@@ -39,6 +39,13 @@
 export const CLERK_USER_ID_RE = /^user_[A-Za-z0-9]+$/;
 
 /**
+ * Job ids are `crypto.randomUUID()` from whichever action opened the job: the
+ * shape `JOB_ID_PATTERN` in layout.py requires, and a path segment like the user
+ * id above.
+ */
+export const PLACEHOLDER_JOB_ID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/**
  * Zero-padding width for per-entry object names — `IMAGE_INDEX_DIGITS` in
  * app/jobs/layout.py (currently 4).
  *
@@ -95,6 +102,66 @@ export function placeholderOutputImageObject(
 ): string {
   const padded = String(index).padStart(PLACEHOLDER_IMAGE_INDEX_DIGITS, "0");
   return `${placeholderJobPrefix(userId, jobId)}output/images/${padded}.${extension}`;
+}
+
+/**
+ * One processed image's stored size for a saved copy (NEO-427):
+ * `output/copy-photos/{image|thumb}/{index:04d}.jpg`, written by `/process-entry`
+ * beside the output (`layout.copy_photo_image_object` and
+ * `layout.copy_photo_thumb_object`). Always JPEG: the service makes nothing else.
+ */
+export function placeholderCopyPhotoObject(
+  userId: string,
+  jobId: string,
+  index: number,
+  size: "image" | "thumb",
+): string {
+  const padded = String(index).padStart(PLACEHOLDER_IMAGE_INDEX_DIGITS, "0");
+  return `${placeholderJobPrefix(userId, jobId)}output/copy-photos/${size}/${padded}.jpg`;
+}
+
+/**
+ * NEO-481 — one hand edit's full-resolution render of an entry:
+ * `output/edits/{index:04d}/{version}.jpg`, written by `/render-edit` (scan
+ * form, `layout.edit_output_object`). Write-once per version: the service
+ * refuses a version that exists, and `placeholderImages.edits` allocates a
+ * fresh one per render. Always JPEG. This is what a tile shows while the
+ * row's `edit.version` names it.
+ */
+export function placeholderEditOutputObject(
+  userId: string,
+  jobId: string,
+  index: number,
+  version: number,
+): string {
+  const padded = String(index).padStart(PLACEHOLDER_IMAGE_INDEX_DIGITS, "0");
+  return `${placeholderJobPrefix(userId, jobId)}output/edits/${padded}/${editVersionSegment(version)}.jpg`;
+}
+
+/**
+ * NEO-481 — the saved-copy sizes of one hand edit:
+ * `output/edits/{index:04d}/{version}/{image|thumb}.jpg`
+ * (`layout.edit_copy_photo_object`). The attach copies these, never the
+ * pipeline's own sizes, once the row carries an edit.
+ */
+export function placeholderEditCopyPhotoObject(
+  userId: string,
+  jobId: string,
+  index: number,
+  version: number,
+  size: "image" | "thumb",
+): string {
+  const padded = String(index).padStart(PLACEHOLDER_IMAGE_INDEX_DIGITS, "0");
+  return `${placeholderJobPrefix(userId, jobId)}output/edits/${padded}/${editVersionSegment(version)}/${size}.jpg`;
+}
+
+/**
+ * A version as a path segment: a positive integer, refused otherwise. It comes
+ * from a stored counter, never from a client, but it still becomes a key.
+ */
+function editVersionSegment(version: number): string {
+  if (!Number.isSafeInteger(version) || version < 1) throw new Error("edit version out of shape");
+  return String(version);
 }
 
 /**

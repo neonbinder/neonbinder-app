@@ -1,5 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { rejectedSummaryValidator } from "./lib/extractRejections";
 
 /**
  * NEO-356 — the collector's saved theme preference, shared by the schema and
@@ -323,8 +324,26 @@ export const selectorOptionMetadataFields = {
    * `""`, refuse control characters and cap at
    * `MAX_LISTING_SHORT_NAME_LENGTH`. Absent means "use the full names".
    * Existing titles are never rewritten when it changes (write-once titles).
+   * NEO-535 — one exception: a PARALLEL's Card titles dialog
+   * (`parallelCopyTitles.saveTitleFixes`) writes it on the parallel row and
+   * rewrites that parallel's still-failing cards with it; see the next field.
    */
   listingShortName: v.optional(v.string()),
+  /**
+   * NEO-535 — when the parallel Card titles dialog last saved
+   * `listingShortName` (ms since epoch), and so the run id of the background
+   * chain that save started (`parallelCopyTitles.rewriteFailingTitlesPage`).
+   * A chain runs only while this still holds its run id AND the box is still
+   * the one it writes with, so saving A, then B, then A again leaves one live
+   * chain, not two.
+   *
+   * Written only by `saveTitleFixes`, beside the box. Every other writer of
+   * `listingShortName` (the attributes panel, the wizard commit, the
+   * short-name backfill) spreads `metadata` and leaves it as it is: none of
+   * them starts a chain, and a box they change stops the live one by itself.
+   * Absent on every row the dialog never saved; no backfill.
+   */
+  listingShortNameSavedAt: v.optional(v.number()),
 };
 
 export const selectorOptionFields = {
@@ -556,6 +575,100 @@ export const selectorOptionFields = {
    */
   teamCascadeStartedAt: v.optional(v.number()),
   /**
+   * NEO-569 — the NB leagues this set's cards belong to, picked at set level
+   * (multi-select). Settable only on `setName`, `variantType`, `insert` and
+   * `parallel` rows; a sport, year or brand never carries it (sport rows are
+   * reference-seed data, and a league picked there would answer for every set
+   * beneath it).
+   *
+   * LOOKED UP, never copied down: a row's effective leagues are its own when
+   * it has them, else the nearest ancestor's on the walk self → parent that
+   * stops after `setName` (`lib/selectorLeagues.effectiveSetLeagueIds`). A
+   * parallel of the Base set sits under the Parallel variant type, so it
+   * inherits from there, not from the Base variant type.
+   *
+   * Never stored empty (a clear removes the field and the row inherits again),
+   * deduped, every league in the row's own sport, at most `MAX_SET_LEAGUES`
+   * (`selectorOptions.setSelectorOptionLeagues`, the one operator door). A new
+   * `setName` row is born with the sport's major league
+   * (`leagues.resolveDefaultLeagueId`); nothing else writes it except the
+   * armed `leagueBackfill`.
+   *
+   * Read any-of: a team is "in the set's league" when it is in any of these
+   * (team suggestions, the picker ranking, the wizard's Teams step). NB data
+   * only; no adapter or sync reads or writes it. Replaces the free-text
+   * `features.league`, which only `leagueBackfill.ts` still reads.
+   */
+  leagueIds: v.optional(v.array(v.id("leagues"))),
+  /**
+   * NEO-569 — the set's ONE league-cascade lock, set on the `setName` row
+   * only: when a `leagueIds` edit on this set or any row within it handed
+   * teamless cards to `cardLeague.cascadeSetLeagues`, and that cascade has not
+   * yet reported back. A fresh stamp refuses every league edit within the set
+   * (so two cascades never overlap), a stale one is overwritten, the
+   * cascade's last invocation removes it. ABSENT means no cascade in flight.
+   */
+  leagueCascadeStartedAt: v.optional(v.number()),
+  /**
+   * NEO-556 — "No Team": the operator said the cards beneath this row carry
+   * no team, as a set-level answer. The third state of the team default:
+   * ABSENT with no `teamIds` is "no set-level team" (unset), `teamIds` is a
+   * team, this is "No Team". Never stored beside `teamIds`: the one writer
+   * (`setSelectorOptionTeams`) removes either when it writes the other, and
+   * every copy-down goes through `inheritedTeamDefault`, which returns one or
+   * the other, never both.
+   *
+   * `setAt` / `setByUserId` are server-stamped (the time and `requireAdmin`'s
+   * subject), never client arguments, because the value is what lets a
+   * background path stamp a card `teamNoneConfirmedByUserId` on the
+   * operator's behalf. A copy-down keeps the original stamp: it is the same
+   * decision, made once, by that person.
+   *
+   * Reaches rows and cards exactly as `teamIds` does (copy-down at creation,
+   * the NEO-24 edit cascade for NODES), with one difference: a No Team value
+   * never touches an EXISTING card. A new card under a No Team leaf is born
+   * stamped `teamNoneConfirmedAt` when `noTeamCardVerdict` says so (it never
+   * is when a listing names a team, or a BSC lookup is still outstanding —
+   * product invariant 8); existing cards are stamped only by the operator's
+   * explicit run (`cardNoTeamBulk`). A card's own "No team" claim from a
+   * checklist does NOT beat a set team X (NEO-556 Q3): `defaultTeamOnCardIds`
+   * is unchanged. No index, no backfill: absent is what every row said.
+   */
+  noTeamDefault: v.optional(
+    v.object({ setAt: v.number(), setByUserId: v.string() }),
+  ),
+  /**
+   * NEO-528 round 3 — "Player on every card": the player every NEW card
+   * beneath this row is born with, when it arrives with no player of its own
+   * (no resolved player and no name waiting for review).
+   *
+   * Settable at ANY level (sport, year, manufacturer, set, variant type,
+   * insert, parallel) and LOOKED UP at card creation, never copied down: the
+   * card's checklist row and its ancestors are walked nearest first and the
+   * nearest row carrying this field wins, as a whole
+   * (`cardPlayersBulk.effectiveCardPlayerDefaults`). A parallel's walk also
+   * passes through the row it is a parallel of (an insert's parallels its
+   * insert; the inserts under a Parallel variant type the set's Base).
+   *
+   * An array for the shape cards use, capped at ONE by the only writer
+   * (`cardPlayersBulk.setCardPlayerDefault`): a new pick replaces it. ABSENT
+   * when empty; nothing to backfill. Clearing it edits no card, and a new pick
+   * never moves cards already carrying the old player.
+   *
+   * NB data only: no adapter or sync reads or writes it. Not named like a
+   * card's `playerIds`, which the player-link pin tests grep for.
+   */
+  defaultPlayerIds: v.optional(v.array(v.id("players"))),
+  /**
+   * NEO-528 round 3 — the cameos ("Also on this card") every NEW card beneath
+   * this row is born with. Same level rules, lookup and nearest-wins as
+   * `defaultPlayerIds`, resolved independently of it (a nearer row's cameos
+   * replace a farther row's; lists are never merged). Capped at
+   * `MAX_CARD_PLAYERS`; never holds this row's own `defaultPlayerIds` player.
+   * ABSENT when empty. NB data only.
+   */
+  defaultCameoIds: v.optional(v.array(v.id("players"))),
+  /**
    * NEO-358 — how many `cardChecklist` rows point at THIS row
    * (`by_selector_option`), stored so a collector's "1 of N" never reads a
    * whole checklist. Meaningful on the card-bearing levels (`variantType`,
@@ -637,6 +750,29 @@ export const selectorOptionFields = {
    * NB data only: no adapter or sync reads or writes it.
    */
   hasCards: v.optional(v.boolean()),
+  /**
+   * NEO-532 — when a card last LANDED on this row (an insert, or a move in),
+   * as the landing mutation's `Date.now()`. Meaningful on the card-bearing
+   * levels (`variantType`, `insert`, `parallel`); absent elsewhere, never
+   * written on an ancestor.
+   *
+   * Kept by the same `CardCountLedger` flush as `cardCount`: every flush that
+   * lands a card on the row stamps it (even when the mutation also took one
+   * off, so the count is unchanged), and a flush that leaves `cardCount` at 0
+   * clears it, but only when that 0 is known (a row whose recount is skipped
+   * is never cleared). A flush that only takes cards off brings it down to
+   * the newest card left (clears it when none is left). It is still a
+   * discovery hint, never a time to show. ABSENT means no card has landed
+   * since the field existed and the armed backfill (`backfillLastCardAt`)
+   * has not reached the row.
+   *
+   * Read by New on NeonBinder (`dashboard.newSets`) through
+   * `by_last_card_at`, to find the variants with the newest cards without
+   * walking the whole checklist table.
+   *
+   * NB data only: no adapter or sync reads or writes it.
+   */
+  lastCardAt: v.optional(v.number()),
   lastUpdated: v.number(),
 };
 
@@ -670,6 +806,63 @@ export const collectionCopyGradingValidator = v.object({
 });
 
 /**
+ * NEO-500 — one box copy a sale's item was taken from, snapshotted by the
+ * apply (`marketplaceSales.items[].from`): the box, the copy row (which may
+ * be gone since: a copy lowered to 0 is deleted), how many came off it, and
+ * the copy's slot, condition and serial as they were. `condition` is required
+ * because the apply only ever lowers raw copies that carry one; no grade,
+ * since a graded copy is never lowered by a sale today.
+ */
+export const saleItemFromValidator = v.object({
+  homeId: v.id("collectionContainers"),
+  copyId: v.id("collectionCopies"),
+  quantity: v.number(),
+  slot: v.optional(v.number()),
+  condition: collectionCopyConditionValidator,
+  serialNumber: v.optional(v.string()),
+});
+
+/**
+ * NEO-509 — the card a sale line describes, as the platform listed it
+ * (`marketplaceSales.items[].listed`): sport, year, set, players, card number
+ * and variant words, read by the order poll at the sync boundary
+ * (`lib/bscOrders.ts`, bounded there: an over-long value is dropped, never
+ * truncated). It lets the Pick List name a line NB could not match ("2021
+ * Score · Justin Fields · #TB2 · 1991 Throwback"). NEO-520 adds eBay's line
+ * `title` (below).
+ *
+ * Kept on the SALE only. It is never written to an NB card, set, player or
+ * team row, and nothing outside the Pick List's labels and walking order, and
+ * (NEO-520) the Sales tab's `listed.title` label read through
+ * `listingSync.publicSale`, reads it. `sportId` is NB's own sport row, resolved once when the line is stored
+ * from the platform's item-level sport id against the sport rows'
+ * `platformData.bsc` slots (exactly one match, else absent); `sport` is the
+ * platform's own word, a fallback label only. Every field is optional: the
+ * line keeps whatever the platform sent that NB could read.
+ */
+export const saleItemListedValidator = v.object({
+  sport: v.optional(v.string()),
+  sportId: v.optional(v.id("selectorOptions")),
+  year: v.optional(v.string()),
+  setName: v.optional(v.string()),
+  players: v.optional(v.string()),
+  cardNo: v.optional(v.string()),
+  variant: v.optional(v.string()),
+  variantName: v.optional(v.string()),
+  /**
+   * NEO-520 — eBay only: the order line's own title as the buyer saw it
+   * (`lineItems[].title`), stored on every eBay line whose title was
+   * readable, and shown only where NB holds no card for the line (a listing
+   * NB did not make): the Pick List, and the Sales tab via
+   * `listingSync.publicSale`. Bounded at the
+   * sync boundary (`lib/ebayListing.ts`): trimmed, control characters
+   * refused, an over-long title dropped, never cut. Never parsed, matched or
+   * written to any NB row. BSC lines never carry it.
+   */
+  title: v.optional(v.string()),
+});
+
+/**
  * NEO-379 — the batch defaults an intake run applies to every card it files,
  * each overridable per card. The fields mirror `collectionCopies`;
  * `minPriceCents` is the box floor (NEO-378), meaningful for boxes only.
@@ -683,6 +876,52 @@ export const intakeDefaultsValidator = v.object({
   notes: v.optional(v.string()),
   minPriceCents: v.optional(v.number()),
 });
+/** NEO-481 — a hand crop, in source pixels of the frame srcW x srcH. */
+export const photoEditCropValidator = v.object({
+  cx: v.number(),
+  cy: v.number(),
+  w: v.number(),
+  h: v.number(),
+  // Degrees clockwise, (-180, 180]; the box's own top edge becomes the output's top.
+  angle: v.number(),
+  srcW: v.number(),
+  srcH: v.number(),
+});
+/**
+ * NEO-481 — `PhotoEdit`: quarter turns clockwise, applied last; crop null =
+ * the whole source. Shared by function `args` AND stored rows, so never
+ * tighten it in place.
+ */
+export const photoEditValidator = v.object({
+  turns: v.union(v.literal(0), v.literal(1), v.literal(2), v.literal(3)),
+  crop: v.union(v.null(), photoEditCropValidator),
+});
+/** NEO-481 — a scan's current edit: the parameters plus the write-once output version they rendered to. */
+export const storedPhotoEditValidator = v.object({
+  ...photoEditValidator.fields,
+  version: v.number(),
+  editedAt: v.number(),
+});
+/** NEO-481 — the scan a copy photo was made from. Server-only; never projected to a client. */
+export const copyPhotoScanValidator = v.object({ jobId: v.string(), entryIndex: v.number() });
+/**
+ * NEO-481 — an edit accepted but not yet rendered (the save is asynchronous:
+ * the reserve returns at once, a scheduled action renders, a commit lands the
+ * new file). `failed` keeps the edit and its error so the UI can offer Try
+ * again; the old photo stays live throughout.
+ */
+export const pendingPhotoEditValidator = v.object({
+  ...photoEditValidator.fields,
+  version: v.number(),
+  requestedAt: v.number(),
+  status: v.union(v.literal("rendering"), v.literal("failed")),
+  error: v.optional(v.string()),
+});
+/** NEO-427 — a saved pair's scans on their way onto its line (`intakeMatches.photos`). */
+export const intakePhotosValidator = v.union(v.literal("pending"), v.literal("attached"), v.literal("failed"));
+/** NEO-427 — why a "failed" attach failed (`intakeMatches.photoFailure`). */
+export const intakePhotoFailureValidator = v.union(v.literal("scanGone"), v.literal("unusable"), v.literal("error"));
+
 /** NEO-379 — the matcher's confidence band (`convex/lib/intakeMatch.ts`). */
 export const intakeBandValidator = v.union(
   v.literal("matched"),
@@ -821,6 +1060,16 @@ export const collectionRuleValidator = v.object({
       test: collectionRuleLeafValidator,
     }),
   ),
+  /**
+   * NEO-528 — the collector's per-binder "also take cards where they are
+   * pictured but not the subject" switch, off (absent) by default. On, a
+   * positive `player` or `hallOfFame` line also reads the card's
+   * `secondaryPlayerIds`; `team`, `playedFor` and every negated line still
+   * read the card's own players only (`lib/collection/binder-rule.ts`
+   * `ruleFit`). `cleanRule` drops it from a rule with no positive player or
+   * Hall of Fame line, where it would mean nothing.
+   */
+  secondaryPlayers: v.optional(v.literal(true)),
 });
 
 /**
@@ -859,6 +1108,361 @@ export const cardRequestStatusValidator = v.union(
 
 /** NEO-361 — "Request a Card" (into a set NB has) or "Request a Set" (one NB lacks). */
 export const cardRequestKindValidator = v.union(v.literal("card"), v.literal("set"));
+
+/**
+ * NEO-370 — a marketplace NB lists a collector's for-sale copies on.
+ * BuySportsCards (sheet-level, one row per BSC card id) and, since NEO-415,
+ * eBay (card-level: one NB-owned listing per card and condition bucket, see
+ * `marketplaceListingLinks`). A wider union is additive, but it must DEPLOY
+ * before anything writes the new value (a document carrying a literal the
+ * deployed union lacks is refused on write, and on read by a rolled-back
+ * deployment; see `platformFacets`). SportLots is not a listing destination,
+ * so it is not here.
+ *
+ * NEO-536: `syncReports.platform` pins this union too (a collector's report
+ * of a held-back set), so removing a literal needs those rows cleared first.
+ */
+export const listingPlatformValidator = v.union(v.literal("bsc"), v.literal("ebay"));
+
+/**
+ * NEO-415: NB's condition buckets for a card-level listing (eBay's four
+ * ungraded card grades, `lib/ebayListing.EBAY_CONDITION_CODES`). Part of the
+ * link row's key (`marketplaceListingLinks.by_owner_platform_card_condition`).
+ */
+export const ebayConditionCodeValidator = v.union(v.literal("NM"), v.literal("EX"), v.literal("VG"), v.literal("PR"));
+
+/**
+ * NEO-370 — why one card of a variant did not list on a platform, as the
+ * variant panel's "Can't list on <platform>" disclosure reports it.
+ * NB-authored: every value is decided by NB's own pre-flight or by NB's
+ * reading of the platform's answer, never copied from the platform.
+ *   noLink         the card carries no id for this platform (`platformData`)
+ *   sharedLink     the id is shared with another NB card, either direction
+ *                  (the exactly-one guard; never list the wrong card)
+ *   numberMismatch the platform's card number for that id is not NB's
+ *   noPrice        no floor: no `minPriceCents` and no common price
+ *   priceTooHigh   the floor is above what the platform accepts
+ *   noCondition    a copy with no condition NB can map to the platform's
+ *   graded         a graded copy (raw only, NEO-373 does slabs)
+ *   notOnSheet     the platform's sheet for this variant has no row for it
+ *   rejected       the platform refused the row; `detail` says what it said
+ *   missingAspect  (eBay) a field eBay requires for the card category is not
+ *                  one NB can fill for this card; `detail` is eBay's aspect
+ *                  name as eBay sent it: it describes eBay's requirement,
+ *                  never NB data
+ *   noPhoto        (eBay) no copy in the (card, condition) group has a photo;
+ *                  eBay needs one
+ *   setupIncomplete (eBay) the collector's eBay settings (shipping, payment,
+ *                  returns, location) are not complete, so nothing was sent
+ *   noLeague       (eBay, NEO-569) the card carries no NB league yet
+ *                  (`cardChecklist.leagueId`), so eBay's League cannot be
+ *                  filled; an admin sets it in the card panel. Never
+ *                  withdraws a live listing
+ *   titleTooLong   (eBay, NEO-535) the card's stored title is over eBay's 80
+ *                  characters; NB never cuts it (a cut would chop the print
+ *                  run), so the card waits for a shorter title in the set
+ *                  builder. NB's own hold, not a platform refusal
+ * A new reason widens this union (additive, deploy before writing it).
+ * Removing one needs every row carrying it cleared first: the listing tables
+ * here and, since NEO-536, `syncReports.cards[].reason` (a collector's report
+ * keeps the reason it was sent with until an admin closes it, and after).
+ */
+export const listingProblemReasonValidator = v.union(
+  v.literal("noLink"),
+  v.literal("sharedLink"),
+  v.literal("numberMismatch"),
+  v.literal("noPrice"),
+  v.literal("priceTooHigh"),
+  v.literal("noCondition"),
+  v.literal("graded"),
+  v.literal("notOnSheet"),
+  v.literal("rejected"),
+  v.literal("missingAspect"),
+  v.literal("noPhoto"),
+  v.literal("setupIncomplete"),
+  v.literal("noLeague"),
+  v.literal("titleTooLong"),
+);
+
+/** NEO-536 — where a collector's sync report stands. `open` until an admin closes it. */
+export const syncReportStatusValidator = v.union(v.literal("open"), v.literal("fixed"), v.literal("notABug"));
+
+/**
+ * NEO-415 — one step of a variant's listing run, as the Sync status tab shows
+ * it (`marketplaceListingSyncs.progress`). NB vocabulary only: the web writes
+ * each label from `kind` and NB's condition names; no marketplace value is
+ * stored here.
+ *   check    compare the collector's boxes with what is listed: the first step
+ *            of an eBay run, and all of a run that finds nothing to do, so a
+ *            run that sent nothing still says what it did
+ *   read     (BSC) read one condition's sheet
+ *   send     (BSC) the PUT carrying the changes
+ *   confirm  (BSC) read one condition back after the PUT
+ *   photos   (BSC seller photos, eBay pictures) upload photos
+ *   items    (eBay) create or replace inventory items
+ *   offers   (eBay) create or update offers, and price-and-quantity updates
+ *   publish  (eBay) publish offers
+ *   withdraw (eBay) take down listings whose count went to 0
+ * `condition` and `conditions` are set on read and confirm only: the NB
+ * conditions that sheet carries (`conditions`, best first; BSC folds Mint
+ * and Near Mint into one modern sheet), `condition` its first. A read or
+ * confirm with neither covers the sheets NB lists nothing under (old rows
+ * NB may still have to zero).
+ */
+export const listingSyncStepKindValidator = v.union(
+  v.literal("check"),
+  v.literal("read"),
+  v.literal("send"),
+  v.literal("confirm"),
+  v.literal("photos"),
+  v.literal("items"),
+  v.literal("offers"),
+  v.literal("publish"),
+  v.literal("withdraw"),
+);
+export const listingSyncStepStatusValidator = v.union(
+  v.literal("waiting"),
+  v.literal("working"),
+  v.literal("done"),
+  v.literal("failed"),
+);
+/**
+ * NEO-415 — one step of eBay "Set me up" (`ebayConnect.createStandardPolicies`):
+ * which policy (or the look at the account before any), its label in NB's
+ * words (NB's own policy names), and where it stands. `had`: the account
+ * already has it, so nothing is made; `stopped`: an earlier step stopped the
+ * run before this one.
+ */
+export const ebaySetupStepValidator = v.object({
+  step: v.union(
+    v.literal("check"),
+    v.literal("tracked"),
+    v.literal("free"),
+    v.literal("payment"),
+    v.literal("returns"),
+    v.literal("ese"),
+  ),
+  label: v.string(),
+  status: v.union(
+    v.literal("waiting"),
+    v.literal("working"),
+    v.literal("done"),
+    v.literal("failed"),
+    v.literal("had"),
+    v.literal("stopped"),
+  ),
+});
+
+/** The latest Set me up run on `ebaySellerSettings.setupProgress`. */
+export const ebaySetupProgressValidator = v.object({
+  runId: v.string(),
+  startedAt: v.number(),
+  steps: v.array(ebaySetupStepValidator),
+});
+
+export const listingSyncStepValidator = v.object({
+  kind: listingSyncStepKindValidator,
+  condition: v.optional(collectionCopyConditionValidator),
+  conditions: v.optional(v.array(collectionCopyConditionValidator)),
+  status: listingSyncStepStatusValidator,
+  finishedAt: v.optional(v.number()),
+  /**
+   * PR 451 (NEO-487) — measured by the BSC call recorder, never the step's
+   * elapsed time: set while a BSC call of this step is outstanding (written on
+   * the recorder's 0 → 1 edge, cleared on its debounced 1 → 0 edge), and the
+   * total time this step has spent waiting on BSC so far.
+   */
+  marketplaceWaitingSince: v.optional(v.number()),
+  marketplaceWaitMs: v.optional(v.number()),
+});
+export const listingSyncProgressValidator = v.object({
+  /** The claim that started this run (`listingDrain.claimVariant`). */
+  runStartedAt: v.number(),
+  steps: v.array(listingSyncStepValidator),
+});
+
+/**
+ * NEO-496 — one stored row of a publisher checklist (`publishedChecklistChunks`).
+ * The server re-check (`convex/lib/publishedChecklistCheck.ts`) is the only
+ * thing that builds one: `noNumber` / `noTeam` are only ever stored as `true`.
+ */
+export const publishedChecklistStoredRowValidator = v.object({
+  number: v.string(),
+  players: v.array(v.string()),
+  teams: v.array(v.string()),
+  noNumber: v.optional(v.boolean()),
+  noTeam: v.optional(v.boolean()),
+});
+/** NEO-496 — a publisher checklist's life: uploading → ready → retired, or uploading → retired. */
+export const publishedChecklistStatusValidator = v.union(
+  v.literal("uploading"),
+  v.literal("ready"),
+  v.literal("retired"),
+);
+/** NEO-496 — what the operator uploaded. */
+export const publishedChecklistFormatValidator = v.union(
+  v.literal("xlsx"),
+  v.literal("pdf"),
+  v.literal("csv"),
+  v.literal("tsv"),
+  v.literal("txt"),
+  v.literal("paste"),
+);
+
+/**
+ * PR 451 (NEO-478) — where the operator's publisher checklist disagrees with
+ * the marketplace on one card. `marketplace` is what the card carries (the
+ * merged marketplace answer), `checklist` what the publisher's row says. Each
+ * side is present only when that field disagrees. Bounded by
+ * `startCandidateBatch` (MAX_CARD_PLAYERS / MAX_CARD_TEAMS, name length).
+ */
+export const checklistConflictSidesValidator = v.object({
+  marketplace: v.array(v.string()),
+  checklist: v.array(v.string()),
+});
+export const checklistConflictValidator = v.object({
+  players: v.optional(checklistConflictSidesValidator),
+  teams: v.optional(checklistConflictSidesValidator),
+});
+
+/**
+ * NEO-496 — a publisher-checklist row a fetched card was paired with on the
+ * server, in the shape Match Cards lists a row (`ChecklistLinkRow`) plus the
+ * name the row has as a card of its own (`checklistOnlyCard`). `teams` are
+ * resolved like a checklist-only card's; `noTeam` is the row's "No Team".
+ */
+export const checklistPairedRowValidator = v.object({
+  number: v.string(),
+  players: v.array(v.string()),
+  teams: v.array(v.string()),
+  noNumber: v.optional(v.literal(true)),
+  noTeam: v.optional(v.literal(true)),
+  cardName: v.string(),
+});
+
+/**
+ * NEO-496 — the card as it was before the paired row was applied, for an
+ * operator Unlink in Match Cards.
+ *
+ *  - `players`: the card's own players (absent: it had none).
+ *  - `teamsFromRow`: the row settled the card's team (`teamLookup:
+ *    "checklist"`), so BSC was never asked. Only then do `teams` /
+ *    `teamLookup` say what to put back; otherwise the card's teams are its
+ *    own (or its lookup's, which lands later) and Unlink leaves them alone.
+ *  - `teams`: the card's own teams before the row (absent: none).
+ *  - `teamLookup: "failed"`: the card had no team of its own and a BSC
+ *    listing whose team lookup was skipped because the row answered it.
+ *    "failed" is the data-missing state (rule 8): the operator picks the
+ *    team and no rule guesses one.
+ */
+export const checklistPairRevertValidator = v.object({
+  players: v.optional(v.array(v.string())),
+  teamsFromRow: v.boolean(),
+  teams: v.optional(v.array(v.string())),
+  teamLookup: v.optional(v.literal("failed")),
+});
+
+/**
+ * NEO-335 / PR 451 — how a card's fetch-time team answer was reached:
+ * "answered" (BSC replied), "failed" (the BSC call failed), "checklist" (the
+ * operator's publisher checklist answered it; BSC was not asked). The one
+ * definition the candidate row, the preview card and the commit chunk share.
+ */
+export const cardTeamLookupValidator = v.union(
+  v.literal("answered"),
+  v.literal("failed"),
+  v.literal("checklist"),
+);
+
+/**
+ * NEO-370 — why a sold line was not (fully) applied to the collector's box
+ * copies. NB-authored, like the listing reasons above.
+ *   unmatched    no NB card could be found for the line (SKU and id both fail)
+ *   linkMismatch the SKU's NB card does not carry the line's platform id
+ *   oversold     more sold than NB held for sale; the copies went to 0 and
+ *                `shortBy` says how many could not be taken off
+ */
+export const saleItemProblemValidator = v.union(
+  v.literal("unmatched"),
+  v.literal("linkMismatch"),
+  v.literal("oversold"),
+);
+
+/**
+ * NEO-475 — why a BuySportsCards call failed, as the telemetry classifies it.
+ *   http         BSC answered with a non-2xx status
+ *   timeout      no response headers before the call's deadline
+ *   body_timeout headers arrived, the body did not before the deadline
+ *   network      the fetch threw (connection reset, DNS, TLS); `errCode` says which
+ *   parse        a 2xx body that would not parse
+ */
+export const bscCallKindValidator = v.union(
+  v.literal("http"),
+  v.literal("timeout"),
+  v.literal("body_timeout"),
+  v.literal("network"),
+  v.literal("parse"),
+);
+
+/**
+ * NEO-475 — one failed BSC call, the `bsc_call_failed` detail line minus its
+ * `msg`. Every string is already scrubbed by the emitter
+ * (`convex/lib/bscCallTelemetry.ts`) and capped again by
+ * `bscCallStats.record`. `headers` is an allowlist of response headers only;
+ * no request header, token, credential or seller id is ever stored.
+ */
+export const bscCallSampleValidator = v.object({
+  op: v.optional(v.string()),
+  pathTemplate: v.optional(v.string()),
+  bscCardId: v.optional(v.string()),
+  kind: bscCallKindValidator,
+  status: v.optional(v.number()),
+  durationMs: v.optional(v.number()),
+  timeoutMs: v.optional(v.number()),
+  attempt: v.optional(v.number()),
+  inflight: v.optional(v.number()),
+  errCode: v.optional(v.string()),
+  headers: v.optional(v.record(v.string(), v.string())),
+  body: v.optional(v.string()),
+  deployment: v.optional(v.string()),
+  at: v.optional(v.number()),
+});
+
+/**
+ * NEO-475 — one action invocation's (or one seller session's) BSC calls,
+ * mergeable with any other: counts add, `maxInflight` and `lat.max` take the
+ * max, `lat.min` the min, and `lat.buckets` add element-wise. The buckets have
+ * FIXED edges (`BSC_LATENCY_BUCKET_EDGES_MS` in `bscCallStats.ts`: ten edges
+ * plus the overflow bucket, so always eleven), which is what lets p50/p95 be
+ * computed across invocations. `deployment` is optional because
+ * `observability.deploymentName()` is undefined off-cloud (tests, local).
+ */
+export const bscCallSummaryFields = {
+  op: v.string(),
+  deployment: v.optional(v.string()),
+  startedAt: v.number(),
+  endedAt: v.number(),
+  calls: v.number(),
+  ok: v.number(),
+  byKind: v.record(v.string(), v.number()),
+  byStatus: v.record(v.string(), v.number()),
+  maxInflight: v.number(),
+  suppressed: v.number(),
+  lat: v.object({
+    min: v.number(),
+    max: v.number(),
+    sum: v.number(),
+    buckets: v.array(v.number()),
+  }),
+  /** At most five failure samples (`bscCallStats.record` caps it). */
+  samples: v.array(bscCallSampleValidator),
+  /**
+   * NEO-552 — calls the BSC call gate refused, by reason (open, probing,
+   * throttled, gate_unavailable). Never sent, so in no other count.
+   */
+  refused: v.optional(v.record(v.string(), v.number())),
+};
+export const bscCallSummaryValidator = v.object(bscCallSummaryFields);
 
 // Using Clerk for authentication - users are identified by Clerk user IDs
 export default defineSchema({
@@ -1035,6 +1639,11 @@ export default defineSchema({
     // (e.g. fetchBscChecklist) don't have to re-derive them on every request.
     marketplaceAccountIds: v.optional(v.object({
       bscSellerId: v.optional(v.string()),
+      // NEO-415: eBay's immutable user id for the connected seller account
+      // (Commerce Identity `userId`, returned by the browser service's
+      // `/oauth/ebay/connect`). The seller-conflict key and the account
+      // deletion lookup; never the display username, which a seller can change.
+      ebayUserId: v.optional(v.string()),
     })),
     preferences: v.optional(v.object({
       // NEO-96: `defaultSport: v.optional(v.string())` removed — it had zero
@@ -1062,7 +1671,39 @@ export default defineSchema({
     // unauthenticated at /u/:username. Optional so existing rows need no
     // migration; /labels treats absent as "not set up yet".
     returnAddress: v.optional(postalAddressValidator),
-  }).index("by_user", ["userId"]),
+    /**
+     * NEO-464 — the dashboard's "since your last visit". `seenAt`: the last
+     * time the dashboard opened. `sinceAt`: where the current visit's "new"
+     * starts (the `seenAt` of the visit before; absent on the first visit).
+     * A visit runs while the dashboard reopens within `VISIT_GAP_MS` of the
+     * last open, so Back to the dashboard keeps its news. Written only by
+     * `dashboard.markVisit` (`nextVisit` is the rule). Top level, not under
+     * `preferences`: `getUserProfile` returns `preferences` through a fixed
+     * validator, and `updateUserProfile` replaces it whole. Optional, no
+     * backfill: absent reads as a first visit.
+     */
+    dashboardVisit: v.optional(
+      v.object({
+        seenAt: v.number(),
+        sinceAt: v.optional(v.number()),
+      }),
+    ),
+    /**
+     * NEO-464 — the collector's first dashboard open since NB stamps when
+     * cards were added (`collectionCopies.addedAt`) and listed (`listedAt`).
+     * A line with no stamp written before this moment predates the stamps,
+     * so Fresh Pulls and New Listings read its `_creationTime` instead; one
+     * written after it was never an add (a move, a split, an undo's
+     * put-back). Set once, by `dashboard.markVisit`; no backfill. Absent: the
+     * dashboard has not opened since, and nothing reads a line without a
+     * stamp.
+     */
+    dashboardStampsFrom: v.optional(v.number()),
+  })
+    .index("by_user", ["userId"])
+    // NEO-415: eBay's Marketplace Account Deletion notice names the seller by
+    // eBay user id; this finds the NB owner(s) holding that account.
+    .index("by_ebay_user", ["marketplaceAccountIds.ebayUserId"]),
 
   // Selector Options - stores all possible values for each selector level.
   // Fields live in `selectorOptionFields` above so query `returns` validators
@@ -1072,6 +1713,14 @@ export default defineSchema({
     .index("by_parent", ["parentId"])
     .index("by_value", ["value"])
     .index("by_level_and_parent", ["level", "parentId"])
+    // NEO-532: New on NeonBinder (`dashboard.newSets`) reads the rows whose
+    // cards landed most recently, newest first. Rows without the stamp sort
+    // first and are ranged out (`gt 0`).
+    .index("by_last_card_at", ["lastCardAt"])
+    // NEO-527: the collector's set column reads sets with cards (count > 0,
+    // biggest first) and then the uncounted ones, so a brand with hundreds
+    // of empty synced sets never pushes a set that holds cards past the cap.
+    .index("by_level_parent_and_subtree_count", ["level", "parentId", "subtreeCardCount"])
     // NEO-358: the collector's set suggestions ("Topps Chrome" → the set, so
     // picking it opens its checklist). Filtered to `level: "setName"` by the
     // reader (`collectionCatalog.suggest`), which re-checks every word.
@@ -1252,6 +1901,38 @@ export default defineSchema({
     // which can drift in the offseason before sets are released.
     playerIds: v.optional(v.array(v.id("players"))),
     /**
+     * NEO-528 — players PICTURED on the card who are not its subject (a
+     * teammate in the dugout, a cameo on a highlight card). NB's own data,
+     * admin-entered only: never derived from a marketplace and never touched
+     * by a re-sync (it is not in `NB_CONTENT_FIELDS`). Absent when empty, and
+     * never holds an id that is in `playerIds` at write time.
+     *
+     * Kept OUT of listing titles, the sync diff, entity review, team
+     * suggestions, collector player search and the admin cards-for-player
+     * list, all of which read `playerIds`. Only a smart binder that turns its
+     * cameo option on reads it (`collectionRuleValidator.secondaryPlayers`).
+     *
+     * One writer, `setCardSecondaryPlayers` in convex/cardSecondaryPlayers.ts,
+     * which also keeps the `cardSecondaryPlayerLinks` index in step;
+     * `cardSecondaryPlayers.pin.test.ts` greps for any other.
+     */
+    secondaryPlayerIds: v.optional(v.array(v.id("players"))),
+    /**
+     * NEO-528 round 3 — the listing this card was born from named a player
+     * (`lib/cardPlayerDefaults.listingNamesAPlayer`), whatever became of the
+     * name: resolved, waiting for review, or ruled "not a person" in entity
+     * review (which leaves the card no id and no pending name). Provenance
+     * only, written once at birth: by the checklist commit's insert, and by a
+     * parallel copy of a card that carries it. A hand-added card has no
+     * listing and never carries it. Absent otherwise; no backfill.
+     *
+     * Read by exactly one thing: a card born from one that carries it never
+     * takes the "Player on every card" default player (Jason, 2026-11-15;
+     * product invariant 8: a data claim holds back a guess). Default cameos
+     * still apply. Never a marketplace value: only that a name was printed.
+     */
+    listingNamedPlayer: v.optional(v.literal(true)),
+    /**
      * ── NEO-254: which NAME this card printed for each player ────────────────
      *
      * Jason, 2026-09-08: a card has to record the name it actually carries. A
@@ -1290,6 +1971,17 @@ export default defineSchema({
       nameOnCard: v.string(),
     }))),
     teamOnCardIds: v.optional(v.array(v.id("teams"))),
+    // NEO-569 — the NB league this card belongs to: a saved, editable copy,
+    // settled from its teams whenever `teamOnCardIds` changes
+    // (`cardLeague.ts`, through `syncCardTeamLinks`): every team in one league
+    // gives that league; no team gives the set's league when the set has
+    // exactly one; anything else (teams in two leagues, a team without a
+    // league, no team in a many-league set) leaves it ABSENT for an admin to
+    // pick in the card panel (`updateCard.leagueId`). A team's own league
+    // change re-settles the cards that followed it
+    // (`cardLeague.recomputeTeamCards`). eBay holds a card without one
+    // (`noLeague`). No index yet: nothing filters cards by league.
+    leagueId: v.optional(v.id("leagues")),
     // NEO-90: set once the BSC per-card team-enrichment queue has checked
     // this card's `platformData.bsc` detail endpoint for a team, regardless
     // of outcome. Distinct from `teamOnCardIds` being empty, which can also
@@ -1304,8 +1996,14 @@ export default defineSchema({
     // was an operator's "no team" ruling, which is not a lookup at all), so a
     // re-ask treats absent like "gaveUp". No index: only the armed re-ask
     // (`enqueueBscTeamBackfill` mode "reask") reads it, and it pages the table.
+    //
+    // PR 451 (NEO-478): "checklist" — the operator's publisher checklist
+    // answered this card at fetch (a matched row), so BSC was never asked. A
+    // card that ends teamless with it was claimed teamless by the checklist;
+    // a re-ask never selects it. Revert hazard: a revert must keep this
+    // literal while rows carry it.
     teamCheckOutcome: v.optional(
-      v.union(v.literal("answered"), v.literal("gaveUp")),
+      v.union(v.literal("answered"), v.literal("gaveUp"), v.literal("checklist")),
     ),
     // NEO-236: the team name BSC returned that we could not match to a row.
     //
@@ -1320,11 +2018,14 @@ export default defineSchema({
     // A HINT, and only a hint. It is NOT a team, and nothing may treat it as
     // one: `features/cardAttention.ts` still badges the card "missing team",
     // and this is deliberately not `pendingTeamNames` (which the attention
-    // rule reads as the card HAVING a team). Written only by
-    // `cardChecklist.applyBscTeamResolution`, capped at 120 characters to
-    // match `MAX_TEAM_NAME_LENGTH`, and never read by any matching or
-    // creation logic — a marketplace string is input for a human, never a
-    // source of truth.
+    // rule reads as the card HAVING a team). Written by
+    // `cardChecklist.applyBscTeamResolution` and the commit's pre-save answer
+    // (`settleCardTeamAnswer`), capped at 120 characters to match
+    // `MAX_TEAM_NAME_LENGTH`. Code may read it only as a PRESENCE check that
+    // stops an automated team fill (product invariant 8: a listing that
+    // names a team holds back a guess, as the parallel build's Set Team fill
+    // does), never match it against a team and never write it as one — a
+    // marketplace string is input for a human, never a source of truth.
     bscTeamName: v.optional(v.string()),
     // NEO-102: an OPERATOR decided this card carries no team at all.
     //
@@ -1345,7 +2046,12 @@ export default defineSchema({
     // Set ONLY by an operator action: `cardChecklist.confirmCardNoTeam`, or
     // (NEO-335) the operator answering "No team on this card" in the wizard
     // before save, which `commitCardChecklist` writes for a card that ends the
-    // commit with no team. Always server-stamped — the time is the server's
+    // commit with no team; or (NEO-556) the operator's set-level "No Team"
+    // (`selectorOptions.noTeamDefault`) — at card birth, through the
+    // `teamNone` arg of `updateCard` / `addCustomCard`, or the operator's
+    // explicit run, every one gated by `noTeamCardVerdict`. A background path
+    // that stamps from the set-level answer records that answer's
+    // `setByUserId`. Always server-stamped — the time is the server's
     // and the user id is `requireAdmin`'s; no client-supplied argument
     // anywhere on either path carries a timestamp, because a forgeable one is
     // operator-review suppression the client can mint for itself. CLEARED the
@@ -1369,6 +2075,8 @@ export default defineSchema({
     // nothing in `convex/` has ever written or read a row in it — so there is
     // no document to point at, and every other audit column in this codebase
     // is the subject string.
+    // NEO-556: a background stamp (BSC's no-team answer, the parallel build,
+    // a commit with no operator) carries the No Team default-setter's id.
     teamNoneConfirmedByUserId: v.optional(v.string()),
     // De-duped union of BSC playerAttribute[] + BSC features[] + variant
     // metadata. Tokens: ["RC","AU","RELIC","SP","SSP","NUM",...]. Drives
@@ -1467,27 +2175,40 @@ export default defineSchema({
     // eBay-specific.
     //
     // NEO-363: REQUIRED, and never blank (Jason: a card's title is required).
-    // It is what a collector searches (`search_listing_title` below). Every
-    // insert writes one: `insertCardRow` and `addCustomCard` generate it
+    // Every insert writes one: `insertCardRow` and `addCustomCard` generate it
     // (`assessListingTitle` always ends in `#<cardNumber>`, so it cannot come
     // out empty) unless the operator's own pre-save title rides on the card.
     // After insert only `updateCard` writes it, and it refuses a blank one
     // (`BLANK_LISTING_TITLE_REFUSAL`). The NEO-358 backfill filled every
     // older row before this flipped.
     listingTitle: v.string(),
+    // NEO-535: every fact NB knows about the card, in prose
+    // (`generateListingDescription`), and what a collector's free-text card
+    // search reads (`search_listing_description` below): the title is cut to
+    // fit 80 characters, the description never is. Written at insert by
+    // `insertCardRow` and `addCustomCard`; after insert only `updateCard`
+    // writes it, and it refuses a blank one
+    // (`BLANK_LISTING_DESCRIPTION_REFUSAL`). Optional: a row the NEO-535
+    // backfill (`backfillListingDescriptions`) has not reached may lack it,
+    // and such a row is not found by the search until it is filled.
     listingDescription: v.optional(v.string()),
-    // NEO-101: the auto-generated title's CORE (year / manufacturer / set /
-    // players) did not fit inside eBay's 80-character cap at creation time, so
-    // the generator cut it at a word boundary to keep room for the card number.
+    // NEO-101 / NEO-609: the card is in Tidy Up. The auto-generated title fit
+    // eBay's 80-character cap only by a cut from the Tidy Up line down (a
+    // whole team, the card number, SP, RELIC, a first name, RC or AUTO; the
+    // "#" alone is not one), or it was built from the set's box text.
     // The title is valid and listable — it is just missing identifying words a
-    // human should put back, which is why this drives a "needs attention" item
+    // human may want to decide differently, which is why this drives a "needs attention" item
     // (`features/cardAttention.ts` → `titleTruncated`) rather than an error.
     //
-    // Set ONLY at insert, from `assessListingTitle(...).coreFits === false`,
-    // and omitted entirely otherwise. CLEARED (patched to `undefined`) by any
-    // operator write of `listingTitle` through `updateCard`: once a human has
-    // authored the title, whether the machine's attempt fit is no longer a
-    // question anyone is asking.
+    // Written with every GENERATED title (insert, Regenerate, a player link,
+    // a team removal), from `assessListingTitle(...).coreFits === false`
+    // (`generatedTitleTruncatedFlag`), and omitted entirely otherwise.
+    // CLEARED (patched to `undefined`) by an operator's own typed title
+    // through `updateCard`: once a human has authored the title, whether the
+    // machine's attempt fit is no longer a question anyone is asking. A title
+    // `updateCard` is handed that is exactly what the generator builds for the
+    // card as it stands (Regenerate) is generated, not typed, and takes the
+    // flag its assessment gives it.
     //
     // WHY IT IS STORED AT ALL, when nothing else about the write-once
     // generation is: a stored row does not carry the player names or the set
@@ -1555,8 +2276,8 @@ export default defineSchema({
     /**
      * NEO-358 — the SPORT this card belongs to: the root of its
      * `selectorOptionId` ancestor chain (`findSportForSelectorOption`),
-     * denormalised so the collector's title search can filter by sport
-     * (`search_listing_title`). Set once at insert and never changed: a card
+     * denormalised so the collector's card search can filter by sport
+     * (`search_listing_description`). Set once at insert and never changed: a card
      * only ever moves between rows under one brand, so its sport is fixed.
      *
      * Writers: `insertCardRow` (convex/cardRowCreate.ts) and `addCustomCard`.
@@ -1584,9 +2305,13 @@ export default defineSchema({
     // re-checks every hit: every unquoted word must appear and every quoted
     // phrase must appear verbatim (case-insensitive). Convex caps a search at
     // 1024 results, which is why set and entity suggestions exist beside it.
-    .searchIndex("search_listing_title", {
-      searchField: "listingTitle",
-      filterFields: ["sportId", "selectorOptionId"],
+    // NEO-535: searches the listing DESCRIPTION, not the title. The title is
+    // cut to fit eBay's 80 characters and may lose a first name or a team;
+    // the description keeps every fact, in long and short forms. Filtered by
+    // sport only (no reader filters by row).
+    .searchIndex("search_listing_description", {
+      searchField: "listingDescription",
+      filterFields: ["sportId"],
     }),
 
   // NEO-21: cross-release guest appearances. Some cards complete one set's
@@ -1696,6 +2421,37 @@ export default defineSchema({
     teamId: v.id("teams"),
   })
     .index("by_team", ["teamId"])
+    .index("by_card", ["cardChecklistId"]),
+
+  /**
+   * ── NEO-528: the player → cards index for `cardChecklist.secondaryPlayerIds` ──
+   *
+   * The twin of `cardPlayerLinks`, for the players a card PICTURES without
+   * being about them. Convex cannot index array members, so the links are
+   * stored flat, one row per (card, player). DERIVED from the card's raw
+   * `secondaryPlayerIds` alone; if the two ever disagree the card wins.
+   * Kept apart from `cardPlayerLinks` on purpose: everything that reads that
+   * index (collector player search, the admin cards-for-player list, the
+   * sync) must never see a cameo.
+   *
+   * `sportId` is the CARD's sport, as on `cardPlayerLinks`, so the player
+   * sport-removal guard is one point read here too.
+   *
+   * Every write goes through convex/cardSecondaryPlayers.ts
+   * (`setCardSecondaryPlayers`, and `deleteCardSecondaryPlayerLinks` from
+   * `removeCardRow`); `cardSecondaryPlayers.pin.test.ts` greps for anything
+   * else.
+   */
+  cardSecondaryPlayerLinks: defineTable({
+    cardChecklistId: v.id("cardChecklist"),
+    playerId: v.id("players"),
+    // The CARD's sport, not the player's.
+    sportId: v.id("selectorOptions"),
+  })
+    // A smart binder's player walk (prefix playerId) and the sport-removal
+    // guard (both fields, `.first()`).
+    .index("by_player_and_sport", ["playerId", "sportId"])
+    // Every row for one card: the writer's diff and the card delete.
     .index("by_card", ["cardChecklistId"]),
 
   // Players — first-class entity. Created from BSC `players[]` / SL desc
@@ -2554,7 +3310,62 @@ export default defineSchema({
          * primary name matched, which is the norm.
          */
         matchedAlias: v.optional(v.string()),
+        /**
+         * NEO-424 — the candidate's HOME sport label, present on candidates the
+         * batch took from the SET'S OWN HISTORY (a name already linked on a
+         * committed card of this set) rather than from the in-sport name index.
+         *
+         * Set history is not sport-scoped: Bo Jackson linked on the base set's
+         * card is the answer for his parallel too, whatever sport his row is
+         * filed under. So a history candidate can be in another sport, and the
+         * wizard labels it when this differs from the set's sport. Absent on a
+         * candidate `buildExistingPlayerCandidates` found, which is always in
+         * the row's own sport. A label resolved once at insert, never a key.
+         */
+        sportValue: v.optional(v.string()),
       }))),
+      /**
+       * NEO-424, player-only — the ONE existing player the batch suggests for
+       * this name, which the operator still confirms.
+       *
+       * Rule E: a name with no answer in the set's sport and no set history
+       * may still have an obvious candidate — the same name in the prior year
+       * of the same product (`priorYearProduct`), or exactly one player of
+       * that name in ANY sport (`onlyNamesake`). The wizard puts "Link to
+       * <name> (<sportValue>)" first and demotes "Add as New Player anyway".
+       *
+       * `setHistory` / `hallOfFame` are the same suggestion after the operator
+       * pressed Change on a row the batch had AUTO-LINKED (`decision.
+       * autoLinked`): the link is undone, but the player it named is still the
+       * best guess, so it comes back as the primary rather than vanishing.
+       *
+       * Never a decision: nothing is linked until the operator says so. But
+       * like a same-name choice (NEO-332) it holds the Wikidata lookup back —
+       * the row is born `ready` and looked up only when the operator presses
+       * "Add as New Player anyway" (`entityReviewQueue.requestPlayerLookup`),
+       * so no New Team steps are staged ahead of "Link to <name>".
+       * `recordDecision`
+       * accepts a cross-sport link to exactly this `playerId` (and to any
+       * `existingCandidates` entry), re-pointing the row's sport to the
+       * player's home sport — the operator-typed Link to Existing stays
+       * sport-checked.
+       */
+      preselect: v.optional(v.object({
+        playerId: v.id("players"),
+        name: v.string(),
+        sportId: v.id("selectorOptions"),
+        sportValue: v.string(),
+        reason: v.union(
+          v.literal("priorYearProduct"),
+          v.literal("onlyNamesake"),
+          v.literal("setHistory"),
+          v.literal("hallOfFame"),
+          // NEO-490 rule 6b / team 2b: the card's team picked the player (or
+          // the card's player picked the team era). Comes back as the primary
+          // after Change, like the other two.
+          v.literal("careerTeam"),
+        ),
+      })),
       // team-only
       league: v.optional(v.string()),
       // NEO-254, team-only — the league's OWN QID, off the same P118 statement
@@ -2769,6 +3580,15 @@ export default defineSchema({
          * sync ever sets it.
          */
         addSetSport: v.optional(v.boolean()),
+        /**
+         * NEO-463, player-kind only — the operator confirmed a one-word name
+         * ("Walker") that is a fuller-named player's first or last name is a
+         * one-name player, not a piece of that player. Without it a plain
+         * create on such a name is refused by `recordDecision` and held back
+         * (no row written, the name reported unreviewed) by the commit. Stored
+         * only as `true`; absent says nothing was confirmed.
+         */
+        oneNamePlayer: v.optional(v.literal(true)),
       }),
       v.object({
         action: v.literal("link"),
@@ -2826,6 +3646,36 @@ export default defineSchema({
          * See the create variant for the full contract.
          */
         addSetSport: v.optional(v.boolean()),
+        /**
+         * ── NEO-424: a link the BATCH made, not the operator ────────────────
+         *
+         * Rule A: a name already linked on a committed card anywhere in this
+         * set (base, inserts, parallels) to exactly one player is that player
+         * — any sport, no wizard step. Rule D: when no same-name candidate was
+         * active in the set's year and exactly one is a Hall of Famer, that
+         * one. Rule F gives teams rule A.
+         *
+         * Stored as an ordinary link decision on an ordinary review row, NOT
+         * as a `checklistNameResolutions` answer: that fast path runs before
+         * decisions in the commit prelude and would override the operator's
+         * Change. Here the wizard lists it under Decided ("Matched from this
+         * set", "Hall of Famer") with Change, and `clearDecision` turns it back
+         * into a question whose primary is the same player
+         * (`enrichment.preselect`).
+         *
+         * Present only on rows `startBatch` inserted already decided. Any
+         * decision the operator records replaces the whole object, so the flag
+         * cannot outlive the batch's own answer. Never carries `addSetSport`:
+         * an auto-link is a guest link and writes nothing to the player.
+         */
+        autoLinked: v.optional(v.union(
+          v.literal("setHistory"),
+          v.literal("hallOfFame"),
+          // NEO-490: rule 6b (the one same-name player with a stint on the
+          // card's team) or 2b (the one team era the card's player played
+          // for). Decided row, "played for the …" / "…'s club".
+          v.literal("careerTeam"),
+        )),
       }),
       // NEO-212: "this name is not a person / not a team". Carries no payload —
       // nothing is created, nothing is linked, and the card keeps the raw name
@@ -2941,6 +3791,25 @@ export default defineSchema({
       "nameNormalized",
     ]),
 
+  // NEO-402 — a checklist fetch's player names that matched exactly one NB
+  // player, kept so the commit that follows does not look each one up again.
+  // Scratch for one (set, operator) review session; see
+  // convex/checklistNameResolutions.ts for the rules.
+  checklistNameResolutions: defineTable({
+    selectorOptionId: v.id("selectorOptions"),
+    createdByUserId: v.string(),
+    sportId: v.id("selectorOptions"),
+    createdAt: v.number(),
+    players: v.array(
+      v.object({
+        nameNormalized: v.string(),
+        playerId: v.id("players"),
+      }),
+    ),
+  })
+    .index("by_selector_option_and_user", ["selectorOptionId", "createdByUserId"])
+    .index("by_created_at", ["createdAt"]),
+
   // NEO-195: candidate cards for ONE checklist fetch, written as reconciliation
   // produces them so the review modal can fill in live instead of waiting for
   // the whole fetch.
@@ -3023,6 +3892,32 @@ export default defineSchema({
       v.literal("matched"),
       v.literal("bscOnly"),
       v.literal("slOnly"),
+      // NEO-496 — a publisher checklist row no marketplace card matched
+      // (`platformData: {}`). Widening only: no existing row changes.
+      v.literal("checklistOnly"),
+    ),
+    // NEO-496 — how a card paired with a publisher-checklist row, for Match
+    // Cards' badge. Optional; absent on every existing row.
+    checklistLink: v.optional(
+      v.object({
+        via: v.union(
+          v.literal("number"),
+          v.literal("caseFolded"),
+          v.literal("prefixStripped"),
+          v.literal("player"),
+          v.literal("playerName"),
+          v.literal("playerFuzzy"),
+        ),
+        // playerFuzzy only, 0.92..1.
+        confidence: v.optional(v.number()),
+        // A name pair with a numbered row: the row's number as printed.
+        checklistNumber: v.optional(v.string()),
+        // NEO-496 — the row the server paired, and the card as it was before
+        // the row was applied, so Match Cards can undo a wrong pair. Shapes:
+        // `checklistPairedRowValidator`, `checklistPairRevertValidator`.
+        row: v.optional(checklistPairedRowValidator),
+        revert: v.optional(checklistPairRevertValidator),
+      }),
     ),
     // Pairing confidence for a matched row; the modal surfaces a fuzzy match
     // differently from an exact one.
@@ -3042,7 +3937,21 @@ export default defineSchema({
     // commit can stamp an answered card's `teamCheckDoneAt` instead of
     // re-asking BSC after save. Optional and additive; the table is drained at
     // commit, so no backfill.
-    teamLookup: v.optional(v.union(v.literal("answered"), v.literal("failed"))),
+    //
+    // PR 451 (NEO-478): "checklist" — the team came from the operator's
+    // publisher checklist (an exactly-one number match), so no BSC lookup ran.
+    // NEO-489: "checklist" with no team on the row means the checklist said
+    // "No Team" (`lib/checklists/no-team.ts`, `checklistClaimsNoTeam`); the
+    // commit stamps that card confirmed no-team. No separate field marks it.
+    teamLookup: v.optional(cardTeamLookupValidator),
+    // PR 451 (NEO-478) — the operator's publisher checklist disagrees with the
+    // marketplace on this card's players and/or teams. Written only on a
+    // candidate the checklist matched by number (exactly one on both sides).
+    // `players` / `teams` on the row still hold the marketplace's answer; the
+    // wizard's "Checklist says otherwise" step settles it and the commit
+    // refuses a card that still carries it. Bounded like `playersConflict`
+    // (`startCandidateBatch`). The checklist itself is never stored.
+    checklistConflict: v.optional(checklistConflictValidator),
     // NEO-335 — BSC's team value for this card exactly as the lookup returned
     // it (trimmed, UNSPLIT; NEO-333's `rawTeamName`), written by
     // `resolveCandidateTeams` only when `teams` does not already say it — a
@@ -3243,6 +4152,14 @@ export default defineSchema({
       v.literal("succeeded"),
       v.literal("failed"),
     ),
+    // NEO-370 — how a stream job left "collecting": `"user"` when the
+    // collector closed it (`closePlaceholderStream`, the intake screen's "Done
+    // adding photos"), `"idle"` when the idle sweep closed an abandoned one.
+    // Only an intake run whose stream the USER closed triggers a listing sync
+    // when it settles (`intakeRuns.kickListingIfRunSettled`); an idle-closed
+    // run waits for the 15-minute cron. Absent on zip jobs and on every row
+    // closed before the field existed (read as "not closed by the user").
+    streamClosedBy: v.optional(v.union(v.literal("user"), v.literal("idle"))),
     // Progress counters (NEO-170). All optional so pre-NEO-170 rows — and the
     // row `insertPlaceholderJob` writes at mint time — stay valid without a
     // migration. `processedImages + failedImages === totalImages` is the
@@ -3251,6 +4168,12 @@ export default defineSchema({
     processedImages: v.optional(v.number()),
     failedImages: v.optional(v.number()),
     rejectedEntries: v.optional(v.number()), // zip members extract declined (not images, too big, etc.)
+    // NEO-446 — why, as a collector can act on it: counts that add up to
+    // `rejectedEntries` and the first few file names (never one that failed
+    // name validation). On the job, not in rows of their own, because a rejected
+    // entry has no work to do and a row would join the counters, the prune and
+    // the lanes. See convex/lib/extractRejections.ts.
+    rejected: v.optional(rejectedSummaryValidator),
     startedAt: v.optional(v.number()), // when the batch was started, not when the job was created
     finishedAt: v.optional(v.number()),
     // Terminal failure detail. `errorCode` is the low-cardinality tag to group
@@ -3466,9 +4389,46 @@ export default defineSchema({
     queuedAt: v.optional(v.number()),
     escalatedAt: v.optional(v.number()),
     settledAt: v.optional(v.number()),
+    // NEO-411: when the heavy worker first started on this escalated row, epoch
+    // ms. Stamped once, by `noteHeavyStart`, which also schedules the photo's
+    // deadline (`HEAVY_PHOTO_DEADLINE_MS`): a heavy photo with no answer by then
+    // is marked failed (errorCode "PHOTO_TIMED_OUT") instead of staying in
+    // "Working on your photos." for the length of the retry ladder. Counted from
+    // the start of work, not from escalation, so a photo waiting its turn behind
+    // other photos in a large batch is not failed for the queue. Cleared with
+    // the rest of the per-image state on a restart or a retry.
+    heavyStartedAt: v.optional(v.number()),
+    // NEO-411: how many times the collector has pressed Try again on this photo
+    // (`retryPlaceholderImage`). Capped at PLACEHOLDER_MAX_IMAGE_RETRIES so one
+    // photo cannot be sent to the paid services without end.
+    retries: v.optional(v.number()),
+    // NEO-446: the collector set this loose photo aside on an intake run
+    // (`setIntakePhotoAside`), usually a side whose partner the zip turned away.
+    // Pairing never picks it up (`computePairingDiff`, and a re-check inside
+    // `applyPairDiffImpl`) and it leaves the Pairing lane. Status and the job's
+    // counters stay as they were, so it never changes how a job is judged. Only
+    // ever on a done or failed row: a restart that re-reads the photo clears it
+    // and one that keeps a done row keeps it, like the row's other user decisions.
+    setAside: v.optional(v.boolean()),
+    // NEO-481: the collector's current hand edit (turns + crop) and the
+    // write-once output version it rendered to. Absent = the pipeline's own
+    // output is current. Cleared (with `autoCrop`) when a restart or Try
+    // again re-reads the photo; `edits` is never reset.
+    edit: v.optional(storedPhotoEditValidator),
+    // NEO-481: the box the winning crop stage cut, in the EXIF-uprighted
+    // original's pixels (`crop_box` from /process-entry). Built field by
+    // field in adapters/preprocess.ts so a malformed box is dropped, never
+    // refused at settle.
+    autoCrop: v.optional(photoEditCropValidator),
+    // NEO-481: scan-form renders reserved on this scan — the version
+    // allocator and the paid-call cap (PLACEHOLDER_MAX_IMAGE_EDITS). Absent = 0.
+    edits: v.optional(v.number()),
+    // NEO-481: an edit accepted and rendering in the background, or one whose
+    // render failed (with the reason, for Try again). Cleared at commit.
+    pendingEdit: v.optional(pendingPhotoEditValidator),
   })
     // The ONLY index this table needs. It answers both "every image of this
-    // job" (prefix `jobId` alone) and "this job's images in zip order", so a
+    // job" (prefix `jobId` alone) and "this job's images in filename order", so a
     // separate `by_job` on `["jobId"]` would be a strict prefix of this one —
     // a second copy of the same index, paid for on every write, that Convex
     // would never choose over this one for anything. Ordered iteration is a
@@ -3551,9 +4511,11 @@ export default defineSchema({
   // defaults. Its `_id` is the `?run=` handle; every function checks
   // `userId === identity.subject` on it.
   //
-  // `variantId` is absent when the collector skipped the set pick; every pair
-  // is then "noVariant" until a variant is picked or pinned. `variantPinned`
-  // marks one chosen mid-run ("these are all from <set>") rather than up front.
+  // NEO-452: every new run starts with a `variantId` (`createIntakeRun` refuses
+  // without one). It stays optional for runs from before that, whose collector
+  // skipped the set pick; every pair of such a run is "noVariant" until a variant
+  // is picked or pinned. `variantPinned` marks one chosen mid-run ("these are all
+  // from <set>") rather than up front.
   intakeRuns: defineTable({
     userId: v.string(),
     jobId: v.string(),
@@ -3569,9 +4531,14 @@ export default defineSchema({
     createdAt: v.number(),
     // Recent runs are listed newest activity first.
     lastActivityAt: v.number(),
+    // NEO-386: the short code the screen shows so the scanner script can join
+    // this run. Minted on first ask; unique among the owner's runs only, since
+    // a join looks it up under the caller's own user id.
+    scannerCode: v.optional(v.string()),
   })
     .index("by_job", ["jobId"])
-    .index("by_user_and_activity", ["userId", "lastActivityAt"]),
+    .index("by_user_and_activity", ["userId", "lastActivityAt"])
+    .index("by_user_and_scanner_code", ["userId", "scannerCode"]),
 
   // NEO-379 — the matcher's answer for one placeholder pair of an intake run.
   // One row per pair, keyed on the pair's `_id` (a swap patches the pair in
@@ -3607,9 +4574,30 @@ export default defineSchema({
     savedCopyId: v.optional(v.id("collectionCopies")),
     savedQuantity: v.optional(v.number()),
     savedAt: v.optional(v.number()),
+    // NEO-427 — the pair's scans going onto the saved line
+    // (`intakePhotos.attachIntakePhotos`). "pending" from the save until the
+    // attach reports, and it holds the run's listing kick; a row saved before
+    // this shipped has neither field and holds nothing. `photoFailure` says
+    // why a "failed" attach failed: "scanGone" (the scan aged out of the
+    // upload bucket) or "unusable" (no photo can be made of it), where Try
+    // again can't help, or "error", where it might. `photoAttempt` counts the
+    // save and each Try again, and a stale timeout does nothing by it.
+    // `photoSidesAttached` is the sides a scan has landed on, so Try again never
+    // brings back a photo the collector has since removed.
+    photos: v.optional(intakePhotosValidator),
+    photoFailure: v.optional(intakePhotoFailureValidator),
+    photoAttempt: v.optional(v.number()),
+    photoSidesAttached: v.optional(v.array(v.union(v.literal("front"), v.literal("back")))),
+    // NEO-481 — this tile's own price (box runs), overriding the run's
+    // default at save. Absent = the run's default. Set by
+    // `setIntakeMatchPrice`; cleared when the row's card changes. Only ever
+    // this card's `minPriceCents`, never a common price.
+    minPriceCents: v.optional(v.number()),
   })
     .index("by_run", ["runId"])
-    .index("by_pair", ["pairId"]),
+    .index("by_pair", ["pairId"])
+    // A line whose scans are still due stays out of the fold (`lineAwaitingScans`).
+    .index("by_saved_copy", ["savedCopyId"]),
 
   // Deployment-wide preprocess warm-up state (NEO-299). One row per fixed
   // `key`; today the only key is "heavyWarmup", read and written solely by
@@ -3633,6 +4621,100 @@ export default defineSchema({
     key: v.string(),
     heavyWarmEnqueuedAt: v.number(),
   }).index("by_key", ["key"]),
+
+  /**
+   * NEO-407 — the latency probe's one write target. `latencyProbe.pingWrite`
+   * patches a single row (insert on first use) so the probe can tell a stalled
+   * WRITE path (commits queued behind something else) from a stalled read
+   * path. One row in practice (two racing first calls could insert two;
+   * harmless, nothing reads it); never written in production (the probe's
+   * functions fail closed where TESTING_RESET_SECRET is unset). No reader.
+   */
+  latencyProbeBeats: defineTable({
+    at: v.number(),
+  }),
+
+  /**
+   * NEO-475 — BuySportsCards call telemetry, one row per action invocation
+   * (or seller session) that called BSC: the `bsc_call_summary` log line plus
+   * up to five failure samples. Written only through
+   * `ctx.scheduler.runAfter(0, internal.bscCallStats.record, …)`, never on the
+   * call's hot path. Insert-only; rows are kept forever (Jason, 2026-11-09,
+   * decision D3: no prune cron). Deployment-wide operational data, no user
+   * data and no NB catalog data: nothing user-facing reads it, nothing
+   * subscribes to it, and the only reader is the paginated internal
+   * `bscCallStats.exportRange`. Holds no marketplace linkage, so it sits
+   * outside the product invariant entirely.
+   */
+  bscCallSummaries: defineTable(bscCallSummaryFields)
+    // exportRange's `startedAt` window, oldest first, paged.
+    .index("by_startedAt", ["startedAt"]),
+
+  /**
+   * PR 451 (NEO-487) — "Waiting on BuySportsCards…": how long one BSC call
+   * recorder (one adapter invocation) has been waiting on BSC, for one run the
+   * client is watching.
+   *
+   * ONE ROW PER RECORDER, inserted on the recorder's first wait edge
+   * (`marketplaceWaits.open`) and then patched by `_id` on every later edge
+   * (`marketplaceWaits.edge`), so two adapter invocations of one run never
+   * write the same document; the public reader (`marketplaceWaits.forRun`)
+   * sums them. Never a shared counter: a counter leaks when an action dies
+   * between its increment and decrement, a row with a stale `waitingSince`
+   * just expires.
+   *
+   * `runKey` is minted by the CLIENT for one fetch / build / probe (≤ 64,
+   * `[A-Za-z0-9_-]`), and `ownerId` is the caller's identity subject, taken
+   * from the action's auth, never from an argument. The table holds no
+   * `selectorOptions` id, so it stays out of the wipe graph and the
+   * reference seed. Each row deletes itself an hour after insert
+   * (`marketplaceWaits.expire`, scheduled by the inserting mutation).
+   *
+   * No marketplace value is stored: only times.
+   */
+  marketplaceWaits: defineTable({
+    ownerId: v.string(),
+    runKey: v.string(),
+    platform: v.literal("bsc"),
+    /** Set while the recorder has a BSC call outstanding; absent between waits. */
+    waitingSince: v.optional(v.number()),
+    /** Closed waiting time so far, in ms (the open interval is not included). */
+    accumulatedMs: v.number(),
+    updatedAt: v.number(),
+  }).index("by_owner_and_run", ["ownerId", "runKey"]),
+
+  /**
+   * NEO-552 — the deployment-wide BSC call gate: the breaker and token bucket
+   * every BuySportsCards call passes through (`bscFetch`, `bscCallGate.ts`;
+   * policy in `lib/bscCallGatePolicy.ts`). It replaced the PR 451 per-endpoint
+   * 429 cooldown table, whose definition is gone.
+   *
+   * One row per (platform, scope). No ids, no user data: counters and times.
+   *  - `tokens` / `refilledAt`: a debt bucket (may go negative: that is a wait
+   *    the caller sleeps), refilled at the tuning's rate up to its burst.
+   *  - `openUntil`: no call before it. `openCause` says which ladder opened it
+   *    (a 429, or a run of failures); `streak` counts openings with no success
+   *    between them; `lastOpenedAt` is when the latest opened.
+   *  - `consecutiveFailures` / `lastFailureAt`: the failure run.
+   *  - `probeLeaseUntil` / `probeGrantedAt`: while half-open, the one
+   *    probe's lease and the grant that holds it (only that grant may hand it
+   *    back early).
+   */
+  marketplaceCallGates: defineTable({
+    platform: v.literal("bsc"),
+    scope: v.literal("deployment"),
+    tokens: v.number(),
+    refilledAt: v.number(),
+    openUntil: v.number(),
+    openCause: v.optional(v.union(v.literal("429"), v.literal("failures"))),
+    streak: v.number(),
+    lastOpenedAt: v.number(),
+    consecutiveFailures: v.number(),
+    lastFailureAt: v.number(),
+    probeLeaseUntil: v.optional(v.number()),
+    probeGrantedAt: v.optional(v.number()),
+    updatedAt: v.number(),
+  }).index("by_platform_scope", ["platform", "scope"]),
 
   /**
    * ── NEO-358: a collector's places to keep cards ───────────────────────────
@@ -3741,6 +4823,28 @@ export default defineSchema({
      * before NEO-364 (every home) and reads as not kept.
      */
     tallyScope: v.optional(collectionTallyScopeValidator),
+    /**
+     * NEO-370 — a BOX's one marketplace setting, "Listed on marketplaces".
+     * Only `false` means anything: the box is in-person inventory, and its
+     * copies count 0 on every listing platform (they stay for sale in NB, on
+     * the box, just not listed). Absent (every box made before the field,
+     * and every box by default) and `true` both mean listed; no backfill.
+     * Per box only, never per copy: a card is held back by moving it to an
+     * in-person box. Written only by `collectionContainers.setContainerListed`,
+     * which refuses a binder; never set on a binder or a shelf row.
+     */
+    listedOnMarketplaces: v.optional(v.boolean()),
+    /**
+     * NEO-370 — when the walk that queues this box's cards after a
+     * "Listed on marketplaces" flip started (`listingSync.queueBoxForListing`);
+     * cleared by the walk's last page. NB's bookkeeping, never shown. A flip
+     * while a walk stamped within `LISTED_WALK_PENDING_MS` is pending
+     * schedules nothing (that walk follows the box's current setting); an
+     * older stamp is taken as a walk that died, and a fresh one replaces it.
+     * Each page carries the stamp it was started with and stands down when
+     * the box holds another, so one box never has two walks running.
+     */
+    listedQueuedAt: v.optional(v.number()),
     lastUpdated: v.number(),
   })
     // Unchanged. Serves: Main/Want/Trade get-or-create (all fields, .unique()),
@@ -3770,9 +4874,13 @@ export default defineSchema({
    * `MAX_COPIES_PER_MOVE` in the move, the rest in the scheduled
    * `repointMovedCardCopies` chain. A move never refuses for copies.
    *
-   * NB data only: no marketplace field. A future listing lives in its own
-   * table (`{ownerId, copyId, platform, listingRef, listedQuantity}`), never
-   * on the copy.
+   * NB data only: no marketplace field, and no listing state, ever (NEO-370).
+   * A for-sale copy (home is a box) reaches a marketplace through
+   * `listingOutbox` (a card's count changed, so every linked platform must
+   * show it), `marketplaceListingSyncs` (how a variant's last push went) and
+   * `marketplaceSales` (what sold, applied back to these rows). NB stores no
+   * mirror of what a platform lists: every push re-reads the platform and
+   * sets it to NB's count.
    *
    * A card with copies cannot be deleted from the catalog: every card delete
    * goes through `removeCardRow`, whose first step asks `by_card`.
@@ -3837,12 +4945,72 @@ export default defineSchema({
      */
     hasPhotos: v.optional(v.literal(true)),
     lastUpdated: v.number(),
+    /**
+     * NEO-464 — when cards last arrived in this line's home (Jason,
+     * 2026-11-10: "adding cards to a binder in any way is filed"): any add
+     * into a binder (Main included) or a box, Add cards saves, a box raise
+     * (`collection.addOne`, `collectionInventory.setBoxQuantity`), a move or
+     * split into another home, and a container emptied back to Main or
+     * Unsorted (`collection.moveCopyCore`, `collectionContainers.empty`). A
+     * line that folds arriving cards into itself takes the stamp too; a part
+     * split off inside the same home keeps its source's. Never set by an
+     * edit, a sale, a trade flag, a pocket shuffle inside the same home, or
+     * an undo's put-back. The dashboard's "since your last visit" reads only
+     * this (`dashboard.newSince`). Optional, no backfill: absent is "not
+     * filed since this shipped".
+     */
+    filedAt: v.optional(v.number()),
+    /**
+     * NEO-464 — when this line's cards were added straight into the
+     * collection (a binder, Main included), as new cards: what the
+     * dashboard's Fresh Pulls reads (`dashboard.freshPulls`; Jason,
+     * 2026-11-10: "only cards new to the collection, never moves"). Stamped
+     * only by an add (`collection.addOne`: Add cards, a pasted range, an
+     * intake save) into a binder, folded or a new line. A move, a split, a
+     * container emptied and a merge carry it (a split part keeps its
+     * source's; a merge keeps the newer of the two), never set it; a box
+     * add or raise, an edit and an undo's put-back never stamp it. Unlike
+     * `filedAt`, which every arrival in a home stamps. A move INTO a box
+     * drops it (cards for sale are not pulls), so a later Take off sale back
+     * into a binder is a move, never a pull. Optional, no backfill: a line
+     * with none that was written before the collector's first dashboard
+     * open under this rule (`userProfiles.dashboardStampsFrom`) reads its
+     * `_creationTime` instead (`dashboard.freshPulls`).
+     */
+    addedAt: v.optional(v.number()),
+    /**
+     * NEO-464 — when this line's cards landed in Inventory (a box, Unsorted
+     * included): what the dashboard's New Listings reads
+     * (`dashboard.newListings`; Jason, 2026-11-10: "Listings come from our
+     * Inventory ... don't worry about if it has sync'd yet or not"). Stamped
+     * by an add into a box (`collection.addOne`), a box raise
+     * (`collectionInventory.setBoxQuantity`) and a move from a binder into a
+     * box (Sell). A move between boxes, a split, a box emptied into Unsorted
+     * and a merge carry it (a merge keeps the newer); a move out to a binder
+     * drops it; an edit and an undo's put-back never stamp it. NB data only:
+     * never a marketplace's listing state. Optional, no backfill: a line with
+     * none written before `userProfiles.dashboardStampsFrom` reads its
+     * `_creationTime` instead.
+     */
+    listedAt: v.optional(v.number()),
   })
     // copiesOf, the fold lookup, and "all my copies" (prefix: ownerId alone).
     .index("by_owner_and_card", ["ownerId", "cardId"])
     // "Everything I own", most recently touched first, paged
     // (`collection.ownedCards`). Every write to a row stamps `lastUpdated`.
     .index("by_owner_and_lastUpdated", ["ownerId", "lastUpdated"])
+    // NEO-464 — the dashboard's "since your last visit": the lines filed
+    // after a stamp, newest first (`dashboard.newSince`, a bounded range). A
+    // line never stamped has no `filedAt` and sorts below every stamp.
+    .index("by_owner_and_filedAt", ["ownerId", "filedAt"])
+    // NEO-464 — Fresh Pulls: the lines added into the collection after a
+    // stamp, newest first (`dashboard.freshPulls`, a bounded range). A line
+    // never stamped has no `addedAt` and sorts below every stamp.
+    .index("by_owner_and_addedAt", ["ownerId", "addedAt"])
+    // NEO-464 — New Listings: the lines that landed in a box after a stamp,
+    // newest first (`dashboard.newListings`, a bounded range). The lines with
+    // no stamp sit first, in `_creationTime` order, for the legacy read.
+    .index("by_owner_and_listedAt", ["ownerId", "listedAt"])
     // copiesInVariant and variantCompletion (all three), set completion
     // (prefix: ownerId + setId).
     .index("by_owner_set_variant", ["ownerId", "setId", "variantId"])
@@ -3979,6 +5147,14 @@ export default defineSchema({
      * by every recompute.
      */
     held: v.optional(v.boolean()),
+    /**
+     * NEO-528 — the card fits only because the binder's cameo option let a
+     * positive player or Hall of Fame line read the card's
+     * `secondaryPlayerIds`. Absent means it fits on the card's own players.
+     * Rewritten by every recompute, so a card that comes to fit on its own
+     * players loses the mark.
+     */
+    secondary: v.optional(v.literal(true)),
   })
     // The empty-slots read and the stale sweep (prefix binderId).
     .index("by_binder_order", ["binderId", "order"])
@@ -4009,11 +5185,26 @@ export default defineSchema({
      * rows, if any, are the previous rule's until it lands; `needs` says so.
      */
     pending: v.optional(v.boolean()),
+    /**
+     * NEO-410 — when `pending` was set (`scheduleFits`). A binder pending for
+     * longer than `binderRules.FITS_STUCK_AFTER_MS` is re-queued by
+     * `requeueStuckFits`, so a recompute Convex dropped can't leave it stuck.
+     */
+    pendingSince: v.optional(v.number()),
+    /** NEO-410 — every attempt of the last recompute failed; the screen offers "Try again". */
+    failed: v.optional(v.boolean()),
     /** The generation the rows carry; the next recompute writes the one after. */
     generation: v.optional(v.number()),
+    /**
+     * NEO-410 — the highest generation a recompute has claimed
+     * (`claimFitsGeneration`), so overlapping recomputes never share one.
+     */
+    nextGeneration: v.optional(v.number()),
   })
     .index("by_binder", ["binderId"])
-    .index("by_computed", ["computedAt"]),
+    .index("by_computed", ["computedAt"])
+    // NEO-410: the stuck-pending sweep (rows with no `pendingSince` sort first and are skipped).
+    .index("by_pending_since", ["pendingSince"]),
 
   collectionWants: defineTable({
     ownerId: v.string(),
@@ -4168,9 +5359,27 @@ export default defineSchema({
    *     hourly cap; swept with its objects after an hour.
    *   - `live`: on its copy. Never more than one per (copy, side).
    *   - `detached`: its copy was removed; kept an hour so the Undo can put it
-   *     back (`restoreCopy`), then swept with its objects.
+   *     back (`restoreCopy`, `undoBoxQuantity`), then swept with its objects.
    * All reads and writes go through `convex/copyPhotos.ts`.
    */
+  /**
+   * ── NEO-481: one row per hand photo edit sent to the renderer ───────────
+   *
+   * Renders run on the shared preprocess service outside the capacity-pinned
+   * pipeline pool, so each owner is held to a rate (renders an hour) and a
+   * number in flight (`settledAt` unset, newer than the stale window). The
+   * reserve inserts one; the commit or the failure settles it. Rows older
+   * than an hour are swept hourly (`photoEditRows.sweepPhotoEditTickets`).
+   */
+  photoEditTickets: defineTable({
+    ownerId: v.string(),
+    createdAt: v.number(),
+    settledAt: v.optional(v.number()),
+  })
+    .index("by_owner_and_created", ["ownerId", "createdAt"])
+    // The hourly sweep.
+    .index("by_created", ["createdAt"]),
+
   collectionCopyPhotos: defineTable({
     ownerId: v.string(),
     copyId: v.id("collectionCopies"),
@@ -4183,11 +5392,805 @@ export default defineSchema({
     // hourly upload cap still counts it and the sweep deletes its files.
     status: v.union(v.literal("pending"), v.literal("live"), v.literal("detached"), v.literal("replaced")),
     since: v.number(),
+    // NEO-427 — "intake": made from a scanned pair when it was saved, not
+    // added by hand. Exempt from the hourly upload cap, either way.
+    // NEO-481 — "edit": a hand turn/crop of the side's live photo. Counted
+    // against its own hourly cap (MAX_COPY_PHOTO_EDITS_PER_HOUR), never the
+    // hand-upload cap.
+    source: v.optional(v.union(v.literal("intake"), v.literal("edit"))),
+    // NEO-481 — the scan this photo was made from, so an edit inside the
+    // scan's two days can re-render from its original. Server-only: never
+    // projected to a client. Carried onto every edit row.
+    scan: v.optional(copyPhotoScanValidator),
+    // NEO-481 — on a `pending` edit row only: the edit being rendered in the
+    // background, or the reason its render failed (Try again re-saves).
+    pendingEdit: v.optional(pendingPhotoEditValidator),
+    // NEO-481 — on a landed edit row: the photo it replaced, while Undo can
+    // still put that one back. Undo clears it, so an edit is undone once.
+    replacesPhotoId: v.optional(v.id("collectionCopyPhotos")),
   })
     .index("by_copy_and_status", ["copyId", "status"])
-    // The hourly upload cap (prefix ownerId, range on _creationTime) and the
-    // per-account test reset.
+    // The per-account test reset.
     .index("by_owner", ["ownerId"])
+    // The hourly upload cap counts hand uploads only: `source` absent, range
+    // on _creationTime.
+    .index("by_owner_and_source", ["ownerId", "source"])
     .index("by_token", ["token"])
     .index("by_status_and_since", ["status", "since"]),
+
+  /**
+   * ── NEO-370: a card whose for-sale count changed, per platform ───────────
+   *
+   * NB is the only truth: every platform shows NB's count in the owner's
+   * LISTED boxes (a box with `listedOnMarketplaces: false` counts 0), and
+   * nothing about a listing is stored here. This is the change list. One row
+   * per (owner, platform, card) means "this card's for-sale count on that
+   * platform may be stale". The copy-change hook upserts one row per platform
+   * the owner lists on (a saved sign-in, `marketplaceListingStates`) whenever a
+   * box-side write touches the card: an add, move, remove or recount, a sale
+   * applied from ANY platform (so a sale on one reaches all the others), and
+   * a box's listed setting flipped. The per-owner drainer pushes and deletes
+   * it. The Sync status tab lists the oldest rows (`listingSync.syncStatus`).
+   *
+   * One row per PLATFORM rather than one per card with a flag per platform:
+   *   - the drainers never write the same document, so a BSC run clearing its
+   *     rows cannot roll back an eBay run (or the user's own box write)
+   *     through OCC on a shared row;
+   *   - the indexes are platform-generic (`platform` is a key field), where a
+   *     flag per platform needs an index per platform;
+   *   - a row exists only while work is pending, so the table stays as small
+   *     as the backlog. The hook pays one point read and one write per linked
+   *     platform, which is one or two.
+   *
+   * Idempotent upsert: the hook looks the row up on `by_owner_platform_card`
+   * and patches it (bumping `seq`) or inserts it, so five changes before a
+   * drain are one row. `seq` is what makes the clear safe: the drainer
+   * snapshots `seq` when it reads a row, pushes, then deletes the row only if
+   * `seq` is unchanged, so a change landing mid-push keeps its row for the
+   * next run. The drainer selects rows in a QUERY and its clearing mutation
+   * point-reads them by id (no range in its read set, so a concurrent box
+   * write never rolls it back).
+   *
+   * Granularity is the platform adapter's:
+   *   - by-set (BSC): take the first row on `by_owner_platform_variant`
+   *     (prefix owner + platform), then every row of that variant; re-read
+   *     and correct the WHOLE variant on the platform; clear those rows.
+   *   - by-card (eBay, later): page the same index and push card by card.
+   *
+   * `variantId` is the card's variant when the change was recorded (the
+   * copy's denormalised `variantId`), a GROUPING HINT only: a card re-homed
+   * by `setShapeMove.moveCards` after that keeps its old value here, so the
+   * drainer reads the card's current `selectorOptionId` and treats a row
+   * whose card has gone as done. Private cards (`privateCards`) are never
+   * listed and never get a row. NB data only: no marketplace value.
+   */
+  listingOutbox: defineTable({
+    ownerId: v.string(),
+    platform: listingPlatformValidator,
+    cardId: v.id("cardChecklist"),
+    variantId: v.id("selectorOptions"),
+    /** Bumped by every upsert; the drainer clears a row only at the seq it pushed. */
+    seq: v.number(),
+    /** When the latest change was recorded (ms). */
+    changedAt: v.number(),
+    /**
+     * NEO-481 — a photo of this card changed: the BSC drain uploads the card's
+     * photo even over an existing seller photo. Only `true` is stored; the
+     * upsert sets it and never clears it, and the row's delete at its `seq`
+     * takes it away.
+     */
+    refreshPhotos: v.optional(v.literal(true)),
+    /**
+     * NEO-481 — BSC runs that tried this card's photo refresh and could not
+     * finish it. At `MAX_PHOTO_REFRESH_ATTEMPTS` the drain drops the refresh
+     * and records a listing problem, so a refresh that keeps failing never
+     * retries forever. A new photo change starts the count again.
+     */
+    refreshAttempts: v.optional(v.number()),
+  })
+    // The hook's upsert (all three, `.unique()`), and nothing else.
+    .index("by_owner_platform_card", ["ownerId", "platform", "cardId"])
+    // The drainer: "anything pending?" and "next variant" (prefix owner +
+    // platform, take 1), then that variant's rows (all three). The per-user
+    // test reset (prefix ownerId).
+    .index("by_owner_platform_variant", ["ownerId", "platform", "variantId"])
+    // The Sync status tab's "queued for the next sync", oldest first (prefix
+    // owner + platform, capped `take`).
+    .index("by_owner_platform_changed", ["ownerId", "platform", "changedAt"]),
+
+  /**
+   * ── NEO-370: how one variant's last push to one platform went ────────────
+   *
+   * One row per (owner, variant, platform), made by the variant's first sync
+   * and patched by every run after it. A SUMMARY, never a mirror: the counts
+   * and problems of the last run, not the listings, and no run log (the last
+   * result per set only). The Sync status tab lists the most recent ones
+   * (`listingSync.syncStatus`, capped, `problems` hydrated for the first few
+   * only; the rest on demand through `syncSetProblems`). `problems` is capped,
+   * the true count in `problemsTotal` (the `selectorSyncStatus.unlinked`
+   * rule); the drainer reads and writes it once per variant.
+   *
+   * `status` with a lease is the per-variant lock that stops two drainers
+   * (a drain kicked by the cron and one kicked by a Sync) running one variant
+   * at once: a run claims the row by writing `running`, a fresh `leaseToken`
+   * and `leaseExpiresAt`; it finishes by writing `idle` or `error` and
+   * dropping both. A `running` row past `leaseExpiresAt` is a run that died
+   * and may be reclaimed. `leaseToken` is server-minted and never returned to
+   * a client (the `userProfiles.siteCredentials.lockToken` rule): a public
+   * reader strips it.
+   *
+   * `conditionsPushed` is every platform condition string NB has ever posted
+   * for this variant (BSC: one sheet per condition). Every BSC run reads the
+   * conditions NB's copies map to now plus these, and nothing else, so a row
+   * NB once listed under a condition it no longer uses is still found and
+   * corrected (NEO-475: no run reads the whole era any more, a first sync or
+   * a Sync press included, so stock NB never listed under is left alone). A
+   * run adds the conditions it is about to list under BEFORE its first PUT
+   * (`listingDrain.recordConditionsPushed`), so a run that dies mid-push still
+   * leaves the record; `finishVariant` adds the rest. Only ever grows; small
+   * (BSC has 4 modern and 10 vintage conditions). ABSENT `lastSuccessAt` means
+   * the variant has never synced cleanly. eBay's first run, and its first run
+   * after a Sync press (`resyncRequestedAt` later than `lastRunAt`, see
+   * `listingSync.syncVariant`), reads every card of the variant.
+   *
+   * `lastError` is an NB-written sentence, truncated by the writer; never a
+   * raw platform response body (it can echo the request, and this row is
+   * client-readable).
+   */
+  marketplaceListingSyncs: defineTable({
+    ownerId: v.string(),
+    variantId: v.id("selectorOptions"),
+    platform: listingPlatformValidator,
+    status: v.union(v.literal("idle"), v.literal("running"), v.literal("error")),
+    leaseToken: v.optional(v.string()),
+    leaseExpiresAt: v.optional(v.number()),
+    lastRunAt: v.optional(v.number()),
+    lastSuccessAt: v.optional(v.number()),
+    lastError: v.optional(v.string()),
+    /**
+     * The last finished run: rows NB holds a count for (`listed`), rows the
+     * push changed (`pushed`), rows set to 0 because NB holds none for sale
+     * (`zeroed`), and cards refused by the pre-flight (`skipped`).
+     * Absent until the first run finishes.
+     */
+    counts: v.optional(
+      v.object({
+        listed: v.number(),
+        pushed: v.number(),
+        zeroed: v.number(),
+        skipped: v.number(),
+      }),
+    ),
+    /**
+     * At most 200 (the writer caps; `problemsTotal` holds the true count).
+     * `cardId` is absent only for a platform row NB cannot tie to a card
+     * (then `platformCardId` names it, server-side only: no public reader
+     * returns it). `detail` is a short NB-written sentence, never a
+     * marketplace value.
+     */
+    problems: v.array(
+      v.object({
+        cardId: v.optional(v.id("cardChecklist")),
+        platformCardId: v.optional(v.string()),
+        reason: listingProblemReasonValidator,
+        detail: v.optional(v.string()),
+      }),
+    ),
+    problemsTotal: v.optional(v.number()),
+    conditionsPushed: v.array(v.string()),
+    /**
+     * The last Sync press that asked for a full read (`listingSync.syncVariant`
+     * does not stamp a press within a minute of this one: that press only runs
+     * the drain for a change no recent drain has tried, or is ignored). The
+     * variant's next eBay run reads every card while this is later than
+     * `lastRunAt` (the claim stamps `lastRunAt`, so one run); a BSC run reads
+     * what any run reads (NEO-475).
+     */
+    resyncRequestedAt: v.optional(v.number()),
+    /**
+     * NEO-415 — the run's steps, in run order, so the Sync status tab can tick
+     * them off as they land. The claim starts an empty ledger; the drainer
+     * writes the plan and flips one step per small write (`working` → `done`),
+     * appending steps it learns later and dropping ones the run turns out not
+     * to need. The finish drops every step still `waiting`; a failed run ends
+     * with the step it died on `failed`; a clean run with nothing to do ends
+     * on its one `check` step (`listingDrain.finishVariant`). Kept as the last
+     * run's ledger until the next claim replaces it. Small (a vintage BSC run
+     * is ~22 steps).
+     */
+    progress: v.optional(listingSyncProgressValidator),
+    lastUpdated: v.number(),
+  })
+    // The drainer's claim and a Sync press (all three, `.unique()`); a
+    // variant's rows across platforms (prefix owner + variant); the per-user
+    // test reset (prefix ownerId).
+    .index("by_owner_variant_platform", ["ownerId", "variantId", "platform"])
+    // The Sync status tab: one platform's sets, most recent run first
+    // (prefix owner + platform, order desc, capped `take`).
+    .index("by_owner_platform_run", ["ownerId", "platform", "lastRunAt"]),
+
+  /**
+   * ── NEO-370: one collector's standing with one listing platform ──────────
+   *
+   * One row per (owner, platform). Revision 5 (Jason, 2026-11-01: "If you
+   * have credentials you are syncing"): a saved sign-in for the platform's
+   * site IS listing. The row is made when that sign-in is saved
+   * (`userProfile.updateSiteCredentialStatus` → `listingSync.setUpListing`;
+   * a save while the platform is paused sets up too, and nothing reaches the
+   * platform until the pause lifts), or, for a sign-in saved before this
+   * rule, by the order-poll cron's one-time pass over saved sign-ins
+   * (`listingSync.setUpSavedSignInsPage`, done once `listingBackfillState`
+   * says so), and then kept:
+   * never deleted by the app (the per-user test reset and the global drain
+   * clear it). It holds no credential; the token is read through
+   * `credentials` as for every marketplace call, and the pause switch
+   * (`marketplacePause`) is honoured there and by the poll, Sync and setup.
+   * There is no per-platform switch, no Start button and no pause: every
+   * card in a listed box lists on every platform the collector has a saved,
+   * unpaused sign-in for.
+   *
+   * Read through `listingOutbox.pushesCounts` / `pollsSales` (one rule):
+   *   - `listingStartedAt` is when the saved sign-in started listing (the
+   *     "since" the Profile shows). NB pushes counts AND polls orders only
+   *     while it is set, the row is not dormant and no test marker is set.
+   *     Saving the sign-in stamps it (again, on every save that starts
+   *     listing; it also names the walk that queues the owner's boxes, so a
+   *     walk from an earlier save stands down). Removing the sign-in clears
+   *     it (`listingOutbox.stopListingForSite`).
+   *   - `dormant` is NB's: set when the platform can't be used for this owner
+   *     at all, and it stops BOTH the poll and the drain.
+   *       `noCredentials`: the owner's saved sign-in was removed
+   *       (`userProfile.removeSiteCredentialStatus`, which also clears
+   *       `listingStartedAt` and the queue); cleared when it is saved again.
+   *       `sellerConflict`: another NB owner already lists from the same
+   *       platform seller account (`platformAccountId`); checked again, and
+   *       cleared when the conflict is gone, each time the sign-in is saved.
+   *   - `testListingOff` is the E2E marker: an account the testing seed
+   *     signed in WITHOUT asking for listing (`testing.seedMyTestCredentials`
+   *     with `listing` false), so the suite's accounts never push to a real
+   *     marketplace unless a spec asks. Written ONLY by the testing seed
+   *     (testing deployments only); no product path reads it except through
+   *     `pushesCounts`, and a real save through the product UI clears it.
+   *   - `enabled` is RETIRED (Revision 3's per-platform switch). Never read
+   *     or written; kept optional only because preview deployments hold rows
+   *     carrying it, and removing a field with rows present fails the deploy.
+   *
+   * `platformAccountId` is the platform seller account this owner lists from
+   * (BSC: `sellerProfile.sellerId`), stamped when it is first known (at
+   * setup from the profile, or by the drainer before its first PUT), never
+   * on a row held back by a conflict. One NB owner per seller account:
+   * setup, and the drainer, refuse an account another owner's row holds
+   * while that row LISTS (`listingOutbox.sellerAccountHolder`); a stopped,
+   * dormant or marked row holds nothing, so two owners can never lock each
+   * other out.
+   *
+   * Order poll: `orderCursorAt` is the newest order date seen. The 15-minute
+   * cron lists non-dormant owners on `by_platform_dormant_polled` and polls
+   * the listing ones (a row not listing, the test marker's, is stamped and
+   * skipped; nothing is read while the platform is paused)
+   * (never-polled first, then oldest poll), and each owner's poll reads order
+   * history newer than the cursor across ALL statuses, so an order that ships
+   * within the 15 minutes is still caught. While the owner's credentials need
+   * a fresh sign-in, the poll runs at most hourly (`reauthPollAt`), so a dead
+   * session is not logged into every tick.
+   *
+   * Drain triggers (no timer): a Sync press (`listingSync.syncVariant`), an
+   * intake run the collector closed with "Done adding photos" once it is
+   * settled, the end of the walk a saved sign-in starts, and the 15-minute cron (after each
+   * owner's poll). The Sync status tab reads `drainLeaseToken` (never
+   * returned) / `drainLeaseExpiresAt` as "a sync is running now". Each kick schedules the drainer at once and stamps
+   * `drainScheduledAt` only when no drain is scheduled or running; a kick
+   * that lands while a drain runs sets `drainRequested`, and that drain's
+   * release runs the next one at once. `drainLeaseToken` /
+   * `drainLeaseExpiresAt` are held while a drain runs, so two kicks never run
+   * two drains. The hook READS this row on every box write, so the drainer
+   * writes it as little as it can: claim once, release once, per-variant
+   * progress on `marketplaceListingSyncs`. `drainLeaseToken` never reaches a
+   * client.
+   */
+  marketplaceListingStates: defineTable({
+    ownerId: v.string(),
+    platform: listingPlatformValidator,
+    orderCursorAt: v.optional(v.number()),
+    lastPolledAt: v.optional(v.number()),
+    lastPollError: v.optional(v.string()),
+    drainScheduledAt: v.optional(v.number()),
+    drainLeaseToken: v.optional(v.string()),
+    drainLeaseExpiresAt: v.optional(v.number()),
+    /** A kick landed while a drain ran: its release runs the next one at once. */
+    drainRequested: v.optional(v.boolean()),
+    /**
+     * NEO-433: the drain run a kick just scheduled, until a run claims. Only
+     * the run handed `drainKickToken` is the one `drainKickFnId` names, and its
+     * claim starts `listingDrain.watchDrainRun` on that function's own record.
+     */
+    drainKickToken: v.optional(v.string()),
+    drainKickFnId: v.optional(v.id("_scheduled_functions")),
+    /**
+     * NEO-433: when the platform recorded the lease holder's function as over
+     * without a release. The lease stands only through the grace after it
+     * (`DRAIN_DEATH_GRACE_MS`); nothing reads the run as running meanwhile.
+     */
+    drainRunDeadAt: v.optional(v.number()),
+    /**
+     * When the last claimed drain released, whether it succeeded or failed. A
+     * refused claim never stamps it. `listingSync.syncVariant` reads it: a row
+     * no newer than this was already tried, so it waits out the minute.
+     */
+    lastDrainAt: v.optional(v.number()),
+    /** RETIRED (Revision 3's switch): never read or written; see the table comment. */
+    enabled: v.optional(v.boolean()),
+    /** When the saved sign-in started listing; absent = not listing (see the table comment). */
+    listingStartedAt: v.optional(v.number()),
+    /** E2E only: the testing seed signed this account in without listing (see the table comment). */
+    testListingOff: v.optional(v.boolean()),
+    /** NB stopped both poll and drain; see the table comment. */
+    dormant: v.optional(v.union(v.literal("noCredentials"), v.literal("sellerConflict"))),
+    /** The platform seller account this owner lists from (BSC seller id). */
+    platformAccountId: v.optional(v.string()),
+    /**
+     * NEO-483 (BSC only): the owner's background seller-account read
+     * (`bscSellerId.ts`). `token` names the chain (a tick whose token no
+     * longer matches stands down); `startedAt` is when the chain began.
+     * RUNNING while `endedAt` is unset: older than
+     * `BSC_SELLER_ID_FETCH_STALE_MS` it reads as stale and a new chain
+     * replaces it. ENDED once `endedAt` is set, with `endReason`: "gaveUp"
+     * (every read failed), "noSellerProfile" (BSC answered with no seller
+     * profile) or "stopped" (a tick found the owner no longer listing, BSC
+     * paused, the owner signed out, or no token). An ended chain is kept so
+     * renewals and drain claims wait `BSC_SELLER_ID_FETCH_COOLDOWN_MS` (only
+     * the 60 s floor after "stopped") and even a user action waits
+     * `BSC_SELLER_ID_FETCH_USER_RETRY_MS`. Cleared only when the account is
+     * known (it lands, or a tick finds it stored). Holds no marketplace value.
+     */
+    sellerIdFetch: v.optional(
+      v.object({
+        token: v.string(),
+        startedAt: v.number(),
+        endedAt: v.optional(v.number()),
+        endReason: v.optional(v.union(v.literal("gaveUp"), v.literal("noSellerProfile"), v.literal("stopped"))),
+      }),
+    ),
+    /** When the poll last ran while the owner's credentials needed a fresh sign-in. */
+    reauthPollAt: v.optional(v.number()),
+    /**
+     * NEO-520: which version of the platform's order read this row is caught
+     * up to (absent = 1). While it is below the platform's
+     * (`ORDER_READ_VERSION` in `listingSales.ts`), the poll reads from the
+     * earlier of the cursor and the platform's floor (eBay only) until a read
+     * completes or the catch-up runs out; the stored cursor never moves back.
+     * New rows are stamped at insert (`listingSync`). Never lowered.
+     */
+    orderReadVersion: v.optional(v.number()),
+    lastUpdated: v.number(),
+  })
+    // Get-or-create and the drainer's claim (both fields, `.unique()`); the
+    // hook's "which platforms does this owner list on" (prefix ownerId), and
+    // the per-user test reset.
+    .index("by_owner_platform", ["ownerId", "platform"])
+    // The order-poll cron: one platform's non-dormant owners (`dormant`
+    // absent), never-polled first (an absent `lastPolledAt` sorts before
+    // every number), then oldest poll.
+    .index("by_platform_dormant_polled", ["platform", "dormant", "lastPolledAt"])
+    // One NB owner per seller account: who else holds this account.
+    .index("by_platform_account", ["platform", "platformAccountId"]),
+
+  /**
+   * ── NEO-370: deployment-wide listing backfill state ──────────────────────
+   *
+   * One row per finished one-time listing backfill, by fixed `key`. Today the
+   * only key is "savedSignInsSetUp": the order-poll cron's pass that sets up
+   * marketplace sign-ins saved before Revision 5 (when saving made no
+   * `marketplaceListingStates` row) records itself done here after a full
+   * pass that left nothing to set up (`listingSync.setUpSavedSignInsPage`),
+   * and the cron (`listingSales.pollAll`) starts it only while no row exists.
+   * Every save since sets itself up, so the pass never needs to run again.
+   *
+   * Its own table for the reason `preprocessWarmupState` has one: no existing
+   * table is deployment-wide state, and a singleton bolted onto one would sit
+   * among rows of a different shape. Holds no user data; the per-user test
+   * reset never touches it.
+   */
+  listingBackfillState: defineTable({
+    key: v.string(),
+    doneAt: v.number(),
+  }).index("by_key", ["key"]),
+
+  /**
+   * ── NEO-370: one order a collector received on a platform ────────────────
+   *
+   * One doc per (owner, platform, orderId), upserted by the order poll from
+   * the platform's order history. The Sales screen lists them (read-only:
+   * order no., date, status, items, totals). Shipping and fulfilment are a
+   * later ticket.
+   *
+   * THE IDEMPOTENCY RECORD for applying a sale to NB: applying one item
+   * (lowering the oldest matching box copy, the SKU's box preferred) and
+   * flipping its `applied` happen in the SAME mutation, so a poll that reads
+   * the order again, or two polls racing, can never take a sold card off
+   * twice. A re-poll updates `status` and `totals` and never resets
+   * `applied`. A sale applied here is a box-side change like any other, so
+   * the hook queues the card for every platform (`listingOutbox`). The copy
+   * lowered is a box copy in a LISTED box, or one in the box the SKU names
+   * (a listing pushed before that box was set to in-person).
+   *
+   * NO BUYER PII, ever: no name, address, email or phone, not even
+   * transiently on the row. The poll projects the platform's order to these
+   * fields before anything is stored. The pull list and shipping come later
+   * and will decide then where (and whether) a ship-to lives.
+   *
+   * `orderId` is the platform's internal id (the lookup key); `orderNo` is
+   * the number the platform shows the seller (displayed). `status` is the
+   * platform's status string, verbatim. Money is integer cents; each total
+   * is absent when the platform did not report it.
+   *
+   * Items: `platformCardId` is the platform's card id (BSC: `card.id`; eBay:
+   * the line's `legacyItemId`) and `sellerSku` the SKU NB pushed (it carries
+   * the NB card id and box); the poll resolves `cardId` from them, checked
+   * against the card's `platformData.<platform>.ref` (a point read, the
+   * exactly-one guard; eBay checks NB's link row for the SKU instead).
+   * `condition` is the platform's condition string (eBay: the SKU's bucket on
+   * an NB line, `""` on a line that is not NB's). An order's items are
+   * well under Convex's 8,192-element array cap in practice; the poll refuses
+   * (and reports) an order that is not.
+   *
+   * NEO-520 — eBay stores every readable line, NB's or not; a line with no NB
+   * SKU is refused as unmatched and lowers nothing. An eBay order with no NB
+   * line is stored only when placed on or after the state row's floor
+   * (`listingSales.ebayOrdersFloor`); one with an NB line is stored whatever
+   * its date.
+   */
+  marketplaceSales: defineTable({
+    ownerId: v.string(),
+    platform: listingPlatformValidator,
+    orderId: v.string(),
+    orderNo: v.string(),
+    orderDate: v.number(),
+    status: v.string(),
+    totals: v.object({
+      subtotalCents: v.optional(v.number()),
+      shippingCents: v.optional(v.number()),
+      feesCents: v.optional(v.number()),
+      netCents: v.optional(v.number()),
+      totalCents: v.optional(v.number()),
+    }),
+    items: v.array(
+      v.object({
+        platformCardId: v.string(),
+        cardId: v.optional(v.id("cardChecklist")),
+        condition: v.string(),
+        quantity: v.number(),
+        /** Per copy, integer cents. */
+        priceCents: v.number(),
+        sellerSku: v.optional(v.string()),
+        applied: v.boolean(),
+        appliedAt: v.optional(v.number()),
+        problem: v.optional(saleItemProblemValidator),
+        /** `oversold` only: how many sold that NB held no copy for. */
+        shortBy: v.optional(v.number()),
+        /**
+         * NEO-500 — where the apply took this item's copies from, one entry
+         * per box copy lowered, in the order taken (capped at
+         * `MAX_PICK_FROM`, `lib/pickLines.ts`). A snapshot for the Pick List
+         * (the copy may be gone or moved since): its box, slot and the
+         * copy's condition, grade and serial as they were. Written by the
+         * apply only; absent on an item applied before NEO-500, not
+         * applied at all, or past the sale's `MAX_FROM_PER_SALE` entries
+         * (the line then shows "Box not recorded"). A re-poll never touches it.
+         */
+        from: v.optional(v.array(saleItemFromValidator)),
+        /**
+         * NEO-500 — after the apply no box copy of this card remained (the
+         * collector pulled the last ones). Only `true` is stored. Unset when
+         * the copy read was truncated, so it never claims what it did not see.
+         */
+        lastOnes: v.optional(v.literal(true)),
+        /**
+         * NEO-500 — when the collector marked this item pulled on the Pick
+         * List (`pickList.setPulled`). Absent = not pulled. A re-poll keeps it.
+         */
+        pulledAt: v.optional(v.number()),
+        /**
+         * NEO-509 — the card as the platform described it
+         * (`saleItemListedValidator`). Written when the line is stored; a
+         * re-poll that reads one replaces it, a re-poll that reads none keeps
+         * the old one. Not part of the line's key (`lib/pickLines.saleItemKey`),
+         * so line ids do not move. Absent on a line past the sale's
+         * `MAX_LISTED_BYTES_PER_SALE` budget (`listingSales.ts`).
+         */
+        listed: v.optional(saleItemListedValidator),
+      }),
+    ),
+    /**
+     * NEO-500 — this order has an item still to pull (applied or refused as
+     * unmatched/linkMismatch, no `pulledAt`) and has not shipped or been
+     * cancelled. Only `true` is stored; none open is ABSENT, written as an
+     * explicit `undefined` because a patch merges. Recomputed by every write
+     * to the items or status (`lib/pickLines.pullOpenOf`).
+     */
+    pullOpen: v.optional(v.literal(true)),
+    firstSeenAt: v.number(),
+    lastUpdated: v.number(),
+  })
+    // The poll's upsert (all three, `.unique()`).
+    .index("by_owner_platform_order", ["ownerId", "platform", "orderId"])
+    // The Sales screen, every platform, newest first, paginated (prefix
+    // ownerId, order desc); the per-user test reset (prefix ownerId).
+    .index("by_owner_date", ["ownerId", "orderDate"])
+    // NEO-500 — the Pick List: the owner's orders with something to pull
+    // (prefix ownerId + pullOpen `true`; absent is the other value), oldest
+    // or newest order first.
+    .index("by_owner_pull_open", ["ownerId", "pullOpen", "orderDate"]),
+
+  /**
+   * ── NEO-415: one collector's eBay listing settings ──────────────────────
+   *
+   * One row per owner, made by the first Connect press (`ebayConnect
+   * .beginConnect`) or the first settings save, and patched after. NB's own
+   * choices about HOW cards list on the collector's eBay account; never a
+   * copy of eBay data. The policy ids are the collector's OWN eBay business
+   * policies (Account API), picked on /profile/ebay; their names are read live
+   * when the page opens, so nothing here goes stale when the seller renames
+   * one on eBay. Two shipping slots: `fulfillmentPolicyUnder20Id` for a card
+   * priced under $20.00 and `fulfillmentPolicy20PlusId` for $20.00 and up
+   * (eBay Standard Envelope only covers items under $20, so a policy whose
+   * only domestic service is the envelope is refused for the $20+ slot when
+   * saved, `lib/ebayListing.policyFitness`).
+   *
+   * Listing needs all four policies and a ship-from location: until then the
+   * drain refuses with `setupIncomplete` (`listingDrain.claimDrain`), so
+   * nothing reaches eBay half-configured. `location` is what the collector
+   * typed; it is pushed to eBay as the inventory location
+   * `merchantLocationKey` when saved (`ebayConnect.saveLocation`) and only
+   * stored once eBay took it. `bestOffer` absent means ON (the default).
+   * `cardWeightOz` is the collector's "weight of a single card", whole
+   * ounces 1–3 (`ebayConnect.setCardWeight`; Standard Envelope tops out at
+   * 3 oz); absent means 1. It is the weight of the letter package every card
+   * under $20 lists with (`lib/ebayListing.ebayPackageFor`); $20 and up ships
+   * in a 6 oz mailer whatever it says.
+   *
+   * `connectNonce` / `connectNonceAt` are the OAuth `state` of the Connect
+   * press in flight: server-minted, single-use, short-lived, and never
+   * returned to a client (`connectionState` strips them).
+   */
+  ebaySellerSettings: defineTable({
+    ownerId: v.string(),
+    fulfillmentPolicyUnder20Id: v.optional(v.string()),
+    fulfillmentPolicy20PlusId: v.optional(v.string()),
+    paymentPolicyId: v.optional(v.string()),
+    returnPolicyId: v.optional(v.string()),
+    /** The inventory location key NB created on the seller's account (fixed per owner). */
+    merchantLocationKey: v.optional(v.string()),
+    location: v.optional(
+      v.object({
+        postalCode: v.string(),
+        city: v.string(),
+        stateOrProvince: v.string(),
+      }),
+    ),
+    /** Absent = on. */
+    bestOffer: v.optional(v.boolean()),
+    /** Whole ounces 1–3; absent = 1 (`lib/ebayListing.EBAY_DEFAULT_CARD_WEIGHT_OZ`). */
+    cardWeightOz: v.optional(v.number()),
+    /** The connected seller's eBay username, for display only (eBay's; may change). */
+    ebayUsername: v.optional(v.string()),
+    /** When the current eBay connection was made. */
+    connectedAt: v.optional(v.number()),
+    connectNonce: v.optional(v.string()),
+    connectNonceAt: v.optional(v.number()),
+    /**
+     * The latest "Set me up" run, step by step, so the page can tick each
+     * policy off as eBay answers (`ebayConnect.createStandardPolicies`). One
+     * run at a time: `runId` is the writer's guard (a stale run writes
+     * nothing), `startedAt` orders runs. NB's own words (labels are NB's
+     * policy names); nothing reads it but the page.
+     */
+    setupProgress: v.optional(ebaySetupProgressValidator),
+    lastUpdated: v.number(),
+  })
+    // Every read and write is one owner's row (`.unique()`); the per-user test
+    // reset and the account-deletion sweep too.
+    .index("by_owner", ["ownerId"]),
+
+  /**
+   * ── NEO-415: NB's link to one listing it made on a card-level platform ──
+   *
+   * One row per (owner, platform, card, condition bucket): the listing NB
+   * created for that card on the collector's account (eBay: one inventory
+   * item + one offer, SKU `NB2-<cardId>-<bucket>`, `lib/ebayListing`). LINKAGE,
+   * not a mirror: the platform ids NB needs to update or end its own listing
+   * and to route a sale on it back to the card (product invariant 5), plus
+   * what NB last pushed so a run only sends what changed (eBay caps revisions
+   * per listing per day). Nothing user-facing reads it; it lives inside the
+   * listing boundary (`listingDrainEbay`, `listingSales`).
+   *
+   * `status`: `draft` (item and offer made, not yet live), `live` (published;
+   * `listingId` set), `ended` (NB withdrew it because the count went to 0; the
+   * offer is kept so the listing is published again when stock returns).
+   * `pushed` is what the live listing carries, as NB sent it; absent until a
+   * publish succeeds. `images` are the eBay-hosted pictures NB uploaded from
+   * the copy's photos, at most two (front, back), front first (`photoToken` names which photo, so a new
+   * photo uploads again; `expiresAt` from eBay, an unused upload expires).
+   *
+   * Never deleted by the drain: a card that leaves the variant or the
+   * catalog keeps its row (an `ended` one costs nothing; a gone card's live
+   * listing is withdrawn when the drain settles its queued row). Cleared only
+   * by Disconnect (every row except one still `live` because eBay would not
+   * end it), the per-user test reset and the eBay account-deletion sweep
+   * (every row: eBay ends a deleted account's listings itself).
+   */
+  marketplaceListingLinks: defineTable({
+    ownerId: v.string(),
+    platform: listingPlatformValidator,
+    cardId: v.id("cardChecklist"),
+    /** NB's condition bucket for the listing (`ebayConditionCodeValidator`). */
+    conditionCode: ebayConditionCodeValidator,
+    sku: v.string(),
+    offerId: v.optional(v.string()),
+    listingId: v.optional(v.string()),
+    /**
+     * Listing ids this link carried before a republish gave it a new one
+     * (eBay ends a withdrawn listing and publishes a new one when stock
+     * returns), newest first, at most five. A late sale on an earlier
+     * listing still routes to this card (`listingSales.applyEbayLine`).
+     */
+    previousListingIds: v.optional(v.array(v.string())),
+    status: v.union(v.literal("draft"), v.literal("live"), v.literal("ended")),
+    pushed: v.optional(
+      v.object({
+        quantity: v.number(),
+        priceCents: v.number(),
+        fulfillmentPolicyId: v.string(),
+        paymentPolicyId: v.string(),
+        returnPolicyId: v.string(),
+        bestOffer: v.boolean(),
+        /** Hash of the item content NB sent (title, description, aspects, picture). */
+        contentHash: v.string(),
+      }),
+    ),
+    images: v.optional(
+      v.array(
+        v.object({
+          url: v.string(),
+          photoToken: v.string(),
+          expiresAt: v.optional(v.number()),
+        }),
+      ),
+    ),
+    lastPushedAt: v.optional(v.number()),
+    lastUpdated: v.number(),
+  })
+    // The drainer's per-card read and upsert (prefix to the card: at most one
+    // row per bucket; all four `.unique()`); the per-user test reset and the
+    // account-deletion sweep (prefix owner + platform, paged).
+    .index("by_owner_platform_card_condition", ["ownerId", "platform", "cardId", "conditionCode"])
+    // A sale line's exactly-one guard: the link whose SKU the order names
+    // (all three, `.unique()`), then its `listingId` must equal the line's.
+    .index("by_owner_platform_sku", ["ownerId", "platform", "sku"]),
+
+  // ── NEO-496: the set's publisher checklist ───────────────────────────────
+  // One READY checklist per set (the header), its sections in file order,
+  // the sections' rows in byte-bounded chunks, and the M:N links from a
+  // variant row to the section names it uses. Sections and chunks are
+  // written once and never patched; a replace retires the old header and a
+  // scheduled purge (`publishedChecklists.purge`) deletes it. Links name a
+  // section KEY (`sectionKeyOf`, a stored format) and are resolved against
+  // the set's current ready checklist at read time, so a replace or remove
+  // never touches them (rule 5). All limits live in
+  // `convex/lib/publishedChecklistSections.ts`.
+  publishedChecklists: defineTable({
+    // A `setName` selector row, checked at start.
+    setId: v.id("selectorOptions"),
+    status: publishedChecklistStatusValidator,
+    fileName: v.string(),
+    format: publishedChecklistFormatValidator,
+    // Only the uploader may send batches to, or finish, an upload.
+    createdByUserId: v.string(),
+    startedAt: v.number(),
+    lastActivityAt: v.number(),
+    finishedAt: v.optional(v.number()),
+    retiredAt: v.optional(v.number()),
+    sectionCount: v.number(),
+    rowCount: v.number(),
+    byteSize: v.number(),
+  })
+    // The set's ready checklist (`.order("desc").first()`); finish / remove
+    // retire the ready one; start retires the caller's own unfinished upload.
+    .index("by_set_and_status", ["setId", "status"])
+    // The purge's next retired checklist, and abandoned uploads (idle 1 h).
+    .index("by_status_and_activity", ["status", "lastActivityAt"])
+    // Account deletion: `forgetUploader` pages the deleted user's headers.
+    .index("by_created_by_user_id", ["createdByUserId"]),
+
+  publishedChecklistSections: defineTable({
+    checklistId: v.id("publishedChecklists"),
+    // 0..n-1 in file order, no gaps.
+    ordinal: v.number(),
+    // The publisher's section name as written, and its folded key.
+    name: v.string(),
+    sectionKey: v.string(),
+    group: v.optional(v.string()),
+    rowCount: v.number(),
+    byteSize: v.number(),
+    chunkCount: v.number(),
+    // The first / last NUMBERED row's card number, display only.
+    firstNumber: v.optional(v.string()),
+    lastNumber: v.optional(v.string()),
+  })
+    .index("by_checklist_and_ordinal", ["checklistId", "ordinal"])
+    .index("by_checklist_and_key", ["checklistId", "sectionKey"]),
+
+  publishedChecklistChunks: defineTable({
+    checklistId: v.id("publishedChecklists"),
+    sectionId: v.id("publishedChecklistSections"),
+    seq: v.number(),
+    // Index of this chunk's first row within its section.
+    firstRow: v.number(),
+    rows: v.array(publishedChecklistStoredRowValidator),
+  }).index("by_section_and_seq", ["sectionId", "seq"]),
+
+  publishedChecklistLinks: defineTable({
+    // The set the link was written under; a link counts only while it is
+    // the row's own set.
+    setId: v.id("selectorOptions"),
+    // A variantType / insert / parallel row under `setId`.
+    selectorOptionId: v.id("selectorOptions"),
+    sectionKey: v.string(),
+    createdAt: v.number(),
+    createdByUserId: v.string(),
+  })
+    .index("by_selector_option_and_key", ["selectorOptionId", "sectionKey"])
+    .index("by_set_and_key", ["setId", "sectionKey"])
+    // Account deletion: `forgetUploader` pages the deleted user's links.
+    .index("by_created_by_user_id", ["createdByUserId"]),
+
+  /**
+   * ── NEO-536: a collector's report of one held-back set ───────────────────
+   *
+   * One row per report: one variant on one listing platform whose last sync
+   * held cards back for a reason only the admin team can fix
+   * (`lib/collection/sync-report.REPORTABLE_SYNC_REASONS`). Made by
+   * `syncReports.report` from the collector's own `marketplaceListingSyncs`
+   * record (the client sends no card ids); a second report of the same set
+   * and platform while one is open refreshes it.
+   *
+   * `label` is a snapshot of the set's name at report time (the dashboard's
+   * `ListingLabels` words), for the lists after the variant is gone. `cards`
+   * are the reportable problems that named an NB card, at most 30;
+   * `heldBack` is how many there were in all. `detail` snapshots the sync
+   * record's problem detail for `rejected` and `missingAspect` only, cut to
+   * 200 characters: display-only for the admin, never written anywhere as NB
+   * data. `note` is the collector's, trimmed, at most 500.
+   *
+   * No auto-close: an admin closes a report as `fixed` or `notABug`
+   * (`closeNote` required for `notABug`), and the close settles every open
+   * report on that (variant, platform) across collectors, because the fix is
+   * to NB's shared catalog. A withdrawn report is deleted, so it has no
+   * status. `closedBy` is the admin's id and never returned to a collector.
+   * NB data only: no marketplace value.
+   */
+  syncReports: defineTable({
+    ownerId: v.string(),
+    platform: listingPlatformValidator,
+    variantId: v.id("selectorOptions"),
+    label: v.string(),
+    cards: v.array(v.object({ cardId: v.id("cardChecklist"), reason: listingProblemReasonValidator, detail: v.optional(v.string()) })),
+    heldBack: v.number(),
+    note: v.optional(v.string()),
+    status: syncReportStatusValidator,
+    closedBy: v.optional(v.string()),
+    closedAt: v.optional(v.number()),
+    closeNote: v.optional(v.string()),
+    lastUpdated: v.number(),
+  })
+    // The collector's open reports and their cap (eq owner + "open"), the
+    // closed ones newest first (eq owner + status, order desc), and the
+    // per-user test reset (prefix owner).
+    .index("by_owner_status_closed", ["ownerId", "status", "closedAt"])
+    // One collector's open report on a set (all four, `.first()`), and an
+    // admin close's group: every open report on it (eq variant + platform +
+    // "open").
+    .index("by_variant_platform_status_owner", ["variantId", "platform", "status", "ownerId"])
+    // The admin queue: open reports oldest first (eq "open").
+    .index("by_status_closed", ["status", "closedAt"]),
 });

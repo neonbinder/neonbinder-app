@@ -100,3 +100,15 @@ export const LISTING_TITLE_SEARCH_CLIP = 70;
  * check covers all of them at once.
  */
 export const ASPECT_VALUE_MAX = 65;
+
+/**
+ * NEO-535 — the longest listing description NB stores. Equal to eBay's
+ * description cap (`EBAY_DESCRIPTION_MAX` in `convex/lib/ebayListing.ts`,
+ * Product.description maxLength 4000; pinned equal in
+ * `listingLimits.test.ts`), so whatever an operator types reaches eBay whole
+ * instead of being cut at send time. Held server-side in `updateCard` (the
+ * refusal carries the length and the cap, never the text) and mirrored in the
+ * card detail panel so the operator hears it before the round trip. Counted
+ * in UTF-16 code units, like the title.
+ */
+export const LISTING_DESCRIPTION_MAX = 4000;

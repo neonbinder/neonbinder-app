@@ -6,22 +6,24 @@
  * |--------------------|-------------------------|-----------------------------------------|
  * | APP_URL            | config `use.baseURL`     | goto('/path') is relative to it         |
  * | WORKER_INDEX       | env.WORKER_INDEX         | from process.env.WORKER_INDEX (CI: shard-1) |
- * | ATTEMPT_ID         | env.ATTEMPT_ID           | `pw<worker><d|m>-a1-<random>` (fresh per test) |
+ * | ATTEMPT_ID         | env.ATTEMPT_ID           | `pw<worker><d|m>-a<attempt>-<random>` (fresh per test) |
  * | (flow-set) ATTEMPT_TOKEN | env.ATTEMPT_TOKEN  | ATTEMPT_ID with hyphens stripped         |
  * | TEST_USERNAME      | env.TEST_USERNAME        | fresh per test, ^[a-z0-9-]+$             |
  * | (new) WORKER_KEY   | env.WORKER_KEY           | `<worker><d|m>`: per worker AND project  |
  * | PAUSED_PLATFORMS   | env.PAUSED_PLATFORMS     | from process.env.PAUSED_PLATFORMS        |
  * | output.SL_PAUSED   | env.SL_PAUSED            | util-paused-platforms.yaml's boolean     |
+ * | (new, NEO-415)     | env.EBAY_PAUSED          | PAUSED_PLATFORMS names ebay              |
  *
  * ATTEMPT_ID spelling: CI Maestro used `r<n>-a<attempt>-<RANDOM>` and local
- * Maestro `w<n>-a<attempt>-<RANDOM>`. Playwright uses `pw<n><p>-a1-<random>`,
+ * Maestro `w<n>-a<attempt>-<RANDOM>`. Playwright uses `pw<n><p>-a<attempt>-<random>`,
  * where <p> is the project marker: `d` for the desktop projects (`e2e`, and
  * `setup`/`bootstrap`), `m` for `e2e-mobile`. Every spec runs on both
  * projects on the same worker, one after the other, and nothing deletes a
  * minted row mid-run, so the mobile run must never mint the desktop run's
  * names: the marker makes `pw3da112345` and `pw3ma112345` different tokens by
- * construction, not by the luck of the random half. Retries are off
- * (retries: 0), so the attempt is always 1.
+ * construction, not by the luck of the random half. The attempt is 1, or 2
+ * on CI's one retry (NEO-592: `testInfo.retry + 1`), so a retry never mints
+ * the failed attempt's names either and its rows read as the retry's.
  *
  * WORKER_KEY (`3d` / `3m`) is the same marker for per-WORKER names (a
  * hand-made set `cft-${env.WORKER_KEY}`): one private row per worker per
@@ -42,6 +44,8 @@ export interface FlowEnv {
   PAUSED_PLATFORMS: string;
   /** True when PAUSED_PLATFORMS names sportlots (util-paused-platforms.yaml). */
   SL_PAUSED: boolean;
+  /** True when PAUSED_PLATFORMS names ebay (NEO-415): the eBay listing spec's paused branch. */
+  EBAY_PAUSED: boolean;
 }
 
 export function workerIndex(): string {
@@ -57,12 +61,22 @@ export function pausedPlatforms(): string {
   return process.env.PAUSED_PLATFORMS ?? "";
 }
 
-/** util/util-paused-platforms.yaml, verbatim logic. */
-export function isSlPaused(paused = pausedPlatforms()): boolean {
+/** Whether the comma-separated switch value names `site` (trimmed, case-insensitive). */
+function pausedNames(site: string, paused: string): boolean {
   return paused
     .split(",")
     .map((s) => s.trim().toLowerCase())
-    .includes("sportlots");
+    .includes(site);
+}
+
+/** util/util-paused-platforms.yaml, verbatim logic. */
+export function isSlPaused(paused = pausedPlatforms()): boolean {
+  return pausedNames("sportlots", paused);
+}
+
+/** NEO-415: the same switch, for eBay (`NEONBINDER_PAUSED_PLATFORMS=ebay`). */
+export function isEbayPaused(paused = pausedPlatforms()): boolean {
+  return pausedNames("ebay", paused);
 }
 
 /**
@@ -77,11 +91,11 @@ function rand(max: number): number {
   return Math.floor(Math.random() * max);
 }
 
-/** `projectName` is the running test's `testInfo.project.name`. */
-export function makeEnv(projectName: string): FlowEnv {
+/** `projectName` and `retry` are the running test's `testInfo.project.name` and `testInfo.retry`. */
+export function makeEnv(projectName: string, retry = 0): FlowEnv {
   const w = workerIndex();
   const key = `${w}${projectMarker(projectName)}`;
-  const attemptId = `pw${key}-a1-${rand(100000)}`;
+  const attemptId = `pw${key}-a${retry + 1}-${rand(100000)}`;
   return {
     APP_URL: appUrl(),
     WORKER_INDEX: w,
@@ -91,5 +105,6 @@ export function makeEnv(projectName: string): FlowEnv {
     TEST_USERNAME: `neontester-pw${key}-${Math.floor(Date.now() / 1000)}-${rand(100000)}`,
     PAUSED_PLATFORMS: pausedPlatforms(),
     SL_PAUSED: isSlPaused(),
+    EBAY_PAUSED: isEbayPaused(),
   };
 }

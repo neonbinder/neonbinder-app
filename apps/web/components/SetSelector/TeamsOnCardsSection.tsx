@@ -15,6 +15,7 @@ import { useTheme } from "../../src/theme/ThemeProvider";
 import type { ThemeMode } from "../../src/theme/theme-mode";
 import { tokenHex } from "../../src/theme/tokens";
 import { teamFullName } from "../../lib/teams/team-name";
+import { nameMatchesQuery } from "../../lib/entities/name-search";
 import { useFieldTestClass } from "../../src/hooks/useFieldTestClass";
 import { Autocomplete, focusWithoutOpening } from "../primitives/Autocomplete";
 import { eraLabel } from "../../lib/teams/team-era";
@@ -41,6 +42,7 @@ import {
   TEAMS_SECTION_NAMES_PER_REQUEST,
   TEAMS_SECTION_PLAYERS_PER_REQUEST,
   toggleTeam,
+  type DefaultPlayerWire,
   type GroupChoice,
   type PreviewCardForTeams,
   type ServerPlayerEvidence,
@@ -80,11 +82,13 @@ import {
  *    `MAX_CARD_TEAMS`, and "No team" / "Leave for later" are pressed toggles.
  *  - "Other team…" (C1) opens ONE search field under the line, focused and
  *    ready to type — no second button to press. It searches the set's sport
- *    only (`teams.search`, the index every team picker types against), and
- *    its last option is "+ New team “…”…", which opens the existing New Team
- *    dialog: the team is created there, at once, and joins the line
- *    selected. Escape closes the list first, then the field, back on the
- *    toggle. The list is the shared `Autocomplete` layer — fixed, portalled
+ *    only, ranked by the set (`teams.pickerCandidates` with the section's
+ *    node as context, NEO-518: the set's league active in its year first,
+ *    then minor leagues active that year, then the rest), and its last
+ *    option is "+ New team “…”…", which opens the existing New Team dialog:
+ *    the team is created there, at once, and joins the line selected.
+ *    Escape closes the list first, then the field, back on the toggle. The
+ *    list is the shared `Autocomplete` layer — fixed, portalled
  *    into the wizard dialog, flipping above the field when there is no room
  *    below — so the dialog body's scroll box never clips it. Only one field
  *    is open at a time, so its accessible name never collides.
@@ -130,10 +134,11 @@ function liveryTextColor(colors: TeamRef["colors"], mode: ThemeMode): string | n
 }
 
 // Copy. OTHER_LABEL, NONE_LABEL, SET_TEAM_HINT are Jason-approved (NEO-335
-// Phase 2). The rest are drafts awaiting sign-off, flagged in the build
-// report.
+// Phase 2; SET_TEAM_HINT gained "No Team" and the panel's real "Edit attributes"
+// name in NEO-556). The rest are drafts
+// awaiting sign-off, flagged in the build report.
 const SET_TEAM_HINT =
-  "Most of these share one team? Set a whole-set team in Set details and every new card gets it.";
+  "Most of these share one team, or show none at all? Pick a set team, or No Team, under Edit attributes and every new card gets it.";
 const NONE_LABEL = "No team on this card";
 const LATER_LABEL = "Leave for later";
 const OTHER_LABEL = "Other team…";
@@ -201,6 +206,8 @@ function noPlayersLabel(count: number): string {
 type SuggestionResult = {
   setYear: number | null;
   sportId?: Id<"selectorOptions"> | null;
+  /** NEO-569 — the set's effective leagues (any-of). */
+  setLeagueIds?: Array<Id<"leagues">>;
   setLeagueId?: Id<"leagues"> | null;
   players: ServerPlayerEvidence[];
   teamNames?: Array<{ teams: ServerTeam[] }>;
@@ -227,6 +234,7 @@ export default function TeamsOnCardsSection({
   playerlessIndexes,
   skippedPlayerNames,
   skippedTeamNames,
+  defaultPlayer,
   disabled = false,
   showSetTeamHint = false,
 }: {
@@ -263,6 +271,12 @@ export default function TeamsOnCardsSection({
    */
   playerlessIndexes?: readonly number[];
   /**
+   * NEO-528 — the row's "Player on every card" and the NEW cards the commit
+   * gives them when nobody else is on them: those cards are that player's
+   * here, never "Cards with no players". The parent decides.
+   */
+  defaultPlayer?: DefaultPlayerWire;
+  /**
    * Player names this set's skip records rule "not a person" (raw, as the
    * records list them). Nobody, on any card, like a name skipped in the
    * Names step.
@@ -288,8 +302,8 @@ export default function TeamsOnCardsSection({
     [settledIndexes],
   );
   const people = useMemo(
-    () => storedPeople(playerlessIndexes, skippedPlayerNames, skippedTeamNames),
-    [playerlessIndexes, skippedPlayerNames, skippedTeamNames],
+    () => storedPeople(playerlessIndexes, skippedPlayerNames, skippedTeamNames, defaultPlayer),
+    [playerlessIndexes, skippedPlayerNames, skippedTeamNames, defaultPlayer],
   );
 
   const requests = useMemo(
@@ -360,7 +374,7 @@ export default function TeamsOnCardsSection({
   }, [requests, nameRequests, selectorOptionId, anyTeamless]);
   const results = useQueries(queries);
 
-  const { serverEvidence, teamNameEvidence, setYear, sportId, setLeagueId } = useMemo(() => {
+  const { serverEvidence, teamNameEvidence, setYear, sportId, setLeagueIds } = useMemo(() => {
     // Loading: the entries stay "not arrived". Failed: the same, for good —
     // a suggestion is a convenience, and a broken one must not take the step
     // down with it.
@@ -391,7 +405,13 @@ export default function TeamsOnCardsSection({
       teamNameEvidence: names,
       setYear: facts.find((r) => r.setYear !== null)?.setYear ?? undefined,
       sportId: facts.find((r) => r.sportId)?.sportId ?? undefined,
-      setLeagueId: facts.find((r) => r.setLeagueId)?.setLeagueId ?? null,
+      // NEO-569 — the list; a server older than it sends only the first.
+      setLeagueIds: ((): string[] => {
+        const withList = facts.find((r) => r.setLeagueIds && r.setLeagueIds.length > 0);
+        if (withList?.setLeagueIds) return withList.setLeagueIds;
+        const single = facts.find((r) => r.setLeagueId)?.setLeagueId;
+        return single ? [single] : [];
+      })(),
     };
   }, [results, requests, nameRequests]);
 
@@ -406,7 +426,7 @@ export default function TeamsOnCardsSection({
         currentYear: new Date().getFullYear(),
         settled,
         teamNameEvidence,
-        setLeagueId,
+        setLeagueIds,
         people,
       }),
     [
@@ -417,7 +437,7 @@ export default function TeamsOnCardsSection({
       linkedTeamNameById,
       settled,
       teamNameEvidence,
-      setLeagueId,
+      setLeagueIds,
       people,
     ],
   );
@@ -498,6 +518,7 @@ export default function TeamsOnCardsSection({
     blocked,
     disabled,
     sportId,
+    contextOptionId: selectorOptionId,
     pickerOpen: pickerFor === choiceKey,
     onTogglePicker: () => setPickerFor((open) => (open === choiceKey ? null : choiceKey)),
     onChoose: (next: GroupChoice) => onChoose(choiceKey, next),
@@ -584,6 +605,8 @@ type ChoiceRowProps = {
   blocked: ReadonlySet<string>;
   disabled: boolean;
   sportId: Id<"selectorOptions"> | undefined;
+  /** The node the cards are saved under: what the Other-team search ranks by. */
+  contextOptionId: Id<"selectorOptions">;
   pickerOpen: boolean;
   onTogglePicker: () => void;
   onChoose: (choice: GroupChoice) => void;
@@ -753,6 +776,7 @@ function ChoiceRow({
   blocked,
   disabled,
   sportId,
+  contextOptionId,
   pickerOpen,
   onTogglePicker,
   onChoose,
@@ -967,6 +991,7 @@ function ChoiceRow({
         <OtherTeamPicker
           hostId={pickerHostId}
           sportId={sportId}
+          contextOptionId={contextOptionId}
           disabled={disabled}
           onPicked={onPicked}
           onDismiss={() => {
@@ -992,12 +1017,19 @@ type OtherTeamOption =
 function OtherTeamPicker({
   hostId,
   sportId,
+  contextOptionId,
   disabled,
   onPicked,
   onDismiss,
 }: {
   hostId: string;
   sportId: Id<"selectorOptions">;
+  /**
+   * NEO-518 — the set being reviewed, so the search ranks as every other
+   * team search in the set builder does: the set's league active in its
+   * year first, then minor leagues active that year, then the rest.
+   */
+  contextOptionId: Id<"selectorOptions">;
   disabled: boolean;
   onPicked: (teamId: Id<"teams">) => void;
   onDismiss: () => void;
@@ -1021,24 +1053,77 @@ function OtherTeamPicker({
 
   const typed = query.trim();
   const term = debounced.trim();
+  // NEO-518 — `pickerCandidates`, not `teams.search`: "houston" on a 2026
+  // baseball set must lead with the Astros, not Houston Cougars. The rows
+  // arrive in their final order (tiers, then alias, prefix, A–Z) and are
+  // never re-sorted here, so the Autocomplete's highlighted first row, and
+  // therefore Enter, is the team this card most likely shows. Every key
+  // written out, never spread (see TeamPicker). Blank skips: the server
+  // would BROWSE on an empty term.
   const searched = useQuery(
-    api.teams.search,
-    typed && term ? { query: term, sportId, limit: OTHER_TEAM_SEARCH_LIMIT } : "skip",
+    api.teams.pickerCandidates,
+    typed && term
+      ? { query: term, sportId, contextOptionId, limit: OTHER_TEAM_SEARCH_LIMIT }
+      : "skip",
   );
+  /**
+   * NEO-518 — the last ranked answer, held while the next one loads
+   * (TeamPicker's NEO-331 pattern). Without it the list collapsed to the
+   * "+ New team" row on every keystroke, highlighted, so a fast Enter on
+   * "houston" opened New Team instead of taking the Astros.
+   *
+   * Held per sport and set: rows ranked for another context are wrong rows,
+   * not stale ones. Compared by ids in order, not identity, so a caller (or a
+   * test mock) that hands back a fresh array each render cannot loop. State
+   * adjusted during render, as in TeamPicker.
+   */
+  const rankKey = `${sportId}|${contextOptionId}`;
+  const [held, setHeld] = useState<{
+    key: string;
+    rows: NonNullable<typeof searched>;
+  } | null>(null);
+  if (
+    searched !== undefined &&
+    (held === null ||
+      held.key !== rankKey ||
+      held.rows.length !== searched.length ||
+      searched.some((r, i) => r.team._id !== held.rows[i].team._id))
+  ) {
+    setHeld({ key: rankKey, rows: searched });
+  }
+  /** The server has answered for exactly what is in the field now. */
+  const answered = typed !== "" && typed === term && searched !== undefined;
+  /** Something is typed and its answer is still on its way. */
+  const pending = typed !== "" && !answered;
+  const shown = useMemo(() => {
+    if (!typed) return [];
+    if (answered) return searched ?? [];
+    // An EARLIER query's answer (the debounce has not caught up, or the new
+    // one is loading): name-filtered against what is typed, so it can only
+    // show fewer rows, never wrong ones. The current answer is never
+    // filtered — it keeps exact-alias hits whose name lacks the text.
+    const earlier = searched ?? (held?.key === rankKey ? held.rows : []);
+    return earlier.filter(({ team }) => nameMatchesQuery(teamFullName(team), typed));
+  }, [typed, answered, searched, held, rankKey]);
   const items = useMemo<OtherTeamOption[]>(() => {
     if (!typed) return [];
-    const teams: OtherTeamOption[] = (searched ?? []).map((team) => ({
+    const teams: OtherTeamOption[] = shown.map(({ team }) => ({
       kind: "team",
       teamId: team._id,
       label: teamFullName(team),
       era: eraLabel(team.yearsActive),
     }));
-    // Always last, and always there once something is typed: a sport can
-    // hold two teams under one name (two Winnipeg Jets), so an exact match
-    // never hides it — the New Team dialog is where a second era is refused
-    // or confirmed, as from TeamPicker.
+    // Nothing to show yet: an empty list, so the field says "Searching…"
+    // rather than offering only "+ New team" for a team that may exist.
+    if (pending && teams.length === 0) return [];
+    // Always last once there is something to show: a sport can hold two
+    // teams under one name (two Winnipeg Jets), so an exact match never
+    // hides it — the New Team dialog is where a second era is refused or
+    // confirmed, as from TeamPicker.
     return [...teams, { kind: "create", name: typed }];
-  }, [typed, searched]);
+  }, [typed, shown, pending]);
+  /** "No matches." is a verdict, so only the CURRENT answer may give it. */
+  const noMatches = answered && searched !== undefined && searched.length === 0;
 
   return (
     <div
@@ -1080,17 +1165,27 @@ function OtherTeamPicker({
         }}
         label={OTHER_TEAM_SEARCH_LABEL}
         placeholder={OTHER_TEAM_PLACEHOLDER}
-        loading={typed !== "" && (typed !== term || searched === undefined) && items.length <= 1}
+        loading={pending}
+        // Held or not-yet-answered rows: Enter on "+ New team" does nothing
+        // (it could mint a team the answer is about to show). A highlighted
+        // real match still takes Enter; a click on the create row still acts.
+        holdEnter={(o) => o.kind === "create" && pending}
         disabled={disabled}
         listMaxHeightClassName="max-h-56"
         inputGeometryClassName="p-1.5 text-sm"
       />
       {/* TeamPicker's own wording, for the same moment: the search answered
           and only "+ New team …" is left. Flows wait on it before Enter
-          (which then can only mean "create"). */}
-      {typed !== "" && typed === term && searched !== undefined && searched.length === 0 && (
-        <p className="mt-1 px-1 text-xs text-ink-3">No matches.</p>
-      )}
+          (which then can only mean "create"). An always-mounted status
+          region, so the verdict is announced as well as drawn; only its text
+          changes, and it takes its margin only while it has words, so the
+          empty region adds no gap under the field. */}
+      <p
+        role="status"
+        className={noMatches ? "mt-1 px-1 text-xs text-ink-3" : "text-xs text-ink-3"}
+      >
+        {noMatches ? "No matches." : ""}
+      </p>
       {creating !== null && (
         <NewTeamDialog
           sportId={sportId}

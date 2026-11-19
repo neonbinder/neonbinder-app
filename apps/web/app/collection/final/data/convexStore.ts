@@ -48,6 +48,7 @@
 import { createElement, useEffect, useMemo, useRef, type ReactNode } from "react";
 import {
   useAction,
+  useConvex,
   useMutation,
   usePaginatedQuery,
   useQueries,
@@ -69,10 +70,16 @@ import type {
   SetRef as RawSetRef,
   VariantRef as RawVariantRef,
 } from "@/convex/lib/catalogView";
+import { setLabel } from "@/convex/lib/catalogView";
 import { isOptimisticId, OPTIMISTIC_ID_PREFIX } from "../lineKeys";
 import { finishForVariant } from "./finish";
-import { resizeCopyPhoto } from "@/lib/collection/copy-photo-resize";
+import { resizeCopyPhoto, type ResizedPhoto } from "@/lib/collection/copy-photo-resize";
+import { startCopyPhotoTimer } from "@/lib/collection/copy-photo-timing";
+import { uploadWithRetry, type PhotoFileKind } from "@/lib/collection/upload-with-retry";
 import { CardImagesProvider } from "./cardImages";
+import { asPendingPhotoEdit } from "@/lib/photo-edit/geometry";
+import { copyPreviewKey, inWords, toEditStart, type RawEditSource } from "@/components/modules/CardPhotoViewer/convexEdits";
+import type { PhotoSideSource, PhotoSource } from "@/components/modules/CardPhotoViewer/types";
 
 import {
   bySlot,
@@ -91,6 +98,7 @@ import {
   type CopyPhotosExtension,
   type SharingExtension,
   type BinderMemoryExtension,
+  type ListingExtension,
 } from "./store";
 import {
   DEFAULT_CONDITION,
@@ -105,6 +113,8 @@ import {
   type CopyDetails,
   type CopyId,
   type CopyPhotos,
+  type PhotoSide,
+  type PhotoUrls,
   type DrillItem,
   type DrillLevel,
   type HeldCount,
@@ -119,6 +129,7 @@ import {
   type Variant,
   type VariantKind,
   type VariantId,
+  type ContainerId,
   type VariantRef,
   type ShareProfile,
   type Want,
@@ -126,8 +137,16 @@ import {
   type BinderSettings,
   type DeclinedCard,
   type FoundCards,
+  type RuleMatches,
   type SmartRule,
+  type EbaySetupView,
+  type ListingGateView,
+  type ListingSettings,
+  type Sale,
+  type SalesPage,
+  type SyncStatus,
 } from "./types";
+import { toSetProblems, toSyncStatus } from "./syncStatus";
 
 type RawCopy = Infer<typeof copyValidator>;
 type RawContainer = FunctionReturnType<typeof api.collectionContainers.list>[number];
@@ -188,7 +207,12 @@ function toSetRef(raw: RawSetRef): SetRef {
     name: raw.name,
     season: raw.season,
     year: yearOf(raw.year?.name ?? raw.season),
-    brand: raw.manufacturer ? { id: raw.manufacturer._id, name: raw.manufacturer.name } : { id: "", name: "" },
+    // NEO-527: the year's brand-unknown row keeps its id (navigation needs it)
+    // but never its name, so no label can show it.
+    brand: raw.manufacturer
+      ? { id: raw.manufacturer._id, name: raw.manufacturerBrandUnknown ? "" : raw.manufacturer.name }
+      : { id: "", name: "" },
+    ...(raw.manufacturerBrandUnknown ? { brandUnknown: true as const } : {}),
     sport: raw.sport ? { id: raw.sport._id, name: raw.sport.name } : { id: "", name: "" },
   };
 }
@@ -241,6 +265,12 @@ function toCard(raw: CatalogCard, set: SetRef, variant: VariantRef): Card {
     variant,
     cardNumber: raw.cardNumber,
     players: raw.players.map((p) => ({ id: p._id, name: p.name, ...(p.nameOnCard ? { nameOnCard: p.nameOnCard } : {}) })),
+    // NEO-528 — "Also on this card": absent when the card pictures no one else.
+    ...(raw.secondaryPlayers?.length
+      ? { secondaryPlayers: raw.secondaryPlayers.map((p) => ({ id: p._id, name: p.name })) }
+      : {}),
+    // NEO-528 — names a card with no player (a cameo-only card): `cardSubject`.
+    ...(raw.cardName?.trim() ? { cardName: raw.cardName.trim() } : {}),
     teams: raw.teams.map((t) => ({
       id: t._id,
       name: t.name,
@@ -258,8 +288,11 @@ function toCard(raw: CatalogCard, set: SetRef, variant: VariantRef): Card {
   };
 }
 
-/** A card that carries its own path; null when the path is gone (an orphaned row). */
-function toCardWithPath(raw: CatalogCardWithPath | null): Card | null {
+/**
+ * A card that carries its own path; null when the path is gone (an orphaned
+ * row). Exported for the Pick List's store (`../pick/convexPickStore`).
+ */
+export function toCardWithPath(raw: CatalogCardWithPath | null): Card | null {
   if (!raw || !raw.set || !raw.variant) return null;
   return toCard(raw, toSetRef(raw.set), toVariantRef(raw.variant));
 }
@@ -456,11 +489,18 @@ function toContainer(raw: RawContainer): Container {
     count: raw.count ?? null,
     ...(raw.slug ? { slug: raw.slug } : {}),
     ...(raw.visibility === "public" ? { isPublic: true } : {}),
+    // NEO-370: only a box carries it, and only once switched off (absent = listed).
+    ...(raw.kind === "box" && raw.listedOnMarketplaces === false ? { listedOnMarketplaces: false } : {}),
   };
 }
 
 function toWant(raw: RawWant): Want {
-  return { cardId: raw.cardId, binderId: raw.binderId ?? null };
+  return {
+    cardId: raw.cardId,
+    binderId: raw.binderId ?? null,
+    // An optimistic want (just set) carries no stamp yet.
+    ...(typeof raw.lastUpdated === "number" ? { lastUpdated: raw.lastUpdated } : {}),
+  };
 }
 
 /** A view copy as the server lists it (for the optimistic engine's fallback). */
@@ -549,6 +589,11 @@ function toDrillItem(level: DrillLevel, raw: RawDrillItem): DrillItem {
   // beneath it (an empty Base is still Base). An "Inserts" type that only
   // holds inserts is a step, not a checklist.
   const isChecklist = cardBearing && (raw.childCount === 0 || (raw.cardCount ?? 0) > 0);
+  // NEO-527: a set the server listed in a year's brand column in place of the
+  // brand-unknown row is a set, carrying that row's id for the brand step.
+  if (raw.brandId) {
+    return { id: raw._id, level: "set", name: raw.name, hasChildren: raw.childCount > 0, brandId: raw.brandId };
+  }
   return {
     id: raw._id,
     level,
@@ -620,7 +665,8 @@ export const CONVEX_DATA: CollectionData = {
       return {
         sport: { id: raw.sport._id, name: raw.sport.name },
         year: { id: raw.year._id, name: raw.season || raw.year.name },
-        brand: { id: raw.manufacturer._id, name: raw.manufacturer.name },
+        // NEO-527: as `toSetRef`, the brand-unknown row's name never leaves here.
+        brand: { id: raw.manufacturer._id, name: raw.manufacturerBrandUnknown ? "" : raw.manufacturer.name },
         set: { id: raw._id, name: raw.name },
       };
     }, [raw]);
@@ -1027,13 +1073,23 @@ export const CONVEX_DATA: CollectionData = {
       if (!containerId || raw === undefined) return undefined;
       const cards: Card[] = [];
       const held = new Set<string>();
+      const secondary = new Set<string>();
       for (const need of raw.needs) {
         const card = toCardWithPath(need.card);
         if (!card) continue;
         cards.push(card);
         if (need.held) held.add(card.id);
+        if (need.secondary) secondary.add(card.id);
       }
-      return { cards, held, supported: raw.supported, truncated: raw.truncated, pending: raw.pending === true };
+      return {
+        cards,
+        held,
+        secondary,
+        supported: raw.supported,
+        truncated: raw.truncated,
+        pending: raw.pending === true,
+        failed: raw.failed === true,
+      };
     }, [containerId, raw]);
   },
 
@@ -1044,21 +1100,25 @@ export const CONVEX_DATA: CollectionData = {
       return Object.fromEntries(
         chunk(ids, CARDS_PER_CALL).map((part, i) => [
           String(i),
-          { query: api.binderRules.matchingCards, args: { containerId: containerId!, cardIds: part } },
+          { query: api.binderRules.ruleFits, args: { containerId: containerId!, cardIds: part } },
         ]),
       );
     }, [key, containerId]);
     const results = useQueries(requests);
-    return useMemo(() => {
+    return useMemo((): RuleMatches | undefined => {
       if (key === null) return undefined;
-      const out = new Set<string>();
+      const fits = new Set<string>();
+      const secondary = new Set<string>();
       for (let i = 0; i < Object.keys(requests).length; i++) {
-        const part = results[String(i)] as string[] | undefined | Error;
+        const part = results[String(i)] as FunctionReturnType<typeof api.binderRules.ruleFits> | undefined | Error;
         if (part === undefined) return undefined;
         if (part instanceof Error) throw part;
-        for (const id of part) out.add(id);
+        for (const fit of part) {
+          fits.add(fit.cardId);
+          if (fit.secondary) secondary.add(fit.cardId);
+        }
       }
-      return out;
+      return { fits, secondary };
     }, [key, requests, results]);
   },
 
@@ -1082,6 +1142,7 @@ export const CONVEX_DATA: CollectionData = {
       if (!containerId || !homes || status === "LoadingFirstPage") return undefined;
       return {
         copies: results.map((r) => toCopy(r, homes)),
+        secondary: new Set(results.filter((r) => r.secondary).map((r) => r.cardId as string)),
         done: status === "Exhausted",
         more: () => {
           if (canLoadMore) loadMore(FIND_PAGE);
@@ -1283,7 +1344,7 @@ function suggestionsFrom(raw: RawSuggest): Suggestion[] {
       (s): Suggestion => ({
         kind: "set",
         id: s._id,
-        label: `${s.season} ${s.name}`,
+        label: setLabel(s),
         sport: s.sport?.name ?? "",
       }),
     ),
@@ -1736,11 +1797,10 @@ function withDefaultCondition(local: OptimisticLocalStore, details: RawDetails):
 /**
  * A plain line (NEO-364, D9), the server's `isPlainLine`: raw, in the default
  * condition or none (stored before NEO-380), no other detail recorded, not up
- * for trade.
+ * for trade. Photos do not matter (NEO-431).
  */
 function isPlainRow(r: RawCopy, defaultCondition: Condition = DEFAULT_CONDITION): boolean {
   return (
-    r.hasPhotos !== true &&
     (r.condition === undefined || r.condition === defaultCondition) &&
     r.grading === undefined &&
     r.serialNumber === undefined &&
@@ -1752,12 +1812,22 @@ function isPlainRow(r: RawCopy, defaultCondition: Condition = DEFAULT_CONDITION)
   );
 }
 
+/** Newest first, as the server's `newerLine`: the latest touched, then the later listed. */
+function newestFirst(rows: readonly RawCopy[]): RawCopy[] {
+  return rows
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => b.r.lastUpdated - a.r.lastUpdated || b.i - a.i)
+    .map(({ r }) => r);
+}
+
 /**
  * `setBoxQuantity` drawn ahead of the server, from the card's loaded rows:
  * the plain lines in the box are set to `quantity`. Raising folds into
- * today's plain unplaced line or draws a new one; lowering takes from the
- * plain lines newest first (a line at 0 goes). The same number changes
- * nothing.
+ * today's plain unplaced line or draws a new one, unless every plain line has
+ * photos: then it stacks onto the newest of those (the server's
+ * `photoLineToRaise`). Lowering takes from the lines without photos, then those
+ * with them, newest first in each (the server's `lowerOrder`; a line at 0
+ * goes). The same number changes nothing.
  */
 function applyBoxQuantity(
   local: OptimisticLocalStore,
@@ -1779,7 +1849,8 @@ function applyBoxQuantity(
   if (quantity > before) {
     const adding = quantity - before;
     const next = { quantity: adding, condition, acquiredOn, homeId: boxId } as RawDetails;
-    const into = rows.find((r) => foldsInto(r, next) && r.quantity + adding <= MAX_LINE_QUANTITY);
+    const photoLine = plain.every((r) => r.hasPhotos === true) ? newestFirst(plain)[0] : undefined;
+    const into = photoLine ?? rows.find((r) => foldsInto(r, next) && r.quantity + adding <= MAX_LINE_QUANTITY);
     if (into) {
       change.before = [into];
       change.after = [{ ...into, quantity: into.quantity + adding, lastUpdated: now }];
@@ -1800,12 +1871,8 @@ function applyBoxQuantity(
     }
   } else {
     let left = before - quantity;
-    // Newest first, as the server's `newerLine`: the latest touched, then the later listed.
-    const newest = plain
-      .map((r, i) => ({ r, i }))
-      .sort((a, b) => b.r.lastUpdated - a.r.lastUpdated || b.i - a.i)
-      .map(({ r }) => r);
-    for (const r of newest) {
+    const ordered = [...newestFirst(plain.filter((r) => !r.hasPhotos)), ...newestFirst(plain.filter((r) => r.hasPhotos))];
+    for (const r of ordered) {
       if (left === 0) break;
       const take = Math.min(left, r.quantity);
       left -= take;
@@ -1819,7 +1886,8 @@ function applyBoxQuantity(
 /**
  * `undoBoxQuantity` drawn ahead of the server: each step of the inverse, in
  * order, on the card's loaded rows. A `restore` folds into an identical
- * line as the server does, or draws line `n` (the step's place).
+ * line as the server does, or draws line `n` (the step's place); one with
+ * photos to take back never folds, and draws a line with photos.
  */
 function applyBoxSteps(
   local: OptimisticLocalStore,
@@ -1839,8 +1907,9 @@ function applyBoxSteps(
         condition: defaultConditionIn(local),
         ...(step.acquiredOn ? { acquiredOn: step.acquiredOn } : {}),
         ...(step.slot !== undefined ? { slot: step.slot } : {}),
+        ...(step.photoIds?.length ? { hasPhotos: true as const } : {}),
         homeId: inverse.boxId,
-      } as RawDetails;
+      } as RawDetails & { hasPhotos?: true };
       const into = rows.find((r) => foldsInto(r, next) && r.quantity + step.quantity <= MAX_LINE_QUANTITY);
       if (into) {
         change.before = [into];
@@ -1920,7 +1989,18 @@ function applyRewrite(local: OptimisticLocalStore, copyId: string, known: KnownC
   });
 }
 
-/** A move (or a placement: a move that stays home), splitting and folding as the server will. */
+/** A home's kind as the loaded shelf has it; `undefined` until the shelf loads. */
+function homeKindIn(local: OptimisticLocalStore, homeId: string): RawContainer["kind"] | undefined {
+  return local.getQuery(api.collectionContainers.list, {})?.find((c) => c._id === homeId)?.kind;
+}
+
+/**
+ * A move (or a placement: a move that stays home), splitting and folding as
+ * the server will. NEO-479: `minPriceCents` is the moving cards' own price
+ * (`null` clears it); left out, they keep theirs, except out of a box into a
+ * binder, where they lose it (the server's Branch B). The price is set before
+ * the twin lookup, so the cards fold only into a line at the same price.
+ */
 function applyMove(
   local: OptimisticLocalStore,
   copyId: string,
@@ -1929,6 +2009,7 @@ function applyMove(
   quantity: number | undefined,
   slot: number | undefined,
   draw: () => RawCopy["_id"] = optimisticId,
+  minPriceCents?: number | null,
 ) {
   const source = rowOf(local, copyId, known);
   if (!source || !known) return;
@@ -1937,6 +2018,14 @@ function applyMove(
   const landed: RawCopy = { ...source, homeId: (toHomeId ?? source.homeId) as RawCopy["homeId"], quantity: moving };
   if (slot === undefined) delete landed.slot;
   else landed.slot = slot;
+  const leavingSale =
+    toHomeId !== undefined &&
+    toHomeId !== source.homeId &&
+    homeKindIn(local, source.homeId) === "box" &&
+    homeKindIn(local, toHomeId) !== undefined &&
+    homeKindIn(local, toHomeId) !== "box";
+  if (typeof minPriceCents === "number") landed.minPriceCents = minPriceCents;
+  else if (minPriceCents === null || leavingSale) delete landed.minPriceCents;
   // NEO-377: photos stay with the line; a part split off has none.
   if (split) delete landed.hasPhotos;
   const twin = cardRows(local, known.cardId).find((r) => r._id !== source._id && foldsInto(r, landed));
@@ -2000,6 +2089,7 @@ function useConvexActions(): CollectionActions {
   const setRule = useMutation(api.collectionContainers.setRule);
   const declineCard = useMutation(api.binderRules.decline);
   const undeclineCard = useMutation(api.binderRules.undecline);
+  const retryBinderFits = useMutation(api.binderRules.retryFits);
   const setCommonPriceBase = useMutation(api.commonPrices.set);
   const undoBoxQuantityBase = useMutation(api.collectionInventory.undoBoxQuantity);
 
@@ -2038,7 +2128,9 @@ function useConvexActions(): CollectionActions {
         );
       }),
       addLineItem: addLineItemBase.withOptimisticUpdate((local, args) =>
-        applyAdd(local, args.cardId, cards.current.get(args.cardId), args.details, true, () => optimisticIdFor(args)),
+        applyAdd(local, args.cardId, cards.current.get(args.cardId), args.details, !args.keepsOwnLine, () =>
+          optimisticIdFor(args),
+        ),
       ),
       restoreCopy: restoreCopyBase.withOptimisticUpdate((local, args) =>
         applyAdd(local, args.cardId, cards.current.get(args.cardId), args.details, false, () => optimisticIdFor(args)),
@@ -2063,8 +2155,15 @@ function useConvexActions(): CollectionActions {
         for (const copyId of args.copyIds) applyRemove(local, copyId, copies.current.get(copyId));
       }),
       moveCopy: moveCopyBase.withOptimisticUpdate((local, args) =>
-        applyMove(local, args.copyId, copies.current.get(args.copyId), args.toHomeId, args.quantity, args.slot, () =>
-          optimisticIdFor(args),
+        applyMove(
+          local,
+          args.copyId,
+          copies.current.get(args.copyId),
+          args.toHomeId,
+          args.quantity,
+          args.slot,
+          () => optimisticIdFor(args),
+          args.minPriceCents,
         ),
       ),
       placeCopy: placeCopyBase.withOptimisticUpdate((local, args) =>
@@ -2250,16 +2349,31 @@ function useConvexActions(): CollectionActions {
         else await m.removeCopy({ copyId: result.copyId });
       };
 
-    /** The undo of a move or a placement: the same cards back where they were. */
-    const undoMove = (copy: Copy, toHomeId: string, slot: number | undefined, r: RawMove) => async () => {
-      knowAs(copy, r.copyId, { homeId: toHomeId, quantity: r.from.quantity, slot });
-      await m.moveCopy({
-        copyId: r.copyId,
-        toHomeId: r.from.homeId,
-        quantity: r.from.quantity,
-        ...(r.from.slot !== undefined ? { slot: r.from.slot } : {}),
-      });
-    };
+    /**
+     * The undo of a move or a placement: the same cards back where they were.
+     * NEO-479: when the move changed the cards' own price, `from.minPriceCents`
+     * holds the one before (`null`: none) and goes back with them. `landedPrice`
+     * is the price the cards carry where they landed (dollars, or none), for
+     * the undo's optimistic row.
+     */
+    const undoMove =
+      (copy: Copy, toHomeId: string, slot: number | undefined, r: RawMove, landedPrice: number | undefined = copy.minPrice) =>
+      async () => {
+        const { minPrice: _before, ...rest } = copy;
+        knowAs(landedPrice === undefined ? rest : { ...rest, minPrice: landedPrice }, r.copyId, {
+          homeId: toHomeId,
+          quantity: r.from.quantity,
+          slot,
+        });
+        const restore = r.from.minPriceCents;
+        await m.moveCopy({
+          copyId: r.copyId,
+          toHomeId: r.from.homeId,
+          quantity: r.from.quantity,
+          ...(r.from.slot !== undefined ? { slot: r.from.slot } : {}),
+          ...(restore !== undefined ? { minPriceCents: restore } : {}),
+        });
+      };
 
     return {
       async addHave(card, homeId) {
@@ -2309,9 +2423,13 @@ function useConvexActions(): CollectionActions {
         };
       },
 
-      async addLineItem(card, details) {
+      async addLineItem(card, details, options) {
         placeCard(card);
-        const result = await m.addLineItem({ cardId: asCard(card.id), details: toRawDetails(details) });
+        const result = await m.addLineItem({
+          cardId: asCard(card.id),
+          details: toRawDetails(details),
+          ...(options?.keepsOwnLine ? { keepsOwnLine: true } : {}),
+        });
         return { copyId: result.copyId, merged: result.merged, undo: undoAdd(card, details.homeId, result) };
       },
 
@@ -2387,8 +2505,26 @@ function useConvexActions(): CollectionActions {
           toHomeId: asHome(toHomeId),
           ...(options?.quantity !== undefined ? { quantity: options.quantity } : {}),
           ...(options?.slot !== undefined ? { slot: options.slot } : {}),
+          // NEO-479 — the cards' own price, in cents; never the common price.
+          ...(options?.minPrice !== undefined ? { minPriceCents: Math.round(options.minPrice * 100) } : {}),
         });
-        return { copyId: r.copyId, folded: r.folded, split: r.split, undo: undoMove(copy, toHomeId, options?.slot, r) };
+        // The price the cards carry where they landed: the one sent, else
+        // theirs, unless the move took it off. Only a move out of a box can
+        // (Branch B), and then `from` records it; into a box, `from` records
+        // an own price that stayed on, for the undo.
+        const recorded = r.from.minPriceCents !== undefined;
+        const landedPrice =
+          options?.minPrice !== undefined
+            ? options.minPrice
+            : copy.homeKind === "box" && recorded
+              ? undefined
+              : copy.minPrice;
+        return {
+          copyId: r.copyId,
+          folded: r.folded,
+          split: r.split,
+          undo: undoMove(copy, toHomeId, options?.slot, r, landedPrice),
+        };
       },
 
       async placeCopy(drawn, slot) {
@@ -2506,6 +2642,7 @@ function useConvexActions(): CollectionActions {
         return {
           before: r.before,
           after: r.after,
+          tookPhotos: r.inverse.steps.some((step) => step.op === "restore" && (step.photoIds?.length ?? 0) > 0),
           undo: async () => {
             // The same number wrote nothing, so there is nothing to put back.
             if (r.inverse.steps.length === 0) return;
@@ -2552,6 +2689,10 @@ function useConvexActions(): CollectionActions {
             await setRule({ containerId: asHome(container.id), rule: previous });
           },
         };
+      },
+
+      async retryBinderFits(container) {
+        await retryBinderFits({ containerId: asHome(container.id) });
       },
 
       async declineCard(container, cardId) {
@@ -2629,8 +2770,80 @@ function useLinePhotos(copies: readonly Copy[]): ReadonlyMap<CopyId, CopyPhotos>
   return useMemo(() => {
     if (args === "skip") return new Map();
     if (rows === undefined) return undefined;
-    return new Map(rows.map((r) => [r.copyId as CopyId, { ...(r.front ? { front: r.front } : {}), ...(r.back ? { back: r.back } : {}) }]));
+    return new Map(rows.map((r) => [r.copyId as CopyId, photosOfRow(r)]));
   }, [args, rows]);
+}
+
+type RawCopyPhotos = FunctionReturnType<typeof api.copyPhotos.photosOf>[number];
+
+/**
+ * NEO-481 — one side of a `photosOf` row, with the edit still rendering (or
+ * failed) on it: the row's `edits` holds the newest per side.
+ */
+function photoSideOf(row: RawCopyPhotos, side: PhotoSide): PhotoUrls | undefined {
+  const urls = row[side];
+  if (!urls) return undefined;
+  const pending = asPendingPhotoEdit(row.edits?.find((e) => e.side === side));
+  return { imageUrl: urls.imageUrl, thumbUrl: urls.thumbUrl, ...(pending ? { pending } : {}) };
+}
+
+/** NEO-377, NEO-481 — a `photosOf` row as the line's photos (a side with none is absent). */
+export function photosOfRow(row: RawCopyPhotos): CopyPhotos {
+  const front = photoSideOf(row, "front");
+  const back = photoSideOf(row, "back");
+  return { ...(front ? { front } : {}), ...(back ? { back } : {}) };
+}
+
+/**
+ * NEO-481 — the viewer's source for a line's photos: where an edit starts
+ * (the server HEADs the scan's original, else it is the stored photo), the
+ * save (accepted at once, rendered in the background), Undo and the failure
+ * note. A hook, mounted only while the viewer is open.
+ *
+ * Undo puts back the photo from before this viewer's last save: the save
+ * answers with the new edit row, and that row is what Undo names.
+ */
+function useConvexCopyPhotoSource(copy: Pick<Copy, "id">, label: string, photos: CopyPhotos | undefined): PhotoSource {
+  const loadSource = useAction(api.photoEdits.photoEditSource);
+  const saveEdit = useAction(api.photoEdits.saveCopyPhotoEdit);
+  const undoEdit = useAction(api.photoEdits.undoCopyPhotoEdit);
+  const dismiss = useAction(api.photoEdits.dismissPhotoEditFailure);
+  const lastEdit = useRef<Partial<Record<PhotoSide, Id<"collectionCopyPhotos">>>>({});
+  return useMemo(() => {
+    const copyId = copy.id as RawCopy["_id"];
+    const side = (s: PhotoSide): PhotoSideSource | undefined => {
+      const p = photos?.[s];
+      if (!p) return undefined;
+      const base = { imageUrl: p.imageUrl, previewKey: copyPreviewKey(copy.id, s), ...(p.pending ? { pending: p.pending } : {}) };
+      if (isOptimisticId(copy.id)) return { ...base, viewOnly: "This copy is still saving. Open it again in a moment." };
+      const ref = { kind: "copy" as const, copyId, side: s };
+      return {
+        ...base,
+        async load() {
+          const raw = (await inWords(loadSource({ ref }), "Couldn't open this photo for editing.")) as RawEditSource;
+          return toEditStart(raw, raw.expectToken);
+        },
+        async save(edit, start) {
+          if (typeof start.guard !== "string") throw new Error("This photo changed. Close it and open it again.");
+          const { photoId } = await inWords(
+            saveEdit({ copyId, side: s, edit, expectToken: start.guard, mode: start.mode }),
+            "That edit didn't save. Try again.",
+          );
+          lastEdit.current[s] = photoId;
+        },
+        async undo() {
+          const photoId = lastEdit.current[s];
+          if (!photoId) throw new Error("There's no edit to undo here.");
+          await inWords(undoEdit({ copyId, photoId }), "Couldn't put the old photo back.");
+          lastEdit.current[s] = undefined;
+        },
+        async dismissFailure() {
+          await inWords(dismiss({ ref }), "Couldn't clear that note.");
+        },
+      };
+    };
+    return { label, front: side("front"), back: side("back") };
+  }, [copy.id, label, photos, loadSource, saveEdit, undoEdit, dismiss]);
 }
 
 /** NEO-377 — the collector's photo of each card on screen (`./cardImages`). */
@@ -2652,6 +2865,30 @@ function useCardImages(cardIds: readonly string[]): ReadonlyMap<string, CopyPhot
 }
 
 /**
+ * NEO-466 — resizes started ahead of their save (`preparePhoto`), by the
+ * original file. `addPhoto` takes its file's entry out, so each is used once
+ * and a later save of the same file resizes afresh. Each promise carries a
+ * no-op handler, so one that rejects before (or without) its save is never an
+ * unhandled rejection; the save still sees the rejection when it awaits it.
+ */
+const preparedPhotos = new WeakMap<File, Promise<ResizedPhoto>>();
+
+function prepareCopyPhoto(file: File): void {
+  if (preparedPhotos.has(file)) return;
+  const resizing = resizeCopyPhoto(file);
+  resizing.catch(() => undefined);
+  preparedPhotos.set(file, resizing);
+}
+
+/** The resize `preparePhoto` started for `file`, taken out of the cache, or a new one. */
+function takeResizedPhoto(file: File): Promise<ResizedPhoto> {
+  const prepared = preparedPhotos.get(file);
+  if (!prepared) return resizeCopyPhoto(file);
+  preparedPhotos.delete(file);
+  return prepared;
+}
+
+/**
  * NEO-377 — copy photos: resize in the browser, upload both files straight
  * to R2 through signed URLs, then let Convex check and attach them.
  */
@@ -2664,28 +2901,77 @@ function useConvexCopyPhotos(): CopyPhotosExtension {
     () => ({
       usePhotos: useLinePhotos,
       useCardImages,
-      async addPhoto(copy, side, file) {
-        if (isOptimisticId(copy.id)) throw new Error("That copy is still saving. Try again in a moment.");
-        const resized = await resizeCopyPhoto(file);
-        const started = await startUpload({
-          copyId: copy.id as RawCopy["_id"],
-          side,
-          contentType: resized.contentType,
-          imageBytes: resized.image.size,
-          thumbBytes: resized.thumb.size,
-        });
-        const put = async (url: string, blob: Blob) => {
-          const res = await fetch(url, { method: "PUT", headers: { "content-type": resized.contentType }, body: blob });
-          if (!res.ok) throw new Error("That photo didn't upload. Check your connection and try again.");
-        };
-        await put(started.imageUploadUrl, resized.image);
-        await put(started.thumbUploadUrl, resized.thumb);
-        await finishUpload({ photoId: started.photoId });
+      usePhotoSource: useConvexCopyPhotoSource,
+      preparePhoto: prepareCopyPhoto,
+      async addPhoto(copy, side, file, context) {
+        // NEO-466: every phase is timed; a slow, retried or failed save logs one line.
+        const timer = startCopyPhotoTimer(undefined, undefined, context?.addLineItemMs);
+        // The resize starts now, beside any wait for the line below. A resize
+        // `preparePhoto` started at the Add press is reused, so this waits only
+        // for what is left of it.
+        const resizing = takeResizedPhoto(file);
+        resizing.catch(() => undefined);
+        try {
+          // A photo picked on a line whose add is still in flight waits for
+          // that write's answer, then goes to the real id (as every other
+          // write on the line does).
+          const line = isOptimisticId(copy.id) ? await timer.phase("line", () => landedCopy(copy)) : copy;
+          const resized = await timer.phase("resize", () => resizing);
+          const started = await timer.phase("startUpload", () =>
+            startUpload({
+              copyId: line.id as RawCopy["_id"],
+              side,
+              contentType: resized.contentType,
+              imageBytes: resized.image.size,
+              thumbBytes: resized.thumb.size,
+            }),
+          );
+          // Both files go up side by side. The first to give up stops the
+          // other, and its error is the one the collector reads. Both are let
+          // settle first, so the timing line holds the stopped file's tries too.
+          const shared = new AbortController();
+          const gaveUp: { failed: boolean; error?: unknown } = { failed: false };
+          const put = (url: string, retryUrl: string | undefined, body: Blob, file: PhotoFileKind) =>
+            timer.put(file, body.size, (onAttempt) =>
+              uploadWithRetry(
+                {
+                  url,
+                  ...(retryUrl ? { retryUrl } : {}),
+                  method: "PUT",
+                  headers: { "content-type": resized.contentType },
+                  body,
+                  file,
+                  failureMessage: "That photo didn't upload. Check your connection and try again.",
+                  signal: shared.signal,
+                },
+                { onAttempt },
+              ).catch((error: unknown) => {
+                if (!gaveUp.failed) {
+                  gaveUp.failed = true;
+                  gaveUp.error = error;
+                  shared.abort();
+                }
+                throw error;
+              }),
+            );
+          await Promise.allSettled([
+            put(started.imageUploadUrl, started.imageRetryUploadUrl, resized.image, "image"),
+            put(started.thumbUploadUrl, started.thumbRetryUploadUrl, resized.thumb, "thumb"),
+          ]);
+          if (gaveUp.failed) throw gaveUp.error;
+          await timer.phase("finishUpload", () => finishUpload({ photoId: started.photoId }));
+          timer.finish("saved");
+        } catch (error) {
+          timer.finish("failed", error);
+          throw error;
+        }
       },
-      async removePhoto(copy, side) {
+      async removePhoto(drawn, side) {
+        const copy = isOptimisticId(drawn.id) ? await landedCopy(drawn) : drawn;
         await remove({ copyId: copy.id as RawCopy["_id"], side });
       },
-      async swapPhotos(copy) {
+      async swapPhotos(drawn) {
+        const copy = isOptimisticId(drawn.id) ? await landedCopy(drawn) : drawn;
         await swap({ copyId: copy.id as RawCopy["_id"] });
       },
     }),
@@ -2745,6 +3031,138 @@ function useConvexBinderMemory(): BinderMemoryExtension {
 }
 
 // ---------------------------------------------------------------------------
+// Marketplace listing (NEO-370)
+// ---------------------------------------------------------------------------
+
+/** Orders the Sales list asks for at a time (the server caps a page at 50). */
+const SALES_PER_PAGE = 20;
+
+type RawSale = FunctionReturnType<typeof api.listingSync.listSales>["page"][number];
+
+function toSale(raw: RawSale): Sale {
+  return {
+    id: raw._id,
+    platform: raw.platform,
+    orderNo: raw.orderNo,
+    orderDate: raw.orderDate,
+    status: raw.status,
+    totals: raw.totals,
+    items: raw.items.map((item) => ({
+      ...(item.cardId !== undefined ? { cardId: item.cardId } : {}),
+      condition: item.condition,
+      quantity: item.quantity,
+      priceCents: item.priceCents,
+      applied: item.applied,
+      ...(item.problem !== undefined ? { problem: item.problem } : {}),
+      ...(item.shortBy !== undefined ? { shortBy: item.shortBy } : {}),
+      ...(item.title !== undefined ? { title: item.title } : {}),
+    })),
+  };
+}
+
+function useListingSettings(): ListingSettings | undefined {
+  return useQuery(api.listingSync.listingSettings, {});
+}
+
+/** NEO-370 — the listing gate (`listingGate.forHome`): a handful of reads, safe to subscribe. */
+function useListingGateQuery(homeId: ContainerId | null, variantId: VariantId | null): ListingGateView | undefined {
+  return useQuery(api.listingGate.forHome, {
+    ...(homeId ? { homeId } : {}),
+    ...(variantId ? { variantId } : {}),
+  });
+}
+
+/**
+ * NEO-415 — the eBay connection as the inventory says it: one small read
+ * (`ebayConnect.connectionState`, the collector's own settings row and
+ * credential flags), safe to subscribe.
+ */
+function useEbaySetupQuery(): EbaySetupView | undefined {
+  const state = useQuery(api.ebayConnect.connectionState, {});
+  return useMemo(
+    () =>
+      state === undefined
+        ? undefined
+        : {
+            connected: state.status !== "notConnected",
+            setupComplete: state.setupComplete,
+            sandbox: state.environment === "sandbox",
+          },
+    [state],
+  );
+}
+
+function useSyncStatusQuery(): SyncStatus | undefined {
+  const raw = useQuery(api.listingSync.syncStatus, {});
+  return useMemo(() => (raw === undefined ? undefined : toSyncStatus(raw)), [raw]);
+}
+
+function useSalesPage(): SalesPage {
+  const pages = usePaginatedQuery(api.listingSync.listSales, {}, { initialNumItems: SALES_PER_PAGE });
+  const { results, status, loadMore } = pages;
+  const sales = useMemo(
+    () => (status === "LoadingFirstPage" ? undefined : results.map(toSale)),
+    [status, results],
+  );
+  return {
+    sales,
+    canLoadMore: status === "CanLoadMore",
+    loadingMore: status === "LoadingMore",
+    loadMore: () => loadMore(SALES_PER_PAGE),
+  };
+}
+
+function useConvexListing(): ListingExtension {
+  const convex = useConvex();
+  const sync = useMutation(api.listingSync.syncVariant);
+  const setListedBase = useMutation(api.collectionContainers.setContainerListed);
+  // The box's setting flips on the shelf at once; the server's answer settles it.
+  const setListed = useMemo(
+    () =>
+      setListedBase.withOptimisticUpdate((local, args) => {
+        const shelf = local.getQuery(api.collectionContainers.list, {});
+        if (!shelf) return;
+        local.setQuery(
+          api.collectionContainers.list,
+          {},
+          shelf.map((c) => {
+            if (c._id !== args.containerId) return c;
+            // The server keeps only `false` (absent = listed).
+            const { listedOnMarketplaces: _was, ...rest } = c;
+            return args.listed ? rest : { ...rest, listedOnMarketplaces: false as const };
+          }),
+        );
+      }),
+    [setListedBase],
+  );
+  return useMemo<ListingExtension>(
+    () => ({
+      useSettings: useListingSettings,
+      useSyncStatus: useSyncStatusQuery,
+      useSales: useSalesPage,
+      useGate: useListingGateQuery,
+      useEbaySetup: useEbaySetupQuery,
+      async syncVariant(variantId) {
+        const { queued, ignored } = await sync({ variantId: variantId as Id<"selectorOptions"> });
+        return { queued, ...(ignored ? { ignored } : {}) };
+      },
+      async setContainerListed(containerId, listed) {
+        await setListed({ containerId: containerId as Id<"collectionContainers">, listed });
+      },
+      async loadSetProblems(variantId, platform) {
+        // Read once, on demand: a full held-back list is never subscribed.
+        const raw = await convex.query(api.listingSync.syncSetProblems, {
+          variantId: variantId as Id<"selectorOptions">,
+          platform,
+        });
+        return toSetProblems(raw);
+      },
+    }),
+    [convex, sync, setListed],
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
 
@@ -2764,9 +3182,19 @@ export function ConvexCollectionProvider({ children }: { children: ReactNode }) 
   const sharing = useConvexSharing();
   const photos = useConvexCopyPhotos();
   const binderMemory = useConvexBinderMemory();
+  const listing = useConvexListing();
   const value = useMemo<CollectionStoreValue>(
-    () => ({ kind: "convex", capabilities: REAL_CAPABILITIES, data: CONVEX_DATA, actions, sharing, photos, binderMemory }),
-    [actions, sharing, photos, binderMemory],
+    () => ({
+      kind: "convex",
+      capabilities: REAL_CAPABILITIES,
+      data: CONVEX_DATA,
+      actions,
+      sharing,
+      photos,
+      binderMemory,
+      listing,
+    }),
+    [actions, sharing, photos, binderMemory, listing],
   );
   return createElement(
     CollectionStoreContext.Provider,
@@ -2814,4 +3242,5 @@ export const __test = {
   isPlainRow,
   patchInventory,
   optimisticIdFor,
+  toSale,
 };

@@ -39,13 +39,14 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test, vi, afterEach } from "vitest";
+import { describe, expect, test, vi, afterEach, beforeEach } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 // @ts-expect-error plain .mjs with no declaration file; test files are not typechecked anyway
 import { SELECTOR_DEPENDANT_TABLES } from "../scripts/reference-seed/cli.mjs";
 import { insertTestCard } from "../lib/testing/card-row";
+import { bscTeamPool } from "./bscTeamPool";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -128,13 +129,16 @@ async function seedEveryDrainedTable(
     });
 
     // players: 4
+    const playerIds = [];
     for (const name of ["A One", "B Two", "C Three", "D Four"]) {
-      await ctx.db.insert("players", {
-        name,
-        nameNormalized: name.toLowerCase(),
-        sportId,
-        lastUpdated: NOW,
-      });
+      playerIds.push(
+        await ctx.db.insert("players", {
+          name,
+          nameNormalized: name.toLowerCase(),
+          sportId,
+          lastUpdated: NOW,
+        }),
+      );
     }
 
     // cardChecklist: 5
@@ -199,6 +203,16 @@ async function seedEveryDrainedTable(
         lastUpdated: NOW,
       });
     }
+
+    // checklistNameResolutions: 1 (NEO-402) — the same abandoned review's
+    // stored player answers, naming a player the reset deletes.
+    await ctx.db.insert("checklistNameResolutions", {
+      selectorOptionId: variantId,
+      createdByUserId: "admin_who_closed_the_tab",
+      sportId,
+      createdAt: NOW,
+      players: [{ nameNormalized: "a one", playerId: playerIds[0] }],
+    });
 
     // cardTeamLinks: 9 (NEO-358) — the derived team → cards index. Hand
     // inserted: the reset drains the table, it does not care how rows got there.
@@ -297,6 +311,60 @@ async function seedEveryDrainedTable(
       });
     }
 
+    // NEO-496 — a set's publisher checklist: publishedChecklists 14 headers,
+    // publishedChecklistSections 13 (under the first), publishedChecklistChunks
+    // 25 (one more than the 24-chunk reset page, so the loop pages), and
+    // publishedChecklistLinks 12. The ids only need to be the right tables'.
+    const checklistIds: Id<"publishedChecklists">[] = [];
+    for (let i = 0; i < 14; i += 1) {
+      checklistIds.push(
+        await ctx.db.insert("publishedChecklists", {
+          setId: sportId,
+          status: i === 0 ? "ready" : "retired",
+          fileName: `checklist-${i}.csv`,
+          format: "csv",
+          createdByUserId: "admin",
+          startedAt: NOW,
+          lastActivityAt: NOW,
+          sectionCount: 13,
+          rowCount: 25,
+          byteSize: 100,
+        }),
+      );
+    }
+    const sectionIds: Id<"publishedChecklistSections">[] = [];
+    for (let i = 0; i < 13; i += 1) {
+      sectionIds.push(
+        await ctx.db.insert("publishedChecklistSections", {
+          checklistId: checklistIds[0],
+          ordinal: i,
+          name: `Section ${i}`,
+          sectionKey: `section ${i}`,
+          rowCount: i === 0 ? 25 : 0,
+          byteSize: 4,
+          chunkCount: i === 0 ? 25 : 0,
+        }),
+      );
+    }
+    for (let i = 0; i < 25; i += 1) {
+      await ctx.db.insert("publishedChecklistChunks", {
+        checklistId: checklistIds[0],
+        sectionId: sectionIds[0],
+        seq: i,
+        firstRow: i,
+        rows: [{ number: String(i + 1), players: ["A One"], teams: [] }],
+      });
+    }
+    for (let i = 0; i < 12; i += 1) {
+      await ctx.db.insert("publishedChecklistLinks", {
+        setId: sportId,
+        selectorOptionId: variantId,
+        sectionKey: `section ${i}`,
+        createdAt: NOW,
+        createdByUserId: "admin",
+      });
+    }
+
     return { sportId };
   });
 }
@@ -329,6 +397,9 @@ async function tableCounts(t: ReturnType<typeof convexTest>) {
       .length,
     checklistCandidates: (await ctx.db.query("checklistCandidates").collect())
       .length,
+    checklistNameResolutions: (
+      await ctx.db.query("checklistNameResolutions").collect()
+    ).length,
     players: (await ctx.db.query("players").collect()).length,
     teams: (await ctx.db.query("teams").collect()).length,
     franchises: (await ctx.db.query("franchises").collect()).length,
@@ -336,7 +407,22 @@ async function tableCounts(t: ReturnType<typeof convexTest>) {
   }));
 }
 
+/**
+ * PR 451 (NEO-482) — every armed reset schedules
+ * `bscTeamPool.cancelAllBscTeamChecks`, which reaches the `bscTeamPool`
+ * workpool component, and no test here registers it. convex-test fires a
+ * scheduled job on `setTimeout`, so faking only the timers keeps that job
+ * pending (no "Component is not registered" noise mid-reset) without touching
+ * `Date`, which the budget tests read. The one test that runs the job advances
+ * the fake timers itself, with the pool's `cancelAll` stubbed.
+ */
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+});
+
 afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
 });
 
@@ -363,6 +449,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       cardCrossListings: 6,
       entityReviewQueue: 7,
       checklistCandidates: 8,
+      checklistNameResolutions: 1,
       players: 4,
       teams: 2,
       franchises: 1,
@@ -393,6 +480,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       cardCrossListings: 6,
       entityReviewQueue: 7,
       checklistCandidates: 8,
+      checklistNameResolutions: 1,
       players: 4,
       teams: 2,
       franchises: 1,
@@ -408,6 +496,8 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     const result = await runReset(t);
 
     expect(result).toEqual({
+      marketplaceCallGatesDeleted: 0,
+      marketplaceWaitsDeleted: 0,
       slSetReviewsDeleted: 2,
       selectorSyncStatusDeleted: 3,
       collectionCopiesDeleted: 10,
@@ -418,13 +508,21 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       collectionBuildingSetsDeleted: 11,
       variantCommonPricesDeleted: 2,
       intakeRunsDeleted: 0,
+      placeholderJobsDeleted: 0,
+      marketplaceListingDeleted: 0,
+      publishedChecklistLinksDeleted: 12,
+      publishedChecklistChunksDeleted: 25,
+      publishedChecklistSectionsDeleted: 13,
+      publishedChecklistsDeleted: 14,
       selectorOptionsDeleted: 3,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 9,
+      cardSecondaryPlayerLinksDeleted: 0,
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,
       entityReviewQueueDeleted: 7,
       checklistCandidatesDeleted: 8,
+      checklistNameResolutionsDeleted: 1,
       playerSportsDeleted: 0,
       playersDeleted: 4,
       playerAliasesDeleted: 0,
@@ -448,6 +546,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       cardCrossListings: 0,
       entityReviewQueue: 0,
       checklistCandidates: 0,
+      checklistNameResolutions: 0,
       players: 0,
       teams: 0,
       franchises: 0,
@@ -472,11 +571,18 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     ["resetCollectionBuildingSetsBatch", "collectionBuildingSets"],
     ["resetVariantCommonPricesBatch", "variantCommonPrices"],
     ["resetCardTeamLinksBatch", "cardTeamLinks"],
+    // NEO-496 — the publisher-checklist tables.
+    ["resetPublishedChecklistLinksBatch", "publishedChecklistLinks"],
+    ["resetPublishedChecklistChunksBatch", "publishedChecklistChunks"],
+    ["resetPublishedChecklistSectionsBatch", "publishedChecklistSections"],
+    ["resetPublishedChecklistsBatch", "publishedChecklists"],
+    ["resetCardSecondaryPlayerLinksBatch", "cardSecondaryPlayerLinks"],
     ["resetSelectorOptionsBatch", "selectorOptions"],
     ["resetCardChecklistBatch", "cardChecklist"],
     ["resetCardCrossListingsBatch", "cardCrossListings"],
     ["resetEntityReviewQueueBatch", "entityReviewQueue"],
     ["resetChecklistCandidatesBatch", "checklistCandidates"],
+    ["resetChecklistNameResolutionsBatch", "checklistNameResolutions"],
     ["resetPlayersBatch", "players"],
     ["resetTeamsBatch", "teams"],
     ["resetFranchisesBatch", "franchises"],
@@ -509,6 +615,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
         cardCrossListings: 6,
         entityReviewQueue: 7,
         checklistCandidates: 8,
+        checklistNameResolutions: 1,
         players: 4,
         teams: 2,
         franchises: 1,
@@ -524,6 +631,8 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     const t = convexTest(schema, modules);
 
     expect(await runReset(t)).toEqual({
+      marketplaceCallGatesDeleted: 0,
+      marketplaceWaitsDeleted: 0,
       slSetReviewsDeleted: 0,
       selectorSyncStatusDeleted: 0,
       collectionCopiesDeleted: 0,
@@ -533,13 +642,21 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       collectionBuildingSetsDeleted: 0,
       variantCommonPricesDeleted: 0,
       intakeRunsDeleted: 0,
+      placeholderJobsDeleted: 0,
+      marketplaceListingDeleted: 0,
+      publishedChecklistLinksDeleted: 0,
+      publishedChecklistChunksDeleted: 0,
+      publishedChecklistSectionsDeleted: 0,
+      publishedChecklistsDeleted: 0,
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 0,
+      cardSecondaryPlayerLinksDeleted: 0,
       cardChecklistDeleted: 0,
       crossListingsDeleted: 0,
       entityReviewQueueDeleted: 0,
       checklistCandidatesDeleted: 0,
+      checklistNameResolutionsDeleted: 0,
       playerSportsDeleted: 0,
       playersDeleted: 0,
       playerAliasesDeleted: 0,
@@ -573,9 +690,11 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     const result = await runReset(t);
 
     expect(result.complete).toBe(false);
-    // The first table in the order is slSetReviews (NEO-306: it points at
-    // selectorOptions, so it drains first); that batch ran and finished
-    // before the budget check could stop anything.
+    // The first table in the order holding rows is slSetReviews (NEO-306:
+    // it points at selectorOptions, so it drains first; the BSC call-gate and
+    // wait tables come before it but are empty here, and an empty batch never
+    // spends the budget); that batch ran and finished before the budget check
+    // could stop anything.
     expect(result.slSetReviewsDeleted).toBe(2);
     const counts = await tableCounts(t);
     expect(counts.slSetReviews).toBe(0);
@@ -590,12 +709,15 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     const t = convexTest(schema, modules);
     await seedEveryDrainedTable(t);
 
-    // Mirrors the shell loop's cap: twelve tables need at most twelve passes
-    // under a zero budget, and a loop that needs more than 20 is stuck.
-    const MAX_PASSES = 20;
+    // Mirrors the shell loop's cap: every seeded table needs at most one pass
+    // per batch under a zero budget (~22 since NEO-496 added four checklist
+    // tables, chunks taking two), and a loop that needs more than 30 is stuck.
+    const MAX_PASSES = 30;
     let passes = 0;
     let complete = false;
     const totals = {
+      marketplaceCallGatesDeleted: 0,
+      marketplaceWaitsDeleted: 0,
       slSetReviewsDeleted: 0,
       selectorSyncStatusDeleted: 0,
       collectionCopiesDeleted: 0,
@@ -605,13 +727,21 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       collectionBuildingSetsDeleted: 0,
       variantCommonPricesDeleted: 0,
       intakeRunsDeleted: 0,
+      placeholderJobsDeleted: 0,
+      marketplaceListingDeleted: 0,
+      publishedChecklistLinksDeleted: 0,
+      publishedChecklistChunksDeleted: 0,
+      publishedChecklistSectionsDeleted: 0,
+      publishedChecklistsDeleted: 0,
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 0,
+      cardSecondaryPlayerLinksDeleted: 0,
       cardChecklistDeleted: 0,
       crossListingsDeleted: 0,
       entityReviewQueueDeleted: 0,
       checklistCandidatesDeleted: 0,
+      checklistNameResolutionsDeleted: 0,
       playerSportsDeleted: 0,
       playersDeleted: 0,
       playerAliasesDeleted: 0,
@@ -635,6 +765,8 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     // Every row was deleted exactly once across the passes — resuming never
     // double-counts or skips a table.
     expect(totals).toEqual({
+      marketplaceCallGatesDeleted: 0,
+      marketplaceWaitsDeleted: 0,
       slSetReviewsDeleted: 2,
       selectorSyncStatusDeleted: 3,
       collectionCopiesDeleted: 10,
@@ -645,13 +777,21 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       collectionBuildingSetsDeleted: 11,
       variantCommonPricesDeleted: 2,
       intakeRunsDeleted: 0,
+      placeholderJobsDeleted: 0,
+      marketplaceListingDeleted: 0,
+      publishedChecklistLinksDeleted: 12,
+      publishedChecklistChunksDeleted: 25,
+      publishedChecklistSectionsDeleted: 13,
+      publishedChecklistsDeleted: 14,
       selectorOptionsDeleted: 3,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 9,
+      cardSecondaryPlayerLinksDeleted: 0,
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,
       entityReviewQueueDeleted: 7,
       checklistCandidatesDeleted: 8,
+      checklistNameResolutionsDeleted: 1,
       playerSportsDeleted: 0,
       playersDeleted: 4,
       playerAliasesDeleted: 0,
@@ -673,6 +813,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       cardCrossListings: 0,
       entityReviewQueue: 0,
       checklistCandidates: 0,
+      checklistNameResolutions: 0,
       players: 0,
       teams: 0,
       franchises: 0,
@@ -703,6 +844,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       cardCrossListings: 6,
       entityReviewQueue: 7,
       checklistCandidates: 8,
+      checklistNameResolutions: 1,
       players: 4,
       teams: 2,
       franchises: 1,
@@ -1083,11 +1225,24 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
     "variantCommonPrices",
     // NEO-379 — an intake run names the variant it matches in.
     "intakeRuns",
+    // NEO-370 — the listing outbox and per-variant sync records name a variant.
+    "listingOutbox",
+    "marketplaceListingSyncs",
+    // NEO-536 — a collector's sync report names a variant and its cards.
+    "syncReports",
+    // NEO-509 — a sale line's description names a sport row (listed.sportId).
+    "marketplaceSales",
     "cardPlayerLinks",
+    // NEO-528 — the also-pictured player index (sportId, the card's sport).
+    "cardSecondaryPlayerLinks",
     "cardChecklist",
     "cardCrossListings",
     "entityReviewQueue",
     "checklistCandidates",
+    "checklistNameResolutions",
+    // NEO-496 — a set's publisher checklist (setId) and the rows' section links.
+    "publishedChecklists",
+    "publishedChecklistLinks",
   ] as const;
 
   const runScoped = (
@@ -1154,6 +1309,12 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
         playerId: player._id,
         sportId,
       });
+      // NEO-528 — one also-pictured index row for that card.
+      await ctx.db.insert("cardSecondaryPlayerLinks", {
+        cardChecklistId: card._id,
+        playerId: player._id,
+        sportId,
+      });
       // NEO-379 — one intake run in the card's variant, with one match.
       const home = (await ctx.db.query("collectionContainers").first())!;
       const runId = await ctx.db.insert("intakeRuns", {
@@ -1187,6 +1348,108 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
         candidates: [card._id],
         variations: [],
       });
+      // NEO-427 — a photo job left collecting, with an image and a pair.
+      await ctx.db.insert("placeholderJobs", {
+        jobId: "job-1",
+        userId: "user",
+        objectPath: "placeholder/user/job-1",
+        createdAt: 1,
+        mode: "stream",
+        status: "collecting",
+        startedAt: 1,
+        totalImages: 2,
+        processedImages: 0,
+        failedImages: 0,
+        rejectedEntries: 0,
+        nextEntryIndex: 2,
+        lastActivityAt: 1,
+      });
+      await ctx.db.insert("placeholderImages", {
+        jobId: "job-1",
+        userId: "user",
+        entryIndex: 0,
+        originalName: "front.jpg",
+        status: "queued",
+        queuedAt: 1,
+      });
+      await ctx.db.insert("placeholderPairs", {
+        jobId: "job-1",
+        userId: "user",
+        frontIndex: 0,
+        backIndex: 1,
+        confidence: "exact",
+        mechanism: "adjacency",
+        score: 1,
+      });
+      // NEO-370 — one row in each listing table: the card queued for BSC,
+      // its variant's sync record, the owner's BSC state and one sale.
+      await ctx.db.insert("listingOutbox", {
+        ownerId: "user",
+        platform: "bsc",
+        cardId: card._id,
+        variantId: card.selectorOptionId,
+        seq: 1,
+        changedAt: 0,
+      });
+      await ctx.db.insert("marketplaceListingSyncs", {
+        ownerId: "user",
+        variantId: card.selectorOptionId,
+        platform: "bsc",
+        status: "idle",
+        problems: [{ cardId: card._id, reason: "noPrice" }],
+        conditionsPushed: [],
+        lastUpdated: 0,
+      });
+      // NEO-536 — a collector's report of that variant, naming the card.
+      await ctx.db.insert("syncReports", {
+        ownerId: "user",
+        platform: "bsc",
+        variantId: card.selectorOptionId,
+        label: "Reset set",
+        cards: [{ cardId: card._id, reason: "noLink" }],
+        heldBack: 1,
+        status: "open",
+        lastUpdated: 0,
+      });
+      await ctx.db.insert("marketplaceListingStates", {
+        ownerId: "user",
+        platform: "bsc",
+        lastUpdated: 0,
+      });
+      // NEO-415 — one eBay link row naming the card (NB's linkage to a
+      // listing it made). It names a card, never a selector row.
+      await ctx.db.insert("marketplaceListingLinks", {
+        ownerId: "user",
+        platform: "ebay",
+        cardId: card._id,
+        conditionCode: "NM",
+        sku: `NB2-${card._id}-NM`,
+        offerId: "O1",
+        listingId: "L1",
+        status: "live",
+        lastUpdated: 0,
+      });
+      await ctx.db.insert("marketplaceSales", {
+        ownerId: "user",
+        platform: "bsc",
+        orderId: "order-reset",
+        orderNo: "1001",
+        orderDate: 0,
+        status: "SHIPPED",
+        totals: {},
+        items: [
+          {
+            platformCardId: "bsc-card-1",
+            cardId: card._id,
+            condition: "near_mint",
+            quantity: 1,
+            priceCents: 25,
+            applied: true,
+          },
+        ],
+        firstSeenAt: 0,
+        lastUpdated: 0,
+      });
     });
   }
 
@@ -1206,6 +1469,32 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
     // cli.mjs refuses an import-mode load while any of these hold rows; the
     // drain tests below prove the scoped reset empties every one of them.
     expect([...DEPENDANTS].sort()).toEqual([...SELECTOR_DEPENDANT_TABLES].sort());
+  });
+
+  test("NEO-415: the scoped reset also drains the eBay link rows, which name cards but are not in the loader's selector-dependant list", async () => {
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    const t = convexTest(schema, modules);
+    await seedAll(t);
+    expect(await t.run(async (ctx) => (await ctx.db.query("marketplaceListingLinks").collect()).length)).toBe(1);
+    expect(SELECTOR_DEPENDANT_TABLES).not.toContain("marketplaceListingLinks");
+
+    const result = await runScoped(t, "exceptReferenceSeed");
+
+    expect(result.complete).toBe(true);
+    expect(await t.run(async (ctx) => await ctx.db.query("marketplaceListingLinks").collect())).toEqual([]);
+  });
+
+  test("NEO-427: every scope drains the photo pipeline, so a collecting job from an earlier run holds no slot", async () => {
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    const t = convexTest(schema, modules);
+    await seedAll(t);
+
+    const result = await runScoped(t, "exceptReferenceSeed");
+
+    expect(result.complete).toBe(true);
+    for (const table of ["placeholderJobs", "placeholderImages", "placeholderPairs"] as const) {
+      expect(await t.run(async (ctx) => await ctx.db.query(table).collect())).toEqual([]);
+    }
   });
 
   test("leaves all eight reference tables' rows untouched and drains every dependant", async () => {
@@ -1230,6 +1519,8 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
     await seedAll(t);
 
     expect(await runScoped(t, "exceptReferenceSeed")).toEqual({
+      marketplaceCallGatesDeleted: 0,
+      marketplaceWaitsDeleted: 0,
       slSetReviewsDeleted: 2,
       selectorSyncStatusDeleted: 3,
       collectionCopiesDeleted: 10,
@@ -1240,13 +1531,23 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
       collectionBuildingSetsDeleted: 11,
       variantCommonPricesDeleted: 2,
       intakeRunsDeleted: 2,
+      // NEO-427: the job, its image, its pair, and the pair the intake match names.
+      placeholderJobsDeleted: 4,
+      // NEO-370: outbox, sync record, state, sale; NEO-415: the eBay link row; NEO-536: the sync report.
+      marketplaceListingDeleted: 6,
+      publishedChecklistLinksDeleted: 12,
+      publishedChecklistChunksDeleted: 25,
+      publishedChecklistSectionsDeleted: 13,
+      publishedChecklistsDeleted: 14,
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 1,
       cardTeamLinksDeleted: 9,
+      cardSecondaryPlayerLinksDeleted: 1,
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,
       entityReviewQueueDeleted: 7,
       checklistCandidatesDeleted: 8,
+      checklistNameResolutionsDeleted: 1,
       playerSportsDeleted: 0,
       playersDeleted: 0,
       playerAliasesDeleted: 0,
@@ -1281,7 +1582,7 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
 
     let complete = false;
     let passes = 0;
-    while (!complete && passes < 20) {
+    while (!complete && passes < 30) {
       passes += 1;
       complete = (await runScoped(t, "exceptReferenceSeed")).complete;
     }
@@ -1301,7 +1602,7 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
     await seedAll(t);
 
     const results = [];
-    for (let i = 0; i < 20; i += 1) {
+    for (let i = 0; i < 30; i += 1) {
       const r = await runScoped(t, "exceptReferenceSeed");
       results.push(r);
       if (r.complete) break;
@@ -1310,10 +1611,12 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
     expect(results.at(-1)!.complete).toBe(true);
     // Every dependant holds rows, plus `cardTeamLinks` and
     // `collectionContainers` (NEO-358: drained in both scopes, but neither
-    // holds a selectorOptions id, so neither is a dependant), so it takes at
-    // most that many passes, never the 18 the unscoped reset needs; a loop
-    // still counting skipped tables would not finish early here.
-    expect(results.length).toBeLessThanOrEqual(DEPENDANTS.length + 2);
+    // holds a selectorOptions id, so neither is a dependant), plus NEO-496's
+    // checklist sections (one pass) and chunks (two: 25 rows over a 24-chunk
+    // page), which hold no selectorOptions id either. So it takes at most that
+    // many passes, never the ~22 the unscoped reset needs; a loop still
+    // counting skipped tables would not finish early here.
+    expect(results.length).toBeLessThanOrEqual(DEPENDANTS.length + 5);
   });
 
   test("scope \"all\" drains every table, exactly like omitting scope", async () => {
@@ -1342,5 +1645,233 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
     );
 
     expect(await idsOf(t)).toEqual(before);
+  });
+});
+
+/**
+ * PR 451 (NEO-482) / NEO-552 — the global reset clears the BSC call gate and
+ * the BSC lane.
+ *
+ * Both are deployment-wide. A breaker the previous run opened, or team checks
+ * it left queued on the one-slot lane (pushed back for up to 30 minutes),
+ * would otherwise stand in front of the next seed's cards. The wait rows go
+ * too, so no "Waiting on BuySportsCards…" figure outlives its run. None of the three is a reference-seed table, so every
+ * scope clears them. (The per-user `/testing/reset` must not: eight shards
+ * run it at once.)
+ */
+describe("PR 451 / NEO-552: the reset clears the BSC call gate, the wait rows and the team lane", () => {
+  async function seedBscLaneState(t: ReturnType<typeof convexTest>) {
+    await t.run(async (ctx) => {
+      // NEO-552 — one call-gate row with its breaker open and a probe lease.
+      await ctx.db.insert("marketplaceCallGates", {
+        platform: "bsc",
+        scope: "deployment",
+        tokens: -3,
+        refilledAt: Date.now(),
+        openUntil: Date.now() + 10 * 60_000,
+        openCause: "429",
+        streak: 3,
+        lastOpenedAt: Date.now(),
+        consecutiveFailures: 0,
+        lastFailureAt: 0,
+        probeLeaseUntil: Date.now() + 30_000,
+        updatedAt: Date.now(),
+      });
+      // Two wait rows, so the gate and wait counts cannot be swapped.
+      for (const runKey of ["run-a", "run-b"]) {
+        await ctx.db.insert("marketplaceWaits", {
+          ownerId: "user",
+          runKey,
+          platform: "bsc",
+          waitingSince: Date.now(),
+          accumulatedMs: 1_500,
+          updatedAt: Date.now(),
+        });
+      }
+    });
+  }
+
+  const laneTableCounts = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) => ({
+      marketplaceCallGates: (await ctx.db.query("marketplaceCallGates").collect()).length,
+      marketplaceWaits: (await ctx.db.query("marketplaceWaits").collect()).length,
+    }));
+
+  const cancelJobs = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter(
+        (job) => job.name === "bscTeamPool:cancelAllBscTeamChecks",
+      ),
+    );
+
+  test.each(["all", "exceptReferenceSeed"] as const)(
+    "scope %s deletes the call gate and wait rows, reports the counts, and schedules the lane cancel",
+    async (scope) => {
+      vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+      const t = convexTest(schema, modules);
+      await seedEveryDrainedTable(t);
+      await seedBscLaneState(t);
+
+      const result = await t.action(
+        internal.selectorOptions.resetSetBuilderDataFromCli,
+        { confirm: "RESET" as const, scope },
+      );
+
+      expect(result.complete).toBe(true);
+      expect(result.marketplaceCallGatesDeleted).toBe(1);
+      expect(result.marketplaceWaitsDeleted).toBe(2);
+      expect(await laneTableCounts(t)).toEqual({
+        marketplaceCallGates: 0,
+        marketplaceWaits: 0,
+      });
+      const jobs = await cancelJobs(t);
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0].state.kind).toBe("pending");
+      expect(jobs[0].args).toEqual([{}]);
+    },
+  );
+
+  test("the scheduled cancel empties the lane through the pool", async () => {
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    const cancelAll = vi
+      .spyOn(bscTeamPool, "cancelAll")
+      .mockResolvedValue(undefined);
+    const t = convexTest(schema, modules);
+
+    await runReset(t);
+    expect(cancelAll).not.toHaveBeenCalled();
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    expect(cancelAll).toHaveBeenCalledTimes(1);
+    const jobs = await cancelJobs(t);
+    expect(jobs.map((job) => job.state.kind)).toEqual(["success"]);
+  });
+
+  test("an unarmed deployment refuses, keeps both tables, and schedules no cancel", async () => {
+    const t = convexTest(schema, modules);
+    await seedBscLaneState(t);
+
+    await expect(runReset(t)).rejects.toThrow(/ALLOW_RESET_SET_BUILDER_DATA/);
+
+    expect(await laneTableCounts(t)).toEqual({
+      marketplaceCallGates: 1,
+      marketplaceWaits: 2,
+    });
+    expect(await cancelJobs(t)).toEqual([]);
+  });
+
+  test.each([
+    "resetMarketplaceCallGatesBatch",
+    "resetMarketplaceWaitsBatch",
+  ] as const)(
+    "%s refuses when unarmed, even called directly, and deletes nothing",
+    async (fn) => {
+      const t = convexTest(schema, modules);
+      await seedBscLaneState(t);
+
+      await expect(
+        t.mutation(internal.selectorOptions[fn], {}),
+      ).rejects.toThrow(/ALLOW_RESET_SET_BUILDER_DATA/);
+
+      expect(await laneTableCounts(t)).toEqual({
+        marketplaceCallGates: 1,
+        marketplaceWaits: 2,
+      });
+    },
+  );
+});
+
+describe("NEO-496: the reset drains the publisher-checklist tables", () => {
+  const checklistCounts = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) => ({
+      publishedChecklistLinks: (await ctx.db.query("publishedChecklistLinks").collect()).length,
+      publishedChecklistChunks: (await ctx.db.query("publishedChecklistChunks").collect()).length,
+      publishedChecklistSections: (await ctx.db.query("publishedChecklistSections").collect())
+        .length,
+      publishedChecklists: (await ctx.db.query("publishedChecklists").collect()).length,
+    }));
+
+  test("an armed run empties all four", async () => {
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    const t = convexTest(schema, modules);
+    await seedEveryDrainedTable(t);
+    expect(await checklistCounts(t)).toEqual({
+      publishedChecklistLinks: 12,
+      publishedChecklistChunks: 25,
+      publishedChecklistSections: 13,
+      publishedChecklists: 14,
+    });
+
+    expect((await runReset(t)).complete).toBe(true);
+
+    expect(await checklistCounts(t)).toEqual({
+      publishedChecklistLinks: 0,
+      publishedChecklistChunks: 0,
+      publishedChecklistSections: 0,
+      publishedChecklists: 0,
+    });
+  });
+
+  test("the chunk batch takes 24, not the 500-row page (a chunk is up to 256 KiB)", async () => {
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    const t = convexTest(schema, modules);
+    await seedEveryDrainedTable(t);
+    const first = await t.mutation(
+      internal.selectorOptions.resetPublishedChecklistChunksBatch,
+      {},
+    );
+    expect(first).toEqual({ deleted: 24, hasMore: true });
+    const second = await t.mutation(
+      internal.selectorOptions.resetPublishedChecklistChunksBatch,
+      {},
+    );
+    expect(second).toEqual({ deleted: 1, hasMore: false });
+  });
+
+  test("an interrupted run never leaves a chunk whose section, or a section whose header, is gone", async () => {
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    vi.stubEnv("RESET_TIME_BUDGET_MS", "0");
+    const t = convexTest(schema, modules);
+    await seedEveryDrainedTable(t);
+    for (let pass = 0; pass < 30; pass += 1) {
+      const result = await runReset(t);
+      const dangling = await t.run(async (ctx) => {
+        const bad: string[] = [];
+        for (const chunk of await ctx.db.query("publishedChecklistChunks").collect()) {
+          if (!(await ctx.db.get(chunk.sectionId))) bad.push(`chunk ${chunk._id}`);
+        }
+        for (const section of await ctx.db.query("publishedChecklistSections").collect()) {
+          if (!(await ctx.db.get(section.checklistId))) bad.push(`section ${section._id}`);
+        }
+        return bad;
+      });
+      expect(dangling).toEqual([]);
+      if (result.complete) break;
+    }
+    expect(await checklistCounts(t)).toEqual({
+      publishedChecklistLinks: 0,
+      publishedChecklistChunks: 0,
+      publishedChecklistSections: 0,
+      publishedChecklists: 0,
+    });
+  });
+
+  test("unarmed, the four batches refuse and every checklist row stays", async () => {
+    const t = convexTest(schema, modules);
+    await seedEveryDrainedTable(t);
+    for (const fn of [
+      internal.selectorOptions.resetPublishedChecklistLinksBatch,
+      internal.selectorOptions.resetPublishedChecklistChunksBatch,
+      internal.selectorOptions.resetPublishedChecklistSectionsBatch,
+      internal.selectorOptions.resetPublishedChecklistsBatch,
+    ]) {
+      await expect(t.mutation(fn, {})).rejects.toThrow(/ALLOW_RESET_SET_BUILDER_DATA/);
+    }
+    expect(await checklistCounts(t)).toEqual({
+      publishedChecklistLinks: 12,
+      publishedChecklistChunks: 25,
+      publishedChecklistSections: 13,
+      publishedChecklists: 14,
+    });
   });
 });

@@ -39,6 +39,12 @@ export interface StoredRule {
   version: 1;
   match: "all" | "any";
   terms: StoredRuleTerm[];
+  /**
+   * NEO-528 — the binder's cameo option: a positive player or Hall of Fame
+   * line also reads the players pictured on a card who are not its subject.
+   * Absent is off. Meaningful only when `ruleCanUseSecondaryPlayers`.
+   */
+  secondaryPlayers?: true;
 }
 
 /** Terms one rule may hold. */
@@ -72,7 +78,22 @@ export interface CardFacts {
   features: ReadonlySet<RuleFeature>;
   /** Numbered print run; null when unnumbered. */
   printRun: number | null;
+  /**
+   * NEO-528 — players pictured on the card who are not its subject
+   * (`cardChecklist.secondaryPlayerIds`), never one already in `playerIds`.
+   * Read only by a positive player line of a rule whose cameo option is on.
+   */
+  secondaryPlayerIds?: ReadonlySet<string>;
+  /** NEO-528 — one of `secondaryPlayerIds` is in the Hall of Fame. */
+  secondaryHallOfFame?: boolean;
 }
+
+/**
+ * NEO-528 — how a card fits a rule: on its own players (`"primary"`), only
+ * because the binder's cameo option let a player or Hall of Fame line see
+ * who else is pictured (`"secondary"`), or not at all (null).
+ */
+export type RuleFit = "primary" | "secondary";
 
 function anyOf(ids: readonly string[], have: ReadonlySet<string>): boolean {
   return ids.some((id) => have.has(id));
@@ -116,11 +137,51 @@ export function leafMatches(leaf: StoredRuleLeaf, facts: CardFacts): boolean {
   }
 }
 
-/** Does the card fit the rule? An empty rule matches nothing. */
-export function ruleMatches(rule: StoredRule, facts: CardFacts): boolean {
+/**
+ * NEO-528 — can the cameo option change what this rule matches? Only a
+ * positive (not turned around) player or Hall of Fame line reads the players
+ * pictured on a card; every other line, and every negated one, reads the
+ * card's own players. The rule builder shows the switch only when this is
+ * true, and `cleanRule` drops the option when it is not.
+ */
+export function ruleCanUseSecondaryPlayers(rule: Pick<StoredRule, "terms">): boolean {
+  return rule.terms.some((t) => !t.negate && (t.test.kind === "player" || t.test.kind === "hallOfFame"));
+}
+
+/** A leaf as a positive line sees it when cameos count too. */
+function leafMatchesWide(leaf: StoredRuleLeaf, facts: CardFacts): boolean {
+  if (leafMatches(leaf, facts)) return true;
+  if (leaf.kind === "player") return anyOf(leaf.playerIds, facts.secondaryPlayerIds ?? new Set());
+  if (leaf.kind === "hallOfFame") return facts.secondaryHallOfFame === true;
+  return false;
+}
+
+function ruleHolds(rule: StoredRule, facts: CardFacts, wide: boolean): boolean {
   if (rule.terms.length === 0) return false;
-  const holds = (term: StoredRuleTerm) => leafMatches(term.test, facts) !== (term.negate === true);
+  // A negated line always reads the card's own players: "not Gooden" leaves
+  // out a Gooden card, never a card he only appears on (NEO-528).
+  const holds = (term: StoredRuleTerm) =>
+    term.negate === true ? !leafMatches(term.test, facts) : wide ? leafMatchesWide(term.test, facts) : leafMatches(term.test, facts);
   return rule.match === "all" ? rule.terms.every(holds) : rule.terms.some(holds);
+}
+
+/**
+ * NEO-528 — how the card fits the rule. `"primary"` when it fits on the
+ * card's own players alone; else `"secondary"` when the rule's cameo option
+ * is on and it fits once positive player and Hall of Fame lines also see who
+ * else is pictured; else null. An empty rule matches nothing.
+ */
+export function ruleFit(rule: StoredRule, facts: CardFacts): RuleFit | null {
+  if (ruleHolds(rule, facts, false)) return "primary";
+  if (rule.secondaryPlayers === true && ruleCanUseSecondaryPlayers(rule) && ruleHolds(rule, facts, true)) {
+    return "secondary";
+  }
+  return null;
+}
+
+/** Does the card fit the rule, either way (`ruleFit`)? An empty rule matches nothing. */
+export function ruleMatches(rule: StoredRule, facts: CardFacts): boolean {
+  return ruleFit(rule, facts) !== null;
 }
 
 /**

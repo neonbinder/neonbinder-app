@@ -23,8 +23,13 @@ import {
   callWarmupHeavy,
   parsePreprocessErrorCode,
 } from "./adapters/preprocess";
-import { HEAVY_MAX_PARALLELISM, PREPROCESS_MAX_PARALLELISM } from "./preprocessCapacity";
+import {
+  HEAVY_MAX_PARALLELISM,
+  PREPROCESS_MAX_PARALLELISM,
+  heavyWarmupCount,
+} from "./preprocessCapacity";
 import { preprocessBaselineValidator } from "./lib/preprocessBaseline";
+import { unknownRejectionReasons } from "./lib/extractRejections";
 
 /**
  * Extract is retried inline rather than through the workpool.
@@ -132,11 +137,26 @@ export const runExtract = internalAction({
       return null;
     }
 
-    // Only the three fields the pipeline needs cross the boundary. The wire
-    // shape also carries content_type / size_bytes / reason, which nothing
-    // downstream reads — passing them would put a service-owned shape into a
-    // Convex argument validator and make every additive change on the service
-    // side a breaking one here.
+    // A new reason reads as "unreadable" on the screen, which is safe but vague,
+    // so the operator channel hears about it. Reasons only: an entry name here
+    // may not have passed validation.
+    const unknownReasons = unknownRejectionReasons(entries.entries);
+    if (unknownReasons.length > 0) {
+      console.warn(
+        JSON.stringify({
+          msg: "preprocess_extract_unknown_reject_reason",
+          jobId: args.jobId,
+          reasons: unknownReasons.slice(0, 10),
+        }),
+      );
+    }
+
+    // Only the fields the pipeline needs cross the boundary. The wire shape also
+    // carries content_type / size_bytes, which nothing downstream reads — passing
+    // them would put a service-owned shape into a Convex argument validator and
+    // make every additive change on the service side a breaking one here. `reason`
+    // is a plain string, and an unknown value is handled where it is read
+    // (lib/extractRejections.ts).
     await ctx.runMutation(internal.placeholderPipeline.registerExtractedImages, {
       jobId: args.jobId,
       userId: args.userId,
@@ -144,6 +164,7 @@ export const runExtract = internalAction({
         index: e.index,
         name: e.name,
         accepted: e.accepted,
+        ...(e.reason ? { reason: e.reason } : {}),
       })),
     });
 
@@ -236,6 +257,23 @@ export const processHeavyEntryWorker = internalAction({
   },
   returns: v.any(),
   handler: async (ctx, args) => {
+    // NEO-411: start the photo's deadline on its first attempt. Best-effort: a
+    // failure here must not cost the photo its heavy call.
+    try {
+      await ctx.runMutation(internal.placeholderPipeline.noteHeavyStart, {
+        jobId: args.jobId,
+        entryIndex: args.entryIndex,
+      });
+    } catch (noteErr) {
+      console.warn(
+        JSON.stringify({
+          msg: "preprocess_heavy_note_start_failed",
+          jobId: args.jobId,
+          entryIndex: args.entryIndex,
+          error: noteErr instanceof Error ? noteErr.message : String(noteErr),
+        }),
+      );
+    }
     try {
       return await callProcessEntryHeavy(ctx, {
         jobId: args.jobId,
@@ -268,7 +306,8 @@ export const processHeavyEntryWorker = internalAction({
 
 /**
  * Warm ONE heavy instance. The function `enqueueHeavyWarmups`
- * (placeholderHeavyPool.ts) enqueues HEAVY_MAX_PARALLELISM times onto the HEAVY
+ * (placeholderHeavyPool.ts) enqueues `heavyWarmupCount` times (half the heavy
+ * slots, NEO-411) onto the HEAVY
  * pool, so each call occupies one pool slot for as long as its `/warmup` holds
  * an instance — for a cold instance, the whole model load.
  *
@@ -293,7 +332,7 @@ export const warmHeavyWorker = internalAction({
  * Put the heavy warm-up fan-out on the heavy pool, swallowing any failure.
  *
  * Both warm-up actions below call this. It returns how many warm-ups were
- * enqueued for their log line: HEAVY_MAX_PARALLELISM, or 0 when another fan-out
+ * enqueued for their log line: `heavyWarmupCount(HEAVY_MAX_PARALLELISM)`, or 0 when another fan-out
  * already ran inside the deployment-wide window (`enqueueHeavyWarmups` logs
  * `preprocess_heavy_warmup_skipped`) or the enqueue failed. A warm-up must never be able to fail a start or a batch, so an enqueue
  * failure is logged and reported as 0 rather than thrown.
@@ -309,7 +348,7 @@ async function enqueueHeavyWarmupsSafely(ctx: ActionCtx): Promise<number> {
     console.warn(
       JSON.stringify({
         msg: "preprocess_heavy_warmup_enqueue_failed",
-        requested: HEAVY_MAX_PARALLELISM,
+        requested: heavyWarmupCount(HEAVY_MAX_PARALLELISM),
         error: err instanceof Error ? err.message : String(err),
       }),
     );
@@ -331,7 +370,8 @@ async function enqueueHeavyWarmupsSafely(ctx: ActionCtx): Promise<number> {
  * per fast instance Cloud Run will run. The fast service cold-starts in
  * seconds, so this is a small win, but it is free.
  *
- * HEAVY: HEAVY_MAX_PARALLELISM warm-ups, enqueued on the HEAVY POOL rather than
+ * HEAVY: half the heavy slots' worth of warm-ups (NEO-411; NEO-299 used all of
+ * them), enqueued on the HEAVY POOL rather than
  * fired directly (NEO-299). Heavy's ~180-240s cold model load is the dominant
  * latency an escalation pays, so the design is to warm the heavy fleet to its
  * limit here and overlap the whole load with the fast phase. Going through the
@@ -375,7 +415,7 @@ export const warmupPreprocess = internalAction({
  * The HEAVY warm-gate, fired the first time a batch escalates an image
  * (scheduled fire-and-forget from `settleImageOutcome`).
  *
- * Enqueues the same HEAVY_MAX_PARALLELISM warm-ups as `warmupPreprocess`, onto
+ * Enqueues the same warm-ups as `warmupPreprocess` (half the heavy slots), onto
  * the same heavy pool (NEO-299; previously it fired a single direct warm-up).
  * It is the backstop for a batch whose start-time warm-up has long since let
  * the fleet scale back to zero, or whose client never called

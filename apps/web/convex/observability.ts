@@ -80,6 +80,7 @@
 import { ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { getCurrentUserId } from "./auth";
+import { BSC_PACED_MARKER } from "./lib/bscPacedCopy";
 
 // "preprocess" (NEO-170) is not a marketplace — it is our own Cloud Run image
 // pipeline. It shares this event because the question the dashboard asks is the
@@ -190,7 +191,7 @@ export async function recordAdapterCall(
   } catch {
     // unreachable but defensive
   }
-  if (!process.env.POSTHOG_API_KEY) return;
+  if (!process.env.POSTHOG_API_KEY || !shouldCaptureAdapterEvents()) return;
   let distinctId = "anonymous";
   try {
     distinctId = (await getCurrentUserId(ctx)) || "anonymous";
@@ -280,6 +281,7 @@ export function recordAdapterPhase(
   } catch {
     // unreachable but defensive — never let a breadcrumb break the caller
   }
+  if (!shouldCaptureAdapterEvents()) return;
   void (async () => {
     let distinctId = "anonymous";
     try {
@@ -303,6 +305,21 @@ export function recordAdapterPhase(
 }
 
 /**
+ * NEO-475 (decision D1) — whether `adapter_*` events go to PostHog from this
+ * deployment. PostHog is on a capped plan and 97% of `adapter_sync_call`
+ * volume was non-production (every PR preview and dev runs the E2E suite), so
+ * only production sends them. The structured console line is written
+ * everywhere regardless.
+ *
+ * "Non-production" is the house signal that already guards every testing
+ * endpoint: `TESTING_RESET_SECRET` is set on dev and on every preview and is
+ * never set on production. No new env var, so nothing can drift.
+ */
+export function shouldCaptureAdapterEvents(): boolean {
+  return !process.env.TESTING_RESET_SECRET;
+}
+
+/**
  * Generate a correlation id for an aggregator call. Lives in observability.ts
  * so call sites don't need to repeat the crypto.randomUUID() boilerplate (and
  * so we can swap the implementation if needed without grepping every caller).
@@ -320,6 +337,8 @@ export function newRequestId(): string {
 export function classifyAdapterError(raw: string | undefined): string | undefined {
   if (!raw) return undefined;
   const s = raw.toLowerCase();
+  // NEO-552: NB's own BSC call gate held the call back; BSC never answered.
+  if (s.includes(BSC_PACED_MARKER)) return "paced";
   if (s.includes("timed out") || s.includes("timeout")) return "timeout";
   if (s.includes("401") || s.includes("unauthorized") || s.includes("no token")) return "auth";
   if (s.includes("403") || s.includes("forbidden")) return "forbidden";

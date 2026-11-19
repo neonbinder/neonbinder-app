@@ -12,6 +12,8 @@
  *   POST /extract        → unzip the upload, list the entries it accepted (FAST)
  *   POST /process-entry  → crop + orient + classify + hash ONE entry (FAST first,
  *                          HEAVY on escalation)
+ *   POST /derive-copy-photos → the sizes a saved copy keeps, from one entry's
+ *                          processed output (FAST; NEO-427)
  *   POST /warmup         → force an instance resident (FAST fired directly on
  *                          start; HEAVY enqueued on the heavy pool, to the
  *                          instance limit, on start and on the first escalation)
@@ -31,6 +33,7 @@
 
 import { ActionCtx } from "../_generated/server";
 import { NonRetryableError } from "@convex-dev/workpool";
+import { Agent } from "undici";
 import { buildAuthHeaders } from "../lib/cloudRunAuth";
 import { preprocessAudienceFor } from "../preprocessAudience";
 import { WARMUP_HEAVY_FETCH_TIMEOUT_MS } from "../lib/preprocessWarmup";
@@ -47,6 +50,7 @@ import {
   type PreprocessBaseline,
   type PreprocessBaselineWire,
 } from "../lib/preprocessBaseline";
+import { parseCropBox, photoEditToWire, type PhotoEdit, type PhotoEditCrop } from "../lib/photoEdit";
 
 // The escalation-hint contract (NEO-315 D4) lives in a pure lib module so the
 // default-runtime settle in placeholderPipeline.ts can read it too (a default-
@@ -134,6 +138,30 @@ const HEAVY_SERVICE = (): PreprocessService => ({
  * adapters/placeholderUploads.ts) and hits the FAST service (no model), so it
  * keeps its own generous budget rather than the fast process-entry one.
  */
+/**
+ * NEO-411: the connection pool every preprocess request goes through, with
+ * undici's own header and body timeouts switched off.
+ *
+ * Node's built-in fetch gives up on a response whose headers take more than
+ * 300s (undici's default `headersTimeout`), whatever `AbortSignal.timeout` the
+ * caller set. A cold heavy call can take longer than that, so every heavy call
+ * and heavy warm-up that ran past 300s died with "fetch failed"
+ * (UND_ERR_HEADERS_TIMEOUT) before our 400s / 330s budgets were reached: six
+ * of them in five red E2E runs on 2026-10-30/31, all at 300.4-300.9s. With
+ * these off, the per-call `AbortSignal.timeout` is the only limit, which is
+ * what the budgets below were always meant to be.
+ */
+const preprocessDispatcher = new Agent({ headersTimeout: 0, bodyTimeout: 0 });
+
+/**
+ * A network failure's own reason, e.g. "UND_ERR_HEADERS_TIMEOUT", so a cut
+ * request names its cause in the log instead of a bare "fetch failed".
+ */
+export function networkCauseOf(err: unknown): string | undefined {
+  const cause = (err as { cause?: { code?: unknown } } | null)?.cause;
+  return typeof cause?.code === "string" ? cause.code : undefined;
+}
+
 const PREPROCESS_FAST_TIMEOUT_MS = 60_000;
 const PREPROCESS_HEAVY_TIMEOUT_MS = 400_000;
 const PREPROCESS_EXTRACT_TIMEOUT_MS = 240_000;
@@ -303,14 +331,24 @@ export type ProcessEntryResponse = {
    * `readEscalationHints` (convex/lib/preprocessBaseline.ts).
    */
   baseline: PreprocessBaseline | null;
+  /**
+   * NEO-481 — the box the winning crop stage cut, in the EXIF-uprighted
+   * original's pixels, narrowed field by field (`parseCropBox`). Absent when
+   * the stage had no box, the revision predates it, or any value was bad: a
+   * malformed box is dropped, never refused, because the settle stores it.
+   */
+  crop_box?: PhotoEditCrop;
 };
 
-/** Narrow the two escalation-hint fields; pass everything else through. */
+/** Narrow the escalation hints and the crop box; pass everything else through. */
 function normalizeProcessEntry(wire: ProcessEntryWire): ProcessEntryResponse {
+  const { crop_box: rawCropBox, ...rest } = wire as ProcessEntryWire & { crop_box?: unknown };
+  const cropBox = parseCropBox(rawCropBox);
   return {
-    ...wire,
+    ...rest,
     dhash: parseDhash(wire.dhash),
     baseline: parseWireBaseline(wire.baseline),
+    ...(cropBox ? { crop_box: cropBox } : {}),
   };
 }
 
@@ -360,7 +398,8 @@ async function preprocessPost<T>(
   ctx: ActionCtx,
   service: PreprocessService,
   path: string,
-  body: Record<string, unknown>,
+  // JSON, or (NEO-481's bytes form of `/render-edit`) a multipart form.
+  body: Record<string, unknown> | FormData,
   operation: string,
   // Per-call fetch budget (ms). Fast/heavy/extract differ by orders of
   // magnitude — see the PREPROCESS_*_TIMEOUT_MS constants.
@@ -399,17 +438,23 @@ async function preprocessPost<T>(
 
   let response: Response;
   try {
+    const headers = await preprocessHeaders(service);
+    const multipart = body instanceof FormData;
+    // fetch writes a multipart body's own Content-Type, boundary included.
+    if (multipart) delete headers["Content-Type"];
     response = await fetch(`${service.url}${path}`, {
       method: "POST",
-      headers: await preprocessHeaders(service),
-      body: JSON.stringify(body),
+      headers,
+      body: multipart ? body : JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),
-    });
+      dispatcher: preprocessDispatcher,
+    } as RequestInit);
   } catch (err) {
     // Network failure, DNS failure, or AbortSignal.timeout firing
     // (`TimeoutError`). All transient by construction — a plain Error, so the
     // pool retries.
-    const message = err instanceof Error ? err.message : String(err);
+    const cause = networkCauseOf(err);
+    const message = (err instanceof Error ? err.message : String(err)) + (cause ? ` (${cause})` : "");
     const isTimeout = err instanceof Error && err.name === "TimeoutError";
     const text = isTimeout
       ? `preprocess request timed out after ${timeoutMs / 1000}s: ${path}`
@@ -558,6 +603,168 @@ export async function callProcessEntryHeavy(
 }
 
 /**
+ * The code `/derive-copy-photos` answers when an entry's processed scan is not
+ * in the bucket: its lifecycle rule removed it, so a retry can't bring it back.
+ * A bare 404 (a revision without the route) is not this.
+ */
+export const OUTPUT_NOT_FOUND_CODE = "OUTPUT_NOT_FOUND";
+
+const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
+
+type DeriveCopyPhotosWire = { image?: unknown; thumb?: unknown; content_type?: unknown };
+
+/** The sizes a saved copy keeps of one entry, decoded and checked for shape. */
+export type DerivedCopyPhotos = {
+  image: Uint8Array<ArrayBuffer>;
+  thumb: Uint8Array<ArrayBuffer>;
+  contentType: "image/jpeg" | "image/webp";
+};
+
+function decodeBase64(value: unknown, field: string, path = "/derive-copy-photos"): Uint8Array<ArrayBuffer> {
+  if (typeof value !== "string" || !BASE64_RE.test(value)) {
+    throw new Error(`preprocess returned an unreadable ${field} from ${path}`);
+  }
+  return Uint8Array.from(Buffer.from(value, "base64"));
+}
+
+/**
+ * The listing size and thumbnail of one processed entry (NEO-427), for an entry
+ * without the stored ones `/process-entry` writes (`intakePhotos.ts`). FAST: there
+ * is no model in it. Writes nothing on the service, so it is safe to repeat.
+ *
+ * Thrown as every other call here is: terminal on the 4xx codes (404
+ * `OUTPUT_NOT_FOUND_CODE` is the one a caller reads), plain on a transient
+ * failure. The sizes are for the caller to check against what it stores.
+ */
+export async function callDeriveCopyPhotos(
+  ctx: ActionCtx,
+  args: { jobId: string; userId: string; entryIndex: number },
+): Promise<DerivedCopyPhotos> {
+  const wire = await preprocessPost<DeriveCopyPhotosWire>(
+    ctx,
+    FAST_SERVICE(),
+    "/derive-copy-photos",
+    { job_id: args.jobId, user_id: args.userId, entry_index: args.entryIndex },
+    "preprocessDeriveCopyPhotos",
+    PREPROCESS_FAST_TIMEOUT_MS,
+    { jobId: args.jobId, entryIndex: args.entryIndex },
+  );
+  if (wire.content_type !== "image/jpeg" && wire.content_type !== "image/webp") {
+    throw new Error("preprocess returned an unknown content type from /derive-copy-photos");
+  }
+  return {
+    image: decodeBase64(wire.image, "image"),
+    thumb: decodeBase64(wire.thumb, "thumb"),
+    contentType: wire.content_type,
+  };
+}
+
+/**
+ * NEO-481 — `/render-edit`'s budget. FAST, but a cold instance takes about
+ * 23 s (p50) to 36 s (p95) to answer, and the render of a 64 MP original plus
+ * a re-read rides on top. The save does not wait on it (it renders in the
+ * background), so this only bounds a stuck call.
+ */
+const PREPROCESS_RENDER_EDIT_TIMEOUT_MS = 120_000;
+
+/** `/render-edit`'s answer when the scan's `extracted/` original has aged out. */
+export const ENTRY_NOT_FOUND_CODE = "ENTRY_NOT_FOUND";
+
+/**
+ * What a scan-form `/render-edit` read off the new crop, when `classify` was
+ * asked for: the `/process-entry` field names, untouched. The commit mutation
+ * narrows them (`imageFieldsFromResult`), as the settle does a process result.
+ */
+export type RenderEditClassify = {
+  players?: unknown;
+  team?: unknown;
+  card_number?: unknown;
+  side?: unknown;
+  text_count?: unknown;
+  dhash?: unknown;
+  orient_confidence?: unknown;
+};
+
+const CLASSIFY_KEYS = ["players", "team", "card_number", "side", "text_count", "dhash", "orient_confidence"] as const;
+
+/**
+ * Render one hand edit of a scan from its `extracted/` original (the scan
+ * form). The service writes the full-resolution crop at
+ * `output/edits/{index:04d}/{version}.jpg` and its 1600/360 sizes beside it
+ * (`lib/placeholderObjects.ts` names them), and refuses a version that
+ * exists. With `classify` it also reads the new crop, and those fields come
+ * back for the commit to narrow; without it, `classified` is null.
+ *
+ * Throws as every call here does. A 404 `ENTRY_NOT_FOUND_CODE` means the
+ * original aged out (`parsePreprocessErrorCode`).
+ */
+export async function callRenderEdit(
+  ctx: ActionCtx,
+  args: { jobId: string; userId: string; entryIndex: number; edit: PhotoEdit; version: number; classify: boolean },
+): Promise<{ classified: RenderEditClassify | null }> {
+  const wire = await preprocessPost<Record<string, unknown>>(
+    ctx,
+    FAST_SERVICE(),
+    "/render-edit",
+    {
+      job_id: args.jobId,
+      user_id: args.userId,
+      entry_index: args.entryIndex,
+      edit: photoEditToWire(args.edit),
+      version: args.version,
+      classify: args.classify,
+    },
+    "preprocessRenderEdit",
+    PREPROCESS_RENDER_EDIT_TIMEOUT_MS,
+    { jobId: args.jobId, entryIndex: args.entryIndex },
+  );
+  // A read that failed still answers 200 (the objects are written) with
+  // `classified: false` and its read fields empty: nothing to write then.
+  if (!args.classify || !wire || typeof wire !== "object" || wire.classified !== true) return { classified: null };
+  const classified: RenderEditClassify = {};
+  for (const key of CLASSIFY_KEYS) if (key in wire) classified[key] = wire[key];
+  return { classified };
+}
+
+/** `/render-edit`'s answer: each size an object, carrying its bytes (`data_b64`) only in the bytes form. */
+type RenderEditWire = {
+  image?: { data_b64?: unknown } | null;
+  thumb?: { data_b64?: unknown } | null;
+  content_type?: unknown;
+};
+
+/**
+ * Render one hand edit of a stored photo (the bytes form): the photo goes up
+ * as multipart (`image`, plus `edit` as JSON) and its 1600/360 sizes come
+ * back as `{ width, height, size_bytes, data_b64 }`. Writes nothing on the service.
+ */
+export async function callRenderEditBytes(
+  ctx: ActionCtx,
+  args: { image: Uint8Array<ArrayBuffer>; contentType: "image/jpeg" | "image/webp"; edit: PhotoEdit },
+): Promise<DerivedCopyPhotos> {
+  const form = new FormData();
+  form.append("image", new Blob([args.image], { type: args.contentType }), "photo");
+  form.append("edit", JSON.stringify(photoEditToWire(args.edit)));
+  const wire = await preprocessPost<RenderEditWire>(
+    ctx,
+    FAST_SERVICE(),
+    "/render-edit",
+    form,
+    "preprocessRenderEditBytes",
+    PREPROCESS_RENDER_EDIT_TIMEOUT_MS,
+  );
+  const contentType = wire.content_type ?? "image/jpeg";
+  if (contentType !== "image/jpeg" && contentType !== "image/webp") {
+    throw new Error("preprocess returned an unknown content type from /render-edit");
+  }
+  return {
+    image: decodeBase64(wire.image?.data_b64, "image", "/render-edit"),
+    thumb: decodeBase64(wire.thumb?.data_b64, "thumb", "/render-edit"),
+    contentType,
+  };
+}
+
+/**
  * How long a FAST warm-up call waits before giving up.
  *
  * A fast instance has no model to load and cold-starts in seconds, so a fast
@@ -626,7 +833,8 @@ async function callWarmupFor(
       headers: await preprocessHeaders(service),
       body: JSON.stringify({}),
       signal: AbortSignal.timeout(timeoutMs),
-    });
+      dispatcher: preprocessDispatcher,
+    } as RequestInit);
     statusCode = response.status;
     // Drain the body so the socket can be reused; its contents are ignored.
     await response.text().catch(() => "");
@@ -641,7 +849,8 @@ async function callWarmupFor(
   } catch (err) {
     // Network failure, timeout (AbortSignal), or DNS — all non-fatal. A cold
     // start simply happens later.
-    const message = err instanceof Error ? err.message : String(err);
+    const cause = networkCauseOf(err);
+    const message = (err instanceof Error ? err.message : String(err)) + (cause ? ` (${cause})` : "");
     await record(false, `preprocess warmup failed: ${message}`);
     console.warn(`[${operation}] failed (non-fatal): ${message}`);
     return { warmed: false };

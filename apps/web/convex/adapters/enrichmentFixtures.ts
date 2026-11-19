@@ -16,10 +16,16 @@
  *   whole point is that a name Wikidata has nothing for costs zero round
  *   trips too, because those are the rows that used to burn two 10 s
  *   timeouts each.
+ * - The file's top-level `sportQid` is the DEFAULT sport of its entries. An
+ *   entry recorded for another sport carries its own `sportQid` (the E2E
+ *   fixtures span Hockey and Football as well as Baseball), and its key is
+ *   built with that QID. The reader keys on the CALLER's sport, so a Hockey
+ *   entry answers a Hockey lookup only.
  * - `readFixture` is the only reader. The three lookup wrappers in
- *   `wikidata.ts` consult it first and fall through to the live body on a
- *   miss. A name outside the recording still goes live, so the fixture is
- *   never a ceiling on what the wizard can do.
+ *   `wikidata.ts` consult it first. On a miss they ask `liveLookupAllowed`:
+ *   with the switch off (production) the live body runs; with it on, only
+ *   the live-proof player goes live and every other miss is refused as a
+ *   no-match with an error-level log line (NEO-413).
  * - `captureFromCli` / `coverageReportFromCli` (`convex/enrichmentFixtures.ts`)
  *   produce and audit the file. They share `fixtureKey` with the reader:
  *   there is ONE normaliser, and it lives here.
@@ -137,26 +143,39 @@ export const leagueFixtureResultValidator = v.object({
 /**
  * One recorded lookup. A discriminated union so a `player` entry can only
  * carry a player-shaped result; `result: null` is a recorded no-match.
+ *
+ * `sportQid` is present only on an entry recorded for a sport other than the
+ * file's top-level one. Absent, the entry belongs to the file's sport, which
+ * is every entry written before entries could carry one. Either way its key
+ * is `fixtureKey(kind, entrySportQid(entry, file.sportQid), name)`.
  */
 export const fixtureEntryValidator = v.union(
   v.object({
     kind: v.literal("player"),
     name: v.string(),
+    sportQid: v.optional(v.string()),
     result: v.union(playerFixtureResultValidator, v.null()),
   }),
   v.object({
     kind: v.literal("team"),
     name: v.string(),
+    sportQid: v.optional(v.string()),
     result: v.union(teamFixtureResultValidator, v.null()),
   }),
   v.object({
     kind: v.literal("league"),
     name: v.string(),
+    sportQid: v.optional(v.string()),
     result: v.union(leagueFixtureResultValidator, v.null()),
   }),
 );
 
 export type EnrichmentFixtureEntry = Infer<typeof fixtureEntryValidator>;
+
+/** The sport an entry was recorded for: its own, else the file's default. */
+export function entrySportQid(entry: EnrichmentFixtureEntry, fileSportQid: string): string {
+  return entry.sportQid ?? fileSportQid;
+}
 
 // Static proof that the validators above describe the SAME shapes the live
 // lookups return. If `PlayerLookupResult` grows a field these fail to compile,
@@ -239,7 +258,10 @@ export function parseFixtureFile(
   for (const [key, value] of Object.entries(file.entries as Record<string, unknown>)) {
     const entry = parseEntry(value);
     if (!entry) return { ok: false, reason: `fixture entry ${key} is malformed` };
-    if (key !== fixtureKey(entry.kind, file.sportQid, entry.name)) {
+    if (entry.sportQid !== undefined && !isWikidataQid(entry.sportQid)) {
+      return { ok: false, reason: `fixture entry ${key} carries a non-QID sportQid` };
+    }
+    if (key !== fixtureKey(entry.kind, entrySportQid(entry, file.sportQid), entry.name)) {
       return { ok: false, reason: `fixture entry ${key} does not match its own kind/name` };
     }
     const id = entry.result?.wikidataId;
@@ -264,6 +286,7 @@ function parseEntry(value: unknown): EnrichmentFixtureEntry | undefined {
   const entry = value as Record<string, unknown>;
   if (entry.kind !== "player" && entry.kind !== "team" && entry.kind !== "league") return undefined;
   if (typeof entry.name !== "string") return undefined;
+  if (entry.sportQid !== undefined && typeof entry.sportQid !== "string") return undefined;
   if (!("result" in entry)) return undefined;
   if (entry.result !== null && (typeof entry.result !== "object" || Array.isArray(entry.result))) {
     return undefined;
@@ -363,11 +386,13 @@ export type FixtureRead<K extends FixtureKind> =
  * - `knownQid` supplied → the caller's id is a fact (it came off the same
  *   Wikidata statement that staged the row) and the live path would READ that
  *   record rather than search by name, so the recording is honoured only when
- *   it agrees: recorded `wikidataId` equal → hit; different → miss (live);
- *   recorded `null` → miss (live) — a name search that found nothing says
+ *   it agrees: recorded `wikidataId` equal → hit; different → miss;
+ *   recorded `null` → miss — a name search that found nothing says
  *   nothing about an id-path lookup, and a staged career team must never be
  *   handed a no-match its id would have answered. (Coordinator decision,
- *   2026-09-20.) An entry with a result but no `wikidataId` (an ESPN-only
+ *   2026-09-20.) That holds where the switch is off. Under the recording
+ *   (NEO-413) such a miss is refused rather than sent live, so record the
+ *   team with its id if a spec depends on the answer. An entry with a result but no `wikidataId` (an ESPN-only
  *   team) is honoured: there is no id to disagree with.
  *
  * Logs one structured `hit`/`miss` line per call when the switch is on;
@@ -394,7 +419,9 @@ export function readFixture<K extends FixtureKind>(
   }
   const fixture = getEnrichmentFixture();
   const entry = fixture?.entries[fixtureKey(kind, sportQid, name)];
-  if (!entry || entry.kind !== kind) {
+  // The key already carries the caller's sport; the second check holds for a
+  // fixture that did not come through `parseFixtureFile` (the test seam).
+  if (!entry || entry.kind !== kind || entrySportQid(entry, fixture!.sportQid) !== sportQid) {
     log("miss");
     return { hit: false };
   }
@@ -411,6 +438,73 @@ export function readFixture<K extends FixtureKind>(
   }
   log("hit");
   return { hit: true, result: entry.result as FixtureResultFor<K> | null };
+}
+
+// ---------------------------------------------------------------------------
+// The one live lookup (NEO-413)
+// ---------------------------------------------------------------------------
+
+/**
+ * NEO-413 — the only name a recording-enabled deployment may send to live
+ * Wikidata: the live-enrichment spec's (`player-live-wikidata-enrichment`).
+ *
+ * Why: a recording-enabled deployment is a test target, and every name that
+ * misses the recording used to fall through to query.wikidata.org. On
+ * 2026-11-01 a passing CI run still sent 26 names live (made-up spec names
+ * and seven real names nobody had recorded). Each one put the suite's result
+ * in the hands of a service outside our control. Jason, 2026-11-01: "We
+ * should only be sending one made up name to ensure that functionality
+ * works." So on such a deployment a miss is answered as a no-match, with
+ * an error-level log line naming it, and only this entry goes live.
+ *
+ * Keyed like the recording (`fixtureKey`), so the sport counts: the same
+ * name in another sport is refused.
+ */
+export const LIVE_LOOKUP_ALLOWED: ReadonlyArray<{
+  kind: FixtureKind;
+  sportQid: string;
+  name: string;
+}> = [{ kind: "player", sportQid: "Q41466", name: "Vladislav Tretiak" }];
+
+/**
+ * NEO-413 — may this lookup leave the deployment? Call it AFTER a recording
+ * miss. Always true where the recording is off (production, and dev or a
+ * preview with the switch unset), so nothing changes there. Where it is on,
+ * true only for `LIVE_LOOKUP_ALLOWED`; anything else logs
+ * `enrichment_fixture_live_refused` at error level and the caller answers
+ * no-match without a request.
+ *
+ * `sportQid` may be undefined (a league in a custom sport has no key): such a
+ * lookup is refused too, because the live league search still runs without
+ * one. The line carries the kind, the name and the sport QID only, the same
+ * fields `readFixture` already logs; the calling function is the line's own
+ * Convex log identifier.
+ */
+export function liveLookupAllowed(
+  kind: FixtureKind,
+  sportQid: string | undefined,
+  name: string,
+): boolean {
+  if (!enrichmentFixturesEnabled()) return true;
+  if (sportQid !== undefined) {
+    const key = fixtureKey(kind, sportQid, name);
+    if (LIVE_LOOKUP_ALLOWED.some((a) => fixtureKey(a.kind, a.sportQid, a.name) === key)) {
+      return true;
+    }
+  }
+  console.error(
+    JSON.stringify({
+      msg: "enrichment_fixture_live_refused",
+      kind,
+      name,
+      sportQid: sportQid ?? null,
+      // A sport with no Wikidata QID is a different fix (configure the sport)
+      // from a name the recording lacks (record it).
+      reason: sportQid === undefined ? "no_sport_qid" : "not_recorded",
+      detail: "not in the recording; answered as no-match without a live request (NEO-413)",
+    }),
+  );
+  return false;
 }
 
 // ---------------------------------------------------------------------------

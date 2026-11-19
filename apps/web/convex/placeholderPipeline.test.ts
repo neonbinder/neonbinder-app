@@ -61,7 +61,7 @@ type JobStatus =
 
 type ImageStatus = "queued" | "processing" | "done" | "failed";
 
-type ExtractEntryArg = { index: number; name: string; accepted: boolean };
+type ExtractEntryArg = { index: number; name: string; accepted: boolean; reason?: string };
 
 async function seedJob(
   t: ReturnType<typeof convexTest>,
@@ -635,6 +635,30 @@ describe("registerExtractedImages", () => {
     expect(job?.failedImages).toBe(0);
   });
 
+  test("NEO-446: a restart keeps a kept done photo set aside, and brings back one it reads again", async () => {
+    const t = harness();
+    await seedJob(t, { status: "extracting" });
+    const doneId = await seedImage(t, JOB_A, 0, USER_A.subject, "done", { setAside: true, pairStatus: "unmatched" });
+    const failedId = await seedImage(t, JOB_A, 1, USER_A.subject, "failed", {
+      setAside: true,
+      errorCode: "ENTRY_TOO_MANY_PIXELS",
+    });
+
+    await registerAll(t, {
+      entries: [
+        { index: 0, name: "front.jpg", accepted: true },
+        { index: 1, name: "back.jpg", accepted: true },
+      ],
+    });
+
+    const [kept, read] = await t.run(async (ctx) => [await ctx.db.get(doneId), await ctx.db.get(failedId)]);
+    // Same bytes, same decision: the collector's call on it stands.
+    expect(kept).toMatchObject({ status: "done", setAside: true });
+    // A fresh attempt: it comes back to the collector as a new answer.
+    expect(read?.status).toBe("queued");
+    expect(read?.setAside).toBeUndefined();
+  });
+
   test("a restart keeps a done row's user-set side: the label it vouches for is kept too", async () => {
     // The mirror of the reset case below. `sideByUser` travels with `side`, so
     // a done row that keeps its side keeps the flag — otherwise a person's
@@ -1100,6 +1124,42 @@ describe("recordImageOutcomeImpl", () => {
     // The rest of the payload still lands — one bad field must not lose the row.
     expect(image?.players).toEqual(["Ken Griffey Jr."]);
     expect(image?.status).toBe("done");
+  });
+
+  test.each([
+    ["camelCase, as the service sends it", { cx: 50, cy: 70, w: 80, h: 120, angle: 1.5, srcW: 100, srcH: 140 }, true],
+    ["snake_case", { cx: 50, cy: 70, w: 80, h: 120, angle: 1.5, src_w: 100, src_h: 140 }, true],
+    ["the whole frame, exactly on its edges", { cx: 50, cy: 70, w: 100, h: 140, angle: 0, srcW: 100, srcH: 140 }, true],
+    ["null (a FAST decline or a client crop)", null, false],
+    ["past the frame", { cx: 90, cy: 70, w: 80, h: 120, angle: 0, srcW: 100, srcH: 140 }, false],
+    ["missing a field", { cx: 50, cy: 70, w: 80, h: 120, srcW: 100, srcH: 140 }, false],
+  ])("NEO-481: crop_box %s is stored as autoCrop only when whole and in frame", async (_label, cropBox, kept) => {
+    const t = harness();
+    await seedJob(t, { status: "processing", totalImages: 2, processedImages: 0, failedImages: 0 });
+    const imageId = await seedImage(t, JOB_A, 0, USER_A.subject, "processing");
+    await t.run(async (ctx) =>
+      recordImageOutcomeImpl(
+        ctx,
+        { jobId: JOB_A, imageId },
+        { kind: "success", returnValue: { ...SUCCESS_BODY, crop_box: cropBox } },
+      ),
+    );
+    const image = await t.run(async (ctx) => ctx.db.get(imageId));
+    expect(image?.status).toBe("done");
+    if (kept) {
+      const box = cropBox as Record<string, number>;
+      expect(image?.autoCrop).toEqual({
+        cx: box.cx,
+        cy: box.cy,
+        w: box.w,
+        h: box.h,
+        angle: box.angle,
+        srcW: box.srcW ?? box.src_w,
+        srcH: box.srcH ?? box.src_h,
+      });
+    } else {
+      expect(image?.autoCrop).toBeUndefined();
+    }
   });
 
   test("oversized classifier strings are capped instead of stored whole", async () => {
@@ -1754,6 +1814,298 @@ describe("runExtract error hygiene", () => {
 });
 
 // ---------------------------------------------------------------------------
+// NEO-446 — why a zip's entries were rejected, kept on the job row
+// ---------------------------------------------------------------------------
+
+describe("NEO-446: rejected summary on the job", () => {
+  const pad = (n: number, from = 0): ExtractEntryArg[] =>
+    Array.from({ length: n }, (_, i) => ({ index: from + i, name: `scan-${from + i}.jpg`, accepted: true }));
+
+  test("registration writes the summary beside the rejected count", async () => {
+    const t = harness();
+    await seedJob(t, { status: "extracting" });
+    await registerAll(t, {
+      entries: [
+        { index: 0, name: "ok.jpg", accepted: true },
+        { index: 1, name: "cards/huge.jpg", accepted: false, reason: "image_too_many_pixels" },
+        { index: 2, name: "phone.heic", accepted: false, reason: "unsupported_image_type" },
+        { index: 3, name: "x.jpg", accepted: false, reason: "reason_from_the_future" },
+        { index: 4, name: "readme", accepted: false },
+      ],
+    });
+    const job = await getJob(t, JOB_A);
+    expect(job?.rejectedEntries).toBe(4);
+    expect(job?.rejected).toEqual({
+      tooBig: 1,
+      wrongFormat: 1,
+      unreadable: 2,
+      examples: [
+        { name: "huge.jpg", kind: "tooBig" },
+        { name: "phone.heic", kind: "wrongFormat" },
+      ],
+    });
+  });
+
+  test("a clean zip leaves rejected absent", async () => {
+    const t = harness();
+    await seedJob(t, { status: "extracting" });
+    await registerAll(t, { entries: pad(3) });
+    const job = await getJob(t, JOB_A);
+    expect(job?.rejectedEntries).toBe(0);
+    expect(job?.rejected).toBeUndefined();
+  });
+
+  test("across chunks the summary is written once, by the last chunk, and adds up", async () => {
+    const t = harness();
+    await seedJob(t, { status: "extracting" });
+    // 120 accepted (three chunks) with rejected entries before, between and after them.
+    const entries: ExtractEntryArg[] = [
+      { index: 0, name: "a.heic", accepted: false, reason: "unsupported_image_type" },
+      ...pad(60, 1),
+      { index: 61, name: "b.jpg", accepted: false, reason: "entry_too_large" },
+      ...pad(60, 62),
+      { index: 122, name: "c.jpg", accepted: false, reason: "no_data" },
+    ];
+
+    const first = await t.mutation(internal.placeholderPipeline.registerExtractedImages, {
+      jobId: JOB_A,
+      userId: USER_A.subject,
+      entries,
+      from: 0,
+    });
+    expect(first.done).toBe(false);
+    expect((await getJob(t, JOB_A))?.rejected).toBeUndefined();
+
+    const result = await registerAll(t, { entries });
+    expect(result.rejectedEntries).toBe(3);
+    const job = await getJob(t, JOB_A);
+    expect(job?.rejected).toMatchObject({ tooBig: 1, wrongFormat: 1, unreadable: 1 });
+    expect(job!.rejected!.tooBig + job!.rejected!.wrongFormat + job!.rejected!.unreadable).toBe(job?.rejectedEntries);
+  });
+
+  test("registering the same list again does not double count", async () => {
+    const t = harness();
+    await seedJob(t, { status: "extracting" });
+    const entries: ExtractEntryArg[] = [
+      ...pad(2),
+      { index: 2, name: "big.jpg", accepted: false, reason: "image_too_many_pixels" },
+    ];
+    await registerAll(t, { entries });
+    await registerAll(t, { entries });
+    const job = await getJob(t, JOB_A);
+    expect(job?.rejectedEntries).toBe(1);
+    expect(job?.rejected?.tooBig).toBe(1);
+    expect(job?.rejected?.examples).toHaveLength(1);
+  });
+
+  test("a duplicate accepted index is not reported as a rejection", async () => {
+    const t = harness();
+    await seedJob(t, { status: "extracting" });
+    await registerAll(t, {
+      entries: [
+        { index: 0, name: "first.jpg", accepted: true },
+        { index: 0, name: "second.jpg", accepted: true },
+      ],
+    });
+    expect((await getJob(t, JOB_A))?.rejected).toBeUndefined();
+  });
+
+  test("a name rejection counts and its name is not stored", async () => {
+    const t = harness();
+    await seedJob(t, { status: "extracting" });
+    await registerAll(t, {
+      entries: [{ index: 0, name: "evil\u202Egpj.exe", accepted: false, reason: "entry_name_has_bidi_chars" }],
+    });
+    const job = await getJob(t, JOB_A);
+    expect(job?.rejected).toEqual({ tooBig: 0, wrongFormat: 0, unreadable: 1, examples: [] });
+    expect(JSON.stringify(job)).not.toContain("evil");
+  });
+
+  test("a restart clears the previous attempt's summary", async () => {
+    const t = harness();
+    await seedJob(t, { status: "failed" });
+    await t.run(async (ctx) => {
+      const job = (await ctx.db.query("placeholderJobs").collect()).find((j) => j.jobId === JOB_A)!;
+      await ctx.db.patch(job._id, {
+        rejectedEntries: 2,
+        rejected: { tooBig: 2, wrongFormat: 0, unreadable: 0, examples: [{ name: "x.jpg", kind: "tooBig" }] },
+      });
+    });
+    await t.withIdentity(USER_A).mutation(api.placeholderPipeline.startPlaceholderBatch, { jobId: JOB_A });
+    const job = await getJob(t, JOB_A);
+    expect(job?.status).toBe("extracting");
+    expect(job?.rejectedEntries).toBe(0);
+    expect(job?.rejected).toBeUndefined();
+  });
+
+  test("getPlaceholderJob returns the summary, and nothing when there is none", async () => {
+    const t = harness();
+    await seedJob(t, { status: "extracting" });
+    const read = () => t.withIdentity(USER_A).query(api.placeholderPipeline.getPlaceholderJob, { jobId: JOB_A });
+    expect((await read())?.rejected).toBeUndefined();
+    await registerAll(t, {
+      entries: [{ index: 0, name: "p.heic", accepted: false, reason: "unsupported_image_type" }],
+    });
+    expect((await read())?.rejected).toEqual({
+      tooBig: 0,
+      wrongFormat: 1,
+      unreadable: 0,
+      examples: [{ name: "p.heic", kind: "wrongFormat" }],
+    });
+  });
+
+  test("a pixel-ceiling failure is recorded as ENTRY_TOO_MANY_PIXELS", async () => {
+    const t = harness();
+    await seedJob(t, { status: "processing", totalImages: 2, processedImages: 0, failedImages: 0 });
+    const imageId = await seedImage(t, JOB_A, 0, USER_A.subject, "processing");
+    await t.run(async (ctx) =>
+      recordImageOutcomeImpl(ctx, { jobId: JOB_A, imageId }, {
+        kind: "failed",
+        error: "Uncaught Error: preprocess ENTRY_TOO_MANY_PIXELS (HTTP 413): 70000000 pixels",
+      }),
+    );
+    const image = await t.run(async (ctx) => ctx.db.get(imageId));
+    expect(image?.status).toBe("failed");
+    expect(image?.errorCode).toBe("ENTRY_TOO_MANY_PIXELS");
+    expect((await getJob(t, JOB_A))?.failedImages).toBe(1);
+  });
+
+  test("an explicit failureCode wins over the pixel-ceiling text", async () => {
+    const t = harness();
+    await seedJob(t, { status: "processing", totalImages: 2, processedImages: 0, failedImages: 0 });
+    const imageId = await seedImage(t, JOB_A, 0, USER_A.subject, "processing");
+    await t.run(async (ctx) =>
+      recordImageOutcomeImpl(
+        ctx,
+        { jobId: JOB_A, imageId },
+        { kind: "failed", error: "preprocess ENTRY_TOO_MANY_PIXELS (HTTP 413): x" },
+        undefined,
+        "PHOTO_TIMED_OUT",
+      ),
+    );
+    expect((await t.run(async (ctx) => ctx.db.get(imageId)))?.errorCode).toBe("PHOTO_TIMED_OUT");
+  });
+
+  test("other failures keep PROCESS_ENTRY_FAILED, and a cancel stays CANCELED", async () => {
+    const t = harness();
+    await seedJob(t, { status: "processing", totalImages: 3, processedImages: 0, failedImages: 0 });
+    const a = await seedImage(t, JOB_A, 0, USER_A.subject, "processing");
+    const b = await seedImage(t, JOB_A, 1, USER_A.subject, "processing");
+    await t.run(async (ctx) =>
+      recordImageOutcomeImpl(ctx, { jobId: JOB_A, imageId: a }, { kind: "failed", error: "preprocess HTTP 502: x" }),
+    );
+    await t.run(async (ctx) => recordImageOutcomeImpl(ctx, { jobId: JOB_A, imageId: b }, { kind: "canceled" }));
+    expect((await t.run(async (ctx) => ctx.db.get(a)))?.errorCode).toBe("PROCESS_ENTRY_FAILED");
+    expect((await t.run(async (ctx) => ctx.db.get(b)))?.errorCode).toBe("CANCELED");
+  });
+
+  test("NEO-484: a not-an-image failure is recorded as ENTRY_UNDECODABLE", async () => {
+    const t = harness();
+    await seedJob(t, { status: "processing", totalImages: 2, processedImages: 0, failedImages: 0 });
+    const imageId = await seedImage(t, JOB_A, 0, USER_A.subject, "processing");
+    await t.run(async (ctx) =>
+      recordImageOutcomeImpl(ctx, { jobId: JOB_A, imageId }, {
+        kind: "failed",
+        error: "Uncaught Error: preprocess ENTRY_UNDECODABLE (HTTP 422): cannot identify image file",
+      }),
+    );
+    const image = await t.run(async (ctx) => ctx.db.get(imageId));
+    expect(image?.status).toBe("failed");
+    expect(image?.errorCode).toBe("ENTRY_UNDECODABLE");
+    expect((await getJob(t, JOB_A))?.failedImages).toBe(1);
+  });
+
+  test("NEO-484: an unknown preprocess code still falls back to PROCESS_ENTRY_FAILED", async () => {
+    const t = harness();
+    await seedJob(t, { status: "processing", totalImages: 2, processedImages: 0, failedImages: 0 });
+    const imageId = await seedImage(t, JOB_A, 0, USER_A.subject, "processing");
+    await t.run(async (ctx) =>
+      recordImageOutcomeImpl(ctx, { jobId: JOB_A, imageId }, {
+        kind: "failed",
+        error: "Uncaught Error: preprocess ZIP_REJECTED (HTTP 422): bad zip",
+      }),
+    );
+    expect((await t.run(async (ctx) => ctx.db.get(imageId)))?.errorCode).toBe("PROCESS_ENTRY_FAILED");
+  });
+});
+
+describe("NEO-446: runExtract passes the reason and logs unknown ones", () => {
+  async function extractWith(entries: Array<Record<string, unknown>>) {
+    const t = harness();
+    await seedJob(t, { status: "extracting" });
+    process.env.NEONBINDER_PREPROCESS_URL = "http://localhost:9998";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      async () =>
+        new Response(
+          JSON.stringify({
+            entries,
+            accepted_count: entries.filter((e) => e.accepted).length,
+            rejected_count: entries.filter((e) => !e.accepted).length,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    try {
+      await t.action(internal.placeholderBatch.runExtract, { jobId: JOB_A, userId: USER_A.subject });
+    } finally {
+      vi.unstubAllGlobals();
+      delete process.env.NEONBINDER_PREPROCESS_URL;
+    }
+    const logged = warn.mock.calls.map((c) => c.map(String).join(" "));
+    warn.mockRestore();
+    return { t, logged };
+  }
+  const wire = (index: number, name: string, accepted: boolean, reason?: string | null) => ({
+    index,
+    name,
+    accepted,
+    content_type: accepted ? "image/jpeg" : null,
+    size_bytes: 10,
+    ...(reason !== undefined ? { reason } : {}),
+  });
+
+  test("a rejected entry's reason reaches the job summary", async () => {
+    const { t } = await extractWith([
+      wire(0, "ok.jpg", true),
+      wire(1, "huge.png", false, "image_too_many_pixels"),
+      wire(2, "no-reason.bin", false, null),
+    ]);
+    const job = await getJob(t, JOB_A);
+    expect(job?.rejectedEntries).toBe(2);
+    expect(job?.rejected).toMatchObject({ tooBig: 1, unreadable: 1 });
+    expect(job?.rejected?.examples).toEqual([{ name: "huge.png", kind: "tooBig" }]);
+  });
+
+  test("an unknown reason is logged by reason only, once, and no file name is logged", async () => {
+    const { logged } = await extractWith([
+      wire(0, "secret-holiday.jpg", false, "reason_from_the_future"),
+      wire(1, "another-private-name.jpg", false, "reason_from_the_future"),
+      wire(2, "third.jpg", false, "image_too_many_pixels"),
+    ]);
+    const line = logged.find((l) => l.includes("preprocess_extract_unknown_reject_reason"));
+    expect(line).toBeDefined();
+    const parsed = JSON.parse(line!);
+    expect(parsed).toMatchObject({ msg: "preprocess_extract_unknown_reject_reason", jobId: JOB_A, reasons: ["reason_from_the_future"] });
+    for (const l of logged) {
+      expect(l).not.toContain("secret-holiday");
+      expect(l).not.toContain("another-private-name");
+      expect(l).not.toContain("third.jpg");
+    }
+  });
+
+  test("known reasons log nothing about unknown reasons", async () => {
+    const { logged } = await extractWith([
+      wire(0, "a.jpg", true),
+      wire(1, "b.heic", false, "unsupported_image_type"),
+      wire(2, "c/", false, "entry_name_x"),
+    ]);
+    expect(logged.some((l) => l.includes("preprocess_extract_unknown_reject_reason"))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // runPairing — the last link in the chain
 // ---------------------------------------------------------------------------
 
@@ -2018,7 +2370,7 @@ describe("public queries are scoped to the caller's own jobs", () => {
 // ---------------------------------------------------------------------------
 
 describe("listDoneImagesForPairing", () => {
-  test("returns only done rows, in zip order, with the id pairing writes back on", async () => {
+  test("returns only done rows, in filename order, with the id pairing writes back on", async () => {
     // Order is part of the algorithm's input, not a display preference: the
     // adjacency pre-pass assumes a sheet's front and back are neighbours. The
     // `_id` is what lets pairing patch the exact row it read, minutes later,

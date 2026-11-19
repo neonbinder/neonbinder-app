@@ -62,6 +62,7 @@ vi.mock("convex/react", () => ({
 }));
 
 import EntityColumn from "./EntityColumn";
+import { columnSyncFailedMessage } from "./column-sync-failed";
 
 const setProps: EntityColumnProps = {
   selector: <div>selector</div>,
@@ -230,6 +231,29 @@ describe("EntityColumn — unlink notice (NEO-211 plan D)", () => {
     expect(toast.textContent).toContain("No longer listed on BSC: 2 sets");
   });
 
+  it("the toast still goes after its time when the sync row changes under it (NEO-592)", async () => {
+    // The toast's timer used to be tied to the status effect, so the row
+    // changing again (a re-run, the dismiss) cut the timer and left the toast up for good.
+    vi.useFakeTimers();
+    try {
+      state.status = doneWithUnlinked;
+      const view = await renderColumn();
+      expect(document.querySelector('[aria-live="polite"]')).not.toBeNull();
+      state.status = null;
+      view.rerender(<EntityColumn {...setProps} />);
+      await act(async () => {
+        vi.advanceTimersByTime(5999);
+      });
+      expect(document.querySelector('[aria-live="polite"]')).not.toBeNull();
+      await act(async () => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(document.querySelector('[aria-live="polite"]')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("leaves the column usable behind it", async () => {
     state.status = doneWithUnlinked;
     await renderColumn();
@@ -366,7 +390,14 @@ describe("EntityColumn — unlink notice (NEO-211 plan D)", () => {
     it("leaves a total failure on the error path, with Retry semantics intact", async () => {
       state.status = { status: "error", message: "Couldn't sync options." };
       await renderColumn();
-      expect(screen.getByText("Couldn't sync options.")).toBeTruthy();
+      // NEO-450: stored, not this session's failure, so the box is a status
+      // reached through the Sync button it describes.
+      const id = screen
+        .getByRole("button", { name: "Sync Sets" })
+        .getAttribute("aria-describedby");
+      const box = document.getElementById(id ?? "");
+      expect(box?.textContent).toBe(columnSyncFailedMessage("Sets"));
+      expect(box?.getAttribute("role")).toBe("status");
       // An error row is not dismissable — Sync is the way out.
       expect(screen.queryByLabelText("Dismiss Sets notice")).toBeNull();
     });

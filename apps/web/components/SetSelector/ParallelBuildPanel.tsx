@@ -1,6 +1,8 @@
 import {
+  type ReactNode,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type RefObject,
@@ -13,6 +15,7 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { activateOnEnter } from "@/lib/dom/activate-on-enter";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import NeonButton from "../modules/NeonButton";
+import { mintWaitKey } from "@/lib/marketplace/wait-key";
 import { ConfirmDialog } from "../modules/confirm-dialog";
 import { SIDE_LABEL, type SyncSide } from "./selector-sync-feedback";
 import {
@@ -21,6 +24,7 @@ import {
   SleeveStrip,
   pulseText,
 } from "../modules/RunLedger";
+import { ParallelTitlesDoor, type ParallelTitleCount } from "./ParallelTitlesDialog";
 
 // NEO-325 — the ledger pieces moved to `modules/RunLedger` on their second
 // use; re-exported so every existing import of them from here keeps working.
@@ -106,9 +110,15 @@ export type ParallelPlanEntry = {
   _id: Id<"selectorOptions">;
   value: string;
   /** Which marketplace ids the parallel ITSELF holds (M4 — never inherited). */
+  owned: { bsc: boolean; sportlots: boolean };
+  /** Which sides a build would ask right now (ids complete, not paused). */
   sides: { bsc: boolean; sportlots: boolean };
   hasCards: boolean;
-  /** Set when the server already knows a build would be refused. */
+  /**
+   * Set when the server already knows a build would be refused — judged by
+   * the build's own rules (NEO-496), so a parallel shown buildable here is
+   * one the build will try.
+   */
   blocked?: string;
 };
 
@@ -170,6 +180,12 @@ export type ParallelBuildResult = {
     unlinked: SideCardLists;
     ambiguous: SideCardLists;
   };
+  /**
+   * NEO-535 — copies born with a title that still fails (over 80, or short a
+   * first name, with no hand edit on the source to carry): the Card titles
+   * dialog's count.
+   */
+  titlesToFix?: number;
 };
 
 /**
@@ -200,7 +216,6 @@ export type ParallelLine =
   | { kind: "waiting" }
   | { kind: "building" }
   | { kind: "built"; result: ParallelBuildResult }
-  | { kind: "skipped" }
   | { kind: "blocked"; reason?: string; deleted?: number }
   | { kind: "stopped" }
   | { kind: "failed"; message: string }
@@ -232,6 +247,12 @@ export type ParallelRun = {
   atIndex: number | null;
   /** What the live region says; see `ParallelBuildPanel`. */
   announcement: string;
+  /**
+   * NEO-487 — this run's key for `marketplaceWaits`, minted when the run
+   * starts and sent with every build in it, so the host can show "Waiting on
+   * BuySportsCards…" while a build is held up. Absent on a left-behind run.
+   */
+  waitKey?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -254,7 +275,6 @@ export function possessive(name: string): string {
 
 export const WAITING_TEXT = "Waiting";
 export const BUILDING_TEXT = "Building…";
-export const SKIPPED_TEXT = "Skipped — not linked to a marketplace yet";
 export const STOPPED_TEXT = "Stopped";
 export const UNFINISHED_TEXT =
   "Still building when you left — open it to check";
@@ -265,6 +285,79 @@ export const BUILD_BUSY_LABEL = "Building…";
 export const REBUILD_CONFIRM_LABEL = "Replace the cards";
 export const REBUILD_BUSY_LABEL = "Rebuilding…";
 export const SEE_CARDS_LABEL = "See which cards";
+
+/** NEO-535 — the built line's clause for copies whose titles need a fix. */
+export function titlesToFixText(count: number): string {
+  return `${count} ${count === 1 ? "title needs" : "titles need"} a fix`;
+}
+
+/** NEO-535 — the ticker's Card titles button (the checklist's reads "Fix card titles"). */
+export function fixRunTitlesLabel(count: number): string {
+  return `Fix ${count} card ${count === 1 ? "title" : "titles"}`;
+}
+
+/** NEO-535 — the end-of-run sentence's tail when copies' titles need a fix. */
+export function runTitlesAnnouncement(count: number): string {
+  return count === 1
+    ? "1 card title needs a fix."
+    : `${count} card titles need a fix.`;
+}
+
+/** NEO-535 — the built parallels whose copies' titles need a fix, and how many in all. */
+export function runTitlesToFix(run: Pick<ParallelRun, "entries">): {
+  parallels: Array<{ id: Id<"selectorOptions">; value: string }>;
+  total: number;
+} {
+  const parallels: Array<{ id: Id<"selectorOptions">; value: string }> = [];
+  let total = 0;
+  for (const entry of run.entries) {
+    const count =
+      entry.line.kind === "built" ? (entry.line.result.titlesToFix ?? 0) : 0;
+    if (count <= 0) continue;
+    parallels.push({ id: entry.id, value: entry.value });
+    total += count;
+  }
+  return { parallels, total };
+}
+
+/** The sentence a run that has ended says: its heading, then the titles left to fix. */
+export function endedAnnouncement(run: ParallelRun): string {
+  const titles = runTitlesToFix(run).total;
+  return titles > 0
+    ? `${panelHeading(run)}. ${runTitlesAnnouncement(titles)}`
+    : `${panelHeading(run)}.`;
+}
+
+/**
+ * NEO-581 — the run with each built parallel's titles-to-fix count replaced
+ * by the live one (parallel id to count). The count stored when a build ended
+ * goes stale once titles are fixed; everything the panel says about titles
+ * (the built line's clause, the button, the end-of-run sentence) reads the
+ * run through this. A parallel with no live count keeps what was stored, and
+ * a run nothing changed in is returned as it came.
+ */
+export function withLiveTitles(
+  run: ParallelRun,
+  counts: Readonly<Record<string, number>>,
+): ParallelRun {
+  let changed = false;
+  const entries = run.entries.map((entry) => {
+    const live = counts[entry.id];
+    if (live === undefined || entry.line.kind !== "built") return entry;
+    if ((entry.line.result.titlesToFix ?? 0) === live) return entry;
+    changed = true;
+    return {
+      ...entry,
+      line: { ...entry.line, result: { ...entry.line.result, titlesToFix: live } },
+    };
+  });
+  if (!changed) return run;
+  const next: ParallelRun = { ...run, entries };
+  if (run.phase === "finished" || run.phase === "stopped") {
+    next.announcement = endedAnnouncement(next);
+  }
+  return next;
+}
 
 /** The heading's id, for a held control's `aria-describedby` on the source. */
 export const PARALLEL_BUILD_HEADING_ID = "parallel-build-heading";
@@ -327,6 +420,9 @@ export function builtText(
     parts.push(
       `${result.skippedChangedSource} skipped — ${source} changed them mid-build`,
     );
+  }
+  if ((result.titlesToFix ?? 0) > 0) {
+    parts.push(titlesToFixText(result.titlesToFix ?? 0));
   }
   for (const side of SIDES) {
     const k = result.stillListedNotRelinked?.[side] ?? 0;
@@ -394,8 +490,6 @@ export function lineStatusText(line: ParallelLine, sourceValue?: string): string
       return BUILDING_TEXT;
     case "built":
       return builtText(line.result, sourceValue);
-    case "skipped":
-      return SKIPPED_TEXT;
     case "blocked":
       return blockedText(line.reason, line.deleted);
     case "stopped":
@@ -428,7 +522,7 @@ const countKind = (run: ParallelRun, kind: ParallelLine["kind"]) =>
  * The heading.
  *
  *   running  "Building parallels of Anime — 2 of 5"   (the line being built)
- *   finished "Anime parallels — 3 built, 1 blocked, 1 skipped"  (non-zero parts only)
+ *   finished "Anime parallels — 3 built, 1 blocked, 1 failed"  (non-zero parts only)
  *   stopped  "Anime parallels — stopped after 2 of 5"  (2 = built)
  *   left     "Anime parallels — stopped when you left, 2 of 5 built"
  */
@@ -454,7 +548,6 @@ export function panelHeading(run: ParallelRun): string {
   const parts = [
     [built, "built"],
     [countKind(run, "blocked"), "blocked"],
-    [countKind(run, "skipped"), "skipped"],
     [countKind(run, "failed"), "failed"],
   ]
     .filter(([n]) => (n as number) > 0)
@@ -624,14 +717,16 @@ function errorMessage(error: unknown): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Lines the server has already answered: a parallel holding no marketplace id
- * of its own has nothing to copy links from (and the source's ids are never
- * borrowed — M4), and one the plan marks `blocked` would be refused. Neither is
- * sent to the action.
+ * Lines the server has already answered: one the plan marks `blocked` would
+ * be refused, so it is not sent to the action.
+ *
+ * NEO-496 (NQ2): a parallel holding no marketplace id of its own is built
+ * like any other. It gets a copy of every card of its source, with no
+ * marketplace link (the source's ids are never borrowed — M4). Rows with and
+ * without ids behave the same (product invariant 6).
  */
 function initialLine(entry: ParallelPlanEntry): ParallelLine {
   if (entry.blocked) return { kind: "blocked", reason: entry.blocked };
-  if (!entry.sides.bsc && !entry.sides.sportlots) return { kind: "skipped" };
   return { kind: "waiting" };
 }
 
@@ -854,6 +949,9 @@ function useRunnerCore(defaultClient: BuildClient | null): ParallelBuildRunner {
       // caller's own name wins when it has one, so an insert's run reads
       // exactly as it always has.
       const sourceValue = from.value || plan.source?.value || "";
+      // NEO-487 — one key for the whole run: the wait line reads whichever
+      // build is in flight.
+      const waitKey = mintWaitKey();
       const opening: ParallelRun = {
         startedFrom: from.id,
         sourceId: plan.source?.id ?? from.id,
@@ -864,6 +962,7 @@ function useRunnerCore(defaultClient: BuildClient | null): ParallelBuildRunner {
         phase: "running",
         atIndex: null,
         announcement: "",
+        waitKey,
       };
       // Worded apart from the heading on purpose, so the page never carries
       // the heading's text twice (a text find would match both).
@@ -887,6 +986,7 @@ function useRunnerCore(defaultClient: BuildClient | null): ParallelBuildRunner {
           const result: ParallelBuildResult = await track(parallelId, () =>
             convex.action(api.parallelChecklistBuild.buildParallelChecklist, {
               parallelId,
+              waitKey,
             }),
           );
           line =
@@ -926,7 +1026,9 @@ function useRunnerCore(defaultClient: BuildClient | null): ParallelBuildRunner {
         };
         // The heading as a sentence — the full stop keeps it a different
         // string from the heading itself, for the same reason as the start.
-        done.announcement = `${panelHeading(done)}.`;
+        // NEO-535 — and the titles left to fix, which the Card titles button
+        // under the ledger opens.
+        done.announcement = endedAnnouncement(done);
         return done;
       });
       return null;
@@ -978,12 +1080,20 @@ function useRunnerCore(defaultClient: BuildClient | null): ParallelBuildRunner {
 const SCROLL_AFTER = 100;
 
 export default function ParallelBuildPanel({
-  run,
+  run: storedRun,
   onStop,
   headingLevel = 3,
+  waitingSlot,
 }: {
   run: ParallelRun;
   onStop: () => void;
+  /**
+   * NEO-487 — the host's "Waiting on BuySportsCards…" line for this run
+   * (`WaitingOnMarketplaceRun` keyed on `run.waitKey`), shown under the
+   * ledger. A slot rather than a subscription here, so the panel stays free
+   * of `useQuery` and every host decides how it reads the wait.
+   */
+  waitingSlot?: ReactNode;
   /**
    * NEO-321 (a11y) — 4 when the panel sits inside a section that has its own
    * h3 (the Base-parallels section), so the outline nests. Text and id are
@@ -1002,9 +1112,84 @@ export default function ParallelBuildPanel({
   // DOM id (which would also hide an aria-label from its `id:` finds).
   const fieldClass = useFieldTestClass();
   const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set());
-  const live = run.phase === "running" || run.phase === "stopping";
-  const stopping = run.phase === "stopping";
-  const scrolls = run.entries.length > SCROLL_AFTER;
+  const live = storedRun.phase === "running" || storedRun.phase === "stopping";
+  const stopping = storedRun.phase === "stopping";
+  const scrolls = storedRun.entries.length > SCROLL_AFTER;
+  // NEO-535 — once the run has ended, the parallels whose copies' titles need
+  // a fix get the Card titles button. It opens on its own once when the run
+  // ends while the operator is here (keyed by the run, so a remount or a
+  // left-behind pickup never reopens it); a run picked up after leaving gets
+  // the button only.
+  // NEO-581 — the count stored when a build ended goes stale the moment a
+  // title is fixed (and was stale already on a reload). The Card titles door
+  // reports the live count per parallel (its load, its recount after a close,
+  // and one on mount); the panel reads the run through it, so the clause, the
+  // button and the end-of-run sentence all drop together. Held with the run
+  // they belong to, like the door's line.
+  const runKey = `parallel-run:${storedRun.waitKey ?? storedRun.startedFrom}`;
+  const [liveTitles, setLiveTitles] = useState<{
+    run: string;
+    counts: Record<string, number>;
+  } | null>(null);
+  const onTitleCounts = useCallback(
+    (counts: readonly ParallelTitleCount[]) =>
+      setLiveTitles((prev) => ({
+        run: runKey,
+        counts: {
+          ...(prev?.run === runKey ? prev.counts : {}),
+          ...Object.fromEntries(counts.map((c) => [c.id, c.count])),
+        },
+      })),
+    [runKey],
+  );
+  const liveCounts = liveTitles?.run === runKey ? liveTitles.counts : null;
+  const run = useMemo(
+    () => (liveCounts ? withLiveTitles(storedRun, liveCounts) : storedRun),
+    [storedRun, liveCounts],
+  );
+  const { parallels: titleParallels, total: titleTotal } = useMemo(
+    () => runTitlesToFix(run),
+    [run],
+  );
+  // The door leaves the moment the live count reaches zero. Its dialog is
+  // already closed by then (the recount runs after a close, and a load that
+  // finds nothing opens none), so nothing is torn out. The door's busy
+  // window is its own (`aria-busy`); the checklist, whose door hangs off a
+  // live flag count, needs `onActiveChange` and this panel does not.
+  const doorShown = !live && titleParallels.length > 0;
+  const doorLabel = fixRunTitlesLabel(titleTotal);
+  const titlesAutoOpenKey =
+    run.phase === "finished" || run.phase === "stopped" ? runKey : undefined;
+  // NEO-535 (a11y) — the Card titles door's lines ("Loading titles…", "Saved
+  // 12 titles.") are said through this panel's one live line, not a second
+  // live region inside the banner. Held with the run they belong to.
+  const [titlesLine, setTitlesLine] = useState<{ run: string; line: string } | null>(null);
+  const onTitlesLine = useCallback(
+    (line: string) => setTitlesLine({ run: runKey, line }),
+    [runKey],
+  );
+  const doorLine = titlesLine?.run === runKey ? titlesLine.line : "";
+
+  /**
+   * a11y (WCAG 2.4.3) — the door leaves once its last title is fixed. If it
+   * had focus the browser drops it to `<body>`; park it on the panel, whose
+   * live line has just said "Saved N titles." Only when the door really held
+   * focus (a silent recount on a reload focused nothing, and must not steal
+   * it) and focus was then dropped: anywhere else, the operator put it there.
+   */
+  const wasDoorShownRef = useRef(doorShown);
+  const doorHadFocusRef = useRef(false);
+  useEffect(() => {
+    const gone = wasDoorShownRef.current && !doorShown;
+    wasDoorShownRef.current = doorShown;
+    if (!gone) return;
+    const hadFocus = doorHadFocusRef.current;
+    doorHadFocusRef.current = false;
+    if (!hadFocus) return;
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    panelRef.current?.focus({ preventScroll: true });
+  }, [doorShown]);
 
   /**
    * a11y (WCAG 2.4.3) — Stop unmounts when the run ends. If it had focus the
@@ -1217,6 +1402,52 @@ export default function ParallelBuildPanel({
         <p className="mt-2 text-xs">{truncatedText(run.entries.length)}</p>
       )}
 
+      {doorShown && (
+        <div
+          className="mt-2"
+          // Whether the door held focus when it left (see the blur handler).
+          onFocusCapture={() => {
+            doorHadFocusRef.current = true;
+          }}
+          onBlurCapture={(event) => {
+            if (event.relatedTarget) {
+              doorHadFocusRef.current = false;
+              return;
+            }
+            // No `relatedTarget`: focus went nowhere (a click on blank page)
+            // or the door was removed under it. After the commit the wrapper
+            // is still there in the first case, gone in the second; and if focus is
+            // back inside it by then (a blur on removal, then the door regained
+            // focus at once), the door still holds it.
+            const wrapper = event.currentTarget;
+            queueMicrotask(() => {
+              if (wrapper.isConnected && !wrapper.contains(document.activeElement)) {
+                doorHadFocusRef.current = false;
+              }
+            });
+          }}
+        >
+          <ParallelTitlesDoor
+            parallels={titleParallels}
+            label={doorLabel}
+            autoOpenKey={titlesAutoOpenKey}
+            announceStatus={false}
+            onStatusChange={onTitlesLine}
+            onCounts={onTitleCounts}
+            countOnMount
+          />
+        </div>
+      )}
+
+      {/* NEO-581 — the door's last line ("Saved 12 titles.") once the door has
+          gone with the last title, so a sighted operator sees why it left.
+          Plain text: the live line below says it. */}
+      {!doorShown && doorLine && (
+        <span className="mt-2 block text-xs">{doorLine}</span>
+      )}
+
+      {waitingSlot}
+
       {/*
         a11y — the one live line, and deliberately POLITE for everything it
         says, failures included. The house split (routine → role="status",
@@ -1231,7 +1462,9 @@ export default function ParallelBuildPanel({
         in the final heading, said once at the end. Every line also stays in
         the ledger above to be read at leisure.
       */}
-      <LiveLine text={run.announcement} />
+      {/* NEO-535 — the Card titles door's latest line takes the live line
+          once the run has ended; a new run's announcement replaces it. */}
+      <LiveLine text={doorLine || run.announcement} />
     </section>
   );
 }
@@ -1280,7 +1513,14 @@ export function ParallelBuildButton({
   runner,
   buttonRef,
   onResult,
+  onWaitKey,
 }: {
+  /**
+   * NEO-487 — told this build's `marketplaceWaits` key when it starts, and
+   * `null` when it ends, so the host can show "Waiting on BuySportsCards…"
+   * while the build is held up by a BSC call.
+   */
+  onWaitKey?: (waitKey: string | null) => void;
   parallelId: Id<"selectorOptions">;
   parallelValue: string;
   sourceValue: string;
@@ -1322,8 +1562,10 @@ export function ParallelBuildButton({
   const build = async () => {
     if (busy) return;
     setBuilding(true);
+    const waitKey = mintWaitKey();
+    onWaitKey?.(waitKey);
     try {
-      const call = () => buildParallel({ parallelId });
+      const call = () => buildParallel({ parallelId, waitKey });
       const result: ParallelBuildResult | undefined = runner
         ? await runner.buildOne(parallelId, call)
         : await call();
@@ -1348,6 +1590,7 @@ export function ParallelBuildButton({
         committed: false,
       });
     } finally {
+      onWaitKey?.(null);
       setBuilding(false);
       if (confirming) restoreRef.current = true;
       setConfirming(false);

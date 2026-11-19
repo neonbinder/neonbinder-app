@@ -34,6 +34,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import {
   assessListingTitle,
   generateListingDescription,
+  type ListingTeamSplit,
 } from "./features/generateListing";
 import {
   listingInputsForCard,
@@ -44,7 +45,21 @@ import {
 import { generateSku } from "./sku";
 import { syncCardPlayerLinks } from "./cardPlayerLinks";
 import { syncCardTeamLinks } from "./cardTeamLinks";
+import { deriveNewCardLeagueId, newCardLeagueCache, type CardLeagueCache } from "./cardLeague";
 import type { CardCountLedger } from "./cardCounts";
+import {
+  bornSecondaryPlayerFields,
+  bornSecondaryPlayers,
+  primaryPlayerIdsOf,
+} from "./cardSecondaryPlayers";
+import { newStoredCardReadCache } from "./storedCardTitle";
+import { MAX_CARD_PLAYERS } from "./features/cardAttention";
+import {
+  planCardPlayerDefaults,
+  type CardPlayerFacts,
+  type DefaultPlayerPlan,
+} from "./lib/cardPlayerDefaults";
+import type { EffectiveCardPlayerDefaults } from "./cardPlayersBulk";
 
 /**
  * Set-level values resolved once per commit (or per build page). The title
@@ -85,6 +100,13 @@ export type NewCardRow = {
   /** NEO-254 — always written together with `playerIds`, never apart. */
   playerLinks?: Array<{ playerId: Id<"players">; nameOnCard: string }>;
   teamOnCardIds?: Array<Id<"teams">>;
+  /**
+   * NEO-569 — the card's league when the caller already knows it (a parallel
+   * copy carries its source card's, when it carries the source's teams).
+   * Absent: derived before the insert from the teams and the set's leagues
+   * (`cardLeague.deriveNewCardLeagueId`).
+   */
+  leagueId?: Id<"leagues">;
   attributes?: string[];
   isRookie?: boolean;
   isRelic?: boolean;
@@ -96,12 +118,33 @@ export type NewCardRow = {
   platformData: Doc<"cardChecklist">["platformData"];
   /** Already bounded by the caller; omitted from the row when empty. */
   pendingPlayerNames: string[];
+  /**
+   * NEO-528 round 3 — the listing this card comes from named a player (see
+   * schema.ts). Written only when true. The checklist commit sets it through
+   * `listingNamesAPlayer`; a parallel copy carries its source's; a
+   * hand-added card never passes it.
+   */
+  listingNamedPlayer?: true;
   pendingTeamNames: string[];
   sortOrder: number;
   /** Canonical player names, for Signed By and the listing text. */
   playerNames: string[];
   /** Canonical team names, for the listing text. */
   teamNames?: string[];
+  /**
+   * NEO-606 — the Location / Name split of those teams that have one, read
+   * off their rows by the caller, so the title can give a team's location up
+   * before the team. Absent when none is split.
+   */
+  teamSplits?: ListingTeamSplit[];
+  /**
+   * NEO-528 round 3 — the people the card is born with under "Also on this
+   * card" (its cameos), with their NB names for the description's cameo
+   * line. Usually `bornCardPlayers`' answer. Repeats and the card's own
+   * players are left out and the list is cut at `MAX_CARD_PLAYERS`; the
+   * stored list and the description always name the same people.
+   */
+  cameos?: ReadonlyArray<BornCameo>;
   carried?: CarriedCardFields;
   /**
    * NEO-312 — the features map to merge the card's observed facts ONTO,
@@ -129,8 +172,10 @@ export type NewCardRow = {
    * written verbatim instead of the generated one. Already trimmed and held
    * to `LISTING_TITLE_MAX` by the caller (`listingInputs.checkTitleAnswer`).
    * A human authored it, so `listingTitleTruncated` is never written beside
-   * it — the same rule `updateCard` applies to an operator title edit. Only
-   * the commit's insert branch passes it.
+   * it — the same rule `updateCard` applies to an operator title edit. The
+   * commit's insert branch passes it, and (NEO-535) the parallel build, for a
+   * copy whose builder title fails but whose source's hand edit, re-headed
+   * with the parallel's description, fits (`features/carriedTitle`).
    */
   listingTitle?: string;
   /**
@@ -140,11 +185,103 @@ export type NewCardRow = {
    * cut short" flag is skipped only when the generated title is exactly this
    * text: then the question it raises was asked and answered before save. A
    * title that came out differently is one nobody saw, so it is flagged as
-   * before (security audit, NEO-335). Only the commit's insert branch passes
-   * it, already trimmed and capped (`listingInputs.checkTitleAnswer`).
+   * before (security audit, NEO-335). The commit's insert branch passes it,
+   * already trimmed and capped (`listingInputs.checkTitleAnswer`), and
+   * (NEO-535) the parallel build, with the title it just generated for a copy
+   * built from the box that fits with every first name: the box was the
+   * operator's answer, so the copy is not flagged cut short.
    */
   listingTitleKept?: string;
 };
+
+/** A cameo a new card is born with: the player, and their NB name. */
+export type BornCameo = { playerId: Id<"players">; name: string };
+
+/**
+ * NEO-528 round 3 — the cameos a new card actually stores, in order: repeats
+ * and the card's own players taken out, cut at `MAX_CARD_PLAYERS`. The same
+ * filter `bornSecondaryPlayerFields` applies, applied first here so the
+ * description names exactly the stored list.
+ */
+function bornCameoList(
+  card: Pick<NewCardRow, "playerIds" | "playerLinks" | "cameos">,
+): BornCameo[] {
+  const own = primaryPlayerIdsOf(card);
+  const seen = new Set<string>();
+  const out: BornCameo[] = [];
+  for (const cameo of card.cameos ?? []) {
+    const key = cameo.playerId as string;
+    if (seen.has(key) || own.has(key)) continue;
+    seen.add(key);
+    out.push(cameo);
+    if (out.length === MAX_CARD_PLAYERS) break;
+  }
+  return out;
+}
+
+/**
+ * NEO-528 round 3 — "Player on every card": what a NEW card is born with once
+ * the defaults of its row (`cardPlayersBulk.effectiveCardPlayerDefaults`) are
+ * applied, through the one per-card rule (`planCardPlayerDefaults`):
+ *
+ *   - a card that names NO player and carries no name waiting for review gets
+ *     the default player: `playerIds`, `playerLinks` (printed as the player's
+ *     NB name) and `playerNames`, all three naming them, in one answer;
+ *   - a card that names anyone, or holds a pending name, keeps what it has
+ *     (a marketplace-resolved or typed player always wins);
+ *   - cameos: the card's own first (those `cameoName` cannot name are gone
+ *     and left off), then each default cameo that is new, never one of the
+ *     card's players. A pending name blocks the player, never the cameos.
+ *
+ * Writes no team, ever (product invariant 8). Pure. `facts` is what the card
+ * arrives with; `cameoName` names its own cameos (null = no longer in NB).
+ * With no defaults the card is returned as it came.
+ */
+export function bornCardPlayers(
+  facts: CardPlayerFacts,
+  own: {
+    playerNames: string[];
+    cameoName?: (id: Id<"players">) => string | null;
+  },
+  defaults: Pick<EffectiveCardPlayerDefaults, "playerId" | "cameoIds" | "player" | "cameos"> | null,
+): {
+  playerIds?: Array<Id<"players">>;
+  playerLinks?: Array<{ playerId: Id<"players">; nameOnCard: string }>;
+  playerNames: string[];
+  cameos: BornCameo[];
+  player: DefaultPlayerPlan;
+} {
+  const defaultNames = new Map<string, string>();
+  for (const cameo of defaults?.cameos ?? []) defaultNames.set(cameo._id as string, cameo.name);
+  if (defaults?.player) defaultNames.set(defaults.player._id as string, defaults.player.name);
+  const plan = planCardPlayerDefaults(facts, {
+    playerId: defaults?.player ? defaults.playerId : null,
+    cameoIds: defaults?.cameoIds ?? [],
+  });
+  const cameos: BornCameo[] = [];
+  for (const id of plan.cameos.ids) {
+    const name = defaultNames.get(id as string) ?? own.cameoName?.(id) ?? null;
+    if (name !== null) cameos.push({ playerId: id, name });
+  }
+  if (plan.player.kind === "fill" && defaults?.player) {
+    const { _id, name } = defaults.player;
+    return {
+      // NEO-254 — the pair, one list, same order.
+      playerIds: [_id],
+      playerLinks: [{ playerId: _id, nameOnCard: name }],
+      playerNames: [name],
+      cameos,
+      player: plan.player,
+    };
+  }
+  return {
+    ...(facts.playerIds !== undefined ? { playerIds: facts.playerIds } : {}),
+    ...(facts.playerLinks !== undefined ? { playerLinks: facts.playerLinks } : {}),
+    playerNames: own.playerNames,
+    cameos,
+    player: plan.player,
+  };
+}
 
 /**
  * NEO-363 — everything a card row is born with except its `sportId`, which
@@ -208,16 +345,30 @@ export function buildCardRowForInsert(
   // at creation time, then freely editable afterward. `previewListingTitle`
   // must be given the same inputs, or a regenerated title disagrees with the
   // one written here.
+  // NEO-528 round 3 — the cameos it is born with, exactly as stored: the
+  // description names them, and the title names them while it has room (they
+  // are the first meaningful thing it gives up, NEO-535's order).
+  const cameos = bornCameoList(card);
   const listingInputs = listingInputsForCard(
     card,
     set,
-    { playerNames, teamNames: card.teamNames },
+    {
+      playerNames,
+      teamNames: card.teamNames,
+      teamSplits: card.teamSplits,
+      cameoNames: cameos.map((c) => c.name),
+    },
     mergedFeatures,
   );
   const listingTitle = assessListingTitle(listingInputs);
   // NEO-335 — the operator's answer from the "Card titles" step, when one
   // rode on the card: their own words, or the trimmed title kept. Either way
   // the cut-short question was put before save, so the flag is not written.
+  // NEO-535 / NEO-609 — `coreFits` is false when a Tidy Up cut (a whole team,
+  // the number, SP, RELIC, a first name, RC, AUTO) is still out, or the title
+  // was built from the set's box text. An over-cap title has cut all of those,
+  // so it is flagged `listingTitleTruncated` too; `titleOverLimit` (its
+  // length) takes precedence when the attention items are read.
   const operatorTitle = card.listingTitle?.trim();
   const flagTruncated =
     !listingTitle.coreFits &&
@@ -245,20 +396,29 @@ export function buildCardRowForInsert(
     // "Card titles" step measured; see `listingInputs.storedCardVariation`.
     cardVariation: storedCardVariation(card.cardVariation),
     platformData: card.platformData,
+    // NEO-528 round 3 — absent when it has none; the field is named only by
+    // its one writer (`cardSecondaryPlayers.ts`).
+    ...bornSecondaryPlayerFields(card, cameos.map((c) => c.playerId)),
     ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),
-    // NEO-363 — required and never blank: the generated title always ends in
-    // `#<cardNumber>` (`assessListingTitle`'s guarantee 2), and a blank
-    // operator answer falls through to it.
+    // NEO-363 — required and never blank: the generated title always carries
+    // the description or the card number (NEO-535 cuts the number only from a
+    // title that is over the cap without it), and a blank operator answer
+    // falls through to it.
     listingTitle: operatorTitle || listingTitle.title,
-    listingDescription: generateListingDescription(listingInputs),
-    // NEO-101: only when the core was actually cut (see schema.ts), and
-    // NEO-335: never over an operator's pre-save answer.
+    listingDescription: generateListingDescription(listingInputs, {
+      cameoNames: cameos.map((c) => c.name),
+    }),
+    // NEO-535 / NEO-609: only in Tidy Up, or when the box text was used
+    // (see schema.ts), and NEO-335: never over an operator's pre-save answer.
     ...(flagTruncated ? { listingTitleTruncated: true } : {}),
     // NEO-221 / NEO-246 — omitted entirely when empty, so a fully-reviewed
     // commit writes exactly the row it wrote before these fields existed.
     ...(card.pendingPlayerNames.length
       ? { pendingPlayerNames: card.pendingPlayerNames }
       : {}),
+    // NEO-528 round 3 — provenance, only when true (absent on every other
+    // card, so their rows are exactly what they were).
+    ...(card.listingNamedPlayer === true ? { listingNamedPlayer: true as const } : {}),
     ...(card.pendingTeamNames.length
       ? { pendingTeamNames: card.pendingTeamNames }
       : {}),
@@ -311,6 +471,12 @@ export function buildCardRowForInsert(
  */
 export type CardRowIndexing = {
   sport: () => Promise<Id<"selectorOptions"> | undefined>;
+  /**
+   * NEO-569 — team and set league reads for the card's `leagueId`, shared
+   * across the page. Every production caller passes its page's cache; absent,
+   * the insert reads with a cache of its own (same answer, more reads).
+   */
+  leagueCache?: CardLeagueCache;
 };
 
 /**
@@ -367,9 +533,14 @@ export async function insertCardRow(
   const built = buildCardRowForInsert(card, set, Date.now());
   // The insert below is typed against the schema, so leaving `sportId` (or
   // any required field the build forgot) off this object is a type error.
+  // NEO-569 — born with its league, never patched in after the insert.
+  const leagueCache = indexing.leagueCache ?? newCardLeagueCache();
+  const leagueId =
+    card.leagueId ?? (await deriveNewCardLeagueId(ctx, card, leagueCache));
   const row = {
     ...built.row,
     sportId,
+    ...(leagueId ? { leagueId } : {}),
     // NEO-312 (R2): a rebuilt card that is clearly the old one keeps its SKU,
     // so a label or a listing that already names it still does.
     ...(card.keepSku ? { sku: card.keepSku } : {}),
@@ -381,7 +552,17 @@ export async function insertCardRow(
     });
   }
   if ((card.teamOnCardIds ?? []).length > 0) {
-    await syncCardTeamLinks(ctx, id, card.teamOnCardIds, { fresh: true });
+    await syncCardTeamLinks(ctx, { _id: id, selectorOptionId: row.selectorOptionId, leagueId }, card.teamOnCardIds, {
+      fresh: true,
+      leagueCache,
+    });
+  }
+  // NEO-528 round 3 — and its cameo index rows, through the one writer. The
+  // names are already known, so the writer reads no player.
+  if ((card.cameos ?? []).length > 0) {
+    const names = newStoredCardReadCache();
+    for (const cameo of card.cameos ?? []) names.players.set(cameo.playerId as string, cameo.name);
+    await bornSecondaryPlayers(ctx, id, row, names);
   }
   ledger.addCard(row);
   if (!card.keepSku) {

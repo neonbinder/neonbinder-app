@@ -11,24 +11,28 @@
 // exactly ONE "Wayne Gretzky", home sport Hockey ("Gretzky" also finds Brent
 // Gretzky, a different accessible name). If a bundle refresh drops him or adds
 // a second one, change the literals to another single-row Hockey player. The
-// cross-sport target is MINTED (the catalogue's Football names would crowd any
-// search).
+// cross-sport target is a REAL name the catalogue does not hold in any sport
+// (NEO-413, support/recorded-names.ts): its Football lookup is a recorded
+// no-match, so the add sends nothing to Wikidata, and its full name finds
+// only that row among the catalogue's Football players.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { CHECKLISTS, checklistFacts, expectTeamsFromChecklist } from "../../support/published-checklist";
 import { addPlayerByHand, expectPlayersLoaded, PLAYERS_MATCHES, playersCounter } from "../../support/players";
 import { advanceToSave, fetchOneMarketplaceSetChecklistToWizard, readBackDecision, reviewWizard, stepCounter, walkToPlayerRow } from "../../support/wizard";
+import { recordedNoMatchName } from "../../support/recorded-names";
 
 test(
   "Entity review — Link to Existing decisions, including one to a player of another sport, are carried through Confirm & Save into the committed checklist",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
-    const gw = `Gw${env.ATTEMPT_TOKEN}`;
+    const gw = recordedNoMatchName(env, "checklist-wizard-link-commits");
 
     await signIn("/admin/players");
     await expectPlayersLoaded(page, LAUNCH_GATE);
     // A Football player to link a Hockey name to, across sports.
     await addPlayerByHand(page, gw, "Football");
 
-    await fetchOneMarketplaceSetChecklistToWizard(page, env, { set: "San Antonio Iguanas CHL" });
+    await fetchOneMarketplaceSetChecklistToWizard(page, env, { set: "San Antonio Iguanas CHL", checklist: CHECKLISTS.sanAntonioIguanas });
     const wizard = reviewWizard(page);
     // Nothing decided: on a name step x is the decided count plus one (NEO-335).
     await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
@@ -83,6 +87,8 @@ test(
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, summary" });
     await confirmSave.click();
     await expect(page.getByText(/Saved [0-9]+ cards/)).toBeVisible();
+    // The result line stays on screen after the save too.
+    await expectTeamsFromChecklist(page, checklistFacts(CHECKLISTS.sanAntonioIguanas));
 
     // The cross-sport link is on the player's committed card list.
     await page.goto("/admin/players");

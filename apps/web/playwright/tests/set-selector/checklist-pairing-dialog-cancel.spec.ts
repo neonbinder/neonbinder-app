@@ -13,6 +13,7 @@
 // pause on the page instead.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { escapeRe } from "../../support/cards";
+import { CHECKLISTS, usePublishersChecklist } from "../../support/published-checklist";
 import {
   columnHeading,
   columnOption,
@@ -22,6 +23,7 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../../support/set-builder";
+import { reviewWizard } from "../../support/wizard";
 
 test(
   "Checklist — the card-pairing dialog opens instead of committing, flags a marketplace name disagreement on a manual link, and cancelling writes nothing",
@@ -62,6 +64,10 @@ test(
 
     // ── STEP 1: sync must NOT commit; it opens the pairing dialog (a live
     // BSC + SportLots round trip, the flow's 90 s).
+    // NEO-489: the seed's own publisher's checklist first (BSC's answers for the 20 cards), so the
+    // fetch asks BSC for no card one by one: this spec is about the pairing dialog, and twenty live
+    // lookups in a burst are what BSC rate-limits.
+    await usePublishersChecklist(page, CHECKLISTS.futureStars2024);
     await syncChecklistButton(page).click();
     const dialog = page.getByRole("dialog", { name: /Match Cards/ });
     await expect(dialog).toBeVisible({ timeout: 90_000 });
@@ -100,7 +106,7 @@ test(
     // number leaves the value its pill will show. Read BEFORE the BSC row is
     // selected: selecting renames it to `#FS-1 …, selected. Press to deselect.`.
     // No live value is hardcoded.
-    const bscRow = dialog.getByRole("button", { name: /^Select BSC card #FS-1 / });
+    const bscRow = dialog.getByRole("radio", { name: /^Select BSC card #FS-1 / });
     const slRow = dialog.getByRole("button", { name: /^Link selected BSC card to #FS-2 / });
     const nameOf = async (row: typeof bscRow, prefix: string) =>
       ((await row.getAttribute("aria-label")) ?? "").replace(prefix, "").replace(/ · .*$/, "").trim();
@@ -115,7 +121,7 @@ test(
 
     // Cross-link BSC's #FS-1 to SportLots' #FS-2.
     await bscRow.click();
-    await expect(dialog.getByRole("button", { name: /^#FS-1 .*, selected\. Press to deselect\.$/ })).toBeVisible();
+    await expect(dialog.getByRole("radio", { name: /^#FS-1 .*, selected\. Press to deselect\.$/ })).toBeVisible();
     await slRow.click();
 
     // The warning is surfaced AND the section opened itself to show it.
@@ -153,6 +159,28 @@ test(
     await expect(
       dialog.getByRole("radio", { name: /— use these players for #FS-1$/ }).first(),
     ).toBeVisible();
+
+    // NEO-606: a roster name past 120 characters is refused in place. The typed roster stays,
+    // the field is invalid, and the refusal is an alert on its own field well (the error pink
+    // misses 4.5:1 on the row's tile); axe reads it in both modes while it shows. Escape drops
+    // the draft, and the roster field shows the card's players again.
+    // LIVE BRANCH ONLY: a roster disagreement needs BSC and SportLots on one row, so this has
+    // not run while SportLots is paused (written against CardPairingModal's names).
+    const roster = dialog.getByRole("textbox", { name: "Players for #FS-1 (separate names with |)", exact: true });
+    const rosterBefore = await roster.inputValue();
+    const overLongPlayer = `Paul ${"Skenes".repeat(20)}x`.slice(0, 121);
+    expect(overLongPlayer).toHaveLength(121);
+    await roster.fill(overLongPlayer);
+    await roster.press("Enter");
+    const rosterRefusal = dialog.getByRole("alert").filter({ hasText: "Player names are limited to" });
+    await expect(rosterRefusal).toHaveText("Player names are limited to 120 characters — shorten it to save.");
+    await expect(roster).toHaveValue(overLongPlayer);
+    await expect(roster).toHaveAttribute("aria-invalid", "true");
+    await expectAccessible(page, { within: dialog, label: "Match Cards dialog, a roster name over 120 refused" });
+    await roster.press("Escape");
+    await expect(rosterRefusal).toHaveCount(0);
+    await expect(roster).toHaveValue(rosterBefore);
+    await expect(dialog).toBeVisible();
 
     // …and no marketplace is named anywhere in the conflict UI: not the old
     // sentence, not a prefixed choice name or text, title or roster. These
@@ -209,7 +237,8 @@ test(
 
     // The set is untouched: Sync is available for a retry and no entity-review
     // wizard opened.
-    await expect(page.getByText("Tidy up this set")).toBeHidden();
+    // By the dialog's name prefix, so the check holds whatever set it names (NEO-497).
+    await expect(reviewWizard(page)).toBeHidden();
     await expect(syncChecklistButton(page)).toBeVisible();
     await expectAccessible(page, { label: "Future Stars checklist after the sync was cancelled" });
   },

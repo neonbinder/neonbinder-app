@@ -3,7 +3,12 @@ import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 // Pure and browser-safe: the same generator the server titled the card with.
-import { assessListingTitle } from "../../convex/features/generateListing";
+import {
+  assessListingTitle,
+  leftOutOfTitle,
+  singularTypeName,
+} from "../../convex/features/generateListing";
+import { variantTypeKindFromTitle } from "../../convex/variantRole";
 
 /**
  * NEO-101 — "Regenerate", and the source fields behind a generated title.
@@ -28,12 +33,14 @@ import { assessListingTitle } from "../../convex/features/generateListing";
  * links — a card's variation text is operator- and marketplace-sourced content,
  * not a destination.
  *
- * ## Laziness
+ * ## Subscribed from the start (NEO-535)
  *
- * `previewListingTitle` is a real server round-trip per card, and the drawer
- * opens on every card an operator arrows through. So the query stays `"skip"`
- * until the operator asks for it, and then stays subscribed for the life of the
- * component so a second Regenerate is instant and the chips keep rendering.
+ * The query used to stay `"skip"` until the operator pressed Regenerate, so
+ * "Left out to fit" and the chips appeared only after a press, on a title that
+ * was already stored. They are read from the card's facts, which only the
+ * server holds, so the hook now subscribes as it mounts: one small query per
+ * opened card (the card, its chain, its players and teams), and Regenerate
+ * itself is instant because its answer is already here.
  */
 
 /** One labelled source fact, e.g. `Set` → `Topps Chrome`. */
@@ -41,6 +48,10 @@ export type TitleSourceChip = { label: string; value: string };
 
 type PreviewResult = {
   title: string;
+  /** NEO-535 — optional: an older deploy predates them. */
+  fits?: boolean;
+  firstNameLost?: boolean;
+  shortNameUsed?: boolean;
   coreFits: boolean;
   dropped: string[];
   inputs: {
@@ -71,8 +82,16 @@ type PreviewResult = {
      * set's short name for titles. Optional: an older deploy predates them.
      */
     insertName?: string;
+    /**
+     * NEO-609 — every level of the chain with its variant type's name, top
+     * level first. One chip each, labelled with the type's name. Optional: an
+     * older deploy predates it, and the Insert / Parallel chips stand.
+     */
+    titleLevels?: Array<{ name: string; typeName?: string; base?: true }>;
     setShortName?: string;
     parallelName?: string;
+    /** NEO-335 — the leaf's parallel ROLE (earns the "Parallel" label). */
+    parallelIsRole?: boolean;
     isRookie?: boolean;
     isRelic?: boolean;
     autographed?: string;
@@ -86,6 +105,13 @@ type PreviewResult = {
      * inside a modal dialog takes the whole dialog with it.
      */
     teamNames?: string[];
+    /**
+     * NEO-606 — the Location / Name of those teams that have one. The title
+     * gives a team's location up before the team, and `leftOutOfTitle` reads
+     * the same split, so the note and the title agree. Optional: an older
+     * deploy predates it, and without it a team is only ever dropped whole.
+     */
+    teamSplits?: Array<{ location: string; name: string }>;
     /** e.g. "Baseball". Optional for the same reason, and genuinely absent for
      * a set whose sport was never resolved. */
     sport?: string;
@@ -108,13 +134,18 @@ function chipValue(value: unknown, whenTrue: string): string | null {
   return null;
 }
 
+/** NEO-535 — a feature value that says the card has no such thing. */
+const noValue = (value: string | undefined): boolean =>
+  !value?.trim() || value.trim() === "None";
+
 /**
- * The chips for a preview, in the order the generator itself assembles a title:
- * core facts first (year, manufacturer, set, parallel, players, number), then
- * the optional tokens that get dropped from the end when it does not fit.
+ * The chips for a preview, in the order the generator itself lays a title
+ * down (NEO-535): the set description (year, maker, set, insert, parallel —
+ * or the "Set name in titles" box that stood in for all of it), players,
+ * number, then AUTO, RELIC, the print run, the variation, RC, SP/SSP, teams
+ * and sport.
  *
- * Reading the row left to right therefore reads the title left to right, which
- * is what makes "the last chips are the ones at risk" legible without saying so.
+ * Reading the row left to right therefore reads the title left to right.
  */
 export function titleSourceChips(inputs: PreviewResult["inputs"]): TitleSourceChip[] {
   const chips: TitleSourceChip[] = [];
@@ -123,7 +154,47 @@ export function titleSourceChips(inputs: PreviewResult["inputs"]): TitleSourceCh
     if (v !== null) chips.push({ label, value: v });
   };
 
-  // Core first, in the order the generator lays it down.
+  // NEO-335/535 — the set description, or the box text that stood in for all
+  // of it. Which one the title used is the generator's answer for these same
+  // inputs (`shortNameUsed`), never a guess from the title text.
+  const shortNameUsed =
+    !!inputs.setShortName?.trim() && assessListingTitle(inputs).shortNameUsed === true;
+  if (shortNameUsed) {
+    push("Set name in titles", inputs.setShortName);
+  } else {
+    pushDescription(push, inputs);
+  }
+  // One chip per player, not a joined string: on a multi-player card the names
+  // are what an operator weighs against each other when shortening.
+  for (const name of inputs.playerNames ?? []) {
+    if (name) chips.push({ label: "Player", value: name });
+  }
+  if (inputs.cardNumber) chips.push({ label: "Number", value: `#${inputs.cardNumber}` });
+
+  // Then the card's own tokens, in the order the title says them.
+  // NEO-535 — "None" is the features' word for "not an autograph" / "not a
+  // short print": no chip, as for any other absent fact.
+  if (!noValue(inputs.autographed)) push("Auto", inputs.autographed, "AUTO");
+  push("Relic", inputs.isRelic, "RELIC");
+  if (inputs.printRun != null) chips.push({ label: "Print run", value: `/${inputs.printRun}` });
+  push("Variation", inputs.cardVariation);
+  push("Rookie", inputs.isRookie, "RC");
+  if (!noValue(inputs.shortPrint)) push("Short print", inputs.shortPrint, "SP");
+  // One chip per team, matching the per-player treatment: a card can carry
+  // two, and "which of these is worth the characters" is the same judgement.
+  for (const name of inputs.teamNames ?? []) {
+    if (name) chips.push({ label: "Team", value: name });
+  }
+  push("Sport", inputs.sport);
+
+  return chips;
+}
+
+/** The builder's own description chips: year, maker, set, insert, parallel. */
+function pushDescription(
+  push: (label: string, value: unknown, whenTrue?: string) => void,
+  inputs: PreviewResult["inputs"],
+): void {
   push("Year", inputs.year);
   // NEO-272: a set whose brand NB has not identified gets NO Maker chip. The
   // generator leaves that manufacturer out of the title, so a chip naming it
@@ -141,50 +212,37 @@ export function titleSourceChips(inputs: PreviewResult["inputs"]): TitleSourceCh
   //
   // Keyed on the flag, never on the manufacturer's name.
   if (!inputs.manufacturerBrandUnknown) push("Maker", inputs.manufacturer);
-  // NEO-335 — the set and insert names, or the short name that stood in for
-  // both. Which one the title used is the generator's answer for these same
-  // inputs (`shortNameUsed`), never a guess from the title text.
-  const shortNameUsed =
-    !!inputs.setShortName?.trim() && assessListingTitle(inputs).shortNameUsed === true;
-  if (shortNameUsed) {
-    push("Short name", inputs.setShortName);
+  push("Set", inputs.setName);
+  // NEO-609 — one chip per level the title names, labelled with its variant
+  // type's own name (a level with no type above it has no label: the chip is
+  // just its name). The
+  // Base word is cut first and is no source fact worth a chip.
+  const levels = inputs.titleLevels?.filter((l) => !l.base);
+  if (levels) {
+    for (const level of levels) push(singularTypeName(level.typeName ?? ""), level.name);
   } else {
-    push("Set", inputs.setName);
     push("Insert", inputs.insertName);
   }
-  // One chip per player, not a joined string: on a multi-player card the names
-  // are what an operator weighs against each other when shortening.
-  for (const name of inputs.playerNames ?? []) {
-    if (name) chips.push({ label: "Player", value: name });
+  // NEO-535 — "Base" names no parallel (the Base kind's word, read through the
+  // role helper, never a literal), so a base card shows no Parallel chip. With
+  // levels, a parallel they already carry has its chip.
+  const parallel = inputs.parallelName?.trim();
+  const carried = levels?.some((l) => l.name.trim().toLowerCase() === parallel?.toLowerCase());
+  if (parallel && !carried && variantTypeKindFromTitle(parallel) !== "base") {
+    push("Parallel", parallel);
   }
-  if (inputs.cardNumber) chips.push({ label: "Number", value: `#${inputs.cardNumber}` });
-
-  // Then the optional tokens, in the priority the generator appends them:
-  // AUTO → RELIC → parallel → /printRun → variation → RC → SP/SSP → team(s) →
-  // sport. The last chips are therefore the first to be dropped when a title
-  // does not fit, which is the whole reason this row is ordered at all.
-  push("Auto", inputs.autographed, "AUTO");
-  push("Relic", inputs.isRelic, "RELIC");
-  push("Parallel", inputs.parallelName);
-  if (inputs.printRun != null) chips.push({ label: "Print run", value: `/${inputs.printRun}` });
-  push("Variation", inputs.cardVariation);
-  push("Rookie", inputs.isRookie, "RC");
-  push("Short print", inputs.shortPrint, "SP");
-  // One chip per team, matching the per-player treatment: a card can carry
-  // two, and "which of these is worth the characters" is the same judgement.
-  for (const name of inputs.teamNames ?? []) {
-    if (name) chips.push({ label: "Team", value: name });
-  }
-  push("Sport", inputs.sport);
-
-  return chips;
 }
 
 export type TitlePreview = {
   /** The source facts behind the last preview. Empty until one is fetched. */
   chips: TitleSourceChip[];
-  /** Tokens the generator had to drop to fit the cap. Empty until fetched. */
-  dropped: string[];
+  /**
+   * NEO-535 — "Left out to fit" for `text`, the title as it reads in the field
+   * NOW (the operator's own words included), from the card's facts. Empty
+   * until a preview is fetched; never the generator's own assessment, so
+   * retyping a cut word takes it off the note.
+   */
+  leftOutOf: (text: string) => string[];
   /** A regenerate is in flight (or its query has not resolved yet). */
   loading: boolean;
   /**
@@ -208,9 +266,6 @@ export function useTitlePreview(
   cardId: Id<"cardChecklist">,
   applyTitle: (title: string) => void,
 ): TitlePreview {
-  // Once true, stays true: the subscription is cheap to keep and expensive to
-  // re-establish, and the chips must survive after the title has been applied.
-  const [subscribed, setSubscribed] = useState(false);
   const [pending, setPending] = useState(false);
   const [confirming, setConfirming] = useState(false);
 
@@ -219,7 +274,7 @@ export function useTitlePreview(
   // this line instead of quietly rendering nothing.
   const preview: PreviewResult | undefined = useQuery(
     api.selectorOptions.previewListingTitle,
-    subscribed ? { cardId } : "skip",
+    { cardId },
   );
 
   useEffect(() => {
@@ -241,7 +296,6 @@ export function useTitlePreview(
         return;
       }
       setConfirming(false);
-      setSubscribed(true);
       setPending(true);
     },
     [confirming],
@@ -257,9 +311,15 @@ export function useTitlePreview(
     [preview],
   );
 
+  const inputs = preview?.inputs;
+  const leftOutOf = useCallback(
+    (text: string) => (inputs ? leftOutOfTitle(inputs, text.trim()) : []),
+    [inputs],
+  );
+
   return {
     chips,
-    dropped: preview?.dropped ?? [],
+    leftOutOf,
     loading: pending,
     confirming,
     request,

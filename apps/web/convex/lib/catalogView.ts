@@ -72,7 +72,27 @@ export const setRefValidator = v.object({
   sport: v.union(pathNodeValidator, v.null()),
   year: v.union(pathNodeValidator, v.null()),
   manufacturer: v.union(pathNodeValidator, v.null()),
+  /**
+   * NEO-527 (Jason, 2026-11-12: "a user should never see unknown outside of
+   * the admin screen") — true when `manufacturer` is the year's brand-unknown
+   * row (`metadata.isBrandUnknown`, read by the flag and never by its name).
+   * The node stays, because navigation needs its id, but its name is sent
+   * blank; every user-facing label leaves it out, as the listing title does
+   * (NEO-272).
+   */
+  manufacturerBrandUnknown: v.optional(v.literal(true)),
 });
+
+/**
+ * What a set reads as to a collector: its season, then its own name
+ * ("2024 Topps Chrome", "1996-97 Upper Deck"). The brand is not added: a
+ * set's name already carries it where collectors say it. The one wording for
+ * a set on the collection screens, the smart binder rule picker and its
+ * summary (NEO-528), so the chip and the "Takes …" line can't disagree.
+ */
+export function setLabel(set: { season: string; name: string }): string {
+  return `${set.season} ${set.name}`.trim();
+}
 
 /**
  * The card-bearing row a card hangs off (a variant type such as Base, an
@@ -141,6 +161,11 @@ export const catalogCardFields = {
   listingTitle: v.string(),
   players: v.array(cardPlayerValidator),
   teams: v.array(cardTeamValidator),
+  /**
+   * NEO-528 — players pictured on the card who are not its subject ("Also
+   * pictured"), never one of `players`. Absent when there are none.
+   */
+  secondaryPlayers: v.optional(v.array(cardPlayerValidator)),
 };
 export const catalogCardValidator = v.object(catalogCardFields);
 
@@ -238,13 +263,19 @@ export class CatalogReader {
     const set = chain?.get("setName");
     if (!chain || !set) return null;
     const year = chain.get("year");
+    const manufacturer = chain.get("manufacturer");
+    const brandUnknown = manufacturer?.metadata?.isBrandUnknown === true;
     return {
       _id: set._id,
       name: set.value,
       season: set.features?.season ?? year?.value ?? "",
       sport: node(chain.get("sport")),
       year: node(year),
-      manufacturer: node(chain.get("manufacturer")),
+      // NEO-527: the brand-unknown row keeps its id (navigation needs it) but
+      // never sends its name, so no reply (the anonymous public one included)
+      // carries it, whatever a client does with the flag.
+      manufacturer: manufacturer && brandUnknown ? { _id: manufacturer._id, name: "" } : node(manufacturer),
+      ...(brandUnknown ? { manufacturerBrandUnknown: true as const } : {}),
     };
   }
 
@@ -305,6 +336,17 @@ export class CatalogReader {
         ...(printed && printed !== p.name ? { nameOnCard: printed } : {}),
       });
     }
+    // NEO-528 — "Also pictured": the card's cameos, minus anyone it already
+    // carries as its own player (a later edit can make a cameo the subject).
+    const secondaryPlayers: NonNullable<CatalogCard["secondaryPlayers"]> = [];
+    for (const playerId of card.secondaryPlayerIds ?? []) {
+      if (seenPlayers.has(playerId as string)) continue;
+      if ((card.playerIds ?? []).includes(playerId)) continue;
+      seenPlayers.add(playerId as string);
+      const p = await this.player(playerId);
+      if (!p) continue;
+      secondaryPlayers.push({ _id: p._id, name: p.name });
+    }
     const seenTeams = new Set<string>();
     const teams: CatalogCard["teams"] = [];
     for (const teamId of card.teamOnCardIds ?? []) {
@@ -336,6 +378,7 @@ export class CatalogReader {
       listingTitle: card.listingTitle,
       players,
       teams,
+      ...(secondaryPlayers.length > 0 ? { secondaryPlayers } : {}),
     };
   }
 

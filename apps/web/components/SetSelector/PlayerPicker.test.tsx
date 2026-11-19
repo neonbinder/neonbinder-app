@@ -38,6 +38,8 @@ vi.mock("../../convex/_generated/api", () => ({
       search: "players.search",
       // NEO-313: PlayerGuestTag's "is this really a guest?" read.
       getByIdParam: "players.getByIdParam",
+      // NEO-463: the one-word fragment pre-check behind "+ Create".
+      nameFragmentCheck: "players.nameFragmentCheck",
     },
     // NEO-313: SportTagById and the popover's SportSwitch both read the sport
     // list to render (a tag's label, the switch's option list).
@@ -60,6 +62,9 @@ let currentSearchResults: unknown;
 /** NEO-313 — `players.getByIdParam`, keyed by the id the guest tag asked for. */
 let currentPlayerById: Map<string, { alsoSportIds?: unknown[] }>;
 const mockFindOrCreate = vi.fn();
+/** NEO-463 — `players.nameFragmentCheck`'s answer; undefined = not answered. */
+let currentFragmentCheck: unknown;
+let lastFragmentArgs: unknown;
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
@@ -72,6 +77,11 @@ vi.mock("convex/react", () => ({
       return currentPlayerById.get(id);
     }
     if (ref === "selectorOptions.getSelectorOptions") return currentSports;
+    if (ref === "players.nameFragmentCheck") {
+      if (args === "skip") return undefined;
+      lastFragmentArgs = args;
+      return currentFragmentCheck;
+    }
     return undefined;
   },
   useMutation: (ref: string) =>
@@ -83,6 +93,16 @@ vi.mock("convex/react", () => ({
 // ---------------------------------------------------------------------------
 
 import PlayerPicker from "./PlayerPicker";
+import {
+  ALSO_PICTURED_PICKER_LABELS,
+  EVERY_CARD_PLAYER_ACTION_LABELS,
+  EVERY_CARD_PLAYER_PICKER_LABELS,
+  PLAYER_ON_EVERY_CARD_HEADING,
+  ALSO_ON_THIS_CARD_HEADING,
+  DEFAULT_PLAYER_PICKER_LABELS,
+  REMOVE_UNNAMED_PLAYER,
+  type ResolvedPlayerPickerLabels,
+} from "./player-picker-labels";
 import type { Id } from "../../convex/_generated/dataModel";
 
 // NEO-96: pickers take the sport-level selectorOptions ROW ID now, not a
@@ -142,6 +162,8 @@ describe("PlayerPicker", () => {
     currentSports = [];
     currentSearchResults = undefined;
     currentPlayerById = new Map();
+    currentFragmentCheck = undefined;
+    lastFragmentArgs = undefined;
     mockFindOrCreate.mockResolvedValue(pid("new-player-1"));
   });
 
@@ -166,6 +188,30 @@ describe("PlayerPicker", () => {
     renderPicker({ value: [pid("p1")] });
 
     expect(screen.getByLabelText("Player: Loading…")).toBeTruthy();
+  });
+
+  it("names a not-yet-loaded chip's × plainly, never by its raw id (NEO-528)", () => {
+    currentSelectedRows = undefined;
+    for (const labels of [undefined, EVERY_CARD_PLAYER_PICKER_LABELS]) {
+      const { unmount } = renderPicker({ value: [pid("k17abc")], labels });
+      const x = screen.getByRole("button", { name: REMOVE_UNNAMED_PLAYER });
+      expect(x.getAttribute("aria-label")).not.toContain("k17abc");
+      expect(document.body.textContent).not.toContain("k17abc");
+      unmount();
+    }
+    expect(REMOVE_UNNAMED_PLAYER).toBe("Remove this player");
+  });
+
+  it("draws a chip filled by default, and outlined (no chip fill) when asked (NEO-528)", () => {
+    currentSelectedRows = [makePlayer("p1", "Mike Trout")];
+    const { unmount } = renderPicker({ value: [pid("p1")] });
+    const filled = screen.getByLabelText("Player: Mike Trout").parentElement!;
+    expect(filled.className.split(/\s+/)).toContain("bg-chip");
+    unmount();
+    renderPicker({ value: [pid("p1")], chipLook: "outline" });
+    const outlined = screen.getByLabelText("Player: Mike Trout").parentElement!;
+    expect(outlined.className.split(/\s+/)).not.toContain("bg-chip");
+    expect(outlined.className.split(/\s+/)).toEqual(expect.arrayContaining(["border", "border-control"]));
   });
 
   it("clicking a chip's × button removes it via onChange", () => {
@@ -953,5 +999,475 @@ describe("PlayerPicker — the popover escapes its clip box (NEO-272)", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(document.activeElement).toBe(screen.getByLabelText("Add player"));
+  });
+  // -------------------------------------------------------------------------
+  // NEO-463 — a one-word name that is a piece of a fuller one on file
+  // -------------------------------------------------------------------------
+
+  describe("NEO-463 name fragment", () => {
+    const WALKER = {
+      isFragment: true,
+      matches: [{ _id: "p-devin", name: "Devin Walker" }],
+    };
+
+    function typeAndCreate(name: string) {
+      openPopover();
+      fireEvent.change(screen.getByLabelText("Search players"), {
+        target: { value: name },
+      });
+      fireEvent.click(screen.getByLabelText(`Create player ${name}`));
+    }
+
+    it("asks the check about the name Create would add, in the searched sport", () => {
+      currentFragmentCheck = WALKER;
+      renderPicker();
+      openPopover();
+      fireEvent.change(screen.getByLabelText("Search players"), {
+        target: { value: "Walker" },
+      });
+      expect(lastFragmentArgs).toEqual({ name: "Walker", sportId: SPORT_ID });
+    });
+
+    it("stops Create on a fragment and shows the panel, focused, without writing", async () => {
+      currentFragmentCheck = WALKER;
+      renderPicker();
+      typeAndCreate("Walker");
+
+      const panel = screen.getByRole("group", {
+        name: "Just Walker? We've got Devin Walker. Pick one, or add Walker as a one-name player.",
+      });
+      expect(panel).toBeTruthy();
+      expect(document.activeElement).toBe(panel);
+      expect(mockFindOrCreate).not.toHaveBeenCalled();
+      // The typeahead rows step aside while the panel answers.
+      expect(screen.queryByLabelText("Create player Walker")).toBeNull();
+    });
+
+    it("does not show the panel for a name the check says is not a fragment", async () => {
+      currentFragmentCheck = { isFragment: false, matches: [] };
+      renderPicker();
+      typeAndCreate("Ichiro");
+
+      expect(screen.queryByRole("group", { name: /^Just Ichiro\?/ })).toBeNull();
+      await waitFor(() => {
+        expect(mockFindOrCreate).toHaveBeenCalledWith({
+          name: "Ichiro",
+          sportId: SPORT_ID,
+        });
+      });
+    });
+
+    it("a link choice adds the existing fuller-named player and creates nothing", async () => {
+      currentFragmentCheck = WALKER;
+      const { onChange } = renderPicker();
+      typeAndCreate("Walker");
+
+      fireEvent.click(screen.getByRole("button", { name: "Add Devin Walker" }));
+
+      expect(onChange).toHaveBeenCalledWith([pid("p-devin")]);
+      expect(mockFindOrCreate).not.toHaveBeenCalled();
+    });
+
+    it("'Add as a one-name player' creates with oneNamePlayer: true and adds the chip", async () => {
+      currentFragmentCheck = WALKER;
+      mockFindOrCreate.mockResolvedValue(pid("p-walker"));
+      const { onChange } = renderPicker();
+      typeAndCreate("Walker");
+
+      fireEvent.click(screen.getByRole("button", { name: "Add as a one-name player" }));
+
+      await waitFor(() => {
+        expect(mockFindOrCreate).toHaveBeenCalledWith({
+          name: "Walker",
+          sportId: SPORT_ID,
+          oneNamePlayer: true,
+        });
+      });
+      await waitFor(() => {
+        expect(onChange).toHaveBeenCalledWith([pid("p-walker")]);
+      });
+    });
+
+    it("opens the panel from the server's PLAYER_NAME_FRAGMENT refusal when the check had not answered", async () => {
+      currentFragmentCheck = undefined;
+      mockFindOrCreate.mockRejectedValue(
+        new ConvexError({
+          code: "PLAYER_NAME_FRAGMENT",
+          message: "Walker is part of a player NeonBinder already has.",
+          matches: [{ _id: "p-devin", name: "Devin Walker" }],
+        }),
+      );
+      renderPicker();
+      typeAndCreate("Walker");
+
+      expect(
+        await screen.findByRole("group", { name: /^Just Walker\? We've got Devin Walker\./ }),
+      ).toBeTruthy();
+      // The refusal is the panel, not an error line.
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+
+    it("Escape in the panel shuts it and hands focus back to the search box", async () => {
+      currentFragmentCheck = WALKER;
+      renderPicker();
+      typeAndCreate("Walker");
+
+      const panel = screen.getByRole("group", { name: /^Just Walker\?/ });
+      fireEvent.keyDown(panel, { key: "Escape" });
+
+      expect(screen.queryByRole("group", { name: /^Just Walker\?/ })).toBeNull();
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(document.activeElement).toBe(screen.getByLabelText("Search players"));
+    });
+
+    it("typing shuts the panel: it was about the old name", () => {
+      currentFragmentCheck = WALKER;
+      renderPicker();
+      typeAndCreate("Walker");
+
+      fireEvent.change(screen.getByLabelText("Search players"), {
+        target: { value: "Walke" },
+      });
+      fireEvent.change(screen.getByLabelText("Search players"), {
+        target: { value: "Walker" },
+      });
+      expect(screen.queryByRole("group", { name: /^Just Walker\?/ })).toBeNull();
+    });
+
+    it("a truncated read asks for the whole name, lists no choices, and keeps the one-name button", () => {
+      currentFragmentCheck = { isFragment: true, truncated: true, matches: [] };
+      renderPicker();
+      typeAndCreate("Walker");
+
+      const panel = screen.getByRole("group", {
+        name: "Just Walker? That's part of a fuller name we've got. Type the whole name to find them, or add Walker as a one-name player.",
+      });
+      expect(panel).toBeTruthy();
+      expect(screen.queryByRole("list", { name: "Fuller names for Walker" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Add as a one-name player" })).toBeTruthy();
+      expect(mockFindOrCreate).not.toHaveBeenCalled();
+    });
+
+    it("tells two players with one name apart by birth year, beside each choice", () => {
+      currentFragmentCheck = {
+        isFragment: true,
+        truncated: false,
+        matches: [
+          { _id: "p-devin-1", name: "Devin Walker", birthYear: 1975 },
+          { _id: "p-devin-2", name: "Devin Walker", birthYear: 1991 },
+          { _id: "p-larry", name: "Larry Walker", birthYear: 1966 },
+        ],
+      };
+      const { onChange } = renderPicker();
+      typeAndCreate("Walker");
+
+      const older = screen.getByRole("button", { name: "Add Devin Walker, b. 1975" });
+      expect(older.textContent).toContain("b. 1975");
+      expect(screen.getByRole("button", { name: "Add Devin Walker, b. 1991" })).toBeTruthy();
+      // A name that appears once keeps the bare contract label and no detail.
+      const larry = screen.getByRole("button", { name: "Add Larry Walker" });
+      expect(larry.textContent).toBe("Larry Walker");
+
+      fireEvent.click(screen.getByRole("button", { name: "Add Devin Walker, b. 1991" }));
+      expect(onChange).toHaveBeenCalledWith([pid("p-devin-2")]);
+    });
+
+    it("falls back to the choice's position when a repeated name has no birth year", () => {
+      currentFragmentCheck = {
+        isFragment: true,
+        truncated: false,
+        matches: [
+          { _id: "p-devin-1", name: "Devin Walker" },
+          { _id: "p-devin-2", name: "Devin Walker" },
+        ],
+      };
+      renderPicker();
+      typeAndCreate("Walker");
+
+      expect(
+        screen.getByRole("button", { name: "Add Devin Walker, option 1 of 2" }),
+      ).toBeTruthy();
+      expect(
+        screen.getByRole("button", { name: "Add Devin Walker, option 2 of 2" }),
+      ).toBeTruthy();
+    });
+
+    it("an undated twin beside a dated one says it has no birth year", () => {
+      currentFragmentCheck = {
+        isFragment: true,
+        truncated: false,
+        matches: [
+          { _id: "p-devin-1", name: "Devin Walker", birthYear: 1975 },
+          { _id: "p-devin-2", name: "Devin Walker" },
+        ],
+      };
+      renderPicker();
+      typeAndCreate("Walker");
+
+      expect(screen.getByRole("button", { name: "Add Devin Walker, b. 1975" })).toBeTruthy();
+      expect(
+        screen.getByRole("button", { name: "Add Devin Walker, no birth year" }),
+      ).toBeTruthy();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-528 — every rendered name is overridable, and the sets never overlap
+// ---------------------------------------------------------------------------
+
+describe("PlayerPicker — label sets (NEO-528)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentSelectedRows = [];
+    currentCandidates = [];
+    currentSports = [];
+    currentSearchResults = undefined;
+    currentPlayerById = new Map();
+    currentFragmentCheck = undefined;
+    mockFindOrCreate.mockResolvedValue(pid("new-player-1"));
+  });
+
+  /**
+   * The quick-add form's container names (`QUICK_ADD_PLAYER_LABELS`, a
+   * module constant in CardChecklist.tsx), restated: it is on the Set
+   * Builder page with all three of the sets below.
+   */
+  const QUICK_ADD_CONTAINER = [
+    "Players on the new card",
+    "Add a player to the new card",
+    "Find a player for the new card",
+    "Player results for the new card",
+  ];
+
+  /**
+   * NEO-528 — the headings the two reworded pickers sit under, and the card
+   * drawer's other "Also …" section. A spec finds a heading by its text, so
+   * no picker name may contain one (or sit inside one) either.
+   */
+  const HEADINGS = [ALSO_ON_THIS_CARD_HEADING, PLAYER_ON_EVERY_CARD_HEADING, "Also appears in"];
+
+  /**
+   * NEO-277 — the Attributes panel's Team picker (`SET_TEAM_PICKER_LABELS` in
+   * SetAttributesPanel.tsx, pinned there), restated: it sits directly above
+   * "Player on every card", so no name here may contain one of its names or
+   * sit inside one. Restated rather than imported, as the quick-add set is:
+   * importing the panel would pull its whole module graph into this file.
+   */
+  const SET_TEAM_PICKER = ["Whole-set team", "Add set team", "Find a team for the set", "Set team matches"];
+
+  /**
+   * NEO-528 — the "Player on every card" section's own names beside its
+   * picker: the two actions and the × on each stored chip.
+   */
+  function everyCardActionNames(name: string): string[] {
+    const A = EVERY_CARD_PLAYER_ACTION_LABELS;
+    return [A.addPlayer, A.addCameo, A.stopPlayer(name), A.stopCameo(name)];
+  }
+
+  /** Every accessible name a set produces, for a sample name. */
+  function namesOf(labels: ResolvedPlayerPickerLabels, name: string): string[] {
+    return [
+      labels.root,
+      labels.trigger,
+      labels.search,
+      labels.results,
+      labels.placeholder,
+      labels.sportSwitch,
+      labels.chip(name),
+      labels.remove(name),
+      labels.option(name),
+      labels.create(name),
+    ];
+  }
+
+  const SETS: Array<[string, ResolvedPlayerPickerLabels]> = [
+    ["default", DEFAULT_PLAYER_PICKER_LABELS],
+    ["also pictured", ALSO_PICTURED_PICKER_LABELS],
+    ["every card", EVERY_CARD_PLAYER_PICKER_LABELS],
+  ];
+
+  // A chip always carries a name, or the "Loading…" stand-in.
+  it.each(["Dan Marino", "Al", "Loading…"])(
+    "no name in one set contains, or is contained by, a name in another (sample %j)",
+    (sample) => {
+      const all: Array<[string, string]> = [];
+      for (const [set, labels] of SETS) {
+        for (const n of namesOf(labels, sample)) all.push([set, n.toLowerCase()]);
+      }
+      for (const n of QUICK_ADD_CONTAINER) all.push(["quick add", n.toLowerCase()]);
+      for (const n of SET_TEAM_PICKER) all.push(["set team", n.toLowerCase()]);
+      for (const n of everyCardActionNames(sample)) all.push(["every card actions", n.toLowerCase()]);
+      // Each heading is its own group: they must stay apart from each other too.
+      for (const n of HEADINGS) all.push([`heading ${n}`, n.toLowerCase()]);
+      for (const [setA, a] of all) {
+        for (const [setB, b] of all) {
+          if (setA === setB) continue;
+          // A bare sample name inside both is fine; the FIXED words must differ.
+          if (a.includes(b) || b.includes(a)) {
+            throw new Error(`"${a}" (${setA}) and "${b}" (${setB}) overlap`);
+          }
+        }
+      }
+    },
+  );
+
+  it("the card drawer's set reads as the E2E specs target it (NEO-528)", () => {
+    const L = ALSO_PICTURED_PICKER_LABELS;
+    expect(ALSO_ON_THIS_CARD_HEADING).toBe("Also on this card");
+    expect(PLAYER_ON_EVERY_CARD_HEADING).toBe("Player on every card");
+    expect([L.root, L.trigger, L.triggerText, L.search, L.results, L.placeholder, L.emptyHint, L.sportSwitch]).toEqual([
+      "Others on this card",
+      "Add someone else to this card",
+      "Add someone else",
+      "Find someone else for this card",
+      "Someone-else matches",
+      "Who else is on this card?",
+      "Type a name…",
+      "Sport for finding someone else",
+    ]);
+    expect([L.chip("Dan Marino"), L.remove("Dan Marino"), L.option("Dan Marino"), L.create("Dan Marino")]).toEqual([
+      "On this card too: Dan Marino",
+      "Take Dan Marino off this card's cameos",
+      "Include Dan Marino",
+      "Create and include Dan Marino",
+    ]);
+  });
+
+  it("the Player on every card names read as the E2E specs target them (NEO-528)", () => {
+    const P = EVERY_CARD_PLAYER_PICKER_LABELS;
+    const A = EVERY_CARD_PLAYER_ACTION_LABELS;
+    expect([P.root, P.trigger, P.triggerText, P.search, P.results, P.placeholder, P.sportSwitch]).toEqual([
+      "Every-card pick",
+      "Choose who goes on every card",
+      "Choose who",
+      "Find who goes on every card",
+      "Every-card matches",
+      "Who's on every card?",
+      "Sport for the every-card search",
+    ]);
+    expect([P.chip("Al"), P.remove("Al"), P.option("Al"), P.create("Al")]).toEqual([
+      "Chosen for every card: Al",
+      "Clear Al as the choice",
+      "Choose Al",
+      "Create and choose Al",
+    ]);
+    expect([A.addPlayer, A.addCameo, A.stopPlayer("Al"), A.stopCameo("Al")]).toEqual([
+      "Add to every card",
+      "Add as cameo",
+      "Stop putting Al on new cards",
+      "Stop adding Al as a cameo on new cards",
+    ]);
+  });
+
+  it("each override set keeps its visible trigger text inside the trigger's name (SC 2.5.3)", () => {
+    for (const [, labels] of SETS) {
+      expect(labels.trigger.toLowerCase()).toContain(labels.triggerText.toLowerCase());
+    }
+  });
+
+  it("draws the + Add trigger as a 24px target for every caller (WCAG 2.5.8)", () => {
+    renderPicker();
+    const trigger = screen.getByRole("button", { name: "Add player" });
+    expect(trigger.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-h-6", "inline-flex", "items-center"]));
+    // Compact everywhere unless a caller asks for the phone size.
+    expect(trigger.className).not.toContain("max-md:");
+  });
+
+  it("roomyTriggerOnPhones grows the trigger to a 32px, text-sm target below 768px only", () => {
+    renderPicker({ roomyTriggerOnPhones: true });
+    const classes = screen.getByRole("button", { name: "Add player" }).className.split(/\s+/);
+    expect(classes).toEqual(
+      expect.arrayContaining(["min-h-6", "text-xs", "max-md:min-h-8", "max-md:px-3", "max-md:text-sm"]),
+    );
+  });
+
+  it("with no labels, renders exactly the names the existing specs target", () => {
+    currentSelectedRows = [makePlayer("p1", "Mike Trout")];
+    currentCandidates = [makePlayer("p2", "Mookie Betts")];
+    renderPicker({ value: [pid("p1")] });
+
+    expect(screen.getByLabelText("Player picker")).toBeTruthy();
+    expect(screen.getByLabelText("Player: Mike Trout")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remove player Mike Trout" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add player" }).textContent).toBe("+ Add player");
+
+    fireEvent.click(screen.getByLabelText("Add player"));
+    const search = screen.getByRole("textbox", { name: "Search players" });
+    expect(search.getAttribute("placeholder")).toBe("Search or add a player...");
+    fireEvent.change(search, { target: { value: "Moo" } });
+    expect(screen.getByRole("option", { name: "Add Mookie Betts" })).toBeTruthy();
+    fireEvent.change(search, { target: { value: "Zed Brandnew" } });
+    expect(screen.getByRole("option", { name: "Create player Zed Brandnew" })).toBeTruthy();
+  });
+
+  it("with the also-pictured set, renders that set's names on every control and none of the defaults", () => {
+    const L = ALSO_PICTURED_PICKER_LABELS;
+    currentSelectedRows = [makePlayer("p1", "Mike Trout")];
+    currentCandidates = [makePlayer("p2", "Mookie Betts")];
+    currentSports = [{ _id: SPORT_ID, value: "Baseball" }];
+    renderPicker({ value: [pid("p1")], labels: L, ariaDescribedBy: "hint-1" });
+
+    expect(screen.getByLabelText(L.root)).toBeTruthy();
+    expect(screen.getByLabelText(L.chip("Mike Trout"))).toBeTruthy();
+    expect(screen.getByRole("button", { name: L.remove("Mike Trout") })).toBeTruthy();
+    const trigger = screen.getByRole("button", { name: L.trigger });
+    expect(trigger.textContent).toBe(`+ ${L.triggerText}`);
+    expect(trigger.getAttribute("aria-describedby")).toBe("hint-1");
+
+    fireEvent.click(trigger);
+    const search = screen.getByRole("textbox", { name: L.search });
+    expect(search.getAttribute("placeholder")).toBe(L.placeholder);
+    expect(screen.getByRole("listbox", { name: L.results })).toBeTruthy();
+    fireEvent.change(search, { target: { value: "Moo" } });
+    expect(screen.getByRole("option", { name: L.option("Mookie Betts") })).toBeTruthy();
+    fireEvent.change(search, { target: { value: "Zed Brandnew" } });
+    expect(screen.getByRole("option", { name: L.create("Zed Brandnew") })).toBeTruthy();
+    expect(screen.getByRole("button", { name: `${L.sportSwitch}: Baseball` })).toBeTruthy();
+
+    // None of the default names is on screen.
+    for (const name of [
+      "Player picker",
+      "Player: Mike Trout",
+      "Remove player Mike Trout",
+      "Add player",
+      "Search players",
+      "Player typeahead results",
+      "Add Mookie Betts",
+      "Create player Zed Brandnew",
+    ]) {
+      expect(screen.queryByLabelText(name)).toBeNull();
+    }
+    expect(screen.queryByText("+ Add player")).toBeNull();
+  });
+
+  it("shows the set's own hint under an empty search box", () => {
+    const L = ALSO_PICTURED_PICKER_LABELS;
+    renderPicker({ labels: L });
+    fireEvent.click(screen.getByRole("button", { name: L.trigger }));
+    expect(screen.getByText(L.emptyHint)).toBeTruthy();
+    expect(screen.queryByText("Type a player name…")).toBeNull();
+  });
+
+  it("the fragment panel's pick uses the set's option wording", async () => {
+    const L = ALSO_PICTURED_PICKER_LABELS;
+    currentCandidates = [];
+    currentFragmentCheck = {
+      isFragment: true,
+      truncated: false,
+      matches: [{ _id: "p9", name: "Devin Walker" }],
+    };
+    renderPicker({ labels: L });
+    fireEvent.click(screen.getByRole("button", { name: L.trigger }));
+    fireEvent.change(screen.getByRole("textbox", { name: L.search }), {
+      target: { value: "Walker" },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("option", { name: L.create("Walker") }));
+    });
+    expect(await screen.findByRole("button", { name: L.option("Devin Walker") })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Add Devin Walker" })).toBeNull();
   });
 });

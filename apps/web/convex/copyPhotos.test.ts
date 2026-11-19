@@ -10,11 +10,13 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
+import { MAX_LINES_PER_CARD } from "./collection";
 import { MAX_COPY_PHOTO_BYTES, MAX_COPY_PHOTO_UPLOADS_PER_HOUR, PHOTO_HOLD_MS, copyPhotoObjectKey } from "./copyPhotos";
 import schema from "./schema";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
+import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import type { Id } from "./_generated/dataModel";
 
 const modules = (import.meta as unknown as {
@@ -24,9 +26,28 @@ const modules = (import.meta as unknown as {
 const ME = { subject: "collector_me_001" };
 const THEM = { subject: "collector_them_002" };
 
+/**
+ * Every convex-test instance a test made. `convex-test` starts a `runAfter(0)`
+ * job (every photo delete schedules `deleteObjects`) in the background the
+ * moment it is scheduled and never waits for it. A job a test left behind could
+ * start late, under load, inside a LATER test that had switched R2 on and
+ * stubbed `fetch` (NEO-466's), and its DELETE landed among that test's
+ * recorded HEADs (NEO-567). So each test settles its own instance before the
+ * next begins.
+ */
+let instances: Array<ReturnType<typeof convexTest>> = [];
+afterEach(async () => {
+  // A test that threw between `useFakeTimers` and `useRealTimers` must not leave its clock behind.
+  vi.useRealTimers();
+  const settle = instances;
+  instances = [];
+  for (const t of settle) await drainScheduled(t);
+});
+
 async function setup() {
   vi.stubEnv("CONVEX_SITE_URL", "https://example.convex.site");
   const t = convexTest(schema, modules);
+  instances.push(t);
   const fx = await seedCollectionCatalog(t);
   return { t, fx, me: t.withIdentity(ME), them: t.withIdentity(THEM) };
 }
@@ -129,6 +150,136 @@ describe("upload", () => {
       }
     });
     await expect(photograph(s, copyId, "back")).rejects.toThrow(/a lot of photos/);
+  });
+
+  test("NEO-427: a scanned pair's photos are outside the hourly cap, and don't eat into it", async () => {
+    const s = await setup();
+    const copyId = await addCopy(s);
+    const seed = (source: "intake" | undefined, count: number, prefix: string) =>
+      s.t.run(async (ctx) => {
+        for (let i = 0; i < count; i++) {
+          await ctx.db.insert("collectionCopyPhotos", {
+            ownerId: ME.subject,
+            copyId,
+            side: "front",
+            token: `${prefix}${i}`,
+            contentType: "image/jpeg",
+            imageBytes: 1,
+            thumbBytes: 1,
+            status: "pending",
+            since: Date.now(),
+            ...(source ? { source } : {}),
+          });
+        }
+      });
+    const reserve = (source?: "intake") =>
+      s.t.mutation(internal.copyPhotos.reserveUpload, {
+        ownerId: ME.subject,
+        copyId,
+        side: "front",
+        contentType: "image/jpeg",
+        imageBytes: 10,
+        thumbBytes: 10,
+        ...(source ? { source } : {}),
+      });
+    // A full hour of scanned photos: a hand upload still goes through...
+    await seed("intake", MAX_COPY_PHOTO_UPLOADS_PER_HOUR, "scan");
+    await expect(reserve()).resolves.toBeTruthy();
+    // ...up to the cap, which then stops hands and never stops the scans.
+    await seed(undefined, MAX_COPY_PHOTO_UPLOADS_PER_HOUR, "hand");
+    await expect(reserve()).rejects.toThrow(/a lot of photos/);
+    const { photoId } = await reserve("intake");
+    expect((await s.t.run((ctx) => ctx.db.get(photoId)))?.source).toBe("intake");
+  });
+
+  test("NEO-427: a hand photo going live between a scanner's reserve and commit stays; the scanner's row goes", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      const s = await setup();
+      const copyId = await addCopy(s);
+      const { photoId: scanned, token } = await s.t.mutation(internal.copyPhotos.reserveUpload, {
+        ownerId: ME.subject,
+        copyId,
+        side: "front",
+        contentType: "image/jpeg",
+        imageBytes: 300_000,
+        thumbBytes: 20_000,
+        source: "intake",
+      });
+      const hand = await photograph(s, copyId, "front");
+      await expect(
+        s.t.mutation(internal.copyPhotos.commitUpload, { ownerId: ME.subject, photoId: scanned }),
+      ).resolves.toBeNull();
+      const { kept, gone, queued } = await s.t.run(async (ctx) => ({
+        kept: await ctx.db.get(hand),
+        gone: await ctx.db.get(scanned),
+        queued: await ctx.db.system.query("_scheduled_functions").collect(),
+      }));
+      expect(kept?.status).toBe("live");
+      expect(gone).toBeNull();
+      // Its files go with it.
+      const deletes = queued.filter((f) => f.name.includes("deleteObjects"));
+      expect(deletes.flatMap((f) => (f.args[0] as { keys: string[] }).keys)).toEqual([
+        copyPhotoObjectKey(token, "image", "image/jpeg"),
+        copyPhotoObjectKey(token, "thumb", "image/jpeg"),
+      ]);
+      await cancelScheduled(s.t as never);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("NEO-427: a collector cannot mark their own upload as a scanner's to dodge the cap", async () => {
+    const s = await setup();
+    const copyId = await addCopy(s);
+    await expect(
+      s.me.action(api.copyPhotos.startUpload, {
+        copyId,
+        side: "front",
+        contentType: "image/jpeg",
+        imageBytes: 10,
+        thumbBytes: 10,
+        source: "intake",
+      } as never),
+    ).rejects.toThrow();
+    expect(await photoRows(s)).toEqual([]);
+  });
+
+  test("NEO-427: hand uploads made before the field existed (no source) still count toward the cap", async () => {
+    const s = await setup();
+    const copyId = await addCopy(s);
+    await s.t.run(async (ctx) => {
+      for (let i = 0; i < MAX_COPY_PHOTO_UPLOADS_PER_HOUR; i++) {
+        await ctx.db.insert("collectionCopyPhotos", {
+          ownerId: ME.subject,
+          copyId,
+          side: "back",
+          token: `old${i}`,
+          contentType: "image/jpeg",
+          imageBytes: 1,
+          thumbBytes: 1,
+          status: "replaced",
+          since: Date.now(),
+        });
+      }
+    });
+    await expect(photograph(s, copyId, "front")).rejects.toThrow(/a lot of photos/);
+  });
+
+  test("NEO-427: with the side free, a scanner's photo goes live", async () => {
+    const s = await setup();
+    const copyId = await addCopy(s);
+    const { photoId } = await s.t.mutation(internal.copyPhotos.reserveUpload, {
+      ownerId: ME.subject,
+      copyId,
+      side: "front",
+      contentType: "image/jpeg",
+      imageBytes: 300_000,
+      thumbBytes: 20_000,
+      source: "intake",
+    });
+    await s.t.mutation(internal.copyPhotos.commitUpload, { ownerId: ME.subject, photoId });
+    expect((await s.t.run((ctx) => ctx.db.get(photoId)))?.status).toBe("live");
   });
 
   test("replacing one side over and over still meets the hourly cap", async () => {
@@ -264,6 +415,60 @@ describe("folds, removes and undo", () => {
     expect(second).not.toBe(copyId);
   });
 
+  test("NEO-431: an add whose photos follow it keeps its own line and pocket; a plain add still stacks", async () => {
+    const s = await setup();
+    const details = { quantity: 1, acquiredOn: "2026-11-01" };
+    const plain = await addCopy(s, details);
+    const own = await s.me.mutation(api.collection.addLineItem, {
+      cardId: s.fx.gooden1,
+      details,
+      keepsOwnLine: true,
+    });
+    expect(own.merged).toBe(false);
+    expect(own.copyId).not.toBe(plain);
+    const [first, second] = [await copyRow(s, plain), await copyRow(s, own.copyId)];
+    expect(first?.quantity).toBe(1);
+    // Not the twin's pocket, which would be refused as taken.
+    expect(second?.slot).not.toBe(first?.slot);
+    expect(second?.hasPhotos).toBeUndefined();
+
+    const again = await s.me.mutation(api.collection.addLineItem, { cardId: s.fx.gooden1, details });
+    expect(again).toMatchObject({ copyId: plain, merged: true });
+  });
+
+  test("NEO-431: a box has no pockets, and keepsOwnLine still starts a line there", async () => {
+    const s = await setup();
+    const { containerId: box } = await s.me.mutation(api.collectionContainers.create, { kind: "box", name: "Show" });
+    const details = { quantity: 1, homeId: box, acquiredOn: "2026-11-01" };
+    const plain = await addCopy(s, details);
+    const own = await s.me.mutation(api.collection.addLineItem, {
+      cardId: s.fx.gooden1,
+      details,
+      keepsOwnLine: true,
+    });
+    expect(own.merged).toBe(false);
+    expect(own.copyId).not.toBe(plain);
+  });
+
+  test("NEO-431: keepsOwnLine on a card at the line limit is refused and writes nothing", async () => {
+    const s = await setup();
+    const copyId = await addCopy(s, { acquiredOn: "2026-11-01" });
+    const row = await copyRow(s, copyId);
+    await s.t.run(async (ctx) => {
+      const { _id, _creationTime, ...rest } = row!;
+      for (let i = 1; i < MAX_LINES_PER_CARD; i++) await ctx.db.insert("collectionCopies", { ...rest, slot: 1000 + i });
+    });
+    await expect(
+      s.me.mutation(api.collection.addLineItem, {
+        cardId: s.fx.gooden1,
+        details: { quantity: 1, acquiredOn: "2026-11-01" },
+        keepsOwnLine: true,
+      }),
+    ).rejects.toThrow(/lines of this card/);
+    const lines = await s.t.run((ctx) => ctx.db.query("collectionCopies").collect());
+    expect(lines).toHaveLength(MAX_LINES_PER_CARD);
+  });
+
   test("moving a whole photographed line keeps its photos and never stacks on a twin", async () => {
     const s = await setup();
     const { containerId: binder } = await s.me.mutation(api.collectionContainers.create, { kind: "binder", name: "B" });
@@ -319,6 +524,61 @@ describe("folds, removes and undo", () => {
     expect((await photoRows(s))[0].status).toBe("detached");
   });
 
+  test("NEO-431: a replayed Undo refuses on a photo that is already live, and writes nothing", async () => {
+    const s = await setup();
+    const copyId = await addCopy(s);
+    await photograph(s, copyId, "front");
+    const { removed } = await s.me.mutation(api.collection.removeCopy, { copyId });
+    const { copyId: back } = await s.me.mutation(api.collection.restoreCopy, removed);
+    await expect(s.me.mutation(api.collection.restoreCopy, removed)).rejects.toThrow(/already back on a line/);
+    const lines = await s.t.run(async (ctx) => await ctx.db.query("collectionCopies").collect());
+    expect(lines.map((line) => line._id)).toEqual([back]);
+    expect((await photoRows(s)).map((photo) => photo.copyId)).toEqual([back]);
+  });
+
+  test("NEO-431: an Undo naming the caller's pending or replaced photo skips it and the line comes back bare", async () => {
+    const s = await setup();
+    const copyId = await addCopy(s);
+    const replaced = await photograph(s, copyId, "front");
+    await photograph(s, copyId, "front");
+    const { photoId: pending } = await s.t.mutation(internal.copyPhotos.reserveUpload, {
+      ownerId: ME.subject,
+      copyId,
+      side: "back",
+      contentType: "image/jpeg",
+      imageBytes: 300_000,
+      thumbBytes: 20_000,
+    });
+    const other = await addCopy(s, { grading: { grader: "PSA", grade: "9" } });
+    const { removed } = await s.me.mutation(api.collection.removeCopy, { copyId: other });
+    const { copyId: back } = await s.me.mutation(api.collection.restoreCopy, {
+      ...removed,
+      photoIds: [replaced, pending],
+    });
+    expect((await copyRow(s, back))?.hasPhotos).toBeUndefined();
+    const rows = await photoRows(s);
+    expect(rows.find((photo) => photo._id === replaced)?.status).toBe("replaced");
+    expect(rows.find((photo) => photo._id === pending)?.status).toBe("pending");
+    expect(rows.some((photo) => photo.copyId === back)).toBe(false);
+  });
+
+  test("NEO-431: an Undo naming a photo the sweep already took still brings the line back, bare", async () => {
+    const s = await setup();
+    vi.useFakeTimers();
+    try {
+      const copyId = await addCopy(s);
+      await photograph(s, copyId, "front");
+      const { removed } = await s.me.mutation(api.collection.removeCopy, { copyId });
+      vi.advanceTimersByTime(PHOTO_HOLD_MS + 1);
+      await s.t.mutation(internal.copyPhotos.sweepCopyPhotos, {});
+      expect(await photoRows(s)).toEqual([]);
+      const { copyId: back } = await s.me.mutation(api.collection.restoreCopy, removed);
+      expect((await copyRow(s, back))?.hasPhotos).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("the sweep clears stale pending and detached photos, not live ones", async () => {
     const s = await setup();
     vi.useFakeTimers();
@@ -340,6 +600,35 @@ describe("folds, removes and undo", () => {
     expect(swept).toEqual({ pending: 1, detached: 1, replaced: 0 });
     const rows = await photoRows(s);
     expect(rows.map((r) => r.status)).toEqual(["live"]);
+    vi.useRealTimers();
+  });
+
+  test("NEO-431: a quick count's photos wait the same hour: inside it the Undo puts them back, past the sweep the line comes back bare", async () => {
+    const s = await setup();
+    vi.useFakeTimers();
+    const box = (await s.me.mutation(api.collectionContainers.create, { kind: "box", name: "Box" })).containerId;
+    const copyId = await addCopy(s, { homeId: box });
+    const photoId = await photograph(s, copyId, "front");
+    const count = (quantity: number) =>
+      s.me.mutation(api.collectionInventory.setBoxQuantity, { cardId: s.fx.gooden1, boxId: box, quantity });
+
+    const zero = await count(0);
+    vi.advanceTimersByTime(PHOTO_HOLD_MS - 1000);
+    expect(await s.t.mutation(internal.copyPhotos.sweepCopyPhotos, {})).toEqual({ pending: 0, detached: 0, replaced: 0 });
+    await s.me.mutation(api.collectionInventory.undoBoxQuantity, { inverse: zero.inverse });
+    const [back] = (await s.t.run((ctx) => ctx.db.query("collectionCopies").collect())).filter((r) => r.homeId === box);
+    expect(back.hasPhotos).toBe(true);
+    expect((await photoRows(s))[0]).toMatchObject({ _id: photoId, copyId: back._id, status: "live" });
+
+    // A line brought back gets a fresh hour the next time it is counted away.
+    const again = await count(0);
+    vi.advanceTimersByTime(PHOTO_HOLD_MS + 1);
+    expect(await s.t.mutation(internal.copyPhotos.sweepCopyPhotos, {})).toEqual({ pending: 0, detached: 1, replaced: 0 });
+    await s.me.mutation(api.collectionInventory.undoBoxQuantity, { inverse: again.inverse });
+    const [bare] = (await s.t.run((ctx) => ctx.db.query("collectionCopies").collect())).filter((r) => r.homeId === box);
+    expect(bare.quantity).toBe(1);
+    expect(bare.hasPhotos).toBeUndefined();
+    expect(await photoRows(s)).toEqual([]);
     vi.useRealTimers();
   });
 
@@ -374,3 +663,232 @@ describe("folds, removes and undo", () => {
     expect(await photoRows(s)).toEqual([]);
   });
 });
+
+describe("NEO-432: a photo change queues the card only when the copy's home lists", () => {
+  const outboxRows = (s: S) => s.t.run(async (ctx) => await ctx.db.query("listingOutbox").collect());
+
+  /** The owner pushes counts to both platforms (`listingOutbox.pushesCounts`). */
+  const listEverywhere = (s: S) =>
+    s.t.run(async (ctx) => {
+      for (const platform of ["bsc", "ebay"] as const) {
+        await ctx.db.insert("marketplaceListingStates", {
+          ownerId: ME.subject,
+          platform,
+          listingStartedAt: 1,
+          lastUpdated: 0,
+        });
+      }
+    });
+
+  async function makeHome(s: S, home: "binder" | "listed box" | "in-person box"): Promise<Id<"collectionContainers">> {
+    const { containerId } = await s.me.mutation(api.collectionContainers.create, {
+      kind: home === "binder" ? "binder" : "box",
+      name: home,
+    });
+    if (home === "in-person box") {
+      await s.me.mutation(api.collectionContainers.setContainerListed, { containerId, listed: false });
+    }
+    return containerId;
+  }
+
+  /** One photo change, and proof it really happened: a no-op would queue nothing either. */
+  const CHANGES = [
+    {
+      name: "commitUpload",
+      photographedFirst: false,
+      change: async (s: S, copyId: Id<"collectionCopies">) => {
+        await photograph(s, copyId, "front");
+        expect((await copyRow(s, copyId))?.hasPhotos).toBe(true);
+      },
+    },
+    {
+      name: "remove",
+      photographedFirst: true,
+      change: async (s: S, copyId: Id<"collectionCopies">) => {
+        await s.me.mutation(api.copyPhotos.remove, { copyId, side: "front" });
+        expect((await copyRow(s, copyId))?.hasPhotos).toBeUndefined();
+      },
+    },
+    {
+      name: "swap",
+      photographedFirst: true,
+      change: async (s: S, copyId: Id<"collectionCopies">) => {
+        await s.me.mutation(api.copyPhotos.swap, { copyId });
+        expect((await photoRows(s))[0].side).toBe("back");
+      },
+    },
+  ];
+
+  /**
+   * A copy in `homeId`, with its photo when the change needs one. Both are
+   * written before the owner lists, so the outbox holds only what the change
+   * under test writes.
+   */
+  async function listedOwnerCopy(
+    s: S,
+    homeId: Id<"collectionContainers">,
+    photographedFirst: boolean,
+  ): Promise<Id<"collectionCopies">> {
+    const copyId = await addCopy(s, { homeId });
+    if (photographedFirst) await photograph(s, copyId, "front");
+    await listEverywhere(s);
+    expect(await outboxRows(s)).toEqual([]);
+    return copyId;
+  }
+
+  test.each(CHANGES)("$name on a binder copy queues nothing", async ({ photographedFirst, change }) => {
+    const s = await setup();
+    const copyId = await listedOwnerCopy(s, await makeHome(s, "binder"), photographedFirst);
+    await change(s, copyId);
+    expect(await outboxRows(s)).toEqual([]);
+  });
+
+  test.each(CHANGES)("$name on an in-person box copy queues nothing", async ({ photographedFirst, change }) => {
+    const s = await setup();
+    const copyId = await listedOwnerCopy(s, await makeHome(s, "in-person box"), photographedFirst);
+    await change(s, copyId);
+    expect(await outboxRows(s)).toEqual([]);
+  });
+
+  test.each(CHANGES)("$name on a listed box copy queues the card on every platform", async ({ photographedFirst, change }) => {
+    const s = await setup();
+    const copyId = await listedOwnerCopy(s, await makeHome(s, "listed box"), photographedFirst);
+    await change(s, copyId);
+    const rows = await outboxRows(s);
+    expect(rows.map((r) => r.platform).sort()).toEqual(["bsc", "ebay"]);
+    expect(rows.every((r) => r.cardId === s.fx.gooden1 && r.ownerId === ME.subject)).toBe(true);
+    // NEO-481: a photo change asks the drains to send the photo again, over a seller photo too.
+    expect(rows.every((r) => r.refreshPhotos === true)).toBe(true);
+  });
+
+  test("a copy pointing at another collector's listed box queues nothing", async () => {
+    const s = await setup();
+    const copyId = await listedOwnerCopy(s, await makeHome(s, "binder"), false);
+    const { containerId: theirBox } = await s.them.mutation(api.collectionContainers.create, {
+      kind: "box",
+      name: "Their box",
+    });
+    await s.t.run(async (ctx) => await ctx.db.patch(copyId, { homeId: theirBox }));
+    await photograph(s, copyId, "front");
+    expect(await outboxRows(s)).toEqual([]);
+  });
+});
+
+describe("two retry URLs and parallel checks (NEO-466)", () => {
+  const R2_ENV = {
+    R2_ENDPOINT: "https://acct.r2.cloudflarestorage.com",
+    R2_BUCKET: "photos",
+    R2_ACCESS_KEY_ID: "AKIDEXAMPLE",
+    R2_SECRET_ACCESS_KEY: "secret",
+  };
+  const configure = (over: Record<string, string> = {}) => {
+    for (const [k, val] of Object.entries({ ...R2_ENV, ...over })) vi.stubEnv(k, val);
+  };
+  // reserveUpload schedules the hold's cleanup; fake timers keep it from firing
+  // (and reaching R2), and every test cancels it before it ends.
+  // Earlier tests in this file leave cleanup scheduled; with R2 configured here
+  // it would reach for the network, so every call is answered by default.
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", (async () => new Response(null, { status: 204 })) as unknown as typeof fetch);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  const start = async (s: S) => {
+    const copyId = await addCopy(s);
+    const started = await s.me.action(api.copyPhotos.startUpload, {
+      copyId,
+      side: "front",
+      contentType: "image/jpeg",
+      imageBytes: 300_000,
+      thumbBytes: 20_000,
+    });
+    await cancelScheduled(s.t as never);
+    return started;
+  };
+
+  test("startUpload returns a path-style pair and a virtual-hosted retry pair for the same objects", async () => {
+    configure();
+    const s = await setup();
+    const started = await start(s);
+    const hosts = [started.imageUploadUrl, started.thumbUploadUrl].map((u) => new URL(u).host);
+    expect(hosts).toEqual(["acct.r2.cloudflarestorage.com", "acct.r2.cloudflarestorage.com"]);
+    const retry = [started.imageRetryUploadUrl!, started.thumbRetryUploadUrl!].map((u) => new URL(u));
+    expect(retry.map((u) => u.host)).toEqual(["photos.acct.r2.cloudflarestorage.com", "photos.acct.r2.cloudflarestorage.com"]);
+    // The same objects: the retry path is the primary's path minus the bucket segment.
+    expect(retry[0].pathname).toBe(new URL(started.imageUploadUrl).pathname.replace("/photos", ""));
+    expect(retry[1].pathname).toBe(new URL(started.thumbUploadUrl).pathname.replace("/photos", ""));
+    expect(retry[0].pathname).not.toBe(retry[1].pathname);
+  });
+
+  test("startUpload returns no retry URLs when the endpoint can't form a virtual host", async () => {
+    configure({ R2_ENDPOINT: "https://acct.r2.cloudflarestorage.com/prefix" });
+    const s = await setup();
+    const started = await start(s);
+    expect(started.imageUploadUrl).toContain("/prefix/photos/");
+    expect(started).not.toHaveProperty("imageRetryUploadUrl");
+    expect(started).not.toHaveProperty("thumbRetryUploadUrl");
+  });
+
+  /** A pending upload, and a fetch whose HEAD answers wait until the test lets them go. */
+  async function pending(headFor: (key: string) => { bytes: number; type: string } | null) {
+    configure();
+    const s = await setup();
+    const copyId = await addCopy(s);
+    const { photoId } = await s.t.mutation(internal.copyPhotos.reserveUpload, {
+      ownerId: ME.subject,
+      copyId,
+      side: "front",
+      contentType: "image/jpeg",
+      imageBytes: 300_000,
+      thumbBytes: 20_000,
+    });
+    const started: string[] = [];
+    const release: (() => void)[] = [];
+    vi.stubGlobal("fetch", (async (request: Request) => {
+      started.push(request.method);
+      await new Promise<void>((resolve) => release.push(resolve));
+      const head = headFor(new URL(request.url).pathname);
+      return head
+        ? new Response(null, { status: 200, headers: { "content-length": String(head.bytes), "content-type": head.type } })
+        : new Response(null, { status: 404 });
+    }) as unknown as typeof fetch);
+    return { s, photoId, started, release };
+  }
+
+  test("finishUpload sends both HEADs before either answers", async () => {
+    const sizeOf = (path: string) => (path.endsWith("thumb.webp") || path.includes("thumb") ? 20_000 : 300_000);
+    const { s, photoId, started, release } = await pending((path) => ({ bytes: sizeOf(path), type: "image/jpeg" }));
+    const finishing = s.me.action(api.copyPhotos.finishUpload, { photoId });
+    await vi.waitFor(() => expect(started).toEqual(["HEAD", "HEAD"]));
+    expect(release).toHaveLength(2);
+    release.forEach((go) => go());
+    await finishing;
+    expect((await s.t.run((ctx) => ctx.db.get(photoId)))?.status).toBe("live");
+    await cancelScheduled(s.t as never);
+  });
+
+  describe.each([["image"], ["thumb"]])("when only the %s is wrong", (bad) => {
+    const good = (path: string) => ({ bytes: path.includes("thumb") ? 20_000 : 300_000, type: "image/jpeg" });
+    const isBad = (path: string) => path.includes(bad);
+
+    test.each([
+      ["has the wrong size", (path: string) => ({ ...good(path), bytes: 1 })],
+      ["has the wrong type", (path: string) => ({ ...good(path), type: "image/png" })],
+      ["is missing", () => null],
+    ])("finishUpload refuses when it %s, and the photo stays pending", async (_name, wrong) => {
+      const { s, photoId, started, release } = await pending((path) => (isBad(path) ? wrong(path) : good(path)));
+      const finishing = s.me.action(api.copyPhotos.finishUpload, { photoId }).catch((e: unknown) => e);
+      await vi.waitFor(() => expect(started).toHaveLength(2));
+      release.forEach((go) => go());
+      expect(String(await finishing)).toMatch(/didn't finish uploading/);
+      expect((await s.t.run((ctx) => ctx.db.get(photoId)))?.status).toBe("pending");
+      await cancelScheduled(s.t as never);
+    });
+  });
+});
+

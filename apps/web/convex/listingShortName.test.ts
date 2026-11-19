@@ -10,6 +10,8 @@ import { describe, expect, test } from "vitest";
 import {
   MAX_LISTING_SHORT_NAME_LENGTH,
   normalizeListingShortName,
+  parallelAfterInsert,
+  roughlySays,
   titleChainFacts,
   type TitleChainRow,
 } from "./listingShortName";
@@ -26,11 +28,12 @@ describe("normalizeListingShortName", () => {
 
   test("the cap is inclusive", () => {
     const atCap = "s".repeat(MAX_LISTING_SHORT_NAME_LENGTH);
-    expect(MAX_LISTING_SHORT_NAME_LENGTH).toBe(60);
+    // NEO-535: raised from 60, the box holds the whole set description.
+    expect(MAX_LISTING_SHORT_NAME_LENGTH).toBe(80);
     expect(normalizeListingShortName(atCap)).toBe(atCap);
     expect(() => normalizeListingShortName(`${atCap}s`)).toThrow(ConvexError);
     expect(() => normalizeListingShortName(`${atCap}s`)).toThrow(
-      /at most 60 characters/,
+      "Set name in titles tops out at 80 characters.",
     );
   });
 
@@ -85,19 +88,26 @@ describe("titleChainFacts", () => {
           row("variantType", title),
           row("setName", "Score"),
         ]),
-      ).toEqual({ insertNameValue: "Dugout Collection", insertIsRole: true });
+      ).toEqual({
+        insertNameValue: "Dugout Collection",
+        insertIsRole: true,
+        // NEO-609: every level is named with its type's row title, as stored.
+        titleLevels: [{ name: "Dugout Collection", typeName: title.trim() }],
+      });
     }
   });
 
-  test("an insert-level row under a type with no kind contributes nothing — never by level or name", () => {
+  test("an insert-level row under a type with no kind is no insert role, but it is still a level the title names (NEO-609)", () => {
+    // The ROLE facts (the eBay aspects read them) stay gated on the kind.
     for (const title of ["Insert Set", "Promo", "Inserts & Autographs"]) {
-      expect(
-        titleChainFacts([
-          row("insert", "Dugout Collection"),
-          row("variantType", title),
-          row("setName", "Score"),
-        ]),
-      ).toEqual({});
+      const facts = titleChainFacts([
+        row("insert", "Dugout Collection"),
+        row("variantType", title),
+        row("setName", "Score"),
+      ]);
+      expect(facts).toEqual({ titleLevels: [{ name: "Dugout Collection", typeName: title }] });
+      expect(facts.insertNameValue).toBeUndefined();
+      expect(facts.insertIsRole).toBeUndefined();
     }
     // The insert's OWN name is never the role.
     expect(
@@ -106,11 +116,11 @@ describe("titleChainFacts", () => {
         row("variantType", "Promo"),
         row("setName", "Score"),
       ]),
-    ).toEqual({});
-    // No variant type in the chain: no kind, no role.
+    ).toEqual({ titleLevels: [{ name: "Inserts", typeName: "Promo" }] });
+    // No variant type in the chain: no kind, no role, no type name.
     expect(
       titleChainFacts([row("insert", "Dugout Collection"), row("setName", "Score")]),
-    ).toEqual({});
+    ).toEqual({ titleLevels: [{ name: "Dugout Collection" }] });
   });
 
   test("a stored retired flag is ignored: the title decides", () => {
@@ -121,7 +131,7 @@ describe("titleChainFacts", () => {
         row("variantType", "Promo"),
         row("setName", "Score"),
       ]),
-    ).toEqual({});
+    ).toEqual({ titleLevels: [{ name: "Dugout Collection", typeName: "Promo" }] });
   });
 
   test("an insert-level row under a Parallel type is a parallel, not an insert", () => {
@@ -131,7 +141,10 @@ describe("titleChainFacts", () => {
         row("variantType", "Parallels"),
         row("setName", "Score"),
       ]),
-    ).toEqual({ parallelLeafValue: "Artist's Proof" });
+    ).toEqual({
+      parallelLeafValue: "Artist's Proof",
+      titleLevels: [{ name: "Artist's Proof", typeName: "Parallels" }],
+    });
   });
 
   test("a parallel leaf under an insert: both the insert and the leaf", () => {
@@ -146,6 +159,11 @@ describe("titleChainFacts", () => {
       insertNameValue: "Dugout Collection",
       insertIsRole: true,
       parallelLeafValue: "Artist's Proof",
+      // Top level first; a sub-variant has no type row, so it is a "Parallel".
+      titleLevels: [
+        { name: "Dugout Collection", typeName: "Inserts" },
+        { name: "Artist's Proof", typeName: "Parallel" },
+      ],
     });
   });
 
@@ -159,11 +177,18 @@ describe("titleChainFacts", () => {
         row("variantType", "Parallels"),
         row("setName", "Chrome"),
       ]),
-    ).toEqual({ parallelLeafValue: "Gold" });
+    ).toEqual({
+      parallelLeafValue: "Gold",
+      // Both are levels the title names (NEO-609); only the leaf is the role.
+      titleLevels: [
+        { name: "Refractor", typeName: "Parallels" },
+        { name: "Gold", typeName: "Parallel" },
+      ],
+    });
     // A variant type is never a parallel leaf, whatever its title.
     expect(
-      titleChainFacts([row("variantType", "Parallels"), row("setName", "Chrome")]),
-    ).toEqual({});
+      titleChainFacts([row("variantType", "Parallels"), row("setName", "Chrome")]).parallelLeafValue,
+    ).toBeUndefined();
   });
 
   test("the NEAREST short name wins, self first", () => {
@@ -174,13 +199,15 @@ describe("titleChainFacts", () => {
         row("setName", "Collector's Choice", { listingShortName: "UD Choice" }),
       ]).listingShortName,
     ).toBe("UD Hologram");
+    // NEO-535: a value stored above the insert row covers the set, so the
+    // insert's name is appended (trimmed value, verbatim name).
     expect(
       titleChainFacts([
         row("insert", "Hologram"),
         row("variantType", "Inserts"),
         row("setName", "Collector's Choice", { listingShortName: " UD Choice " }),
       ]).listingShortName,
-    ).toBe("UD Choice");
+    ).toBe("UD Choice Hologram");
   });
 
   test("nothing past the setName row is read", () => {
@@ -192,15 +219,15 @@ describe("titleChainFacts", () => {
         row("insert", "Stray"),
         row("variantType", "Inserts"),
       ]),
-    ).toEqual({});
-    // A variant type past the setName row confers no kind.
+    ).toEqual({ titleLevels: [{ name: "Base", base: true }] });
+    // A variant type past the setName row confers no kind, and no type name.
     expect(
       titleChainFacts([
         row("insert", "Stray"),
         row("setName", "Score"),
         row("variantType", "Inserts"),
       ]),
-    ).toEqual({});
+    ).toEqual({ titleLevels: [{ name: "Stray" }] });
   });
 
   test("the first (nearest) insert-level row is the one named", () => {
@@ -211,16 +238,131 @@ describe("titleChainFacts", () => {
         row("variantType", "Inserts"),
         row("setName", "Score"),
       ]),
-    ).toEqual({ insertNameValue: "Child", insertIsRole: true });
+    ).toEqual({
+      insertNameValue: "Child",
+      insertIsRole: true,
+      titleLevels: [
+        { name: "Parent", typeName: "Inserts" },
+        { name: "Child", typeName: "Inserts" },
+      ],
+    });
   });
 
   test("an empty or broken chain says nothing", () => {
     expect(titleChainFacts([])).toEqual({});
     expect(titleChainFacts([null])).toEqual({});
-    expect(titleChainFacts([row("variantType", "Base"), null, row("setName", "x", { listingShortName: "y" })])).toEqual({});
-    // A break before the variant type: the insert has no kind to read.
+    expect(
+      titleChainFacts([row("variantType", "Base"), null, row("setName", "x", { listingShortName: "y" })]),
+    ).toEqual({ titleLevels: [{ name: "Base", base: true }] });
+    // A break before the variant type: the insert has no kind to read, so no
+    // role and no type name.
     expect(
       titleChainFacts([row("insert", "Hologram"), null, row("variantType", "Inserts")]),
-    ).toEqual({});
+    ).toEqual({ titleLevels: [{ name: "Hologram" }] });
+  });
+});
+
+describe("NEO-535: a name the box already says, in another spelling, is not appended again", () => {
+  test("roughlySays folds case, edge punctuation, a plural s and the autograph spellings", () => {
+    expect(roughlySays("Metal 1991 Gold Prospect Auto", "1991 Gold Prospects Autographs")).toBe(true);
+    expect(roughlySays("Leaf Metal AU", "Autographed")).toBe(true);
+    expect(roughlySays("Chrome Refractors,", "refractor")).toBe(true);
+    // "ss" and short words keep their s; a missing word is not said.
+    expect(roughlySays("Chrome Glass", "Glas")).toBe(false);
+    expect(roughlySays("Chrome Bu", "Bus")).toBe(false);
+    expect(roughlySays("Metal 1991 Gold Prospect", "1991 Gold Prospects Autographs")).toBe(false);
+    expect(roughlySays("anything", "  ")).toBe(false);
+  });
+
+  test("an insert the box says in a shortened spelling is not appended", () => {
+    const chain = (box: string) => [
+      row("insert", "1991 Gold Prospects Autographs"),
+      row("variantType", "Insert"),
+      row("setName", "Leaf Metal", { listingShortName: box }),
+    ];
+    expect(titleChainFacts(chain("2026 Leaf Metal 1991 Gold Prospect Auto")).listingShortName).toBe(
+      "2026 Leaf Metal 1991 Gold Prospect Auto",
+    );
+    expect(titleChainFacts(chain("2026 Leaf Metal")).listingShortName).toBe(
+      "2026 Leaf Metal 1991 Gold Prospects Autographs",
+    );
+  });
+
+  test("a parallel the box says in a plural is not appended", () => {
+    const chain = (box: string) => [
+      row("parallel", "Prismatic"),
+      row("insert", "Gold Prospects"),
+      row("variantType", "Insert"),
+      row("setName", "Leaf Metal"),
+    ].map((r, i) => (i === 1 ? { ...r, metadata: { listingShortName: box } } : r));
+    expect(titleChainFacts(chain("2026 Leaf Metal Gold Prospects Prismatics")).listingShortName).toBe(
+      "2026 Leaf Metal Gold Prospects Prismatics",
+    );
+    expect(titleChainFacts(chain("2026 Leaf Metal Gold Prospects")).listingShortName).toBe(
+      "2026 Leaf Metal Gold Prospects Prismatic",
+    );
+  });
+});
+
+describe("parallelAfterInsert (NEO-535: the insert's words said once)", () => {
+  test("the leading run the parallel shares with its insert goes", () => {
+    expect(parallelAfterInsert("Anime Red Refractors", "Anime")).toBe("Red Refractors");
+    expect(parallelAfterInsert("TRItanium Red Flood", "TRItanium Prismatic White")).toBe("Red Flood");
+    expect(parallelAfterInsert("anime  RED Refractors", "ANIME")).toBe("RED Refractors");
+  });
+
+  test("folded as roughlySays folds: plural and autograph spellings", () => {
+    expect(parallelAfterInsert("Gold Prospect Auto Orange", "Gold Prospects Autographs")).toBe("Orange");
+  });
+
+  test("only a leading run: a shared word later in the name stays", () => {
+    expect(parallelAfterInsert("Red Anime Refractors", "Anime")).toBe("Red Anime Refractors");
+    expect(parallelAfterInsert("Gold Refractor", "Chrome Gold")).toBe("Gold Refractor");
+  });
+
+  test("a parallel that is all insert words leaves nothing; no insert leaves it whole", () => {
+    expect(parallelAfterInsert("Anime", "Anime")).toBe("");
+    expect(parallelAfterInsert("Anime Red", undefined)).toBe("Anime Red");
+    expect(parallelAfterInsert("Anime Red", "")).toBe("Anime Red");
+  });
+
+  test("a box stored above the parallel appends only the parallel's own words", () => {
+    const chain = [
+      row("parallel", "Anime Red Refractors"),
+      row("insert", "Anime"),
+      row("variantType", "Inserts"),
+      row("setName", "Bowman", { listingShortName: "Bowman" }),
+    ];
+    expect(titleChainFacts(chain).listingShortName).toBe("Bowman Anime Red Refractors");
+    // Stored ON the insert row: the parallel's own words follow it.
+    expect(
+      titleChainFacts([
+        row("parallel", "Anime Red Refractors"),
+        row("insert", "Anime", { listingShortName: "Bowman Anime" }),
+        row("variantType", "Inserts"),
+        row("setName", "Bowman"),
+      ]).listingShortName,
+    ).toBe("Bowman Anime Red Refractors");
+  });
+
+  test("a parallel that is all insert words leaves a stored box unchanged", () => {
+    const facts = titleChainFacts([
+      row("parallel", "Anime"),
+      row("insert", "Anime"),
+      row("variantType", "Inserts"),
+      row("setName", "Bowman", { listingShortName: "Bowman Anime" }),
+    ]);
+    expect(facts.listingShortName).toBe("Bowman Anime");
+  });
+
+  test("an insert that is not a role leaves the parallel appended whole", () => {
+    const facts = titleChainFacts([
+      row("parallel", "Anime Red Refractors"),
+      row("insert", "Anime"),
+      row("variantType", "Parallels"),
+      row("setName", "Bowman", { listingShortName: "Bowman" }),
+    ]);
+    expect(facts.insertIsRole).toBeUndefined();
+    expect(facts.listingShortName).toBe("Bowman Anime Red Refractors");
   });
 });

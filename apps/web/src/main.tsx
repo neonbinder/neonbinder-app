@@ -14,6 +14,8 @@ import { clerkAppearance } from "@/components/modules/clerk-appearance";
 import { ThemeProvider, useTheme } from "@/src/theme/ThemeProvider";
 import ConvexClientProvider from "@/components/modules/ConvexClientProvider";
 import { ProfileThemeSync } from "@/src/theme/ProfileThemeSync";
+import { HeldIntakeOwner } from "@/app/collection/final/intake/HeldIntakeOwner";
+import { PreviewOwner } from "@/components/modules/CardPhotoViewer/PreviewOwner";
 import * as Sentry from "@sentry/react";
 
 import ProtectedLayout from "@/src/layouts/ProtectedLayout";
@@ -21,8 +23,10 @@ import BinderLayout from "@/src/layouts/binder-layout";
 import AdminLayout from "@/src/layouts/AdminLayout";
 import AdminSectionLayout from "@/src/layouts/admin-section-layout";
 import ProfileLayout from "@/src/layouts/profile-layout";
+import EbayReturnLanding from "@/app/profile/ebay/page";
 import PrintLayout from "@/src/layouts/print-layout";
 
+import { ForceDark } from "@/components/primitives/ForceDark";
 import {
   Deferred,
   PrefetchBinderTabs,
@@ -33,6 +37,7 @@ import {
   loadPrintHub,
   loadProfilePublic,
 } from "@/src/routes/lazy-routes";
+import { APP_BOUNDARY_OPTIONS } from "@/src/routes/chunk-reload";
 
 // Pages. Only Home (the landing page, and the first paint for most visitors)
 // ships in the entry bundle; every other page is its own chunk, fetched when
@@ -41,7 +46,8 @@ import {
 // every visitor of the landing page.
 import Home from "@/app/page";
 const About = lazy(() => import("@/app/about/page"));
-const BinderTracking = lazy(() => import("@/app/binder-tracking/page"));
+const Privacy = lazy(() => import("@/app/privacy/page"));
+const CollectionTracking = lazy(() => import("@/app/collection-tracking/page"));
 const AiCardIdentification = lazy(() => import("@/app/ai-card-identification/page"));
 const ManagingInventory = lazy(() => import("@/app/managing-inventory/page"));
 const ShippingLabelsMarketing = lazy(() => import("@/app/shipping-labels/page"));
@@ -61,8 +67,13 @@ const TestSignIn = lazy(() => import("@/app/testing/sign-in/page"));
 const TestReset = lazy(() => import("@/app/testing/reset/page"));
 const TestSeedCredentials = lazy(() => import("@/app/testing/seed-credentials/page"));
 const TestNeedsReauth = lazy(() => import("@/app/testing/needs-reauth/page"));
+const TestKilledDrain = lazy(() => import("@/app/testing/killed-drain/page"));
+const TestBackdateDashboardVisit = lazy(() => import("@/app/testing/backdate-dashboard-visit/page"));
+const TestSeedDashboard = lazy(() => import("@/app/testing/seed-dashboard/page"));
 const TestSeedPlaceholderRun = lazy(() => import("@/app/testing/seed-placeholder-run/page"));
-const TestSeedPlaceholderUpload = lazy(() => import("@/app/testing/seed-placeholder-upload/page"));
+const TestFailPlaceholderEntry = lazy(() => import("@/app/testing/fail-placeholder-entry/page"));
+const TestSeedPickOrder = lazy(() => import("@/app/testing/seed-pick-order/page"));
+const TestBscFake = lazy(() => import("@/app/testing/bsc-fake/page"));
 const Dashboard = lazy(loadDashboard);
 const ProfilePublic = lazy(loadProfilePublic);
 const ProfileCredentials = lazy(() => import("@/app/profile/credentials/page"));
@@ -78,6 +89,7 @@ const AdminTeams = lazy(() => import("@/app/admin/teams/page"));
 const AdminLeagues = lazy(() => import("@/app/admin/leagues/page"));
 const AdminFranchises = lazy(() => import("@/app/admin/franchises/page"));
 const AdminCardRequests = lazy(() => import("@/app/admin/card-requests/page"));
+const AdminSyncStatus = lazy(() => import("@/app/admin/sync-status/page"));
 const PipelineRuns = lazy(() => import("@/app/pipeline-runs/page"));
 const DesignPrimitives = lazy(() => import("@/app/design/primitives/page"));
 const PrintHub = lazy(loadPrintHub);
@@ -91,14 +103,17 @@ const Inventory = lazy(loadInventory);
 
 // NEO-350 — the collection demo and its five reference prototypes are
 // lazy-loaded: ~300 fake cards, their art and their CSS stay out of the main
-// bundle until someone opens one. /binder-tracking lazy-loads the public copy
-// of the demo the same way (app/binder-tracking/page.tsx).
+// bundle until someone opens one. The demo lazy-loads its collection pages the same way
 const Collection = lazy(loadCollection);
 const CollectionPrototype1 = lazy(() => import("@/app/collection/prototypes/p1/page"));
 const CollectionPrototype2 = lazy(() => import("@/app/collection/prototypes/p2/page"));
 const CollectionPrototype3 = lazy(() => import("@/app/collection/prototypes/p3/page"));
 const CollectionPrototype4 = lazy(() => import("@/app/collection/prototypes/p4/page"));
 const CollectionPrototype5 = lazy(() => import("@/app/collection/prototypes/p5/page"));
+// NEO-464 — the dashboard demo: the signed-in shell on fake data, logged out.
+const DashboardDemo = lazy(() => import("@/app/dashboard/demo/DashboardDemoLayout"));
+const DashboardDemoPage = lazy(() => import("@/app/dashboard/demo/DashboardDemoPage"));
+const DashboardDemoCollection = lazy(() => import("@/app/dashboard/demo/CollectionDemoRoute"));
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 
@@ -106,10 +121,10 @@ const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
  * The old /placeholders stopgap URL, forwarded to the real tool.
  *
  * Carries the QUERY STRING across, which a bare `<Navigate to="/print/placeholders">`
- * silently drops. `?jobId=…` is the whole point of the link: it is how a run is
- * reopened, and how /testing/seed-placeholder-upload hands the E2E suite its
- * freshly seeded batch. Dropping it lands the user on an empty page with their
- * run apparently gone.
+ * silently drops. `?jobId=…` is the whole point of the link: it is how a
+ * bookmarked, reloaded or pasted run is reopened, whether it is still going or
+ * already finished. Dropping it lands the user on an empty page with their run
+ * apparently gone.
  */
 function LegacyPlaceholders() {
   const { search } = useLocation();
@@ -125,6 +140,24 @@ function LegacyPlaceholders() {
 function LegacySetSelector() {
   const { search } = useLocation();
   return <Navigate to={`/admin/set-builder${search}`} replace />;
+}
+
+/**
+ * The old /binder-tracking demo URL (bookmarks, old links), forwarded to the demo
+ * app. The old demo put its side in the query (`?demo=on&side=inventory`), so that
+ * one lands on /demo/inventory, not on a bare `<Navigate to="/demo">` that drops it.
+ * Anything else lands on /demo. The rest of the query (`tab=pick`, `sorder=...`)
+ * goes along, so an old deep link still opens its tab. Replaces the entry, so Back
+ * leaves the demo.
+ */
+function LegacyBinderTracking() {
+  const { search } = useLocation();
+  const params = new URLSearchParams(search);
+  const inventory = params.get("side") === "inventory";
+  params.delete("demo");
+  params.delete("side");
+  const rest = params.toString();
+  return <Navigate to={`${inventory ? "/demo/inventory" : "/demo"}${rest ? `?${rest}` : ""}`} replace />;
 }
 
 function ScrollToTop() {
@@ -144,7 +177,7 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
           {/* Public routes */}
           <Route path="/" element={<Home />} />
           <Route path="/about" element={<Deferred><About /></Deferred>} />
-          <Route path="/binder-tracking" element={<Deferred><BinderTracking /></Deferred>} />
+          <Route path="/privacy" element={<Deferred><Privacy /></Deferred>} />
           <Route
             path="/ai-card-identification"
             element={<Deferred><AiCardIdentification /></Deferred>}
@@ -155,11 +188,23 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
             element={<Deferred><ShippingLabelsMarketing /></Deferred>}
           />
           <Route path="/print-shop" element={<Deferred><PrintShopMarketing /></Deferred>} />
+          {/* NEO-464 — the dashboard demo, logged out on fake data, as one app:
+              the signed-in shell with its own tabs (Dashboard, Collection,
+              Inventory, Sign up, Back to the tour). */}
+          <Route path="/demo" element={<Deferred fullPage><DashboardDemo /></Deferred>}>
+            <Route index element={<Deferred><DashboardDemoPage /></Deferred>} />
+            <Route path="collection" element={<Deferred><DashboardDemoCollection side="collection" /></Deferred>} />
+            <Route path="inventory" element={<Deferred><DashboardDemoCollection side="inventory" /></Deferred>} />
+          </Route>
+          <Route path="/collection-tracking" element={<Deferred><CollectionTracking /></Deferred>} />
+          {/* NEO-464 — the old demo URL: bookmarks and links still land on the demo, `side=inventory` on its Inventory. */}
+          <Route path="/binder-tracking" element={<LegacyBinderTracking />} />
           <Route path="/easypost-setup" element={<Deferred><EasypostSetup /></Deferred>} />
           <Route path="/signin/*" element={<Deferred><SignInPage /></Deferred>} />
           <Route path="/sign-up/*" element={<Deferred><SignUpPage /></Deferred>} />
           <Route path="/u/:username/sale" element={<Deferred><SalePage /></Deferred>} />
-          <Route path="/u/:username/binders/:path" element={<Deferred><PublicBinder /></Deferred>} />
+          {/* Dark from the first paint, the wait for its chunk included. */}
+          <Route path="/u/:username/binders/:path" element={<ForceDark><Deferred fullPage><PublicBinder /></Deferred></ForceDark>} />
           <Route path="/u/:username/want-list" element={<Deferred><PublicWantList /></Deferred>} />
           <Route path="/u/:username/up-for-trade" element={<Deferred><PublicTrade /></Deferred>} />
           <Route path="/u/:username/for-sale" element={<Deferred><PublicForSale /></Deferred>} />
@@ -171,18 +216,24 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
             element={<Deferred><TestSeedCredentials /></Deferred>}
           />
           <Route path="/testing/needs-reauth" element={<Deferred><TestNeedsReauth /></Deferred>} />
+          <Route path="/testing/killed-drain" element={<Deferred><TestKilledDrain /></Deferred>} />
+          <Route
+            path="/testing/backdate-dashboard-visit"
+            element={<Deferred><TestBackdateDashboardVisit /></Deferred>}
+          />
+          <Route path="/testing/seed-dashboard" element={<Deferred><TestSeedDashboard /></Deferred>} />
           <Route
             path="/testing/seed-placeholder-run"
             element={<Deferred><TestSeedPlaceholderRun /></Deferred>}
           />
-          {/* The E2E suite's door into the real upload path: only the file
-              picker is bypassed. Built because the retired maestro-web driver
-              could not drive a file input; the Playwright placeholder specs
-              still enter through it. */}
+          {/* NEO-481: fails one of the caller's real uploaded scans, for the hand-crop rescue spec. */}
           <Route
-            path="/testing/seed-placeholder-upload"
-            element={<Deferred><TestSeedPlaceholderUpload /></Deferred>}
+            path="/testing/fail-placeholder-entry"
+            element={<Deferred><TestFailPlaceholderEntry /></Deferred>}
           />
+          <Route path="/testing/seed-pick-order" element={<Deferred><TestSeedPickOrder /></Deferred>} />
+          {/* NEO-552: sets and clears the caller's fake BuySportsCards faults, orders and the BSC call gate. */}
+          <Route path="/testing/bsc-fake" element={<Deferred><TestBscFake /></Deferred>} />
 
           {/* Protected routes — wrapped in binder shell */}
           <Route element={<ProtectedLayout />}>
@@ -196,8 +247,8 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
             >
               <Route path="/dashboard" element={<Deferred><Dashboard /></Deferred>} />
               {/* NEO-350 — the collection demo: a permanent, hard-coded
-                  marketing demo (never Convex), the same page the public
-                  plays with on /binder-tracking. Not the future real
+                  marketing demo (never Convex), the same page the Collection tab
+                  shows at /demo/collection. Not the future real
                   collection. */}
               <Route path="/collection" element={<Deferred><Collection /></Deferred>} />
               {/* NEO-350 — the five collection prototypes the demo was built
@@ -223,6 +274,12 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                 <Route index element={<Navigate to="/profile/public" replace />} />
                 <Route path="public" element={<Deferred><ProfilePublic /></Deferred>} />
                 <Route path="credentials" element={<Deferred><ProfileCredentials /></Deferred>} />
+                {/* NEO-415 — eBay's consent screen returns here with
+                    ?code=&state= (NEO-422's return pages forward to it). Not a
+                    section: it forwards to Credentials with eBay picked, the
+                    return riding in location state. Eager, so the trip home
+                    costs no extra chunk before the panel's. */}
+                <Route path="ebay" element={<EbayReturnLanding />} />
                 <Route path="shipping" element={<Deferred><ProfileShipping /></Deferred>} />
                 <Route path="postage" element={<Deferred><ProfilePostage /></Deferred>} />
                 <Route path="prizes" element={<Deferred><ProfilePrizes /></Deferred>} />
@@ -289,6 +346,9 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                   {/* NEO-361 — collectors' card and set requests. The
                       functions behind it are requireAdmin server-side. */}
                   <Route path="card-requests" element={<Deferred><AdminCardRequests /></Deferred>} />
+                  {/* NEO-370 — every collector's marketplace sync, read-only.
+                      The functions behind it are requireAdmin server-side. */}
+                  <Route path="sync-status" element={<Deferred><AdminSyncStatus /></Deferred>} />
                 </Route>
                 {/* The old top-level routes. Kept forever rather than 404ing:
                     /set-selector is bookmarked, and most E2E specs navigate
@@ -309,7 +369,7 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
       </BrowserRouter>
     );
   },
-  { fallback: <div>An error occurred. Please refresh the page.</div> },
+  APP_BOUNDARY_OPTIONS,
 );
 
 /**
@@ -330,6 +390,8 @@ function ThemedApp() {
       >
         <PostHogProvider>
           <ConvexClientProvider>
+            <HeldIntakeOwner />
+            <PreviewOwner />
             <ProfileThemeSync />
             <SentryErrorBoundary />
           </ConvexClientProvider>

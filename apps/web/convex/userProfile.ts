@@ -3,9 +3,15 @@ import { v } from "convex/values";
 import { getCurrentUserId } from "./auth";
 import { binderOpenPreferenceValidator, collectionCopyConditionValidator, themePreferenceValidator } from "./schema";
 import { DEFAULT_CONDITION } from "./collection";
+import { listingPlatformForSite, stopListingForSite } from "./listingOutbox";
+import { holdTestListingOff, setUpListing } from "./listingSync";
+import { landBscSellerId } from "./bscSellerId";
 
+// Mirrors schema.ts `userProfiles.marketplaceAccountIds`: a field missing here
+// fails getUserProfile's return validation for every profile that has it.
 const marketplaceAccountIdsValidator = v.optional(v.object({
   bscSellerId: v.optional(v.string()),
+  ebayUserId: v.optional(v.string()),
 }));
 
 /**
@@ -107,8 +113,15 @@ export const getThemePreference = query({
 /**
  * Internal mutation to upsert a marketplace-specific account identifier
  * (e.g. BSC sellerId) onto the user's profile. Called from the BSC login
- * action after the browser service returns the sellerId; never invoked
+ * action after the browser service returns the sellerId, and from the
+ * background seller-account read (`bscSellerId.fetchTick`); never invoked
  * directly from the client.
+ *
+ * NEO-483: the single place a landed BSC account is acted on. It always
+ * writes (an account BSC names now replaces the one stored), then
+ * `landBscSellerId` clears any background read, binds the account to the
+ * owner's listing row (or holds it back on a seller conflict) and kicks the
+ * drain a missing account was holding.
  *
  * Note: only known sites are accepted to keep the validator surface tight.
  * Adding a new marketplace means extending this switch alongside the schema.
@@ -116,7 +129,7 @@ export const getThemePreference = query({
 export const setMarketplaceAccountIdInternal = internalMutation({
   args: {
     userId: v.string(),
-    site: v.union(v.literal("buysportscards")),
+    site: v.union(v.literal("buysportscards"), v.literal("ebay")),
     accountId: v.string(),
   },
   returns: v.null(),
@@ -132,7 +145,10 @@ export const setMarketplaceAccountIdInternal = internalMutation({
         `[setMarketplaceAccountIdInternal] accountId length out of range (1-64), got ${args.accountId.length}`,
       );
     }
-    if (!/^[A-Za-z0-9_-]+$/.test(args.accountId)) {
+    // NEO-415: eBay's immutable user id (Commerce Identity `userId`) may
+    // also carry dots; nothing else widens.
+    const allowed = args.site === "ebay" ? /^[A-Za-z0-9._-]+$/ : /^[A-Za-z0-9_-]+$/;
+    if (!allowed.test(args.accountId)) {
       throw new Error(
         `[setMarketplaceAccountIdInternal] accountId contains invalid characters (allow A-Z a-z 0-9 _ -)`,
       );
@@ -146,6 +162,7 @@ export const setMarketplaceAccountIdInternal = internalMutation({
     const nextAccounts = {
       ...(profile?.marketplaceAccountIds ?? {}),
       ...(args.site === "buysportscards" ? { bscSellerId: args.accountId } : {}),
+      ...(args.site === "ebay" ? { ebayUserId: args.accountId } : {}),
     };
 
     if (profile) {
@@ -155,6 +172,9 @@ export const setMarketplaceAccountIdInternal = internalMutation({
         userId: args.userId,
         marketplaceAccountIds: nextAccounts,
       });
+    }
+    if (args.site === "buysportscards") {
+      await landBscSellerId(ctx, args.userId, args.accountId);
     }
     return null;
   },
@@ -354,6 +374,19 @@ export const updateSiteCredentialStatus = internalMutation({
     // self-recovery path: a successful login proves no re-auth is needed);
     // `true` sets them.
     needsReauth: v.optional(v.boolean()),
+    // NEO-370 Revision 5: what a saved sign-in does to listing on the
+    // platform that signs in through `site` (only with `hasCredentials`).
+    //   absent    — a login re-asserting the flag (token refresh, Test
+    //               Credentials): starts listing unless the E2E test marker
+    //               or a seller conflict holds the account off
+    //               (`listingSync.setUpListing`).
+    //   "save"    — the collector saved their sign-in (`credentials.
+    //               saveCredentials`), or the testing seed asked for listing:
+    //               clears the marker, re-checks a seller conflict and
+    //               starts listing.
+    //   "testOff" — the testing seed signed in WITHOUT listing: sets the
+    //               marker (testing deployments only; refused elsewhere).
+    listing: v.optional(v.union(v.literal("save"), v.literal("testOff"))),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -397,6 +430,17 @@ export const updateSiteCredentialStatus = internalMutation({
         userId: args.userId,
         siteCredentials: updatedCredentials,
       });
+    }
+
+    // NEO-370 Revision 5 ("If you have credentials you are syncing"): a saved
+    // sign-in for a listing platform's site starts listing there, cleared it
+    // stops. In this same mutation as the flag, so the two never disagree.
+    const platform = listingPlatformForSite(args.site);
+    if (!args.hasCredentials) {
+      await stopListingForSite(ctx, args.userId, args.site);
+    } else if (platform !== null) {
+      if (args.listing === "testOff") await holdTestListingOff(ctx, args.userId, platform);
+      else await setUpListing(ctx, args.userId, platform, { save: args.listing === "save" });
     }
 
     return null;
@@ -532,6 +576,10 @@ export const removeSiteCredentialStatus = internalMutation({
         siteCredentials: updatedCredentials,
       });
     }
+    // NEO-370: no credentials, no listing work: listing on the platform stops
+    // (dormant: no order poll, no drain; the stamp is cleared and the queue
+    // dropped). Saving again starts it again.
+    await stopListingForSite(ctx, args.userId, args.site);
 
     return null;
   },

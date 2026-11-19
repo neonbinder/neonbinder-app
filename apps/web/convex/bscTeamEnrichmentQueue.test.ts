@@ -40,9 +40,11 @@ import { teamFullName } from "../lib/teams/team-name";
 import {
   BSC_TEAM_CHECK_MAX_PASSES,
   BSC_TEAM_CHECK_RETRY_DELAYS_MS,
+  BSC_TEAM_LOOKUP_MAX_ATTEMPTS,
 } from "./adapters/buysportscards";
 import { deriveCardAttention } from "./features/cardAttention";
 import { insertTestCard } from "../lib/testing/card-row";
+import { captureBscTeamLane, runBscTeamLane } from "../lib/testing/bsc-team-lane";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -166,6 +168,11 @@ function makeCardListingFetch(opts: {
 afterEach(() => {
   vi.unstubAllGlobals();
 });
+
+// PR 451 (NEO-487) — the queue is the `bscTeamPool` lane; run by hand (see
+// lib/testing/bsc-team-lane.ts).
+const captureLane = captureBscTeamLane;
+const runLane = runBscTeamLane;
 
 // ===========================================================================
 // resolveBscCardTeam
@@ -338,15 +345,80 @@ describe("resolveBscCardTeam", () => {
 });
 
 // ===========================================================================
+// resolveBscCardTeam — call telemetry (NEO-475)
+// ===========================================================================
+
+describe("resolveBscCardTeam — one bsc_call_summary per invocation (NEO-475)", () => {
+  /** Runs the action once with console captured; returns its summary lines. */
+  async function runOnce(response: string | number): Promise<{
+    result: string;
+    fetchCount: number;
+    summaries: Array<Record<string, unknown>>;
+    t: ReturnType<typeof convexTest>;
+  }> {
+    const t = convexTest(schema, modules);
+    const variantTypeId = await seedTree(t);
+    const cardId = await insertCard(t, variantTypeId, "1", "bsc-1");
+    const calls: RecordedCall[] = [];
+    vi.stubGlobal("fetch", makeCardListingFetch({ responses: { "bsc-1": response }, calls }));
+    const lines: string[] = [];
+    const log = vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => void lines.push(a.map(String).join(" ")));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let result: string;
+    try {
+      result = await t.action(internal.adapters.buysportscards.resolveBscCardTeam, { cardChecklistId: cardId });
+    } finally {
+      log.mockRestore();
+      warn.mockRestore();
+    }
+    const summaries = lines
+      .filter((l) => l.startsWith("{") && l.includes('"bsc_call_summary"'))
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .filter((o) => o.msg === "bsc_call_summary");
+    return { result, fetchCount: calls.length, summaries, t };
+  }
+
+  test("an answered lookup: exactly one summary, its calls equal to the fetch count", async () => {
+    const { result, fetchCount, summaries, t } = await runOnce("New York Yankees");
+    expect(result).toBe("answered");
+    expect(fetchCount).toBe(1);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({ op: "resolveBscCardTeam", calls: fetchCount, ok: 1 });
+    // Log only, by design: one row per card would swamp the per-invocation
+    // rows `bscCallSummaries` is for.
+    const scheduled = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled.filter((f) => f.name.includes("bscCallStats"))).toHaveLength(0);
+  });
+
+  test("a failed lookup is summarised too: one summary, calls equal to the fetch count", async () => {
+    const { result, fetchCount, summaries } = await runOnce(503);
+    expect(result).toBe("failed");
+    // NEO-475: a 5xx is retried once, and both attempts are on the one summary.
+    expect(fetchCount).toBe(BSC_TEAM_LOOKUP_MAX_ATTEMPTS);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({
+      op: "resolveBscCardTeam",
+      calls: fetchCount,
+      ok: 0,
+      byStatus: { "503": BSC_TEAM_LOOKUP_MAX_ATTEMPTS },
+    });
+  });
+});
+
+// ===========================================================================
 // processBscTeamEnrichmentQueue
 // ===========================================================================
 
-describe("processBscTeamEnrichmentQueue", () => {
+describe("processBscTeamEnrichmentQueue (a shim onto bscTeamPool since PR 451)", () => {
   beforeEach(() => {
-    vi.useFakeTimers();
+    // The item paces itself BSC_TEAM_ENRICH_DELAY_MS after its call; that
+    // pause elapses in real time.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.spyOn(console, "log").mockImplementation(() => {});
   });
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   test("drains ids one at a time, resolving each card", async () => {
@@ -370,13 +442,19 @@ describe("processBscTeamEnrichmentQueue", () => {
       }),
     );
 
+    const lane = captureLane();
     await t.action(internal.adapters.buysportscards.processBscTeamEnrichmentQueue, {
       cardChecklistIds: [card1, card2, card3],
     });
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    // One item per card, in order, on the first pass.
+    expect(lane.map((l) => [l.item.cardChecklistId, l.item.pass])).toEqual([
+      [card1, 1],
+      [card2, 1],
+      [card3, 1],
+    ]);
+    await runLane(t, lane);
 
-    // Every card in the tail eventually got processed via the chained
-    // reschedule (BSC_TEAM_ENRICH_DELAY_MS between each), in order.
+    // Every card was asked once, in order, through the one-slot lane.
     expect(calls.map((c) => c.url)).toEqual([
       expect.stringContaining("/marketplace/card/bsc-1/card-listing"),
       expect.stringContaining("/marketplace/card/bsc-2/card-listing"),
@@ -394,11 +472,13 @@ describe("processBscTeamEnrichmentQueue", () => {
 
   test("an empty id list drains immediately without error", async () => {
     const t = convexTest(schema, modules);
+    const lane = captureLane();
     await expect(
       t.action(internal.adapters.buysportscards.processBscTeamEnrichmentQueue, {
         cardChecklistIds: [],
       }),
     ).resolves.toBeNull();
+    expect(lane).toHaveLength(0);
   });
 
   // NOTE: "tolerates one card's resolveBscCardTeam throwing without
@@ -426,12 +506,15 @@ describe("processBscTeamEnrichmentQueue", () => {
  * BSC-linked card is what the attention badge reads as "still waiting", so
  * the card was never shown to anyone.
  */
-describe("processBscTeamEnrichmentQueue — bounded retry, then the operator (NEO-330)", () => {
+describe("the bscTeamPool lane — bounded retry, then the operator (NEO-330, PR 451)", () => {
   // The queue reports retries and give-ups on console.warn/error. Captured so
   // nothing crosses the vitest worker RPC at teardown (see the tolerance file).
   const warnLines: string[] = [];
   beforeEach(() => {
-    vi.useFakeTimers();
+    // NEO-475: a failed lookup pauses 250-500 ms inside the action before its
+    // one retry. `shouldAdvanceTime` lets that pause elapse in real time while
+    // the queue's own 60 s / 5 min passes still wait for `runAllTimers`.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     warnLines.length = 0;
     vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
       warnLines.push(args.map(String).join(" "));
@@ -473,13 +556,15 @@ describe("processBscTeamEnrichmentQueue — bounded retry, then the operator (NE
       }),
     );
 
+    const lane = captureLane();
     await t.action(internal.adapters.buysportscards.processBscTeamEnrichmentQueue, {
       cardChecklistIds: [failing, fine],
     });
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    await runLane(t, lane);
 
     const asked = calls.filter((c) => c.url.includes("/card/bsc-1/"));
-    expect(asked).toHaveLength(BSC_TEAM_CHECK_MAX_PASSES);
+    // NEO-475: every pass is one lookup of up to two attempts.
+    expect(asked).toHaveLength(BSC_TEAM_CHECK_MAX_PASSES * BSC_TEAM_LOOKUP_MAX_ATTEMPTS);
     // The answered card is never asked again.
     expect(calls.filter((c) => c.url.includes("/card/bsc-2/"))).toHaveLength(1);
 
@@ -499,10 +584,11 @@ describe("processBscTeamEnrichmentQueue — bounded retry, then the operator (NE
     );
     const gaveUp = warnLines.find((l) => l.includes("bsc_team_check_gave_up"));
     expect(gaveUp).toBeDefined();
+    // PR 451: one line per card given up (the lane is per card).
     expect(JSON.parse(gaveUp!)).toMatchObject({
       platform: "bsc",
-      failed: 1,
-      flagged: 1,
+      reason: "passes",
+      flagged: true,
       passes: BSC_TEAM_CHECK_MAX_PASSES,
     });
     // Counts only on the log line — never the marketplace's team string.
@@ -518,10 +604,16 @@ describe("processBscTeamEnrichmentQueue — bounded retry, then the operator (NE
       makeCardListingFetch({ responses: { "bsc-1": 503 }, calls: [] }),
     );
 
-    // One pass only: the retry is scheduled, not yet run.
+    // One pass only: the retry is queued a minute out, not yet run.
+    const lane = captureLane();
     await t.action(internal.adapters.buysportscards.processBscTeamEnrichmentQueue, {
       cardChecklistIds: [cardId],
     });
+    const before = Date.now();
+    await runLane(t, lane, 1);
+    expect(lane).toHaveLength(1);
+    expect(lane[0].item).toMatchObject({ cardChecklistId: cardId, pass: 2 });
+    expect(lane[0].runAt).toBeGreaterThanOrEqual(before + BSC_TEAM_CHECK_RETRY_DELAYS_MS[0]);
 
     const card = (await getCard(t, cardId))!;
     expect(card.teamCheckDoneAt).toBeUndefined();
@@ -539,7 +631,9 @@ describe("processBscTeamEnrichmentQueue — bounded retry, then the operator (NE
       "fetch",
       (async () => {
         attempt++;
-        if (attempt === 1) return new Response("busy", { status: 503 });
+        // NEO-475: the whole first pass fails (both of its attempts), so the
+        // answer can only come from a later pass.
+        if (attempt <= BSC_TEAM_LOOKUP_MAX_ATTEMPTS) return new Response("busy", { status: 503 });
         return new Response(JSON.stringify({ teamName: "Yankees" }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -547,12 +641,13 @@ describe("processBscTeamEnrichmentQueue — bounded retry, then the operator (NE
       }) as unknown as typeof fetch,
     );
 
+    const lane = captureLane();
     await t.action(internal.adapters.buysportscards.processBscTeamEnrichmentQueue, {
       cardChecklistIds: [cardId],
     });
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    await runLane(t, lane);
 
-    expect(attempt).toBe(2);
+    expect(attempt).toBe(BSC_TEAM_LOOKUP_MAX_ATTEMPTS + 1);
     const card = (await getCard(t, cardId))!;
     expect(card.teamOnCardIds).toEqual([yankeesId]);
     expect(warnLines.some((l) => l.includes("bsc_team_check_gave_up"))).toBe(false);
@@ -568,17 +663,20 @@ describe("processBscTeamEnrichmentQueue — bounded retry, then the operator (NE
       makeCardListingFetch({ responses: { "bsc-1": 503 }, calls }),
     );
 
+    const lane = captureLane();
     await t.action(internal.adapters.buysportscards.processBscTeamEnrichmentQueue, {
       cardChecklistIds: [cardId],
     });
+    await runLane(t, lane, 1);
     // The operator settles it as teamless while the retry waits.
     const confirmedAt = 1_700_000_000_000;
     await t.run(async (ctx) =>
       ctx.db.patch(cardId, { teamNoneConfirmedAt: confirmedAt }),
     );
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    await runLane(t, lane);
 
-    expect(calls).toHaveLength(1);
+    // NEO-475: the first pass's two attempts, and no later pass.
+    expect(calls).toHaveLength(BSC_TEAM_LOOKUP_MAX_ATTEMPTS);
     const card = (await getCard(t, cardId))!;
     expect(card.teamNoneConfirmedAt).toBe(confirmedAt);
     expect(card.teamOnCardIds).toBeUndefined();

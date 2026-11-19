@@ -41,7 +41,7 @@ function team(
 }
 
 const CTX_2024: TeamRankContext = {
-  leagueId: MLB,
+  leagueIds: [MLB],
   year: 2024,
   levelById: LEVELS,
 };
@@ -135,14 +135,14 @@ describe("teamRankTier", () => {
   });
 
   test("a set whose league is itself minor: its active teams are tier 1, not 2", () => {
-    const ctx: TeamRankContext = { leagueId: AAA, year: 2024, levelById: LEVELS };
+    const ctx: TeamRankContext = { leagueIds: [AAA], year: 2024, levelById: LEVELS };
     expect(
       teamRankTier(team("a", "A", { leagueId: AAA, yearsActive: { from: 2000 } }), ctx),
     ).toBe(1);
   });
 
   describe("no year on the set", () => {
-    const ctx: TeamRankContext = { leagueId: MLB, levelById: LEVELS };
+    const ctx: TeamRankContext = { leagueIds: [MLB], levelById: LEVELS };
 
     test("every team in the league is tier 1, dated or not", () => {
       expect(teamRankTier(team("a", "A", { leagueId: MLB }), ctx)).toBe(1);
@@ -176,6 +176,27 @@ describe("teamRankTier", () => {
         teamRankTier(team("a", "A", { leagueId: AAA, yearsActive: { from: 2000 } }), ctx),
       ).toBe(2);
     });
+  });
+
+  test("NEO-569: any of the set's leagues counts as L", () => {
+    const ctx: TeamRankContext = { leagueIds: [MLB, NHL], year: 2024, levelById: LEVELS };
+    expect(
+      teamRankTier(team("a", "A", { leagueId: NHL, yearsActive: { from: 1990 } }), ctx),
+    ).toBe(1);
+    expect(
+      teamRankTier(team("b", "B", { leagueId: MLB, yearsActive: { from: 1958 } }), ctx),
+    ).toBe(1);
+    expect(teamRankTier(team("c", "C", { leagueId: NHL }), ctx)).toBe(3);
+    expect(
+      teamRankTier(team("d", "D", { leagueId: AAA, yearsActive: { from: 2000 } }), ctx),
+    ).toBe(2);
+  });
+
+  test("NEO-569: an empty league list ranks like no league", () => {
+    const ctx: TeamRankContext = { leagueIds: [], year: 2024, levelById: LEVELS };
+    expect(
+      teamRankTier(team("a", "A", { leagueId: MLB, yearsActive: { from: 1958 } }), ctx),
+    ).toBe(4);
   });
 
   test("no context at all: everything is tier 4", () => {

@@ -11,12 +11,17 @@
  *   J1  After an insert's checklist is saved, the client builds its parallels
  *       one at a time, calling `buildParallelChecklist` for each.
  *   J2  A card is copied only if it links on at least one marketplace side;
- *       the rest are left off and reported.
+ *       the rest are left off and reported. NEO-496 (NQ2, Jason): a parallel
+ *       with no marketplace ids of its own is built anyway, as an UNLINKED
+ *       copy of every card of its source; J2 applies only when a side was
+ *       fetched. Refused while its old cards hold a marketplace link, which
+ *       the copy would drop (rule 5).
  *   J3  A parallel that already has cards is REBUILT from a fresh copy — the
  *       automatic run included (R1: no confirm, no "empty only").
  *   J4  "Fetch from Marketplaces" on a parallel row runs the same build for
  *       that one parallel.
- *   R2  A rebuilt card that is clearly the old one keeps the old SKU.
+ *   R2  A rebuilt card that is clearly the old one keeps the old SKU. With
+ *       no side fetched (an unlinked copy) "clearly" is the card key alone.
  *
  * ## What a build does, in order (M2)
  *
@@ -105,10 +110,32 @@ import { slotIds, type PlatformSide } from "./platformSlots";
 import { platformSideValidator } from "./selectorSyncStore";
 import { resolveCardSlots } from "./selectorOptions";
 import {
+  bornCardPlayers,
   copyFeaturesForParallel,
   insertCardRow,
   type CardRowSetContext,
+  type NewCardRow,
 } from "./cardRowCreate";
+import { assessNewCardListing } from "./features/listingInputs";
+import {
+  assessParallelCopyTitle,
+  carriedTitleRest,
+  storedTitleFails,
+  type ParallelCopyTitle,
+} from "./features/carriedTitle";
+import {
+  listingInputsForStoredCard,
+  newStoredCardReadCache,
+  teamNameFor,
+} from "./storedCardTitle";
+import { effectiveCardPlayerDefaults, newSelectorRowCache } from "./cardPlayersBulk";
+import {
+  defaultTeamOnCardIds,
+  noTeamCardVerdict,
+  stampNoTeam,
+  teamDefaultOf,
+} from "./lib/selectorTeams";
+import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import {
   cardKey,
   linkCardsToSide,
@@ -116,7 +143,7 @@ import {
   type FetchedParallelCard,
   type LinkableNbCard,
 } from "./lib/parallelCardLink";
-import { teamFullName } from "../lib/teams/team-name";
+import type { ListingTeamSplit } from "./features/generateListing";
 // NEO-358 — the one card delete (with its collector guard) and the counts.
 import {
   cardIsCollected,
@@ -130,8 +157,10 @@ import { findSportForSelectorOption } from "./cardChecklist";
 import { safeMarketplaceText } from "../lib/marketplace/safe-text";
 import { derivedVariantFlags, variantTypeKind } from "./variantRole";
 import { titleChainFacts } from "./listingShortName";
+import { newCardLeagueCache } from "./cardLeague";
 import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
 import { classifyAdapterError } from "./observability";
+import { isValidWaitKey } from "./lib/marketplaceWaitWriter";
 import {
   failureFromMessage,
   scrubLogText,
@@ -156,6 +185,49 @@ export const MAX_PARALLELS_PER_INSERT = 500;
  * calibrated to.
  */
 export const INSERT_COPIES_PER_PAGE = 150;
+/**
+ * NEO-528 round 3 — the writes one insert page makes before it hands the rest
+ * of its copies back (`processed`), as it does when the read budget runs low.
+ * A copy writes its row, its SKU and one index row per player, team and cameo;
+ * that is ~4 for a typical copy (150 copies ≈ 600, never stopped early), but a
+ * copy carrying a long cameo list ("Player on every card" defaults, or the
+ * source's own) writes up to ~45. Kept at the commit chunk's sizing budget.
+ */
+export const INSERT_PAGE_WRITE_BUDGET = 1200;
+/** The most one copy can write: row, SKU, and every player, team and cameo index row. */
+const MAX_COPY_WRITES = 2 + MAX_CARD_PLAYERS + MAX_CARD_TEAMS + MAX_CARD_PLAYERS;
+/** NEO-556 — the page's one `enqueueBscTeamChecks` schedule, kept inside the budget. */
+const LOOKUP_SCHEDULE_WRITES = 1;
+
+/**
+ * NEO-556 — whether a copy is born owing its own BSC team lookup: it carries
+ * its own BSC link, no team, no "carries no team" ruling, and no FINISHED
+ * lookup to copy from its source. The same card `cardChecklist
+ * .getForBscTeamCheck` lets the lane ask (`needsCheck`), and the one the
+ * checklist counts as "Still looking up teams" (`isAwaitingTeamLookup`), so a
+ * copy that reads as waiting is always on the lane.
+ *
+ * A source whose lookup has been and gone passes that answer on (its stamp,
+ * outcome and hint travel with the copy) and is not asked again. One whose
+ * lookup never ran (a hand-added card) or has not run YET (still queued when
+ * the build runs) would otherwise leave the copy waiting forever: nothing
+ * else queues a copy. Once the lane answers, `applyBscTeamResolution` writes
+ * the team, or stamps the parallel's "No Team" when BSC names none.
+ */
+export function bscTeamLookupOwed(copy: {
+  hasBscRef: boolean;
+  teamOnCardIds: ReadonlyArray<Id<"teams">> | undefined;
+  teamCheckDoneAt: number | undefined;
+  teamNoneConfirmedAt: number | undefined;
+}): boolean {
+  // Truthiness, as `getForBscTeamCheck` reads both stamps.
+  return (
+    copy.hasBscRef &&
+    (copy.teamOnCardIds?.length ?? 0) === 0 &&
+    !copy.teamCheckDoneAt &&
+    !copy.teamNoneConfirmedAt
+  );
+}
 /**
  * Old cards deleted per transaction. Per card: one cross-listing lookup, one
  * variation-children lookup (plus a patch per child), one player-index lookup
@@ -254,10 +326,15 @@ const LIST_BLOCK_COLLECTOR_LINES = 20;
  */
 export const BLOCKED_REVIEW_OPEN =
   "a checklist review is running on it in another window — try again in a few minutes";
-export const BLOCKED_NO_IDS = "it isn't linked to a marketplace yet";
+/**
+ * NEO-496 (NQ2) — an unlinked parallel is copied without links, but not over
+ * old cards that hold one: the copy would drop it (rule 5).
+ */
+export const BLOCKED_UNLINKED_OVER_LINKED_CARDS =
+  "its cards have marketplace links this parallel doesn't. Link the parallel in Sync Parallels first.";
 /** The no-name fallback of `blockedIdsUnreachable`. */
 export const BLOCKED_IDS_UNREACHABLE =
-  "its marketplace links need the set above it linked too — link that first";
+  "link the set above it first, then this one can carry its links.";
 // NEO-321 — "the insert" became a neutral phrase: a base parallel is built
 // from the Base, not an insert.
 // NEO-321 (audit N1) — the two size sentences now cover the byte cap too.
@@ -347,6 +424,10 @@ function sideFailedWhat(side: PlatformSide, kind?: FetchFailureKind): string {
       return `${name} signed us out`;
     case "no_sign_in":
       return `we couldn't sign in to ${name}`;
+    case "paced":
+      // NEO-552: our own call gate held the call back; the marketplace was
+      // never asked, so the copy never blames it.
+      return `we're pacing our calls to ${name}`;
     default:
       return `${name} didn't answer`;
   }
@@ -581,6 +662,8 @@ export function snapshotForCopies(
   return { ...snapshot, cardType: byFlags };
 }
 
+const SIDES: readonly PlatformSide[] = ["bsc", "sportlots"];
+
 export type ParallelSidePlan = {
   /** Per side: the parallel holds a source id of its own there. */
   owned: Record<PlatformSide, boolean>;
@@ -615,8 +698,8 @@ const BSC_FACET_LEVEL: Record<string, string> = {
 
 /**
  * Which sides a parallel is built from, and with what. Pure; shared by the
- * list query (no pause) and the build (with it), so what the list says and
- * what the build does come from one function.
+ * list query and the build, both with the deployment's pause (NEO-496), so
+ * what the list says and what the build does come from one function.
  *
  * The chain is judged AND queried with its insert row taken out, and the
  * checklist gate runs with `leafGate`: only the parallel's own ids scope a
@@ -682,6 +765,84 @@ export function planParallelSides(
     bscOverCap: planBscFanOut(plan.filters, MAX_BSC_FAN_OUT).capped,
     slIds,
     slOverCap: slIds.length > MAX_SL_SETS_PER_BUILD,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Blocks the side plan decides — one set of rules for the list and the build
+// ---------------------------------------------------------------------------
+
+/** The side-plan fields the block rules read. */
+export type SidePlanForBlocks = Pick<
+  ParallelSidePlan,
+  "owned" | "fetch" | "paused" | "unreachableRow" | "slOverCap" | "bscOverCap"
+>;
+
+/**
+ * NEO-496 — what the side plan alone refuses, before any card is read: every
+ * side the parallel owns is paused or out of reach (a parallel that owns no
+ * id on either side is an unlinked copy and is NOT refused here — rule 6),
+ * or it links more sets than one build reads.
+ *
+ * The build runs this first; `getParallelsForBuild` runs the SAME function
+ * on the same plan (pause included), so the panel's "blocked" is the build's.
+ */
+export function sidePlanBlockReason(plan: SidePlanForBlocks): string | undefined {
+  const fetchesAny = SIDES.some((side) => plan.fetch[side]);
+  const ownsAny = SIDES.some((side) => plan.owned[side]);
+  if (!fetchesAny && ownsAny) {
+    const pausedOwned = SIDES.filter((side) => plan.owned[side] && plan.paused[side]);
+    if (pausedOwned.length > 0) return blockedAllPaused(pausedOwned);
+    const ownedSides = SIDES.filter((side) => plan.owned[side]);
+    const side = ownedSides.find((s) => plan.unreachableRow[s]);
+    return side
+      ? blockedIdsUnreachable(
+          plan.unreachableRow[side],
+          ownedSides.length === 1 ? side : undefined,
+        )
+      : BLOCKED_IDS_UNREACHABLE;
+  }
+  // Security 6 — more sets than one build reads is refused, never truncated:
+  // a truncated fetch would call every card of the unread sets unlisted.
+  if (plan.owned.sportlots && plan.slOverCap) return BLOCKED_TOO_MANY_SL_SETS;
+  if (plan.fetch.bsc && plan.bscOverCap) return BLOCKED_TOO_MANY_BSC_SETS;
+  return undefined;
+}
+
+/**
+ * NEO-496 — what the parallel's OLD cards' links refuse, given which sides
+ * any old card holds a link on. Pure; the build passes what it read off every
+ * old card, the list what it read off its bounded sample.
+ *
+ *   - NQ2: an unlinked copy (nothing fetched) never replaces linked cards —
+ *     the copy would drop the links (rule 5).
+ *   - Security 1: a side the parallel owns but this build cannot ask (paused,
+ *     or ids out of reach) while old cards hold links there.
+ */
+export function oldLinksBlockReason(
+  plan: SidePlanForBlocks,
+  oldLinked: Readonly<Record<PlatformSide, boolean>>,
+): string | undefined {
+  const fetchesAny = SIDES.some((side) => plan.fetch[side]);
+  if (!fetchesAny && SIDES.some((side) => oldLinked[side])) {
+    return BLOCKED_UNLINKED_OVER_LINKED_CARDS;
+  }
+  for (const side of SIDES) {
+    if (!plan.owned[side] || plan.fetch[side] || !oldLinked[side]) continue;
+    return plan.paused[side]
+      ? blockedSidePaused(side)
+      : blockedIdsUnreachable(plan.unreachableRow[side], side);
+  }
+  return undefined;
+}
+
+/** Which sides any of these cards holds a marketplace link on. */
+function linkedSidesOf(
+  cards: ReadonlyArray<Pick<Doc<"cardChecklist">, "platformData">>,
+): Record<PlatformSide, boolean> {
+  return {
+    bsc: cards.some((card) => !!card.platformData?.bsc?.ref),
+    sportlots: cards.some((card) => !!card.platformData?.sportlots?.ref),
   };
 }
 
@@ -820,8 +981,13 @@ function cardLabel(card: { cardNumber: string; cardName: string }): string {
  * Every listed row resolves (`resolveBuildSource`) to the returned `source`.
  * `source.hasCards` reads one card (`.first()`).
  *
- * `sides` is judged on ids alone (no pause), from `planParallelSides`.
- * `blocked` is a budgeted early warning; the build re-checks every card.
+ * NEO-496 — every parallel is judged as the build judges it: the side plan
+ * comes from `planParallelSides` WITH the deployment's pause, `owned` is the
+ * sides the parallel holds ids on, `sides` the sides a build would ask right
+ * now, and `blocked` runs the build's own rules (`sidePlanBlockReason`, the
+ * review/scan/cross-listing/collector checks, then `oldLinksBlockReason`) in
+ * the build's order. The card checks read a bounded sample; the build
+ * re-checks every card, so a sample can only miss a block, never invent one.
  *
  * `insertId` is the pre-NEO-321 name of `sourceId`, kept so a client built
  * before it keeps working through the Convex-before-SPA deploy window. Remove
@@ -848,6 +1014,9 @@ export const getParallelsForBuild = query({
       v.object({
         _id: v.id("selectorOptions"),
         value: v.string(),
+        /** Sides the parallel itself holds a source id on (never inherited). */
+        owned: v.object({ bsc: v.boolean(), sportlots: v.boolean() }),
+        /** Sides a build would ask right now (ids complete, not paused). */
         sides: v.object({ bsc: v.boolean(), sportlots: v.boolean() }),
         hasCards: v.boolean(),
         blocked: v.optional(v.string()),
@@ -915,16 +1084,22 @@ export const getParallelsForBuild = query({
 
     let cardBudget = LIST_BLOCK_CARD_BUDGET;
     let lookupBudget = LIST_BLOCK_LOOKUP_BUDGET;
+    // NEO-496 — the build plans with the pause; so does the list.
+    const paused = pausedSides();
     const out = [];
     for (const parallel of parallels) {
-      const plan = planParallelSides([...parentChain, chainRowOf(parallel)]);
+      const plan = planParallelSides([...parentChain, chainRowOf(parallel)], paused);
+      // The build stops on the side plan before it reads a card; so does
+      // this, past the one card `hasCards` needs.
+      const planBlock = sidePlanBlockReason(plan);
       // NEO-321 (audit N1) — past the read-byte reserve the scan stops: one
       // card is still read per parallel, for `hasCards`, and `blocked` is
       // judged on it alone (the build re-checks every card).
       const room = await roomToRead(ctx);
-      const take = room
-        ? Math.max(1, Math.min(LIST_BLOCK_CARDS_PER_PARALLEL, cardBudget))
-        : 1;
+      const take =
+        room && !planBlock
+          ? Math.max(1, Math.min(LIST_BLOCK_CARDS_PER_PARALLEL, cardBudget))
+          : 1;
       const cards = await ctx.db
         .query("cardChecklist")
         .withIndex("by_selector_option", (q) =>
@@ -933,8 +1108,14 @@ export const getParallelsForBuild = query({
         .take(take);
       cardBudget -= cards.length;
 
-      let blocked: string | undefined;
-      if (await reviewLooksLive(ctx, parallel._id, Date.now() - REVIEW_ACTIVE_WINDOW_MS)) {
+      // The build's order: side plan, live review, scans, cross-listing and
+      // collectors, then the old cards' links.
+      let blocked: string | undefined = planBlock;
+      if (blocked) {
+        // Refused on the plan alone, as the build refuses it.
+      } else if (
+        await reviewLooksLive(ctx, parallel._id, Date.now() - REVIEW_ACTIVE_WINDOW_MS)
+      ) {
         blocked = BLOCKED_REVIEW_OPEN;
       } else if (cards.some(hasScans)) {
         blocked = BLOCKED_SCANS;
@@ -957,10 +1138,15 @@ export const getParallelsForBuild = query({
           }
         }
       }
+      // NEO-496 — an unlinked copy over linked cards, and a side the build
+      // can't ask while old cards hold links there (Security 1). Read off the
+      // cards already sampled: no extra read.
+      if (!blocked) blocked = oldLinksBlockReason(plan, linkedSidesOf(cards));
 
       out.push({
         _id: parallel._id,
         value: parallel.value,
+        owned: { bsc: plan.owned.bsc, sportlots: plan.owned.sportlots },
         sides: { bsc: plan.fetch.bsc, sportlots: plan.fetch.sportlots },
         hasCards: cards.length > 0,
         ...(blocked ? { blocked } : {}),
@@ -1470,8 +1656,8 @@ const copyLinkValidator = v.object({
 });
 
 /** Set-level values for the parallel's new rows, resolved once per page. */
-async function parallelSetContext(
-  ctx: { db: MutationCtx["db"] },
+export async function parallelSetContext(
+  ctx: { db: QueryCtx["db"] },
   parallel: Doc<"selectorOptions">,
 ): Promise<CardRowSetContext> {
   const { rows } = await loadChain(ctx, parallel._id);
@@ -1515,8 +1701,17 @@ function sameStrings(a: readonly string[], b: readonly string[]): boolean {
  * (`copyFeaturesForParallel`); listing text, SKU (or the kept SKU, R2) and
  * `platformData` with `src` on the parallel's own slots go through the shared
  * `insertCardRow`, so a copy is born exactly like a synced card. `printRun` is
- * the linked SportLots card's only. `imageUrls` is never copied and no team
- * enrichment is queued.
+ * the linked SportLots card's only. `imageUrls` is never copied. The only
+ * background work queued is NEO-556's: the BSC team lookup for each copy born
+ * owing one (`bscTeamLookupOwed`), one schedule per page.
+ *
+ * NEO-528 round 3 — after the copy, the PARALLEL's "Player on every card"
+ * defaults (its own or the nearest row's above it) go through the per-card
+ * rule every new card follows (`cardRowCreate.bornCardPlayers`): its player on
+ * a copy that names nobody, its cameos after the copy's own. And its own
+ * set-level team (`teamIds`) on a copy with no team of its own, as the commit
+ * does for a card it inserts. A page also stops at `INSERT_PAGE_WRITE_BUDGET`
+ * writes and hands the rest back through `processed`.
  *
  * `remap` carries the new ids of variation PARENTS copied on earlier pages; a
  * variation whose parent was not copied loses the link (and its manual flag)
@@ -1577,6 +1772,13 @@ export const insertParallelCardsPage = internalMutation({
      * its source no longer resolves as the action linked it (audit S1).
      */
     changed: v.boolean(),
+    /**
+     * NEO-535 — copies born with a title that still fails (over 80 after every
+     * cut, or short a first name, and no hand edit on the source to carry):
+     * the Card titles dialog's count. Optional so a page answered across a
+     * deploy still validates.
+     */
+    titlesToFix: v.optional(v.number()),
   }),
   handler: async (ctx, args) => {
     // NEO-321 (security audit S1) — by the time a page runs, the parallel's
@@ -1629,6 +1831,8 @@ export const insertParallelCardsPage = internalMutation({
     // (the card's own chain), walked once per page; `insertCardRow` writes the
     // rows, and (NEO-358) stamps the sport on every copy as `sportId`.
     let pageSport: { id: Id<"selectorOptions"> | undefined } | undefined;
+    // NEO-569 — team and set league reads for the copies, once per page.
+    const leagueCache = newCardLeagueCache();
     const parallelSport = async (): Promise<Id<"selectorOptions"> | undefined> => {
       pageSport ??= {
         id: await findSportForSelectorOption(ctx, args.parallelId),
@@ -1639,8 +1843,13 @@ export const insertParallelCardsPage = internalMutation({
     const newIdOf = new Map<string, Id<"cardChecklist">>();
     for (const { from, to } of args.remap) newIdOf.set(from, to);
 
-    const playerName = new Map<string, string | null>();
-    const teamName = new Map<string, string | null>();
+    // NEO-535 — one lookup cache for the page: the copies' names below, and
+    // the source cards' stored inputs when a copy's title needs the source's
+    // hand edit (`listingInputsForStoredCard` reads the same maps the same
+    // way, so a name is read once per page whichever asks first).
+    const lookup = newStoredCardReadCache();
+    const playerName = lookup.players;
+    const teamName = lookup.teams;
     const namesOf = async <T extends "players" | "teams">(
       ids: Array<Id<T>> | undefined,
       cache: Map<string, string | null>,
@@ -1655,15 +1864,72 @@ export const insertParallelCardsPage = internalMutation({
       return out;
     };
 
+    const readPlayerName = async (id: Id<"players">) => (await ctx.db.get(id))?.name ?? null;
+    // NEO-606 — through the shared reader, so a team's split lands in the
+    // cache beside its name (`splitsOf` below reads it from there).
+    const readTeamName = (id: Id<"teams">) => teamNameFor(ctx, id, lookup);
+    const splitsOf = (ids: Array<Id<"teams">> | undefined): ListingTeamSplit[] => {
+      const out: ListingTeamSplit[] = [];
+      for (const id of ids ?? []) {
+        const split = lookup.teamSplits.get(id as string);
+        if (split) out.push(split);
+      }
+      return out;
+    };
+
+    // NEO-528 round 3 — "Player on every card": the player and cameos a card
+    // born on THIS parallel gets (the nearest row up the parallel's own chain
+    // that stores each), read once per page, before the first copy. Applied
+    // to each copy after what it copies, through the same per-card rule every
+    // new card follows (`bornCardPlayers`).
+    const defaultsSport = args.copies.length > 0 ? await parallelSport() : undefined;
+    const parallelDefaults =
+      args.copies.length > 0
+        ? await effectiveCardPlayerDefaults(ctx, args.parallelId, {
+            ...(defaultsSport ? { sportId: defaultsSport } : {}),
+            cache: newSelectorRowCache(),
+          })
+        : null;
+    // NEO-528 round 3 — the Set Team gap: the parallel's own set-level team
+    // (`teamIds`, copied down at its creation) goes on a copy that arrives
+    // with no team of its own, as it does on a card the commit inserts. Read
+    // and named once per page.
+    //
+    // NEO-556 — or the parallel's "No Team" (`noTeamDefault`, copied down the
+    // same way): a copy that would be born with no team and no ruling is
+    // stamped "carries no team" when `noTeamCardVerdict` says so, credited to
+    // whoever set the No Team (a background path acting on that answer).
+    const parallelDefault = teamDefaultOf(parallel);
+    const parallelTeamIds =
+      parallelDefault.kind === "teams" ? parallelDefault.teamIds : undefined;
+    const parallelNoTeam =
+      parallelDefault.kind === "noTeam" ? parallelDefault.noTeamDefault : undefined;
+    const parallelTeamNames = await namesOf(parallelTeamIds, teamName, readTeamName);
+    const parallelTeamSplits = splitsOf(parallelTeamIds);
+
     const created: Array<{ from: Id<"cardChecklist">; to: Id<"cardChecklist"> }> = [];
     let missing = 0;
     let skippedChangedSource = 0;
     let processed = 0;
+    let titlesToFix = 0;
+    // NEO-528 round 3 — writes so far; see `INSERT_PAGE_WRITE_BUDGET`.
+    let writes = 0;
     // NEO-358 — every copy adds to the parallel's counts; flushed once below.
     const countLedger = createCardCountLedger();
+    // NEO-556 — copies born owing a BSC team lookup, queued once per page
+    // after the loop (see `bscTeamLookupOwed`).
+    const lookupOwed: Array<Id<"cardChecklist">> = [];
     for (const copy of args.copies) {
       // NEO-321 (audit N1) — a source card's size is unknown until it is
       // read, so ask for room first; the rest of the page goes next call.
+      // NEO-528 — and room for the most one more copy can write, plus the
+      // page's one lookup schedule (NEO-556).
+      if (
+        processed > 0 &&
+        writes + MAX_COPY_WRITES + LOOKUP_SCHEDULE_WRITES > INSERT_PAGE_WRITE_BUDGET
+      ) {
+        break;
+      }
       if (processed > 0 && !(await roomToRead(ctx))) break;
       processed++;
       const source = await ctx.db.get(copy.sourceCardId);
@@ -1702,77 +1968,206 @@ export const insertParallelCardsPage = internalMutation({
         variation = { variationParentManual: source.variationParentManual };
       }
 
-      const playerNames = await namesOf(
-        source.playerIds,
-        playerName,
-        async (id) => (await ctx.db.get(id))?.name ?? null,
+      const playerNames = await namesOf(source.playerIds, playerName, readPlayerName);
+      const sourceTeamNames = await namesOf(source.teamOnCardIds, teamName, readTeamName);
+      const sourceTeamSplits = splitsOf(source.teamOnCardIds);
+      // NEO-528 — the copy pictures the same people as the card it copies:
+      // its cameos travel with it (one no longer in NB is left off), then the
+      // parallel's defaults: its player on a copy that names nobody and holds
+      // no pending name (a copied cameo who is that player moves up), and its
+      // cameos added. A player the card names is never replaced. Nor is a
+      // card whose listing named someone (`listingNamedPlayer`, even a name
+      // ruled "not a person"): it stays blank, exactly as the commit left the
+      // card it copies (Jason, 2026-11-15). Its cameos still go on.
+      await namesOf(source.secondaryPlayerIds, playerName, readPlayerName);
+      const born = bornCardPlayers(
+        source,
+        { playerNames, cameoName: (id) => playerName.get(id as string) ?? null },
+        source.listingNamedPlayer === true && parallelDefaults
+          ? { ...parallelDefaults, playerId: null, player: null }
+          : parallelDefaults,
       );
-      const teamNames = await namesOf(
-        source.teamOnCardIds,
-        teamName,
-        async (id) => {
-          const team = await ctx.db.get(id);
-          return team ? teamFullName(team) : null;
+      // The Set Team gap, fill-empty only: never over a card's own team or a
+      // team name waiting for review (`defaultTeamOnCardIds`), never on a
+      // card an operator ruled teamless, and never where a listing named a
+      // team NB could not match (product invariant 8: that card is the
+      // operator's to settle).
+      const teamDefault =
+        source.teamNoneConfirmedAt === undefined && source.bscTeamName === undefined
+          ? defaultTeamOnCardIds(
+              { teamOnCardIds: source.teamOnCardIds, pendingTeamNames: source.pendingTeamNames },
+              parallelTeamIds ? { teamIds: parallelTeamIds } : null,
+            )
+          : { ids: undefined, defaulted: false };
+      const teamOnCardIds = teamDefault.defaulted ? teamDefault.ids : source.teamOnCardIds;
+      const teamNames = teamDefault.defaulted ? parallelTeamNames : sourceTeamNames;
+      const teamSplits = teamDefault.defaulted ? parallelTeamSplits : sourceTeamSplits;
+      // NEO-556 — under the parallel's No Team, asked of the copy as it will
+      // be born: its teams and pending names, the lookup bookkeeping it
+      // carries from its source, and ITS OWN BSC link. A listing that names a
+      // team, or a BSC lookup still to run on the copy, holds the stamp back
+      // (product invariant 8); `applyBscTeamResolution` stamps it once BSC
+      // answers with no team. That lookup is queued below, after the page
+      // (`bscTeamLookupOwed`). A source the operator ruled teamless already
+      // carries its own stamp (below), so it reads `alreadyNoTeam`.
+      const copyNoTeamStamp =
+        parallelNoTeam &&
+        noTeamCardVerdict({
+          teamOnCardIds,
+          pendingTeamNames: source.pendingTeamNames,
+          teamNoneConfirmedAt: source.teamNoneConfirmedAt,
+          bscTeamName: source.bscTeamName,
+          teamCheckDoneAt: source.teamCheckDoneAt,
+          teamCheckOutcome: source.teamCheckOutcome,
+          platformData: copy.bsc ? { bsc: { ref: copy.bsc.ref } } : {},
+        }).verdict === "stamp"
+          ? stampNoTeam(parallelNoTeam.setByUserId, Date.now())
+          : undefined;
+
+      const card: NewCardRow = {
+        selectorOptionId: args.parallelId,
+        cardNumber: source.cardNumber,
+        cardName: source.cardName,
+        // NEO-254 — the pair, together (the source's, or the parallel's
+        // default player on a copy that had none).
+        playerIds: born.playerIds,
+        playerLinks: born.playerLinks,
+        cameos: born.cameos,
+        teamOnCardIds,
+        // NEO-569 — the copy carries its source's league while it carries
+        // the source's teams; a copy given the parallel's Set Team derives
+        // its own from that team.
+        ...(!teamDefault.defaulted && source.leagueId ? { leagueId: source.leagueId } : {}),
+        attributes: source.attributes,
+        isRookie: source.isRookie,
+        isRelic: source.isRelic,
+        printRun: copy.printRun,
+        cardVariation: source.cardVariation,
+        // A legacy row may still carry it; observed only, never stored.
+        autographType: source.autographType,
+        platformData: toStored({
+          ...(copy.bsc ? { bsc: copy.bsc } : {}),
+          ...(copy.sportlots ? { sportlots: copy.sportlots } : {}),
+        }),
+        pendingPlayerNames: source.pendingPlayerNames ?? [],
+        // NEO-528 round 3 — the copy comes from the same listing, so it
+        // carries the claim forward (a parallel of this parallel holds the
+        // default back too).
+        ...(source.listingNamedPlayer === true ? { listingNamedPlayer: true as const } : {}),
+        pendingTeamNames: source.pendingTeamNames ?? [],
+        sortOrder: source.sortOrder,
+        playerNames: born.playerNames,
+        teamNames,
+        ...(teamSplits.length > 0 ? { teamSplits } : {}),
+        // Hobby A4 — the insert card's own facts (an autograph, Signed By,
+        // a short print) survive; the parallel's snapshot wins on what the
+        // parallel IS.
+        baseFeatures: copyFeaturesForParallel({
+          insertSnapshot: sourceRow.features,
+          parallelSnapshot,
+          insertCardFeatures: source.features,
+        }),
+        // NEO-321 — the copy is a card OF this parallel: its parallelName
+        // (and so its listing title) is the parallel row's own NB name.
+        parallelName: parallel.value,
+        ...(copy.keepSku ? { keepSku: copy.keepSku } : {}),
+        carried: {
+          teamCheckDoneAt: source.teamCheckDoneAt,
+          // NEO-345 — the stamp's reason travels with the stamp.
+          teamCheckOutcome: source.teamCheckOutcome,
+          bscTeamName: source.bscTeamName,
+          teamNoneConfirmedAt:
+            copyNoTeamStamp?.teamNoneConfirmedAt ?? source.teamNoneConfirmedAt,
+          teamNoneConfirmedByUserId:
+            copyNoTeamStamp?.teamNoneConfirmedByUserId ?? source.teamNoneConfirmedByUserId,
+          ...variation,
         },
-      );
+      };
+
+      // NEO-535 — the copy's title, in Jason's order (features/carriedTitle):
+      // the builder's own for the parallel card; else the source's hand edit,
+      // re-headed; else the builder's flagged result, counted for the Card
+      // titles dialog. The assessment is the one `insertCardRow` makes from
+      // the same card and set, so "fits" here is "fits" there. The source's
+      // stored inputs are read only for a copy that fails.
+      // NEO-528 — the names the copy is born with (its default player and
+      // its cameos included), the ones `insertCardRow` titles it from.
+      const { inputs, assessment } = assessNewCardListing(card, set, {
+        playerNames: card.playerNames,
+        teamNames: card.teamNames,
+        teamSplits: card.teamSplits,
+        cameoNames: born.cameos.map((c) => c.name),
+      });
+      let outcome: ParallelCopyTitle | undefined =
+        assessment.fits && !assessment.tidyUp
+          ? { ...assessment, failing: false }
+          : undefined;
+      if (outcome === undefined) {
+        const { inputs: sourceInputs } = await listingInputsForStoredCard(ctx, source, lookup);
+        outcome = assessParallelCopyTitle(
+          inputs,
+          carriedTitleRest({
+            sourceTitle: source.listingTitle,
+            sourceFlagged: storedTitleFails(source),
+            sourceInputs,
+          }),
+        );
+      }
+      if (outcome.failing) {
+        titlesToFix++;
+      } else if (outcome.carried) {
+        // The operator's own words, so never flagged (NEO-335's rule).
+        card.listingTitle = outcome.title;
+      } else if (!outcome.coreFits) {
+        // Built from the box and fits with full names: the box was the
+        // answer, so the copy is not flagged cut short.
+        card.listingTitleKept = outcome.title;
+      }
 
       const newId = await insertCardRow(
         ctx,
-        {
-          selectorOptionId: args.parallelId,
-          cardNumber: source.cardNumber,
-          cardName: source.cardName,
-          // NEO-254 — the pair, together.
-          playerIds: source.playerIds,
-          playerLinks: source.playerLinks,
-          teamOnCardIds: source.teamOnCardIds,
-          attributes: source.attributes,
-          isRookie: source.isRookie,
-          isRelic: source.isRelic,
-          printRun: copy.printRun,
-          cardVariation: source.cardVariation,
-          // A legacy row may still carry it; observed only, never stored.
-          autographType: source.autographType,
-          platformData: toStored({
-            ...(copy.bsc ? { bsc: copy.bsc } : {}),
-            ...(copy.sportlots ? { sportlots: copy.sportlots } : {}),
-          }),
-          pendingPlayerNames: source.pendingPlayerNames ?? [],
-          pendingTeamNames: source.pendingTeamNames ?? [],
-          sortOrder: source.sortOrder,
-          playerNames,
-          teamNames,
-          // Hobby A4 — the insert card's own facts (an autograph, Signed By,
-          // a short print) survive; the parallel's snapshot wins on what the
-          // parallel IS.
-          baseFeatures: copyFeaturesForParallel({
-            insertSnapshot: sourceRow.features,
-            parallelSnapshot,
-            insertCardFeatures: source.features,
-          }),
-          // NEO-321 — the copy is a card OF this parallel: its parallelName
-          // (and so its listing title) is the parallel row's own NB name.
-          parallelName: parallel.value,
-          ...(copy.keepSku ? { keepSku: copy.keepSku } : {}),
-          carried: {
-            teamCheckDoneAt: source.teamCheckDoneAt,
-            // NEO-345 — the stamp's reason travels with the stamp.
-            teamCheckOutcome: source.teamCheckOutcome,
-            bscTeamName: source.bscTeamName,
-            teamNoneConfirmedAt: source.teamNoneConfirmedAt,
-            teamNoneConfirmedByUserId: source.teamNoneConfirmedByUserId,
-            ...variation,
-          },
-        },
+        card,
         set,
-        { sport: parallelSport },
+        { sport: parallelSport, leagueCache },
         countLedger,
       );
+      writes +=
+        (copy.keepSku ? 1 : 2) +
+        (born.playerIds?.length ?? 0) +
+        (teamOnCardIds?.length ?? 0) +
+        born.cameos.length;
       newIdOf.set(source._id, newId);
       created.push({ from: source._id, to: newId });
+      if (
+        bscTeamLookupOwed({
+          hasBscRef: copy.bsc !== undefined,
+          teamOnCardIds,
+          teamCheckDoneAt: source.teamCheckDoneAt,
+          teamNoneConfirmedAt:
+            copyNoTeamStamp?.teamNoneConfirmedAt ?? source.teamNoneConfirmedAt,
+        })
+      ) {
+        lookupOwed.push(newId);
+      }
     }
     await countLedger.flush(ctx);
-    return { created, missing, skippedChangedSource, processed, changed: false };
+    // NEO-556 — the copies' own BSC team lookups, onto the one-slot
+    // `bscTeamPool` lane, as the checklist commit queues a synced card's.
+    // One schedule per page (the enqueue chunks itself), so the page stays
+    // a fixed size and runnable where the workpool component is not mounted.
+    if (lookupOwed.length > 0) {
+      await ctx.scheduler.runAfter(0, internal.bscTeamPool.enqueueBscTeamChecks, {
+        cardChecklistIds: lookupOwed,
+      });
+    }
+    return {
+      created,
+      missing,
+      skippedChangedSource,
+      processed,
+      changed: false,
+      titlesToFix,
+    };
   },
 });
 
@@ -1796,6 +2191,8 @@ export type BuildParallelResult = {
   legacyLinksRemoved: SideCounts;
   skippedChangedSource: number;
   deletedCount?: number;
+  /** NEO-535 — copies whose title still fails: the Card titles dialog's count. */
+  titlesToFix?: number;
   extraOnMarketplace: {
     bsc: { count: number; cards: string[] };
     sportlots: { count: number; cards: string[] };
@@ -1808,8 +2205,6 @@ export type BuildParallelResult = {
   rebuilt: boolean;
   blockedReason?: string;
 };
-
-const SIDES: readonly PlatformSide[] = ["bsc", "sportlots"];
 
 /** Cards as the BSC checklist adapter returns them — the fields read here. */
 type BscChecklistCard = {
@@ -1866,7 +2261,15 @@ const extraValidator = v.object({
 });
 
 export const buildParallelChecklist = action({
-  args: { parallelId: v.id("selectorOptions") },
+  args: {
+    parallelId: v.id("selectorOptions"),
+    /**
+     * PR 451 (NEO-487) — the client's run key for "Waiting on
+     * BuySportsCards…" (`marketplaceWaits.forRun`). Passed to the BSC fetch;
+     * absent, nothing is written.
+     */
+    waitKey: v.optional(v.string()),
+  },
   returns: v.object({
     status: v.union(v.literal("built"), v.literal("blocked")),
     /** Insert cards copied onto the parallel (linked on at least one side). */
@@ -1905,6 +2308,13 @@ export const buildParallelChecklist = action({
     /** Old cards deleted — present on a block that fired mid-delete. */
     deletedCount: v.optional(v.number()),
     /**
+     * NEO-535 — copies born with a title that still fails (over 80 after
+     * every cut, or short a first name, with no hand edit on the source to
+     * carry). Present on a build; the client offers the Card titles dialog
+     * when it is above zero.
+     */
+    titlesToFix: v.optional(v.number()),
+    /**
      * Per fetched side: the parallel's marketplace cards no insert card
      * matched. The count is exact; `cards` names at most `MAX_LISTED_CARDS`.
      *
@@ -1933,6 +2343,9 @@ export const buildParallelChecklist = action({
   }),
   handler: async (ctx, args): Promise<BuildParallelResult> => {
     await requireAdmin(ctx);
+    if (args.waitKey !== undefined && !isValidWaitKey(args.waitKey)) {
+      throw new ConvexError("buildParallelChecklist: waitKey must be 1-64 letters, digits, _ or -.");
+    }
     const startedAt = Date.now();
     const zero = (): SideCounts => ({ bsc: 0, sportlots: 0 });
     const emptyLists = (): SideLists => ({ bsc: [], sportlots: [] });
@@ -1994,31 +2407,11 @@ export const buildParallelChecklist = action({
       );
     }
 
-    if (toFetch.length === 0) {
-      const pausedOwned = SIDES.filter(
-        (side) => plan.owned[side] && plan.paused[side],
-      );
-      if (pausedOwned.length > 0) return blocked(blockedAllPaused(pausedOwned));
-      const ownedSides = SIDES.filter((side) => plan.owned[side]);
-      if (ownedSides.length === 0) return blocked(BLOCKED_NO_IDS);
-      const side = ownedSides.find((s) => plan.unreachableRow[s]);
-      return blocked(
-        side
-          ? blockedIdsUnreachable(
-              plan.unreachableRow[side],
-              ownedSides.length === 1 ? side : undefined,
-            )
-          : BLOCKED_IDS_UNREACHABLE,
-      );
-    }
-    // Security 6 — more sets than one build reads is refused, never truncated:
-    // a truncated fetch would call every card of the unread sets unlisted.
-    if (plan.owned.sportlots && plan.slOverCap) {
-      return blocked(BLOCKED_TOO_MANY_SL_SETS);
-    }
-    if (plan.fetch.bsc && plan.bscOverCap) {
-      return blocked(BLOCKED_TOO_MANY_BSC_SETS);
-    }
+    // NEO-496 — paused / out-of-reach sides and over-cap links, judged by the
+    // one function the list query also reads. A parallel with no ids of its
+    // own on either side (NQ2) passes: an unlinked copy, no marketplace asked.
+    const planBlock = sidePlanBlockReason(plan);
+    if (planBlock) return blocked(planBlock);
     // NEO-321 — nothing to copy: refused before the review-state clear (a
     // write) and before any marketplace is asked. Inserts included.
     if (!plan.sourceHasCards) {
@@ -2046,17 +2439,14 @@ export const buildParallelChecklist = action({
       side: PlatformSide,
     ): string | undefined => (side === "bsc" ? card.bscRef : card.slRef);
 
-    // Security 1 — a side the parallel owns but this build cannot ask, while
-    // old cards hold links there: rebuilding would drop every one of them.
-    for (const side of SIDES) {
-      if (!plan.owned[side] || plan.fetch[side]) continue;
-      if (!old.cards.some((card) => oldRefOf(card, side))) continue;
-      return blocked(
-        plan.paused[side]
-          ? blockedSidePaused(side)
-          : blockedIdsUnreachable(plan.unreachableRow[side], side),
-      );
-    }
+    // NEO-496 (NQ2) and Security 1 — an unlinked copy never replaces linked
+    // cards, and a side it cannot ask never drops the old cards' links there.
+    // The same function the list query reads, over EVERY old card here.
+    const oldLinksBlock = oldLinksBlockReason(plan, {
+      bsc: old.cards.some((card) => oldRefOf(card, "bsc")),
+      sportlots: old.cards.some((card) => oldRefOf(card, "sportlots")),
+    });
+    if (oldLinksBlock) return blocked(oldLinksBlock);
 
     const insertCards = await loadCardsPaged((cursor) =>
       ctx.runQuery(internal.parallelChecklistBuild.loadInsertCardsForLink, {
@@ -2109,6 +2499,7 @@ export const buildParallelChecklist = action({
             parentFilters: {},
             facetFilters: plan.bscFilters,
             ...(plan.bscSourceFacet ? { sourceFacet: plan.bscSourceFacet } : {}),
+            ...(args.waitKey !== undefined ? { waitKey: args.waitKey } : {}),
           },
         );
         tally(trace, result);
@@ -2304,7 +2695,8 @@ export const buildParallelChecklist = action({
       };
       const bsc = link("bsc");
       const sl = link("sportlots");
-      if (!bsc && !sl) {
+      // J2 — only when a side was asked; an unlinked copy takes every card.
+      if (!bsc && !sl && toFetch.length > 0) {
         listPush(lists.leftOff, label);
         continue;
       }
@@ -2355,7 +2747,10 @@ export const buildParallelChecklist = action({
     const oldForCopy = new Map<Copy, number>();
     const copiesPerOld = new Map<number, number>();
     for (const copy of copies) {
+      // NEO-496 (NQ2) — with no side asked there is no ref to compare (and
+      // no old card holds one): the key alone, exactly one each way.
       const hits = (oldByKey.get(copy.key) ?? []).filter((i) => {
+        if (toFetch.length === 0) return true;
         const card = old.cards[i];
         return (
           (copy.bsc !== undefined && card.bscRef === copy.bsc.ref) ||
@@ -2451,6 +2846,8 @@ export const buildParallelChecklist = action({
     let firstCreatedId: Id<"cardChecklist"> | undefined;
     let missing = 0;
     let changedSources = 0;
+    // NEO-535 — summed across pages: the build is paged, never one call.
+    let titlesToFix = 0;
     // NEO-321 (audit N1) — a page may stop early on its read budget; the
     // next page starts where it stopped (`processed`), never skipping a copy.
     for (let i = 0; i < copies.length; ) {
@@ -2495,6 +2892,8 @@ export const buildParallelChecklist = action({
       }
       missing += page.missing;
       changedSources += page.skippedChangedSource;
+      // A refused page (`changed`) carries no count; this one was not refused.
+      titlesToFix += "titlesToFix" in page ? (page.titlesToFix ?? 0) : 0;
       // Every page that was not `changed` consumes at least its first copy;
       // the floor keeps a misbehaving page from spinning this loop.
       i += Math.max(1, page.processed);
@@ -2526,6 +2925,7 @@ export const buildParallelChecklist = action({
       stillListedNotRelinked: final.listed,
       legacyLinksRemoved: final.legacy,
       skippedChangedSource: missing + changedSources,
+      titlesToFix,
       extraOnMarketplace,
       cards: lists,
       rebuilt: deletedTotal > 0,
@@ -2747,6 +3147,8 @@ function logBuild(
       stillListedNotRelinked: result.stillListedNotRelinked,
       legacyLinksRemoved: result.legacyLinksRemoved,
       skippedChangedSource: result.skippedChangedSource,
+      // NEO-535 — a count only, never a title.
+      ...(result.titlesToFix !== undefined ? { titlesToFix: result.titlesToFix } : {}),
       extraOnMarketplace: {
         bsc: result.extraOnMarketplace.bsc.count,
         sportlots: result.extraOnMarketplace.sportlots.count,

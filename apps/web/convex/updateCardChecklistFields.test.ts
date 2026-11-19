@@ -16,7 +16,13 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { MAX_CARD_PLAYERS } from "./features/cardAttention";
-import { BLANK_LISTING_TITLE_REFUSAL } from "./selectorOptions";
+import { generatedTitleTruncatedFlag } from "./features/listingInputs";
+import { titleForStoredCard } from "./storedCardTitle";
+import { LISTING_DESCRIPTION_MAX } from "./features/listingLimits";
+import {
+  BLANK_LISTING_DESCRIPTION_REFUSAL,
+  BLANK_LISTING_TITLE_REFUSAL,
+} from "./selectorOptions";
 import type { Id } from "./_generated/dataModel";
 import { insertTestCard } from "../lib/testing/card-row";
 
@@ -137,10 +143,12 @@ describe("updateCard structured fields (NEO-25)", () => {
     expect(card.listingDescription).toBe("Mint condition. Ships in a top loader.");
   });
 
-  test("clears fields via empty array / false / empty string (never the title)", async () => {
+  test("clears fields via empty array / false (never the title or description)", async () => {
     // NEO-358 — every field here still clears, except `listingTitle`: a card's
-    // title is what a collector searches, so a blank one is refused (see the
-    // NEO-358 block in the cap describe below). It is left out of the clear.
+    // title is required, so a blank one is refused (see the NEO-358 block in
+    // the cap describe below). NEO-535: nor `listingDescription`, which the
+    // collector's card search reads (its own block below). Both are left out
+    // of the clear and kept.
     const { asAdmin, variantTypeId, cardId } = await seed();
 
     // First set values, then clear them.
@@ -157,7 +165,6 @@ describe("updateCard structured fields (NEO-25)", () => {
       attributes: [],
       isRookie: false,
       isRelic: false,
-      listingDescription: "",
     });
 
     const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
@@ -169,7 +176,63 @@ describe("updateCard structured fields (NEO-25)", () => {
     expect(card.isRookie).toBe(false);
     expect(card.isRelic).toBe(false);
     expect(card.listingTitle).toBe("Some title");
-    expect(card.listingDescription).toBe("");
+    expect(card.listingDescription).toBe("Some description");
+  });
+
+  test("NEO-535: a blank description is refused, the stored one kept, and nothing else in the call written", async () => {
+    const { asAdmin, variantTypeId, cardId } = await seed();
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      listingDescription: "  A real description  ",
+      cardVariation: "Before",
+    });
+    for (const blank of ["", "   ", "\n\t"]) {
+      await expect(
+        asAdmin.mutation(api.selectorOptions.updateCard, {
+          id: cardId,
+          listingDescription: blank,
+          cardVariation: "After",
+        }),
+      ).rejects.toThrow(BLANK_LISTING_DESCRIPTION_REFUSAL);
+    }
+    const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    const card = cards.find((c) => c._id === cardId)!;
+    // Stored trimmed, as the panel sends it.
+    expect(card.listingDescription).toBe("A real description");
+    expect(card.cardVariation).toBe("Before");
+  });
+
+  test("NEO-535: a description over the cap is refused with its length and the cap, never its text", async () => {
+    const { asAdmin, variantTypeId, cardId } = await seed();
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      listingDescription: "A real description",
+      cardVariation: "Before",
+    });
+    // Exactly the cap (padding trimmed first) is fine.
+    const atCap = "d".repeat(LISTING_DESCRIPTION_MAX);
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      listingDescription: `  ${atCap}  `,
+    });
+    const over = "Secret" + "x".repeat(LISTING_DESCRIPTION_MAX - 5);
+    const refusal = asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      listingDescription: over,
+      cardVariation: "After",
+    });
+    await expect(refusal).rejects.toThrow(
+      `Listing description is ${LISTING_DESCRIPTION_MAX + 1} characters; the limit is ${LISTING_DESCRIPTION_MAX}.`,
+    );
+    await expect(refusal).rejects.not.toThrow(/Secret/);
+    const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    const card = cards.find((c) => c._id === cardId)!;
+    expect(card.listingDescription).toBe(atCap);
+    expect(card.cardVariation).toBe("Before");
   });
 
   test("partial patch leaves omitted fields untouched", async () => {
@@ -1354,5 +1417,69 @@ describe("updateCard pending-name bounds (NEO-246)", () => {
     const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
     expect(stored!.pendingPlayerNames).toEqual(["Never Reviewed"]);
     expect(stored!.pendingTeamNames).toEqual(["Reno Aces"]);
+  });
+});
+
+describe("generatedTitleTruncatedFlag (NEO-609)", () => {
+  test("a core that fits clears the flag; one that does not keeps it", () => {
+    expect(generatedTitleTruncatedFlag({ coreFits: true })).toBeUndefined();
+    expect(generatedTitleTruncatedFlag({ coreFits: false })).toBe(true);
+  });
+});
+
+describe("updateCard saving a title the generator would write (NEO-609)", () => {
+  const LONG = "Bartholomew Maximilian Alexander Christopher Fitzgerald-Worthington";
+
+  /** The seeded card, linked to a player; `long` makes its title a Tidy Up one. */
+  async function linked(long: boolean) {
+    const s = await seed();
+    const playerId = await s.asAdmin.run(async (ctx) => {
+      const id = await ctx.db.insert("players", {
+        name: long ? LONG : "Shohei Ohtani",
+        nameNormalized: (long ? LONG : "Shohei Ohtani").toLowerCase().split(" ").sort().join(" "),
+        sportId: s.sportId,
+        lastUpdated: Date.now(),
+      });
+      await ctx.db.patch(s.cardId, { playerIds: [id], listingTitleTruncated: long ? true : undefined });
+      return id;
+    });
+    const generated = await s.asAdmin.run(async (ctx) =>
+      titleForStoredCard(ctx, (await ctx.db.get(s.cardId))!),
+    );
+    return { ...s, playerId, generated };
+  }
+  const flagOf = (s: Awaited<ReturnType<typeof linked>>) =>
+    s.asAdmin.run(async (ctx) => ((await ctx.db.get(s.cardId))!.listingTitleTruncated ?? false));
+
+  test("equal to the generated title on a Tidy Up card: the flag stays true", async () => {
+    const s = await linked(true);
+    expect(s.generated.tidyUp).toBe(true);
+    await s.asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: s.cardId,
+      listingTitle: s.generated.title,
+    });
+    expect(await flagOf(s)).toBe(true);
+  });
+
+  test("equal to the generated title with no Tidy Up: the flag clears", async () => {
+    const s = await linked(false);
+    expect(s.generated.tidyUp).toBe(false);
+    await s.asAdmin.run(async (ctx) => {
+      await ctx.db.patch(s.cardId, { listingTitleTruncated: true });
+    });
+    await s.asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: s.cardId,
+      listingTitle: s.generated.title,
+    });
+    expect(await flagOf(s)).toBe(false);
+  });
+
+  test("a title that differs from the generated one clears the flag", async () => {
+    const s = await linked(true);
+    await s.asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: s.cardId,
+      listingTitle: `${s.generated.title.slice(0, 40)} by hand`,
+    });
+    expect(await flagOf(s)).toBe(false);
   });
 });

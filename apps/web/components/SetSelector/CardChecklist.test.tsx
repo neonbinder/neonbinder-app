@@ -131,6 +131,13 @@ vi.mock("../../convex/_generated/api", () => ({
       getParallelsForBuild: "getParallelsForBuild",
       buildParallelChecklist: "buildParallelChecklist",
     },
+    // NEO-487: the "Waiting on BuySportsCards…" lines read this per run key.
+    marketplaceWaits: { forRun: "marketplaceWaits.forRun" },
+    // NEO-490: Match Cards' Confirm asks what the operator's checklist links
+    // mean, through `useConvex().action`.
+    publishedChecklistPairs: {
+      applyPublishedChecklistPairs: "publishedChecklistPairs.apply",
+    },
   },
 }));
 
@@ -164,6 +171,10 @@ vi.mock("react-virtuoso", () => ({
  * session to return to, and whether a failed commit was reported without
  * throwing the review away.
  */
+// NEO-569: the card panel's League row reads its own query; its behaviour is
+// CardLeagueRow.test.tsx's, so here it is out of the way.
+vi.mock("./CardLeagueRow", () => ({ default: () => null }));
+
 vi.mock("./EntityReviewWizard", () => ({
   default: ({
     summary,
@@ -185,7 +196,10 @@ vi.mock("./EntityReviewWizard", () => ({
     onListingShortNameChange,
     hasAutographFormat,
     onAutographFormatChange,
+    title,
   }: {
+    // NEO-497 — the header's title, which the parent reads off the chain.
+    title?: string;
     // NEO-345 — the autograph step, reduced to the parent's half: whether the
     // leaf already has a format, and the answer channel.
     hasAutographFormat?: boolean;
@@ -224,6 +238,7 @@ vi.mock("./EntityReviewWizard", () => ({
       <p>
         {`Wizard summary: ${summary.cardCount} cards, ${summary.deleteCount} deletions, ${summary.reviewDecisionCount} field decisions`}
       </p>
+      {title !== undefined && <p>{`Wizard title: ${title}`}</p>}
       {commitError && <p>{`Wizard commit error: ${commitError}`}</p>}
       {teamsOnly && <p>Wizard opened teams-only</p>}
       {onTeamAnswersChange && (
@@ -327,6 +342,25 @@ vi.mock("./EntityReviewWizard", () => ({
 }));
 
 const mockFetchChecklist = vi.fn();
+/**
+ * NEO-496 — the server always reports the run's `sources`: the marketplace
+ * sides it fetched (attached, minus paused) plus "checklist" when a checklist
+ * was in play. Most fixtures here predate the field, so a result without one
+ * gets the value the server would send for that fixture; a fixture that sets
+ * `sources` itself is passed through untouched.
+ */
+const fetchWithSources = async (args: { publishedChecklist?: unknown }) => {
+  const result = await mockFetchChecklist(args);
+  if (!result || typeof result !== "object" || "sources" in result || !result.success) {
+    return result;
+  }
+  const paused = new Set<string>(result.pausedSides ?? []);
+  const sides = ((result.attachedSides ?? []) as string[]).filter((s) => !paused.has(s));
+  return {
+    ...result,
+    sources: [...sides, ...(args.publishedChecklist ? ["checklist"] : [])],
+  };
+};
 const mockResolveEntities = vi.fn();
 const mockCommitChecklist = vi.fn();
 const mockDiffChecklist = vi.fn();
@@ -336,6 +370,7 @@ const mockDiscardCandidates = vi.fn();
 // reset them, so every pre-existing test in this file is unaffected: a plain
 // insert or Base checklist with no `parallelBuild` prop never reaches either.
 const mockGetParallelsForBuild = vi.fn();
+const mockApplyChecklistPairs = vi.fn();
 const mockBuildParallelChecklist = vi.fn();
 // NEO-208: the quick-add form's mutation. It was already listed in the `api`
 // mock above but never routed to a spy, because nothing exercised the form —
@@ -386,6 +421,11 @@ const state: {
   }>;
   /** NEO-287: paused credential site keys, as `getPausedPlatforms` returns them. */
   paused: string[];
+  /**
+   * NEO-487: what `marketplaceWaits.forRun` answers for ANY run key.
+   * Undefined (no wait) unless a test sets it.
+   */
+  marketplaceWait?: unknown;
 } = {
   cards: [],
   variantRow: { value: "Test Set" },
@@ -419,6 +459,7 @@ vi.mock("convex/react", () => ({
       return state.players;
     }
     if (ref === "entityReviewSkips.listForSet") return state.skippedNames;
+    if (ref === "marketplaceWaits.forRun") return state.marketplaceWait;
     // CrossListingImportModal's drill-down queries — never exercised here.
     return undefined;
   },
@@ -432,7 +473,7 @@ vi.mock("convex/react", () => ({
     return vi.fn();
   },
   useAction: (ref: string) => {
-    if (ref === "fetchCardChecklist") return mockFetchChecklist;
+    if (ref === "fetchCardChecklist") return fetchWithSources;
     if (ref === "resolveChecklistEntities") return mockResolveEntities;
     // NEO-189: commitCardChecklist became an ACTION when the commit was
     // chunked server-side. Same call shape, different hook.
@@ -462,7 +503,9 @@ vi.mock("convex/react", () => ({
     action: (ref: string, args?: unknown) =>
       ref === "buildParallelChecklist"
         ? mockBuildParallelChecklist(args)
-        : Promise.resolve(undefined),
+        : ref === "publishedChecklistPairs.apply"
+          ? mockApplyChecklistPairs(args)
+          : Promise.resolve(undefined),
   }),
 }));
 
@@ -1624,6 +1667,472 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
   });
 
   /**
+   * NEO-478 — the publisher's checklist: the button and dialog beside Sync,
+   * the chip, the rows and waitKey the sync sends, the "Teams from your
+   * checklist" line, and a disagreement forcing the wizard open.
+   */
+  describe("NEO-478: the publisher's checklist", () => {
+    const PASTE = "1 Solo One - Solo Team\n2 Solo Two - Solo Team";
+    const ROWS = [
+      { number: "1", players: ["Solo One"], teams: ["Solo Team"] },
+      { number: "2", players: ["Solo Two"], teams: ["Solo Team"] },
+    ];
+
+    async function addChecklist(text = PASTE) {
+      fireEvent.click(screen.getByRole("button", { name: "Add the official checklist" }));
+      const box = await screen.findByLabelText("Paste the checklist");
+      await act(async () => {
+        fireEvent.change(box, { target: { value: text } });
+      });
+      await waitFor(() => expect(screen.getByText("2 rows")).toBeTruthy());
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Use this checklist" }));
+      });
+    }
+
+    async function syncWith(
+      rerender: Parameters<typeof streamCandidates>[0],
+      batch: unknown,
+      result: Record<string, unknown> = {},
+    ) {
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      await streamCandidates(rerender, batch);
+      await act(async () => {
+        resolveFetch({
+          success: true,
+          message: "0 matched, 0 BSC-only, 2 SL-only",
+          candidateCount: 2,
+          attachedSides: ["sportlots"],
+          ...result,
+        });
+      });
+    }
+
+    it("the button opens the dialog, and Cancel closes it with no chip", async () => {
+      renderChecklist();
+      fireEvent.click(screen.getByRole("button", { name: "Add the official checklist" }));
+      expect(await screen.findByRole("dialog", { name: "Official checklist" })).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(screen.queryByText(/Official checklist: /)).toBeNull();
+    });
+
+    it("accepting shows the chip with the row count, and Remove clears it", async () => {
+      renderChecklist();
+      await addChecklist();
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(screen.getByText("Official checklist: 2 rows")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Remove the official checklist" }));
+      expect(screen.queryByText(/Official checklist: /)).toBeNull();
+    });
+
+    it("while a checklist is attached the chip is its handle: no add button, focus on Remove, and Remove brings the button back focused (NEO-482)", async () => {
+      renderChecklist();
+      await addChecklist();
+      expect(screen.queryByRole("button", { name: "Add the official checklist" })).toBeNull();
+      const remove = screen.getByRole("button", { name: "Remove the official checklist" });
+      await waitFor(() => expect(document.activeElement).toBe(remove));
+      fireEvent.click(remove);
+      const add = await screen.findByRole("button", { name: "Add the official checklist" });
+      await waitFor(() => expect(document.activeElement).toBe(add));
+    });
+
+    it("the chip reopens the dialog on what was pasted; Use replaces the rows and focus comes back to the chip", async () => {
+      const { rerender } = renderChecklist();
+      await addChecklist();
+      const chip = screen.getByRole("button", { name: "Official checklist: 2 rows" });
+      fireEvent.click(chip);
+      const box = (await screen.findByLabelText("Paste the checklist")) as HTMLTextAreaElement;
+      expect(box.value).toBe(PASTE);
+      expect(screen.getByText("2 rows")).toBeTruthy();
+      await act(async () => {
+        fireEvent.change(box, { target: { value: "1 Solo One - Solo Team" } });
+      });
+      await waitFor(() => expect(screen.getByText("1 row")).toBeTruthy());
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Use this checklist" }));
+      });
+      const reopened = screen.getByRole("button", { name: "Official checklist: 1 row" });
+      await waitFor(() => expect(document.activeElement).toBe(reopened));
+      await syncWith(rerender, arrivedBatch);
+      expect(mockFetchChecklist.mock.calls[0][0].publishedChecklist).toEqual({ rows: [ROWS[0]] });
+    });
+
+    it("the chip says how many lines were skipped", async () => {
+      renderChecklist();
+      await addChecklist(`${PASTE}\nBase Set`);
+      expect(
+        screen.getByRole("button", { name: "Official checklist: 2 rows · 1 skipped" }),
+      ).toBeTruthy();
+    });
+
+    it("the next sync passes the rows and a valid waitKey to fetchCardChecklist", async () => {
+      const { rerender } = renderChecklist();
+      await addChecklist();
+      await syncWith(rerender, arrivedBatch);
+      expect(mockFetchChecklist).toHaveBeenCalledTimes(1);
+      expect(mockFetchChecklist).toHaveBeenCalledWith({
+        selectorOptionId: VARIANT_ID,
+        waitKey: expect.stringMatching(/^[A-Za-z0-9_-]{1,64}$/),
+        publishedChecklist: { rows: ROWS },
+      });
+    });
+
+    it("a sync with no checklist (or after Remove) sends no publishedChecklist", async () => {
+      const { rerender } = renderChecklist();
+      await addChecklist();
+      fireEvent.click(screen.getByRole("button", { name: "Remove the official checklist" }));
+      await syncWith(rerender, arrivedBatch);
+      expect(mockFetchChecklist.mock.calls[0][0]).not.toHaveProperty("publishedChecklist");
+      expect(mockFetchChecklist.mock.calls[0][0].waitKey).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+    });
+
+    /**
+     * NEO-496 — the server paired both cards with a checklist row by number
+     * and took their teams from it, so each carries the row's link.
+     */
+    const linkedCandidates = slCandidates.map((card) => ({
+      ...card,
+      teamLookup: "checklist" as const,
+      checklistLink: { via: "number" as const },
+    }));
+    const linkedBatch = { ...arrivedBatch, cards: linkedCandidates };
+
+    /** NEO-496 — a checklist makes two sources: Match Cards opens; confirm it. */
+    async function confirmMatchCards() {
+      await screen.findByText(/Match Cards/);
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText("Confirm card matches"));
+      });
+    }
+
+    it("renders 'Teams from your checklist: N of M cards' from checklistTeams while the wizard is open", async () => {
+      // The line rides on the sync banner, read here where the run stops: on
+      // a card the wizard has to settle. (The no-question case is below.)
+      const conflictBatch = {
+        ...linkedBatch,
+        cards: linkedCandidates.map((card, i) =>
+          i === 0
+            ? { ...card, checklistConflict: { teams: { marketplace: [], checklist: ["Reds"] } } }
+            : card,
+        ),
+      };
+      const { rerender } = renderChecklist();
+      await addChecklist();
+      await syncWith(rerender, conflictBatch, { checklistTeams: { matched: 1, total: 2 } });
+      await confirmMatchCards();
+      await screen.findByText("Wizard opened teams-only");
+      expect(liveRegionText()).toContain("Teams from your checklist: 1 of 2 cards");
+    });
+
+    it("keeps 'Teams from your checklist: N of M cards' on the saved line when the run commits with no question", async () => {
+      // No disagreement, no unknown names: Confirm commits straight away and
+      // "Saved N cards." replaces the sync line — the checklist line rides on.
+      const { rerender } = renderChecklist();
+      await addChecklist();
+      await syncWith(rerender, linkedBatch, { checklistTeams: { matched: 2, total: 2 } });
+      await confirmMatchCards();
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(liveRegionText()).toMatch(/Saved \d+ cards\./));
+      expect(liveRegionText()).toContain("Teams from your checklist: 2 of 2 cards");
+      expect(screen.queryByText("Wizard opened teams-only")).toBeNull();
+    });
+
+    /**
+     * NEO-496 — the checklist is a full source. One marketplace plus a
+     * checklist is two sources, so Match Cards opens, even when every card
+     * lines up; a checklist alone is one source and is kept whole.
+     */
+    describe("NEO-496: checklist routing", () => {
+      /** A checklist row no card paired, as the fetch streams it. */
+      const rowCandidate = (n: string, player: string, id = `row-${n}`) => ({
+        _id: id,
+        cardNumber: n,
+        cardName: player,
+        players: [player],
+        teams: ["Solo Team"],
+        teamLookup: "checklist" as const,
+        bucket: "checklistOnly" as const,
+        platformData: {},
+      });
+      const withRows = {
+        ...arrivedBatch,
+        ready: 4,
+        total: 4,
+        cards: [...slCandidates, rowCandidate("1", "Solo One"), rowCandidate("2", "Solo Two")],
+      };
+
+      it("a one-marketplace set with a checklist opens Match Cards with Keep on both sources' leftovers, and commits nothing yet", async () => {
+        const { rerender } = renderChecklist();
+        await addChecklist();
+        await syncWith(rerender, withRows, { candidateCount: 4 });
+
+        expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+        expect(screen.getByRole("heading", { name: "Checklist only (2)" })).toBeTruthy();
+        expect(screen.queryByRole("heading", { name: /^BSC only/ })).toBeNull();
+        expect(screen.getByLabelText("Keep #1 Solo One as SportLots-only")).toBeTruthy();
+        expect(
+          screen.getByLabelText("Keep #1 Solo One · Solo Team as checklist-only"),
+        ).toBeTruthy();
+        expect(mockCommitChecklist).not.toHaveBeenCalled();
+        expect(mockResolveEntities).not.toHaveBeenCalled();
+      });
+
+      it("every card on the checklist still opens Match Cards; Confirm saves them all", async () => {
+        const { rerender } = renderChecklist();
+        await addChecklist();
+        await syncWith(rerender, linkedBatch);
+
+        await confirmMatchCards();
+        await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+        const saved = mockCommitChecklist.mock.calls[0][0].cards;
+        expect(saved).toHaveLength(2);
+        // The wire-only link never reaches the strict commit validator.
+        expect(saved[0]).not.toHaveProperty("checklistLink");
+      });
+
+      it("a stored checklist the client could not see is learned from the fetch, and opens Match Cards", async () => {
+        // Nothing pasted: the client predicted one source, the server says two.
+        const { rerender } = renderChecklist();
+        await syncWith(rerender, linkedBatch, { sources: ["sportlots", "checklist"] });
+        expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+        expect(mockCommitChecklist).not.toHaveBeenCalled();
+      });
+
+      it("no checklist: a one-marketplace set still keeps every card and commits with no dialog", async () => {
+        const { rerender } = renderChecklist();
+        await syncWith(rerender, arrivedBatch);
+        await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+        expect(screen.queryByText(/Match Cards/)).toBeNull();
+      });
+
+      it("a checklist alone (no marketplace attached) keeps every row as a card and goes straight on", async () => {
+        state.ancestorChain = [
+          { _id: SPORT_ID, level: "sport", value: "Baseball", platformData: {} },
+          { _id: SET_ID, level: "setName", value: "Test Set", platformData: {} },
+          { _id: VARIANT_ID, level: "variantType", value: "Base", platformData: {} },
+        ];
+        const rowsOnly = {
+          ...arrivedBatch,
+          cards: [rowCandidate("1", "Solo One"), rowCandidate("2", "Solo Two")],
+        };
+        // Held open so the kept line is read while it stands for the commit.
+        let finishCommit: (value: unknown) => void = () => {};
+        mockCommitChecklist.mockImplementation(
+          () => new Promise((resolve) => (finishCommit = resolve)),
+        );
+        const { rerender } = renderChecklist();
+        await addChecklist();
+        await syncWith(rerender, rowsOnly, { attachedSides: [] });
+
+        await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+        expect(screen.queryByText(/Match Cards/)).toBeNull();
+        const saved = mockCommitChecklist.mock.calls[0][0].cards;
+        expect(saved.map((c: { cardNumber: string }) => c.cardNumber)).toEqual(["1", "2"]);
+        expect(saved[0]).toMatchObject({ platformData: {}, teamLookup: "checklist" });
+        expect(saved[0]).not.toHaveProperty("checklistRowId");
+        expect(liveRegionText()).toContain(
+          "Kept all 2 cards from your checklist. Nothing to match, no marketplace attached.",
+        );
+        await act(async () => finishCommit({ count: 2 }));
+      });
+
+      it("Confirm asks the server about the hand links, saves the linked and kept cards, and recounts the teams line from the answers", async () => {
+        mockApplyChecklistPairs.mockResolvedValue([
+          { teams: ["Solo Team"], teamLookup: "checklist" },
+        ]);
+        const { rerender } = renderChecklist();
+        await addChecklist();
+        // The fetch counted none from the checklist; one link will make it one.
+        await syncWith(rerender, withRows, {
+          candidateCount: 4,
+          checklistTeams: { matched: 0, total: 2 },
+        });
+        await screen.findByText(/Match Cards/);
+
+        fireEvent.click(screen.getByLabelText("Select #1 Solo One · Solo Team"));
+        fireEvent.click(screen.getByLabelText("Link selected checklist row to #1 Solo One"));
+        fireEvent.click(screen.getByLabelText("Keep #2 Solo Two as SportLots-only"));
+        await act(async () => {
+          fireEvent.click(screen.getByLabelText("Confirm card matches"));
+        });
+
+        await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+        expect(mockApplyChecklistPairs).toHaveBeenCalledTimes(1);
+        const asked = mockApplyChecklistPairs.mock.calls[0][0];
+        expect(asked.selectorOptionId).toBe(VARIANT_ID);
+        expect(asked.pairs).toHaveLength(1);
+        expect(asked.pairs[0].row).toEqual({
+          number: "1",
+          players: ["Solo One"],
+          teams: ["Solo Team"],
+        });
+        // The row nobody kept was dropped; the linked and the kept card saved.
+        expect(mockCommitChecklist.mock.calls[0][0].cards).toHaveLength(2);
+        await waitFor(() =>
+          expect(liveRegionText()).toContain("Teams from your checklist: 1 of 2 cards"),
+        );
+        expect(liveRegionText()).not.toContain("Teams from your checklist: 0 of 2 cards");
+      });
+
+      it("the teams line is left as the fetch counted it when the checklist was not a source", async () => {
+        // Two marketplaces, and the server reports no checklist source: the
+        // dialog opens for the usual pairing, and nothing is recounted. A
+        // recount here would read 0 of 1.
+        state.ancestorChain = twoSidedChain();
+        state.liveCandidates = {
+          batchId: "batch-490",
+          ready: 1,
+          total: 1,
+          // Teamed, so nothing opens the wizard's teamless step.
+          cards: [{ ...streamedCandidate, teams: ["Streamed Team"] }],
+        };
+        const { rerender } = renderChecklist();
+        await addChecklist();
+        fireEvent.click(screen.getByLabelText("Sync card checklist"));
+        expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+        await streamCandidates(rerender, { ...(state.liveCandidates as object), batchId: "batch-490b" });
+        await act(async () => {
+          resolveFetch({
+            success: true,
+            message: "1 matched, 0 BSC-only, 0 SL-only",
+            candidateCount: 1,
+            attachedSides: ["bsc", "sportlots"],
+            sources: ["bsc", "sportlots"],
+            checklistTeams: { matched: 1, total: 1 },
+          });
+        });
+        expect(screen.queryByRole("list", { name: "Leftover checklist rows" })).toBeNull();
+        await act(async () => {
+          fireEvent.click(screen.getByLabelText("Confirm card matches"));
+        });
+
+        await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+        await waitFor(() =>
+          expect(liveRegionText()).toContain("Teams from your checklist: 1 of 1 card"),
+        );
+      });
+
+      it("a failed answer keeps the dialog open and commits nothing", async () => {
+        mockApplyChecklistPairs.mockRejectedValue(new Error("server down"));
+        const { rerender } = renderChecklist();
+        await addChecklist();
+        await syncWith(rerender, withRows, { candidateCount: 4 });
+        await screen.findByText(/Match Cards/);
+
+        fireEvent.click(screen.getByLabelText("Select #1 Solo One · Solo Team"));
+        fireEvent.click(screen.getByLabelText("Link selected checklist row to #1 Solo One"));
+        await act(async () => {
+          fireEvent.click(screen.getByLabelText("Confirm card matches"));
+        });
+
+        expect(await screen.findByText(/your checklist links didn't stick/)).toBeTruthy();
+        expect(mockCommitChecklist).not.toHaveBeenCalled();
+        expect(screen.getByText(/Match Cards/)).toBeTruthy();
+      });
+
+      it("the saved line counts the cards whose team came from the checklist: a repeated number's card, asked of the marketplace and kept, is saved but not counted (D2)", async () => {
+        // The NEO-478 spec's shape: 17 cards the server paired by number, card
+        // #6 whose number is on two rows (so it paired with neither and its
+        // team was asked of the marketplace), and those two rows left over.
+        const paired = Array.from({ length: 18 }, (_, i) => String(i + 1))
+          .filter((n) => n !== "6")
+          .map((n) => ({
+            cardNumber: n,
+            cardName: `Player ${n}`,
+            teams: ["Solo Team"],
+            teamLookup: "checklist" as const,
+            checklistLink: { via: "number" as const },
+            bucket: "slOnly" as const,
+            platformData: { sportlots: { ref: `sl-${n}` } },
+          }));
+        const six = {
+          cardNumber: "6",
+          cardName: "Player 6",
+          teams: ["Marketplace Team"],
+          teamLookup: "answered" as const,
+          bucket: "slOnly" as const,
+          platformData: { sportlots: { ref: "sl-6" } },
+        };
+        const batch = {
+          ...arrivedBatch,
+          ready: 20,
+          total: 20,
+          cards: [
+            ...paired,
+            six,
+            rowCandidate("6", "Player 6", "row-6a"),
+            rowCandidate("6", "Player 8", "row-6b"),
+          ],
+        };
+        const { rerender } = renderChecklist();
+        await addChecklist();
+        await syncWith(rerender, batch, {
+          candidateCount: 20,
+          checklistTeams: { matched: 17, total: 18 },
+        });
+        await screen.findByText(/Match Cards/);
+        fireEvent.click(screen.getByLabelText("Keep all SportLots-only cards"));
+        await act(async () => {
+          fireEvent.click(screen.getByLabelText("Confirm card matches"));
+        });
+
+        await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+        // The rows nobody kept are dropped: 18 cards saved, #6 among them.
+        expect(mockCommitChecklist.mock.calls[0][0].cards).toHaveLength(18);
+        await waitFor(() => expect(liveRegionText()).toMatch(/Saved \d+ cards\./));
+        expect(liveRegionText()).toContain("Teams from your checklist: 17 of 18 cards");
+        expect(liveRegionText()).not.toContain("18 of 18");
+      });
+    });
+
+    it("says nothing about checklist teams when the fetch reports none", async () => {
+      const { rerender } = renderChecklist();
+      await syncWith(rerender, arrivedBatch);
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
+      await waitFor(() => expect(liveRegionText()).toMatch(/Saved \d+ cards\./));
+      expect(liveRegionText()).not.toContain("Teams from your checklist");
+    });
+
+    it("an open checklistConflict forces the wizard open instead of committing", async () => {
+      const conflictBatch = {
+        ...arrivedBatch,
+        cards: slCandidates.map((card, i) =>
+          i === 0
+            ? {
+                ...card,
+                checklistConflict: {
+                  players: { marketplace: ["Solo One"], checklist: ["Solo Won"] },
+                },
+              }
+            : card,
+        ),
+      };
+      const { rerender } = renderChecklist();
+      await syncWith(rerender, conflictBatch);
+      await waitFor(() => expect(mockResolveEntities).toHaveBeenCalled());
+      expect(await screen.findByText("Wizard opened teams-only")).toBeTruthy();
+      expect(mockCommitChecklist).not.toHaveBeenCalled();
+    });
+
+    it("a conflict on the card reaches the wizard's preview cards", async () => {
+      const checklistConflict = {
+        teams: { marketplace: ["Reds"], checklist: ["Cincinnati Reds"] },
+      };
+      const conflictBatch = {
+        ...arrivedBatch,
+        cards: slCandidates.map((card, i) => (i === 0 ? { ...card, checklistConflict } : card)),
+      };
+      const { rerender } = renderChecklist();
+      await syncWith(rerender, conflictBatch);
+      await screen.findByText("Wizard opened teams-only");
+      expect(mockResolveEntities.mock.calls[0][0].cards[0].checklistConflict).toEqual(
+        checklistConflict,
+      );
+    });
+  });
+
+  /**
    * NEO-335 — no names to review is no longer "nothing to ask". A SportLots
    * sync of known players is the biggest source of teamless cards, so a card
    * that would save with no team opens the wizard straight onto its final
@@ -1655,6 +2164,10 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
 
       expect(await screen.findByText("Wizard opened teams-only")).toBeTruthy();
       expect(screen.getByText(/Wizard summary: 2 cards/)).toBeTruthy();
+      // NEO-497: the wizard is titled with the set and variant off the chain
+      // (this chain has no year row, so the title simply leaves it out, and
+      // the leaf is Base, which the title drops).
+      expect(screen.getByText("Wizard title: Tidy up Test Set")).toBeTruthy();
       expect(mockCommitChecklist).not.toHaveBeenCalled();
 
       fireEvent.click(screen.getByText("Answer every card with no team"));
@@ -1779,6 +2292,16 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
 
     it("commits straight through when the node's set-level team covers the new cards", async () => {
       state.variantRow = { value: "Test Set", teamIds: ["team-set"] };
+      const { rerender } = renderChecklist();
+      await syncTeamless(rerender);
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
+      expect(screen.queryByText(/Wizard summary/)).toBeNull();
+    });
+
+    it("NEO-556: under a No Team node, new cards with nothing to look up commit straight through", async () => {
+      // SportLots-only cards: no BSC ref, so no lookup to wait on and no
+      // listing value; the commit stamps each one No Team.
+      state.variantRow = { value: "Test Set", noTeamDefault: { setAt: 1, setByUserId: "u" } };
       const { rerender } = renderChecklist();
       await syncTeamless(rerender);
       await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
@@ -3197,6 +3720,25 @@ describe("CardChecklist — NEO-102 attention count and walker (NEO-335: one 'N 
     expect(screen.queryByText(/needs? you/)).toBeNull();
   });
 
+  it("names the walker after the set's year, set and variant (NEO-497)", async () => {
+    state.ancestorChain = [
+      { _id: SPORT_ID, level: "sport", value: "Baseball", platformData: {} },
+      { _id: "year_2024", level: "year", value: "2024", platformData: {} },
+      { _id: "mfr_topps", level: "manufacturer", value: "Topps", platformData: {} },
+      { _id: SET_ID, level: "setName", value: "Topps Chrome", platformData: {} },
+      { _id: VARIANT_ID, level: "variantType", value: "Base", platformData: {} },
+    ];
+    renderChecklist();
+
+    fireEvent.click(needsYou());
+
+    // The title is the dialog's accessible name; neither the manufacturer row
+    // nor the trailing "Base" is part of it.
+    expect(
+      await screen.findByRole("dialog", { name: "Tidy up 2024 Topps Chrome" }),
+    ).toBeTruthy();
+  });
+
   it("offers no grid filter any more — every row stays listed", () => {
     renderChecklist();
 
@@ -3212,8 +3754,9 @@ describe("CardChecklist — NEO-102 attention count and walker (NEO-335: one 'N 
 
     fireEvent.click(needsYou());
 
-    const dialog = await screen.findByRole("dialog");
-    expect(dialog.textContent).toContain("Tidy up this set");
+    // NEO-497: titled off the chain (this one has no year row; Base is dropped).
+    const dialog = await screen.findByRole("dialog", { name: "Tidy up Test Set" });
+    expect(dialog).toBeTruthy();
     expect(screen.getByRole("heading", { level: 3 }).textContent).toBe(
       "#1 AL Leaders ERA LL",
     );
@@ -3712,6 +4255,8 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
       "Card name",
       QA_TRIGGER,
       "Add team",
+      // NEO-556: the No Team toggle sits right after the team trigger.
+      "No Team for the new card",
       "Submit new card",
       "Cancel new card",
     ]);
@@ -4683,6 +5228,141 @@ describe("CardChecklist — NEO-221 D9: Back to matching", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// NEO-424 — a batch whose only names are links the server made on its own
+// (set history, the Hall of Fame tie-break). Those names are left out of
+// `unknownPlayers`/`unknownTeams`, so the "no names" path used to commit them
+// silently. Every auto-link must be seen, and be reversible, in the wizard's
+// Decided list first — so the count the server returns now opens the wizard.
+// ---------------------------------------------------------------------------
+
+describe("CardChecklist — NEO-424: links made for the operator open the wizard", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = twoSidedChain();
+    state.liveCandidates = null;
+    state.teams = [];
+    state.players = [];
+    state.skippedNames = [];
+  });
+
+  /**
+   * One paired card that prints its team, so nothing else would hold the
+   * save: no teamless card (no teams step), no title context (no titles
+   * step), no "AU" (no autograph step). Whatever opens the wizard here is the
+   * names alone.
+   */
+  async function pairTeamedCard() {
+    state.liveCandidates = {
+      ready: 1,
+      total: 1,
+      cards: [
+        {
+          ...streamedCandidate,
+          cardName: "Joe Morgan",
+          players: ["Joe Morgan"],
+          teams: ["Cincinnati Reds"],
+        },
+      ],
+    };
+    mockFetchChecklist.mockImplementation(async () =>
+      publish({
+        success: true,
+        message: "Fetched 1 card",
+        candidateCount: 1,
+        attachedSides: ["bsc", "sportlots"],
+      }),
+    );
+    mockDiffChecklist.mockResolvedValue(NOTHING_TO_REVIEW);
+    mockCommitChecklist.mockResolvedValue({ count: 1 });
+    mockDiscardCandidates.mockResolvedValue(undefined);
+    renderChecklist();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    });
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+  }
+
+  it("opens the full wizard on a batch with nothing to answer but links made for you, and does not commit", async () => {
+    mockResolveEntities.mockResolvedValue({
+      unknownPlayers: [],
+      unknownTeams: [],
+      batchId: "batch-424",
+      autoLinkedCount: 2,
+    });
+    await pairTeamedCard();
+    await confirmPairing();
+
+    // The full wizard over the batch, not the teams-only entry: its Save step
+    // is where the Decided list, and each link's Change, live.
+    expect(screen.queryByText("Wizard opened teams-only")).toBeNull();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+    // The banner says why the save is held, rather than "0 names need a look".
+    expect(
+      screen.getByText("2 names were linked for you. Give them a look before this saves."),
+    ).toBeTruthy();
+
+    // And the wizard's own Confirm is what commits it, batch and all.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Confirm entity review" }));
+    });
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+    expect(mockCommitChecklist.mock.calls[0][0].batchId).toBe("batch-424");
+  });
+
+  /**
+   * NEO-221 — the "Back to matching" return trip, where a re-pair resolved
+   * every name, hands back the OPEN batch's id with no unknowns: a batch of
+   * the operator's own decisions. That must keep committing straight away,
+   * which is why the gate reads the auto-link count and never `batchId`.
+   */
+  it("still commits without the wizard when Back to matching comes back with a batch and nothing linked", async () => {
+    mockResolveEntities.mockResolvedValueOnce({
+      unknownPlayers: ["Unknown Guy"],
+      unknownTeams: [],
+      batchId: "batch-424",
+    });
+    await pairTeamedCard();
+    await confirmPairing();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Back to matching" }));
+    });
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+
+    mockResolveEntities.mockResolvedValueOnce({
+      unknownPlayers: [],
+      unknownTeams: [],
+      batchId: "batch-424",
+      autoLinkedCount: 0,
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    });
+
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+    expect(mockCommitChecklist.mock.calls[0][0].batchId).toBe("batch-424");
+    expect(screen.queryByText(/Wizard summary/)).toBeNull();
+  });
+
+  it("reads a missing count as none, as an older server sends it", async () => {
+    mockResolveEntities.mockResolvedValue({
+      unknownPlayers: [],
+      unknownTeams: [],
+      batchId: undefined,
+    });
+    await pairTeamedCard();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    });
+
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText(/Wizard summary/)).toBeNull();
+  });
+});
+
 describe("CardChecklist — NEO-221 D9/D10: aborting the review", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -5379,7 +6059,7 @@ describe("CardChecklist — NEO-312 a parallel row's Sync slot builds instead of
     fireEvent.click(button);
 
     await waitFor(() =>
-      expect(mockBuildParallelChecklist).toHaveBeenCalledWith({ parallelId: VARIANT_ID }),
+      expect(mockBuildParallelChecklist).toHaveBeenCalledWith({ parallelId: VARIANT_ID, waitKey: expect.stringMatching(/^[A-Za-z0-9_-]{1,64}$/) }),
     );
     expect(mockFetchChecklist).not.toHaveBeenCalled();
     expect(screen.queryByText(/Match Cards/)).toBeNull();
@@ -5414,7 +6094,7 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
     mockGetParallelsForBuild.mockResolvedValue({
       truncated: false,
       parallels: [
-        { _id: "parallel-a", value: "Anime Gold", sides: { bsc: true, sportlots: false }, hasCards: false },
+        { _id: "parallel-a", value: "Anime Gold", owned: { bsc: true, sportlots: false }, sides: { bsc: true, sportlots: false }, hasCards: false },
       ],
     });
     mockResolveEntities.mockResolvedValue({ unknownPlayers: [], unknownTeams: [], batchId: undefined });
@@ -5468,7 +6148,7 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Build from Anime" }));
 
     await waitFor(() =>
-      expect(mockBuildParallelChecklist).toHaveBeenCalledWith({ parallelId: VARIANT_ID }),
+      expect(mockBuildParallelChecklist).toHaveBeenCalledWith({ parallelId: VARIANT_ID, waitKey: expect.stringMatching(/^[A-Za-z0-9_-]{1,64}$/) }),
     );
     const addCard = screen.getByLabelText("Open add card form");
     await waitFor(() => expect(addCard.getAttribute("aria-disabled")).toBe("true"));
@@ -5492,6 +6172,63 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
       buildOne: vi.fn(),
     };
   }
+
+  it("NEO-487: a single build's wait line stays while another insert's run goes elsewhere — one line, never two (NEO-496)", async () => {
+    state.marketplaceWait = { waitingSince: 1, accumulatedMs: 0 };
+    // An empty parallel: its button builds at once, no rebuild confirm.
+    state.cards = [];
+    try {
+      const pending = new Promise<never>(() => {});
+      const idle: ParallelBuildRunner = {
+        run: null,
+        active: false,
+        inFlight: new Set(),
+        start: vi.fn(),
+        stop: vi.fn(),
+        buildOne: vi.fn(() => pending),
+      };
+      const props = {
+        variantId: VARIANT_ID,
+        sourceChips: {},
+        sourceLabelMaps: { bsc: {}, sportlots: {} },
+        parallelBuild: { role: "parallel" as const, sourceId: INSERT_ROW_ID, sourceValue: "Anime" },
+      };
+      const { rerender } = render(<CardChecklist {...props} parallelRun={idle} />);
+      // This row's own build, held up on the marketplace: its line shows.
+      fireEvent.click(screen.getByRole("button", { name: "Build from Anime" }));
+      await waitFor(() => expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1), {
+        timeout: 3000,
+      });
+      // A run of another insert's parallels starts while that build is still
+      // in flight (the operator saved the insert, then came back here).
+      // NEO-496: that run's ledger belongs to its insert, not this row, so it
+      // is not drawn here, and this row's own wait line stays the one line.
+      const running = hostedRunner({
+        startedFrom: "some-other-insert" as unknown as Id<"selectorOptions">,
+        sourceId: "some-other-insert" as unknown as Id<"selectorOptions">,
+        sourceValue: "Other Insert",
+        sourceKind: "insert",
+        entries: [
+          { id: "other-parallel" as unknown as Id<"selectorOptions">, value: "X", line: { kind: "building" } },
+        ],
+        truncated: false,
+        phase: "running",
+        atIndex: 0,
+        announcement: "",
+        waitKey: "run-key",
+      });
+      rerender(<CardChecklist {...props} parallelRun={{ ...running, buildOne: idle.buildOne }} />);
+      await waitFor(() => expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1), {
+        timeout: 3000,
+      });
+      // And it is the build's line: no ledger for the other insert's run.
+      const line = screen.getByText("Waiting on BuySportsCards…");
+      expect(line.closest("section")?.textContent ?? "").not.toContain("Other Insert");
+      expect(document.getElementById(PARALLEL_BUILD_HEADING_ID)).toBeNull();
+    } finally {
+      state.marketplaceWait = undefined;
+    }
+  });
 
   it("a run active on a DIFFERENT insert entirely never holds this checklist", () => {
     const foreign = hostedRunner({
@@ -5544,6 +6281,64 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
     const addCard = screen.getByLabelText("Open add card form");
     expect(addCard.getAttribute("aria-disabled")).toBe("true");
     expect(addCard.getAttribute("aria-describedby")).toBe(parallelLineId(VARIANT_ID));
+    // NEO-496: the line it is described by is on screen, in the run's ledger.
+    expect(document.getElementById(parallelLineId(VARIANT_ID))).not.toBeNull();
+  });
+
+  /**
+   * NEO-496 (Jason, 2026-11-12) — the ledger belongs to the row whose save
+   * started it: on that row, and on one of its parallels only while the run
+   * holds it. A finished run is not drawn on its parallels, and no run is
+   * drawn on an unrelated row.
+   */
+  describe("the ledger shows only on its own row (NEO-496)", () => {
+    const PARALLEL_ID = "parallel-row-9" as unknown as Id<"selectorOptions">;
+    const runOf = (phase: "running" | "finished") => ({
+      startedFrom: VARIANT_ID,
+      sourceId: VARIANT_ID,
+      sourceValue: "Anime",
+      sourceKind: "insert" as const,
+      entries: [
+        {
+          id: PARALLEL_ID,
+          value: "Anime Kanji",
+          line: phase === "running" ? { kind: "waiting" as const } : { kind: "failed" as const, message: "BSC had no cards" },
+        },
+      ],
+      truncated: false,
+      phase,
+      atIndex: 0,
+      announcement: "",
+    });
+    const at = (variantId: Id<"selectorOptions">, phase: "running" | "finished") => (
+      <CardChecklist
+        variantId={variantId}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        parallelRun={hostedRunner(runOf(phase) as never)}
+      />
+    );
+    const ledger = () => document.getElementById(PARALLEL_BUILD_HEADING_ID);
+
+    it("a finished run is on the row it started from", () => {
+      render(at(VARIANT_ID, "finished"));
+      expect(ledger()).not.toBeNull();
+    });
+
+    it("a finished run is not carried onto one of its parallels", () => {
+      render(at(PARALLEL_ID, "finished"));
+      expect(ledger()).toBeNull();
+    });
+
+    it("a running run is on its parallel while it holds that row", () => {
+      render(at(PARALLEL_ID, "running"));
+      expect(ledger()).not.toBeNull();
+    });
+
+    it("a running run is not drawn on an unrelated row", () => {
+      render(at("unrelated-row" as unknown as Id<"selectorOptions">, "running"));
+      expect(ledger()).toBeNull();
+    });
   });
 });
 
@@ -5590,6 +6385,61 @@ describe("CardChecklist — NEO-312 the auto-run after a commit (J1)", () => {
     renderChecklist();
     await driveZeroCandidateCommit();
     expect(mockGetParallelsForBuild).not.toHaveBeenCalled();
+  });
+
+  it("NEO-496: \"Saved N cards.\" goes the moment another row is picked, and does not come back", async () => {
+    mockGetParallelsForBuild.mockResolvedValue({ parallels: [], truncated: false });
+    const { rerender } = renderInsertRow();
+    await driveZeroCandidateCommit();
+    await waitFor(() => expect(screen.getByText(/^Saved 2 cards\./)).toBeTruthy());
+
+    const OTHER_ID = "variant-2" as unknown as Id<"selectorOptions">;
+    const at = (variantId: Id<"selectorOptions">) => (
+      <CardChecklist
+        variantId={variantId}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        parallelBuild={{ role: "insert" }}
+      />
+    );
+    await act(async () => {
+      rerender(at(OTHER_ID));
+    });
+    expect(screen.queryByText(/Saved 2 cards/)).toBeNull();
+    // The new row is on screen, with its own Sync.
+    expect(screen.getByLabelText("Sync card checklist")).toBeTruthy();
+
+    await act(async () => {
+      rerender(at(VARIANT_ID));
+    });
+    expect(screen.queryByText(/Saved 2 cards/)).toBeNull();
+  });
+
+  it("NEO-496: a parallels list that fails after the operator moved on says nothing on the new row", async () => {
+    let failList!: (error: Error) => void;
+    mockGetParallelsForBuild.mockImplementation(
+      () => new Promise((_resolve, reject) => (failList = reject)),
+    );
+    const { rerender } = renderInsertRow();
+    await driveZeroCandidateCommit();
+    await waitFor(() => expect(mockGetParallelsForBuild).toHaveBeenCalled());
+
+    const OTHER_ID = "variant-2" as unknown as Id<"selectorOptions">;
+    await act(async () => {
+      rerender(
+        <CardChecklist
+          variantId={OTHER_ID}
+          sourceChips={{}}
+          sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+          parallelBuild={{ role: "insert" }}
+        />,
+      );
+    });
+    await act(async () => {
+      failList(new Error("list unreadable"));
+    });
+    expect(screen.queryByText(/Parallels not built/)).toBeNull();
+    expect(screen.queryByText(/Saved 2 cards/)).toBeNull();
   });
 });
 
@@ -5652,7 +6502,7 @@ describe("CardChecklist — NEO-321 a base-parallel row builds from Base (D3)", 
     fireEvent.click(screen.getByRole("button", { name: "Build from Base" }));
 
     await waitFor(() =>
-      expect(mockBuildParallelChecklist).toHaveBeenCalledWith({ parallelId: VARIANT_ID }),
+      expect(mockBuildParallelChecklist).toHaveBeenCalledWith({ parallelId: VARIANT_ID, waitKey: expect.stringMatching(/^[A-Za-z0-9_-]{1,64}$/) }),
     );
     expect(mockFetchChecklist).not.toHaveBeenCalled();
     expect(mockCommitChecklist).not.toHaveBeenCalled();
@@ -6178,5 +7028,138 @@ describe("CardChecklist — stream readiness helpers", () => {
   it("teams: with no fence, every row must be ready", () => {
     expect(streamTeamsLanded(live({ ready: 2 }), { count: 3 })).toBe(false);
     expect(streamTeamsLanded(live({ ready: 3 }), { count: 3 })).toBe(true);
+  });
+});
+
+describe("CardChecklist — NEO-556 quick-add No Team", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = twoSidedChain();
+    state.liveCandidates = null;
+    state.teams = [YANKEES, METS];
+    mockAddCustomCard.mockResolvedValue("new-card-1");
+  });
+
+  const noTeamToggle = () =>
+    screen.getByRole("button", { name: "No Team for the new card" });
+
+  it("sends teamNone, and no team ids, when No Team is pressed", async () => {
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("601");
+    pickTeam("New York Yankees");
+    fireEvent.click(noTeamToggle());
+    expect(noTeamToggle().getAttribute("aria-pressed")).toBe("true");
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+    const args = mockAddCustomCard.mock.calls[0][0];
+    expect(args.teamNone).toBe(true);
+    expect(args).not.toHaveProperty("teamOnCardIds");
+  });
+
+  it("picking a team after No Team turns it off and sends the team alone", async () => {
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("602");
+    fireEvent.click(noTeamToggle());
+    pickTeam("New York Mets");
+    expect(noTeamToggle().getAttribute("aria-pressed")).toBe("false");
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+    const args = mockAddCustomCard.mock.calls[0][0];
+    expect(args.teamOnCardIds).toEqual([METS._id]);
+    expect(args).not.toHaveProperty("teamNone");
+  });
+
+  it("does not carry No Team into the next card", async () => {
+    renderChecklist();
+    openAddForm();
+    fireEvent.click(noTeamToggle());
+    fireEvent.click(screen.getByLabelText("Cancel new card"));
+    openAddForm();
+    expect(noTeamToggle().getAttribute("aria-pressed")).toBe("false");
+  });
+
+  describe("under a No Team checklist", () => {
+    beforeEach(() => {
+      state.variantRow = { value: "Test Set", noTeamDefault: { setAt: 1, setByUserId: "u" } };
+    });
+    const fromSet = () => screen.queryByText("From the set. Pick a team, or press No Team to turn it off.");
+
+    it("starts pressed, says it came from the set, and saves No Team", async () => {
+      renderChecklist();
+      openAddForm();
+      expect(noTeamToggle().getAttribute("aria-pressed")).toBe("true");
+      const hint = fromSet();
+      expect(hint).toBeTruthy();
+      // The toggle (and "+ Add team") is described by the line.
+      expect(noTeamToggle().getAttribute("aria-describedby")).toBe(hint?.id);
+
+      fillCardNumber("611");
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText("Submit new card"));
+      });
+      const args = mockAddCustomCard.mock.calls[0][0];
+      expect(args.teamNone).toBe(true);
+      expect(args).not.toHaveProperty("teamOnCardIds");
+    });
+
+    it("un-pressing it sends teamNone false: don't mark this card", async () => {
+      renderChecklist();
+      openAddForm();
+      fireEvent.click(noTeamToggle());
+      expect(noTeamToggle().getAttribute("aria-pressed")).toBe("false");
+      expect(fromSet()).toBeNull();
+
+      fillCardNumber("612");
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText("Submit new card"));
+      });
+      const args = mockAddCustomCard.mock.calls[0][0];
+      expect(args.teamNone).toBe(false);
+      expect(args).not.toHaveProperty("teamOnCardIds");
+    });
+
+    it("picking a team replaces it: the team alone is sent", async () => {
+      renderChecklist();
+      openAddForm();
+      fillCardNumber("613");
+      pickTeam("New York Mets");
+      expect(noTeamToggle().getAttribute("aria-pressed")).toBe("false");
+      expect(fromSet()).toBeNull();
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText("Submit new card"));
+      });
+      const args = mockAddCustomCard.mock.calls[0][0];
+      expect(args.teamOnCardIds).toEqual([METS._id]);
+      expect(args).not.toHaveProperty("teamNone");
+    });
+
+    it("an un-press does not carry into the next card: it starts from the set again", () => {
+      renderChecklist();
+      openAddForm();
+      fireEvent.click(noTeamToggle());
+      fireEvent.click(screen.getByLabelText("Cancel new card"));
+      openAddForm();
+      expect(noTeamToggle().getAttribute("aria-pressed")).toBe("true");
+      expect(fromSet()).toBeTruthy();
+    });
+  });
+
+  it("with no No Team on the checklist, an untouched toggle sends nothing about No Team", async () => {
+    renderChecklist();
+    openAddForm();
+    expect(screen.queryByText("From the set. Pick a team, or press No Team to turn it off.")).toBeNull();
+    fillCardNumber("614");
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+    expect(mockAddCustomCard.mock.calls[0][0]).not.toHaveProperty("teamNone");
   });
 });

@@ -20,9 +20,8 @@ import { api } from "@/convex/_generated/api";
 // can act on the FIRST row without needing to carry an id around. The short id
 // is still printed below for a spec that would rather read it.
 //
-// RESET FIRST, like /testing/seed-placeholder-upload: this page also leaves a
-// `collecting` job behind (that IS its output — the abort flow's fixture), so
-// it feeds the same 2-active-per-user cap on the same worker account. Left
+// RESET FIRST: this page leaves a `collecting` job behind (that IS its
+// output — the abort flow's fixture), so it feeds the same 2-active-per-user cap on the same worker account. Left
 // unchecked, a second run — or an earlier abort flow that failed before it
 // aborted — would leave two active jobs and `seedMyTestPlaceholderStream` would
 // refuse. Cancelling the caller's active jobs first (through the real cancel
@@ -30,17 +29,59 @@ import { api } from "@/convex/_generated/api";
 // idempotent across repeated runs. Gated identically, so it is safe here and
 // nowhere a real user can reach.
 //
+// NEO-411: `?failedPhoto=1` seeds a different fixture, an intake run holding one
+// photo that was never read (`seedMyTestFailedPhotoRun`), and lands on that
+// run's Add cards screen. `redirect` is ignored in that mode: the run id is
+// only known once the seed returns.
+//
+// NEO-440: `&view=placeholders` opens the same seeded batch on the placeholder
+// intake page instead, where one failed photo is the `waiting` stage.
+//
+// NEO-427: `?savedPhotoFailure=scanGone|unusable|error` seeds a run with one
+// saved card whose scans failed to reach its copy
+// (`seedMyTestSavedPhotoFailureRun`), and lands on that run the same way.
+//
+// NEO-441: `?loosePhotos=1` seeds a run holding four read photos that no pair
+// claims (`seedMyTestLoosePhotosRun`: loose-1.jpg to loose-4.jpg), so the
+// Pairing column's pair-by-hand button can be driven, and lands on that run.
+//
+// NEO-464: `?hopperScan=1` seeds a run holding one open scan nothing identified
+// (`seedMyTestHopperRun`), the state the signed-in dashboard's In the Hopper
+// counts, and lands on that run's Add cards screen like the seeds above, so
+// the spec can read the run id off the URL and then check the dashboard's link
+// carries the same one.
+//
+// NEO-464: `?clearHopper=1` is the other half: it sets aside the account's open
+// scans (`clearMyTestHopper`) so the dashboard's In the Hopper has nothing to
+// count, then lands on `redirect`.
+//
 // Only functional when VITE_CLERK_TESTING_ENABLED=true; the mutations also fail
 // closed on production Convex (no TESTING_RESET_SECRET there).
+const SAVED_PHOTO_FAILURES = ["scanGone", "unusable", "error"] as const;
+type SavedPhotoFailure = (typeof SAVED_PHOTO_FAILURES)[number];
+const isSavedPhotoFailure = (value: string): value is SavedPhotoFailure =>
+  (SAVED_PHOTO_FAILURES as readonly string[]).includes(value);
+
 function TestingSeedPlaceholderRunContent() {
   const { isAuthenticated, isLoading } = useConvexAuth();
   const resetSessions = useMutation(
     api.placeholderPipeline.seedCancelMyActivePlaceholderJobs,
   );
   const seedRun = useMutation(api.testing.seedMyTestPlaceholderStream);
+  const seedFailedPhoto = useMutation(api.testing.seedMyTestFailedPhotoRun);
+  const seedSavedPhotoFailure = useMutation(api.testing.seedMyTestSavedPhotoFailureRun);
+  const seedLoosePhotos = useMutation(api.testing.seedMyTestLoosePhotosRun);
+  const seedHopper = useMutation(api.testing.seedMyTestHopperRun);
+  const clearHopper = useMutation(api.testing.clearMyTestHopper);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const redirect = searchParams.get("redirect") || "/pipeline-runs";
+  const failedPhoto = searchParams.get("failedPhoto") === "1";
+  const loosePhotos = searchParams.get("loosePhotos") === "1";
+  const hopperScan = searchParams.get("hopperScan") === "1";
+  const clearHopperScans = searchParams.get("clearHopper") === "1";
+  const placeholdersView = searchParams.get("view") === "placeholders";
+  const savedPhotoFailure = searchParams.get("savedPhotoFailure");
   const [status, setStatus] = useState("Initializing...");
   const ranRef = useRef(false);
 
@@ -63,6 +104,9 @@ function TestingSeedPlaceholderRunContent() {
 
     (async () => {
       try {
+        if (savedPhotoFailure !== null && !isSavedPhotoFailure(savedPhotoFailure)) {
+          throw new Error(`savedPhotoFailure must be one of ${SAVED_PHOTO_FAILURES.join(", ")}`);
+        }
         // FIRST: free any active slot this worker account is still holding, so
         // the seed below cannot hit the 2-active cap. Unconditional — see the
         // "RESET FIRST" note above.
@@ -71,6 +115,40 @@ function TestingSeedPlaceholderRunContent() {
         // Held through the seed's own await so it actually paints; a bare
         // second setStatus in the same tick would batch it away.
         setStatus(`Reset ${reset.canceled} previous sessions.`);
+        if (failedPhoto) {
+          const seeded = await seedFailedPhoto();
+          setStatus(`Seeded ${seeded.originalName} — redirecting...`);
+          navigate(
+            placeholdersView
+              ? `/print/placeholders?jobId=${encodeURIComponent(seeded.jobId)}`
+              : `/collection?tab=add&run=${encodeURIComponent(seeded.runId)}`,
+          );
+          return;
+        }
+        if (clearHopperScans) {
+          const cleared = await clearHopper();
+          setStatus(`Cleared ${cleared.cleared} open scans — redirecting...`);
+          navigate(redirect);
+          return;
+        }
+        if (hopperScan) {
+          const seeded = await seedHopper();
+          setStatus("Seeded a hopper scan — redirecting...");
+          navigate(`/collection?tab=add&run=${encodeURIComponent(seeded.runId)}`);
+          return;
+        }
+        if (loosePhotos) {
+          const seeded = await seedLoosePhotos();
+          setStatus("Seeded loose photos — redirecting...");
+          navigate(`/collection?tab=add&run=${encodeURIComponent(seeded.runId)}`);
+          return;
+        }
+        if (savedPhotoFailure !== null) {
+          const seeded = await seedSavedPhotoFailure({ photoFailure: savedPhotoFailure });
+          setStatus(`Seeded ${savedPhotoFailure} — redirecting...`);
+          navigate(`/collection?tab=add&run=${encodeURIComponent(seeded.runId)}`);
+          return;
+        }
         const result = await seedRun();
         setStatus(`Seeded ${result.jobId.slice(0, 8)} — redirecting...`);
         navigate(redirect);
@@ -79,7 +157,25 @@ function TestingSeedPlaceholderRunContent() {
         setStatus(`Error: ${msg}`);
       }
     })();
-  }, [isAuthenticated, isLoading, navigate, redirect, resetSessions, seedRun]);
+  }, [
+    clearHopper,
+    clearHopperScans,
+    failedPhoto,
+    hopperScan,
+    isAuthenticated,
+    isLoading,
+    loosePhotos,
+    navigate,
+    placeholdersView,
+    redirect,
+    resetSessions,
+    savedPhotoFailure,
+    seedFailedPhoto,
+    seedHopper,
+    seedLoosePhotos,
+    seedRun,
+    seedSavedPhotoFailure,
+  ]);
 
   return (
     <div className="flex items-center justify-center min-h-screen bg-surface">

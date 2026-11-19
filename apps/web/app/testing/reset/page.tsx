@@ -1,4 +1,4 @@
-import { useConvexAuth, useMutation } from "convex/react";
+import { useAction, useConvexAuth } from "convex/react";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { api } from "@/convex/_generated/api";
@@ -6,13 +6,14 @@ import { api } from "@/convex/_generated/api";
 // Test-only reset landing page. An E2E spec signs in via /testing/sign-in
 // with `redirect=/testing/reset?redirect=<final>`; this page waits for the
 // Convex client to pick up the new Clerk session, calls the auth-scoped
-// resetMyTestState mutation (wipes the signed-in user's own per-user rows),
+// resetMyTestState action (wipes the signed-in user's own per-user rows and,
+// NEO-552, their fake BuySportsCards account),
 // then forwards to the final destination. Only functional when
 // VITE_CLERK_TESTING_ENABLED=true; the mutation itself also fails closed on
 // production Convex (no TESTING_RESET_SECRET there).
 function TestingResetContent() {
   const { isAuthenticated, isLoading } = useConvexAuth();
-  const resetMutation = useMutation(api.testing.resetMyTestState);
+  const resetMutation = useAction(api.testing.resetMyTestState);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const redirect = searchParams.get("redirect") || "/dashboard";
@@ -41,7 +42,7 @@ function TestingResetContent() {
         setStatus("Resetting test state...");
         const counts = await resetMutation({});
         setStatus(
-          `Reset complete (pp=${counts.publicProfiles} up=${counts.userProfiles} pz=${counts.prizePool} cc=${counts.collectionCopies} cw=${counts.collectionWants} ct=${counts.collectionContainers} bs=${counts.collectionBuildingSets}) — redirecting...`,
+          `Reset complete (pp=${counts.publicProfiles} up=${counts.userProfiles} pz=${counts.prizePool} cc=${counts.collectionCopies} cw=${counts.collectionWants} ct=${counts.collectionContainers} bs=${counts.collectionBuildingSets} ml=${counts.marketplaceListing}) — redirecting...`,
         );
         navigate(redirect);
       } catch (e: unknown) {

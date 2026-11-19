@@ -8,33 +8,87 @@
  */
 import { expect, type Page } from "@playwright/test";
 import type { FlowEnv } from "./env";
+import { test } from "./fixtures";
 
-/** A cold marketplace login is a real ~22 s Puppeteer/SSO round trip (the flows' 30 s). */
+/**
+ * A live SportLots login is a real ~22 s Puppeteer/SSO round trip (the flows' 30 s).
+ * SportLots only: BuySportsCards is the fake (NEO-552), whose sign-in steps measured
+ * 1.3 s at most on the #487 merge-group run (GUIDE) and take the standard 7 s.
+ */
 export const LIVE_LOGIN = 30_000;
 
-async function openCredentials(page: Page): Promise<void> {
+async function openCredentials(page: Page, gate = 10_000): Promise<void> {
   await page.goto("/profile/credentials");
-  // An in-session navigation, not a cold launch: the flows' 10 s.
+  // An in-session navigation, not a cold launch: the flows' 10 s. A page that
+  // has not loaded the app yet (a second page opened by a cleanup hook) passes
+  // `LAUNCH_GATE`.
   await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({
-    timeout: 10_000,
+    timeout: gate,
   });
 }
 
-async function testStoredSession(page: Page, success: RegExp): Promise<void> {
+async function pressTest(page: Page): Promise<void> {
   // While another credential op holds the lock the button reads
-  // "Testing..."; wait for the real label (the flows' 30 s).
+  // "Testing..."; wait for the real label. BSC only (the fake's sign-in:
+  // measured 5 ms at most on the #487 merge-group run (GUIDE)), so the standard 7 s.
   const test = page.getByRole("button", { name: "Test Credentials" });
-  await expect(test).toBeVisible({ timeout: LIVE_LOGIN });
+  await expect(test).toBeVisible();
   await test.click();
+}
+
+async function testStoredSession(page: Page, success: RegExp): Promise<void> {
+  await pressTest(page);
   await expect(page.getByText(success)).toBeVisible({ timeout: LIVE_LOGIN });
+}
+
+/**
+ * What Test Credentials says when BuySportsCards accepts the stored session. The
+ * store name is read from BSC's seller profile, which can stall (NEO-483), so the
+ * line is one of:
+ *  - "BSC account authenticated successfully": the store name was confirmed and a
+ *    "Store: <name>" line sits under it;
+ *  - with no store name to show: "Signed in to BuySportsCards. Couldn't confirm your
+ *    store name right now; ..." (a live sign-in) or "Your saved BuySportsCards
+ *    sign-in is in place ..." (the cached path).
+ * All three are a success; a failure reads "Could not sign in to ..." and matches none.
+ */
+export const BSC_TEST_SUCCESS =
+  /BSC account authenticated successfully|Signed in to BuySportsCards|Your saved BuySportsCards sign-in is in place/i;
+
+/**
+ * Waits for BSC's Test Credentials success (either branch above) and says which one
+ * the press hit: it goes into the report as a `store-name` annotation
+ * (`confirmed` / `unconfirmed`), and the "Store: <name>" line is asserted only on
+ * the confirmed branch (an unconfirmed one has no store to show, and says so).
+ *
+ * Contract: ENTRY the Test press was taken. EXIT a success message is on screen.
+ * The fake answers the sign-in at once (measured 2.8 s at most across the suite's Test
+ * presses on the #487 merge-group run (GUIDE), one with a cold token), so the standard 7 s.
+ */
+export async function expectBscTestSuccess(page: Page, timeout = 7_000): Promise<"confirmed" | "unconfirmed"> {
+  await expect(page.getByText(BSC_TEST_SUCCESS).first()).toBeVisible({ timeout });
+  const outcome = (await page.getByText(/BSC account authenticated successfully/i).first().isVisible()) ? "confirmed" : "unconfirmed";
+  try {
+    test.info().annotations.push({ type: "store-name", description: outcome });
+  } catch {
+    // Not inside a test: nothing to annotate.
+  }
+  if (outcome === "confirmed") await expect(page.getByText(/Store: \S/)).toBeVisible();
+  return outcome;
+}
+
+/** Open the BSC credentials page and check the worker is connected (no Test press). */
+export async function openBscCredentials(page: Page): Promise<void> {
+  await openCredentials(page);
+  // BuySportsCards is the default tab.
+  await expect(page.getByText("Connected to BuySportsCards")).toBeVisible();
 }
 
 /** util-login-to-bsc.yaml */
 export async function loginToBsc(page: Page): Promise<void> {
-  await openCredentials(page);
-  // BuySportsCards is the default tab.
-  await expect(page.getByText("Connected to BuySportsCards")).toBeVisible();
-  await testStoredSession(page, /BSC account authenticated successfully/i);
+  await openBscCredentials(page);
+  await pressTest(page);
+  await expectBscTestSuccess(page);
 }
 
 /** util-login-to-sportlots.yaml — two branches on the operator's pause switch. */
@@ -56,4 +110,146 @@ export async function loginToSportLots(page: Page, env: FlowEnv): Promise<void> 
   await expect(page.getByText(/^Sign-ins to SportLots are benched for now/)).toBeVisible();
   await expect(page.getByRole("button", { name: "Test Credentials" })).toBeHidden();
   await expect(page.getByLabel(/SportLots Username/i)).toBeHidden();
+}
+
+/**
+ * Saving a sign-in through the seed hop signs in to BuySportsCards (the fake since
+ * NEO-552). Measured on the #487 merge-group run (GUIDE) that sized this: the longest hop took
+ * 13.4 s (the fake's first token of a run is cold, 7.5-9 s at the seed), so
+ * ceil(13.4 + 7) = 21 s. It was 90 s when the sign-in went to the real site.
+ */
+export const SEED_SIGN_IN = 21_000;
+
+/**
+ * Remove the worker's BuySportsCards sign-in on Profile (Clear Credentials,
+ * confirmed). For NEO-370 this is how a collector STOPS listing: it also stops
+ * the sales poll and clears the queue. Pair it with `saveBscSignIn` in a
+ * `finally`, so a worker is never left without its sign-in (R7). `gate` is
+ * the heading wait: `LAUNCH_GATE` on a page that has not loaded the app yet.
+ */
+export async function removeBscSignIn(page: Page, gate?: number): Promise<void> {
+  await openCredentials(page, gate);
+  // BuySportsCards is the default tab.
+  await expect(page.getByText("Connected to BuySportsCards")).toBeVisible();
+  // BSC only, measured 0.8 s and 1.3 s on the #487 merge-group run (GUIDE): the standard 7 s.
+  const clear = page.getByRole("button", { name: "Clear Credentials" });
+  await expect(clear).toBeVisible();
+  await clear.click();
+  await page.getByRole("button", { name: "Yes, Clear" }).click();
+  await expect(page.getByText("Cleared your BuySportsCards connection.")).toBeVisible();
+  await expect(page.getByLabel(/BuySportsCards Username/)).toBeVisible();
+}
+
+/**
+ * Save the worker's BuySportsCards sign-in again, the way the bootstrap does:
+ * the `/testing/seed-credentials` hop (no password ever typed, GUIDE hard
+ * rule 7). The page must already be signed in. Lands on Profile → Credentials
+ * showing "Connected to BuySportsCards".
+ *
+ * NEO-370 Rev 5: a saved sign-in syncs (counts pushed, sales polled), but the
+ * hop marks a seeded one "not syncing" unless `listing: true` (`listing=on`),
+ * so a worker's saved sign-in lists nowhere by default. Only `listing: true`
+ * sets up real listing on BuySportsCards; pair it with `removeBscSignIn` +
+ * `saveBscSignIn(page)` to stop it again. A real save through the Profile
+ * form (never done in E2E: it needs a typed password) would also sync.
+ */
+export async function saveBscSignIn(page: Page, opts: { listing?: boolean } = {}): Promise<void> {
+  const listing = opts.listing ? "&listing=on" : "";
+  await page.goto(`/testing/seed-credentials?sites=buysportscards${listing}&redirect=/profile/credentials`);
+  // The hop signs in to BuySportsCards (SEED_SIGN_IN, GUIDE hard rule 3).
+  // A hop that FAILS prints "Seed failed (...)" and goes nowhere: throw its
+  // reason now instead of idling to the budget on a heading that never comes.
+  const landed = page.getByRole("heading", { name: "Profile Settings" });
+  const seedFailed = page.getByText(/^\[testing-seed\] Seed failed/);
+  await expect(landed.or(seedFailed)).toBeVisible({ timeout: SEED_SIGN_IN });
+  if (await seedFailed.isVisible()) {
+    throw new Error(`The BuySportsCards seed hop failed: ${(await seedFailed.innerText()).replace(/\s+/g, " ")}`);
+  }
+  await expect(page.getByText("Connected to BuySportsCards")).toBeVisible();
+}
+
+// ---------------------------------------------------------------------------
+// NEO-415: eBay. It signs in by eBay's own consent screen, never a password,
+// so a spec cannot connect it through the UI. The seed hop connects the
+// sandbox seller with a refresh token the deployment holds (the same
+// `/testing/seed-credentials` route, `sites=ebay`), and Profile -> Credentials -> eBay
+// (its eBay tab; `/profile/ebay` forwards there) is where the connection is read, renewed and removed.
+// ---------------------------------------------------------------------------
+
+/** What Profile -> Credentials -> eBay says when the deployment has no eBay wiring. */
+export const EBAY_NOT_HOOKED_UP = "eBay isn't hooked up on this NeonBinder yet.";
+
+/**
+ * Wait until Profile -> Credentials -> eBay's connection card has settled into ONE of its
+ * states (every state carries a Connect or a Disconnect button, the not-wired
+ * one a disabled Connect), and FAIL LOUDLY, naming the missing setup, when the
+ * deployment is not wired to eBay. A spec for eBay is never skipped for want
+ * of its credentials (GUIDE hard rule 1): a deployment without them is a red
+ * run that says what to set.
+ */
+export async function expectEbayHookedUp(page: Page): Promise<void> {
+  const connect = page.getByRole("button", { name: /^Connect eBay/ });
+  const disconnect = page.getByRole("button", { name: "Disconnect eBay", exact: true });
+  // One of the card's controls is showing: the connection state has arrived.
+  await expect(connect.or(disconnect).first()).toBeVisible();
+  if (await page.getByText(EBAY_NOT_HOOKED_UP, { exact: true }).isVisible()) {
+    throw new Error(
+      "eBay is not configured on this deployment, so the eBay listing spec cannot run. " +
+        "Set EBAY_CLIENT_ID, EBAY_RU_NAME and EBAY_ENVIRONMENT=sandbox on the Convex deployment, " +
+        "the eBay client secret on the browser service it calls, and DEV_EBAY_REFRESH_TOKEN " +
+        "(a sandbox seller's refresh token) beside them. This spec never skips for missing setup.",
+    );
+  }
+}
+
+/**
+ * Connect the worker's sandbox eBay seller the way the bootstrap saves the
+ * other sign-ins: the `/testing/seed-credentials` hop (no password, GUIDE hard
+ * rule 7). The page must already be signed in. Lands on Profile -> Credentials -> eBay.
+ *
+ * `listing: true` (`listing=on`) is what a collector's own Connect does:
+ * connected IS listing. Without it the hop marks the connection "not syncing".
+ * Only the eBay listing spec passes `listing: true`; pair it with
+ * `removeEbayConnection`.
+ *
+ * `gate` is the wait for the full page load the hop ends in (the caller's
+ * `LAUNCH_GATE`: the hop is one token exchange with eBay, not a live sign-in).
+ * A hop that FAILS prints "Seed failed (...)" and goes nowhere; that is thrown
+ * here with its reason. A hop that SKIPS (no refresh token on the deployment,
+ * or eBay paused) lands on the page with eBay not connected: the caller's next
+ * assertion names it. A deployment with no eBay wiring throws from
+ * `expectEbayHookedUp`.
+ */
+export async function saveEbayConnection(page: Page, opts: { listing?: boolean; gate: number }): Promise<void> {
+  const listing = opts.listing ? "&listing=on" : "";
+  await page.goto(`/testing/seed-credentials?sites=ebay${listing}&redirect=/profile/ebay`);
+  const landed = page.getByRole("heading", { name: "Profile Settings" });
+  const seedFailed = page.getByText(/^\[testing-seed\] Seed failed/);
+  await expect(landed.or(seedFailed)).toBeVisible({ timeout: opts.gate });
+  if (await seedFailed.isVisible()) {
+    throw new Error(`The eBay seed hop failed: ${(await seedFailed.innerText()).replace(/\s+/g, " ")}`);
+  }
+  await expectEbayHookedUp(page);
+}
+
+/**
+ * Disconnect eBay through the product (Profile -> Credentials -> eBay -> Disconnect eBay,
+ * confirmed): it takes down every listing NeonBinder put up on eBay, drops the
+ * queue and the saved setup, and leaves the account not connected. Safe to call
+ * when eBay is not connected (it then only opens the page and returns).
+ * `gate` is the page-load wait (`LAUNCH_GATE` on a page that has not loaded the
+ * app yet). The takedown gets the standard 7 s budget.
+ */
+export async function removeEbayConnection(page: Page, opts: { gate: number }): Promise<void> {
+  await page.goto("/profile/ebay");
+  await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({ timeout: opts.gate });
+  const connect = page.getByRole("button", { name: /^Connect eBay/ });
+  const disconnect = page.getByRole("button", { name: "Disconnect eBay", exact: true });
+  await expect(connect.or(disconnect).first()).toBeVisible();
+  if (await disconnect.isVisible()) {
+    await disconnect.click();
+    await page.getByRole("dialog", { name: "Disconnect eBay?", exact: true }).getByRole("button", { name: "Yes, disconnect" }).click();
+    await expect(disconnect).toBeHidden();
+  }
+  await expect(page.getByRole("button", { name: "Connect eBay", exact: true })).toBeVisible();
 }

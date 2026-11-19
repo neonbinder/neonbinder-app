@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 import { useAction, useMutation, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
@@ -6,7 +6,7 @@ import NeonButton from "@/components/modules/NeonButton";
 import { ConfirmDialog } from "@/components/modules/confirm-dialog";
 import { api } from "@/convex/_generated/api";
 import { classifyIntake } from "@/lib/placeholders/intake-kind";
-import { deriveStage } from "@/lib/placeholders/intake-stage";
+import { deriveStage, waitingHeadline } from "@/lib/placeholders/intake-stage";
 import { Dropzone } from "./dropzone";
 import { ReviewGrid, type ReviewPair } from "./review-grid";
 import { PrintRun, type PrintablePair } from "./print-run";
@@ -82,7 +82,16 @@ const MECHANISM_LABELS: Record<PlaceholderPair["mechanism"], string> = {
   manual: "you set this",
 };
 
-type Notice = { tone: "success" | "info" | "error"; text: string };
+type Notice = {
+  tone: "success" | "info" | "error";
+  text: string;
+  /**
+   * An action offered beside the notice, outside its live region so it is not
+   * read out as part of the sentence. A structural marker, never inferred from
+   * the tone or the text.
+   */
+  action?: "new-batch";
+};
 
 const NOTICE_CLASSES: Record<Notice["tone"], string> = {
   success: "border border-neon-green/40 bg-neon-green/10 text-neon-green-text",
@@ -129,9 +138,9 @@ export default function CardIntake() {
 
   // The session id lives in the URL, not in state. That is what makes this page
   // addressable: /placeholders?jobId=… reopens a run that is still going (or
-  // already finished), which is where the upload flow lands itself and where the
-  // /testing entry point redirects the E2E suite. State would have made the run
-  // view reachable only by having just created it.
+  // already finished), which is where the upload flow lands itself and what a
+  // bookmark, a reload or a pasted link comes back to. State would have made the
+  // run view reachable only by having just created it.
   const [searchParams, setSearchParams] = useSearchParams();
   const jobId = searchParams.get("jobId");
 
@@ -141,6 +150,35 @@ export default function CardIntake() {
   );
   const [actionBusy, setActionBusy] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
+  /** The drop zone's file input, for the focus moves around a closed batch. */
+  const dropInput = useRef<HTMLInputElement>(null);
+  /**
+   * Set by "Start a new batch": move focus to the drop zone once it is back.
+   * The route change is a transition, so the zone mounts a commit or two after
+   * the click; the effect below waits for it.
+   */
+  const focusDropzoneNext = useRef(false);
+  useEffect(() => {
+    if (!focusDropzoneNext.current || !dropInput.current) return;
+    focusDropzoneNext.current = false;
+    dropInput.current.focus();
+  });
+
+  /**
+   * Park focus on the run's heading when a send outcome may have taken the
+   * control in use away: the drop zone leaves once the batch stops collecting.
+   * Deferred a frame and guarded, like the session actions below: only focus
+   * that has already fallen to the page (or, when `fromDropzone`, focus still on
+   * a drop zone that is about to leave) is moved.
+   */
+  const parkOnSessionHeading = useCallback((fromDropzone: boolean) => {
+    requestAnimationFrame(() => {
+      const active = document.activeElement;
+      const fallen = !active || active === document.body;
+      if (!fallen && !(fromDropzone && active === dropInput.current)) return;
+      document.getElementById("session-heading")?.focus();
+    });
+  }, []);
   /**
    * Pairs the user has taken OUT of the print run, keyed `front-back`.
    *
@@ -173,6 +211,11 @@ export default function CardIntake() {
     jobId ? { jobId } : "skip",
   );
 
+  // The guard against a second send. `uploading` is React state, so two calls
+  // in one render batch (a drop and an input change for the same files) both
+  // read it as false; a ref is set before the first await and seen at once.
+  const uploadInFlight = useRef(false);
+
   /**
    * Selecting files IS starting the upload — there is no confirm step.
    *
@@ -180,51 +223,108 @@ export default function CardIntake() {
    * straight out of the drop/change handler, where a `setFiles` in the same
    * tick has not flushed yet, so reading state here would upload the PREVIOUS
    * selection (nothing, the first time).
+   *
+   * ## Photos dropped on an open run join it
+   * A run that is still collecting is a scanner session, and adding to it is
+   * the whole point of keeping the drop zone on screen. Starting a second
+   * session instead left the first one collecting, holding one of the user's
+   * two active-batch slots until the idle sweep reclaimed it. A zip always
+   * starts its own run (the hook refuses one into an existing session), and a
+   * run that has stopped collecting cannot take more, so both start a new one.
+   *
+   * ## The run can close between the render and the drop
+   * Another tab can finish it, or the idle sweep can. The server then refuses
+   * the next photo with a coded error (BATCH_NOT_COLLECTING, which survives
+   * production's message redaction), the send stops there, and the outcome
+   * carries `batchClosed`. When none of the photos got in, they are sent again
+   * as a new run and the notice says so. When some did, they stay where they
+   * landed and the notice offers "Start a new batch" for the rest; re-sending
+   * only the rest into a new run would split the deck's front/back order across
+   * two runs. The drop zone leaves with the closed batch, so focus is parked on
+   * the run's heading in both cases.
    */
   const handleUpload = useCallback(
     async (chosen: File[]) => {
-    if (chosen.length === 0 || uploading) return;
-    setNotice(null);
+      if (chosen.length === 0 || uploading || uploadInFlight.current) return;
+      uploadInFlight.current = true;
+      try {
+        setNotice(null);
 
-    try {
-      // Label the run web-originated (NEO-170); the cardlister CLI passes
-      // "scanner" on its own start path.
-      const outcome = await upload(chosen, { source: "web" });
-      if (!outcome.ok) {
-        setNotice({
-          tone: "error",
-          text: `Couldn't start a scan session — ${outcome.reason}.`,
-        });
-        return;
-      }
+        const addingTo =
+          jobId !== null &&
+          job?.status === "collecting" &&
+          classifyIntake(chosen).kind === "images"
+            ? jobId
+            : undefined;
 
-      // Put the new session in the URL so the run view is shareable and
-      // survives a reload, and so the back button leaves the run rather than
-      // silently keeping it.
-      setSearchParams({ jobId: outcome.jobId });
-      // Clear the tray: these are on the server now, and leaving them listed
-      // as "ready to upload" invites a second, duplicate send.
-      setFiles([]);
-      setNotice(
-        outcome.failed === 0
-          ? {
-              tone: "success",
-              text: `Uploaded ${outcome.uploaded} of ${outcome.total} images.`,
-            }
-          : {
+        try {
+          // Label the run web-originated (NEO-170); the cardlister CLI passes
+          // "scanner" on its own start path.
+          let outcome = await upload(chosen, { source: "web", jobId: addingTo });
+          let startedFresh = false;
+          if (addingTo && outcome.ok && outcome.batchClosed && outcome.uploaded === 0) {
+            outcome = await upload(chosen, { source: "web" });
+            startedFresh = true;
+          }
+
+          if (!outcome.ok) {
+            // Clear the tray: nothing was sent, and the tray's line under a
+            // refusal would otherwise read "6 photos sent." beside it.
+            setFiles([]);
+            setNotice({
               tone: "error",
-              text: `Uploaded ${outcome.uploaded} of ${outcome.total} images — ${outcome.failed} failed.`,
-            },
-      );
-    } catch (error) {
-      console.error("Placeholder upload failed", error);
-      setNotice({
-        tone: "error",
-        text: "Couldn't upload these scans. Please try again.",
-      });
-    }
+              text: `Couldn't start a scan session — ${outcome.reason}.`,
+            });
+            return;
+          }
+
+          // Put a new session in the URL so the run view is shareable and
+          // survives a reload, and so the back button leaves the run rather than
+          // silently keeping it. Photos added to the run already on screen are not
+          // a move, so they push no history entry.
+          if (outcome.jobId !== jobId) setSearchParams({ jobId: outcome.jobId });
+          // Clear the tray: these are on the server now, and leaving them listed
+          // as "ready to upload" invites a second, duplicate send. That holds when
+          // the batch closed part-way too: dropping the whole pile again would send
+          // the ones that already landed a second time.
+          setFiles([]);
+          if (outcome.batchClosed) {
+            setNotice({
+              tone: "error",
+              text: `This batch was finished while your photos were going up. ${outcome.uploaded} of ${outcome.total} got in. Start a new batch for the other ${outcome.failed}.`,
+              action: "new-batch",
+            });
+            parkOnSessionHeading(true);
+            return;
+          }
+          const tally =
+            outcome.failed === 0
+              ? `Uploaded ${outcome.uploaded} of ${outcome.total} images.`
+              : `Uploaded ${outcome.uploaded} of ${outcome.total} images — ${outcome.failed} failed.`;
+          if (startedFresh) {
+            // Not a success to celebrate: the photos went somewhere other than
+            // where they were dropped, and that is news, so it is info-toned.
+            setNotice({
+              tone: outcome.failed === 0 ? "info" : "error",
+              text: `That batch was already finished, so these started a new one. ${tally}`,
+            });
+            parkOnSessionHeading(false);
+            return;
+          }
+          setNotice({ tone: outcome.failed === 0 ? "success" : "error", text: tally });
+        } catch (error) {
+          console.error("Placeholder upload failed", error);
+          setFiles([]);
+          setNotice({
+            tone: "error",
+            text: "Couldn't upload these scans. Please try again.",
+          });
+        }
+      } finally {
+        uploadInFlight.current = false;
+      }
     },
-    [setSearchParams, upload, uploading],
+    [job?.status, jobId, parkOnSessionHeading, setSearchParams, upload, uploading],
   );
 
   const handleConfirmAction = useCallback(async () => {
@@ -321,17 +421,41 @@ export default function CardIntake() {
 
       {/* Always mounted: a live region inserted at the same moment its text
           appears is unreliably announced. `key` remounts it when the tone — and
-          therefore the role — changes. */}
+          therefore the role — changes. The notice's action sits beside the
+          live region, not in it, so it is not read out as part of the line. */}
       <div
-        key={notice?.tone ?? "idle"}
-        role={notice?.tone === "error" ? "alert" : "status"}
-        aria-live={notice?.tone === "error" ? undefined : "polite"}
-        aria-atomic="true"
         className={
-          notice ? `rounded-md p-3 text-sm ${NOTICE_CLASSES[notice.tone]}` : ""
+          notice
+            ? `flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md p-3 text-sm ${NOTICE_CLASSES[notice.tone]}`
+            : ""
         }
       >
-        {notice?.text ?? ""}
+        <div
+          key={notice?.tone ?? "idle"}
+          role={notice?.tone === "error" ? "alert" : "status"}
+          aria-live={notice?.tone === "error" ? undefined : "polite"}
+          aria-atomic="true"
+          className="min-w-0 flex-1 basis-64"
+        >
+          {notice?.text ?? ""}
+        </div>
+        {notice?.action === "new-batch" && (
+          <NeonButton
+            type="button"
+            size="1"
+            variant="primary"
+            className="max-sm:min-h-11"
+            onClick={() => {
+              setNotice(null);
+              focusDropzoneNext.current = true;
+              // Leaving the finished batch is a move, so it is a history push:
+              // Back returns to it.
+              setSearchParams({});
+            }}
+          >
+            Start a new batch
+          </NeonButton>
+        )}
       </div>
 
       {/* Adding is always available while the batch is open — that is what a
@@ -341,6 +465,10 @@ export default function CardIntake() {
         <Dropzone
           files={files}
           disabled={uploading}
+          inputRef={dropInput}
+          // An error notice is the one thing to hear: the zone's own polite
+          // "Nothing selected yet." would only queue up behind the alert.
+          quiet={notice?.tone === "error"}
           onFiles={(chosen) => {
             setFiles(chosen);
             // A refusal (two zips, or a zip mixed with photos) must NOT upload;
@@ -373,13 +501,13 @@ export default function CardIntake() {
               This is the whole answer to "how would a new user know to wait?" */}
           <div className="rounded-lg border border-panel-rule bg-panel p-4 space-y-2 shadow-offset">
             <p role="status" aria-live="polite" className="text-ink-2">
-              {stage === "uploading" && "Sending your photos…"}
+              {stage === "uploading" &&
+                (classifyIntake(files).kind === "zip" ? "Sending your zip…" : "Sending your photos…")}
               {stage === "working" &&
                 (totalCount === 0
                   ? "Getting your photos ready…"
                   : `Reading your cards — ${settledCount} of ${totalCount} done.`)}
-              {stage === "waiting" &&
-                `All ${totalCount} photo${totalCount === 1 ? "" : "s"} read.`}
+              {stage === "waiting" && waitingHeadline(totalCount, failedCount)}
               {stage === "finishing" && "Matching up the last pairs…"}
               {stage === "done" &&
                 `${pairs?.length ?? 0} pair${(pairs?.length ?? 0) === 1 ? "" : "s"} ready to print.`}
@@ -431,8 +559,8 @@ export default function CardIntake() {
                 aria-hidden="true"
                 className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-neon-blue"
               />
-              A few of these need a closer look, which takes a couple of minutes
-              the first time. The rest keep coming in below.
+              A few of these need a closer look, which can take a minute or so.
+              The rest keep coming in below.
             </p>
           )}
 

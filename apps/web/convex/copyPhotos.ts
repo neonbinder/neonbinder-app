@@ -28,9 +28,18 @@
  *    then `commitUpload` makes the row `live`, retires the side's old photo
  *    (its objects deleted) and marks the copy `hasPhotos`.
  *
+ * NEO-427: a scanned pair's photos arrive the same way but server side
+ * (`intakePhotos.attachIntakePhotos`): `reserveUpload` with `source: "intake"`,
+ * Convex PUTs both files itself, then `commitUpload`. Those rows are outside
+ * the hourly cap, which counts hand uploads only; a job's entry cap bounds them.
+ *
  * A line with photos never folds (`isOneOfAKind`), so photos are never merged
- * into another line. Removing the copy DETACHES its photos (`detachPhotos`) so
- * the Undo can put them back (`reattachPhotos`, from `restoreCopy`).
+ * into another line. The one way more copies join a line with photos is a
+ * quick count's raise (NEO-431, `collectionInventory.ts`), and they share its
+ * photos. Removing the copy, or counting it away, DETACHES its photos
+ * (`detachPhotos`) so the Undo can put them back (`reattachPhotos`, from
+ * `restoreCopy` and `undoBoxQuantity`). Such an Undo runs once: a photo already
+ * live again refuses the replay, where a swept one lets the line come back bare.
  * `sweepCopyPhotos` (hourly) deletes pending, detached and replaced rows over
  * an hour old, with their objects.
  *
@@ -52,7 +61,10 @@ import { action, httpAction, internalAction, internalMutation, internalQuery, mu
 import { internal } from "./_generated/api";
 import { getCurrentUserId, requireSignedIn } from "./auth";
 import { COLLECTION_ERRORS, refuse } from "./collection";
-import { deleteObject, headObject, r2Config, signedGetUrl, signedPutUrl } from "./lib/r2";
+import { enqueueListingCards, listsOnMarketplaces } from "./listingOutbox";
+import { deleteObject, headObject, r2Config, signedGetUrl, signedPutUrl, type R2HostStyle } from "./lib/r2";
+import { copyPhotoScanValidator, photoEditCropValidator } from "./schema";
+import { MAX_COPY_PHOTO_EDITS_PER_HOUR, PHOTO_EDIT_RENDER_STALE_MS } from "./lib/photoEdit";
 
 type PhotoRow = Doc<"collectionCopyPhotos">;
 type CopyRow = Doc<"collectionCopies">;
@@ -93,11 +105,30 @@ type Size = typeof sizeValidator.type;
 const photoUrlsValidator = v.object({ imageUrl: v.string(), thumbUrl: v.string() });
 type PhotoUrls = typeof photoUrlsValidator.type;
 
+/**
+ * NEO-481 — a hand edit of one side, accepted and rendering in the background
+ * ("Touching it up…"), or one whose render failed (`error`, for Try again).
+ * The side's live photo stays the one shown until the new file lands. Only
+ * the newest per side; `photoId` is the row `undoCopyPhotoEdit` takes once it
+ * has landed.
+ */
+export const copyPhotoEditStateValidator = v.object({
+  photoId: v.id("collectionCopyPhotos"),
+  side: sideValidator,
+  status: v.union(v.literal("rendering"), v.literal("failed")),
+  error: v.optional(v.string()),
+  turns: v.union(v.literal(0), v.literal(1), v.literal(2), v.literal(3)),
+  crop: v.union(v.null(), photoEditCropValidator),
+  requestedAt: v.number(),
+});
+
 /** A line's photos as its owner reads them. A side with no photo is absent. */
 export const copyPhotosValidator = v.object({
   copyId: v.id("collectionCopies"),
   front: v.optional(photoUrlsValidator),
   back: v.optional(photoUrlsValidator),
+  /** NEO-481 — edits in flight or failed, newest per side. Absent when none. */
+  edits: v.optional(v.array(copyPhotoEditStateValidator)),
 });
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -118,6 +149,10 @@ function newToken(): string {
 }
 
 /** The page-facing URL of one size of a photo (`serveCopyPhoto` redirects it). */
+export function copyPhotoReadUrl(token: string, size: Size): string {
+  return readUrl(token, size);
+}
+
 function readUrl(token: string, size: Size): string {
   const site = (process.env.CONVEX_SITE_URL ?? "").replace(/\/+$/, "");
   return `${site}/copy-photo/${token}/${size}`;
@@ -144,6 +179,43 @@ export async function photoUrlsOf(
   const out: { front?: PhotoUrls; back?: PhotoUrls } = {};
   for (const photo of await livePhotosOf(ctx, row._id)) out[photo.side] = urlsOf(photo);
   return out;
+}
+
+/**
+ * NEO-500 — the live photos of a copy line by its id, the owner's only. It
+ * reads the photo rows, never the copy: a sale that took a line's last copy
+ * deletes the line and keeps its photos (`listingSales`), so the Pick List
+ * reaches a sold copy's photos only this way. A photo of another owner's
+ * line is left out, so a guessed id shows nothing.
+ */
+export async function ownerPhotoUrlsByCopyId(
+  ctx: Pick<QueryCtx, "db">,
+  ownerId: string,
+  copyId: Id<"collectionCopies">,
+): Promise<{ front?: PhotoUrls; back?: PhotoUrls }> {
+  const out: { front?: PhotoUrls; back?: PhotoUrls } = {};
+  for (const photo of await livePhotosOf(ctx, copyId)) {
+    if (photo.ownerId === ownerId) out[photo.side] = urlsOf(photo);
+  }
+  return out;
+}
+
+/**
+ * NEO-432: a photo change queues the card only when the copy's home lists on
+ * marketplaces, the test `listingDrain.variantCopiesPage` uses. Both listing
+ * plans skip every other copy, so a photo on a binder or in-person box copy
+ * can't reach a listing and must not show as queued on the Sync status tab.
+ */
+async function queueIfHomeLists(
+  ctx: MutationCtx,
+  ownerId: string,
+  copy: Pick<CopyRow, "cardId" | "homeId">,
+): Promise<void> {
+  const home = await ctx.db.get(copy.homeId);
+  if (!home || home.ownerId !== ownerId || !listsOnMarketplaces(home)) return;
+  // NEO-481: every caller here changed a photo, so the row is flagged for a
+  // photo refresh: BSC re-uploads even over a seller photo it already has.
+  await enqueueListingCards(ctx, { ownerId, cardIds: [copy.cardId], refreshPhotos: true });
 }
 
 /** Delete photo rows now, and their objects in the background. */
@@ -183,25 +255,34 @@ export async function detachPhotos(
   return photos.map((photo) => photo._id);
 }
 
+const PHOTOS_ALREADY_BACK = "Those photos are already back on a line, so there's nothing to undo.";
+
 /**
  * The Undo of a remove: put the caller's detached photos onto the restored
- * line. One already swept, not the caller's, or not detached is skipped.
+ * line. One already swept, not the caller's, pending or replaced is skipped.
+ * One of the caller's that is already live means this Undo already ran (a
+ * double click, a retried request) or was forged: that is refused, and the
+ * throw takes the line just put back with it, so a replay writes nothing.
+ * Returns whether any went back.
  */
 export async function reattachPhotos(
   ctx: MutationCtx,
   ownerId: string,
   photoIds: ReadonlyArray<Id<"collectionCopyPhotos">>,
   copyId: Id<"collectionCopies">,
-): Promise<void> {
+): Promise<boolean> {
   const seen = new Set<Side>();
   const now = Date.now();
   for (const id of photoIds.slice(0, 2)) {
     const photo = await ctx.db.get(id);
-    if (!photo || photo.ownerId !== ownerId || photo.status !== "detached" || seen.has(photo.side)) continue;
+    if (!photo || photo.ownerId !== ownerId) continue;
+    if (photo.status === "live") refuse(COLLECTION_ERRORS.invalid, PHOTOS_ALREADY_BACK);
+    if (photo.status !== "detached" || seen.has(photo.side)) continue;
     seen.add(photo.side);
     await ctx.db.patch(photo._id, { copyId, status: "live", since: now });
   }
   if (seen.size > 0) await ctx.db.patch(copyId, { hasPhotos: true });
+  return seen.size > 0;
 }
 
 /** Every one of an owner's photos, any status (the per-account test reset). */
@@ -234,6 +315,10 @@ export const reserveUpload = internalMutation({
     contentType: contentTypeValidator,
     imageBytes: v.number(),
     thumbBytes: v.number(),
+    /** NEO-427: a scanned pair's photo, outside the hourly cap. Internal callers only (`startUpload` never passes it). */
+    source: v.optional(v.literal("intake")),
+    /** NEO-481: the scan an intake photo was made from (server-only; `attachIntakePhotos`). */
+    scan: v.optional(copyPhotoScanValidator),
   },
   returns: v.object({ photoId: v.id("collectionCopyPhotos"), token: v.string() }),
   handler: async (ctx, args) => {
@@ -250,12 +335,16 @@ export const reserveUpload = internalMutation({
       }
     }
     const now = Date.now();
-    const recent = await ctx.db
-      .query("collectionCopyPhotos")
-      .withIndex("by_owner", (q) => q.eq("ownerId", args.ownerId).gt("_creationTime", now - PHOTO_HOLD_MS))
-      .take(MAX_COPY_PHOTO_UPLOADS_PER_HOUR);
-    if (recent.length >= MAX_COPY_PHOTO_UPLOADS_PER_HOUR) {
-      refuse(COLLECTION_ERRORS.limit, "That's a lot of photos for one hour. Try again a little later.");
+    if (args.source === undefined) {
+      const recent = await ctx.db
+        .query("collectionCopyPhotos")
+        .withIndex("by_owner_and_source", (q) =>
+          q.eq("ownerId", args.ownerId).eq("source", undefined).gt("_creationTime", now - PHOTO_HOLD_MS),
+        )
+        .take(MAX_COPY_PHOTO_UPLOADS_PER_HOUR);
+      if (recent.length >= MAX_COPY_PHOTO_UPLOADS_PER_HOUR) {
+        refuse(COLLECTION_ERRORS.limit, "That's a lot of photos for one hour. Try again a little later.");
+      }
     }
     const token = newToken();
     const photoId = await ctx.db.insert("collectionCopyPhotos", {
@@ -268,6 +357,8 @@ export const reserveUpload = internalMutation({
       thumbBytes: args.thumbBytes,
       status: "pending",
       since: now,
+      ...(args.source ? { source: args.source } : {}),
+      ...(args.scan ? { scan: args.scan } : {}),
     });
     return { photoId, token };
   },
@@ -277,6 +368,12 @@ export const reserveUpload = internalMutation({
  * Start putting a photo on one side of a copy line. Returns two upload URLs
  * (PUT, exactly `imageBytes` / `thumbBytes` of `contentType`); then call
  * `finishUpload`.
+ *
+ * NEO-466: also two retry URLs for the same objects, signed on the bucket's
+ * virtual-hosted host, so a browser retrying a stalled PUT opens a fresh
+ * connection instead of reusing a pooled socket that swallowed the first try.
+ * Optional: absent when the bucket has no virtual-hosted address (and an older
+ * client ignores them; Convex deploys before the SPA).
  */
 export const startUpload = action({
   args: {
@@ -290,11 +387,19 @@ export const startUpload = action({
     photoId: v.id("collectionCopyPhotos"),
     imageUploadUrl: v.string(),
     thumbUploadUrl: v.string(),
+    imageRetryUploadUrl: v.optional(v.string()),
+    thumbRetryUploadUrl: v.optional(v.string()),
   }),
   handler: async (
     ctx,
     args,
-  ): Promise<{ photoId: Id<"collectionCopyPhotos">; imageUploadUrl: string; thumbUploadUrl: string }> => {
+  ): Promise<{
+    photoId: Id<"collectionCopyPhotos">;
+    imageUploadUrl: string;
+    thumbUploadUrl: string;
+    imageRetryUploadUrl?: string;
+    thumbRetryUploadUrl?: string;
+  }> => {
     const ownerId = await requireSignedIn(ctx);
     const config = r2Config();
     if (!config) refuse(COLLECTION_ERRORS.invalid, NOT_SET_UP);
@@ -302,13 +407,25 @@ export const startUpload = action({
       internal.copyPhotos.reserveUpload,
       { ownerId, ...args },
     );
-    const put = (size: Size, bytes: number) =>
-      signedPutUrl(config, copyPhotoObjectKey(token, size, args.contentType), args.contentType, bytes, UPLOAD_URL_TTL_SECONDS);
-    return {
-      photoId,
-      imageUploadUrl: await put("image", args.imageBytes),
-      thumbUploadUrl: await put("thumb", args.thumbBytes),
-    };
+    const put = (size: Size, bytes: number, hostStyle: R2HostStyle) =>
+      signedPutUrl(
+        config,
+        copyPhotoObjectKey(token, size, args.contentType),
+        args.contentType,
+        bytes,
+        UPLOAD_URL_TTL_SECONDS,
+        hostStyle,
+      );
+    const [imageUploadUrl, thumbUploadUrl] = await Promise.all([
+      put("image", args.imageBytes, "path"),
+      put("thumb", args.thumbBytes, "path"),
+    ]);
+    if (!config.virtualBase) return { photoId, imageUploadUrl, thumbUploadUrl };
+    const [imageRetryUploadUrl, thumbRetryUploadUrl] = await Promise.all([
+      put("image", args.imageBytes, "virtual"),
+      put("thumb", args.thumbBytes, "virtual"),
+    ]);
+    return { photoId, imageUploadUrl, thumbUploadUrl, imageRetryUploadUrl, thumbRetryUploadUrl };
   },
 });
 
@@ -329,6 +446,8 @@ export const pendingUpload = internalQuery({
   handler: async (ctx, args) => {
     const row = await ctx.db.get(args.photoId);
     if (!row || row.ownerId !== args.ownerId || row.status !== "pending") return null;
+    // NEO-481: an edit row is finished by its render (`commitEditedPhoto`), never by a client.
+    if (row.source === "edit") return null;
     return { token: row.token, contentType: row.contentType, imageBytes: row.imageBytes, thumbBytes: row.thumbBytes };
   },
 });
@@ -339,7 +458,7 @@ export const commitUpload = internalMutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const photo = await ctx.db.get(args.photoId);
-    if (!photo || photo.ownerId !== args.ownerId || photo.status !== "pending") {
+    if (!photo || photo.ownerId !== args.ownerId || photo.status !== "pending" || photo.source === "edit") {
       refuse(COLLECTION_ERRORS.notFound, "That photo upload ran out of time. Add it again.");
     }
     const copy = await ctx.db.get(photo.copyId);
@@ -353,9 +472,19 @@ export const commitUpload = internalMutation({
     // could write files no row owns.
     const now = Date.now();
     const old = (await livePhotosOf(ctx, copy._id)).filter((row) => row.side === photo.side);
+    // NEO-427: a scanner photo never replaces a live one. The collector's stands.
+    if (photo.source === "intake" && old.length > 0) {
+      await deletePhotoRows(ctx, [photo]);
+      return null;
+    }
     for (const row of old) await ctx.db.patch(row._id, { status: "replaced", since: now });
     await ctx.db.patch(photo._id, { status: "live", since: now });
     if (!copy.hasPhotos) await ctx.db.patch(copy._id, { hasPhotos: true });
+    // NEO-415: a card-level listing shows the copy's photos, so a photo
+    // change queues the card on every listing platform, but only for a copy
+    // in a listed box (NEO-432, `queueIfHomeLists`). Intake's "Done adding
+    // photos" lands here too.
+    await queueIfHomeLists(ctx, args.ownerId, copy);
     return null;
   },
 });
@@ -377,15 +506,21 @@ export const finishUpload = action({
       photoId: args.photoId,
     });
     if (!pending) refuse(COLLECTION_ERRORS.notFound, "That photo upload ran out of time. Add it again.");
-    for (const [size, bytes] of [
+    // Both HEADs at once (NEO-466): they are independent, and this wait sits
+    // inside the collector's "Saving..." budget.
+    const files = [
       ["image", pending.imageBytes],
       ["thumb", pending.thumbBytes],
-    ] as const) {
-      const head = await headObject(config, copyPhotoObjectKey(pending.token, size, pending.contentType));
+    ] as const;
+    const heads = await Promise.all(
+      files.map(([size]) => headObject(config, copyPhotoObjectKey(pending.token, size, pending.contentType))),
+    );
+    files.forEach(([, bytes], i) => {
+      const head = heads[i];
       if (!head || head.bytes !== bytes || head.contentType !== pending.contentType) {
         refuse(COLLECTION_ERRORS.invalid, "That photo didn't finish uploading. Try adding it again.");
       }
-    }
+    });
     await ctx.runMutation(internal.copyPhotos.commitUpload, { ownerId, photoId: args.photoId });
     return null;
   },
@@ -407,6 +542,7 @@ export const remove = mutation({
     if (photos.length === gone.length && row.hasPhotos) {
       await ctx.db.patch(row._id, { hasPhotos: undefined });
     }
+    if (gone.length > 0) await queueIfHomeLists(ctx, ownerId, row);
     return null;
   },
 });
@@ -421,12 +557,244 @@ export const swap = mutation({
     if (!row || row.ownerId !== ownerId) {
       refuse(COLLECTION_ERRORS.notFound, "That copy isn't in your collection.");
     }
-    for (const photo of await livePhotosOf(ctx, row._id)) {
+    const photos = await livePhotosOf(ctx, row._id);
+    for (const photo of photos) {
       await ctx.db.patch(photo._id, { side: photo.side === "front" ? "back" : "front" });
     }
+    if (photos.length > 0) await queueIfHomeLists(ctx, ownerId, row);
     return null;
   },
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-481: hand edits (turn + crop). `photoEdits.ts` drives these; the rows
+// live here so every photo write stays in this module.
+//
+// An edit is a NEW row (`source: "edit"`) with a new token, reserved when the
+// collector saves (`reserveEditPhoto`, carrying `pendingEdit`), filled in the
+// background by the render, and made live by `commitEditedPhoto`, which
+// retires the row it was made from to `replaced`: the hour the sweep gives a
+// replaced row is Undo's window (`undoEditedPhoto`). `scan` is carried onto
+// every edit row.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Pending edit rows of one line, oldest first (bounded: a few per side at most). */
+async function pendingEditRowsOf(ctx: Pick<QueryCtx, "db">, copyId: Id<"collectionCopies">): Promise<PhotoRow[]> {
+  const rows = await ctx.db
+    .query("collectionCopyPhotos")
+    .withIndex("by_copy_and_status", (q) => q.eq("copyId", copyId).eq("status", "pending"))
+    .take(20);
+  return rows.filter((row) => row.source === "edit" && row.pendingEdit !== undefined);
+}
+
+/** The newest edit in flight or failed per side, for the owner's read. */
+async function editStatesOf(
+  ctx: Pick<QueryCtx, "db">,
+  copyId: Id<"collectionCopies">,
+): Promise<Array<typeof copyPhotoEditStateValidator.type>> {
+  const newest = new Map<Side, PhotoRow>();
+  for (const row of await pendingEditRowsOf(ctx, copyId)) newest.set(row.side, row);
+  return [...newest.values()].map((row) => {
+    const edit = row.pendingEdit!;
+    return {
+      photoId: row._id,
+      side: row.side,
+      status: edit.status,
+      ...(edit.error !== undefined ? { error: edit.error } : {}),
+      turns: edit.turns,
+      crop: edit.crop,
+      requestedAt: edit.requestedAt,
+    };
+  });
+}
+
+/** The caller's live photo on one side of a line, or a refusal in the collector's words. */
+export async function requireLivePhoto(
+  ctx: Pick<QueryCtx, "db">,
+  ownerId: string,
+  copyId: Id<"collectionCopies">,
+  side: Side,
+): Promise<{ copy: CopyRow; photo: PhotoRow }> {
+  const copy = await ctx.db.get(copyId);
+  if (!copy || copy.ownerId !== ownerId) refuse(COLLECTION_ERRORS.notFound, "That copy isn't in your collection.");
+  const photo = (await livePhotosOf(ctx, copyId)).find((row) => row.side === side);
+  if (!photo) refuse(COLLECTION_ERRORS.notFound, "There's no photo on that side to edit.");
+  return { copy, photo };
+}
+
+/**
+ * Reserve an edit of one side's live photo: the token check, one edit at a
+ * time per side, the hourly edit cap, then the pending row. The live row
+ * must still carry `expectToken`, so an edit of a photo replaced meanwhile is
+ * refused before any render. An edit still rendering (and not stale) holds
+ * the side; a failed one does not, and stays (unshown once superseded) until
+ * the sweep, so the cap still counts it.
+ */
+export async function reserveEditPhoto(
+  ctx: MutationCtx,
+  args: {
+    ownerId: string;
+    copyId: Id<"collectionCopies">;
+    side: Side;
+    expectToken: string;
+    pendingEdit: NonNullable<PhotoRow["pendingEdit"]>;
+  },
+): Promise<{ photoId: Id<"collectionCopyPhotos">; token: string; live: PhotoRow }> {
+  const { photo: live } = await requireLivePhoto(ctx, args.ownerId, args.copyId, args.side);
+  if (live.token !== args.expectToken) {
+    refuse(COLLECTION_ERRORS.invalid, "This photo changed since you opened it. Open it again to edit the new one.");
+  }
+  const now = Date.now();
+  for (const row of await pendingEditRowsOf(ctx, args.copyId)) {
+    if (row.side === args.side && row.pendingEdit?.status === "rendering" && now - row.pendingEdit.requestedAt < PHOTO_EDIT_RENDER_STALE_MS) {
+      refuse(COLLECTION_ERRORS.invalid, "Your last change to this photo is still being made. Give it a moment.");
+    }
+  }
+  const recent = await ctx.db
+    .query("collectionCopyPhotos")
+    .withIndex("by_owner_and_source", (q) =>
+      q.eq("ownerId", args.ownerId).eq("source", "edit").gt("_creationTime", now - PHOTO_HOLD_MS),
+    )
+    .take(MAX_COPY_PHOTO_EDITS_PER_HOUR);
+  if (recent.length >= MAX_COPY_PHOTO_EDITS_PER_HOUR) {
+    refuse(COLLECTION_ERRORS.limit, "That's a lot of photo edits for one hour. Try again a little later.");
+  }
+  const token = newToken();
+  const photoId = await ctx.db.insert("collectionCopyPhotos", {
+    ownerId: args.ownerId,
+    copyId: args.copyId,
+    side: args.side,
+    token,
+    // Placeholders until the render reports its files (`commitEditedPhoto`).
+    contentType: "image/jpeg",
+    imageBytes: 0,
+    thumbBytes: 0,
+    status: "pending",
+    since: now,
+    source: "edit",
+    ...(live.scan ? { scan: live.scan } : {}),
+    pendingEdit: args.pendingEdit,
+  });
+  return { photoId, token, live };
+}
+
+/**
+ * The render's files are in R2: the edit row goes live in place of the row
+ * whose token is `expectToken`, on whichever side that row sits NOW (a swap
+ * during the render lands on the right side). If no live row carries that
+ * token any more (the photo was removed or replaced meanwhile), nothing is
+ * written and the reason comes back: the caller records it on the edit row,
+ * which the sweep removes with its files. This is the edit's way past the "a
+ * scanner photo never replaces a live one" guard, which stays keyed on
+ * `source === "intake"`. Every check runs before the first write. On success,
+ * returns the row the edit replaced (Undo's target).
+ */
+export async function commitEditedPhoto(
+  ctx: MutationCtx,
+  args: {
+    ownerId: string;
+    photoId: Id<"collectionCopyPhotos">;
+    expectToken: string;
+    contentType: PhotoRow["contentType"];
+    imageBytes: number;
+    thumbBytes: number;
+  },
+): Promise<{ ok: true; previousPhotoId: Id<"collectionCopyPhotos"> } | { ok: false; error: string }> {
+  const photo = await ctx.db.get(args.photoId);
+  if (!photo || photo.ownerId !== args.ownerId || photo.status !== "pending" || photo.source !== "edit") {
+    return { ok: false, error: "That edit ran out of time. Open the photo and try again." };
+  }
+  for (const [bytes, max] of [
+    [args.imageBytes, MAX_COPY_PHOTO_BYTES],
+    [args.thumbBytes, MAX_COPY_THUMB_BYTES],
+  ] as const) {
+    if (!Number.isInteger(bytes) || bytes < 1 || bytes > max) {
+      return { ok: false, error: "That edit came out too big to keep. Try a smaller crop." };
+    }
+  }
+  const copy = await ctx.db.get(photo.copyId);
+  const live = await ctx.db
+    .query("collectionCopyPhotos")
+    .withIndex("by_token", (q) => q.eq("token", args.expectToken))
+    .unique();
+  if (!copy || copy.ownerId !== args.ownerId || !live || live.status !== "live" || live.copyId !== photo.copyId) {
+    return { ok: false, error: "This photo changed while it was being touched up. Open it again to edit the new one." };
+  }
+  const now = Date.now();
+  await ctx.db.patch(live._id, { status: "replaced", since: now });
+  await ctx.db.patch(photo._id, {
+    status: "live",
+    side: live.side,
+    since: now,
+    // Undo's target, cleared by the Undo so an edit is undone once (`undoEditedPhoto`).
+    replacesPhotoId: live._id,
+    contentType: args.contentType,
+    imageBytes: args.imageBytes,
+    thumbBytes: args.thumbBytes,
+    pendingEdit: undefined,
+  });
+  if (!copy.hasPhotos) await ctx.db.patch(copy._id, { hasPhotos: true });
+  // Listings follow the new file, and only now that it exists.
+  await queueIfHomeLists(ctx, args.ownerId, copy);
+  return { ok: true, previousPhotoId: live._id };
+}
+
+/**
+ * The Undo of an edit, inside the hour its replaced row lives: the edit row
+ * goes back to `replaced` and the row it replaced (`replacesPhotoId`) comes
+ * back live, on the side the edit sits now. The edit row's pointer is cleared
+ * with it, so an undone edit can't be undone again (no toggling forever).
+ * Refused once anything else changed that side, or the replaced row is gone.
+ */
+export async function undoEditedPhoto(
+  ctx: MutationCtx,
+  args: { ownerId: string; copyId: Id<"collectionCopies">; photoId: Id<"collectionCopyPhotos"> },
+): Promise<null> {
+  const nothing = () =>
+    refuse(COLLECTION_ERRORS.invalid, "That edit can't be undone any more. Edit the photo again instead.");
+  const copy = await ctx.db.get(args.copyId);
+  if (!copy || copy.ownerId !== args.ownerId) refuse(COLLECTION_ERRORS.notFound, "That copy isn't in your collection.");
+  const edited = await ctx.db.get(args.photoId);
+  if (!edited || edited.ownerId !== args.ownerId || edited.copyId !== copy._id) return nothing();
+  if (edited.status !== "live" || edited.source !== "edit" || !edited.replacesPhotoId) return nothing();
+  const previous = await ctx.db.get(edited.replacesPhotoId);
+  if (!previous || previous.status !== "replaced" || previous.copyId !== copy._id || previous.ownerId !== args.ownerId) {
+    return nothing();
+  }
+  const now = Date.now();
+  await ctx.db.patch(edited._id, { status: "replaced", since: now, replacesPhotoId: undefined });
+  await ctx.db.patch(previous._id, { status: "live", side: edited.side, since: now });
+  await queueIfHomeLists(ctx, args.ownerId, copy);
+  return null;
+}
+
+/** The render failed: the row keeps the edit and says why, for Try again. The live photo is untouched. */
+export async function failEditedPhoto(
+  ctx: MutationCtx,
+  photoId: Id<"collectionCopyPhotos">,
+  error: string,
+): Promise<void> {
+  const photo = await ctx.db.get(photoId);
+  if (!photo || photo.status !== "pending" || photo.source !== "edit" || !photo.pendingEdit) return;
+  await ctx.db.patch(photo._id, { pendingEdit: { ...photo.pendingEdit, status: "failed", error } });
+}
+
+/**
+ * The collector dismissed a failed edit's message. The row stays, unshown, so
+ * the hourly cap still counts it; the sweep removes it.
+ */
+export async function dismissFailedEdits(
+  ctx: MutationCtx,
+  ownerId: string,
+  copyId: Id<"collectionCopies">,
+  side: Side,
+): Promise<void> {
+  const copy = await ctx.db.get(copyId);
+  if (!copy || copy.ownerId !== ownerId) return;
+  for (const row of await pendingEditRowsOf(ctx, copyId)) {
+    if (row.side === side && row.pendingEdit?.status === "failed") await ctx.db.patch(row._id, { pendingEdit: undefined });
+  }
+}
 
 // ───────────────────────────────────────────────────────────────────────────
 // Reading
@@ -449,7 +817,8 @@ export const photosOf = query({
     for (const copyId of new Set(args.copyIds)) {
       const row = await ctx.db.get(copyId);
       if (!row || row.ownerId !== ownerId || !row.hasPhotos) continue;
-      out.push({ copyId, ...(await photoUrlsOf(ctx, row)) });
+      const edits = await editStatesOf(ctx, copyId);
+      out.push({ copyId, ...(await photoUrlsOf(ctx, row)), ...(edits.length > 0 ? { edits } : {}) });
     }
     return out;
   },

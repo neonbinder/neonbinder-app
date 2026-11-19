@@ -31,7 +31,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
@@ -90,7 +90,7 @@ describe("NEO-154: adapter actions are internal, not public", () => {
   // The obvious test — call it and expect "not found" — does not work and,
   // worse, passes for the wrong reason. `convex-test` resolves a function by
   // its module path and does NOT enforce the public/internal boundary, so
-  // `t.action(api.adapters.ebay.searchEbay, {})` happily runs an
+  // `t.action(api.adapters.myslabs.searchMySlabs, {})` happily runs an
   // `internalAction` and fails on ARGUMENT VALIDATION instead. A regex loose
   // enough to accept that error accepts a genuinely-public function too.
   //
@@ -98,8 +98,6 @@ describe("NEO-154: adapter actions are internal, not public", () => {
   // public `api` from it via `FilterApi`), so the declaration is the honest
   // thing to assert.
   test.each([
-    ["adapters/ebay.ts", "searchEbay"],
-    ["adapters/ebay.ts", "testCredentials"],
     ["adapters/index.ts", "searchAllCardPlatforms"],
     ["adapters/index.ts", "getAvailableSetParameters"],
     ["adapters/mycardpost.ts", "searchMyCardPost"],
@@ -254,6 +252,10 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
     // twins: its insert branch schedules a pooled Wikidata enrichment, and
     // `wikidataPool` caps concurrency rather than total queued work.
     ["players.findOrCreate", (t, sportId) => t.mutation(api.players.findOrCreate, { name: "Nobody", sportId })],
+    // NEO-463. The picker's and add form's pre-check for a one-word name: it
+    // reads which fuller-named players the word belongs to, behind the same
+    // admin-only editors that write players.
+    ["players.nameFragmentCheck", (t, sportId) => t.query(api.players.nameFragmentCheck, { name: "Walker", sportId })],
     ["teams.resolveNames", (t, sportId) => t.query(api.teams.resolveNames, { names: [], sportId })],
     ["teams.nearMatches", (t, sportId) => t.query(api.teams.nearMatches, { name: "Yankees", sportId })],
     // NEO-284. Advisory as it is, it still reads which OTHER team a proposed
@@ -268,6 +270,10 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
     // instead of the capped list. It stands in for `teams.listForManagement`,
     // so it carries that list's gate.
     ["teams.searchForManagement", (t) => t.query(api.teams.searchForManagement, { query: "Yankees" })],
+    // NEO-495. The list it stands in for, now that it also answers the league
+    // dropdown from the league's own rows. Admin-only since NEO-156; pinned
+    // here when its arguments grew.
+    ["teams.listForManagement", (t) => t.query(api.teams.listForManagement, { leagueId: "none" })],
     // NEO-301: both bulk fast paths are public ACTIONS now (a query picks the
     // page, an internal mutation writes it), and the admin gate runs in the
     // action before either half is reached. The create twin was never pinned
@@ -626,7 +632,8 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
         parentId: yearId,
         platformData: {},
         children: [],
-        features: { league: "Major League Baseball" },
+        // NEO-569 — the set names its league by id.
+        leagueIds: [mlbId],
         lastUpdated: 1,
       });
       // Tier 1 for an admin: in the set's league, active in 2024.
@@ -944,6 +951,10 @@ describe("NEO-214: the Set Builder admin panel and its client-callable functions
     "resetCollectionContainersBatch",
     "resetCollectionBuildingSetsBatch",
     "resetVariantCommonPricesBatch",
+    // NEO-552 — the BSC call gate.
+    "resetMarketplaceCallGatesBatch",
+    // PR 451 (NEO-482) — the BSC wait rows.
+    "resetMarketplaceWaitsBatch",
   ])("%s is declared internalMutation, not mutation", (fn) => {
     // These do the actual deleting, and they carry no identity check —
     // a CLI run has no identity, so one would refuse every legitimate call
@@ -1025,6 +1036,95 @@ describe("NEO-277: the set-level team surface is admin-gated, and its cascade is
     const src = readFileSync(join(__dirname, "selectorOptions.ts"), "utf8");
     expect(src).toContain("export const cascadeSelectorOptionTeams = internalMutation({");
     expect(src).not.toContain("export const cascadeSelectorOptionTeams = mutation(");
+  });
+});
+
+describe("NEO-569: the set and card League surface is admin-gated, and its cascades are internal", () => {
+  /**
+   * Three public functions arrived with NB leagues on sets and cards: a set
+   * row's League control (read and write) and a card's League options. All
+   * admin, like every other set-side read and edit in this file: the write
+   * changes shared reference data and schedules a cascade over the set's
+   * teamless cards, and the reads expose admin-only rows. A card's league is
+   * written through `updateCard`, already admin.
+   *
+   * The two cascades are `internalMutation`: their arguments carry a
+   * "previous league" only the writer knows, and a client that could call
+   * them could point one at any set or team and rewrite the cards beneath it.
+   */
+  test.each([
+    [
+      "selectorOptions.getSelectorOptionLeagues",
+      (t: ReturnType<typeof convexTest>, sportId: Id<"selectorOptions">) =>
+        t.query(api.selectorOptions.getSelectorOptionLeagues, { selectorOptionId: sportId }),
+    ],
+  ] as const)("%s refuses a signed-in non-admin and a signed-out caller", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await expect(call(t.withIdentity(SIGNED_IN), sportId)).rejects.toThrow();
+    await expect(call(t, sportId)).rejects.toThrow();
+    const row = await t.run(async (ctx) => ctx.db.get(sportId));
+    expect(row!.lastUpdated).toBe(1_700_000_000_000);
+    expect(row!.leagueIds).toBeUndefined();
+  });
+
+  test("selectorOptions.setSelectorOptionLeagues refuses a non-admin and a signed-out caller on a row the handler would accept", async () => {
+    const t = convexTest(schema, modules);
+    // A setName row: the handler accepts it, so only the admin gate can refuse.
+    const setId = await t.run(async (ctx) => {
+      const row = (level: "sport" | "year" | "manufacturer" | "setName", value: string, parentId?: Id<"selectorOptions">) =>
+        ctx.db.insert("selectorOptions", {
+          level, value, ...(parentId ? { parentId } : {}), platformData: {}, children: [], lastUpdated: 1_700_000_000_000,
+        });
+      const sport = await row("sport", "Baseball");
+      const year = await row("year", "2024", sport);
+      const brand = await row("manufacturer", "Topps", year);
+      return row("setName", "Chrome", brand);
+    });
+    const call = (c: ReturnType<typeof convexTest>) =>
+      c.mutation(api.selectorOptions.setSelectorOptionLeagues, { selectorOptionId: setId, leagueIds: [] });
+    await expect(call(t.withIdentity(SIGNED_IN))).rejects.toThrow();
+    await expect(call(t)).rejects.toThrow();
+    const row = await t.run(async (ctx) => ctx.db.get(setId));
+    expect(row!.lastUpdated).toBe(1_700_000_000_000);
+    expect(row!.leagueIds).toBeUndefined();
+    // Positive control: the same call as an admin resolves, so the refusals above are the gate.
+    await expect(call(t.withIdentity({ subject: "user_admin_569", role: "admin" }))).resolves.toBeNull();
+  });
+
+  test("cardLeague.cardLeagueOptions refuses a signed-in non-admin and a signed-out caller", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const cardId = await t.run(async (ctx) =>
+      insertTestCard(ctx, {
+        selectorOptionId: sportId,
+        cardNumber: "1",
+        cardName: "Card",
+        sortOrder: 0,
+        platformData: {},
+        lastUpdated: 1,
+      }),
+    );
+    const call = (c: ReturnType<typeof convexTest>) =>
+      c.query(api.cardLeague.cardLeagueOptions, { cardId });
+    await expect(call(t.withIdentity(SIGNED_IN))).rejects.toThrow();
+    await expect(call(t)).rejects.toThrow();
+  });
+
+  test("the set-league and team-league cascades are declared internalMutation", () => {
+    const src = readFileSync(join(__dirname, "cardLeague.ts"), "utf8");
+    for (const name of ["cascadeSetLeagues", "recomputeTeamCards"]) {
+      expect(src).toContain(`export const ${name} = internalMutation({`);
+      expect(src).not.toContain(`export const ${name} = mutation(`);
+    }
+  });
+
+  test("the league backfill is internal and armed", () => {
+    const src = readFileSync(join(__dirname, "leagueBackfill.ts"), "utf8");
+    expect(src).toContain("export const run = internalAction({");
+    expect(src).toContain("export const page = internalMutation({");
+    expect(src).not.toMatch(/export const \w+ = (query|mutation|action)\(/);
+    expect(src).toContain("process.env[ENV_FLAG]");
   });
 });
 
@@ -2218,6 +2318,21 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
     ["collectionWants.list", (t) => t.query(api.collectionWants.list, {})],
     // NEO-378
     ["commonPrices.forVariants", (t) => t.query(api.commonPrices.forVariants, { variantIds: [] })],
+    // NEO-370 — the listing gate's read: the caller's own state rows, home and common price only.
+    ["listingGate.forHome", (t) => t.query(api.listingGate.forHome, {})],
+    // NEO-464 — the signed-in dashboard's own reads and its visit stamp.
+    ["dashboard.justCompleted", (t) => t.query(api.dashboard.justCompleted, { sinceMs: 0 })],
+    ["dashboard.setBoard", (t) => t.query(api.dashboard.setBoard, { setId: NOT_AN_ID })],
+    ["dashboard.smartChecklist", (t) => t.query(api.dashboard.smartChecklist, { containerId: NOT_AN_ID })],
+    ["dashboard.newSince", (t) => t.query(api.dashboard.newSince, { sinceMs: 0 })],
+    ["dashboard.freshPulls", (t) => t.query(api.dashboard.freshPulls, { sinceMs: 0 })],
+    ["dashboard.markVisit", (t) => t.mutation(api.dashboard.markVisit, {})],
+    ["dashboard.couldFit", (t) => t.query(api.dashboard.couldFit, { containerId: NOT_AN_ID })],
+    ["dashboard.intake", (t) => t.query(api.dashboard.intake, {})],
+    ["dashboard.sales", (t) => t.query(api.dashboard.sales, {})],
+    ["dashboard.newSets", (t) => t.query(api.dashboard.newSets, {})],
+    ["dashboard.newListings", (t) => t.query(api.dashboard.newListings, { sinceMs: 0 })],
+    ["dashboard.syncAlerts", (t) => t.query(api.dashboard.syncAlerts, {})],
   ];
 
   test.each(SIGNED_IN_GATED)("%s rejects an anonymous caller", async (_name, call) => {
@@ -2317,6 +2432,8 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
       () => t.mutation(api.collectionContainers.update, { containerId: ids.homeId, label: null }),
       () => t.mutation(api.collectionContainers.empty, { containerId: ids.homeId }),
       () => t.mutation(api.collectionContainers.remove, { containerId: ids.homeId }),
+      // NEO-410 — "Try again" on a smart binder's empty slots.
+      () => t.mutation(api.binderRules.retryFits, { containerId: ids.homeId }),
       () => t.mutation(api.collectionWants.set, { cardId: ids.cardId, on: true }),
       // NEO-378
       () => t.mutation(api.commonPrices.set, { variantId: ids.variantId, priceCents: 25 }),
@@ -2366,6 +2483,38 @@ describe("NEO-358: the collection and its catalog reads require a signed-in call
     ["copyPhotos.ts", "liveByToken", "internalQuery"],
     ["copyPhotos.ts", "deleteObjects", "internalAction"],
     ["copyPhotos.ts", "sweepCopyPhotos", "internalMutation"],
+    // NEO-427 — a save's photos: these take a match or an ownerId argument.
+    ["intakeRuns.ts", "intakePhotoWork", "internalQuery"],
+    ["intakeRuns.ts", "recordIntakePhotos", "internalMutation"],
+    ["intakeRuns.ts", "expireIntakePhotoAttach", "internalMutation"],
+    ["intakeRuns.ts", "beginIntakePhotoRetry", "internalMutation"],
+    ["intakeRuns.ts", "intakeRunSavedMatches", "internalQuery"],
+    ["intakeRuns.ts", "recordIntakePhotoSide", "internalMutation"],
+    ["intakePhotos.ts", "attachIntakePhotos", "internalAction"],
+    ["intakePhotos.ts", "reattachIntakeRunPhotos", "internalAction"],
+    // NEO-481 — hand photo edits: every row function takes a userId/ownerId
+    // argument, and the renders take keys' parts, so none may ever be public.
+    ["photoEditRows.ts", "scanSourceFacts", "internalQuery"],
+    ["photoEditRows.ts", "copySourceFacts", "internalQuery"],
+    ["photoEditRows.ts", "reserveScanEdit", "internalMutation"],
+    ["photoEditRows.ts", "commitScanEdit", "internalMutation"],
+    ["photoEditRows.ts", "failScanEdit", "internalMutation"],
+    ["photoEditRows.ts", "reserveCopyEdit", "internalMutation"],
+    ["photoEditRows.ts", "commitCopyEdit", "internalMutation"],
+    ["photoEditRows.ts", "failCopyEdit", "internalMutation"],
+    ["photoEditRows.ts", "undoCopyEdit", "internalMutation"],
+    ["photoEditRows.ts", "dismissFailure", "internalMutation"],
+    ["photoEditRows.ts", "sweepPhotoEditTickets", "internalMutation"],
+    ["photoEditRows.ts", "claimEditWarmup", "internalMutation"],
+    ["photoEdits.ts", "renderScanEdit", "internalAction"],
+    ["photoEdits.ts", "renderCopyEdit", "internalAction"],
+    ["photoEdits.ts", "warmEditRenderer", "internalAction"],
+    // NEO-481 — the public edit entry points are actions that sign in first.
+    ["photoEdits.ts", "photoEditSource", "action"],
+    ["photoEdits.ts", "saveScanEdit", "action"],
+    ["photoEdits.ts", "saveCopyPhotoEdit", "action"],
+    ["photoEdits.ts", "undoCopyPhotoEdit", "action"],
+    ["photoEdits.ts", "dismissPhotoEditFailure", "action"],
   ])(
     "%s :: %s is declared %s",
     (file, fn, kind) => {
@@ -2594,7 +2743,7 @@ describe("NEO-360: the public share-link reads are public by intent; the switche
 describe("NEO-379: the intake run functions are signed-in, and the reads answer a stranger with nothing", () => {
   test("the writes reject an anonymous caller; the reads return null or empty", async () => {
     const t = convexTest(schema, modules);
-    const { homeId, runId, pairId, cardId } = await t.run(async (ctx) => {
+    const { homeId, runId, pairId, cardId, matchId } = await t.run(async (ctx) => {
       const homeId = await ctx.db.insert("collectionContainers", {
         ownerId: "someone",
         kind: "box",
@@ -2632,7 +2781,23 @@ describe("NEO-379: the intake run functions are signed-in, and the reads answer 
         sortOrder: 0,
         lastUpdated: 0,
       } as never);
-      return { homeId, runId, pairId, cardId };
+      const matchId = await ctx.db.insert("intakeMatches", {
+        runId,
+        userId: "someone",
+        pairId,
+        frontIndex: 0,
+        backIndex: 1,
+        readKey: "1",
+        cardId,
+        band: "matched",
+        reason: "numberAndPlayer",
+        confidence: 97,
+        candidates: [],
+        variations: [],
+        photos: "failed",
+        photoFailure: "error",
+      } as never);
+      return { homeId, runId, pairId, cardId, matchId };
     });
     const writes = [
       () => t.mutation(api.intakeRuns.createIntakeRun, { jobId: "job-x", homeId }),
@@ -2643,13 +2808,1276 @@ describe("NEO-379: the intake run functions are signed-in, and the reads answer 
       () => t.mutation(api.intakeRuns.saveIntakeMatch, { runId, pairId, quantity: 1 }),
       () => t.mutation(api.intakeRuns.answerIntakeRepeat, { runId, pairId, secondCopy: true }),
       () => t.mutation(api.intakeRuns.setIntakeMatchAside, { runId, pairId, setAside: true }),
+      // NEO-446: a loose photo set aside.
+      () => t.mutation(api.intakeRuns.setIntakePhotoAside, { runId, entryIndex: 0, setAside: true }),
+      // NEO-427: the Saved tile's Try again.
+      () => t.action(api.intakePhotos.retryIntakePhotos, { matchId }),
+      // NEO-481: a box tile's own price.
+      () => t.mutation(api.intakeRuns.setIntakeMatchPrice, { runId, pairId, priceCents: 100 }),
     ];
     for (const call of writes) await expect(call()).rejects.toThrow(/Not authenticated/);
+    expect((await t.run((ctx) => ctx.db.get(matchId)))?.photos).toBe("failed");
     expect(await t.query(api.intakeRuns.getIntakeRun, { runId })).toBeNull();
     expect(await t.query(api.intakeRuns.listIntakeMatches, { runId })).toEqual([]);
     expect(await t.query(api.intakeRuns.listMyIntakeRuns, {})).toEqual([]);
     expect(await t.query(api.intakeRuns.searchIntakeCards, { runId, q: "1" })).toEqual([]);
     const copies = await t.run(async (ctx) => ctx.db.query("collectionCopies").collect());
     expect(copies).toEqual([]);
+  });
+});
+
+describe("NEO-481: the hand photo edit functions are signed-in", () => {
+  test("every public edit function rejects an anonymous caller and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { copyId, photoId } = await t.run(async (ctx) => {
+      const homeId = await ctx.db.insert("collectionContainers", {
+        ownerId: "someone",
+        kind: "box",
+        name: "B",
+        lastUpdated: 0,
+      });
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        platformData: {},
+        children: [],
+        lastUpdated: 0,
+      });
+      const cardId = await insertTestCard(ctx, {
+        selectorOptionId: sportId,
+        cardNumber: "1",
+        cardName: "A",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: 0,
+      } as never);
+      const copyId = await ctx.db.insert("collectionCopies", {
+        ownerId: "someone",
+        cardId,
+        variantId: sportId,
+        setId: sportId,
+        homeId,
+        quantity: 1,
+        lastUpdated: 0,
+      });
+      const photoId = await ctx.db.insert("collectionCopyPhotos", {
+        ownerId: "someone",
+        copyId,
+        side: "front",
+        token: "a".repeat(32),
+        contentType: "image/jpeg",
+        imageBytes: 1,
+        thumbBytes: 1,
+        status: "live",
+        since: 0,
+      });
+      return { copyId, photoId };
+    });
+    const jobId = "00000000-0000-4000-8000-000000000000";
+    const edit = { turns: 1 as const, crop: null };
+    const calls = [
+      () => t.action(api.photoEdits.photoEditSource, { ref: { kind: "scan", jobId, entryIndex: 0 } }),
+      () => t.action(api.photoEdits.photoEditSource, { ref: { kind: "copy", copyId, side: "front" } }),
+      () => t.action(api.photoEdits.saveScanEdit, { jobId, entryIndex: 0, edit, expectVersion: 0 }),
+      () =>
+        t.action(api.photoEdits.saveCopyPhotoEdit, {
+          copyId,
+          side: "front",
+          edit,
+          expectToken: "a".repeat(32),
+          mode: "stored",
+        }),
+      () => t.action(api.photoEdits.undoCopyPhotoEdit, { copyId, photoId }),
+      () => t.action(api.photoEdits.dismissPhotoEditFailure, { ref: { kind: "copy", copyId, side: "front" } }),
+    ];
+    for (const call of calls) await expect(call()).rejects.toThrow(/Not authenticated/);
+    const photos = await t.run(async (ctx) => ctx.db.query("collectionCopyPhotos").collect());
+    expect(photos.map((p) => [p._id, p.status])).toEqual([[photoId, "live"]]);
+  });
+});
+
+describe("NEO-386: the scanner code functions are signed-in", () => {
+  test("both reject an anonymous caller", async () => {
+    const t = convexTest(schema, modules);
+    const runId = await t.run(async (ctx) => {
+      const homeId = await ctx.db.insert("collectionContainers", {
+        ownerId: "someone",
+        kind: "box",
+        name: "B",
+        lastUpdated: 0,
+      });
+      return await ctx.db.insert("intakeRuns", {
+        userId: "someone",
+        jobId: "job-x",
+        homeId,
+        createdAt: 0,
+        lastActivityAt: 0,
+      });
+    });
+    await expect(t.mutation(api.intakeScanner.scannerCodeForIntakeRun, { runId })).rejects.toThrow(
+      /Not authenticated/,
+    );
+    await expect(
+      t.query(api.intakeScanner.joinIntakeRunByScannerCode, { code: "ABCDEF" }),
+    ).rejects.toThrow(/Not authenticated/);
+  });
+
+  test("another signed-in collector gets no code and no run", async () => {
+    const t = convexTest(schema, modules);
+    const runId = await t.run(async (ctx) => {
+      const homeId = await ctx.db.insert("collectionContainers", {
+        ownerId: "someone",
+        kind: "box",
+        name: "B",
+        lastUpdated: 0,
+      });
+      return await ctx.db.insert("intakeRuns", {
+        userId: "someone",
+        jobId: "job-x",
+        homeId,
+        createdAt: 0,
+        lastActivityAt: 0,
+        scannerCode: "ABCDEF",
+      });
+    });
+    const other = t.withIdentity(SIGNED_IN);
+    await expect(other.mutation(api.intakeScanner.scannerCodeForIntakeRun, { runId })).rejects.toThrow(
+      /Intake run not found/,
+    );
+    expect(await other.query(api.intakeScanner.joinIntakeRunByScannerCode, { code: "ABCDEF" })).toBeNull();
+  });
+});
+
+/**
+ * NEO-407 — `latencyProbe.ping` / `pingMutation` / `pingWrite`: public and ANONYMOUS by
+ * intent (the E2E latency probe calls them with no session). Pinned: anonymous
+ * calls answer null and write nothing (pingWrite: its own single row, off
+ * prod only); with `TESTING_RESET_SECRET` unset
+ * (production) they return before any read; an oversized nonce is refused.
+ */
+describe("NEO-407 latencyProbe — anonymous by intent, fails closed in prod", () => {
+  test("anonymous calls answer null and write nothing, with or without the testing secret", async () => {
+    const saved = process.env.TESTING_RESET_SECRET;
+    try {
+      for (const secret of [undefined, "x"]) {
+        if (secret === undefined) delete process.env.TESTING_RESET_SECRET;
+        else process.env.TESTING_RESET_SECRET = secret;
+        const t = convexTest(schema, modules);
+        await seedSport(t);
+        expect(await t.query(api.latencyProbe.ping, { nonce: "n" })).toBeNull();
+        expect(await t.mutation(api.latencyProbe.pingMutation, { nonce: "n" })).toBeNull();
+        const rows = await t.run(async (ctx) => ctx.db.query("selectorOptions").collect());
+        expect(rows).toHaveLength(1);
+        // pingWrite touches only its own one-row table, and only off prod.
+        expect(await t.mutation(api.latencyProbe.pingWrite, { nonce: "n" })).toBeNull();
+        expect(await t.mutation(api.latencyProbe.pingWrite, { nonce: "m" })).toBeNull();
+        const beats = await t.run(async (ctx) => ctx.db.query("latencyProbeBeats").collect());
+        expect(beats).toHaveLength(secret === undefined ? 0 : 1);
+      }
+    } finally {
+      if (saved === undefined) delete process.env.TESTING_RESET_SECRET;
+      else process.env.TESTING_RESET_SECRET = saved;
+    }
+  });
+
+  test("the production gate and the nonce cap stay in the source", () => {
+    const src = readFileSync(join(__dirname, "latencyProbe.ts"), "utf8");
+    expect(src).toContain("Boolean(process.env.TESTING_RESET_SECRET)");
+    expect(src.match(/if \(!probeEnabled\(args\.nonce\)\) return null;/g)).toHaveLength(3);
+  });
+
+  test("an oversized nonce is refused", async () => {
+    const t = convexTest(schema, modules);
+    await expect(t.query(api.latencyProbe.ping, { nonce: "x".repeat(65) })).rejects.toThrow(/nonce too long/);
+  });
+});
+
+/**
+ * NEO-370 — marketplace listing (`listingSync.ts`): the settings, Start, Sync,
+ * the Sync status tab and the Sales screen, plus a box's "Listed on
+ * marketplaces" setting (`collectionContainers.setContainerListed`). Every one
+ * is the signed-in caller's own (a collector, not an admin); the owner is
+ * never an argument. The admin's read-only Sync status takes an `ownerId`, so
+ * it is admin-only. The walks that queue and clear a collector's changes take
+ * an `ownerId`, so they are internal.
+ */
+describe("NEO-370: listing is the signed-in collector's own", () => {
+  async function seedVariant(t: ReturnType<typeof convexTest>): Promise<Id<"selectorOptions">> {
+    const sportId = await seedSport(t);
+    return t.run(async (ctx) => {
+      const setId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Topps",
+        parentId: sportId,
+        platformData: {},
+        lastUpdated: 0,
+      });
+      return ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        parentId: setId,
+        platformData: {},
+        lastUpdated: 0,
+      });
+    });
+  }
+  const CALLS: Array<
+    [string, (t: ReturnType<typeof convexTest>, variantId: Id<"selectorOptions">) => Promise<unknown>]
+  > = [
+    ["listingSync.listingSettings", (t) => t.query(api.listingSync.listingSettings, {})],
+    ["listingSync.syncStatus", (t) => t.query(api.listingSync.syncStatus, {})],
+    [
+      "listingSync.syncSetProblems",
+      (t, variantId) => t.query(api.listingSync.syncSetProblems, { variantId, platform: "bsc" }),
+    ],
+    [
+      "listingSync.listSales",
+      (t) => t.query(api.listingSync.listSales, { paginationOpts: { numItems: 10, cursor: null } }),
+    ],
+    ["listingSync.syncVariant", (t, variantId) => t.mutation(api.listingSync.syncVariant, { variantId })],
+  ];
+  const ADMIN_CALLS: Array<
+    [string, (t: ReturnType<typeof convexTest>, variantId: Id<"selectorOptions">) => Promise<unknown>]
+  > = [
+    ["listingSync.adminSyncOwners", (t) => t.query(api.listingSync.adminSyncOwners, {})],
+    ["listingSync.adminSyncStatus (every collector)", (t) => t.query(api.listingSync.adminSyncStatus, {})],
+    [
+      "listingSync.adminSyncStatus (one collector)",
+      (t) => t.query(api.listingSync.adminSyncStatus, { ownerId: "someone" }),
+    ],
+    [
+      "listingSync.adminSyncSetProblems",
+      (t, variantId) =>
+        t.query(api.listingSync.adminSyncSetProblems, { ownerId: "someone", variantId, platform: "bsc" }),
+    ],
+  ];
+
+  test.each(CALLS)("%s rejects an anonymous caller", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t, await seedVariant(t))).rejects.toThrow(/Not authenticated/);
+  });
+
+  test.each(CALLS)("%s answers a signed-in non-admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t.withIdentity(SIGNED_IN), await seedVariant(t))).resolves.not.toThrow();
+  });
+
+  test.each(ADMIN_CALLS)("%s rejects an anonymous caller", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t, await seedVariant(t))).rejects.toThrow(/Not authenticated/);
+  });
+
+  test.each(ADMIN_CALLS)("%s rejects a signed-in NON-ADMIN caller", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t.withIdentity(SIGNED_IN), await seedVariant(t))).rejects.toThrow(/Admin access required/);
+  });
+
+  test.each(ADMIN_CALLS)("%s answers an admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t.withIdentity(ADMIN), await seedVariant(t))).resolves.toBeDefined();
+  });
+
+  // Revision 5 ("If you have credentials you are syncing"): there is no
+  // Start. Listing starts from a saved sign-in, server-side, so nothing a
+  // client can call makes or wakes a listing state row by itself.
+  test("startListing is gone: no public way to start listing but saving a sign-in", () => {
+    const src = readFileSync(join(__dirname, "listingSync.ts"), "utf8");
+    expect(src).not.toMatch(/export const startListing\s*=/);
+    expect(src).toContain("export async function setUpListing(");
+    expect(src).not.toContain("export const setUpListing");
+  });
+
+  test.each([
+    ["listingSync.ts", "startListingWalk", "internalMutation"],
+    ["listingSync.ts", "setUpSavedSignInsPage", "internalMutation"],
+    ["listingSync.ts", "queueBoxesPage", "internalMutation"],
+    ["credentials.ts", "storeTestCredentials", "internalAction"],
+    ["userProfile.ts", "updateSiteCredentialStatus", "internalMutation"],
+  ])("%s %s stays %s (it starts listing, or writes the E2E test marker)", (file, fn, kind) => {
+    const src = readFileSync(join(__dirname, file), "utf8");
+    expect(src).toContain(`export const ${fn} = ${kind}({`);
+  });
+
+  test("the E2E test marker is written only by the testing seed's path, and refused off testing deployments", () => {
+    // `testListingOff` may be written only through `holdTestListingOff`
+    // (gated on TESTING_RESET_SECRET), reached only from
+    // `updateSiteCredentialStatus` with `listing: "testOff"`, which only the
+    // testing seed and its internal store pass.
+    const sync = readFileSync(join(__dirname, "listingSync.ts"), "utf8");
+    const hold = sync.slice(sync.indexOf("export async function holdTestListingOff("));
+    expect(hold.slice(0, hold.indexOf("\n}\n"))).toContain("if (!process.env.TESTING_RESET_SECRET)");
+    const store = readFileSync(join(__dirname, "credentials.ts"), "utf8");
+    const seedStore = store.slice(store.indexOf("export const storeTestCredentials"));
+    expect(seedStore.slice(0, seedStore.indexOf("\n});\n"))).toContain("if (!process.env.TESTING_RESET_SECRET)");
+    // The collector's own save always passes "save", never "testOff".
+    const save = store.slice(store.indexOf("export const saveCredentials"));
+    expect(save.slice(0, save.indexOf("\n});\n"))).toContain('connectAndStore(ctx, userId, args.site, username, password, "save")');
+    expect(save.slice(0, save.indexOf("\n});\n"))).not.toContain('"testOff"');
+  });
+
+  test("an anonymous Sync is refused and writes no state row", async () => {
+    const t = convexTest(schema, modules);
+    await expect(t.mutation(api.listingSync.syncVariant, { variantId: await seedVariant(t) })).rejects.toThrow(
+      /Not authenticated/,
+    );
+    expect(await t.run(async (ctx) => ctx.db.query("marketplaceListingStates").collect())).toEqual([]);
+  });
+
+  test("a box's listed setting: anonymous refused; another collector's box not found; the owner's own answers", async () => {
+    const t = convexTest(schema, modules);
+    const boxId = await t.run(async (ctx) =>
+      ctx.db.insert("collectionContainers", { ownerId: SIGNED_IN.subject, kind: "box", name: "Box", lastUpdated: 0 }),
+    );
+    await expect(
+      t.mutation(api.collectionContainers.setContainerListed, { containerId: boxId, listed: false }),
+    ).rejects.toThrow(/Not authenticated/);
+    await expect(
+      t
+        .withIdentity({ subject: "someone_else_370" })
+        .mutation(api.collectionContainers.setContainerListed, { containerId: boxId, listed: false }),
+    ).rejects.toThrow();
+    expect((await t.run((ctx) => ctx.db.get(boxId)))?.listedOnMarketplaces).toBeUndefined();
+    await expect(
+      t.withIdentity(SIGNED_IN).mutation(api.collectionContainers.setContainerListed, { containerId: boxId, listed: false }),
+    ).resolves.toBeNull();
+  });
+
+  test.each([
+    ["listingSync.ts", "queueBoxesPage", "internalMutation"],
+    ["listingSync.ts", "queueListedBoxPage", "internalMutation"],
+    ["listingSync.ts", "clearOutboxPage", "internalMutation"],
+    ["listingSync.ts", "queueVariantPage", "internalMutation"],
+  ])("%s :: %s is declared %s", (file, fn, kind) => {
+    const src = readFileSync(join(__dirname, file), "utf8");
+    expect(src).toContain(`export const ${fn} = ${kind}({`);
+  });
+});
+
+describe("NEO-415: eBay connection surface", () => {
+  test("the connection query and the mutations refuse an anonymous caller", async () => {
+    const t = convexTest(schema, modules);
+    await expect(t.query(api.ebayConnect.connectionState, {})).rejects.toThrow(/Not authenticated/);
+    await expect(t.mutation(api.ebayConnect.beginConnect, {})).rejects.toThrow(/Not authenticated/);
+    await expect(t.mutation(api.ebayConnect.setBestOffer, { on: false })).rejects.toThrow(/Not authenticated/);
+    await expect(t.mutation(api.ebayConnect.setCardWeight, { ounces: 2 })).rejects.toThrow(/Not authenticated/);
+    expect(await t.run(async (ctx) => ctx.db.query("ebaySellerSettings").collect())).toEqual([]);
+  });
+
+  test.each([
+    "completeConnect",
+    "disconnect",
+    "readPolicies",
+    "createStandardPolicies",
+    "savePolicies",
+    "saveLocation",
+  ])("ebayConnect :: %s is a public action that starts with requireSignedIn", (fn) => {
+    const src = readFileSync(join(__dirname, "ebayConnect.ts"), "utf8");
+    const start = src.indexOf(`export const ${fn} = action({`);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const body = src.slice(start, src.indexOf("\n});\n", start));
+    expect(body).toContain("await requireSignedIn(ctx)");
+  });
+
+  test.each([
+    ["ebayConnect.ts", "recordEbayConnection", "internalMutation"],
+    ["ebayConnect.ts", "connectGuard", "internalQuery"],
+    ["ebayConnect.ts", "forgetEbayConnection", "internalMutation"],
+    ["ebayConnect.ts", "markEbayLinksEnded", "internalMutation"],
+    ["ebayConnect.ts", "purgeEbayHistoryPage", "internalMutation"],
+    ["ebayConnect.ts", "consumeConnectNonce", "internalMutation"],
+    ["ebayConnect.ts", "writePolicySettings", "internalMutation"],
+    ["ebayConnect.ts", "writeLocationSettings", "internalMutation"],
+    ["ebayConnect.ts", "fillEmptyPolicySlots", "internalMutation"],
+    ["ebayConnect.ts", "writeSetupProgress", "internalMutation"],
+    ["ebayConnect.ts", "purgeEbayLinksPage", "internalMutation"],
+    ["ebayConnect.ts", "processAccountDeletion", "internalAction"],
+    ["credentials.ts", "connectEbay", "internalAction"],
+    ["credentials.ts", "disconnectEbay", "internalAction"],
+    ["credentials.ts", "disconnectEbayAndWithdraw", "internalAction"],
+    ["credentials.ts", "verifyEbayNotification", "internalAction"],
+    ["listingDrainEbay.ts", "recordEbayLinks", "internalMutation"],
+    ["listingDrain.ts", "recordConditionsPushed", "internalMutation"],
+  ])("%s :: %s is declared %s", (file, fn, kind) => {
+    const src = readFileSync(join(__dirname, file), "utf8");
+    expect(src).toContain(`export const ${fn} = ${kind}({`);
+  });
+
+  test("an eBay session is seeded from a refresh token only on a testing deployment", () => {
+    const src = readFileSync(join(__dirname, "credentials.ts"), "utf8");
+    const connect = src.slice(src.indexOf("export const connectEbay"));
+    expect(connect.slice(0, connect.indexOf("\n});\n"))).toContain(
+      "if (args.refreshToken !== undefined && !process.env.TESTING_RESET_SECRET)",
+    );
+    expect(connect.slice(0, connect.indexOf("\n});\n"))).toContain(
+      'if (args.refreshToken !== undefined && ebayConfig()?.environment !== "sandbox")',
+    );
+  });
+
+  test("the eBay account-deletion POST verifies the signature before it schedules anything", () => {
+    const src = readFileSync(join(__dirname, "ebayConnect.ts"), "utf8");
+    const start = src.indexOf("export const ebayDeletionNotice = httpAction(");
+    expect(start).toBeGreaterThanOrEqual(0);
+    const body = src.slice(start, src.indexOf("\n});\n", start));
+    const verify = body.indexOf("internal.credentials.verifyEbayNotification");
+    const schedule = body.indexOf("ctx.scheduler.runAfter");
+    expect(verify).toBeGreaterThan(0);
+    expect(schedule).toBeGreaterThan(verify);
+    expect(body.indexOf("ctx.scheduler")).toBe(schedule);
+  });
+});
+
+describe("NEO-475: the BSC call telemetry store is internal, never public", () => {
+  /**
+   * `record` is scheduled by the BSC adapters off the hot path and writes a
+   * `bscCallSummaries` row that is kept forever; `exportRange` reads every row
+   * and is reached only by `npx convex run` from the bsc-health scripts. A
+   * public twin of `record` would be an unauthenticated write into a table
+   * nothing prunes; a public twin of `exportRange` would be an unauthenticated
+   * read of every BSC call's failure samples. Same reading-the-source approach
+   * as the NEO-289 and NEO-322 blocks, for the same reason (convex-test does
+   * not enforce the public/internal boundary).
+   */
+  test.each([
+    ["bscCallStats.ts", "record", "internalMutation"],
+    ["bscCallStats.ts", "exportRange", "internalQuery"],
+  ])("%s :: %s is declared %s", (file, fn, keyword) => {
+    const src = readFileSync(join(__dirname, file), "utf8");
+    expect(src).toContain(`export const ${fn} = ${keyword}({`);
+    expect(src).not.toContain(`export const ${fn} = action(`);
+    expect(src).not.toContain(`export const ${fn} = query(`);
+    expect(src).not.toContain(`export const ${fn} = mutation(`);
+  });
+
+  test("the module imports no public function builder", () => {
+    // A third export added later inherits the module's imports; with only the
+    // internal builders imported, a public one cannot be declared by copying
+    // a neighbour.
+    const src = readFileSync(join(__dirname, "bscCallStats.ts"), "utf8");
+    const serverImport = src.match(/import \{([^}]*)\} from "\.\/_generated\/server";/);
+    expect(serverImport).not.toBeNull();
+    const names = serverImport![1].split(",").map((s) => s.trim()).filter(Boolean);
+    expect(names.sort()).toEqual(["internalMutation", "internalQuery"]);
+  });
+});
+
+/**
+ * NEO-464 — `testing.backdateMyDashboardVisit`: public so the E2E test page can
+ * call it, and closed everywhere else. Pinned: refused off a testing deployment
+ * (`TESTING_RESET_SECRET` unset, i.e. production) even for a signed-in caller,
+ * and refused to an anonymous caller where it is enabled. Its caller scoping is
+ * testing.test.ts's.
+ */
+describe("NEO-464 testing.backdateMyDashboardVisit — testing deployments only, signed in", () => {
+  test("refused in production and to an anonymous caller", async () => {
+    const saved = process.env.TESTING_RESET_SECRET;
+    try {
+      delete process.env.TESTING_RESET_SECRET;
+      const prod = convexTest(schema, modules);
+      await expect(
+        prod.withIdentity(SIGNED_IN).mutation(api.testing.backdateMyDashboardVisit, {}),
+      ).rejects.toThrow(/not enabled/);
+      process.env.TESTING_RESET_SECRET = "x";
+      const dev = convexTest(schema, modules);
+      await expect(dev.mutation(api.testing.backdateMyDashboardVisit, {})).rejects.toThrow(/Not authenticated/);
+    } finally {
+      if (saved === undefined) delete process.env.TESTING_RESET_SECRET;
+      else process.env.TESTING_RESET_SECRET = saved;
+    }
+  });
+});
+
+/**
+ * NEO-464 — the dashboard's test seeds (`testing.seedMyTestSale`,
+ * `seedMyTestSync`, `clearMyTestDashboardSeeds`): public so the E2E test page
+ * can call them, and closed everywhere else. Pinned like
+ * `backdateMyDashboardVisit`: refused in production even for a signed-in
+ * caller, and refused to an anonymous caller where they are enabled. Their
+ * caller scoping is testing.test.ts's.
+ */
+describe("NEO-464 testing dashboard seeds — testing deployments only, signed in", () => {
+  const CALLS: Array<[string, (t: ReturnType<typeof convexTest>) => Promise<unknown>]> = [
+    ["testing.seedMyTestSale", (t) => t.mutation(api.testing.seedMyTestSale, {})],
+    ["testing.seedMyTestSync", (t) => t.mutation(api.testing.seedMyTestSync, { pending: true, error: true })],
+    ["testing.clearMyTestDashboardSeeds", (t) => t.mutation(api.testing.clearMyTestDashboardSeeds, {})],
+  ];
+  test.each(CALLS)("%s is refused in production and to an anonymous caller", async (_name, call) => {
+    const saved = process.env.TESTING_RESET_SECRET;
+    try {
+      delete process.env.TESTING_RESET_SECRET;
+      const prod = convexTest(schema, modules);
+      await expect(call(prod.withIdentity(SIGNED_IN) as unknown as ReturnType<typeof convexTest>)).rejects.toThrow(/not enabled/);
+      process.env.TESTING_RESET_SECRET = "x";
+      const dev = convexTest(schema, modules);
+      await expect(call(dev)).rejects.toThrow(/Not authenticated/);
+    } finally {
+      if (saved === undefined) delete process.env.TESTING_RESET_SECRET;
+      else process.env.TESTING_RESET_SECRET = saved;
+    }
+  });
+});
+
+describe("PR 451 (NEO-487, NEO-478): the BSC wait, cooldown and team lane", () => {
+  /**
+   * Everything that writes is internal: the wait rows are opened and patched
+   * by the BSC adapters (the owner is the identity the action runs as, never
+   * an argument), the cooldown is written only on a BSC 429, and the team
+   * lane is fed by the commit and backfill. A public twin of any of them is
+   * an unauthenticated write (a forged cooldown would stop every BSC team
+   * lookup on the deployment). Reading-the-source, as the NEO-475 block.
+   */
+  test.each([
+    ["marketplaceWaits.ts", "open", "internalMutation"],
+    ["marketplaceWaits.ts", "edge", "internalMutation"],
+    ["marketplaceWaits.ts", "expire", "internalMutation"],
+    // NEO-552 — the call gate replaced the cooldown: a public twin would let
+    // anyone open (or close) the breaker on every BSC call of the deployment.
+    ["bscCallGate.ts", "acquire", "internalMutation"],
+    ["bscCallGate.ts", "recordOutcome", "internalMutation"],
+    ["bscCallGate.ts", "state", "internalQuery"],
+    ["bscCallGate.ts", "releaseProbe", "internalMutation"],
+    ["bscCallGate.ts", "clearForTesting", "internalMutation"],
+    // NEO-552 — the fake BSC's controls and its ID token.
+    ["fakeBsc.ts", "idToken", "internalAction"],
+    ["fakeBsc.ts", "resetNamespace", "internalAction"],
+    ["fakeBsc.ts", "resetPrefix", "internalAction"],
+    ["fakeBsc.ts", "setFaults", "internalAction"],
+    ["fakeBsc.ts", "addOrder", "internalAction"],
+    ["fakeBsc.ts", "misses", "internalAction"],
+    ["fakeBsc.ts", "reportMisses", "internalAction"],
+    ["fakeBsc.ts", "writeCaptureStatus", "internalAction"],
+    ["bscTeamPool.ts", "enqueueBscTeamChecks", "internalMutation"],
+    ["bscTeamPool.ts", "cancelAllBscTeamChecks", "internalMutation"],
+    ["checklistCandidates.ts", "resolveChecklistTeamTexts", "internalQuery"],
+    ["adapters/buysportscards.ts", "runBscTeamCheckItem", "internalAction"],
+    ["adapters/buysportscards.ts", "processBscTeamEnrichmentQueue", "internalAction"],
+    ["adapters/buysportscards.ts", "probeBscChecklistBatch", "internalAction"],
+    ["adapters/buysportscards.ts", "fetchBscCardTeamNames", "internalAction"],
+  ])("%s :: %s is declared %s", (file, fn, keyword) => {
+    const src = readFileSync(join(__dirname, file), "utf8");
+    expect(src).toContain(`export const ${fn} = ${keyword}({`);
+    expect(src).not.toContain(`export const ${fn} = action(`);
+    expect(src).not.toContain(`export const ${fn} = query(`);
+    expect(src).not.toContain(`export const ${fn} = mutation(`);
+  });
+
+  test("the team lane's completion handler is the pool's own onComplete", () => {
+    const src = readFileSync(join(__dirname, "bscTeamPool.ts"), "utf8");
+    expect(src).toContain("export const onBscTeamCheckComplete = bscTeamPool.defineOnComplete({");
+    const serverImport = src.match(/import \{([^}]*)\} from "\.\/_generated\/server";/);
+    expect(serverImport).not.toBeNull();
+    const names = serverImport![1].split(",").map((s) => s.trim()).filter(Boolean);
+    expect(names).not.toContain("query");
+    expect(names).not.toContain("mutation");
+    expect(names).not.toContain("action");
+  });
+
+  test("marketplaceWaits.forRun is the one public function and reads only the caller's own rows", () => {
+    const src = readFileSync(join(__dirname, "marketplaceWaits.ts"), "utf8");
+    const start = src.indexOf("export const forRun = query({");
+    expect(start).toBeGreaterThanOrEqual(0);
+    const body = src.slice(start, src.indexOf("\n});\n", start));
+    expect(body).toContain("await getCurrentUserIdentity(ctx)");
+    expect(body).toContain('q.eq("ownerId", identity.userId)');
+    // The owner is never an argument.
+    expect(body).toContain("args: { runKey: v.string() }");
+    const publics = src.match(/export const \w+ = (query|mutation|action)\(/g) ?? [];
+    expect(publics).toEqual(["export const forRun = query("]);
+  });
+
+  test("the wait row's owner comes from the identity, never an argument", () => {
+    const src = readFileSync(join(__dirname, "marketplaceWaits.ts"), "utf8");
+    const start = src.indexOf("export const open = internalMutation({");
+    const body = src.slice(start, src.indexOf("\n});\n", start));
+    expect(body).toContain("ownerId: identity.userId");
+    expect(body).not.toMatch(/ownerId:\s*v\./);
+  });
+
+  test("forRun answers nothing to a caller with no identity", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("marketplaceWaits", {
+        ownerId: "someone-else",
+        runKey: "run_1",
+        platform: "bsc",
+        waitingSince: 1_000,
+        accumulatedMs: 500,
+        updatedAt: 1_000,
+      });
+    });
+    expect(await t.query(api.marketplaceWaits.forRun, { runKey: "run_1" })).toEqual({ accumulatedMs: 0 });
+    expect(
+      await t.withIdentity(SIGNED_IN).query(api.marketplaceWaits.forRun, { runKey: "run_1" }),
+    ).toEqual({ accumulatedMs: 0 });
+  });
+});
+
+describe("NEO-490: the operator's checklist links are admin-gated", () => {
+  /**
+   * `applyPublishedChecklistPairs` is a public action (the Match Cards dialog
+   * calls it) that reads team names from the set tree: `requireAdmin` before
+   * anything else, like `fetchCardChecklist`. It writes nothing.
+   */
+  test("applyPublishedChecklistPairs is a public action that calls requireAdmin first", () => {
+    const src = readFileSync(join(__dirname, "publishedChecklistPairs.ts"), "utf8");
+    expect(src).toContain("export const applyPublishedChecklistPairs = action({");
+    const start = src.indexOf("handler: async (ctx, args) => {");
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start);
+    expect(body.indexOf("await requireAdmin(ctx)")).toBeGreaterThan(-1);
+    expect(body.indexOf("await requireAdmin(ctx)")).toBeLessThan(body.indexOf("args.pairs.length"));
+  });
+
+  test("applyPublishedChecklistPairs writes nothing: no mutation or db write in the module", () => {
+    const src = readFileSync(join(__dirname, "publishedChecklistPairs.ts"), "utf8");
+    expect(src).not.toContain("ctx.runMutation");
+    expect(src).not.toContain("ctx.db");
+  });
+
+  test("an anonymous call is refused", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedSport(t);
+    await expect(
+      t.action(api.publishedChecklistPairs.applyPublishedChecklistPairs, {
+        selectorOptionId: id,
+        pairs: [],
+      }),
+    ).rejects.toThrow(/not authenticated/i);
+  });
+
+  test("a signed-in non-admin is refused", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedSport(t);
+    await expect(
+      t.withIdentity({ subject: "member", role: "member" }).action(
+        api.publishedChecklistPairs.applyPublishedChecklistPairs,
+        { selectorOptionId: id, pairs: [] },
+      ),
+    ).rejects.toThrow(/admin access required/i);
+  });
+});
+
+
+describe("NEO-496: the set's publisher checklist surface is admin-gated", () => {
+  /**
+   * Four writes (start, addSections, finish, remove) and three subscribed or
+   * on-demand reads (getForSet, listSections, leafChecklistSummary). Every
+   * one calls `requireAdmin`; the reads answer a signed-out caller with
+   * nothing (a sign-out mid-session must not crash the screen) and refuse a
+   * signed-in member. The clean-up and the fetch's reads are internal.
+   */
+  async function seedSet(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) => {
+      const setId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Set",
+        platformData: {},
+        children: [],
+        lastUpdated: 0,
+      });
+      const checklistId = await ctx.db.insert("publishedChecklists", {
+        setId,
+        status: "ready",
+        fileName: "c.csv",
+        format: "csv",
+        createdByUserId: "admin",
+        startedAt: 0,
+        lastActivityAt: 0,
+        finishedAt: 0,
+        sectionCount: 0,
+        rowCount: 0,
+        byteSize: 0,
+      });
+      return { setId, checklistId };
+    });
+  }
+
+  test("every write refuses an anonymous caller and a member, and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { setId, checklistId } = await seedSet(t);
+    const calls = (who: typeof t) => [
+      () => who.mutation(api.publishedChecklists.start, { setId, fileName: "x.csv", format: "csv" }),
+      () =>
+        who.mutation(api.publishedChecklists.addSections, {
+          checklistId,
+          firstOrdinal: 0,
+          sections: [{ name: "A", rows: [{ number: "1", players: ["P"], teams: [] }] }],
+        }),
+      () => who.mutation(api.publishedChecklists.finish, { checklistId, sectionCount: 0, rowCount: 0 }),
+      () => who.mutation(api.publishedChecklists.remove, { setId }),
+    ];
+    for (const call of calls(t)) await expect(call()).rejects.toThrow(/not authenticated/i);
+    const member = t.withIdentity({ subject: "member", role: "member" }) as unknown as typeof t;
+    for (const call of calls(member)) await expect(call()).rejects.toThrow(/admin access required/i);
+    const rows = await t.run(async (ctx) => ({
+      headers: (await ctx.db.query("publishedChecklists").collect()).map((h) => h.status),
+      sections: (await ctx.db.query("publishedChecklistSections").collect()).length,
+    }));
+    expect(rows).toEqual({ headers: ["ready"], sections: 0 });
+  });
+
+  test("the reads answer a signed-out caller with nothing and refuse a member", async () => {
+    const t = convexTest(schema, modules);
+    const { setId, checklistId } = await seedSet(t);
+    expect(await t.query(api.publishedChecklists.getForSet, { setId })).toBeNull();
+    expect(
+      await t.query(api.publishedChecklists.listSections, {
+        checklistId,
+        paginationOpts: { numItems: 10, cursor: null },
+      }),
+    ).toEqual({ page: [], isDone: true, continueCursor: "" });
+    expect(
+      await t.query(api.publishedChecklists.leafChecklistSummary, { selectorOptionId: setId }),
+    ).toBeNull();
+    const member = t.withIdentity({ subject: "member", role: "member" });
+    await expect(member.query(api.publishedChecklists.getForSet, { setId })).rejects.toThrow(
+      /admin access required/i,
+    );
+    await expect(
+      member.query(api.publishedChecklists.listSections, {
+        checklistId,
+        paginationOpts: { numItems: 10, cursor: null },
+      }),
+    ).rejects.toThrow(/admin access required/i);
+    await expect(
+      member.query(api.publishedChecklists.leafChecklistSummary, { selectorOptionId: setId }),
+    ).rejects.toThrow(/admin access required/i);
+  });
+
+  test("clean-up and the fetch's reads are internal, never public", () => {
+    const src = readFileSync(join(__dirname, "publishedChecklists.ts"), "utf8");
+    for (const name of ["expireUpload", "purge", "forgetUploader"]) {
+      expect(src).toContain(`export const ${name} = internalMutation({`);
+    }
+    for (const name of ["sectionsForSet", "linksForSet", "rowsForLeaf"]) {
+      expect(src).toContain(`export const ${name} = internalQuery({`);
+    }
+    // Every public function's handler calls requireAdmin (directly, or
+    // through adminOrSignedOut for the reads) before it touches the database.
+    for (const name of ["start", "addSections", "finish", "remove"]) {
+      const begin = src.indexOf(`export const ${name} = mutation({`);
+      expect(begin, name).toBeGreaterThan(-1);
+      const body = src.slice(src.indexOf("handler: async", begin));
+      expect(body.indexOf("await requireAdmin(ctx)"), name).toBeGreaterThan(-1);
+      expect(body.indexOf("await requireAdmin(ctx)"), name).toBeLessThan(body.indexOf("ctx.db"));
+    }
+    for (const name of ["getForSet", "listSections", "leafChecklistSummary"]) {
+      const begin = src.indexOf(`export const ${name} = query({`);
+      expect(begin, name).toBeGreaterThan(-1);
+      const body = src.slice(src.indexOf("handler: async", begin));
+      expect(body.indexOf("await adminOrSignedOut(ctx)"), name).toBeGreaterThan(-1);
+      expect(body.indexOf("await adminOrSignedOut(ctx)"), name).toBeLessThan(body.indexOf("ctx.db"));
+    }
+  });
+});
+
+/**
+ * NEO-500 — the Pick List (`pickList.ts`). Every function is the signed-in
+ * caller's own; the owner is never an argument. `open`, `soldPhotos` and
+ * `setPulled` read or write only the caller's sales and photos (pinned in
+ * `pickList.test.ts`); `cards` and `sports` (NEO-509) are catalog data,
+ * signed in like `collectionCatalog.cards`.
+ */
+describe("NEO-500: the Pick List is the signed-in seller's own", () => {
+  const CALLS: Array<[string, (t: ReturnType<typeof convexTest>) => Promise<unknown>]> = [
+    ["pickList.open", (t) => t.query(api.pickList.open, {})],
+    ["pickList.cards", (t) => t.query(api.pickList.cards, { cardIds: [] })],
+    ["pickList.sports", (t) => t.query(api.pickList.sports, { sportIds: [] })],
+    ["pickList.soldPhotos", (t) => t.query(api.pickList.soldPhotos, { copyIds: [] })],
+    ["pickList.setPulled", (t) => t.mutation(api.pickList.setPulled, { ids: [], pulled: true })],
+  ];
+
+  test.each(CALLS)("%s rejects an anonymous caller", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t)).rejects.toThrow(/Not authenticated/);
+  });
+
+  test.each(CALLS)("%s answers a signed-in non-admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t.withIdentity(SIGNED_IN))).resolves.not.toThrow();
+  });
+});
+
+/**
+ * NEO-500 — `testing.seedMyTestPickOrder`, the Pick List spec's seed hop. A
+ * public mutation by necessity (the page calls it as the signed-in suite
+ * account), so it carries the testing seeds' two locks: it refuses an
+ * anonymous caller, and it throws (writing nothing) on a deployment without
+ * `TESTING_RESET_SECRET`, which is every production deployment. Its
+ * behaviour is pinned in `testing.pickOrder.test.ts`.
+ */
+describe("NEO-500: the pick-order seed is locked like the other testing seeds", () => {
+  const args = { orderNo: "P1", boxName: "Box", cards: [{ cardNumber: "1", quantity: 1 }] };
+  const written = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) => (await ctx.db.query("marketplaceSales").collect()).length);
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  test("refuses an anonymous caller", async () => {
+    vi.stubEnv("TESTING_RESET_SECRET", "test-enabled");
+    const t = convexTest(schema, modules);
+    await expect(t.mutation(api.testing.seedMyTestPickOrder, args)).rejects.toThrow(/Not authenticated/);
+    expect(await written(t)).toBe(0);
+  });
+
+  test("throws and writes nothing when TESTING_RESET_SECRET is unset", async () => {
+    vi.stubEnv("TESTING_RESET_SECRET", "");
+    const t = convexTest(schema, modules);
+    await expect(t.withIdentity(SIGNED_IN).mutation(api.testing.seedMyTestPickOrder, args)).rejects.toThrow(
+      /not enabled on this deployment/,
+    );
+    await expect(
+      t.withIdentity(SIGNED_IN).mutation(api.testing.seedMyTestPickOrder, { orderNo: "P1", ship: true }),
+    ).rejects.toThrow(/not enabled on this deployment/);
+    expect(await written(t)).toBe(0);
+  });
+});
+
+/**
+ * NEO-528 — "Also pictured" players on a card. Editing them is operator
+ * tooling (`requireAdmin`): one card's list, the "Player on every card" adds
+ * over a checklist and its parallels (as the card's player or as a cameo),
+ * that run's target list, and (round 3) the stored per-row defaults with the
+ * panel's read of them. A collector
+ * only ever READS them, through the signed-in smart binder read `ruleFits`
+ * (which answers only for the caller's own binder).
+ */
+describe("NEO-528: the also-pictured surface is admin-gated; ruleFits is signed-in", () => {
+  async function seedIds(t: ReturnType<typeof convexTest>) {
+    const sportId = await seedSport(t);
+    return t.run(async (ctx) => {
+      const variantId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        parentId: sportId,
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      const playerId = await ctx.db.insert("players", {
+        name: "Dan Marino",
+        nameNormalized: "dan marino",
+        sportId,
+        lastUpdated: 1_700_000_000_000,
+      });
+      const cardId = await insertTestCard(ctx, {
+        selectorOptionId: variantId,
+        cardNumber: "1",
+        cardName: "Card",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: 1_700_000_000_000,
+      });
+      return { variantId, playerId, cardId };
+    });
+  }
+  /** What a refused call must not have written on the card. */
+  const cardWrites = (t: ReturnType<typeof convexTest>, ids: Awaited<ReturnType<typeof seedIds>>) =>
+    t.run(async (ctx) => {
+      const card = await ctx.db.get(ids.cardId);
+      const row = await ctx.db.get(ids.variantId);
+      return {
+        secondaryPlayerIds: card?.secondaryPlayerIds ?? null,
+        playerIds: card?.playerIds ?? null,
+        // NEO-528 round 3: the stored "Player on every card" values.
+        defaults: [row?.defaultPlayerIds ?? null, row?.defaultCameoIds ?? null],
+      };
+    });
+  const ADMIN_GATED: Array<
+    [string, (t: ReturnType<typeof convexTest>, ids: Awaited<ReturnType<typeof seedIds>>) => Promise<unknown>]
+  > = [
+    [
+      "cardSecondaryPlayers.setSecondaryPlayers",
+      (t, ids) => t.mutation(api.cardSecondaryPlayers.setSecondaryPlayers, { cardId: ids.cardId, playerIds: [ids.playerId] }),
+    ],
+    [
+      "cardPlayersBulk.addPlayerToVariant",
+      (t, ids) =>
+        t.mutation(api.cardPlayersBulk.addPlayerToVariant, {
+          variantId: ids.variantId,
+          playerId: ids.playerId,
+          cursor: null,
+        }),
+    ],
+    [
+      "cardPlayersBulk.addCameoToVariant",
+      (t, ids) =>
+        t.mutation(api.cardPlayersBulk.addCameoToVariant, {
+          variantId: ids.variantId,
+          playerId: ids.playerId,
+          cursor: null,
+        }),
+    ],
+    [
+      "cardPlayersBulk.everyCardTargets",
+      (t, ids) => t.query(api.cardPlayersBulk.everyCardTargets, { variantId: ids.variantId, kind: "player" }),
+    ],
+    [
+      "cardPlayersBulk.setCardPlayerDefault",
+      (t, ids) =>
+        t.mutation(api.cardPlayersBulk.setCardPlayerDefault, {
+          selectorOptionId: ids.variantId,
+          kind: "player",
+          playerId: ids.playerId,
+        }),
+    ],
+    [
+      "cardPlayersBulk.clearCardPlayerDefault",
+      (t, ids) =>
+        t.mutation(api.cardPlayersBulk.clearCardPlayerDefault, {
+          selectorOptionId: ids.variantId,
+          kind: "cameo",
+          playerId: ids.playerId,
+        }),
+    ],
+    [
+      "cardPlayersBulk.cardPlayerDefaults",
+      (t, ids) => t.query(api.cardPlayersBulk.cardPlayerDefaults, { selectorOptionId: ids.variantId }),
+    ],
+  ];
+
+  test.each(ADMIN_GATED)("%s rejects an anonymous caller and writes nothing", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const ids = await seedIds(t);
+    await expect(call(t, ids)).rejects.toThrow(/not authenticated/i);
+    expect(await cardWrites(t, ids)).toEqual({ secondaryPlayerIds: null, playerIds: null, defaults: [null, null] });
+  });
+
+  test.each(ADMIN_GATED)("%s rejects a signed-in non-admin and writes nothing", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const ids = await seedIds(t);
+    await expect(call(t.withIdentity({ subject: "member", role: "member" }) as never, ids)).rejects.toThrow(
+      /admin access required/i,
+    );
+    expect(await cardWrites(t, ids)).toEqual({ secondaryPlayerIds: null, playerIds: null, defaults: [null, null] });
+  });
+
+  test.each(ADMIN_GATED)("%s answers an admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const ids = await seedIds(t);
+    await expect(call(t.withIdentity(ADMIN) as never, ids)).resolves.toBeDefined();
+  });
+
+  test("binderRules.ruleFits rejects an anonymous caller and answers a signed-in non-admin", async () => {
+    const t = convexTest(schema, modules);
+    await expect(t.query(api.binderRules.ruleFits, { containerId: "not-an-id", cardIds: [] })).rejects.toThrow(
+      /Not authenticated/,
+    );
+    await expect(
+      t.withIdentity(SIGNED_IN).query(api.binderRules.ruleFits, { containerId: "not-an-id", cardIds: [] }),
+    ).resolves.toEqual([]);
+  });
+});
+
+/**
+ * NEO-556 — "Mark the teamless cards No Team" is operator tooling
+ * (`requireAdmin`): the run's target list and counts, and the page that
+ * stamps. A refused page must not have stamped a card.
+ */
+describe("NEO-556: the No Team run is admin-gated", () => {
+  async function seedIds(t: ReturnType<typeof convexTest>) {
+    const sportId = await seedSport(t);
+    return t.run(async (ctx) => {
+      const variantId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        parentId: sportId,
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+        noTeamDefault: { setAt: 1_700_000_000_000, setByUserId: "admin" },
+      });
+      const cardId = await insertTestCard(ctx, {
+        selectorOptionId: variantId,
+        cardNumber: "1",
+        cardName: "Card",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: 1_700_000_000_000,
+      });
+      return { variantId, cardId };
+    });
+  }
+  const stamped = (t: ReturnType<typeof convexTest>, ids: Awaited<ReturnType<typeof seedIds>>) =>
+    t.run(async (ctx) => (await ctx.db.get(ids.cardId))?.teamNoneConfirmedAt ?? null);
+  const ADMIN_GATED: Array<
+    [string, (t: ReturnType<typeof convexTest>, ids: Awaited<ReturnType<typeof seedIds>>) => Promise<unknown>]
+  > = [
+    [
+      "cardNoTeamBulk.noTeamTargets",
+      (t, ids) => t.query(api.cardNoTeamBulk.noTeamTargets, { selectorOptionId: ids.variantId }),
+    ],
+    [
+      "cardNoTeamBulk.applyNoTeamPage",
+      (t, ids) => t.mutation(api.cardNoTeamBulk.applyNoTeamPage, { selectorOptionId: ids.variantId, cursor: null }),
+    ],
+  ];
+
+  test.each(ADMIN_GATED)("%s rejects an anonymous caller and stamps nothing", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const ids = await seedIds(t);
+    await expect(call(t, ids)).rejects.toThrow(/not authenticated/i);
+    expect(await stamped(t, ids)).toBeNull();
+  });
+
+  test.each(ADMIN_GATED)("%s rejects a signed-in non-admin and stamps nothing", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const ids = await seedIds(t);
+    await expect(call(t.withIdentity({ subject: "member", role: "member" }) as never, ids)).rejects.toThrow(
+      /admin access required/i,
+    );
+    expect(await stamped(t, ids)).toBeNull();
+  });
+
+  test.each(ADMIN_GATED)("%s answers an admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const ids = await seedIds(t);
+    await expect(call(t.withIdentity(ADMIN) as never, ids)).resolves.toBeDefined();
+  });
+});
+
+/**
+ * NEO-520 — `testing.seedMyTestEbayOrder`, the unmatched-eBay-sale spec's seed
+ * hop, by the same two locks as `seedMyTestPickOrder`: an anonymous caller is
+ * refused, and a deployment without `TESTING_RESET_SECRET` (every production
+ * deployment) throws having written nothing. Its behaviour is pinned in
+ * `testing.ebayOrder.test.ts`.
+ */
+describe("NEO-520: the eBay order seed is locked like the other testing seeds", () => {
+  const args = { orderNo: "E1", lines: [{ title: "A lot", quantity: 1 }] };
+  const written = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) => (await ctx.db.query("marketplaceSales").collect()).length);
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  test("refuses an anonymous caller", async () => {
+    vi.stubEnv("TESTING_RESET_SECRET", "test-enabled");
+    const t = convexTest(schema, modules);
+    await expect(t.mutation(api.testing.seedMyTestEbayOrder, args)).rejects.toThrow(/Not authenticated/);
+    expect(await written(t)).toBe(0);
+  });
+
+  test("throws and writes nothing when TESTING_RESET_SECRET is unset", async () => {
+    vi.stubEnv("TESTING_RESET_SECRET", "");
+    const t = convexTest(schema, modules);
+    await expect(t.withIdentity(SIGNED_IN).mutation(api.testing.seedMyTestEbayOrder, args)).rejects.toThrow(
+      /not enabled on this deployment/,
+    );
+    await expect(
+      t.withIdentity(SIGNED_IN).mutation(api.testing.seedMyTestEbayOrder, { orderNo: "E1", ship: true }),
+    ).rejects.toThrow(/not enabled on this deployment/);
+    expect(await written(t)).toBe(0);
+  });
+});
+
+/**
+ * NEO-536 — a collector's report of a held-back set, and the dashboard's
+ * "with the crew" reads. The collector half reads and writes only the
+ * caller's own reports (`syncReports.test.ts` covers the ownership
+ * refusals); the queue, the review and the close read or settle every
+ * collector's, so they are admin. `crewDesk.waiting` is every collector's
+ * open asks, so it is admin too.
+ */
+describe("NEO-536: sync reports are the caller's own, and closing them is admin-gated", () => {
+  const NOT_AN_ID = "not-an-id";
+  const SIGNED_IN_GATED: Array<[string, (t: ReturnType<typeof convexTest>) => Promise<unknown>]> = [
+    ["syncReports.mine", (t) => t.query(api.syncReports.mine, {})],
+    ["crewDesk.mine", (t) => t.query(api.crewDesk.mine, {})],
+  ];
+
+  test.each(SIGNED_IN_GATED)("%s rejects an anonymous caller", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t)).rejects.toThrow(/Not authenticated/);
+  });
+
+  test.each(SIGNED_IN_GATED)("%s answers a signed-in non-admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t.withIdentity(SIGNED_IN))).resolves.not.toThrow();
+  });
+
+  const ADMIN_READS: Array<[string, (t: ReturnType<typeof convexTest>) => Promise<unknown>]> = [
+    ["syncReports.queue", (t) => t.query(api.syncReports.queue, {})],
+    ["syncReports.review", (t) => t.query(api.syncReports.review, { id: NOT_AN_ID })],
+    ["crewDesk.waiting", (t) => t.query(api.crewDesk.waiting, {})],
+  ];
+
+  test.each(ADMIN_READS)("%s rejects anonymous and signed-in non-admin callers, and answers an admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t)).rejects.toThrow(/Not authenticated/);
+    await expect(call(t.withIdentity(SIGNED_IN))).rejects.toThrow(/Admin access required/);
+    await expect(call(t.withIdentity(ADMIN))).resolves.not.toThrow();
+  });
+
+  /** An open report of "user"'s on a real variant, with the sync record it came from. */
+  async function seed(t: ReturnType<typeof convexTest>) {
+    return await t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", { level: "sport", value: "Football", platformData: {}, lastUpdated: 0 });
+      const setId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Contenders",
+        parentId: sportId,
+        platformData: {},
+        lastUpdated: 0,
+      });
+      const variantId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        parentId: setId,
+        platformData: {},
+        lastUpdated: 0,
+      });
+      const cardId = await insertTestCard(ctx, {
+        selectorOptionId: variantId,
+        cardNumber: "41",
+        cardName: "Reggie White",
+        platformData: {},
+        sortOrder: 1,
+        lastUpdated: 0,
+      });
+      await ctx.db.insert("marketplaceListingSyncs", {
+        ownerId: "user",
+        variantId,
+        platform: "bsc",
+        status: "idle",
+        problems: [{ cardId, reason: "noLink" }],
+        conditionsPushed: [],
+        lastUpdated: 0,
+      });
+      const reportId = await ctx.db.insert("syncReports", {
+        ownerId: "user",
+        platform: "bsc",
+        variantId,
+        label: "1996 Playoff Contenders",
+        cards: [{ cardId, reason: "noLink" }],
+        heldBack: 1,
+        status: "open",
+        lastUpdated: 0,
+      });
+      return { variantId, reportId };
+    });
+  }
+
+  test("report and withdraw reject an anonymous caller and write nothing", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    await expect(t.mutation(api.syncReports.report, { variantId: ids.variantId, platform: "bsc" })).rejects.toThrow(
+      /Not authenticated/,
+    );
+    await expect(t.mutation(api.syncReports.withdraw, { id: ids.reportId })).rejects.toThrow(/Not authenticated/);
+    const rows = await t.run((ctx) => ctx.db.query("syncReports").collect());
+    expect(rows.map((r) => [r._id, r.status])).toEqual([[ids.reportId, "open"]]);
+  });
+
+  test("close rejects anonymous and signed-in non-admin callers (the reporter included) and leaves the report open", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    const close = (c: ReturnType<typeof convexTest>) =>
+      c.mutation(api.syncReports.close, { id: ids.reportId, outcome: "notABug", note: "no" });
+    await expect(close(t)).rejects.toThrow(/Not authenticated/);
+    await expect(close(t.withIdentity(SIGNED_IN))).rejects.toThrow(/Admin access required/);
+    const rows = await t.run((ctx) => ctx.db.query("syncReports").collect());
+    expect(rows.map((r) => r.status)).toEqual(["open"]);
+  });
+
+  test("the collector-facing returns never carry who closed a report", () => {
+    const src = readFileSync(join(__dirname, "syncReports.ts"), "utf8");
+    const mineValidator = src.slice(src.indexOf("export const mySyncReportValidator"), src.indexOf("export const syncReportQueueItemValidator"));
+    expect(mineValidator).not.toContain("closedBy");
+    const crewDesk = readFileSync(join(__dirname, "crewDesk.ts"), "utf8");
+    expect(crewDesk).not.toContain("closedBy");
+    expect(crewDesk).not.toContain("ownerId: v.");
+  });
+});
+
+/**
+ * NEO-535 — the Card titles dialog for a parallel's cards
+ * (`parallelCopyTitles.ts`). Both public functions are operator tooling:
+ * `requireAdmin` first, then the row must resolve as a buildable parallel.
+ * The box continuation is internal. Behaviour is pinned in
+ * `parallelCopyTitles.test.ts`.
+ */
+describe("NEO-535: the parallel Card titles functions are admin-gated", () => {
+  test("failingTitles and saveTitleFixes call requireAdmin before reading the row; the rewrite is internal", () => {
+    const src = readFileSync(join(__dirname, "parallelCopyTitles.ts"), "utf8");
+    expect(src).toContain("export const failingTitles = query({");
+    expect(src).toContain("export const saveTitleFixes = mutation({");
+    expect(src).toContain("export const rewriteFailingTitlesPage = internalMutation({");
+    for (const name of ["failingTitles", "saveTitleFixes"]) {
+      const body = src.slice(src.indexOf(`export const ${name} =`));
+      const guard = body.indexOf("await requireAdmin(ctx)");
+      expect(guard).toBeGreaterThan(-1);
+      expect(guard).toBeLessThan(body.indexOf("requireBuildableParallel(ctx"));
+    }
+  });
+
+  test("an anonymous call is refused", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedSport(t);
+    await expect(
+      t.query(api.parallelCopyTitles.failingTitles, { parallelId: id }),
+    ).rejects.toThrow(/not authenticated/i);
+    await expect(
+      t.mutation(api.parallelCopyTitles.saveTitleFixes, { parallelId: id, cards: [] }),
+    ).rejects.toThrow(/not authenticated/i);
+  });
+
+  test("a signed-in non-admin is refused", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedSport(t);
+    await expect(
+      t.withIdentity(SIGNED_IN).query(api.parallelCopyTitles.failingTitles, { parallelId: id }),
+    ).rejects.toThrow(/admin access required/i);
+    await expect(
+      t
+        .withIdentity(SIGNED_IN)
+        .mutation(api.parallelCopyTitles.saveTitleFixes, { parallelId: id, cards: [] }),
+    ).rejects.toThrow(/admin access required/i);
+  });
+});
+
+/**
+ * NEO-552 — the fake BuySportsCards test controls (`testing.setMyBscFaults`,
+ * `testing.addMyBscOrder`, and their teardowns `testing.clearMyBscFaults`,
+ * `testing.clearBscCallGate`) and `testing.resetMyTestState`, now an action so
+ * the caller's fake namespace is cleared before it returns. Public because the
+ * E2E pages call them as the signed-in suite account, so they carry the
+ * testing seeds' locks: refused to an anonymous caller, refused where
+ * `TESTING_RESET_SECRET` is unset (every production deployment), and the fault
+ * and order controls also refuse a deployment that talks to the real BSC. They
+ * reach only the caller's own namespace, derived from the Clerk subject; that
+ * scoping is pinned in `testing.fakeBsc.test.ts`.
+ */
+describe("NEO-552: the fake BSC test controls are locked like the other testing seeds", () => {
+  const rules = [{ match: { method: "GET" as const, pathTemplate: "marketplace/user/profile" }, kind: "503" as const }];
+  const order = { items: [{ cardId: "abc123", condition: "nm", quantity: 1 }] };
+  const cases: Array<[string, (t: ReturnType<typeof convexTest>) => Promise<unknown>]> = [
+    ["testing.setMyBscFaults", (t) => t.action(api.testing.setMyBscFaults, { rules })],
+    ["testing.addMyBscOrder", (t) => t.action(api.testing.addMyBscOrder, { order })],
+    ["testing.clearMyBscFaults", (t) => t.action(api.testing.clearMyBscFaults, {})],
+    ["testing.clearBscCallGate", (t) => t.action(api.testing.clearBscCallGate, {})],
+    ["testing.resetMyTestState", (t) => t.action(api.testing.resetMyTestState, {})],
+  ];
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  test.each(cases)("%s refuses an anonymous caller", async (_name, call) => {
+    vi.stubEnv("TESTING_RESET_SECRET", "test-enabled");
+    await expect(call(convexTest(schema, modules))).rejects.toThrow(/Not authenticated/);
+  });
+
+  test.each(cases)("%s throws where TESTING_RESET_SECRET is unset", async (_name, call) => {
+    vi.stubEnv("TESTING_RESET_SECRET", "");
+    await expect(call(convexTest(schema, modules).withIdentity(SIGNED_IN))).rejects.toThrow(/not enabled/);
+  });
+
+  test.each(cases.slice(0, 4))("%s refuses a deployment on the real BuySportsCards", async (_name, call) => {
+    vi.stubEnv("TESTING_RESET_SECRET", "test-enabled");
+    vi.stubEnv("NEONBINDER_BSC_API_BASE", "");
+    await expect(call(convexTest(schema, modules).withIdentity(SIGNED_IN))).rejects.toThrow(/real BuySportsCards/);
   });
 });

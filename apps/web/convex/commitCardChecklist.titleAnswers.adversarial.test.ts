@@ -15,6 +15,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import { ASPECT_VALUE_MAX, LISTING_TITLE_MAX } from "./features/listingLimits";
 import { deriveCardAttention } from "./features/cardAttention";
+import { LISTING_TITLE_KEPT_MAX } from "./features/listingInputs";
 
 beforeEach(() => {
   vi.stubGlobal(
@@ -46,6 +47,13 @@ type Ids = { sportId: Id<"selectorOptions">; leafId: Id<"selectorOptions"> };
 const LONG_SET_NAME =
   "Chrome Update Series Sapphire Edition Platinum Anniversary Collectors Box Hobby Exclusive";
 
+/**
+ * NEO-535 — the leaf's box text. The builder's title is over the cap, so
+ * every card's title is built from the box and born `listingTitleTruncated`
+ * (on the Card titles step): the flag these tests turn on and off.
+ */
+const BOX = "2026 Topps Sapphire";
+
 async function seedTree(t: T): Promise<Ids> {
   return t.run(async (ctx) => {
     const sportId = await ctx.db.insert("selectorOptions", {
@@ -70,6 +78,7 @@ async function seedTree(t: T): Promise<Ids> {
       value: "Base",
       platformData: {},
       features: { manufacturer: "Topps", season: "2026" },
+      metadata: { listingShortName: BOX },
       parentId: setNameId,
       children: [],
       lastUpdated: Date.now(),
@@ -273,13 +282,23 @@ describe("listingTitle — the cap at 80 / 81, measured after the trim", () => {
     await settle(t);
   });
 
-  test("'kept' at exactly 80 characters is accepted; at 81 the commit is refused", async () => {
+  test("'kept' is bounded, not capped: 81 and the bound are accepted, one past the bound is refused", async () => {
+    // NEO-535: the step can show (and the operator keep) a title over eBay's
+    // cap, so 'kept' is held to LISTING_TITLE_KEPT_MAX instead. Neither text
+    // is what the server generates, so both cards are still flagged.
     const t = convexTest(schema, modules);
     const ids = await seedTree(t);
-    await commit(t, ids, [card({ cardNumber: "1", listingTitleKept: "k".repeat(80) })]);
+    await commit(t, ids, [
+      card({ cardNumber: "1", listingTitleKept: "k".repeat(81) }),
+      card({ cardNumber: "2", listingTitleKept: "k".repeat(LISTING_TITLE_KEPT_MAX) }),
+    ]);
+    const all = await rows(t, ids.leafId);
+    expect(all.get("1")!.listingTitleTruncated).toBe(true);
+    expect(all.get("2")!.listingTitleTruncated).toBe(true);
     await expect(
-      commit(t, ids, [card({ cardNumber: "2", listingTitleKept: "k".repeat(81) })]),
-    ).rejects.toThrow(/card #2: the title is 81 characters/);
+      commit(t, ids, [card({ cardNumber: "3", listingTitleKept: "k".repeat(LISTING_TITLE_KEPT_MAX + 1) })]),
+    ).rejects.toThrow(`card #3: the title is ${LISTING_TITLE_KEPT_MAX + 1} characters`);
+    expect((await rows(t, ids.leafId)).has("3")).toBe(false);
     await settle(t);
   });
 

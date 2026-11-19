@@ -7,7 +7,7 @@ import NeonButton from "@/components/modules/NeonButton";
 /** Fetch the demo early when a visitor is about to open it (as the tour does). */
 function warmDemo() {
   void import("@/app/collection/final/PublicCollectionDemo").catch(() => {
-    // A failed warm-up is retried by lazy() when the demo actually opens.
+    // A failed warm-up is harmless here: if the demo then fails to open, the app boundary reloads the page (NEO-434).
   });
 }
 
@@ -15,7 +15,7 @@ export default function LandingPage() {
   const navigate = useNavigate();
 
   const handleBindersClick = () => {
-    navigate("/binder-tracking");
+    navigate("/collection-tracking");
   };
 
   const handleAiIdentificationClick = () => {
@@ -91,7 +91,7 @@ export default function LandingPage() {
             </p>
             <NeonButton asChild variant="secondary" size="3">
               <Link
-                to="/binder-tracking?demo=on"
+                to="/demo/collection"
                 onPointerEnter={warmDemo}
                 onFocus={warmDemo}
                 className="after:absolute after:inset-0 after:rounded-lg after:content-['']"
@@ -310,6 +310,22 @@ export default function LandingPage() {
             and do not express it in vh. */}
         <div aria-hidden="true" className="h-[208px]" />
       </main>
+      <footer className="border-t border-rule px-4 py-6 sm:px-8">
+        <nav aria-label="Site" className="max-w-4xl mx-auto">
+          <ul className="flex flex-wrap justify-center gap-x-6 gap-y-2 text-sm text-ink-3">
+            <li>
+              <Link to="/about" className="underline underline-offset-2 hover:text-ink focus-outline rounded-sm">
+                About
+              </Link>
+            </li>
+            <li>
+              <Link to="/privacy" className="underline underline-offset-2 hover:text-ink focus-outline rounded-sm">
+                Privacy
+              </Link>
+            </li>
+          </ul>
+        </nav>
+      </footer>
     </>
   );
 }

@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useId, useRef, useState } from "react";
+import { ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 import { useAction, useConvex, useMutation, useQuery } from "convex/react";
 import { Input } from "../primitives/Input";
 import { api } from "../../convex/_generated/api";
@@ -7,7 +7,6 @@ import NeonButton from "../modules/NeonButton";
 import { CUSTOM_BUTTON_LABEL } from "./control-labels";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import { activateOnEnter } from "@/lib/dom/activate-on-enter";
-import { e2eDiagnostic } from "@/lib/observability/e2e-diagnostics";
 import SelectorSyncReviewModal, {
   MAX_DECISIONS_PER_CALL,
   type SelectorSyncSuggestion,
@@ -34,6 +33,10 @@ import {
   VARIANT_TYPE_RENAME_REFUSED,
 } from "../../convex/variantRole";
 import { siblingTwinSuffixes } from "./marketplace-item-label";
+import { ColumnSyncFailedContext } from "./column-sync-failed-context";
+import { columnSyncFailedMessage } from "./column-sync-failed";
+import { WaitingOnMarketplaceRun } from "../modules/WaitingOnMarketplace";
+import { mintWaitKey } from "@/lib/marketplace/wait-key";
 
 type Level =
   | "sport"
@@ -157,6 +160,18 @@ function customRefusal(
  */
 const BREADCRUMB_DEPTH = 2;
 
+/**
+ * NEO-499 — a size-2 NeonButton whose label IS a row's name (the pick-shared
+ * list). Radix fixes a button at 32px tall and never breaks a word, so a long
+ * unbroken name ran out of the column and off a 375px page. This lets it
+ * fill the column and grow taller to wrap, the house pattern NEO-424 set for
+ * the wizard's Link primary: `min-h-8 py-1.5` is the same 32px on one line,
+ * so a short name looks exactly as before. `wrap-anywhere`, not
+ * `break-words`, because only `anywhere` also shrinks the min-content width,
+ * so the token cannot widen the column it sits in.
+ */
+const NAME_BUTTON_WRAPS = "h-auto min-h-8 max-w-full py-1.5 text-left wrap-anywhere";
+
 function breadcrumbOf(
   chain: Array<{ value: string }> | undefined | null,
 ): string {
@@ -191,7 +206,17 @@ function breadcrumbOf(
  */
 export type EntityColumnProps = {
   selector: ReactNode;
-  renderForm: (onDone: () => void) => ReactNode;
+  /**
+   * The legacy sync form "Sync <X>" opens. Optional only for a column with
+   * `hideSync`, which has no Sync button to open it.
+   */
+  renderForm?: (onDone: () => void) => ReactNode;
+  /**
+   * The Sync button's text ("Sync Sets"). With "Sync " stripped it is also the
+   * column's noun: "+ Custom" is named "Add custom Sets" from it, and the
+   * stall banner says "Couldn't load sets". With `hideSync` there is no
+   * button, so pass the noun alone ("Sub-Variants").
+   */
   addButtonText: string;
   isVisible: boolean;
   level?: Level;
@@ -233,6 +258,12 @@ export type EntityColumnProps = {
    * line that says what to do instead ("Pick a brand to add a set").
    */
   hideCustom?: { reason: string };
+  /**
+   * NEO-425 — the column's rows exist only in NB (Sub-Variants: no
+   * marketplace has them), so there is nothing to sync. No "Sync <X>"
+   * button, and no auto-sync when the column opens empty. "+ Custom" stays.
+   */
+  hideSync?: boolean;
 };
 
 // Gap left between a newly-revealed column's edge and the scroll row's true
@@ -278,6 +309,7 @@ export default function EntityColumn({
   syncingLabel,
   onLoadingChange,
   hideCustom,
+  hideSync,
 }: EntityColumnProps) {
   const [mode, setMode] = useState<"idle" | "sync" | "custom">("idle");
   const [customValue, setCustomValue] = useState("");
@@ -352,7 +384,18 @@ export default function EntityColumn({
   // save in flight still reports back. The pill is the focus return target.
   const [showSlReview, setShowSlReview] = useState(false);
   const slReviewBtnRef = useRef<HTMLButtonElement | null>(null);
+  // One timer for the column's one toast, whichever message put it up: a
+  // later toast restarts it, so an earlier message's timer never takes down
+  // a newer one (the sync report and the review's result share the box).
   const slReviewToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showToast = (text: string) => {
+    if (slReviewToastTimerRef.current) clearTimeout(slReviewToastTimerRef.current);
+    setToast(text);
+    slReviewToastTimerRef.current = setTimeout(() => {
+      slReviewToastTimerRef.current = null;
+      setToast(null);
+    }, 6000);
+  };
   // NEO-71-74 follow-up: always start false, regardless of this column's
   // isVisible prop at mount. Columns 6/7 (Variant / Variant of Variant) are
   // conditionally MOUNTED (not just conditionally rendered null like columns
@@ -408,10 +451,6 @@ export default function EntityColumn({
     [],
   );
 
-  useEffect(() => {
-    onLoadingChange?.(!!level && items === undefined);
-  }, [onLoadingChange, level, items]);
-
   // NEO-47 new-path hooks (active only when useEnsureSync). Reactive sync status
   // (null = idle) drives loading/error; ensureSelectorOptions is the one backend
   // door that decides whether/how to populate.
@@ -422,6 +461,118 @@ export default function EntityColumn({
   const ensureOptions = useAction(
     api.selectorOptions.ensureSelectorOptions,
   );
+  // PR 451 (NEO-487) — THIS column's own ensure call: the run key it was
+  // given and whether it is still pending, for "Waiting on BuySportsCards…"
+  // in the syncing panel. A fresh key per call; a settled call only clears
+  // its own key, so an older call finishing never hides a newer one's wait.
+  const [ensureWait, setEnsureWait] = useState<{ key: string; pending: boolean } | null>(
+    null,
+  );
+
+  // NEO-450 (a11y) — how loudly the "Couldn't sync <X>" box speaks.
+  //
+  // The box shows whenever the STORED status is "error", which is persisted
+  // server state: a refresh, a deep link or a "+ Custom" round trip would
+  // re-insert it, and as `role="alert"` every such mount interrupted the screen
+  // reader (up to five columns at once on load). So urgency follows THIS
+  // session's own attempt instead. Each sync this column runs that comes back
+  // `reason: "error"` (or rejects) bumps `attempt`; the box is keyed on it, so a
+  // fast error → error retry still remounts and re-announces, and it is an alert
+  // only while that failure is fresh (`urgent`). A stored error nobody here just
+  // caused renders as a polite status.
+  //
+  // Scoped to the (level, parentId) the attempt ran for. Moving to another
+  // parent resets the count during render (React's "adjust state when a prop
+  // changes" pattern, no effect), and a late answer for a scope the column
+  // has already left is dropped rather than announced against the new one.
+  // An answer landing after unmount needs no guard: React 19 ignores a state
+  // update on an unmounted component. No refs here on purpose: `forceSync`
+  // is handed to the render-time `idleButtons`, and a handler that reaches a
+  // ref through `runEnsure` fails react-hooks/refs there.
+  const syncScopeKey = `${level ?? ""}:${parentId ?? "root"}`;
+  //
+  // `urgent` also ends once the failure it announced is over: when the status
+  // has been seen as "error" with this flag up (`shown`) and later SETTLES on
+  // something else (no row, or "done": a later sync succeeded), the flag
+  // drops, so a failure some OTHER session's sync stores afterwards reads as
+  // the stored state it is. Two guards keep it off a fresh failure whose
+  // action answered before the status query caught up: `shown` (the status
+  // may still be the pre-retry "done"/no row), and "syncing" never clearing
+  // it (the status may still be the OLD stored error, then pass through
+  // "syncing" before landing on the new one). Same render-time adjustment as
+  // the scope reset.
+  const [syncFailure, setSyncFailure] = useState<{
+    scope: string;
+    attempt: number;
+    urgent: boolean;
+    shown: boolean;
+  }>({ scope: syncScopeKey, attempt: 0, urgent: false, shown: false });
+  if (syncFailure.scope !== syncScopeKey) {
+    setSyncFailure({ scope: syncScopeKey, attempt: 0, urgent: false, shown: false });
+  } else if (syncFailure.urgent && syncStatus !== undefined) {
+    const status = syncStatus?.status;
+    if (status === "error" && !syncFailure.shown) {
+      setSyncFailure({ ...syncFailure, shown: true });
+    } else if (
+      status !== "error" &&
+      status !== "syncing" &&
+      syncFailure.shown
+    ) {
+      setSyncFailure({ ...syncFailure, urgent: false, shown: false });
+    }
+  }
+  const failedAttempt =
+    syncFailure.scope === syncScopeKey ? syncFailure.attempt : 0;
+  const syncFailureUrgent = failedAttempt > 0 && syncFailure.urgent;
+  // The failure box, named by the Sync button it sits above (its retry).
+  const syncFailedId = useId();
+  // The retry button, so focus can return to it when a sync started from it
+  // ends (see the branch park below).
+  const syncButtonRef = useRef<HTMLButtonElement | null>(null);
+  // One ensure call: PR 451's wait key for "Waiting on BuySportsCards…", and
+  // NEO-450's failure count for the "Couldn't sync <X>" box.
+  const runEnsure = useCallback(
+    (args: {
+      level: NonNullable<typeof level>;
+      parentId: typeof parentId;
+      force?: boolean;
+    }) => {
+      const scope = `${args.level}:${args.parentId ?? "root"}`;
+      const waitKey = mintWaitKey();
+      setEnsureWait({ key: waitKey, pending: true });
+      const settled = () =>
+        setEnsureWait((w) => (w?.key === waitKey ? { key: waitKey, pending: false } : w));
+      const failed = () =>
+        setSyncFailure((prev) =>
+          prev.scope === scope
+            ? { scope, attempt: prev.attempt + 1, urgent: true, shown: false }
+            : prev,
+        );
+      void ensureOptions({ ...args, waitKey }).then(
+        (res) => {
+          settled();
+          if (res?.reason === "error") failed();
+        },
+        (err: unknown) => {
+          settled();
+          failed();
+          // Still surfaces as an unhandled rejection, as the bare `void` call
+          // did before, so error reporting sees it.
+          throw err;
+        },
+      );
+    },
+    [ensureOptions],
+  );
+
+  // NEO-427: the idle buttons wait for the status read, so a status read that
+  // stalls has to recover the way a stalled items read does.
+  useEffect(() => {
+    onLoadingChange?.(
+      !!level &&
+        (items === undefined || (!!useEnsureSync && syncStatus === undefined)),
+    );
+  }, [onLoadingChange, level, items, useEnsureSync, syncStatus]);
 
   // NEO-211 (plan C): derived state, not a pipeline — this just compares the
   // marketplace label the store already recorded against our own value. Wired
@@ -453,6 +604,9 @@ export default function EntityColumn({
   // so closing the form doesn't immediately retrigger it. A fresh
   // parentId (user picks a different parent) gets its own attempt.
   const autoSyncedRef = useRef<Set<string>>(new Set());
+  // NEO-417: the key the last run asked to sync, until the next run sees how
+  // that came out. See the auto-sync effect.
+  const autoSyncAttemptRef = useRef<string | null>(null);
 
   // Has this column finished its first sync (data loaded, or a sync cycle
   // completed)? Freeze-on-interaction only engages after this, so a never-
@@ -523,39 +677,6 @@ export default function EntityColumn({
     }
     prevModeRef.current = mode;
   }, [items, mode]);
-
-  // NEO-392: an E2E-only timeline of this column (mount, unmount, every mode
-  // change, and a custom form closed by a parent change), so a red such as "Add custom was clicked and the
-  // form never showed" can be read back from PostHog instead of guessed at.
-  // A no-op outside E2E. Identifiers only: the level, never a typed value.
-  const diagModeRef = useRef(mode);
-  useEffect(() => {
-    e2eDiagnostic("e2e_column", { action: "mount", level: level ?? null, mode });
-    return () =>
-      e2eDiagnostic("e2e_column", { action: "unmount", level: level ?? null });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount/unmount only
-  }, []);
-  useEffect(() => {
-    if (diagModeRef.current === mode) return;
-    e2eDiagnostic("e2e_column", {
-      action: "mode",
-      level: level ?? null,
-      from: diagModeRef.current,
-      to: mode,
-    });
-    diagModeRef.current = mode;
-  }, [mode, level]);
-
-  // The parent-change reset below closes an open custom form; record when it
-  // does, since that is a form closing without the operator asking.
-  useEffect(() => {
-    if (diagModeRef.current !== "custom") return;
-    e2eDiagnostic("e2e_column", {
-      action: "custom_closed_by_parent_change",
-      level: level ?? null,
-      has_parent: parentId != null,
-    });
-  }, [parentId, level]);
 
   // A different parent is a fresh, untouched context: re-allow auto-sync and
   // require a new first-sync before interaction can freeze the column again.
@@ -671,13 +792,11 @@ export default function EntityColumn({
     if (prev === "done" || syncStatus?.status !== "done") return;
     if (doneUnlinked.length === 0) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- announces a completed background sync; there is no event to hang it off
-    setToast(
+    showToast(
       unlinkNoticeText(doneUnlinked, level, {
         maxNames: UNLINKED_NAME_LIMIT_TOAST,
       }),
     );
-    const id = setTimeout(() => setToast(null), 6000);
-    return () => clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fires on the status transition only; doneUnlinked is derived from the same row
   }, [syncStatus?.status, level]);
 
@@ -775,13 +894,22 @@ export default function EntityColumn({
     const onFocusIn = () => {
       hadFocusInsideRef.current = true;
     };
+    // Chromium dispatches focusout (relatedTarget null) on a focused node that
+    // is being removed, while it is still attached; happy-dom fires nothing.
+    // That removal is exactly the branch swap this ref exists to remember, so
+    // a null relatedTarget is decided after the removal settles: a node that
+    // left the DOM under focus still counts as ours.
     const onFocusOut = (event: FocusEvent) => {
-      // A node UNMOUNTING while focused does not reliably fire focusout, which
-      // is exactly the case this ref exists to remember — so absence of the
-      // event has to mean "still ours". Only a focusout that names a new home
-      // outside the column clears it.
       const next = event.relatedTarget;
-      hadFocusInsideRef.current = !!next && next instanceof Node && el.contains(next);
+      if (next instanceof Node) {
+        hadFocusInsideRef.current = el.contains(next);
+        return;
+      }
+      const left = event.target;
+      queueMicrotask(() => {
+        if (left instanceof Node && !left.isConnected) return; // unmounted under focus: still ours
+        hadFocusInsideRef.current = el.contains(document.activeElement);
+      });
     };
     el.addEventListener("focusin", onFocusIn);
     el.addEventListener("focusout", onFocusOut);
@@ -796,6 +924,21 @@ export default function EntityColumn({
     renderedBranchRef.current = branchKey;
     if (previous === branchKey) return;
     if (!hadFocusInsideRef.current) return;
+    // NEO-450 (a11y): a sync ending puts the idle row back. Focus was parked
+    // on the container (tabIndex -1, no ring) when the panel replaced the
+    // Sync button, so hand it back to that button — the retry, now described
+    // by the failure box when the sync failed. Only from the park spot (or
+    // <body>), never from somewhere the operator moved on to.
+    if (
+      previous === "syncing" &&
+      branchKey === "idle" &&
+      (document.activeElement === containerRef.current ||
+        document.activeElement === document.body) &&
+      syncButtonRef.current
+    ) {
+      syncButtonRef.current.focus({ preventScroll: true });
+      return;
+    }
     if (document.activeElement !== document.body) return;
     containerRef.current?.focus({ preventScroll: true });
   }, [branchKey]);
@@ -805,8 +948,20 @@ export default function EntityColumn({
   // auto-synced this (level, parentId) — switch to sync mode. The form itself
   // auto-runs `fetchRawOptions`/`fetchAggregatedOptions` on mount, so this is
   // the only nudge needed.
+  //
+  // NEO-417: `mode` here is this effect's closure, and it can be stale. This
+  // effect may still be waiting to flush when a click lands, and React flushes
+  // it ahead of rendering the click, so its write queues AFTER the handler's. A
+  // plain setMode("sync") then overrides the "+ Custom" press, so the write only
+  // ever leaves idle. The key is burned on the next run, once `mode` says whether
+  // the sync really opened: a press that won means no sync happened, and
+  // cancelling it lands where a press made before the list loaded lands.
   useEffect(() => {
+    const attempted = autoSyncAttemptRef.current;
+    autoSyncAttemptRef.current = null;
+    if (attempted && mode === "sync") autoSyncedRef.current.add(attempted);
     if (useEnsureSync) return; // new path handles populate via ensureSelectorOptions
+    if (hideSync) return; // NEO-425: nothing to sync from
     if (!isVisible) return;
     if (hasInteracted) return;
     if (mode !== "idle") return;
@@ -815,9 +970,9 @@ export default function EntityColumn({
     if (items.length > 0) return;
     const key = `${level}:${parentId ?? "root"}`;
     if (autoSyncedRef.current.has(key)) return;
-    autoSyncedRef.current.add(key);
-    setMode("sync");
-  }, [isVisible, mode, level, parentId, items, hasInteracted, useEnsureSync]);
+    autoSyncAttemptRef.current = key;
+    setMode((m) => (m === "idle" ? "sync" : m));
+  }, [isVisible, mode, level, parentId, items, hasInteracted, useEnsureSync, hideSync]);
 
   // NEO-47 new path: on an empty column, ask the backend to populate (once per
   // key). The backend decides everything (already-populated / custom-subtree /
@@ -832,15 +987,18 @@ export default function EntityColumn({
     const key = `${level}:${parentId ?? "root"}`;
     if (ensuredRef.current.has(key)) return;
     ensuredRef.current.add(key);
-    void ensureOptions({ level, parentId });
-  }, [useEnsureSync, isVisible, level, parentId, items, ensureOptions]);
+    runEnsure({ level, parentId });
+  }, [useEnsureSync, isVisible, level, parentId, items, runEnsure]);
 
   const addCustomOption = useMutation(
     api.selectorOptions.addCustomSelectorOption,
   );
 
+  // NEO-417: only ever leaves sync. A freeze can unmount the form with its fetch
+  // still running, and that fetch calling back must not close a custom form
+  // opened since.
   const handleFormDone = () => {
-    setMode("idle");
+    setMode((m) => (m === "sync" ? "idle" : m));
   };
 
   // NEO-211 (plan D): dismiss clears the SERVER's notice, not just this
@@ -1228,6 +1386,13 @@ export default function EntityColumn({
   // `custom-entry-survives-resync.yaml` asserts `text: "Custom"` positioned
   // rightOf a row, and a second match here is a resolution hazard.)
   const customForm = (
+    // NEO-499: `wrap-anywhere` sits only on the lines that quote a name (the
+    // typed one, or other rows' on "already exists"), never on the form, so a
+    // long unbroken name breaks inside the column while the button labels
+    // never break mid-word; the buttons in the `flex gap-2` rows are
+    // `shrink-0` so a squeezed row cannot narrow them either. The one
+    // exception is the pick-shared list, whose buttons ARE names: those wrap
+    // inside their own border (NAME_BUTTON_WRAPS).
     <div
       className="bg-raised p-6 rounded-lg shadow"
       onKeyDown={(e) => {
@@ -1285,14 +1450,14 @@ export default function EntityColumn({
             <div
               id={customErrorId}
               role="alert"
-              className="p-2 mb-3 bg-notice-danger-bg border border-notice-danger-rule rounded-md text-notice-danger-ink text-sm"
+              className="p-2 mb-3 wrap-anywhere bg-notice-danger-bg border border-notice-danger-rule rounded-md text-notice-danger-ink text-sm"
             >
               {customError}
             </div>
           )}
           <div className="flex gap-2">
             <NeonButton
-              className={fieldClass("btn-add")}
+              className={`${fieldClass("btn-add")} shrink-0`}
               aria-label={addLabel}
               onClick={handleCustomSubmit}
               onKeyDown={(e) =>
@@ -1308,7 +1473,7 @@ export default function EntityColumn({
             </NeonButton>
             <NeonButton
               variant="negative"
-              className={fieldClass("btn-cancel")}
+              className={`${fieldClass("btn-cancel")} shrink-0`}
               aria-label={cancelLabel}
               onClick={closeCustomForm}
               onKeyDown={(e) => activateOnEnter(e, closeCustomForm)}
@@ -1321,12 +1486,12 @@ export default function EntityColumn({
 
       {customStage.kind === "confirm-create" && (
         <>
-          <p className={`text-sm ${rehomeSentence ? "mb-1" : "mb-3"}`}>
+          <p className={`text-sm wrap-anywhere ${rehomeSentence ? "mb-1" : "mb-3"}`}>
             {createSentence}
           </p>
           {rehomeSentence && (
             // Same dual-mode contrast as the other explanatory lines here.
-            <p className="text-xs text-ink-3 mb-3">
+            <p className="text-xs text-ink-3 mb-3 wrap-anywhere">
               {rehomeSentence}
             </p>
           )}
@@ -1334,7 +1499,7 @@ export default function EntityColumn({
             <div
               id={customErrorId}
               role="alert"
-              className="p-2 mb-3 bg-notice-danger-bg border border-notice-danger-rule rounded-md text-notice-danger-ink text-sm"
+              className="p-2 mb-3 wrap-anywhere bg-notice-danger-bg border border-notice-danger-rule rounded-md text-notice-danger-ink text-sm"
             >
               {customError}
             </div>
@@ -1345,7 +1510,7 @@ export default function EntityColumn({
                 type → Enter → Enter. */}
             <NeonButton
               ref={confirmPrimaryRef}
-              className={fieldClass("btn-confirm-create")}
+              className={`${fieldClass("btn-confirm-create")} shrink-0`}
               aria-label={confirmCreateLabel}
               onClick={() => void runCreate(customStage.value, false)}
               onKeyDown={(e) =>
@@ -1361,7 +1526,7 @@ export default function EntityColumn({
             </NeonButton>
             <NeonButton
               variant="secondary"
-              className={fieldClass("btn-confirm-back")}
+              className={`${fieldClass("btn-confirm-back")} shrink-0`}
               aria-label={backToInputLabel}
               onClick={backToInput}
               onKeyDown={(e) => activateOnEnter(e, backToInput, creating)}
@@ -1375,7 +1540,7 @@ export default function EntityColumn({
 
       {customStage.kind === "confirm-exists" && firstMatch && (
         <>
-          <p className="text-sm mb-1">{existsSentence}</p>
+          <p className="text-sm mb-1 wrap-anywhere">{existsSentence}</p>
           {otherMatchCount > 0 && (
             // Same dual-mode contrast fix as the "Checking…" status line above.
             <p className="text-xs text-ink-3 mb-2">
@@ -1391,7 +1556,7 @@ export default function EntityColumn({
             <div
               id={customErrorId}
               role="alert"
-              className="p-2 mb-3 bg-notice-danger-bg border border-notice-danger-rule rounded-md text-notice-danger-ink text-sm"
+              className="p-2 mb-3 wrap-anywhere bg-notice-danger-bg border border-notice-danger-rule rounded-md text-notice-danger-ink text-sm"
             >
               {customError}
             </div>
@@ -1443,7 +1608,7 @@ export default function EntityColumn({
 
       {customStage.kind === "pick-shared" && (
         <>
-          <p className="text-sm mb-2">{sharedSentence}</p>
+          <p className="text-sm mb-2 wrap-anywhere">{sharedSentence}</p>
           {/* One button per row, never a pre-picked default: the first in list
               order is exactly the coin flip this stage exists to stop. Focus
               lands on the first only so the keyboard has somewhere to start. */}
@@ -1453,7 +1618,7 @@ export default function EntityColumn({
                 <NeonButton
                   variant="secondary"
                   ref={i === 0 ? confirmPrimaryRef : undefined}
-                  className={fieldClass(`btn-pick-shared-${i}`)}
+                  className={`${fieldClass(`btn-pick-shared-${i}`)} ${NAME_BUTTON_WRAPS}`}
                   aria-label={pickSharedLabel(match.label)}
                   onClick={() => handlePickShared(match)}
                   onKeyDown={(e) => activateOnEnter(e, () => handlePickShared(match))}
@@ -1518,15 +1683,6 @@ export default function EntityColumn({
   const slReviewScope =
     level === "setName" && parentId && !hideCustom ? parentId : undefined;
 
-  const showSlReviewToast = (text: string) => {
-    if (slReviewToastTimerRef.current) clearTimeout(slReviewToastTimerRef.current);
-    setToast(text);
-    slReviewToastTimerRef.current = setTimeout(() => {
-      slReviewToastTimerRef.current = null;
-      setToast(null);
-    }, 6000);
-  };
-
   // Sync and "+ Custom" get the same marker-class + explicit-Enter treatment as
   // the form's own buttons: they are identically-classed NeonButton siblings
   // too, and they are the gate a keyboard-only pass through the cascade has to
@@ -1538,21 +1694,29 @@ export default function EntityColumn({
     // so it stays an event-handler closure — hoisted, `idleButtons()` itself
     // would read a ref during render (react-hooks/refs).
     const openCustomForm = () => {
-      e2eDiagnostic("e2e_column", { action: "custom_open", level: level ?? null });
       setCustomError(null);
       setCustomStage({ kind: "input" });
       pendingCreateEnterRef.current = false;
+      // NEO-450: the operator has heard the failure and moved on; when Cancel
+      // brings the box back it is the stored state again, not a fresh alert.
+      setSyncFailure((prev) => (prev.urgent ? { ...prev, urgent: false } : prev));
       setMode("custom");
     };
     return (
       <div className="flex gap-2 items-center flex-wrap">
-        <NeonButton
-          className={fieldClass("btn-sync")}
-          onClick={onSync}
-          onKeyDown={(e) => activateOnEnter(e, onSync)}
-        >
-          {addButtonText}
-        </NeonButton>
+        {!hideSync && (
+          <NeonButton
+            ref={syncButtonRef}
+            aria-describedby={
+              syncStatus?.status === "error" ? syncFailedId : undefined
+            }
+            className={fieldClass("btn-sync")}
+            onClick={onSync}
+            onKeyDown={(e) => activateOnEnter(e, onSync)}
+          >
+            {addButtonText}
+          </NeonButton>
+        )}
         {/* After Sync, before "+ Custom", so `extraActions` ("Group Parallels")
             still sits last. */}
         {suggestionsPill}
@@ -1626,6 +1790,16 @@ export default function EntityColumn({
           <p className="text-ink-3">
             Fetching from marketplaces…
           </p>
+          {/* PR 451 (NEO-487) — "Waiting on BuySportsCards… 12s" while THIS
+              column's own sync is held up by a BSC call. Mounted with the
+              panel, which shows before any wait can reach 1.5 s, so the
+              status region exists before it speaks. */}
+          <WaitingOnMarketplaceRun
+            runKey={ensureWait?.key ?? null}
+            active={!!ensureWait?.pending}
+            marketplace="BuySportsCards"
+            className="mt-2"
+          />
         </div>
       );
     }
@@ -1634,13 +1808,27 @@ export default function EntityColumn({
       // Mark this as a sync THIS session explicitly asked for, so the panel
       // above still shows even though the click also set hasInteracted true.
       setSelfRequestedSync(true);
-      void ensureOptions({ level, parentId, force: true });
+      runEnsure({ level, parentId, force: true });
     };
     return (
       <>
+        {/* NEO-445: the retry is the "Sync <X>" button in the row below, which
+            forces the same sync. The selector drops its empty line meanwhile
+            (`ColumnSyncFailedContext`), so this is the only thing the column
+            says about a failed sync. It names the column (NEO-450) rather
+            than echoing the server's generic status message. An alert only
+            for a failure this session's own attempt just produced, a polite
+            status for a stored one; keyed on the attempt so a repeat failure
+            remounts and is heard again (see `syncFailure`). */}
         {syncStatus?.status === "error" && (
-          <div className="p-3 mb-1 bg-notice-danger-bg border border-notice-danger-rule rounded-md text-notice-danger-ink text-sm">
-            {syncStatus.message || "Couldn't sync options."}
+          <div
+            key={failedAttempt}
+            id={syncFailedId}
+            role={syncFailureUrgent ? "alert" : "status"}
+            aria-atomic="true"
+            className="p-3 mb-1 bg-notice-danger-bg border border-notice-danger-rule rounded-md text-notice-danger-ink text-sm"
+          >
+            {columnSyncFailedMessage(addButtonText.replace(/^Sync /, ""))}
           </div>
         )}
         {/* NEO-211 (plans B + D). `message` is the partial-failure case: one
@@ -1670,7 +1858,10 @@ export default function EntityColumn({
             onDismiss={handleDismissNotice}
           />
         )}
-        {idleButtons(forceSync)}
+        {/* NEO-427: not before the status read lands. A notice it carries draws
+            above this row, and landing mid-press that shift ate the click. The
+            buttons and the notice arrive together. */}
+        {syncStatus !== undefined && idleButtons(forceSync)}
       </>
     );
   };
@@ -1683,11 +1874,13 @@ export default function EntityColumn({
       tabIndex={-1}
       className="min-w-[260px] max-w-[min(340px,calc(100vw-80px))] flex-shrink-0 flex flex-col gap-4 focus:outline-none"
     >
-      {selector}
+      <ColumnSyncFailedContext.Provider value={syncStatus?.status === "error"}>
+        {selector}
+      </ColumnSyncFailedContext.Provider>
       {useEnsureSync
         ? newPathContent()
         : mode === "sync"
-          ? renderForm(handleFormDone)
+          ? (renderForm?.(handleFormDone) ?? null)
           : mode === "custom"
             ? customForm
             : idleButtons(() => setMode("sync"))}
@@ -1726,7 +1919,7 @@ export default function EntityColumn({
           onClose={() => setShowSlReview(false)}
           onSaved={(text) => {
             setShowSlReview(false);
-            showSlReviewToast(text);
+            showToast(text);
           }}
         />
       )}
@@ -1734,13 +1927,17 @@ export default function EntityColumn({
       {toast && (
         // SetAttributesPanel's pattern verbatim (NEO-47): fixed in the viewport,
         // because a background sync can land while this column is scrolled well
-        // off-screen and an in-flow banner would announce to nobody.
-        <div
-          className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-raised-deep border border-notice-warn-rule rounded text-xs text-notice-warn-ink shadow-lg"
-          role="status"
-          aria-live="polite"
-        >
-          {toast}
+        // off-screen and an in-flow banner would announce to nobody. NEO-499:
+        // the panel's wrapper too, so a long unbroken name wraps inside the
+        // viewport's 1rem gutters instead of in a half-width box.
+        <div className="pointer-events-none fixed inset-x-4 top-20 z-50 flex flex-col items-center">
+          <div
+            className="max-w-full wrap-anywhere px-4 py-2 bg-raised-deep border border-notice-warn-rule rounded text-xs text-notice-warn-ink shadow-lg"
+            role="status"
+            aria-live="polite"
+          >
+            {toast}
+          </div>
         </div>
       )}
     </div>

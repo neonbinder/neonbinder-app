@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { ruleIds, ruleMatches, ruleProblem, yearOfSeason, type CardFacts, type StoredRule } from "./binder-rule";
+import {
+  ruleCanUseSecondaryPlayers,
+  ruleFit,
+  ruleIds,
+  ruleMatches,
+  ruleProblem,
+  yearOfSeason,
+  type CardFacts,
+  type StoredRule,
+} from "./binder-rule";
 
 const facts = (over: Partial<CardFacts> = {}): CardFacts => ({
   playerIds: new Set(["gooden"]),
@@ -86,5 +95,94 @@ describe("ruleIds and yearOfSeason", () => {
   it("files a season under its first year", () => {
     expect(yearOfSeason("1996-97")).toBe(1996);
     expect(yearOfSeason("Unknown")).toBeNull();
+  });
+});
+
+describe("ruleFit: cameos (NEO-528)", () => {
+  // Strawberry's card, with Gooden pictured in the background.
+  const cameo = (over: Partial<CardFacts> = {}) =>
+    facts({
+      playerIds: new Set(["strawberry"]),
+      playedForIds: new Set(["mets"]),
+      secondaryPlayerIds: new Set(["gooden"]),
+      ...over,
+    });
+  const withCameos = (r: StoredRule): StoredRule => ({ ...r, secondaryPlayers: true });
+  const gooden = rule("all", { test: { kind: "player", playerIds: ["gooden"] } });
+
+  it("off (the default) is exactly the old rule: a cameo never fits", () => {
+    expect(ruleFit(gooden, cameo())).toBeNull();
+    expect(ruleMatches(gooden, cameo())).toBe(false);
+  });
+
+  it("on, a positive player line sees who else is pictured, and says so", () => {
+    expect(ruleFit(withCameos(gooden), cameo())).toBe("secondary");
+    expect(ruleMatches(withCameos(gooden), cameo())).toBe(true);
+  });
+
+  it("a card that fits on its own players is primary, whether or not the option is on", () => {
+    expect(ruleFit(gooden, facts())).toBe("primary");
+    expect(ruleFit(withCameos(gooden), facts({ secondaryPlayerIds: new Set(["strawberry"]) }))).toBe("primary");
+  });
+
+  it("an any-of rule that holds on the card's own facts is primary even when a cameo also matches", () => {
+    const r = withCameos(rule("any", { test: { kind: "player", playerIds: ["gooden"] } }, { test: { kind: "team", teamIds: ["mets"] } }));
+    expect(ruleFit(r, cameo())).toBe("primary");
+  });
+
+  it("Hall of Fame reads a pictured Hall of Famer only with the option on", () => {
+    const hof = rule("all", { test: { kind: "hallOfFame" } });
+    expect(ruleFit(hof, cameo({ secondaryHallOfFame: true }))).toBeNull();
+    expect(ruleFit(withCameos(hof), cameo({ secondaryHallOfFame: true }))).toBe("secondary");
+  });
+
+  it("a negated player line reads the card's own players only: 'not Gooden' keeps a card he is only pictured on", () => {
+    const r = withCameos(
+      rule("all", { test: { kind: "team", teamIds: ["mets"] } }, { negate: true, test: { kind: "player", playerIds: ["gooden"] } }),
+    );
+    expect(ruleFit(r, cameo())).toBe("primary");
+    expect(ruleFit(r, facts())).toBeNull();
+  });
+
+  it("a negated Hall of Fame line ignores a pictured Hall of Famer", () => {
+    const r = withCameos(
+      rule("all", { test: { kind: "team", teamIds: ["mets"] } }, { negate: true, test: { kind: "hallOfFame" } }),
+    );
+    expect(ruleFit(r, cameo({ secondaryHallOfFame: true }))).toBe("primary");
+  });
+
+  it("played for and team read the card's own players only, even with the option on", () => {
+    // Gooden (pictured) played for the Yankees; Strawberry's facts say Mets only.
+    const r = withCameos(rule("all", { test: { kind: "playedFor", teamIds: ["yankees"] } }));
+    expect(ruleFit(r, cameo())).toBeNull();
+    const team = withCameos(rule("all", { test: { kind: "team", teamIds: ["yankees"] } }));
+    expect(ruleFit(team, cameo())).toBeNull();
+  });
+
+  it("every all-of line must still hold: a cameo fills the player line, not the others", () => {
+    const r = withCameos(
+      rule("all", { test: { kind: "player", playerIds: ["gooden"] } }, { test: { kind: "feature", feature: "AU" } }),
+    );
+    expect(ruleFit(r, cameo())).toBeNull();
+    expect(ruleFit(r, cameo({ features: new Set(["AU"]) }))).toBe("secondary");
+  });
+
+  it("facts without the cameo fields read as no cameos", () => {
+    const { secondaryPlayerIds: _ids, secondaryHallOfFame: _hof, ...bare } = cameo();
+    expect(ruleFit(withCameos(gooden), bare)).toBeNull();
+  });
+
+  it("the option means something only with a positive player or Hall of Fame line", () => {
+    expect(ruleCanUseSecondaryPlayers(gooden)).toBe(true);
+    expect(ruleCanUseSecondaryPlayers(rule("all", { test: { kind: "hallOfFame" } }))).toBe(true);
+    expect(ruleCanUseSecondaryPlayers(rule("all", { test: { kind: "set", setIds: ["s"] } }))).toBe(false);
+    expect(
+      ruleCanUseSecondaryPlayers(
+        rule("all", { test: { kind: "set", setIds: ["s"] } }, { negate: true, test: { kind: "player", playerIds: ["p"] } }),
+      ),
+    ).toBe(false);
+    // Stored on a rule that cannot use it, it changes nothing.
+    const team = { ...rule("all", { test: { kind: "playedFor", teamIds: ["yankees"] } }), secondaryPlayers: true as const };
+    expect(ruleFit(team, cameo())).toBeNull();
   });
 });

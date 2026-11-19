@@ -2,27 +2,38 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom";
 import { Input } from "../primitives/Input";
 import { Textarea } from "../primitives/Textarea";
+import { oneLine } from "./card-titles";
 import { NotesLengthMeter } from "./NotesLengthMeter";
 import { Theme } from "@radix-ui/themes";
-import { useMutation, useQuery } from "convex/react";
+import { useConvex, useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import type { Id } from "../../convex/_generated/dataModel";
 import TeamPicker from "./TeamPicker";
+import { NO_TEAM_LABELS } from "./team-picker-labels";
 import PlayerPicker from "./PlayerPicker";
+import {
+  ALSO_ON_THIS_CARD_HEADING,
+  ALSO_PICTURED_PICKER_LABELS,
+} from "./player-picker-labels";
 import CardFeaturesEditor, { CardFeatureRow } from "./CardFeaturesEditor";
+import CardLeagueRow from "./CardLeagueRow";
 import { EXPECTED_FEATURES } from "../../convex/features/expectedFeatures";
 import { useReactiveField } from "../forms/useReactiveField";
 import {
   ASPECT_VALUE_MAX,
   LISTING_TITLE_MAX,
   TitleFieldNote,
+  OVER_FIELD_CLASS,
+  overFieldProps,
   TitleLengthAlert,
   TitleLengthMeter,
   titleLengthState,
 } from "./TitleLengthMeter";
 import { useTitlePreview } from "./useTitlePreview";
+import { LISTING_DESCRIPTION_MAX } from "../../convex/features/listingLimits";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
+import { CheckIcon } from "@heroicons/react/20/solid";
 import NeonButton from "@/components/modules/NeonButton";
 
 const AUTOGRAPHED_FEATURE = EXPECTED_FEATURES.find(
@@ -144,8 +155,50 @@ const PRINT_RUN_MESSAGE =
  * `selectorOptions.BLANK_LISTING_TITLE_REFUSAL`, which `updateCard` throws for
  * any other client: the server is the rule, this saves the round trip.
  */
+/**
+ * NEO-528 — the "Also on this card" field's words. "Cameo" is what a
+ * collector's smart binder calls such a card, so the hint says where these go.
+ */
+export const ALSO_PICTURED_HINT =
+  "Anyone on the card besides its main player: a teammate in the photo, a name on a team leaders card, the star a Profiles card is about. Smart binders can count these as cameos.";
+export const ALREADY_A_PLAYER_MESSAGE =
+  "They're already this card's player. No cameo needed.";
+export const ALSO_PICTURED_SAVED = `Saved ${ALSO_ON_THIS_CARD_HEADING}`;
+export const ALSO_PICTURED_MOVED_TO_PLAYERS = `Saved Players and moved them out of ${ALSO_ON_THIS_CARD_HEADING}`;
+const ALSO_PICTURED_SAVE_FAILED = `Couldn't save ${ALSO_ON_THIS_CARD_HEADING}. Give it another go.`;
+
+/** NEO-556 — the drawer's No Team toasts. */
+export const NO_TEAM_SAVED_ON_CARD = "Saved No Team";
+/** The card is teamless again, and is asked about its team like any other. */
+export const NO_TEAM_CLEARED_ON_CARD = "Cleared No Team";
+
 const BLANK_TITLE_MESSAGE =
   "A card needs a title. Type one in, or hit Regenerate for a fresh one.";
+
+/**
+ * NEO-535 — the refusal for a cleared Card description. The same sentence as
+ * `selectorOptions.BLANK_LISTING_DESCRIPTION_REFUSAL`: the description is what
+ * a collector's card search reads, so it is never stored blank.
+ */
+/** NEO-535 — said when Regenerate rebuilt the Card description too. */
+const DESCRIPTION_REBUILT = "Description rebuilt";
+/** How long after Regenerate a description change still counts as its rebuild. */
+const DESCRIPTION_REBUILD_WINDOW_MS = 10_000;
+
+const BLANK_DESCRIPTION_MESSAGE =
+  "A card needs a description. It's what collectors search, so type one in.";
+
+/**
+ * NEO-535 — the refusal for a Card description over `LISTING_DESCRIPTION_MAX`
+ * (eBay's description cap). `updateCard` refuses the same length; refusing
+ * here keeps the operator's text in the field with the reason beside it.
+ */
+function overLongDescriptionMessage(length: number): string {
+  return (
+    `Not saved — that description runs ${length.toLocaleString("en-US")} characters, ` +
+    `past the ${LISTING_DESCRIPTION_MAX.toLocaleString("en-US")} limit. Trim it down and save again.`
+  );
+}
 
 type CardDetailCard = {
   _id: Id<"cardChecklist">;
@@ -162,6 +215,14 @@ type CardDetailCard = {
    * canonical name speak for the card.
    */
   playerLinks?: Array<{ playerId: Id<"players">; nameOnCard: string }>;
+  /**
+   * NEO-528 — players PICTURED on the card who are not its subject (a
+   * teammate in the photo, a manager). "Also on this card" here; a smart binder
+   * that opts in counts the card as a cameo. Admin-entered NB data, never
+   * read from a marketplace, never touched by a re-sync. Absent when empty,
+   * and never holds an id that is also in `playerIds`.
+   */
+  secondaryPlayerIds?: Array<Id<"players">>;
   teamOnCardIds?: Array<Id<"teams">>;
   /**
    * NEO-208 — team names an operator typed that no `teams` row exists for yet.
@@ -178,6 +239,12 @@ type CardDetailCard = {
    * team; there is nothing here for them to edit or delete directly.
    */
   pendingTeamNames?: string[];
+  /**
+   * NEO-556 — the operator (or a checklist that said so) confirmed this card
+   * carries no team. Server-stamped; the drawer shows it as the pressed
+   * "No Team" toggle beside the picker, and picking a team retires it.
+   */
+  teamNoneConfirmedAt?: number;
   attributes?: string[];
   isRookie?: boolean;
   isRelic?: boolean;
@@ -188,9 +255,10 @@ type CardDetailCard = {
   listingTitle?: string;
   /**
    * NEO-101: the auto-generated title did not fit and was cut at a word
-   * boundary, so what is stored is not the whole card. Set at creation and
-   * cleared server-side by any write of `listingTitle` — so an operator
-   * rewriting the title clears it by construction, with no flag to remember.
+   * boundary, so what is stored is not the whole card. Written with every
+   * generated title (creation, Regenerate) from its assessment, and cleared
+   * server-side by a title the operator typed — so rewriting the title clears
+   * it by construction, with no flag to remember.
    */
   listingTitleTruncated?: boolean;
   listingDescription?: string;
@@ -268,9 +336,10 @@ function FieldFeedback({
         </p>
       )}
       {error && (
-        // a11y: NOT the neon pink as text — 4.4:1 on this drawer's raised
-        // surface in dark, under WCAG 1.4.3's 4.5:1 floor. The danger notice
-        // ink clears 4.5:1 here in both modes (NEO-356).
+        // a11y: the error ink is neon pink (`notice-danger-ink` IS
+        // `neon-pink-text`, NEO-606: one pink for errors). This drawer is the
+        // `raised` surface, where it reads 4.55:1 in dark and 5.92:1 in light;
+        // it would miss on a row or chip tile (`TEXT_NEVER_ON`).
         <p
           id={errorId}
           role="alert"
@@ -406,7 +475,7 @@ export default function CardDetailPanel({
     api.selectorOptions.removeCrossListing,
   );
   const cardNameInputRef = useRef<HTMLInputElement | null>(null);
-  const titleInputRef = useRef<HTMLInputElement | null>(null);
+  const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
   // Unique per-field marker class so Maestro's inputText targets the tapped
   // field rather than the first input in the drawer (see useFieldTestClass).
   const fieldClass = useFieldTestClass();
@@ -465,7 +534,7 @@ export default function CardDetailPanel({
    * the over-length text in the field with the explanation beside it; the
    * server enforces the same constant either way.
    */
-  const titleField = useReactiveField({
+  const titleField = useReactiveField<HTMLTextAreaElement>({
     value: card.listingTitle ?? "",
     onSave: async (trimmed) => {
       const state = titleLengthState(trimmed.length, LISTING_TITLE_MAX, true);
@@ -488,18 +557,34 @@ export default function CardDetailPanel({
     onEmptyCommit: () => {
       const stored = card.listingTitle ?? "";
       if (titleInputRef.current) titleInputRef.current.value = stored;
-      setTitleLength(stored.length);
+      setTitleText(stored);
       throw new Error(BLANK_TITLE_MESSAGE);
     },
   });
 
+  const descriptionInputRef = useRef<HTMLTextAreaElement | null>(null);
   const descriptionField = useReactiveField<HTMLTextAreaElement>({
     value: card.listingDescription ?? "",
     // A bare Enter here is a paragraph break the operator typed, not a save.
     enterCommit: "modEnter",
-    onSave: (trimmed) =>
-      commitField({ listingDescription: trimmed }, "Saved Card description"),
+    onSave: async (trimmed) => {
+      if (trimmed.length > LISTING_DESCRIPTION_MAX) {
+        throw new Error(overLongDescriptionMessage(trimmed.length));
+      }
+      await commitField({ listingDescription: trimmed }, "Saved Card description");
+    },
+    // NEO-535 — the description is what a collector searches, so it is never
+    // stored blank (`updateCard` refuses one with the same sentence). A
+    // cleared field puts the stored description back and says why.
+    onEmptyCommit: () => {
+      if (descriptionInputRef.current) {
+        descriptionInputRef.current.value = card.listingDescription ?? "";
+      }
+      throw new Error(BLANK_DESCRIPTION_MESSAGE);
+    },
   });
+  const { ref: descriptionHookRef, ...descriptionInputProps } =
+    descriptionField.inputProps;
 
   // NEO-367 — NB's own note about the card. Multi-line like the description,
   // so a bare Enter is a line break. Blank is a real answer ("no note"), sent
@@ -551,9 +636,10 @@ export default function CardDetailPanel({
   // whenever that changes and the field is idle — the same focus-guard the hook
   // itself applies, for the same reason (a reactive push must not renumber a
   // counter for text the operator can still see in front of them).
-  const [titleLength, setTitleLength] = useState(
-    (card.listingTitle ?? "").length,
-  );
+  // NEO-535 — the title's TEXT, not only its length: "Left out to fit" is
+  // read from what the field holds now.
+  const [titleText, setTitleText] = useState(card.listingTitle ?? "");
+  const titleLength = titleText.length;
   const [variationLength, setVariationLength] = useState(
     (card.cardVariation ?? "").length,
   );
@@ -567,7 +653,7 @@ export default function CardDetailPanel({
       return;
     }
     // Mirroring an external (reactive) value, not deriving render state.
-    setTitleLength((card.listingTitle ?? "").length);
+    setTitleText(card.listingTitle ?? "");
   }, [card.listingTitle]);
 
   useEffect(() => {
@@ -587,6 +673,7 @@ export default function CardDetailPanel({
   const titleErrorId = `${uid}-title-error`;
   const descriptionErrorId = `${uid}-description-error`;
   const descriptionHintId = `${uid}-description-hint`;
+  const titleHintId = `${uid}-title-hint`;
   const notesErrorId = `${uid}-notes-error`;
   const notesHintId = `${uid}-notes-hint`;
   const notesId = `${uid}-notes`;
@@ -611,11 +698,56 @@ export default function CardDetailPanel({
   useEffect(() => {
     replaceTitleRef.current = titleField.replace;
   }, [titleField.replace]);
+  // NEO-535 — Regenerate rebuilds the description too, on the server's rule
+  // (`regeneratedDescription`): one that reads as the builder's own is rebuilt
+  // from the facts now, one an operator wrote is left alone. Its own write,
+  // so a title refused for length still gets its description rebuilt; the
+  // description field hydrates from the row like any reactive update.
+  // a11y (NEO-535) — the rebuilt description arrives on the subscription
+  // after the write, in a field the operator is not looking at. Armed with
+  // the description as it stood when Regenerate was pressed; the first
+  // different value the row brings is said once ("Description rebuilt"), on
+  // the drawer's one status line. An unchanged description (an operator's
+  // own, left alone) says nothing and the arm lapses.
+  const descriptionRebuildRef = useRef<{ from: string; until: number } | null>(null);
+  const regenerateDescription = useCallback(async () => {
+    descriptionRebuildRef.current = {
+      from: card.listingDescription ?? "",
+      until: Date.now() + DESCRIPTION_REBUILD_WINDOW_MS,
+    };
+    try {
+      await updateCard({ id: card._id, regenerateDescription: true });
+    } catch (err) {
+      descriptionRebuildRef.current = null;
+      announce(userFacingMessage(err, "Couldn't rebuild the card description"));
+    }
+  }, [updateCard, card._id, card.listingDescription, announce]);
+  useEffect(() => {
+    const armed = descriptionRebuildRef.current;
+    if (!armed) return;
+    const now = card.listingDescription ?? "";
+    if (now === armed.from) return;
+    descriptionRebuildRef.current = null;
+    if (Date.now() > armed.until) return;
+    // Mirroring a reactive write into the drawer's status line, not deriving
+    // render state; appended so a "Saved Card title" just said is kept.
+    setToast((prev) =>
+      prev && prev !== DESCRIPTION_REBUILT ? `${prev}. ${DESCRIPTION_REBUILT}` : DESCRIPTION_REBUILT,
+    );
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 6000);
+  }, [card.listingDescription]);
+  const regenerateDescriptionRef = useRef(regenerateDescription);
+  useEffect(() => {
+    regenerateDescriptionRef.current = regenerateDescription;
+  }, [regenerateDescription]);
   const applyTitle = useCallback((title: string) => {
-    setTitleLength(title.length);
+    setTitleText(title);
     void replaceTitleRef.current?.(title);
+    void regenerateDescriptionRef.current();
   }, []);
   const preview = useTitlePreview(card._id, applyTitle);
+  const titleLeftOut = useMemo(() => preview.leftOutOf(titleText), [preview, titleText]);
   /** Does the field hold something other than what is stored? Read live. */
   const titleIsEdited = () =>
     (titleInputRef.current?.value ?? "") !== (card.listingTitle ?? "");
@@ -718,6 +850,36 @@ export default function CardDetailPanel({
     });
   }, [card.playerLinks, linkedPlayerRows, playersPending]);
 
+  /**
+   * NEO-556 — No Team, as the picker's toggle. `null` = show what is stored.
+   * Pressing it asks the server to stamp the card (the same patch empties the
+   * teams); pressing it again sends `teamNone: false`, which takes the stamp
+   * off and leaves the card teamless, so it is asked about its team again.
+   * Picking a team retires the stamp too (the server's rule on a team write).
+   */
+  const [noTeamPending, setNoTeamPending] = useState<boolean | null>(null);
+  const noTeamOn =
+    noTeamPending ??
+    (teamsPending !== null && teamsPending.length > 0
+      ? false
+      : card.teamNoneConfirmedAt !== undefined && teamIds.length === 0);
+  const saveNoTeam = async (next: boolean) => {
+    setNoTeamPending(next);
+    if (next) setTeamsPending([]);
+    try {
+      await commitField(
+        { teamNone: next },
+        next ? NO_TEAM_SAVED_ON_CARD : NO_TEAM_CLEARED_ON_CARD,
+      );
+      setTeamsError(null);
+    } catch (e) {
+      setTeamsError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setNoTeamPending(null);
+      setTeamsPending(null);
+    }
+  };
+
   const saveTeams = async (next: Array<Id<"teams">>) => {
     setTeamsPending(next);
     try {
@@ -730,6 +892,58 @@ export default function CardDetailPanel({
     }
   };
 
+  // ----- also pictured (NEO-528) ---------------------------------------
+  //
+  // Its own mutation (`cardSecondaryPlayers.setSecondaryPlayers`, the one
+  // writer of the list and its index), reached through the client at CALL
+  // time: the tests that render this drawer hand-build their `api` mock, and
+  // a `useMutation(api.cardSecondaryPlayers…)` here would read a module those
+  // mocks do not have, at render, in every one of them.
+  const convex = useConvex();
+  const [alsoPending, setAlsoPending] = useState<Array<
+    Id<"players">
+  > | null>(null);
+  const [alsoError, setAlsoError] = useState<string | null>(null);
+  const alsoErrorId = `${uid}-also-pictured-error`;
+  const alsoHintId = `${uid}-also-pictured-hint`;
+  const alsoPicturedIds = alsoPending ?? card.secondaryPlayerIds ?? [];
+
+  /** Write the card's also-pictured list; the server drops the card's own players. */
+  const writeAlsoPictured = async (next: Array<Id<"players">>) =>
+    await convex.mutation(api.cardSecondaryPlayers.setSecondaryPlayers, {
+      cardId: card._id,
+      playerIds: next,
+    });
+
+  const saveAlsoPictured = async (next: Array<Id<"players">>) => {
+    // A card's own player is never also its cameo. Said here, beside the
+    // field, rather than letting the server quietly drop the pick (it would:
+    // `strippedPrimary`), so the chip never appears and then vanishes.
+    const own = new Set<string>(playerIds as string[]);
+    const kept = next.filter((id) => !own.has(id as string));
+    if (kept.length < next.length) {
+      setAlsoError(ALREADY_A_PLAYER_MESSAGE);
+      const current = card.secondaryPlayerIds ?? [];
+      if (
+        kept.length === current.length &&
+        kept.every((id, i) => id === current[i])
+      ) {
+        return;
+      }
+    } else {
+      setAlsoError(null);
+    }
+    setAlsoPending(kept);
+    try {
+      await writeAlsoPictured(kept);
+      announce(ALSO_PICTURED_SAVED);
+    } catch (e) {
+      setAlsoError(userFacingMessage(e, ALSO_PICTURED_SAVE_FAILED));
+    } finally {
+      setAlsoPending(null);
+    }
+  };
+
   const savePlayers = async (next: Array<Id<"players">>) => {
     setPlayersPending(next);
     try {
@@ -737,8 +951,26 @@ export default function CardDetailPanel({
       setPlayersError(null);
     } catch (e) {
       setPlayersError(e instanceof Error ? e.message : String(e));
-    } finally {
       setPlayersPending(null);
+      return;
+    }
+    setPlayersPending(null);
+    // NEO-528 — a player just added under Players who was listed as also
+    // pictured is the card's subject now, so he leaves that list (the server
+    // strips the card's own players only when THAT list is written).
+    const own = new Set<string>(next as string[]);
+    const cameos = card.secondaryPlayerIds ?? [];
+    const kept = cameos.filter((id) => !own.has(id as string));
+    if (kept.length === cameos.length) return;
+    setAlsoPending(kept);
+    try {
+      await writeAlsoPictured(kept);
+      setAlsoError(null);
+      announce(ALSO_PICTURED_MOVED_TO_PLAYERS);
+    } catch (e) {
+      setAlsoError(userFacingMessage(e, ALSO_PICTURED_SAVE_FAILED));
+    } finally {
+      setAlsoPending(null);
     }
   };
 
@@ -835,25 +1067,6 @@ export default function CardDetailPanel({
         aria-hidden="true"
         onClick={onClose}
       />
-      {/* The one save confirmation for the whole drawer.
-
-          NEO-47's reasoning, inherited from SetAttributesPanel: FIXED in the
-          viewport rather than in-flow, because an edit made while scrolled
-          down to the print run would otherwise render its confirmation above
-          the fold, invisible to the operator who just made it.
-
-          NEO-341: `pointer-events-none`. It only reports; on a phone the
-          drawer is full width and this toast lands on the Card name field,
-          so for its few seconds it swallowed the tap meant for the field. */}
-      {toast && (
-        <div
-          className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-[60] px-4 py-2 bg-raised-deep border border-neon-green-text/60 rounded text-xs text-neon-green-text shadow-lg"
-          role="status"
-          aria-live="polite"
-        >
-          {toast}
-        </div>
-      )}
       {/*
         NEO-272 — THE WIDTH IS MEASURED OFF AN 80-CHARACTER TITLE, not picked
         off a breakpoint. Same derivation, same field and the same number as
@@ -1045,13 +1258,32 @@ export default function CardDetailPanel({
               onChange={(next) => void saveTeams(next)}
               sportId={ancestorSportId}
               contextOptionId={contextOptionId}
+              noTeam={{
+                value: noTeamOn,
+                onChange: (next) => void saveNoTeam(next),
+                label: NO_TEAM_LABELS.card,
+              }}
             />
             <FieldFeedback
-              busy={teamsPending !== null}
+              busy={teamsPending !== null || noTeamPending !== null}
               error={teamsError}
               errorId={teamsErrorId}
             />
           </div>
+
+          {/* NEO-569: the card's league, directly under the teams it is
+              settled from. Writes only `leagueId`, through the same
+              commitField as every field here. */}
+          <CardLeagueRow
+            key={`card-league-${card._id}`}
+            cardId={card._id}
+            onCommit={(leagueId) =>
+              commitField(
+                { leagueId },
+                leagueId === null ? "Cleared League" : "Saved League",
+              )
+            }
+          />
 
           {/* Per-card feature overrides (persists immediately via setCardFeature).
               Kept directly under Teams — matching the old inline edit modal — so
@@ -1118,16 +1350,22 @@ export default function CardDetailPanel({
                 </button>
               </span>
             </div>
-            <Input
+            {/* NEO-535: a wrapping one-line field, the Card titles step's
+                shape, so the whole title is in view on a phone. Enter still
+                saves (the hook's default), and a pasted line break reads as
+                a space: a title is one line. */}
+            <Textarea
               bare
               {...titleInputProps}
               ref={(el) => {
                 titleHookRef(el);
                 titleInputRef.current = el;
               }}
-              type="text"
+              rows={2}
               onChange={(e) => {
-                setTitleLength(e.target.value.length);
+                const flat = oneLine(e.target.value);
+                if (flat !== e.target.value) e.target.value = flat;
+                setTitleText(flat);
                 // Typing is the operator changing their mind about replacing
                 // the draft — drop the pending confirm rather than leaving a
                 // second click armed against text they just wrote.
@@ -1138,17 +1376,21 @@ export default function CardDetailPanel({
               // No maxLength, deliberately: it would silently swallow the tail
               // of a pasted title, and an over-length title the operator cannot
               // SEE is one they cannot fix. Let it overflow and say so.
-              className={`${fieldClass("cardTitle")} w-full p-1.5 text-sm`}
+              className={`${fieldClass("cardTitle")} block w-full resize-none p-1.5 text-sm [field-sizing:content] ${OVER_FIELD_CLASS}`}
               placeholder="Listing title reused across marketplaces"
               aria-label="Card title"
               aria-invalid={titleState.over || Boolean(titleField.error) || undefined}
+              {...overFieldProps(titleState.over)}
               aria-describedby={
                 [
                   titleState.over ? titleAlertId : null,
                   titleField.error ? titleErrorId : null,
+                  // NEO-535: a wrapping field reads as one where Enter makes
+                  // a new line; the hint says Enter saves.
+                  titleHintId,
                 ]
                   .filter(Boolean)
-                  .join(" ") || undefined
+                  .join(" ")
               }
             />
             <TitleLengthAlert id={titleAlertId} length={titleLength} />
@@ -1169,12 +1411,17 @@ export default function CardDetailPanel({
                 Regenerate again to replace the title you have typed.
               </p>
             )}
-            {card.listingTitleTruncated && (
+            {/* NEO-535: never beside the over-cap alert, where a long title
+                is not "cut short"; nor beside "Left out to fit", which says
+                exactly what was cut. */}
+            {card.listingTitleTruncated && !titleState.over && titleLeftOut.length === 0 && (
               <TitleFieldNote>Auto title was cut short — rewrite it</TitleFieldNote>
             )}
-            {preview.dropped.length > 0 && (
+            {/* NEO-535: read from the text in the field now, so retyping a
+                cut word takes it off the note. */}
+            {titleLeftOut.length > 0 && (
               <TitleFieldNote>
-                Left out to fit: {preview.dropped.join(", ")}
+                Left out to fit: {titleLeftOut.join(", ")}
               </TitleFieldNote>
             )}
             {preview.chips.length > 0 && (
@@ -1193,16 +1440,21 @@ export default function CardDetailPanel({
                     // on this panel in both modes (NEO-356 roles).
                     className="rounded-full border border-rule-strong bg-raised/60 px-2 py-0.5 text-[10px] text-ink-2"
                   >
-                    <span className="mr-1 uppercase tracking-wide text-ink-3">
-                      {chip.label}
-                    </span>
+                    {chip.label && (
+                      <>
+                        <span className="uppercase tracking-wide text-ink-3">
+                          {chip.label}
+                        </span>
+                        {" "}
+                      </>
+                    )}
                     {chip.value}
                   </li>
                 ))}
               </ul>
             )}
-            <p className="text-[10px] text-ink-3 mt-1">
-              Stored once and reused by every marketplace listing.
+            <p id={titleHintId} className="text-[10px] text-ink-3 mt-1">
+              Enter saves it. Stored once and reused by every marketplace listing.
             </p>
           </div>
           <div>
@@ -1211,7 +1463,11 @@ export default function CardDetailPanel({
             </label>
             <Textarea
               bare
-              {...descriptionField.inputProps}
+              {...descriptionInputProps}
+              ref={(el) => {
+                descriptionHookRef(el);
+                descriptionInputRef.current = el;
+              }}
               rows={3}
               readOnly={descriptionField.busy}
               aria-busy={descriptionField.busy || undefined}
@@ -1450,10 +1706,12 @@ export default function CardDetailPanel({
               onChange={(e) => setVariationLength(e.target.value.length)}
               readOnly={variationField.busy}
               aria-busy={variationField.busy || undefined}
-              className={`${fieldClass("cardVariation")} w-full p-1.5 text-sm`}
+              className={`${fieldClass("cardVariation")} w-full p-1.5 text-sm ${OVER_FIELD_CLASS}`}
               placeholder="e.g. Gold Refractor"
               aria-label="Card variation"
               aria-invalid={variationField.error ? true : undefined}
+              // Advisory past 65 (it still saves): pink box, no `aria-invalid`.
+              {...overFieldProps(variationLength > ASPECT_VALUE_MAX)}
               aria-describedby={
                 [
                   variationLength > ASPECT_VALUE_MAX ? variationAlertId : null,
@@ -1545,10 +1803,10 @@ export default function CardDetailPanel({
               />
             )}
             {parentError && (
-              // a11y: NOT the neon pink as text — 4.4:1 on this panel's
-              // raised surface in dark, under WCAG 1.4.3's 4.5:1 minimum. An
-              // error message has to be legible, so it uses the danger notice
-              // ink, which clears 4.5:1 here in both modes (NEO-356).
+              // a11y: the error ink is neon pink (`notice-danger-ink` IS
+              // `neon-pink-text`, NEO-606). On this panel's `raised` surface
+              // it reads 4.55:1 in dark and 5.92:1 in light; it would miss on
+              // a row or chip tile (`TEXT_NEVER_ON`).
               <p className="text-xs text-notice-danger-ink mt-1" role="alert">
                 {parentError}
               </p>
@@ -1602,6 +1860,34 @@ export default function CardDetailPanel({
               busy={playersPending !== null}
               error={playersError}
               errorId={playersErrorId}
+            />
+          </div>
+
+          {/* NEO-528 — Also on this card: the second PlayerPicker in this drawer,
+              so every name it renders is reworded apart from the one above
+              (`ALSO_PICTURED_PICKER_LABELS`). The hint is the trigger's
+              description, so a keyboard user hears what the field is for on
+              the control they land on. */}
+          <div>
+            <label className="block text-[10px] uppercase tracking-wide text-ink-3 mb-1">
+              {ALSO_ON_THIS_CARD_HEADING}
+            </label>
+            <PlayerPicker
+              value={alsoPicturedIds}
+              onChange={(next) => void saveAlsoPictured(next)}
+              sportId={ancestorSportId}
+              labels={ALSO_PICTURED_PICKER_LABELS}
+              ariaDescribedBy={
+                alsoError ? `${alsoHintId} ${alsoErrorId}` : alsoHintId
+              }
+            />
+            <p id={alsoHintId} className="mt-1 text-[11px] text-ink-3">
+              {ALSO_PICTURED_HINT}
+            </p>
+            <FieldFeedback
+              busy={alsoPending !== null}
+              error={alsoError}
+              errorId={alsoErrorId}
             />
           </div>
 
@@ -1700,9 +1986,32 @@ export default function CardDetailPanel({
             open — the NEO-189 stranding finding. "Done" is that element, and
             it does exactly what Escape and the × do. */}
         <div className="px-4 py-3 border-t border-rule-strong flex items-center justify-between gap-3">
-          <span className="text-[10px] text-ink-3">
-            Changes save as you leave each field.
-          </span>
+          {/* The one save confirmation for the whole drawer, in place of the
+              rule it confirms while it shows.
+
+              NEO-47 wanted it where an edit made far down the drawer can
+              still see it, which once meant fixed to the viewport, centred
+              at the top. NEO-528's audit: there it sat on the drawer's own
+              Card name field (on a phone, and on a desktop window narrower
+              than the drawer's 45rem). The footer has the same property
+              without the cover: it never scrolls away (the body scrolls
+              between header and footer), and it is where the operator was
+              told that leaving a field saves it. Mounted with its text, as
+              the fixed toast was. */}
+          {toast ? (
+            <span
+              className="min-w-0 inline-flex items-center gap-1.5 px-2 py-1 bg-raised-deep border border-neon-green-text/60 rounded text-xs font-medium text-neon-green-text"
+              role="status"
+              aria-live="polite"
+            >
+              <CheckIcon aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+              <span className="min-w-0 break-words">{toast}</span>
+            </span>
+          ) : (
+            <span className="text-[10px] text-ink-3">
+              Changes save as you leave each field.
+            </span>
+          )}
           <NeonButton
             type="button"
             size="1"

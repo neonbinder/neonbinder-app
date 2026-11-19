@@ -68,6 +68,10 @@ vi.mock("../../convex/_generated/api", () => ({
       setCardVariationParent: "setCardVariationParent",
       getCardChecklist: "getCardChecklist",
     },
+    // NEO-528: the Also pictured field's writer, called through useConvex().
+    cardSecondaryPlayers: {
+      setSecondaryPlayers: "cardSecondaryPlayers.setSecondaryPlayers",
+    },
   },
 }));
 
@@ -80,7 +84,11 @@ const mockSiblingCards = [
   { _id: "card-2", cardNumber: "2", cardName: "Roberto Osuna" },
 ];
 
+/** NEO-528 — `useConvex().mutation`, the Also pictured field's one write. */
+const mockConvexMutation = vi.fn();
+
 vi.mock("convex/react", () => ({
+  useConvex: () => ({ mutation: mockConvexMutation }),
   useMutation: (ref: string) => {
     if (ref === "updateCard") return mockUpdateCard;
     if (ref === "setCardFeature") return mockSetCardFeature;
@@ -99,21 +107,58 @@ vi.mock("convex/react", () => ({
 /** NEO-254 — rows served to `players.getManyByIds`. */
 let currentPlayerRows: Array<{ _id: string; name: string }> | undefined;
 
+/**
+ * NEO-569 — the card's League row owns its own Convex read and has its own
+ * test file (CardLeagueRow.test.tsx). Here it is a stand-in: the panel's
+ * contract with it is the card id in, and `onCommit(leagueId | null)` out.
+ */
+vi.mock("./CardLeagueRow", () => ({
+  default: ({
+    cardId,
+    onCommit,
+  }: {
+    cardId: string;
+    onCommit: (leagueId: string | null) => Promise<void>;
+  }) => (
+    <div aria-label="Card league row (stub)" data-card-id={cardId}>
+      <button type="button" onClick={() => void onCommit("league-al").catch(() => {})}>
+        Stub pick league
+      </button>
+      <button type="button" onClick={() => void onCommit(null).catch(() => {})}>
+        Stub clear league
+      </button>
+    </div>
+  ),
+}));
+
 vi.mock("./TeamPicker", () => ({
   default: ({
     value,
     onChange,
     contextOptionId,
+    noTeam,
   }: {
     value: string[];
     onChange: (next: string[]) => void;
     contextOptionId?: string;
+    noTeam?: { value: boolean; onChange: (next: boolean) => void; label?: string };
   }) => (
     <div aria-label="Team picker (stub)" data-context-option-id={contextOptionId ?? ""}>
       <span>Teams: {value.join(",")}</span>
-      <button onClick={() => onChange([...value, "team-new"])}>
+      <button onClick={() => onChange(noTeam?.value ? ["team-new"] : [...value, "team-new"])}>
         Stub add team
       </button>
+      {/* NEO-556 — the real toggle's contract: press → onChange(!value). */}
+      {noTeam && (
+        <button
+          type="button"
+          aria-label={noTeam.label}
+          aria-pressed={noTeam.value}
+          onClick={() => noTeam.onChange(!noTeam.value)}
+        >
+          No Team
+        </button>
+      )}
     </div>
   ),
 }));
@@ -122,10 +167,29 @@ vi.mock("./PlayerPicker", () => ({
   default: ({
     value,
     onChange,
+    labels,
+    ariaDescribedBy,
   }: {
     value: string[];
     onChange: (next: string[]) => void;
-  }) => (
+    labels?: { root: string };
+    ariaDescribedBy?: string;
+  }) =>
+    // NEO-528: the drawer mounts two — the labelled one is Also pictured.
+    labels ? (
+      <div aria-label={`${labels.root} (stub)`} data-described-by={ariaDescribedBy ?? ""}>
+        <span>Also pictured: {value.join(",")}</span>
+        <button onClick={() => onChange([...value, "cameo-new"])}>
+          Stub add cameo
+        </button>
+        <button onClick={() => onChange([...value, "player-1"])}>
+          Stub add the card's own player as a cameo
+        </button>
+        <button onClick={() => onChange(value.slice(0, -1))}>
+          Stub remove last cameo
+        </button>
+      </div>
+    ) : (
     <div aria-label="Player picker (stub)">
       <span>Players: {value.join(",")}</span>
       <button onClick={() => onChange([...value, "player-new"])}>
@@ -135,17 +199,21 @@ vi.mock("./PlayerPicker", () => ({
         Stub remove last player
       </button>
     </div>
-  ),
+    ),
 }));
 
 // ---------------------------------------------------------------------------
 // Component under test — imported after mocks
 // ---------------------------------------------------------------------------
 
-import CardDetailPanel from "./CardDetailPanel";
+import CardDetailPanel, {
+  ALREADY_A_PLAYER_MESSAGE,
+  ALSO_PICTURED_HINT,
+} from "./CardDetailPanel";
+import { ALSO_PICTURED_PICKER_LABELS } from "./player-picker-labels";
 // NEO-272: the drawer-geometry block below reads the character budget from the
 // server's own constant rather than restating 80.
-import { LISTING_TITLE_MAX } from "../../convex/features/listingLimits";
+import { LISTING_DESCRIPTION_MAX, LISTING_TITLE_MAX } from "../../convex/features/listingLimits";
 import type { Id } from "../../convex/_generated/dataModel";
 
 // ---------------------------------------------------------------------------
@@ -523,6 +591,23 @@ describe("CardDetailPanel — per-field autosave (NEO-216)", () => {
     expect(status.textContent).toBe("Saved Card name");
   });
 
+  it("shows the save in the drawer's footer, in place of the autosave rule, never over the fields", async () => {
+    renderPanel();
+
+    await editAndCommit(nameInput(), "Shohei Ohtani");
+
+    const status = await screen.findByRole("status");
+    // Inside the dialog (NEO-528 audit: the viewport-fixed toast sat on Card
+    // name), beside Done, and not positioned over anything.
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.contains(status)).toBe(true);
+    const footer = screen.getByLabelText("Done editing card").parentElement!;
+    expect(footer.contains(status)).toBe(true);
+    expect(status.className).not.toMatch(/\bfixed\b|\babsolute\b/);
+    // It stands in for the rule while it shows.
+    expect(screen.queryByText("Changes save as you leave each field.")).toBeNull();
+  });
+
   /**
    * NEO-36 pin — the bug class this whole drawer was rebuilt around.
    *
@@ -649,6 +734,116 @@ describe("CardDetailPanel — per-field autosave (NEO-216)", () => {
       id: CARD_ID,
       listingDescription: "line one\nline two",
     });
+  });
+
+  it("NEO-535: a cleared description is not saved; the stored one comes back with the reason", async () => {
+    renderPanel({ card: makeCard({ listingDescription: "Stored copy" }) });
+    const description = screen.getByLabelText(
+      "Card description",
+    ) as HTMLTextAreaElement;
+
+    await act(async () => {
+      focusField(description);
+      typeInto(description, "   ");
+      blurField(description);
+    });
+
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+    expect(description.value).toBe("Stored copy");
+    expect(
+      await screen.findByText(
+        "A card needs a description. It's what collectors search, so type one in.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("NEO-535: a description over the cap is not saved; the text stays with the reason, and one at the cap saves", async () => {
+    renderPanel({ card: makeCard({ listingDescription: "Stored copy" }) });
+    const description = screen.getByLabelText(
+      "Card description",
+    ) as HTMLTextAreaElement;
+    const over = "x".repeat(LISTING_DESCRIPTION_MAX + 1);
+
+    await act(async () => {
+      focusField(description);
+      typeInto(description, over);
+      blurField(description);
+    });
+
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+    expect(description.value).toBe(over);
+    expect(
+      await screen.findByText(
+        "Not saved — that description runs 4,001 characters, past the 4,000 limit. Trim it down and save again.",
+      ),
+    ).toBeTruthy();
+    expect(description.getAttribute("aria-invalid")).toBe("true");
+
+    const atCap = "y".repeat(LISTING_DESCRIPTION_MAX);
+    await act(async () => {
+      focusField(description);
+      typeInto(description, atCap);
+      blurField(description);
+    });
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(1));
+    expect(mockUpdateCard).toHaveBeenCalledWith({ id: CARD_ID, listingDescription: atCap });
+  });
+
+  it("NEO-535: typing the stored description back after an over-cap refusal clears the alert and aria-invalid", async () => {
+    // E2E found it: nothing needs saving once the field is back at the stored
+    // text, so the hook returned at its no-op guard and the refusal stayed up
+    // beside a valid description.
+    renderPanel({ card: makeCard({ listingDescription: "Stored copy" }) });
+    const description = screen.getByLabelText(
+      "Card description",
+    ) as HTMLTextAreaElement;
+    const refusal =
+      "Not saved — that description runs 4,001 characters, past the 4,000 limit. Trim it down and save again.";
+
+    await act(async () => {
+      focusField(description);
+      typeInto(description, "x".repeat(LISTING_DESCRIPTION_MAX + 1));
+      blurField(description);
+    });
+    expect(await screen.findByText(refusal)).toBeTruthy();
+    expect(description.getAttribute("aria-invalid")).toBe("true");
+
+    await act(async () => {
+      focusField(description);
+      typeInto(description, "Stored copy");
+      blurField(description);
+    });
+
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+    expect(screen.queryByText(refusal)).toBeNull();
+    expect(description.hasAttribute("aria-invalid")).toBe(false);
+  });
+
+  it("NEO-535: the blank-description reason survives the blur after a Cmd+Enter refusal", async () => {
+    // The refusal puts the stored description back, so the blur that follows
+    // commits an unchanged field. That must not wipe the reason it came back.
+    renderPanel({ card: makeCard({ listingDescription: "Stored copy" }) });
+    const description = screen.getByLabelText(
+      "Card description",
+    ) as HTMLTextAreaElement;
+    const reason =
+      "A card needs a description. It's what collectors search, so type one in.";
+
+    await act(async () => {
+      focusField(description);
+      typeInto(description, "");
+      fireEvent.keyDown(description, { key: "Enter", metaKey: true });
+    });
+    expect(await screen.findByText(reason)).toBeTruthy();
+    expect(description.value).toBe("Stored copy");
+
+    await act(async () => {
+      blurField(description);
+    });
+
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+    expect(screen.getByText(reason)).toBeTruthy();
+    expect(description.getAttribute("aria-invalid")).toBe("true");
   });
 
   it("NEO-367: notes commit only `notes`, keep line breaks, and clearing sends \"\"", async () => {
@@ -1323,5 +1518,288 @@ describe("CardDetailPanel — NEO-331 the set context reaches the team picker", 
     expect(
       screen.getByLabelText("Team picker (stub)").getAttribute("data-context-option-id"),
     ).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-528 — Also pictured: a second player list, its own writer.
+// ---------------------------------------------------------------------------
+
+describe("CardDetailPanel — Also on this card (NEO-528)", () => {
+  const ids = (...xs: string[]) => xs as unknown as Array<Id<"players">>;
+  const ALSO = `${ALSO_PICTURED_PICKER_LABELS.root} (stub)`;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUpdateCard.mockResolvedValue(null);
+    mockConvexMutation.mockResolvedValue({ secondaryPlayerIds: [], strippedPrimary: 0 });
+    currentPlayerRows = undefined;
+  });
+
+  it("mounts a second picker under its own labels, seeded with the card's also-pictured players", () => {
+    renderPanel({ card: makeCard({ secondaryPlayerIds: ids("cameo-1", "cameo-2") }) });
+    expect(screen.getByText("Also on this card", { selector: "label" })).toBeTruthy();
+    expect(screen.getByLabelText(ALSO)).toBeTruthy();
+    expect(screen.getByText("Also pictured: cameo-1,cameo-2")).toBeTruthy();
+    // The Players picker is still the default-labelled one.
+    expect(screen.getByLabelText("Player picker (stub)")).toBeTruthy();
+  });
+
+  it("describes the picker with the visible hint", () => {
+    expect(ALSO_PICTURED_HINT).toBe(
+      "Anyone on the card besides its main player: a teammate in the photo, a name on a team leaders card, the star a Profiles card is about. Smart binders can count these as cameos.",
+    );
+    expect(ALREADY_A_PLAYER_MESSAGE).toBe("They're already this card's player. No cameo needed.");
+    renderPanel();
+    const hint = screen.getByText(ALSO_PICTURED_HINT);
+    expect(hint.id).not.toBe("");
+    expect(screen.getByLabelText(ALSO).getAttribute("data-described-by")).toBe(hint.id);
+  });
+
+  it("an add writes ONLY the also-pictured list, through its own mutation, and says so", async () => {
+    renderPanel({ card: makeCard({ secondaryPlayerIds: ids("cameo-1") }) });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Stub add cameo"));
+    });
+    await waitFor(() => {
+      expect(mockConvexMutation).toHaveBeenCalledWith(
+        "cardSecondaryPlayers.setSecondaryPlayers",
+        { cardId: CARD_ID, playerIds: ["cameo-1", "cameo-new"] },
+      );
+    });
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+    expect(await screen.findByText("Saved Also on this card")).toBeTruthy();
+  });
+
+  it("a remove writes the shortened list; the last one off writes []", async () => {
+    renderPanel({ card: makeCard({ secondaryPlayerIds: ids("cameo-1") }) });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Stub remove last cameo"));
+    });
+    await waitFor(() => {
+      expect(mockConvexMutation).toHaveBeenCalledWith(
+        "cardSecondaryPlayers.setSecondaryPlayers",
+        { cardId: CARD_ID, playerIds: [] },
+      );
+    });
+  });
+
+  it("refuses the card's own player beside the field, without a write", async () => {
+    renderPanel({ card: makeCard({ playerIds: ids("player-1"), secondaryPlayerIds: [] }) });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Stub add the card's own player as a cameo"));
+    });
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(ALREADY_A_PLAYER_MESSAGE);
+    expect(mockConvexMutation).not.toHaveBeenCalled();
+    // The picker reads the live row again: no chip appeared.
+    expect(screen.getByText("Also pictured:")).toBeTruthy();
+  });
+
+  it("shows the server's refusal inline and snaps back to the live row", async () => {
+    mockConvexMutation.mockRejectedValue(
+      new ConvexError("A card can have at most 20 people under Also on this card."),
+    );
+    renderPanel({ card: makeCard({ secondaryPlayerIds: ids("cameo-1") }) });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Stub add cameo"));
+    });
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("A card can have at most 20 people under Also on this card.");
+    expect(screen.getByText("Also pictured: cameo-1")).toBeTruthy();
+  });
+
+  it("falls back to a plain sentence when the write fails with no user-facing text", async () => {
+    mockConvexMutation.mockRejectedValue(new Error("Server Error"));
+    renderPanel();
+    await act(async () => {
+      fireEvent.click(screen.getByText("Stub add cameo"));
+    });
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Couldn't save Also on this card. Give it another go.");
+  });
+
+  it("a player made one of the card's own players leaves Also pictured", async () => {
+    // The stub's "add player" appends "player-new"; that player was a cameo.
+    renderPanel({
+      card: makeCard({
+        playerIds: ids("player-1"),
+        secondaryPlayerIds: ids("cameo-1", "player-new"),
+      }),
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Stub add player"));
+    });
+    await waitFor(() => {
+      expect(mockConvexMutation).toHaveBeenCalledWith(
+        "cardSecondaryPlayers.setSecondaryPlayers",
+        { cardId: CARD_ID, playerIds: ["cameo-1"] },
+      );
+    });
+    expect(mockUpdateCard).toHaveBeenCalledWith({
+      id: CARD_ID,
+      playerIds: ["player-1", "player-new"],
+    });
+    expect(
+      await screen.findByText("Saved Players and moved them out of Also on this card"),
+    ).toBeTruthy();
+  });
+
+  it("a Players write that touches no cameo leaves Also pictured alone", async () => {
+    renderPanel({
+      card: makeCard({ playerIds: ids("player-1"), secondaryPlayerIds: ids("cameo-1") }),
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Stub add player"));
+    });
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalled());
+    expect(mockConvexMutation).not.toHaveBeenCalled();
+  });
+
+  it("a refused Players write never touches Also pictured", async () => {
+    mockUpdateCard.mockRejectedValue(new ConvexError("Nope."));
+    renderPanel({
+      card: makeCard({ playerIds: ids("player-1"), secondaryPlayerIds: ids("player-new") }),
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Stub add player"));
+    });
+    await screen.findByRole("alert");
+    expect(mockConvexMutation).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * NEO-569 — the card's own league, directly under Teams. The row's picker and
+ * why-blank line are CardLeagueRow.test.tsx's; here, where the panel puts it
+ * and what one pick writes.
+ */
+describe("CardDetailPanel — the League row (NEO-569)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUpdateCard.mockResolvedValue(undefined);
+  });
+
+  it("sits directly under Teams, for this card", () => {
+    renderPanel();
+    const row = screen.getByLabelText("Card league row (stub)");
+    expect(row.getAttribute("data-card-id")).toBe(CARD_ID);
+    const teams = screen.getByLabelText("Team picker (stub)").parentElement!;
+    expect(teams.nextElementSibling).toBe(row);
+    // And ahead of the features editor that used to hold a League field.
+    const features = screen.getByLabelText("Show features editor");
+    expect(row.compareDocumentPosition(features) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("a pick writes only leagueId and says Saved League", async () => {
+    renderPanel();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Stub pick league" }));
+    });
+    expect(mockUpdateCard).toHaveBeenCalledTimes(1);
+    expect(mockUpdateCard).toHaveBeenCalledWith({ id: CARD_ID, leagueId: "league-al" });
+    await waitFor(() => expect(screen.getByText("Saved League")).toBeTruthy());
+  });
+
+  it("No league writes leagueId: null and says Cleared League", async () => {
+    renderPanel();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Stub clear league" }));
+    });
+    expect(mockUpdateCard).toHaveBeenCalledWith({ id: CARD_ID, leagueId: null });
+    await waitFor(() => expect(screen.getByText("Cleared League")).toBeTruthy());
+  });
+
+  it("a refusal announces nothing as saved", async () => {
+    mockUpdateCard.mockRejectedValueOnce(
+      new ConvexError("That league isn't in this card's sport."),
+    );
+    renderPanel();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Stub pick league" }));
+    });
+    expect(screen.queryByText("Saved League")).toBeNull();
+  });
+});
+
+describe("CardDetailPanel — No Team (NEO-556)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUpdateCard.mockResolvedValue(undefined);
+  });
+
+  const toggle = () => screen.getByRole("button", { name: "No Team for this card" });
+
+  it("offers No Team beside the picker, off for a card with no answer", () => {
+    renderPanel();
+    expect(toggle().getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("pressing it asks the server for the stamp alone, and says so", async () => {
+    renderPanel({ card: makeCard({ teamOnCardIds: ["team-1"] as unknown as Array<Id<"teams">> }) });
+    await act(async () => {
+      fireEvent.click(toggle());
+    });
+    expect(mockUpdateCard).toHaveBeenCalledTimes(1);
+    expect(mockUpdateCard).toHaveBeenCalledWith({ id: CARD_ID, teamNone: true });
+    expect(await screen.findByText("Saved No Team")).toBeTruthy();
+  });
+
+  it("while the save is out, the toggle reads pressed and the chips are gone", async () => {
+    let resolve: () => void = () => {};
+    mockUpdateCard.mockImplementationOnce(() => new Promise<void>((r) => (resolve = r)));
+    renderPanel({ card: makeCard({ teamOnCardIds: ["team-1"] as unknown as Array<Id<"teams">> }) });
+    act(() => {
+      fireEvent.click(toggle());
+    });
+    expect(toggle().getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByText("Teams:")).toBeTruthy();
+    await act(async () => resolve());
+  });
+
+  it("a stamped card shows it pressed; pressing again clears No Team (the card is teamless again)", async () => {
+    let resolve: () => void = () => {};
+    mockUpdateCard.mockImplementationOnce(() => new Promise<void>((r) => (resolve = r)));
+    renderPanel({ card: makeCard({ teamNoneConfirmedAt: 1 }) });
+    expect(toggle().getAttribute("aria-pressed")).toBe("true");
+    act(() => {
+      fireEvent.click(toggle());
+    });
+    // Off at once, while the write is out.
+    expect(toggle().getAttribute("aria-pressed")).toBe("false");
+    expect(mockUpdateCard).toHaveBeenCalledTimes(1);
+    expect(mockUpdateCard).toHaveBeenCalledWith({ id: CARD_ID, teamNone: false });
+    await act(async () => resolve());
+    expect(await screen.findByText("Cleared No Team")).toBeTruthy();
+    expect(screen.queryByText(/No Team stays/)).toBeNull();
+  });
+
+  it("a refused clear shows the server's sentence and the toggle reads the stamp again", async () => {
+    mockUpdateCard.mockRejectedValueOnce(new ConvexError("This card changed. Give it another go."));
+    renderPanel({ card: makeCard({ teamNoneConfirmedAt: 1 }) });
+    await act(async () => {
+      fireEvent.click(toggle());
+    });
+    expect(await screen.findByText("This card changed. Give it another go.")).toBeTruthy();
+    expect(toggle().getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("picking a team on a stamped card saves just the team (the server retires the stamp)", async () => {
+    renderPanel({ card: makeCard({ teamNoneConfirmedAt: 1 }) });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Stub add team" }));
+    });
+    expect(mockUpdateCard).toHaveBeenCalledWith({ id: CARD_ID, teamOnCardIds: ["team-new"] });
+    expect(mockUpdateCard.mock.calls[0][0]).not.toHaveProperty("teamNone");
+  });
+
+  it("a refused No Team shows the server's sentence and the toggle settles back", async () => {
+    mockUpdateCard.mockRejectedValueOnce(new ConvexError("Pick No Team or a team, not both."));
+    renderPanel();
+    await act(async () => {
+      fireEvent.click(toggle());
+    });
+    expect(await screen.findByText("Pick No Team or a team, not both.")).toBeTruthy();
+    expect(toggle().getAttribute("aria-pressed")).toBe("false");
   });
 });

@@ -19,6 +19,17 @@ import type { ThemeMode } from "../../src/theme/theme-mode";
 import { TOKENS, tokenHex } from "../../src/theme/tokens";
 import PickerPopover, { popoverFocusables } from "./PickerPopover";
 import SportSwitch from "./SportSwitch";
+import {
+  REMOVE_UNNAMED_PLAYER,
+  resolvePlayerPickerLabels,
+  type PlayerPickerLabels,
+} from "./player-picker-labels";
+import NameFragmentPanel, {
+  fragmentCheckChoices,
+  fragmentRefusalMatches,
+  isNameFragmentRefusal,
+  type NameFragmentMatch,
+} from "./NameFragmentPanel";
 
 /**
  * NEO-313 — a player row as the cross-sport search returns it. `players.search`
@@ -178,42 +189,23 @@ const NO_ROWS: PickerPlayerRow[] = [];
 const RESULT_STINT_LIMIT = 3;
 
 /**
- * NEO-220 — the four container-level accessible names, overridable per
- * instance. Every one of them is present whatever the picker's state, and
- * NONE of them carries a player's name, so they are exactly the labels that
- * collide when two PlayerPickers are on screen at once — which is now
- * reachable in `CardChecklist`, where the card drawer and the quick-add form
- * mount one each and neither hides the other.
+ * NEO-220 — the container-level accessible names, overridable per instance,
+ * because two PlayerPickers can be on screen at once (the card drawer and
+ * the quick-add form in `CardChecklist`, neither hiding the other).
  *
- * Whole strings rather than a prefix/suffix knob, deliberately. Maestro
- * selects by `resource-id` (= the aria-label) with a REGEX FIND, so a derived
- * label that contains the base one — "Add player to new card" — would make the
- * drawer's own `id: "Add player"` match BOTH elements: strictly worse than the
- * collision it set out to fix. Every override below is checked to share no
- * substring with its default in either direction.
+ * NEO-528 — and now every name the picker renders, chips and options
+ * included, because the card drawer mounts TWO: Players and "Also on this card".
+ * The same player can never be on both lists (the server keeps a card's own
+ * players out of its also-pictured list), but a spec's `Remove player X` or
+ * `/^Remove player /` matches by substring, so the second picker's chips must
+ * not read like the first's. The sets and the rule they keep live in
+ * `player-picker-labels.ts`.
  *
- * Chip and option labels ("Player: Mike Trout", "Add Mike Trout", "Create
- * player X") are deliberately NOT overridable: they carry the player's name,
- * which is the disambiguator, and the existing drawer flows target them that
- * way.
+ * Whole strings rather than a prefix/suffix knob, deliberately: a derived
+ * label that contains the base one ("Add player to new card") makes a
+ * locator for the base match BOTH elements.
  */
-export type PlayerPickerLabels = {
-  /** The chip row's own name. Default "Player picker". */
-  root: string;
-  /** The "+ Add player" trigger. Default "Add player". */
-  trigger: string;
-  /** The popover's search input. Default "Search players". */
-  search: string;
-  /** The popover listbox. Default "Player typeahead results". */
-  results: string;
-};
-
-const DEFAULT_LABELS: PlayerPickerLabels = {
-  root: "Player picker",
-  trigger: "Add player",
-  search: "Search players",
-  results: "Player typeahead results",
-};
+export type { PlayerPickerLabels } from "./player-picker-labels";
 
 /**
  * NEO-25 — multi-select player picker. Mirrors `TeamPicker`'s chip/popover
@@ -251,7 +243,10 @@ export default function PlayerPicker({
   onChange,
   sportId,
   disabled,
-  labels = DEFAULT_LABELS,
+  labels: labelsProp,
+  ariaDescribedBy,
+  roomyTriggerOnPhones = false,
+  chipLook = "filled",
 }: {
   value: Array<Id<"players">>;
   onChange: (next: Array<Id<"players">>) => void;
@@ -264,13 +259,34 @@ export default function PlayerPicker({
   sportId?: Id<"selectorOptions">;
   disabled?: boolean;
   /**
-   * Accessible names for this instance's four container controls. Omit on the
-   * one picker a screen can be sure of having only one of; pass all four when a
-   * second picker can be mounted alongside it. All four together, never a
-   * subset — a half-renamed instance is a collision you then have to find.
+   * Accessible names for this instance. Omit on the one picker a screen can
+   * be sure of having only one of; when a second picker can be mounted
+   * alongside it, pass a whole set from `player-picker-labels.ts` (the four
+   * container names at least, never a subset of those — a half-renamed
+   * instance is a collision you then have to find).
    */
   labels?: PlayerPickerLabels;
+  /**
+   * NEO-528 — id(s) of a visible hint about this field, read with the "+ Add"
+   * trigger (the control a keyboard user lands on).
+   */
+  ariaDescribedBy?: string;
+  /**
+   * NEO-528 — the "+ Add" trigger grows to a 32px, text-sm target below
+   * 768px (Radix's `sm`), to sit level with full-size NeonButtons beside it
+   * on a phone (the Set Builder's bulk "Also on every card" row). Off, it is
+   * the compact 24px box everywhere.
+   */
+  roomyTriggerOnPhones?: boolean;
+  /**
+   * NEO-528 — how a chip is drawn. `filled` (the chip grey) for a value that
+   * is saved as it is picked; `outline` (a clear chip with a solid edge) for a
+   * pick that is only a choice until an action stores it, so it never reads
+   * as a stored chip beside it (the "Player on every card" pick).
+   */
+  chipLook?: "filled" | "outline";
 }) {
+  const labels = resolvePlayerPickerLabels(labelsProp);
   const { mode } = useTheme();
   const selectedRows = useQuery(api.players.getManyByIds, { ids: value });
   const setSportPool = useQuery(
@@ -360,6 +376,13 @@ export default function PlayerPicker({
    * `userFacingMessage`).
    */
   const [createError, setCreateError] = useState<string | null>(null);
+  /**
+   * NEO-463 — the typed name the fragment panel is about, or null when it is
+   * shut. See `fragmentCheck` below.
+   */
+  const [fragmentFor, setFragmentFor] = useState<string | null>(null);
+  /** Matches a refusal carried, for when the check had not answered yet. */
+  const [refusalMatches, setRefusalMatches] = useState<NameFragmentMatch[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -375,6 +398,8 @@ export default function PlayerPicker({
    * `Node.contains()` is a DOM question, and both dismissal paths ask it.
    */
   const popoverRef = useRef<HTMLDivElement | null>(null);
+  /** NEO-463 — the fragment panel, for Enter in the search box to return to. */
+  const fragmentPanelRef = useRef<HTMLDivElement | null>(null);
 
   /** Inside the picker as the OPERATOR sees it: the chip row or the popover. */
   const insidePicker = (node: Node | null) =>
@@ -415,6 +440,7 @@ export default function PlayerPicker({
       setPopoverOpen(false);
       setQuery("");
       setCreateError(null);
+      setFragmentFor(null);
     };
     document.addEventListener("pointerdown", onPointerDown);
     return () => document.removeEventListener("pointerdown", onPointerDown);
@@ -496,6 +522,33 @@ export default function PlayerPicker({
   const showCreateOption =
     query.trim().length > 0 && !hasExactMatch && !!activeSportId;
 
+  /**
+   * NEO-463 — is the name "+ Create" would add only a piece of a fuller one
+   * on file ("Walker" when "Devin Walker" exists)? Asked only while Create is
+   * on offer, so a picker that is just searching never subscribes. The server
+   * owns the rule; an unanswered check lets Create go through, and the
+   * mutation's own `PLAYER_NAME_FRAGMENT` refusal opens the panel instead.
+   */
+  const fragmentCheck = useQuery(
+    api.players.nameFragmentCheck,
+    showCreateOption && activeSportId
+      ? { name: typed, sportId: activeSportId }
+      : "skip",
+  );
+  const fragmentShown =
+    popoverOpen && fragmentFor !== null && fragmentFor === typed;
+  // A truncated check withholds its list (`[]`), and the panel falls back to
+  // "Type the whole name"; with no check in hand, a refusal's own list.
+  const checkChoices = fragmentCheckChoices(fragmentCheck);
+  const fragmentMatches: ReadonlyArray<NameFragmentMatch> =
+    checkChoices !== null && (fragmentCheck?.truncated || checkChoices.length > 0)
+      ? checkChoices
+      : refusalMatches;
+  const closeFragment = () => {
+    setFragmentFor(null);
+    setRefusalMatches([]);
+  };
+
   const removeChip = (idToRemove: Id<"players">) => {
     if (disabled) return;
     onChange(value.filter((id) => id !== idToRemove));
@@ -510,11 +563,17 @@ export default function PlayerPicker({
     setTimeout(() => inputRef.current?.focus(), 0);
   };
 
-  const createAndAdd = async () => {
+  const createAndAdd = async (oneNamePlayer = false) => {
     const name = query.trim();
     // `creating` guard: re-entry protection now that the button stays mounted
     // (and clickable — `aria-disabled`, not `disabled`) for the request.
     if (!name || disabled || creating) return;
+    // NEO-463 — a fragment stops here and asks, before any write.
+    if (!oneNamePlayer && fragmentCheck?.isFragment) {
+      setCreateError(null);
+      setFragmentFor(name);
+      return;
+    }
     setCreating(true);
     setCreateError(null);
     try {
@@ -522,9 +581,21 @@ export default function PlayerPicker({
       // NEO-313: created in the sport being SEARCHED. After a switch that is
       // the operator's explicit choice, and the new player is filed under it —
       // never under the set's sport by default.
-      const id = await findOrCreate({ name, sportId: activeSportId });
+      const id = await findOrCreate({
+        name,
+        sportId: activeSportId,
+        ...(oneNamePlayer ? { oneNamePlayer: true as const } : {}),
+      });
+      closeFragment();
       addChip(id);
     } catch (err) {
+      // NEO-463 — the server's own fragment refusal (the check had not
+      // answered yet) opens the panel rather than an error line.
+      if (isNameFragmentRefusal(err)) {
+        setRefusalMatches(fragmentRefusalMatches(err));
+        setFragmentFor(name);
+        return;
+      }
       // The ConvexError's `data`, never `.message`: production redacts a plain
       // Error, and a surviving message arrives wrapped in "[CONVEX M(...)]
       // [Request ID: ...]" noise. The query is left alone so "+ Create" stays
@@ -542,6 +613,7 @@ export default function PlayerPicker({
     setPopoverOpen(false);
     setQuery("");
     setCreateError(null);
+    closeFragment();
     setTimeout(() => triggerRef.current?.focus(), 0);
   };
 
@@ -574,11 +646,15 @@ export default function PlayerPicker({
       setPopoverOpen(false);
       setQuery("");
       setCreateError(null);
+      closeFragment();
     }, 0);
   };
 
   // Highlight index spans matches PLUS the trailing "create" row when shown.
-  const rowCount = matches.length + (showCreateOption ? 1 : 0);
+  // NEO-463: none while the fragment panel stands in for the rows.
+  const rowCount = fragmentShown
+    ? 0
+    : matches.length + (showCreateOption ? 1 : 0);
 
   return (
     <div
@@ -590,11 +666,13 @@ export default function PlayerPicker({
       {value.map((id) => (
         <span
           key={id}
-          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-chip text-xs"
+          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs ${
+            chipLook === "outline" ? "border border-control text-ink" : "bg-chip"
+          }`}
         >
           <span
             className="truncate max-w-[140px]"
-            aria-label={`Player: ${labelById.get(id as unknown as string) ?? "Loading…"}`}
+            aria-label={labels.chip(labelById.get(id as unknown as string) ?? "Loading…")}
           >
             {labelById.get(id as unknown as string) ?? "Loading…"}
           </span>
@@ -609,7 +687,11 @@ export default function PlayerPicker({
             type="button"
             disabled={disabled}
             onClick={() => removeChip(id)}
-            aria-label={`Remove player ${labelById.get(id as unknown as string) ?? id}`}
+            // While the name loads, a plain name rather than the raw id.
+            aria-label={(() => {
+              const name = labelById.get(id as unknown as string);
+              return name === undefined ? REMOVE_UNNAMED_PLAYER : labels.remove(name);
+            })()}
             // NEO-356: on the chip's grey, pink TEXT is 3:1 in dark and ink-3 is
             // 3.9:1 (tokens.ts TEXT_NEVER_ON). Quiet ink-2 at rest; under the
             // pointer or focus the × takes a pink FILL with black ink (6:1 in
@@ -645,10 +727,16 @@ export default function PlayerPicker({
             first.focus();
           }}
           aria-label={labels.trigger}
+          aria-describedby={ariaDescribedBy}
           aria-expanded={popoverOpen}
-          className="px-2 py-0.5 text-xs rounded border border-dashed border-control hover:border-neon-green-text focus:border-neon-green-text focus-outline text-ink-2"
+          // a11y (WCAG 2.5.8, NEO-528) — a real 24px box, not a hit-area
+          // pseudo: text-xs + py-0.5 + the border drew 22px. Every caller
+          // takes it from here, never per call site.
+          className={`inline-flex min-h-6 items-center px-2 py-0.5 text-xs rounded border border-dashed border-control hover:border-neon-green-text focus:border-neon-green-text focus-outline text-ink-2${
+            roomyTriggerOnPhones ? " max-md:min-h-8 max-md:px-3 max-md:text-sm" : ""
+          }`}
         >
-          + Add player
+          + {labels.triggerText}
         </button>
 
         {popoverOpen && (
@@ -674,12 +762,15 @@ export default function PlayerPicker({
               ref={inputRef}
               type="text"
               value={query}
-              placeholder="Search or add a player..."
+              placeholder={labels.placeholder}
               aria-label={labels.search}
               onChange={(e) => {
                 // The refusal described the name that was in this box; the
                 // next keystroke makes it stale, so it goes with the query.
                 setCreateError(null);
+                // NEO-463: the fragment panel is about the name that was in
+                // this box, so it goes with the query too.
+                closeFragment();
                 setQuery(e.target.value);
               }}
               onKeyDown={(e) => {
@@ -694,7 +785,11 @@ export default function PlayerPicker({
                   setHighlightIdx((i) => Math.max(i - 1, 0));
                 } else if (e.key === "Enter") {
                   e.preventDefault();
-                  if (highlightIdx < matches.length) {
+                  // NEO-463: the rows are hidden behind the fragment panel, so
+                  // Enter here hands focus back to it rather than picking one.
+                  if (fragmentShown) {
+                    fragmentPanelRef.current?.focus();
+                  } else if (highlightIdx < matches.length) {
                     const pick = matches[highlightIdx];
                     if (pick) addChip(pick._id);
                   } else if (showCreateOption) {
@@ -713,9 +808,10 @@ export default function PlayerPicker({
             />
 
             {createError && (
-              // a11y: NOT the brand pink — on this popover's graphite it is
-              // 4.4:1, under WCAG 1.4.3's 4.5:1 floor for normal text. The
-              // danger notice ink clears 4.5:1 on the popover in both modes.
+              // a11y: the error ink is the brand pink (`notice-danger-ink` IS
+              // `neon-pink-text`, NEO-606). The popover is `bg-raised`, where
+              // it reads 4.55:1 in dark and 5.92:1 in light, past WCAG
+              // 1.4.3's 4.5:1 floor for normal text.
               <p
                 role="alert"
                 className="px-2 py-1 text-xs text-notice-danger-ink"
@@ -731,7 +827,7 @@ export default function PlayerPicker({
               matches.length === 0 &&
               query.trim().length === 0 && (
                 <div className="text-xs text-ink-3 px-2 py-1">
-                  Type a player name…
+                  {labels.emptyHint}
                 </div>
               )}
             <div
@@ -739,13 +835,16 @@ export default function PlayerPicker({
               aria-label={labels.results}
               className="space-y-1"
             >
-              {matches.map((m, idx) => (
+              {/* NEO-463: while the fragment panel is up it IS the answer, so
+                  the rows step aside rather than list the same names twice.
+                  The listbox itself stays, as it does for every open state. */}
+              {!fragmentShown && matches.map((m, idx) => (
                 <button
                   key={m._id}
                   type="button"
                   onClick={() => addChip(m._id)}
                   onMouseEnter={() => setHighlightIdx(idx)}
-                  aria-label={`Add ${m.name}`}
+                  aria-label={labels.option(m.name)}
                   role="option"
                   aria-selected={idx === highlightIdx}
                   className={`w-full text-left px-2 py-1 text-sm rounded ${
@@ -808,7 +907,7 @@ export default function PlayerPicker({
                   )}
                 </button>
               ))}
-              {showCreateOption && (
+              {showCreateOption && !fragmentShown && (
                 <button
                   type="button"
                   // NEO-220: `aria-disabled`, not `disabled` — the row stays
@@ -820,7 +919,7 @@ export default function PlayerPicker({
                   aria-disabled={creating || undefined}
                   onClick={() => void createAndAdd()}
                   onMouseEnter={() => setHighlightIdx(matches.length)}
-                  aria-label={`Create player ${query.trim()}`}
+                  aria-label={labels.create(query.trim())}
                   role="option"
                   aria-selected={highlightIdx === matches.length}
                   className={`w-full text-left px-2 py-1 text-sm rounded border-t border-rule-strong ${
@@ -838,6 +937,37 @@ export default function PlayerPicker({
               )}
             </div>
 
+            {fragmentShown && (
+              <NameFragmentPanel
+                compact
+                autoFocus
+                panelRef={fragmentPanelRef}
+                name={typed}
+                matches={fragmentMatches}
+                // The picker's own verb: a press adds the player to the card,
+                // as a typeahead row would. The rows are hidden while this is
+                // up, so the names cannot collide.
+                pickLabel={labels.option}
+                disabled={disabled}
+                confirmBusy={creating}
+                onPick={(id) => {
+                  closeFragment();
+                  const pick = id as Id<"players">;
+                  if (value.includes(pick)) {
+                    setQuery("");
+                    setTimeout(() => inputRef.current?.focus(), 0);
+                    return;
+                  }
+                  addChip(pick);
+                }}
+                onConfirm={() => void createAndAdd(true)}
+                onDismiss={() => {
+                  closeFragment();
+                  setTimeout(() => inputRef.current?.focus(), 0);
+                }}
+              />
+            )}
+
             {/* NEO-313 — the cross-sport override, last in the popover and
                 quiet on purpose: it is used rarely, it must never be the
                 default focus (the search box keeps that), and it sits below
@@ -849,7 +979,7 @@ export default function PlayerPicker({
                   // Only one picker's popover is ever open, but the review
                   // wizard's own switch ("Sport for this name") can share the
                   // screen, so this one is worded apart from it.
-                  label="Sport to search for players"
+                  label={labels.sportSwitch}
                   value={activeSportId ?? sportId}
                   setSportId={sportId}
                   disabled={disabled}

@@ -16,15 +16,16 @@
  * Feature keys mirror `EXPECTED_FEATURES` in ./expectedFeatures.ts.
  */
 
-export const SPORT_TO_LEAGUE: Record<string, string> = {
-  Baseball: "MLB",
-  Basketball: "NBA",
-  Football: "NFL",
-  Hockey: "NHL",
-};
-
-/** Selectable options for the League feature (NEO-72). */
-export const LEAGUE_OPTIONS: ReadonlyArray<string> = Object.values(SPORT_TO_LEAGUE);
+/**
+ * NEO-569 — feature keys that are RETIRED: moved to a typed field and never
+ * minted, copied or edited as a feature again. `league` became
+ * `selectorOptions.leagueIds` (a set's NB leagues) and
+ * `cardChecklist.leagueId` (a card's). The old sport-to-"MLB" derivation is
+ * gone; every copy-down (`inheritableFeatures`, `mergeCardFeatures`) drops the
+ * key, the edit doors refuse it, and only the armed `leagueBackfill.ts` reads
+ * the legacy text (to resolve it once, then strip it).
+ */
+export const RETIRED_FEATURE_KEYS: ReadonlySet<string> = new Set(["league"]);
 
 /**
  * eBay-standard "Era" item-specific buckets, named so the Era select
@@ -114,14 +115,18 @@ export const NODE_ONLY_FEATURE_KEYS: ReadonlySet<string> = new Set([
 
 /**
  * A parent's `features` as a new child (node or card) inherits them: every
- * key except `NODE_ONLY_FEATURE_KEYS`. Every creation-time copy-down spreads
- * this instead of the parent's raw map. A fresh object; never the input.
+ * key except `NODE_ONLY_FEATURE_KEYS` and (NEO-569) `RETIRED_FEATURE_KEYS` —
+ * a sport row from the reference seed still carries `league: "MLB"`, and
+ * copying it down would re-mint what the backfill strips. Every creation-time
+ * copy-down spreads this instead of the parent's raw map. A fresh object;
+ * never the input.
  */
 export function inheritableFeatures(
   features: Readonly<Record<string, string>> | undefined,
 ): Record<string, string> {
   const out: Record<string, string> = { ...(features ?? {}) };
   for (const key of NODE_ONLY_FEATURE_KEYS) delete out[key];
+  for (const key of RETIRED_FEATURE_KEYS) delete out[key];
   return out;
 }
 
@@ -180,7 +185,7 @@ function parseYear(year: string | undefined): number | null {
 
 /**
  * Features derivable from the set hierarchy alone (independent of the
- * individual card): league, era, vintage, season, manufacturer, cardType,
+ * individual card): era, vintage, season, manufacturer, cardType,
  * isReprint, autographed, cardSize, cardMaterial, language.
  */
 export function deriveSetLevelFeatures(
@@ -188,11 +193,9 @@ export function deriveSetLevelFeatures(
 ): Record<string, string> {
   const f: Record<string, string> = {};
 
-  // League — only for the four stick-and-ball sports (matches
-  // EXPECTED_FEATURES.applicableSports). Other sports get no league.
-  if (inputs.sport && SPORT_TO_LEAGUE[inputs.sport]) {
-    f.league = SPORT_TO_LEAGUE[inputs.sport];
-  }
+  // NEO-569 — no League here any more: a set's leagues are NB rows
+  // (`selectorOptions.leagueIds`), defaulted at set creation, never a string
+  // derived from the sport's name.
 
   // Era + Vintage — from the 4-digit year.
   const yearNum = parseYear(inputs.year);
@@ -254,7 +257,7 @@ export function deriveSetLevelFeatures(
 }
 
 const LEVEL_HEURISTIC_KEYS: Partial<Record<string, string[]>> = {
-  sport: ["league"],
+  // NEO-569 — `sport: ["league"]` retired; a sport row derives nothing.
   year: ["era", "vintage", "season"],
   manufacturer: ["manufacturer"],
   // variantType (Base) also gets a "Base" parallelName default — see
@@ -363,14 +366,8 @@ export function deriveBackfillFeatures(
  * rejects an era write that doesn't match the fixed bucket set, in case a
  * caller bypasses the `<select>` UI. No-op for every other feature key.
  *
- * NOT applied to "league": unlike era's closed 4-bucket taxonomy, league is
- * open-ended in the real world (NPB, KBO, CPBL, minor-league systems, etc.).
- * `LEAGUE_OPTIONS` covers only the 4 primary US leagues for the frontend
- * `<select>`'s common case; an operator overriding league via
- * `setSelectorOptionFeature` for an international/niche set (e.g. "NPB" for
- * a Japanese release — a pre-existing, tested capability predating this
- * guard) legitimately needs values outside that list. Hard-rejecting here
- * would silently break real product functionality, not just a bypassed UI.
+ * NEO-569: "league" is not a feature any more (see `RETIRED_FEATURE_KEYS`);
+ * the doors refuse the key before this guard is reached.
  */
 export function validateFeatureValue(key: string, value: string): void {
   if (key === "era" && !ERA_BUCKET_OPTIONS.includes(value)) {

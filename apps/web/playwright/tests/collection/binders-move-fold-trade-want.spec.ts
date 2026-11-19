@@ -39,7 +39,7 @@
 // Minted names are single tokens from `env.ATTEMPT_TOKEN` (never rebuilt by
 // hand), so the binders of this run are this run's alone.
 import type { Locator } from "@playwright/test";
-import { drillToCollectorBase, goViaShell, ordinaryBaseRows, shortNameOf } from "../../support/collection";
+import { confirmRemoved, drillToCollectorBase, goViaShell, ordinaryBaseRows, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -424,11 +424,16 @@ test(
     await expect(heading(binderA)).toBeVisible();
     const hunt = page.getByRole("searchbox", { name: "Hunt for one of your cards" });
     await hunt.fill(`${three.player} ${three.number}`);
+    // The hunt finds the base card and its parallels. A parallel puts its name
+    // after the team, or in the team's place when the copy has none, so its button
+    // can read like the base card's. The base card is the one whose caption is the
+    // plain checklist, "2024 Topps Chrome".
     await page
+      .getByRole("region", { name: "Card hunt" })
+      .getByRole("listitem")
+      .filter({ has: page.getByText("2024 Topps Chrome", { exact: true }) })
       .getByRole("button", {
-        // The hunt finds the base card and its parallels ("..., Orioles, Gold Wave
-        // Refractors"): the base card's name stops at the team.
-        name: new RegExp(`^Slot in 2024 Topps Chrome #${escapeRegExp(three.number)} ${escapeRegExp(three.player)}, [^,]+$`),
+        name: new RegExp(`^Slot in 2024 Topps Chrome #${escapeRegExp(three.number)} ${escapeRegExp(three.player)}(,|$)`),
       })
       .click();
     await page
@@ -555,6 +560,7 @@ test(
     await expect(line("Raw, Excellent ×3").getByText("Main")).toBeVisible();
     await yourCopies.getByRole("button", { name: `Remove ${one.short}, Raw, Excellent ×3`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+    await confirmRemoved(drawer, `Removed ${one.short}, Raw, Excellent ×3`);
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
 

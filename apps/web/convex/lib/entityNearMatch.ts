@@ -21,7 +21,11 @@
  * way.
  */
 
-import { playerNamesMatch, teamNamesMatch } from "./pairing/names";
+import {
+  normalizePlayerName,
+  playerNamesMatch,
+  teamNamesMatch,
+} from "./pairing/names";
 // NEO-253: the shared normalisation core. Re-exported below under the names
 // this module has always published, and used directly by the ranking helpers.
 import {
@@ -232,6 +236,15 @@ export function rankTeamCandidates(
 }
 
 /**
+ * Tokens in a player name as the `playerNamesMatch` ladder counts them
+ * (suffixes and punctuation stripped), so "Williams Jr." is one and
+ * "J. Williams" is two. NEO-578.
+ */
+function playerNameTokenCount(raw: string): number {
+  return normalizePlayerName(raw).split(" ").filter(Boolean).length;
+}
+
+/**
  * Rank existing players against a player name the operator is about to create.
  *
  * `exact` is normalised equality, as for teams. `close` is any rung of the
@@ -241,6 +254,17 @@ export function rankTeamCandidates(
  * generational suffixes, so it calls "Ken Griffey Jr" and "Ken Griffey" an
  * exact match, and those are two different people often enough that the
  * operator should see the prompt rather than a settled answer.
+ *
+ * NEO-578: rung 4 of that ladder ("surname-only on either side") exists for
+ * card-photo pairing, where a front prints just "BUEHLER". Here the query is a
+ * name the operator is about to create, and a stored "Williams" is not the same
+ * person as "Jonah Williams" (Jason: "we should not match surname only people
+ * here unless the player is only a surname"). So when the query has two or more
+ * tokens, a one-token stored name is dropped. A one-token query is untouched,
+ * which keeps the NEO-463 fragment flow ("Walker" -> fuller names). Counted
+ * with the ladder's own `normalizePlayerName` (suffixes stripped), so a stored
+ * "Williams Jr." is one token here exactly as it is to rung 4. The ladder
+ * itself is left alone: pairing and its Python port depend on that rung.
  */
 export function rankPlayerCandidates(
   query: string,
@@ -248,6 +272,7 @@ export function rankPlayerCandidates(
 ): RankedNearMatch[] {
   const normalizedQuery = normalizeEntityName(query);
   if (!normalizedQuery) return [];
+  const queryIsFullName = playerNameTokenCount(query) >= 2;
 
   const scored: ScoredCandidate[] = [];
   candidates.forEach((candidate, index) => {
@@ -257,6 +282,9 @@ export function rankPlayerCandidates(
       scored.push({ index, confidence: "exact", name: candidate.name, shared });
       return;
     }
+
+    // NEO-578: a full-name query never lands on a surname-only row.
+    if (queryIsFullName && playerNameTokenCount(candidate.name) <= 1) return;
 
     if (playerNamesMatch(query, candidate.name).match) {
       scored.push({ index, confidence: "close", name: candidate.name, shared });

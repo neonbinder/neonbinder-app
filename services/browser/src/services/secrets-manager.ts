@@ -1,4 +1,5 @@
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
+import { bscTarget } from '../bsc-endpoints';
 
 /**
  * The shape stored in one Secret Manager secret.
@@ -72,6 +73,14 @@ export interface Credentials {
    * tries the cookie and lets B2C answer.
    */
   ssoExpiresAt?: number;
+  /**
+   * eBay only. NEO-415. The seller's IMMUTABLE eBay user id (Commerce
+   * Identity `userId`), captured at connect. `username` is the seller's
+   * display name on eBay and can change; this cannot, so seller-conflict
+   * detection and the Marketplace Account Deletion notification (which names
+   * the userId) key on it. An identifier, not credential material.
+   */
+  ebayUserId?: string;
 }
 
 /**
@@ -109,6 +118,54 @@ function parseCookieMap(value: unknown): Record<string, string> | undefined {
 }
 
 const KEY_PATTERN = /^[a-z0-9]+-credentials-[a-zA-Z0-9_-]+$/;
+
+/**
+ * NEO-552: the marker of a per-deployment fake-BSC session key,
+ * `buysportscards-credentials-fake-<convexSlug>-<clerkUserId>`.
+ *
+ * Convex sends this form instead of the bare per-user key when its deployment
+ * is wired to the fake BSC, so two deployments that sign in the same Clerk
+ * test user keep separate sessions (one Secret Manager store per GCP project
+ * would otherwise make the later seed overwrite the earlier run's session).
+ * The key passes KEY_PATTERN unchanged, so the release contract is untouched;
+ * these rules narrow what is accepted, they widen nothing.
+ */
+const FAKE_KEY_MARKER = '-credentials-fake-';
+/**
+ * Only BSC and eBay have a fake (NEO-555 widened this from BSC alone): any
+ * other site carrying the marker is refused. eBay's form is
+ * `ebay-credentials-fake-<convexSlug>-<clerkUserId>`, for the same reason
+ * BSC's is, and gets the same 72 h expiry (it is the marker, not the site,
+ * that selects the lifecycle).
+ */
+const FAKE_KEY_PATTERN = /^(?:buysportscards|ebay)-credentials-fake-[a-zA-Z0-9_-]+$/;
+
+/**
+ * NEO-552: how long a fake-BSC session secret outlives its last write.
+ *
+ * Previews and worktree deployments are many and short-lived, and Secret
+ * Manager bills every live version, so a fake key must not live forever. Every
+ * write to it (the seed's sign-in, each hourly refresh) pushes the expiry back
+ * to now + 72 h, so a secret in use never expires mid-run, and one abandoned
+ * with its deployment is deleted, versions and all, three days later. Real
+ * keys get no expiry, ever: a user's session is not ours to time out.
+ */
+export const FAKE_CREDENTIAL_TTL_MS = 72 * 60 * 60 * 1000;
+
+/** True for a key in the per-deployment fake-BSC form (see FAKE_KEY_MARKER). */
+export function isFakeCredentialKey(key: string): boolean {
+  return key.includes(FAKE_KEY_MARKER);
+}
+
+/** The site prefix of a key that passed KEY_PATTERN (`<site>-credentials-...`). */
+function siteOf(key: string): string {
+  return key.slice(0, key.indexOf('-credentials-'));
+}
+
+/** The `expireTime` a fake-key write sets: now + FAKE_CREDENTIAL_TTL_MS, whole seconds. */
+function fakeExpireTime(now: number): { seconds: number } {
+  return { seconds: Math.floor((now + FAKE_CREDENTIAL_TTL_MS) / 1000) };
+}
 
 /**
  * Retry budget for a Secret Manager call refused with RESOURCE_EXHAUSTED.
@@ -191,8 +248,15 @@ const GRPC_RESOURCE_EXHAUSTED = 8;
  */
 const GRPC_FAILED_PRECONDITION = 9;
 
+/** The service could not be reached right now; transient (NEO-604). */
+const GRPC_UNAVAILABLE = 14;
+
 function isResourceExhaustedError(err: any): boolean {
   return err?.code === GRPC_RESOURCE_EXHAUSTED;
+}
+
+function isUnavailableError(err: any): boolean {
+  return err?.code === GRPC_UNAVAILABLE;
 }
 
 function isFailedPreconditionError(err: any): boolean {
@@ -200,24 +264,72 @@ function isFailedPreconditionError(err: any): boolean {
 }
 
 /**
- * Run a Secret Manager call, retrying it on RESOURCE_EXHAUSTED only.
+ * Retry budget for a Secret Manager call that failed with UNAVAILABLE (NEO-604).
+ *
+ * UNAVAILABLE is the transport saying "the service could not be reached right
+ * now" (a dropped connection, a Google front end restarting). A CI seed saw
+ * one on an EasyPost key write after 37 ms, which the route turned into a 500
+ * for a failure one more attempt would have ridden out. ONE retry, after a
+ * jittered 100-300 ms, so the most this adds to a call is 300 ms plus the
+ * failed attempt (which is fast: UNAVAILABLE is a connect-level failure, not a
+ * timeout). The retry budget is separate from the quota one, so a call refused
+ * on quota and then on a blip still gets both.
+ *
+ * DEADLINE_EXCEEDED (4) is deliberately NOT retried. By the time it is
+ * reported the call has already spent its whole deadline (5 s on a read,
+ * the client's default on a write), so a retry would double a wait the callers
+ * cannot afford, and on a write the request has very likely landed.
+ */
+const UNAVAILABLE_RETRY_BASE_MS = 200;
+
+/**
+ * Filled in by `withQuotaRetry` so a caller can learn that an attempt of a
+ * NON-idempotent call was retried after UNAVAILABLE. UNAVAILABLE does not say
+ * the first attempt did not execute: the connection can drop after the server
+ * committed. A write whose retry flag is set may therefore have created two
+ * versions (see `updateCredentials`, which prunes a second one when it is).
+ */
+export interface RetryOutcome {
+  unavailableRetried: boolean;
+}
+
+/**
+ * Run a Secret Manager call, retrying it on RESOURCE_EXHAUSTED (up to twice)
+ * and on UNAVAILABLE (once).
  *
  * Every other error propagates at once: they are answers (NOT_FOUND,
  * FAILED_PRECONDITION) or faults a retry will not fix. Exported for the
  * SportLots automated-access reader, which talks to the client directly.
  */
-export async function withQuotaRetry<T>(call: () => Promise<T>): Promise<T> {
-  for (let attempt = 0; ; attempt++) {
+export async function withQuotaRetry<T>(
+  call: () => Promise<T>,
+  outcome?: RetryOutcome,
+): Promise<T> {
+  let quotaRetries = 0;
+  let unavailableRetries = 0;
+  for (;;) {
     try {
       return await call();
     } catch (err: any) {
-      const base = QUOTA_RETRY_DELAYS_MS[attempt];
-      if (!isResourceExhaustedError(err) || base === undefined) throw err;
-      // Jitter, so a herd of refused callers does not retry in lockstep.
-      const delay = Math.round(base * (0.5 + Math.random()));
-      console.warn(
-        JSON.stringify({ msg: "secret_manager_quota_retry", attempt: attempt + 1, delayMs: delay }),
-      );
+      let delay: number;
+      if (isResourceExhaustedError(err)) {
+        const base = QUOTA_RETRY_DELAYS_MS[quotaRetries];
+        if (base === undefined) throw err;
+        quotaRetries++;
+        // Jitter, so a herd of refused callers does not retry in lockstep.
+        delay = Math.round(base * (0.5 + Math.random()));
+        console.warn(
+          JSON.stringify({ msg: "secret_manager_quota_retry", attempt: quotaRetries, delayMs: delay }),
+        );
+      } else if (isUnavailableError(err)) {
+        if (unavailableRetries >= 1) throw err;
+        unavailableRetries++;
+        if (outcome) outcome.unavailableRetried = true;
+        delay = Math.round(UNAVAILABLE_RETRY_BASE_MS * (0.5 + Math.random()));
+        console.warn(JSON.stringify({ msg: "secret_manager_unavailable_retry", delayMs: delay }));
+      } else {
+        throw err;
+      }
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
@@ -270,8 +382,33 @@ function isAlreadyExistsError(err: any): boolean {
   );
 }
 
+/**
+ * Refuse a malformed key before any Secret Manager call. Every refusal throws
+ * the same fixed message, which the routes map to a 400 with a fixed body.
+ *
+ * NEO-552 adds refusals for the fake key form (NEO-555 widened the sites from
+ * BSC alone to BSC and eBay, and added the prod one):
+ *   - on any site but `buysportscards` and `ebay` (only those have a fake),
+ *   - while ENVIRONMENT=prod, and
+ *   - while this process talks to REAL BSC (`bscTarget()` is "real"). A fake
+ *     key reaching a real-mode revision means a test deployment is wired to
+ *     the wrong browser service; storing its session here would put a test
+ *     secret in the real store and hand real BSC a fake account. Prod can
+ *     never resolve the fake (bsc-endpoints.ts), so prod refuses every fake key.
+ *
+ * The log line names the reason only, never the key.
+ */
 function validateKeyFormat(key: string): void {
   if (!KEY_PATTERN.test(key)) {
+    throw new Error("Invalid credential key format");
+  }
+  if (!isFakeCredentialKey(key)) return;
+  let reason: string | undefined;
+  if (!FAKE_KEY_PATTERN.test(key)) reason = 'fake_key_unsupported_site';
+  else if ((process.env.ENVIRONMENT ?? '').trim() === 'prod') reason = 'fake_key_in_prod';
+  else if (bscTarget() !== 'fake') reason = 'fake_key_on_real_bsc_target';
+  if (reason) {
+    console.warn(JSON.stringify({ msg: 'credential_key_refused', reason }));
     throw new Error("Invalid credential key format");
   }
 }
@@ -366,6 +503,11 @@ export class SecretsManagerService {
       if (ssoCookies) result.ssoCookies = ssoCookies;
       if (typeof credentials.ssoExpiresAt === "number") {
         result.ssoExpiresAt = credentials.ssoExpiresAt;
+      }
+      // NEO-415: without this line a stored ebayUserId is dropped on read, and
+      // the next /oauth/ebay/refresh (read → merge → write) erases it.
+      if (typeof credentials.ebayUserId === "string" && credentials.ebayUserId.length > 0) {
+        result.ebayUserId = credentials.ebayUserId;
       }
       return result;
     } catch (error: any) {
@@ -463,12 +605,24 @@ export class SecretsManagerService {
     // key, so it must be captured on BOTH the normal and create-then-add
     // paths, and prune must be skipped entirely if we never learned it.
     let createdVersionName: string | null | undefined;
+    // NEO-552: a fake-BSC key's expiry moves to now + 72 h on every write.
+    const fake = isFakeCredentialKey(key);
+    // NEO-604: set when an add was retried after UNAVAILABLE, which can leave
+    // a duplicate version behind. See the prune below.
+    const outcome: RetryOutcome = { unavailableRetried: false };
     try {
+      // Extend BEFORE adding the version, so the version this call writes can
+      // never land in a secret that expires a moment later. Best-effort: a
+      // failure leaves the previous expiry in place (at most 72 h after the
+      // last write) and never fails the write.
+      if (fake) await this.extendFakeExpiry(secretName, siteOf(key));
       createdVersionName = await this.addVersionCreatingIfAbsent(
         parent,
         secretId,
         secretName,
         payload,
+        fake,
+        outcome,
       );
     } catch (err: any) {
       // Message only, and this is the sharpest case in the file: the failed
@@ -492,7 +646,20 @@ export class SecretsManagerService {
 
     // NEO-115: keep exactly one version. This is deliberately AFTER the write
     // succeeded and is best-effort — see destroyPreviousVersion.
-    await this.destroyPreviousVersion(secretName, secretId, createdVersionName);
+    //
+    // NEO-604: an add retried after UNAVAILABLE may have landed twice (the
+    // first attempt committed, then the connection dropped). The versions are
+    // identical payloads, so which one is "latest" does not matter to a reader,
+    // but pruning only N-1 would leave the first duplicate (N-1) AND the
+    // pre-write version (N-2) live, breaking the one-live-version rule. So a
+    // retried add prunes two back. When the first attempt had not landed, N-2
+    // is already destroyed and the extra destroy is a tolerated no-op.
+    await this.destroyPreviousVersion(
+      secretName,
+      secretId,
+      createdVersionName,
+      outcome.unavailableRetried ? 2 : 1,
+    );
   }
 
   /**
@@ -545,13 +712,17 @@ export class SecretsManagerService {
     secretId: string,
     secretName: string,
     payload: string,
+    fake = false,
+    outcome?: RetryOutcome,
   ): Promise<string | null | undefined> {
     const addVersion = async (): Promise<string | null | undefined> => {
-      const [created] = await withQuotaRetry(() =>
-        this.client.addSecretVersion({
-          parent: secretName,
-          payload: { data: Buffer.from(payload, 'utf8') },
-        }),
+      const [created] = await withQuotaRetry(
+        () =>
+          this.client.addSecretVersion({
+            parent: secretName,
+            payload: { data: Buffer.from(payload, 'utf8') },
+          }),
+        outcome,
       );
       return created?.name;
     };
@@ -568,6 +739,9 @@ export class SecretsManagerService {
         secretId,
         secret: {
           replication: { automatic: {} },
+          // NEO-552: a fake-BSC key is born with its expiry; a real key never
+          // has one.
+          ...(fake ? { expireTime: fakeExpireTime(Date.now()) } : {}),
         },
       });
     } catch (err: any) {
@@ -587,6 +761,53 @@ export class SecretsManagerService {
     }
 
     return await addVersion();
+  }
+
+  /**
+   * NEO-552: push a fake-BSC secret's expiry to now + FAKE_CREDENTIAL_TTL_MS.
+   *
+   * Sets `expire_time` (an absolute timestamp, update mask `expire_time`)
+   * rather than `ttl`. `ttl` is INPUT_ONLY in the API and shares the
+   * `expiration` oneof with `expire_time`; the reference does not document
+   * which update-mask path a `ttl` update takes or that it counts from the
+   * update call, whereas `expire_time` is an ordinary updatable field whose
+   * value is exactly what we send. Computing it here costs only this
+   * process's clock skew, which is seconds against a 72 h window.
+   *
+   * NOT_FOUND means there is no secret yet (a first write, or one that
+   * expired): the write's create path sets the expiry instead, so it is
+   * silent. Every other failure is logged by code and swallowed: the write
+   * must not fail over a lifecycle detail, and the old expiry still stands.
+   *
+   * The failure log names the site and the error code only, never the secret
+   * id: a fake key's id carries the Convex deployment slug and the Clerk user
+   * id, and neither is needed to act on a failed extension.
+   *
+   * @param secretName Fully-qualified name; addresses the call, NEVER logged.
+   * @param site The key's site prefix, the only identifier logged.
+   */
+  private async extendFakeExpiry(secretName: string, site: string): Promise<void> {
+    try {
+      await withQuotaRetry(() =>
+        this.client.updateSecret({
+          secret: { name: secretName, expireTime: fakeExpireTime(Date.now()) },
+          updateMask: { paths: ['expire_time'] },
+        }),
+      );
+    } catch (err: any) {
+      if (isNotFoundError(err)) return;
+      const code = (err as { code?: unknown } | null)?.code;
+      console.error(
+        JSON.stringify({
+          msg: 'fake_secret_expiry_extend_failed',
+          site,
+          fake: true,
+          // The gRPC status, or the error class when there is none; never the
+          // message, which names the resource.
+          code: typeof code === 'number' ? code : err instanceof Error ? err.name : 'unknown',
+        }),
+      );
+    }
   }
 
   /**
@@ -620,10 +841,15 @@ export class SecretsManagerService {
    *   here. NOT_FOUND and FAILED_PRECONDITION (already destroyed, e.g. by a
    *   concurrent writer) are the normal outcome of a race and are silent.
    * - **Never destroys the version we just wrote, nor a newer one.** Only
-   *   `N-1` is ever addressed. With two overlapping writers, A adding v10 and
-   *   B adding v11, A destroys v9 and B destroys v10, and v11, the newest,
-   *   survives both. That is the interleaving that once zeroed a secret, when
-   *   prune destroyed "everything but mine" (see git history).
+   *   versions numbered below the one this write created are addressed:
+   *   `N-1`, or `N-1` and `N-2` after an add that was retried on UNAVAILABLE
+   *   (`depth` 2; the first attempt may have landed as `N-1`). With two
+   *   overlapping writers, A adding v10 and B adding v11, A destroys v9 and B
+   *   destroys v10, and v11, the newest, survives both. That is the
+   *   interleaving that once zeroed a secret, when prune destroyed
+   *   "everything but mine" (see git history). A retried add can destroy a
+   *   concurrent writer's version, but only one that its own newer version
+   *   already hides from readers (last writer wins, as before).
    * - **Skipped when the created version is unknown.** Without the created
    *   name's ordinal there is no safe target, so nothing is destroyed.
    * - **No secret material and no infrastructure identifier is logged.** Only
@@ -640,11 +866,14 @@ export class SecretsManagerService {
    * @param secretId The bare `<site>-credentials-<clerkUserId>` id, the
    *   log-safe form.
    * @param createdVersionName Resource name of the version this write added.
+   * @param depth How many versions back from the created one to destroy: 1
+   *   normally, 2 after an add retried on UNAVAILABLE (NEO-604).
    */
   private async destroyPreviousVersion(
     secretName: string,
     secretId: string,
     createdVersionName: string | null | undefined,
+    depth = 1,
   ): Promise<void> {
     const createdOrdinal = createdVersionName ? versionOrdinal(createdVersionName) : undefined;
     if (createdOrdinal === undefined) {
@@ -654,18 +883,20 @@ export class SecretsManagerService {
       );
       return;
     }
-    if (createdOrdinal <= 1) return;
 
-    const previous = `${secretName}/versions/${createdOrdinal - 1}`;
-    try {
-      await withQuotaRetry(() => this.client.destroySecretVersion({ name: previous }));
-    } catch (err: any) {
-      if (isNotFoundError(err) || isFailedPreconditionError(err)) return;
-      console.error(
-        "Failed to destroy secret version '%s': %s",
-        shortVersion(secretId, previous),
-        describeSecretError(err),
-      );
+    for (let back = 1; back <= depth; back++) {
+      if (createdOrdinal - back < 1) return;
+      const previous = `${secretName}/versions/${createdOrdinal - back}`;
+      try {
+        await withQuotaRetry(() => this.client.destroySecretVersion({ name: previous }));
+      } catch (err: any) {
+        if (isNotFoundError(err) || isFailedPreconditionError(err)) continue;
+        console.error(
+          "Failed to destroy secret version '%s': %s",
+          shortVersion(secretId, previous),
+          describeSecretError(err),
+        );
+      }
     }
   }
-} 
+}

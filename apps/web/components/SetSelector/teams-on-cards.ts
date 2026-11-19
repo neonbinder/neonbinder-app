@@ -1,5 +1,6 @@
 import type { Id } from "../../convex/_generated/dataModel";
 import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
+import { listingNamesAPlayer } from "../../convex/lib/cardPlayerDefaults";
 // Browser-safe: `features/cardAttention.ts` has no server imports (it is
 // already read by the attention walker in the browser).
 import { MAX_CARD_TEAMS } from "../../convex/features/cardAttention";
@@ -12,6 +13,8 @@ import {
   type TeamPreferenceRank,
 } from "../../convex/lib/teamFill";
 import { teamFullName } from "../../lib/teams/team-name";
+import { checklistClaimsNoTeam } from "../../lib/checklists/no-team";
+import type { TeamLookupOutcome } from "./checklist-conflict";
 
 export { MAX_CARD_TEAMS };
 
@@ -33,7 +36,18 @@ export { MAX_CARD_TEAMS };
  * of this set (the set's skip records, `StoredPeople.skippedTeamNames`). Any
  * other string with no review row resolved before the wizard opened
  * (`resolveChecklistEntities` only queues unknowns, and drops a skipped name
- * before it asks), so it counts as a team. Membership is computed from the cards and the
+ * before it asks), so it counts as a team.
+ *
+ * Never in the section: a card whose publisher checklist said "No Team"
+ * (NEO-489, `checklistClaimsNoTeam`: `teamLookup: "checklist"` with no team
+ * strings). That is the checklist's answer, not a gap: the commit saves it
+ * as a confirmed no-team card, so asking would put an answered question back
+ * to the operator. Being outside the section it gets no line, so no pre-fill
+ * and no "Fill" can reach it (invariant 8: the claim holds every guess back),
+ * and it gives no batch evidence to a sibling with the same player, because
+ * it prints no team to give.
+ *
+ * Membership is computed from the cards and the
  * Names-phase decisions ONLY — never from this section's own answers, so a
  * line does not vanish under the operator's cursor the moment they answer it.
  *
@@ -115,9 +129,13 @@ export interface PreviewCardForTeams {
   /**
    * How the fetch-time team lookup for this card ended. "failed" means the
    * listing's answer never arrived, so no rule may guess a team for it
-   * (invariant 8): the operator picks.
+   * (invariant 8): the operator picks. NEO-478 "checklist" means the
+   * operator's published checklist settled the team — a data claim on the
+   * same terms: no rule may fill a different team over it. With no team
+   * strings, "checklist" means the checklist said "No Team" (NEO-489,
+   * `checklistClaimsNoTeam`).
    */
-  teamLookup?: "answered" | "failed";
+  teamLookup?: TeamLookupOutcome;
 }
 
 /** The operator's answer for one card, as the commit reads it. */
@@ -135,7 +153,12 @@ export interface TeamsReviewRow {
   _id: string;
   kind: "player" | "team" | "league";
   name: string;
-  enrichment?: { careerTeams?: CareerStint[]; colors?: TeamColors } | null;
+  enrichment?: {
+    careerTeams?: CareerStint[];
+    /** NEO-569 — Wikidata teams with no years; see `createdUndatedNames`. */
+    undatedCareerTeams?: string[];
+    colors?: TeamColors;
+  } | null;
   decision?:
     | {
         action: "create";
@@ -211,6 +234,12 @@ export interface TeamsGroup {
   listedNames: string[];
   /** Invariant 8 — the listing's team lookup failed for these cards. */
   lookupFailed: boolean;
+  /**
+   * NEO-478, invariant 8 — the operator's published checklist is where these
+   * cards' teams came from (`teamLookup: "checklist"`), so nothing is
+   * pre-filled over it. Absent reads as false.
+   */
+  checklistClaim?: boolean;
   /** Server evidence for at least one player (or listed name) has not arrived yet. */
   loading: boolean;
 }
@@ -271,6 +300,72 @@ export function cardTeamStrings(card: PreviewCardForTeams): string[] {
 }
 
 /**
+ * NEO-556 — the set-level team default a checklist row carries, in its three
+ * states: a team (or teams) every new card gets, "No Team", or nothing. A row
+ * that somehow carries both reads as teams, as the server reads it
+ * (`teamDefaultOf`).
+ */
+export type SetTeamDefaultKind = "teams" | "noTeam" | "none";
+
+export function setTeamDefaultKind(
+  row:
+    | {
+        teamIds?: ReadonlyArray<unknown>;
+        /** `getAncestorChain`'s row: the third state as a plain flag. */
+        noTeam?: boolean;
+        /** `getSelectorOptionById`'s whole document: the stored stamp. */
+        noTeamDefault?: unknown;
+      }
+    | null
+    | undefined,
+): SetTeamDefaultKind {
+  if ((row?.teamIds?.length ?? 0) > 0) return "teams";
+  if (row?.noTeam === true) return "noTeam";
+  if (row?.noTeamDefault !== undefined && row?.noTeamDefault !== null) return "noTeam";
+  return "none";
+}
+
+/** The fields of a confirmed card `setDefaultSettlesNewRow` reads. */
+export interface NewRowTeamCard extends PreviewCardForTeams {
+  /** BSC's unsplit team value — the commit's "Listed as:" hint. */
+  rawTeamName?: string;
+  platformData?: { bsc?: unknown };
+}
+
+/**
+ * NEO-556 — will the set-level default settle the team of this card when the
+ * commit inserts it as a NEW row, so the wizard need not ask?
+ *
+ *  - A set team: always. The commit gives a teamless new row that team, and
+ *    a card that resolves a team of its own has one anyway (NEO-277).
+ *  - "No Team": only when the commit will STAMP the card No Team — the
+ *    client half of `noTeamCardVerdict` as the commit asks it. Product
+ *    invariant 8: a listing that names a team, or a BSC lookup that has not
+ *    answered (still to run, or failed), holds the stamp back, and the
+ *    operator answers. So settled means the card prints no team string, no
+ *    listing value, and either has no BSC ref (nothing to look up) or a
+ *    lookup that already ended with no team ("answered", or the publisher
+ *    checklist's "checklist").
+ *  - Nothing: never.
+ *
+ * Deliberately one-sided: a card whose only team strings were ruled "not a
+ * team" would be stamped by the commit, but is still asked here. Asking about
+ * a card the commit would have settled costs a click; settling one it would
+ * not would save it teamless with nobody asked.
+ */
+export function setDefaultSettlesNewRow(
+  card: NewRowTeamCard,
+  setDefault: SetTeamDefaultKind,
+): boolean {
+  if (setDefault === "teams") return true;
+  if (setDefault !== "noTeam") return false;
+  if (cardTeamStrings(card).length > 0) return false;
+  if ((card.rawTeamName?.trim() ?? "") !== "") return false;
+  if (!card.platformData?.bsc) return true;
+  return card.teamLookup === "answered" || card.teamLookup === "checklist";
+}
+
+/**
  * Who and what is on the cards, as the STORED data says it — the half the
  * review rows cannot say. All are facts NB already holds (sets → cards →
  * players, and the set's skip records); nothing here is a stored wizard
@@ -308,6 +403,26 @@ export interface StoredPeople {
    * A review row in this sitting still wins over the record.
    */
   skippedTeamNames?: ReadonlySet<string>;
+  /**
+   * NEO-528 — the row's "Player on every card": preview positions of NEW
+   * cards the commit will give that player. Only a card whose listing names
+   * nobody gets them (`listingNamesAPlayer`): one that prints a name, even a
+   * name ruled "not a person" or still waiting for review, is left blank by
+   * the commit (Jason, 2026-11-15; invariant 8), so it is never theirs here
+   * either, whatever position the host passed. Such a card is that player's
+   * for the teams step, so its team is asked with their career as evidence,
+   * never filed under "Cards with no players". By id: the name is only what
+   * the line shows.
+   */
+  defaultPlayer?: DefaultPlayerForNewCards;
+}
+
+/** NEO-528 — see `StoredPeople.defaultPlayer`. */
+export interface DefaultPlayerForNewCards {
+  playerId: Id<"players">;
+  name: string;
+  /** Preview positions of the NEW cards (never a re-synced stored row). */
+  positions: ReadonlySet<number>;
 }
 
 /**
@@ -319,18 +434,50 @@ export function storedPeople(
   playerlessIndexes?: readonly number[],
   skippedPlayerNames?: readonly string[],
   skippedTeamNames?: readonly string[],
+  defaultPlayer?: DefaultPlayerWire,
 ): StoredPeople | undefined {
   const playerless =
     playerlessIndexes && playerlessIndexes.length > 0 ? new Set(playerlessIndexes) : undefined;
   const skipped = new Set((skippedPlayerNames ?? []).map(norm).filter(Boolean));
   const skippedTeams = new Set((skippedTeamNames ?? []).map(norm).filter(Boolean));
-  if (!playerless && skipped.size === 0 && skippedTeams.size === 0) return undefined;
+  const fallback =
+    defaultPlayer && defaultPlayer.positions.length > 0 && norm(defaultPlayer.name)
+      ? { playerId: defaultPlayer.playerId, name: defaultPlayer.name, positions: new Set(defaultPlayer.positions) }
+      : undefined;
+  if (!playerless && skipped.size === 0 && skippedTeams.size === 0 && !fallback) return undefined;
   return {
     ...(playerless ? { playerless } : {}),
     ...(skipped.size > 0 ? { skippedPlayerNames: skipped } : {}),
     ...(skippedTeams.size > 0 ? { skippedTeamNames: skippedTeams } : {}),
+    ...(fallback ? { defaultPlayer: fallback } : {}),
   };
 }
+
+/**
+ * NEO-528 — the preview positions a "Player on every card" default would
+ * land on: a card that does not re-sync a stored row (`existingIdByIndex` has
+ * no entry for its index) AND whose listing names nobody
+ * (`listingNamesAPlayer`; a blank-only list names nobody). Existing rows are
+ * never filled, and a new card the listing named someone on is left blank,
+ * the same test the commit's insert branch uses, so the wizard cannot plan a
+ * player the save leaves off. Positions index into `kept`, not into the
+ * diff's card indexes.
+ */
+export function defaultPlayerPositions(
+  kept: ReadonlyArray<{ card: Pick<PreviewCardForTeams, "players">; index: number }>,
+  existingIdByIndex: ReadonlyMap<number, unknown>,
+): number[] {
+  return kept.flatMap(({ card, index }, position) =>
+    existingIdByIndex.has(index) || listingNamesAPlayer(card.players) ? [] : [position],
+  );
+}
+
+/** NEO-528 — `DefaultPlayerForNewCards` as the host passes it (positions as an array). */
+export type DefaultPlayerWire = {
+  playerId: Id<"players">;
+  name: string;
+  positions: readonly number[];
+};
 
 interface NamesView {
   teamRowByKey: Map<string, TeamsReviewRow>;
@@ -338,6 +485,7 @@ interface NamesView {
   playerless: ReadonlySet<number>;
   skippedPlayerNames: ReadonlySet<string>;
   skippedTeamNames: ReadonlySet<string>;
+  defaultPlayer?: DefaultPlayerForNewCards;
 }
 
 const NOBODY: ReadonlySet<never> = new Set<never>();
@@ -358,6 +506,7 @@ function namesView(rows: readonly TeamsReviewRow[], people?: StoredPeople): Name
     playerless: people?.playerless ?? NOBODY,
     skippedPlayerNames: people?.skippedPlayerNames ?? NOBODY,
     skippedTeamNames: people?.skippedTeamNames ?? NOBODY,
+    ...(people?.defaultPlayer ? { defaultPlayer: people.defaultPlayer } : {}),
   };
 }
 
@@ -433,6 +582,21 @@ function cardPlayers(card: PreviewCardForTeams, index: number, view: NamesView):
     // A row with no decision cannot reach the Teams step (every row is
     // decided there); a link with no id is malformed. Both are nobody.
   }
+  // NEO-528 — a NEW card whose listing names nobody: the commit gives it the
+  // row's "Player on every card", so the teams step reads it as theirs. A
+  // card that prints any name never takes them, even when every name was
+  // ruled out or is still waiting for review: the commit leaves it blank
+  // (`listingNamedPlayer`, the same `listingNamesAPlayer` test), so it stays
+  // a card with no players here.
+  const fallback = view.defaultPlayer;
+  if (out.length === 0 && fallback?.positions.has(index) && !listingNamesAPlayer(card.players)) {
+    out.push({
+      kind: "server",
+      key: norm(fallback.name),
+      display: fallback.name,
+      request: { key: `id:${fallback.playerId}`, playerId: fallback.playerId },
+    });
+  }
   return out;
 }
 
@@ -443,7 +607,8 @@ function cardPlayers(card: PreviewCardForTeams, index: number, view: NamesView):
  * carries a team (or an operator's "no team"): the commit keeps a stored
  * row's team, so those cards will not save teamless whatever they print, and
  * asking about them again on every re-sync would be asking an answered
- * question.
+ * question. A card whose checklist said "No Team" is left out for the same
+ * reason: the checklist answered it (NEO-489).
  */
 export function teamlessCardIndexes(
   cards: readonly PreviewCardForTeams[],
@@ -455,6 +620,8 @@ export function teamlessCardIndexes(
   const out: number[] = [];
   cards.forEach((card, index) => {
     if (settled?.has(index)) return;
+    // NEO-489 — the checklist said No Team: answered, never asked.
+    if (checklistClaimsNoTeam(card)) return;
     if (!cardTeamStrings(card).some((t) => teamStringResolves(t, view))) out.push(index);
   });
   return out;
@@ -493,6 +660,31 @@ function createdStints(row: TeamsReviewRow): CareerStint[] {
 }
 
 /**
+ * NEO-569 — a created player's UNDATED career teams: the Wikidata names with
+ * no years, minus what the operator unchecked and minus any name already on
+ * the dated list (dating a lead moves it there). They reach the career rule as
+ * undated stints, which counts one only when it is the player's one team in
+ * the set's leagues (`careerTeamVerdict`) — the client mirror of the server's
+ * rule for a stored player's undated `teamYears`. A lead still creates nothing
+ * on the player.
+ */
+function createdUndatedNames(row: TeamsReviewRow, dated: readonly CareerStint[]): string[] {
+  const decision = row.decision?.action === "create" ? row.decision : undefined;
+  const skip = new Set([
+    ...(decision?.excludedCareerTeamNames ?? []).map(norm),
+    ...dated.map((s) => norm(s.name)),
+  ]);
+  const out: string[] = [];
+  for (const name of row.enrichment?.undatedCareerTeams ?? []) {
+    const key = norm(name);
+    if (!key || skip.has(key)) continue;
+    skip.add(key);
+    out.push(name);
+  }
+  return out;
+}
+
+/**
  * Every team NAME the server should resolve to existing NB teams, deduped by
  * normalized name, in first-seen order:
  *  - a listing's printed team on a card in the section (invariant 8: its NB
@@ -517,8 +709,12 @@ export function teamNameRequests(
     for (const listed of listedClaims(card, view)) add(listed);
     for (const player of cardPlayers(card, index, view)) {
       if (player.kind !== "created") continue;
-      for (const stint of createdStints(player.row)) {
+      const dated = createdStints(player.row);
+      for (const stint of dated) {
         if (!view.teamRowByKey.has(norm(stint.name))) add(stint.name);
+      }
+      for (const name of createdUndatedNames(player.row, dated)) {
+        if (!view.teamRowByKey.has(norm(name))) add(name);
       }
     }
   }
@@ -586,7 +782,8 @@ interface RankContext {
   view: NamesView;
   /** By normalized name; absent map = names are not being resolved (nothing pending). */
   teamNameEvidence: ReadonlyMap<string, ServerTeam[]> | undefined;
-  setLeagueId: string | null | undefined;
+  /** NEO-569 — the set's effective leagues, any-of; empty = none. */
+  setLeagueIds: readonly string[];
 }
 
 /**
@@ -601,7 +798,7 @@ function stringRank(raw: string, ctx: RankContext): { rank: TeamPreferenceRank; 
   if (row) {
     const leagueId = row.decision?.action === "create" ? row.decision.create?.leagueId : undefined;
     return {
-      rank: leagueId && ctx.setLeagueId && leagueId === ctx.setLeagueId ? 0 : UNRANKED,
+      rank: leagueId && ctx.setLeagueIds.includes(leagueId) ? 0 : UNRANKED,
       pending: false,
     };
   }
@@ -621,21 +818,32 @@ function createdPlayerVerdict(
   ctx: RankContext,
 ): PlayerVerdict {
   const refByKey = new Map<string, TeamRef>();
-  const stints: Array<{ key: string; fromYear: number; toYear?: number }> = [];
+  const stints: Array<{ key: string; fromYear?: number; toYear?: number }> = [];
   let loading = false;
-  for (const stint of createdStints(row)) {
-    const ref = refFromString(stint.name, ctx.view, linkedTeamNameById);
-    if (!ref) continue;
+  const refFor = (name: string): TeamRef | null => {
+    const ref = refFromString(name, ctx.view, linkedTeamNameById);
+    if (!ref) return null;
     if (!refByKey.has(ref.key)) {
-      const { rank, pending } = stringRank(stint.name, ctx);
+      const { rank, pending } = stringRank(name, ctx);
       if (pending) loading = true;
       refByKey.set(ref.key, rank === UNRANKED ? ref : { ...ref, rank });
     }
+    return ref;
+  };
+  const dated = createdStints(row);
+  for (const stint of dated) {
+    const ref = refFor(stint.name);
+    if (!ref) continue;
     stints.push({
       key: ref.key,
       fromYear: stint.fromYear,
       ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
     });
+  }
+  // NEO-569 — undated leads go to the career rule as undated stints.
+  for (const name of createdUndatedNames(row, dated)) {
+    const ref = refFor(name);
+    if (ref) stints.push({ key: ref.key });
   }
   // A rank still on its way could change a tie-break: hold the line until
   // it lands rather than pre-fill and then move the pick under the cursor.
@@ -645,6 +853,7 @@ function createdPlayerVerdict(
     year: setYear,
     currentYear,
     rankOf: (key) => (refByKey.get(key)?.rank ?? UNRANKED) as TeamPreferenceRank,
+    setHasLeagues: ctx.setLeagueIds.length > 0,
   });
   return {
     answer: verdict.answer ? [refByKey.get(verdict.answer.key)!] : null,
@@ -683,8 +892,11 @@ export function buildTeamsGroups(input: {
    * names are not resolved at all (nothing waits on them).
    */
   teamNameEvidence?: ReadonlyMap<string, ServerTeam[]>;
-  /** The set's preferred league (C2b), for a team staged in this wizard. */
-  setLeagueId?: string | null;
+  /**
+   * NEO-569 — the set's effective leagues (C2b, any-of), for a team staged
+   * in this wizard and for the undated-stint rule's scope.
+   */
+  setLeagueIds?: readonly string[];
   /** Who the stored data says is on the cards — see `StoredPeople`. */
   people?: StoredPeople;
 }): TeamsGroup[] {
@@ -694,7 +906,7 @@ export function buildTeamsGroups(input: {
   const rankCtx: RankContext = {
     view,
     teamNameEvidence: input.teamNameEvidence,
-    setLeagueId: input.setLeagueId,
+    setLeagueIds: input.setLeagueIds ?? [],
   };
   const members = new Set(teamlessCardIndexes(cards, rows, settled, input.people));
 
@@ -729,9 +941,17 @@ export function buildTeamsGroups(input: {
     // listing's team claim (invariant 8).
     const listedNames = listedClaims(card, view);
     const lookupFailed = card.teamLookup === "failed";
+    // NEO-478 — a team the operator's published checklist settled is a data
+    // claim exactly like a failed lookup's: the card's team is the one its
+    // checklist row named, so no inference may fill another over it. A row
+    // whose team cell is blank makes no claim and never sets "checklist"
+    // (B1); one that says "No Team" never reaches this loop (NEO-489,
+    // `teamlessCardIndexes`).
+    const checklistClaim = card.teamLookup === "checklist";
     const claimKey =
       (listedNames.length > 0 ? `|listed:${listedNames.map(norm).sort().join("|")}` : "") +
-      (lookupFailed ? "|lookup-failed" : "");
+      (lookupFailed ? "|lookup-failed" : "") +
+      (checklistClaim ? "|checklist" : "");
     // No people → no player evidence at all, so every such card (a
     // checklist, a league leaders card, a highlight) shares ONE line, keyed
     // on having no players — never on a card's name. Its listing claims are
@@ -745,6 +965,7 @@ export function buildTeamsGroups(input: {
       existing.cards.push(entry);
       if (groupKey === NO_PLAYERS_GROUP_KEY) {
         existing.lookupFailed ||= lookupFailed;
+        if (checklistClaim) existing.checklistClaim = true;
         for (const name of listedNames) {
           if (existing.listedNames.some((n) => norm(n) === norm(name))) continue;
           existing.listedNames.push(name);
@@ -795,7 +1016,7 @@ export function buildTeamsGroups(input: {
         else listedRefs.push(...found.map(refFromServer));
       }
     }
-    if (listedNames.length > 0 || lookupFailed) {
+    if (listedNames.length > 0 || lookupFailed || checklistClaim) {
       // A data claim holds the guess back: nothing is pre-selected, and the
       // would-be pre-fill becomes one more choice.
       choices = [...(suggestion ?? []), ...choices];
@@ -817,6 +1038,7 @@ export function buildTeamsGroups(input: {
       suggestion: suggestion && suggestion.length > 0 ? suggestion.map((r) => r.key) : null,
       listedNames: [...listedNames],
       lookupFailed,
+      ...(checklistClaim ? { checklistClaim: true } : {}),
       loading,
     });
   }

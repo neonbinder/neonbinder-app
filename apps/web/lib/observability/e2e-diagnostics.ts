@@ -14,7 +14,9 @@ import type { CaptureResult, PostHogConfig } from "posthog-js";
  * - nothing automatic: no autocapture, pageviews, recordings, surveys,
  *   heatmaps or flags, so the page under test loads no recorder worker or
  *   survey iframe (exception capture loads its one script);
- * - only the events named in {@link E2E_DIAGNOSTIC_EVENTS} leave the page;
+ * - only the events named in {@link E2E_DIAGNOSTIC_EVENTS} leave the page
+ *   (NEO-475: `e2e_column` and `e2e_press` were dropped, 88% of the volume and
+ *   read by no spec; PostHog is on a capped plan);
  * - every event carries the run, attempt, worker, project and test the
  *   Playwright fixture stamped onto the page ({@link readE2ETags}), so one
  *   red in CI maps to one filterable timeline in PostHog;
@@ -28,10 +30,11 @@ export const isE2E = (): boolean =>
 /** The only events E2E sends. Anything else is dropped before it is sent. */
 export const E2E_DIAGNOSTIC_EVENTS: ReadonlySet<string> = new Set([
   "e2e_page_start",
-  "e2e_column",
   "convex_client_reconnect",
   "selector_options_stall_backstop",
   "selector_sync_fe_timeout",
+  // NEO-466: a copy photo save that was slow, retried or failed (copy-photo-timing.ts).
+  "copy_photo_save_timing",
   "$exception",
 ]);
 

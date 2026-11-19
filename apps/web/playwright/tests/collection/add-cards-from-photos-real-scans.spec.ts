@@ -10,7 +10,11 @@
 //
 // The scans are six real 2014 Score football photos (McFadden #160, Bowe
 // #315, Bell #174, front then back) plus a re-scan of the Bowe card dropped
-// later into the same run (`playwright/fixtures/intake/`). The misread case is
+// later into the same run (`playwright/fixtures/intake/`). NEO-427: every save
+// brings its own scans along (the tile says "Photos are in!", and the card's
+// drawer holds the pair, the front and the back each opening the photo viewer),
+// and a scanned save never folds into a line that is already there, so the
+// second Bowe is a second line, each with its own photos. The misread case is
 // made certain rather than left to the reader (Jason, 2026-10-28): the set we
 // build gives #174 to another player and Bell his own #47, so Bell's photo
 // reads a number that names one card and a name that names another. That is
@@ -35,7 +39,7 @@
 // runs at 7 s.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { collectorCascade } from "../../support/collection";
+import { collectorCascade, confirmRemoved } from "../../support/collection";
 import { addCardViaForm, escapeRe } from "../../support/cards";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { VARIANT_TYPES_SYNC, columnHeading, drillToCustom, selectOrCreate, setBuilderReady } from "../../support/set-builder";
@@ -44,10 +48,16 @@ const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "
 const scans = (...names: string[]) => names.map((n) => path.join(FIXTURES, n));
 /**
  * The placeholder pipeline: real crops and reads. Usually about a minute, but
- * a cold preprocess service (the first pipeline spec on a shard) has taken
- * over three; pipeline-escalation-cold-start allows ten for its heavier load.
+ * photos that escalate to the heavy model can meet a cold instance: a cold
+ * load is ~200-300 s, a warm heavy photo ~40 s (CI run 41212224696, where 6
+ * minutes ran out about a minute before the last heavy job finished, ~7.4 min
+ * in). Eight minutes covers a cold load plus the queue (NEO-407, Jason
+ * 2026-10-31); shard-plan.mjs runs this spec after
+ * pipeline-escalation-cold-start on one shard so the two never compete for
+ * the heavy instances. pipeline-escalation-cold-start allows ten for its
+ * heavier load.
  */
-const PIPELINE = 360_000;
+const PIPELINE = 480_000;
 
 test(
   "Add cards from photos: real scans are matched in the set, a misread asks, a double scan asks, and only a yes saves",
@@ -121,7 +131,7 @@ test(
     // Every pair read, paired and matched (the pipeline's exception, above). The
     // run's status line comes first so a stall says where: still reading, a
     // photo left unpaired, or matched into the wrong lane.
-    const runStatus = page.getByRole("status").filter({ hasText: /^(Working on your photos\.|Everything is read\..*|\d+ saved\.)$/ });
+    const runStatus = page.getByRole("status").filter({ hasText: /^(Working on your photos\.|Everything is read\..*|Done reading\..*|\d+ saved\..*)$/ });
     await expect(runStatus).toHaveText("Everything is read. 3 waiting for you, 0 saved.", { timeout: PIPELINE });
     await expect(waiting).toHaveAccessibleName("Needs you, 3");
 
@@ -132,6 +142,11 @@ test(
     // What was read is shown (as read, so any case), and nothing saved itself.
     await expect(bell.getByText(/^Read: #174 · .*bell/i)).toBeVisible();
     await expect(page.getByRole("region", { name: "Saved, 0" })).toBeVisible();
+    // A binder card never has a price (NEO-481: only a box run's tiles do,
+    // add-cards-box-run-per-card-price). The tile's count is there, so the
+    // absence means something (R2).
+    await expect(mcfadden.getByRole("textbox", { name: /^(Count|Had \d+ →)$/ })).toBeVisible();
+    await expect(mcfadden.getByRole("textbox", { name: /price/i })).toHaveCount(0);
 
     // --- Bell, in the drawer: the misread explained, the right card found -----------
     await bell.getByRole("button", { name: "Review #174 Antonio Brown" }).click();
@@ -181,14 +196,31 @@ test(
     await boweYes.click();
     await expect(page.getByRole("region", { name: "Saved, 4" })).toBeVisible();
     await expect(waiting).toHaveAccessibleName("Needs you, 0");
-    const savedTiles = saved.getByRole("listitem").filter({ hasText: /Saved \+1$/ });
+    // NEO-427: every saved pair brings its scans to the copy it made, and says so
+    // on its tile (a Saved +1, then the photo line). The Bowe re-scan saved as a
+    // line of its own, so there are two Bowe tiles and each has its photos.
+    const savedTiles = saved.getByRole("listitem").filter({ hasText: /Saved \+1/ });
     for (const [label, n] of [["#160 Darren McFadden", 1], ["#315 Dwayne Bowe", 2], ["#47 Le'Veon Bell", 1]] as const) {
-      await expect(savedTiles.filter({ has: page.getByText(label, { exact: true }) })).toHaveCount(n);
+      const tiles = savedTiles.filter({ has: page.getByText(label, { exact: true }) });
+      await expect(tiles).toHaveCount(n);
+      await expect(tiles.filter({ has: page.getByText("Photos are in!", { exact: true }) })).toHaveCount(n);
     }
+    // Positive first (above): none of the four is still slipping them in or stuck.
+    await expect(saved.getByText("Slipping in the photos…", { exact: true })).toHaveCount(0);
+    await expect(saved.getByText("Photos didn't stick.", { exact: true })).toHaveCount(0);
+    await expect(saved.getByText("The scans aged out.", { exact: true })).toHaveCount(0);
+    await expect(saved.getByText("These scans won't cut it.", { exact: true })).toHaveCount(0);
+    // The new state, on the whole screen: four saved tiles, each with its photo line.
+    await expectAccessible(page, { label: "Add cards, saved cards with their photos in" });
 
     // --- Done adding photos: the session closes ---------------------------------------
     await page.getByRole("button", { name: "Done adding photos" }).click();
     await expect(page.getByText("This run's photos are all in. To add more, start a new run.")).toBeVisible();
+    // NEO-370: after Done, leaving asks while any column but Saved holds something.
+    // Every pair is saved, so none does and the page loads below without a question.
+    for (const column of ["Cropping & reading", "Pairing", "Matching", "Needs you"]) {
+      await expect(page.getByRole("region", { name: `${column}, 0`, exact: true })).toBeVisible();
+    }
 
     // --- In the binder, then clean up ----------------------------------------------
     await page.goto("/collection?tab=checklists");
@@ -201,18 +233,43 @@ test(
     await checklists.drill("Variant Types", "Insert");
     await checklists.drill("Insert", "Base");
     const checklist = page.getByRole("region", { name: `2024 ${setName} Base`, exact: true });
-    for (const number of ["160", "315", "47"]) {
+    // One line per scan, never folded: the second Bowe copy is a line of its own.
+    for (const [number, lines] of [["160", 1], ["315", 2], ["47", 1]] as const) {
       const short = `#${number}`;
       await expect(
         checklist.getByRole("button", { name: new RegExp(`^Have ${escapeRe(short)}, `), pressed: true }),
-      ).toBeVisible();
-      await checklist.getByRole("button", { name: `Details for ${short}`, exact: true }).click();
+      ).toHaveCount(lines);
+      // A card with one line says "Details for #160"; a stacked card's name says which line it opens.
+      const details = lines === 1 ? `Details for ${short}` : `Details for ${short}, Raw, Excellent, in Main, line 1`;
+      await checklist.getByRole("button", { name: details, exact: true }).click();
       const drawer = page.getByRole("dialog", { name: new RegExp(`^2024 ${escapeRe(setName)}.*${escapeRe(short)}`) });
       const yourCopies = drawer.getByRole("region", { name: `Your copies of ${short}` });
       const remove = yourCopies.getByRole("button", { name: new RegExp(`^Remove ${escapeRe(short)}, `) });
-      // One line each: the second Bowe copy folded into the first, not a line of its own.
-      await expect(remove).toHaveCount(1);
-      await remove.click();
+      await expect(remove).toHaveCount(lines);
+      // NEO-427: each line carries its pair: a thumbnail beside the line...
+      await expect(yourCopies.getByRole("img", { name: /^(Front|Back) of / })).toHaveCount(lines);
+      // ...and the line's own Edit form holds both sides, each opening the card photo viewer (NEO-481).
+      const editLine = yourCopies.getByRole("button", { name: new RegExp(`^Edit ${escapeRe(short)}, `) });
+      await expect(editLine).toHaveCount(lines);
+      await editLine.first().click();
+      const editForm = yourCopies.getByRole("form", { name: /^Edit Raw, / });
+      const photos = editForm.getByRole("region", { name: /^Photos of / });
+      await expect(photos.getByRole("button", { name: /^Open front of / })).toBeVisible();
+      await expect(photos.getByRole("button", { name: /^Open back of / })).toBeVisible();
+      // One check for the one-line card and one for the two-line card.
+      if (number !== "47") {
+        await expectAccessible(page, { label: `Card drawer, ${lines === 1 ? "a saved copy" : "two saved copies"} with scanned photos`, within: drawer });
+      }
+      await editForm.getByRole("button", { name: "Cancel", exact: true }).click();
+      // Cancel closes the form: the line's Edit is back, and so is every other line's.
+      await expect(editLine).toHaveCount(lines);
+      await expect(photos).toBeHidden();
+      for (let left = lines; left > 0; left--) {
+        await remove.first().click();
+        await expect(remove).toHaveCount(left - 1);
+        // The server's answer before the next Remove (every "Removed ..." notice of one card reads the same).
+        await confirmRemoved(drawer, `Removed ${short}, Raw, `);
+      }
       await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
       await drawer.getByRole("button", { name: "Close card detail" }).click();
       await expect(drawer).toBeHidden();

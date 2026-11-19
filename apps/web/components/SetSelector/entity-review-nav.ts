@@ -60,8 +60,39 @@ export type NavDecision =
        * its own next time instead of parking here again.
        */
       saveAsAlias?: boolean;
+      /**
+       * NEO-424 — the batch made this link itself, before the operator saw
+       * the name: `setHistory` when the name is already linked to exactly one
+       * player on a committed card elsewhere in this set, `hallOfFame` when
+       * the card-year narrowing left one Hall of Famer among namesakes no one
+       * of whom was active that year. NEO-490 `careerTeam`: on a player row,
+       * the one namesake with a stint on the card's team; on a team row, the
+       * one era of the name the card's player played for. Absent on every
+       * operator-made link. It only changes how the decided list words the
+       * row (`describeDecision`); "Change" clears it like any other decision.
+       */
+      autoLinked?: "setHistory" | "hallOfFame" | "careerTeam";
     }
   | { action: "skip" };
+
+/**
+ * NEO-424 — a player the batch SUGGESTS for an unknown name, for the operator
+ * to confirm: the same name on last year's edition of this product
+ * (`priorYearProduct`), or the only player on file under the name in any
+ * sport (`onlyNamesake`). `setHistory` and `hallOfFame` are an auto-link the
+ * operator pressed Change on: the link is undone, its player comes back as the
+ * suggestion. The server shape, verbatim
+ * (`entityReviewQueue.enrichment.preselect`). Unlike `autoLinked` nothing is
+ * decided: the New Player step offers "Link to {name} ({sportValue})" as its
+ * primary, and the operator's press is the decision.
+ */
+export type NavPreselect = {
+  playerId: string;
+  name: string;
+  sportId: string;
+  sportValue: string;
+  reason: "priorYearProduct" | "onlyNamesake" | "setHistory" | "hallOfFame" | "careerTeam";
+};
 
 /**
  * The slice of an `entityReviewQueue` row this module reads. Structural rather
@@ -87,6 +118,13 @@ export type NavRow = {
   /** A team row's own name, and a player row's career-team labels — the two
    *  sides the blocker rule matches on. Optional so a test may omit them. */
   name?: string;
+  /**
+   * NEO-424 — the row's own sport and the batch's, for the decided list: an
+   * auto-linked row sits in the linked player's HOME sport, which may not be
+   * the set's, and the read-back names it when it differs. Optional, as above.
+   */
+  sportValue?: string;
+  setSportValue?: string;
   enrichment?: {
     careerTeams?: readonly { name: string }[];
     /**
@@ -97,8 +135,150 @@ export type NavRow = {
      * left open and the wizard's rows pass straight through.
      */
     existingCandidates?: readonly unknown[];
+    /** NEO-424 — see `NavPreselect`. Read through `preselectFor`. */
+    preselect?: NavPreselect | null;
   } | null;
 };
+
+/**
+ * NEO-424 — the player this row's New Player step should offer to link, or
+ * null. Player rows only: the server never writes one on a team or league row,
+ * and a stray one there must not turn "Add as New Team" into a player link.
+ *
+ * Read through a helper typed on `NavRow` rather than off the generated row
+ * type, so the wizard reads the optional field the same way whichever shape
+ * `getBatch` hands it.
+ */
+export function preselectFor(row: NavRow): NavPreselect | null {
+  if (row.kind !== "player") return null;
+  return row.enrichment?.preselect ?? null;
+}
+
+/**
+ * NEO-424 — the one line the New Player step shows above a suggested player,
+ * saying where the suggestion came from. The footer button says what the press
+ * does ("Link to {name} ({sport})"); this says why it is on offer, so the
+ * operator is never asked to confirm a guess they cannot see the basis of.
+ */
+export function preselectReasonLine(preselect: NavPreselect): string {
+  const who = `${preselect.name} (${preselect.sportValue})`;
+  switch (preselect.reason) {
+    case "priorYearProduct":
+      return `Last year's edition of this set had ${who}. Same one?`;
+    case "setHistory":
+      return `Another card in this set is already linked to ${who}. Same one?`;
+    case "hallOfFame":
+      return `None of the ${preselect.name}s on file played that year, but one's in the Hall of Fame (${preselect.sportValue}). Same one?`;
+    case "careerTeam":
+      return `Only one ${preselect.name} on file ever played for this card's team (${preselect.sportValue}). Same one?`;
+    case "onlyNamesake":
+    default:
+      return `We've only got one ${who} on file. Same one?`;
+  }
+}
+
+/** NEO-424 — did the batch make this row's link on its own? */
+export function isAutoLinked(row: NavRow): boolean {
+  return row.decision?.action === "link" && row.decision.autoLinked !== undefined;
+}
+
+/** NEO-424 — how many rows the batch linked on its own, for the decided summary. */
+export function countAutoLinked(rows: readonly NavRow[]): number {
+  return rows.reduce((n, r) => (isAutoLinked(r) ? n + 1 : n), 0);
+}
+
+/**
+ * NEO-424 — the decided list summary's note, `· 6 linked for you`, or null
+ * when the batch linked none on its own. It follows `Decided (14)` in a span
+ * of its own: the E2E driver opens the list by that count's exact text
+ * (`/^Decided \([0-9]+\)$/` in playwright/support/wizard.ts), so the count
+ * keeps a node to itself.
+ */
+export function autoLinkedSummaryNote(rows: readonly NavRow[]): string | null {
+  const auto = countAutoLinked(rows);
+  return auto > 0 ? ` · ${auto} linked for you` : null;
+}
+
+/**
+ * NEO-424 — the auto-linked row's sport when it is not the set's, for the
+ * read-back ("Linked to Mike Shinoda (Non Sport) · …"). Null when the two
+ * agree or either is unknown. Compared case- and space-insensitively, as the
+ * pick step's sport label is. Display only.
+ */
+export function autoLinkOtherSport(row: NavRow): string | null {
+  if (!isAutoLinked(row)) return null;
+  const own = row.sportValue?.trim();
+  const set = row.setSportValue?.trim();
+  if (!own || !set) return null;
+  return own.toLowerCase() === set.toLowerCase() ? null : own;
+}
+
+/** The slice of a preview card `careerTeamContextFor` reads. */
+export type CareerContextCard = {
+  players?: readonly string[];
+  teams?: readonly string[];
+  team?: string;
+};
+
+/**
+ * NEO-490 — what on the card settled a `careerTeam` auto-link, for
+ * `describeDecision`: a PLAYER row gets the team printed on the card carrying
+ * its name ("Houston Astros"), a TEAM row the player on the card printing its
+ * name ("Satchel Paige"). Null for any other row, or when no card says.
+ *
+ * Named only when nothing else could have been meant: exactly ONE card
+ * carries the name, and that card prints exactly one team and one player.
+ * With two cards carrying the name, or a card with two teams or two players,
+ * the one this would print may not be the one that decided, and a wrong name
+ * here reads as a fact. Null then, and the line falls back to its general
+ * words ("played for the team on the card").
+ *
+ * Display only, and read off the cards the wizard already holds, so nothing
+ * extra is stored on the row. Names compare by `normalizeEntityName`, the same
+ * key the career chips use; the row's name is the card's own string, so this
+ * finds the cards the batch was built from.
+ */
+export function careerTeamContextFor(
+  row: NavRow,
+  cards: readonly CareerContextCard[] | undefined,
+): string | null {
+  const decision = row.decision;
+  if (decision?.action !== "link" || decision.autoLinked !== "careerTeam") return null;
+  if (!cards || !row.name) return null;
+  if (row.kind !== "team" && row.kind !== "player") return null;
+  const key = normalizeEntityName(row.name);
+  if (!key) return null;
+  const teamsOf = (card: CareerContextCard): string[] => {
+    const named = (card.teams ?? []).map((t) => t.trim()).filter(Boolean);
+    if (named.length === 0 && card.team?.trim()) named.push(card.team.trim());
+    return named;
+  };
+  const playersOf = (card: CareerContextCard): string[] =>
+    (card.players ?? []).map((p) => p.trim()).filter(Boolean);
+  const carrying = cards.filter((card) =>
+    (row.kind === "team" ? teamsOf(card) : playersOf(card)).some(
+      (n) => normalizeEntityName(n) === key,
+    ),
+  );
+  if (carrying.length !== 1) return null;
+  const teams = teamsOf(carrying[0]);
+  const players = playersOf(carrying[0]);
+  if (teams.length !== 1 || players.length !== 1) return null;
+  return row.kind === "team" ? players[0] : teams[0];
+}
+
+/**
+ * NEO-490 — a team name as it reads after "played for": "the Houston
+ * Astros", but "Team USA" and "USA" as they are, and a name that already
+ * starts with "the" left alone.
+ */
+function teamAfterPlayedFor(team: string): string {
+  if (/^the\s/i.test(team)) return team;
+  if (/^team\b/i.test(team)) return team;
+  // All caps (at least one letter, no lower-case): "USA", "CCCP".
+  if (/[A-Z]/.test(team) && team === team.toUpperCase()) return team;
+  return `the ${team}`;
+}
 
 /**
  * NEO-332 — is this row a pick between two or more players already on file?
@@ -781,15 +961,60 @@ function settle(nav: NavState, next: NavState): NavState {
  * read exactly as before. Dropped with the name: a detail with no name to
  * qualify ("Linked to an existing record, b. 1852") says nothing useful.
  */
+/*
+ * NEO-424 — a link the batch made on its own reads with the same verb as any
+ * link, and then says WHY, because the operator never pressed anything for it
+ * and the decided list is the only place they learn it happened:
+ * "Linked to Mike Shinoda · already on another card in this set", "Linked to
+ * Bob Allen · the Hall of Famer" (the year narrowing's tie-break).
+ * `otherSport` (see `autoLinkOtherSport`) follows the name when the player is
+ * filed under another sport: "Linked to Mike Shinoda (Non Sport) · …". Same
+ * words in the decided list and the read-only panel, and the same "Change"
+ * undoes either. While the name is still loading the line still says why,
+ * rather than borrowing "an existing record".
+ *
+ * NEO-490 — `careerTeam` says what on the card settled it, in `careerContext`
+ * (see `careerTeamContextFor`): a player row names the card's team, "Linked
+ * to Nelson Cruz · played for the Houston Astros"; a team row names the
+ * card's player, "Linked to St. Louis Browns · Satchel Paige played there".
+ * With no context it still says why, in general words ("· played for the
+ * team on the card", "· the player on the card played there").
+ */
 export function describeDecision(
   decision: NavDecision | null | undefined,
   linkedName?: string | null,
   rememberedName?: string | null,
   linkedDetail?: string | null,
+  otherSport?: string | null,
+  careerContext?: string | null,
 ): string {
   if (!decision) return "Not yet decided";
   if (decision.action === "create") return "Added as new";
   if (decision.action === "skip") return "Skipped";
+  if (decision.autoLinked) {
+    const who = linkedName
+      ? `${linkedName}${otherSport ? ` (${otherSport})` : ""}`
+      : null;
+    if (decision.autoLinked === "hallOfFame") {
+      return who ? `Linked to ${who} · the Hall of Famer` : "Linked to the Hall of Famer";
+    }
+    if (decision.autoLinked === "careerTeam") {
+      const context = careerContext?.trim();
+      if (decision.linkedTeamId) {
+        const why = context
+          ? `${context} played there`
+          : "the player on the card played there";
+        return who ? `Linked to ${who} · ${why}` : `Linked to a team · ${why}`;
+      }
+      const team = context ? teamAfterPlayedFor(context) : "the team on the card";
+      return who
+        ? `Linked to ${who} · played for ${team}`
+        : `Linked to a player · played for ${team}`;
+    }
+    return who
+      ? `Linked to ${who} · already on another card in this set`
+      : `Linked to a ${decision.linkedTeamId ? "team" : "player"} already in this set`;
+  }
   const linked = linkedName
     ? linkedDetail
       ? `Linked to ${linkedName}, ${linkedDetail}`

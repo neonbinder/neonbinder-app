@@ -9,6 +9,12 @@
 //                                                        rewrite timings.json from one or more
 //                                                        (merged) Playwright JSON reports, each
 //                                                        spec's median over the reports
+//   node playwright/shard-plan.mjs --seller   the marketplace-seller specs (NEO-415), which
+//                                                        no shard runs: e2e.yml's seller-desktop /
+//                                                        seller-mobile jobs do, one PR at a time
+//   node playwright/shard-plan.mjs --breaker  the BSC breaker specs (NEO-552), which no
+//                                                        shard runs either: e2e.yml's breaker-desktop /
+//                                                        breaker-mobile jobs do, alone, after every shard
 //   node playwright/shard-plan.mjs --projects  the spec projects, one per line
 //                                                        (e2e.yml's gate reads it)
 //
@@ -45,7 +51,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ignoredSpecs } from "./project-scope.mjs";
+import { BREAKER_SPECS, BREAKER_TAG, ignoredSpecs, SELLER_SPECS, SELLER_TAG } from "./project-scope.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.resolve(HERE, "..");
@@ -60,13 +66,87 @@ const MAX_SPEC_SECONDS = 3600;
 
 const toPosix = (p) => p.split(path.sep).join("/");
 
-function listSpecs(project) {
-  const ignored = new Set(ignoredSpecs(project));
+function allSpecs() {
   return fs
     .readdirSync(TESTS, { recursive: true })
     .map((p) => toPosix(String(p)))
-    .filter((p) => p.endsWith(".spec.ts") && !EXCLUDED.has(p) && !ignored.has(p))
+    .filter((p) => p.endsWith(".spec.ts") && !EXCLUDED.has(p))
     .sort();
+}
+
+// NEO-415 / NEO-552: the seller specs and the BSC breaker specs (project-scope.mjs)
+// are planned in no shard, and each tag and its list must name the same files.
+// Checked on every plan.
+function checkTaggedList(specs, { list, tag, listName }) {
+  const tagged = specs.filter((s) => hasTag(fs.readFileSync(path.join(TESTS, s), "utf8"), tag));
+  const missing = list.filter((s) => !specs.includes(s));
+  const untagged = list.filter((s) => !tagged.includes(s));
+  const unlisted = tagged.filter((s) => !list.includes(s));
+  return [
+    ...missing.map((s) => `${listName} names ${s}, which does not exist`),
+    ...untagged.map((s) => `${s} is in ${listName} but lacks the ${tag} tag`),
+    ...unlisted.map((s) => `${s} carries ${tag} but is not in ${listName} (project-scope.mjs)`),
+  ];
+}
+
+// GUIDE hard rule 5: a seller or breaker spec never retries (a retry writes to the
+// one shared seller again, or reopens the deployment-wide BSC gate). The runtime
+// backstop (`noRetryOnSharedAccounts`) refuses a retry only after a failure; this
+// refuses a tagged spec without `describe.configure({ retries: 0 })` before CI runs.
+// Comments are stripped first, so a configure call quoted in a comment does not count.
+const RETRIES_ZERO = /\b(?:test\.)?describe\.configure\(\s*\{[^}]*\bretries\s*:\s*0\b[^}]*\}\s*\)/;
+// A tag in any quote style ("@x", '@x', `@x`).
+const hasTag = (source, tag) => ['"', "'", "`"].some((q) => source.includes(`${q}${tag}${q}`));
+const stripComments = (source) => source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
+/**
+ * Problems for every spec carrying one of `tags` whose source lacks a
+ * `describe.configure({ retries: 0 })`. `read(spec)` returns a spec's source.
+ * @param {string[]} specs
+ * @param {(spec: string) => string} read
+ * @param {string[]} [tags]
+ * @returns {string[]}
+ */
+export function checkNoRetryTagged(specs, read, tags = [SELLER_TAG, BREAKER_TAG]) {
+  const problems = [];
+  for (const spec of specs) {
+    const source = read(spec);
+    const tag = tags.find((t) => hasTag(source, t));
+    if (tag && !RETRIES_ZERO.test(stripComments(source))) {
+      problems.push(`${spec} carries ${tag} but lacks test.describe.configure({ retries: 0 }) (GUIDE hard rule 5)`);
+    }
+  }
+  return problems;
+}
+
+function checkSellerTags(specs) {
+  const problems = [
+    ...checkTaggedList(specs, { list: SELLER_SPECS, tag: SELLER_TAG, listName: "SELLER_SPECS" }),
+    ...checkTaggedList(specs, { list: BREAKER_SPECS, tag: BREAKER_TAG, listName: "BREAKER_SPECS" }),
+    ...checkNoRetryTagged(specs, (s) => fs.readFileSync(path.join(TESTS, s), "utf8")),
+    ...SELLER_SPECS.filter((s) => BREAKER_SPECS.includes(s)).map((s) => `${s} is in both SELLER_SPECS and BREAKER_SPECS`),
+  ];
+  if (problems.length) throw new Error(`seller/breaker specs fail the planning checks (lists, tags, retries):\n  ${problems.join("\n  ")}`);
+}
+
+/** The specs a shard may be handed on `project`: everything but the ignored, the seller and the breaker specs. */
+function listSpecs(project) {
+  const specs = allSpecs();
+  checkSellerTags(specs);
+  const ignored = new Set([...ignoredSpecs(project), ...SELLER_SPECS, ...BREAKER_SPECS]);
+  return specs.filter((p) => !ignored.has(p));
+}
+
+/** The seller specs `seller-<pass>` runs on `project` (all of them; none is project-ignored). */
+function listSellerSpecs() {
+  checkSellerTags(allSpecs());
+  return [...SELLER_SPECS].sort();
+}
+
+/** The breaker specs `breaker-<pass>` runs, alone after every shard (none is project-ignored). */
+function listBreakerSpecs() {
+  checkSellerTags(allSpecs());
+  return [...BREAKER_SPECS].sort();
 }
 
 /** Seconds per spec on `project`, falling back to the desktop value. */
@@ -81,14 +161,26 @@ function loadTimings(project) {
 
 // Specs whose run time swings far more than a median shows plan at no less
 // than this many seconds (NEO-389). pipeline-escalation-cold-start waits on
-// the heavy preprocess model's cold start: 1.6 to 5.4 min across runs, median
-// about 1.6, so planned at the median it lands beside a full shard's worth of
-// other specs and sets that shard's length whenever the start is slow.
-// Planned near its worst case it gets a shard close to its own.
+// the heavy preprocess model: 1.6 to 5.4 min across runs when this was written,
+// median about 1.6. Since NEO-529 (real drop zone, no cold-start notice wait)
+// its heavy leg is 6.4-73.2 s over 7 green runs (cold 25.6-27.6 s a call), so
+// the floor below is a stale worst case until CI's own timings show it; the
+// number is deliberately left alone here.
 const MIN_SECONDS = {
   "placeholders/pipeline-escalation-cold-start.spec.ts": 300,
 };
 
+// Specs that share the heavy preprocess service (NEO-407). Each sends photos
+// past the fast crop to the heavy model: the dev heavy service runs one photo
+// per instance on a handful of instances, and a cold one takes minutes to
+// load. Two of them on different shards at once compete for those instances,
+// and which one lands on a cold instance or waits behind the other's photos is
+// luck (CI run 41212224696: real-scans timed out queued behind other heavy
+// jobs). Planned as ONE unit, they run one after another on one shard
+// (`workers: 1`), so within a pass they never overlap. Order is the listed one.
+const RUN_TOGETHER = [
+  ["placeholders/pipeline-escalation-cold-start.spec.ts", "collection/add-cards-from-photos-real-scans.spec.ts"],
+];
 function median(values) {
   if (values.length === 0) return 1;
   const s = [...values].sort((a, b) => a - b);
@@ -100,19 +192,24 @@ function plan(n, project) {
   const timings = loadTimings(project);
   const specs = listSpecs(project);
   const fallback = median(specs.map((s) => timings[s]).filter((v) => Number.isFinite(v)));
-  const weighted = specs
-    .map((spec) => ({
-      spec,
-      secs: Math.max(Number.isFinite(timings[spec]) ? timings[spec] : fallback, MIN_SECONDS[spec] ?? 0),
-    }))
-    // Heaviest first; path breaks ties so every shard computes the same plan.
-    .sort((a, b) => b.secs - a.secs || a.spec.localeCompare(b.spec));
+  const secsOf = (spec) => Math.max(Number.isFinite(timings[spec]) ? timings[spec] : fallback, MIN_SECONDS[spec] ?? 0);
+  const grouped = new Set();
+  const units = [];
+  for (const group of RUN_TOGETHER) {
+    const present = group.filter((spec) => specs.includes(spec));
+    if (present.length === 0) continue;
+    for (const spec of present) grouped.add(spec);
+    units.push({ spec: present[0], specs: present, secs: present.reduce((acc, spec) => acc + secsOf(spec), 0) });
+  }
+  for (const spec of specs) if (!grouped.has(spec)) units.push({ spec, specs: [spec], secs: secsOf(spec) });
+  // Heaviest first; path breaks ties so every shard computes the same plan.
+  const weighted = units.sort((a, b) => b.secs - a.secs || a.spec.localeCompare(b.spec));
   const shards = Array.from({ length: n }, () => ({ secs: 0, specs: [] }));
   for (const item of weighted) {
     let lightest = shards[0];
     for (const s of shards) if (s.secs < lightest.secs) lightest = s;
     lightest.secs += item.secs;
-    lightest.specs.push(item.spec);
+    lightest.specs.push(...item.specs);
   }
   return shards;
 }
@@ -170,34 +267,47 @@ function fromResults(files) {
   );
 }
 
-const args = process.argv.slice(2);
-const pIdx = args.indexOf("--project");
-let project = PROJECTS[0];
-if (pIdx !== -1) {
-  project = args[pIdx + 1];
-  if (!PROJECTS.includes(project)) throw new Error(`--project must be one of ${PROJECTS.join(", ")}, got '${project}'`);
-  args.splice(pIdx, 2);
-}
-if (args[0] === "--projects") {
-  for (const p of PROJECTS) console.log(p);
-} else if (args[0] === "--from-results") {
-  if (!args[1]) throw new Error("usage: shard-plan.mjs --from-results <results.json>...");
-  fromResults(args.slice(1));
-} else {
-  const n = Number(args[0]);
-  const i = args[1] === undefined ? undefined : Number(args[1]);
-  if (!Number.isInteger(n) || n < 1 || (i !== undefined && (!Number.isInteger(i) || i < 1 || i > n))) {
-    throw new Error(
-      "usage: shard-plan.mjs <N> [<i> in 1..N] [--project <p>] | --from-results <results.json>... | --projects",
-    );
+function main(argv) {
+  const args = argv.slice(2);
+  const pIdx = args.indexOf("--project");
+  let project = PROJECTS[0];
+  if (pIdx !== -1) {
+    project = args[pIdx + 1];
+    if (!PROJECTS.includes(project)) throw new Error(`--project must be one of ${PROJECTS.join(", ")}, got '${project}'`);
+    args.splice(pIdx, 2);
   }
-  const shards = plan(n, project);
-  if (i === undefined) {
-    shards.forEach((s, k) =>
-      console.error(`shard ${k + 1}/${n} [${project}]: ${s.specs.length} specs, ~${Math.round(s.secs)}s`),
-    );
-  } else {
+  if (args[0] === "--seller") {
     const rel = toPosix(path.relative(WEB, TESTS));
-    for (const spec of shards[i - 1].specs) console.log(`${rel}/${spec}`);
+    for (const spec of listSellerSpecs()) console.log(`${rel}/${spec}`);
+  } else if (args[0] === "--breaker") {
+    const rel = toPosix(path.relative(WEB, TESTS));
+    for (const spec of listBreakerSpecs()) console.log(`${rel}/${spec}`);
+  } else if (args[0] === "--projects") {
+    for (const p of PROJECTS) console.log(p);
+  } else if (args[0] === "--from-results") {
+    if (!args[1]) throw new Error("usage: shard-plan.mjs --from-results <results.json>...");
+    fromResults(args.slice(1));
+  } else {
+    const n = Number(args[0]);
+    const i = args[1] === undefined ? undefined : Number(args[1]);
+    if (!Number.isInteger(n) || n < 1 || (i !== undefined && (!Number.isInteger(i) || i < 1 || i > n))) {
+      throw new Error(
+        "usage: shard-plan.mjs <N> [<i> in 1..N] [--project <p>] | --from-results <results.json>... | --projects",
+      );
+    }
+    const shards = plan(n, project);
+    if (i === undefined) {
+      shards.forEach((s, k) =>
+        console.error(`shard ${k + 1}/${n} [${project}]: ${s.specs.length} specs, ~${Math.round(s.secs)}s`),
+      );
+    } else {
+      const rel = toPosix(path.relative(WEB, TESTS));
+      for (const spec of shards[i - 1].specs) console.log(`${rel}/${spec}`);
+    }
   }
 }
+
+// Run as a CLI only: the unit tests import checkNoRetryTagged without planning.
+// Real paths on both sides, since import.meta.url is resolved through symlinks.
+const invoked = process.argv[1] && fs.existsSync(process.argv[1]) ? fs.realpathSync(process.argv[1]) : undefined;
+if (invoked === fs.realpathSync(fileURLToPath(import.meta.url))) main(process.argv);

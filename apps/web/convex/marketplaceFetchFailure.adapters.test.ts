@@ -41,23 +41,28 @@ vi.mock("./credentials", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./credentials")>();
   const { internalAction } = await import("./_generated/server");
   const { v } = await import("convex/values");
+  const getSiteToken = internalAction({
+    args: { site: v.string() },
+    returns: v.any(),
+    handler: async (_ctx, args) =>
+      credState.hasToken
+        ? {
+            token:
+              args.site === "sportlots"
+                ? "PHPSESSID=sl-secret-cookie-value"
+                : "bsc-secret-token-value-0123456789abcdef",
+          }
+        : null,
+  });
   return {
     ...actual,
-    getSiteToken: internalAction({
-      args: { site: v.string() },
-      returns: v.any(),
-      handler: async (_ctx, args) =>
-        credState.hasToken
-          ? {
-              token:
-                args.site === "sportlots"
-                  ? "PHPSESSID=sl-secret-cookie-value"
-                  : "bsc-secret-token-value-0123456789abcdef",
-            }
-          : null,
-    }),
+    getSiteToken,
+    // NEO-605: the BSC adapter reads the token by calling this directly,
+    // not through `runAction(getSiteToken)`; the same stub answers both.
+    siteTokenForCurrentUser: (ctx: unknown, site: string) =>
+      (getSiteToken as unknown as { _handler: (c: unknown, a: { site: string }) => unknown })._handler(ctx, { site }),
     authenticateBsc: internalAction({
-      args: {},
+      args: { userId: v.optional(v.string()), tokenRefused: v.optional(v.boolean()) },
       returns: v.any(),
       handler: async () =>
         credState.reauthSucceeds

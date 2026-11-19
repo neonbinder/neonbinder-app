@@ -44,10 +44,10 @@ vi.mock("./EntityLinkSearch", () => ({ default: () => null }));
 import EntityReviewWizard from "./EntityReviewWizard";
 
 const CONFIRM_SAVE_NAME = "Confirm & Save (Enter) — commit this review";
-const TITLES_LEAD = "Trimmed to fit. Keep it, or make it yours.";
+const TITLES_LEAD = "These titles had to leave something out or still run long. Check what went, then keep 'em or make 'em yours.";
 const SET_TEAM_HINT =
-  "Most of these share one team? Set a whole-set team in Set details and every new card gets it.";
-/** A set name long enough that every new card's title is trimmed to fit. */
+  "Most of these share one team, or show none at all? Pick a set team, or No Team, under Edit attributes and every new card gets it.";
+/** A set name long enough that every new card's title runs over the cap (NEO-535: kept as built). */
 const LONG_TITLES = {
   sportValue: "Baseball",
   setNameValue: "Chrome Update Series Sapphire Edition Platinum Anniversary Collectors Box",
@@ -56,7 +56,7 @@ const LONG_TITLES = {
   players: [],
   teams: [],
 };
-/** The same set with a short name: nothing to trim. */
+/** The same set with a short name: every title fits. */
 const SHORT_TITLES = { ...LONG_TITLES, setNameValue: "Chrome" };
 const NEXT_NAME = "Next (Enter)";
 
@@ -112,12 +112,20 @@ beforeEach(() => {
 });
 
 describe("the chrome on every screen", () => {
-  it("titles the dialog 'Tidy up this set' and never shows the old header", () => {
+  it("titles the dialog with the set it tidies and never shows the old header", () => {
+    currentRows = [row({ name: "Mike Trout" })];
+    render(wizard({ title: "Tidy up 2024 Topps Chrome" }));
+    // NEO-497: the parent's title is the dialog's accessible name.
+    expect(screen.getByRole("dialog", { name: "Tidy up 2024 Topps Chrome" })).toBeTruthy();
+    expect(screen.queryByText("Tidy up this set")).toBeNull();
+    expect(screen.queryByText("Confirm New Players & Teams")).toBeNull();
+    expect(screen.queryByText(/of \d+ reviewed/)).toBeNull();
+  });
+
+  it("falls back to 'Tidy up this set' while the parent has no title yet", () => {
     currentRows = [row({ name: "Mike Trout" })];
     render(wizard());
     expect(screen.getByRole("dialog", { name: "Tidy up this set" })).toBeTruthy();
-    expect(screen.queryByText("Confirm New Players & Teams")).toBeNull();
-    expect(screen.queryByText(/of \d+ reviewed/)).toBeNull();
   });
 
   it.each([
@@ -344,7 +352,7 @@ describe("the post-review steps", () => {
     expect(document.activeElement).toBe(screen.getByRole("button", { name: NEXT_NAME }));
     // Shown, so the commit hears "kept" for the card.
     expect(onTitleAnswersChange.mock.calls.at(-1)?.[0]).toEqual([
-      { listingTitleKept: expect.stringMatching(/#1$/) },
+      { listingTitleKept: expect.stringContaining("Collectors Box") },
     ]);
     // Nothing decided in this sitting: no Back out of the first step.
     expect(screen.queryByRole("button", { name: "Back to previous step" })).toBeNull();
@@ -370,8 +378,8 @@ describe("the post-review steps", () => {
     // "Kept" carries the title the operator was shown, so the server keeps
     // exactly that one.
     expect(onTitleAnswersChange.mock.calls.at(-1)?.[0]).toEqual([
-      { listingTitleKept: expect.stringMatching(/#1$/) },
-      { listingTitleKept: expect.stringMatching(/#2$/) },
+      { listingTitleKept: expect.stringContaining("Collectors Box") },
+      { listingTitleKept: expect.stringContaining("Collectors Box") },
     ]);
   });
 
@@ -387,7 +395,7 @@ describe("the post-review steps", () => {
     fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
     expect(onTitleAnswersChange.mock.calls.at(-1)?.[0]).toEqual([
       undefined,
-      { listingTitleKept: expect.stringMatching(/#2$/) },
+      { listingTitleKept: expect.stringContaining("Collectors Box") },
     ]);
   });
 

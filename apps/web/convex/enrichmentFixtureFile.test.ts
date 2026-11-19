@@ -16,12 +16,15 @@ import { describe, expect, test } from "vitest";
 import { isWikidataQid } from "../lib/players/wikidata-id";
 import {
   FIXTURE_VERSION,
+  entrySportQid,
   fixtureKey,
   getEnrichmentFixture,
+  LIVE_LOOKUP_ALLOWED,
   normaliseLookupName,
   parseFixtureFile,
   type EnrichmentFixtureEntry,
 } from "./adapters/enrichmentFixtures";
+import { RECORDED_NO_MATCH_NAMES, RECORDED_NO_MATCH_PLAYERS } from "../playwright/support/recorded-names";
 
 const FIXTURE_PATH = join(__dirname, "adapters", "__fixtures__", "enrichment-lookups.json");
 
@@ -141,7 +144,9 @@ describe("the committed enrichment fixture", () => {
     if (!parsed.ok) return;
     const { sportQid, entries } = parsed.fixture;
     for (const [key, entry] of Object.entries(entries)) {
-      expect(key).toBe(fixtureKey(entry.kind, sportQid, entry.name));
+      expect(key).toBe(fixtureKey(entry.kind, entrySportQid(entry, sportQid), entry.name));
+      // An entry names its sport only when it differs from the file's.
+      if (entry.sportQid !== undefined) expect(entry.sportQid).not.toBe(sportQid);
       expect(entry.name.trim().length).toBeGreaterThan(0);
       if (entry.result?.wikidataId !== undefined) {
         expect(isWikidataQid(entry.result.wikidataId), `${key} wikidataId`).toBe(true);
@@ -167,6 +172,96 @@ describe("the committed enrichment fixture", () => {
     // sport must not sweep the name in either.
     const suffix = `|${normaliseLookupName(LIVE_PROOF_PLAYER)}`;
     expect(Object.keys(entries).filter((key) => key.endsWith(suffix))).toEqual([]);
+  });
+
+  // NEO-413: under the recording a miss is refused instead of going live, so
+  // the one name allowed through must be exactly the live-proof player, and it
+  // must stay out of the recording (else the live lane proves nothing).
+  test("the only name allowed to go live is the live-proof player, and it is unrecorded", () => {
+    expect(LIVE_LOOKUP_ALLOWED).toEqual([
+      { kind: "player", sportQid: LIVE_PROOF_SPORT_QID, name: LIVE_PROOF_PLAYER },
+    ]);
+  });
+
+  // NEO-413: the hockey checklist specs used to look these up live. Each must
+  // be recorded under Hockey, or the refusal turns it into a silent no-match.
+  test("the hockey checklist names are recorded under Hockey", () => {
+    const parsed = parseFixtureFile(readCommitted());
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const { entries } = parsed.fixture;
+    const hockey: Array<["player" | "team", string]> = [
+      ["player", "Jim Peters"],
+      ["player", "Cory Peterson"],
+      ["player", "Kyuin Shim"],
+      ["player", "Sylvain Naud"],
+      ["player", "Chris Robertson"],
+      ["team", "Tulsa Oilers"],
+      ["team", "Columbus Chill"],
+    ];
+    for (const [kind, name] of hockey) {
+      const entry = entries[fixtureKey(kind, LIVE_PROOF_SPORT_QID, name)];
+      expect(entry, `${kind} ${name} is not recorded under Hockey`).toBeDefined();
+      expect(entrySportQid(entry!, parsed.fixture.sportQid)).toBe(LIVE_PROOF_SPORT_QID);
+    }
+  });
+
+  // The E2E specs that add a player only as scaffolding take a real person from
+  // `playwright/support/recorded-names.ts` so the add costs no live Wikidata
+  // call (Jason, 2026-10-30). That holds only while each name is a recorded
+  // Baseball NO-MATCH: a recorded answer would put a Wikidata career on the
+  // row (the specs assert "No stints recorded yet."), and a missing one goes
+  // live. One name per worker per spec, never shared, so no two shards add
+  // the same person.
+  test("every recorded-name pool player is a recorded Baseball no-match, used once", () => {
+    const parsed = parseFixtureFile(readCommitted());
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const { entries, sportQid } = parsed.fixture;
+    expect(sportQid).toBe("Q5369");
+    const seen = new Set<string>();
+    for (const [pool, names] of Object.entries(RECORDED_NO_MATCH_PLAYERS)) {
+      // Accounts 0-11 exist; recordedNoMatchPlayer indexes by WORKER_INDEX.
+      expect(names.length, pool).toBeGreaterThanOrEqual(12);
+      for (const name of names) {
+        const entry = entries[fixtureKey("player", sportQid, name)];
+        expect(entry, `${pool}: ${name} is not recorded`).toBeDefined();
+        expect(entry?.result, `${pool}: ${name} is recorded with an answer`).toBeNull();
+        const key = normaliseLookupName(name);
+        expect(seen.has(key), `${name} is in two pools`).toBe(false);
+        seen.add(key);
+      }
+    }
+  });
+
+  // NEO-413: every other spec's looked-up player, league or team is a real
+  // name from RECORDED_NO_MATCH_NAMES. Each must answer from the recording as
+  // a no-match in its own kind and sport (a miss is refused under the switch,
+  // and an answer would change the row), one per worker, never in two pools.
+  test("every real-name pool entry is a recorded no-match of its kind and sport, used once", () => {
+    const parsed = parseFixtureFile(readCommitted());
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const { entries } = parsed.fixture;
+    const seen = new Map<string, string>();
+    for (const names of Object.values(RECORDED_NO_MATCH_PLAYERS)) {
+      for (const name of names) seen.set(`player|${normaliseLookupName(name)}`, "RECORDED_NO_MATCH_PLAYERS");
+    }
+    for (const [pool, { kind, sportQid, names }] of Object.entries(RECORDED_NO_MATCH_NAMES)) {
+      expect(names.length, pool).toBeGreaterThanOrEqual(12);
+      for (const name of names) {
+        const entry = entries[fixtureKey(kind, sportQid, name)];
+        expect(entry, `${pool}: ${kind} ${name} is not recorded under ${sportQid}`).toBeDefined();
+        expect(entry?.result, `${pool}: ${name} is recorded with an answer`).toBeNull();
+        expect(normaliseLookupName(name)).not.toBe(normaliseLookupName(LIVE_PROOF_PLAYER));
+        const key = `${kind}|${normaliseLookupName(name)}`;
+        expect(seen.get(key), `${name} is in ${seen.get(key)} and ${pool}`).toBeUndefined();
+        seen.set(key, pool);
+        // A team is typed into a team picker, whose search matches any shared
+        // word: one word only (SET-REGISTRY.md, single search token).
+        if (kind === "team") expect(name, `${pool}: ${name}`).toMatch(/^[A-Za-z]+$/);
+      }
+    }
   });
 
   test("carries names and lookup answers only — no credentials, URLs or deployment names", () => {

@@ -12,8 +12,9 @@ import { api, internal } from "./_generated/api";
 import schema, { collectionRuleValidator } from "./schema";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import type { Id } from "./_generated/dataModel";
-import { binderNeeds } from "./binderRules";
+import { FactReader, MAX_MATCH_CARDS, binderNeeds } from "./binderRules";
 import { CatalogReader } from "./lib/catalogView";
+import { setCardSecondaryPlayers } from "./cardSecondaryPlayers";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -85,6 +86,36 @@ describe("a smart binder's rule", () => {
     });
     const row = await s.t.run(async (ctx) => ctx.db.get(copyId as Id<"collectionCopies">));
     expect(row?.slot).toBe(0);
+  });
+
+  test('names a set as its cards\' titles do: brand once, never "Topps Topps Chrome"', async () => {
+    const s = await setup();
+    // A set whose name doesn't carry its brand, beside the fixture's
+    // "Topps Chrome": the brand is put in front once, never twice (NEO-527).
+    const cosmicId = await s.t.run(async (ctx) => {
+      const id = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Cosmic",
+        platformData: {},
+        isCustom: false,
+        children: [],
+        parentId: s.fx.toppsId,
+        lastUpdated: 1_700_000_000_000,
+      } as never);
+      const topps = await ctx.db.get(s.fx.toppsId);
+      await ctx.db.patch(s.fx.toppsId, { children: [...(topps?.children ?? []), id] });
+      return id;
+    });
+    const rule = {
+      version: 1 as const,
+      match: "any" as const,
+      terms: [{ test: { kind: "set" as const, setIds: [s.fx.setId, cosmicId] } }],
+    };
+    const id = await smartBinder(s, rule);
+    const listed = (await s.me.query(api.collectionContainers.list, {})).find((c) => c._id === id)!;
+    const named = Object.fromEntries((listed.ruleNames ?? []).map((n) => [n.id, n.name]));
+    expect(named[s.fx.setId]).toBe("2024 Topps Chrome");
+    expect(named[cosmicId]).toBe("2024 Topps Cosmic");
   });
 
   test("refuses a rule with nothing to include, a wrong kind of id, and Main", async () => {
@@ -602,5 +633,466 @@ describe("brandsOfSport", () => {
     expect(brands).toHaveLength(1);
     expect(brands[0].name).toBe("Topps");
     expect([...brands[0].ids].sort()).toEqual([s.fx.toppsId, s.fx.topps86Id].sort());
+  });
+});
+
+/**
+ * NEO-527 (Jason, 2026-11-12: "a user should never see unknown outside of the
+ * admin screen") — the year's brand-unknown row, by its flag and never its
+ * name, is not a brand a rule can pick, and a set rule's words leave it out.
+ */
+describe("NEO-527: the brand-unknown row in the rule builder", () => {
+  async function withUnknownBrand(s: S) {
+    return s.t.run(async (ctx) => {
+      const unknownId = await ctx.db.insert("selectorOptions", {
+        level: "manufacturer",
+        value: "Unknown",
+        platformData: {},
+        isCustom: false,
+        children: [],
+        parentId: s.fx.yearId,
+        lastUpdated: 1,
+        hasCards: true,
+        metadata: { isBrandUnknown: true },
+      } as never);
+      const setId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Bowman",
+        platformData: {},
+        isCustom: false,
+        children: [],
+        parentId: unknownId,
+        lastUpdated: 1,
+      } as never);
+      return { unknownId, setId };
+    });
+  }
+
+  test("brandsOfSport never offers it", async () => {
+    const s = await setup();
+    await withUnknownBrand(s);
+    const brands = await s.me.query(api.binderRules.brandsOfSport, { sportId: s.fx.sportId });
+    expect(brands.map((b) => b.name)).toEqual(["Topps"]);
+  });
+
+  test("a set rule names the set without it; a real brand's set keeps its brand", async () => {
+    const s = await setup();
+    const { setId } = await withUnknownBrand(s);
+    const id = await smartBinder(s, {
+      version: 1,
+      match: "any",
+      terms: [{ test: { kind: "set", setIds: [setId, s.fx.setId] } }],
+    });
+    const listed = (await s.me.query(api.collectionContainers.list, {})).find((c) => c._id === id)!;
+    expect(listed.ruleNames).toContainEqual({ id: setId, name: "2024 Bowman" });
+    expect(listed.ruleNames).toContainEqual({ id: s.fx.setId, name: "2024 Topps Chrome" });
+    expect(JSON.stringify(listed.ruleNames)).not.toMatch(/unknown/i);
+  });
+});
+
+/**
+ * NEO-410 — a smart binder is never left waiting for its empty slots. In CI
+ * one `writeFitsPage` never finished ("too many system operations"), nothing
+ * retried it, and the binder stayed pending forever. These fail the write on
+ * purpose and check every road out ends in stored fits or a visible "failed".
+ */
+describe("a recompute that fails (NEO-410)", () => {
+  const TIMEOUT = "Your request timed out performing too many system operations.";
+  const failWrites = async (times: number) => {
+    const mod = await import("./binderRules");
+    // convex-test runs a nested mutation through its `_handler`.
+    const write = mod.writeFitsPage as unknown as { _handler: (...args: unknown[]) => Promise<unknown> };
+    const spy = vi.spyOn(write, "_handler");
+    for (let i = 0; i < times; i++) spy.mockRejectedValueOnce(new Error(TIMEOUT));
+    return spy;
+  };
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+  const slots = (s: S, containerId: Id<"collectionContainers">) =>
+    s.me.query(api.binderRules.needs, { containerId });
+
+  test("tries again on its own and ends with every fit stored, nothing pending", async () => {
+    const s = await setup();
+    const reference = await smartBinder(s);
+    await settle(s);
+    const expected = (await fitsOf(s, reference)).map((f) => f.cardId);
+    expect(expected.length).toBeGreaterThan(1);
+
+    const spy = await failWrites(1);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const id = await smartBinder(s);
+    await settle(s);
+    expect(spy.mock.calls.length).toBeGreaterThan(1); // it ran again after the failure
+    expect((await fitsOf(s, id)).map((f) => f.cardId)).toEqual(expected);
+    const state = await fitsStateOf(s, id);
+    expect(state?.pending).toBeUndefined();
+    expect(state?.failed).toBeUndefined();
+    expect(state?.pendingSince).toBeUndefined();
+    const read = await slots(s, id);
+    expect(read.pending).toBe(false);
+    expect(read.failed).toBeUndefined();
+  });
+
+  test("gives up visibly after its last retry, and Try again fills the slots", async () => {
+    const s = await setup();
+    await failWrites(5);
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const id = await smartBinder(s);
+    await settle(s);
+    expect(errors).toHaveBeenCalledTimes(5);
+    const state = await fitsStateOf(s, id);
+    expect(state?.pending).toBeUndefined();
+    expect(state?.failed).toBe(true);
+    const read = await slots(s, id);
+    expect(read.pending).toBe(false);
+    expect(read.failed).toBe(true);
+
+    // "Try again" (the write works now): pending at once, then filled. A
+    // second tap while it is pending schedules nothing more.
+    const writes = await failWrites(0);
+    writes.mockClear();
+    await s.me.mutation(api.binderRules.retryFits, { containerId: id });
+    expect((await slots(s, id)).pending).toBe(true);
+    await s.me.mutation(api.binderRules.retryFits, { containerId: id });
+    await settle(s);
+    expect(writes).toHaveBeenCalledTimes(1); // one recompute, one page
+    expect((await fitsOf(s, id)).length).toBeGreaterThan(1);
+    const after = await fitsStateOf(s, id);
+    // On a binder that is fine, Try again does nothing at all.
+    await s.me.mutation(api.binderRules.retryFits, { containerId: id });
+    expect((await fitsStateOf(s, id))?.pending).toBeUndefined();
+    expect(after?.failed).toBeUndefined();
+    expect(after?.pending).toBeUndefined();
+    expect((await slots(s, id)).failed).toBeUndefined();
+  });
+
+  test("Try again is the owner's alone", async () => {
+    const s = await setup();
+    const id = await smartBinder(s);
+    await settle(s);
+    await expect(s.them.mutation(api.binderRules.retryFits, { containerId: id })).rejects.toThrow();
+  });
+
+  test("a binder left pending (a recompute Convex never finished) is re-queued by the sweep", async () => {
+    const s = await setup();
+    const id = await smartBinder(s);
+    await settle(s);
+    const fresh = await smartBinder(s, {
+      version: 1,
+      match: "all",
+      terms: [{ test: { kind: "player", playerIds: [s.fx.goodenId] } }],
+    });
+    await settle(s);
+    // A third binder that is fine (no pendingSince at all): never swept.
+    const settled = await smartBinder(s);
+    await settle(s);
+    // Simulate a dropped recompute: pending, long ago, rows gone; and a
+    // second binder that only just went pending, which the sweep leaves be.
+    const now = Date.now();
+    await s.t.run(async (ctx) => {
+      for (const row of await ctx.db
+        .query("collectionBinderFits")
+        .withIndex("by_binder_order", (q) => q.eq("binderId", id))
+        .collect())
+        await ctx.db.delete(row._id);
+      const stuck = await ctx.db
+        .query("collectionBinderFitsState")
+        .withIndex("by_binder", (q) => q.eq("binderId", id))
+        .unique();
+      await ctx.db.patch(stuck!._id, { pending: true, pendingSince: now - 21 * 60 * 1000 });
+      const recent = await ctx.db
+        .query("collectionBinderFitsState")
+        .withIndex("by_binder", (q) => q.eq("binderId", fresh))
+        .unique();
+      await ctx.db.patch(recent!._id, { pending: true, pendingSince: now });
+    });
+    expect(await s.t.mutation(internal.binderRules.requeueStuckFits, {})).toEqual({ requeued: 1 });
+    await settle(s);
+    expect((await fitsOf(s, id)).length).toBeGreaterThan(1);
+    expect((await fitsStateOf(s, id))?.pending).toBeUndefined();
+    expect((await fitsStateOf(s, fresh))?.pending).toBe(true);
+    expect((await fitsStateOf(s, settled))?.pending).toBeUndefined();
+  });
+
+  test("overlapping recomputes: an older run landing late changes nothing a newer one stored", async () => {
+    const s = await setup();
+    const id = await smartBinder(s);
+    await settle(s);
+    const before = await fitsOf(s, id);
+    // Run A claims a generation, then stalls; run C claims after it and finishes.
+    const older = await s.t.mutation(internal.binderRules.claimFitsGeneration, { binderId: id });
+    await s.t.action(internal.binderRules.recomputeFits, { binderId: id });
+    const done = await fitsStateOf(s, id);
+    expect(done!.generation).toBeGreaterThan(older);
+    const rows = await fitsOf(s, id);
+    // A wakes up: writes one page (a subset) and finishes. Nothing moves.
+    await s.t.mutation(internal.binderRules.writeFitsPage, {
+      binderId: id,
+      ownerId: ME.subject,
+      generation: older,
+      startOrder: 0,
+      rows: [{ cardId: rows[0].cardId, variantId: rows[0].variantId }],
+    });
+    await s.t.mutation(internal.binderRules.finishFits, {
+      binderId: id,
+      ownerId: ME.subject,
+      generation: older,
+      supported: true,
+      complete: true,
+      count: 1,
+    });
+    const after = await fitsOf(s, id);
+    expect(after.map((f) => [f._id, f.order, f.generation])).toEqual(rows.map((f) => [f._id, f.order, f.generation]));
+    expect(after.map((f) => f.cardId)).toEqual(before.map((f) => f.cardId));
+    expect(await fitsStateOf(s, id)).toMatchObject({ generation: done!.generation, count: done!.count });
+  });
+
+  test("a stale chain never marks failed: not over a newer save, not over good fits", async () => {
+    const s = await setup();
+    const id = await smartBinder(s);
+    await settle(s);
+    const good = await fitsStateOf(s, id);
+    // A nightly-style recompute (no pending spell) that fails every time
+    // leaves the binder's good fits alone: no `failed`, no "Try again".
+    await failWrites(5);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await s.t.action(internal.binderRules.recomputeFits, { binderId: id });
+    await settle(s);
+    expect((await fitsStateOf(s, id))?.failed).toBeUndefined();
+    expect((await fitsOf(s, id)).length).toBe(good!.count);
+    // An old spell's give-up after a newer save started another spell.
+    await s.t.run(async (ctx) => {
+      const st = await ctx.db
+        .query("collectionBinderFitsState")
+        .withIndex("by_binder", (q) => q.eq("binderId", id))
+        .unique();
+      await ctx.db.patch(st!._id, { pending: true, pendingSince: 2_000 });
+    });
+    await s.t.mutation(internal.binderRules.markFitsFailed, { binderId: id, since: 1_000 });
+    expect(await fitsStateOf(s, id)).toMatchObject({ pending: true, pendingSince: 2_000 });
+    expect((await fitsStateOf(s, id))?.failed).toBeUndefined();
+  });
+});
+
+describe("backfillFitsState (NEO-410)", () => {
+  test("schedules only smart binders the sweep cannot see: no state row, or pending with no pendingSince", async () => {
+    const s = await setup();
+    const fine = await smartBinder(s);
+    const noRow = await smartBinder(s);
+    const unstamped = await smartBinder(s);
+    await settle(s);
+    await s.t.run(async (ctx) => {
+      const row = (id: Id<"collectionContainers">) =>
+        ctx.db
+          .query("collectionBinderFitsState")
+          .withIndex("by_binder", (q) => q.eq("binderId", id))
+          .unique();
+      await ctx.db.delete((await row(noRow))!._id);
+      await ctx.db.patch((await row(unstamped))!._id, { pending: true });
+    });
+    // Dry run: counts, writes nothing.
+    const dry = await s.t.mutation(internal.backfillFitsState.run, {});
+    expect(dry).toMatchObject({ armed: false, missing: 1, unstamped: 1, isDone: true });
+    expect(await fitsStateOf(s, noRow)).toBeNull();
+    // Armed: both computed; the settled binder untouched.
+    const fineBefore = await fitsStateOf(s, fine);
+    await s.t.mutation(internal.backfillFitsState.run, { arm: true });
+    await settle(s);
+    expect((await fitsStateOf(s, noRow))?.pending).toBeUndefined();
+    expect((await fitsOf(s, noRow)).length).toBeGreaterThan(1);
+    expect((await fitsStateOf(s, unstamped))?.pending).toBeUndefined();
+    expect((await fitsStateOf(s, fine))?.computedAt).toBe(fineBefore?.computedAt);
+  });
+});
+
+describe("NEO-528: cameos (also-pictured players) in a smart binder", () => {
+  /** Strawberry's #2 pictures Gooden too, through the one writer. */
+  const giveCameo = (s: S) =>
+    s.t.run(async (ctx) => {
+      const card = (await ctx.db.get(s.fx.strawberry2))!;
+      await setCardSecondaryPlayers(ctx, card, [s.fx.goodenId]);
+    });
+  const withCameos = (s: S) => ({ ...goodenRule(s), secondaryPlayers: true as const });
+
+  test("off by default: a card Gooden is only pictured on never fits", async () => {
+    const s = await setup();
+    await giveCameo(s);
+    const id = await smartBinder(s);
+    await settle(s);
+    expect((await fitsOf(s, id)).map((f) => f.cardId)).not.toContain(s.fx.strawberry2);
+    expect(
+      await s.me.query(api.binderRules.ruleFits, { containerId: id, cardIds: [s.fx.gooden1, s.fx.strawberry2] }),
+    ).toEqual([{ cardId: s.fx.gooden1 }]);
+  });
+
+  test("on, the walk reaches the card through the cameo index, and the fit, the slot and the read are marked", async () => {
+    const s = await setup();
+    await giveCameo(s);
+    const id = await smartBinder(s, withCameos(s));
+    await settle(s);
+    const fits = await fitsOf(s, id);
+    const cameo = fits.find((f) => f.cardId === s.fx.strawberry2);
+    // Strawberry's card is in no Gooden `cardPlayerLinks` row: only the
+    // cameo index could have brought it into the walk.
+    expect(cameo?.secondary).toBe(true);
+    expect(fits.find((f) => f.cardId === s.fx.gooden1)?.secondary).toBeUndefined();
+
+    expect(
+      await s.me.query(api.binderRules.ruleFits, { containerId: id, cardIds: [s.fx.gooden1, s.fx.strawberry2, s.fx.gold1] }),
+    ).toEqual([{ cardId: s.fx.gooden1 }, { cardId: s.fx.strawberry2, secondary: true }, { cardId: s.fx.gold1 }]);
+    // The older read still answers, without the mark.
+    expect(
+      await s.me.query(api.binderRules.matchingCards, { containerId: id, cardIds: [s.fx.gooden1, s.fx.strawberry2] }),
+    ).toEqual([s.fx.gooden1, s.fx.strawberry2]);
+
+    const needs = await s.me.query(api.binderRules.needs, { containerId: id });
+    expect(needs.needs.find((n) => n.card._id === s.fx.strawberry2)?.secondary).toBe(true);
+    expect(needs.needs.find((n) => n.card._id === s.fx.gooden1)?.secondary).toBeUndefined();
+    // The slot's card names who is pictured.
+    expect(needs.needs.find((n) => n.card._id === s.fx.strawberry2)?.card.secondaryPlayers).toEqual([
+      { _id: s.fx.goodenId, name: "Dwight Gooden" },
+    ]);
+  });
+
+  test("Find cards marks a copy that fits only as a cameo", async () => {
+    const s = await setup();
+    await giveCameo(s);
+    const id = await smartBinder(s, withCameos(s));
+    await s.me.mutation(api.collection.addHaves, { cardIds: [s.fx.strawberry2, s.fx.gooden1] });
+    const page = await findAll(s, id);
+    const byCard = new Map(page.page.map((c) => [c.cardId, c]));
+    expect(byCard.get(s.fx.strawberry2)?.secondary).toBe(true);
+    expect(byCard.get(s.fx.gooden1)?.secondary).toBeUndefined();
+  });
+
+  test("a cameo that becomes the card's own player loses the mark on the next recompute", async () => {
+    const s = await setup();
+    await giveCameo(s);
+    const id = await smartBinder(s, withCameos(s));
+    await settle(s);
+    expect((await fitsOf(s, id)).find((f) => f.cardId === s.fx.strawberry2)?.secondary).toBe(true);
+
+    await s.t.run(async (ctx) => {
+      await ctx.db.patch(s.fx.strawberry2, {
+        playerIds: [s.fx.strawberryId, s.fx.goodenId],
+        playerLinks: [
+          { playerId: s.fx.strawberryId, nameOnCard: "Darryl Strawberry" },
+          { playerId: s.fx.goodenId, nameOnCard: "Dwight Gooden" },
+        ],
+      });
+    });
+    await s.t.action(internal.binderRules.recomputeFits, { binderId: id });
+    const row = (await fitsOf(s, id)).find((f) => f.cardId === s.fx.strawberry2);
+    expect(row).toBeDefined();
+    expect(row?.secondary).toBeUndefined();
+  });
+
+  test("turning the option off drops the cameo fit", async () => {
+    const s = await setup();
+    await giveCameo(s);
+    const id = await smartBinder(s, withCameos(s));
+    await settle(s);
+    await s.me.mutation(api.collectionContainers.setRule, { containerId: id, rule: goodenRule(s) });
+    await settle(s);
+    expect((await fitsOf(s, id)).map((f) => f.cardId)).not.toContain(s.fx.strawberry2);
+  });
+
+  test("cleanRule keeps the option on a rule with a positive player or Hall of Fame line, and drops it elsewhere", async () => {
+    const s = await setup();
+    const stored = async (rule: typeof collectionRuleValidator.type) => {
+      const id = await smartBinder(s, rule);
+      return (await s.me.query(api.collectionContainers.list, {})).find((c) => c._id === id)!.rule;
+    };
+    expect(await stored(withCameos(s))).toEqual(withCameos(s));
+    expect(
+      await stored({ version: 1, match: "all", terms: [{ test: { kind: "hallOfFame" } }], secondaryPlayers: true }),
+    ).toEqual({ version: 1, match: "all", terms: [{ test: { kind: "hallOfFame" } }], secondaryPlayers: true });
+    // A set rule, and one whose only player line is turned around: nothing to widen.
+    const setOnly = { version: 1 as const, match: "all" as const, terms: [{ test: { kind: "set" as const, setIds: [s.fx.setId] } }] };
+    expect(await stored({ ...setOnly, secondaryPlayers: true })).toEqual(setOnly);
+    const notGooden = {
+      version: 1 as const,
+      match: "all" as const,
+      terms: [
+        { test: { kind: "set" as const, setIds: [s.fx.setId] } },
+        { negate: true as const, test: { kind: "player" as const, playerIds: [s.fx.goodenId] } },
+      ],
+    };
+    expect(await stored({ ...notGooden, secondaryPlayers: true })).toEqual(notGooden);
+  });
+
+  test("a negated player line keeps a card he is only pictured on", async () => {
+    const s = await setup();
+    await giveCameo(s);
+    const id = await smartBinder(s, {
+      version: 1,
+      match: "all",
+      terms: [
+        { test: { kind: "set", setIds: [s.fx.setId] } },
+        { negate: true, test: { kind: "player", playerIds: [s.fx.goodenId] } },
+      ],
+      secondaryPlayers: true,
+    });
+    expect(
+      await s.me.query(api.binderRules.ruleFits, { containerId: id, cardIds: [s.fx.gooden1, s.fx.strawberry2] }),
+    ).toEqual([{ cardId: s.fx.strawberry2 }]);
+  });
+
+  test("another collector asking about my cameo binder learns nothing, and past 200 ids is refused", async () => {
+    const s = await setup();
+    await giveCameo(s);
+    const id = await smartBinder(s, withCameos(s));
+    const cardIds = [s.fx.gooden1, s.fx.strawberry2];
+    // The owner's binder does take both, one as a cameo.
+    expect(await s.me.query(api.binderRules.ruleFits, { containerId: id, cardIds })).toEqual([
+      { cardId: s.fx.gooden1 },
+      { cardId: s.fx.strawberry2, secondary: true },
+    ]);
+    expect(await s.them.query(api.binderRules.ruleFits, { containerId: id, cardIds })).toEqual([]);
+    expect(await s.them.query(api.binderRules.matchingCards, { containerId: id, cardIds })).toEqual([]);
+
+    const tooMany = Array.from({ length: MAX_MATCH_CARDS + 1 }, () => s.fx.strawberry2 as string);
+    await expect(s.me.query(api.binderRules.ruleFits, { containerId: id, cardIds: tooMany })).rejects.toThrow(
+      /At most 200 cards/,
+    );
+    await expect(s.me.query(api.binderRules.matchingCards, { containerId: id, cardIds: tooMany })).rejects.toThrow(
+      /At most 200 cards/,
+    );
+    // Exactly the cap is fine.
+    expect(
+      await s.me.query(api.binderRules.ruleFits, { containerId: id, cardIds: tooMany.slice(1) }),
+    ).toHaveLength(MAX_MATCH_CARDS);
+  });
+
+  test("a binder without the cameo option never reads the card's cameo players", async () => {
+    const s = await setup();
+    await giveCameo(s);
+    const read = (cameos: boolean) =>
+      s.t.run(async (ctx) => {
+        const gets: string[] = [];
+        const db = new Proxy(ctx.db, {
+          get(target, prop) {
+            const value = Reflect.get(target, prop, target) as unknown;
+            if (prop === "get") {
+              return async (...args: unknown[]) => {
+                gets.push(String(args[args.length - 1]));
+                return (value as (...a: unknown[]) => unknown).apply(target, args);
+              };
+            }
+            return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+          },
+        });
+        const card = (await ctx.db.get(s.fx.strawberry2))!;
+        const facts = await new FactReader({ ...ctx, db } as never).facts(card, { cameos });
+        return { gets, secondary: [...(facts.secondaryPlayerIds ?? [])] };
+      });
+    const off = await read(false);
+    expect(off.secondary).toEqual([]);
+    expect(off.gets).not.toContain(s.fx.goodenId);
+    // The control: on, the same card reads Gooden and reports him.
+    const on = await read(true);
+    expect(on.secondary).toEqual([s.fx.goodenId]);
+    expect(on.gets).toContain(s.fx.goodenId);
   });
 });

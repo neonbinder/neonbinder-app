@@ -1,10 +1,15 @@
-import { useState, useEffect, useRef } from "react";
+import { useCallback, useState, useEffect, useId, useRef } from "react";
 import { useAction, useQuery } from "convex/react";
+import { useSearchParams } from "react-router";
 import { api } from "@/convex/_generated/api";
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import { usePausedPlatforms } from "@/src/hooks/usePausedPlatforms";
 import { PAUSE_NOTICE_COPY } from "@/lib/marketplace/pause-notice";
+import { CONSENT_HEADING, LISTING_CONSENT, PLATFORM_PARAM } from "@/lib/marketplace/listing-copy";
+import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
+import BscListingSection from "./BscListingSection";
+import EbayPanel from "./ebay/EbayPanel";
 
 const SUPPORTED_SITES = [
   { key: "buysportscards", label: "BuySportsCards" },
@@ -12,11 +17,58 @@ const SUPPORTED_SITES = [
   // server-returned message. Maestro text matching is case-insensitive, so the
   // flows that select on "Sportlots" keep working.
   { key: "sportlots", label: "SportLots" },
-  // Add more sites here as needed (eBay coming soon)
 ];
 
+/**
+ * NEO-415 — eBay has no password to save: it connects by eBay's own consent
+ * screen, and its whole setup (the connection, shipping, payment, returns,
+ * ships-from, Best Offer) lives in its tab here, so every marketplace is
+ * managed in one place (Jason, 2026-11-02). Nothing here can save, test or
+ * clear an eBay sign-in: its tab draws `EbayPanel` instead of the form.
+ */
+const EBAY_SITE = { key: "ebay", label: "eBay" };
+
+const SITE_TABS = [...SUPPORTED_SITES, EBAY_SITE];
+
+/**
+ * The picked platform lives in the URL (`?platform=`), so a link can open
+ * a platform (the inventory's "Finish your eBay setup", the Set Builder's
+ * sign-in notices), a refresh keeps it, and Back steps through the tabs the
+ * collector switched between. No parameter, or one this page doesn't know:
+ * the first platform.
+ */
+function usePickedSite(): {
+  picked: string;
+  /** A push: switching platforms is going somewhere, so Back comes back. */
+  pick: (key: string) => void;
+  /** A replace: puts the URL back on a platform without a history step. */
+  keep: (key: string) => void;
+} {
+  const [params, setParams] = useSearchParams();
+  const asked = params.get(PLATFORM_PARAM);
+  const picked = SITE_TABS.some((s) => s.key === asked) ? asked! : SUPPORTED_SITES[0].key;
+  const go = useCallback(
+    (key: string, replace: boolean) =>
+      setParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.set(PLATFORM_PARAM, key);
+          return next;
+        },
+        { replace },
+      ),
+    [setParams],
+  );
+  const pick = (key: string) => {
+    if (key !== picked) go(key, false);
+  };
+  const keep = useCallback((key: string) => go(key, true), [go]);
+  return { picked, pick, keep };
+}
+
 export default function CredentialsPanel() {
-  const [selectedSite, setSelectedSite] = useState(SUPPORTED_SITES[0].key);
+  useDocumentTitle("Credentials | Neon Binder");
+  const { picked: urlSite, pick: pickSite, keep: keepSite } = usePickedSite();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -40,6 +92,27 @@ export default function CredentialsPanel() {
   const [verifiedThisSession, setVerifiedThisSession] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [confirmingClear, setConfirmingClear] = useState(false);
+  // NEO-415: the eBay panel's Disconnect confirm is up, or a disconnect is running.
+  const [ebayHolding, setEbayHolding] = useState(false);
+
+  // A platform's request in flight holds the page on that platform until it
+  // settles. The tabs are off meanwhile, but Back and Forward still move
+  // `?platform=`; following them would show one platform's answer under
+  // another's name (a BuySportsCards refusal under SportLots) or unmount the
+  // eBay panel mid-disconnect and drop its "still up on eBay" alert. So the
+  // shown platform stays put, and the URL is put back on it (replace: the
+  // Back press simply doesn't take while the page is busy). Only this page's
+  // own request holds; another tab's lock just turns the tabs off.
+  const holding = isLoading || ebayHolding;
+  const [heldSite, setHeldSite] = useState<string | null>(null);
+  if (holding && heldSite === null) setHeldSite(urlSite);
+  // Let go once settled and the URL is back on it (putting it back is a
+  // router transition, so it can trail the request settling by a render).
+  if (!holding && heldSite !== null && urlSite === heldSite) setHeldSite(null);
+  const selectedSite = heldSite ?? urlSite;
+  useEffect(() => {
+    if (heldSite !== null && urlSite !== heldSite) keepSite(heldSite);
+  }, [heldSite, urlSite, keepSite]);
 
   // Refs for clear-confirm modal focus management (2.4.3 Focus Order, 2.1.1 Keyboard)
   const clearTriggerRef = useRef<HTMLElement | null>(null);
@@ -59,6 +132,7 @@ export default function CredentialsPanel() {
   // Get user profile to check if credentials are stored
   const profile = useQuery(api.userProfile.getUserProfile);
   const siteMeta = SUPPORTED_SITES.find((s) => s.key === selectedSite);
+  const ebay = selectedSite === EBAY_SITE.key;
 
   const siteCredential = profile?.siteCredentials?.find(
     (cred) => cred.site === selectedSite,
@@ -74,6 +148,11 @@ export default function CredentialsPanel() {
   const paused = usePausedPlatforms();
   const sitePaused = paused.has(selectedSite);
   const siteName = siteMeta?.label ?? selectedSite;
+  // NEO-370 Rev 5: a saved, unpaused sign-in on a listing platform IS
+  // syncing (listing and sales). What that does is said beside Connect,
+  // before it is pressed, and describes the button.
+  const listingConsent = LISTING_CONSENT[selectedSite];
+  const consentId = useId();
   // a11y (NEO-287 audit): which of the mutually exclusive state cards is
   // showing. Each card is a polite live region keyed on this, so a LIVE flip
   // (pause set or lifted, session lapsing, connect succeeding) remounts the
@@ -106,6 +185,8 @@ export default function CredentialsPanel() {
         cred.lockedAt + CRED_LOCK_LEASE_MS > Date.now(),
     ) || false;
   const credsBusy = isLoading || anyCredentialOpInFlight;
+  // The platform tabs also wait on eBay's Disconnect (its confirm and its run).
+  const tabsOff = credsBusy || ebayHolding;
 
   // Reset form fields and edit mode when site changes
   useEffect(() => {
@@ -305,7 +386,8 @@ export default function CredentialsPanel() {
           browser needs to type-to-select). Buttons are
           click-driven, accessible (role="tab" each + role="tablist"),
           and announce as a platform group to screen readers. */}
-      <div>
+      {/* Inert behind eBay's Disconnect confirm: only the dialog can be reached. */}
+      <div inert={ebayHolding || undefined}>
         <span
           id="site-select-label"
           className="block text-sm font-medium mb-2"
@@ -317,17 +399,19 @@ export default function CredentialsPanel() {
           aria-labelledby="site-select-label"
           className="flex flex-wrap gap-2"
         >
-          {SUPPORTED_SITES.map((site) => {
+          {SITE_TABS.map((site) => {
             const isSelected = selectedSite === site.key;
             return (
               <button
                 key={site.key}
                 type="button"
                 role="tab"
+                // ARIA needs the id: the panel is labelled by its tab.
+                id={`site-tab-${site.key}`}
                 aria-selected={isSelected}
                 aria-controls="site-credentials-panel"
-                onClick={() => { if (!credsBusy) setSelectedSite(site.key); }}
-                disabled={credsBusy}
+                onClick={() => { if (!tabsOff) pickSite(site.key); }}
+                disabled={tabsOff}
                 className={
                   "px-4 py-2 rounded-md border text-sm font-medium transition-colors focus-outline disabled:opacity-50 disabled:cursor-not-allowed " +
                   (isSelected
@@ -341,9 +425,20 @@ export default function CredentialsPanel() {
           })}
         </div>
       </div>
+    {ebay ? (
+      <div
+        id="site-credentials-panel"
+        role="tabpanel"
+        aria-labelledby={`site-tab-${selectedSite}`}
+      >
+        <EbayPanel onHoldChange={setEbayHolding} />
+      </div>
+    ) : (
+      <>
     <div
       id="site-credentials-panel"
       role="tabpanel"
+      aria-labelledby={`site-tab-${selectedSite}`}
     >
       <h2 className="text-xl font-semibold mb-2">
         {siteMeta?.label} Credentials
@@ -592,11 +687,21 @@ export default function CredentialsPanel() {
             </p>
           )}
         </div>
+        {listingConsent && (
+          <p
+            id={consentId}
+            className="mt-4 rounded-md border border-notice-warn-rule bg-notice-warn-bg p-3 text-sm text-notice-warn-ink"
+          >
+            <strong className="block">{CONSENT_HEADING}</strong>
+            {listingConsent}
+          </p>
+        )}
         <div className="flex flex-col sm:flex-row gap-4 mt-4">
           <NeonButton
             type="submit"
             disabled={credsBusy || !username || !password}
-            className="flex-1"
+            aria-describedby={listingConsent ? consentId : undefined}
+            className="flex-1 max-sm:min-h-11"
           >
             {credsBusy ? "Connecting..." : "Connect"}
           </NeonButton>
@@ -604,7 +709,7 @@ export default function CredentialsPanel() {
             type="button"
             onClick={handleTestCredentials}
             disabled={credsBusy || !hasStoredCredentials}
-            className="flex-1"
+            className="flex-1 max-sm:min-h-11"
           >
             {credsBusy ? "Testing..." : "Test Stored Credentials"}
           </NeonButton>
@@ -614,7 +719,7 @@ export default function CredentialsPanel() {
               variant="negative"
               onClick={handleClearCredentials}
               disabled={credsBusy}
-              className="flex-1"
+              className="flex-1 max-sm:min-h-11"
             >
               {credsBusy ? "Clearing..." : "Clear Credentials"}
             </NeonButton>
@@ -632,6 +737,9 @@ export default function CredentialsPanel() {
         )}
       </form>
     )}
+    {/* NEO-370 Rev 5 — where BuySportsCards syncing stands, under the
+        sign-in that drives it. Draws nothing until that sign-in is saved. */}
+    {selectedSite === "buysportscards" && <BscListingSection />}
     {confirmingClear && (
       // Centered modal overlay (not inline): a destructive confirm
       // belongs in a modal, and rendering it fixed/centered keeps it out
@@ -757,6 +865,8 @@ export default function CredentialsPanel() {
           <li>• You can clear your credentials at any time</li>
         </ul>
       </div>
+      </>
+    )}
       </>
     )}
   </section>

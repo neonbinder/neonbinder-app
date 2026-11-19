@@ -43,8 +43,11 @@ vi.mock("./credentials", async (importOriginal) => {
       returns: v.any(),
       handler: async () => ({ token: "test-token" }),
     }),
+    // NEO-605: the BSC adapter reads the token by calling this directly,
+    // not through `runAction(getSiteToken)`; the same stub answers both.
+    siteTokenForCurrentUser: async () => ({ token: "test-token" }),
     authenticateBsc: internalAction({
-      args: {},
+      args: { userId: v.optional(v.string()), tokenRefused: v.optional(v.boolean()) },
       returns: v.any(),
       handler: async () => ({ success: true }),
     }),

@@ -5,14 +5,22 @@ name: Browser CI
 # (build-push / deploy-dev / dev-promote / deploy-prod / prod-promote) lives in
 # browser-deploy.yml and is invoked by release.yml — see the NEO-143 note below.
 #
-# WIF: the dev provider now trusts neonbinder/neonbinder (NEO-18 terraform
+# WIF: the dev provider now trusts neonbinder/neonbinder-app (NEO-18 terraform
 # change, neonbinder_ioc#25). GCP_WIF_PROVIDER_DEV / GCP_SERVICE_ACCOUNT_DEPLOYER_DEV
 # are set on this repo.
 
 on:
+  # NEO-546: GitHub's merge queue fires merge_group; `paths:` cannot filter it,
+  # so the `scope` job below does. Inert until MERGE_QUEUE is on and the ruleset
+  # has a merge_queue rule.
+  merge_group:
+    types: [checks_requested]
   pull_request:
     paths:
       - "services/browser/**"
+      # NEO-555: kept equal to the merge_group `scope` filter below. A change
+      # to the fake-bsc files the browser tests read is covered by the PR
+      # pipeline's browser-test job; it does not need a browser preview.
       # This workflow's own path (NEO-130). Without it a PR that changes only
       # this file does not run it, so the change ships unexercised — which is
       # exactly how a broken preview image path could reach main and take the
@@ -22,6 +30,16 @@ on:
       # a PR touching only those should still build + preview this service.
       - ".github/workflows/browser-deploy.yml"
       - ".github/workflows/release.yml"
+      # NEO-555: the scripts this workflow's preview jobs run.
+      - ".github/scripts/ci-mode.sh"
+      - ".github/scripts/resolve-secret-version.sh"
+      - ".github/scripts/image-push-report.sh"
+      - ".github/scripts/fake-bsc-url.sh"
+      - ".github/scripts/bsc-probe.sh"
+      - ".github/scripts/bsc-probe-verdict.sh"
+      - ".github/scripts/ebay-fake-token.sh"
+      - ".github/scripts/ebay-probe.sh"
+      - ".github/scripts/ebay-probe-verdict.sh"
 
 # NEO-143: deliberately NO `push:` trigger. The prod deploy lane moved to
 # browser-deploy.yml so release.yml can order it AHEAD of the web/Convex
@@ -34,8 +52,9 @@ concurrency:
   # Group per-PR and cancel in-flight so rapid pushes don't stack up redundant
   # preview builds. (Pre-merge only now, so the old main/dispatch arm of this
   # expression is gone.)
-  group: browser-ci-pr-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: browser-ci-pr-${{ github.event.pull_request.number || github.ref }}
+  # A cancelled merge-queue run ejects the PR, so a merge group is never cancelled.
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 permissions:
   contents: read
@@ -45,7 +64,7 @@ env:
   # `gcloud run deploy` of the shared dev browser service happened to carry
   # (browser-deploy.yml's dev lane sets 20) — a tagged no-traffic preview
   # revision does not honour the service-level cap. Capped explicitly at the
-  # dealer-preview scale agreed in NEO-299 (Jason, 2026-09-24: "Fast: ...
+  # dealer-preview scale agreed in NEO-299 (2026-09-24 decision: "Fast: ...
   # Browser preview: 3"), sized so a preview burst can't add to the 400 GiB
   # dev quota alongside the preprocess previews. Not part of
   # apps/web/convex/preprocessCapacity.json (that file is preprocess-only) —
@@ -57,13 +76,72 @@ defaults:
     working-directory: services/browser
 
 jobs:
+  # NEO-546: scope and mode. A pull_request run reaches this workflow through
+  # `on.pull_request.paths`, but GitHub does not apply `paths:` to a merge_group
+  # run, so the merge queue would otherwise build every service on every PR.
+  # `changed` is therefore forced true on pull_request (today's behaviour) and
+  # computed from the diff on merge_group. `full`, `pr` and `sha` come from the
+  # shared ci-mode.sh: the preview is built on a merge group, or on a PR that is
+  # not in cheap mode, and is keyed on the PR number either way.
+  scope:
+    name: Decide scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    outputs:
+      changed: ${{ github.event_name == 'pull_request' && 'true' || steps.filter.outputs.browser }}
+      full: ${{ steps.mode.outputs.full }}
+      pr: ${{ steps.mode.outputs.pr }}
+      sha: ${{ steps.mode.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Decide cheap or full
+        id: mode
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          MERGE_QUEUE: ${{ vars.MERGE_QUEUE }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: bash .github/scripts/ci-mode.sh >> "$GITHUB_OUTPUT"
+
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        if: github.event_name == 'merge_group'
+        with:
+          # Mirror `on.pull_request.paths` above.
+          filters: |
+            browser:
+              - "services/browser/**"
+              - ".github/workflows/browser.yml"
+              - ".github/workflows/browser-deploy.yml"
+              - ".github/workflows/release.yml"
+              - ".github/scripts/ci-mode.sh"
+              - ".github/scripts/resolve-secret-version.sh"
+              - ".github/scripts/image-push-report.sh"
+              - ".github/scripts/fake-bsc-url.sh"
+              - ".github/scripts/bsc-probe.sh"
+              - ".github/scripts/bsc-probe-verdict.sh"
+              - ".github/scripts/ebay-fake-token.sh"
+              - ".github/scripts/ebay-probe.sh"
+              - ".github/scripts/ebay-probe-verdict.sh"
+
   test:
     name: Build + unit tests
+    needs: scope
+    if: needs.scope.outputs.changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: services/browser/.nvmrc
           cache: npm
@@ -76,7 +154,7 @@ jobs:
   # Per-PR preview: each PR gets a stable `pr-<N>` tagged, NO-TRAFFIC revision
   # on the dev Cloud Run service. Traffic-serving dev (main's HEAD) is
   # untouched. The deterministic tagged URL
-  #   https://pr-<N>---neonbinder-browser-xxlo66yxuq-uc.a.run.app
+  #   https://pr-<N>---<base-host>
   # is what apps/web's vercel-build.sh points the Convex preview's
   # NEONBINDER_BROWSER_URL at, so the web E2E exercises THIS PR's browser code.
   # Fork PRs are skipped (no WIF/OIDC access). Teardown: a cutover follow-up
@@ -84,10 +162,13 @@ jobs:
   # ---------------------------------------------------------------------------
   deploy-preview:
     name: Deploy per-PR Cloud Run preview
-    needs: test
+    needs: [scope, test]
+    # NEO-546: built on a PR that is not in cheap mode (today's flow) and on
+    # every merge group. A cheap PR run skips it; the queue builds it.
     if: |
-      github.event_name == 'pull_request'
-      && github.event.pull_request.head.repo.full_name == github.repository
+      needs.scope.outputs.full == 'true'
+      && needs.scope.outputs.changed == 'true'
+      && (github.event_name == 'merge_group' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -106,6 +187,61 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
+      - id: ebay
+        name: Preflight eBay config (sandbox, dev project)
+        env:
+          EBAY_CLIENT_ID: ${{ vars.EBAY_CLIENT_ID_SANDBOX }}
+          EBAY_RU_NAME: ${{ vars.EBAY_RU_NAME_SANDBOX }}
+          GCP_PROJECT: neonbinder-dev
+        # NEO-415. Fail the deploy loudly rather than ship a revision whose eBay
+        # routes answer 503 ebay_not_configured, or hand Cloud Run a secret
+        # reference whose latest version is not enabled (an opaque deploy
+        # failure). Resolves `latest` to its number and pins that number in the
+        # deploy: Cloud Run reads secret env vars at instance start, so a
+        # floating :latest would take a newly added version live on the next
+        # cold start without a deploy. Needs the deployer's viewer grant on the
+        # secret (neonbinder_ioc).
+        run: |
+          set -uo pipefail
+          missing=()
+          [ -n "$EBAY_CLIENT_ID" ] || missing+=("repo variable EBAY_CLIENT_ID_SANDBOX")
+          [ -n "$EBAY_RU_NAME" ] || missing+=("repo variable EBAY_RU_NAME_SANDBOX")
+          if ! out=$(gcloud secrets versions describe latest \
+              --secret=ebay-client-secret --project="$GCP_PROJECT" \
+              --format='value(state,name)' 2>&1); then
+            missing+=("secret ebay-client-secret readable in $GCP_PROJECT (gcloud: $(printf '%s' "$out" | head -n1))")
+          else
+            state=$(printf '%s' "$out" | awk '{print $1}')
+            version=$(printf '%s' "$out" | awk '{print $2}' | awk -F/ '{print $NF}')
+            if [ "$state" != "ENABLED" ] || ! [[ "$version" =~ ^[0-9]+$ ]]; then
+              missing+=("the latest version of secret ebay-client-secret in $GCP_PROJECT to be ENABLED (state: $state)")
+            else
+              echo "version=$version" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+          if [ "${#missing[@]}" -gt 0 ]; then
+            for m in "${missing[@]}"; do echo "::error::eBay config missing: $m"; done
+            echo "::error::See NEO-415. Set the repo variables with gh variable set and add the secret version with gcloud secrets versions add ebay-client-secret."
+            exit 1
+          fi
+
+      # NEO-552: a preview must talk to the FAKE BSC, never the real site. Fail
+      # the deploy loudly if the fake's URL is not configured, and pin the
+      # caller-key secret to a resolved version (see resolve-secret-version.sh).
+      - id: fakebsc
+        name: Preflight fake BSC config (dev project)
+        env:
+          FAKE_BSC_URL: ${{ vars.NEONBINDER_FAKE_BSC_URL }}
+        run: |
+          set -euo pipefail
+          re='^https://neonbinder-fake-bsc-[a-z0-9-]+(\.[a-z0-9-]+)*\.run\.app$'
+          if [[ -z "${FAKE_BSC_URL:-}" ]] || [[ ! "${FAKE_BSC_URL%/}" =~ $re ]] || [[ "${FAKE_BSC_URL%/}" == *---* ]]; then
+            echo "::error::Repo variable NEONBINDER_FAKE_BSC_URL must be https://neonbinder-fake-bsc-….run.app, the fake's own service URL, with no tag or path (NEO-552)."
+            exit 1
+          fi
+          version=$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-secret-version.sh" fake-bsc-caller-key neonbinder-dev)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Configure Docker for GCR
         run: gcloud auth configure-docker --quiet
 
@@ -123,22 +259,39 @@ jobs:
           # No new cleanup policy needed: `delete-stale-pr-images` (tag prefix
           # `pr-`, 30d) and `delete-old-untagged` (14d) apply to ALL packages.
           IMAGE: gcr.io/neonbinder-dev/neonbinder-browser-preview
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ needs.scope.outputs.pr }}
+          HEAD_SHA: ${{ needs.scope.outputs.sha }}
         # cwd = services/browser (job default); Dockerfile.prod + context live here.
+        #
+        # NEO-484: --provenance=false --sbom=false pushes ONE image manifest,
+        # not an OCI index + attestation (see .github/scripts/image-push-report.sh).
         run: |
-          docker build -f Dockerfile.prod -t "$IMAGE:pr-$PR_NUMBER" .
+          set -euo pipefail
+          docker build --provenance=false --sbom=false \
+            --label "org.opencontainers.image.revision=$HEAD_SHA" \
+            -f Dockerfile.prod -t "$IMAGE:pr-$PR_NUMBER" .
           docker push "$IMAGE:pr-$PR_NUMBER"
+          bash "$GITHUB_WORKSPACE/.github/scripts/image-push-report.sh" "$IMAGE:pr-$PR_NUMBER"
 
       - name: Deploy tagged no-traffic preview to dev Cloud Run
         uses: google-github-actions/deploy-cloudrun@2028e2d7d30a78c6910e0632e48dd561b064884d # v3.0.1
         with:
           service: neonbinder-browser
           region: us-central1
-          image: gcr.io/neonbinder-dev/neonbinder-browser-preview:pr-${{ github.event.pull_request.number }}
+          image: gcr.io/neonbinder-dev/neonbinder-browser-preview:pr-${{ needs.scope.outputs.pr }}
           project_id: neonbinder-dev
-          env_vars: ENVIRONMENT=dev
+          env_vars: |
+            ENVIRONMENT=dev
+            EBAY_CLIENT_ID=${{ vars.EBAY_CLIENT_ID_SANDBOX }}
+            EBAY_RU_NAME=${{ vars.EBAY_RU_NAME_SANDBOX }}
+            EBAY_ENVIRONMENT=sandbox
+            NEONBINDER_FAKE_BSC_URL=${{ vars.NEONBINDER_FAKE_BSC_URL }}
+            PREVIEW_SHA=${{ needs.scope.outputs.sha }}
+          secrets: |
+            EBAY_CLIENT_SECRET=ebay-client-secret:${{ steps.ebay.outputs.version }}
+            NEONBINDER_FAKE_BSC_KEY=fake-bsc-caller-key:${{ steps.fakebsc.outputs.version }}
           no_traffic: true
-          tag: pr-${{ github.event.pull_request.number }}
+          tag: pr-${{ needs.scope.outputs.pr }}
           # NEO-299: explicit per-deploy cap — see the env block comment above.
           # Without this the preview inherited the shared dev service's last
           # deployed --max-instances (20), unbounded by anything this
@@ -148,7 +301,7 @@ jobs:
       - id: capture
         name: Capture preview URL
         env:
-          PR: ${{ github.event.pull_request.number }}
+          PR: ${{ needs.scope.outputs.pr }}
         run: |
           set -euo pipefail
           TAG="pr-$PR"
@@ -165,14 +318,16 @@ jobs:
           echo "preview_tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Preview URL: $TAGGED_URL"
 
-  # Real BSC + SportLots login round-trip against the tagged preview revision.
+  # Fake-BSC probe + real SportLots login round-trip against the tagged preview revision.
   # This is the dedicated browser-service e2e check (tests/integration/*.test.mjs
   # via test:prod-gate) that was missing in the monorepo CI — it catches auth
   # regressions in the PR's own browser code before the web E2E even runs.
   preview-login-probe:
-    name: Preview login probe (BSC + SportLots)
+    name: Preview login probe (fake BSC + SportLots)
     needs: deploy-preview
-    if: github.event_name == 'pull_request'
+    # Runs whenever deploy-preview succeeded (implicit success()), on a PR or a
+    # merge group.
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -180,7 +335,7 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: services/browser/.nvmrc
           cache: npm
@@ -217,29 +372,98 @@ jobs:
           id_token_audience: ${{ steps.base-url.outputs.base_url }}
           id_token_include_email: true
 
-      - name: Run integration login suite against preview
+      # NEO-552: BSC is the fake. The probe signs in with the fake's constant
+      # credentials and asserts /health says bscTarget=fake; no BSC credential
+      # exists in CI. SportLots still logs in for real.
+      - name: BSC probe against the preview (fake)
         env:
           TARGET_URL: ${{ needs.deploy-preview.outputs.preview_url }}
           PROBE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
-          BSC_USERNAME: ${{ secrets.MAESTRO_BSC_USERNAME }}
-          BSC_PASSWORD: ${{ secrets.MAESTRO_BSC_PASSWORD }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/bsc-probe.sh" fake
+
+      # NEO-555: fake-mode eBay probe gate. The preview's browser service talks
+      # to the fake eBay (same standing dev fake as BSC). To run the probe's
+      # ACCOUNT leg too, CI mints a fake refresh token itself: POST
+      # /__fake/ebay/consent, then the code grant with the fake's fixed public
+      # client (ebay-fake-token.sh). A failed mint fails the job (S2): a broken
+      # fake consent or token endpoint must not pass with the account leg
+      # skipped. Nothing here is a real eBay credential;
+      # the fake never contacts eBay. A missing fake URL or caller key fails the
+      # job: a gate that skips itself is not a gate (N2).
+      - id: ebay-fake-keys
+        name: Read the fake's caller key (eBay preflight)
+        env:
+          FAKE_URL: ${{ vars.NEONBINDER_FAKE_BSC_URL }}
+        run: |
+          set -uo pipefail
+          if ! bash "$GITHUB_WORKSPACE/.github/scripts/fake-bsc-url.sh" >/dev/null; then
+            echo "::error::vars.NEONBINDER_FAKE_BSC_URL must be the fake's own https://neonbinder-fake-bsc-….run.app URL; the eBay probe gate cannot run without it"
+            exit 1
+          fi
+          if ! caller=$(gcloud secrets versions access latest --secret=fake-bsc-caller-key --project=neonbinder-dev); then
+            echo "::error::fake-bsc-caller-key is not readable by the deployer; the eBay probe gate cannot run without it"
+            exit 1
+          fi
+          echo "::add-mask::$caller"
+          {
+            echo "caller<<NB_EOF"
+            echo "$caller"
+            echo "NB_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - id: ebay-fake-token
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+          token_format: id_token
+          id_token_audience: ${{ vars.NEONBINDER_FAKE_BSC_URL }}
+          id_token_include_email: true
+
+      - id: ebay-mint
+        name: Mint a fake eBay refresh token (account leg)
+        env:
+          FAKE_URL: ${{ vars.NEONBINDER_FAKE_BSC_URL }}
+          FAKE_ID_TOKEN: ${{ steps.ebay-fake-token.outputs.id_token }}
+          FAKE_CALLER_KEY: ${{ steps.ebay-fake-keys.outputs.caller }}
+          OUT_DIR: ${{ runner.temp }}/ebay-probe
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ebay-fake-token.sh"
+
+      - id: ebay-probe
+        name: eBay probe against the preview (fake)
+        env:
+          TARGET_URL: ${{ needs.deploy-preview.outputs.preview_url }}
+          PROBE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+          OUT_DIR: ${{ runner.temp }}/ebay-probe
+          MINTED: ${{ steps.ebay-mint.outputs.minted }}
+        run: |
+          set -uo pipefail
+          if [ "$MINTED" = "true" ]; then
+            EBAY_FAKE_REFRESH_TOKEN=$(cat "$OUT_DIR/refresh-token")
+            export EBAY_FAKE_REFRESH_TOKEN
+          fi
+          bash "$GITHUB_WORKSPACE/.github/scripts/ebay-probe.sh" fake
+      - name: Run SportLots login suite against preview
+        env:
+          TARGET_URL: ${{ needs.deploy-preview.outputs.preview_url }}
+          PROBE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
           SPORTLOTS_USERNAME: ${{ secrets.MAESTRO_SPORTLOTS_USERNAME }}
           SPORTLOTS_PASSWORD: ${{ secrets.MAESTRO_SPORTLOTS_PASSWORD }}
-          # NEO-287: mirrors the Convex-side NEONBINDER_PAUSED_PLATFORMS switch —
-          # while SportLots is paused this probe can't log in either, so skip
-          # just that half rather than going red for a known, operator-chosen
-          # outage. No `if:` gating: BSC keeps probing unconditionally.
+          # NEO-287: mirrors the Convex-side NEONBINDER_PAUSED_PLATFORMS switch.
           PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
-        run: npm run test:prod-gate
+        run: node --test tests/integration/sportlots-login.test.mjs
 
   # Sticky PR comment with the preview URL + probe result, always posted so a
   # failure still leaves a trace on the PR.
   comment-preview:
     name: Comment preview URL
-    needs: [deploy-preview, preview-login-probe]
+    needs: [scope, deploy-preview, preview-login-probe]
+    # NEO-546: a sticky PR comment only on a PR run that built a preview; the
+    # merge group is not a PR conversation, and a cheap run built nothing.
     if: |
       always()
       && github.event_name == 'pull_request'
+      && needs.scope.outputs.full == 'true'
       && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     # This job does not checkout (only gh-api calls), so override the workflow's
@@ -283,7 +507,7 @@ jobs:
 
           **Checks**
           - Deploy: $(status "$DEPLOY_RESULT")
-          - Login probe (BSC + SportLots): $(status "$PROBE_RESULT")
+          - Login probe (fake BSC + SportLots): $(status "$PROBE_RESULT")
 
           The web E2E on this PR runs against this preview (NEONBINDER_BROWSER_URL is pointed at the tagged URL). [Workflow run]($RUN_URL)
           EOF

@@ -17,6 +17,7 @@ import {
   cardNumbersSummary,
   chooseKind,
   defaultChoice,
+  defaultPlayerPositions,
   effectiveCardChoice,
   effectiveChoice,
   evidenceRequests,
@@ -38,6 +39,8 @@ import {
   type StoredPeople,
   type TeamsGroup,
   type TeamsReviewRow,
+  setDefaultSettlesNewRow,
+  setTeamDefaultKind,
 } from "./teams-on-cards";
 
 /** What a line's chips say, in order. */
@@ -76,6 +79,7 @@ function build(
   extra: {
     teamNameEvidence?: Record<string, ServerTeam[]>;
     setLeagueId?: string | null;
+    setLeagueIds?: string[];
     settled?: ReadonlySet<number>;
     people?: StoredPeople;
   } = {},
@@ -90,7 +94,11 @@ function build(
     ...(extra.teamNameEvidence
       ? { teamNameEvidence: new Map(Object.entries(extra.teamNameEvidence)) }
       : {}),
-    ...(extra.setLeagueId !== undefined ? { setLeagueId: extra.setLeagueId } : {}),
+    // NEO-569 — the builder takes the set's leagues as a list (any-of).
+    ...(extra.setLeagueIds !== undefined ? { setLeagueIds: extra.setLeagueIds } : {}),
+    ...(extra.setLeagueId !== undefined
+      ? { setLeagueIds: extra.setLeagueId ? [extra.setLeagueId] : [] }
+      : {}),
     ...(extra.settled ? { settled: extra.settled } : {}),
     ...(extra.people ? { people: extra.people } : {}),
   });
@@ -674,6 +682,29 @@ describe("invariant 8 — a listing's team name holds the guess back", () => {
     expect(suggested(groups[1])).toEqual(["Cincinnati Reds"]);
   });
 
+  test("a team the published checklist settled is a data claim: nothing pre-filled over it (NEO-478)", () => {
+    // NEO-489: a checklist card with NO team string is the checklist's "No
+    // Team" and leaves the section; this card's checklist team was ruled "not
+    // a team" by the operator, so it keeps its (skipped) string and stays.
+    const skipRows = [row({ kind: "team", name: "Team Card", decision: { action: "skip" } })];
+    const cards: PreviewCardForTeams[] = [
+      { ...card("1", ["Johnny Bench"], ["Team Card"]), teamLookup: "checklist" },
+      { ...card("2", ["Johnny Bench"]), teamLookup: "answered" },
+    ];
+    const groups = build(cards, skipRows, {
+      "name:bench johnny": answered([REDS, "Cincinnati Reds"]),
+    });
+    // The claim is part of what a line shares, so the two do not collapse.
+    expect(groups).toHaveLength(2);
+    expect(groups[0].checklistClaim).toBe(true);
+    expect(groups[0].lookupFailed).toBe(false);
+    expect(groups[0].suggestion).toBeNull();
+    // The would-be pre-fill is one more choice, not an answer.
+    expect(labels(groups[0])).toContain("Cincinnati Reds");
+    expect(groups[1].checklistClaim).toBeUndefined();
+    expect(suggested(groups[1])).toEqual(["Cincinnati Reds"]);
+  });
+
   test("the listed string is never written: an answer only ever names a chip", () => {
     const rows = [unruledTeam("Bulls")];
     const groups = build([card("1", ["Johnny Bench"], ["Bulls"])], rows, {
@@ -828,6 +859,94 @@ describe("created players — the window and the set's league (C2, C2b, C8)", ()
     expect(suggested(groups[0])).toEqual(["Tampa Bay Rays"]);
     // The affiliates stay offered, behind the pick.
     expect(labels(groups[0])).toEqual(["Tampa Bay Rays", "Montgomery Biscuits", "Durham Bulls"]);
+  });
+
+  describe("NEO-569: undated career teams (the Jackson Burns rule)", () => {
+    const WAKE = "team_wake" as Id<"teams">;
+    const DUKE = "team_duke" as Id<"teams">;
+    const undated = (name: string, names: string[], careerTeams: Array<{ name: string; fromYear: number; toYear?: number }> = []) =>
+      row({
+        kind: "player",
+        name,
+        enrichment: { careerTeams, undatedCareerTeams: names },
+        decision: { action: "create" },
+      });
+    const evidenceFor = (
+      cards: PreviewCardForTeams[],
+      rows: TeamsReviewRow[],
+      byName: Record<string, ServerTeam[]>,
+    ): Record<string, ServerTeam[]> =>
+      Object.fromEntries(
+        teamNameRequests(cards, rows).map((r) => [r.key, byName[r.name] ?? []]),
+      );
+
+    test("the player's ONE team in the set's leagues, undated, covers every year", () => {
+      const rows = [undated("Jackson Burns", ["Wake Forest Demon Deacons"])];
+      const cards = [card("1", ["Jackson Burns"])];
+      expect(teamNameRequests(cards, rows).map((r) => r.name)).toEqual([
+        "Wake Forest Demon Deacons",
+      ]);
+      const groups = build(cards, rows, {}, 2025, {
+        teamNameEvidence: evidenceFor(cards, rows, {
+          "Wake Forest Demon Deacons": [{ teamId: WAKE, name: "Wake Forest Demon Deacons", rank: 0 }],
+        }),
+        setLeagueIds: ["league_ncaa"],
+      });
+      expect(suggested(groups[0])).toEqual(["Wake Forest Demon Deacons"]);
+    });
+
+    test("two undated teams in the set's leagues: both ignored, nothing pre-filled", () => {
+      const rows = [undated("Two Schools", ["Wake Forest Demon Deacons", "Duke Blue Devils"])];
+      const cards = [card("1", ["Two Schools"])];
+      const groups = build(cards, rows, {}, 2025, {
+        teamNameEvidence: evidenceFor(cards, rows, {
+          "Wake Forest Demon Deacons": [{ teamId: WAKE, name: "Wake Forest Demon Deacons", rank: 0 }],
+          "Duke Blue Devils": [{ teamId: DUKE, name: "Duke Blue Devils", rank: 0 }],
+        }),
+        setLeagueIds: ["league_ncaa"],
+      });
+      expect(groups[0].suggestion).toBeNull();
+    });
+
+    test("an undated team outside the set's leagues never decides the card", () => {
+      const rows = [undated("Pro Guy", ["Wake Forest Demon Deacons"])];
+      const cards = [card("1", ["Pro Guy"])];
+      const groups = build(cards, rows, {}, 2025, {
+        teamNameEvidence: evidenceFor(cards, rows, {
+          "Wake Forest Demon Deacons": [{ teamId: WAKE, name: "Wake Forest Demon Deacons" }],
+        }),
+        setLeagueIds: ["league_mlb"],
+      });
+      expect(groups[0].suggestion).toBeNull();
+    });
+
+    test("a dated team in scope beside it: the undated one is ignored", () => {
+      const rows = [
+        undated("Mixed Guy", ["Wake Forest Demon Deacons"], [
+          { name: "Duke Blue Devils", fromYear: 2023, toYear: 2023 },
+        ]),
+      ];
+      const cards = [card("1", ["Mixed Guy"])];
+      const groups = build(cards, rows, {}, 2025, {
+        teamNameEvidence: evidenceFor(cards, rows, {
+          "Wake Forest Demon Deacons": [{ teamId: WAKE, name: "Wake Forest Demon Deacons", rank: 0 }],
+          "Duke Blue Devils": [{ teamId: DUKE, name: "Duke Blue Devils", rank: 0 }],
+        }),
+        setLeagueIds: ["league_ncaa"],
+      });
+      expect(suggested(groups[0])).not.toEqual(["Wake Forest Demon Deacons"]);
+    });
+
+    test("a set with no league: the one undated team of the whole career covers every year", () => {
+      const rows = [undated("Solo Guy", ["Wake Forest Demon Deacons"])];
+      const cards = [card("1", ["Solo Guy"])];
+      const groups = build(cards, rows, {}, 2025, {
+        teamNameEvidence: evidenceFor(cards, rows, {
+          "Wake Forest Demon Deacons": [{ teamId: WAKE, name: "Wake Forest Demon Deacons" }],
+        }),
+      });
+      expect(suggested(groups[0])).toEqual(["Wake Forest Demon Deacons"]);
+    });
   });
 
   test("a team staged in this wizard is in the set's league when the operator filed it there", () => {
@@ -1088,6 +1207,99 @@ describe("stored people — re-synced playerless rows and the set's skip records
 });
 
 /**
+ * NEO-528 — the row's "Player on every card": a NEW card whose listing names
+ * nobody is born with that player, so the teams step files it under them (by
+ * id), with their career as the evidence, never on the "Cards with no
+ * players" line. A card that prints any name is left blank by the commit
+ * (Jason, 2026-11-15), so it never takes them here either.
+ */
+describe("stored people — the row's Player on every card", () => {
+  const GRIFFEY = "player_griffey" as Id<"players">;
+  const wire = (positions: number[]) => ({ playerId: GRIFFEY, name: "Ken Griffey Jr.", positions });
+
+  test("a new card printing nobody joins the default player's line and asks for them by id", () => {
+    const cards = [card("1", []), card("2", []), card("3", ["Johnny Bench"])];
+    const people = storedPeople(undefined, undefined, undefined, wire([0, 1, 2]));
+    const groups = build(cards, [], {}, undefined, { people });
+    expect(groups.some((g) => g.key === NO_PLAYERS_GROUP_KEY)).toBe(false);
+    const griffey = groups.find((g) => g.players.includes("Ken Griffey Jr."));
+    expect(griffey?.cards.map((c) => c.index)).toEqual([0, 1]);
+    // A card with its own player keeps them.
+    expect(groups.find((g) => g.players.includes("Johnny Bench"))?.cards.map((c) => c.index)).toEqual([2]);
+    expect(evidenceRequests(cards, [], undefined, people)).toEqual([
+      { key: `id:${GRIFFEY}`, playerId: GRIFFEY },
+      { key: "name:bench johnny", name: "Johnny Bench" },
+    ]);
+  });
+
+  // Jason, 2026-11-15: the listing named someone, so the default is not a
+  // guess to make over it. The commit leaves these cards blank
+  // (`listingNamedPlayer`); the teams step must not plan the default either,
+  // even when the host passed the position.
+  test("a card whose only printed name an earlier save ruled out stays nobody's, not the default's", () => {
+    const people = storedPeople(undefined, ["Team Photo"], undefined, wire([0]));
+    const groups = build([card("1", ["Team Photo"])], [], {}, undefined, { people });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].key).toBe(NO_PLAYERS_GROUP_KEY);
+    expect(groups[0].players).toEqual([]);
+    expect(evidenceRequests([card("1", ["Team Photo"])], [], undefined, people)).toEqual([]);
+  });
+
+  test("a card whose every printed name was ruled out in THIS sitting stays nobody's", () => {
+    const rows = [
+      row({ kind: "player", name: "Team Photo", decision: { action: "skip" } }),
+      row({ kind: "player", name: "Checklist", decision: { action: "skip" } }),
+    ];
+    const cards = [card("1", ["Team Photo", "Checklist"]), card("2", [])];
+    const people = storedPeople(undefined, undefined, undefined, wire([0, 1]));
+    const groups = build(cards, rows, {}, undefined, { people });
+    expect(groups.find((g) => g.key === NO_PLAYERS_GROUP_KEY)?.cards.map((c) => c.index)).toEqual([0]);
+    // The nameless card beside it still takes the default.
+    expect(groups.find((g) => g.players.includes("Ken Griffey Jr."))?.cards.map((c) => c.index)).toEqual([1]);
+  });
+
+  test("a card whose printed name is still waiting for review is not the default's", () => {
+    // An undecided row (and a link with no id) is nobody on the card, but the
+    // listing named someone: the commit keeps the name pending and leaves the
+    // card blank, never the default.
+    const rows = [
+      row({ kind: "player", name: "Mystery Man", decision: null }),
+      row({ kind: "player", name: "Half Linked", decision: { action: "link" } }),
+    ];
+    const cards = [card("1", ["Mystery Man"]), card("2", ["Half Linked"])];
+    const people = storedPeople(undefined, undefined, undefined, wire([0, 1]));
+    const groups = build(cards, rows, {}, undefined, { people });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].key).toBe(NO_PLAYERS_GROUP_KEY);
+    expect(groups[0].cards.map((c) => c.index)).toEqual([0, 1]);
+    expect(evidenceRequests(cards, rows, undefined, people)).toEqual([]);
+  });
+
+  test("a blank printed string names nobody, so the card still takes the default", () => {
+    const people = storedPeople(undefined, undefined, undefined, wire([0]));
+    const groups = build([card("1", ["  ", ""])], [], {}, undefined, { people });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].players).toEqual(["Ken Griffey Jr."]);
+  });
+
+  test("a re-synced stored row (not in positions) stays on the no-players line", () => {
+    const people = storedPeople([0], undefined, undefined, wire([1]));
+    const groups = build([card("1", []), card("2", [])], [], {}, undefined, { people });
+    expect(groups.map((g) => g.cards.map((c) => c.index))).toEqual([[0], [1]]);
+    expect(groups[0].key).toBe(NO_PLAYERS_GROUP_KEY);
+    expect(groups[1].players).toEqual(["Ken Griffey Jr."]);
+  });
+
+  test("no positions, or a blank name, is nothing to say", () => {
+    expect(storedPeople(undefined, undefined, undefined, wire([]))).toBeUndefined();
+    expect(
+      storedPeople(undefined, undefined, undefined, { playerId: GRIFFEY, name: "  ", positions: [0] }),
+    ).toBeUndefined();
+    expect([...(storedPeople(undefined, undefined, undefined, wire([3, 1]))?.defaultPlayer?.positions ?? [])]).toEqual([3, 1]);
+  });
+});
+
+/**
  * NEO-335 — the set's skip records for TEAM names (CI run 38285320710,
  * `checklist-one-marketplace-skips-match-dialog` step 10). The first sitting
  * skipped "Roanoke Express" as "not a team"; a re-sync's gate drops it before
@@ -1164,5 +1376,126 @@ describe("stored team skips — a name an earlier save ruled 'not a team'", () =
     const people = storedPeople(undefined, undefined, ["Roanoke Express"]);
     expect([...(people?.skippedTeamNames ?? [])]).toEqual(["express roanoke"]);
     expect(people?.skippedPlayerNames).toBeUndefined();
+  });
+});
+
+describe("NEO-489 — a card the checklist answered No Team is never asked", () => {
+  const noTeam = (cardNumber: string, players: string[]): PreviewCardForTeams => ({
+    ...card(cardNumber, players),
+    teams: [],
+    teamLookup: "checklist",
+  });
+
+  test("it is outside teamlessCardIndexes while a plain teamless card stays in", () => {
+    const cards = [noTeam("1", ["Host One"]), card("2", ["Johnny Bench"])];
+    expect(teamlessCardIndexes(cards, [])).toEqual([1]);
+  });
+
+  test("it is in no group and asks the server about no player", () => {
+    const cards = [noTeam("1", ["Host One"])];
+    expect(build(cards)).toEqual([]);
+    expect(evidenceRequests(cards, [])).toEqual([]);
+  });
+
+  test("a checklist card whose team string was ruled not a team is still asked", () => {
+    const rows = [row({ kind: "team", name: "Checklist", decision: { action: "skip" } })];
+    const cards: PreviewCardForTeams[] = [
+      { ...card("1", ["Host One"], ["Checklist"]), teamLookup: "checklist" },
+    ];
+    expect(teamlessCardIndexes(cards, rows)).toEqual([0]);
+  });
+
+  test("a No Team card gives a same-player sibling no batch evidence and no pre-fill", () => {
+    const groups = build([noTeam("1", ["Johnny Bench"]), card("2", ["Johnny Bench"])]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].cards.map((c) => c.index)).toEqual([1]);
+    expect(groups[0].suggestion).toBeNull();
+    expect(defaultChoice(groups[0])).toEqual({ kind: "later" });
+  });
+});
+
+describe("NEO-556 setTeamDefaultKind", () => {
+  test("teams, No Team, or nothing — teams win over a stray No Team", () => {
+    expect(setTeamDefaultKind(undefined)).toBe("none");
+    expect(setTeamDefaultKind({})).toBe("none");
+    expect(setTeamDefaultKind({ teamIds: [] })).toBe("none");
+    expect(setTeamDefaultKind({ teamIds: ["t"] })).toBe("teams");
+    expect(setTeamDefaultKind({ noTeamDefault: { setAt: 1 } })).toBe("noTeam");
+    expect(setTeamDefaultKind({ teamIds: ["t"], noTeamDefault: { setAt: 1 } })).toBe("teams");
+  });
+
+  test("reads getAncestorChain's `noTeam` flag as well as the stored stamp", () => {
+    expect(setTeamDefaultKind({ noTeam: true })).toBe("noTeam");
+    expect(setTeamDefaultKind({ noTeam: false })).toBe("none");
+    expect(setTeamDefaultKind({ teamIds: ["t"], noTeam: true })).toBe("teams");
+  });
+});
+
+describe("NEO-556 setDefaultSettlesNewRow", () => {
+  const card = { cardNumber: "1", cardName: "One" };
+  const bsc = { platformData: { bsc: { ref: "b1" } } };
+
+  test("a set team settles every new row; no default settles none", () => {
+    expect(setDefaultSettlesNewRow({ ...card, ...bsc }, "teams")).toBe(true);
+    expect(setDefaultSettlesNewRow(card, "none")).toBe(false);
+  });
+
+  test("No Team settles a card with nothing to look up", () => {
+    expect(setDefaultSettlesNewRow(card, "noTeam")).toBe(true);
+  });
+
+  test("No Team settles a BSC card whose lookup ended with no team", () => {
+    expect(setDefaultSettlesNewRow({ ...card, ...bsc, teamLookup: "answered" }, "noTeam")).toBe(true);
+    expect(setDefaultSettlesNewRow({ ...card, ...bsc, teamLookup: "checklist" }, "noTeam")).toBe(true);
+  });
+
+  test("invariant 8: a BSC lookup outstanding or given up holds the stamp back", () => {
+    expect(setDefaultSettlesNewRow({ ...card, ...bsc }, "noTeam")).toBe(false);
+    expect(setDefaultSettlesNewRow({ ...card, ...bsc, teamLookup: "failed" }, "noTeam")).toBe(false);
+  });
+
+  test("invariant 8: a listing or printed team string holds the stamp back", () => {
+    expect(
+      setDefaultSettlesNewRow({ ...card, ...bsc, teamLookup: "answered", rawTeamName: "Padres" }, "noTeam"),
+    ).toBe(false);
+    expect(setDefaultSettlesNewRow({ ...card, teams: ["Padres"] }, "noTeam")).toBe(false);
+    expect(setDefaultSettlesNewRow({ ...card, team: "Padres" }, "noTeam")).toBe(false);
+    // Blank strings are no claim.
+    expect(setDefaultSettlesNewRow({ ...card, teams: ["  "], rawTeamName: " " }, "noTeam")).toBe(true);
+  });
+});
+
+describe("NEO-528 — defaultPlayerPositions: which preview cards the set's player lands on", () => {
+  // `kept` entries are { card, index }: `index` is the diff's card index,
+  // the returned values are positions in `kept`.
+  const entry = (index: number, players?: string[]) => ({
+    card: { players },
+    index,
+  });
+  const stored = new Map<number, unknown>([[10, "card_stored"]]);
+
+  test("a card that re-syncs a stored row is excluded, even when it names nobody", () => {
+    expect(defaultPlayerPositions([entry(10, [])], stored)).toEqual([]);
+    expect(defaultPlayerPositions([entry(10, undefined)], stored)).toEqual([]);
+  });
+
+  test("a new card whose listing names a player is excluded", () => {
+    expect(defaultPlayerPositions([entry(11, ["Johnny Bench"])], stored)).toEqual([]);
+  });
+
+  test("a new card whose listing names nobody is included, blank-only lists too", () => {
+    expect(defaultPlayerPositions([entry(11, [])], stored)).toEqual([0]);
+    expect(defaultPlayerPositions([entry(11, undefined)], stored)).toEqual([0]);
+    expect(defaultPlayerPositions([entry(11, ["", "   "])], stored)).toEqual([0]);
+  });
+
+  test("positions index into kept, not into the diff's card indexes", () => {
+    const kept = [
+      entry(10, []), // stored row
+      entry(11, ["Johnny Bench"]), // new, names someone
+      entry(12, []), // new, nameless
+      entry(13, [" "]), // new, blank-only
+    ];
+    expect(defaultPlayerPositions(kept, stored)).toEqual([2, 3]);
   });
 });

@@ -2,3 +2,25 @@
 
 - [App-wide restyle axe gap](app-wide-restyle-axe-gap.md) — theme PRs prove the switch but axe only runs on a few screens; ask for a light-mode sweep
 - [One big spec, many screens](one-big-spec-many-screens-axe-gap.md) — map every view of a multi-view feature to an open assert plus axe; open forms count
+- [CLI to Convex boundary args pin](cli-to-convex-boundary-args-pin.md) — a script calling `convex run` needs a test pinning the JSON it sends and the refusal on a short answer; convex-test ids cannot prove id-byte logic, ask for a read-only cross-check on a deployment
+- [Retry chain plus sweep overlap](retry-chain-plus-sweep-overlap.md) — delay ladder longer than the sweep threshold runs two chains; ask for an overlap test; failure-only UI gets a component test, not a backdoor
+- [Scheduled deadline keyed on row id](scheduled-deadline-keyed-on-row-id.md) — a deadline that carries only the row id fires on a retried/restarted row; require a test running the old deadline after the reset
+- [Seeded terminal-state spec](seeded-terminal-state-spec.md) — a spec that seeds a failed row then drives the real path: trace it to a terminal 4xx, check close keeps the screen, prove the cap variant; gate sign-in on LAUNCH_GATE
+- [Consent-flow return leg unproven](third-party-consent-flow-return-leg-unproven.md) — seed-hop connect leaves begin/return/error legs without live proof; instant isVisible branches on server-read controls
+- [Progress ledger live-spec gaps](progress-ledger-live-spec-gaps.md) — lease guard, call-order claim, rerun-dependent step list, axe only on finished state
+- [Cross-service error string contract](cross-service-error-string-contract.md) — matcher on another service's error text tested with typed literals; join them; mock-only hook fields need a real-hook test; sibling notice branches need live specs
+- [Read-only reuse of an owner component](read-only-reuse-of-owner-component.md) — extracted hook owner wiring, privacy switch order in the spec, layout branches, "fixture too hard" claims
+- [Keyboard alternative to pointer, unit only](keyboard-alternative-to-pointer-unit-only.md) — Tab/Enter onto a drop box proven only in happy-dom; ask for a live press + per-viewport layout geometry
+- [Spec move mojibake](spec-rename-mojibake-vacuous-negatives.md) — renamed specs can corrupt … and arrows; negative asserts go vacuous; byte-grep every moved file
+- [Re-read proof needs a changed read](reread-proof-needs-a-changed-read.md) — identical-read fixtures make a re-read spec vacuous; use a failed auto crop rescued by hand; diff plan "covers X" claims vs spec diff
+- [Websocket-faked query masks transitions](websocket-faked-query-masks-transitions.md) — faked Convex value proves the stored state only; hides "syncing" and own-action branches (alert, focus return)
+- [Measured-wait helper](measured-wait-helper-untested-and-narrower-than-flat-timeout.md) — flat live timeout swapped for announced-wait credit: helper untested, narrower than the flat ceiling, 429 UI never forced live
+- [Optimistic write, spec waits out the race](optimistic-write-spec-waits-out-the-race.md) — second-tab wait before reload hides lost-on-refresh; ask for pending/beforeunload unit test + no-wait reload
+- [Inverted skip path loses its live proof](inverted-skip-path-loses-its-live-proof.md) — a rule flip rewrites the skip specs; the unchanged case survives only as an .or(); grep removed sentences
+- [Two-order spec helper](two-order-spec-helper-hook-and-pin-widening.md) — instant-or-wait helpers: check failure hooks, widened success regexes, dropped underWay gate
+- [Fake-upstream fault proof gaps](fake-upstream-fault-injection-proof-gaps.md) — conditional/times:1 faults prove nothing; dropped log-shape tests; vacuous capture checks
+- [Budget sweep, GCS store untested](budget-sweep-and-gcs-store-untested.md) — removed/added expect pairing; cloud adapter tested via local store only; cold-start seed budgets
+- [Wildcard regex hides doubled words](wildcard-regex-around-a-label-hides-doubled-words.md) — `.*LABEL.*` passes a brand-doubled label; pin exact text for wording fixes
+- [Cross-service source-read tests vs path filters](cross-service-source-read-tests-vs-path-filters.md) — parity tests reading a sibling service only run if its lane's filter lists those paths, both ways
+- [Inline workflow logic untested](inline-workflow-logic-untested-and-mirrored-regex.md) — yml gate/jq edits need a script test or yml-pin; hand-mirrored regexes drift
+- [Stored count replaced by live count](host-stored-count-replaced-by-live-count-stales-old-spec.md) — old spec asserting the button survives the fix goes stale; race token untested

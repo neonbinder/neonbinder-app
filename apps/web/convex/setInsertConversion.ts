@@ -64,7 +64,11 @@ import {
   deriveOwnLevelFeatures,
   inheritableFeatures,
 } from "./features/deriveCardFeatures";
-import { inheritedTeamIds } from "./lib/selectorTeams";
+import {
+  inheritedTeamDefault,
+  teamDefaultFields,
+  teamDefaultOf,
+} from "./lib/selectorTeams";
 import { newRowSubtreeCounts } from "./cardCounts";
 import { allocateSlots, initialSlots, slotIds } from "./platformSlots";
 import { deleteEmptySelectorOptionRow } from "./selectorOptions";
@@ -968,7 +972,12 @@ async function insertChildRow(
     ...(data?.features ?? {}),
     ...deriveOwnLevelFeatures(level, value, flags),
   };
-  const teamIds = data?.teamIds ? [...data.teamIds] : inheritedTeamIds(parent);
+  // The source's team default (NEO-556: or No Team), else the parent's.
+  const sourceTeamDefault = teamDefaultOf(data);
+  const teamDefault =
+    sourceTeamDefault.kind !== "unset"
+      ? teamDefaultFields(sourceTeamDefault)
+      : inheritedTeamDefault(parent);
   const metadata = {
     ...(data?.cardNumberPrefix !== undefined ? { cardNumberPrefix: data.cardNumberPrefix } : {}),
   };
@@ -987,7 +996,7 @@ async function insertChildRow(
     createdByUserId: adminUserId,
     ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
     ...(Object.keys(features).length > 0 ? { features } : {}),
-    ...(teamIds ? { teamIds } : {}),
+    ...teamDefault,
     lastUpdated: now,
   });
   const freshParent = (await ctx.db.get(parent._id))!;

@@ -1,6 +1,6 @@
 // NEO-345: a synced part's AUTOGRAPH FORMAT is the operator's answer, never a
 // marketplace's. Proved on live data through the operator's own path: Sync card
-// checklist -> the "Tidy up this set" wizard's required "Autographed cards"
+// checklist -> the "Tidy up" wizard's required "Autographed cards"
 // step -> Confirm & Save, then the card's drawer, Set details and the checklist
 // header's prompt.
 //   (a) the step is asked (BSC tags every card of this insert AU, and the part
@@ -35,9 +35,10 @@
 //    ANSWERED with no hint (or gave up after three live failures), and no
 //    registered fixture yields a card the walker can be pinned to. The walker
 //    opens on the lowest-numbered flagged card, and BSC names a team (so a hint)
-//    for every card of every set the suite commits, bar a handful on the Line
-//    Up Venezuelan set (#279, #292, #296 ...) that the sole-writer alias spec
-//    leaves among hundreds of hinted flagged cards. Covered by
+//    for every card of every set the suite commits (bar, until NEO-475, a
+//    handful on the Line Up Venezuelan set, #279, #292, #296 ..., that the
+//    sole-writer alias spec left among hundreds of hinted flagged cards; it
+//    now commits a 9-card set, not measured for this). Covered by
 //    components/SetSelector/MissingTeamFixer.test.tsx (outcomeHeading and the
 //    rendered line), convex/cardChecklist.bscTeamEnrichment.test.ts,
 //    convex/bscTeamEnrichmentQueue.test.ts and convex/fetchBscCardTeamNames.test.ts
@@ -58,6 +59,8 @@
 import type { Locator } from "@playwright/test";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { editCardButton } from "../../support/cards";
+import { expectStepWithSportLots } from "../../support/marketplace-wait";
+import { CHECKLISTS, confirmChecklistMatchCards, matchCardsDialog, usePublishersChecklist } from "../../support/published-checklist";
 import {
   COLD_SYNC,
   columnHeading,
@@ -65,7 +68,7 @@ import {
   columnSearch,
   drillToColdManufacturer,
   drillToSet,
-  INSERT_FETCH,
+  expectAfterBscSync,
   openInsertsReconcile,
   pick,
   setBuilderReady,
@@ -91,7 +94,7 @@ const INSERT = "Bowman Draft Nights Autographs";
 const CARD = "BDNA-KA"; // Kade Anderson, Seattle Mariners: AU + SN99
 const PLAYER = "Kade Anderson";
 const BOWMAN_DRAFT = { sport: "Baseball", year: "2025", manufacturer: "Bowman", set: "Bowman Draft" };
-/** A live BSC (+ SportLots) checklist round trip. */
+/** A live BSC (+ SportLots) checklist round trip: the ceiling kept while SportLots is live (`expectStepWithSportLots`). */
 const CHECKLIST_FETCH = 120_000;
 /** The wizard opens behind the live lookups the batch queues. */
 const WIZARD_OPENS = 60_000;
@@ -104,7 +107,7 @@ const PILL = {
 };
 
 test(
-  "Checklist — a synced part's autograph format is asked in Tidy up this set, applied to its AU cards, changeable in Set details and asked again from the header (NEO-345)",
+  "Checklist — a synced part's autograph format is asked in the tidy-up wizard, applied to its AU cards, changeable in Set details and asked again from the header (NEO-345)",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     const wizard = reviewWizard(page);
@@ -117,16 +120,19 @@ test(
     // The year may be cold (this spec ran first) or already synced by the
     // dual-team spec; the helper's waits are ceilings, not sleeps.
     await drillToColdManufacturer(page, env, { sport: "Baseball", year: "2025", manufacturer: "Bowman" });
-    await expect(page.getByRole("listbox", { name: "Sets" })).toBeVisible({ timeout: COLD_SYNC });
+    await expectStepWithSportLots(page, page.getByRole("listbox", { name: "Sets" }), env, {
+      liveMs: COLD_SYNC,
+      what: "the Sets list",
+    });
     await pick(page, "Sets", "Bowman Draft");
     await expect(columnHeading(page, "Variant Types")).toBeVisible();
     const insertType = columnOption(page, "Variant Types", "Insert");
-    await expect(insertType).toBeVisible({ timeout: VARIANT_TYPES_SYNC });
+    await expectStepWithSportLots(page, insertType, env, { liveMs: VARIANT_TYPES_SYNC, what: "Variant Types row Insert" });
     await insertType.click();
 
     // ── STEP 2: make the insert an NB set: the Inserts reconcile ──
     if (!env.SL_PAUSED) {
-      await openInsertsReconcile(page);
+      await openInsertsReconcile(page, env);
       // Narrow both lists to the insert. Its refractor siblings share the words,
       // so the set is made by its own exact button, never "Keep all" (that would
       // make every sibling a set too).
@@ -147,7 +153,8 @@ test(
       await columnOption(page, "Variant Types", "Insert").click();
     } else {
       // Paused: one marketplace, nothing to reconcile; the column fills straight from BSC.
-      await expect(columnHeading(page, "Inserts")).toBeVisible({ timeout: INSERT_FETCH });
+      // BSC alone: 7 s plus the seconds the column's wait line is up (measured 0.8 s on the #487 merge-group run (GUIDE)).
+      await expectAfterBscSync(page, columnHeading(page, "Inserts"), "the Inserts column opening");
       await expect(reconcile).toBeHidden();
     }
 
@@ -156,33 +163,31 @@ test(
     await columnOption(page, "Inserts", INSERT).click();
     // The empty-checklist assert makes the saved cards below THIS fetch's.
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
+    // The publisher's checklist (NEO-478): the five cards' teams are BSC's own answers, uploaded, so the
+    // fetch asks BSC for the checklist and for no card. This spec is about the autograph format, which
+    // comes from BSC's checklist (the AU + SN99 tags), not from the file.
+    const facts = await usePublishersChecklist(page, CHECKLISTS.bowmanDraftNightsAutographs2025);
     await syncChecklistButton(page).click();
 
-    // A SportLots set paired with the insert opens "Match Cards"; one source
-    // takes the one-marketplace path ("Kept all N cards from BSC"). A live round trip.
-    const matchCards = page.getByText(/Match Cards/).first();
-    const kept = page.getByText(/Kept all [0-9]+ cards? from BSC/);
-    await expect(matchCards.or(kept).or(wizard).first()).toBeVisible({ timeout: CHECKLIST_FETCH });
-    // NEO-287: paused, nothing was asked of SportLots, so the pairing dialog is the bug.
-    if (env.SL_PAUSED) await expect(matchCards).toBeHidden();
-    if (await matchCards.isVisible()) {
-      // The dialog OPENING is not the fetch FINISHING: Confirm reads "Loading…" and is inert until it resolves.
-      const confirm = page.getByRole("button", { name: "Confirm card matches", disabled: false });
-      await expect(confirm).toBeVisible({ timeout: CHECKLIST_FETCH });
-      await expectAccessible(page, {
-        within: page.getByRole("dialog", { name: /^Match Cards/ }),
-        label: "Match Cards dialog (Bowman Draft Nights Autographs)",
-      });
-      await confirm.click();
-      await expect(page.getByText(/Match Cards/)).toBeHidden();
-    }
+    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards
+    // opens with SportLots paused or live. The dialog OPENING is not the fetch FINISHING:
+    // Confirm reads "Loading…" and is inert until it resolves. Live SportLots keeps the old
+    // ceiling; paused, BSC alone under the fetch's wait line (`expectStepWithSportLots`).
+    const matchCards = matchCardsDialog(page);
+    await expectStepWithSportLots(page, matchCards.getByRole("button", { name: "Confirm card matches", disabled: false }), env, {
+      liveMs: CHECKLIST_FETCH,
+      what: "the insert checklist fetch",
+    });
+    await expectAccessible(page, { within: matchCards, label: "Match Cards dialog (Bowman Draft Nights Autographs)" });
+    // Proves the teams line while the dialog is open, keeps any card the file leaves out, confirms.
+    await confirmChecklistMatchCards(page, { facts, what: "the Bowman Draft Nights Autographs fetch" });
 
     // ── STEP 4: the wizard opens, and (a) its Autographed cards step is asked ──
     // REQUIRED (R2): every card of this insert is tagged AU and the part has no
     // format, so the save is never direct. The wizard opens behind the entity
     // check's batch (a live round trip). A fetch that saved without it did not
     // see AU, and fails here by name.
-    await expect(wizard, "the sync opens Tidy up this set for AU cards on a part with no autograph format").toBeVisible({
+    await expect(wizard, "the sync opens the tidy-up wizard for AU cards on a part with no autograph format").toBeVisible({
       timeout: WIZARD_OPENS,
     });
 
@@ -238,7 +243,7 @@ test(
       await control.scrollIntoViewIfNeeded();
       await expect(control).toBeInViewport();
     }
-    await expectAccessible(page, { within: wizard, label: "Tidy up this set wizard, Autographed cards step" });
+    await expectAccessible(page, { within: wizard, label: "Tidy-up wizard, Autographed cards step" });
 
     // Pressing the held Next does nothing but explain: the line appears and
     // focus goes to a tile. By keyboard (Enter on the focused control): the

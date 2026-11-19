@@ -78,6 +78,8 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalAction, internalMutation, mutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { noteArrivals } from "./binderFits";
+import { enqueueListingCards, listsOnMarketplaces } from "./listingOutbox";
+import { ListingGate, type GatedCopy } from "./listingGate";
 import { requireSignedIn } from "./auth";
 import { findSetForSelectorOption } from "./lib/selectorAncestry";
 import {
@@ -101,6 +103,8 @@ type ContainerRow = Doc<"collectionContainers">;
 export const MAX_COPY_QUANTITY = 999;
 /** Line items one collector may hold of one card. Bounds the fold scan. */
 export const MAX_LINES_PER_CARD = 200;
+/** At the line limit. A line with photos can't stack, so removing one is always on offer. */
+export const TOO_MANY_LINES = `You already have ${MAX_LINES_PER_CARD} lines of this card. Remove one, or stack any without photos, to make room.`;
 /** Cards `addHaves` and copies `removeCopies` take per call. */
 export const MAX_BATCH = 200;
 /** Lines one variant's copy list reads. */
@@ -170,8 +174,12 @@ const MAX_CERT_CHARS = 40;
 const MAX_SERIAL_CHARS = 20;
 const MAX_LOCATION_CHARS = 120;
 const MAX_NOTES_CHARS = 2000;
-/** $100,000,000.00 in cents: far above any card, below float trouble. */
-const MAX_COST_CENTS = 10_000_000_000;
+/**
+ * $100,000,000.00 in cents: far above any card, below float trouble. The
+ * client keeps its own copy (`lib/collection/price-cap.ts`); a unit test
+ * holds the two equal.
+ */
+export const MAX_COST_CENTS = 10_000_000_000;
 
 /** NEO-378 — a price (a copy's floor, a common price) in whole cents, zero to the cost cap. */
 export function isPriceCents(raw: number): boolean {
@@ -284,7 +292,8 @@ export const copyValidator = v.object({
  * NEO-359 — what a move (or a place) did. `copyId` is the line the moved
  * cards are now: the same row, a row split off, or the twin it folded into.
  * `from` is where they were, so the undo is `moveCopy({copyId, toHomeId:
- * from.homeId, quantity: from.quantity, slot: from.slot})`.
+ * from.homeId, quantity: from.quantity, slot: from.slot, minPriceCents:
+ * from.minPriceCents})`.
  */
 export const moveResultValidator = v.object({
   copyId: v.id("collectionCopies"),
@@ -294,6 +303,14 @@ export const moveResultValidator = v.object({
     homeId: v.id("collectionContainers"),
     slot: v.optional(v.number()),
     quantity: v.number(),
+    /**
+     * NEO-479 — the moving cards' own price before the move (null: they
+     * had none). Present when the move changed it, and on a move into a box
+     * from a home that is not one when the cards had a price (the reverse
+     * move, a Take off sale, would clear it). The undo sends it back as the
+     * move's `minPriceCents`, so it puts back exactly what was there.
+     */
+    minPriceCents: v.optional(v.union(v.number(), v.null())),
   }),
 });
 
@@ -443,10 +460,57 @@ export function checkSlot(home: Pick<ContainerRow, "kind" | "system">, slot: num
 
 /**
  * One of a kind: a cert, a serial number, or (NEO-377) a photo of that very
- * copy. Never folds, either way.
+ * copy. Never folds, either way. (A quick count's raise may still stack onto a
+ * line with photos, on purpose and outside this rule: `photoLineToRaise` in
+ * collectionInventory.ts.)
  */
 export function isOneOfAKind(d: { grading?: { cert?: string }; serialNumber?: string; hasPhotos?: true }): boolean {
   return Boolean(d.grading?.cert || d.serialNumber || d.hasPhotos);
+}
+
+/** NEO-427 — how many times one saved pair's scans may be tried: the save, then each Try again. */
+export const MAX_INTAKE_PHOTO_ATTEMPTS = 5;
+
+/** NEO-427 — can Try again still help this row? Not with aged-out or unusable scans, nor out of tries. */
+export function canRetryIntakePhotos(
+  row: Pick<Doc<"intakeMatches">, "photos" | "photoFailure" | "photoAttempt">,
+): boolean {
+  return (
+    row.photos === "failed" &&
+    row.photoFailure !== "scanGone" &&
+    row.photoFailure !== "unusable" &&
+    (row.photoAttempt ?? 1) < MAX_INTAKE_PHOTO_ATTEMPTS
+  );
+}
+
+/**
+ * NEO-427 — is this a scanned line whose photos are still due: on their way, or
+ * failed with a Try again left? Such a line neither takes a fold (the stack
+ * would share one copy's photos) nor folds away (the photos need the copy).
+ * Past that it is a plain line again.
+ */
+export async function lineAwaitingScans(ctx: Pick<QueryCtx, "db">, copyId: Id<"collectionCopies">): Promise<boolean> {
+  const match = await ctx.db
+    .query("intakeMatches")
+    .withIndex("by_saved_copy", (q) => q.eq("savedCopyId", copyId))
+    .first();
+  return match !== null && (match.photos === "pending" || canRetryIntakePhotos(match));
+}
+
+/**
+ * The line an arriving copy folds into: the first that `fits` and has no
+ * photos due. Every fold goes through here. It reads only for a line that fits,
+ * which an add rarely has.
+ */
+export async function foldTargetOf<Row extends Pick<CopyRow, "_id">>(
+  ctx: Pick<QueryCtx, "db">,
+  lines: readonly Row[],
+  fits: (line: Row) => boolean,
+): Promise<Row | undefined> {
+  for (const line of lines) {
+    if (fits(line) && !(await lineAwaitingScans(ctx, line._id))) return line;
+  }
+  return undefined;
 }
 
 /** A line's details plus its photo marker: the shape the fold rule reads. */
@@ -904,7 +968,9 @@ async function collectionLinesOf(
  *      binder home; a distinct card gained when a card's first collection
  *      line arrives, lost when its last one goes),
  *   2. every container's own count (`moveCounts`, both sides, Trade too),
- *   3. the building-set `cards` (the same gained/lost cards, by set).
+ *   3. the building-set `cards` (the same gained/lost cards, by set),
+ *   4. NEO-370: the listing outbox, for every card a write touched in a box
+ *      (`enqueueListingCards`).
  *
  * A card's collection presence before the write is its collection lines now
  * minus the net collection lines the changes added, so a card is read only
@@ -954,6 +1020,21 @@ export async function applyCopyChanges(
     ownerId,
     changes.map((c) => ({ cardId: c.cardId, homeId: c.after?.homeId ?? null, fromId: c.before?.homeId ?? null })),
   );
+  // NEO-370: a box copy is for sale, so a write whose row lived in a box
+  // before or after may change what the collector lists. Queue those cards
+  // for every platform they list on (a sale applied from one platform comes
+  // through here too, which is how it reaches the others). Any box, listed
+  // or in-person: the drain reads the whole variant and counts only the
+  // listed boxes, so a move from one to the other is pushed as a 0 or a
+  // count. Binder-only writes queue nothing; an owner who lists nowhere
+  // costs one read.
+  const forSale: CopyCardId[] = [];
+  for (const change of changes) {
+    const wasBoxed = change.before !== null && (await sides.is(change.before.homeId, "inventory"));
+    const isBoxed = change.after !== null && (await sides.is(change.after.homeId, "inventory"));
+    if (wasBoxed || isBoxed) forSale.push(change.cardId);
+  }
+  await enqueueListingCards(ctx, { ownerId, cardIds: forSale });
 }
 
 /**
@@ -1107,7 +1188,9 @@ export async function arrivingPocket(
   next: FoldShape,
   except: ReadonlyArray<Id<"collectionCopies">> = [],
 ): Promise<number> {
-  const twin = lines.find(
+  const twin = await foldTargetOf(
+    ctx,
+    lines,
     (row) =>
       !except.includes(row._id) &&
       row.homeId === home._id &&
@@ -1395,6 +1478,24 @@ async function moveCounts(
  * the caller applies every add's change once (`applyCopyChanges`), after all
  * its adds. `ownerId` must be the signed-in caller (or a row they own), never
  * a value taken from a client's arguments.
+ *
+ * NEO-370: an add into a listed box by a collector set up for syncing needs
+ * a price and a condition (`listingGate.ts`), or it is refused before
+ * anything is written. A caller adding many cards passes one `gate`, so the
+ * owner's listing state and each common price are read once.
+ *
+ * `keepsOwnLine` starts a new line even when an identical one is there, and in
+ * a binder takes the first open pocket rather than that line's. An add whose
+ * photos follow it is one of a kind (NEO-431), as is a scanned save (NEO-427),
+ * but those photos arrive after the add, so the fold rule's photo check
+ * (`isOneOfAKind`) can't see them yet.
+ *
+ * NEO-464: every add files cards into a home (Main included: it is a binder),
+ * so the line it lands on takes `filedAt`, whether the add folds or starts a
+ * line (Jason, 2026-11-10: "adding cards to a binder in any way is filed").
+ * An add into a binder also brings new cards into the collection, so that
+ * line takes `addedAt` too (Fresh Pulls); an add into a box takes `listedAt`
+ * instead (New Listings).
  */
 export async function addOne(
   ctx: MutationCtx,
@@ -1402,6 +1503,8 @@ export async function addOne(
   cardId: CopyCardId,
   raw: DetailsArg,
   defaultCondition: Condition,
+  gate: ListingGate = new ListingGate(ctx, ownerId),
+  { keepsOwnLine = false }: { keepsOwnLine?: boolean } = {},
 ): Promise<{
   result: typeof addResultValidator.type;
   change: CountChange;
@@ -1410,30 +1513,37 @@ export async function addOne(
   const home = await resolveHome(ctx, ownerId, raw.homeId);
   checkSlot(home, cleaned.slot);
   const place = await placeOfCopyCard(ctx, ownerId, cardId);
+  await gate.require(home, gatedCopy(place, cleaned));
   const lines = await ctx.db
     .query("collectionCopies")
     .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", cardId))
     .take(MAX_LINES_PER_CARD + 1);
   if (cleaned.slot === undefined && keepsPockets(home)) {
-    cleaned.slot = await arrivingPocket(ctx, ownerId, home, lines, { ...cleaned, homeId: home._id });
+    cleaned.slot = keepsOwnLine
+      ? await firstOpenPocket(ctx, ownerId, home._id)
+      : await arrivingPocket(ctx, ownerId, home, lines, { ...cleaned, homeId: home._id });
   }
   const next: StoredDetails = { ...cleaned, homeId: home._id };
   const now = Date.now();
-  const into = lines.find((row) => foldsInto(foldShape(row), next));
+  // NEO-464: new cards into a binder are Fresh Pulls; into a box they are New Listings.
+  const added = sideOfContainer(home) === "collection" ? { addedAt: now } : { listedAt: now };
+  // A box line folded into drops any `addedAt` an older rule left on it (never a pull).
+  const foldAdded = sideOfContainer(home) === "collection" ? added : { ...added, addedAt: undefined };
+  const into = keepsOwnLine ? undefined : await foldTargetOf(ctx, lines, (row) => foldsInto(foldShape(row), next));
   if (into) {
     const quantity = into.quantity + next.quantity;
     if (quantity > MAX_COPY_QUANTITY) {
       refuse(COLLECTION_ERRORS.limit, `That stack would pass ${MAX_COPY_QUANTITY} copies. Start a new line for the rest.`);
     }
     const previous = detailsOf(into);
-    await ctx.db.patch(into._id, { quantity, lastUpdated: now });
+    await ctx.db.patch(into._id, { quantity, lastUpdated: now, filedAt: now, ...foldAdded });
     return {
       result: { copyId: into._id, merged: true, previous },
       change: changeOf(into, counted(into), counted({ ...into, quantity })),
     };
   }
   if (lines.length >= MAX_LINES_PER_CARD) {
-    refuse(COLLECTION_ERRORS.limit, `You already have ${MAX_LINES_PER_CARD} lines of this card. Stack some together first.`);
+    refuse(COLLECTION_ERRORS.limit, TOO_MANY_LINES);
   }
   await assertPocketFree(ctx, ownerId, home, next.slot, []);
   const copyId = await ctx.db.insert("collectionCopies", {
@@ -1442,11 +1552,79 @@ export async function addOne(
     ...placeFields(place),
     ...next,
     lastUpdated: now,
+    filedAt: now,
+    ...added,
   });
   return {
     result: { copyId, merged: false },
     change: changeOf({ cardId, setId: place.setId }, null, counted(next)),
   };
+}
+
+/**
+ * NEO-464 — when cards fold from `from` into `into`, the line keeps the newer
+ * `addedAt` of the two (it now holds the newer cards): as a patch, empty when
+ * `into`'s already stands. A merge never stamps one of its own.
+ */
+export function newerAdded(
+  into: Pick<CopyRow, "addedAt">,
+  from: Pick<CopyRow, "addedAt">,
+): { addedAt?: number } {
+  if (from.addedAt === undefined) return {};
+  if (into.addedAt !== undefined && into.addedAt >= from.addedAt) return {};
+  return { addedAt: from.addedAt };
+}
+
+/** NEO-464 — `newerAdded` for `listedAt`: cards folding into a box line keep the newer listing time. */
+export function newerListed(
+  into: Pick<CopyRow, "listedAt">,
+  from: Pick<CopyRow, "listedAt">,
+): { listedAt?: number } {
+  if (from.listedAt === undefined) return {};
+  if (into.listedAt !== undefined && into.listedAt >= from.listedAt) return {};
+  return { listedAt: from.listedAt };
+}
+
+/**
+ * NEO-464 — the dashboard stamps a line's cards take when they move from
+ * `from` (the line's home, by side) to `to`, as a patch (`undefined` drops a
+ * field). Into a binder from a binder: `addedAt` travels, never `listedAt`.
+ * Into a box from a box: `listedAt` travels. Into a box from a binder (Sell):
+ * newly listed, `now`, and `addedAt` drops (cards for sale are not pulls).
+ * Into a binder from a box (Take off sale): `listedAt` drops, and no
+ * `addedAt` (a move, never a pull). `row` is the moving line. A move never
+ * makes cards new to the collection.
+ */
+export function movedStamps(
+  row: Pick<CopyRow, "addedAt" | "listedAt">,
+  from: Side,
+  to: Side,
+  now: number,
+): { addedAt?: number; listedAt?: number } {
+  if (to === "collection") return { addedAt: from === "collection" ? row.addedAt : undefined, listedAt: undefined };
+  return { addedAt: undefined, listedAt: from === "inventory" ? row.listedAt : now };
+}
+
+/** The fields of `stamps` that hold a value: an insert writes no field as `undefined`. */
+export function definedOnly(stamps: { addedAt?: number; listedAt?: number }): { addedAt?: number; listedAt?: number } {
+  return {
+    ...(stamps.addedAt !== undefined ? { addedAt: stamps.addedAt } : {}),
+    ...(stamps.listedAt !== undefined ? { listedAt: stamps.listedAt } : {}),
+  };
+}
+
+/**
+ * The stamps a line takes when moved cards fold into it (`into`, already in
+ * the destination): the newer of the two for the side's stamp, the other
+ * dropped. `moving` is `movedStamps` of the arriving cards.
+ */
+export function foldedStamps(
+  into: Pick<CopyRow, "addedAt" | "listedAt">,
+  moving: { addedAt?: number; listedAt?: number },
+  to: Side,
+): { addedAt?: number; listedAt?: number } {
+  if (to === "collection") return { ...newerAdded(into, moving), listedAt: undefined };
+  return { ...newerListed(into, moving), addedAt: undefined };
 }
 
 /**
@@ -1459,8 +1637,29 @@ export async function addOne(
  * Want List, Up for Trade, a smart binder, and a binder pocket another line
  * holds. Returns the result and applies the numbers itself
  * (`applyCopyChanges`): NEO-364, a binder-to-box move (Sell) leaves the tally,
- * a box-to-binder one (Take off sale) joins it.
+ * a box-to-binder one (Take off sale) joins it. NEO-479: `price` is the
+ * moving cards' own price (`moveCopy`'s `minPriceCents`); Take off sale
+ * clears it when none is given, and `from.minPriceCents` carries the old one
+ * whenever it changed or the undo would otherwise clear it (into a box from
+ * a non-box with a price). Never the common price.
  */
+/**
+ * NEO-370 — what the listing gate reads of a copy headed for a home: its
+ * variant (for the common price; none for a private card, which never lists),
+ * whether it is graded, its condition and its own price.
+ */
+function gatedCopy(
+  place: Pick<Place, "variantId">,
+  details: { grading?: unknown; condition?: string; minPriceCents?: number },
+): GatedCopy {
+  return {
+    ...(place.variantId !== undefined ? { variantId: place.variantId } : { privateCard: true }),
+    graded: details.grading !== undefined,
+    condition: details.condition,
+    ...(details.minPriceCents !== undefined ? { ownPriceCents: details.minPriceCents } : {}),
+  };
+}
+
 export async function moveCopyCore(
   ctx: MutationCtx,
   ownerId: string,
@@ -1468,6 +1667,7 @@ export async function moveCopyCore(
   toHomeId: Id<"collectionContainers">,
   quantityArg: number | undefined,
   slot: number | undefined,
+  price?: number | null,
 ): Promise<typeof moveResultValidator.type> {
   const quantity = quantityArg ?? row.quantity;
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > row.quantity) {
@@ -1481,6 +1681,15 @@ export async function moveCopyCore(
   if (slot !== undefined && (!Number.isInteger(slot) || slot < 0)) {
     refuse(COLLECTION_ERRORS.invalid, "That pocket or row doesn't exist. Pick one from the page.");
   }
+  // NEO-479: a price rides only on a move to another home (Sell sets it, an
+  // Undo clears or restores it). Never the common price: that is
+  // `commonPrices.ts`'s alone, and a move never writes it.
+  if (price !== undefined && toHomeId === row.homeId) {
+    refuse(COLLECTION_ERRORS.invalid, "A card's price changes on a move to another home, not inside one.");
+  }
+  if (typeof price === "number" && !isPriceCents(price)) {
+    refuse(COLLECTION_ERRORS.invalid, "Price needs to be a dollar amount of zero or more.");
+  }
   const from = {
     homeId: row.homeId,
     ...(row.slot !== undefined ? { slot: row.slot } : {}),
@@ -1491,33 +1700,92 @@ export async function moveCopyCore(
     refuse(COLLECTION_ERRORS.notFound, "That binder or box isn't in your collection.");
   }
   checkSlot(home, slot);
+  const source = toHomeId !== row.homeId ? await ctx.db.get(row.homeId) : null;
+  // NEO-479: the moving cards' own price after the move. A price argument
+  // sets it (null clears it). Without one the cards keep theirs, except on
+  // the way out of a box into a binder (Take off sale), which clears it:
+  // a card off sale has no price, and selling it again asks afresh. The old
+  // price goes back in `from`, so Undo restores it.
+  const ownPrice =
+    price !== undefined
+      ? (price ?? undefined)
+      : source?.kind === "box" && home.kind !== "box"
+        ? undefined
+        : row.minPriceCents;
+  // `from` carries the old price when the move changed it, and when the
+  // undo (box → non-box, no price) would otherwise clear a price the cards
+  // came in with: Sell leaves a binder card's own price alone, Undo would not.
+  const undoNeedsPrice =
+    ownPrice !== row.minPriceCents ||
+    (toHomeId !== row.homeId &&
+      source?.kind !== "box" &&
+      home.kind === "box" &&
+      row.minPriceCents !== undefined);
+  // NEO-370: cards moving INTO a listed box from a home that does not list
+  // (a binder, an in-person box) are an add there, held by the listing gate
+  // as `addOne` is, with the price the move gives them. A move between
+  // listed homes changes nothing it reads.
+  if (toHomeId !== row.homeId) {
+    if (!source || !listsOnMarketplaces(source)) {
+      const own = ctx.db.normalizeId("privateCards", row.cardId) !== null;
+      await new ListingGate(ctx, ownerId).require(
+        home,
+        gatedCopy(own ? {} : { variantId: row.variantId }, {
+          grading: row.grading,
+          condition: row.condition,
+          ...(ownPrice !== undefined ? { minPriceCents: ownPrice } : {}),
+        }),
+      );
+    }
+  }
   const lines = await ctx.db
     .query("collectionCopies")
     .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", row.cardId))
     .take(MAX_LINES_PER_CARD + 1);
   const rest: StoredDetails = { ...detailsOf(row), quantity, homeId: home._id };
   delete rest.slot;
+  // The price is set before the fold test, so the cards fold only into a
+  // twin at the same price, and a part split off carries it; the rest of
+  // the stack keeps its own.
+  if (ownPrice === undefined) delete rest.minPriceCents;
+  else rest.minPriceCents = ownPrice;
   // NEO-377: a line's photos travel only with the whole line; a part split
   // off is a plain stack that may fold.
   const whole = quantity === row.quantity;
   const moving: FoldShape = whole && row.hasPhotos ? { ...rest, hasPhotos: true } : rest;
+  // NEO-427: a whole line whose photos are due stays a line, for them to land on.
+  const keepsLine = whole && (await lineAwaitingScans(ctx, row._id));
   if (slot === undefined && keepsPockets(home)) {
     // Every card in a binder sits in a pocket: staying in the same binder
     // keeps its own; arriving stacks on a twin or takes the first open one.
     slot =
       toHomeId === row.homeId && row.slot !== undefined
         ? row.slot
-        : await arrivingPocket(ctx, ownerId, home, lines, moving, [row._id]);
+        : keepsLine
+          ? await firstOpenPocket(ctx, ownerId, home._id)
+          : await arrivingPocket(ctx, ownerId, home, lines, moving, [row._id]);
   }
   if (toHomeId === row.homeId && slot === row.slot) {
     return { copyId: row._id, folded: false, split: false, from };
   }
   const next: StoredDetails = { ...rest, ...(slot !== undefined ? { slot } : {}) };
-  const into = lines.find(
-    (other) => other._id !== row._id && foldsInto(foldShape(other), { ...moving, ...next }),
-  );
+  const into = keepsLine
+    ? undefined
+    : await foldTargetOf(ctx, lines, (other) => other._id !== row._id && foldsInto(foldShape(other), { ...moving, ...next }));
   await assertPocketFree(ctx, ownerId, home, slot, [row._id, ...(into ? [into._id] : [])]);
   const now = Date.now();
+  // NEO-464: cards arriving in another home were filed or moved (the
+  // dashboard's "since your last visit"); a pocket shuffle in the same home was not.
+  const filed = home._id !== row.homeId ? { filedAt: now } : {};
+  // A part split off in the same home keeps when its cards were filed there.
+  const splitFiled = home._id !== row.homeId ? filed : row.filedAt !== undefined ? { filedAt: row.filedAt } : {};
+  // NEO-464: a move never makes a card new to the collection. A part split
+  // off keeps when its cards were added; cards folding into a line keep the
+  // newer of the two (the line now holds them). Into a box from a binder the
+  // cards are newly listed and drop `addedAt`; out of a box into a binder
+  // they drop `listedAt` (`movedStamps`).
+  const stamps = movedStamps(row, sideOfContainer(source ?? home), sideOfContainer(home), now);
+  const splitAdded = definedOnly(stamps);
   const changes: CountChange[] = [];
   let copyId: Id<"collectionCopies">;
   if (into) {
@@ -1525,7 +1793,7 @@ export async function moveCopyCore(
     if (total > MAX_COPY_QUANTITY) {
       refuse(COLLECTION_ERRORS.limit, `That stack would pass ${MAX_COPY_QUANTITY} copies. Move fewer, or start a new line.`);
     }
-    await ctx.db.patch(into._id, { quantity: total, lastUpdated: now });
+    await ctx.db.patch(into._id, { quantity: total, lastUpdated: now, ...filed, ...foldedStamps(into, stamps, sideOfContainer(home)) });
     changes.push(changeOf(into, counted(into), counted({ ...into, quantity: total })));
     if (whole) {
       await ctx.db.delete(row._id);
@@ -1536,12 +1804,12 @@ export async function moveCopyCore(
     }
     copyId = into._id;
   } else if (whole) {
-    await ctx.db.patch(row._id, { homeId: home._id, slot, lastUpdated: now });
+    await ctx.db.patch(row._id, { homeId: home._id, slot, minPriceCents: ownPrice, lastUpdated: now, ...filed, ...stamps });
     changes.push(changeOf(row, counted(row), counted({ ...row, homeId: home._id })));
     copyId = row._id;
   } else {
     if (lines.length >= MAX_LINES_PER_CARD) {
-      refuse(COLLECTION_ERRORS.limit, `You already have ${MAX_LINES_PER_CARD} lines of this card. Stack some together first.`);
+      refuse(COLLECTION_ERRORS.limit, TOO_MANY_LINES);
     }
     await ctx.db.patch(row._id, { quantity: row.quantity - quantity, lastUpdated: now });
     changes.push(changeOf(row, counted(row), counted({ ...row, quantity: row.quantity - quantity })));
@@ -1551,13 +1819,20 @@ export async function moveCopyCore(
       ...placeFields(row),
       ...next,
       lastUpdated: now,
+      ...splitFiled,
+      ...splitAdded,
     });
     changes.push(changeOf(row, null, counted(next)));
   }
   // The whole line left its pocket (a part leaves the rest behind in it).
   if (whole) await pocketEmptied(ctx, row.homeId, row.slot);
   await applyCopyChanges(ctx, ownerId, changes);
-  return { copyId, folded: into !== undefined, split: !whole, from };
+  return {
+    copyId,
+    folded: into !== undefined,
+    split: !whole,
+    from: undoNeedsPrice ? { ...from, minPriceCents: row.minPriceCents ?? null } : from,
+  };
 }
 
 /** A fresh copy of a card: one raw card (in the default condition), in `homeId` when given, else Main. */
@@ -2280,8 +2555,16 @@ export const addHaves = mutation({
     const out = [];
     const changes: CountChange[] = [];
     const defaultCondition = await defaultConditionOf(ctx, ownerId);
+    const gate = new ListingGate(ctx, ownerId);
     for (const cardId of args.cardIds) {
-      const added = await addOne(ctx, ownerId, cardId, haveDetails(args.acquiredOn, args.homeId), defaultCondition);
+      const added = await addOne(
+        ctx,
+        ownerId,
+        cardId,
+        haveDetails(args.acquiredOn, args.homeId),
+        defaultCondition,
+        gate,
+      );
       out.push({ cardId, ...added.result });
       changes.push(added.change);
     }
@@ -2292,7 +2575,12 @@ export const addHaves = mutation({
 
 /** Add a line item with full details. Folds into an identical row (see the header). */
 export const addLineItem = mutation({
-  args: { cardId: copyCardIdValidator, details: copyDetailsValidator },
+  args: {
+    cardId: copyCardIdValidator,
+    details: copyDetailsValidator,
+    /** NEO-431: never fold; this add's photos follow it (`addOne`). */
+    keepsOwnLine: v.optional(v.boolean()),
+  },
   returns: addResultValidator,
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
@@ -2302,6 +2590,8 @@ export const addLineItem = mutation({
       args.cardId,
       args.details,
       await defaultConditionOf(ctx, ownerId),
+      undefined,
+      { keepsOwnLine: args.keepsOwnLine },
     );
     await applyCopyChanges(ctx, ownerId, [change]);
     return result;
@@ -2345,6 +2635,11 @@ export const updateCopy = mutation({
       homeId: row.homeId,
       // NEO-377 — an edit never touches the line's photos.
       ...(row.hasPhotos ? { hasPhotos: true as const } : {}),
+      // NEO-464 — nor when it was last filed: an edit is not a move.
+      ...(row.filedAt !== undefined ? { filedAt: row.filedAt } : {}),
+      // Nor when its cards were added (Fresh Pulls) or listed (New Listings).
+      ...(row.addedAt !== undefined ? { addedAt: row.addedAt } : {}),
+      ...(row.listedAt !== undefined ? { listedAt: row.listedAt } : {}),
       lastUpdated: Date.now(),
     });
     await applyCopyChanges(ctx, ownerId, [
@@ -2423,12 +2718,14 @@ export const restoreCopy = mutation({
       cleaned.slot = await firstOpenPocket(ctx, ownerId, home._id);
     }
     const place = await placeOfCopyCard(ctx, ownerId, args.cardId);
+    // NEO-370: a line put back is an add, held by the listing gate as `addOne` is.
+    await new ListingGate(ctx, ownerId).require(home, gatedCopy(place, cleaned));
     const lines = await ctx.db
       .query("collectionCopies")
       .withIndex("by_owner_and_card", (q) => q.eq("ownerId", ownerId).eq("cardId", args.cardId))
       .take(MAX_LINES_PER_CARD);
     if (lines.length >= MAX_LINES_PER_CARD) {
-      refuse(COLLECTION_ERRORS.limit, `You already have ${MAX_LINES_PER_CARD} lines of this card. Stack some together first.`);
+      refuse(COLLECTION_ERRORS.limit, TOO_MANY_LINES);
     }
     const copyId = await ctx.db.insert("collectionCopies", {
       ownerId,
@@ -2451,9 +2748,20 @@ export const restoreCopy = mutation({
  * home, at `slot` (absent: a binder's first open pocket, else not placed). Folds into an identical
  * line at the destination; part of a stack splits off. The result's `from`
  * is the undo: move `from.quantity` of `copyId` back to `from.homeId` at
- * `from.slot`, which splits the cards back out of a fold. Refuses the Want
- * List, Up for Trade, and a binder pocket another line item holds. The trade
- * flag travels with the cards.
+ * `from.slot` with `from.minPriceCents`, which splits the cards back out of
+ * a fold. Refuses the Want List, Up for Trade, and a binder pocket another
+ * line item holds. The trade flag travels with the cards.
+ *
+ * NEO-479 — `minPriceCents` is the moving cards' own price (whole cents):
+ * Sell into a box sets it, and the listing gate reads it, so a priced sale
+ * passes where an unpriced one is held. `null` clears it (an Undo). Absent:
+ * the cards keep theirs, except a move out of a box into a binder (Take off
+ * sale), which clears it and puts the old one in `from`. A number may land
+ * in any home: Sell sends one into a box, and the Undo of a Sell sends a
+ * binder card's old price back into its binder. Any price on a move within
+ * one home is refused. Only the moving cards change: a stack's remainder
+ * keeps its price, and the owner's common price for the variant is never
+ * written.
  */
 export const moveCopy = mutation({
   args: {
@@ -2461,12 +2769,13 @@ export const moveCopy = mutation({
     toHomeId: v.id("collectionContainers"),
     quantity: v.optional(v.number()),
     slot: v.optional(v.number()),
+    minPriceCents: v.optional(v.union(v.number(), v.null())),
   },
   returns: moveResultValidator,
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
     const row = await ownCopy(ctx, ownerId, args.copyId);
-    return await moveCopyCore(ctx, ownerId, row, args.toHomeId, args.quantity, args.slot);
+    return await moveCopyCore(ctx, ownerId, row, args.toHomeId, args.quantity, args.slot, args.minPriceCents);
   },
 });
 

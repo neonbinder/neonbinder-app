@@ -1,0 +1,489 @@
+/**
+ * NEO-415 — eBay OAuth for listing: the user-token exchange and the identity
+ * lookup, as plain HTTP. Launches no browser.
+ *
+ * WHY THIS LIVES IN THE BROWSER SERVICE
+ *
+ * eBay's user consent yields an access token (about two hours) and a refresh
+ * token (about eighteen months). The refresh token, and the app's client
+ * secret that every token call presents, are long-lived credentials. This is
+ * the one component that holds per-user credential material (NEO-20), so the
+ * secret stays here, the refresh token goes straight into Secret Manager, and
+ * Convex only ever sees the short-lived access token (through the existing
+ * GET /credentials/:key/token, or the /oauth/ebay/refresh response).
+ *
+ * SECURITY: nothing in this module may put a token, the client secret, an
+ * authorization code or an eBay response body into an Error message or a log
+ * line. Failures are a closed set of `EbayOAuthError` kinds plus eBay's
+ * OAuth `error` code when it is one we recognise (`knownOAuthError`), never
+ * eBay's free-text `error_description`.
+ */
+
+import { BscEndpoints, FAKE_BSC_KEY_ENV, bscTarget, resolveBscEndpoints } from "../bsc-endpoints";
+
+/** eBay's two environments. Anything else in EBAY_ENVIRONMENT is "not configured". */
+export type EbayEnvironment = "sandbox" | "production";
+
+/**
+ * NEO-555: where a FAKE eBay session's calls go. Built only by the route's
+ * per-key resolver (routes/ebay-oauth.ts `resolveEbayConfigForKey`), which
+ * refuses to build one in prod or without a valid fake URL. `hosts` replace
+ * EBAY_HOSTS for this config; `callerHeaders` adds the fake's caller key and
+ * ID token to every call (fakeBscCallerHeaders). Never read from a request.
+ */
+export interface EbayFakeTarget {
+  hosts: { api: string; apiz: string };
+  /** SECURITY: the result carries credentials. Never log it. */
+  callerHeaders: () => Promise<Record<string, string>>;
+}
+
+export interface EbayOAuthConfig {
+  environment: EbayEnvironment;
+  clientId: string;
+  clientSecret: string;
+  /** eBay's RuName: the value eBay wants as `redirect_uri` on the code grant. */
+  ruName: string;
+  /** Set only for a fake-key session. Absent = the process's real eBay environment. */
+  fake?: EbayFakeTarget;
+}
+
+/**
+ * Hosts per environment. Fixed here, never read from the environment or a
+ * request: these calls carry the client secret in an Authorization header,
+ * so a configurable host would be a way to post that secret anywhere.
+ *
+ *   api   — OAuth token endpoint (`/identity/v1/oauth2/token`)
+ *   apiz  — Commerce Identity API (`/commerce/identity/v1/user/`); eBay serves
+ *           this one API from the `apiz` host, not `api`.
+ */
+export const EBAY_HOSTS: Record<EbayEnvironment, { api: string; apiz: string }> = {
+  production: { api: "https://api.ebay.com", apiz: "https://apiz.ebay.com" },
+  sandbox: { api: "https://api.sandbox.ebay.com", apiz: "https://apiz.sandbox.ebay.com" },
+};
+
+/** Why the fake eBay cannot be used by this process. A closed set; logged, never returned. */
+export type FakeEbayRefusal =
+  | "fake_key_in_prod"
+  | "fake_key_no_fake_url"
+  | "fake_key_bad_fake_url"
+  | "fake_key_no_caller_key";
+
+/**
+ * NEO-555: may this process talk to the fake eBay? The one place that decides,
+ * for both the per-key route config and /health's `ebayFake`.
+ *
+ * Yes only when the process is NOT prod, has a fake URL that bsc-endpoints
+ * accepts (the fake's own Cloud Run host, or loopback), and has the fake
+ * caller key. The prod test comes first and stands alone: a prod process is
+ * refused for that reason before any URL is read.
+ */
+export function resolveFakeEbayTarget(
+  env: Record<string, string | undefined>,
+): { ok: true; origin: string; endpoints: BscEndpoints } | { ok: false; reason: FakeEbayRefusal } {
+  if ((env.ENVIRONMENT ?? "").trim() === "prod") return { ok: false, reason: "fake_key_in_prod" };
+  if (bscTarget(env) !== "fake") return { ok: false, reason: "fake_key_no_fake_url" };
+  let endpoints: BscEndpoints;
+  try {
+    endpoints = resolveBscEndpoints(env);
+  } catch {
+    return { ok: false, reason: "fake_key_bad_fake_url" };
+  }
+  if (endpoints.target !== "fake" || !endpoints.fakeOrigin) {
+    return { ok: false, reason: "fake_key_bad_fake_url" };
+  }
+  if ((env[FAKE_BSC_KEY_ENV] ?? "").trim().length === 0) {
+    return { ok: false, reason: "fake_key_no_caller_key" };
+  }
+  return { ok: true, origin: endpoints.fakeOrigin, endpoints };
+}
+
+/** The api/apiz hosts a config's calls go to: the fake's, else its environment's. */
+function hostsFor(config: EbayOAuthConfig): { api: string; apiz: string } {
+  return config.fake ? config.fake.hosts : EBAY_HOSTS[config.environment];
+}
+
+/**
+ * The fake's caller headers for a fake config; {} otherwise. A failure to
+ * build them (caller key unset, ID token not mintable) is a configuration
+ * fault of ours, so it is `client`, with the cause dropped: the underlying
+ * error can name an audience.
+ */
+async function callerHeadersFor(config: EbayOAuthConfig): Promise<Record<string, string>> {
+  if (!config.fake) return {};
+  try {
+    return await config.fake.callerHeaders();
+  } catch {
+    throw new EbayOAuthError("client");
+  }
+}
+
+export const TOKEN_PATH = "/identity/v1/oauth2/token";
+const IDENTITY_USER_PATH = "/commerce/identity/v1/user/";
+
+/**
+ * The scopes NB asks for at consent. Convex builds the consent URL from the
+ * same list (plan.md, NEO-415); the refresh grant repeats it, because eBay
+ * wants the refresh request's scopes to be the consented set or a subset.
+ * Changing this list means every stored refresh token minted with the old list
+ * must re-consent if the new list is a superset — keep the two in lockstep.
+ */
+export const EBAY_SCOPES: readonly string[] = [
+  "https://api.ebay.com/oauth/api_scope",
+  "https://api.ebay.com/oauth/api_scope/sell.inventory",
+  "https://api.ebay.com/oauth/api_scope/sell.account",
+  "https://api.ebay.com/oauth/api_scope/sell.fulfillment",
+  "https://api.ebay.com/oauth/api_scope/commerce.identity.readonly",
+];
+
+/**
+ * NEO-555: the read-only counterparts of EBAY_SCOPES, for the prod probe
+ * (src/routes/ebay-probe.ts), which reads one seller's account and must not
+ * hold a token that could write to it. `api_scope` (public data) and
+ * `commerce.identity.readonly` have no other form. Whether eBay grants these
+ * on a refresh token consented with the full scopes is UNVERIFIED; the probe
+ * falls back to EBAY_SCOPES when eBay refuses them, and logs that it did.
+ */
+export const EBAY_READONLY_SCOPES: readonly string[] = Object.freeze([
+  "https://api.ebay.com/oauth/api_scope",
+  "https://api.ebay.com/oauth/api_scope/sell.inventory.readonly",
+  "https://api.ebay.com/oauth/api_scope/sell.account.readonly",
+  "https://api.ebay.com/oauth/api_scope/sell.fulfillment.readonly",
+  "https://api.ebay.com/oauth/api_scope/commerce.identity.readonly",
+]);
+
+/** Per-call budget. eBay's token endpoint answers in well under a second. */
+export const EBAY_REQUEST_TIMEOUT_MS = 10_000;
+
+/** No real eBay username comes near this; it bounds what we store and return. */
+const MAX_USERNAME_LENGTH = 128;
+
+/**
+ * The shape of an eBay immutable user id, as Convex validates it too
+ * (NEO-415 security review). Anchored, so a value that merely CONTAINS a
+ * valid id is refused. An id outside it is treated as a malformed eBay
+ * answer: nothing is stored.
+ */
+export const EBAY_USER_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+
+/** The scope a client-credentials (application) token is minted with. */
+export const EBAY_APP_SCOPE = "https://api.ebay.com/oauth/api_scope";
+
+/**
+ * Read the eBay app configuration from the environment.
+ *
+ * @returns the config, or null when any of the four values is missing or
+ *   EBAY_ENVIRONMENT is not exactly `sandbox` or `production`. A typo in the
+ *   environment name is refused rather than defaulted, because defaulting to
+ *   production would point a dev or preview deployment at real sellers.
+ */
+export function readEbayOAuthConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): EbayOAuthConfig | null {
+  const environment = env.EBAY_ENVIRONMENT?.trim();
+  const clientId = env.EBAY_CLIENT_ID?.trim();
+  const clientSecret = env.EBAY_CLIENT_SECRET?.trim();
+  const ruName = env.EBAY_RU_NAME?.trim();
+  if (environment !== "sandbox" && environment !== "production") return null;
+  if (!clientId || !clientSecret || !ruName) return null;
+  return { environment, clientId, clientSecret, ruName };
+}
+
+/**
+ * Why an eBay call failed, as a closed set.
+ *
+ *   rejected     — eBay refused the grant: the code or refresh token is bad,
+ *                  expired, revoked, or its scopes no longer fit. The user has
+ *                  to consent again; retrying cannot help.
+ *   client       — eBay refused OUR app credentials (invalid_client). A
+ *                  configuration fault, not the user's.
+ *   unavailable  — eBay answered 5xx/429, an unexpected 4xx, or not at all
+ *                  (network error, timeout).
+ *   malformed    — eBay answered 200 with a body we cannot use.
+ */
+export type EbayOAuthErrorKind = "rejected" | "client" | "unavailable" | "malformed";
+
+export class EbayOAuthError extends Error {
+  readonly kind: EbayOAuthErrorKind;
+  /** eBay's HTTP status, when there was one. */
+  readonly upstreamStatus?: number;
+  /** eBay's OAuth `error` code, only when it is in KNOWN_OAUTH_ERRORS. */
+  readonly oauthError?: string;
+
+  constructor(
+    kind: EbayOAuthErrorKind,
+    opts: { upstreamStatus?: number; oauthError?: string } = {},
+  ) {
+    // Fixed text only: see the module header.
+    super(`eBay OAuth ${kind}`);
+    this.name = "EbayOAuthError";
+    this.kind = kind;
+    this.upstreamStatus = opts.upstreamStatus;
+    this.oauthError = opts.oauthError;
+  }
+}
+
+/**
+ * The RFC 6749 error codes, which are the only ones eBay's token endpoint
+ * documents. Anything else is reported as absent rather than echoed, so an
+ * eBay body can never put arbitrary text into our logs.
+ */
+const KNOWN_OAUTH_ERRORS = new Set([
+  "invalid_request",
+  "invalid_client",
+  "invalid_grant",
+  "unauthorized_client",
+  "unsupported_grant_type",
+  "invalid_scope",
+  "access_denied",
+  "server_error",
+  "temporarily_unavailable",
+]);
+
+/**
+ * Codes that mean "this grant is dead; the user must consent again". A
+ * refresh token past its ~18 months, a revoked consent, a used or expired
+ * authorization code, and a scope set the consent no longer covers all land
+ * here.
+ */
+const REJECTED_GRANT_ERRORS = new Set([
+  "invalid_grant",
+  "invalid_scope",
+  "access_denied",
+  "unauthorized_client",
+]);
+
+/** The parts of a token response the routes use. */
+export interface EbayTokenResult {
+  accessToken: string;
+  /** Epoch ms. */
+  expiresAt: number;
+  /** Present on the code grant; eBay's refresh grant does not return one. */
+  refreshToken?: string;
+  /** Epoch ms. Present only alongside `refreshToken`. */
+  refreshExpiresAt?: number;
+}
+
+export interface EbayOAuthDeps {
+  fetchImpl?: typeof fetch;
+  now?: () => number;
+  timeoutMs?: number;
+}
+
+function basicAuth(config: EbayOAuthConfig): string {
+  return `Basic ${Buffer.from(`${config.clientId}:${config.clientSecret}`).toString("base64")}`;
+}
+
+/**
+ * POST to eBay with a deadline. A network error or timeout becomes
+ * `unavailable`; the underlying error is dropped, never re-thrown, because
+ * undici attaches the request it failed on to `cause`.
+ */
+async function ebayFetch(
+  url: string,
+  init: RequestInit,
+  deps: EbayOAuthDeps,
+): Promise<Response> {
+  const doFetch = deps.fetchImpl ?? fetch;
+  try {
+    return await doFetch(url, {
+      ...init,
+      redirect: "error",
+      signal: AbortSignal.timeout(deps.timeoutMs ?? EBAY_REQUEST_TIMEOUT_MS),
+    });
+  } catch {
+    throw new EbayOAuthError("unavailable");
+  }
+}
+
+async function readJson(res: Response): Promise<Record<string, unknown> | null> {
+  try {
+    const body: unknown = await res.json();
+    return typeof body === "object" && body !== null && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Positive finite seconds → epoch ms, else undefined. */
+function expiryFrom(now: number, seconds: unknown): number | undefined {
+  return typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0
+    ? now + Math.floor(seconds * 1000)
+    : undefined;
+}
+
+/**
+ * Run one grant against eBay's token endpoint.
+ *
+ * Status mapping: 200 → parse; 400/401 with a grant-rejection code →
+ * `rejected`; `invalid_client` → `client`; everything else non-200 →
+ * `unavailable`.
+ */
+async function tokenGrant(
+  config: EbayOAuthConfig,
+  form: URLSearchParams,
+  deps: EbayOAuthDeps,
+): Promise<EbayTokenResult> {
+  const now = (deps.now ?? Date.now)();
+  const caller = await callerHeadersFor(config);
+  const res = await ebayFetch(
+    `${hostsFor(config).api}${TOKEN_PATH}`,
+    {
+      method: "POST",
+      headers: {
+        ...caller,
+        "Content-Type": "application/x-www-form-urlencoded",
+        Authorization: basicAuth(config),
+        Accept: "application/json",
+      },
+      body: form.toString(),
+    },
+    deps,
+  );
+
+  const body = await readJson(res);
+  if (!res.ok) {
+    const raw = typeof body?.error === "string" ? body.error : undefined;
+    const oauthError = raw && KNOWN_OAUTH_ERRORS.has(raw) ? raw : undefined;
+    const opts = { upstreamStatus: res.status, oauthError };
+    if (oauthError === "invalid_client") throw new EbayOAuthError("client", opts);
+    if ((res.status === 400 || res.status === 401) && oauthError && REJECTED_GRANT_ERRORS.has(oauthError)) {
+      throw new EbayOAuthError("rejected", opts);
+    }
+    throw new EbayOAuthError("unavailable", opts);
+  }
+
+  const accessToken = body?.access_token;
+  const expiresAt = expiryFrom(now, body?.expires_in);
+  if (typeof accessToken !== "string" || accessToken.length === 0 || expiresAt === undefined) {
+    throw new EbayOAuthError("malformed", { upstreamStatus: res.status });
+  }
+  const result: EbayTokenResult = { accessToken, expiresAt };
+  if (typeof body?.refresh_token === "string" && body.refresh_token.length > 0) {
+    result.refreshToken = body.refresh_token;
+    const refreshExpiresAt = expiryFrom(now, body.refresh_token_expires_in);
+    if (refreshExpiresAt !== undefined) result.refreshExpiresAt = refreshExpiresAt;
+  }
+  return result;
+}
+
+/**
+ * Authorization-code grant. `code` is the value eBay put on the callback
+ * URL, already URL-decoded (as `URLSearchParams.get` returns it); this
+ * function form-encodes it again for the request body.
+ *
+ * The result always carries a refresh token: a code grant without one would
+ * leave a session that dies in two hours with no way to renew, so it is
+ * treated as `malformed` rather than stored.
+ */
+export async function exchangeAuthorizationCode(
+  config: EbayOAuthConfig,
+  code: string,
+  deps: EbayOAuthDeps = {},
+): Promise<EbayTokenResult & { refreshToken: string }> {
+  const result = await tokenGrant(
+    config,
+    new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: config.ruName,
+    }),
+    deps,
+  );
+  if (!result.refreshToken) throw new EbayOAuthError("malformed", { upstreamStatus: 200 });
+  return result as EbayTokenResult & { refreshToken: string };
+}
+
+/**
+ * Refresh-token grant. eBay does not rotate the refresh token here, so the
+ * result normally has no `refreshToken`; if eBay ever starts returning one,
+ * the caller stores it.
+ *
+ * `scopes` defaults to the consented set. NEO-555's probe passes
+ * EBAY_READONLY_SCOPES first; eBay wants a subset of the consented scopes.
+ */
+export async function refreshAccessToken(
+  config: EbayOAuthConfig,
+  refreshToken: string,
+  deps: EbayOAuthDeps = {},
+  scopes: readonly string[] = EBAY_SCOPES,
+): Promise<EbayTokenResult> {
+  return tokenGrant(
+    config,
+    new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      scope: scopes.join(" "),
+    }),
+    deps,
+  );
+}
+
+/** The seller's identity as eBay reports it. */
+export interface EbayIdentity {
+  /** Immutable. What seller-conflict and account-deletion key on. */
+  userId: string;
+  /** The seller's current eBay username; they can change it. */
+  username: string;
+}
+
+/** A bounded, non-blank string, trimmed; else undefined. */
+function identityField(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 && trimmed.length <= MAX_USERNAME_LENGTH ? trimmed : undefined;
+}
+
+/**
+ * Client-credentials grant: an APPLICATION token, which acts as NB's app and
+ * no seller. The Notification API's getPublicKey takes one. eBay issues them
+ * for about two hours; callers cache it (see AppTokenCache).
+ */
+export async function fetchApplicationToken(
+  config: EbayOAuthConfig,
+  deps: EbayOAuthDeps = {},
+): Promise<EbayTokenResult> {
+  return tokenGrant(
+    config,
+    new URLSearchParams({ grant_type: "client_credentials", scope: EBAY_APP_SCOPE }),
+    deps,
+  );
+}
+
+/**
+ * The signed-in seller's eBay identity, from Commerce Identity `getUser`.
+ * eBay documents both `userId` and `username` as always present; a response
+ * missing either is `malformed`.
+ *
+ * A 401/403 here means the token we were just handed cannot read identity
+ * (the consent lacked `commerce.identity.readonly`), which is a consent
+ * problem: `rejected`. In the sandbox eBay answers with mock profile data,
+ * which is still well-formed.
+ */
+export async function fetchEbayIdentity(
+  config: EbayOAuthConfig,
+  accessToken: string,
+  deps: EbayOAuthDeps = {},
+): Promise<EbayIdentity> {
+  const caller = await callerHeadersFor(config);
+  const res = await ebayFetch(
+    `${hostsFor(config).apiz}${IDENTITY_USER_PATH}`,
+    {
+      method: "GET",
+      headers: { ...caller, Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+    },
+    deps,
+  );
+  if (res.status === 401 || res.status === 403) {
+    throw new EbayOAuthError("rejected", { upstreamStatus: res.status });
+  }
+  if (!res.ok) throw new EbayOAuthError("unavailable", { upstreamStatus: res.status });
+  const body = await readJson(res);
+  const userId = typeof body?.userId === "string" ? body.userId : undefined;
+  const username = identityField(body?.username);
+  if (!userId || !EBAY_USER_ID_PATTERN.test(userId) || !username) {
+    throw new EbayOAuthError("malformed", { upstreamStatus: res.status });
+  }
+  return { userId, username };
+}

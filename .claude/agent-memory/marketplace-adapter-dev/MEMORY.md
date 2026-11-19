@@ -3,7 +3,7 @@
 - [Eslint does not cover plain ts](reference_eslint_does_not_cover_plain_ts.md) — apps/web `npm run lint` visits no plain `.ts` file, so Convex adapters and lib/ are gated only by tsc + vitest
 - [Worktree node_modules linking](reference_worktree_node_modules_linking.md) — link-deps.sh checks the repo root, not apps/web; symlink main/apps/web/node_modules by hand after cmp on the lockfile
 - [Generated api.d.ts needs a hand edit in worktrees](reference_generated_api_needs_hand_edit_in_worktrees.md) — add a new module's two lines by hand; an entry for a missing file typechecks green (skipLibCheck) and reads as any
-- [Narrowing a Convex validator is a runtime break](reference_narrowing_convex_validator_is_a_runtime_break.md) — tsc stays green; grep forwards of stored sub-objects before narrowing; widening a stored element breaks echoing returns
+- [Narrowing a Convex validator is a runtime break](reference_narrowing_convex_validator_is_a_runtime_break.md) — tsc stays green; grep forwards before narrowing; retiring stored literals: keep schema wide, narrow the return
 - [Swept log markers are pinned](reference_swept_log_markers_are_pinned.md) — resolvabilityLogSafety.test.ts asserts exact skip/coverage log prefixes exist; keep the marker text, append detail after it
 - [PRODUCT BUG tests are fix requests](feedback_product_bug_tests_are_fix_requests.md) — a red test titled "PRODUCT BUG (file:line)" is a fix for the file owner; run untracked sibling tests in the fast gate, never edit the test
 - [Read budget by construction in convex-test](reference_convex_test_read_budget_by_construction.md) — Proxy over ctx.db counts reads; optional pre-read index + both paths pinned equal; t.run cannot return a Map; empty BSC list = failed side
@@ -13,14 +13,14 @@
 - [Sync action `message` is log-only](reference_sync_action_message_is_log_only.md) — legacy *Form components render it but `useEnsureSync` columns never mount them; the status row is the only surface
 - [Marketplace bucket words leak into set names](reference_marketplace_bucket_words_leak_into_set_names.md) — "Other ONIT Athlete …" is stored as the NB name; start-anchored matchers miss it; fix at the adapter boundary, never widen the matcher
 - [Convex op budget: count writes, not items](reference_convex_op_budget_count_writes_not_items.md) — count ops at the call sites; budgeting writes makes a truncated call finishable by replaying the same list; a shared dry run must pay the write cost
-- [Stub ctx for an action's write failures](reference_action_impl_stub_ctx_for_write_failures.md) — plain *Impl + Pick<ActionCtx> stub; forward to t.query/t.mutation and throw on the Nth chunk for resume tests; adapters are no-throw
+- [Stub ctx for an action's write failures](reference_action_impl_stub_ctx_for_write_failures.md) — plain *Impl + Pick<ActionCtx> stub; forward to t.query/t.mutation and throw on the Nth chunk for resume tests; adapters are no-throw; add a recording scheduler
 - [Workpool retry semantics](reference_workpool_retry_semantics.md) — every throw retries unless NonRetryableError; onComplete only after the final attempt; error arrives as a string
 - [Convex test files are not typechecked](reference_convex_test_files_are_not_typechecked.md) — convex tsconfig excludes *.test.ts and eslint skips .ts; typecheck new tests with a scratch tsconfig
 - [Store loops fall through to insert](reference_store_loops_fall_through_to_insert.md) — a new MatchOutcome kind becomes a NEW ROW in both stores until each gets an explicit branch
 - [Scheduled telemetry unmasks cross-test leaks](reference_scheduled_telemetry_unmasks_cross_test_leaks.md) — recordAdapterCall schedules since NEO-315; drain before asserting captures, scope by requestId, set POSTHOG_API_KEY in stubs
 - [use-node contract narrowers live in lib](reference_use_node_contract_narrowers_live_in_lib.md) — default-runtime settle can't import a "use node" adapter; types/validators/narrowers go in convex/lib, re-exported
 - [Check baseline reds in main/, not by stash](reference_check_baseline_reds_in_main_not_by_stash.md) — shared worktree: prove a stray red pre-existing by running that file in main/ at the same base
-- [Hook between action steps in convex-test](reference_convex_test_hook_between_action_steps.md) — vi.mock a helper the earlier mutation calls, or t.run inside the fetch stub when a fetch splits the steps
+- [Hook between action steps in convex-test](reference_convex_test_hook_between_action_steps.md) — vi.mock a helper the earlier mutation calls, or t.run inside the fetch stub (write a change, or snapshot a ledger) when a fetch splits the steps
 - [paginate maximumBytesRead](reference_paginate_maximum_bytes_read.md) — a .take(N) can't be byte-bounded; page across queries with maximumBytesRead; size byte fixtures with literals, never from the cap
 - ["No token" can be our own limiter](reference_no_token_can_be_our_own_limiter.md) — browser-service 60/min rate limit (/health per IP), credential lock, NEO-278 backoff all read as no token
 - [Store unlink needs non-empty options](reference_store_unlink_needs_nonempty_options.md) — unlink pass is inside `options.length > 0`; a pre-store filter that empties the list skips unlinking
@@ -28,15 +28,74 @@
 - [Planner sees the first wire id only](reference_planner_sees_first_wire_id_only.md) — reconcile store plans ids[0] per side; extras need their own one-link-one-row check at the insert
 - [Adapter re-auth goes through refreshSiteToken](reference_adapter_reauth_goes_through_refresh_site_token.md) — never authenticate* from an adapter; one re-auth per session; the lock inserts a userProfiles row in convex-test
 - [Action promise races its subscription](reference_action_promise_races_subscription.md) — action resolves before useQuery sees its runMutation writes; last-chunk team loss; empty is never a diff claim
-- [Action stubs pin old return shapes](reference_action_stubs_pin_old_return_shapes.md) — tests vi.mock adapter actions with their own returns validator; a return-shape change must update every stub
-- [Agent Bash node ignores .nvmrc](reference_agent_bash_node_ignores_nvmrc.md) — `node` is the nvm default in agent Bash; prefix PATH with the .nvmrc version for every gate call
+- [Action stubs pin old shapes](reference_action_stubs_pin_old_return_shapes.md) — vi.mock stubs keep their own args/returns; a new arg or return shape must update every stub
 - [Store working copies hide renames from db guards](reference_store_working_copies_hide_renames_from_db_guards.md) — stores patch in a final pass; a mid-loop ctx.db read misses same-call renames; suggestions apply patches in-loop
 - [Team names contain separators](reference_team_names_contain_separators.md) — teams split on comma only (Bodø/Glimt, "Korea, South"); players on , / |; resolve the whole raw value first
 - [Team resolution null is two answers](reference_team_resolution_null_is_two_answers.md) — teamId null = unknown OR ambiguous era; branch on candidates.length before any fallback (NEO-333 split bug)
-- [Agent shell node ignores .nvmrc](reference_agent_shell_node_ignores_nvmrc.md) — Bash-tool `node` is the nvm default; prepend $NVM_DIR/versions/node/v$(cat .nvmrc)/bin to PATH per gate call
+- [Agent shell node ignores .nvmrc](reference_agent_shell_node_ignores_nvmrc.md) — Bash-tool `node` is the nvm default; pin per gate call; a major-only .nvmrc ("22") needs the full dir
 - [Cross-adapter parity test](reference_cross_adapter_parity_test.md) — prove BSC/SL agreement by running both real fetch actions (fetch routed by URL) into card-name helpers; never replicate naming
 - [Action result beats its subscription](reference_action_result_beats_subscription.md) — a Convex action's promise resolves before the client's subscriptions show its writes; a gate reading a useQuery ref right after the await can act on a pre-write snapshot
 - [Probe BSC public search for card ids](reference_probe_bsc_public_search_for_card_ids.md) — shop/results answers unauthenticated with ids; card-listing playerAttribute is a comma string; teamName can be the label
 - [E2E seed carries no cards](reference_e2e_seed_carries_no_cards.md) — bundle is 8 reference tables; preview cards come from setup.spec through insertCardRow, so derived fields need no backfill
 - [Pin tests need a bypass plant](reference_pin_tests_need_a_bypass_plant.md) — *.pin tests scan source; a planted throw leaves them green, plant a forbidden call instead
 - [convex-test t.run rejects undefined](reference_convex_test_t_run_rejects_undefined.md) — an array holding undefined throws; map to null
+- [convex-test ids fail real-id codecs](reference_convex_test_ids_fail_real_id_codecs.md) — mock id-checksum codecs (listingSku); fake timers when a test only inspects scheduled network actions
+- [Hold a runAfter(0) action in convex-test](reference_hold_runafter0_in_convex_test.md) — fake setTimeout, hand-run walks, cancel before useRealTimers; count drains in any state
+- [Scratch test typecheck: node-types noise](reference_scratch_test_typecheck_node_types_noise.md) — fixture-reading tests report TS2591/TS2304 under the convex tsconfig; encodeId mints real ids for lib tests
+- [New table naming a card: four places](reference_new_table_naming_a_card_three_places.md) — wipe graph (tested), set-builder reset, per-user reset (untested), reference-seed dependant list (tested; nested ids count)
+- [eBay Sell API shapes come from the OAS specs](reference_ebay_sell_api_shapes_come_from_the_oas_specs.md) — bulk 400 per-entry; 25002 adopt; OAS fixture for fakes
+- [Work under the credential lock reads tokens directly](reference_work_under_the_credential_lock_reads_tokens_directly.md) — getSiteTokenForUser/re-auth contend for the held lock (busy = no token); read cache, refresh body, reauthAttempted:true
+- [Public refusals: return or ConvexError](reference_public_refusals_are_returns_or_convex_error.md) — a plain Error from a public function is "Server Error" in prod; return {ok:false,error}
+- [BSC seller sheet reads must be serial](reference_bsc_seller_sheet_reads_must_be_serial.md) — concurrent seller/bulk-upload/results reads per seller return twin (card, condition) rows; every card held back (NEO-415)
+- [eBay sandbox diverges from the contract](reference_ebay_sandbox_diverges_from_the_contract.md) — location 400 on existing key; GA behind old code; calculated shipping publish = 25007; bulk publish ~9 s, publish per offer
+- [BSC seller sheet has no all-conditions read](reference_bsc_seller_sheet_has_no_all_conditions_read.md) — omit/null condition = 500; ""/"all" = one blank template per card, hides listings; templates mint new productIds per read
+- [eBay sandbox refuses eSE policies](reference_ebay_sandbox_refuses_ese_policy.md) — 20403 on any eSE policy create (confirmed by hand); no body fix; NB makes no shipping policies until NEO-423
+- [Ledger error finish settles working as failed](reference_progress_ledger_error_finish_settles_working_failed.md) — ledger.fail the earlier step, endWorking before an error finish
+- [eBay Media 500 190000 is ambiguous](reference_ebay_media_500_is_ambiguous.md) — malformed-request answer too; no upload on sandbox, items need imageUrls (25717): fixed test picture; JS doc pages
+- [Adapter retry pause is injected](reference_adapter_retry_pause_is_injected.md) — optional `pause` param threaded via DrainOptions; instant counting pause in drain tests; fake only setTimeout for the default
+- [playerIds key pin reads any line](reference_playerids_key_pin_reads_any_line.md) — playerLinksPin flags any `^playerIds:` line in selectorOptions.ts, types and runQuery args too; keep such keys inline
+- [Client wizard gate reads unknown lists](reference_client_wizard_gate_reads_unknown_lists.md) — a batchId with empty unknowns commits silently; a decided-only batch needs its own result field
+- [Preprocess pytest runs without torch](reference_preprocess_pytest_runs_without_torch.md) — tests/unit runs on a Mac (uv 3.12 venv minus torch/transformers/accelerate); rembg+ORT install too, lite model for real-mask checks
+- [Unstub globals before real timers](reference_unstub_globals_before_real_timers.md) — stubGlobal(setTimeout) after useFakeTimers: undo it first or the fake stays and the network guard's afterAll times out
+- [New pool enqueue breaks convex-test](reference_new_pool_enqueue_breaks_convex_test.md) — spy enqueueAction; run the lane by hand via the real onComplete; a scheduled enqueue fails silently
+- [eBay inventory offset is a page number](reference_ebay_inventory_offset_is_a_page_number.md) — unlike getOrders; follow the next link, fail on an unreadable one
+- [Testing wired BSC call telemetry](reference_testing_wired_bsc_call_telemetry.md) — flush-once = count bscCallStats scheduled rows; drain flag past the 4 KB clone; backoff spy
+- [NB card numbers are not bare by rule](reference_nb_card_numbers_are_not_bare_by_rule.md) — sync commits BSC cardNo raw despite the comments; strip on both sides; BSC prefixes per variant
+- [Recording hits stage career teams by QID](reference_recording_hits_stage_career_teams_by_qid.md) — fixture hits stage dated clubs looked up with knownQid; null/other QID = refused miss; capture team+league by id
+- [FastAPI manual-body routes](reference_fastapi_manual_body_routes.md) — two-content-type route: starlette form file fails isinstance(fastapi.UploadFile); openapi_extra $ref dangles
+- [--noconftest when a sibling breaks conftest](reference_noconftest_when_a_sibling_breaks_conftest.md) — a deleted attr in a shared autouse fixture errors every test; run your files with --noconftest, rerun the gate later
+- [Dry-run a live itest against fakes](reference_dry_run_a_live_itest_against_fakes.md) — patch storage.Client/RPC/loader in a scratch module, star-import the test, --noconftest; -rs shows no skips
+- [Preprocess cold import cost is module count](reference_preprocess_cold_import_cost_is_module_count.md) — gen2 lazy layers: count modules, not local ms; SDKs import on first use; hold prewarm threads in tests
+- [Agent Bash is zsh: no word split](reference_agent_bash_is_zsh_no_word_split.md) — unquoted $VAR of paths is one arg; wrap list/array commands in bash -c; perl alarm for timeouts
+- [test:unit ignores file args](reference_test_unit_ignores_file_args.md) — `npm run test:unit -- files` runs the whole suite (args hit the verify script); iterate with npx vitest run
+- [Client parse rows hit strict arg validators](reference_client_parse_rows_hit_strict_arg_validators.md) — a new parser row field passed straight to an action arg fails v.object at runtime; widen optional + drop server-side
+- [Spy `_handler` to count convex-test calls](reference_convex_test_spy_handler_to_count_calls.md) — nested runQuery goes through `_handler`; an `invokeQuery` spy stays at 0; pair every "never called" with a control
+- [Workpool cancelAll semantics](reference_workpool_cancel_all_semantics.md) — pending/runAt items get `canceled`; a running item finishes with its real result and its re-enqueue escapes
+- [settleOnFakeClock drifts on first import](reference_settle_on_fake_clock_drifts_on_first_import.md) — first adapter action in a file moves the fake clock ~26 s before its first read; warm with a throwaway item, reset to NOW
+- [Token leg is BSC wait time](reference_token_leg_is_bsc_wait_time.md) — wrap getBscToken/re-auth in whileWaitingOnBsc (one wait with the calls); recorder before the token read
+- [Checklist row field rides five hops](reference_checklist_row_field_rides_five_hops.md) — compare → apply → validator → Match Cards request → action args/answer fold; the link path drops unknown fields silently
+- [Wall-clock unit tests red under load](reference_wall_clock_unit_tests_red_under_load.md) — parser 2 MB bound, theme-allowlist scan, panelLink ↑↓ test time out at load ~30+; rerun alone, never raise the bound
+- [Scratch probe via a sibling test's header](reference_scratch_probe_via_sibling_test_header.md) — copy a test file's pre-describe header into convex/zz*.test.ts, probe, rm in the same call
+- [Id-less items in stores and commits](reference_id_less_items_in_stores_and_commits.md) — id-less store lines need a section-link identity; NNO cards match by number + folded name
+- [zsh file list runs nothing](reference_zsh_file_list_runs_nothing.md) — unquoted $LIST is one arg in zsh; vitest matches nothing and stays green; use xargs, check the file count
+- [Vitest cache holds a stale glob](reference_vitest_cache_holds_stale_glob.md) — "Could not find module" for a module on disk = cached import.meta.glob; edit the test or --no-cache
+- [Preview query shares the action's block rules](patterns_preview_query_shares_the_actions_block_rules.md) — one set of pure block functions for list + action, pause threaded into both; list-then-build agreement test
+- [Seed hops that consume rows replay on retry](reference_seed_hops_that_consume_rows_replay_on_retry.md) — an apply-seed lowers the copies it resolved from; replay the stored order by token on a re-visit
+- [Convex doc-size budget counts framing](reference_convex_doc_size_budget_counts_framing.md) — getDocumentSize adds ~3 B/field + ~10 B/object; test both fat and many-tiny worst shapes
+- [Edit tool decodes \u escapes](reference_edit_tool_decodes_unicode_escapes.md) — format/bidi escapes land as literal chars; U+2028 in a regex = PARSE_ERROR; write via python, grep -P after
+- [Lint crashes beside a vitest run](reference_lint_crashes_beside_a_vitest_run.md) — eslint glob stack trace when .vitest/ vanishes mid-walk is not a result; rerun lint alone
+- [Date-cutoff rules need a frozen clock](reference_date_cutoff_rules_need_a_frozen_clock_in_convex_test.md) — _creationTime is real time; freeze Date per describe; ceil/floor fractional ms
+- [Every stored-session login runs setUpListing](reference_every_stored_session_login_runs_set_up_listing.md) — renewals reach setUpListing(save:false) hourly; user-only effects key on opts.save / transient
+- [Cloud Run strips the serverless-auth signature](reference_cloud_run_strips_serverless_auth_signature.md) — never trust it; verify a second signed-token header yourself; includeEmail for impersonated ADC
+- [Express 5 finish loggers see rewritten req.path](reference_express5_req_path_rewritten_by_mounted_routers.md) — capture req.originalUrl at entry; mounted routers strip the prefix
+- [BSC call gate in unit tests](reference_bsc_call_gate_in_unit_tests.md) — stub ctx fails closed without runMutation; openBscGate/skipBscGateWaits/vi.mock open gate; 5 failures open it
+- [Fake-mode /health stub needs bscTarget](reference_fake_mode_health_stub_needs_bsc_target.md) — fake-mode convex-tests must serve bscTarget "fake" or every BSC credential call is refused; BSC keys carry the slug
+- [Test signal guards with process.emit](reference_test_signal_guards_with_process_emit.md) — emit with the name arg; inject exit; listenerCount per request
+- [Cloud Run: load before listen](reference_cloud_run_load_before_listen.md) — throttled CPU starves post-listen boot work; load first, budget optional loads; spy Server.prototype.listen
+- [New listing problem reason touch list](reference_new_listing_problem_reason_touch_list.md) — ~8 lists; tsc catches only types.ts + copy.ts; REPORTABLE and seed SYNC_HELD_REASONS fail silently
+- [Stdio EPIPE is a late 'error' event](reference_stdio_epipe_error_is_a_late_event.md) — closed pipe/tty kills Node via nextTick 'error'; release scoped listeners on setImmediate; spy emit
+- [Capture diff paths are what the fake invents](reference_capture_diff_paths_are_what_the_fake_invents.md) — shape_drift paths = fake-only fields; stored shapes unreadable; CAPTURE_OPTIONAL; name variants by kind not id
+- [Capture optional paths: parent-only](reference_capture_optional_parent_only.md) — fake-bsc prefix exemption hides read fields under a present object; use parentOnly + list children
+- [Cloud Run socket destroy restarts the instance](reference_cloud_run_socket_destroy_restarts_instance.md) — fake faults end in 503, never socket.destroy(); hangCapMs injectable
+- [eBay read path: one clock](ebay-read-path-bounded-by-one-clock.md) — 3 s a try, one retry on timeout; timeout is never a missing policy
+- [Direct helper bypasses action stubs](reference_direct_helper_bypasses_credentials_action_stubs.md) — runAction -> plain helper skips vi.mock action stubs; add a twin stub, spy _handler for no-hop proof

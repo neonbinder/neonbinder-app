@@ -13,7 +13,7 @@ import {
   inheritableFeatures,
   validateFeatureValue,
   ERA_BUCKET_OPTIONS,
-  LEAGUE_OPTIONS,
+  RETIRED_FEATURE_KEYS,
 } from "./features/deriveCardFeatures";
 
 describe("deriveSetLevelFeatures", () => {
@@ -26,7 +26,6 @@ describe("deriveSetLevelFeatures", () => {
         leafLevel: "variantType",
       }),
     ).toEqual({
-      league: "MLB",
       era: "Modern (1980-Now)",
       vintage: "false",
       season: "2024",
@@ -43,11 +42,17 @@ describe("deriveSetLevelFeatures", () => {
     });
   });
 
-  test("league maps per sport; unmapped sport gets none", () => {
-    expect(deriveSetLevelFeatures({ sport: "Basketball" }).league).toBe("NBA");
-    expect(deriveSetLevelFeatures({ sport: "Football" }).league).toBe("NFL");
-    expect(deriveSetLevelFeatures({ sport: "Hockey" }).league).toBe("NHL");
-    expect(deriveSetLevelFeatures({ sport: "Pokémon" }).league).toBeUndefined();
+  test("NEO-569: no sport derives a league any more (a set's leagues are NB ids)", () => {
+    for (const sport of ["Baseball", "Basketball", "Football", "Hockey", "Pokémon"]) {
+      expect(deriveSetLevelFeatures({ sport })).not.toHaveProperty("league");
+    }
+  });
+
+  test("NEO-569: inheritableFeatures drops the retired league key", () => {
+    expect(RETIRED_FEATURE_KEYS.has("league")).toBe(true);
+    expect(inheritableFeatures({ league: "MLB", era: "Modern (1980-Now)" })).toEqual({
+      era: "Modern (1980-Now)",
+    });
   });
 
   test("cardType from leaf level / metadata", () => {
@@ -132,12 +137,6 @@ describe("eraForYear (eBay-standard buckets)", () => {
 });
 
 describe("validateFeatureValue (NEO-72/73 server-side guard)", () => {
-  test("accepts every LEAGUE_OPTIONS value", () => {
-    for (const league of LEAGUE_OPTIONS) {
-      expect(() => validateFeatureValue("league", league)).not.toThrow();
-    }
-  });
-
   test("accepts every ERA_BUCKET_OPTIONS value", () => {
     for (const era of ERA_BUCKET_OPTIONS) {
       expect(() => validateFeatureValue("era", era)).not.toThrow();
@@ -146,17 +145,6 @@ describe("validateFeatureValue (NEO-72/73 server-side guard)", () => {
 
   test("rejects an off-list era value", () => {
     expect(() => validateFeatureValue("era", "Junk Wax")).toThrow();
-  });
-
-  // league is intentionally NOT validated against LEAGUE_OPTIONS server-side
-  // (unlike era's closed bucket taxonomy): operators legitimately override it
-  // to values outside the 4-primary-league frontend <select> for
-  // international/niche sets (e.g. "NPB" for Japanese releases — see
-  // cardFeatureDerivation.test.ts's operator-override test, which predates
-  // this file). Hard-rejecting here broke that real, tested capability.
-  test("does NOT reject an off-list league value", () => {
-    expect(() => validateFeatureValue("league", "NPB")).not.toThrow();
-    expect(() => validateFeatureValue("league", "XFL")).not.toThrow();
   });
 
   test("NEO-345: autographFormat accepts exactly the two formats", () => {
@@ -286,7 +274,7 @@ describe("deriveBackfillFeatures (gap-fill, existing wins)", () => {
       // Operator previously overrode cardType and already has isRookie.
       { cardType: "Short Print", isRookie: "true" },
     );
-    expect(result.league).toBe("MLB"); // gap-filled
+    expect(result).not.toHaveProperty("league"); // NEO-569: retired, never filled
     expect(result.era).toBe("Modern (1980-Now)"); // gap-filled
     expect(result.cardType).toBe("Short Print"); // override preserved, NOT "Base"
     expect(result.isRookie).toBe("true");

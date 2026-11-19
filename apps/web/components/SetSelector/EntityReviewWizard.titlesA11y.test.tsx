@@ -39,7 +39,7 @@ const stepProps: Array<{ headingId?: string }> = [];
 vi.mock("./CardTitlesStep", () => ({
   default: (props: { headingId?: string }) => {
     stepProps.push(props);
-    return <h3 id={props.headingId}>Trimmed to fit. Keep it, or make it yours.</h3>;
+    return <h3 id={props.headingId}>These titles had to leave something out or still run long. Check what went, then keep 'em or make 'em yours.</h3>;
   },
 }));
 
@@ -83,7 +83,7 @@ describe("the titles step's Next", () => {
     expect(describedBy).toBeTruthy();
     expect(stepProps.at(-1)?.headingId).toBe(describedBy);
     const lead = document.getElementById(describedBy!);
-    expect(lead?.textContent).toBe("Trimmed to fit. Keep it, or make it yours.");
+    expect(lead?.textContent).toBe("These titles had to leave something out or still run long. Check what went, then keep 'em or make 'em yours.");
   });
 });
 

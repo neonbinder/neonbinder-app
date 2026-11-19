@@ -1,15 +1,19 @@
-// Unit tests for the `resetMyTestState` mutation. Verifies caller-scoped
+// Unit tests for the `resetMyTestState` action (NEO-552: was a mutation). Verifies caller-scoped
 // deletes across publicProfiles / userProfiles / prizePool and (NEO-358) the
 // caller's collection tables, the auth gate
-// (must be signed in), and the production fail-closed gate (mutation throws
+// (must be signed in), and the production fail-closed gate (it throws
 // unless TESTING_RESET_SECRET is present on the deployment).
 
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { __resetContractCache } from "./credentials";
+import { SEED_BSC_SELLER_CONFLICT_REASON } from "./testing";
 import { insertTestCard } from "../lib/testing/card-row";
+import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
+import { VISIT_GAP_MS } from "./dashboard";
+import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -126,6 +130,63 @@ async function seedUser(
       priceCents: 25,
       lastUpdated: 0,
     });
+    // NEO-370 — one row in each listing table.
+    await ctx.db.insert("listingOutbox", {
+      ownerId: userId,
+      platform: "bsc",
+      cardId,
+      variantId,
+      seq: 1,
+      changedAt: 0,
+    });
+    await ctx.db.insert("marketplaceListingSyncs", {
+      ownerId: userId,
+      variantId,
+      platform: "bsc",
+      status: "idle",
+      problems: [],
+      conditionsPushed: ["near_mint"],
+      // NEO-415: the run's steps ride on the row, so the row's delete clears them.
+      progress: { runStartedAt: 0, steps: [{ kind: "read", condition: "Near Mint", status: "done", finishedAt: 0 }] },
+      lastUpdated: 0,
+    });
+    await ctx.db.insert("marketplaceListingStates", {
+      ownerId: userId,
+      platform: "bsc",
+      lastUpdated: 0,
+    });
+    // NEO-536 — a report of that set, folded into the listing count.
+    await ctx.db.insert("syncReports", {
+      ownerId: userId,
+      platform: "bsc",
+      variantId,
+      label: "Set",
+      cards: [{ cardId, reason: "noLink" }],
+      heldBack: 1,
+      status: "open",
+      lastUpdated: 0,
+    });
+    await ctx.db.insert("marketplaceSales", {
+      ownerId: userId,
+      platform: "bsc",
+      orderId: `order-${userId}`,
+      orderNo: "1001",
+      orderDate: 0,
+      status: "READY_TO_SHIP",
+      totals: { totalCents: 25 },
+      items: [
+        {
+          platformCardId: "bsc-card-1",
+          cardId,
+          condition: "near_mint",
+          quantity: 1,
+          priceCents: 25,
+          applied: false,
+        },
+      ],
+      firstSeenAt: 0,
+      lastUpdated: 0,
+    });
   });
 }
 
@@ -141,6 +202,7 @@ async function countRows(
   collectionBuildingSets: number;
   variantCommonPrices: number;
   binderFits: number;
+  listing: number;
 }> {
   return t.run(async (ctx) => {
     const pp = (await ctx.db.query("publicProfiles").collect()).filter(
@@ -167,6 +229,16 @@ async function countRows(
     const bf =
       (await ctx.db.query("collectionBinderFits").collect()).filter((r) => r.ownerId === userId).length +
       (await ctx.db.query("collectionBinderFitsState").collect()).filter((r) => r.ownerId === userId).length;
+    let listing = 0;
+    for (const table of [
+      "listingOutbox",
+      "marketplaceListingSyncs",
+      "marketplaceListingStates",
+      "marketplaceSales",
+      "syncReports",
+    ] as const) {
+      listing += (await ctx.db.query(table).collect()).filter((r) => r.ownerId === userId).length;
+    }
     return {
       publicProfiles: pp.length,
       userProfiles: up.length,
@@ -176,6 +248,7 @@ async function countRows(
       collectionBuildingSets: bs.length,
       variantCommonPrices: vp.length,
       binderFits: bf,
+      listing,
     };
   });
 }
@@ -187,7 +260,7 @@ describe("resetMyTestState", () => {
 
     const result = await t
       .withIdentity({ subject: USER_A })
-      .mutation(api.testing.resetMyTestState, {});
+      .action(api.testing.resetMyTestState, {});
 
     expect(result).toEqual({
       publicProfiles: 1,
@@ -199,6 +272,8 @@ describe("resetMyTestState", () => {
       collectionContainers: 1,
       collectionBuildingSets: 1,
       variantCommonPrices: 1,
+      marketplaceListing: 5,
+      fakeBscNamespaceReset: false,
     });
     expect(await countRows(t, USER_A)).toEqual({
       publicProfiles: 0,
@@ -209,6 +284,7 @@ describe("resetMyTestState", () => {
       collectionBuildingSets: 0,
       variantCommonPrices: 0,
       binderFits: 0,
+      listing: 0,
     });
   });
 
@@ -219,7 +295,7 @@ describe("resetMyTestState", () => {
 
     await t
       .withIdentity({ subject: USER_A })
-      .mutation(api.testing.resetMyTestState, {});
+      .action(api.testing.resetMyTestState, {});
 
     expect(await countRows(t, USER_A)).toEqual({
       publicProfiles: 0,
@@ -230,6 +306,7 @@ describe("resetMyTestState", () => {
       collectionBuildingSets: 0,
       variantCommonPrices: 0,
       binderFits: 0,
+      listing: 0,
     });
     expect(await countRows(t, USER_B)).toEqual({
       publicProfiles: 1,
@@ -240,6 +317,7 @@ describe("resetMyTestState", () => {
       collectionBuildingSets: 1,
       variantCommonPrices: 1,
       binderFits: 2,
+      listing: 5,
     });
   });
 
@@ -248,7 +326,7 @@ describe("resetMyTestState", () => {
 
     const result = await t
       .withIdentity({ subject: USER_A })
-      .mutation(api.testing.resetMyTestState, {});
+      .action(api.testing.resetMyTestState, {});
 
     expect(result).toEqual({
       publicProfiles: 0,
@@ -260,6 +338,8 @@ describe("resetMyTestState", () => {
       collectionContainers: 0,
       collectionBuildingSets: 0,
       variantCommonPrices: 0,
+      marketplaceListing: 0,
+      fakeBscNamespaceReset: false,
     });
   });
 
@@ -268,7 +348,7 @@ describe("resetMyTestState", () => {
     await seedUser(t, USER_A);
 
     await expect(
-      t.mutation(api.testing.resetMyTestState, {}),
+      t.action(api.testing.resetMyTestState, {}),
     ).rejects.toThrow(/Not authenticated/);
 
     // Existing rows must be untouched.
@@ -281,6 +361,7 @@ describe("resetMyTestState", () => {
       collectionBuildingSets: 1,
       variantCommonPrices: 1,
       binderFits: 2,
+      listing: 5,
     });
   });
 
@@ -292,7 +373,7 @@ describe("resetMyTestState", () => {
     await expect(
       t
         .withIdentity({ subject: USER_A })
-        .mutation(api.testing.resetMyTestState, {}),
+        .action(api.testing.resetMyTestState, {}),
     ).rejects.toThrow(/not enabled/);
 
     expect(await countRows(t, USER_A)).toEqual({
@@ -304,6 +385,7 @@ describe("resetMyTestState", () => {
       collectionBuildingSets: 1,
       variantCommonPrices: 1,
       binderFits: 2,
+      listing: 5,
     });
   });
 });
@@ -379,6 +461,8 @@ function makeCredentialFetch(opts: {
       }
     | 404;
   puts: Array<{ url: string; method: string; body: unknown }>;
+  /** NEO-482: the seller id the browser's login answer carries (BSC logins only read it best-effort). */
+  sellerId?: string;
 }): FetchStub {
   return async (url, init) => {
     const u = String(url);
@@ -404,7 +488,11 @@ function makeCredentialFetch(opts: {
         method,
         body: init?.body ? JSON.parse(String(init.body)) : null,
       });
-      return jsonResponse({ success: true, message: "ok" });
+      return jsonResponse({
+        success: true,
+        message: "ok",
+        ...(opts.sellerId ? { sellerId: opts.sellerId } : {}),
+      });
     }
     // NEO-120: the EasyPost key store — the one credential write that survived
     // NEO-141, easypost-scoped. See services/browser/src/routes/easypost.ts.
@@ -461,7 +549,7 @@ describe("markSiteNeedsReauth", () => {
         .withIndex("by_user", (q) => q.eq("userId", USER_A))
         .first();
       const sl = mine?.siteCredentials?.find((c) => c.site === "sportlots");
-      const bsc = mine?.siteCredentials?.find((c) => c.site === "buysportscards");
+      const bsc = mine?.siteCredentials?.find((c: { site: string }) => c.site === "buysportscards");
       expect(sl?.needsReauth).toBe(true);
       expect(typeof sl?.needsReauthSince).toBe("number");
       // hasCredentials survives: the account is still connected, the session
@@ -551,6 +639,46 @@ describe("seedMyTestCredentials", () => {
     const easypostPut = puts.find((p) => p.url.includes("/easypost/"));
     expect(easypostPut?.url).toContain(`/easypost/easypost-credentials-${USER_A}`);
     expect(easypostPut?.body).toEqual({ apiKey: "EZTK_test_key" });
+  });
+
+  // NEO-604: a failed EasyPost key store used to read "no reason reported" on
+  // the seed page. The reason now carries the browser service's HTTP status.
+  test("reports the HTTP status as the reason when the EasyPost key store fails", async () => {
+    process.env.DEV_EASYPOST_API_KEY = "EZTK_test_key";
+    const t = convexTest(schema, modules);
+    const puts: Array<{ url: string; method: string; body: unknown }> = [];
+    const credentialFetch = makeCredentialFetch({ metadata: { username: SL_USERNAME }, puts });
+    stubFetch(async (url, init) =>
+      init?.method === "PUT" && String(url).includes("/easypost/")
+        ? jsonResponse({ error: "boom EZTK_test_key" }, 500)
+        : credentialFetch(url, init),
+    );
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.testing.seedMyTestCredentials, { sites: ["sportlots"] });
+
+    expect(result.seeded).toContainEqual({
+      site: "easypost",
+      stored: false,
+      reason: "Failed to store EasyPost key (500)",
+    });
+    // Neither the key nor the response body leaks into the reason.
+    expect(JSON.stringify(result)).not.toContain("EZTK_test_key");
+    expect(JSON.stringify(result)).not.toContain("boom");
+  });
+
+  test("storeEasypostKeyForUser names the status on a non-OK answer", async () => {
+    process.env.NEONBINDER_BROWSER_URL = "http://localhost:9999";
+    const t = convexTest(schema, modules);
+    stubFetch(async () => jsonResponse({ error: "nope" }, 403));
+
+    const result = await t.action(internal.postage.storeEasypostKeyForUser, {
+      userId: USER_A,
+      apiKey: "EZTK_test_key",
+    });
+
+    expect(result).toEqual({ success: false, message: "Failed to store EasyPost key (403)" });
   });
 
   test("skips re-store (preserves token) when the stored username is already correct", async () => {
@@ -908,6 +1036,575 @@ describe("seedMyTestCredentials", () => {
   });
 });
 
+// NEO-370 Revision 5 — the seed decides whether the seeded BSC sign-in LISTS.
+// A saved sign-in is listing (counts pushed, sales polled), so the suite's
+// accounts carry the E2E test marker (`testListingOff`) unless a spec asks
+// for listing (`listing: true`, the seed page's `listing=on`). A real save
+// through the product clears the marker.
+describe("seedMyTestCredentials — the listing test marker", () => {
+  beforeEach(() => {
+    process.env.NEONBINDER_BROWSER_URL = "http://localhost:9999";
+    __resetContractCache();
+    process.env.DEV_BSC_USERNAME = BSC_USERNAME;
+    process.env.DEV_BSC_PASSWORD = BSC_PASSWORD;
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.NEONBINDER_BROWSER_URL;
+    delete process.env.DEV_BSC_USERNAME;
+    delete process.env.DEV_BSC_PASSWORD;
+  });
+
+  const bscState = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) =>
+      (await ctx.db.query("marketplaceListingStates").collect()).filter((r) => r.ownerId === USER_A),
+    );
+  const seed = (t: ReturnType<typeof convexTest>, listing?: boolean) =>
+    t
+      .withIdentity({ subject: USER_A })
+      .action(api.testing.seedMyTestCredentials, {
+        sites: ["buysportscards"],
+        ...(listing !== undefined ? { listing } : {}),
+      });
+
+  test.each([
+    ["the skip path (stored session still good)", { username: BSC_USERNAME } as const],
+    ["the store path (no secret yet)", 404 as const],
+  ])("%s: by default the account is held off listing", async (_name, metadata) => {
+    const t = convexTest(schema, modules);
+    const puts: Array<{ url: string; method: string; body: unknown }> = [];
+    stubFetch(makeCredentialFetch({ metadata, puts }));
+    expect((await seed(t)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+    const rows = await bscState(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ platform: "bsc", testListingOff: true });
+    expect(rows[0].listingStartedAt).toBeUndefined();
+    expect(
+      (await t.withIdentity({ subject: USER_A }).query(api.listingSync.listingSettings, {})).bsc,
+    ).toMatchObject({ connected: true, listing: false });
+    // Nothing was set going: no walk, no drain.
+    const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled.filter((f) => /startListingWalk|drainOwner/.test(f.name))).toEqual([]);
+  });
+
+  test.each([
+    ["the skip path (stored session still good)", { username: BSC_USERNAME } as const],
+    ["the store path (no secret yet)", 404 as const],
+  ])("%s: `listing: true` lists, and clears a marker an earlier seed set", async (_name, metadata) => {
+    const t = convexTest(schema, modules);
+    const puts: Array<{ url: string; method: string; body: unknown }> = [];
+    stubFetch(makeCredentialFetch({ metadata: { username: BSC_USERNAME }, puts }));
+    await seed(t);
+    expect((await bscState(t))[0].testListingOff).toBe(true);
+    vi.unstubAllGlobals();
+    __resetContractCache();
+    // NEO-483: a listing-on BSC seed is exactly one store, whatever the id.
+    stubFetch(makeCredentialFetch({ metadata, puts, sellerId: "seller-482" }));
+    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+    const [row] = await bscState(t);
+    expect(row.testListingOff).toBeUndefined();
+    expect(row.listingStartedAt).toBeTypeOf("number");
+    expect(
+      (await t.withIdentity({ subject: USER_A }).query(api.listingSync.listingSettings, {})).bsc,
+    ).toMatchObject({ connected: true, listing: true });
+    await drainScheduled(t);
+  });
+
+  test("a real save through the product (saveCredentials) clears the marker and starts listing", async () => {
+    const t = convexTest(schema, modules);
+    const puts: Array<{ url: string; method: string; body: unknown }> = [];
+    stubFetch(makeCredentialFetch({ metadata: { username: BSC_USERNAME }, puts }));
+    await seed(t);
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.saveCredentials, { site: "buysportscards", username: "me@example.com", password: "pw" });
+    expect(result.success).toBe(true);
+    const [row] = await bscState(t);
+    expect(row.testListingOff).toBeUndefined();
+    expect(row.listingStartedAt).toBeTypeOf("number");
+    await drainScheduled(t);
+  });
+
+  test("the internal store refuses where the testing flag is unset, and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    stubFetch(async () => {
+      throw new Error("no fetch expected");
+    });
+    delete process.env.TESTING_RESET_SECRET;
+    await expect(
+      t.action(internal.credentials.storeTestCredentials, {
+        userId: USER_A,
+        site: "buysportscards",
+        username: BSC_USERNAME,
+        password: BSC_PASSWORD,
+        listing: false,
+      }),
+    ).rejects.toThrow(/not enabled/);
+    expect(await bscState(t)).toEqual([]);
+  });
+});
+
+// NEO-483 — a listing-on BSC seed is exactly one store with listing on,
+// whatever state the saved session is in. It no longer signs in until the login
+// carries the seller id (NEO-482/NEO-489's loop is gone): a login that does not
+// return the account still sets listing up, and the spaced background read
+// (`bscSellerId`) arms for 30 s later; the drain holds the queue
+// (`awaitingSeller`) until it lands. The seed makes no profile read of its own.
+describe("seedMyTestCredentials — NEO-483 listing-on BSC seed is one store", () => {
+  beforeEach(() => {
+    process.env.NEONBINDER_BROWSER_URL = "http://localhost:9999";
+    __resetContractCache();
+    process.env.DEV_BSC_USERNAME = BSC_USERNAME;
+    process.env.DEV_BSC_PASSWORD = BSC_PASSWORD;
+    process.env.DEV_SPORTLOTS_USERNAME = SL_USERNAME;
+    process.env.DEV_SPORTLOTS_PASSWORD = SL_PASSWORD;
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    delete process.env.NEONBINDER_BROWSER_URL;
+    delete process.env.DEV_BSC_USERNAME;
+    delete process.env.DEV_BSC_PASSWORD;
+    delete process.env.DEV_SPORTLOTS_USERNAME;
+    delete process.env.DEV_SPORTLOTS_PASSWORD;
+    delete process.env.NEONBINDER_PAUSED_PLATFORMS;
+  });
+
+  /** The flag-only branch of old: the stored session is correct and renewable. */
+  const SIGNED_IN = { username: BSC_USERNAME } as const;
+  const SELLER = "seller-482";
+
+  /** What one browser-service login answers. */
+  type LoginStep = { sellerId?: string } | { fail: string } | "http500" | "throw";
+
+  /**
+   * A browser-service stub that counts logins. Login N answers `steps[N]`
+   * (the last step repeats). Any call to a BSC host is recorded in
+   * `bscHosts`: the seed makes no marketplace profile read of its own.
+   */
+  function loginStub(opts: { metadata: { username: string } | 404; steps: LoginStep[] }) {
+    const state = { logins: 0, loginUrls: [] as string[], bscHosts: [] as string[], loginBodies: [] as unknown[] };
+    const fetchFn: FetchStub = async (url, init) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+      if (u.includes("buysportscards.com")) {
+        state.bscHosts.push(u);
+        throw new Error(`unexpected BSC call: ${u}`);
+      }
+      if (u.includes("/metadata")) {
+        if (opts.metadata === 404) return jsonResponse({ error: "Credentials not found" }, 404);
+        return jsonResponse({ username: opts.metadata.username, hasToken: true, expiresAt: 1_900_000_000_000 });
+      }
+      if (method === "POST" && u.includes("/login/")) {
+        const n = state.logins;
+        state.logins += 1;
+        state.loginUrls.push(u);
+        state.loginBodies.push(init?.body ? JSON.parse(String(init.body)) : null);
+        const step = opts.steps[Math.min(n, opts.steps.length - 1)];
+        if (step === "throw") throw new TypeError("fetch failed");
+        if (step === "http500") return jsonResponse({ error: "boom" }, 500);
+        if ("fail" in step) return jsonResponse({ success: false, message: step.fail });
+        return jsonResponse({ success: true, message: "ok", ...(step.sellerId ? { sellerId: step.sellerId } : {}) });
+      }
+      throw new Error(`unexpected fetch: ${method} ${u}`);
+    };
+    return { state, fetchFn };
+  }
+
+  const seed = (t: ReturnType<typeof convexTest>, listing?: boolean, sites = ["buysportscards"]) =>
+    t.withIdentity({ subject: USER_A }).action(api.testing.seedMyTestCredentials, {
+      sites,
+      ...(listing !== undefined ? { listing } : {}),
+    });
+
+  const sellerIdOf = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) => {
+      const profile = (await ctx.db.query("userProfiles").collect()).find((r) => r.userId === USER_A);
+      return profile?.marketplaceAccountIds?.bscSellerId ?? null;
+    });
+
+  const bscCredentialEntry = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) => {
+      const profile = (await ctx.db.query("userProfiles").collect()).find((r) => r.userId === USER_A);
+      return profile?.siteCredentials?.find((c: { site: string }) => c.site === "buysportscards");
+    });
+
+  const preseedSellerId = (t: ReturnType<typeof convexTest>, accountId: string) =>
+    t.mutation(internal.userProfile.setMarketplaceAccountIdInternal, {
+      userId: USER_A,
+      site: "buysportscards",
+      accountId,
+    });
+
+  /** Spy on both console channels; `all()` is everything written to either. */
+  function captureConsole() {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const all = () => [...log.mock.calls, ...error.mock.calls].map((args) => args.map(String).join(" "));
+    const restore = () => {
+      log.mockRestore();
+      error.mockRestore();
+    };
+    return { all, restore };
+  }
+
+  /** The `startListingWalk` jobs scheduled so far (a listing run starting). */
+  const listingWalks = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
+        job.name.includes("startListingWalk"),
+      ),
+    );
+
+  /** The pending background seller-account reads. */
+  const pendingFetchTicks = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter(
+        (job) => job.name.includes("fetchTick") && job.state.kind === "pending",
+      ),
+    );
+
+  /** Settle the immediate work and drop the delayed read, as a test that ends must. */
+  const settle = async (t: ReturnType<typeof convexTest>) => {
+    await drainScheduled(t);
+    await cancelScheduled(t);
+  };
+
+  /** Another NB owner who already lists from the BSC seller account `accountId`. */
+  const otherOwnerListsFrom = (t: ReturnType<typeof convexTest>, accountId: string) =>
+    t.run(async (ctx) => {
+      await ctx.db.insert("marketplaceListingStates", {
+        ownerId: USER_B,
+        platform: "bsc",
+        platformAccountId: accountId,
+        listingStartedAt: Date.now() - 60_000,
+        lastUpdated: Date.now() - 60_000,
+      });
+    });
+
+  /** USER_A's BSC listing row. */
+  const ownBscRow = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) =>
+      ctx.db
+        .query("marketplaceListingStates")
+        .withIndex("by_owner_platform", (q) => q.eq("ownerId", USER_A).eq("platform", "bsc"))
+        .first(),
+    );
+
+  test("the login returns the seller id: exactly one login, saved, listing on, no background read", async () => {
+    const t = convexTest(schema, modules);
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{ sellerId: SELLER }] });
+    stubFetch(fetchFn);
+
+    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+
+    expect(state.logins).toBe(1);
+    expect(await sellerIdOf(t)).toBe(SELLER);
+    const row = await ownBscRow(t);
+    expect(row?.testListingOff).toBeUndefined();
+    expect(row?.listingStartedAt).toBeTypeOf("number");
+    expect(row?.platformAccountId).toBe(SELLER);
+    expect(row?.sellerIdFetch).toBeUndefined();
+    expect(await listingWalks(t)).toHaveLength(1);
+    expect(await pendingFetchTicks(t)).toEqual([]);
+    expect((await bscCredentialEntry(t))?.hasCredentials).toBe(true);
+    await settle(t);
+  });
+
+  test("the login returns no id: still exactly one login, stored true, listing on, the read armed for 30 s", async () => {
+    const t = convexTest(schema, modules);
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}] });
+    stubFetch(fetchFn);
+    const before = Date.now();
+
+    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+    const after = Date.now();
+
+    expect(state.logins).toBe(1);
+    expect(await sellerIdOf(t)).toBeNull();
+    const row = await ownBscRow(t);
+    expect(row?.testListingOff).toBeUndefined();
+    expect(row?.listingStartedAt).toBeTypeOf("number");
+    expect(row?.sellerIdFetch).toBeDefined();
+    const ticks = await pendingFetchTicks(t);
+    expect(ticks).toHaveLength(1);
+    expect(ticks[0].scheduledTime).toBeGreaterThanOrEqual(before + 30_000);
+    expect(ticks[0].scheduledTime).toBeLessThanOrEqual(after + 30_000);
+    expect((await bscCredentialEntry(t))?.hasCredentials).toBe(true);
+    await settle(t);
+  });
+
+  test.each([
+    ["a saved session still good", SIGNED_IN],
+    ["no secret yet", 404 as const],
+  ])("%s: the same one store with listing on, one login", async (_name, metadata) => {
+    const t = convexTest(schema, modules);
+    const { state, fetchFn } = loginStub({ metadata, steps: [{ sellerId: SELLER }] });
+    stubFetch(fetchFn);
+
+    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+
+    expect(state.logins).toBe(1);
+    expect(state.loginUrls[0]).toContain("/login/bsc");
+    expect(await sellerIdOf(t)).toBe(SELLER);
+    await settle(t);
+  });
+
+  test("an earlier listing-off seed's marker is cleared by the listing-on seed", async () => {
+    const t = convexTest(schema, modules);
+    stubFetch(loginStub({ metadata: 404, steps: [{}] }).fetchFn);
+    await seed(t);
+    expect((await ownBscRow(t))?.testListingOff).toBe(true);
+    vi.unstubAllGlobals();
+    __resetContractCache();
+    const { state, fetchFn } = loginStub({ metadata: SIGNED_IN, steps: [{}] });
+    stubFetch(fetchFn);
+
+    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+
+    expect(state.logins).toBe(1);
+    const row = await ownBscRow(t);
+    expect(row?.testListingOff).toBeUndefined();
+    expect(row?.listingStartedAt).toBeTypeOf("number");
+    await settle(t);
+  });
+
+  test("the id was already saved: one login, the id kept, no background read", async () => {
+    const t = convexTest(schema, modules);
+    await preseedSellerId(t, "seller-kept");
+    const { state, fetchFn } = loginStub({ metadata: SIGNED_IN, steps: [{}] });
+    stubFetch(fetchFn);
+
+    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+
+    expect(state.logins).toBe(1);
+    expect(await sellerIdOf(t)).toBe("seller-kept");
+    expect((await ownBscRow(t))?.platformAccountId).toBe("seller-kept");
+    expect(await pendingFetchTicks(t)).toEqual([]);
+    await settle(t);
+  });
+
+  test("the login returns the id and another owner lists from it: stored false naming the conflict, no listing run", async () => {
+    const t = convexTest(schema, modules);
+    await otherOwnerListsFrom(t, SELLER);
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{ sellerId: SELLER }] });
+    stubFetch(fetchFn);
+
+    expect((await seed(t, true)).seeded).toEqual([
+      { site: "buysportscards", stored: false, reason: SEED_BSC_SELLER_CONFLICT_REASON },
+    ]);
+    expect(SEED_BSC_SELLER_CONFLICT_REASON).toContain("sellerConflict");
+
+    expect(state.logins).toBe(1);
+    expect(await sellerIdOf(t)).toBe(SELLER);
+    const row = await ownBscRow(t);
+    expect(row?.dormant).toBe("sellerConflict");
+    expect(row?.listingStartedAt).toBeUndefined();
+    expect(await listingWalks(t)).toEqual([]);
+    await settle(t);
+  });
+
+  test.each([
+    ["saved session still good", SIGNED_IN],
+    ["no secret yet", 404 as const],
+  ])("id already saved (%s), another owner lists from it: stored false naming the conflict, no listing run", async (_name, metadata) => {
+    const t = convexTest(schema, modules);
+    await preseedSellerId(t, "seller-kept");
+    await otherOwnerListsFrom(t, "seller-kept");
+    const { state, fetchFn } = loginStub({ metadata, steps: [{}] });
+    stubFetch(fetchFn);
+
+    expect((await seed(t, true)).seeded).toEqual([
+      { site: "buysportscards", stored: false, reason: SEED_BSC_SELLER_CONFLICT_REASON },
+    ]);
+
+    expect(state.logins).toBe(1);
+    expect((await ownBscRow(t))?.dormant).toBe("sellerConflict");
+    expect(await listingWalks(t)).toEqual([]);
+    await settle(t);
+  });
+
+  test.each([
+    ["a non-ok response", "http500" as const],
+    ["a browser success:false", { fail: "BSC refused the sign-in." } as const],
+    ["a thrown request", "throw" as const],
+  ])("%s on the login: stored false with a reason, one login, no id, no background read", async (_name, step) => {
+    const t = convexTest(schema, modules);
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [step] });
+    stubFetch(fetchFn);
+
+    const [entry] = (await seed(t, true)).seeded;
+
+    expect(entry.stored).toBe(false);
+    expect(entry.reason).toBeTruthy();
+    expect(state.logins).toBe(1);
+    expect(await sellerIdOf(t)).toBeNull();
+    expect(await pendingFetchTicks(t)).toEqual([]);
+    await settle(t);
+  });
+
+  test("a success:false login's own message is the reason", async () => {
+    const t = convexTest(schema, modules);
+    const { fetchFn } = loginStub({ metadata: 404, steps: [{ fail: "BSC refused the sign-in." }] });
+    stubFetch(fetchFn);
+    // The same login, called straight, gives the message the seed must pass on.
+    const direct = await t.action(internal.credentials.storeTestCredentials, {
+      userId: USER_A,
+      site: "buysportscards",
+      username: BSC_USERNAME,
+      password: BSC_PASSWORD,
+      listing: true,
+    });
+    expect(direct.success).toBe(false);
+
+    __resetContractCache();
+    const [entry] = (await seed(t, true)).seeded;
+    expect(entry).toEqual({ site: "buysportscards", stored: false, reason: direct.message });
+    await settle(t);
+  });
+
+  test("storeTestCredentials itself throws: stored false with the message", async () => {
+    // A throw out of the action (not a result): wrap its handler so the
+    // seed's runAction rejects.
+    const real = (await modules["./credentials.ts"]()) as Record<string, unknown>;
+    const t = convexTest(schema, {
+      ...modules,
+      "./credentials.ts": async () => ({
+        ...real,
+        storeTestCredentials: Object.assign(() => undefined, real.storeTestCredentials as object, {
+          _handler: async () => {
+            throw new Error("store exploded");
+          },
+        }),
+      }),
+    });
+    await preseedSellerId(t, "seller-kept");
+    stubFetch(async () => {
+      throw new Error("no fetch expected");
+    });
+
+    const [entry] = (await seed(t, true)).seeded;
+
+    expect(entry.stored).toBe(false);
+    expect(entry.reason).toContain("store exploded");
+    expect(await sellerIdOf(t)).toBe("seller-kept");
+  });
+
+  test.each([
+    ["listing off (flag-only)", SIGNED_IN, false],
+    ["listing off (store)", 404 as const, false],
+    ["listing unset (store)", 404 as const, undefined],
+  ])("%s: no seller id read and no background read, even with a login that returns no id", async (_name, metadata, listing) => {
+    const t = convexTest(schema, modules);
+    const { state, fetchFn } = loginStub({ metadata, steps: [{}] });
+    stubFetch(fetchFn);
+
+    expect((await seed(t, listing)).seeded).toEqual([{ site: "buysportscards", stored: true }]);
+
+    expect(state.logins).toBe(metadata === 404 ? 1 : 0);
+    expect(state.bscHosts).toEqual([]);
+    expect(await sellerIdOf(t)).toBeNull();
+    expect(await pendingFetchTicks(t)).toEqual([]);
+    await settle(t);
+  });
+
+  test("SportLots with listing on: one login at most, no seller id read", async () => {
+    const t = convexTest(schema, modules);
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{}] });
+    stubFetch(fetchFn);
+
+    expect((await seed(t, true, ["sportlots"])).seeded).toEqual([{ site: "sportlots", stored: true }]);
+
+    expect(state.logins).toBe(1);
+    expect(state.loginUrls[0]).toContain("/login/sportlots");
+    expect(await sellerIdOf(t)).toBeNull();
+    expect(await pendingFetchTicks(t)).toEqual([]);
+    await settle(t);
+  });
+
+  test("BSC paused: skipped first, no browser-service or BSC call, no id", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "buysportscards";
+    const t = convexTest(schema, modules);
+    let fetchCalled = false;
+    stubFetch(async (url, init) => {
+      fetchCalled = true;
+      throw new Error(`unexpected fetch: ${init?.method ?? "GET"} ${String(url)}`);
+    });
+
+    expect((await seed(t, true)).seeded).toEqual([{ site: "buysportscards", stored: false, skipped: true }]);
+
+    expect(fetchCalled).toBe(false);
+    expect(await sellerIdOf(t)).toBeNull();
+  });
+
+  test("the seed never calls a BSC host itself, on any path", async () => {
+    for (const [metadata, steps] of [
+      [404, [{}]],
+      [SIGNED_IN, [{}]],
+      [404, [{ sellerId: SELLER }]],
+    ] as const) {
+      const t = convexTest(schema, modules);
+      __resetContractCache();
+      const { state, fetchFn } = loginStub({ metadata, steps: [...steps] });
+      stubFetch(fetchFn);
+      await seed(t, true);
+      expect(state.bscHosts).toEqual([]);
+      await settle(t);
+    }
+  });
+
+  test("no reason or console line carries the seller id, the password or a token", async () => {
+    const SECRET_ID = "seller-secret-id-482";
+    const cases: Array<[string, { username: string } | 404, LoginStep[]]> = [
+      ["saved on the login", 404, [{ sellerId: SECRET_ID }]],
+      ["no id on the login", 404, [{}]],
+      ["login fails", 404, ["http500"]],
+      ["login throws", 404, ["throw"]],
+      ["success:false", SIGNED_IN, [{ fail: "BSC refused the sign-in." }]],
+    ];
+    for (const [, metadata, steps] of cases) {
+      const t = convexTest(schema, modules);
+      __resetContractCache();
+      const { fetchFn } = loginStub({ metadata, steps });
+      stubFetch(fetchFn);
+      const con = captureConsole();
+
+      const result = await seed(t, true);
+
+      const haystack = [JSON.stringify(result), ...con.all()].join("\n");
+      expect(haystack).not.toContain(SECRET_ID);
+      expect(haystack).not.toContain(BSC_PASSWORD);
+      expect(haystack).not.toMatch(/token/i);
+      await settle(t);
+      con.restore();
+    }
+  });
+
+  test("the login request carries the dev password only in its body, and the seed result never does", async () => {
+    const t = convexTest(schema, modules);
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{ sellerId: SELLER }] });
+    stubFetch(fetchFn);
+
+    const result = await seed(t, true);
+
+    expect(state.loginBodies).toEqual([expect.objectContaining({ username: BSC_USERNAME, password: BSC_PASSWORD })]);
+    expect(JSON.stringify(result)).not.toContain(BSC_PASSWORD);
+    await settle(t);
+  });
+
+  test("fails closed when TESTING_RESET_SECRET is unset: throws, no login, nothing saved", async () => {
+    const t = convexTest(schema, modules);
+    const { state, fetchFn } = loginStub({ metadata: 404, steps: [{ sellerId: SELLER }] });
+    stubFetch(fetchFn);
+    delete process.env.TESTING_RESET_SECRET;
+
+    await expect(seed(t, true)).rejects.toThrow(/not enabled/i);
+
+    expect(state.logins).toBe(0);
+    expect(await sellerIdOf(t)).toBeNull();
+  });
+});
+
 // NEO-121 — the scan-visibility fixture. It exists so an E2E flow can look at a
 // purchase row that has USPS scans on it; the only organic route to one is a
 // real purchase plus three days of USPS, neither of which a CI run has.
@@ -961,7 +1658,7 @@ describe("seedMyTestCredentials — label-scans fixture", () => {
     expect(row.trackingCode).toHaveLength(31);
     expect(row.trackingStatus).toBe("out_for_delivery");
     expect(row.publicTrackingUrl).toMatch(/^https:\/\//);
-    expect(row.scans?.map((scan) => scan.message)).toEqual([
+    expect(row.scans?.map((scan: { message: string }) => scan.message)).toEqual([
       "Origin Processing Cancellation of Postage",
       "Origin Primary Processing",
       "Destination MMP Processing",
@@ -1029,5 +1726,549 @@ describe("seedMyTestCredentials — label-scans fixture", () => {
     ).rejects.toThrow(/not enabled on this deployment/);
 
     expect(await readFixtureRows(t, USER_A)).toHaveLength(0);
+  });
+});
+
+describe("backdateMyDashboardVisit (NEO-464)", () => {
+  test("fails closed when TESTING_RESET_SECRET is unset (production)", async () => {
+    const t = convexTest(schema, modules);
+    delete process.env.TESTING_RESET_SECRET;
+    await expect(
+      t.withIdentity({ subject: USER_A }).mutation(api.testing.backdateMyDashboardVisit, {}),
+    ).rejects.toThrow(/not enabled/i);
+  });
+
+  test("refuses an anonymous caller", async () => {
+    const t = convexTest(schema, modules);
+    await expect(t.mutation(api.testing.backdateMyDashboardVisit, {})).rejects.toThrow(/Not authenticated/);
+  });
+
+  test("is a no-op before the caller's first open", async () => {
+    const t = convexTest(schema, modules);
+    const result = await t.withIdentity({ subject: USER_A }).mutation(api.testing.backdateMyDashboardVisit, {});
+    expect(result).toEqual({ backdated: false });
+  });
+
+  test("moves only the caller's open back, so the next open starts a new visit from there", async () => {
+    const t = convexTest(schema, modules);
+    const me = t.withIdentity({ subject: USER_A });
+    const other = t.withIdentity({ subject: USER_B });
+    expect(await me.mutation(api.dashboard.markVisit, {})).toEqual({ sinceMs: null });
+    await other.mutation(api.dashboard.markVisit, {});
+    const visitOf = (userId: string) =>
+      t.run(async (ctx) =>
+        (
+          await ctx.db
+            .query("userProfiles")
+            .withIndex("by_user", (q) => q.eq("userId", userId))
+            .unique()
+        )?.dashboardVisit,
+      );
+    const otherBefore = await visitOf(USER_B);
+
+    const before = Date.now();
+    expect(await me.mutation(api.testing.backdateMyDashboardVisit, {})).toEqual({ backdated: true });
+    const moved = await visitOf(USER_A);
+    expect(moved?.sinceAt).toBeUndefined();
+    expect(moved!.seenAt).toBeLessThanOrEqual(before - VISIT_GAP_MS);
+
+    // The next open is a new visit whose "new" starts at the moved open.
+    expect(await me.mutation(api.dashboard.markVisit, {})).toEqual({ sinceMs: moved!.seenAt });
+    // Another account's visit is untouched.
+    expect(await visitOf(USER_B)).toEqual(otherBefore);
+  });
+});
+
+describe("dashboard seeds: a test sale and test sync records (NEO-464)", () => {
+  async function withBoxedCard() {
+    const t = convexTest(schema, modules);
+    const fx = await seedCollectionCatalog(t);
+    const me = t.withIdentity({ subject: USER_A });
+    const box = await t.run((ctx) =>
+      ctx.db.insert("collectionContainers", { ownerId: USER_A, kind: "box", name: "Show box", lastUpdated: 0 }),
+    );
+    await me.mutation(api.collection.addHave, { cardId: fx.gooden1, homeId: box });
+    return { t, fx, me, other: t.withIdentity({ subject: USER_B }) };
+  }
+  const listing = (t: ReturnType<typeof convexTest>, platform: "bsc" | "ebay") =>
+    t.run((ctx) =>
+      ctx.db.insert("marketplaceListingStates", { ownerId: USER_A, platform, listingStartedAt: 1, lastUpdated: 1 }),
+    );
+
+  test("fail closed when TESTING_RESET_SECRET is unset (production), and refuse an anonymous caller", async () => {
+    const t = convexTest(schema, modules);
+    await expect(t.mutation(api.testing.seedMyTestSale, {})).rejects.toThrow(/Not authenticated/);
+    await expect(t.mutation(api.testing.seedMyTestSync, { pending: true, error: true })).rejects.toThrow(/Not authenticated/);
+    await expect(t.mutation(api.testing.clearMyTestDashboardSeeds, {})).rejects.toThrow(/Not authenticated/);
+    delete process.env.TESTING_RESET_SECRET;
+    const me = t.withIdentity({ subject: USER_A });
+    await expect(me.mutation(api.testing.seedMyTestSale, {})).rejects.toThrow(/not enabled/i);
+    await expect(me.mutation(api.testing.seedMyTestSync, { pending: true, error: false })).rejects.toThrow(/not enabled/i);
+    await expect(me.mutation(api.testing.clearMyTestDashboardSeeds, {})).rejects.toThrow(/not enabled/i);
+  });
+
+  test("a sale of the caller's boxed card waiting to ship: the sales section and Out the Door read it; the clear takes only it away", async () => {
+    const { t, fx, me, other } = await withBoxedCard();
+    // A real order stays.
+    await t.run((ctx) =>
+      ctx.db.insert("marketplaceSales", {
+        ownerId: USER_A,
+        platform: "ebay",
+        orderId: "real-1",
+        orderNo: "R-1",
+        orderDate: 1,
+        status: "FULFILLED",
+        totals: {},
+        items: [],
+        firstSeenAt: 1,
+        lastUpdated: 1,
+      }),
+    );
+    const seeded = await me.mutation(api.testing.seedMyTestSale, {});
+    expect(seeded).toMatchObject({ platform: "bsc", matched: true });
+    const sales = await me.query(api.dashboard.sales, {});
+    expect(sales.dealer).toBe(true);
+    expect(sales.orders).toHaveLength(1);
+    expect(sales.orders[0]).toMatchObject({ orderNo: seeded.orderNo, lines: [{ cardId: fx.gooden1, quantity: 1 }] });
+    // Another collector sees nothing of it.
+    expect((await other.query(api.dashboard.sales, {})).dealer).toBe(false);
+
+    expect(await me.mutation(api.testing.clearMyTestDashboardSeeds, {})).toEqual({ sales: 1, queued: 0, records: 0 });
+    const after = await me.query(api.dashboard.sales, {});
+    expect(after.orders).toEqual([]);
+    expect(after.dealer).toBe(true);
+  });
+
+  test("never on a platform NB polls for the caller; refused when NB polls them all", async () => {
+    const { t, me } = await withBoxedCard();
+    await listing(t, "bsc");
+    expect((await me.mutation(api.testing.seedMyTestSale, {})).platform).toBe("ebay");
+    await listing(t, "ebay");
+    await expect(me.mutation(api.testing.seedMyTestSale, {})).rejects.toThrow(/every marketplace/);
+  });
+
+  test("the sync seed never queues a card where NB lists the caller (a real sync would send it); the failed set still goes there", async () => {
+    const { t, fx, me } = await withBoxedCard();
+    await listing(t, "ebay");
+    expect(await me.mutation(api.testing.seedMyTestSync, { pending: true, error: true })).toEqual({
+      platforms: [
+        { platform: "bsc", pending: true, error: true },
+        {
+          platform: "ebay",
+          pending: false,
+          error: true,
+          note: "no queued card: NB lists this account here, so a real sync would pick it up",
+        },
+      ],
+    });
+    const queued = await t.run((ctx) =>
+      ctx.db
+        .query("listingOutbox")
+        .withIndex("by_owner_platform_changed", (q) => q.eq("ownerId", USER_A).eq("platform", "ebay"))
+        .collect(),
+    );
+    expect(queued).toEqual([]);
+    // On the platform NB pushes, the record reads to the next real run exactly as no record: a full read.
+    const records = await t.run((ctx) =>
+      ctx.db
+        .query("marketplaceListingSyncs")
+        .withIndex("by_owner_variant_platform", (q) => q.eq("ownerId", USER_A).eq("variantId", fx.baseId))
+        .collect(),
+    );
+    const byPlatform = Object.fromEntries(records.map((r) => [r.platform, r]));
+    // No platform's record ever claims a success: were NB to start listing there, its first run is a full read too.
+    expect(byPlatform.ebay.lastSuccessAt).toBeUndefined();
+    expect(byPlatform.ebay.conditionsPushed).toEqual([]);
+    expect(byPlatform.bsc.lastSuccessAt).toBeUndefined();
+    expect(byPlatform.bsc.conditionsPushed).toEqual([]);
+
+    // Listed everywhere: no card is queued anywhere, the failed sets still are.
+    await me.mutation(api.testing.clearMyTestDashboardSeeds, {});
+    await listing(t, "bsc");
+    const all = await me.mutation(api.testing.seedMyTestSync, { pending: true, error: true });
+    expect(all.platforms.map((p) => [p.platform, p.pending, p.error])).toEqual([
+      ["bsc", false, true],
+      ["ebay", false, true],
+    ]);
+  });
+
+  test("with no card at all, the sale is a line NB could not tie to a card; the sync seed is refused", async () => {
+    const t = convexTest(schema, modules);
+    const me = t.withIdentity({ subject: USER_A });
+    expect((await me.mutation(api.testing.seedMyTestSale, {})).matched).toBe(false);
+    const sales = await me.query(api.dashboard.sales, {});
+    expect(sales.orders[0].lines).toEqual([{ quantity: 1, problem: "unmatched" }]);
+    await expect(me.mutation(api.testing.seedMyTestSync, { pending: true, error: false })).rejects.toThrow(/Add a card to a box/);
+  });
+
+  test("a pending card and a failed set show in the dashboard's sync status; the clear removes only them", async () => {
+    const { t, fx, me, other } = await withBoxedCard();
+    // A real queued card stays.
+    await t.run((ctx) =>
+      ctx.db.insert("listingOutbox", { ownerId: USER_A, platform: "bsc", cardId: fx.gold1, variantId: fx.goldId, seq: 3, changedAt: 1 }),
+    );
+    expect(await me.mutation(api.testing.seedMyTestSync, { pending: true, error: true })).toEqual({
+      platforms: [
+        { platform: "bsc", pending: true, error: true },
+        { platform: "ebay", pending: true, error: true },
+      ],
+    });
+    const alerts = await me.query(api.dashboard.syncAlerts, {});
+    expect(alerts.pending).toEqual([
+      { platform: "bsc", cards: 2, more: false },
+      { platform: "ebay", cards: 1, more: false },
+    ]);
+    expect(alerts.sets).toHaveLength(2);
+    expect(alerts.sets.map((s) => s.platform).sort()).toEqual(["bsc", "ebay"]);
+    for (const set of alerts.sets) {
+      expect(set).toMatchObject({ variantId: fx.baseId, failed: true, heldBack: 1 });
+      expect(set.cards).toEqual([{ cardId: fx.gooden1, reason: "noPrice", detail: "(Test) No price set." }]);
+    }
+    expect(await other.query(api.dashboard.syncAlerts, {})).toEqual({ pending: [], sets: [], more: false });
+
+    // Seeding again rewrites its own records rather than stacking a second failure.
+    await me.mutation(api.testing.seedMyTestSync, { pending: false, error: true });
+    expect((await me.query(api.dashboard.syncAlerts, {})).sets).toHaveLength(2);
+
+    expect(await me.mutation(api.testing.clearMyTestDashboardSeeds, {})).toEqual({ sales: 0, queued: 2, records: 2 });
+    expect(await me.query(api.dashboard.syncAlerts, {})).toEqual({
+      pending: [{ platform: "bsc", cards: 1, more: false }],
+      sets: [],
+      more: false,
+    });
+  });
+
+  test("a seeded order is never handed to the order poll, even once NB polls that platform for the caller", async () => {
+    const { t, me } = await withBoxedCard();
+    const seeded = await me.mutation(api.testing.seedMyTestSale, {});
+    expect(seeded.platform).toBe("bsc");
+    // A real order waiting to ship, which the poll must still re-read.
+    await t.run((ctx) =>
+      ctx.db.insert("marketplaceSales", {
+        ownerId: USER_A,
+        platform: "bsc",
+        orderId: "real-open-1",
+        orderNo: "R-2",
+        orderDate: 2,
+        status: "READY_TO_SHIP",
+        totals: {},
+        items: [],
+        firstSeenAt: 2,
+        lastUpdated: 2,
+      }),
+    );
+    // The caller starts listing on BuySportsCards: a saved sign-in and a started state, so the poll runs.
+    await listing(t, "bsc");
+    await t.run(async (ctx) => {
+      const profile = await ctx.db
+        .query("userProfiles")
+        .withIndex("by_user", (q) => q.eq("userId", USER_A))
+        .unique();
+      const siteCredentials = [{ site: "buysportscards", hasCredentials: true }];
+      if (profile) await ctx.db.patch(profile._id, { siteCredentials } as never);
+      else await ctx.db.insert("userProfiles", { userId: USER_A, siteCredentials } as never);
+    });
+    const input = await t.query(internal.listingSales.pollInput, { ownerId: USER_A, platform: "bsc" });
+    expect(input).not.toBeNull();
+    expect(input!.stored.map((o) => o.orderId)).toEqual(["real-open-1"]);
+    // The seeded order is still there for the dashboard (and the clear).
+    expect((await me.query(api.dashboard.sales, {})).orders.map((o) => o.orderNo)).toContain(seeded.orderNo);
+  });
+
+  test("a seeded failed set a real sync has claimed is the drain's: the clear and a re-seed leave it alone", async () => {
+    const { t, fx, me } = await withBoxedCard();
+    await me.mutation(api.testing.seedMyTestSync, { pending: false, error: true });
+    const recordOn = (platform: "bsc" | "ebay") =>
+      t.run((ctx) =>
+        ctx.db
+          .query("marketplaceListingSyncs")
+          .withIndex("by_owner_variant_platform", (q) =>
+            q.eq("ownerId", USER_A).eq("variantId", fx.baseId).eq("platform", platform),
+          )
+          .unique(),
+      );
+    // A real run claims the BuySportsCards record as `listingDrain.claimVariant` does: running, leased, a fresh
+    // ledger, and the seed's sentence still in `lastError`.
+    const claimed = await recordOn("bsc");
+    await t.run((ctx) =>
+      ctx.db.patch(claimed!._id, {
+        status: "running",
+        leaseToken: "real-run",
+        leaseExpiresAt: Date.now() + 60_000,
+        progress: { runStartedAt: Date.now(), steps: [] },
+      }),
+    );
+    // A real run on eBay died after pushing a condition: settled back to `error`, mark kept, ledger and push kept.
+    const dead = await recordOn("ebay");
+    await t.run((ctx) =>
+      ctx.db.patch(dead!._id, { progress: { runStartedAt: Date.now(), steps: [] }, conditionsPushed: ["near_mint"] }),
+    );
+    const before = { bsc: await recordOn("bsc"), ebay: await recordOn("ebay") };
+
+    expect(await me.mutation(api.testing.clearMyTestDashboardSeeds, {})).toEqual({ sales: 0, queued: 0, records: 0 });
+    expect(await me.mutation(api.testing.seedMyTestSync, { pending: false, error: true })).toEqual({
+      platforms: [
+        { platform: "bsc", pending: false, error: false, note: "no failed set: a real sync has picked up the test record here" },
+        { platform: "ebay", pending: false, error: false, note: "no failed set: a real sync has picked up the test record here" },
+      ],
+    });
+    expect(await recordOn("bsc")).toEqual(before.bsc);
+    expect(await recordOn("ebay")).toEqual(before.ebay);
+  });
+
+  test("the queued card needs a boxed copy: with only a binder copy, none is queued and the result says why", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seedCollectionCatalog(t);
+    const me = t.withIdentity({ subject: USER_A });
+    const binder = await t.run((ctx) =>
+      ctx.db.insert("collectionContainers", { ownerId: USER_A, kind: "binder", name: "PC binder", lastUpdated: 0 }),
+    );
+    await me.mutation(api.collection.addHave, { cardId: fx.gooden1, homeId: binder });
+    const note = "no queued card: your newest card is in a binder, and NB lists only boxed cards";
+    expect(await me.mutation(api.testing.seedMyTestSync, { pending: true, error: true })).toEqual({
+      platforms: [
+        { platform: "bsc", pending: false, error: true, note },
+        { platform: "ebay", pending: false, error: true, note },
+      ],
+    });
+    const queued = await t.run((ctx) => ctx.db.query("listingOutbox").collect());
+    expect(queued).toEqual([]);
+  });
+
+  test("a set with a real sync record is left alone", async () => {
+    const { t, fx, me } = await withBoxedCard();
+    await t.run((ctx) =>
+      ctx.db.insert("marketplaceListingSyncs", {
+        ownerId: USER_A,
+        variantId: fx.baseId,
+        platform: "bsc",
+        status: "idle",
+        problems: [],
+        conditionsPushed: [],
+        lastUpdated: 1,
+      }),
+    );
+    // Only that platform is skipped, with a note; the other is still seeded.
+    expect(await me.mutation(api.testing.seedMyTestSync, { pending: false, error: true })).toEqual({
+      platforms: [
+        { platform: "bsc", pending: false, error: false, note: "no failed set: that set already has a real sync record here" },
+        { platform: "ebay", pending: false, error: true },
+      ],
+    });
+    const real = await t.run((ctx) =>
+      ctx.db
+        .query("marketplaceListingSyncs")
+        .withIndex("by_owner_variant_platform", (q) =>
+          q.eq("ownerId", USER_A).eq("variantId", fx.baseId).eq("platform", "bsc"),
+        )
+        .unique(),
+    );
+    expect(real).toMatchObject({ status: "idle", problems: [] });
+    expect(real?.lastError).toBeUndefined();
+  });
+
+  describe("NEO-536: a held set: the last sync went through but held the card back", () => {
+    test("writes a marked idle record holding the card back for that reason; the dashboard lists it and it can be reported; the clear takes it away", async () => {
+      const { t, fx, me } = await withBoxedCard();
+      expect(await me.mutation(api.testing.seedMyTestSync, { pending: false, error: false, held: "rejected" })).toEqual({
+        platforms: [
+          { platform: "bsc", pending: false, error: false, held: true },
+          { platform: "ebay", pending: false, error: false, held: true },
+        ],
+      });
+      const record = await t.run((ctx) =>
+        ctx.db
+          .query("marketplaceListingSyncs")
+          .withIndex("by_owner_variant_platform", (q) => q.eq("ownerId", USER_A).eq("variantId", fx.baseId).eq("platform", "bsc"))
+          .unique(),
+      );
+      expect(record).toMatchObject({
+        status: "idle",
+        problems: [{ cardId: fx.gooden1, reason: "rejected", detail: "(Test) The marketplace turned this card down." }],
+        problemsTotal: 1,
+        conditionsPushed: [],
+      });
+      expect(record?.lastError?.startsWith("(Test) ")).toBe(true);
+      expect(record?.lastSuccessAt).toBeUndefined();
+      const alerts = await me.query(api.dashboard.syncAlerts, {});
+      expect(alerts.sets.map((x) => [x.platform, x.failed, x.heldBack])).toEqual([
+        ["bsc", false, 1],
+        ["ebay", false, 1],
+      ]);
+      await expect(me.mutation(api.syncReports.report, { variantId: fx.baseId, platform: "bsc" })).resolves.toMatchObject({
+        already: false,
+      });
+      expect(await me.mutation(api.testing.clearMyTestDashboardSeeds, {})).toEqual({ sales: 0, queued: 0, records: 2 });
+    });
+
+    test("NEO-535: a titleTooLong hold is seeded with no detail, as the real eBay sync records it, and can be reported", async () => {
+      const { t, fx, me } = await withBoxedCard();
+      await me.mutation(api.testing.seedMyTestSync, { pending: false, error: false, held: "titleTooLong" });
+      const record = await t.run((ctx) =>
+        ctx.db
+          .query("marketplaceListingSyncs")
+          .withIndex("by_owner_variant_platform", (q) => q.eq("ownerId", USER_A).eq("variantId", fx.baseId).eq("platform", "ebay"))
+          .unique(),
+      );
+      expect(record?.problems).toEqual([{ cardId: fx.gooden1, reason: "titleTooLong" }]);
+      await expect(me.mutation(api.syncReports.report, { variantId: fx.baseId, platform: "ebay" })).resolves.toMatchObject({
+        already: false,
+      });
+    });
+
+    test("a reason the collector fixes is seeded too (it just can't be reported)", async () => {
+      const { fx, me } = await withBoxedCard();
+      await me.mutation(api.testing.seedMyTestSync, { pending: false, error: false, held: "noPrice" });
+      await expect(me.mutation(api.syncReports.report, { variantId: fx.baseId, platform: "ebay" })).rejects.toThrow(
+        /needs the crew/,
+      );
+    });
+
+    test("NEO-569: a noLeague held set is written on eBay only, and it can be reported there", async () => {
+      const { t, fx, me } = await withBoxedCard();
+      expect(await me.mutation(api.testing.seedMyTestSync, { pending: false, error: false, held: "noLeague" })).toEqual({
+        platforms: [
+          { platform: "bsc", pending: false, error: false, held: false, note: "no held set: only eBay holds a card back for its league" },
+          { platform: "ebay", pending: false, error: false, held: true },
+        ],
+      });
+      const records = await t.run((ctx) => ctx.db.query("marketplaceListingSyncs").collect());
+      expect(records.map((r) => [r.platform, r.problems])).toEqual([["ebay", [{ cardId: fx.gooden1, reason: "noLeague" }]]]);
+      await expect(me.mutation(api.syncReports.report, { variantId: fx.baseId, platform: "ebay" })).resolves.toMatchObject({
+        already: false,
+      });
+    });
+
+    test("asking for a held set with a failed or recovered one is refused, and nothing is written", async () => {
+      const { t, me } = await withBoxedCard();
+      await expect(me.mutation(api.testing.seedMyTestSync, { pending: false, error: true, held: "noLink" })).rejects.toThrow(
+        /held set on its own/,
+      );
+      await expect(
+        me.mutation(api.testing.seedMyTestSync, { pending: false, error: false, recovered: true, held: "noLink" }),
+      ).rejects.toThrow(/held set on its own/);
+      expect(await t.run((ctx) => ctx.db.query("marketplaceListingSyncs").collect())).toEqual([]);
+    });
+  });
+
+  describe("a recovered set: a failure a later sync put right", () => {
+    type Harness = Awaited<ReturnType<typeof withBoxedCard>>;
+    const recordOn = (t: Harness["t"], variantId: Harness["fx"]["baseId"], platform: "bsc" | "ebay") =>
+      t.run((ctx) =>
+        ctx.db
+          .query("marketplaceListingSyncs")
+          .withIndex("by_owner_variant_platform", (q) => q.eq("ownerId", USER_A).eq("variantId", variantId).eq("platform", platform))
+          .unique(),
+      );
+
+    test("replaces the failed seed on the same set, and the dashboard stops naming it; the waiting cards stay", async () => {
+      const { t, fx, me, other } = await withBoxedCard();
+      await me.mutation(api.testing.seedMyTestSync, { pending: true, error: true });
+      expect((await me.query(api.dashboard.syncAlerts, {})).sets).toHaveLength(2);
+
+      expect(await me.mutation(api.testing.seedMyTestSync, { pending: false, error: false, recovered: true })).toEqual({
+        platforms: [
+          { platform: "bsc", pending: false, error: false, recovered: true },
+          { platform: "ebay", pending: false, error: false, recovered: true },
+        ],
+      });
+      const alerts = await me.query(api.dashboard.syncAlerts, {});
+      expect(alerts.sets).toEqual([]);
+      expect(alerts.pending.map((p) => p.platform).sort()).toEqual(["bsc", "ebay"]);
+      // One record per set and marketplace: the later clean run IS the record. Marked, idle, run time, no
+      // success time (the next real run still reads in full), nothing held back.
+      const record = await recordOn(t, fx.baseId, "ebay");
+      expect(record).toMatchObject({ status: "idle", problems: [], problemsTotal: 0, conditionsPushed: [] });
+      expect(record?.lastError?.startsWith("(Test) ")).toBe(true);
+      expect(record?.lastSuccessAt).toBeUndefined();
+      expect(record?.leaseToken).toBeUndefined();
+      expect(record?.progress).toBeUndefined();
+      expect(await other.query(api.dashboard.syncAlerts, {})).toEqual({ pending: [], sets: [], more: false });
+
+      // The same clear takes it away, and the set stays absent.
+      expect(await me.mutation(api.testing.clearMyTestDashboardSeeds, {})).toEqual({ sales: 0, queued: 2, records: 2 });
+      expect(await recordOn(t, fx.baseId, "ebay")).toBeNull();
+    });
+
+    test("a failed seed replaces a recovered one: the set is back on the dashboard", async () => {
+      const { me } = await withBoxedCard();
+      await me.mutation(api.testing.seedMyTestSync, { pending: false, error: false, recovered: true });
+      expect((await me.query(api.dashboard.syncAlerts, {})).sets).toEqual([]);
+      await me.mutation(api.testing.seedMyTestSync, { pending: false, error: true });
+      expect((await me.query(api.dashboard.syncAlerts, {})).sets).toHaveLength(2);
+    });
+
+    test("asking for both a failed and a recovered set is refused, and nothing is written", async () => {
+      const { t, me } = await withBoxedCard();
+      await expect(me.mutation(api.testing.seedMyTestSync, { pending: true, error: true, recovered: true })).rejects.toThrow(
+        /failed set or a recovered one/,
+      );
+      expect(await t.run((ctx) => ctx.db.query("marketplaceListingSyncs").collect())).toEqual([]);
+      expect(await t.run((ctx) => ctx.db.query("listingOutbox").collect())).toEqual([]);
+    });
+
+    test("never replaces a real record, or a seeded one a real run has claimed; the clear leaves a claimed one too", async () => {
+      const { t, fx, me } = await withBoxedCard();
+      // A real clean record on BuySportsCards.
+      await t.run((ctx) =>
+        ctx.db.insert("marketplaceListingSyncs", {
+          ownerId: USER_A,
+          variantId: fx.baseId,
+          platform: "bsc",
+          status: "idle",
+          lastSuccessAt: 5,
+          problems: [],
+          conditionsPushed: [],
+          lastUpdated: 1,
+        }),
+      );
+      const real = await recordOn(t, fx.baseId, "bsc");
+      expect(await me.mutation(api.testing.seedMyTestSync, { pending: false, error: false, recovered: true })).toEqual({
+        platforms: [
+          { platform: "bsc", pending: false, error: false, recovered: false, note: "no recovered set: that set already has a real sync record here" },
+          { platform: "ebay", pending: false, error: false, recovered: true },
+        ],
+      });
+      expect(await recordOn(t, fx.baseId, "bsc")).toEqual(real);
+
+      // A real run claims the seeded recovered record on eBay (running, leased, a fresh ledger, the mark still on it).
+      const seeded = await recordOn(t, fx.baseId, "ebay");
+      await t.run((ctx) =>
+        ctx.db.patch(seeded!._id, {
+          status: "running",
+          leaseToken: "real-run",
+          leaseExpiresAt: Date.now() + 60_000,
+          progress: { runStartedAt: Date.now(), steps: [] },
+        }),
+      );
+      const claimed = await recordOn(t, fx.baseId, "ebay");
+      expect(await me.mutation(api.testing.clearMyTestDashboardSeeds, {})).toEqual({ sales: 0, queued: 0, records: 0 });
+      expect(await me.mutation(api.testing.seedMyTestSync, { pending: false, error: false, recovered: true })).toMatchObject({
+        platforms: [
+          { platform: "bsc", recovered: false },
+          { platform: "ebay", recovered: false, note: "no recovered set: a real sync has picked up the test record here" },
+        ],
+      });
+      expect(await recordOn(t, fx.baseId, "ebay")).toEqual(claimed);
+    });
+
+    test("a recovered idle record a real run finished (mark cleared) is a real record: not cleared, not replaced", async () => {
+      const { t, fx, me } = await withBoxedCard();
+      await me.mutation(api.testing.seedMyTestSync, { pending: false, error: false, recovered: true });
+      const seeded = await recordOn(t, fx.baseId, "bsc");
+      // What `listingDrain.finishVariant` leaves after an ok run: idle, `lastError` cleared, a success time and a ledger.
+      await t.run((ctx) =>
+        ctx.db.patch(seeded!._id, {
+          lastError: undefined,
+          lastSuccessAt: Date.now(),
+          progress: { runStartedAt: Date.now(), steps: [] },
+        }),
+      );
+      const finished = await recordOn(t, fx.baseId, "bsc");
+      // Only the untouched seeded record on eBay goes; the finished one on BuySportsCards is the drain's.
+      expect(await me.mutation(api.testing.clearMyTestDashboardSeeds, {})).toEqual({ sales: 0, queued: 0, records: 1 });
+      expect(await recordOn(t, fx.baseId, "bsc")).toEqual(finished);
+      expect(await recordOn(t, fx.baseId, "ebay")).toBeNull();
+    });
   });
 });

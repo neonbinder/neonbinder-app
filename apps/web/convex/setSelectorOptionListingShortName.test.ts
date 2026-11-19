@@ -144,8 +144,9 @@ describe("setSelectorOptionListingShortName", () => {
     const atCap = "X".repeat(MAX_LISTING_SHORT_NAME_LENGTH);
     await set(t, id, atCap);
     expect((await getRow(t, id))?.metadata).toEqual({ listingShortName: atCap });
+    expect(MAX_LISTING_SHORT_NAME_LENGTH).toBe(80);
     await expect(set(t, id, `${atCap}X`)).rejects.toThrow(
-      new RegExp(`at most ${MAX_LISTING_SHORT_NAME_LENGTH} characters`),
+      `Set name in titles tops out at ${MAX_LISTING_SHORT_NAME_LENGTH} characters.`,
     );
     expect((await getRow(t, id))?.metadata).toEqual({ listingShortName: atCap });
   });

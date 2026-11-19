@@ -1,6 +1,7 @@
 /**
- * NEO-335 — the wizard's "Card titles" step: grouping, the meters, inline
- * edits, recompute on a team change, and that nothing here blocks a save.
+ * NEO-335 / NEO-535 — the wizard's "Card titles" step: grouping, "Left out to
+ * fit" read from each field's text, the meters, inline edits, over-cap rows,
+ * recompute on a team change, and that nothing here blocks a save.
  *
  * Deciding lives in `card-titles.ts` (its own test); this pins what the
  * operator sees and what the wizard is told.
@@ -19,24 +20,27 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-const LONG_SET =
-  "Chrome Update Series Sapphire Edition Platinum Anniversary Collectors Box";
+/** "2026 Topps <this>" is 69 characters: titles keep the surname, not the first name. */
+const FIRST_NAME_SET = "Chrome Update Series Sapphire Edition Platinum Anniversary";
+/** "2026 Topps <this>" is 84 characters: every title stays over the cap. */
+const OVER_SET = `${FIRST_NAME_SET} Collectors Box`;
 const LONG_VARIATION =
   "Image Variation; Wearing a throwback uniform with the 1970s powder blue logo";
 
 const CONTEXT: TitleContext = {
   sportValue: "Baseball",
-  setNameValue: LONG_SET,
+  setNameValue: FIRST_NAME_SET,
   inheritedFeatures: { manufacturer: "Topps", season: "2026" },
   setTeamNames: [],
   players: [
     { printed: "Shohei Ohtani", name: "Shohei Ohtani" },
-    { printed: "Mike Trout", name: "Mike Trout" },
+    { printed: "Julio Rodriguez", name: "Julio Rodriguez" },
   ],
   teams: [],
 };
 
 const SHORT: TitleContext = { ...CONTEXT, setNameValue: "Chrome" };
+const OVER: TitleContext = { ...CONTEXT, setNameValue: OVER_SET };
 
 function card(n: string, extra: Partial<PreviewCardForTitles> = {}): PreviewCardForTitles {
   return { cardNumber: n, cardName: `Card ${n}`, players: ["Shohei Ohtani"], ...extra };
@@ -49,6 +53,7 @@ function setup(props: {
   answers?: Array<TitleAnswer | undefined>;
   names?: React.ComponentProps<typeof CardTitlesStep>["names"];
   headingId?: string;
+  disabled?: boolean;
 }) {
   const onAnswersChange = vi.fn();
   const onWizardKey = vi.fn();
@@ -63,6 +68,7 @@ function setup(props: {
         headingId={p.headingId}
         answers={p.answers ?? []}
         onAnswersChange={onAnswersChange}
+        disabled={p.disabled}
       />
     </div>
   );
@@ -87,25 +93,56 @@ describe("CardTitlesStep — what is on screen", () => {
     });
     expect(screen.getByRole("heading", { name: "Variation's too long to list. Trim it to 65." }))
       .toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Trimmed to fit. Keep it, or make it yours." }))
-      .toBeTruthy();
+    expect(
+      screen.getByRole("heading", {
+        name: "These titles had to leave something out or still run long. Check what went, then keep 'em or make 'em yours.",
+      }),
+    ).toBeTruthy();
 
     const variation = screen.getByRole("textbox", { name: "Variation for #2 Card 2" });
     expect((variation as HTMLInputElement).value).toBe(LONG_VARIATION);
     expect(screen.getByText(`${LONG_VARIATION.length}/65`)).toBeTruthy();
 
     const title = screen.getByRole("textbox", { name: "Title for #1 Card 1" }) as HTMLInputElement;
-    expect(title.value).toMatch(/#1 RC$|#1$/);
+    expect(title.value).toBe(`2026 Topps ${FIRST_NAME_SET} Ohtani #1`);
     expect(screen.getAllByText(`${title.value.length}/80`).length).toBeGreaterThan(0);
   });
 
   test("identical drops share one line with a count; each card's own name sits under its field", () => {
-    setup({ cards: [card("1"), card("2", { players: ["Mike Trout"] })] });
-    const shared = screen.getByText(/^Left out to fit: Collectors Box/);
+    setup({
+      cards: [
+        card("1", { isRelic: true }),
+        card("2", { players: ["Julio Rodriguez"], isRelic: true }),
+      ],
+    });
+    // NEO-609: a variation is never cut, so the shared drop is a RELIC.
+    const shared = screen.getByText(/^Left out to fit: RELIC/);
     expect(shared.textContent).toContain("(2 cards)");
-    expect(shared.textContent).not.toMatch(/Ohtani|Trout/);
-    expect(screen.getByText("Left out to fit: Shohei Ohtani")).toBeTruthy();
-    expect(screen.getByText("Left out to fit: Mike Trout")).toBeTruthy();
+    expect(shared.textContent).not.toMatch(/Shohei|Julio/);
+    expect(screen.getByText("Left out to fit: Shohei")).toBeTruthy();
+    expect(screen.getByText("Left out to fit: #2, Julio")).toBeTruthy();
+  });
+
+  test("NEO-535: retyping a cut word takes it off the note", () => {
+    setup({ cards: [card("1")] });
+    expect(screen.getByText("Left out to fit: Shohei")).toBeTruthy();
+    fireEvent.change(screen.getByRole("textbox", { name: "Title for #1 Card 1" }), {
+      target: { value: `2026 Topps Chrome Shohei Ohtani #1` },
+    });
+    expect(screen.queryByText(/Left out to fit:.*Shohei/)).toBeNull();
+    // What the operator's own words now leave out is what the note says.
+    expect(screen.getByText(/^Left out to fit: Update Series Sapphire Edition Platinum Anniversary$/))
+      .toBeTruthy();
+  });
+
+  test("NEO-535: a title the builder could not fit arrives over the cap, said once, never cut", () => {
+    setup({ cards: [card("1")], titleContext: OVER });
+    const field = screen.getByRole("textbox", { name: "Title for #1 Card 1" }) as HTMLTextAreaElement;
+    expect(field.value).toContain(OVER_SET);
+    expect(field.value.length).toBeGreaterThan(80);
+    expect(field.getAttribute("aria-invalid")).toBe("true");
+    expect(screen.getByRole("status").textContent).toBe("Too long to list as-is.");
+    expect(screen.getByText(`${field.value.length}/80`)).toBeTruthy();
   });
 
   test("two rows the same words would name get distinct field names", () => {
@@ -116,23 +153,23 @@ describe("CardTitlesStep — what is on screen", () => {
 });
 
 describe("CardTitlesStep — inline edit", () => {
-  test("typing makes the title theirs: meter follows, 'Use trimmed title' appears, blur tells the wizard", () => {
+  test("typing makes the title theirs: meter follows, 'Use generated title' appears, blur tells the wizard", () => {
     const { onAnswersChange } = setup({ cards: [card("1")] });
     const field = screen.getByRole("textbox", { name: "Title for #1 Card 1" });
     fireEvent.change(field, { target: { value: "2026 Topps Chrome Ohtani #1 RC" } });
     expect(screen.getByText("30/80")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Use trimmed title for #1 Card 1" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Use generated title for #1 Card 1" })).toBeTruthy();
     fireEvent.blur(field);
     expect(onAnswersChange).toHaveBeenLastCalledWith([{ listingTitle: "2026 Topps Chrome Ohtani #1 RC" }]);
   });
 
-  test("'Use trimmed title' puts the generated title back", () => {
+  test("'Use generated title' puts the generated title back", () => {
     const { onAnswersChange } = setup({ cards: [card("1")] });
     const field = screen.getByRole("textbox", { name: "Title for #1 Card 1" }) as HTMLInputElement;
     const generated = field.value;
     fireEvent.change(field, { target: { value: "Mine #1" } });
     fireEvent.blur(field);
-    fireEvent.click(screen.getByRole("button", { name: "Use trimmed title for #1 Card 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Use generated title for #1 Card 1" }));
     expect(field.value).toBe(generated);
     fireEvent.blur(field);
     expect(onAnswersChange).toHaveBeenLastCalledWith([undefined]);
@@ -230,7 +267,11 @@ describe("CardTitlesStep — recomputed from the team answers", () => {
     fireEvent.change(second, { target: { value: "Mine #2" } });
 
     rerenderWith({ teamAnswers: [{ teamIds: [teamId] }, { teamIds: [teamId] }] });
-    expect(screen.getAllByText(/Left out to fit: Shohei Ohtani, Los Angeles Dodgers/)).toHaveLength(2);
+    // Both fields lack the team now: it is the line they share.
+    expect(screen.getByText(/^Left out to fit: Los Angeles Dodgers/).textContent).toContain(
+      "(2 cards)",
+    );
+    expect(screen.getByText("Left out to fit: Shohei")).toBeTruthy();
     expect(
       (screen.getByRole("textbox", { name: "Title for #2 Card 2" }) as HTMLInputElement).value,
     ).toBe("Mine #2");
@@ -243,31 +284,54 @@ describe("CardTitlesStep — never blocks", () => {
     const field = screen.getByRole("textbox", { name: "Title for #1 Card 1" });
     fireEvent.change(field, { target: { value: "t".repeat(90) } });
     const buttons = screen.queryAllByRole("button").map((b) => b.textContent);
-    expect(buttons).toEqual(["Use trimmed title"]);
+    expect(buttons).toEqual(["Use generated title"]);
     expect(document.querySelector("[disabled]")).toBeNull();
   });
 });
 
 describe("CardTitlesStep — accessibility wiring", () => {
-  test("'Use trimmed title' hands focus to its field instead of dropping it on <body>", () => {
+  test("'Use generated title' hands focus to its field instead of dropping it on <body>", () => {
     setup({ cards: [card("1")] });
     const field = screen.getByRole("textbox", { name: "Title for #1 Card 1" });
     fireEvent.change(field, { target: { value: "Mine #1" } });
-    const reset = screen.getByRole("button", { name: "Use trimmed title for #1 Card 1" });
+    const reset = screen.getByRole("button", { name: "Use generated title for #1 Card 1" });
     reset.focus();
     fireEvent.click(reset);
-    expect(screen.queryByRole("button", { name: "Use trimmed title for #1 Card 1" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Use generated title for #1 Card 1" })).toBeNull();
     expect(document.activeElement).toBe(field);
   });
 
-  test("'Use trimmed title' clears the 24px target floor", () => {
+  test("'Use generated title' clears the 24px target floor", () => {
     setup({ cards: [card("1")] });
     fireEvent.change(screen.getByRole("textbox", { name: "Title for #1 Card 1" }), {
       target: { value: "Mine #1" },
     });
-    const reset = screen.getByRole("button", { name: "Use trimmed title for #1 Card 1" });
-    expect(reset.className).toContain("leading-4");
-    expect(reset.className).toContain("py-1");
+    const reset = screen.getByRole("button", { name: "Use generated title for #1 Card 1" });
+    // NEO-535: the house NeonButton at Radix size 1, whose height is 24px.
+    expect(reset.className).toContain("neon-button");
+    expect(reset.className).toContain("rt-r-size-1");
+  });
+
+  test("while the step saves, the field and 'Use generated title' read as held, with no caller fade", () => {
+    const { rerenderWith } = setup({ cards: [card("1")] });
+    const field = screen.getByRole("textbox", { name: "Title for #1 Card 1" });
+    fireEvent.change(field, { target: { value: "Mine #1" } });
+    const reset = screen.getByRole("button", { name: "Use generated title for #1 Card 1" });
+    expect(reset.getAttribute("aria-disabled")).toBeNull();
+    expect(reset.style.cursor).toBe("");
+
+    rerenderWith({ disabled: true });
+    // The button's held look is NeonButton's own (aria-disabled → neutral fill).
+    expect(reset.getAttribute("aria-disabled")).toBe("true");
+    expect(reset.style.cursor).toBe("not-allowed");
+    // The field's is the Textarea primitive's (aria-disabled variants), never an opacity.
+    expect(field.getAttribute("aria-disabled")).toBe("true");
+    expect(field.hasAttribute("readonly")).toBe(true);
+    expect(field.className).toContain("aria-disabled:bg-button-neutral");
+    expect(field.className).not.toMatch(/(^|\s)opacity-/);
+    // The guard holds: pressing it while held keeps the typed title.
+    fireEvent.click(reset);
+    expect((field as HTMLTextAreaElement).value).toBe("Mine #1");
   });
 
   test("headingId lands on the titles lead when there are titles, for the wizard's Next", () => {
@@ -276,14 +340,16 @@ describe("CardTitlesStep — accessibility wiring", () => {
       headingId: "titles-lead",
     });
     expect(document.getElementById("titles-lead")?.textContent).toBe(
-      "Trimmed to fit. Keep it, or make it yours.",
+      "These titles had to leave something out or still run long. Check what went, then keep 'em or make 'em yours.",
     );
   });
 
   test("headingId lands on the variation lead when only variations are on the step", () => {
     setup({
-      cards: [card("2", { cardVariation: LONG_VARIATION })],
-      titleContext: SHORT,
+      // A variation is never cut (NEO-609), so only a short title leaves it
+      // as the sole fault.
+      cards: [card("2", { players: [], cardVariation: "v".repeat(66) })],
+      titleContext: { ...SHORT, setNameValue: "X", inheritedFeatures: {} },
       headingId: "titles-lead",
     });
     expect(document.getElementById("titles-lead")?.textContent).toBe(
@@ -296,7 +362,7 @@ describe("CardTitlesStep — accessibility wiring", () => {
     const field = screen.getByRole("textbox", { name: "Title for #1 Card 1" });
     const ids = (field.getAttribute("aria-describedby") ?? "").split(" ");
     const texts = ids.map((id) => document.getElementById(id)?.textContent);
-    expect(texts).toContain("Left out to fit: Shohei Ohtani");
+    expect(texts).toContain("Left out to fit: Shohei");
     expect(texts.some((t) => /\/80/.test(t ?? ""))).toBe(true);
     // The over-cap status joins only once the title is over.
     fireEvent.change(field, { target: { value: "t".repeat(84) } });
@@ -307,10 +373,15 @@ describe("CardTitlesStep — accessibility wiring", () => {
   });
 
   test("a group of cards is described by the drop they share; its <li> stays a list item", () => {
-    setup({ cards: [card("1"), card("2", { players: ["Mike Trout"] })] });
+    setup({
+      cards: [
+        card("1", { isRelic: true }),
+        card("2", { players: ["Julio Rodriguez"], isRelic: true }),
+      ],
+    });
     const group = screen.getByRole("group");
     const line = document.getElementById(group.getAttribute("aria-describedby")!);
-    expect(line?.textContent).toMatch(/^Left out to fit: Collectors Box/);
+    expect(line?.textContent).toMatch(/^Left out to fit: RELIC/);
     expect(group.tagName).toBe("DIV");
     expect(group.parentElement?.tagName).toBe("LI");
     expect(within(group).getAllByRole("textbox")).toHaveLength(2);
@@ -333,7 +404,48 @@ describe("CardTitlesStep — the meter is neutral until past the cap", () => {
       target: { value: "t".repeat(84) },
     });
     const meter = screen.getByText("84/80");
+    // NEO-606: neon pink is the app's error colour; the counter paints the pink text role directly, not the danger notice role.
     expect(meter.parentElement?.className).toContain("text-neon-pink-text");
+    expect(meter.parentElement?.className).not.toContain("notice-danger");
     expect(screen.getByText("4 over")).toBeTruthy();
+  });
+
+  test("NEO-606: past the cap the whole box is marked, in neon pink, and clears as soon as it fits", () => {
+    setup({ cards: [card("1")] });
+    const field = screen.getByRole("textbox", { name: "Title for #1 Card 1" });
+    fireEvent.change(field, { target: { value: "t".repeat(84) } });
+    // happy-dom does not run the stylesheet: the invalid look is the
+    // `aria-invalid:` utilities, which apply exactly while the attribute is set.
+    expect(field.getAttribute("aria-invalid")).toBe("true");
+    expect(field.getAttribute("data-over")).toBe("true");
+    expect(field.className).toContain("data-[over=true]:border-neon-pink-text");
+    expect(field.className).toContain("data-[over=true]:ring-neon-pink-text");
+    // Held (the step saving) keeps the pink edge and shows the grey fill.
+    expect(field.className).toContain("aria-disabled:data-[over=true]:bg-button-neutral");
+    // The note is pink text and tied to the box.
+    const note = screen.getByRole("status");
+    expect(note.textContent).toBe("Too long to list as-is.");
+    expect(note.className).toContain("text-neon-pink-text");
+    expect(note.className).not.toContain("notice-danger");
+    expect(field.getAttribute("aria-describedby")).toContain(note.id);
+    // Back under the cap: the box and the note both let go.
+    fireEvent.change(field, { target: { value: "t".repeat(80) } });
+    expect(field.getAttribute("aria-invalid")).toBeNull();
+    expect(field.getAttribute("data-over")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("");
+    expect(field.getAttribute("aria-describedby")).not.toContain(note.id);
+  });
+
+  test("NEO-606: a variation past 65 gets the pink box but is advisory, so never aria-invalid", () => {
+    setup({
+      cards: [card("1", { cardVariation: LONG_VARIATION })],
+      titleContext: SHORT,
+    });
+    const field = screen.getByRole("textbox", { name: "Variation for #1 Card 1" });
+    expect(field.getAttribute("data-over")).toBe("true");
+    expect(field.getAttribute("aria-invalid")).toBeNull();
+    expect(field.className).toContain("data-[over=true]:border-neon-pink-text");
+    fireEvent.change(field, { target: { value: "Throwback uniform" } });
+    expect(field.getAttribute("data-over")).toBeNull();
   });
 });

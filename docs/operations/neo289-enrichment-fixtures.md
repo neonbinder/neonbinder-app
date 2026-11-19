@@ -39,7 +39,14 @@ two batches, both Baseball only (`sportQid: "Q5369"`):
   players, the 8 clubs, the 2 career teams and the league the wizard stages,
   211 of 211, added with §4a's method.
 
-Names outside the recording still go live.
+Since NEO-413 (2026-11-01), a name outside the recording does **not** go live
+while the switch is on: the lookup wrapper refuses it, answers no-match, and
+logs one error-level `enrichment_fixture_live_refused` line (kind, sport,
+name: these are test names). The one exception is the live-proof player
+(`LIVE_LOOKUP_ALLOWED` in `enrichmentFixtures.ts`, Vladislav Tretiak under
+Hockey), which proves the live lane. A spec that needs a lookup answer
+records the name first (§4). A refused line in a run's Convex logs is a
+coverage gap to record, never a reason to loosen the refusal.
 **Production never reads the recording** — see the two-env gate below.
 
 This exists because the seed's own arithmetic doesn't fit inside CI's wait:
@@ -57,11 +64,12 @@ transport failure by mistake.
 belt-and-braces shape as `convex/testing.ts:60`). Prod has neither var, so a
 stray `NEONBINDER_ENRICHMENT_FIXTURES=1` there is inert — the gate check
 fails closed and the code falls through to a live lookup with one structured
-warning logged, never a silent recording read.
+warning logged, never a silent recording read. The NEO-413 refusal applies
+only while the switch is honoured, so production always looks up live.
 
 A hit is honoured only when the recorded `wikidataId` matches the caller's
-`knownQid` (or the record carries none); a mismatch is treated as a miss and
-goes live. The key is `${kind}|${sportQid}|${normalised name}` — `knownQid`
+`knownQid` (or the record carries none); a mismatch is treated as a miss
+(refused as above under the switch, live with the switch off). The key is `${kind}|${sportQid}|${normalised name}` — `knownQid`
 is not part of the key.
 
 ## 2. How each environment gets it
@@ -81,7 +89,10 @@ is not part of the key.
   session on this laptop (not a shared *server* — NEO-249/288). **Announce
   before setting it** the same way any dev-affecting env change should be
   announced, so a concurrent session isn't surprised that its Wikidata
-  lookups suddenly answer from a Baseball-only Topps Chrome recording.
+  lookups suddenly answer from the recording. Since NEO-413 that includes
+  every name the recording lacks: it comes back a no-match (error-level
+  `enrichment_fixture_live_refused`) and is never looked up live, so a real
+  lookup on dev is a permanent no-match while the switch is on.
 - **Prod:** never set either var. See §1.
 
 ## 3. Coverage report (informational, non-blocking)
@@ -270,6 +281,119 @@ those (§3).
 
 The preview answers from the new entries only after its bundle is rebuilt,
 because the JSON is imported at build time: the next push to the PR.
+
+**NEO-424 entry (2026-11-03): `Kendry Morales` as a Football no-match.** The
+set-history spec (`checklist-wizard-set-history-links-across-variants`) moves
+this real checklist name from Baseball to Football in the wizard and adds him
+there, which re-queues his lookup in Football. He is a baseball player, so the
+Football answer is a no-match, and without a recorded entry the deployment
+would refuse the miss with an error-level log line (NEO-413). Captured by this
+section's method: `lookupPlayerEnrichmentLive("Kendry Morales", <football
+sportConfig>, trace)` from a laptop (`sportQid` `Q41323`, hall of fame
+`Q778412`), which searched twice (`wikidata_search_empty`, then
+`wikidata_search_empty_confirmed`), logged `wikidata_player_no_match`, and
+left `trace.transportFailed` false, so the `null` is a completed search and not
+an outage. One entry, merged per step 5 (only the new key, keys re-sorted).
+
+His FIRST lookup, in Baseball when the wizard opens on his row, is recorded too:
+that live answer is a **hit** (`wikidataId` `Q1185217`, born 1983, three
+undated clubs Minnesota Twins / Seattle Mariners / Toronto Blue Jays, enwiki
+"Kendrys Morales"), captured the same way, and merged as the file's default
+sport (no `sportQid`). Without it the unrecorded Baseball miss is refused at
+error level on every run of the spec. A genuine capture, not a `null`.
+
+The same spec reaches four more lookups, each captured the same way (every
+`transportFailed` false) and merged under step 5: `Michael Brantley` as a
+Football no-match (the FOOTBALL player the spec adds from `/admin/players`; his
+Baseball row is inserted READY and is never looked up), and two historic clubs
+the Peak Performance wizard stages as team steps, as Baseball hits:
+`St. Louis Browns` (`Q504309`, MLB, from 1882) and `Washington Senators`
+(`Q329816`, American League, from 1961). The recorded Wikidata answers are
+Wikidata's own; the wizard still links the Browns to the catalogue's 1902-1953
+row by name.
+
+**NEO-424 entry (2026-11-04): `Rickie Weeks`, Baseball hit and Football
+no-match.** The same spec's prior-year phase (rule E1) adds `Rickie Weeks`, the
+one unknown name on the 2009 insert Career Best Jumbo Jerseys, as a Football
+player, exactly as it does `Kendry Morales`. His FIRST lookup, in Baseball when
+the wizard opens on his row, is a live **hit** (`wikidataId` `Q3431635`, born
+1982, four dated stints with Wikidata ids at clubs the catalogue already holds
+(Milwaukee Brewers, Seattle Mariners, Arizona Diamondbacks, Tampa Bay Rays) and
+three undated clubs, so no career team is staged; enwiki "Rickie Weeks Jr."),
+merged as the file's default sport (no `sportQid`). Moving the row to Football
+re-queues the lookup there, and his Football answer is a **no-match** (`sportQid`
+`Q41323`). Both captured by the method above with `lookupPlayerEnrichmentLive`
+from a laptop; each trace left `transportFailed` false, and the Football search
+ran twice (`wikidata_search_empty`, then `wikidata_search_empty_confirmed`)
+before `wikidata_player_no_match`, so the `null` is a completed search and not
+an outage. Two entries merged per step 5 (only the new keys, keys re-sorted);
+the coverage proof of step 4 reads both as hits. His row on the 2010 insert
+(Peak Performance Relics) is inserted ready as a suggestion and is never looked
+up.
+
+**NEO-475 entry (2026-11-09): three small Baseball sets.** E2E moved to three
+small sets, and each name they stage was captured by the method above with the
+`*Live` bodies from a laptop (Baseball `sportConfig`, five at a time). Every
+kept trace left `transportFailed` false. Each `null` came after two empty
+searches (`wikidata_search_empty`, then `wikidata_search_empty_confirmed`), so
+it is a completed search and not an outage. Sixteen new keys were merged per
+step 5, and the step 4 proof read all 20 lookups below (the 16 plus four
+already recorded) with no miss.
+
+- 2024 Topps Stars of MLB Network: `Lauren Shehadi`, `Robert Flores`,
+  `Brian Kenny`, `Greg Amsinger`, `Lauren Gardner` and `Intentional Talk` (a
+  show, not a person) are all **no-matches**. `Chris Young` is a **hit**
+  (`Q2964905`, the pitcher, born 1979) with six dated MLB stints and no new
+  club.
+- 1996 New Haven Ravens Rally Raffle: `Edgard Velazquez`, `Rodney Pedraza` and
+  the team `New Haven Ravens` are all **no-matches**. ESPN had nothing for the
+  team either. The set's NNO raffle card stages the player name
+  `raffle entry card` (lower case, exactly as the wizard stages it). It is
+  recorded as a **no-match**: a deployment refused it as `not_recorded` until
+  it was.
+- 2024 BBM Rookie Edition Premium: `Gouki Oda` (`Q124097444`) and
+  `Koichi Okumura` (`Q115529958`) are **hits** with undated clubs only, so they
+  stage no career team. `Ryotaro Sawayanagi` (`Q124096978`) is a **hit** with
+  two dated stints: Fukuoka SoftBank Hawks (`Q129164`, already recorded with
+  that id) and `Roki Techno Toyama` (`Q24859605`). The Roki team was recorded
+  with that id as `knownQid`, because a recorded `null` cannot answer a staged
+  team (§1). Its league, `Japan Amateur Baseball Association` (`Q11509291`),
+  was recorded the same way. His first two live searches timed out at 30 s and
+  were dropped. The third answered. `Kota Nishidate`, `Kosuke Kawachi` and
+  `Shuya Yamada` were already recorded.
+
+## 4b. Other sports, explicit names, and no Wikidata from your machine (2026-10-30)
+
+**Entries for another sport.** The file's `sportQid` is the default sport of
+its entries. An entry for any other sport carries its own `sportQid`, and its
+key is `fixtureKey(kind, <that QID>, name)`; an entry of the default sport
+carries none (every entry written before this). The reader keys on the
+caller's sport, so a Hockey entry answers only a Hockey lookup.
+`parseFixtureFile` refuses an entry whose key disagrees with its sport.
+
+**When the machine cannot reach Wikidata** (a cloud session's proxy), run the
+node half of the capture on a deployment instead:
+
+    npx convex run adapters/wikidata:runCaptureLookups \
+      '{"sport":<the sport row's sportConfig, as {label, espn, wikidata}>,
+        "sportQid":"Q41466",
+        "items":[{"kind":"player","name":"…"},{"kind":"team","name":"…","knownQid":"Q…"}]}'
+
+It is the action `captureFromCli` fans out to. Its handler never touches
+`ctx`, so it writes nothing; it calls the `*Live` bodies and returns the
+entries plus `skippedTransport`. It needs no env arming (the arming guards
+`captureFromCli`'s deployment-wide name scan, which this skips because you
+pass the names). Ten names a call keeps each call well inside the CLI's wait.
+Re-run every `skippedTransport` name, add `sportQid` to each entry that is not
+of the file's sport, re-key locally with `fixtureKey`, and merge as §4a step 5.
+A staged career team carries the QID from the player's recorded
+`careerTeams[].wikidataId`: pass it as `knownQid`.
+
+**Recorded no-matches from a CI run.** A run's `convex-logs-*` artifacts
+log `wikidata_player_no_match` / `wikidata_team_no_match` (with the sport
+label) only after a completed search found nothing, never on a transport
+failure; a team line also means ESPN had nothing. Such a line is a captured
+`null` answer and may be merged the same way.
 
 ## 5. When to re-capture
 

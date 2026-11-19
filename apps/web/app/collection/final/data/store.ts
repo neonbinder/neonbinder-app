@@ -80,17 +80,27 @@
 
 import { createContext, useContext, useMemo } from "react";
 import type { BrowseFilter, CardRequest, NewCardRequest } from "../store";
+import type { PhotoSource } from "@/components/modules/CardPhotoViewer/types";
 import type {
   AddManyResult,
   BinderNeeds,
   BinderSettingsPatch,
   DeclinedCard,
   RuleBrand,
+  RuleMatches,
   FoundCards,
   PocketPlacement,
   SmartRule,
   InventoryCards,
+  ListingPlatform,
+  EbaySetupView,
+  ListingGateView,
+  ListingSettings,
   QuantityResult,
+  SalesPage,
+  SetProblems,
+  SyncStatus,
+  SyncVariantResult,
   Side,
   SystemKind,
   AddResult,
@@ -274,10 +284,11 @@ export interface CollectionData {
   useBinderNeeds(containerId: ContainerId | null): BinderNeeds | undefined;
   /**
    * Which of `cardIds` fit a smart binder's rule (capability `binderRules`):
-   * the Checklists filter and "outside the rule". Empty for a binder without
-   * a rule, and from a store without rules.
+   * the Checklists filter and "outside the rule". NEO-528: `secondary` the
+   * ones that fit only as a cameo. Empty for a binder without a rule, and
+   * from a store without rules.
    */
-  useRuleMatches(containerId: ContainerId | null, cardIds: readonly CardId[] | null): ReadonlySet<CardId> | undefined;
+  useRuleMatches(containerId: ContainerId | null, cardIds: readonly CardId[] | null): RuleMatches | undefined;
   /** "Find cards for this binder" (capability `binderRules`); `null` asks nothing. */
   useFindCards(containerId: ContainerId | null): FoundCards | undefined;
   /** The cards declined for a smart binder, newest first (capability `binderRules`). */
@@ -337,9 +348,11 @@ export interface CollectionActions {
   /**
    * A copy with details (`details.homeId`, else the scope, else Main); the
    * server folds it into an identical line item (never one with a cert or
-   * serial).
+   * serial). NEO-431: `keepsOwnLine` starts a line of its own instead, for an
+   * add whose photos follow it: a line with photos is one of a kind, and the
+   * rule can't see photos that haven't arrived yet.
    */
-  addLineItem(card: Card, details: CopyDetails): Promise<AddResult>;
+  addLineItem(card: Card, details: CopyDetails, options?: { keepsOwnLine?: boolean }): Promise<AddResult>;
   /** Edits a copy in place. Refuses a change of `homeId` (that is `moveCopy`); never folds. */
   updateCopy(copy: Copy, patch: Partial<CopyDetails>): Promise<UpdateResult>;
   /** Deletes the copy; the undo puts the same fields back. */
@@ -356,7 +369,9 @@ export interface CollectionActions {
    * `slot` there when given (else unslotted). Folds into an identical line
    * item there; part of a stack splits off. Refuses the Want List, the Up
    * for Trade pile, a smart binder, and a binder pocket another line item
-   * holds. A copy keeps its Up for Trade flag.
+   * holds. A copy keeps its Up for Trade flag. NEO-479: `options.minPrice`
+   * prices the cards going into a box; out of a box into a binder, they
+   * lose their own price (the undo restores it).
    */
   moveCopy(copy: Copy, toHomeId: ContainerId, options?: MoveOptions): Promise<MoveResult>;
   /**
@@ -413,6 +428,8 @@ export interface CollectionActions {
   declineCard(container: Container, cardId: CardId): Promise<UpdateResult>;
   /** Pulls a declined card back into Find cards. */
   undeclineCard(container: Container, cardId: CardId): Promise<UpdateResult>;
+  /** NEO-410 — recompute a smart binder's empty slots after a recompute failed ("Try again"). */
+  retryBinderFits(container: Container): Promise<void>;
 
   // --- NEO-378 ---------------------------------------------------------------
 
@@ -429,6 +446,14 @@ export interface MoveOptions {
   quantity?: number;
   /** The pocket or row at the destination. */
   slot?: number;
+  /**
+   * NEO-479 — the moving cards' own price (dollars, whole cents), set as they
+   * go into a box. Leave it out to keep the price they have (or, with none,
+   * the variant's common price, read live). Never writes the common price.
+   * Refused on a move that stays home. A move out of a box into a binder
+   * clears the cards' own price; its undo puts it back.
+   */
+  minPrice?: number;
 }
 
 /** What only the demo has (see the module comment). */
@@ -465,6 +490,12 @@ export interface SharingExtension {
   setShelfVisibility(shelf: PublicShelf, isPublic: boolean): Promise<void>;
 }
 
+/** NEO-466 — what an add tells `addPhoto` about the write before it. */
+export interface AddPhotoContext {
+  /** On an add's photo: ms from the Add press until the new line's write answered. */
+  addLineItemMs?: number;
+}
+
 /**
  * NEO-377 — photos of the collector's own copies (capability `copyPhotos`).
  * The demo keeps them on the page; the real store uploads to R2 through
@@ -473,12 +504,29 @@ export interface SharingExtension {
 export interface CopyPhotosExtension {
   /** The photos of those lines that have any (`Copy.hasPhotos`); `undefined` while loading. */
   usePhotos(copies: readonly Copy[]): ReadonlyMap<CopyId, CopyPhotos> | undefined;
-  /** Put a photo on one side of a line, replacing the one there. `file` is the original; it is never kept. */
-  addPhoto(copy: Copy, side: PhotoSide, file: File): Promise<void>;
+  /**
+   * NEO-466 — start the work on a held photo that needs no copy yet (the
+   * resize), so the add's own write and that work overlap. `addPhoto` with the
+   * same `file` picks it up; a failure here shows only there. Optional: the
+   * demo has nothing to prepare.
+   */
+  preparePhoto?(file: File): void;
+  /**
+   * Put a photo on one side of a line, replacing the one there. `file` is the
+   * original; it is never kept. `context` is for the save's timing line only.
+   */
+  addPhoto(copy: Copy, side: PhotoSide, file: File, context?: AddPhotoContext): Promise<void>;
   /** Take the photo off one side of a line. */
   removePhoto(copy: Copy, side: PhotoSide): Promise<void>;
   /** Trade a line's front and back photos. */
   swapPhotos(copy: Copy): Promise<void>;
+  /**
+   * NEO-481 — the card photo viewer's source for one line (turn and crop by
+   * hand). A hook: call it from the viewer's own component, mounted only
+   * while the viewer is open. Absent: the line's photos open view-only. Only
+   * the line's id is read (Add cards' Saved tiles hold no whole `Copy`).
+   */
+  usePhotoSource?(copy: Pick<Copy, "id">, label: string, photos: CopyPhotos | undefined): PhotoSource;
   /**
    * The photo that stands for each of these cards in the collection (the
    * first line with a front, else a back), for `CardFace`
@@ -499,6 +547,46 @@ export interface BinderMemoryExtension {
   remember(scope: Scope): void;
 }
 
+/**
+ * NEO-370 — listing the collector's box copies on a marketplace (capability
+ * `marketplaceListing`): the Convex store's only. The demo never touches a
+ * marketplace, so it has none and hides every listing control. NB is the
+ * only truth: a platform shows NB's box count, and nothing here edits a
+ * listing by hand. Saving a marketplace sign-in on the Profile is what
+ * starts syncing (NEO-370 Rev 5), not anything here.
+ */
+export interface ListingExtension {
+  /** Where the collector stands with each platform; `undefined` while loading. */
+  useSettings(): ListingSettings | undefined;
+  /**
+   * Sync: read this checklist's sheet on every platform the collector lists
+   * on and set every card to NB's counts. Resolves with whether it was
+   * queued, or why the server let it pass (already in the works, or nothing lists).
+   */
+  syncVariant(variantId: VariantId): Promise<SyncVariantResult>;
+  /** A box's "Listed on marketplaces". Rejects with the server's words (a binder, say). */
+  setContainerListed(containerId: ContainerId, listed: boolean): Promise<void>;
+  /** The Sync status tab: running, queued and each set's last result. `undefined` while loading. */
+  useSyncStatus(): SyncStatus | undefined;
+  /** One set's whole held-back list, read once on demand. */
+  loadSetProblems(variantId: VariantId, platform: ListingPlatform): Promise<SetProblems>;
+  /** The Sales list, newest first. Call it every render, like a hook. */
+  useSales(): SalesPage;
+  /**
+   * The listing gate for adds into `homeId` (a variant's common price
+   * included), and whether the collector syncs at all; `undefined` while
+   * loading. Call it every render, like a hook.
+   */
+  useGate(homeId: ContainerId | null, variantId: VariantId | null): ListingGateView | undefined;
+  /**
+   * NEO-415 — the collector's eBay setup as the inventory says it (finished
+   * or not, sandbox or real); `undefined` while loading or where there is
+   * none. Call it every render, like a hook. Optional: a store without eBay
+   * leaves it out and every eBay line reads as not set up.
+   */
+  useEbaySetup?(): EbaySetupView | undefined;
+}
+
 export interface CollectionStoreValue {
   kind: "demo" | "convex";
   capabilities: Capabilities;
@@ -508,6 +596,7 @@ export interface CollectionStoreValue {
   sharing?: SharingExtension;
   photos?: CopyPhotosExtension;
   binderMemory?: BinderMemoryExtension;
+  listing?: ListingExtension;
 }
 
 export const CollectionStoreContext = createContext<CollectionStoreValue | null>(null);
@@ -546,6 +635,30 @@ export function useBinderMemory(): BinderMemoryExtension | undefined {
   return useCollectionStore().binderMemory;
 }
 
+/**
+ * NEO-370 — marketplace listing; `undefined` when the store has none (the
+ * demo) or the capability is off. Hide every listing control when it is.
+ */
+export function useListing(): ListingExtension | undefined {
+  // Not `useCollectionStore`: a checklist drawn outside a store (a test's) simply lists nowhere.
+  const store = useContext(CollectionStoreContext);
+  return store?.capabilities.marketplaceListing ? store.listing : undefined;
+}
+
+/** A store that lists nowhere (the demo, a test's): never syncing, never gated. */
+export const NO_LISTING_GATE: ListingGateView = { syncing: false, applies: false, commonPriceCents: null, variantHasCards: true };
+const noGate = (): ListingGateView => NO_LISTING_GATE;
+
+/**
+ * NEO-370 — the listing gate for adds into `homeId` (`ListingGateView`):
+ * `NO_LISTING_GATE` in a store with no listing, `undefined` while loading.
+ * Call it every render, like a hook.
+ */
+export function useListingGate(homeId: ContainerId | null, variantId: VariantId | null): ListingGateView | undefined {
+  const ext = useListing();
+  return (ext?.useGate ?? noGate)(homeId, variantId);
+}
+
 /** NEO-360 — real share links; `undefined` when the store has none (the demo). */
 export function useSharing(): SharingExtension | undefined {
   return useCollectionStore().sharing;
@@ -567,7 +680,8 @@ function withScope(actions: CollectionActions, scope: ContainerId): CollectionAc
     ...actions,
     addHave: (card, homeId) => actions.addHave(card, homeId ?? scope),
     addMany: (cards, homeId) => actions.addMany(cards, homeId ?? scope),
-    addLineItem: (card, details) => actions.addLineItem(card, details.homeId ? details : { ...details, homeId: scope }),
+    addLineItem: (card, details, options) =>
+      actions.addLineItem(card, details.homeId ? details : { ...details, homeId: scope }, options),
   };
 }
 
@@ -725,7 +839,7 @@ export function useBinderNeeds(containerId: ContainerId | null): BinderNeeds | u
 export function useRuleMatches(
   containerId: ContainerId | null,
   cardIds: readonly CardId[] | null,
-): ReadonlySet<CardId> | undefined {
+): RuleMatches | undefined {
   return useCollectionStore().data.useRuleMatches(containerId, cardIds);
 }
 export function useFindCards(containerId: ContainerId | null): FoundCards | undefined {

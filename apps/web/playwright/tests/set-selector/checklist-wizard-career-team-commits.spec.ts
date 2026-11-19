@@ -1,8 +1,11 @@
 // Origin: .maestro/flows/set-selector/checklist-wizard-career-team-commits.yaml (Maestro suite retired in NEO-341; see git history)
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { CHECKLISTS, checklistFacts, expectTeamsFromChecklist } from "../../support/published-checklist";
 import { setBuilderReady } from "../../support/set-builder";
 import { expectTeamsLoaded, teamsCounter } from "../../support/players";
+import { recordedNoMatchName } from "../../support/recorded-names";
 import {
+  answerPlayerAsNew,
   advanceToSave,
   fetchOneMarketplaceSetChecklistToWizard,
   readStep,
@@ -17,17 +20,22 @@ import {
 // every Orioles player, so that fetch committed straight through with no
 // wizard. MEASURED on PR #314's preview: 18 cards, 15 unknown names, all
 // players, 0 teams. Re-seed before re-running.
+// NEO-413: the staged career team is looked up when it stages, so it is a
+// real club from support/recorded-names.ts (a hurling club, one word) that the
+// recording holds as a Hockey no-match and the reference catalogue does not
+// hold: the lookup sends nothing to Wikidata, the step still reads "New Team",
+// and Team Management's filter finds this one row. One name per worker.
 const SET = "Memphis RiverKings CHL";
 
 test(
   "Entity review — a hand-staged career team survives the commit and becomes a real team row",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
-    const team = `MintedTeam${env.ATTEMPT_TOKEN}`;
+    const team = recordedNoMatchName(env, "checklist-wizard-career-team-commits");
 
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
-    await fetchOneMarketplaceSetChecklistToWizard(page, env, { set: SET });
+    await fetchOneMarketplaceSetChecklistToWizard(page, env, { set: SET, checklist: CHECKLISTS.memphisRiverKings });
     const wizard = reviewWizard(page);
     await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
     // readyToCreate: this spec creates the player, so the walk also passes any
@@ -42,7 +50,9 @@ test(
     await wizard.getByRole("spinbutton", { name: /^To year/ }).fill("2005");
     await wizard.getByRole("button", { name: "Add career team" }).click();
 
-    // The new name is looked up (live), then raised as its own New Team step.
+    // The new name is looked up (a recorded no-match since NEO-413: no live
+    // request), then raised as its own New Team step. The ceiling stays the
+    // walk util's lookup ceiling: the lookup still waits in the shared pool.
     const lookingUp = wizard.getByText(/still looking up/);
     const newTeam = wizard.getByRole("heading", { name: `New Team: ${team}` });
     await expect(newTeam.or(lookingUp).first()).toBeVisible();
@@ -64,7 +74,7 @@ test(
     // not y (y grows as staged steps arrive); the pattern is anchored at both
     // ends, so "Step 5" cannot answer for "Step 15".
     const { x: stepBefore } = await readStep(page);
-    await wizard.getByRole("button", { name: "Add as New Player" }).click();
+    await answerPlayerAsNew(page);
     await expect(stepCounter(page)).toHaveText(new RegExp(`^Step ${stepBefore + 1} of [0-9]+$`));
 
     await wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ }).click();
@@ -82,6 +92,8 @@ test(
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, summary" });
     await confirmSave.click();
     await expect(page.getByText(/Saved [0-9]+ cards/)).toBeVisible();
+    // The result line stays on screen after the save too.
+    await expectTeamsFromChecklist(page, checklistFacts(CHECKLISTS.memphisRiverKings));
 
     // The staged team is now a real row in Team Management.
     await page.goto("/admin/teams");

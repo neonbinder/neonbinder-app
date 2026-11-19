@@ -1,6 +1,6 @@
 ---
 name: deps-batch
-description: Consolidate all open Dependabot PRs in the NeonBinder monorepo into one maintainer-authored, locally-validated batch PR — triage the bumps, integrate them one at a time in a fresh worktree with a validation gate after each, run the full local lint/unit/build gates, push, let CI run the full E2E suite, watch CI, and on approval merge and close out every Dependabot artifact (PRs, branches, Linear ticket, worktree). Use when Dependabot PRs have piled up (e.g. "deal with the dependabot PRs", "batch the dependency updates", "run the deps batch"). Never merges a Dependabot PR directly; never adds secrets to the Dependabot secret store; requires explicit approval before merging the batch.
+description: Consolidate all open Dependabot PRs in the NeonBinder monorepo into one maintainer-authored, locally-validated batch PR — triage the bumps, integrate them one at a time in a fresh worktree with a validation gate after each, run the full local lint/unit/build gates, get approval, join the pr-queue and on its turn push, let CI run the full E2E suite, merge on green and close out every Dependabot artifact (PRs, branches, Linear ticket, worktree). Use when Dependabot PRs have piled up (e.g. "deal with the dependabot PRs", "batch the dependency updates", "run the deps batch"). Never merges a Dependabot PR directly; never adds secrets to the Dependabot secret store; requires explicit approval before the batch joins the queue.
 argument-hint: [--repo <dir>] [--exclude <pr#>[,<pr#>...]]
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Skill, ToolSearch, AskUserQuestion, WebFetch, mcp__linear-server__get_issue, mcp__linear-server__list_issues, mcp__linear-server__save_issue, mcp__linear-server__list_issue_statuses, mcp__linear-server__list_teams
 ---
@@ -33,7 +33,7 @@ exactly the point: the thing that ships gets the full suite.
 ## Environment (resolved 2026-08-02 — re-verify if anything 404s)
 - **Repo dir** (default, override with `--repo`): the monorepo checkout (`git rev-parse
   --show-toplevel`; `<workspace>/main` in the standard layout)
-  (the active monorepo; GitHub `neonbinder/neonbinder`). Packages: `apps/web`,
+  (the active monorepo; GitHub `neonbinder/neonbinder-app`). Packages: `apps/web`,
   `services/browser`. There is no root `package.json` — these are **not** npm workspaces.
 - **Worktree parent**: `<workspace>/worktrees`, i.e. `$(git rev-parse --show-toplevel)/../worktrees`
 - **Dependabot config**: `.github/dependabot.yml` — weekly; three ecosystems
@@ -286,10 +286,11 @@ batch touched). Record the counts for the PR body.
 **E2E is CI's job here, not the laptop's.** The batch is maintainer-authored, so it
 gets the full 8-shard Playwright matrix on the PR, and a local full-suite run costs far
 more than it proves (see CLAUDE.md, "The PR loop"). Run the specs a bump plausibly
-touches against dev before step 7 pushes (CLAUDE.md, "Run your specs against dev
-before the first push"), not the whole suite. Do not skip or defer anything
-silently: the E2E result is part of step 8's verdict, and a red spec is debugged with
-that one spec against dev, or against the PR preview when dev cannot reproduce it
+touches on this worktree's own deployment before step 7 asks for approval (CLAUDE.md, "Run your
+specs on your own Convex deployment before the first push"), not the whole suite. Do
+not skip or defer anything silently: the local spec results are part of step 7's report, and a
+red spec is debugged with that one spec on that deployment, or against the PR preview
+when it cannot reproduce it
 (`apps/web/playwright/GUIDE.md` -> **Running**).
 
 If a bump touches the E2E harness itself (`@playwright/test`, `playwright.config.ts`,
@@ -299,7 +300,39 @@ also run `npm run test:e2e:typecheck` and `npx eslint playwright` locally, and
 
 ---
 
-## Step 7 — Push and open the batch PR
+## Step 7 — Ask for approval, then join the queue
+
+**Which flow:** `gh variable get MERGE_QUEUE -R neonbinder/neonbinder-app` (an
+error reading it counts as off). `true` = GitHub merge queue: approval still
+comes first and is still explicit for this batch, but the "queue" step is
+`gh pr merge <PR> --squash` (enqueue) after the push, with no `/pr-queue join`
+and no turn; the approval you get here is the merge approval. Anything else =
+the Claude-run queue below, unchanged.
+
+CI is handed out one ticket at a time by the `pr-queue` skill, and a turn's run
+ends in a merge on green, so **approval comes before the push**. Report the bump
+table, the toolchain each bump was validated on, the local gate counts, the
+majors' safety reasons and the audit delta, and stop. Joining requires the
+user's explicit approval for this batch, every time.
+
+Once approved: `/pr-queue join <NEO-###>`. Do not push until the turn comes.
+
+---
+
+## Step 8 — On the turn: push, open the PR, watch, merge
+
+**`MERGE_QUEUE=true` (GitHub merge queue):** there is no turn. Once approved,
+push the branch (`git push -u origin "$BR"`) and open the PR as below (PR body
+unchanged), let the cheap PR checks pass, then `gh pr merge <PR> --squash` to
+enqueue and follow it with `pr-watch --queue <PR>` (the `pr-queue` skill's
+GitHub-queue flow: `MERGED` goes to `/pr-close`, `EJECTED` is a red to triage,
+fix and re-enqueue; further pushes are free). A bump that fails in the queue is
+dropped and parked per step 4, never debugged inside the queue. Step 9 is
+unchanged. For `MERGE_QUEUE` off, the turn flow:
+
+Follow the `pr-queue` turn steps (merge main, push and open the PR, watch CI,
+on a red pass the turn and triage per that skill, merge on green with
+`pr-close`, notify, tell the other sessions, tell the queue). For this skill:
 
 ```bash
 git push -u origin "$BR"
@@ -319,28 +352,15 @@ PR body must contain:
 
 Label it `dependencies` (and `github_actions` if Actions were bumped).
 
-**Then launch `/pr-watch <PR>` in the background and tell the user** — this is required
-after every push to a PR branch.
-
----
-
-## Step 8 — Wait for approval
-
-CI green is **not** authorization to merge. Report the verdict and stop. Merging
-requires the user's explicit per-PR approval, every time.
-
-While waiting: if CI goes red, diagnose from the actual failure log before pushing any
-fix. A `gh run rerun` of the PR Pipeline re-runs the E2E workflow from setup
-(scripted reset and seed included), so it is a valid retry for a flake; push a fresh
-commit when the code changed. Also note that `main`'s ruleset requires branches be
-up to date, so every trailing PR merged ahead of this one costs a branch update and a
-full ~25-minute re-run — another reason the batch is one PR, not N.
+A red passes the turn and goes through the `pr-queue` triage (a known `ci-fail`
+failure rejoins every time; anything else goes to the planner and waits for the user). `main`'s ruleset requires branches be up to
+date, which is why the batch is one PR, not N.
 
 ---
 
 ## Step 9 — Close out EVERY Dependabot artifact
 
-Run `/pr-close <PR> <NEO-###>` for the merge → prod-verify → smoke-test → Linear →
+The turn's `/pr-close <PR> <NEO-###>` does the merge → prod-verify → smoke-test → Linear →
 worktree gates. That skill handles the batch PR itself. **This step covers what it does
 not know about: the Dependabot fleet.**
 
@@ -423,8 +443,19 @@ that went `READY`, which Dependabot PRs/branches were closed or deleted, what wa
   ~30 phantom browser failures and ~31 silently-dropped web tests.
 - **Never batch a major in with the grouped minors.** Majors go last, one commit each.
 - **Never let one failing bump block the batch** — drop it, park it, ticket it, and say
-  so. And never call a failure flaky.
-- **Never merge without the user's explicit per-PR approval**, no matter how green.
+  so. And never call a failure flaky without a matching `ci-fail` ticket
+  (the `pr-queue` red triage).
+- **Never enqueue or merge a fork PR or a Dependabot-authored PR.** The batch is
+  maintainer-authored on a `neonbinder` branch: before `gh pr merge`, check
+  `gh pr view <PR> --json isCrossRepository,headRepositoryOwner,author` (not
+  cross-repo, owner `neonbinder`, author not Dependabot). The Dependabot PRs
+  themselves are never enqueued.
+- **A green `CI Gate` is not E2E proof in the Claude-run flow**: the turn's
+  `pr-close` requires the `E2E / e2e` gate check run on the batch's head SHA.
+  In queue mode, `pr-close` also requires `ci-mode.sh --check-ruleset` to print `queue=live`.
+- **Never join the queue (or, with `MERGE_QUEUE=true`, enqueue) without the user's
+  explicit approval for this batch.** The merge follows on green, so that
+  approval is the merge approval.
 - **Never close a parked bump's Dependabot PR.** It is still the tracking artifact.
 - **Never delete a remote branch without asking**, and never remove a worktree with
   uncommitted changes.

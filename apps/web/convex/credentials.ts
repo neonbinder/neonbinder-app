@@ -15,6 +15,14 @@ import {
 } from "./observability";
 import type { CredentialTestProperties } from "./observability";
 import { isPlatformPaused } from "./marketplacePause";
+import { ebayConfig, ebayConfigured } from "./lib/ebayEnv";
+import { withdrawOffer, type EbaySellerSession } from "./adapters/ebaySeller";
+import {
+  fakeBscCredentialKeyFor,
+  fakeBscCredentialKeyPrefixFor,
+  fakeBscMode,
+  fakeBscUsernameFor,
+} from "./testing";
 import {
   isAbortTimeout,
   logMarketplaceLimiter,
@@ -221,10 +229,17 @@ export class BrowserServiceOutdatedError extends Error {
  */
 function credentialFailureMessage(error: unknown, site: string): string {
   if (error instanceof BrowserServiceOutdatedError) return error.userMessage;
+  if (error instanceof FakeBscBrowserNotFakeError) return error.userMessage;
   return `Could not reach ${siteDisplayName(site)} to verify your credentials. Nothing was saved — please try again.`;
 }
 
-let cachedContract: { url: string; version: number; checkedAt: number } | null = null;
+/**
+ * The last `/health` answer: its contract version and (NEO-552) which
+ * BuySportsCards the service talks to. `bscTarget` is null when the service
+ * did not say (a revision predating the field) or said something unknown.
+ */
+let cachedContract: { url: string; version: number; bscTarget: "real" | "fake" | null; checkedAt: number } | null =
+  null;
 
 /** Reset the cached contract probe. Exported for tests. */
 export function __resetContractCache() {
@@ -278,17 +293,77 @@ async function assertBrowserContract(headers: Record<string, string>): Promise<v
       `Browser service health check failed (${response.status}) — refusing to send a request whose shape it may not support.`,
     );
   }
-  const body = (await response.json().catch(() => ({}))) as { contractVersion?: unknown };
+  const body = (await response.json().catch(() => ({}))) as { contractVersion?: unknown; bscTarget?: unknown };
 
   // A service predating NEO-143 does not report the field at all. Treat that as
   // version 0 — it is exactly the "old service" case this guard exists for, and
   // defaulting it to "probably fine" would defeat the entire mechanism.
   const version = typeof body.contractVersion === "number" ? body.contractVersion : 0;
-  cachedContract = { url, version, checkedAt: now };
+  // NEO-552: read by `assertBrowserTalksToFakeBsc`. A missing or unknown value
+  // is neither answer, so a fake deployment refuses it.
+  const bscTarget = body.bscTarget === "real" || body.bscTarget === "fake" ? body.bscTarget : null;
+  cachedContract = { url, version, bscTarget, checkedAt: now };
 
   if (version < REQUIRED_CONTRACT_VERSION) {
     throw new BrowserServiceOutdatedError(version, REQUIRED_CONTRACT_VERSION);
   }
+}
+
+/**
+ * NEO-552 — thrown when a deployment wired to the fake BSC is about to send a
+ * BuySportsCards credential call (`/login/bsc`, or any `/credentials/*` call
+ * naming a BSC key) to a browser service that does not say it talks to the
+ * fake. That service would sign in to (or store a session for) the real site
+ * under this deployment's fake key, so the request is never sent.
+ */
+export class FakeBscBrowserNotFakeError extends Error {
+  readonly userMessage =
+    "This test deployment's BuySportsCards connection is not set up for the test BuySportsCards. Nothing was changed.";
+
+  constructor(readonly reported: "real" | "fake" | null) {
+    super(
+      `This deployment uses the fake BuySportsCards but the browser service reports bscTarget=${reported ?? "missing"}. ` +
+        `Refusing to send a BuySportsCards credential call.`,
+    );
+    this.name = "FakeBscBrowserNotFakeError";
+  }
+}
+
+const BSC_KEY_MARK = "buysportscards-credentials-";
+
+/** Whether a browser-service request names a BSC credential (its path or body). */
+function namesBscCredential(path: string, body: unknown): boolean {
+  if (browserRouteOf(path) === "/login/bsc") return true;
+  if (path.includes(BSC_KEY_MARK)) return true;
+  return typeof body === "string" && body.includes(BSC_KEY_MARK);
+}
+
+/**
+ * NEO-552 — the env-mismatch guard on the Convex side. Outside fake mode, or
+ * for a request that names no BSC credential, it does nothing. In fake mode it
+ * refuses unless the cached `/health` answer for this browser URL says
+ * `bscTarget: "fake"`; a revision predating the field is refused too.
+ *
+ * It reads the probe `browserAuthHeaders` has just made or trusted (every
+ * caller computes the headers before the request is sent), so it adds no
+ * call of its own. Logs `fake_bsc_browser_not_fake` with the route and what
+ * the service reported, never a key.
+ */
+function assertBrowserTalksToFakeBsc(path: string, body: unknown, operation: string): void {
+  if (!fakeBscMode() || !namesBscCredential(path, body)) return;
+  const url = browserUrl();
+  const reported = cachedContract && cachedContract.url === url ? cachedContract.bscTarget : null;
+  if (reported === "fake") return;
+  console.error(
+    JSON.stringify({
+      msg: "fake_bsc_browser_not_fake",
+      platform: "buysportscards",
+      operation,
+      route: browserRouteOf(path),
+      reported: reported ?? "missing",
+    }),
+  );
+  throw new FakeBscBrowserNotFakeError(reported);
 }
 
 /**
@@ -317,6 +392,10 @@ export async function browserFetch(
   path: string,
   init: RequestInit,
 ): Promise<Response> {
+  // NEO-552: never send a BSC credential call from a fake deployment to a
+  // browser service that is not on the fake. Before the try: a refusal is
+  // not a timeout.
+  assertBrowserTalksToFakeBsc(path, init.body, "browserFetch");
   const startedAt = Date.now();
   try {
     return await fetch(`${browserUrl()}${path}`, {
@@ -341,8 +420,20 @@ export async function browserFetch(
   }
 }
 
-/** NEO-120: exported alongside {@link browserFetch}, same reasoning. */
+/**
+ * NEO-120: exported alongside {@link browserFetch}, same reasoning.
+ *
+ * NEO-552: the one place a browser-service key is named. On a deployment wired
+ * to the fake BSC (`fakeBscMode`), a BuySportsCards key carries the
+ * deployment's slug (`fakeBscCredentialKeyFor`), so deployments that share a
+ * Clerk test user keep separate sessions; it throws there without a
+ * `CONVEX_CLOUD_URL`. Every other site, and BSC on any deployment talking to
+ * the real site (production included), keeps the bare per-user key.
+ */
 export function credKey(site: string, userId: string) {
+  if (site === "buysportscards" && fakeBscMode()) {
+    return fakeBscCredentialKeyFor(userId, process.env.CONVEX_CLOUD_URL);
+  }
   return `${site}-credentials-${userId}`;
 }
 
@@ -360,7 +451,7 @@ function validateInputLength(value: string, fieldName: string) {
 // reactively, so a user rarely hits this). Releases in a finally so the happy
 // path frees the lock immediately; a server-minted token guards release.
 async function withCredentialLock<T>(
-  ctx: { runMutation: (ref: any, args: any) => Promise<any> },
+  ctx: Pick<ActionCtx, "runMutation">,
   userId: string,
   site: string,
   op: "store" | "test" | "delete",
@@ -408,6 +499,87 @@ async function withCredentialLock<T>(
       heldMs: Date.now() - heldFrom,
     });
   }
+}
+
+/**
+ * The connect-and-store half of `saveCredentials` (NEO-141), shared with the
+ * testing seed (`storeTestCredentials`). `listing` says what the stored
+ * sign-in does to marketplace listing (NEO-370 Revision 5, see
+ * `userProfile.updateSiteCredentialStatus`): "save" for the collector's own
+ * save, "testOff" only from the testing seed.
+ */
+async function connectAndStore(
+  ctx: ActionCtx,
+  userId: string,
+  site: string,
+  username: string,
+  password: string,
+  listing: "save" | "testOff",
+): Promise<{ success: boolean; message: string }> {
+  return withCredentialLock(ctx, userId, site, "store", async () => {
+    try {
+      // NEO-141: connect-and-store. The password is handed to the login
+      // route for this one request only — the browser service persists the
+      // resulting session, never the password. There is therefore no
+      // "store now, verify later": a login we cannot complete gives us
+      // nothing worth storing.
+      const outcome = await runSiteLogin(
+        ctx,
+        userId,
+        site,
+        { username, password },
+        "saveCredentials",
+      );
+
+      if (!outcome.success) {
+        // Store NOTHING on failure. Leaving `hasCredentials` untouched is
+        // the whole point: a half-saved credential is what NEO-140 was.
+        //
+        // NEO-281: only send the user to their password when the
+        // marketplace actually refused it. If it never answered, say so.
+        // NEO-287: and if the operator paused the marketplace, the login
+        // was never attempted — the paused copy goes out verbatim and is
+        // never rewritten into "check your username and password".
+        // NEO-288: a site-side refusal (challenge / automated_access)
+        // arrives here as `transient` with the per-site `siteMessage`
+        // already in `message`, so it too goes out verbatim.
+        return {
+          success: false,
+          message: outcome.paused || outcome.transient
+            ? outcome.message
+            : `Could not sign in to ${siteDisplayName(site)}. Nothing was saved — check your username and password and try again.`,
+        };
+      }
+
+      await ctx.runMutation(internal.userProfile.updateSiteCredentialStatus, {
+        userId,
+        site: site,
+        hasCredentials: true,
+        // A successful login is proof no re-auth is pending.
+        needsReauth: false,
+        listing,
+      });
+
+      return {
+        success: true,
+        message: `Connected to ${siteDisplayName(site)} successfully. Your password was not stored — only the session it created.`,
+      };
+    } catch (error) {
+      const detail = error instanceof Error
+        ? `${error.name}: ${error.message}${error.cause ? ` (cause: ${String(error.cause)})` : ""}`
+        : String(error);
+      console.error(
+        `[saveCredentials] store site=${site} url=${browserUrl()} threw: ${detail}`,
+      );
+      return {
+        success: false,
+        message: credentialFailureMessage(error, site),
+      };
+    }
+  }, {
+    success: false,
+    message: "Another credential operation is in progress — try again.",
+  });
 }
 
 /**
@@ -463,6 +635,12 @@ export const saveCredentials = action({
     if (!userId) {
       throw new Error("Not authenticated");
     }
+    // NEO-415: eBay never takes a username and password. It connects through
+    // eBay's own consent page (`ebayConnect.beginConnect` / `completeConnect`)
+    // and disconnects there too.
+    if (args.site === "ebay") {
+      return { success: false, message: "eBay connects under Profile → Credentials → eBay, not with a password." };
+    }
     if (!isSupportedSite(args.site)) {
       return { success: false, message: `Unsupported site: ${args.site}` };
     }
@@ -483,69 +661,9 @@ export const saveCredentials = action({
       validateInputLength(username, "Username");
       validateInputLength(password, "Password");
 
-      return withCredentialLock(ctx, userId, args.site, "store", async () => {
-        try {
-          // NEO-141: connect-and-store. The password is handed to the login
-          // route for this one request only — the browser service persists the
-          // resulting session, never the password. There is therefore no
-          // "store now, verify later": a login we cannot complete gives us
-          // nothing worth storing.
-          const outcome = await runSiteLogin(
-            ctx,
-            userId,
-            args.site,
-            { username, password },
-            "saveCredentials",
-          );
-
-          if (!outcome.success) {
-            // Store NOTHING on failure. Leaving `hasCredentials` untouched is
-            // the whole point: a half-saved credential is what NEO-140 was.
-            //
-            // NEO-281: only send the user to their password when the
-            // marketplace actually refused it. If it never answered, say so.
-            // NEO-287: and if the operator paused the marketplace, the login
-            // was never attempted — the paused copy goes out verbatim and is
-            // never rewritten into "check your username and password".
-            // NEO-288: a site-side refusal (challenge / automated_access)
-            // arrives here as `transient` with the per-site `siteMessage`
-            // already in `message`, so it too goes out verbatim.
-            return {
-              success: false,
-              message: outcome.paused || outcome.transient
-                ? outcome.message
-                : `Could not sign in to ${siteDisplayName(args.site)}. Nothing was saved — check your username and password and try again.`,
-            };
-          }
-
-          await ctx.runMutation(internal.userProfile.updateSiteCredentialStatus, {
-            userId,
-            site: args.site,
-            hasCredentials: true,
-            // A successful login is proof no re-auth is pending.
-            needsReauth: false,
-          });
-
-          return {
-            success: true,
-            message: `Connected to ${siteDisplayName(args.site)} successfully. Your password was not stored — only the session it created.`,
-          };
-        } catch (error) {
-          const detail = error instanceof Error
-            ? `${error.name}: ${error.message}${error.cause ? ` (cause: ${String(error.cause)})` : ""}`
-            : String(error);
-          console.error(
-            `[saveCredentials] store site=${args.site} url=${browserUrl()} threw: ${detail}`,
-          );
-          return {
-            success: false,
-            message: credentialFailureMessage(error, args.site),
-          };
-        }
-      }, {
-        success: false,
-        message: "Another credential operation is in progress — try again.",
-      });
+      // NEO-370 Revision 5: the collector's own save starts listing on a
+      // listing platform's site (and clears an E2E test marker).
+      return connectAndStore(ctx, userId, args.site, username, password, "save");
     }
 
     // Clear branch — both username and password omitted/blank.
@@ -584,6 +702,180 @@ export const saveCredentials = action({
       success: false,
       message: "Another credential operation is in progress — try again.",
     });
+  },
+});
+
+/**
+ * NEO-370 Revision 5 — the testing seed's connect-and-store
+ * (`testing.seedMyTestCredentials`): `saveCredentials`' store path for the
+ * seeded user, where the seed decides whether the stored sign-in lists
+ * (`listing` true: as a collector's own save) or not (false: the E2E test
+ * marker, `marketplaceListingStates.testListingOff`). Internal, and fails
+ * closed where the testing flag is unset (production), so no product path
+ * can reach the marker.
+ */
+export const storeTestCredentials = internalAction({
+  args: {
+    userId: v.string(),
+    site: v.string(),
+    username: v.string(),
+    password: v.string(),
+    listing: v.boolean(),
+  },
+  returns: v.object({ success: v.boolean(), message: v.string() }),
+  handler: async (ctx, args) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test credential seeding is not enabled on this deployment");
+    }
+    if (!isSupportedSite(args.site)) {
+      return { success: false, message: `Unsupported site: ${args.site}` };
+    }
+    validateInputLength(args.username, "Username");
+    validateInputLength(args.password, "Password");
+    return connectAndStore(ctx, args.userId, args.site, args.username, args.password, args.listing ? "save" : "testOff");
+  },
+});
+
+/**
+ * NEO-445 — the other half of the testing seed's store, for a sign-in that
+ * belongs to no collector (`testingSellerCleanup`): deletes the stored session
+ * (`DELETE /credentials/<key>`; a 404 is already gone) and clears the saved
+ * sign-in, under the credential lock. Internal, and fails closed where the
+ * testing flag is unset (production).
+ */
+export const removeTestCredentials = internalAction({
+  args: { userId: v.string(), site: v.union(v.literal("buysportscards"), v.literal("ebay")) },
+  returns: v.object({ ok: v.boolean() }),
+  handler: async (ctx, args): Promise<{ ok: boolean }> => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test credential seeding is not enabled on this deployment");
+    }
+    return await withCredentialLock<{ ok: boolean }>(
+      ctx,
+      args.userId,
+      args.site,
+      "delete",
+      async () => {
+        try {
+          const response = await browserFetch(`/credentials/${credKey(args.site, args.userId)}`, {
+            method: "DELETE",
+            headers: await browserAuthHeaders(),
+          });
+          if (!response.ok && response.status !== 404) return { ok: false };
+        } catch {
+          return { ok: false };
+        }
+        await ctx.runMutation(internal.userProfile.removeSiteCredentialStatus, { userId: args.userId, site: args.site });
+        return { ok: true };
+      },
+      { ok: false },
+    );
+  },
+});
+
+/**
+ * NEO-552 — the end-of-run cleanup of this deployment's fake BSC sessions.
+ * Each one is a Secret Manager secret (`buysportscards-credentials-fake-<slug>-<userId>`,
+ * see `credKey`), and Secret Manager bills per active version, so the E2E
+ * workflow calls this after both passes (`e2e.yml`, the `e2e` job) rather than
+ * leaving one secret per test user per preview. The browser service's 72 h
+ * TTL on fake keys is the backstop for a run that never gets here.
+ *
+ * For every user on this deployment (`testing.fakeBscCleanupUserIds`) it
+ * deletes that user's fake key through the browser service's existing
+ * `DELETE /credentials/:key` (a missing secret is already gone) and clears
+ * the user's BSC flag, under the credential lock. A key that is not exactly
+ * this deployment's own fake prefix plus a plain id (`[A-Za-z0-9_]+`) is never
+ * sent, and the key is URL-encoded into the path. Outside fake mode
+ * (production, or a deployment on the real BSC) it deletes nothing and says
+ * so: a bare key there is a real session.
+ *
+ * Internal: reached only by `convex run` with the deployment's deploy key, like
+ * the other CLI testing helpers. Reports counts, never ids or keys, and never
+ * throws for a failed delete (the workflow only warns).
+ */
+export const deleteFakeBscSessionsFromCli = internalAction({
+  args: {},
+  returns: v.union(
+    v.object({ fake: v.literal(false) }),
+    v.object({
+      fake: v.literal(true),
+      users: v.number(),
+      deleted: v.number(),
+      failed: v.number(),
+      truncated: v.boolean(),
+    }),
+  ),
+  handler: async (
+    ctx,
+  ): Promise<
+    { fake: false } | { fake: true; users: number; deleted: number; failed: number; truncated: boolean }
+  > => {
+    if (!process.env.TESTING_RESET_SECRET || !fakeBscMode()) {
+      console.log(JSON.stringify({ msg: "fake_bsc_session_cleanup", platform: "buysportscards", outcome: "not_fake" }));
+      return { fake: false };
+    }
+    const startedAt = Date.now();
+    // Throws without CONVEX_CLOUD_URL: with no slug there is no prefix that
+    // is provably this deployment's, so nothing is deleted.
+    const prefix = fakeBscCredentialKeyPrefixFor(process.env.CONVEX_CLOUD_URL);
+    const { userIds, truncated } = (await ctx.runQuery(internal.testing.fakeBscCleanupUserIds, {})) as {
+      userIds: string[];
+      truncated: boolean;
+    };
+    // The WHOLE key must be this deployment's prefix plus a plain id: a user
+    // id carrying `/`, `.` or `%` could otherwise walk the DELETE path onto
+    // another key (`a/../../credentials/<other>`). A non-match sends nothing.
+    const ownKey = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[A-Za-z0-9_]+$`);
+    let deleted = 0;
+    let failed = 0;
+    for (const userId of userIds) {
+      const key = credKey("buysportscards", userId);
+      if (!ownKey.test(key)) {
+        failed++;
+        continue;
+      }
+      const ok = await withCredentialLock<boolean>(
+        ctx,
+        userId,
+        "buysportscards",
+        "delete",
+        async () => {
+          try {
+            const response = await browserFetch(`/credentials/${encodeURIComponent(key)}`, {
+              method: "DELETE",
+              headers: await browserAuthHeaders(),
+            });
+            await response.body?.cancel().catch(() => undefined);
+            if (!response.ok && response.status !== 404) return false;
+          } catch {
+            return false;
+          }
+          await ctx.runMutation(internal.userProfile.removeSiteCredentialStatus, {
+            userId,
+            site: "buysportscards",
+          });
+          return true;
+        },
+        false,
+      );
+      if (ok) deleted++;
+      else failed++;
+    }
+    console.log(
+      JSON.stringify({
+        msg: "fake_bsc_session_cleanup",
+        platform: "buysportscards",
+        operation: "deleteFakeBscSessions",
+        outcome: failed === 0 ? "ok" : "partial",
+        users: userIds.length,
+        deleted,
+        failed,
+        truncated,
+        elapsedMs: Date.now() - startedAt,
+      }),
+    );
+    return { fake: true, users: userIds.length, deleted, failed, truncated };
   },
 });
 
@@ -662,6 +954,78 @@ export const getSiteCredentials = action({
  * token that expires mid-request and produces a confusing 401.
  */
 const TOKEN_REFRESH_LEEWAY_MS = 5 * 60 * 1000;
+
+/**
+ * NEO-552 — on a deployment wired to the fake BSC, every test user signs in
+ * as `nb+<convexSlug>-<userTag>@fake.invalid`, and the fake keeps that run's
+ * listings, orders and faults under the namespace in it. The browser service
+ * stores that session under a key that names this deployment too
+ * (`credKey` → `fakeBscCredentialKeyFor`), so another deployment's seed
+ * cannot replace it.
+ *
+ * This guard is the backstop for the session still not being this
+ * deployment's: a key written by hand, an older seed, or a real BSC account.
+ * In fake mode only, a BSC session is used only when its stored username is
+ * this deployment's own (`fakeBscUsernameFor`). A mismatch refuses the token
+ * (the caller sees "no credentials", as for any missing session) and logs
+ * `fake_bsc_namespace_clash` naming both namespaces. Re-seeding the user on
+ * this deployment (`testing.seedMyTestCredentials`, which compares the same
+ * username) repairs it. It never re-seeds here.
+ *
+ * A match is remembered per user for {@link FAKE_SESSION_CHECK_TTL_MS}, so
+ * the extra metadata read costs one browser-service call per user per
+ * window, not one per BSC call.
+ */
+const FAKE_SESSION_CHECK_TTL_MS = 2 * 60_000;
+const fakeSessionCheckedAt = new Map<string, number>();
+
+/** Tests only: the match cache otherwise leaks across cases. */
+export function __resetFakeBscSessionCheck(): void {
+  fakeSessionCheckedAt.clear();
+}
+
+/** The namespace part of a fake sign-in (`nb+<ns>@fake.invalid`), for the log. */
+function fakeNamespaceOf(username: string): string {
+  const m = /^nb\+([a-z0-9-]{1,100})@fake\.invalid$/i.exec(username.trim());
+  return m ? m[1].toLowerCase() : "not-a-fake-account";
+}
+
+/**
+ * Null when the stored BSC session may be used on this deployment, else why
+ * not. Outside fake mode, or for another site, always null. An unreadable
+ * answer is not a clash (the token read then fails or succeeds on its own).
+ */
+async function fakeBscSessionClash(site: string, userId: string): Promise<string | null> {
+  if (site !== "buysportscards" || !fakeBscMode()) return null;
+  const key = credKey(site, userId);
+  const checkedAt = fakeSessionCheckedAt.get(key);
+  if (checkedAt !== undefined && Date.now() - checkedAt < FAKE_SESSION_CHECK_TTL_MS) return null;
+  let expected: string;
+  try {
+    expected = fakeBscUsernameFor(userId, process.env.CONVEX_CLOUD_URL);
+  } catch {
+    // No deployment slug: this deployment cannot name its own namespace, so
+    // no session can be proven its own. Fail closed.
+    return "this deployment has no CONVEX_CLOUD_URL to name its fake namespace";
+  }
+  const response = await browserFetch(`/credentials/${key}/metadata`, {
+    method: "GET",
+    headers: await browserAuthHeaders(),
+  });
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    return null;
+  }
+  const data = (await response.json().catch(() => null)) as { username?: unknown } | null;
+  const stored = typeof data?.username === "string" ? data.username : null;
+  if (stored === null) return null;
+  const norm = (value: string) => value.trim().toLowerCase();
+  if (norm(stored) === norm(expected)) {
+    fakeSessionCheckedAt.set(key, Date.now());
+    return null;
+  }
+  return `the stored BuySportsCards session belongs to namespace ${fakeNamespaceOf(stored)}, not this deployment's ${fakeNamespaceOf(expected)}; re-seed this test user here`;
+}
 
 /**
  * Read the raw token + expiresAt from the browser service's secret store.
@@ -824,140 +1188,252 @@ export const getSiteToken = internalAction({
     v.null(),
   ),
   handler: async (ctx, args): Promise<{ token: string; expiresAt?: number } | null> => {
-    const userId = await getCurrentUserId(ctx);
-    if (!userId) {
-      throw new Error("Not authenticated");
-    }
-
-    // NEO-287: a paused marketplace is not contacted at all — not even to
-    // read the cached token, because a cached-but-stale token would lead
-    // straight into `refreshSiteToken` and a stored-session login. Returning
-    // null here means the adapters take their `no_credentials` exit, which
-    // writes nothing (no `needsReauth`, no NEO-278 stamp, no self-heal), so
-    // the stored session and every flag come out of the pause exactly as they
-    // went in. The adapters guard this earlier still (before asking for the
-    // token); this is the backstop for any caller that does not.
-    if (isPlatformPaused(args.site)) {
-      console.log(
-        JSON.stringify({ msg: "marketplace_token_paused", site: args.site, op: "getSiteToken" }),
-      );
-      return null;
-    }
-
-    try {
-      const cached = await readCachedToken(args.site, userId);
-
-      if (cached === "not_found") {
-        // The secret doesn't exist at all — not "stale," genuinely absent.
-        // Self-heal the Convex flag rather than wasting a doomed re-auth
-        // attempt (there's nothing to log in with). This is the fix for
-        // NEO-89: whatever caused the drift (an interrupted delete, a
-        // deleted-out-from-under-us secret), the UI now corrects itself the
-        // next time anyone hits this path instead of staying wrong forever.
-        //
-        // NEO-140 narrowed what reaches here. `readCachedToken` used to return
-        // "not_found" for a plain "no token cached yet" 404 too, so this
-        // destructive branch fired on a perfectly healthy account — the single
-        // most damaging line in the credential flow. It is now reachable only
-        // when the browser service says the SECRET is missing.
-        //
-        // Guard: skip if a saveCredentials store/delete is actively holding
-        // the lock right now — a 404 mid-write is an expected transient, not
-        // proof of absence, and self-healing here would both race the flag
-        // the in-flight op is about to set and clobber the lock entry it's
-        // holding (security-auditor finding, NEO-89 review).
-        const locked = await ctx.runQuery(internal.userProfile.hasLiveCredentialLock, {
-          userId,
-          site: args.site,
-        });
-        if (!locked) {
-          // TOCTOU: the lock check races the store it is meant to defer to.
-          // A store can hold the lock while we read the secret mid-write (404),
-          // then set `hasCredentials: true` and RELEASE before the check above
-          // runs — so the guard reads "unlocked" and we delete the flag that
-          // store just wrote. The window is small but the loss is total, since
-          // nothing on any success path re-asserts the flag.
-          //
-          // Confirm before destroying. A second read costs one round trip on a
-          // path that has already conceded a re-auth, and it collapses the race:
-          // if the store finished, the secret now exists and this read no longer
-          // says "not_found". Never delete on a single observation — that is the
-          // whole lesson of NEO-140.
-          const confirmed = await readCachedToken(args.site, userId);
-          if (confirmed === "not_found") {
-            await ctx.runMutation(internal.userProfile.removeSiteCredentialStatus, {
-              userId,
-              site: args.site,
-            });
-          }
-        }
-        return null;
-      }
-
-      if (!cached) {
-        // No cached token, but the secret itself exists. Mint a fresh token
-        // via re-auth before giving up — otherwise the caller fails with
-        // `no_credentials` even though credentials exist. Confirmed E2E root
-        // cause: a worker's token was evicted ~18min after warm, so a later
-        // sport/year fetch got a null token and the column came up empty (no
-        // Football, etc.).
-        //
-        // NEO-140: this branch was written for the seeded-but-never-warmed
-        // case, but was UNREACHABLE for it — that case produced a 404, which
-        // the old `readCachedToken` collapsed into "not_found", so it took the
-        // destructive branch above instead of landing here. Now that 204 (and
-        // a legacy "No token available" 404) map to `null`, the branch finally
-        // does the job it was written for. This restores intended behaviour
-        // rather than adding new behaviour.
-        //
-        // If the re-auth fails because the session is unrecoverable, the
-        // authenticate* action flags `needsReauth` on its way out; we return
-        // null and never delete.
-        const minted = await refreshSiteToken(ctx, userId, args.site);
-        if (!minted) return null;
-        const afterMint = await readCachedToken(args.site, userId);
-        return afterMint === "not_found" ? null : afterMint;
-      }
-
-      const isFresh =
-        typeof cached.expiresAt === "number" &&
-        cached.expiresAt > Date.now() + TOKEN_REFRESH_LEEWAY_MS;
-      if (isFresh) return cached;
-
-      // Stale (or unknown expiry) — kick off a re-auth via the site's
-      // own authenticate action. Each site has its own action because
-      // the login flow + post-login bookkeeping (e.g. BSC sellerId
-      // capture) differs per marketplace.
-      const refreshed = await refreshSiteToken(ctx, userId, args.site);
-      if (!refreshed) {
-        // Refresh failed (or was skipped by the NEO-278 re-auth backoff);
-        // fall back to the (likely stale) cached token rather than null —
-        // let the caller's 401 path surface a clear "please re-login" error
-        // if the cache really is dead.
-        return cached;
-      }
-
-      const fresh = await readCachedToken(args.site, userId);
-      return fresh === "not_found" ? null : (fresh ?? cached);
-    } catch (error) {
-      console.error(`Failed to retrieve token for ${args.site}`);
-      // NEO-321 follow-up — why, scrubbed (the error can name a browser
-      // route with the credential key in it). The caller sees only "no
-      // token", so this line is the only place the reason survives.
-      const detail =
-        error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-      console.error(
-        JSON.stringify({
-          msg: "site_token_failed",
-          site: args.site,
-          errorClass: classifyAdapterError(detail),
-          error: scrubLogText(detail),
-        }),
-      );
-      return null;
-    }
+    return await siteTokenForCurrentUser(ctx, args.site);
   },
 });
+
+/**
+ * The body of `getSiteToken` as a plain function, for a caller that is
+ * already an action and would otherwise spend two action hops (and the
+ * scheduler's wait between them) to reach it. The identity is the one on
+ * `ctx.auth`, exactly what `ctx.runAction(getSiteToken)` propagates; no
+ * identity throws "Not authenticated", exactly as the action does. The token
+ * goes back to the caller and nowhere else: this logs nothing.
+ */
+export async function siteTokenForCurrentUser(
+  ctx: ActionCtx,
+  site: string,
+): Promise<{ token: string; expiresAt?: number } | null> {
+  const userId = await getCurrentUserId(ctx);
+  if (!userId) {
+    throw new Error("Not authenticated");
+  }
+  return await siteTokenFor(ctx, userId, site);
+}
+
+/**
+ * NEO-370 — the user an identity-less entry acts for. `explicitUserId` is the
+ * owner the scheduler passed; a caller that DOES carry an identity may only
+ * name itself. Both present and different is a bug or an attack, never a
+ * fallback: it throws. Neither present throws "Not authenticated".
+ */
+export async function actingUserId(
+  ctx: Pick<ActionCtx, "auth">,
+  explicitUserId: string | undefined,
+): Promise<string> {
+  const identity = await getCurrentUserId(ctx);
+  if (explicitUserId !== undefined && identity && identity !== explicitUserId) {
+    throw new Error("A signed-in caller can only act for itself");
+  }
+  const userId = explicitUserId ?? identity;
+  if (!userId) throw new Error("Not authenticated");
+  return userId;
+}
+
+/**
+ * NEO-370 — `getSiteToken` for work that runs with NO caller identity: a
+ * scheduled listing drain or the order poll acts for the collector it was
+ * scheduled for, and the identity a user-driven call would carry is absent.
+ * The same body as `getSiteToken` (pause, the NEO-140 self-heal rules, the
+ * NEO-278 backoff, the credential lock), keyed on the `userId` the scheduler
+ * passed instead of on `ctx.auth`.
+ *
+ * Internal only, like `getSiteToken`: never reachable over RPC, and a caller
+ * must only ever pass the owner of the row it is working on.
+ */
+export const getSiteTokenForUser = internalAction({
+  args: {
+    site: v.union(v.literal("buysportscards"), v.literal("sportlots"), v.literal("ebay")),
+    userId: v.string(),
+  },
+  returns: v.union(
+    v.object({
+      token: v.string(),
+      expiresAt: v.optional(v.float64()),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, args): Promise<{ token: string; expiresAt?: number } | null> => {
+    const userId = await actingUserId(ctx, args.userId);
+    return await siteTokenFor(ctx, userId, args.site, { explicitUserId: true });
+  },
+});
+
+/**
+ * NEO-370 — `refreshSiteTokenAfterRejection` for identity-less work (see
+ * `getSiteTokenForUser`). Same guards: the pause, the NEO-278 backoff and the
+ * credential lock. Answers `{ refreshed: false }` for any of them or a failed
+ * login; never throws for a refresh failure.
+ */
+export const refreshSiteTokenForUser = internalAction({
+  args: {
+    site: v.union(v.literal("buysportscards"), v.literal("sportlots"), v.literal("ebay")),
+    userId: v.string(),
+  },
+  returns: v.object({ refreshed: v.boolean() }),
+  handler: async (ctx, args): Promise<{ refreshed: boolean }> => {
+    const userId = await actingUserId(ctx, args.userId);
+    if (isPlatformPaused(args.site)) return { refreshed: false };
+    // NEO-483: every caller is answering a refusal (a 401 on the token it
+    // was handed), so the login must not hand the same token back.
+    return {
+      refreshed: await refreshSiteToken(ctx, userId, args.site, { explicitUserId: true, tokenRefused: true }),
+    };
+  },
+});
+
+/**
+ * The body of `getSiteToken` / `getSiteTokenForUser`. `explicitUserId` makes a
+ * refresh name the user to the login action rather than leave it to the
+ * caller's identity (which identity-less work does not have).
+ */
+async function siteTokenFor(
+  ctx: ActionCtx,
+  userId: string,
+  site: string,
+  opts: { explicitUserId?: boolean } = {},
+): Promise<{ token: string; expiresAt?: number } | null> {
+  // `args.site` keeps the body as it was in `getSiteToken`.
+  const args = { site };
+  // NEO-287: a paused marketplace is not contacted at all — not even to
+  // read the cached token, because a cached-but-stale token would lead
+  // straight into `refreshSiteToken` and a stored-session login. Returning
+  // null here means the adapters take their `no_credentials` exit, which
+  // writes nothing (no `needsReauth`, no NEO-278 stamp, no self-heal), so
+  // the stored session and every flag come out of the pause exactly as they
+  // went in. The adapters guard this earlier still (before asking for the
+  // token); this is the backstop for any caller that does not.
+  if (isPlatformPaused(args.site)) {
+    console.log(
+      JSON.stringify({ msg: "marketplace_token_paused", site: args.site, op: "getSiteToken" }),
+    );
+    return null;
+  }
+  // NEO-415: a deployment not wired to eBay never asks the service for an
+  // eBay token (and never self-heals a flag on its answer).
+  if (args.site === "ebay" && !ebayConfigured()) return null;
+
+  try {
+    // NEO-552 — fake mode: never use another deployment's BSC session.
+    const clash = await fakeBscSessionClash(args.site, userId);
+    if (clash !== null) {
+      console.error(
+        JSON.stringify({ msg: "fake_bsc_namespace_clash", site: args.site, operation: "getSiteToken", reason: clash }),
+      );
+      return null;
+    }
+    const cached = await readCachedToken(args.site, userId);
+
+    if (cached === "not_found") {
+      // The secret doesn't exist at all — not "stale," genuinely absent.
+      // Self-heal the Convex flag rather than wasting a doomed re-auth
+      // attempt (there's nothing to log in with). This is the fix for
+      // NEO-89: whatever caused the drift (an interrupted delete, a
+      // deleted-out-from-under-us secret), the UI now corrects itself the
+      // next time anyone hits this path instead of staying wrong forever.
+      //
+      // NEO-140 narrowed what reaches here. `readCachedToken` used to return
+      // "not_found" for a plain "no token cached yet" 404 too, so this
+      // destructive branch fired on a perfectly healthy account — the single
+      // most damaging line in the credential flow. It is now reachable only
+      // when the browser service says the SECRET is missing.
+      //
+      // Guard: skip if a saveCredentials store/delete is actively holding
+      // the lock right now — a 404 mid-write is an expected transient, not
+      // proof of absence, and self-healing here would both race the flag
+      // the in-flight op is about to set and clobber the lock entry it's
+      // holding (security-auditor finding, NEO-89 review).
+      const locked = await ctx.runQuery(internal.userProfile.hasLiveCredentialLock, {
+        userId,
+        site: args.site,
+      });
+      if (!locked) {
+        // TOCTOU: the lock check races the store it is meant to defer to.
+        // A store can hold the lock while we read the secret mid-write (404),
+        // then set `hasCredentials: true` and RELEASE before the check above
+        // runs — so the guard reads "unlocked" and we delete the flag that
+        // store just wrote. The window is small but the loss is total, since
+        // nothing on any success path re-asserts the flag.
+        //
+        // Confirm before destroying. A second read costs one round trip on a
+        // path that has already conceded a re-auth, and it collapses the race:
+        // if the store finished, the secret now exists and this read no longer
+        // says "not_found". Never delete on a single observation — that is the
+        // whole lesson of NEO-140.
+        const confirmed = await readCachedToken(args.site, userId);
+        if (confirmed === "not_found") {
+          await ctx.runMutation(internal.userProfile.removeSiteCredentialStatus, {
+            userId,
+            site: args.site,
+          });
+        }
+      }
+      return null;
+    }
+
+    if (!cached) {
+      // No cached token, but the secret itself exists. Mint a fresh token
+      // via re-auth before giving up — otherwise the caller fails with
+      // `no_credentials` even though credentials exist. Confirmed E2E root
+      // cause: a worker's token was evicted ~18min after warm, so a later
+      // sport/year fetch got a null token and the column came up empty (no
+      // Football, etc.).
+      //
+      // NEO-140: this branch was written for the seeded-but-never-warmed
+      // case, but was UNREACHABLE for it — that case produced a 404, which
+      // the old `readCachedToken` collapsed into "not_found", so it took the
+      // destructive branch above instead of landing here. Now that 204 (and
+      // a legacy "No token available" 404) map to `null`, the branch finally
+      // does the job it was written for. This restores intended behaviour
+      // rather than adding new behaviour.
+      //
+      // If the re-auth fails because the session is unrecoverable, the
+      // authenticate* action flags `needsReauth` on its way out; we return
+      // null and never delete.
+      const minted = await refreshSiteToken(ctx, userId, args.site, opts);
+      if (!minted) return null;
+      const afterMint = await readCachedToken(args.site, userId);
+      return afterMint === "not_found" ? null : afterMint;
+    }
+
+    const isFresh =
+      typeof cached.expiresAt === "number" &&
+      cached.expiresAt > Date.now() + TOKEN_REFRESH_LEEWAY_MS;
+    if (isFresh) return cached;
+
+    // Stale (or unknown expiry) — kick off a re-auth via the site's
+    // own authenticate action. Each site has its own action because
+    // the login flow + post-login bookkeeping (e.g. BSC sellerId
+    // capture) differs per marketplace.
+    const refreshed = await refreshSiteToken(ctx, userId, args.site, opts);
+    if (!refreshed) {
+      // Refresh failed (or was skipped by the NEO-278 re-auth backoff);
+      // fall back to the (likely stale) cached token rather than null —
+      // let the caller's 401 path surface a clear "please re-login" error
+      // if the cache really is dead.
+      return cached;
+    }
+
+    const fresh = await readCachedToken(args.site, userId);
+    return fresh === "not_found" ? null : (fresh ?? cached);
+  } catch (error) {
+    console.error(`Failed to retrieve token for ${args.site}`);
+    // NEO-321 follow-up — why, scrubbed (the error can name a browser
+    // route with the credential key in it). The caller sees only "no
+    // token", so this line is the only place the reason survives.
+    const detail =
+      error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    console.error(
+      JSON.stringify({
+        msg: "site_token_failed",
+        site: args.site,
+        errorClass: classifyAdapterError(detail),
+        error: scrubLogText(detail),
+      }),
+    );
+    return null;
+  }
+}
 
 /**
  * NEO-278: how long `getSiteToken` waits after a `reauth_required` outcome
@@ -1032,6 +1508,12 @@ async function inReauthBackoff(
  * paths (`testSiteCredentials`, `saveCredentials`) run their own login
  * directly and are never subject to the NEO-278 backoff below — a user who
  * clicks "Test" or signs in again must always get a real attempt.
+ *
+ * NEO-483 — `tokenRefused`: the caller is answering a refusal of the token
+ * the cache handed it (the two after-rejection actions). For BSC it rides to
+ * the browser service's `/login/bsc` so the login skips its cached-token
+ * check, which during a BSC profile stall would otherwise hand the refused
+ * token straight back. Other sites ignore it.
  */
 async function refreshSiteToken(
   ctx: {
@@ -1041,7 +1523,12 @@ async function refreshSiteToken(
   },
   userId: string,
   site: string,
+  opts: { explicitUserId?: boolean; tokenRefused?: boolean } = {},
 ): Promise<boolean> {
+  // NEO-370: identity-less work names the user to the login action; a
+  // user-driven call leaves it to the identity it carries (its args stay
+  // `{}`, exactly as before).
+  const loginArgs = opts.explicitUserId ? { userId } : {};
   // NEO-278: checked BEFORE contending for the lock, so a suppressed refresh
   // costs one indexed query rather than a lock round-trip. Returning false
   // here lands on the same fallbacks a failed refresh does — the cached token
@@ -1057,16 +1544,25 @@ async function refreshSiteToken(
   return withCredentialLock(ctx, userId, site, "test", async () => {
     try {
       if (site === "buysportscards") {
-        const result = (await ctx.runAction(internal.credentials.authenticateBsc, {})) as {
+        const result = (await ctx.runAction(internal.credentials.authenticateBsc, {
+          ...loginArgs,
+          ...(opts.tokenRefused === true ? { tokenRefused: true } : {}),
+        })) as {
           success: boolean;
         };
         return result.success;
       }
       if (site === "sportlots") {
-        const result = (await ctx.runAction(internal.credentials.authenticateSportlots, {})) as {
+        const result = (await ctx.runAction(internal.credentials.authenticateSportlots, loginArgs)) as {
           success: boolean;
         };
         return result.success;
+      }
+      if (site === "ebay") {
+        // NEO-415: no login. The browser service renews the access token
+        // with the stored refresh token (eBay's refresh grant) and stores
+        // it; the caller re-reads the cached token. Already under the lock.
+        return await refreshEbayToken(ctx, userId);
       }
       console.warn(`[refreshSiteToken] no refresh handler for site: ${site}`);
       return false;
@@ -1113,7 +1609,8 @@ export const refreshSiteTokenAfterRejection = internalAction({
     }
     // NEO-287 — a paused marketplace is never logged in to.
     if (isPlatformPaused(args.site)) return { refreshed: false };
-    return { refreshed: await refreshSiteToken(ctx, userId, args.site) };
+    // NEO-483: the marketplace refused the cached token; see `refreshSiteToken`.
+    return { refreshed: await refreshSiteToken(ctx, userId, args.site, { tokenRefused: true }) };
   },
 });
 
@@ -1190,13 +1687,6 @@ export const testSiteCredentials = action({
             return result;
           }
 
-          case "ebay": {
-            console.log("[testSiteCredentials] Dispatching to ebay.testCredentials");
-            const result = await ctx.runAction(internal.adapters.ebay.testCredentials, {});
-            console.log(`[testSiteCredentials] ebay.testCredentials returned: success=${result.success}`);
-            return result;
-          }
-
           case "sportlots": {
             console.log("[testSiteCredentials] Dispatching to authenticateSportlots");
             const result = await ctx.runAction(
@@ -1256,6 +1746,10 @@ async function loginWithRetry(
   // — the password is never written to Secret Manager and never leaves this
   // request. When absent the service falls back to the stored secret.
   transient?: { username: string; password: string },
+  // NEO-483 (BSC only): the caller's token was just refused, so the service
+  // must not answer from its cached-token check. Sent only when true; an
+  // older service ignores the field.
+  tokenRefused?: boolean,
 ): Promise<{ success: boolean; data: { success: boolean; message?: string; storeName?: string; sellerId?: string } | null; detail: string; diagnostic?: LoginDiagnostic; errorClass?: string }> {
   // Retry ONLY on 503 (browser service busy serializing Puppeteer logins) —
   // back off and wait our turn. Do NOT retry an actual login failure: a real
@@ -1272,10 +1766,20 @@ async function loginWithRetry(
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const attemptStartedAt = Date.now();
     try {
+      const headers = await browserAuthHeaders();
+      const body = JSON.stringify({
+        key,
+        ...(transient ?? {}),
+        ...(tokenRefused === true ? { tokenRefused: true } : {}),
+      });
+      // NEO-552: the login path calls `fetch` directly, so it carries the
+      // fake-BSC guard itself. Checked on the path only (the body holds the
+      // transient password and is never inspected or logged).
+      assertBrowserTalksToFakeBsc(new URL(loginUrl).pathname, key, label);
       const response = await fetch(loginUrl, {
         method: "POST",
-        headers: await browserAuthHeaders(),
-        body: JSON.stringify(transient ? { key, ...transient } : { key }),
+        headers,
+        body,
         signal: AbortSignal.timeout(60_000),
       });
       if (response.status === 429) {
@@ -1350,6 +1854,8 @@ async function loginWithRetry(
       // Let it propagate to the action's catch, which renders the deploy-aware
       // message.
       if (e instanceof BrowserServiceOutdatedError) throw e;
+      // NEO-552: likewise a fake-BSC guard refusal: nothing was sent.
+      if (e instanceof FakeBscBrowserNotFakeError) throw e;
       // Network/timeout to the browser service — do not retry (avoid hammering).
       if (isAbortTimeout(e)) {
         // NEO-321 follow-up — our own 60s timer on the login call.
@@ -1486,6 +1992,8 @@ async function runSiteLogin(
   site: string,
   transient: { username: string; password: string } | undefined,
   label: string,
+  // NEO-483: see `refreshSiteToken`. BSC only; ignored for every other site.
+  opts: { tokenRefused?: boolean } = {},
 ): Promise<SiteLoginOutcome> {
   const cfg = SITE_LOGIN[site];
   if (!cfg) {
@@ -1520,7 +2028,13 @@ async function runSiteLogin(
 
   const key = credKey(site, userId);
   const startedAt = Date.now();
-  const result = await loginWithRetry(`${browserUrl()}${cfg.path}`, key, label, transient);
+  const result = await loginWithRetry(
+    `${browserUrl()}${cfg.path}`,
+    key,
+    label,
+    transient,
+    site === "buysportscards" && opts.tokenRefused === true ? true : undefined,
+  );
   const durationMs = Date.now() - startedAt;
 
   if (!result.success || !result.data) {
@@ -1559,17 +2073,50 @@ async function runSiteLogin(
 
   const loginResult = result.data;
 
-  // Persist BSC sellerId on the user's profile so subsequent
-  // fetchBscChecklist calls don't have to re-derive it. The browser
-  // service may legitimately return success without sellerId if BSC's
-  // /marketplace/user/profile shape changes — in that case we skip the
-  // upsert and fall back to env-var seller in fetchBscChecklist.
-  if (site === "buysportscards" && loginResult.sellerId) {
-    await ctx.runMutation(internal.userProfile.setMarketplaceAccountIdInternal, {
-      userId,
-      site: "buysportscards",
-      accountId: loginResult.sellerId,
-    });
+  // Persist the BSC seller id, read live from BSC's profile inside this
+  // login, on the user's profile. It is never taken from env or config. This
+  // runs before the caller writes the credential status (connectAndStore's
+  // `updateSiteCredentialStatus`, which starts listing), so a save that
+  // returns the id has it saved before listing turns on.
+  //
+  // NEO-483: the read is best-effort. A password login can succeed without an
+  // id (a stalled or reshaped profile read), and a token renewal or silent
+  // re-authorize never reads it. Then nothing is stored here, and for an
+  // owner who already lists on BSC with no account stored, the background
+  // read (`bscSellerId.ts`) is armed to start in 30 s. A first save is armed
+  // by listing setup instead (`listingSync.setUpListing`), since the owner
+  // does not list yet at this point. The drain never reads the id live; it
+  // waits (`awaitingSeller`) until the account lands.
+  //
+  // NEO-483 audit: only a password sign-in (`transient` set: the collector's
+  // Connect/save, or the testing seed's store, which stands in for one) is a
+  // user action. A renewal, a silent re-authorize and Test Credentials run
+  // on the stored session and arm WITHOUT `userAction`, so a chain that gave
+  // up or found no seller profile cools down instead of being restarted by
+  // every hourly renewal (`ensureBscSellerIdFetch`, `coolingDown`).
+  let sellerFetch: "started" | "inFlight" | "coolingDown" | "notListing" | "known" | "notArmed" | null = null;
+  if (site === "buysportscards") {
+    if (loginResult.sellerId) {
+      await ctx.runMutation(internal.userProfile.setMarketplaceAccountIdInternal, {
+        userId,
+        site: "buysportscards",
+        accountId: loginResult.sellerId,
+      });
+    } else {
+      try {
+        // The default first wait (30 s) applies.
+        sellerFetch = await ctx.runMutation(internal.bscSellerId.ensureFetch, {
+          ownerId: userId,
+          ...(transient !== undefined ? { userAction: true } : {}),
+        });
+      } catch {
+        sellerFetch = "notArmed";
+        // Arming the read never fails a login; the next drain claim re-arms it.
+        console.warn(
+          JSON.stringify({ msg: "bsc_seller_id_fetch", platform: "bsc", operation: "ensure", outcome: "not_armed" }),
+        );
+      }
+    }
   }
 
   // NEO-43: the success counterpart. Without it only an absolute failure
@@ -1581,12 +2128,31 @@ async function runSiteLogin(
 
   return {
     success: true,
-    message: cfg.successMessage,
+    message:
+      site === "buysportscards" && !loginResult.storeName ? bscUnconfirmedSuccessMessage(sellerFetch) : cfg.successMessage,
     details: loginResult.storeName ? `Store: ${loginResult.storeName}` : undefined,
     reauthRequired: false,
     transient: false,
     paused: false,
   };
+}
+
+/**
+ * NEO-483 audit (security note 2): a BSC sign-in that came back without a
+ * store name did not have its token confirmed by BSC's profile read: either
+ * the read stalled (the browser service serves the cached token unchecked)
+ * or the session was renewed, which never reads the profile. "Authenticated
+ * successfully" overstates that, so Test Credentials says what is known.
+ * "We'll keep checking" only when the background seller-account read is
+ * actually running for this owner (`started` / `inFlight`).
+ */
+function bscUnconfirmedSuccessMessage(
+  sellerFetch: "started" | "inFlight" | "coolingDown" | "notListing" | "known" | "notArmed" | null,
+): string {
+  const checking = sellerFetch === "started" || sellerFetch === "inFlight";
+  return checking
+    ? "Your saved BuySportsCards sign-in is in place. Couldn't confirm your store name right now; we'll keep checking."
+    : "Your saved BuySportsCards sign-in is in place. Couldn't confirm your store name right now; test again in a few minutes.";
 }
 
 /**
@@ -1602,7 +2168,7 @@ async function runSiteLogin(
  *   evidence about what we have stored.
  */
 async function applyLoginOutcome(
-  ctx: { runMutation: (ref: any, args: any) => Promise<any> },
+  ctx: Pick<ActionCtx, "runMutation">,
   userId: string,
   site: string,
   outcome: SiteLoginOutcome,
@@ -1640,19 +2206,21 @@ async function applyLoginOutcome(
  * expose the success/sellerId metadata to unauthorized callers.
  */
 export const authenticateBsc = internalAction({
-  args: {},
+  // NEO-370 — `userId` is passed only by identity-less work (a scheduled
+  // listing drain or order poll, through `refreshSiteTokenForUser`); a
+  // user-driven call sends `{}` and is the caller's identity, as before.
+  // NEO-483 — `tokenRefused`: set only by `refreshSiteToken` answering a BSC
+  // refusal of the cached token (see there).
+  args: { userId: v.optional(v.string()), tokenRefused: v.optional(v.boolean()) },
   returns: v.object({
     success: v.boolean(),
     message: v.string(),
     details: v.optional(v.string()),
   }),
-  handler: async (ctx): Promise<{ success: boolean; message: string; details?: string }> => {
+  handler: async (ctx, args): Promise<{ success: boolean; message: string; details?: string }> => {
     console.log("[authenticateBsc] Starting BSC authentication");
-    const userId = await getCurrentUserId(ctx);
-    if (!userId) {
-      console.log("[authenticateBsc] Not authenticated - no userId");
-      throw new Error("Not authenticated");
-    }
+    // Throws for no user at all, and for an identity naming another user.
+    const userId = await actingUserId(ctx, args.userId);
 
     try {
       console.log(
@@ -1667,6 +2235,7 @@ export const authenticateBsc = internalAction({
         "buysportscards",
         undefined,
         "authenticateBsc",
+        { tokenRefused: args.tokenRefused === true },
       );
       await applyLoginOutcome(ctx, userId, "buysportscards", outcome);
 
@@ -1701,17 +2270,16 @@ export const authenticateBsc = internalAction({
  * testSiteCredentials; never invoked over Convex RPC.
  */
 export const authenticateSportlots = internalAction({
-  args: {},
+  // NEO-370 — see `authenticateBsc`.
+  args: { userId: v.optional(v.string()) },
   returns: v.object({
     success: v.boolean(),
     message: v.string(),
     details: v.optional(v.string()),
   }),
-  handler: async (ctx): Promise<{ success: boolean; message: string; details?: string }> => {
-    const userId = await getCurrentUserId(ctx);
-    if (!userId) {
-      throw new Error("Not authenticated");
-    }
+  handler: async (ctx, args): Promise<{ success: boolean; message: string; details?: string }> => {
+    // Throws for no user at all, and for an identity naming another user.
+    const userId = await actingUserId(ctx, args.userId);
 
     try {
       // Stored-session path — see authenticateBsc.
@@ -1744,3 +2312,476 @@ export const authenticateSportlots = internalAction({
     }
   },
 });
+
+// ─── NEO-415: eBay (OAuth, no password) ──────────────────────────────────────
+//
+// eBay signs in through eBay's own consent page, never with a username and
+// password, so it has no SITE_LOGIN row. The browser service holds the client
+// secret and the refresh token and does every token exchange:
+//   POST /oauth/ebay/connect  {key, code | refreshToken, expectEbayUserId?}
+//                             → 200 {username, ebayUserId, environment, expiresAt}
+//                             | 409 account_mismatch (expectEbayUserId differs; nothing stored)
+//   POST /oauth/ebay/refresh  {key}                      → {token, expiresAt}
+//   POST /webhooks/ebay/verify {signatureHeader, body}   → 200 {valid}
+//                             | 502 ebay_unavailable | 503 ebay_not_configured
+// Reading the token is the existing `GET /credentials/<key>/token`, and
+// disconnect is the existing `DELETE /credentials/<key>`. Every one runs under
+// the per-(user, "ebay") credential lock. Errors are `{error_class}` from a
+// closed set; a 404 whose body is not that JSON is an older service without
+// the route ("service not ready"), never absence. A 500 `internal` is the
+// service's own store fault: transient, never a reason to ask for a fresh
+// connection.
+
+/** What an eBay connect can come back with (NB-side words, never eBay's). */
+export type EbayConnectError =
+  | "busy"
+  | "notConfigured"
+  | "consentRefused"
+  | "unavailable"
+  | "serviceNotReady"
+  | "badRequest"
+  | "internal"
+  /** A different eBay seller than the one NB's listings sit on. */
+  | "accountSwitch"
+  /** The service's eBay environment is not this deployment's. */
+  | "environmentMismatch";
+
+const ebayConnectErrorValidator = v.union(
+  v.literal("accountSwitch"),
+  v.literal("environmentMismatch"),
+  v.literal("busy"),
+  v.literal("notConfigured"),
+  v.literal("consentRefused"),
+  v.literal("unavailable"),
+  v.literal("serviceNotReady"),
+  v.literal("badRequest"),
+  v.literal("internal"),
+);
+
+/** The browser service's `error_class`, or null when the body is not that JSON. */
+async function serviceErrorClass(response: Response): Promise<string | null> {
+  const body = (await response.json().catch(() => null)) as { error_class?: unknown } | null;
+  return body && typeof body.error_class === "string" ? body.error_class.slice(0, 40) : null;
+}
+
+function logEbayCredentialCall(operation: string, startedAt: number, outcome: string, httpStatus?: number): void {
+  console.log(
+    JSON.stringify({
+      msg: "ebay_credential_call",
+      platform: "ebay",
+      operation,
+      outcome,
+      ...(httpStatus !== undefined ? { httpStatus } : {}),
+      durationMs: Date.now() - startedAt,
+    }),
+  );
+}
+
+/** Account id shape `userProfile.setMarketplaceAccountIdInternal` accepts for eBay. */
+const EBAY_USER_ID_RE = /^[A-Za-z0-9._-]{1,64}$/;
+
+type EbayConnectResult = { ok: true; username: string; ebayUserId: string } | { ok: false; error: EbayConnectError };
+
+/** Pages of stale link rows a connect clears before listing starts (200 rows a page). */
+const MAX_STALE_LINK_PAGES = 100;
+
+/**
+ * Best effort: a session the service stored but NB refused (`DELETE
+ * /credentials/<key>`; already under the lock), and the saved sign-in with
+ * it, so no flag claims a session that is gone. Logged; never throws.
+ */
+async function discardEbaySession(ctx: Pick<ActionCtx, "runMutation">, userId: string, reason: string): Promise<void> {
+  const startedAt = Date.now();
+  try {
+    const response = await browserFetch(`/credentials/${credKey("ebay", userId)}`, {
+      method: "DELETE",
+      headers: await browserAuthHeaders(),
+    });
+    logEbayCredentialCall(`discard_${reason}`, startedAt, response.ok ? "ok" : "http_error", response.status);
+    if (!response.ok && response.status !== 404) return;
+  } catch {
+    logEbayCredentialCall(`discard_${reason}`, startedAt, "network");
+    return;
+  }
+  await ctx.runMutation(internal.userProfile.removeSiteCredentialStatus, { userId, site: "ebay" });
+}
+
+/**
+ * Exchanges a consent `code` (or, sandbox testing deployments only, a
+ * refresh token minted out of band) for a stored eBay session, then records
+ * the connection: the seller's immutable eBay user id
+ * (`marketplaceAccountIds.ebayUserId`, the seller-conflict key), the display
+ * username, and the saved sign-in, which starts listing
+ * (`updateSiteCredentialStatus` → `listingSync.setUpListing`, or the E2E
+ * marker for `listing: "testOff"`).
+ *
+ * Account switches: while NB's link rows sit on the profile's account, the
+ * service is told to accept only that seller (`expectEbayUserId`; `409
+ * account_mismatch` stores nothing), and `ebayConnect.recordEbayConnection`
+ * checks again before writing the id. Any refusal AFTER the service stored a
+ * session (no usable user id, an environment that is not this deployment's,
+ * the record refusing or throwing) discards that session.
+ */
+export const connectEbay = internalAction({
+  args: {
+    userId: v.string(),
+    code: v.optional(v.string()),
+    refreshToken: v.optional(v.string()),
+    listing: v.union(v.literal("save"), v.literal("testOff")),
+  },
+  returns: v.union(
+    v.object({ ok: v.literal(true), username: v.string(), ebayUserId: v.string() }),
+    v.object({ ok: v.literal(false), error: ebayConnectErrorValidator }),
+  ),
+  handler: async (ctx, args): Promise<EbayConnectResult> => {
+    if ((args.code === undefined) === (args.refreshToken === undefined)) {
+      return { ok: false, error: "badRequest" };
+    }
+    if (args.refreshToken !== undefined && !process.env.TESTING_RESET_SECRET) {
+      throw new Error("Seeding an eBay connection is not enabled on this deployment");
+    }
+    if (args.refreshToken !== undefined && ebayConfig()?.environment !== "sandbox") {
+      throw new Error("Seeding an eBay connection needs the eBay sandbox");
+    }
+    const config = ebayConfig();
+    if (!config || !ebayConfigured()) return { ok: false, error: "notConfigured" };
+    const grant = args.code !== undefined ? { code: args.code } : { refreshToken: args.refreshToken as string };
+    if ((grant.code ?? grant.refreshToken ?? "").length > 4096) return { ok: false, error: "badRequest" };
+    return await withCredentialLock<EbayConnectResult>(
+      ctx,
+      args.userId,
+      "ebay",
+      "store",
+      async () => {
+        const startedAt = Date.now();
+        const guard: { expectEbayUserId: string | null } = await ctx.runQuery(internal.ebayConnect.connectGuard, {
+          ownerId: args.userId,
+        });
+        let response: Response;
+        try {
+          response = await browserFetch("/oauth/ebay/connect", {
+            method: "POST",
+            headers: { ...(await browserAuthHeaders()), "Content-Type": "application/json" },
+            body: JSON.stringify({
+              key: credKey("ebay", args.userId),
+              ...grant,
+              ...(guard.expectEbayUserId !== null ? { expectEbayUserId: guard.expectEbayUserId } : {}),
+            }),
+          });
+        } catch {
+          logEbayCredentialCall("connect", startedAt, "network");
+          return { ok: false, error: "unavailable" };
+        }
+        if (!response.ok) {
+          const errorClass = await serviceErrorClass(response);
+          logEbayCredentialCall("connect", startedAt, errorClass ?? "unreadable", response.status);
+          if (response.status === 404 && errorClass === null) return { ok: false, error: "serviceNotReady" };
+          if (response.status === 409 && errorClass === "account_mismatch") return { ok: false, error: "accountSwitch" };
+          if (errorClass === "consent_refused") return { ok: false, error: "consentRefused" };
+          if (errorClass === "ebay_not_configured") return { ok: false, error: "notConfigured" };
+          if (errorClass === "bad_request") return { ok: false, error: "badRequest" };
+          if (errorClass === "internal") return { ok: false, error: "internal" };
+          return { ok: false, error: "unavailable" };
+        }
+        // From here the service has stored a session: every refusal discards it.
+        const body = (await response.json().catch(() => null)) as
+          | { username?: unknown; ebayUserId?: unknown; environment?: unknown }
+          | null;
+        const username = typeof body?.username === "string" ? body.username.trim().slice(0, 64) : "";
+        const ebayUserId = typeof body?.ebayUserId === "string" ? body.ebayUserId.trim() : "";
+        if (!EBAY_USER_ID_RE.test(ebayUserId)) {
+          // NB cannot tell whose session it is, so it cannot check
+          // one-owner-per-account: refuse to keep it.
+          logEbayCredentialCall("connect", startedAt, "no_user_id", response.status);
+          await discardEbaySession(ctx, args.userId, "no_user_id");
+          return { ok: false, error: "unavailable" };
+        }
+        if (body?.environment !== config.environment) {
+          // A session from the other eBay (sandbox vs production) than the
+          // one this deployment lists on: its ids mean nothing here.
+          logEbayCredentialCall("connect", startedAt, "environment_mismatch", response.status);
+          await discardEbaySession(ctx, args.userId, "environment_mismatch");
+          return { ok: false, error: "environmentMismatch" };
+        }
+        const displayName = username.length > 0 ? username : ebayUserId;
+        let recorded: { kind: "accountSwitch" } | { kind: "recorded"; staleLinks: boolean };
+        try {
+          recorded = await ctx.runMutation(internal.ebayConnect.recordEbayConnection, {
+            ownerId: args.userId,
+            ebayUserId,
+            ebayUsername: displayName,
+          });
+        } catch {
+          logEbayCredentialCall("connect", startedAt, "record_failed", response.status);
+          await discardEbaySession(ctx, args.userId, "record_failed");
+          return { ok: false, error: "internal" };
+        }
+        if (recorded.kind === "accountSwitch") {
+          logEbayCredentialCall("connect", startedAt, "account_switch", response.status);
+          await discardEbaySession(ctx, args.userId, "account_switch");
+          return { ok: false, error: "accountSwitch" };
+        }
+        if (recorded.staleLinks) {
+          // Link rows left from the account a Disconnect could not fully
+          // end: their offer ids mean nothing on this account, so they are
+          // deleted (accepted in security review: those listings stay up on
+          // the old account, and Disconnect told the collector how many).
+          let pages = 0;
+          for (let cursor: string | null = null; pages < MAX_STALE_LINK_PAGES; pages += 1) {
+            const page: { cursor: string; isDone: boolean } = await ctx.runMutation(
+              internal.ebayConnect.purgeEbayLinksPage,
+              { ownerId: args.userId, keepLive: false, cursor },
+            );
+            if (page.isDone) break;
+            cursor = page.cursor;
+          }
+          logEbayCredentialCall("connect_stale_links", startedAt, "cleared");
+        }
+        logEbayCredentialCall("connect", startedAt, "ok", response.status);
+        await ctx.runMutation(internal.userProfile.updateSiteCredentialStatus, {
+          userId: args.userId,
+          site: "ebay",
+          hasCredentials: true,
+          needsReauth: false,
+          listing: args.listing,
+        });
+        return { ok: true, username: displayName, ebayUserId };
+      },
+      { ok: false, error: "busy" },
+    );
+  },
+});
+
+/**
+ * Deletes the stored eBay session (`DELETE /credentials/<key>`; a 404 is
+ * already gone) and clears the saved sign-in, which stops listing there
+ * (`removeSiteCredentialStatus` → `listingOutbox.stopListingForSite`). What
+ * eBay lists is left as it is. Under the credential lock.
+ */
+export const disconnectEbay = internalAction({
+  args: { userId: v.string() },
+  returns: v.object({ ok: v.boolean() }),
+  handler: async (ctx, args): Promise<{ ok: boolean }> => {
+    return await withCredentialLock(
+      ctx,
+      args.userId,
+      "ebay",
+      "delete",
+      async () => {
+        const startedAt = Date.now();
+        try {
+          const response = await browserFetch(`/credentials/${credKey("ebay", args.userId)}`, {
+            method: "DELETE",
+            headers: await browserAuthHeaders(),
+          });
+          logEbayCredentialCall("disconnect", startedAt, response.ok ? "ok" : "http_error", response.status);
+          if (!response.ok && response.status !== 404) return { ok: false };
+        } catch {
+          logEbayCredentialCall("disconnect", startedAt, "network");
+          return { ok: false };
+        }
+        await ctx.runMutation(internal.userProfile.removeSiteCredentialStatus, { userId: args.userId, site: "ebay" });
+        return { ok: true };
+      },
+      { ok: false },
+    );
+  },
+});
+
+/** Time Disconnect spends taking listings down under the lock (the lock's lease is 5 minutes). */
+const EBAY_WITHDRAW_BUDGET_MS = 3 * 60 * 1000;
+/** A cached eBay access token closer than this to expiring is renewed before Disconnect uses it. */
+const EBAY_TOKEN_MIN_LIFE_MS = 5 * 60 * 1000;
+
+/**
+ * An eBay access token for work that already holds the owner's credential
+ * lock (Disconnect): the cached one, renewed first (`refreshEbayToken`, no
+ * second lock) when it is missing or about to lapse. Null when there is
+ * none to be had.
+ */
+async function ebayTokenUnderLock(ctx: Pick<ActionCtx, "runMutation">, userId: string): Promise<string | null> {
+  const cached = await readCachedToken("ebay", userId).catch(() => null);
+  if (cached === "not_found") return null;
+  const fresh =
+    cached !== null && (cached.expiresAt === undefined || cached.expiresAt - Date.now() > EBAY_TOKEN_MIN_LIFE_MS);
+  if (fresh) return cached.token;
+  if (!(await refreshEbayToken(ctx, userId))) return cached?.token ?? null;
+  const renewed = await readCachedToken("ebay", userId).catch(() => null);
+  return renewed !== null && renewed !== "not_found" ? renewed.token : null;
+}
+
+/**
+ * Withdraws every live NB listing on the owner's eBay account and marks each
+ * link ended, a page at a time (`ebayConnect.liveEbayLinksPage`,
+ * `ebayConnect.markEbayLinksEnded`). `session` null (eBay paused, not wired,
+ * no token): nothing is sent and every live listing counts as not ended.
+ * Returns how many were ended and how many are still live.
+ */
+async function withdrawLiveEbayListings(
+  ctx: Pick<ActionCtx, "runQuery" | "runMutation" | "runAction">,
+  userId: string,
+  session: EbaySellerSession | null,
+): Promise<{ ended: number; notEnded: number }> {
+  const startedAt = Date.now();
+  let ended = 0;
+  let notEnded = 0;
+  for (let cursor: string | null = null; ; ) {
+    const page: { offers: Array<{ sku: string; offerId: string }>; cursor: string; isDone: boolean } =
+      await ctx.runQuery(internal.ebayConnect.liveEbayLinksPage, { ownerId: userId, cursor });
+    const endedSkus: string[] = [];
+    for (const offer of page.offers) {
+      if (!session || session.dead || Date.now() - startedAt > EBAY_WITHDRAW_BUDGET_MS) {
+        notEnded += 1;
+        continue;
+      }
+      const r = await withdrawOffer(ctx, session, offer.offerId);
+      // 404: eBay no longer has it live.
+      if (r.ok || r.failure.httpStatus === 404) endedSkus.push(offer.sku);
+      else notEnded += 1;
+    }
+    if (endedSkus.length > 0) {
+      await ctx.runMutation(internal.ebayConnect.markEbayLinksEnded, { ownerId: userId, skus: endedSkus });
+      ended += endedSkus.length;
+    }
+    if (page.isDone) break;
+    cursor = page.cursor;
+  }
+  return { ended, notEnded };
+}
+
+/**
+ * Disconnect, all under the owner's eBay credential lock (`delete`), so no
+ * publish's token refresh or second connect runs beside it: every live NB
+ * listing is withdrawn on eBay and marked ended, the stored session goes
+ * (`DELETE /credentials/<key>`; 404 is already gone) with the saved sign-in,
+ * the link rows go except any still live, and the settings and the profile's
+ * eBay user id go (`ebayConnect.forgetEbayConnection`). The caller stopped
+ * listing first. A session that will not delete changes nothing more:
+ * `ok: false`. `notEnded`: listings still live on eBay.
+ */
+export const disconnectEbayAndWithdraw = internalAction({
+  args: { userId: v.string() },
+  returns: v.object({ ok: v.boolean(), notEnded: v.number() }),
+  handler: async (ctx, args): Promise<{ ok: boolean; notEnded: number }> => {
+    return await withCredentialLock<{ ok: boolean; notEnded: number }>(
+      ctx,
+      args.userId,
+      "ebay",
+      "delete",
+      async () => {
+        const startedAt = Date.now();
+        const config = ebayConfig();
+        let session: EbaySellerSession | null = null;
+        if (config && !isPlatformPaused("ebay")) {
+          const token = await ebayTokenUnderLock(ctx, args.userId);
+          // Renewed just now (or fresh): a 401 is final, never a second refresh under this lock.
+          if (token) session = { ownerId: args.userId, token, config, reauthAttempted: true, dead: false };
+        }
+        const withdrawn = await withdrawLiveEbayListings(ctx, args.userId, session);
+        logEbayCredentialCall("disconnect_withdraw", startedAt, session ? "ok" : "no_session");
+        try {
+          const response = await browserFetch(`/credentials/${credKey("ebay", args.userId)}`, {
+            method: "DELETE",
+            headers: await browserAuthHeaders(),
+          });
+          logEbayCredentialCall("disconnect", startedAt, response.ok ? "ok" : "http_error", response.status);
+          if (!response.ok && response.status !== 404) return { ok: false, notEnded: withdrawn.notEnded };
+        } catch {
+          logEbayCredentialCall("disconnect", startedAt, "network");
+          return { ok: false, notEnded: withdrawn.notEnded };
+        }
+        await ctx.runMutation(internal.userProfile.removeSiteCredentialStatus, { userId: args.userId, site: "ebay" });
+        let keptLive = 0;
+        for (let cursor: string | null = null; ; ) {
+          const page: { cursor: string; isDone: boolean; keptLive: number } = await ctx.runMutation(
+            internal.ebayConnect.purgeEbayLinksPage,
+            { ownerId: args.userId, keepLive: true, cursor },
+          );
+          keptLive += page.keptLive;
+          if (page.isDone) break;
+          cursor = page.cursor;
+        }
+        await ctx.runMutation(internal.ebayConnect.forgetEbayConnection, { ownerId: args.userId });
+        return { ok: true, notEnded: keptLive };
+      },
+      { ok: false, notEnded: 0 },
+    );
+  },
+});
+
+/**
+ * NEO-415: asks the browser service whether an eBay Notification API push
+ * is really from eBay (`POST /webhooks/ebay/verify`; the service holds the
+ * app credentials eBay's public key needs). `body` is the raw request text
+ * as Convex received it. `unavailable` covers the service or eBay being
+ * down, an older service, and an answer NB cannot read: the caller answers
+ * eBay with a 500 so eBay retries.
+ */
+export const verifyEbayNotification = internalAction({
+  args: { signatureHeader: v.string(), body: v.string() },
+  returns: v.union(v.literal("valid"), v.literal("invalid"), v.literal("unavailable"), v.literal("notConfigured")),
+  handler: async (_ctx, args): Promise<"valid" | "invalid" | "unavailable" | "notConfigured"> => {
+    const startedAt = Date.now();
+    let response: Response;
+    try {
+      response = await browserFetch("/webhooks/ebay/verify", {
+        method: "POST",
+        headers: { ...(await browserAuthHeaders()), "Content-Type": "application/json" },
+        body: JSON.stringify({ signatureHeader: args.signatureHeader, body: args.body }),
+      });
+    } catch {
+      logEbayCredentialCall("verify_notification", startedAt, "network");
+      return "unavailable";
+    }
+    if (response.ok) {
+      const body = (await response.json().catch(() => null)) as { valid?: unknown } | null;
+      const verdict = body?.valid === true ? "valid" : body?.valid === false ? "invalid" : "unavailable";
+      logEbayCredentialCall("verify_notification", startedAt, verdict, response.status);
+      return verdict;
+    }
+    const errorClass = await serviceErrorClass(response);
+    logEbayCredentialCall("verify_notification", startedAt, errorClass ?? "unreadable", response.status);
+    if (response.status === 503 && errorClass === "ebay_not_configured") return "notConfigured";
+    // 400 means NB sent a shape the service refuses (a bug on our side, not
+    // a verdict on the notice); 502 is eBay unreachable.
+    return "unavailable";
+  },
+});
+
+/**
+ * The eBay branch of `refreshSiteToken` (already under the credential lock):
+ * asks the browser service to renew the access token. True when it did; a
+ * `reauth_required` answer (eBay refused the refresh token, or none is
+ * stored) flags `needsReauth`; anything else (not configured, eBay or the
+ * store down, an older service) is a failed refresh that writes nothing.
+ */
+async function refreshEbayToken(
+  ctx: Pick<ActionCtx, "runMutation">,
+  userId: string,
+): Promise<boolean> {
+  if (!ebayConfigured()) return false;
+  const startedAt = Date.now();
+  let response: Response;
+  try {
+    response = await browserFetch("/oauth/ebay/refresh", {
+      method: "POST",
+      headers: { ...(await browserAuthHeaders()), "Content-Type": "application/json" },
+      body: JSON.stringify({ key: credKey("ebay", userId) }),
+    });
+  } catch {
+    logEbayCredentialCall("refresh", startedAt, "network");
+    return false;
+  }
+  if (response.ok) {
+    await response.text().catch(() => "");
+    logEbayCredentialCall("refresh", startedAt, "ok", response.status);
+    await ctx.runMutation(internal.userProfile.setSiteReauthState, { userId, site: "ebay", needsReauth: false });
+    return true;
+  }
+  const errorClass = await serviceErrorClass(response);
+  logEbayCredentialCall("refresh", startedAt, errorClass ?? "unreadable", response.status);
+  if (response.status === 401 && errorClass === "reauth_required") {
+    await ctx.runMutation(internal.userProfile.setSiteReauthState, { userId, site: "ebay", needsReauth: true });
+  }
+  return false;
+}

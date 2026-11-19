@@ -1,0 +1,340 @@
+/**
+ * NEO-500 — the Pick List (Inventory → Pick List): the public demo's today
+ * (`home/demo-pick-list`), the signed-in seller's once its Convex store lands.
+ * Both stores sit behind one UI, so one set of handles serves both specs.
+ *
+ * Everything here is what a user perceives (GUIDE hard rule 2): the "Pick
+ * List" region, its "Cards to pull" table, each row's `Pulled <row>` toggle
+ * and `Bigger picture of <row>` button, the set and group headings, the
+ * filter bar's labelled controls and the page's status line with Undo.
+ *
+ * Phone vs wide screen (GUIDE "Desktop and mobile"): a phone hides the
+ * column headers (it sorts from "Sort by" instead) and folds Order, Sport,
+ * Year, Type and Condition under "More filters". The helpers that touch
+ * those take the project's `isMobile` and end in hard asserts either way.
+ */
+import { expect, type Locator, type Page } from "@playwright/test";
+
+/**
+ * A run-time name, safe inside a regex (support/... "runtime names need
+ * escaping"). A listing's title joins its parts with " · " on screen, and a
+ * toggle's accessible name reads those joins as pauses (", "), so `row` is
+ * converted: `2024 Score #302 · Malik Nabers` is looked for as
+ * `2024 Score #302, Malik Nabers` (NEO-509).
+ */
+function escapeRegex(text: string): RegExp {
+  return new RegExp(`^${text.split(" · ").join(", ").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`);
+}
+
+/**
+ * Only the copy a user can see. The table draws each row twice, the wide
+ * columns and a phone's one "Card" cell, and hides whichever does not fit, so
+ * a text inside a row resolves to two elements, one of them hidden.
+ */
+export function seen(locator: Locator): Locator {
+  return locator.filter({ visible: true });
+}
+
+/** The Pick List region, its parts, and the status line it reports on. */
+export function pickList(page: Page) {
+  const region = page.getByRole("region", { name: "Pick List" });
+  return {
+    region,
+    heading: region.getByRole("heading", { level: 2, name: "Pick List" }),
+    /** "3 of 29 pulled". */
+    progress: (got: number, total: number) =>
+      region.getByText(`${got} of ${total} pulled`, { exact: true }),
+    /** The whole list's table; By the Box has one per stop (`boxTable`). */
+    table: region.getByRole("table", { name: "Cards to pull" }),
+    boxTable: (boxName: string) => region.getByRole("table", { name: `Cards to pull from ${boxName}`, exact: true }),
+    /** By the Box, the "Not in a box" stop: sales NB has no card for but whose listing says what they are, by set. */
+    notInBoxTable: region.getByRole("table", { name: "Sales not in NB, by set", exact: true }),
+    /** By the Box, the last stop: sales that say too little to file. */
+    cantFindTable: region.getByRole("table", { name: "Sales NB couldn't place", exact: true }),
+    /** The "Only not in NB" quick filter (a toggle: `aria-pressed`). */
+    onlyNotInNb: region.getByRole("group", { name: "Quick filters" }).getByRole("button", { name: "Only not in NB", exact: true }),
+    views: region.getByRole("navigation", { name: "Pick List views" }),
+    /** The list's own filter count ("4 match."), always mounted, empty when unfiltered. */
+    matches: region.getByRole("status"),
+    find: region.getByRole("textbox", { name: "Find a card" }),
+    quickFilters: region.getByRole("group", { name: "Quick filters" }),
+    backToDefault: region.getByRole("button", { name: "Back to default", exact: true }),
+    /**
+     * NEO-522: the "Row size" switch, a radio group: Spacious (the default) or
+     * Condensed (the dense rows, one line each on a wide screen since NEO-598),
+     * the choice in `aria-checked`. One Tab
+     * stop; the arrow keys move and pick. This device keeps the choice; Back to
+     * default leaves it alone.
+     */
+    rowSize: {
+      group: region.getByRole("radiogroup", { name: "Row size", exact: true }),
+      spacious: region.getByRole("radiogroup", { name: "Row size", exact: true }).getByRole("radio", { name: "Spacious", exact: true }),
+      condensed: region.getByRole("radiogroup", { name: "Row size", exact: true }).getByRole("radio", { name: "Condensed", exact: true }),
+    },
+    /** The page's status line (outside the region): a pull says so here, with Undo. */
+    notice: (message: string) => page.getByRole("status").filter({ hasText: message }),
+    undo: page.getByRole("button", { name: "Undo", exact: true }),
+  };
+}
+
+/**
+ * A row's Pulled toggle. `row` is how the row's name begins: "#150 Paul
+ * Skenes, 2026 Topps Series 1" (a card), or the listing's own title (a sale
+ * NB could not tie to a card). The full name adds the condition, serial or
+ * grade, slot and order, so a prefix is the stable handle.
+ */
+export function pulledToggle(scope: Locator, row: string): Locator {
+  return scope.getByRole("button", { name: escapeRegex(`Pulled ${row}`) });
+}
+
+/**
+ * NEO-598: how many text lines tall a table row stands: its height over its own
+ * line-height, so a row on one line reads about 1 (a Condensed row on a wide
+ * screen) and one that wrapped reads 2 or more. Poll it: `expect.poll(() =>
+ * rowLines(row)).toBeLessThanOrEqual(1.5)`.
+ */
+export async function rowLines(row: Locator): Promise<number> {
+  const box = await row.boundingBox();
+  if (!box) throw new Error("rowLines: the row has no box on screen");
+  const lineHeight = await row.evaluate((tr) => parseFloat(getComputedStyle(tr).lineHeight));
+  return box.height / lineHeight;
+}
+
+/**
+ * NEO-598: a chip or text sits whole inside its cell, not cut at the cell's edge.
+ */
+export async function expectWithinCell(inner: Locator): Promise<void> {
+  const box = (await inner.boundingBox())!;
+  const cell = await inner.evaluate((el) => {
+    const r = el.closest("td")!.getBoundingClientRect();
+    return { x: r.x, width: r.width };
+  });
+  expect(box.x).toBeGreaterThanOrEqual(cell.x - 0.5);
+  expect(box.x + box.width).toBeLessThanOrEqual(cell.x + cell.width + 0.5);
+}
+
+/**
+ * NEO-598: nothing in the table is clipped or pushed past the page. A Condensed row
+ * wraps its words where a line cannot fit; it never cuts them with an ellipsis or
+ * hidden overflow, and it never makes the list scroll sideways. So no element in a
+ * text cell holds more than its box shows (`scrollWidth <= clientWidth`), and the
+ * table is no wider than its region. The toggle and picture cells are left out: their
+ * invisible hit areas are meant to reach past the cell.
+ */
+export async function expectNothingClipped(table: Locator, region: Locator): Promise<void> {
+  const tableWidth = (await table.boundingBox())!.width;
+  const regionWidth = (await region.boundingBox())!.width;
+  expect(tableWidth).toBeLessThanOrEqual(regionWidth + 1);
+  const clipped = await table.evaluate((t) =>
+    [...t.querySelectorAll("td")]
+      .filter((td) => !td.querySelector("button"))
+      .flatMap((td) => [td, ...td.querySelectorAll("*")])
+      // (an sr-only span is 1px wide by design)
+      .filter((el) => el.clientWidth > 1 && el.scrollWidth > el.clientWidth + 1)
+      .map((el) => (el.textContent ?? "").trim().slice(0, 50)),
+  );
+  expect(clipped, "elements with clipped text").toEqual([]);
+}
+
+/** The table row that carries `row`'s Pulled toggle. */
+export function pickRow(scope: Locator, row: string): Locator {
+  return scope.getByRole("row").filter({ has: scope.page().getByRole("button", { name: escapeRegex(`Pulled ${row}`) }) });
+}
+
+/** A row's "Bigger picture of …" button (only a row with a card has one). */
+export function pictureButton(scope: Locator, row: string): Locator {
+  return scope.getByRole("button", { name: escapeRegex(`Bigger picture of ${row}`) });
+}
+
+/**
+ * NEO-522: a row's variant tag, between its picture and its number: the
+ * variant's own name ("8 Bit Ballers"; "Base" on a base row), titled with its
+ * kind when the name does not say it ("Insert: 8 Bit Ballers"), which a
+ * screen reader hears first. Only the copy in view (`seen`).
+ */
+export function variantTag(row: Locator, name: string, kind?: string): Locator {
+  return seen(row.getByTitle(kind ? `${kind}: ${name}` : name, { exact: true }));
+}
+
+/**
+ * NEO-522: the cell that names the row's player, the copy in view: the wide
+ * screen's Player column (the name, then its tags, and no team: the card's
+ * picture carries it) or a phone's one Card cell, which leads with the
+ * variant tag and the number (`Base #27 Mike Trout …`). `lead` is that
+ * phone lead ("Base #27"). Never the picture's cell, whose name is "Bigger
+ * picture of …".
+ */
+export function nameCell(row: Locator, player: string, lead: string): Locator {
+  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/ /g, "\\s*");
+  return seen(row.getByRole("cell", { name: new RegExp(`^(${escape(lead)}\\s*)?${escape(player)}`) }));
+}
+
+/**
+ * Opens "More filters" on a phone (Order, Sport, Year, Type and Condition
+ * live under it); a wide screen shows them inline and has no such button.
+ */
+export async function openMoreFilters(page: Page, isMobile: boolean): Promise<void> {
+  const { region } = pickList(page);
+  const more = region.getByRole("button", { name: /^More filters/ });
+  const order = region.getByRole("combobox", { name: "Order", exact: true });
+  if (isMobile) {
+    if ((await more.getAttribute("aria-expanded")) !== "true") await more.click();
+    await expect(more).toHaveAttribute("aria-expanded", "true");
+  } else {
+    await expect(more).toBeHidden();
+  }
+  await expect(order).toBeVisible();
+}
+
+/** Picks `option` (its visible text) in one of the filter bar's selects: "Order", "Sport", "Year", "Type", "Condition". */
+export async function filterBy(page: Page, isMobile: boolean, label: string, option: string): Promise<void> {
+  await openMoreFilters(page, isMobile);
+  const select = pickList(page).region.getByRole("combobox", { name: label, exact: true });
+  await select.selectOption({ label: option });
+  await expect(select.getByRole("option", { selected: true })).toHaveText(option);
+}
+
+/** The sortable columns, as their header buttons and the phone's "Sort by" read. */
+export type PickSortColumn = "Qty" | "No." | "Player" | "Condition" | "Serial" | "Order";
+
+/**
+ * Sorts the whole list by a column, starting from the pick order. A wide
+ * screen presses the column's header button (once ascending, twice
+ * descending) and the header says so (`aria-sort`); a phone picks it from
+ * "Sort by".
+ */
+export async function sortBy(page: Page, isMobile: boolean, column: PickSortColumn, dir: "asc" | "desc"): Promise<void> {
+  const { region, table } = pickList(page);
+  if (isMobile) {
+    const select = region.getByRole("combobox", { name: "Sort by", exact: true });
+    const option = `${column}, ${dir === "asc" ? "low to high" : "high to low"}`;
+    await select.selectOption({ label: option });
+    await expect(select.getByRole("option", { selected: true })).toHaveText(option);
+    return;
+  }
+  const button = table.getByRole("button", { name: column, exact: true });
+  const header = table.getByRole("columnheader").filter({ has: page.getByRole("button", { name: column, exact: true }) });
+  await expect(header).toHaveAttribute("aria-sort", "none");
+  await button.click();
+  await expect(header).toHaveAttribute("aria-sort", "ascending");
+  if (dir === "desc") {
+    await button.click();
+    await expect(header).toHaveAttribute("aria-sort", "descending");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The signed-in Pick List (`collection/inventory-pick-list`): its orders are
+// seeded through the test hop, since a sale cannot be made on cue (the seller
+// accounts are shared and a real order needs a real buyer).
+// ---------------------------------------------------------------------------
+
+/** The Pick List's own page in the signed-in app. */
+export const PICK_LIST_PATH = "/inventory?tab=pick";
+
+/** How the list names a BuySportsCards order: "BSC <order number>" (its Order filter option and a row's order). */
+export function bscOrder(orderNo: string): string {
+  return `BSC ${orderNo}`;
+}
+
+/**
+ * How the toggle of a line NB could not tie to a card begins: "Unmatched sale,
+ * BSC <order>" (the row's own title says nothing of its order, so the name
+ * adds it). An order holding more than one such line reads "Unmatched sale
+ * (n of m), BSC <order>"; the specs seed one per order.
+ */
+export function unmatchedLine(orderNo: string): string {
+  return `Unmatched sale, ${bscOrder(orderNo)}`;
+}
+
+/**
+ * Seeds one BuySportsCards order over the signed-in user's own box
+ * (`/testing/seed-pick-order`, testing deployments only): it is recorded and
+ * applied as the sales poll would, taking the copies from `box`, and lands on
+ * `redirect` (the Pick List by default). `cards` maps a card number in the
+ * box to the copies sold; `bad` adds one line NB cannot tie to a card and says
+ * nothing of (it stays under Can't find it). `listed` (NEO-509,
+ * `"<card number>:<players>"`) adds one more unmatched line that DESCRIBES a
+ * card of the first card's set, so it files inline under that set with an
+ * "Unmatched" chip; its toggle reads `Pulled <set> · <players> · #<number>,
+ * unmatched, BSC <order>` (`listedLine`). The
+ * hop refuses an account that lists on a marketplace, so no copy it lowers
+ * reaches one. `orderNo` must be one token. Re-seeding a number replays the
+ * stored order. Opens `page` on the hop, so the browser does a full load
+ * (callers gate on the destination with `LAUNCH_GATE`).
+ */
+export async function seedPickOrder(
+  page: Page,
+  order: {
+    orderNo: string;
+    box: string;
+    cards: Readonly<Record<string, number>>;
+    bad?: boolean;
+    listed?: string | readonly string[];
+  },
+  redirect = PICK_LIST_PATH,
+): Promise<void> {
+  const cards = Object.entries(order.cards)
+    .map(([no, qty]) => `${no}:${qty}`)
+    .join(",");
+  const query = new URLSearchParams({ order: order.orderNo, box: order.box, cards, redirect });
+  if (order.bad) query.set("bad", "1");
+  // A repeated param, one per described line, in the order given.
+  for (const entry of typeof order.listed === "string" ? [order.listed] : (order.listed ?? [])) query.append("listed", entry);
+  await page.goto(`/testing/seed-pick-order?${query.toString()}`);
+}
+
+/**
+ * How a described unmatched line (`seedPickOrder`'s `listed`) is titled on
+ * screen: "2024 Topps Chrome #208 · Listed<token>" (the set, the number, then
+ * who is on it; the page's notice reads it as is, a toggle's name reads the
+ * " · " as a comma). The set is the one the card number is filed under, a
+ * Base variant is not written.
+ */
+export function listedLine(setTitle: string, players: string, cardNumber: string): string {
+  return `${setTitle} #${cardNumber} · ${players}`;
+}
+
+/** Marks a seeded order shipped (the hop's `ship=1`): its lines leave the Pick List. */
+export async function shipPickOrder(page: Page, orderNo: string, redirect = PICK_LIST_PATH): Promise<void> {
+  const query = new URLSearchParams({ order: orderNo, ship: "1", redirect });
+  await page.goto(`/testing/seed-pick-order?${query.toString()}`);
+}
+
+/** How the list names an eBay order: "eBay <order number>" (its Order filter option and a row's order link). */
+export function ebayOrder(orderNo: string): string {
+  return `eBay ${orderNo}`;
+}
+
+/**
+ * Seeds one eBay order NeonBinder did not list (NEO-520,
+ * `/testing/seed-pick-order?platform=ebay`, testing deployments only): the
+ * caller's own order, recorded and applied exactly as the order poll does,
+ * with no marketplace call and no box touched (a line with no NeonBinder SKU
+ * is refused as unmatched). `lines` is 1-3 lines, each a `quantity` and the
+ * title eBay sent (leave `title` out for a line that sends none). It refuses
+ * an account that lists anywhere. `orderNo` must be one token. Opens `page`
+ * on the hop, so the browser does a full load (callers gate on the
+ * destination with `LAUNCH_GATE`).
+ */
+export async function seedEbayOrder(
+  page: Page,
+  order: { orderNo: string; lines: ReadonlyArray<{ quantity: number; title?: string }> },
+  redirect = PICK_LIST_PATH,
+): Promise<void> {
+  const query = new URLSearchParams({ platform: "ebay", order: order.orderNo, redirect });
+  // A repeated param, one per line, in the order given: "<quantity>:<title>" ("<quantity>:" sends no title).
+  for (const line of order.lines) query.append("line", `${line.quantity}:${line.title ?? ""}`);
+  await page.goto(`/testing/seed-pick-order?${query.toString()}`);
+}
+
+/** Marks a seeded eBay order shipped (the hop's `ship=1`): its lines leave the Pick List. */
+export async function shipEbayOrder(page: Page, orderNo: string, redirect = PICK_LIST_PATH): Promise<void> {
+  const query = new URLSearchParams({ platform: "ebay", order: orderNo, ship: "1", redirect });
+  await page.goto(`/testing/seed-pick-order?${query.toString()}`);
+}
+
+/** The table's group (a set, Can't find it, Sold since you started) under the heading `title`. */
+export function pickGroup(table: Locator, title: string): Locator {
+  return table.getByRole("rowgroup").filter({ has: table.page().getByRole("heading", { level: 3, name: title, exact: true }) });
+}

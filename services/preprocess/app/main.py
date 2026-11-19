@@ -11,26 +11,62 @@ NEO-170:  `/extract` + `/process-entry` — stateless batch routes behind the
           routes read and write GCS at keys derived from `{user_id, job_id,
           index}` (`app.jobs.layout`) and return metadata only. Same thin-layer
           rule: this file does auth, request shape and error-code mapping.
+NEO-427:  `/process-entry` also stores the listing and thumbnail sizes of the
+          output it writes, for Convex to read when the card is saved.
+          `/derive-copy-photos` makes them on request for an entry without them.
+NEO-481:  `/render-edit` renders a collector's hand edit (quarter turns and a
+          turnable crop, `app.edit`) from a scan's original or from a stored
+          photo's bytes, and `/process-entry` reports the auto crop's box.
+NEO-484:  `/process-entry` answers a terminal 422 `ENTRY_UNDECODABLE` for bytes
+          that are not an image, binds the dev cache policy for its request
+          (`app.devcache`), and the heavy startup hook loads the BiRefNet ORT
+          session directly (`app.cropper.birefnet`) with no warm-up inference.
 """
 
+# The import time of this module is part of the `cold_start` line, so the clock
+# starts before any other import; every import below therefore sits after a
+# statement, which is what E402 would otherwise refuse.
+# ruff: noqa: E402
 from __future__ import annotations
 
+import time
+
+_MODULE_IMPORT_STARTED = time.perf_counter()
+
 import base64
-import glob
 import hmac
+import json
 import logging
 import os
+import platform
+import re
 import sys
-import time
+from collections.abc import Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from typing import Annotated, Literal
+from dataclasses import dataclass
+from io import BytesIO
+from typing import Annotated, Any, Literal
 
-from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, status
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, ValidationError
+from PIL import Image, UnidentifiedImageError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import UploadFile as FormFile
 
-from app import cropper
+from app import cropper, prewarm
+from app import edit as photo_edit
 from app.classify import ClassifyError
+from app.copy_photos import (
+    COPY_PHOTO_CONTENT_TYPE,
+    CopyPhotoTooLargeError,
+    DerivedCopyPhotos,
+    derive_copy_photos,
+    derive_copy_photos_from_image,
+    read_dpi,
+    to_plain_rgb,
+    usable_icc_profile,
+)
 from app.cropper import (
     CROP_QUALITIES,
     CROP_QUALITY_FAST,
@@ -38,16 +74,19 @@ from app.cropper import (
     CropDeclined,
     CropRejected,
     UnknownStrategyError,
+    birefnet,
 )
 from app.cropper._utils import rotate_image_bytes
+from app.cropper.boxes import CropBox
+from app.devcache import policy as devcache_policy
 from app.dhash import compute_dhash
 from app.exif import apply_exif_orientation
-from app.imaging import RasterTooLargeError, check_raster_size
+from app.imaging import RasterTooLargeError, check_raster_size, read_raster_size
 from app.jobs import layout, zipsafe
 from app.jobs.gcs import ObjectAlreadyExistsError, ObjectRef, ObjectStore
 from app.jobs.layout import InvalidJobIdentifierError
 from app.orient import OrientationResult
-from app.timing import Timings
+from app.timing import Timings, timing_logger
 
 # ── Logging (NEO-191) ───────────────────────────────────────────────────────
 # Nothing in this service used to configure logging, and uvicorn only ever
@@ -145,8 +184,9 @@ EXTRACT_UPLOAD_WORKERS = 8
 # future retains its entry's decompressed bytes, so without a bound a producer
 # that outruns GCS (a crafted low-compression archive, or an ordinary one on a
 # slow storage day) re-materializes up to MAX_TOTAL_UNCOMPRESSED_BYTES (2 GiB)
-# of image data in RAM on a 4 GiB instance — exactly the OOM class the
-# streaming zip read exists to prevent. The bound has to be a BYTE budget, not
+# of image data in RAM for one request, on an instance that may be serving
+# others — exactly the OOM class the streaming zip read exists to prevent. The
+# bound has to be a BYTE budget, not
 # a future count: entry sizes span three orders of magnitude (a tens-of-KB
 # thumbnail up to the 32 MiB per-entry cap), so any count small enough to be
 # safe for the largest entries would needlessly serialize the small ones.
@@ -165,7 +205,8 @@ NOT_CONFIGURED_RETRY_AFTER_SECONDS = 30
 
 # Extensions /process-entry probes for an extracted object, most common first.
 # Exactly the set /extract can write — the values of
-# `zipsafe.EXTENSION_BY_CONTENT_TYPE`.
+# `zipsafe.EXTENSION_BY_CONTENT_TYPE`. /derive-copy-photos probes an output
+# object the same way, because /process-entry names it from the same map.
 _EXTRACTED_EXTENSIONS = ("jpg", "png", "webp")
 
 # Storage client for the batch routes. Construction is credential-free (the
@@ -174,50 +215,191 @@ _EXTRACTED_EXTENSIONS = ("jpg", "png", "webp")
 _object_store = ObjectStore()
 
 
+# ── Cold start (NEO-484) ────────────────────────────────────────────────────
+# One `cold_start` JSON line per process, from the startup hook, through the
+# same bare-JSON `timing` logger as `process_entry_timing`, so a cold start can
+# be split into its phases from the logs alone (`scripts/cold-start-report.py`
+# joins it with Cloud Run's start and probe events). Host facts use the same
+# definitions as `scripts/golden_masks.py`'s fingerprint, so a slow start and a
+# mask difference can be put down to the same machine.
+COLD_START_MSG = "cold_start"
+
+# CPU features that pick different onnxruntime (MLAS) kernels, in a fixed order
+# so the ISA string is stable. Mirrors `scripts/golden_masks.RELEVANT_CPU_FLAGS`.
+_ISA_FLAGS = (
+    "sse4_1",
+    "avx",
+    "f16c",
+    "fma",
+    "avx2",
+    "avx_vnni",
+    "avx512f",
+    "avx512bw",
+    "avx512dq",
+    "avx512vl",
+    "avx512_vnni",
+    "avx512_bf16",
+    "avx512_fp16",
+    "amx_tile",
+    "amx_bf16",
+)
+
+# gVisor (Cloud Run gen1) reports an old fixed kernel; some builds also name it.
+_GVISOR_KERNEL = re.compile(r"Linux version 4\.4\.0\b|gvisor", re.IGNORECASE)
+
+
+def _read_text(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def _exec_env(proc_version: str, environ: Mapping[str, str]) -> str:
+    """`gen1` (gVisor), `gen2` (any other Cloud Run), or `local`."""
+    if _GVISOR_KERNEL.search(proc_version or ""):
+        return "gen1"
+    if environ.get("K_SERVICE") or environ.get("CLOUD_RUN_JOB"):
+        return "gen2"
+    return "local"
+
+
+def _cpu_facts(cpuinfo: str, machine: str) -> tuple[str, str]:
+    """`(isa, cpu_model)` from /proc/cpuinfo text: the first processor's values."""
+    cpu_model = "unknown"
+    flags: set[str] = set()
+    for line in cpuinfo.splitlines():
+        key, sep, value = line.partition(":")
+        if not sep:
+            continue
+        key = key.strip()
+        if key == "model name" and cpu_model == "unknown":
+            cpu_model = " ".join(value.split())
+        elif key in ("flags", "Features") and not flags:
+            flags = set(value.split())
+    isa = "+".join([machine, *[flag for flag in _ISA_FLAGS if flag in flags]])
+    return isa, cpu_model
+
+
+def _nproc() -> int:
+    try:
+        return len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        return os.cpu_count() or 0
+
+
+def _process_age_s() -> float | None:
+    """Seconds since this process started, from /proc; None where there is no /proc.
+
+    Covers what `main_module_import_s` cannot: the interpreter's own start and
+    uvicorn's import, before this module's clock began.
+    """
+    try:
+        stat = _read_text("/proc/self/stat")
+        uptime = _read_text("/proc/uptime")
+        if not stat or not uptime:
+            return None
+        # Field 22 (starttime, clock ticks since boot). Fields counted after the
+        # command name, which is parenthesised and may contain spaces.
+        after_comm = stat.rsplit(")", 1)[1].split()
+        start_ticks = int(after_comm[19])
+        age = float(uptime.split()[0]) - start_ticks / os.sysconf("SC_CLK_TCK")
+        return round(age, 3) if age >= 0 else None
+    except (IndexError, ValueError, OSError):
+        return None
+
+
+def _host_facts() -> dict[str, Any]:
+    machine = platform.machine() or "unknown"
+    isa, cpu_model = _cpu_facts(_read_text("/proc/cpuinfo"), machine)
+    if cpu_model == "unknown":
+        cpu_model = platform.processor() or "unknown"
+    return {
+        "exec_env": _exec_env(_read_text("/proc/version"), os.environ),
+        "isa": isa,
+        "cpu_model": cpu_model,
+        "nproc": _nproc(),
+    }
+
+
+def _emit_cold_start(*, role: str, session_load_s: float | None, hook_started: float) -> None:
+    """Write the one `cold_start` line. Never raises: it must not fail a boot."""
+    try:
+        body: dict[str, Any] = {"msg": COLD_START_MSG, "role": role}
+        body.update(_host_facts())
+        body["main_module_import_s"] = round(_MAIN_MODULE_IMPORT_S, 3)
+        body["session_load_s"] = session_load_s
+        body["startup_hook_s"] = round(time.perf_counter() - hook_started, 3)
+        body["process_age_at_ready_s"] = _process_age_s()
+        # C6: how far the background SDK import (`app.prewarm`) had got when
+        # the hook returned; the thread writes its own `prewarm` line when done.
+        body["prewarm"] = prewarm.snapshot()
+        timing_logger.info(json.dumps(body, separators=(",", ":")))
+    except Exception:  # noqa: BLE001 - a log line must never take the container down
+        logger.exception("startup: could not write the cold_start line")
+
+
 @app.on_event("startup")
 def _verify_baked_weights() -> None:
-    """Fail loudly at boot if the baked model weights are missing.
+    """Load the BiRefNet session at boot (heavy role), then log one `cold_start` line.
 
-    Only enforced when REQUIRE_BAKED_WEIGHTS=1 (set in the Dockerfile). A
-    missing cache would otherwise trigger rembg's silent runtime re-download:
-    a ~930MB write into Cloud Run's in-memory filesystem plus an
-    unauthenticated outbound fetch — a slow success where we want a loud
-    failure. Unit tests don't set the var and are unaffected.
+    Only the HEAVY role loads a model, and only when REQUIRE_BAKED_WEIGHTS=1
+    (set in the Dockerfile; unit tests don't set it). It first checks that the
+    baked model exists at `$BIREFNET_HOME/$BIREFNET_MODEL.onnx` and raises if
+    not: a missing model is a broken image, and failing the boot is louder and
+    cheaper than failing every request.
 
-    NEO-175: only the HEAVY role loads a local model. The FAST role
-    (`PREPROCESS_ROLE=fast`) runs classical-only and must cold-start in
-    seconds, so it skips BOTH the baked-weight check and the ~191s warm-up —
-    even if REQUIRE_BAKED_WEIGHTS is still set on the shared image. This is the
-    clean seam: the model is loaded at startup only when role == HEAVY.
+    It then creates the onnxruntime session (`birefnet.load_session`) while
+    Cloud Run still allocates full startup CPU and no request is waiting. No
+    warm-up inference runs (NEO-484): the model's input is fixed at 1024x1024,
+    so a dummy pass costs a full inference, and the first real run is only a
+    few seconds slower than later ones. The session load is what is kept, so
+    the instance is ready the moment the startup probe passes (NEO-194).
+
+    The FAST role (`PREPROCESS_ROLE=fast`, NEO-175) runs classical-only and
+    never constructs a model session, so it skips both the check and the load,
+    even with REQUIRE_BAKED_WEIGHTS still set on the shared image.
+
+    SAM is deliberately NOT loaded here (NEO-315). Measured on a HEAVY
+    revision, loading it at startup took 46-94s (p50 56s) even at 8 vCPU and
+    sat on every cold start's critical path, while SAM wins under 1% of cards.
+    It lazy-loads on first use instead (`sam._load_model`, behind a lock).
+
+    Every role and path writes the `cold_start` line, except a boot that fails
+    the weights check.
     """
-    if _preprocess_role() != ROLE_HEAVY:
+    hook_started = time.perf_counter()
+    role = _preprocess_role()
+    session_load_s: float | None = None
+    # C6 (NEO-484): import the cloud SDKs on a daemon thread while the hook
+    # carries on, so they overlap the session load and the probe instead of
+    # sitting inside `main_module_import_s`. Started first, on every role and
+    # path: the fast role needs the SDKs as much as the heavy one does.
+    prewarm.start()
+    if role != ROLE_HEAVY:
         logger.info(
-            "startup: %s=%s — skipping baked-weight check and model warm-up",
+            "startup: %s=%s — skipping baked-weight check and model load",
             PREPROCESS_ROLE_ENV,
-            _preprocess_role(),
+            role,
         )
-        return
-    if os.environ.get("REQUIRE_BAKED_WEIGHTS") != "1":
-        return
-    u2net_home = os.environ.get("U2NET_HOME", "")
-    if not u2net_home or not glob.glob(os.path.join(u2net_home, "*.onnx")):
-        raise RuntimeError(
-            f"REQUIRE_BAKED_WEIGHTS=1 but no .onnx weights under U2NET_HOME={u2net_home!r}"
+    elif os.environ.get("REQUIRE_BAKED_WEIGHTS") == "1":
+        model_path = birefnet.model_path()
+        if not os.path.isfile(model_path):
+            raise RuntimeError(
+                f"REQUIRE_BAKED_WEIGHTS=1 but no baked model at {model_path!r} "
+                f"({birefnet.HOME_ENV}={os.environ.get(birefnet.HOME_ENV)!r}, "
+                f"{birefnet.MODEL_ENV}={os.environ.get(birefnet.MODEL_ENV)!r})"
+            )
+        loaded = birefnet.load_session()
+        session_load_s = loaded["session_load_s"]
+        logger.info(
+            "BiRefNet session %s loaded in %.1fs (onnxruntime %s)",
+            loaded["model"],
+            session_load_s,
+            loaded["ort"],
         )
-    # Warm the BiRefNet session now, while Cloud Run still allocates full
-    # startup CPU and no request is waiting on it. Cold, the load + first
-    # inference exceeded the smoke test's timeout.
-    from app.cropper import tiered
-
-    started = time.monotonic()
-    tiered.warm_up()
-    logger.info("BiRefNet session warmed in %.1fs", time.monotonic() - started)
-
-    # SAM is deliberately NOT warmed here (NEO-315). Measured on a HEAVY
-    # revision, loading it at startup took 46-94s (p50 56s) even at 8 vCPU and
-    # sat on every cold start's critical path, while SAM wins under 1% of
-    # cards. It lazy-loads on first use instead (`sam._load_model`, behind a
-    # lock), so only the rare image that falls through to it pays the load.
+    _emit_cold_start(role=role, session_load_s=session_load_s, hook_started=hook_started)
 
 
 class CropStrategyOutput(BaseModel):
@@ -298,14 +480,16 @@ def _verify_internal_key(x_internal_key: str | None) -> None:
 
 
 def _validate_content_type(content_type: str | None, *, field: str) -> None:
+    # Error details name the field (a literal from this file) and never echo
+    # what the caller sent (NEO-481 audit).
     if (content_type or "").split(";")[0].strip() not in ALLOWED_CONTENT_TYPES:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail=f"unsupported content-type for {field}: {content_type}",
+            detail=f"unsupported content-type for {field}",
         )
 
 
-async def _read_upload(upload: UploadFile, *, field: str) -> bytes:
+async def _read_upload(upload: FormFile, *, field: str) -> bytes:
     _validate_content_type(upload.content_type, field=field)
     data = await upload.read()
     if not data:
@@ -328,17 +512,38 @@ async def _read_upload(upload: UploadFile, *, field: str) -> bytes:
     # existing error paths own that case.
     try:
         check_raster_size(data)
-    except RasterTooLargeError as exc:
+    except RasterTooLargeError:
         raise HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-            detail=f"{field}: {exc}",
+            detail=f"{field} exceeds the pixel limit",
         ) from None
     return data
 
 
+def _resolve_cache_policy(host: str | None) -> devcache_policy.CachePolicy:
+    """The dev cache policy for a request's Host. Never raises: a failure is off.
+
+    `devcache_policy.resolve` already turns its own errors into `off:error`;
+    this guard keeps a bug there from failing the request that asked.
+    """
+    try:
+        return devcache_policy.resolve(host)
+    except Exception:  # noqa: BLE001 - a cache decision must never fail a request
+        logger.warning("devcache: policy resolution raised, cache off", exc_info=True)
+        return devcache_policy.CachePolicy(enabled=False, mode="off:error", bucket=None)
+
+
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health(http_request: Request) -> dict[str, str]:
+    """Liveness, plus the dev cache mode this Host would get (NEO-484).
+
+    `dev_cache` is `on` only on the dev base URL with the cache bucket
+    configured; previews, the `sha-*` blue/green URLs and prod all read
+    `off:<reason>`. CI checks it after every deploy. It names a mode only,
+    never the bucket.
+    """
+    policy = _resolve_cache_policy(http_request.headers.get("host"))
+    return {"status": "ok", "dev_cache": policy.mode}
 
 
 class WarmupResponse(BaseModel):
@@ -360,32 +565,31 @@ class WarmupResponse(BaseModel):
 def warmup(
     x_internal_key: Annotated[str | None, Header()] = None,
 ) -> WarmupResponse:
-    """Force the BiRefNet crop model resident on this instance, then report warm.
+    """Make the BiRefNet session resident on this instance, then report warm.
 
-    A scale-to-zero container pays the ~930MB BiRefNet load plus ORT's first-run
-    allocations on its first inference; cold, that latency lands on the first real
-    /process-entry call (minutes of effective wait). Convex calls this at
-    session-start to pre-spin the model so the real calls hit a warm instance.
+    A heavy instance loads the session in its startup hook, so by the time it
+    serves a request this is normally the idempotent fast path. Convex still
+    calls it at session start: Cloud Run holds the request while a cold
+    instance starts, so a 200 tells the caller an instance is up and ready.
 
-    Synchronous "load then return": the load runs the SAME path a real crop uses
-    (`tiered.warm_up` → `_get_session` + one tiny in-memory 64x64 inference), needs
-    no GCS object or real image, does NO GCS / Vision / Anthropic I/O, and writes
-    nothing — pure model residency. Cloud Run holds the request while a cold
-    instance loads, so a 200 tells the caller the instance is actually ready.
+    Synchronous "load then return": the load is `birefnet.load_session`, the
+    same session a real crop uses. It runs NO inference (NEO-484: the model's
+    input is fixed at 1024x1024, so a warm-up pass would cost a full one), needs
+    no GCS object or real image, does no GCS / Vision / Anthropic I/O, and
+    writes nothing.
 
-    Idempotent and cheap when already warm: `is_session_loaded()` short-circuits so
-    a repeat call returns immediately with no reload and no inference, and reports
-    `was_cold=False` so the caller knows the instance was already ready.
+    Idempotent and cheap when already warm: `birefnet.is_session_loaded()`
+    short-circuits, and the response reports `was_cold=False`. `was_cold=True`
+    means THIS call created the session.
 
-    Concurrency: the service runs container_concurrency=1, so one /warmup warms the
-    ONE instance that happens to handle it. Warming all N instances of a scaled-out
-    revision needs N concurrent /warmup calls (Convex fans out N = capacity); this
-    endpoint only ever warms its own instance.
+    Concurrency: the service runs container_concurrency=1, so one /warmup warms
+    the ONE instance that happens to handle it. Warming all N instances of a
+    scaled-out revision needs N concurrent /warmup calls (Convex fans out N =
+    capacity); this endpoint only ever warms its own instance.
 
     NEO-175: the FAST role has no local model to make resident, so it must not
     reach the loader at all (the whole point of the role is that it never
-    constructs a model session). It short-circuits to `was_cold=False` without
-    importing or touching the tiered session helpers.
+    constructs a model session). It short-circuits to `was_cold=False`.
     """
     _verify_internal_key(x_internal_key)
 
@@ -395,13 +599,9 @@ def warmup(
         )
         return WarmupResponse(status="warm", was_cold=False)
 
-    # Same inline import as the startup warm hook: reach the tiered module's
-    # session helpers by name without widening main.py's top-level imports.
-    from app.cropper import tiered
-
-    was_cold = not tiered.is_session_loaded()
+    was_cold = not birefnet.is_session_loaded()
     if was_cold:
-        tiered.warm_up()
+        birefnet.load_session()
     return WarmupResponse(status="warm", was_cold=was_cold)
 
 
@@ -626,13 +826,13 @@ class ExtractRequest(BaseModel):
 
 
 class ExtractEntry(BaseModel):
-    """One archive member's outcome, in zip order.
+    """One archive member's outcome, in natural filename order.
 
-    `index` is the member's ordinal among non-ignored zip members and
-    preserves zip order — downstream pairing in Convex reads it as scan
-    order, so it is load-bearing, not cosmetic. Callers only ever hold
-    `{job_id, user_id, index}`; there is deliberately no object key or path
-    here (the service derives keys — see `ExtractRequest`).
+    `index` is the member's ordinal among non-ignored zip members, after the
+    natural filename sort in `zipsafe.iter_zip_members` — downstream pairing
+    in Convex reads it as scan order, so it is load-bearing, not cosmetic.
+    Callers only ever hold `{job_id, user_id, index}`; there is deliberately no
+    object key or path here (the service derives keys — see `ExtractRequest`).
 
     Accepted entries carry the sniffed `content_type` and `size_bytes` of the
     bytes actually stored (post EXIF normalisation); rejected ones carry a
@@ -650,7 +850,7 @@ class ExtractEntry(BaseModel):
 class ExtractResponse(BaseModel):
     """Response body for POST /extract.
 
-    `entries` has one row per non-ignored zip member, in zip order.
+    `entries` has one row per non-ignored zip member, in natural filename order.
     `accepted_count + rejected_count == len(entries)`.
     """
 
@@ -709,6 +909,81 @@ class BaselineOrientation(BaseModel):
 
 # The serialised dHash: 16 lowercase hex characters (see ProcessEntryResponse).
 DHASH_PATTERN = r"^[0-9a-f]{16}$"
+
+# Bounds on a crop's numbers. Generous: an original is at most 64 MP, so no
+# real box comes near them; they keep a hostile value from becoming a
+# multi-gigabyte canvas or a nonsense float.
+EDIT_MAX_COORDINATE = 1_000_000.0
+EDIT_MAX_FRAME_EDGE = 100_000
+
+
+class EditCropModel(BaseModel):
+    """A crop box in `PhotoEdit`'s geometry (NEO-481; see `app.edit`).
+
+    The wire names are the TypeScript contract's: `srcW` and `srcH` are
+    camelCase so Convex can pass `PhotoEdit.crop` (and store `crop_box` as
+    `placeholderImages.autoCrop`) field for field. The same model is the
+    request's `edit.crop` and the response's `crop_box`.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    cx: float = Field(ge=-EDIT_MAX_COORDINATE, le=EDIT_MAX_COORDINATE, allow_inf_nan=False)
+    cy: float = Field(ge=-EDIT_MAX_COORDINATE, le=EDIT_MAX_COORDINATE, allow_inf_nan=False)
+    w: float = Field(gt=0, le=EDIT_MAX_COORDINATE, allow_inf_nan=False)
+    h: float = Field(gt=0, le=EDIT_MAX_COORDINATE, allow_inf_nan=False)
+    angle: float = Field(gt=-180, le=180, allow_inf_nan=False)
+    src_w: int = Field(alias="srcW", ge=1, le=EDIT_MAX_FRAME_EDGE)
+    src_h: int = Field(alias="srcH", ge=1, le=EDIT_MAX_FRAME_EDGE)
+
+    @classmethod
+    def from_box(cls, box: CropBox | None) -> EditCropModel | None:
+        """The wire form of a cascade box, or None when it falls outside the contract.
+
+        Never raises: `/process-entry` must not fail an entry over its box.
+        """
+        if box is None:
+            return None
+        try:
+            return cls(
+                cx=box.cx,
+                cy=box.cy,
+                w=box.w,
+                h=box.h,
+                angle=box.angle,
+                srcW=box.src_w,
+                srcH=box.src_h,
+            )
+        except ValidationError:
+            logger.warning("process_entry: crop box outside the wire contract, omitting")
+            return None
+
+    def to_crop(self) -> photo_edit.EditCrop:
+        return photo_edit.EditCrop(
+            cx=self.cx,
+            cy=self.cy,
+            w=self.w,
+            h=self.h,
+            angle=self.angle,
+            src_w=self.src_w,
+            src_h=self.src_h,
+        )
+
+
+class PhotoEditModel(BaseModel):
+    """`PhotoEdit`: quarter turns clockwise (applied last) and an optional crop.
+
+    `crop` null means the whole source. Fields beyond these two (a stored
+    edit's `version`, `editedAt`) are ignored.
+    """
+
+    turns: Literal[0, 1, 2, 3]
+    crop: EditCropModel | None
+
+    def to_edit(self) -> photo_edit.PhotoEdit:
+        return photo_edit.PhotoEdit(
+            turns=self.turns, crop=None if self.crop is None else self.crop.to_crop()
+        )
 
 
 class ProcessEntryRequest(BaseModel):
@@ -824,6 +1099,36 @@ class ProcessEntryResponse(BaseModel):
     output_written: bool = False
     # NEO-315 — whole-image Vision orient, only on a FAST decline (case b).
     baseline: BaselineOrientation | None = None
+    # NEO-481 — the box the winning stage cut, in the EXIF-uprighted
+    # original's pixels and before the `rotation_degrees` turn, inside that
+    # frame. Only on a completed result (case a), and absent when the stage
+    # reports no box. Convex stores it as `placeholderImages.autoCrop`; the
+    # editor opens on it with turns from `rotation_degrees`.
+    crop_box: EditCropModel | None = None
+
+
+class DeriveCopyPhotosRequest(BaseModel):
+    """Body for POST /derive-copy-photos. Same no-path rule as `ExtractRequest`."""
+
+    job_id: str = Field(description="The jobId minted by createPlaceholderUploadUrl (a UUID).")
+    user_id: str = Field(description="The Clerk subject id that owns the job.")
+    entry_index: int = Field(
+        ge=0,
+        le=zipsafe.MAX_ZIP_ENTRIES,
+        description="The entry's zip ordinal, from /extract.",
+    )
+
+
+class DeriveCopyPhotosResponse(BaseModel):
+    """Response body for POST /derive-copy-photos: both sizes, base64-encoded.
+
+    Unlike the other batch routes this one returns image bytes, because the
+    objects they become live in R2, which this service holds no key for.
+    """
+
+    image: str
+    thumb: str
+    content_type: str
 
 
 def _invalid_identifier_response(exc: InvalidJobIdentifierError) -> JSONResponse:
@@ -884,6 +1189,13 @@ def _prepare_member(
         logger.warning("extract: entry %d undecodable during EXIF normalisation", member.index)
         return _rejected("entry_undecodable")
 
+    # The EXIF re-encode runs at high quality and can grow an image past the
+    # ceiling it came in under. The object written here is read back through
+    # that same ceiling by /process-entry, so an oversized one could only fail
+    # later and less clearly.
+    if len(upright) > zipsafe.MAX_ENTRY_UNCOMPRESSED_BYTES:
+        return _rejected("entry_too_large")
+
     # Re-sniff rather than reusing the member's type: EXIF normalisation can
     # re-encode into a different format (see app.exif), and the stored object
     # must describe the bytes actually written.
@@ -911,6 +1223,11 @@ def _upload_extracted(store: ObjectStore, ref: ObjectRef, data: bytes, content_t
     `ObjectAlreadyExistsError` (GCS 412) is idempotent success: the only way
     the key is occupied is a re-run of a timed-out extract, which derived the
     same key from the same ordinal. First write wins.
+
+    That holds while the entry ordering stays the same. A job extracted before
+    a change in ordering and restarted after it could disagree: its rows would
+    follow the new order and its stored objects the old one. This is accepted,
+    since it takes one job in flight across that one deploy.
     """
     try:
         store.create(ref, data, content_type=content_type)
@@ -923,9 +1240,10 @@ def _extract_entries(
 ) -> list[ExtractEntry]:
     """Stream the archive through zipsafe's guards and upload accepted entries.
 
-    The zip is read sequentially (one seekable stream); only the GCS uploads
-    are overlapped, on a small pool, and the producer is throttled so the bytes
-    retained by not-yet-finished uploads never exceed
+    The zip is read one entry at a time through one seekable stream, in natural
+    filename order rather than file order, so it seeks between entries. Only
+    the GCS uploads are overlapped, on a small pool, and the producer is
+    throttled so the bytes retained by not-yet-finished uploads never exceed
     `EXTRACT_PENDING_BYTES_BUDGET` (see the constant for the OOM class this
     prevents). Raises `ZipRejectedError` for archive-level violations —
     uploads already submitted are drained first (they are write-once and
@@ -1071,9 +1389,44 @@ def extract(
     )
 
 
+# Pillow's answers for bytes it cannot decode: an unrecognised header
+# (`UnidentifiedImageError`, an OSError), truncated or corrupt data (OSError),
+# and malformed headers or segments (SyntaxError, ValueError). In the EXIF and
+# dHash steps these mean the stored entry is not an image we can open: the same
+# bytes fail the same way every time, so they are a terminal 422, never a
+# retryable 502.
+_DECODE_ERRORS: tuple[type[BaseException], ...] = (
+    UnidentifiedImageError,
+    OSError,
+    SyntaxError,
+    ValueError,
+)
+
+ENTRY_UNDECODABLE = "ENTRY_UNDECODABLE"
+
+
+def _entry_undecodable(timings: Timings, detail: str) -> JSONResponse:
+    timings.error_code = ENTRY_UNDECODABLE
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        content={"error_code": ENTRY_UNDECODABLE, "detail": detail},
+    )
+
+
+def _upstream_failure(timings: Timings, error_code: str, detail: str) -> HTTPException:
+    """A 502 for the caller to retry; `error_code` labels the timing line only.
+
+    The body stays `{"detail": ...}` as it has always been: callers branch on
+    the status alone for these.
+    """
+    timings.error_code = error_code
+    return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail)
+
+
 @app.post("/process-entry", response_model=ProcessEntryResponse)
 def process_entry(
     request: ProcessEntryRequest,
+    http_request: Request,
     x_internal_key: Annotated[str | None, Header()] = None,
 ) -> ProcessEntryResponse | JSONResponse:
     """Run the full crop cascade on one extracted entry and store the result.
@@ -1084,22 +1437,106 @@ def process_entry(
     cropping. The rotated winning crop is written once to its derived output
     key; on retry the first write wins and `output_written` comes back False.
 
-    Failure codes: `INVALID_IDENTIFIER` (400), `ENTRY_NOT_FOUND` (404,
-    terminal — /extract never wrote this ordinal), `EXTRACT_NOT_CONFIGURED`
-    (503, retryable); Vision/Anthropic and unexpected storage failures surface
-    as 502, exactly like /process.
+    The sizes a saved copy keeps are stored beside that output, made from
+    whichever bytes won. Failing to make or store them never fails the entry:
+    a save without them asks `/derive-copy-photos` instead.
+
+    Failure codes:
+      - `INVALID_IDENTIFIER` (400).
+      - `ENTRY_NOT_FOUND` (404, terminal): /extract never wrote this ordinal.
+      - `ENTRY_TOO_MANY_PIXELS` (413, terminal): the header names more pixels
+        than the service decodes.
+      - `ENTRY_UNDECODABLE` (422, terminal, NEO-484): the stored bytes are not
+        an image this service can open: no readable image header, or the EXIF
+        upright or dHash decode fails. Checked on both roles before any Vision
+        call, and a supplied `dhash` does not skip it. The same bytes fail the
+        same way every time, so Convex must not retry it.
+      - `EXTRACT_NOT_CONFIGURED` (503, retryable).
+      - Vision/Anthropic and unexpected storage failures surface as 502, exactly
+        like /process, and are retryable.
 
     Every authenticated request emits exactly one `process_entry_timing` JSON
-    line (NEO-315, `app.timing`), whatever its outcome.
+    line (NEO-315, `app.timing`), whatever its outcome. A failed request's line
+    carries its `error_code` (502s get a label of their own there), and every
+    line carries the dev cache mode the request ran under.
+
+    NEO-484: the dev cache policy is resolved from the request's Host and bound
+    for this request only (`app.devcache.policy.bound`). It is on only on the
+    dev base URL with the cache bucket configured; /process, /crop and every
+    other route run live. The Host is read from the raw request rather than a
+    declared header parameter, so the route's OpenAPI parameters do not change.
     """
     _verify_internal_key(x_internal_key)
 
     timings = Timings(role=_preprocess_role(), index=request.entry_index)
     timings.baseline_supplied = request.baseline is not None
+    policy = _resolve_cache_policy(http_request.headers.get("host"))
+    timings.cache_mode = policy.mode
     try:
-        return _process_entry(request, timings)
+        with devcache_policy.bound(policy):
+            return _process_entry(request, timings)
+    except Exception:
+        # HTTPExceptions set their own label before raising; anything else
+        # escaping is an unhandled 500.
+        if timings.error_code is None:
+            timings.error_code = "INTERNAL_ERROR"
+        raise
     finally:
         timings.emit()
+
+
+def _store_copy_photo_sizes(
+    request: ProcessEntryRequest,
+    bucket: str,
+    output_ref: ObjectRef,
+    fresh_output: bytes | None,
+    timings: Timings,
+) -> None:
+    """Store the two sizes a saved copy keeps beside an entry's output. Never raises.
+
+    `fresh_output` is the output this attempt just wrote. None means an earlier
+    attempt's object stands (first write wins), so the sizes are made from that
+    object rather than this attempt's crop, which may not be the same pixels.
+    That earlier attempt can have died before its sizes landed, or stored only
+    one, so a retry fills in whatever is missing.
+
+    Outputs are write-once and nothing replaces one, so sizes made here match the
+    output they were made from. The one exception: a retry whose crop comes out in
+    another format writes a second output under another extension and leaves the
+    sizes as they were, so they show the first attempt's crop of the same scan.
+    """
+    image_ref = ObjectRef(
+        bucket=bucket,
+        name=layout.copy_photo_image_object(request.user_id, request.job_id, request.entry_index),
+    )
+    thumb_ref = ObjectRef(
+        bucket=bucket,
+        name=layout.copy_photo_thumb_object(request.user_id, request.job_id, request.entry_index),
+    )
+    try:
+        with timings.measure("copy_photos_ms"):
+            source = fresh_output
+            if source is None:
+                if (
+                    _object_store.stat(image_ref) is not None
+                    and _object_store.stat(thumb_ref) is not None
+                ):
+                    return
+                source = _object_store.download(
+                    output_ref, max_bytes=zipsafe.MAX_ENTRY_UNCOMPRESSED_BYTES
+                )
+            check_raster_size(source)
+            derived = derive_copy_photos(source)
+            for ref, data in ((image_ref, derived.image), (thumb_ref, derived.thumb)):
+                try:
+                    _object_store.create(ref, data, content_type=derived.content_type)
+                except ObjectAlreadyExistsError:
+                    pass
+    except Exception:
+        logger.exception(
+            "process_entry: no copy photo sizes for index %d, a save will derive them",
+            request.entry_index,
+        )
 
 
 def _process_entry(
@@ -1109,10 +1546,12 @@ def _process_entry(
     try:
         layout.validate_identifiers(request.user_id, request.job_id)
     except InvalidJobIdentifierError as exc:
+        timings.error_code = "INVALID_IDENTIFIER"
         return _invalid_identifier_response(exc)
 
     bucket = os.environ.get(layout.BUCKET_ENV)
     if not bucket:
+        timings.error_code = "EXTRACT_NOT_CONFIGURED"
         return _not_configured_response()
 
     try:
@@ -1131,6 +1570,7 @@ def _process_entry(
                     entry_ref = candidate
                     break
             if entry_ref is None:
+                timings.error_code = "ENTRY_NOT_FOUND"
                 return JSONResponse(
                     status_code=status.HTTP_404_NOT_FOUND,
                     content={
@@ -1144,9 +1584,8 @@ def _process_entry(
             )
     except Exception:
         logger.exception("process_entry: extracted image read failed")
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="placeholder storage unavailable",
+        raise _upstream_failure(
+            timings, "ENTRY_READ_FAILED", "placeholder storage unavailable"
         ) from None
 
     # Pixels, not bytes — the same guard /extract runs before ITS first
@@ -1159,12 +1598,23 @@ def _process_entry(
     # purpose: re-sending the same bytes can never succeed, so it must not
     # land in the retryable-502 bucket and be paid five times.
     try:
-        check_raster_size(entry_bytes)
+        raster_size = check_raster_size(entry_bytes)
     except RasterTooLargeError as exc:
+        timings.error_code = "ENTRY_TOO_MANY_PIXELS"
         return JSONResponse(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             content={"error_code": "ENTRY_TOO_MANY_PIXELS", "detail": str(exc)},
         )
+
+    # No readable image header: these bytes are not an image (NEO-484 — the
+    # fake scanner's 6-byte `side-1` page labelled image/jpeg, an empty object,
+    # any upload that only claimed to be a photo). Terminal 422 before EXIF,
+    # dHash or Vision, on both roles, and a supplied dhash does not skip it:
+    # the 502 this used to fall into was retried five times by the workpool and
+    # paid a Vision call on each attempt.
+    if raster_size is None:
+        logger.warning("process_entry: index=%d has no readable image header", request.entry_index)
+        return _entry_undecodable(timings, "extracted entry is not a readable image")
 
     # EXIF-upright the entry unconditionally, BEFORE the dhash. Zip-extracted
     # objects are already upright (/extract transposed and re-encoded them,
@@ -1175,12 +1625,16 @@ def _process_entry(
     try:
         with timings.measure("exif_ms"):
             entry_bytes, _orientation = apply_exif_orientation(entry_bytes)
+    except _DECODE_ERRORS as exc:
+        logger.warning(
+            "process_entry: index=%d EXIF upright could not decode the entry (%s)",
+            request.entry_index,
+            type(exc).__name__,
+        )
+        return _entry_undecodable(timings, "extracted entry could not be decoded")
     except Exception:
         logger.exception("process_entry: EXIF upright failed on the extracted image")
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="extracted image undecodable",
-        ) from None
+        raise _upstream_failure(timings, "EXIF_FAILED", "extracted image undecodable") from None
 
     # dHash the EXIF-uprighted ORIGINAL before any cropping — the hash must
     # describe the scan, never the crop, so re-scans of the same card match
@@ -1193,11 +1647,17 @@ def _process_entry(
             with timings.measure("dhash_ms"):
                 # 16 lowercase hex chars: a 64-bit int does not survive JSON float64.
                 dhash_hex = f"{compute_dhash(entry_bytes):016x}"
+        except _DECODE_ERRORS as exc:
+            logger.warning(
+                "process_entry: index=%d dhash could not decode the entry (%s)",
+                request.entry_index,
+                type(exc).__name__,
+            )
+            return _entry_undecodable(timings, "extracted entry could not be decoded")
         except Exception:
             logger.exception("process_entry: dhash failed on the extracted image")
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="extracted image undecodable",
+            raise _upstream_failure(
+                timings, "DHASH_FAILED", "extracted image undecodable"
             ) from None
 
     # Same cascade, same upstream-failure translation as POST /process. In the
@@ -1225,15 +1685,13 @@ def _process_entry(
         )
     except ClassifyError:
         logger.exception("process_entry: classify failed to parse after retry")
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="classify response unparseable",
+        raise _upstream_failure(
+            timings, "CLASSIFY_UNPARSEABLE", "classify response unparseable"
         ) from None
     except Exception:
         logger.exception("process_entry: cascade failed")
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="preprocess pipeline upstream failure",
+        raise _upstream_failure(
+            timings, "PIPELINE_UPSTREAM_FAILURE", "preprocess pipeline upstream failure"
         ) from None
 
     if isinstance(result, CropDeclined):
@@ -1259,10 +1717,7 @@ def _process_entry(
         )
 
     if isinstance(result, CropRejected):  # pragma: no cover - image_bytes was provided
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="cascade returned no result",
-        )
+        raise _upstream_failure(timings, "NO_CROP_RESULT", "cascade returned no result")
 
     timings.source = result.source
     # Write the winning crop already rotated (the /process contract leaves
@@ -1276,9 +1731,8 @@ def _process_entry(
             rotated = rotate_image_bytes(result.image_bytes, result.orientation.rotation_degrees)
     output_content_type = zipsafe.sniff_image_type(rotated)
     if output_content_type is None:  # pragma: no cover - rotation preserves format
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="processed image has no recognisable type",
+        raise _upstream_failure(
+            timings, "OUTPUT_TYPE_UNKNOWN", "processed image has no recognisable type"
         )
 
     output_ref = ObjectRef(
@@ -1301,10 +1755,13 @@ def _process_entry(
         output_written = False
     except Exception:
         logger.exception("process_entry: output write failed")
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="placeholder storage unavailable",
+        raise _upstream_failure(
+            timings, "OUTPUT_WRITE_FAILED", "placeholder storage unavailable"
         ) from None
+
+    _store_copy_photo_sizes(
+        request, bucket, output_ref, rotated if output_written else None, timings
+    )
 
     logger.info(
         "process_entry: index=%d source=%s rotation=%d written=%s",
@@ -1328,4 +1785,612 @@ def _process_entry(
         cropped_source=result.source,
         dhash=dhash_hex,
         output_written=output_written,
+        crop_box=EditCropModel.from_box(getattr(result, "crop_box", None)),
     )
+
+
+@app.post("/derive-copy-photos", response_model=DeriveCopyPhotosResponse)
+def derive_copy_photos_route(
+    request: DeriveCopyPhotosRequest,
+    x_internal_key: Annotated[str | None, Header()] = None,
+) -> DeriveCopyPhotosResponse | JSONResponse:
+    """Make the sizes a saved copy keeps from one entry's processed output.
+
+    The fallback for an entry without stored sizes: one processed before
+    /process-entry stored them, or whose sizes could not be made then. Reads the
+    object /process-entry wrote for this ordinal and writes nothing, so it is
+    safe to repeat. Runs on either role: there is no model involved.
+
+    Failure codes: `INVALID_IDENTIFIER` (400), `OUTPUT_NOT_FOUND` (404,
+    terminal: the bucket's lifecycle rule removed the scan, or it was never
+    processed), `OUTPUT_TOO_MANY_PIXELS` (413, terminal), `OUTPUT_UNDECODABLE`
+    and `PHOTO_TOO_LARGE` (422, terminal: the same bytes fail the same way),
+    `EXTRACT_NOT_CONFIGURED` (503, retryable); storage failures surface as 502.
+    """
+    _verify_internal_key(x_internal_key)
+
+    try:
+        layout.validate_identifiers(request.user_id, request.job_id)
+    except InvalidJobIdentifierError as exc:
+        return _invalid_identifier_response(exc)
+
+    bucket = os.environ.get(layout.BUCKET_ENV)
+    if not bucket:
+        return _not_configured_response()
+
+    try:
+        output_bytes: bytes | None = None
+        for extension in _EXTRACTED_EXTENSIONS:
+            candidate = ObjectRef(
+                bucket=bucket,
+                name=layout.output_image_object(
+                    request.user_id, request.job_id, request.entry_index, extension
+                ),
+            )
+            output_stat = _object_store.stat(candidate)
+            if output_stat is not None:
+                output_bytes = _object_store.download(
+                    candidate, max_bytes=zipsafe.MAX_ENTRY_UNCOMPRESSED_BYTES, stat=output_stat
+                )
+                break
+    except Exception:
+        logger.exception("derive_copy_photos: output read failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="placeholder storage unavailable",
+        ) from None
+
+    if output_bytes is None:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={
+                "error_code": "OUTPUT_NOT_FOUND",
+                "detail": "no processed image at this index",
+            },
+        )
+
+    # Written by this service, but from pixels a signed POST policy never
+    # bounded; the same guard as every other first full-size decode here.
+    try:
+        check_raster_size(output_bytes)
+    except RasterTooLargeError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            content={"error_code": "OUTPUT_TOO_MANY_PIXELS", "detail": str(exc)},
+        )
+
+    try:
+        derived = derive_copy_photos(output_bytes)
+    except CopyPhotoTooLargeError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={"error_code": "PHOTO_TOO_LARGE", "detail": str(exc)},
+        )
+    except Exception:
+        logger.exception("derive_copy_photos: output undecodable")
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={"error_code": "OUTPUT_UNDECODABLE", "detail": "processed image undecodable"},
+        )
+
+    logger.info(
+        "derive_copy_photos: index=%d image_bytes=%d thumb_bytes=%d",
+        request.entry_index,
+        len(derived.image),
+        len(derived.thumb),
+    )
+    return DeriveCopyPhotosResponse(
+        image=base64.b64encode(derived.image).decode("ascii"),
+        thumb=base64.b64encode(derived.thumb).decode("ascii"),
+        content_type=derived.content_type,
+    )
+
+
+# ── /render-edit (NEO-481) ──────────────────────────────────────────────────
+# A collector's hand edit, rendered into a new saved image. Two request forms
+# share the one route, told apart by content type:
+#
+#   scan form   application/json, `RenderEditScanRequest`. Reads the scan's
+#               EXIF-uprighted original from `extracted/` and writes the
+#               version's three write-once objects under `output/edits/`
+#               (`app.jobs.layout`). Optionally re-reads the new crop.
+#   bytes form  multipart/form-data: `image` (a stored photo, JPEG/PNG/WebP)
+#               and `edit` (the `PhotoEdit` JSON). Writes nothing; returns the
+#               two sizes base64-encoded, since they go to R2, which this
+#               service holds no key for. Never classifies.
+#
+# Both make the sizes with `app.copy_photos` (1600 px / 360 px long edge,
+# never enlarged, the same byte caps and quality steps), carrying the
+# source's ICC profile and pixel density.
+
+# The bytes form's own ceiling (NEO-481 audit). Its source is a stored photo,
+# which NeonBinder keeps at most 1600 px on the long edge, so nothing honest
+# comes near this. It is far below the 65 MP scan ceiling because a stored
+# photo reaches R2 through a signed PUT that bounds bytes, never pixels, and a
+# flat JPEG of a few MB can decode to 64 MP. Checked from the header before
+# the first full decode (the EXIF upright). The long edge survives that
+# transpose unchanged, so the order costs nothing.
+RENDER_EDIT_BYTES_MAX_EDGE = 4096
+
+# Quality steps for the full-resolution crop a scan edit stores. The first that
+# fits the extracted-object ceiling wins: it is read back through that same
+# ceiling by the re-read and by anything that serves it.
+_EDIT_CROP_JPEG_QUALITIES = (92, 85, 75, 65)
+
+_RENDER_EDIT_REQUEST_BODY = {
+    "required": True,
+    "content": {
+        "application/json": {
+            "schema": {"$ref": "#/components/schemas/RenderEditScanRequest"},
+        },
+        "multipart/form-data": {
+            "schema": {
+                "type": "object",
+                "required": ["image", "edit"],
+                "properties": {
+                    "image": {"type": "string", "format": "binary"},
+                    "edit": {
+                        "type": "string",
+                        "description": "The PhotoEdit as JSON: {turns, crop}.",
+                    },
+                },
+            },
+        },
+    },
+}
+
+
+class RenderEditScanRequest(BaseModel):
+    """The scan form of POST /render-edit. Same no-path rule as `ExtractRequest`.
+
+    `version` is the write-once version Convex allocated for this edit
+    (`placeholderImages.edits`); the route refuses one already rendered.
+    `classify` re-reads the new crop (Vision orient + Anthropic classify).
+    """
+
+    job_id: str = Field(description="The jobId minted by createPlaceholderUploadUrl (a UUID).")
+    user_id: str = Field(description="The Clerk subject id that owns the job.")
+    entry_index: int = Field(
+        ge=0,
+        le=zipsafe.MAX_ZIP_ENTRIES,
+        description="The entry's zip ordinal, from /extract.",
+    )
+    edit: PhotoEditModel
+    version: int = Field(ge=1, le=layout.MAX_EDIT_VERSION, strict=True)
+    classify: bool = False
+
+
+class RenderedPhoto(BaseModel):
+    """One rendered JPEG: its size, and its bytes only in the bytes form."""
+
+    width: int
+    height: int
+    size_bytes: int
+    data_b64: str | None = None
+
+
+class RenderEditResponse(BaseModel):
+    """Response body for POST /render-edit.
+
+    Both forms: `image` (long edge at most 1600) and `thumb` (at most 360),
+    always JPEG (`content_type`). In the bytes form each carries `data_b64`;
+    in the scan form they are stored at their keys and carry none.
+
+    Scan form only: `version`, and `crop`, the full-resolution crop (the
+    output before fitting) stored beside them. The read fields are filled only
+    when `classify` was asked: `dhash` is the hash of the uprighted ORIGINAL
+    (the same rule as `/process-entry`), and `classified` is true when the read
+    of the new crop succeeded. A failed read never fails the render, since the
+    objects are already written: it comes back `classified: false` with the
+    read fields null.
+    """
+
+    content_type: str = COPY_PHOTO_CONTENT_TYPE
+    image: RenderedPhoto
+    thumb: RenderedPhoto
+    version: int | None = None
+    crop: RenderedPhoto | None = None
+    classified: bool = False
+    players: list[str] = Field(default_factory=list)
+    player: str | None = None
+    team: str | None = None
+    card_number: str | None = None
+    side: str | None = None
+    text_count: int | None = None
+    orient_confidence: float | None = None
+    dhash: str | None = None
+
+
+def _error(status_code: int, error_code: str, detail: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code, content={"error_code": error_code, "detail": detail}
+    )
+
+
+def _invalid_edit_response(detail: str) -> JSONResponse:
+    return _error(status.HTTP_422_UNPROCESSABLE_CONTENT, "INVALID_EDIT", detail)
+
+
+def _validation_summary(exc: ValidationError) -> str:
+    """Which fields failed, without echoing what the caller sent."""
+    fields = sorted({".".join(str(part) for part in err["loc"]) or "body" for err in exc.errors()})
+    return "invalid fields: " + ", ".join(fields)
+
+
+class _RenderFailedError(Exception):
+    """A render that ends in a terminal error response."""
+
+    def __init__(self, response: JSONResponse) -> None:
+        super().__init__(response.status_code)
+        self.response = response
+
+
+@dataclass(frozen=True)
+class _Rendered:
+    crop_bytes: bytes | None
+    crop_size: tuple[int, int]
+    sizes: DerivedCopyPhotos
+
+
+def _encode_edit_crop(
+    image: Image.Image, icc_profile: bytes | None, dpi: tuple[float, float] | None
+) -> bytes:
+    extra = {} if dpi is None else {"dpi": dpi}
+    for quality in _EDIT_CROP_JPEG_QUALITIES:
+        out = BytesIO()
+        image.save(out, format="JPEG", quality=quality, icc_profile=icc_profile, **extra)
+        if out.tell() <= zipsafe.MAX_ENTRY_UNCOMPRESSED_BYTES:
+            return out.getvalue()
+    raise CopyPhotoTooLargeError("no JPEG quality fits the crop ceiling")
+
+
+def _render(source_bytes: bytes, edit: photo_edit.PhotoEdit, *, keep_crop: bool) -> _Rendered:
+    """Decode, apply the edit, and make the sizes. Raises `_RenderFailedError`.
+
+    `source_bytes` must already be uprighted and pixel-checked. Profile and
+    density are read off the source and carried to every output.
+    """
+    try:
+        with Image.open(BytesIO(source_bytes)) as source:
+            source.load()
+            icc_profile = usable_icc_profile(source)
+            dpi = read_dpi(source)
+            rgb = to_plain_rgb(source)
+    except Exception:
+        logger.warning("render_edit: source undecodable")
+        raise _RenderFailedError(
+            _error(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "IMAGE_UNDECODABLE",
+                "the source image could not be decoded",
+            )
+        ) from None
+
+    try:
+        rendered = photo_edit.render_edit(rgb, edit)
+    except photo_edit.EditError as exc:
+        raise _RenderFailedError(
+            _error(status.HTTP_422_UNPROCESSABLE_CONTENT, exc.code, str(exc))
+        ) from None
+
+    try:
+        crop_bytes = _encode_edit_crop(rendered, icc_profile, dpi) if keep_crop else None
+        sizes = derive_copy_photos_from_image(rendered, icc_profile=icc_profile, dpi=dpi)
+    except CopyPhotoTooLargeError as exc:
+        raise _RenderFailedError(
+            _error(status.HTTP_422_UNPROCESSABLE_CONTENT, "PHOTO_TOO_LARGE", str(exc))
+        ) from None
+    return _Rendered(crop_bytes=crop_bytes, crop_size=rendered.size, sizes=sizes)
+
+
+def _photo(data: bytes, *, include_data: bool) -> RenderedPhoto:
+    size = read_raster_size(data) or (0, 0)
+    return RenderedPhoto(
+        width=size[0],
+        height=size[1],
+        size_bytes=len(data),
+        data_b64=base64.b64encode(data).decode("ascii") if include_data else None,
+    )
+
+
+@app.post(
+    "/render-edit",
+    response_model=RenderEditResponse,
+    openapi_extra={"requestBody": _RENDER_EDIT_REQUEST_BODY},
+)
+async def render_edit(
+    request: Request,
+    x_internal_key: Annotated[str | None, Header()] = None,
+) -> RenderEditResponse | JSONResponse:
+    """Render a hand edit into a new saved image (NEO-481).
+
+    See the section comment above for the two forms. The scan form is safe to
+    retry with a NEW version only: a version is write-once, and its crop is
+    written last, so a crop already at the key means the version is complete
+    and the route answers `VERSION_EXISTS` rather than rendering it again.
+
+    Failure codes: `INVALID_IDENTIFIER` (400), `MISSING_IMAGE` (400),
+    `ENTRY_NOT_FOUND` (404, terminal: the original is gone, normally aged out
+    of the bucket), `VERSION_EXISTS` (409, terminal), `IMAGE_TOO_LARGE` and
+    `ENTRY_TOO_MANY_PIXELS` (413, terminal), `UNSUPPORTED_MEDIA_TYPE` (415),
+    `INVALID_EDIT`, `EDIT_FRAME_MISMATCH`, `EDIT_OUT_OF_FRAME`,
+    `IMAGE_UNDECODABLE` and `PHOTO_TOO_LARGE` (422, terminal: the same request
+    fails the same way), `EXTRACT_NOT_CONFIGURED` (503, retryable); storage
+    failures surface as 502.
+    """
+    _verify_internal_key(x_internal_key)
+
+    content_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if content_type == "application/json":
+        try:
+            body = await request.json()
+            scan_request = RenderEditScanRequest.model_validate(body)
+        except ValidationError as exc:
+            return _invalid_edit_response(_validation_summary(exc))
+        except ValueError:
+            return _invalid_edit_response("body is not JSON")
+        return await run_in_threadpool(_render_edit_scan, scan_request)
+    if content_type == "multipart/form-data":
+        return await _render_edit_bytes(request)
+    return _error(
+        status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+        "UNSUPPORTED_MEDIA_TYPE",
+        "send application/json (scan form) or multipart/form-data (bytes form)",
+    )
+
+
+async def _render_edit_bytes(request: Request) -> RenderEditResponse | JSONResponse:
+    """The bytes form: a stored photo in, its two sizes out, nothing written."""
+    async with request.form(max_files=1, max_fields=2) as form:
+        upload = form.get("image")
+        raw_edit = form.get("edit")
+        if not isinstance(upload, FormFile):
+            return _error(status.HTTP_400_BAD_REQUEST, "MISSING_IMAGE", "image is required")
+        if not isinstance(raw_edit, str):
+            return _invalid_edit_response("edit is required")
+        try:
+            edit = PhotoEditModel.model_validate(json.loads(raw_edit)).to_edit()
+        except ValidationError as exc:
+            return _invalid_edit_response(_validation_summary(exc))
+        except ValueError:
+            return _invalid_edit_response("edit is not JSON")
+        try:
+            image_bytes = await _read_upload(upload, field="image")
+        except HTTPException as exc:
+            code = {
+                status.HTTP_400_BAD_REQUEST: "MISSING_IMAGE",
+                status.HTTP_413_CONTENT_TOO_LARGE: "IMAGE_TOO_LARGE",
+                status.HTTP_415_UNSUPPORTED_MEDIA_TYPE: "UNSUPPORTED_MEDIA_TYPE",
+            }.get(exc.status_code, "INVALID_IMAGE")
+            return _error(exc.status_code, code, str(exc.detail))
+    return await run_in_threadpool(_render_edit_bytes_sync, image_bytes, edit)
+
+
+def _render_edit_bytes_sync(
+    image_bytes: bytes, edit: photo_edit.PhotoEdit
+) -> RenderEditResponse | JSONResponse:
+    started = time.monotonic()
+    try:
+        size = read_raster_size(image_bytes)
+    except RasterTooLargeError:
+        size = (RENDER_EDIT_BYTES_MAX_EDGE + 1, RENDER_EDIT_BYTES_MAX_EDGE + 1)
+    if size is not None and max(size) > RENDER_EDIT_BYTES_MAX_EDGE:
+        logger.warning("render_edit: form=bytes stored photo over the edge ceiling")
+        return _error(
+            status.HTTP_413_CONTENT_TOO_LARGE,
+            "IMAGE_TOO_LARGE",
+            "the image is larger than a stored photo can be",
+        )
+    try:
+        # A stored photo carries no orientation tag today, but one that did
+        # would be shown uprighted, so that is the frame its edit was drawn in.
+        upright, _orientation = apply_exif_orientation(image_bytes)
+        rendered = _render(upright, edit, keep_crop=False)
+    except _RenderFailedError as failure:
+        return failure.response
+    except Exception:
+        logger.warning("render_edit: stored photo undecodable")
+        return _error(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "IMAGE_UNDECODABLE",
+            "the image could not be decoded",
+        )
+    logger.info(
+        "render_edit: form=bytes turns=%d crop=%s ms=%d",
+        edit.turns,
+        edit.crop is not None,
+        int((time.monotonic() - started) * 1000),
+    )
+    return RenderEditResponse(
+        image=_photo(rendered.sizes.image, include_data=True),
+        thumb=_photo(rendered.sizes.thumb, include_data=True),
+    )
+
+
+def _read_extracted(bucket: str, request: RenderEditScanRequest) -> bytes | None:
+    """The scan's extracted original, or None when it no longer exists."""
+    for extension in _EXTRACTED_EXTENSIONS:
+        candidate = ObjectRef(
+            bucket=bucket,
+            name=layout.extracted_image_object(
+                request.user_id, request.job_id, request.entry_index, extension
+            ),
+        )
+        stat = _object_store.stat(candidate)
+        if stat is not None:
+            return _object_store.download(
+                candidate, max_bytes=zipsafe.MAX_ENTRY_UNCOMPRESSED_BYTES, stat=stat
+            )
+    return None
+
+
+def _render_edit_scan(request: RenderEditScanRequest) -> RenderEditResponse | JSONResponse:
+    """The scan form, run off the event loop."""
+    started = time.monotonic()
+    try:
+        layout.validate_identifiers(request.user_id, request.job_id)
+    except InvalidJobIdentifierError as exc:
+        return _invalid_identifier_response(exc)
+
+    bucket = os.environ.get(layout.BUCKET_ENV)
+    if not bucket:
+        return _not_configured_response()
+
+    def ref(name: str) -> ObjectRef:
+        return ObjectRef(bucket=bucket, name=name)
+
+    args = (request.user_id, request.job_id, request.entry_index, request.version)
+    crop_ref = ref(layout.edit_output_object(*args))
+    image_ref = ref(layout.edit_copy_photo_object(*args, "image"))
+    thumb_ref = ref(layout.edit_copy_photo_object(*args, "thumb"))
+
+    def version_exists() -> JSONResponse:
+        return _error(
+            status.HTTP_409_CONFLICT, "VERSION_EXISTS", "this edit version is already rendered"
+        )
+
+    try:
+        if _object_store.stat(crop_ref) is not None:
+            return version_exists()
+        source_bytes = _read_extracted(bucket, request)
+    except Exception:
+        logger.exception("render_edit: extracted image read failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="placeholder storage unavailable",
+        ) from None
+    if source_bytes is None:
+        return _error(
+            status.HTTP_404_NOT_FOUND, "ENTRY_NOT_FOUND", "no extracted image at this index"
+        )
+
+    # The same pixel guard and uprighting as /process-entry, so the frame the
+    # edit was drawn in (and `crop_box` was measured in) is the frame read here.
+    try:
+        check_raster_size(source_bytes)
+    except RasterTooLargeError:
+        return _error(
+            status.HTTP_413_CONTENT_TOO_LARGE,
+            "ENTRY_TOO_MANY_PIXELS",
+            "the extracted image exceeds the pixel limit",
+        )
+    try:
+        upright, _orientation = apply_exif_orientation(source_bytes)
+    except Exception:
+        logger.warning("render_edit: extracted image undecodable")
+        return _error(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "IMAGE_UNDECODABLE",
+            "the extracted image could not be decoded",
+        )
+
+    try:
+        rendered = _render(upright, request.edit.to_edit(), keep_crop=True)
+    except _RenderFailedError as failure:
+        return failure.response
+    assert rendered.crop_bytes is not None  # keep_crop=True
+
+    # Sizes first, the crop last: the crop's presence is what marks a version
+    # complete. A size already at its key is an earlier attempt at this same
+    # version, which rendered the same request to the same bytes.
+    try:
+        for size_ref, data in (
+            (image_ref, rendered.sizes.image),
+            (thumb_ref, rendered.sizes.thumb),
+        ):
+            try:
+                _object_store.create(size_ref, data, content_type=COPY_PHOTO_CONTENT_TYPE)
+            except ObjectAlreadyExistsError:
+                pass
+        _object_store.create(crop_ref, rendered.crop_bytes, content_type=COPY_PHOTO_CONTENT_TYPE)
+    except ObjectAlreadyExistsError:
+        return version_exists()
+    except Exception:
+        logger.exception("render_edit: edit write failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="placeholder storage unavailable",
+        ) from None
+
+    response = RenderEditResponse(
+        image=_photo(rendered.sizes.image, include_data=False),
+        thumb=_photo(rendered.sizes.thumb, include_data=False),
+        version=request.version,
+        crop=RenderedPhoto(
+            width=rendered.crop_size[0],
+            height=rendered.crop_size[1],
+            size_bytes=len(rendered.crop_bytes),
+        ),
+    )
+    if request.classify:
+        response = _reread(response, upright, rendered.crop_bytes)
+
+    logger.info(
+        "render_edit: form=scan index=%d version=%d classify=%s classified=%s ms=%d",
+        request.entry_index,
+        request.version,
+        request.classify,
+        response.classified,
+        int((time.monotonic() - started) * 1000),
+    )
+    return response
+
+
+def _reread(response: RenderEditResponse, original: bytes, crop: bytes) -> RenderEditResponse:
+    """Read the new crop the way /process-entry reads its winner. Never raises.
+
+    The crop is read as the collector turned it: the orient call reports its
+    text count and confidence but turns nothing, since the edit's `turns` are
+    the photo's orientation now. The dHash describes the original, as ever.
+    """
+    try:
+        dhash_hex = f"{compute_dhash(original):016x}"
+    except Exception:
+        logger.warning("render_edit: dhash failed on the extracted image")
+        dhash_hex = None
+    try:
+        orientation = cropper.detect_orientation(crop)
+        classification = cropper.classify_card(crop)
+    except Exception:
+        logger.exception("render_edit: re-read failed, returning the render unread")
+        return response.model_copy(update={"dhash": dhash_hex})
+    return response.model_copy(
+        update={
+            "classified": True,
+            "players": list(classification.players),
+            "player": classification.player,
+            "team": classification.team,
+            "card_number": classification.card_number,
+            "side": classification.side,
+            "text_count": orientation.text_count,
+            "orient_confidence": orientation.confidence,
+            "dhash": dhash_hex,
+        }
+    )
+
+
+# The scan form's body is read by hand (the route takes two content types), so
+# FastAPI never sees `RenderEditScanRequest` and would leave the request body's
+# `$ref` to it dangling. Register it, and the models it nests, as components.
+_default_openapi = app.openapi
+
+
+def _openapi_with_render_edit_scan_form() -> dict[str, object]:
+    if app.openapi_schema is None:
+        schema = _default_openapi()
+        scan_form = RenderEditScanRequest.model_json_schema(
+            ref_template="#/components/schemas/{model}"
+        )
+        nested = scan_form.pop("$defs", {})
+        components = schema.setdefault("components", {}).setdefault("schemas", {})
+        for name, nested_schema in nested.items():
+            components.setdefault(name, nested_schema)
+        components["RenderEditScanRequest"] = scan_form
+    return app.openapi_schema
+
+
+app.openapi = _openapi_with_render_edit_scan_form  # type: ignore[method-assign]
+
+
+# Last statement of the module: the `cold_start` line's import share.
+_MAIN_MODULE_IMPORT_S = time.perf_counter() - _MODULE_IMPORT_STARTED

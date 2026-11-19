@@ -1,13 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { ConvexCollectionProvider, UNSAVED_LINE_MESSAGE, __test } from "./convexStore";
+import { ConvexCollectionProvider, UNSAVED_LINE_MESSAGE, __test, toCardWithPath } from "./convexStore";
 import { isOptimisticId } from "../lineKeys";
 import {
   collectionCopiesIn,
   collectionCopiesOfCards,
   ScopeProvider,
+  useBinderNeeds,
   useCapabilities,
+  useCopyPhotos,
   useCollectionActions,
   useContainerCopies,
   useContainers,
@@ -18,6 +20,7 @@ import {
   useInventoryCards,
   useSetCompletion,
   useOwnedCards,
+  useRuleMatches,
   useSearch,
   useSetCards,
   useSuggestions,
@@ -25,7 +28,9 @@ import {
   useTradeCopies,
   useVariantCompletion,
   useWants,
+  writeErrorMessage,
 } from "./store";
+import { installFakeXhr } from "@/lib/testing/fake-xhr";
 import { REAL_CAPABILITIES, type Card, type Copy } from "./types";
 
 /**
@@ -35,6 +40,8 @@ import { REAL_CAPABILITIES, type Card, type Copy } from "./types";
  * No test here reaches a server.
  */
 const calls = vi.hoisted(() => ({ list: [] as { name: string; args: unknown }[], answers: new Map<string, unknown>() }));
+/** What a public action answers, by function name: a value, or a function of the args. */
+const actionAnswers = vi.hoisted(() => new Map<string, unknown>());
 const queried = vi.hoisted(() => [] as { name: string; args: unknown }[]);
 /** What a query answers once loaded, by function name: a value, or a function of the args. */
 const loaded = vi.hoisted(() => new Map<string, unknown>());
@@ -52,7 +59,8 @@ const paged = vi.hoisted(() => ({ pages: new Map<string, unknown[][]>(), loadMor
  */
 const local = vi.hoisted(() => ({
   data: new Map<string, { name: string; args: unknown; value: unknown }>(),
-  failures: new Map<string, string>(),
+  /** A string rejects with a plain Error; an object rejects as a ConvexError carrying it as `data`. */
+  failures: new Map<string, string | { code: string; message: string }>(),
   key(name: string, args: unknown) {
     return `${name}|${JSON.stringify(args)}`;
   },
@@ -109,16 +117,30 @@ vi.mock("convex/react", async () => {
           return [key, typeof answer === "function" ? answer(args) : answer];
         }),
       ),
+    // NEO-370: the client the Sync status tab reads a set's held-back list with.
+    useConvex: () => ({
+      query: async (ref: Parameters<typeof nameOf>[0], args: unknown) => {
+        const answer = loaded.get(nameOf(ref));
+        return typeof answer === "function" ? answer(args) : answer;
+      },
+    }),
     // NEO-377: the copy-photo actions; no test here reaches them.
-    useAction: (ref: Parameters<typeof nameOf>[0]) => async () => {
-      throw new Error(`unexpected action ${nameOf(ref)}`);
+    useAction: (ref: Parameters<typeof nameOf>[0]) => async (args: unknown) => {
+      const name = nameOf(ref);
+      if (!actionAnswers.has(name)) throw new Error(`unexpected action ${name}`);
+      const answer = actionAnswers.get(name);
+      return typeof answer === "function" ? answer(args) : answer;
     },
     useMutation: (ref: Parameters<typeof nameOf>[0]) => {
       const name = nameOf(ref);
       const send = async (args: unknown) => {
         calls.list.push({ name, args });
         const failure = local.failures.get(name);
-        if (failure) throw new Error(failure);
+        if (failure) {
+          if (typeof failure === "string") throw new Error(failure);
+          const { ConvexError } = await import("convex/values");
+          throw new ConvexError(failure);
+        }
         const answer = calls.answers.get(name);
         return (typeof answer === "function" ? answer(args) : answer) ?? null;
       };
@@ -181,7 +203,24 @@ const COPY: Copy = {
   notes: "",
 };
 
+/** The listing gate's refusal as the server throws it (`convex/listingGate.ts`). */
+const GATE = {
+  code: "LISTING_NEEDS_DETAILS",
+  message:
+    "Show box sells on your marketplaces, so cards going in need a price first. Set a common price for the checklist, or give the card a price of its own.",
+};
+
+vi.mock("@/lib/collection/copy-photo-resize", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  resizeCopyPhoto: vi.fn(async () => ({
+    contentType: "image/jpeg",
+    image: new Blob(["image"], { type: "image/jpeg" }),
+    thumb: new Blob(["thumb"], { type: "image/jpeg" }),
+  })),
+}));
+
 beforeEach(() => {
+  actionAnswers.clear();
   calls.list.length = 0;
   calls.answers.clear();
   queried.length = 0;
@@ -190,7 +229,10 @@ beforeEach(() => {
   paged.loadMore.length = 0;
   local.clear();
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe("the server's variant rows, in the view's terms", () => {
   it("reads Base from its variant type", () => {
@@ -247,6 +289,48 @@ describe("NEO-367 a card's notes", () => {
   });
 });
 
+describe("NEO-528 cameos: who else is pictured, and the cards a binder takes in only as a cameo", () => {
+  const variant = toVariantRef({ _id: "vt", level: "variantType", name: "Base", kind: "base", variantType: node("vt", "Base"), insert: null } as never);
+  const raw = (extra: object) =>
+    ({ _id: "c1", cardNumber: "7", cardName: "Clayton", sortOrder: 0, variantId: "vt", features: [], listingTitle: "#7", players: [], teams: [], ...extra }) as never;
+  const { toCard } = __test;
+
+  it("carries the card's pictured players, and leaves the key off a card that pictures no one else", () => {
+    expect(toCard(raw({ secondaryPlayers: [{ _id: "p9", name: "Dan Marino" }] }), null as never, variant).secondaryPlayers).toEqual([
+      { id: "p9", name: "Dan Marino" },
+    ]);
+    expect("secondaryPlayers" in toCard(raw({}), null as never, variant)).toBe(false);
+    expect("secondaryPlayers" in toCard(raw({ secondaryPlayers: [] }), null as never, variant)).toBe(false);
+  });
+
+  it("carries the card's own name, trimmed, for naming a card with no player; blank leaves the key off", () => {
+    expect(toCard(raw({ cardName: "  Dolphins Leaders " }), null as never, variant).cardName).toBe("Dolphins Leaders");
+    expect("cardName" in toCard(raw({ cardName: "  " }), null as never, variant)).toBe(false);
+  });
+
+  it("rule matches read ruleFits: every fit, and the cameo fits apart", () => {
+    loaded.set("binderRules:ruleFits", (args: { cardIds: string[] }) =>
+      args.cardIds.flatMap((id) => (id === "own" ? [{ cardId: id }] : id === "cameo" ? [{ cardId: id, secondary: true }] : [])),
+    );
+    const { result } = renderHook(() => useRuleMatches("b1", ["own", "cameo", "neither"]), { wrapper });
+    expect([...(result.current?.fits ?? [])]).toEqual(["own", "cameo"]);
+    expect([...(result.current?.secondary ?? [])]).toEqual(["cameo"]);
+    expect(queried.some((q) => q.name === "binderRules:matchingCards")).toBe(false);
+  });
+
+  it("a binder's needs mark the cameo ones", () => {
+    const need = (id: string, secondary?: true) => ({
+      card: { ...(raw({ _id: id }) as object), set: { _id: "s", name: "Score", year: "1990" }, variant: { _id: "vt", level: "variantType", name: "Base", kind: "base", variantType: node("vt", "Base"), insert: null } },
+      held: false,
+      ...(secondary ? { secondary } : {}),
+    });
+    loaded.set("binderRules:needs", { needs: [need("n1"), need("n2", true)], supported: true, truncated: false });
+    const { result } = renderHook(() => useBinderNeeds("b1"), { wrapper });
+    expect(result.current?.cards.map((c) => c.id)).toEqual(["n1", "n2"]);
+    expect([...(result.current?.secondary ?? [])]).toEqual(["n2"]);
+  });
+});
+
 describe("the drill", () => {
   const item = (over: object) =>
     ({ _id: "x", level: "variantType", name: "Base", kind: "base", childCount: 0, cardCount: 335, baseCardCount: 330, ...over }) as never;
@@ -269,6 +353,52 @@ describe("the drill", () => {
   it("rows above a set carry no counts", () => {
     const d = toDrillItem("year", item({ level: "year", name: "2024", kind: null, childCount: 4, cardCount: null, baseCardCount: null }));
     expect(d).toEqual({ id: "x", level: "year", name: "2024", hasChildren: true });
+  });
+
+  it("NEO-527: a set listed in a brand column in place of the brand-unknown row is a set carrying that row's id", () => {
+    const d = toDrillItem(
+      "brand",
+      item({ _id: "set9", level: "setName", name: "Starline", kind: null, childCount: 2, cardCount: null, baseCardCount: null, brandId: "unk" }),
+    );
+    expect(d).toEqual({ id: "set9", level: "set", name: "Starline", hasChildren: true, brandId: "unk" });
+    expect(toDrillItem("brand", item({ level: "manufacturer", name: "Topps", kind: null, childCount: 4 })).brandId).toBeUndefined();
+  });
+});
+
+describe("NEO-527: the brand-unknown row's name never reaches the view", () => {
+  const raw = (setExtra: object) =>
+    ({
+      _id: "c1",
+      cardNumber: "87",
+      cardName: "Purdy",
+      sortOrder: 0,
+      variantId: "vt",
+      features: [],
+      listingTitle: "#87",
+      players: [],
+      teams: [],
+      set: {
+        _id: "set1",
+        name: "Bowman",
+        season: "2026",
+        sport: node("sp", "Football"),
+        year: node("y", "2026"),
+        manufacturer: node("unk", "Unknown"),
+        ...setExtra,
+      },
+      variant: { _id: "vt", level: "variantType", name: "Base", kind: "base", variantType: node("vt", "Base"), insert: null, parallel: null, cardCount: null, baseCardCount: null },
+    }) as never;
+
+  it("keeps the flagged brand's id for navigation but never its name", () => {
+    const card = toCardWithPath(raw({ manufacturerBrandUnknown: true }));
+    expect(card?.set.brand).toEqual({ id: "unk", name: "" });
+    expect(card?.set.brandUnknown).toBe(true);
+  });
+
+  it("a real brand keeps its name and carries no flag", () => {
+    const card = toCardWithPath(raw({ manufacturer: node("b", "Topps") }));
+    expect(card?.set.brand).toEqual({ id: "b", name: "Topps" });
+    expect(card?.set.brandUnknown).toBeUndefined();
   });
 });
 
@@ -337,6 +467,11 @@ describe("copies between the view and the server", () => {
   it("reads a want with no binder as unscoped", () => {
     expect(toWant({ cardId: "k" } as never)).toEqual({ cardId: "k", binderId: null });
     expect(toWant({ cardId: "k", binderId: "b" } as never)).toEqual({ cardId: "k", binderId: "b" });
+  });
+
+  it("keeps a want's server stamp, and leaves it off an optimistic want that has none", () => {
+    expect(toWant({ cardId: "k", lastUpdated: 42 } as never)).toEqual({ cardId: "k", binderId: null, lastUpdated: 42 });
+    expect(toWant({ cardId: "k" } as never)).not.toHaveProperty("lastUpdated");
   });
 
   it("folds like the server: identical details only, never a cert or a serial", () => {
@@ -584,6 +719,19 @@ describe("every write's undo is the inverse write", () => {
     expect(writes()[1]).toEqual({ name: "collection:removeCopy", args: { copyId: "new1" } });
   });
 
+  it("NEO-431: a plain add sends no keepsOwnLine; an add with photos coming does, and its undo removes the line", async () => {
+    calls.answers.set("collection:addLineItem", { copyId: "new1", merged: false });
+    const a = actions();
+    await a.addLineItem(CARD, { quantity: 1, acquiredAt: "2026-11-01", notes: "" });
+    expect(writes()[0].args).not.toHaveProperty("keepsOwnLine");
+    const result = await a.addLineItem(CARD, { quantity: 1, acquiredAt: "2026-11-01", notes: "" }, { keepsOwnLine: true });
+    expect(writes()[1].args).toMatchObject({ cardId: "card1", keepsOwnLine: true });
+    // The answer's id, never a placeholder.
+    expect(result.copyId).toBe("new1");
+    await act(result.undo);
+    expect(writes()[2]).toEqual({ name: "collection:removeCopy", args: { copyId: "new1" } });
+  });
+
   it("Have, folded into a stack: the undo puts the stack back as it was", async () => {
     const previous = { quantity: 1, acquiredOn: "2026-10-23", homeId: "home1" };
     calls.answers.set("collection:addHave", { copyId: "stack1", merged: true, previous });
@@ -734,6 +882,151 @@ describe("a write on a line drawn ahead of the server waits for its real id", ()
     await expect(first).rejects.toThrow("refused");
     await expect(trade).rejects.toThrow(UNSAVED_LINE_MESSAGE);
     expect(writes().map((w) => w.name)).toEqual(["collection:moveCopy"]);
+  });
+
+  describe("a copy photo on a line drawn by an add (NEO-466)", () => {
+    const STARTED = {
+      photoId: "photo1",
+      imageUploadUrl: "https://r2.example/image?sig=a",
+      thumbUploadUrl: "https://r2.example/thumb?sig=b",
+    };
+    /** Presses addHave with its answer held, and reads the row it drew. */
+    function addDrawn() {
+      local.set("collection:copiesOf", { cardId: "card1" }, []);
+      let land!: (r: unknown) => void;
+      let refuse!: (e: Error) => void;
+      const answer = new Promise((resolve, reject) => {
+        land = resolve;
+        refuse = reject;
+      });
+      calls.answers.set("collection:addHave", () => answer);
+      const { result } = renderHook(() => ({ actions: useCollectionActions(), photos: useCopyPhotos()! }), { wrapper });
+      const pressed = result.current.actions.addHave(CARD);
+      const rows = local.get("collection:copiesOf", { cardId: "card1" }) as (typeof RAW)[];
+      expect(rows).toHaveLength(1);
+      expect(isOptimisticId(rows[0]._id)).toBe(true);
+      const line: Copy = { ...COPY, id: rows[0]._id, quantity: 1 };
+      return { photos: result.current.photos, pressed, line, land, refuse };
+    }
+    const file = () => new File(["x"], "card.jpg", { type: "image/jpeg" });
+    const sent = (name: string) => calls.list.filter((c) => c.name === name);
+    const startCalls = () => {
+      const seen: unknown[] = [];
+      actionAnswers.set("copyPhotos:startUpload", (a: unknown) => {
+        seen.push(a);
+        return STARTED;
+      });
+      actionAnswers.set("copyPhotos:finishUpload", () => null);
+      return seen;
+    };
+
+    it("holds startUpload until the add answers, then sends the real id; no placeholder reaches an action", async () => {
+      const seen = startCalls();
+      const xhrs = installFakeXhr();
+      const { photos, pressed, line, land } = addDrawn();
+      const saving = photos.addPhoto(line, "front", file());
+      await act(async () => {});
+      expect(seen).toEqual([]);
+
+      land({ copyId: "new1", merged: false });
+      await act(async () => {
+        await pressed;
+      });
+      await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+      xhrs.all.forEach((x) => x.respond(200));
+      await saving;
+      expect(seen).toEqual([expect.objectContaining({ copyId: "new1", side: "front" })]);
+      expect(seen.some((a) => isOptimisticId(String((a as { copyId: string }).copyId)))).toBe(false);
+    });
+
+    it("when the add is refused, the save fails with the unsaved-line message, sends nothing, and leaves no unhandled rejection", async () => {
+      const seen = startCalls();
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => unhandled.push(reason);
+      process.on("unhandledRejection", onUnhandled);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const { photos, pressed, line, refuse } = addDrawn();
+        const saving = photos.addPhoto(line, "front", file());
+        const failed = saving.catch((e: unknown) => e);
+        const refused = pressed.catch((e: unknown) => e);
+        refuse(new Error("refused"));
+        expect(await refused).toMatchObject({ message: "refused" });
+        expect(await failed).toMatchObject({ message: UNSAVED_LINE_MESSAGE });
+        await new Promise((r) => setTimeout(r, 20));
+        expect(seen).toEqual([]);
+        expect(unhandled).toEqual([]);
+      } finally {
+        process.off("unhandledRejection", onUnhandled);
+        warn.mockRestore();
+      }
+    });
+
+    it("starts the resize at once, beside the add's write, and the save reuses that one resize", async () => {
+      const { resizeCopyPhoto } = await import("@/lib/collection/copy-photo-resize");
+      vi.mocked(resizeCopyPhoto).mockClear();
+      const seen = startCalls();
+      const xhrs = installFakeXhr();
+      const { photos, pressed, line, land } = addDrawn();
+      const held = file();
+      photos.preparePhoto!(held);
+      const saving = photos.addPhoto(line, "front", held);
+      await act(async () => {});
+      expect(resizeCopyPhoto).toHaveBeenCalledTimes(1);
+      expect(seen).toEqual([]);
+
+      land({ copyId: "new1", merged: false });
+      await act(async () => {
+        await pressed;
+      });
+      await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+      xhrs.all.forEach((x) => x.respond(200));
+      await saving;
+      expect(resizeCopyPhoto).toHaveBeenCalledTimes(1);
+    });
+
+    it("starts the resize before the add answers even when nothing prepared it", async () => {
+      const { resizeCopyPhoto } = await import("@/lib/collection/copy-photo-resize");
+      vi.mocked(resizeCopyPhoto).mockClear();
+      startCalls();
+      const { photos, pressed, line, refuse } = addDrawn();
+      const failed = photos.addPhoto(line, "front", file()).catch((e: unknown) => e);
+      await act(async () => {});
+      expect(resizeCopyPhoto).toHaveBeenCalledTimes(1);
+      refuse(new Error("refused"));
+      await pressed.catch(() => {});
+      await failed;
+    });
+
+    it("removePhoto and swapPhotos wait for the add, then send the real id", async () => {
+      const { photos, pressed, line, land } = addDrawn();
+      const removing = photos.removePhoto!(line, "front");
+      const swapping = photos.swapPhotos!(line);
+      await act(async () => {});
+      expect(sent("copyPhotos:remove")).toEqual([]);
+      expect(sent("copyPhotos:swap")).toEqual([]);
+
+      land({ copyId: "new1", merged: false });
+      await act(async () => {
+        await pressed;
+        await removing;
+        await swapping;
+      });
+      expect(sent("copyPhotos:remove")).toEqual([{ name: "copyPhotos:remove", args: { copyId: "new1", side: "front" } }]);
+      expect(sent("copyPhotos:swap")).toEqual([{ name: "copyPhotos:swap", args: { copyId: "new1" } }]);
+    });
+
+    it("removePhoto and swapPhotos on an add that was refused send nothing and say so", async () => {
+      const { photos, pressed, line, refuse } = addDrawn();
+      const removing = photos.removePhoto!(line, "front").catch((e: unknown) => e);
+      const swapping = photos.swapPhotos!(line).catch((e: unknown) => e);
+      refuse(new Error("refused"));
+      await pressed.catch(() => {});
+      expect(await removing).toMatchObject({ message: UNSAVED_LINE_MESSAGE });
+      expect(await swapping).toMatchObject({ message: UNSAVED_LINE_MESSAGE });
+      expect(sent("copyPhotos:remove")).toEqual([]);
+      expect(sent("copyPhotos:swap")).toEqual([]);
+    });
   });
 
   it("gives a write's drawn line the same placeholder every time Convex replays its optimistic update", () => {
@@ -1023,6 +1316,40 @@ describe("writes: moves, trade, wants and containers", () => {
     expect(r).toMatchObject({ copyId: "twin", folded: true, split: true });
   });
 
+  it("NEO-479: moveCopy sends the own price in whole cents, never dollars", async () => {
+    calls.answers.set("collection:moveCopy", MOVE_BACK);
+    await actions().moveCopy(COPY, "box1", { minPrice: 0.29 });
+    expect(writes()[0].args).toEqual({ copyId: "copy1", toHomeId: "box1", minPriceCents: 29 });
+    await actions().moveCopy(COPY, "box1", { minPrice: 1.1 });
+    expect(writes()[1].args).toMatchObject({ minPriceCents: 110 });
+  });
+
+  it("NEO-479: a move with no price sends no price key", async () => {
+    calls.answers.set("collection:moveCopy", MOVE_BACK);
+    await actions().moveCopy(COPY, "box1", { quantity: 1 });
+    expect(writes()[0].args).not.toHaveProperty("minPriceCents");
+  });
+
+  it.each([
+    ["a number", 150],
+    ["null (there was none)", null],
+  ])("NEO-479: the undo sends back the price the server recorded: %s", async (_n, before) => {
+    calls.answers.set("collection:moveCopy", { ...MOVE_BACK, from: { homeId: "home1", quantity: 2, minPriceCents: before } });
+    const r = await actions().moveCopy(COPY, "box1", { minPrice: 0.4 });
+    await act(r.undo);
+    expect(writes()[1]).toEqual({
+      name: "collection:moveCopy",
+      args: { copyId: "copy1", toHomeId: "home1", quantity: 2, minPriceCents: before },
+    });
+  });
+
+  it("NEO-479: an undo of a move that changed no price sends no price key", async () => {
+    calls.answers.set("collection:moveCopy", MOVE_BACK);
+    const r = await actions().moveCopy(COPY, "box1");
+    await act(r.undo);
+    expect(writes()[1].args).not.toHaveProperty("minPriceCents");
+  });
+
   it("placeCopy sends the row, null to take it out, and its undo goes back to the previous row", async () => {
     calls.answers.set("collection:placeCopy", { ...MOVE_BACK, from: { homeId: "home1", slot: 1, quantity: 2 } });
     const r = await actions().placeCopy(COPY, null);
@@ -1103,6 +1430,41 @@ describe("writes: moves, trade, wants and containers", () => {
       "collectionContainers:empty",
       "collectionContainers:remove",
     ]);
+  });
+});
+
+describe("optimistic updates: an add with photos coming (NEO-431)", () => {
+  const twin = {
+    _id: "copy1",
+    cardId: "card1",
+    variantId: "base1",
+    setId: "set1",
+    homeId: "home1",
+    quantity: 1,
+    condition: "Excellent",
+    acquiredOn: "2026-11-01",
+    lastUpdated: 1,
+  };
+  const details = { quantity: 1, condition: "Excellent" as const, acquiredAt: "2026-11-01", notes: "", homeId: "home1" };
+
+  it("draws its own row beside an identical one, where a plain add stacks", async () => {
+    local.set("collection:copiesOf", { cardId: "card1" }, [twin]);
+    calls.answers.set("collection:addLineItem", { copyId: "new1", merged: false });
+    const a = renderHook(() => useCollectionActions(), { wrapper }).result.current;
+    void a.addLineItem(CARD, details, { keepsOwnLine: true });
+    const own = local.get("collection:copiesOf", { cardId: "card1" }) as (typeof twin)[];
+    expect(own).toHaveLength(2);
+    expect(own.find((r) => r._id === "copy1")?.quantity).toBe(1);
+    expect(isOptimisticId(own.find((r) => r._id !== "copy1")!._id)).toBe(true);
+    await act(async () => {});
+
+    local.set("collection:copiesOf", { cardId: "card1" }, [twin]);
+    calls.answers.set("collection:addLineItem", { copyId: "copy1", merged: true, previous: { quantity: 1 } });
+    void a.addLineItem(CARD, details);
+    const stacked = local.get("collection:copiesOf", { cardId: "card1" }) as (typeof twin)[];
+    expect(stacked).toHaveLength(1);
+    expect(stacked[0].quantity).toBe(2);
+    await act(async () => {});
   });
 });
 
@@ -1244,6 +1606,83 @@ describe("optimistic updates: a copy is never shown in two places", () => {
     expect(copiesOf()[0]).toMatchObject({ homeId: BOX, slot: 3 });
   });
 
+  describe("the move's own price (NEO-479)", () => {
+    const rawIn = (homeId: string) => rowsIn("collection:copiesInContainer", homeId) as { _id: string; quantity: number; minPriceCents?: number }[];
+
+    it("lands the cards in the box at the price typed, in cents", async () => {
+      seed();
+      answer();
+      await actions().moveCopy(move, BOX, { minPrice: 0.4 });
+      expect(rawIn(BOX)[0]).toMatchObject({ _id: "copy1", minPriceCents: 40 });
+    });
+
+    it("a priced split prices only the part in the box; the remainder stays unpriced", async () => {
+      seed();
+      answer({ copyId: "new", split: true, from: { homeId: MAIN, quantity: 2 } });
+      await actions().moveCopy(move, BOX, { quantity: 2, minPrice: 1.5 });
+      expect(rawIn(BOX)[0]).toMatchObject({ quantity: 2, minPriceCents: 150 });
+      expect(rawIn(MAIN)[0]).toMatchObject({ _id: "copy1", quantity: 1 });
+      expect(rawIn(MAIN)[0]).not.toHaveProperty("minPriceCents");
+    });
+
+    it("folds only into a box twin at the same price", async () => {
+      const same = base({ _id: "twin", homeId: BOX, quantity: 1, minPriceCents: 150 });
+      seed([base()], [same]);
+      answer({ copyId: "twin", folded: true });
+      await actions().moveCopy(move, BOX, { minPrice: 1.5 });
+      expect(copiesOf().map((r) => [r._id, r.quantity])).toEqual([["twin", 4]]);
+    });
+
+    it("does not fold into a box twin at another price, or with none", async () => {
+      for (const twinPrice of [{ minPriceCents: 99 }, {}]) {
+        local.clear();
+        seed([base()], [base({ _id: "twin", homeId: BOX, quantity: 1, ...twinPrice })]);
+        answer();
+        await actions().moveCopy(move, BOX, { minPrice: 1.5 });
+        expect(copiesOf().map((r) => r._id).sort()).toEqual(["copy1", "twin"]);
+      }
+    });
+
+    it("a card with its own price keeps it into a box when none is typed", async () => {
+      seed([base({ minPriceCents: 200 })]);
+      answer();
+      await actions().moveCopy({ ...move, minPrice: 2 }, BOX);
+      expect(rawIn(BOX)[0]).toMatchObject({ minPriceCents: 200 });
+    });
+
+    it("taking a priced box line off sale lands it in the binder with no price (Branch B)", async () => {
+      seed([], [base({ homeId: BOX, minPriceCents: 150 })]);
+      answer({ from: { homeId: BOX, quantity: 3, minPriceCents: 150 } });
+      await actions().moveCopy({ ...COPY_AT(BOX), homeKind: "box", minPrice: 1.5 }, MAIN);
+      expect(rawIn(MAIN)[0]).toMatchObject({ _id: "copy1" });
+      expect(rawIn(MAIN)[0]).not.toHaveProperty("minPriceCents");
+    });
+
+    it("the undo of taking off sale puts the price back on the row it sends", async () => {
+      seed([], [base({ homeId: BOX, minPriceCents: 150 })]);
+      answer({ from: { homeId: BOX, quantity: 3, minPriceCents: 150 } });
+      const r = await actions().moveCopy({ ...COPY_AT(BOX), homeKind: "box", minPrice: 1.5 }, MAIN);
+      answer({ from: { homeId: MAIN, quantity: 3 } });
+      await act(r.undo);
+      expect(calls.list.at(-1)).toEqual({
+        name: "collection:moveCopy",
+        args: { copyId: "copy1", toHomeId: BOX, quantity: 3, minPriceCents: 150 },
+      });
+      expect(rawIn(BOX)[0]).toMatchObject({ _id: "copy1", minPriceCents: 150 });
+    });
+
+    it("an undo that restores 'no price' lands the row without one", async () => {
+      seed();
+      answer({ from: { homeId: MAIN, quantity: 3, minPriceCents: null } });
+      const r = await actions().moveCopy(move, BOX, { minPrice: 0.4 });
+      answer({ from: { homeId: BOX, quantity: 3 } });
+      await act(r.undo);
+      expect(calls.list.at(-1)?.args).toMatchObject({ toHomeId: MAIN, minPriceCents: null });
+      expect(rawIn(MAIN)[0]).toMatchObject({ _id: "copy1" });
+      expect(rawIn(MAIN)[0]).not.toHaveProperty("minPriceCents");
+    });
+  });
+
   it("placeCopy re-rows the line in its own home and clears the row with null", async () => {
     seed([base({ homeId: BOX, slot: 1 })]);
     calls.answers.set("collection:placeCopy", { copyId: "copy1", folded: false, split: false, from: { homeId: BOX, slot: 1, quantity: 3 } });
@@ -1262,6 +1701,50 @@ describe("optimistic updates: a copy is never shown in two places", () => {
     expect(rowsIn("collection:copiesInContainer", MAIN).map((r) => r._id)).toEqual(["copy1"]);
     expect(rowsIn("collection:copiesInContainer", BOX)).toEqual([]);
     expect(count(MAIN)).toEqual({ copies: 3, lines: 1 });
+  });
+
+  it("a move the listing gate refuses rolls every list back and rejects with the gate's own words", async () => {
+    seed();
+    const before = local.snapshot();
+    local.failures.set("collection:moveCopy", GATE);
+    const refused = await actions().moveCopy(move, BOX).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(writeErrorMessage(refused)).toBe(GATE.message);
+    expect(refused).toMatchObject({ data: { code: "LISTING_NEEDS_DETAILS" } });
+    expect([...local.data.entries()]).toEqual([...before.entries()]);
+    expect(rowsIn("collection:copiesInContainer", MAIN).map((r) => r._id)).toEqual(["copy1"]);
+    expect(rowsIn("collection:copiesInContainer", BOX)).toEqual([]);
+    expect(count(BOX)).toEqual({ copies: 0, lines: 0 });
+  });
+
+  it("the undo of a removal into a listed box that the gate refuses rejects with the gate's words, and the restore is rolled back", async () => {
+    seed([], [base({ homeId: BOX, quantity: 1 })]);
+    const removed = { cardId: "card1", details: { quantity: 1, homeId: BOX } };
+    calls.answers.set("collection:removeCopy", { removed });
+    const r = await actions().removeCopy({ ...COPY_AT(BOX), quantity: 1, homeKind: "box" });
+    local.failures.set("collection:restoreCopy", GATE);
+    const before = local.snapshot();
+    const refused = await r.undo().then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(writeErrorMessage(refused)).toBe(GATE.message);
+    expect([...local.data.entries()]).toEqual([...before.entries()]);
+  });
+
+  it("the restoreCopy action, refused by the gate, rejects with its words and draws nothing", async () => {
+    seed([], []);
+    const before = local.snapshot();
+    local.failures.set("collection:restoreCopy", GATE);
+    const refused = await actions().restoreCopy({ ...COPY_AT(BOX), quantity: 1, homeKind: "box" }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(writeErrorMessage(refused)).toBe(GATE.message);
+    expect([...local.data.entries()]).toEqual([...before.entries()]);
+    expect(rowsIn("collection:copiesInContainer", BOX)).toEqual([]);
   });
 
   it("setTrade flags the line without moving it: it joins the trade pile and stays in its home", async () => {
@@ -1496,6 +1979,13 @@ describe("the Inventory list and quick counts (NEO-364)", () => {
       expect(writes()).toHaveLength(1);
     });
 
+    it("says photos went only when the inverse puts some back", async () => {
+      calls.answers.set("collectionInventory:setBoxQuantity", result([{ op: "restore", quantity: 2, photoIds: ["ph1"] }], 2, 0));
+      expect((await actions().setBoxQuantity(CARD, BOX_C, 0)).tookPhotos).toBe(true);
+      calls.answers.set("collectionInventory:setBoxQuantity", result([{ op: "restore", quantity: 2 }], 2, 0));
+      expect((await actions().setBoxQuantity(CARD, BOX_C, 0)).tookPhotos).toBe(false);
+    });
+
     it("refuses a binder, a fraction, a negative and a count past the cap before anything is sent", async () => {
       const a = actions();
       await expect(a.setBoxQuantity(CARD, { ...BOX_C, kind: "binder" }, 1)).rejects.toThrow(/box/i);
@@ -1512,6 +2002,23 @@ describe("the Inventory list and quick counts (NEO-364)", () => {
       local.failures.set("collectionInventory:setBoxQuantity", "Nope");
       const before = local.snapshot();
       await expect(actions().setBoxQuantity(CARD, BOX_C, 2)).rejects.toThrow("Nope");
+      expect([...local.data.entries()]).toEqual([...before.entries()]);
+    });
+
+    it("an undo the listing gate refuses reaches the caller with the gate's own words, and the drawn undo rolls back", async () => {
+      loaded.set("collectionContainers:list", SHELF);
+      local.set("collectionContainers:list", {}, SHELF);
+      local.set("collection:copiesOf", { cardId: "card1" }, []);
+      calls.answers.set("collectionInventory:setBoxQuantity", result([{ op: "restore", quantity: 2 }], 0, 2));
+      const r = await actions().setBoxQuantity(CARD, BOX_C, 2);
+      local.failures.set("collectionInventory:undoBoxQuantity", GATE);
+      const before = local.snapshot();
+      const refused = await r.undo().then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(writeErrorMessage(refused)).toBe(GATE.message);
+      expect(refused).toMatchObject({ data: { code: "LISTING_NEEDS_DETAILS" } });
       expect([...local.data.entries()]).toEqual([...before.entries()]);
     });
   });
@@ -1606,6 +2113,150 @@ describe("the Inventory list and quick counts (NEO-364)", () => {
       expect(copiesOf().map((r) => r._id).sort()).toEqual(["noted", "slab", "trade"]);
     });
 
+    describe("a line with photos (NEO-431)", () => {
+      const photo = (id: string, over: object = {}) => row(id, UNSORTED, { quantity: 1, condition: "Excellent", hasPhotos: true, ...over });
+      const lines = () => copiesOf().map((r) => [r._id, r.quantity]).sort();
+
+      it("with only a photo line in the box, a raise stacks onto it and keeps its photos", async () => {
+        seed([photo("p", { acquiredOn: "2026-10-01" })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 3, "2026-10-25", PLACE, draw);
+        expect(copiesOf()).toEqual([expect.objectContaining({ _id: "p", quantity: 3, hasPhotos: true, acquiredOn: "2026-10-01" })]);
+        expect(drawn).toBe(0);
+      });
+
+      it("with two photo lines and nothing else, a raise stacks onto the newest", async () => {
+        seed([photo("old", { lastUpdated: 1 }), photo("new", { lastUpdated: 9 })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 3, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["new", 2], ["old", 1]]);
+      });
+
+      it("with a line without photos, a raise folds there and the photo line stays as it was", async () => {
+        seed([photo("p"), row("bare", UNSORTED, { quantity: 1, condition: "Excellent", acquiredOn: "2026-10-25" })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 4, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["bare", 3], ["p", 1]]);
+      });
+
+      it("with an older line without photos, a raise draws today's line, never onto the photo line", async () => {
+        seed([photo("p", { acquiredOn: "2026-10-25" }), row("bare", UNSORTED, { quantity: 1, acquiredOn: "2026-10-01" })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 3, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["bare", 1], ["drawn1", 1], ["p", 1]]);
+      });
+
+      it("a photo line beside a graded or noted line still takes the raise: only plain lines decide", async () => {
+        seed([photo("p"), row("noted", UNSORTED, { quantity: 1, notes: "ding" })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 2, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["noted", 1], ["p", 2]]);
+      });
+
+      it("a lowering takes the lines without photos first, even when the photo line is newer", async () => {
+        seed([row("bare", UNSORTED, { quantity: 2, lastUpdated: 1 }), photo("p", { quantity: 2, lastUpdated: 9 })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 3, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["bare", 1], ["p", 2]]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 2, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["p", 2]]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 1, "2026-10-25", PLACE, draw);
+        expect(copiesOf()).toEqual([expect.objectContaining({ _id: "p", quantity: 1, hasPhotos: true })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 0, "2026-10-25", PLACE, draw);
+        expect(copiesOf()).toEqual([]);
+      });
+
+      it("a lowering takes newest first within each group", async () => {
+        seed([photo("p-old", { lastUpdated: 1 }), photo("p-new", { lastUpdated: 2 }), row("b-old", UNSORTED, { quantity: 1, lastUpdated: 3 }), row("b-new", UNSORTED, { quantity: 1, lastUpdated: 4 })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 3, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["b-old", 1], ["p-new", 1], ["p-old", 1]]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 1, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["p-old", 1]]);
+      });
+
+      it("a photo line with another detail is never counted or touched", async () => {
+        seed([photo("noted", { notes: "ding" })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 0, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["noted", 1]]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 1, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["drawn1", 1], ["noted", 1]]);
+      });
+
+      it("a restore with photos draws a line with photos, never folded into an identical bare line", async () => {
+        seed([row("bare", UNSORTED, { quantity: 1, condition: "Excellent", acquiredOn: "2026-10-01" })]);
+        applyBoxSteps(
+          await store(),
+          { cardId: "k1", boxId: UNSORTED, steps: [{ op: "restore", quantity: 2, acquiredOn: "2026-10-01", photoIds: ["ph1"] }] } as never,
+          PLACE,
+          (n) => `step${n}` as never,
+        );
+        expect(copiesOf().map((r) => [r._id, r.quantity, (r as { hasPhotos?: boolean }).hasPhotos]).sort()).toEqual([
+          ["bare", 1, undefined],
+          ["step0", 2, true],
+        ]);
+      });
+
+      it("adversarial: the undo of a raise onto a photo line sets it back; the redo puts it on again, with no line drawn either way", async () => {
+        seed([photo("p", { quantity: 2 })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 5, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["p", 5]]);
+        applyBoxSteps(await store(), { cardId: "k1", boxId: UNSORTED, steps: [{ op: "set", copyId: "p", from: 5, to: 2 }] } as never, PLACE, (n) => `step${n}` as never);
+        expect(lines()).toEqual([["p", 2]]);
+        applyBoxSteps(await store(), { cardId: "k1", boxId: UNSORTED, steps: [{ op: "set", copyId: "p", from: 2, to: 5 }] } as never, PLACE, (n) => `step${n}` as never);
+        expect(lines()).toEqual([["p", 5]]);
+        expect(drawn).toBe(0);
+      });
+
+      it("adversarial: one inverse restoring a bare line and two photo lines of the same date draws two photo lines and folds the bare one", async () => {
+        seed([row("bare", UNSORTED, { quantity: 1, condition: "Excellent", acquiredOn: "2026-10-01" })]);
+        applyBoxSteps(
+          await store(),
+          {
+            cardId: "k1",
+            boxId: UNSORTED,
+            steps: [
+              { op: "restore", quantity: 2, acquiredOn: "2026-10-01" },
+              { op: "restore", quantity: 1, acquiredOn: "2026-10-01", photoIds: ["a"] },
+              { op: "restore", quantity: 3, acquiredOn: "2026-10-01", photoIds: ["b"] },
+            ],
+          } as never,
+          PLACE,
+          (n) => `step${n}` as never,
+        );
+        expect(copiesOf().map((r) => [r._id, r.quantity, (r as { hasPhotos?: boolean }).hasPhotos === true]).sort()).toEqual([
+          ["bare", 3, false],
+          ["step1", 1, true],
+          ["step2", 3, true],
+        ]);
+      });
+
+      it("adversarial: a raise whose total would pass the cap cannot be drawn onto a photo line past it", async () => {
+        seed([photo("p", { quantity: 999 - 1 })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 999, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["p", 999]]);
+      });
+
+      it("adversarial: with a legacy photo line (no condition) alone, a raise stacks onto it as the server does", async () => {
+        seed([row("legacy", UNSORTED, { quantity: 1, hasPhotos: true })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 2, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["legacy", 2]]);
+        expect(drawn).toBe(0);
+      });
+
+      it("adversarial: equal lastUpdated, two photo lines: the later listed is the newest, for a raise and for a lowering", async () => {
+        seed([photo("first", { lastUpdated: 5 }), photo("second", { lastUpdated: 5 })]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 3, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["first", 1], ["second", 2]]);
+        applyBoxQuantity(await store(), "k1", UNSORTED, 1, "2026-10-25", PLACE, draw);
+        expect(lines()).toEqual([["first", 1]]);
+      });
+
+      it("a restore without photos never folds into an identical photo line", async () => {
+        seed([photo("p", { acquiredOn: "2026-10-01" })]);
+        applyBoxSteps(
+          await store(),
+          { cardId: "k1", boxId: UNSORTED, steps: [{ op: "restore", quantity: 1, acquiredOn: "2026-10-01" }] } as never,
+          PLACE,
+          (n) => `step${n}` as never,
+        );
+        expect(lines()).toEqual([["p", 1], ["step0", 1]]);
+      });
+    });
+
     it("the same number draws nothing, and an unplaced card draws nothing", async () => {
       seed([row("a", UNSORTED, { quantity: 2 })]);
       const before = local.snapshot();
@@ -1665,6 +2316,12 @@ describe("the Inventory list and quick counts (NEO-364)", () => {
         ]) {
           expect(isPlainRow(row("a", UNSORTED, over) as never), JSON.stringify(over)).toBe(false);
         }
+      });
+
+      it("NEO-431: a photo alone leaves a line plain; a photo and any other detail does not", () => {
+        expect(isPlainRow(row("a", UNSORTED, { hasPhotos: true }) as never)).toBe(true);
+        expect(isPlainRow(row("a", UNSORTED, { hasPhotos: true, notes: "x" }) as never)).toBe(false);
+        expect(isPlainRow(row("a", UNSORTED, { hasPhotos: true, condition: "Mint" }) as never)).toBe(false);
       });
 
       it("NEO-380: a line in the default condition is plain, another condition is not", () => {
@@ -1732,3 +2389,246 @@ describe("the Inventory list and quick counts (NEO-364)", () => {
     });
   });
 });
+
+describe("addPhoto uploads both files side by side (NEO-466)", () => {
+  const PRIMARY = { image: "https://r2.example/image?sig=a", thumb: "https://r2.example/thumb?sig=b" };
+  const RETRY = { image: "https://bucket.r2.example/image?sig=c", thumb: "https://bucket.r2.example/thumb?sig=d" };
+
+  const begin = (withRetry = true) => {
+    actionAnswers.set("copyPhotos:startUpload", {
+      photoId: "photo1",
+      imageUploadUrl: PRIMARY.image,
+      thumbUploadUrl: PRIMARY.thumb,
+      ...(withRetry ? { imageRetryUploadUrl: RETRY.image, thumbRetryUploadUrl: RETRY.thumb } : {}),
+    });
+    const finishCalls: unknown[] = [];
+    actionAnswers.set("copyPhotos:finishUpload", (args: unknown) => {
+      finishCalls.push(args);
+      return null;
+    });
+    const xhrs = installFakeXhr();
+    const { result } = renderHook(() => useCopyPhotos(), { wrapper });
+    const saving = result.current!.addPhoto(COPY, "front", new File(["x"], "card.jpg", { type: "image/jpeg" }));
+    return { xhrs, saving, finishCalls };
+  };
+  const byUrl = (xhrs: ReturnType<typeof installFakeXhr>, part: string) => xhrs.all.find((x) => x.url?.includes(part))!;
+
+  it("starts the image and the thumb before either has answered, then finishes once both have", async () => {
+    const { xhrs, saving, finishCalls } = begin();
+    await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+    expect(xhrs.all.map((x) => x.url).sort()).toEqual([PRIMARY.image, PRIMARY.thumb].sort());
+    expect(finishCalls).toEqual([]);
+    byUrl(xhrs, "/image").respond(200);
+    await Promise.resolve();
+    expect(finishCalls).toEqual([]);
+    byUrl(xhrs, "/thumb").respond(200);
+    await saving;
+    expect(finishCalls).toEqual([{ photoId: "photo1" }]);
+  });
+
+  it("works without retry URLs when the server sent none", async () => {
+    const { xhrs, saving } = begin(false);
+    await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+    xhrs.all.forEach((x) => x.respond(200));
+    await expect(saving).resolves.toBeUndefined();
+  });
+
+  it("when the image is refused, aborts the thumb, never finishes, and shows the image's error", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { xhrs, saving, finishCalls } = begin();
+      const failing = saving.catch((e: unknown) => e);
+      await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+      const thumb = byUrl(xhrs, "/thumb");
+      byUrl(xhrs, "/image").respond(403);
+      const error = await failing;
+      expect(thumb.aborted).toBe(true);
+      expect(finishCalls).toEqual([]);
+      expect(error).toMatchObject({ name: "PhotoUploadError", status: 403 });
+      // Only the file that gave up logs; the aborted one is not a failure.
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      expect(lines.filter((l) => l.includes("copy_photo_put_failed"))).toHaveLength(1);
+      expect(lines.join("\n")).not.toContain("r2.example");
+      const timing = lines.find((l) => l.includes("copy_photo_save_timing"))!;
+      expect(JSON.parse(timing)).toMatchObject({ outcome: "failed", failedAt: "put", errorName: "PhotoUploadError", errorStatus: 403 });
+      expect(JSON.parse(timing).puts).toHaveLength(2);
+      expect(timing).not.toContain("r2.example");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  describe("failures and timing", () => {
+    let warn: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    });
+    afterEach(() => {
+      warn.mockRestore();
+      vi.useRealTimers();
+    });
+    const timingLines = () =>
+      warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("copy_photo_save_timing")).map((l) => JSON.parse(l));
+
+    it("when the thumb is refused first, aborts the image and shows the thumb's error", async () => {
+      const { xhrs, saving, finishCalls } = begin();
+      const failing = saving.catch((e: unknown) => e);
+      await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+      const image = byUrl(xhrs, "/image");
+      byUrl(xhrs, "/thumb").respond(403);
+      const error = await failing;
+      expect(image.aborted).toBe(true);
+      expect(error).toMatchObject({ name: "PhotoUploadError", status: 403 });
+      expect(finishCalls).toEqual([]);
+      expect(timingLines()).toEqual([expect.objectContaining({ outcome: "failed", failedAt: "put", errorStatus: 403 })]);
+    });
+
+    it("when both files give up, the first one's error is the one shown", async () => {
+      const { xhrs, saving } = begin();
+      const failing = saving.catch((e: unknown) => e);
+      await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+      byUrl(xhrs, "/image").respond(403);
+      byUrl(xhrs, "/thumb").respond(400);
+      expect(await failing).toMatchObject({ name: "PhotoUploadError", status: 403 });
+    });
+
+    it("when finishUpload rejects, the save fails at finishUpload and logs one timing line", async () => {
+      const { xhrs, saving } = begin();
+      actionAnswers.set("copyPhotos:finishUpload", () => {
+        throw new Error("finish refused");
+      });
+      const failing = saving.catch((e: unknown) => e);
+      await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+      xhrs.all.forEach((x) => x.respond(200));
+      expect(await failing).toMatchObject({ message: "finish refused" });
+      expect(timingLines()).toEqual([expect.objectContaining({ outcome: "failed", failedAt: "finishUpload", errorName: "Error" })]);
+    });
+
+    it("when startUpload rejects, nothing is uploaded and the save fails at startUpload", async () => {
+      const { xhrs, saving } = begin();
+      actionAnswers.set("copyPhotos:startUpload", () => {
+        throw new Error("start refused");
+      });
+      await expect(saving).rejects.toThrow("start refused");
+      expect(xhrs.all).toHaveLength(0);
+      expect(timingLines()).toEqual([expect.objectContaining({ outcome: "failed", failedAt: "startUpload" })]);
+    });
+
+    it("when the resize fails, nothing is asked of the server and the save fails at resize", async () => {
+      const { resizeCopyPhoto } = await import("@/lib/collection/copy-photo-resize");
+      vi.mocked(resizeCopyPhoto).mockRejectedValueOnce(new Error("bad image"));
+      const startCalls: unknown[] = [];
+      const { xhrs, saving } = begin();
+      actionAnswers.set("copyPhotos:startUpload", (a: unknown) => startCalls.push(a));
+      await expect(saving).rejects.toThrow("bad image");
+      expect(startCalls).toEqual([]);
+      expect(xhrs.all).toHaveLength(0);
+      expect(timingLines()).toEqual([expect.objectContaining({ outcome: "failed", failedAt: "resize" })]);
+    });
+
+    it("reuses a resize preparePhoto started, once, and carries the add's write in the timing line", async () => {
+      const { resizeCopyPhoto } = await import("@/lib/collection/copy-photo-resize");
+      vi.mocked(resizeCopyPhoto).mockClear();
+      actionAnswers.set("copyPhotos:startUpload", {
+        photoId: "photo1",
+        imageUploadUrl: PRIMARY.image,
+        thumbUploadUrl: PRIMARY.thumb,
+      });
+      actionAnswers.set("copyPhotos:finishUpload", () => null);
+      const xhrs = installFakeXhr();
+      const { result } = renderHook(() => useCopyPhotos(), { wrapper });
+      const file = new File(["x"], "held.jpg", { type: "image/jpeg" });
+      result.current!.preparePhoto!(file);
+      result.current!.preparePhoto!(file);
+      expect(resizeCopyPhoto).toHaveBeenCalledTimes(1);
+      const saving = result.current!.addPhoto(COPY, "front", file, { addLineItemMs: 5000 });
+      await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+      xhrs.all.forEach((x) => x.respond(200));
+      await saving;
+      expect(resizeCopyPhoto).toHaveBeenCalledTimes(1);
+      // Slow only because of the add's write: still reported, with it named.
+      expect(timingLines()).toEqual([expect.objectContaining({ outcome: "saved", addLineItemMs: 5000 })]);
+      // Used once: a later save of the same file resizes afresh.
+      const again = result.current!.addPhoto(COPY, "front", file);
+      await vi.waitFor(() => expect(xhrs.all).toHaveLength(4));
+      xhrs.all.slice(2).forEach((x) => x.respond(200));
+      await again;
+      expect(resizeCopyPhoto).toHaveBeenCalledTimes(2);
+    });
+
+    it("a photo replaced before its save: the save uses the replacement's resize, never the first one's", async () => {
+      const { resizeCopyPhoto } = await import("@/lib/collection/copy-photo-resize");
+      const made = new Map<string, Blob>();
+      vi.mocked(resizeCopyPhoto).mockClear();
+      vi.mocked(resizeCopyPhoto).mockImplementation(async (file: File) => {
+        const image = new Blob([`image of ${file.name}`], { type: "image/jpeg" });
+        made.set(file.name, image);
+        return { contentType: "image/jpeg", image, thumb: new Blob(["thumb"], { type: "image/jpeg" }) };
+      });
+      try {
+        actionAnswers.set("copyPhotos:startUpload", {
+          photoId: "photo1",
+          imageUploadUrl: PRIMARY.image,
+          thumbUploadUrl: PRIMARY.thumb,
+        });
+        actionAnswers.set("copyPhotos:finishUpload", () => null);
+        const xhrs = installFakeXhr();
+        const { result } = renderHook(() => useCopyPhotos(), { wrapper });
+        const first = new File(["a"], "first.jpg", { type: "image/jpeg" });
+        const second = new File(["b"], "second.jpg", { type: "image/jpeg" });
+        result.current!.preparePhoto!(first);
+        result.current!.preparePhoto!(second);
+        const saving = result.current!.addPhoto(COPY, "front", second);
+        await vi.waitFor(() => expect(xhrs.all).toHaveLength(2));
+        expect(byUrl(xhrs, "/image").sentBody).toBe(made.get("second.jpg"));
+        xhrs.all.forEach((x) => x.respond(200));
+        await saving;
+        // One resize each, at prepare time; the save made none of its own.
+        expect(vi.mocked(resizeCopyPhoto).mock.calls.map(([f]) => f.name)).toEqual(["first.jpg", "second.jpg"]);
+      } finally {
+        vi.mocked(resizeCopyPhoto).mockReset();
+        vi.mocked(resizeCopyPhoto).mockImplementation(async () => ({
+          contentType: "image/jpeg",
+          image: new Blob(["image"], { type: "image/jpeg" }),
+          thumb: new Blob(["thumb"], { type: "image/jpeg" }),
+        }));
+      }
+    });
+
+    it("a prepared resize that fails surfaces at the save, with its own message, failing at resize", async () => {
+      // No unhandled-rejection check here: vitest's spy observes every promise
+      // a mock returns, so a mocked rejection is never unhandled either way.
+      const { resizeCopyPhoto } = await import("@/lib/collection/copy-photo-resize");
+      vi.mocked(resizeCopyPhoto).mockRejectedValueOnce(new Error("That file isn't a photo this browser can open."));
+      const startCalls: unknown[] = [];
+      actionAnswers.set("copyPhotos:startUpload", (a: unknown) => startCalls.push(a));
+      const { result } = renderHook(() => useCopyPhotos(), { wrapper });
+      const file = new File(["x"], "bad.heic", { type: "image/heic" });
+      result.current!.preparePhoto!(file);
+      // The rejection lands before anything awaits it.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await expect(result.current!.addPhoto(COPY, "front", file)).rejects.toThrow("That file isn't a photo this browser can open.");
+      expect(startCalls).toEqual([]);
+      expect(timingLines()).toEqual([expect.objectContaining({ outcome: "failed", failedAt: "resize" })]);
+    });
+
+    it("a save that needed a retry and then succeeded logs exactly one timing line, outcome saved", async () => {
+      vi.useFakeTimers();
+      const { xhrs, saving } = begin();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(xhrs.all).toHaveLength(2);
+      byUrl(xhrs, "/image").respond(503);
+      byUrl(xhrs, "/thumb").respond(200);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(xhrs.all).toHaveLength(3);
+      xhrs.last.respond(200);
+      await saving;
+      const lines = timingLines();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatchObject({ outcome: "saved" });
+      expect(lines[0].puts.find((p: { file: string }) => p.file === "image").tries).toHaveLength(2);
+      expect(JSON.stringify(lines)).not.toContain("r2.example");
+    });
+  });
+});
+

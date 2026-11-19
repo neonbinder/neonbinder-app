@@ -19,7 +19,9 @@
  *   button   "Add custom Years"          (+ Custom)
  */
 import { expect, type Locator, type Page } from "@playwright/test";
+import { columnSyncFailedMessage } from "../../components/SetSelector/column-sync-failed";
 import type { FlowEnv } from "./env";
+import { expectAfterMarketplace, expectStepWithSportLots } from "./marketplace-wait";
 
 export type Column =
   | "Sports"
@@ -29,12 +31,47 @@ export type Column =
   | "Variant Types"
   | "Inserts"
   | "Parallels"
-  /** The seventh column: it exists only under an Insert-titled variant type (NEO-334). */
-  | "Sub-Variants";
+  | "Proofs";
+
+/** `s` as a literal inside a RegExp. */
+export function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * NEO-450: ANY column's failed-sync sentence ("Couldn't sync <column> —
+ * please try again."), cut from the product's own builder around a marker, so
+ * a copy change moves this with it instead of silently matching nothing. For
+ * page-wide "no column failed" checks (setup.spec's `expectNoSyncFailure`);
+ * `columnSyncError` is the one-column locator.
+ */
+const COLUMN_MARKER = "\u0001";
+const [SYNC_FAILED_HEAD, SYNC_FAILED_TAIL] = columnSyncFailedMessage(COLUMN_MARKER).split(COLUMN_MARKER);
+export const ANY_COLUMN_SYNC_FAILED = new RegExp(`${escapeRe(SYNC_FAILED_HEAD)}.+${escapeRe(SYNC_FAILED_TAIL)}`);
 
 /** The panel's subtitle: the signal that the Set Builder (not the nav) has mounted. */
 export function setBuilderReady(page: Page): Locator {
   return page.getByText("Build set parameters using marketplace APIs");
+}
+
+/**
+ * NEO-450: the column's own "Couldn't sync <column> — please try again."
+ * box, shown when its sync failed outright. It is an `alert` when THIS
+ * session's own sync attempt failed, and a `status` when the error is one the
+ * server already held (another session's failed sync, or one stored before
+ * this page loaded); same sentence either way, so this matches both. The
+ * sentence filter keeps it apart from the column's other `status` box (the
+ * sync-done notice). While it shows on an empty column the idle
+ * "No <column> available…" line is hidden, so the empty line is no longer
+ * proof the sync ran. The sentence comes from the product's own builder, so
+ * it cannot drift from what the column draws. The retry is the column's
+ * `Sync <column>` button.
+ */
+export function columnSyncError(page: Page, column: Column): Locator {
+  return page
+    .getByRole("alert")
+    .or(page.getByRole("status"))
+    .filter({ hasText: columnSyncFailedMessage(column) });
 }
 
 export function columnHeading(page: Page, column: Column): Locator {
@@ -73,6 +110,34 @@ export async function pick(
 }
 
 /**
+ * Wait for `target` while a column's auto-sync is asking BuySportsCards: the
+ * Years, Sets and Variant Types columns sync from BSC the first time they are
+ * opened on data nothing synced yet, and the column's syncing panel says
+ * "Waiting on BuySportsCards…" while that call is out. The step gets 7 s of its
+ * own plus every second the status was up (NEO-487, `expectAfterMarketplace`),
+ * never a flat ceiling. On data that is already synced it returns at once.
+ * Not for Manufacturers (SportLots-led, BSC has no such level).
+ *
+ * Contract: ENTRY the column is open (its parent row was just picked). EXIT
+ * `target` is visible.
+ */
+export async function expectAfterBscSync(page: Page, target: Locator, what: string): Promise<void> {
+  await expectAfterMarketplace(page, target, { platform: "BuySportsCards", what });
+}
+
+/**
+ * `pick` for a column whose rows may still be one BSC sync away (see
+ * `expectAfterBscSync`): search, wait for the row with the marketplace rule,
+ * click it.
+ */
+export async function pickAfterBscSync(page: Page, column: Column, name: string): Promise<void> {
+  await columnSearch(page, column).fill(name);
+  const row = columnOption(page, column, name);
+  await expectAfterBscSync(page, row, `${column} row ${name}`);
+  await row.click();
+}
+
+/**
  * The "+ Custom" form's confirm button, per column: `Create <level noun>`
  * (components/SetSelector/EntityColumn.tsx). The variant type's child column
  * is the insert level whatever its title, so "Parallels" confirms with
@@ -86,7 +151,9 @@ export const CUSTOM_CONFIRM: Record<Column, string> = {
   "Variant Types": "Create variant type",
   Inserts: "Create insert",
   Parallels: "Create insert",
-  "Sub-Variants": "Create sub-variant",
+  // Unused by any spec so far; the label is read from VariantSelector, which opens this column at
+  // the insert level (like "Parallels"), so EntityColumn's `Create ${noun}` says "Create insert".
+  Proofs: "Create insert",
 };
 
 export interface AddCustomEntryOptions {
@@ -161,14 +228,25 @@ export async function selectOrCreate(
   { via = "search", confirm }: SelectOrCreateOptions = {},
 ): Promise<void> {
   const option = columnOption(page, column, name);
+  const syncFailed = columnSyncError(page, column);
+  // The column settles on its rows, its "nothing here" line, or its failed-
+  // sync alert (NEO-450: the empty line is hidden while that alert shows, so
+  // without it a failed sync would only surface as a 7 s timeout). `.first()`:
+  // the alert can sit beside rows a sync stored earlier.
   if (via === "search") {
     await columnSearch(page, column).fill(name);
-    await expect(option.or(page.getByText("No matches found"))).toBeVisible();
+    await expect(option.or(page.getByText("No matches found")).or(syncFailed).first()).toBeVisible();
   } else {
     const anyRow = page.getByRole("listbox", { name: column }).getByRole("option").first();
     const empty = page.getByText(`No ${column.toLowerCase()} available`);
-    await expect(anyRow.or(empty)).toBeVisible();
+    await expect(anyRow.or(empty).or(syncFailed).first()).toBeVisible();
   }
+  // A failed sync is a product bug, never a cue to retry or to hand-make the
+  // row: making it here would hide the failure behind a "+ Custom" row.
+  await expect(
+    syncFailed,
+    `${column}'s sync failed ("${columnSyncFailedMessage(column)}"); selectOrCreate never makes a row over a failed sync`,
+  ).toBeHidden();
   if (!(await option.isVisible())) {
     await addCustomEntry(page, column, name, { confirm });
     if (via === "search") await columnSearch(page, column).fill(name);
@@ -191,7 +269,19 @@ export interface DrillTarget {
   expectSets?: boolean;
 }
 
-/** Variant types sync live on a set's first visit (the flow's 60 s). */
+/** `drillToSet`'s ancestors when the caller names none. */
+export const DRILL_DEFAULTS = {
+  sport: "Baseball",
+  year: "2024",
+  manufacturer: "Topps",
+  set: "Topps Chrome",
+} as const;
+
+/**
+ * Variant types sync on a set's first visit (the flow's 60 s). That is the ceiling a
+ * step that also drives a LIVE SportLots round trip keeps (`expectStepWithSportLots`);
+ * BuySportsCards alone is the fake and follows the wait-line rule (NEO-552).
+ */
 export const VARIANT_TYPES_SYNC = 60_000;
 
 /**
@@ -201,10 +291,10 @@ export const VARIANT_TYPES_SYNC = 60_000;
  */
 export async function drillToSet(page: Page, env: FlowEnv, target: DrillTarget = {}): Promise<void> {
   const {
-    sport = "Baseball",
-    year = "2024",
-    manufacturer = "Topps",
-    set = "Topps Chrome",
+    sport = DRILL_DEFAULTS.sport,
+    year = DRILL_DEFAULTS.year,
+    manufacturer = DRILL_DEFAULTS.manufacturer,
+    set = DRILL_DEFAULTS.set,
     createManufacturer = false,
   } = target;
 
@@ -238,10 +328,14 @@ export async function drillToSet(page: Page, env: FlowEnv, target: DrillTarget =
   }
   await expect(columnHeading(page, "Sets")).toBeVisible();
 
-  await pick(page, "Sets", set);
+  // Sets sync from BSC on first use (a set nothing opened before, e.g. 1996
+  // Score): the marketplace rule, not a flat 7 s.
+  await pickAfterBscSync(page, "Sets", set);
   await expect(columnHeading(page, "Variant Types")).toBeVisible();
-  await expect(columnOption(page, "Variant Types", "Base")).toBeVisible({
-    timeout: VARIANT_TYPES_SYNC,
+  // The Variant Types column's sync: its wait line covers it, so paused it is the marketplace rule.
+  await expectStepWithSportLots(page, columnOption(page, "Variant Types", "Base"), env, {
+    liveMs: VARIANT_TYPES_SYNC,
+    what: "Variant Types row Base",
   });
 }
 
@@ -269,9 +363,10 @@ export async function drillToBaseVariant(
   await expect(picker.or(page.getByRole("button", { name: /Re-map Base/ }))).toBeVisible();
 
   if (await picker.isVisible()) {
-    // The candidates are a live marketplace round trip (the flow's 45 s).
+    // The candidates are a marketplace round trip: the flow's 45 s while SportLots is
+    // live; paused it is BSC's candidates alone, under the picker's wait line.
     const confirm = picker.getByRole("button", { name: "Confirm Base Set" });
-    await expect(confirm).toBeVisible({ timeout: 45_000 });
+    await expectStepWithSportLots(page, confirm, env, { liveMs: 45_000, what: "the Base picker's candidates" });
     const bsc = picker.getByRole("option", { name: /^BSC base candidate: / });
     const sl = picker.getByRole("option", { name: /^SportLots base candidate: / });
     if (!env.SL_PAUSED) {
@@ -282,7 +377,7 @@ export async function drillToBaseVariant(
     } else {
       // Paused: SportLots offers nothing, so the operator cancels and the
       // row stays unmapped.
-      await expect(picker.getByText(/^SportLots returned no base set for /)).toBeVisible();
+      await expect(picker.getByText(/^SportLots wasn't asked: /)).toBeVisible();
       await expect(bsc.first()).toBeVisible();
       await expect(sl).toHaveCount(0);
       await picker.getByRole("button", { name: "Cancel" }).click();
@@ -297,7 +392,10 @@ export async function drillToBaseVariant(
   await expect(syncChecklistButton(page)).toBeVisible();
 }
 
-/** A live two-sided (BSC + SportLots) insert-level fetch on data nothing synced yet: the flows' 240 s. */
+/**
+ * A two-sided (BSC + SportLots) insert-level fetch on data nothing synced yet: the flows' 240 s,
+ * kept while SportLots is live (`expectStepWithSportLots`). Paused it is BSC's fetch alone.
+ */
 export const INSERT_FETCH = 240_000;
 
 /**
@@ -315,17 +413,22 @@ export const INSERT_FETCH = 240_000;
  * is open (returned, not axe-checked: the caller names what it is about).
  * Never presses Sync Inserts on an empty column, so the cold path is unchanged.
  */
-export async function openInsertsReconcile(page: Page): Promise<Locator> {
+export async function openInsertsReconcile(page: Page, env: FlowEnv): Promise<Locator> {
   const reconcile = page.getByRole("dialog", { name: "Reconcile Inserts" });
-  await expect(reconcile.or(page.getByRole("listbox", { name: "Inserts" })).first()).toBeVisible({
-    timeout: INSERT_FETCH,
+  await expectStepWithSportLots(page, reconcile.or(page.getByRole("listbox", { name: "Inserts" })).first(), env, {
+    liveMs: INSERT_FETCH,
+    what: "the Inserts column's fetch",
   });
   if (!(await reconcile.isVisible())) await page.getByRole("button", { name: "Sync Inserts" }).click();
-  await expect(reconcile).toBeVisible({ timeout: INSERT_FETCH });
+  await expectStepWithSportLots(page, reconcile, env, { liveMs: INSERT_FETCH, what: "the Reconcile Inserts dialog" });
   return reconcile;
 }
 
-/** A never-synced level pays a cold marketplace sync (the flow's 150 s). */
+/**
+ * A never-synced level pays a cold marketplace sync (the flow's 150 s), the ceiling a
+ * step that also drives a LIVE SportLots round trip keeps (`expectStepWithSportLots`).
+ * Under a SportLots pause the level's wait is BuySportsCards alone (NEO-552).
+ */
 export const COLD_SYNC = 150_000;
 
 /**
@@ -345,8 +448,15 @@ export async function drillToColdManufacturer(
   await expect(columnSearch(page, "Sports")).toBeVisible({ timeout: 60_000 });
   await pick(page, "Sports", sport);
   await expect(columnHeading(page, "Years")).toBeVisible({ timeout: 20_000 });
-  await expect(page.getByText("Syncing Year Options")).toBeHidden({ timeout: COLD_SYNC });
-  await expect(page.getByRole("listbox", { name: "Years" })).toBeVisible({ timeout: 60_000 });
+  await expectStepWithSportLots(page, page.getByText("Syncing Year Options"), env, {
+    liveMs: COLD_SYNC,
+    what: "the Years sync",
+    state: "hidden",
+  });
+  await expectStepWithSportLots(page, page.getByRole("listbox", { name: "Years" }), env, {
+    liveMs: 60_000,
+    what: "the Years list",
+  });
 
   await pick(page, "Years", year);
   await expect(columnHeading(page, "Manufacturers")).toBeVisible({ timeout: 20_000 });
@@ -359,6 +469,17 @@ export async function drillToColdManufacturer(
     const allBrands = columnOption(page, "Manufacturers", "All Brands");
     await expect(allBrands).toBeVisible();
     if (!env.SL_PAUSED) await expect(empty).toBeHidden({ timeout: 60_000 });
+    // NEO-450: a failed sync hides the empty line too, so the line going is
+    // no proof the brands landed; the column's failed-sync alert must be
+    // absent as well. `Sync Manufacturers` renders only once the column's
+    // status read has landed (NEO-427), so wait for it first: before that the
+    // alert is absent whatever the status, and the check below would pass
+    // without having read anything.
+    await expect(page.getByRole("button", { name: "Sync Manufacturers", exact: true })).toBeVisible();
+    await expect(
+      columnSyncError(page, "Manufacturers"),
+      "the Manufacturers sync failed under All Brands",
+    ).toBeHidden();
     // Paused, the pinned view is the column's only guaranteed entry: the rest
     // (the year's `Unknown` row, hand-made brands) depend on which specs ran
     // first, so none of it is asserted here.
@@ -374,7 +495,11 @@ export async function drillToColdManufacturer(
     await selectOrCreate(page, "Manufacturers", manufacturer);
   }
   await expect(columnHeading(page, "Sets")).toBeVisible({ timeout: 20_000 });
-  await expect(page.getByText("Syncing Sets")).toBeHidden({ timeout: COLD_SYNC });
+  await expectStepWithSportLots(page, page.getByText("Syncing Sets"), env, {
+    liveMs: COLD_SYNC,
+    what: "the Sets sync",
+    state: "hidden",
+  });
   // "Syncing Sets" hidden is NOT proof the sync finished: a cold column shows
   // its idle "Sync Sets" for a few queries before the sync's first write, so
   // the wait above can pass before the sync has started. What a user waits on
@@ -382,8 +507,12 @@ export async function drillToColdManufacturer(
   // has sets, so a listed row is the signal. Hand-made brands under paused
   // SportLots may be empty; pass `expectSets: false` for any other empty brand.
   if (expectSets ?? !env.SL_PAUSED) {
-    await expect(page.getByRole("listbox", { name: "Sets" }).getByRole("option").first()).toBeVisible({
-      timeout: COLD_SYNC,
+    // Measured on the #487 merge-group run (GUIDE): the longest first Sets row took 5.8 s (a year-wide
+    // sync), so paused this is the marketplace rule (the Sets column's wait line), 7 s plus
+    // the seconds BSC is visibly holding it.
+    await expectStepWithSportLots(page, page.getByRole("listbox", { name: "Sets" }).getByRole("option").first(), env, {
+      liveMs: COLD_SYNC,
+      what: "the first Sets row",
     });
   }
 }
@@ -404,9 +533,13 @@ export interface CustomTarget {
   variant?: string;
 }
 
-/** The variant type's own column title: "Insert" -> "Inserts". */
+/**
+ * The variant type's own column title, worded as the set builder words it
+ * (`variantsColumnLabel`): "Insert" -> "Inserts", and a type already named in
+ * the plural keeps its name ("Proofs" -> "Proofs").
+ */
 function variantColumn(variantType: string): Column {
-  return `${variantType}s` as Column;
+  return (variantType.endsWith("s") ? variantType : `${variantType}s`) as Column;
 }
 
 /**
@@ -473,6 +606,21 @@ export async function drillToCustomSet(
 }
 
 /**
+ * NEO-496 — open the selected row's attributes panel when it is closed. Below
+ * the set level it starts closed, and the row's "Multi-source sets" panel
+ * (its attached BSC and SportLots sets, "Attach more…", each source's Remove)
+ * lives inside it, so a spec reaching those opens the panel first. The panel
+ * settles its open state as it draws a row, so the branch is on app state.
+ */
+export async function openAttributesPanel(page: Page): Promise<void> {
+  const edit = page.getByRole("button", { name: "Edit attributes" });
+  const hide = page.getByRole("button", { name: "Hide attributes" });
+  await expect(edit.or(hide)).toBeVisible();
+  if (await edit.isVisible()) await edit.click();
+  await expect(hide).toBeVisible();
+}
+
+/**
  * util-attach-pane-sportlots-twin-ids.yaml (NEO-325): open a saved insert
  * row's "Attach more source sets" pane and read which SportLots twin it
  * holds. The twin it holds is excluded from the candidates (so searching its
@@ -496,6 +644,7 @@ export async function readAttachedTwinId(
   await columnSearch(page, "Inserts").fill(insertQuery);
   await columnOption(page, "Inserts", insertRow).click();
 
+  await openAttributesPanel(page);
   await expect(page.getByText("Multi-source sets")).toBeVisible();
   await page.getByRole("button", { name: "Attach more source sets" }).click();
   const search = page.getByRole("textbox", { name: "Search SportLots sets" });

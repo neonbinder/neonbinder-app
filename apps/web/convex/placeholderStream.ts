@@ -45,6 +45,8 @@ import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import { fastPreprocessPool } from "./placeholderPool";
 import { finalizePairingInline } from "./placeholderPairing";
+import { ENTRY_TOO_MANY_PIXELS, ENTRY_UNDECODABLE } from "./lib/extractRejections";
+import { batchNotCollecting } from "./lib/placeholderRefusals";
 import {
   ACTIVE_STATUSES,
   ENQUEUE_CHUNK_SIZE,
@@ -77,6 +79,11 @@ import {
  * job the caller has already proved they own, so there is nothing to leak, and
  * "job is processing, not collecting" is the difference between a user
  * understanding what happened and filing a bug.
+ *
+ * The not-collecting refusal is a `ConvexError` with a stable code (NEO-529).
+ * A plain Error's text is redacted in production, and the web client has to
+ * tell "the session closed under you" from an ordinary per-file failure: it
+ * re-sends the photos as a new batch, or names the ones that missed out.
  */
 async function requireCollectingStreamJob(
   ctx: MutationCtx,
@@ -86,9 +93,7 @@ async function requireCollectingStreamJob(
   const job = await findOwnedJob(ctx, jobId, userId);
   if (!job) throw new Error("Job not found");
   if (job.mode !== "stream") throw new Error("job is not a scanner batch");
-  if (job.status !== "collecting") {
-    throw new Error(`job is ${job.status}, not collecting`);
-  }
+  if (job.status !== "collecting") throw batchNotCollecting(job.status);
   return job;
 }
 
@@ -189,7 +194,8 @@ export const startPlaceholderStream = mutation({
     // scanner collects images, not when the first one is confirmed. Fire-and-
     // forget: scheduled, never awaited, and `warmupPreprocess` cannot fail — a
     // cold start simply happens the old way if it does nothing. This is also
-    // what warms the service for the E2E gate, whose seed page opens a stream.
+    // what warms the service for the E2E gate, whose placeholder specs open a
+    // stream through the upload screen.
     await ctx.scheduler.runAfter(0, internal.placeholderBatch.warmupPreprocess, {});
 
     return { started: true, jobId };
@@ -369,6 +375,115 @@ export const confirmPlaceholderImageUpload = mutation({
   },
 });
 
+/** NEO-411: how many times one photo may be sent again with Try again. */
+export const PLACEHOLDER_MAX_IMAGE_RETRIES = 3;
+
+/**
+ * Try again on one photo that failed (NEO-411), while the batch is still open.
+ *
+ * The photo goes back through the pipeline from the start, as a fresh fast-tier
+ * row: its read-off fields, escalation and stage clock are cleared exactly as a
+ * restart clears them (`registerExtractedImages`), it leaves the failed count,
+ * and it is enqueued on the fast pool the same way a confirmed upload is. Its
+ * object is already stored, so nothing is uploaded again. `totalImages` does
+ * not change: it is the same photo.
+ *
+ * Only on a collecting stream job, the one shape where "the batch is finished"
+ * cannot have fired yet (a collecting job never satisfies the last-one-done
+ * test), so moving a row from failed back to working cannot strand a batch that
+ * already counted it. Capped at PLACEHOLDER_MAX_IMAGE_RETRIES per photo, because
+ * each retry is paid preprocess work.
+ */
+export const retryPlaceholderImage = mutation({
+  args: { jobId: v.string(), entryIndex: v.number() },
+  returns: v.object({ retried: v.boolean(), reason: v.optional(v.string()) }),
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    if (
+      !Number.isInteger(args.entryIndex) ||
+      args.entryIndex < 0 ||
+      args.entryIndex > PLACEHOLDER_MAX_ENTRY_INDEX
+    ) {
+      throw new Error("Image not found");
+    }
+    const job = await findOwnedJob(ctx, args.jobId, userId);
+    if (!job) throw new Error("Job not found");
+    if (job.mode !== "stream") throw new Error("job is not a scanner batch");
+    // Closed (here or in another tab) since the button was drawn: an answer the
+    // screen can word for the collector, not a thrown internal message.
+    if (job.status !== "collecting") return { retried: false, reason: "closed" };
+    const image = await ctx.db
+      .query("placeholderImages")
+      .withIndex("by_job_and_index", (q) =>
+        q.eq("jobId", args.jobId).eq("entryIndex", args.entryIndex),
+      )
+      .unique();
+    if (!image) throw new Error("Image not found");
+    // A double click, or a photo that already came back: nothing to do.
+    if (image.status !== "failed") return { retried: false, reason: "not failed" };
+    // NEO-446: set aside in another tab since the button was drawn. Bringing it
+    // back is the collector's call, not a side effect of this press.
+    if (image.setAside) return { retried: false, reason: "set aside" };
+    // NEO-446: over the pixel ceiling. The stored bytes can only fail the same
+    // way, before any model runs, so a retry would only spend a request and a GCS
+    // read to get the same answer. Checked ahead of the cap so the answer is the
+    // real reason whatever its try count.
+    if (image.errorCode === ENTRY_TOO_MANY_PIXELS) return { retried: false, reason: "too big" };
+    // NEO-484: not a decodable image. Same reasoning: the bytes cannot change.
+    if (image.errorCode === ENTRY_UNDECODABLE) return { retried: false, reason: "not an image" };
+    const retries = (image.retries ?? 0) + 1;
+    if (retries > PLACEHOLDER_MAX_IMAGE_RETRIES) {
+      return { retried: false, reason: "too many tries" };
+    }
+
+    const now = Date.now();
+    await ctx.db.patch(image._id, {
+      status: "queued",
+      retries,
+      workId: undefined,
+      players: undefined,
+      team: undefined,
+      cardNumber: undefined,
+      side: undefined,
+      sideByUser: undefined,
+      rotationDegrees: undefined,
+      orientConfidence: undefined,
+      textCount: undefined,
+      croppedSource: undefined,
+      dhash: undefined,
+      escalated: undefined,
+      errorCode: undefined,
+      errorDetail: undefined,
+      pairStatus: undefined,
+      queuedAt: now,
+      escalatedAt: undefined,
+      settledAt: undefined,
+      heavyStartedAt: undefined,
+      // NEO-481: the photo is read afresh, so a hand edit (and the box it
+      // started from) goes with the read it described. `edits` stays.
+      edit: undefined,
+      autoCrop: undefined,
+      pendingEdit: undefined,
+    });
+    await ctx.db.patch(job._id, {
+      failedImages: Math.max(0, (job.failedImages ?? 0) - 1),
+      lastActivityAt: now,
+    });
+
+    const workId = await fastPreprocessPool.enqueueAction(
+      ctx,
+      internal.placeholderBatch.processEntryWorker,
+      { jobId: args.jobId, userId: image.userId, entryIndex: image.entryIndex },
+      {
+        onComplete: internal.placeholderPool.onImageComplete,
+        context: { jobId: args.jobId, imageId: image._id },
+      },
+    );
+    await ctx.db.patch(image._id, { workId, status: "processing" });
+    return { retried: true };
+  },
+});
+
 /**
  * Stop accepting images and let the batch finish.
  *
@@ -393,7 +508,10 @@ export const closePlaceholderStream = mutation({
       return { closed: false, reason: `job is already ${job.status}` };
     }
 
-    const status = await closeStreamImpl(ctx, job);
+    // NEO-370: the collector said "no more photos are coming" (the intake
+    // screen's "Done adding photos"); an intake run over this job may now
+    // sync its box copies once it settles. The idle sweep says "idle".
+    const status = await closeStreamImpl(ctx, job, "user");
     return { closed: true, status };
   },
 });
@@ -431,7 +549,11 @@ export const closePlaceholderStream = mutation({
 export async function closeStreamImpl(
   ctx: MutationCtx,
   job: Doc<"placeholderJobs">,
+  closedBy: "user" | "idle",
 ): Promise<string> {
+  // NEO-370: recorded FIRST, so a finalize that lands in this transaction
+  // (and the intake settle check it runs) already sees who closed it.
+  await ctx.db.patch(job._id, { streamClosedBy: closedBy });
   await ctx.scheduler.runAfter(0, internal.placeholderStream.sweepAwaitingUploads, {
     jobId: job.jobId,
     from: 0,
@@ -576,7 +698,9 @@ export const sweepIdleStreams = internalMutation({
       .take(ENQUEUE_CHUNK_SIZE);
 
     for (const job of idle) {
-      await closeStreamImpl(ctx, job);
+      // NEO-370: an abandoned session never triggers a listing sync; the
+      // 15-minute cron picks its box copies up.
+      await closeStreamImpl(ctx, job, "idle");
     }
 
     const done = idle.length < ENQUEUE_CHUNK_SIZE;

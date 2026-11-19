@@ -11,25 +11,48 @@
 // checklist-wizard-past-era-team-link-commits: this set's clubs are absent
 // from the reference catalogue, so it has neither shape (Jason, 2026-10-10).
 //
-// Sole writer of the 1996 Line Up Venezuelan Winter League set (BSC only;
+// Sole writer of the 1996 New Haven Ravens Rally Raffle set (BSC only, filed
+// under the year's Unknown row and reached through the All Brands view;
 // SET-REGISTRY.md); fresh-only (it mints the fixture team and commits the
-// set). Re-seed before re-running. MEASURED on PR #314's preview: 300 cards,
-// 200 new players + 8 new teams, 211 rows once every lookup settled (the 8
-// Venezuelan Professional Baseball League clubs, one staged league, two staged
-// career teams). The catalogue holds none of the eight clubs. Two of the 200
-// players are same-name rows (NEO-332) and open as pick steps; an untouched
-// pick step yields to the first settled team like any player row.
+// set). Re-seed before re-running. NEO-475: it replaced the 300-card 1996 Line
+// Up Venezuelan Winter League (200 new players + 8 new clubs) with a 9-card
+// set (one an NNO raffle entry card). Chosen by a read-only probe with
+// SportLots PAUSED (BSC only, 2026-11-09): ONE unknown club, the row under
+// test, and two unknown players (Edgard Velazquez, Rodney Pedraza); the
+// catalogue holds no "New Haven Ravens". The recording answers the club's
+// lookup with no match, so its New Team step opens with the whole name in
+// "New team name" (no location to split off), which the NEO-307 check reads.
+// The wizard counts and the time to settle are NOT yet measured on the UI.
+//
+// THE RAFFLE CARD SAYS "No Team" (NEO-489, Jason 2026-11-11). Its row in the uploaded
+// checklist reads `No Team`, the publisher's claim that the card has none, so the card is
+// ANSWERED: it is never asked of BSC, never a line on the wizard's "Cards with no team"
+// step, and it saves as a confirmed no-team card that no attention badge flags. The step
+// after the names is therefore not "Cards with no team" (the other eight cards name the
+// club the walk links), and the spec checks that and the saved card. The count line,
+// "Teams from your checklist: N of M", takes its N from the file (9: the claim counts).
 //
 // THE ROW UNDER TEST IS NAMED, not "whichever comes first": the walk reads
-// each team/league step's heading, acts on the checklist club "Navegantes del
-// Magallanes" and skips every other step (a skip creates nothing, R7).
+// each team/league step's heading, acts on the checklist club "New Haven
+// Ravens" and skips every other step (a skip creates nothing, R7).
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { editCardButton } from "../../support/cards";
+import { CHECKLISTS } from "../../support/published-checklist";
 import { expectPlayersLoaded, expectTeamsLoaded, teamsCounter } from "../../support/players";
-import { advanceToSave, fetchOneMarketplaceSetChecklistToWizard, readStep, reviewWizard, stepCounter } from "../../support/wizard";
+import { recordedNoMatchPlayer } from "../../support/recorded-names";
+import {
+  advanceToSave,
+  confirmSaveButton,
+  fetchOneMarketplaceSetChecklistToWizard,
+  nextStepButton,
+  readStep,
+  reviewWizard,
+  stepCounter,
+} from "../../support/wizard";
 import type { Page } from "@playwright/test";
 
-const SET = "Line Up Venezuelan Winter League";
-const ROW = "Navegantes del Magallanes";
+const SET = "New Haven Ravens Rally Raffle";
+const ROW = "New Haven Ravens";
 
 /** The admin Team Management page, filtered to `query`. */
 async function openTeams(page: Page, query: string) {
@@ -59,10 +82,16 @@ test(
     await expect(page.getByText("0 matches", { exact: true })).toBeVisible();
 
     await page.getByRole("button", { name: "Add player" }).click();
-    await page.getByRole("textbox", { name: "New player name" }).fill(`Alp${T}`);
-    await page.getByRole("button", { name: `Create player Alp${T}` }).click();
-    await expect(page.getByRole("heading", { name: `Alp${T}`, exact: true })).toBeVisible();
-    await expect(page.getByText(`Added Alp${T}`)).toBeVisible();
+    // The career editor's player: a REAL person whose Baseball lookup the
+    // enrichment recording holds as a no-match (support/recorded-names.ts), so
+    // the add makes no live Wikidata call and the row stays bare. The pool is
+    // the retired Venezuelan set's roster, none of whom is on this checklist;
+    // the walk skips every player row either way.
+    const scaffold = recordedNoMatchPlayer(env, "checklist-wizard-link-team-saves-alias");
+    await page.getByRole("textbox", { name: "New player name" }).fill(scaffold);
+    await page.getByRole("button", { name: `Create player ${scaffold}` }).click();
+    await expect(page.getByRole("heading", { name: scaffold, exact: true })).toBeVisible();
+    await expect(page.getByText(`Added ${scaffold}`)).toBeVisible();
     await expect(page.getByText("No stints recorded yet.")).toBeVisible();
     await expectAccessible(page, { label: "Player detail, new player with no stints" });
 
@@ -85,7 +114,7 @@ test(
     await expect(page.getByRole("button", { name: `Remove team ${FIXTURE_TEAM}` })).toBeVisible();
 
     // ── PART 2: the set; decline SportLots (it does not carry this set), fetch BSC only ──
-    await fetchOneMarketplaceSetChecklistToWizard(page, env, { sport: "Baseball", year: "1996", set: SET });
+    await fetchOneMarketplaceSetChecklistToWizard(page, env, { sport: "Baseball", year: "1996", set: SET, checklist: CHECKLISTS.newHavenRavens });
     const wizard = reviewWizard(page);
 
     // ── PART 3: walk the team and league steps, acting on one club by name ──
@@ -95,9 +124,11 @@ test(
     // Wait the batch's lookups out so every step the walk reads is settled and
     // nothing that settles later out-ranks the row under test (leagues before
     // teams before players). Marketplace-class wait: one lookup per unknown
-    // name through the deployment-wide pool (the flow's 180 s; measured ~144 s
-    // live, the NEO-289 recording answers every lookup this batch makes, so
-    // this stays the live-lane ceiling until a CI run measures the recorded one).
+    // name through the deployment-wide pool (the flow's 180 s, set when the
+    // fixture was the 300-card Venezuelan set: ~144 s live for 211 rows). The
+    // NEO-289 recording answers this batch's lookups (three names here, plus
+    // any career teams they stage), so this stays the live-lane ceiling until
+    // a CI run measures the recorded one; NEO-475 left the number alone.
     await expect(wizard.getByText(/still looking up/)).toBeHidden({ timeout: 180_000 });
 
     const teamSkip = wizard.getByRole("button", { name: /^Skip .* — not a team$/ });
@@ -187,13 +218,34 @@ test(
     expect(aliasDone, `the "${ROW}" team step must be presented`).toBe(true);
 
     await wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ }).click();
-    // The teams / titles steps (a skipped club leaves its cards teamless) stay on
-    // their defaults; this spec's feature is the alias.
+    // THE RAFFLE CARD IS NEVER ASKED (NEO-489). Skipping the rest of the names lands on the
+    // first screen after them, which is where "Cards with no team" would be: the eight cards
+    // name the club the walk linked and the raffle card's row says "No Team", so no card is
+    // teamless and the wizard is on a later step or already on Save. The footer's forward
+    // control is the positive the hidden title is read against.
+    await expect(nextStepButton(page).or(confirmSaveButton(page))).toBeVisible();
+    await expect(wizard.getByText(/^(Card titles|Autographed cards|Ready to save)$/)).toBeVisible();
+    await expect(wizard.getByText("Cards with no team", { exact: true })).toBeHidden();
+    // The teams / titles steps stay on their defaults; this spec's feature is the alias.
     await advanceToSave(page);
     const confirmSave = wizard.getByRole("button", { name: /Confirm & Save/ });
     await expect(confirmSave).toBeVisible();
     await confirmSave.click();
     await expect(page.getByText(/Saved [0-9]+ cards/)).toBeVisible();
+
+    // ── PART 5b: the raffle card saved as a card with no team, and nothing flags it (NEO-489) ──
+    // The committed list is up (its edit control is the positive), and no card of the set is
+    // badged "no team on this card yet" nor counted under the header's "N need you".
+    await expect(editCardButton(page, "NNO")).toBeVisible();
+    await expect(page.getByRole("img", { name: /needs attention: no team on this card yet$/ })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^([0-9]+ need you|1 needs you)$/ })).toHaveCount(0);
+    // Its drawer shows the team picker (Add team) with no team chip: a stored no-team card.
+    await editCardButton(page, "NNO").click();
+    const drawer = page.getByRole("dialog");
+    await expect(drawer.getByRole("button", { name: "Add team", exact: true })).toBeVisible();
+    await expect(drawer.getByRole("button", { name: /^Remove team / })).toHaveCount(0);
+    await page.getByRole("button", { name: "Done editing card" }).click();
+    await expect(drawer).toBeHidden();
 
     // ── PART 6: Team Management shows the alias ──
     await openTeams(page, `Ali${T}`);

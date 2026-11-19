@@ -3,8 +3,8 @@
  * the operator, rather than silently doing.
  *
  * Both live here because `EntityColumn` (levels 1-5, via `selectorSyncStatus`)
- * and `VariantForm` / `ParallelForm` (levels 6-7, via the store mutation's own
- * result) have to say exactly the same words about exactly the same events.
+ * and `VariantForm` (level 6, via the store mutation's own result; level 7's
+ * `ParallelForm` went with its Sync button in NEO-425) have to say exactly the same words about exactly the same events.
  * When the two surfaces drifted apart before, the same outage read as "nothing
  * happened" in one column and an error in another.
  *
@@ -32,7 +32,11 @@
  */
 
 import { MAX_RETURNED_IDS } from "../../convex/selectorSyncStore";
-import { ATTACH_MORE_LABEL, CUSTOM_BUTTON_LABEL } from "./control-labels";
+import {
+  ATTACH_MORE_LABEL,
+  CUSTOM_BUTTON_LABEL,
+  EDIT_ATTRIBUTES_LABEL,
+} from "./control-labels";
 
 export type SyncSide = "bsc" | "sportlots";
 
@@ -280,7 +284,7 @@ export type SelectorLevel =
  * The ONE level→noun map for both NEO-211 surfaces.
  *
  * Derived from the PUBLIC labels the column buttons already use ("Sync Sets",
- * "Sync Sub-Variants"), not from `SetAttributesPanel`'s `LEVEL_LABEL`, which
+ * "Add custom Sub-Variants"), not from `SetAttributesPanel`'s `LEVEL_LABEL`, which
  * says "Parallel" where the columns say "Sub-Variant" and belongs to an older,
  * unrelated panel. Two maps that disagree about what a level is called is worse
  * than either one; this is the one these two new surfaces share, and renaming
@@ -667,7 +671,8 @@ export function twinLeftIdsText(entry: TwinLeftEntry): string {
 export function twinsLeftGuidance(level: SelectorLevel | undefined): string | null {
   switch (level) {
     case "setName":
-      return `For each one, use ${ATTACH_MORE_LABEL} on its set's Base. Not a set yet? Add it with ${CUSTOM_BUTTON_LABEL}, then use ${ATTACH_MORE_LABEL} there.`;
+      // NEO-496: Attach more… sits inside the row's attributes panel now.
+      return `For each one, open ${EDIT_ATTRIBUTES_LABEL} on its set's Base and use ${ATTACH_MORE_LABEL}. Not a set yet? Add it with ${CUSTOM_BUTTON_LABEL}, then do the same there.`;
     case "insert":
     case "parallel":
       return "Run this column's Sync again and pair each one in Reconcile.";

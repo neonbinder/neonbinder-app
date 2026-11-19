@@ -5,10 +5,10 @@ import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import { QUIET_BUTTON, useLiverySurface } from "../../prototypes/p1/ui";
 import type { RowActions } from "../CardRows";
-import { cardLabel, playerNames, printRunLabel, setAndVariant, shortCardName, teamNames, teamTextColor } from "../data/labels";
+import { cardLabel, cardSubject, printRunLabel, setAndVariant, shortCardName, teamNames, teamTextColor } from "../data/labels";
 import { inventoryCopies, useCollectionActions, useCopiesOf, useDefaultCondition, writeErrorMessage } from "../data/store";
 import type { Card, Container, Copy, CopyId, QuantityResult } from "../data/types";
-import { usePageApi } from "../pageApi";
+import { startWrite, usePageApi } from "../pageApi";
 import { FeatureBadges } from "./badges";
 import { useQuickEntry } from "./QuickEntry";
 import {
@@ -35,9 +35,11 @@ export const BLANK_MESSAGE = "Nothing changed. Type 0 to clear it.";
 type Status = { kind: "idle" } | { kind: "saving" } | { kind: "saved" } | { kind: "error"; message: string };
 
 /** What the status line says once a quantity lands. */
-export function quantityMessage(name: string, box: Pick<Container, "name">, r: Pick<QuantityResult, "before" | "after">): string {
+export function quantityMessage(name: string, box: Pick<Container, "name">, r: Pick<QuantityResult, "before" | "after" | "tookPhotos">): string {
   if (r.after > r.before) return `Boxed ${r.after - r.before} more of ${name}. ${r.after} in ${box.name}.`;
-  if (r.after < r.before) return `Pulled ${r.before - r.after} of ${name} from ${box.name}. ${r.after} left.`;
+  if (r.after < r.before) {
+    return `Pulled ${r.before - r.after} of ${name} from ${box.name}${r.tookPhotos ? ", with its photos" : ""}. ${r.after} left.`;
+  }
   return `${name} stays at ${r.after} in ${box.name}.`;
 }
 
@@ -69,7 +71,8 @@ function rowControls(from: HTMLElement): HTMLElement[] {
  * field instead of Have / Want / Trade.
  *
  * The field is how many PLAIN copies of the card sit in the target box (raw,
- * nothing noted, not up for trade). Leaving it writes the new number in one
+ * nothing noted, not up for trade; a photo alone changes none of that, NEO-431,
+ * so a line added by hand with photos is the one it edits). Leaving it writes the new number in one
  * go (`setBoxQuantity`), through the page's commit queue, so Tab never waits
  * on a write. After it: the card's other lines in that box, read-only
  * ("also here: PSA 9, Raw Mint"), and Details for everything else. They sit
@@ -105,6 +108,7 @@ export default function QuantityRow({
   onRowClick,
   onOpenChecklist,
   groupRef,
+  raiseHeld,
 }: {
   card: Card;
   /** The card's box copies (any box; never a binder copy). `undefined` while they load. */
@@ -121,6 +125,13 @@ export default function QuantityRow({
   /** Search results: the opener for the card's checklist. */
   onOpenChecklist?: () => void;
   groupRef?: Ref<HTMLLIElement>;
+  /**
+   * NEO-370 — raising this box's count is held (the listing gate): `noteId` is
+   * the note saying why, which the field points at; `message` is what a typed
+   * raise says when it is refused. The + is off. Lowering always writes:
+   * taking cards out is never blocked (Jason, 2026-11-01).
+   */
+  raiseHeld?: { noteId: string; message: string };
 }) {
   const api = usePageApi();
   const writes = useCollectionActions();
@@ -177,6 +188,13 @@ export default function QuantityRow({
       refuseOverCap(base, box.id);
       return false;
     }
+    if (raiseHeld && quantity > base) {
+      // A raise the listing gate holds: nothing written, the number goes back.
+      setDraft(pending.current > 0 ? { text: String(base), boxId: box.id } : null);
+      setStatus({ kind: "error", message: raiseHeld.message });
+      api.notify(`${shortCardName(card)} didn't change. ${raiseHeld.message}`);
+      return false;
+    }
     send(quantity, box);
     return true;
   };
@@ -188,7 +206,7 @@ export default function QuantityRow({
    * left (the field keeps the focus, see `onMouseDown` below) goes first.
    */
   const addOne = () => {
-    if (!box || copies === undefined) return;
+    if (!box || copies === undefined || raiseHeld) return;
     // A typed number the cap refused stays refused: the + adds nothing to it.
     if (!commit()) return;
     const base = latest();
@@ -206,6 +224,8 @@ export default function QuantityRow({
     lastSent.current = quantity;
     setDraft({ text: String(quantity), boxId: target.id });
     setStatus({ kind: "saving" });
+    // NEO-460: the line's last Undo goes now, never pressed while this saves.
+    const ticket = startWrite(api);
     const settle = () => {
       pending.current -= 1;
       if (mine !== seq.current) return false;
@@ -218,12 +238,12 @@ export default function QuantityRow({
       .then(
         (result) => {
           if (settle()) setStatus({ kind: "saved" });
-          api.notify(quantityMessage(shortCardName(card), target, result), result.undo);
+          ticket.done(quantityMessage(shortCardName(card), target, result), result.undo);
         },
         (error: unknown) => {
           const message = writeErrorMessage(error);
           if (settle()) setStatus({ kind: "error", message });
-          api.notify(`${shortCardName(card)} didn't change. ${message}`);
+          ticket.refused(`${shortCardName(card)} didn't change. ${message}`);
         },
       );
   };
@@ -277,7 +297,9 @@ export default function QuantityRow({
   if (showSet) sub.push(setAndVariant(card));
   if (run) sub.push(run);
   if (card.cardVariation) sub.push(`${card.cardVariation} variation`);
-  const describedBy = [status.kind === "error" ? errorId : null, others ? othersId : null].filter(Boolean).join(" ");
+  const describedBy = [raiseHeld?.noteId ?? null, status.kind === "error" ? errorId : null, others ? othersId : null]
+    .filter(Boolean)
+    .join(" ");
 
   return (
     <li
@@ -300,7 +322,7 @@ export default function QuantityRow({
         <div className={`min-w-0 flex-1 ${showSet ? "max-sm:basis-full" : ""}`}>
           <div className="min-w-0 truncate text-sm font-medium text-ink">
             <span className="font-mono font-normal text-ink-3 sm:hidden">#{card.cardNumber} </span>
-            {playerNames(card) || "Player unknown"}
+            {cardSubject(card) || "Player unknown"}
           </div>
           <div className="flex min-h-[1rem] min-w-0 items-center gap-1.5 text-xs text-ink-3">
             <span className="min-w-0 truncate">
@@ -367,7 +389,10 @@ export default function QuantityRow({
             size="1"
             tabIndex={-1}
             aria-label={addLabel}
-            disabled={!ready}
+            disabled={!ready || raiseHeld !== undefined}
+            // Held: the reason, for the pointer (title) and for anyone who reaches it.
+            aria-describedby={raiseHeld?.noteId}
+            title={raiseHeld?.message}
             onMouseDown={(e) => e.preventDefault()}
             onClick={(e) => {
               e.stopPropagation();

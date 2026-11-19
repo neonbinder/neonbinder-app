@@ -19,6 +19,7 @@
  */
 
 import type { StoredRule, StoredRuleLeaf, StoredRuleTerm } from "@/lib/collection/binder-rule";
+import type { PendingPhotoEdit } from "@/lib/photo-edit/geometry";
 
 // ---------------------------------------------------------------------------
 // Ids
@@ -59,7 +60,7 @@ export type Side = "collection" | "inventory";
  * both sides. The old `"inventory"` key is retired: a `?tab=inventory` link
  * redirects (replace) to `/inventory?tab=boxes`.
  */
-export type CollectionTab = "cards" | "binders" | "boxes" | "checklists" | "add";
+export type CollectionTab = "cards" | "binders" | "boxes" | "checklists" | "add" | "sales" | "sync" | "pick";
 
 // ---------------------------------------------------------------------------
 // Catalog
@@ -81,6 +82,12 @@ export interface SetRef {
   /** The year the set is filed under (a hockey season files under its start). */
   year: number;
   brand: NamedRef;
+  /**
+   * NEO-527 — true when `brand` is the year's brand-unknown row (read by the
+   * server from its flag, never its name). Its id still drives navigation,
+   * but no label shows its name: a collector never sees that row.
+   */
+  brandUnknown?: true;
   sport: NamedRef;
 }
 
@@ -196,6 +203,19 @@ export interface Card {
   cardNumber: string;
   /** In the card's own order: the first leads the face and the label. */
   players: CardPlayer[];
+  /**
+   * NEO-528 — players pictured on the card who are not its subject (a
+   * teammate on a team leaders card, a highlight's other star): "Also
+   * pictured" on the card's detail, and a smart binder's cameos. Never one of
+   * `players`; absent when there are none.
+   */
+  secondaryPlayers?: CardPlayer[];
+  /**
+   * NEO-528 — the card's own name in the checklist ("Dolphins Leaders"),
+   * trimmed; absent when blank. Read only to name a card that has no player
+   * (`cardSubject`), never in place of one.
+   */
+  cardName?: string;
   /** Teams printed on the card (the uniform), not every team the player had. */
   teams: CardTeam[];
   /** Numbered print run: 50 means "/50", 1 a 1/1; null = unnumbered. */
@@ -283,6 +303,14 @@ export interface DrillItem {
   variantId?: VariantId;
   /** True when the row has a column beneath it (an insert with sub-parallels has both). */
   hasChildren: boolean;
+  /**
+   * NEO-527 — set on a SET listed straight in a year's brand column, because
+   * the brand row above it is the year's brand-unknown row, which a
+   * collector never sees: that row's id, which the drill still carries for
+   * its brand step. Picking the item picks that brand and this set at once
+   * (`pickInBrandColumn`).
+   */
+  brandId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -380,6 +408,11 @@ export type PhotoSide = "front" | "back";
 export interface PhotoUrls {
   imageUrl: string;
   thumbUrl: string;
+  /**
+   * NEO-481 — a turn or crop saved and still rendering, or one whose render
+   * failed. `imageUrl` is still the old photo until the new file lands.
+   */
+  pending?: PendingPhotoEdit;
 }
 
 /** A copy line's photos. A side with none is absent. */
@@ -540,6 +573,11 @@ export interface Container {
   slug?: string;
   /** NEO-360 — anyone with the link can read it (a binder or the Want List). */
   isPublic?: boolean;
+  /**
+   * NEO-370 — a box only: false when it is in-person inventory, whose copies
+   * count 0 on every marketplace. Absent reads as listed.
+   */
+  listedOnMarketplaces?: boolean;
 }
 
 /**
@@ -559,6 +597,12 @@ export function isHome(container: Pick<Container, "system" | "rule"> | undefined
 export interface Want {
   cardId: CardId;
   binderId: ContainerId | null;
+  /**
+   * NEO-464 — when the want was last set (ms since epoch), as the server
+   * stamps it: the dashboard's chase takes the newest. Absent from the demo
+   * store and on a want just set and not yet confirmed (read it as newest).
+   */
+  lastUpdated?: number;
 }
 
 /**
@@ -821,6 +865,19 @@ export interface Capabilities {
   intake: boolean;
   /** NEO-377 — a front and back photo on each copy line (`useCopyPhotos`). */
   copyPhotos: boolean;
+  /**
+   * NEO-370 — listing box copies on a marketplace (`useListing`): a
+   * checklist's Sync button, a box's "Listed on marketplaces", the Sales
+   * and Sync status tabs.
+   * Signed-in only: the demo never touches a marketplace.
+   */
+  marketplaceListing: boolean;
+  /**
+   * NEO-500 — the Pick List: every sold card still to pull from a box. The
+   * demo's runs on a fixture (`../pick/demoPickStore`), the signed-in one on
+   * the seller's orders (`../pick/convexPickStore`).
+   */
+  pickList: boolean;
 }
 
 export const ALL_CAPABILITIES: Capabilities = {
@@ -839,6 +896,9 @@ export const ALL_CAPABILITIES: Capabilities = {
   inventory: true,
   intake: true,
   copyPhotos: true,
+  // The demo never touches Convex, so it never lists anywhere.
+  marketplaceListing: false,
+  pickList: true,
 };
 
 export const NO_CAPABILITIES: Capabilities = {
@@ -856,6 +916,8 @@ export const NO_CAPABILITIES: Capabilities = {
   inventory: false,
   intake: false,
   copyPhotos: false,
+  marketplaceListing: false,
+  pickList: false,
 };
 
 /**
@@ -875,6 +937,8 @@ export const REAL_CAPABILITIES: Capabilities = {
   binderSettings: true,
   intake: true,
   copyPhotos: true,
+  marketplaceListing: true,
+  pickList: true,
 };
 
 // ---------------------------------------------------------------------------
@@ -894,6 +958,275 @@ export interface ShareProfile {
 
 export interface ShareLinkParts {
   slug: string;
+}
+
+// ---------------------------------------------------------------------------
+// Marketplace listing (NEO-370)
+// ---------------------------------------------------------------------------
+
+/**
+ * A marketplace NB lists box copies on: BuySportsCards (NEO-370) and eBay
+ * (NEO-415). Mirrors `listingPlatformValidator` in convex/schema.ts.
+ */
+export type ListingPlatform = "bsc" | "ebay";
+
+/**
+ * Where the collector stands with one listing platform (NEO-370 Rev 5).
+ * A saved, unpaused sign-in IS syncing (listing and the sales poll); there
+ * is no Start and no pause: removing the sign-in stops both.
+ */
+export interface ListingPlatformSettings {
+  /** Their sign-in for it is saved (Profile → Credentials). */
+  connected: boolean;
+  /**
+   * Syncing there: a saved sign-in, the platform not paused and the seller
+   * account not in use elsewhere. Everything in a listed box goes up, and
+   * sales come back.
+   */
+  listing: boolean;
+  /** Since when (ms), as the server stamps it; may be absent. */
+  listingSince?: number;
+  /** The saved sign-in died: they must sign in again on their Profile. */
+  needsReauth: boolean;
+  /** NB has paused the platform for everyone; changes wait until it is back. */
+  paused: boolean;
+  /**
+   * Their seller account already lists from another NeonBinder account, so
+   * this one can't: nothing goes up or comes in from this one.
+   */
+  sellerConflict: boolean;
+}
+
+export type ListingSettings = Record<ListingPlatform, ListingPlatformSettings>;
+
+/**
+ * NEO-415 — the two things about the collector's eBay connection that the
+ * inventory's tabs say (the rest lives on Profile → eBay): whether its setup
+ * is finished (shipping, payment, returns, ships-from), without which nothing
+ * goes up; and whether it talks to eBay's sandbox (dev and previews), so an
+ * order's link goes there.
+ */
+export interface EbaySetupView {
+  connected: boolean;
+  setupComplete: boolean;
+  sandbox: boolean;
+}
+
+/**
+ * NEO-370 — the listing gate as a screen reads it (`convex/listingGate.ts`
+ * `forHome`): whether the collector is set up for syncing at all, whether
+ * adds into the home need a price and a condition first (it lists on
+ * marketplaces and they sync), and their common price for the variant, in
+ * cents, when it does. What the copy will carry is combined with it through
+ * `convex/lib/listingReadiness.ts`, the rule the server enforces.
+ */
+export interface ListingGateView {
+  syncing: boolean;
+  applies: boolean;
+  commonPriceCents: number | null;
+  /** NEO-452: the picked set holds a card to match against; true with no set picked. */
+  variantHasCards: boolean;
+}
+
+/**
+ * Why one card of a checklist did not list (NB's own words for it live in
+ * `lib/marketplace/listing-copy`). Mirrors `listingProblemReasonValidator` in
+ * convex/schema.ts.
+ */
+export type ListingProblemReason =
+  | "noLink"
+  | "sharedLink"
+  | "numberMismatch"
+  | "noPrice"
+  | "priceTooHigh"
+  | "noCondition"
+  | "graded"
+  | "notOnSheet"
+  | "rejected"
+  // NEO-415, eBay: a category detail eBay requires that NB can't fill
+  // (`detail` names it), no photo on the card's copy, and the eBay page's
+  // setup (shipping, payment, returns, ships-from) not finished.
+  | "missingAspect"
+  | "noPhoto"
+  | "setupIncomplete"
+  // NEO-569, eBay: the card has no league while its sport has some. Only an
+  // admin sets it; the collector reports it.
+  | "noLeague"
+  // NEO-535, eBay: the card's title is over eBay's 80 characters; NB holds it
+  // back rather than cut it, until the title is shortened in the set builder.
+  | "titleTooLong";
+
+/** One card a sync held back, named as the collector reads it. */
+export interface SyncProblem {
+  reason: ListingProblemReason;
+  /** The card the row names, when NB knows it: the row opens that card's panel. */
+  cardId?: CardId;
+  /** NB's card number; absent for a platform row NB cannot tie to a card. */
+  cardNo?: string;
+  /** The card's player(s), as NB names them. */
+  cardLabel?: string;
+  /** For `rejected`: a short excerpt of what the platform said. */
+  detail?: string;
+}
+
+/** What Sync answered: `queued`, or why it let the press pass. */
+export interface SyncVariantResult {
+  queued: boolean;
+  ignored?: "throttled" | "notListing";
+}
+
+/** A card waiting for the next sync. The queue holds cards, not diffs: NB's counts are what go up. */
+export interface QueuedSyncCard {
+  cardId: CardId;
+  cardNo?: string;
+  cardLabel?: string;
+  variantId: VariantId;
+  setLabel: string;
+  /** When it was queued (ms). */
+  changedAt: number;
+}
+
+/**
+ * NEO-415 — one step of a sync run, in run order: BuySportsCards reads each
+ * condition, sends the changes once, then checks each condition back; eBay
+ * compares with the boxes, uploads photos, writes the items, sets the offers,
+ * publishes, and takes down what went to 0. A run with nothing to read or
+ * send is the compare step alone. The server stores kind and NB condition only; the
+ * words are the web's (`stepLabels` in the listing copy), never a
+ * marketplace value. Mirrors `marketplaceListingSyncs.progress.steps`.
+ */
+export type SyncStepKind = "check" | "read" | "send" | "confirm" | "photos" | "items" | "offers" | "publish" | "withdraw";
+export type SyncStepStatus = "waiting" | "working" | "done" | "failed";
+export interface SyncStep {
+  kind: SyncStepKind;
+  /** NB's condition, for a read or a check-back (the first of `conditions`). */
+  condition?: Condition;
+  /**
+   * Every NB condition one read or check-back covers (one marketplace sheet
+   * can hold two of NB's). Neither field: the step covers the conditions NB
+   * lists nothing under.
+   */
+  conditions?: Condition[];
+  status: SyncStepStatus;
+  /**
+   * NEO-487 — set while a marketplace call of this step is outstanding (the
+   * server's BSC call recorder, never the step's elapsed time). The screen
+   * says "Waiting on BuySportsCards…" with running seconds while it is.
+   */
+  marketplaceWaitingSince?: number;
+}
+
+/** One set's last sync on a platform. Last result only: there is no run log. */
+export interface SyncSetResult {
+  variantId: VariantId;
+  setLabel: string;
+  status: "idle" | "running" | "error";
+  lastRunAt?: number;
+  lastSuccessAt?: number;
+  /** NB's sentence for what went wrong last time. */
+  lastError?: string;
+  counts?: { listed: number; pushed: number; zeroed: number; skipped: number };
+  problemsTotal: number;
+  /** The first few only; the rest come from `loadSetProblems`. */
+  problems: SyncProblem[];
+  /** NEO-415 — the last run's steps (the run going now while `running`); absent from an older server. */
+  steps?: SyncStep[];
+}
+
+/** NEO-483 — why the reads for a BuySportsCards seller account stopped. */
+export type SellerAccountStall = "gaveUp" | "noSellerProfile";
+
+/** One platform on the Sync status tab. */
+export interface PlatformSyncStatus extends ListingPlatformSettings {
+  platform: ListingPlatform;
+  /** A sync going on now. */
+  running: { startedAt: number; setLabel?: string; variantId?: VariantId; steps?: SyncStep[] } | null;
+  /** When the next sync is due (ms), when one is scheduled. */
+  scheduledAt?: number;
+  /** When the last sync finished (ms). */
+  lastDrainAt?: number;
+  /**
+   * NEO-483 — BuySportsCards hasn't said which seller account is the
+   * collector's yet, so no sync can start: since when NB's current run of
+   * reads started asking (ms). Absent when nothing is asking.
+   */
+  awaitingSellerSince?: number;
+  /**
+   * NEO-483 — the reads for the seller account have stopped without one:
+   * `gaveUp` (BSC never answered), `noSellerProfile` (BSC answered that the
+   * account isn't set up to sell). The collector's next Sync asks again.
+   * Never set together with `awaitingSellerSince`.
+   */
+  sellerAccountStalled?: SellerAccountStall;
+  /** Oldest first, capped; `more` when there are others. */
+  queued: { cards: QueuedSyncCard[]; more: boolean };
+  /** Most recent first, capped. */
+  sets: SyncSetResult[];
+}
+
+export interface SyncStatus {
+  platforms: PlatformSyncStatus[];
+}
+
+/** One set's whole held-back list, read on demand. */
+export interface SetProblems {
+  problems: SyncProblem[];
+  problemsTotal: number;
+}
+
+/** Why a sold line was not (fully) taken out of the collector's boxes. */
+export type SaleItemProblem = "unmatched" | "linkMismatch" | "oversold";
+
+export interface SaleItem {
+  /** The NB card it sold as; absent when NB could not match it. */
+  cardId?: CardId;
+  /** The platform's condition word, verbatim (eBay: NB's bucket code, NM/EX/VG/PR). */
+  condition: string;
+  quantity: number;
+  /** Per copy, in cents. */
+  priceCents: number;
+  /** Taken out of the collector's boxes. */
+  applied: boolean;
+  problem?: SaleItemProblem;
+  /** `oversold` only: how many sold that NB had no box copy for. */
+  shortBy?: number;
+  /**
+   * NEO-520 — the listing's own title as the platform sent it (eBay only).
+   * Shown only on a line with no NB card: the one thing that says what sold
+   * when NeonBinder didn't list it. Never read as card data.
+   */
+  title?: string;
+}
+
+/** One order a collector received on a platform. Money is integer cents. */
+export interface Sale {
+  id: string;
+  platform: ListingPlatform;
+  /** The number the platform shows the seller. */
+  orderNo: string;
+  /** When it was ordered (ms). */
+  orderDate: number;
+  /** The platform's status word, verbatim ("SHIPPED"). */
+  status: string;
+  totals: {
+    subtotalCents?: number;
+    shippingCents?: number;
+    feesCents?: number;
+    netCents?: number;
+    totalCents?: number;
+  };
+  items: SaleItem[];
+}
+
+/** The Sales list, newest first, a page at a time. */
+export interface SalesPage {
+  /** Undefined while the first page loads. */
+  sales: Sale[] | undefined;
+  /** More can be loaded. */
+  canLoadMore: boolean;
+  /** A page is on its way. */
+  loadingMore: boolean;
+  loadMore: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -953,6 +1286,8 @@ export interface MoveResult {
 export interface QuantityResult {
   before: number;
   after: number;
+  /** A line with photos went with the count; the Undo brings them back. */
+  tookPhotos?: boolean;
   /** Puts exactly the lines the write touched back as they were. */
   undo: Undo;
 }
@@ -991,6 +1326,12 @@ export interface BinderNeeds {
   cards: Card[];
   /** Of `cards`, the ones the collector has in another binder. */
   held: ReadonlySet<CardId>;
+  /**
+   * NEO-528 — of `cards`, the ones a smart binder's rule takes in only as a
+   * cameo (its cameo option is on, and the player is pictured, not the
+   * subject). Empty for every other binder.
+   */
+  secondary: ReadonlySet<CardId>;
   /** False when the rule names nothing NB can walk the catalog from (only years, features, ...). */
   supported: boolean;
   /** True when there are more than `cards` lists. */
@@ -1000,16 +1341,32 @@ export interface BinderNeeds {
    * just saved): `cards` is what was known before, and refreshes on its own.
    */
   pending?: boolean;
+  /**
+   * NEO-410 — every attempt to recompute the slots failed: `cards` is what
+   * was known before, and the screen offers "Try again" (`retryBinderFits`).
+   */
+  failed?: boolean;
 }
 
 /** NEO-362 — "Find cards for this binder": copies that fit the rule and live elsewhere. */
 export interface FoundCards {
   /** Line items that fit, every home but this binder, in card order. */
   copies: Copy[];
+  /** NEO-528 — of the copies' cards, the ones that fit only as a cameo. */
+  secondary: ReadonlySet<CardId>;
   /** True when the whole collection has been looked through. */
   done: boolean;
   /** Look further through the collection. */
   more: () => void;
+}
+
+/**
+ * NEO-528 — which of some cards fit a smart binder's rule (`fits`), and of
+ * those, which fit only as a cameo (`secondary`, always inside `fits`).
+ */
+export interface RuleMatches {
+  fits: ReadonlySet<CardId>;
+  secondary: ReadonlySet<CardId>;
 }
 
 /** NEO-362 — a card declined for one smart binder, with the collector's copies of it. */

@@ -6,7 +6,7 @@
 
 import { describe, expect, test } from "vitest";
 import { EXPECTED_FEATURES } from "./expectedFeatures";
-import { AUTOGRAPH_FORMATS, LEAGUE_OPTIONS, ERA_BUCKET_OPTIONS } from "./deriveCardFeatures";
+import { AUTOGRAPH_FORMATS, ERA_BUCKET_OPTIONS } from "./deriveCardFeatures";
 
 function feature(key: string) {
   const f = EXPECTED_FEATURES.find((f) => f.key === key);
@@ -15,10 +15,8 @@ function feature(key: string) {
 }
 
 describe("EXPECTED_FEATURES typed entries", () => {
-  test("league is a select sourced from LEAGUE_OPTIONS", () => {
-    const league = feature("league");
-    expect(league.inputType).toBe("select");
-    expect(league.options).toBe(LEAGUE_OPTIONS);
+  test("NEO-569: league is not a feature row any more (it has its own controls)", () => {
+    expect(EXPECTED_FEATURES.find((f) => f.key === "league")).toBeUndefined();
   });
 
   test("era is a select sourced from ERA_BUCKET_OPTIONS", () => {

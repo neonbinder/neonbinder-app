@@ -53,8 +53,11 @@ Two traps are handled for you:
   import keeps the exported number. Production numbered its tables in
   creation order, while a fresh preview numbers them differently. A raw
   import either fails or lands ids on the wrong table. `load` re-encodes
-  every id onto the target's numbers, which it reads from a read-only export
-  of the target.
+  every id onto the target's numbers, which it reads from the target through
+  `referenceSeed:preflight` (`apps/web/convex/referenceSeed.ts`, an internal
+  action run with the deploy credentials). Until NEO-408 it took a full
+  snapshot export for this; two fresh previews' exports hung on 2026-10-31
+  while the deployment itself answered in 100 ms.
 - **int64.** In a snapshot every plain JSON number is a float64, and the
   export writes `2005.0`. The importer reads a bare `2005` as int64, which a
   `v.number()` validator rejects. Every writer here emits float notation, and
@@ -96,7 +99,8 @@ their dependants, and references to dropped rows are repaired. The target
 needs its sport rows first, and opening the Set Selector once creates them.
 
 **`clear`** empties all eight tables, `selectorOptions` included, with one
-atomic import of empty tables. It needs no deployed code (see §6).
+atomic import of empty tables. Like `load`, it reads the target through
+`referenceSeed:*`, so the target must have the current code deployed.
 
 `load` refuses a hollow bundle before it contacts Convex. Each of the seven
 reference tables needs at least one row, except `playerSports`, which
@@ -110,9 +114,10 @@ the eight tables.
 
 `load` prints its plan before writing anything: the sport mapping, table
 numbers, rows in versus rows kept, repairs and re-encodes. It then runs the
-same check on the import ZIP, imports, and verifies the result from a second
-read-only export (exact counts, ids on the right table numbers, every sport
-id a real sport row). `--dry-run` stops after the plan. It still reads the
+same check on the import ZIP, imports, and verifies the result through
+`referenceSeed:tableStats` (exact row counts per table, and every sport id a
+real sport row; a row read from its own table is on the right table number
+by construction). `--dry-run` stops after the plan. It still reads the
 target, because the plan needs the target's table numbers.
 
 ### Guards
@@ -209,7 +214,7 @@ first and a fixture turns out drained, restore the previous object version
 (bucket versioning) so other PRs stay green while you re-fixture.
 
 **2. Probe each fixture set, read-only.** Point a spare-port Vite at the
-preview (root `CLAUDE.md`, "Debugging a red flow against the PR's own
+preview (root `CLAUDE.md`, "Debugging a red spec against the PR's own
 services") and run a throwaway probe flow per set, never committed: drill to the set, cancel the base picker, fetch, read
 the wizard, then **Cancel → Discard** so nothing is saved. Read four lines:
 the fetch's `Kept all N cards from BSC … P new players + T new teams need
@@ -233,8 +238,9 @@ tokens sorted: "Wayne Gretzky" → `gretzky wayne`) on `players` /
 | `checklist-wizard-skip-commits-and-unskip` | Hockey 1995 Tulsa Oilers CHL | unknown player rows to skip (measured 16) |
 | `checklist-wizard-career-team-commits` | Hockey 1995 Memphis RiverKings CHL | 1 unknown player row |
 | `checklist-wizard-skip-not-a-person` | Hockey 1995 Fort Worth Fire CHL | 2 unknown player rows (one per-row skip, one left for the footer skip) |
-| `checklist-wizard-link-team-saves-alias` | Baseball 1996 Line Up Venezuelan Winter League | team steps for both "Navegantes del Magallanes" and "Tigres de Aragua"; exactly one Baseball team "Pittsburgh Crawfords" with no aliases; lookups settling well inside the flow's 180 s ceiling (measured ~144 s) |
-| `checklist-wizard-career-team-entry`, `-link-to-existing-player`, `-back-to-matching-resumes-decisions` | Baseball 2024 Topps Big League | the player rows and link target each header names |
+| `checklist-wizard-link-team-saves-alias` | Baseball 1996 New Haven Ravens Rally Raffle (NEO-475) | a team step for "New Haven Ravens" (no catalogue team of the name); unknown player rows left for "Skip remaining names"; lookups settling inside the flow's 180 s ceiling |
+| `checklist-wizard-career-team-entry`, `-link-to-existing-player`, `-back-to-matching-resumes-decisions` | Baseball 2024 Topps Stars of MLB Network (NEO-475) | the player rows and link target each header names (first player row #1 Lauren Shehadi) |
+| `checklist-wizard-same-name-pick-step` | Baseball 2024 BBM Rookie Edition Premium (NEO-475) | exactly one catalogue Baseball "Shuya Yamada", undated, whose stint starts after 2024; RP01 and RP02 still resolving to one player each |
 | `admin/player-live-wikidata-enrichment` | — | its live-proof name absent from `players` and `playerAliases` (README, "Enrichment fixtures") |
 | `setup.yaml` | Baseball 2024 Topps Chrome | its drain finishes; a new same-name player panel is handled by the drain's link step |
 
@@ -285,11 +291,11 @@ preview on every run.
 
 ## 7. Loading your dev deployment
 
-The dev deployment is personal, but every Claude session on your laptop
-shares it. Before you load it, make sure no other session is running flows
-against dev, or point that session at a PR preview instead. A load replaces
-all seven reference tables. To anyone else on dev, that looks exactly like a
-product bug.
+Load a worktree's own deployment freely. The long-lived dev deployment is
+shared by every session on your laptop: before you load it, make sure no other
+session is running flows against it, or point that session at a PR preview
+instead. A load replaces all seven reference tables. To anyone else on that
+deployment, that looks exactly like a product bug.
 
 ```bash
 cd apps/web

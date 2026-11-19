@@ -42,7 +42,16 @@ vi.mock("convex/react", () => ({
     ref === "previewListingTitle" && args !== "skip" ? previewResult : undefined,
 }));
 
-import TitleFixer from "./TitleFixer";
+import TitleFixer, {
+  FITS_NOW,
+  TOO_LONG,
+  TOSS_TYPED_CONFIRM,
+  TOSS_TYPED_TITLE,
+} from "./TitleFixer";
+import {
+  useClosesForSetNameInTitles,
+  useSetNameInTitlesTarget,
+} from "./set-name-in-titles-jump";
 import type { AttentionItem } from "./card-attention";
 import type { CardChecklistRow } from "./cardAttentionRegistry";
 
@@ -76,7 +85,7 @@ const aspectOver = (length: number): AttentionItem =>
   }) as AttentionItem;
 
 const titleField = () =>
-  screen.getByLabelText("Card title for #300b") as HTMLInputElement;
+  screen.getByLabelText("Card title for #300b") as HTMLTextAreaElement;
 const saveButton = () => screen.getByRole("button", { name: /^Save/ });
 
 beforeEach(() => {
@@ -93,18 +102,34 @@ beforeEach(() => {
       setName: "Topps Chrome",
       teamNames: ["Seattle Mariners"],
       sport: "Baseball",
+      shortPrint: "SP",
     },
   };
 });
 
 describe("TitleFixer (NEO-101)", () => {
   it("anchors on the card number and states every reason the card was flagged", () => {
-    renderFixer([overLimit(84), truncated()]);
+    renderFixer([truncated(), aspectOver(70)]);
 
-    expect(screen.getByText(/#300b/)).toBeTruthy();
-    expect(screen.getByText("Julio Rodriguez", { exact: false })).toBeTruthy();
-    expect(screen.getByText("title is over the 80-character limit")).toBeTruthy();
+    const heading = screen.getByRole("heading", { level: 3 });
+    expect(heading.textContent).toContain("#300b");
+    expect(heading.textContent).toContain("Julio Rodriguez");
     expect(screen.getByText("auto-generated title was cut short")).toBeTruthy();
+    expect(screen.getByText("variation text is over the 65-character limit")).toBeTruthy();
+  });
+
+  it("NEO-535: an over-cap card is not also called cut short — the longer problem speaks for both", () => {
+    renderFixer([overLimit(84), truncated()], makeRow({ listingTitle: "z".repeat(84) }));
+
+    expect(screen.getByText("title is over the 80-character limit")).toBeTruthy();
+    expect(screen.queryByText("auto-generated title was cut short")).toBeNull();
+    // One message under the field, not three: no "cut short" note and no
+    // "Left out to fit" while the title is over the cap. On arrival it is a
+    // polite status (the field's description reads it), never an alert.
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getAllByRole("status").filter((n) => n.textContent === TOO_LONG)).toHaveLength(1);
+    expect(screen.queryByText(/cut short — rewrite it/)).toBeNull();
+    expect(screen.queryByText(/^Left out to fit/)).toBeNull();
   });
 
   it("pre-fills the stored title and focuses it, so the operator can just type", async () => {
@@ -146,8 +171,11 @@ describe("TitleFixer (NEO-101)", () => {
     renderFixer([overLimit(84)], makeRow({ listingTitle: "z".repeat(84) }));
 
     expect(screen.getByText("84/80")).toBeTruthy();
-    const alert = screen.getByRole("alert");
-    expect(alert.textContent).toContain("4 over the 80-character limit");
+    const alert = screen.getByText(TOO_LONG);
+    expect(alert.textContent).toBe(
+      "Too long to list as-is. Trim it here, or shorten the set name for the whole row.",
+    );
+    expect(titleField().getAttribute("aria-describedby")).toContain(alert.id);
 
     const save = saveButton();
     expect(save.getAttribute("aria-disabled")).toBe("true");
@@ -172,6 +200,7 @@ describe("TitleFixer (NEO-101)", () => {
       expect(mockUpdateCard).toHaveBeenCalledWith({
         id: CARD_ID,
         listingTitle: "2024 Topps Chrome #300b",
+        titleReviewed: true,
       }),
     );
     expect(onSaved).toHaveBeenCalledTimes(1);
@@ -202,6 +231,68 @@ describe("TitleFixer (NEO-101)", () => {
     expect(onSaved).not.toHaveBeenCalled();
   });
 
+  it("NEO-535: the title is a wrapping field that grows, a pasted line break reads as a space, and Enter saves", async () => {
+    const { onSaved } = renderFixer([truncated()]);
+    const field = titleField();
+    expect(field.tagName).toBe("TEXTAREA");
+    expect(field.getAttribute("rows")).toBe("2");
+    expect(field.className).toContain("[field-sizing:content]");
+
+    fireEvent.change(field, { target: { value: "2024 Topps Chrome\nJulio Rodriguez #300b" } });
+    expect(field.value).toBe("2024 Topps Chrome Julio Rodriguez #300b");
+
+    await act(async () => {
+      fireEvent.keyDown(field, { key: "Enter" });
+    });
+    await waitFor(() =>
+      expect(mockUpdateCard).toHaveBeenCalledWith({
+        id: CARD_ID,
+        listingTitle: "2024 Topps Chrome Julio Rodriguez #300b",
+        titleReviewed: true,
+      }),
+    );
+    expect(onSaved).toHaveBeenCalledTimes(1);
+  });
+
+  it("NEO-606: over the cap the title box is marked in neon pink with its note, and clears once it fits", () => {
+    renderFixer([overLimit(84)], makeRow({ listingTitle: "z".repeat(84) }));
+    const field = titleField();
+    expect(field.getAttribute("aria-invalid")).toBe("true");
+    expect(field.getAttribute("data-over")).toBe("true");
+    expect(field.className).toContain("data-[over=true]:border-neon-pink-text");
+    expect(field.className).toContain("data-[over=true]:ring-neon-pink-text");
+    // Held (busy: readOnly + aria-disabled) keeps the edge and shows the grey fill.
+    expect(field.className).toContain("aria-disabled:data-[over=true]:bg-button-neutral");
+    const note = screen.getByText(TOO_LONG);
+    expect(note.className).toContain("text-neon-pink-text");
+    expect(note.className).not.toContain("notice-danger");
+    expect(field.getAttribute("aria-describedby")).toContain(note.id);
+
+    fireEvent.change(field, { target: { value: "z".repeat(70) } });
+    expect(field.getAttribute("aria-invalid")).toBeNull();
+    expect(field.getAttribute("data-over")).toBeNull();
+    // Fits again: the note turns green, not pink.
+    const fits = screen.getByText(FITS_NOW);
+    expect(fits.className).toContain("text-neon-green-text");
+    expect(fits.className).not.toContain("text-neon-pink-text");
+  });
+
+  it("NEO-606: the variation box is pink while it is past 65, but advisory: never aria-invalid", () => {
+    renderFixer(
+      [aspectOver(70)],
+      makeRow({ listingTitle: "2024 Topps Chrome #300b", cardVariation: "v".repeat(70) }),
+    );
+    const field = screen.getByLabelText("Card variation for #300b");
+    expect(field.getAttribute("data-over")).toBe("true");
+    expect(field.getAttribute("aria-invalid")).toBeNull();
+    expect(field.className).toContain("data-[over=true]:border-neon-pink-text");
+    // Its status still describes it.
+    const described = field.getAttribute("aria-describedby")!.split(" ");
+    expect(described.some((id) => document.getElementById(id)?.textContent?.includes("Variation is 70 characters"))).toBe(true);
+    fireEvent.change(field, { target: { value: "x".repeat(65) } });
+    expect(field.getAttribute("data-over")).toBeNull();
+  });
+
   it("shows the variation field only when the variation is what is over the limit", () => {
     renderFixer([overLimit(84)]);
     expect(screen.queryByLabelText("Card variation for #300b")).toBeNull();
@@ -230,6 +321,7 @@ describe("TitleFixer (NEO-101)", () => {
       expect(mockUpdateCard).toHaveBeenCalledWith({
         id: CARD_ID,
         listingTitle: "2024 Topps Chrome #300b",
+        titleReviewed: true,
         cardVariation: "Image Variation",
       }),
     );
@@ -252,7 +344,24 @@ describe("TitleFixer (NEO-101)", () => {
     expect(chips.textContent).toContain("Seattle Mariners");
     expect(chips.textContent).toContain("Baseball");
     expect(chips.querySelector("a")).toBeNull();
-    expect(screen.getByText("Left out to fit: SP")).toBeTruthy();
+    // NEO-535: read from the field's text against the card's facts.
+    expect(screen.getByText("Left out to fit: Seattle Mariners, SP")).toBeTruthy();
+  });
+
+  it("NEO-535: 'Left out to fit' follows the field — retyping a cut word takes it off", async () => {
+    renderFixer([truncated()], makeRow({ listingTitle: "2024 Topps #300b" }));
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Regenerate card title"));
+    });
+    await waitFor(() =>
+      expect(titleField().value).toBe("2024 Topps Chrome Julio Rodriguez #300b"),
+    );
+    fireEvent.change(titleField(), {
+      target: { value: "2024 Topps Chrome Julio Rodriguez #300b SP Seattle Mariners" },
+    });
+    expect(screen.queryByText(/^Left out to fit/)).toBeNull();
+    fireEvent.change(titleField(), { target: { value: "2024 Topps Chrome Rodriguez #300b SP" } });
+    expect(screen.getByText("Left out to fit: Seattle Mariners, Julio")).toBeTruthy();
   });
 
   it("renders no team or sport chip when the preview carries neither", async () => {
@@ -292,5 +401,149 @@ describe("TitleFixer (NEO-101)", () => {
       ).toBeTruthy(),
     );
     expect(onSaved).not.toHaveBeenCalled();
+  });
+
+  describe("NEO-535 (a11y): the over-cap line is always mounted", () => {
+    const line = () => document.getElementById(
+      titleField().getAttribute("aria-describedby")!.split(" ").find((id) => id.endsWith("-title-limit"))!,
+    );
+
+    it("is an alert only when a keystroke takes the title over, and says when it fits again", () => {
+      renderFixer([truncated()], makeRow({ listingTitle: "2024 Topps Chrome #300b" }));
+      const node = document.querySelector('[id$="-title-limit"]') as HTMLElement;
+      expect(node).not.toBeNull();
+      expect(node.textContent).toBe("");
+      expect(node.getAttribute("role")).toBe("status");
+
+      fireEvent.change(titleField(), { target: { value: "x".repeat(81) } });
+      expect(line()).toBe(node);
+      expect(node.getAttribute("role")).toBe("alert");
+      expect(node.textContent).toBe(TOO_LONG);
+
+      fireEvent.change(titleField(), { target: { value: "x".repeat(80) } });
+      expect(document.querySelector('[id$="-title-limit"]')).toBe(node);
+      expect(node.getAttribute("role")).toBe("status");
+      expect(node.textContent).toBe(FITS_NOW);
+    });
+
+    it("a card that arrives over the cap is said politely, then fits once trimmed", () => {
+      renderFixer([overLimit(84)], makeRow({ listingTitle: "z".repeat(84) }));
+      const node = line()!;
+      expect(node.getAttribute("role")).toBe("status");
+      expect(node.textContent).toBe(TOO_LONG);
+      fireEvent.change(titleField(), { target: { value: "z".repeat(70) } });
+      expect(document.querySelector('[id$="-title-limit"]')).toBe(node);
+      expect(node.textContent).toBe(FITS_NOW);
+    });
+
+    it("the title field says Enter saves", () => {
+      renderFixer([truncated()]);
+      const ids = titleField().getAttribute("aria-describedby")!.split(" ");
+      const said = ids.map((id) => document.getElementById(id)?.textContent ?? "").join(" ");
+      expect(said).toContain("Enter saves the title on this card.");
+    });
+  });
+
+  describe("NEO-535: the way to the row's Set name in titles", () => {
+    function Target({ open }: { open: () => void }) {
+      useSetNameInTitlesTarget(open);
+      return null;
+    }
+    function Closer({ close }: { close: () => void }) {
+      useClosesForSetNameInTitles(close);
+      return null;
+    }
+
+    it("is offered on an over-cap title when the row's box is on screen, and goes there", () => {
+      const open = vi.fn();
+      const close = vi.fn();
+      render(
+        <>
+          <Target open={open} />
+          <Closer close={close} />
+        </>,
+      );
+      renderFixer([overLimit(84)], makeRow({ listingTitle: "z".repeat(84) }));
+
+      expect(screen.getByText(/Set name hogging it\?/)).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Trim Set name in titles" }));
+      // The dialog in front closes, then the box opens.
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(open).toHaveBeenCalledTimes(1);
+    });
+
+    it("asks before tossing a typed title, and Cancel stays put", () => {
+      const open = vi.fn();
+      const close = vi.fn();
+      render(
+        <>
+          <Target open={open} />
+          <Closer close={close} />
+        </>,
+      );
+      renderFixer([overLimit(84)], makeRow({ listingTitle: "z".repeat(84) }));
+      fireEvent.change(titleField(), { target: { value: "y".repeat(85) } });
+
+      fireEvent.click(screen.getByRole("button", { name: "Trim Set name in titles" }));
+      expect(screen.getByRole("dialog", { name: TOSS_TYPED_TITLE })).toBeTruthy();
+      expect(open).not.toHaveBeenCalled();
+      expect(close).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      expect(screen.queryByRole("dialog", { name: TOSS_TYPED_TITLE })).toBeNull();
+      expect(titleField().value).toBe("y".repeat(85));
+      expect(open).not.toHaveBeenCalled();
+    });
+
+    it("Escape in the toss question answers it, and never reaches the walker", () => {
+      const walkerKeys = vi.fn();
+      render(<Target open={vi.fn()} />);
+      const onSaved = vi.fn();
+      render(
+        <div onKeyDown={(e) => walkerKeys(e.key)}>
+          <TitleFixer
+            row={makeRow({ listingTitle: "z".repeat(84) })}
+            items={[overLimit(84)]}
+            onSaved={onSaved}
+            onSkip={vi.fn()}
+          />
+        </div>,
+      );
+      fireEvent.change(titleField(), { target: { value: "y".repeat(85) } });
+      fireEvent.click(screen.getByRole("button", { name: "Trim Set name in titles" }));
+      const question = screen.getByRole("dialog", { name: TOSS_TYPED_TITLE });
+      fireEvent.keyDown(question, { key: "Escape" });
+      expect(screen.queryByRole("dialog", { name: TOSS_TYPED_TITLE })).toBeNull();
+      expect(walkerKeys).not.toHaveBeenCalledWith("Escape");
+    });
+
+    it("tossing the typed title goes on to the row's box", () => {
+      const open = vi.fn();
+      const close = vi.fn();
+      render(
+        <>
+          <Target open={open} />
+          <Closer close={close} />
+        </>,
+      );
+      renderFixer([overLimit(84)], makeRow({ listingTitle: "z".repeat(84) }));
+      fireEvent.change(titleField(), { target: { value: "y".repeat(85) } });
+      fireEvent.click(screen.getByRole("button", { name: "Trim Set name in titles" }));
+      fireEvent.click(screen.getByRole("button", { name: TOSS_TYPED_CONFIRM }));
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(open).toHaveBeenCalledTimes(1);
+      expect(mockUpdateCard).not.toHaveBeenCalled();
+    });
+
+    it("is never a dead end: no box on screen, no door", () => {
+      renderFixer([overLimit(84)], makeRow({ listingTitle: "z".repeat(84) }));
+      expect(screen.queryByRole("button", { name: "Trim Set name in titles" })).toBeNull();
+    });
+
+    it("is not offered on a title that fits", () => {
+      render(<Target open={vi.fn()} />);
+      renderFixer([truncated()]);
+      expect(screen.queryByRole("button", { name: "Trim Set name in titles" })).toBeNull();
+    });
   });
 });

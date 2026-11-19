@@ -4,6 +4,7 @@
 // Sole writer of the 2024 Hockey Topps NHL Sticker Collection set's name; it
 // ends renamed back, so a rerun starts from the same place.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { expectStepWithSportLots } from "../../support/marketplace-wait";
 import {
   COLD_SYNC,
   columnOption,
@@ -23,7 +24,16 @@ test(
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
 
-    await drillToColdManufacturer(page, env, { sport: "Hockey", year: "2024", manufacturer: "Topps" });
+    // GUIDE hard rule 3, the live-BSC exception: "Topps" is a hand-made brand
+    // under the SportLots pause, so its Sets are filed by BSC on this first
+    // visit. Wait for them here (the drill's COLD_SYNC ceiling) so the row
+    // click below never races that live sync.
+    await drillToColdManufacturer(page, env, {
+      sport: "Hockey",
+      year: "2024",
+      manufacturer: "Topps",
+      expectSets: true,
+    });
 
     // The set is listed under whichever name it currently carries.
     await columnSearch(page, "Sets").fill("C");
@@ -32,7 +42,12 @@ test(
     await expect(page.getByRole("heading", { name: "Variant Types", exact: true })).toBeVisible({
       timeout: 20_000,
     });
-    await expect(columnOption(page, "Variant Types", "Base")).toBeVisible({ timeout: 60_000 });
+    // The set's first visit syncs its variant types: 60 s while SportLots is live; paused, BSC
+    // alone under the column's wait line (measured 1.3 s on the #487 merge-group run (GUIDE)).
+    await expectStepWithSportLots(page, columnOption(page, "Variant Types", "Base"), env, {
+      liveMs: 60_000,
+      what: "Variant Types row Base",
+    });
 
     // Rename it to TCG unless a previous run left it renamed.
     if (await columnSelection(page, "Sets", ORIGINAL).isVisible()) {
@@ -46,7 +61,12 @@ test(
 
     // A forced Sync Sets: the rename survives, BSC's name returns as a suggestion.
     await page.getByRole("button", { name: "Sync Sets" }).click();
-    await expect(page.getByText("1 name to check")).toBeVisible({ timeout: 90_000 });
+    // The forced sync asks SportLots too while it is live (the flow's 90 s); paused, BSC alone
+    // under the column's wait line (measured 2 ms on the #487 merge-group run (GUIDE)).
+    await expectStepWithSportLots(page, page.getByText("1 name to check"), env, {
+      liveMs: 90_000,
+      what: "the forced Sets sync's name check",
+    });
     await expect(page.getByText(/Attributes for TCG/)).toBeVisible();
     await expect(columnOption(page, "Variant Types", "Base")).toBeVisible();
 

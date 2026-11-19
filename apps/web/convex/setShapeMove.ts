@@ -50,12 +50,23 @@ import {
 } from "./selectorSyncMatch";
 import { MAX_YEAR_SET_ROWS } from "./setFromMarketplace";
 import { variantTypeKind } from "./variantRole";
+import {
+  sameTeamDefault,
+  teamDefaultFields,
+  teamDefaultOf,
+  type NoTeamDefault,
+} from "./lib/selectorTeams";
 import { compareCardNumbers } from "../lib/cards/card-number";
 // NEO-358 — a moved card's counts move with it, and so do its collectors'
 // copies (their denormalised `variantId` / `setId`).
 import { createCardCountLedger } from "./cardCounts";
 import { findSetForSelectorOption } from "./lib/selectorAncestry";
-import { forgetBuildingCards } from "./collection";
+import { forgetBuildingCards, HomeSides } from "./collection";
+import { refreshedListingDescription } from "./cardDescriptionRefresh";
+import { newStoredCardReadCache } from "./storedCardTitle";
+// NEO-370 — a moved card lists under another marketplace set: its box
+// copies' owners re-sync both variants.
+import { enqueueMovedListingCards, listsAnywhere, type MovedListingCard } from "./listingOutbox";
 
 type Row = Doc<"selectorOptions">;
 type RowId = Id<"selectorOptions">;
@@ -109,6 +120,14 @@ export const COPY_REPOINT_PAGE = 500;
  * then a patch or a delete).
  */
 export const MAX_BUILDING_SETS_PER_MOVE = 500;
+
+/**
+ * NEO-370 — moved copies one `queueMovedCopyListings` run looks at (the rest
+ * go to the next run). An owner who lists nowhere costs one read; one who
+ * lists costs a few per copy (its home, the card, the outbox row), so this
+ * keeps a run well inside the house budget.
+ */
+export const MOVED_LISTING_PAGE = 100;
 
 /** Sets a door's target picker lists for one brand. */
 export const MAX_TARGET_SETS = 500;
@@ -279,7 +298,12 @@ const OWN_LEVEL_FEATURE_KEYS = ["cardType", "parallelName"];
 export type SourceData = {
   cardNumberPrefix?: string;
   features: Record<string, string>;
+  /**
+   * The team default the rows carried (NEO-277 teams, or NEO-556 No Team) —
+   * at most one of the two, as `teamDefaultFields` spells it.
+   */
   teamIds?: Array<Id<"teams">>;
+  noTeamDefault?: NoTeamDefault;
   /** A "no" to an upstream rename suggestion is on one of the rows. */
   declined: boolean;
 };
@@ -292,12 +316,11 @@ export function sourceDataOf(set: Row, base: Row): SourceData {
   for (const key of OWN_LEVEL_FEATURE_KEYS) delete features[key];
   const cardNumberPrefix =
     base.metadata?.cardNumberPrefix ?? set.metadata?.cardNumberPrefix;
-  const teamIds =
-    base.teamIds && base.teamIds.length > 0
-      ? base.teamIds
-      : set.teamIds && set.teamIds.length > 0
-        ? set.teamIds
-        : undefined;
+  // The Base's own default wins over the set's, as for every field here;
+  // NEO-556 — a No Team default is a default like a team is.
+  const baseDefault = teamDefaultOf(base);
+  const teamDefault =
+    baseDefault.kind !== "unset" ? baseDefault : teamDefaultOf(set);
   const declined = [set, base].some(
     (r) =>
       r.declinedUpstreamLabels?.bsc !== undefined ||
@@ -306,7 +329,7 @@ export function sourceDataOf(set: Row, base: Row): SourceData {
   return {
     ...(cardNumberPrefix !== undefined ? { cardNumberPrefix } : {}),
     features,
-    ...(teamIds ? { teamIds } : {}),
+    ...teamDefaultFields(teamDefault),
     declined,
   };
 }
@@ -320,14 +343,13 @@ export function sourceDataOfRow(row: Row): SourceData {
   const features: Record<string, string> = { ...(row.features ?? {}) };
   for (const key of OWN_LEVEL_FEATURE_KEYS) delete features[key];
   const cardNumberPrefix = row.metadata?.cardNumberPrefix;
-  const teamIds = row.teamIds && row.teamIds.length > 0 ? row.teamIds : undefined;
   const declined =
     row.declinedUpstreamLabels?.bsc !== undefined ||
     row.declinedUpstreamLabels?.sportlots !== undefined;
   return {
     ...(cardNumberPrefix !== undefined ? { cardNumberPrefix } : {}),
     features,
-    ...(teamIds ? { teamIds } : {}),
+    ...teamDefaultFields(teamDefaultOf(row)),
     declined,
   };
 }
@@ -358,7 +380,7 @@ export function lossOnto(data: SourceData, dest: Row | null): ConversionLoss {
   if (dest === null) {
     return { cardPrefix: false, featureKeys: [], team: false, dismissedNames: data.declined };
   }
-  const destTeams = new Set<string>(dest.teamIds ?? []);
+  const sourceDefault = teamDefaultOf(data);
   return {
     cardPrefix:
       data.cardNumberPrefix !== undefined &&
@@ -367,9 +389,8 @@ export function lossOnto(data: SourceData, dest: Row | null): ConversionLoss {
       .filter((k) => dest.features?.[k] !== data.features[k])
       .sort(),
     team:
-      data.teamIds !== undefined &&
-      (data.teamIds.length !== destTeams.size ||
-        data.teamIds.some((id) => !destTeams.has(id))),
+      sourceDefault.kind !== "unset" &&
+      !sameTeamDefault(sourceDefault, teamDefaultOf(dest)),
     dismissedNames: data.declined,
   };
 }
@@ -627,6 +648,10 @@ export async function readConversionSource(
  *    counts a copy whose card is still on the variant, so no count over-reads
  *    in that window. The chain reads the card's CURRENT row for its target, so
  *    it is safe to retry and safe against a second move in between.
+ *  - NEO-370, listing: a moved card lists under another marketplace set, so
+ *    every re-pointed copy (here and in the chain) is handed to the scheduled
+ *    `queueMovedCopyListings`, which queues both the old and the new variant
+ *    for the owners who list and hold the card in a box.
  */
 export async function moveCards(
   ctx: MutationCtx,
@@ -664,6 +689,9 @@ export async function moveCards(
   // NEO-359 — (owner, set) pairs whose "cards on this set build" a re-point
   // changed: their kept counts are cleared once, after the loop.
   const movedSets: Array<{ ownerId: string; setId: RowId }> = [];
+  // NEO-370 — (owner, card, old variant, home) of every copy re-pointed
+  // here, for the listing hand-off after the loop.
+  const listing = new MovedCopies();
   for (let i = 0; i < ordered.length; i++) {
     const { card, slotMap } = ordered[i];
     await ctx.db.patch(card._id, {
@@ -710,6 +738,8 @@ export async function moveCards(
     }
     for (const copy of copies.slice(0, budget)) {
       copiesRepointed += 1;
+      // The card left `card.selectorOptionId` (read before its patch above).
+      if (card.selectorOptionId !== destId) listing.add(copy, card._id, card.selectorOptionId);
       if (copy.variantId === destId && copy.setId === setId) continue;
       await ctx.db.patch(copy._id, {
         variantId: destId,
@@ -726,6 +756,24 @@ export async function moveCards(
   }
   await countLedger.flush(ctx);
   await forgetBuildingCards(ctx, movedSets);
+  await listing.schedule(ctx);
+  // NEO-535 — a card's description names its set, insert and parallel, so a
+  // card that changed rows has its unedited description rebuilt. Scheduled,
+  // not inline: a move carries up to MAX_CARDS_PER_MOVE cards, and the rebuild
+  // reads each card's chain, players and teams. Only cards with a description
+  // to keep current are handed over.
+  const described = ordered
+    .filter(
+      ({ card }) =>
+        card.selectorOptionId !== destId && (card.listingDescription?.trim() ?? "") !== "",
+    )
+    .map(({ card }) => ({ cardId: card._id, fromId: card.selectorOptionId }));
+  if (described.length > 0) {
+    await ctx.scheduler.runAfter(0, internal.setShapeMove.refreshMovedCardDescriptions, {
+      moved: described,
+      index: 0,
+    });
+  }
   if (later.length > 0) {
     console.log(
       JSON.stringify({
@@ -748,6 +796,58 @@ export async function moveCards(
     );
   }
 }
+
+/** NEO-535 — cards per `refreshMovedCardDescriptions` run. */
+export const MOVED_DESCRIPTION_PAGE = 100;
+
+/**
+ * NEO-535 — the description tail of `moveCards`: each moved card whose stored
+ * description is exactly what the builder made for it on its OLD row gets
+ * the builder's description for its new row (`refreshedListingDescription`;
+ * an operator's own description is kept). A page per run, scheduling itself
+ * until the list is done.
+ *
+ * Read from the card's CURRENT row, so a re-run writes nothing, and a card
+ * moved again in between (or back) is judged against where it is now: a card
+ * no longer away from `fromId` is skipped, as is one that is gone.
+ */
+export const refreshMovedCardDescriptions = internalMutation({
+  args: {
+    moved: v.array(
+      v.object({ cardId: v.id("cardChecklist"), fromId: v.id("selectorOptions") }),
+    ),
+    index: v.number(),
+  },
+  returns: v.object({ rewritten: v.number(), done: v.boolean() }),
+  handler: async (ctx, args) => {
+    const start = Number.isInteger(args.index) && args.index >= 0 ? args.index : 0;
+    const end = Math.min(start + MOVED_DESCRIPTION_PAGE, args.moved.length);
+    const cache = newStoredCardReadCache();
+    let rewritten = 0;
+    for (let i = start; i < end; i++) {
+      const { cardId, fromId } = args.moved[i];
+      const card = await ctx.db.get(cardId);
+      if (!card || card.selectorOptionId === fromId) continue;
+      const listingDescription = await refreshedListingDescription(
+        ctx,
+        { ...card, selectorOptionId: fromId },
+        { selectorOptionId: card.selectorOptionId },
+        cache,
+      );
+      if (listingDescription === undefined) continue;
+      await ctx.db.patch(card._id, { listingDescription });
+      rewritten += 1;
+    }
+    const done = end >= args.moved.length;
+    if (!done) {
+      await ctx.scheduler.runAfter(0, internal.setShapeMove.refreshMovedCardDescriptions, {
+        moved: args.moved,
+        index: end,
+      });
+    }
+    return { rewritten, done };
+  },
+});
 
 /**
  * NEO-358 — the tail of `moveCards`: re-point the copies of `cardIds` that the
@@ -795,8 +895,12 @@ export const repointMovedCardCopies = internalMutation({
         .paginate({ cursor: args.cursor, numItems: COPY_REPOINT_PAGE });
       const now = Date.now();
       const movedSets: Array<{ ownerId: string; setId: Id<"selectorOptions"> }> = [];
+      const listing = new MovedCopies();
       for (const copy of page.page) {
         if (copy.variantId === card.selectorOptionId && copy.setId === setId) continue;
+        // The copy still names the variant the card left (a copy with none,
+        // which a catalog card's never is, has no old variant to re-sync).
+        listing.add(copy, cardId, copy.variantId ?? card.selectorOptionId);
         await ctx.db.patch(copy._id, {
           variantId: card.selectorOptionId,
           setId,
@@ -810,6 +914,7 @@ export const repointMovedCardCopies = internalMutation({
       }
       // NEO-359 — the moved copies' owners' set-build counts are not known now.
       await forgetBuildingCards(ctx, movedSets);
+      await listing.schedule(ctx);
       if (!page.isDone) next = { index, cursor: page.continueCursor };
     }
     const done = next.index >= args.cardIds.length;
@@ -820,6 +925,90 @@ export const repointMovedCardCopies = internalMutation({
       });
     }
     return { repointed, done };
+  },
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-370 — listing: a moved card re-syncs both variants
+// ───────────────────────────────────────────────────────────────────────────
+
+const movedCopyValidator = v.object({
+  ownerId: v.string(),
+  cardId: v.id("cardChecklist"),
+  fromVariantId: v.id("selectorOptions"),
+  homeId: v.id("collectionContainers"),
+});
+type MovedCopy = typeof movedCopyValidator.type;
+
+/**
+ * The re-pointed copies of one transaction, one entry per (owner, card, old
+ * variant, home): a pile of one owner's copies of one card is one entry. A
+ * move writes no listing row itself; `schedule` hands the entries to
+ * `queueMovedCopyListings`, so the operator's transaction pays one scheduler
+ * call whoever lists, and owners who list nowhere cost the move nothing.
+ */
+class MovedCopies {
+  private readonly items: MovedCopy[] = [];
+  private readonly seen = new Set<string>();
+
+  add(
+    copy: Pick<Doc<"collectionCopies">, "ownerId" | "homeId">,
+    cardId: Id<"cardChecklist">,
+    fromVariantId: RowId,
+  ): void {
+    const key = `${copy.ownerId}|${cardId}|${fromVariantId}|${copy.homeId}`;
+    if (this.seen.has(key)) return;
+    this.seen.add(key);
+    this.items.push({ ownerId: copy.ownerId, cardId, fromVariantId, homeId: copy.homeId });
+  }
+
+  async schedule(ctx: MutationCtx): Promise<void> {
+    if (this.items.length === 0) return;
+    await ctx.scheduler.runAfter(0, internal.setShapeMove.queueMovedCopyListings, {
+      copies: this.items,
+    });
+  }
+}
+
+/**
+ * NEO-370 — after a move commits, queue the moved cards for every owner who
+ * lists and holds them in a box (a box copy is for sale), so both the card's
+ * old variant and its new one re-sync (`enqueueMovedListingCards`). Copies of
+ * many owners may arrive from one move: an owner who lists nowhere costs one
+ * indexed read; a run looks at `MOVED_LISTING_PAGE` copies and schedules the
+ * rest. Runs after the move, so it sees the move's result (a source row a
+ * conversion deleted is gone, and is not woken).
+ */
+export const queueMovedCopyListings = internalMutation({
+  args: { copies: v.array(movedCopyValidator) },
+  returns: v.object({ queued: v.number() }),
+  handler: async (ctx, args) => {
+    const page = args.copies.slice(0, MOVED_LISTING_PAGE);
+    const rest = args.copies.slice(MOVED_LISTING_PAGE);
+    const byOwner = new Map<string, MovedCopy[]>();
+    for (const copy of page) {
+      const list = byOwner.get(copy.ownerId) ?? [];
+      list.push(copy);
+      byOwner.set(copy.ownerId, list);
+    }
+    // The old variant's wake card is the same for every owner: scan it once.
+    const wakeCards = new Map<string, Id<"cardChecklist"> | null>();
+    let queued = 0;
+    for (const [ownerId, copies] of byOwner) {
+      if (!(await listsAnywhere(ctx, ownerId))) continue;
+      const sides = new HomeSides(ctx, ownerId);
+      const moved: MovedListingCard[] = [];
+      for (const copy of copies) {
+        if (await sides.is(copy.homeId, "inventory")) {
+          moved.push({ cardId: copy.cardId, fromVariantId: copy.fromVariantId });
+        }
+      }
+      queued += await enqueueMovedListingCards(ctx, { ownerId, moved, wakeCards });
+    }
+    if (rest.length > 0) {
+      await ctx.scheduler.runAfter(0, internal.setShapeMove.queueMovedCopyListings, { copies: rest });
+    }
+    return { queued };
   },
 });
 

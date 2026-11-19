@@ -12,6 +12,18 @@ name: PR Pipeline
 # specs exercise the PR's browser service, not shared dev. Web-only PRs skip the
 # wiring and run E2E against the canonical dev browser default.
 #
+# Path filters (job `changes`), and why two of them name browser files:
+#  • `browser` gates the browser unit tests. It is wider than services/browser
+#    because those tests read a few fake-bsc files (identity, namespace, eBay
+#    sources, CONTRACT.md).
+#  • `browser_preview` gates the pr-<N> wiring. It equals browser.yml's
+#    merge_group scope filter (services/browser, that workflow and its deploy
+#    lane, release.yml, the scripts its preview jobs run), because that is
+#    exactly when browser.yml builds a preview. Wider and the wire job waits
+#    for a preview that never comes; narrower and a built preview is not wired
+#    into E2E (NEO-555).
+#  • `scripts` includes .github/workflows/** because a script test reads them.
+#
 # Why the wiring lives HERE (not in e2e.yml, not in the Vercel build):
 #  • Vercel stays "dumb": it only builds the SPA + `convex deploy`. The
 #    FE → Convex → browser security boundary means Vercel never talks to the
@@ -24,11 +36,22 @@ name: PR Pipeline
 
 on:
   pull_request:
+  # NEO-546: GitHub's merge queue builds main + the PR on a temporary
+  # gh-readonly-queue/main/pr-<N>-<sha> branch and fires this event. Nothing
+  # changes until the repo variable MERGE_QUEUE is "true" AND the ruleset has a
+  # merge_queue rule: until then no merge_group event is ever sent and every
+  # pull_request run is a full run, exactly as before. The job names, and so
+  # the required check names, are identical on both events.
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
 
 concurrency:
+  # A merge group has no PR number; its ref is unique per group, so groups
+  # never share a concurrency group and are never cancelled by one another
+  # (a cancelled queue run would eject the PR).
   group: pr-pipeline-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 # Superset of what the reusable e2e.yml needs (a called workflow's GITHUB_TOKEN
 # can't exceed the caller's): checks:write + pull-requests:write for the E2E
@@ -54,24 +77,92 @@ jobs:
     outputs:
       web: ${{ steps.filter.outputs.web }}
       browser: ${{ steps.filter.outputs.browser }}
+      browser_preview: ${{ steps.filter.outputs.browser_preview }}
       preprocess: ${{ steps.filter.outputs.preprocess }}
+      fake_bsc: ${{ steps.filter.outputs.fake_bsc }}
       scripts: ${{ steps.filter.outputs.scripts }}
+      scanner: ${{ steps.filter.outputs.scanner }}
       deps_only: ${{ steps.deps.outputs.deps_only }}
+      # NEO-546 (see .github/scripts/ci-mode.sh). `full` is "false" ONLY for a
+      # pull_request run while the merge queue is verifiably live; every other
+      # case, and every error, is "true". `pr`, `sha`, `head_sha` and
+      # `head_ref` are what the preview jobs key on: on a merge_group run they
+      # come from the queue ref and the API, because github.event.pull_request
+      # does not exist there.
+      full: ${{ steps.mode.outputs.full }}
+      pr: ${{ steps.mode.outputs.pr }}
+      sha: ${{ steps.mode.outputs.sha }}
+      head_sha: ${{ steps.mode.outputs.head_sha }}
+      head_ref: ${{ steps.mode.outputs.head_ref }}
     permissions:
       contents: read
       pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Decide cheap or full (NEO-546)
+        id: mode
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          MERGE_QUEUE: ${{ vars.MERGE_QUEUE }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: bash .github/scripts/ci-mode.sh >> "$GITHUB_OUTPUT"
+
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
           filters: |
             web:
               - 'apps/web/**'
+              # The web-unit lane runs flaky-reporter.test.mjs, which reads the
+              # shared redactor corpus and CLI.
+              - '.github/scripts/redact-corpus.json'
+              - '.github/scripts/redact-cli.mjs'
             browser:
               - 'services/browser/**'
+              # NEO-552: browser's bsc-fake-identity-contract test loads these two
+              # files from the fake, so a PR touching only them still runs browser-test.
+              - 'services/fake-bsc/src/identity/**'
+              - 'services/fake-bsc/src/namespace.ts'
+              # NEO-555: browser's ebay-probe tests read the fake's eBay
+              # sources and the contract doc.
+              - 'services/fake-bsc/src/ebay/**'
+              - 'services/fake-bsc/CONTRACT.md'
+            # NEO-555: what browser.yml builds a `pr-<N>` preview for. Must EQUAL
+            # browser.yml's merge_group scope filter (a test enforces it): wider
+            # and the wire job waits for a preview that is never built, narrower
+            # and a preview is built but never wired into E2E. `browser`
+            # above is wider on purpose (it gates the unit tests only).
+            browser_preview:
+              - 'services/browser/**'
+              - '.github/workflows/browser.yml'
+              - '.github/workflows/browser-deploy.yml'
+              - '.github/workflows/release.yml'
+              - '.github/scripts/ci-mode.sh'
+              - '.github/scripts/resolve-secret-version.sh'
+              - '.github/scripts/image-push-report.sh'
+              - '.github/scripts/fake-bsc-url.sh'
+              - '.github/scripts/bsc-probe.sh'
+              - '.github/scripts/bsc-probe-verdict.sh'
+              - '.github/scripts/ebay-fake-token.sh'
+              - '.github/scripts/ebay-probe.sh'
+              - '.github/scripts/ebay-probe-verdict.sh'
             preprocess:
               - 'services/preprocess/**'
+            # NEO-552: the standing fake BuySportsCards (dev). Own lane, own
+            # deploy (release.yml); never a per-PR preview.
+            fake_bsc:
+              - 'services/fake-bsc/**'
+              # NEO-555: the fake's tests read the browser probe sources.
+              - 'services/browser/src/routes/ebay-probe*.ts'
+              - '.github/scripts/ebay-drift-verdict.sh'
+              # NEO-555: ebay-server.test.mjs reads Convex's missing-capture pattern and
+              # its test's list of required names, so a change to either runs the fake's tests.
+              - 'apps/web/convex/fakeBsc.ts'
+              - 'apps/web/convex/fakeBsc.test.ts'
             # NEO-309/NEO-310: node --test coverage for the ops shell scripts
             # (revision GC, image check) plus their test helpers, and for the
             # NEO-310 Discord-notify scripts/action — none of these ship as
@@ -82,6 +173,17 @@ jobs:
               - 'scripts/**'
               - '.github/scripts/**'
               - '.github/actions/notify-discord/**'
+              # redact-ci-log.test.mjs exercises the redactor and reporter that
+              # live under apps/web.
+              - 'apps/web/playwright/support/redact.mjs'
+              - 'apps/web/playwright/support/flaky-reporter.mjs'
+              # NEO-555: a script test reads the workflow files (filter parity).
+              - '.github/workflows/**'
+            # NEO-386: the scanner script runs on a collector's own computer,
+            # never deployed, so it gets its own small lane.
+            scanner:
+              - 'apps/scanner/**'
+              - '.github/workflows/scanner-build.yml'
 
       # May this PR skip the 8-worker matrix? Only if BOTH hold:
       #   1. it was authored by dependabot[bot]  (NEO-108), and
@@ -259,7 +361,8 @@ jobs:
     name: Build the PR's Vercel preview
     needs: changes
     if: |
-      github.event_name == 'pull_request'
+      needs.changes.outputs.full == 'true'
+      && needs.changes.outputs.pr != ''
       && needs.changes.outputs.deps_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -282,7 +385,7 @@ jobs:
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: apps/web/.nvmrc
           cache: npm
@@ -305,7 +408,7 @@ jobs:
           vercel pull --yes --environment=preview \
             --git-branch="$HEAD_REF" --token="$VERCEL_TOKEN"
         env:
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REF: ${{ needs.changes.outputs.head_ref }}
 
       # THE `--meta` FLAGS ARE LOAD-BEARING — do not drop them as noise.
       #
@@ -322,8 +425,8 @@ jobs:
       - name: Deploy preview (hosted build; creates the Convex preview)
         id: deploy
         env:
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ needs.changes.outputs.head_ref }}
+          HEAD_SHA: ${{ needs.changes.outputs.head_sha }}
         run: |
           set -euo pipefail
           URL="$(vercel deploy --token="$VERCEL_TOKEN" \
@@ -360,7 +463,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           URL: ${{ steps.deploy.outputs.url }}
-          SHA: ${{ github.event.pull_request.head.sha }}
+          SHA: ${{ needs.changes.outputs.head_sha }}
         run: |
           set -euo pipefail
           deployment_id=$(gh api "repos/$GITHUB_REPOSITORY/deployments" \
@@ -406,11 +509,15 @@ jobs:
     name: Wire NEONBINDER_BROWSER_URL → pr-<N> browser preview
     needs: [changes, web-preview]
     if: |
-      github.event_name == 'pull_request'
-      && needs.changes.outputs.browser == 'true'
+      needs.changes.outputs.full == 'true'
+      && needs.changes.outputs.pr != ''
+      && needs.changes.outputs.browser_preview == 'true'
       && needs.changes.outputs.deps_only != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Covers browser.yml's worst case (scope 5 + test 10 + deploy-preview 15
+    # min) plus the ~5 min of steps before the wait; the wait step's own
+    # ceiling (below) is well inside it.
+    timeout-minutes: 60
     # Job-scoped perms: id-token (WIF for gcloud), contents (checkout). Does NOT
     # need checks/PR-write, and no longer needs deployments:read — NEO-162
     # replaced the Deployments API poll with a `needs:` on web-preview.
@@ -418,11 +525,11 @@ jobs:
       contents: read
       id-token: write
     env:
-      PR: ${{ github.event.pull_request.number }}
+      PR: ${{ needs.changes.outputs.pr }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: apps/web/.nvmrc
 
@@ -493,28 +600,28 @@ jobs:
           done
           echo "::error::Could not resolve Convex deployment name from preview index.html."; exit 1
 
-      # Wait for the PR's pr-<N> browser revision to be live before pointing the
-      # Convex preview at it. browser.yml deploys it in parallel (~3-5 min). The
-      # service requires OIDC, so an UNauthenticated probe returns 403 once the
-      # revision exists (404 = tag not present yet, 000 = unreachable).
-      - name: Wait for pr-<N> browser preview to be live
+      # Wait for the PR's pr-<N> browser revision to be built from THIS commit
+      # before pointing the Convex preview at it. browser.yml deploys it in
+      # parallel (scope + test + deploy: up to ~30 min). A URL that merely
+      # answers is not proof: on a second full run for the same PR the tag still
+      # serves the previous run's revision, so E2E would run against stale
+      # browser code. browser.yml stamps PREVIEW_SHA with the commit it builds
+      # (the same `sha` output of ci-mode.sh), and this reads it back from the
+      # Cloud Run revision with gcloud (NEO-484's guard, shared script), not
+      # from an endpoint of the app. Ceiling: 120 x 20s = 40 min plus gcloud
+      # time, inside the job's 60 min; a deploy that never arrives fails here
+      # with an ::error::, never falls through to the stale revision.
+      - name: Wait for pr-<N> browser preview to be built from this commit
         id: browser
         env:
           HOST: ${{ steps.host.outputs.host }}
+          EXPECTED_SHA: ${{ needs.changes.outputs.sha }}
         run: |
           set -euo pipefail
-          PREVIEW_BROWSER_URL="https://pr-${PR}---${HOST}"
-          echo "browser_url=$PREVIEW_BROWSER_URL" >> "$GITHUB_OUTPUT"
-          for attempt in $(seq 1 180); do  # ~30 min ceiling (slow preprocess build)
-            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${PREVIEW_BROWSER_URL}/health" || echo 000)
-            if [ "$code" != "404" ] && [ "$code" != "000" ]; then
-              echo "pr-${PR} browser preview is live (HTTP ${code}): $PREVIEW_BROWSER_URL"
-              exit 0
-            fi
-            echo "attempt $attempt/60: $PREVIEW_BROWSER_URL → HTTP ${code} — retry in 10s"
-            sleep 10
-          done
-          echo "::error::pr-${PR} browser preview never came up — browser.yml deploy may have failed."; exit 1
+          echo "browser_url=https://pr-${PR}---${HOST}" >> "$GITHUB_OUTPUT"
+          bash .github/scripts/wait-preprocess-revision.sh \
+            --project neonbinder-dev --service neonbinder-browser \
+            --tag "pr-${PR}" --sha "$EXPECTED_SHA" --attempts 120 --interval 20
 
       # Point the Convex preview at the pr-<N> browser. A PREVIEW deploy key is
       # project-scoped; `--deployment <slug>` selects THIS PR's preview. Verified
@@ -569,15 +676,22 @@ jobs:
     name: Wire NEONBINDER_PREPROCESS_URL → pr-<N> preprocess preview(s)
     needs: [changes, web-preview]
     if: |
-      github.event_name == 'pull_request'
+      needs.changes.outputs.full == 'true'
+      && needs.changes.outputs.pr != ''
       && needs.changes.outputs.preprocess == 'true'
       && needs.changes.outputs.deps_only != 'true'
     runs-on: ubuntu-latest
-    # 45, not 20 like wire-browser-url: the preprocess preview image is multi-GB
+    # 90, not 20 like wire-browser-url: the preprocess preview image is multi-GB
     # (torch + baked SAM) and rebuilds with NO layer cache (~20-25 min), and the
     # fast per-PR revision deploys only AFTER deploy-preview — so this parallel
     # job must be able to wait ~25-30 min for both pr-<N> revisions to come up.
-    timeout-minutes: 45
+    # NEO-484: it then also waits for each revision to carry THIS push's sha
+    # (heavy up to 40 min, fast up to 15 more after it), so a second push's
+    # E2E never starts against the previous push's container. The worst case
+    # (every ceiling hit in turn) is far beyond a healthy run's ~30 min; the
+    # job timeout only has to outlast the per-step ceilings so that a stuck
+    # deploy fails at a step with a clear ::error::, not as a cancelled job.
+    timeout-minutes: 90
     # Job-scoped perms: id-token (WIF), contents (checkout). Does NOT need
     # checks/PR-write, and no longer needs deployments:read — NEO-162 replaced
     # the Deployments API poll with a `needs:` on web-preview.
@@ -592,11 +706,11 @@ jobs:
       heavy_base_url: ${{ steps.host-heavy.outputs.host && format('https://{0}', steps.host-heavy.outputs.host) }}
       heavy_preview_url: ${{ steps.heavy.outputs.url }}
     env:
-      PR: ${{ github.event.pull_request.number }}
+      PR: ${{ needs.changes.outputs.pr }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: apps/web/.nvmrc
 
@@ -725,6 +839,34 @@ jobs:
           done
           echo "::error::pr-${PR} fast preprocess preview never came up — preprocess.yml deploy-preview-fast may have failed."; exit 1
 
+      # NEO-484: the two waits above only prove the pr-<N> URL answers. On a
+      # second-or-later push that is already true of the PREVIOUS push's
+      # revision, so without this E2E (which needs this job) ran against a
+      # stale container while the new image was still building. Hold here, and
+      # so hold E2E, until each revision behind the tag carries this commit's
+      # PREVIEW_SHA. Same script as the crop matrix's guard, so the two cannot
+      # drift. A deploy that never arrives fails this job with an ::error::
+      # (ceilings: heavy 120 x 20s = 40 min, fast 45 x 20s = 15 min after it);
+      # it never falls through to the stale revision. Runs inside the existing
+      # `preprocess == 'true'` job condition, so PRs that do not touch
+      # services/preprocess take no extra wait.
+      - name: Wait for the pr-<N> heavy revision to be built from this commit
+        env:
+          EXPECTED_SHA: ${{ needs.changes.outputs.sha }}
+        run: |
+          bash .github/scripts/wait-preprocess-revision.sh \
+            --project neonbinder-dev --service neonbinder-preprocess \
+            --tag "pr-${PR}" --sha "$EXPECTED_SHA" --attempts 120 --interval 20
+
+      - name: Wait for the pr-<N> fast revision to be built from this commit
+        if: steps.host-fast.outputs.exists == 'true'
+        env:
+          EXPECTED_SHA: ${{ needs.changes.outputs.sha }}
+        run: |
+          bash .github/scripts/wait-preprocess-revision.sh \
+            --project neonbinder-dev --service neonbinder-preprocess-fast \
+            --tag "pr-${PR}" --sha "$EXPECTED_SHA" --attempts 45 --interval 20
+
       # Point the Convex preview at the pr-<N> preprocess preview(s). Same
       # deploy-key mechanism + read-back verification as wire-browser-url.
       # NEONBINDER_PREPROCESS_FAST_URL is only set when the fast service
@@ -773,7 +915,7 @@ jobs:
   # preprocessCapacity.ts's fallback — when the env var is unset — is the PROD
   # value (heavy 12, fast 20, NEO-299). Left unset, such a PR would fan out at
   # prod width against dev's services and 429 them, plus stampede a heavy
-  # warm-up burst (warmupPreprocess fans out to the FULL configured limit)
+  # warm-up burst (warmupPreprocess fans out to half the configured limit since NEO-411)
   # into a service dev shares with every other PR.
   #
   # So this job runs for every PR (no `changes.outputs.preprocess` gate,
@@ -829,7 +971,8 @@ jobs:
     needs: [changes, web-preview, wire-preprocess-url]
     if: |
       always()
-      && github.event_name == 'pull_request'
+      && needs.changes.outputs.full == 'true'
+      && needs.changes.outputs.pr != ''
       && needs.changes.result == 'success'
       && needs.changes.outputs.deps_only != 'true'
       && needs.web-preview.result == 'success'
@@ -839,11 +982,11 @@ jobs:
     permissions:
       contents: read
     env:
-      PR: ${{ github.event.pull_request.number }}
+      PR: ${{ needs.changes.outputs.pr }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: apps/web/.nvmrc
 
@@ -953,6 +1096,7 @@ jobs:
     if: |
       always()
       && needs.changes.result == 'success'
+      && needs.changes.outputs.full == 'true'
       && needs.changes.outputs.deps_only != 'true'
       && needs.web-preview.result == 'success'
       && (needs.wire-browser-url.result == 'success' || needs.wire-browser-url.result == 'skipped')
@@ -971,6 +1115,7 @@ jobs:
     uses: ./.github/workflows/e2e.yml
     with:
       preview_url: ${{ needs.web-preview.outputs.url }}
+      pr: ${{ needs.changes.outputs.pr }}
     secrets: inherit
 
   # --- Pre-merge area CI -----------------------------------------------------
@@ -995,7 +1140,7 @@ jobs:
       HUSKY: 0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: apps/web/.nvmrc
           cache: npm
@@ -1018,7 +1163,7 @@ jobs:
       HUSKY: 0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: apps/web/.nvmrc
           cache: npm
@@ -1031,6 +1176,10 @@ jobs:
       # convex/*.test.ts files whose convex-test generics do not typecheck
       # under tsc (they are typechecked and run by vitest in web-unit).
       - run: npm run typecheck
+      # NEO-434: builds with Sentry on and no token, and reads the entry chunk.
+      # Not a `postbuild`: a preview build compiles Sentry out, so it has nothing
+      # to compare, and E2E runs against that build.
+      - run: npm run check:entry-order
 
   web-unit:
     name: Unit & component tests (vitest, apps/web)
@@ -1047,7 +1196,7 @@ jobs:
       HUSKY: 0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: apps/web/.nvmrc
           cache: npm
@@ -1069,7 +1218,7 @@ jobs:
         working-directory: services/browser
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: services/browser/.nvmrc
           cache: npm
@@ -1077,6 +1226,66 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
+
+  # NEO-552: build + unit tests for the fake BSC. Mirror of fake-bsc.yml `test`
+  # (kept in sync intentionally, same rationale as browser-test above). There
+  # is no per-PR preview: the fake is deployed once from main by release.yml.
+  fake-bsc-test:
+    name: Fake BSC build + unit tests
+    needs: changes
+    if: needs.changes.outputs.fake_bsc == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: services/fake-bsc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: services/fake-bsc/.nvmrc
+          cache: npm
+          cache-dependency-path: services/fake-bsc/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  # NEO-386: the scanner script (apps/scanner). Typecheck + unit tests; the
+  # scanner itself only exists on a collector's desk, so nothing here drives one.
+  scanner-test:
+    name: Scanner script typecheck + unit tests
+    needs: changes
+    if: needs.changes.outputs.scanner == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: apps/scanner
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: apps/scanner/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/scanner/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  # NEO-386: the packaged Mac app (one file per architecture, its own SANE
+  # driver inside). Its zips are this run's artifacts: what a reviewer
+  # downloads to try the scanner.
+  scanner-build:
+    name: Scanner app build
+    needs: changes
+    if: needs.changes.outputs.scanner == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/scanner-build.yml
 
   # Mirror of preprocess.yml `test` (kept in sync intentionally — same rationale
   # as browser-test above).
@@ -1113,7 +1322,7 @@ jobs:
         working-directory: services/preprocess
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
           cache: pip
@@ -1121,7 +1330,13 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: ruff check .
       - run: ruff format --check .
-      - run: pytest tests/unit --cov=app --cov-report=term-missing --cov-fail-under=80
+      # NEO-484: COVERAGE_CORE=sysmon (see pyproject [tool.coverage.run]) and
+      # --durations so the next slow test shows up in the log. The unit
+      # conftest blocks the real SAM model load; without that, a runner with
+      # torch installed spent ~14 of its ~15 minutes running SAM per test.
+      - run: pytest tests/unit --cov=app --cov-report=term-missing --cov-fail-under=80 --durations=15
+        env:
+          COVERAGE_CORE: sysmon
 
   # NEO-309/NEO-310: `node --test` over the ops shell scripts' own test
   # suites. No `npm ci` / package.json involved — these use only Node
@@ -1140,7 +1355,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: apps/web/.nvmrc
       - run: node --test scripts/*.test.mjs .github/scripts/*.test.mjs
@@ -1175,7 +1390,8 @@ jobs:
     name: Preprocess crop matrix (deployed)
     needs: [changes, wire-preprocess-url]
     if: |
-      github.event_name == 'pull_request'
+      needs.changes.outputs.full == 'true'
+      && needs.changes.outputs.pr != ''
       && needs.changes.outputs.preprocess == 'true'
       && needs.changes.outputs.deps_only != 'true'
     runs-on: ubuntu-latest
@@ -1195,7 +1411,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -1252,46 +1468,22 @@ jobs:
           echo "SMOKE_INTERNAL_KEY=$KEY" >> "$GITHUB_ENV"
 
       # ── Refuse to test a stale revision (NEO-191) ────────────────────
-      # `wire-preprocess-url` waits only for the pr-<N> URL to stop 404ing.
-      # On the FIRST push that means waiting out the ~25 min image build, but
-      # on any later push the URL already answers — serving the PREVIOUS
-      # push's revision — so it returns in ~30s and everything downstream
-      # would assert against the wrong container. Observed on this PR: a green
-      # matrix in 2m against an image built from the prior commit.
-      #
-      # deploy-preview stamps each revision with PREVIEW_SHA, so wait for the
-      # revision behind the tag to actually be THIS commit. On a first push
-      # this passes on the first poll (wire-preprocess-url already waited);
-      # on a later push it absorbs the remaining build time, which is the
-      # cost of the gate meaning what it says.
+      # `wire-preprocess-url` now holds until the pr-<N> heavy (and fast)
+      # revision carries this commit's PREVIEW_SHA (NEO-484; it used to wait
+      # only for the URL to stop 404ing, which on a later push is true of the
+      # previous push's revision). This re-check costs one poll in the normal
+      # case and is kept on purpose: it is the same script, so the matrix and
+      # E2E can never disagree about what "this commit's revision" means, and
+      # it still guards this job if the wiring job is ever restructured.
       - name: Wait for the pr-<N> revision to be built from this commit
         env:
-          PR: ${{ github.event.pull_request.number }}
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ needs.changes.outputs.pr }}
+          EXPECTED_SHA: ${{ needs.changes.outputs.sha }}
+        working-directory: ${{ github.workspace }}
         run: |
-          set -euo pipefail
-          for attempt in $(seq 1 120); do   # ~40 min ceiling; build is ~25
-            # `|| true` on both reads: a transient gcloud/API blip must cost
-            # one poll, not the whole job. Same idiom as the wait loops above.
-            REV=$(gcloud run services describe neonbinder-preprocess \
-              --region=us-central1 --project="$DEV_PROJECT" --format=json 2>/dev/null \
-              | jq -r --arg t "pr-$PR" '.status.traffic[]? | select(.tag==$t) | .revisionName' || true)
-            if [ -n "$REV" ] && [ "$REV" != "null" ]; then
-              ACTUAL=$(gcloud run revisions describe "$REV" \
-                --region=us-central1 --project="$DEV_PROJECT" --format=json 2>/dev/null \
-                | jq -r '.spec.containers[0].env[]? | select(.name=="PREVIEW_SHA") | .value' || true)
-              if [ "$ACTUAL" = "$EXPECTED_SHA" ]; then
-                echo "$REV is built from $EXPECTED_SHA"
-                exit 0
-              fi
-              echo "attempt $attempt/120: $REV has PREVIEW_SHA='${ACTUAL:-<unset>}', want $EXPECTED_SHA — retry in 20s"
-            else
-              echo "attempt $attempt/120: no revision serving tag pr-$PR yet — retry in 20s"
-            fi
-            sleep 20
-          done
-          echo "::error::pr-$PR never served a revision built from $EXPECTED_SHA — preprocess.yml deploy-preview may have failed."
-          exit 1
+          bash .github/scripts/wait-preprocess-revision.sh \
+            --project "$DEV_PROJECT" --service neonbinder-preprocess \
+            --tag "pr-$PR" --sha "$EXPECTED_SHA" --attempts 120 --interval 20
 
       # A cold preview would otherwise spend the first fixture's timeout loading
       # ~930MB of BiRefNet. /warmup is synchronous and idempotent.
@@ -1312,6 +1504,245 @@ jobs:
           SMOKE_TARGET_URL: ${{ needs.wire-preprocess-url.outputs.heavy_preview_url }}
           SMOKE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
         run: pytest tests/functional -v
+
+  # NEO-484 C: golden-mask parity for the direct-ORT BiRefNet path.
+  #
+  # The heavy service stopped importing rembg and runs a literal transcription
+  # of rembg 2.0.78's BiRefNet predict through onnxruntime
+  # (app/cropper/birefnet.py). This job proves that transcription still
+  # produces rembg's masks, on THIS PR's own image, on every preprocess PR.
+  #
+  #   * The image: the pr-<N> preview image preprocess.yml builds, waited for
+  #     until its org.opencontainers.image.revision label is this head SHA
+  #     (the same stale-image trap the crop matrix guards with PREVIEW_SHA),
+  #     then PINNED by digest so a later push cannot swap it mid-run.
+  #   * The oracle: services/preprocess/tests/parity/Dockerfile layers
+  #     requirements-oracle.txt (rembg and the packages its removal dropped,
+  #     pinned with hashes) on that digest. Target `check` adds only the test
+  #     runner; target `oracle` adds rembg.
+  #   * The reference model: rembg's own release download, verified by its
+  #     md5 and a pinned sha256 on every run (cached or not).
+  #   * Hardening: the containers run with --network none, a read-only root,
+  #     no capabilities and no credentials; only services/preprocess is
+  #     mounted, read-only. The GCP credentials file the auth action writes
+  #     sits at the workspace root, outside that mount.
+  #
+  # Runs whenever preprocess changed, deps-only PRs included: a dependency
+  # bump (onnxruntime, numpy, Pillow) is exactly what can move a mask. It does
+  # not depend on the web preview or E2E, so it adds no wall-clock beyond the
+  # preview image build it waits for.
+  #
+  # Interface with tests/parity (P3 owns that directory), all env vars:
+  #   PARITY_STAGE          base | oracle (base: image checks + SAM, in `check`)
+  #   PARITY_SHARD_INDEX    0-based shard of this run
+  #   PARITY_SHARD_COUNT    total shards (2)
+  #   PARITY_FIXTURES_DIR   the fixture images (the whole fixtures bucket)
+  #   PARITY_ORIGINAL_MODEL the verified original birefnet-general.onnx
+  preprocess-mask-parity:
+    name: Preprocess mask parity (shard ${{ matrix.shard }})
+    needs: [changes]
+    if: |
+      needs.changes.outputs.full == 'true'
+      && needs.changes.outputs.pr != ''
+      && needs.changes.outputs.preprocess == 'true'
+    runs-on: ubuntu-latest
+    # The preview image build is ~25 min on a first push; this job may wait
+    # for all of it before its own ~10 min.
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      DEV_PROJECT: neonbinder-dev
+      PREVIEW_IMAGE: gcr.io/neonbinder-dev/neonbinder-preprocess-preview
+      PARITY_SHARD_COUNT: "2"
+      # rembg 2.0.78's download for birefnet-general and its pinned md5
+      # (rembg/sessions/birefnet_general.py). The sha256 was captured in S0a
+      # and is the same pin scripts/bake_birefnet.py verifies at image build.
+      BIREFNET_SOURCE_URL: https://github.com/danielgatis/rembg/releases/download/v0.0.0/BiRefNet-general-epoch_244.onnx
+      BIREFNET_SOURCE_MD5: 7a35a0141cbbc80de11d9c9a28f52697
+      BIREFNET_SOURCE_SHA256: 58f621f00f5d756097615970a88a791584600dcf7c45b18a0a6267535a1ebd3c
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Dependabot-triggered runs get no secrets, so preprocess.yml cannot
+      # build the pr-<N> image this job tests. Fail with the remedy rather
+      # than wait 40 minutes for an image that never comes. A maintainer
+      # push to the branch (or the deps batch) runs it with secrets.
+      - name: Preconditions
+        env:
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          if [ "$ACTOR" = "dependabot[bot]" ]; then
+            echo "::error::mask parity needs this PR's pr-<N> image, which a Dependabot-triggered run cannot build (no secrets). Push to the branch as a maintainer, or validate the bump in the deps batch."
+            exit 1
+          fi
+          case "$BIREFNET_SOURCE_SHA256" in
+            *[!0-9a-f]*|"") echo "::error::BIREFNET_SOURCE_SHA256 is not a sha256 yet; set it from S0a."; exit 1 ;;
+          esac
+          [ "${#BIREFNET_SOURCE_SHA256}" -eq 64 ] || { echo "::error::BIREFNET_SOURCE_SHA256 must be 64 hex characters."; exit 1; }
+
+      # The PR image unpacks to several GB, and the oracle layer, the model
+      # and the fixtures sit beside it. Drop toolchains this job never uses.
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Restore the reference model
+        id: model-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: services/preprocess/.parity/model
+          key: birefnet-general-${{ env.BIREFNET_SOURCE_SHA256 }}
+
+      - name: Download and verify the reference model
+        working-directory: services/preprocess
+        run: |
+          set -euo pipefail
+          mkdir -p .parity/model
+          f=.parity/model/birefnet-general.onnx
+          if [ ! -s "$f" ]; then
+            curl -fsSL --retry 3 --retry-all-errors -o "$f.part" "$BIREFNET_SOURCE_URL"
+            mv "$f.part" "$f"
+          fi
+          # Verified on every run, cache hit or not: the cache is keyed on the
+          # sha256 we expect, not on what the file actually is.
+          echo "$BIREFNET_SOURCE_MD5  $f" | md5sum -c -
+          echo "$BIREFNET_SOURCE_SHA256  $f" | sha256sum -c -
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER_DEV }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker --quiet
+
+      # Every fixture in the bucket (the crop matrix's --crop subset is 11 of
+      # them). The bucket name is read from fetch_fixtures.py so there is one
+      # source for it; tests/parity checks each file's sha256 against its
+      # goldens manifest, so a replaced fixture fails loudly.
+      - name: Fetch fixture images
+        working-directory: services/preprocess
+        run: |
+          set -euo pipefail
+          BUCKET=$(python3 -c 'import re; print(re.search(r"^FIXTURES_BUCKET = \"(gs://[^\"]+)\"", open("scripts/fetch_fixtures.py").read(), re.M).group(1))')
+          mkdir -p .parity/fixtures
+          gcloud storage cp "$BUCKET/*" .parity/fixtures/
+          echo "fixtures: $(find .parity/fixtures -type f | wc -l)"
+
+      # Wait for pr-<N> to be THIS commit's image, then pin its digest. The
+      # label is read from the image config through the registry API, so no
+      # multi-GB pull happens until the right image is there.
+      - name: Wait for this commit's pr-<N> image and pin its digest
+        id: pin
+        env:
+          PR: ${{ needs.changes.outputs.pr }}
+          EXPECTED_SHA: ${{ needs.changes.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ref="$PREVIEW_IMAGE:pr-$PR"
+          for attempt in $(seq 1 120); do   # ~40 min ceiling; build is ~25
+            # `|| true`: a transient registry blip costs one poll, not the job.
+            fq=$(gcloud artifacts docker images describe "$ref" --project="$DEV_PROJECT" \
+              --format='value(image_summary.fully_qualified_digest)' 2>/dev/null || true)
+            if [ -n "$fq" ]; then
+              pkg="${fq%@*}"; digest="${fq#*@}"
+              host="${pkg%%/*}"; path="${pkg#*/}"
+              token=$(gcloud auth print-access-token)
+              echo "::add-mask::$token"
+              manifest=$(printf 'Authorization: Bearer %s\n' "$token" | curl -sf -H @- \
+                -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+                "https://$host/v2/$path/manifests/$digest" || true)
+              cfg=$(jq -r '.config.digest // empty' <<< "$manifest" 2>/dev/null || true)
+              label=""
+              if [ -n "$cfg" ]; then
+                label=$(printf 'Authorization: Bearer %s\n' "$token" | curl -sfL -H @- \
+                  "https://$host/v2/$path/blobs/$cfg" \
+                  | jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' || true)
+              fi
+              if [ "$label" = "$EXPECTED_SHA" ]; then
+                echo "pr-$PR is $digest, built from $EXPECTED_SHA"
+                echo "image=$PREVIEW_IMAGE@$digest" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              echo "attempt $attempt/120: pr-$PR is $digest with revision '${label:-<none>}', want $EXPECTED_SHA — retry in 20s"
+            else
+              echo "attempt $attempt/120: no pr-$PR image yet — retry in 20s"
+            fi
+            sleep 20
+          done
+          echo "::error::pr-$PR never became an image built from $EXPECTED_SHA — check preprocess.yml's deploy-preview."
+          exit 1
+
+      - name: Pull the pinned image
+        env:
+          IMAGE: ${{ steps.pin.outputs.image }}
+        run: docker pull "$IMAGE"
+
+      # Built with network (pip installs requirements-oracle.txt with
+      # --require-hashes); only the test runs below are offline.
+      - name: Build the parity images on the pinned digest
+        env:
+          IMAGE: ${{ steps.pin.outputs.image }}
+        run: |
+          set -euo pipefail
+          ctx=services/preprocess/tests/parity
+          docker build --provenance=false --sbom=false --build-arg "BASE_IMAGE=$IMAGE" \
+            --target check -t nb-parity-check "$ctx"
+          docker build --provenance=false --sbom=false --build-arg "BASE_IMAGE=$IMAGE" \
+            --target oracle -t nb-parity-oracle "$ctx"
+
+      # Nothing a test needs is outside services/preprocess, and nothing in it
+      # is a credential: assert that, since the mount is the whole boundary.
+      - name: Check the mount holds no credentials
+        run: |
+          set -euo pipefail
+          if find services/preprocess -name 'gha-creds-*.json' -o -name '*.pem' -o -name 'application_default_credentials.json' | grep -q .; then
+            echo "::error::credential-like file under services/preprocess; refusing to mount it."
+            exit 1
+          fi
+
+      - name: Step A — base image checks and SAM (shard 0)
+        if: matrix.shard == 0
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,size=4g \
+            --cap-drop ALL --security-opt no-new-privileges \
+            -v "$GITHUB_WORKSPACE/services/preprocess:/work:ro" -w /work \
+            -e HOME=/tmp -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PARITY_STAGE=base -e PARITY_SHARD_INDEX="$SHARD" -e PARITY_SHARD_COUNT \
+            -e PARITY_FIXTURES_DIR=/work/.parity/fixtures \
+            -e PARITY_ORIGINAL_MODEL=/work/.parity/model/birefnet-general.onnx \
+            --entrypoint python nb-parity-check \
+            -m pytest tests/parity -p no:cacheprovider -v -rA
+
+      - name: Step B — rembg oracle and goldens
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,size=4g \
+            --cap-drop ALL --security-opt no-new-privileges \
+            -v "$GITHUB_WORKSPACE/services/preprocess:/work:ro" -w /work \
+            -e HOME=/tmp -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PARITY_STAGE=oracle -e PARITY_SHARD_INDEX="$SHARD" -e PARITY_SHARD_COUNT \
+            -e PARITY_FIXTURES_DIR=/work/.parity/fixtures \
+            -e PARITY_ORIGINAL_MODEL=/work/.parity/model/birefnet-general.onnx \
+            --entrypoint python nb-parity-oracle \
+            -m pytest tests/parity -p no:cacheprovider -v -rA
 
   repo-hygiene:
     name: Repo hygiene (stray agent memory)
@@ -1357,25 +1788,91 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: ./scripts/check-capacity-parity.sh
 
+  # NEO-475: BSC call-health report from this run's Convex logs. Advisory only:
+  # NOT in ci-gate's needs, continue-on-error, no secrets. Runs only when e2e
+  # actually ran (the logs come from its convex-logs-* artifacts). The report is
+  # built from log content alone and prints no deployment names (the artifact is
+  # public).
+  bsc-health:
+    name: BSC health report
+    needs: [e2e]
+    if: always() && needs.e2e.result != 'skipped'
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: |
+            apps/web/scripts/bsc-health
+            apps/web/.nvmrc
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: apps/web/.nvmrc
+      - name: Download Convex log artifacts
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: convex-logs-*
+          merge-multiple: false
+          path: ${{ runner.temp }}/convex-logs
+      - name: Build report
+        run: |
+          set -euo pipefail
+          OUT="${RUNNER_TEMP}/bsc-health"
+          LOGS="${RUNNER_TEMP}/convex-logs"
+          mkdir -p "$OUT"
+          if [ -d "$LOGS" ] && [ -n "$(find "$LOGS" -type f -name '*.jsonl*' -print -quit)" ]; then
+            node apps/web/scripts/bsc-health/report.mjs \
+              --in "$LOGS" --out "$OUT" --env "ci-run-${{ github.run_id }}"
+            cat "$OUT/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No convex-logs-* artifacts were found for this run, so there is no BSC health report." | tee "$OUT/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bsc-health-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bsc-health
+          retention-days: 90
+
   ci-gate:
     name: CI Gate
-    needs: [changes, web-preview, web-lint, web-typecheck, web-unit, browser-test, preprocess-test, scripts-test, preprocess-crop-matrix, wire-browser-url, wire-preprocess-url, wire-preprocess-capacity, e2e, repo-hygiene, capacity-parity]
+    needs: [changes, web-preview, web-lint, web-typecheck, web-unit, browser-test, preprocess-test, fake-bsc-test, scripts-test, scanner-test, scanner-build, preprocess-crop-matrix, preprocess-mask-parity, wire-browser-url, wire-preprocess-url, wire-preprocess-capacity, e2e, repo-hygiene, capacity-parity]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 3
     permissions:
       contents: read
     steps:
+      # NEO-546: the verdict lives in a tested script. A skipped heavy job is
+      # acceptable only on a pull_request run that ci-mode.sh declared cheap
+      # (merge queue verifiably live); a merge_group run accepts no skip.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
       - name: Aggregate required-check verdict
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          FULL: ${{ needs.changes.outputs.full }}
           R_CHANGES: ${{ needs.changes.result }}
           R_WEB_LINT: ${{ needs.web-lint.result }}
           R_WEB_TYPECHECK: ${{ needs.web-typecheck.result }}
           R_WEB_UNIT: ${{ needs.web-unit.result }}
           R_BROWSER_TEST: ${{ needs.browser-test.result }}
           R_PREPROCESS_TEST: ${{ needs.preprocess-test.result }}
+          R_FAKE_BSC_TEST: ${{ needs.fake-bsc-test.result }}
           R_SCRIPTS_TEST: ${{ needs.scripts-test.result }}
+          R_SCANNER_TEST: ${{ needs.scanner-test.result }}
+          R_SCANNER_BUILD: ${{ needs.scanner-build.result }}
           R_CROP_MATRIX: ${{ needs.preprocess-crop-matrix.result }}
+          R_MASK_PARITY: ${{ needs.preprocess-mask-parity.result }}
+          R_PREPROCESS_CHANGED: ${{ needs.changes.outputs.preprocess }}
           R_WIRE: ${{ needs.wire-browser-url.result }}
           R_WIRE_PREPROCESS: ${{ needs.wire-preprocess-url.result }}
           R_WIRE_CAPACITY: ${{ needs.wire-preprocess-capacity.result }}
@@ -1384,37 +1881,4 @@ jobs:
           R_DEPS_ONLY: ${{ needs.changes.outputs.deps_only }}
           R_HYGIENE: ${{ needs.repo-hygiene.result }}
           R_CAPACITY_PARITY: ${{ needs.capacity-parity.result }}
-        run: |
-          set -euo pipefail
-          echo "hygiene=$R_HYGIENE capacity-parity=$R_CAPACITY_PARITY changes=$R_CHANGES web-lint=$R_WEB_LINT web-typecheck=$R_WEB_TYPECHECK web-unit=$R_WEB_UNIT browser-test=$R_BROWSER_TEST preprocess-test=$R_PREPROCESS_TEST scripts-test=$R_SCRIPTS_TEST crop-matrix=$R_CROP_MATRIX wire-browser-url=$R_WIRE wire-preprocess-url=$R_WIRE_PREPROCESS wire-preprocess-capacity=$R_WIRE_CAPACITY e2e=$R_E2E deps_only=$R_DEPS_ONLY"
-          fail=0
-          # changes must SUCCEED (skipped => gate unreliable)
-          [ "$R_CHANGES" = "success" ] || { echo "::error::changes=$R_CHANGES (must succeed)"; fail=1; }
-          # repo-hygiene and capacity-parity are both ungated (always run, no
-          # path filter), so `skipped` is a fault, not out-of-scope, for either.
-          [ "$R_HYGIENE" = "success" ] || { echo "::error::repo-hygiene=$R_HYGIENE (must succeed)"; fail=1; }
-          [ "$R_CAPACITY_PARITY" = "success" ] || { echo "::error::capacity-parity=$R_CAPACITY_PARITY (must succeed)"; fail=1; }
-          # e2e must SUCCEED, except on a dependency-manifest-only PR where a
-          # SKIP is the intended outcome (NEO-87). Note the deps_only check reads
-          # the same job output that gated the skip, so the two can't disagree.
-          if [ "$R_E2E" != "success" ]; then
-            if [ "$R_DEPS_ONLY" = "true" ] && [ "$R_E2E" = "skipped" ]; then
-              echo "e2e=skipped — dependency-manifest-only PR, matrix intentionally not run (NEO-87)."
-            else
-              echo "::error::e2e=$R_E2E (must succeed; skip allowed only when deps_only=true)"; fail=1
-            fi
-          fi
-          # area + wiring jobs: success OR skipped (out-of-area) OK; else fail
-          # web-preview joins this list rather than getting a rule of its own
-          # (NEO-162): it is `skipped` exactly when deps_only skips E2E, and any
-          # OTHER reason it fails to succeed already reds the gate through the
-          # e2e rule above, since e2e `needs:` it.
-          for kv in "web-preview=$R_WEB_PREVIEW" "web-lint=$R_WEB_LINT" "web-typecheck=$R_WEB_TYPECHECK" "web-unit=$R_WEB_UNIT" "browser-test=$R_BROWSER_TEST" "preprocess-test=$R_PREPROCESS_TEST" "scripts-test=$R_SCRIPTS_TEST" "preprocess-crop-matrix=$R_CROP_MATRIX" "wire-browser-url=$R_WIRE" "wire-preprocess-url=$R_WIRE_PREPROCESS" "wire-preprocess-capacity=$R_WIRE_CAPACITY"; do
-            r="${kv#*=}"
-            case "$r" in
-              success|skipped) ;;
-              *) echo "::error::${kv%%=*}=$r"; fail=1 ;;
-            esac
-          done
-          [ "$fail" = "0" ] || { echo "CI Gate: FAIL"; exit 1; }
-          echo "CI Gate: PASS — in-scope checks green, out-of-scope skipped."
+        run: bash .github/scripts/ci-gate-verdict.sh

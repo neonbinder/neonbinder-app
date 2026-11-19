@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import React, { Fragment, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Input } from "./Input";
 
@@ -93,6 +93,29 @@ export function focusWithoutOpening(
   }
 }
 
+/**
+ * NEO-518 — an option's DOM id, from the list's id and the item's KEY.
+ *
+ * Keyed rather than indexed so `aria-activedescendant` changes whenever the
+ * highlighted ROW changes, not only when the highlight moves: a search whose
+ * answer re-ranks under a resting highlight (row 0 was "+ New team …", is now
+ * the Astros) gets a new active descendant, and a screen reader announces the
+ * row Enter will now take. Under an index id the attribute stayed `…-opt-0`
+ * and nothing was said.
+ *
+ * A key may hold anything (`:`, spaces, quotes). Every character outside
+ * `[A-Za-z0-9-]` is written as `_<hex code point>_`, `_` included, so two
+ * different keys never share an id and the result is safe both in an id and
+ * inside the `[id="…"]` selector the scroll effect uses.
+ */
+export function autocompleteOptionId(listboxId: string, key: string): string {
+  const safe = key.replace(
+    /[^A-Za-z0-9-]/gu,
+    (c) => `_${c.codePointAt(0)!.toString(16)}_`,
+  );
+  return `${listboxId}-opt-${safe}`;
+}
+
 export interface AutocompleteProps<T> {
   /** Current text in the field. Controlled — the caller owns the query. */
   query: string;
@@ -103,6 +126,16 @@ export interface AutocompleteProps<T> {
   getLabel: (item: T) => string;
   /** Optional secondary line, e.g. a player's sport or a team's league. */
   getDescription?: (item: T) => string | undefined;
+  /**
+   * Optional group heading for an item (NEO-569: "Major leagues" / "More
+   * leagues"). Consecutive items with the same heading render under it as an
+   * ARIA `group` labelled by a non-option heading row (the APG grouped
+   * listbox), so the reader hears the group on entering it. Items keep one
+   * flat order: arrows, Enter and the highlight run straight through the
+   * groups, and the caller sorts `items` so each group is one run. An item
+   * with no heading renders ungrouped.
+   */
+  getGroup?: (item: T) => string | undefined;
   onSelect: (item: T) => void;
   /** Accessible name for the input. Also the Maestro selector for it. */
   label: string;
@@ -176,6 +209,17 @@ export interface AutocompleteProps<T> {
   describedBy?: string;
   /** Marks the field as failing validation (`aria-invalid`); pair it with `describedBy` on the error. */
   invalid?: boolean;
+  /**
+   * NEO-518 — Enter on this highlighted row does nothing FOR NOW: the press is
+   * swallowed (never reaching a host form or dialog), the list stays open, and
+   * nothing is selected. A click still selects it.
+   *
+   * For a create row offered while the caller's answer is still on its way:
+   * an Enter there would mint a duplicate of a team the search has not
+   * returned yet. Dropped rather than queued — once the answer lands the
+   * highlight resets to row 0, the best match, and the next Enter takes it.
+   */
+  holdEnter?: (item: T) => boolean;
 }
 
 export function Autocomplete<T>({
@@ -185,6 +229,7 @@ export function Autocomplete<T>({
   getKey,
   getLabel,
   getDescription,
+  getGroup,
   onSelect,
   label,
   placeholder,
@@ -203,6 +248,7 @@ export function Autocomplete<T>({
   hideWhenEmpty = false,
   describedBy,
   invalid = false,
+  holdEnter,
 }: AutocompleteProps<T>) {
   const [open, setOpen] = useState(false);
   const [highlightIdx, setHighlightIdx] = useState(0);
@@ -273,19 +319,28 @@ export function Autocomplete<T>({
     open &&
     (openOnEmpty || query.trim().length > 0) &&
     !(hideWhenEmpty && !hasResults && !loading);
-  const activeId = hasResults ? `${listboxId}-opt-${highlightIdx}` : undefined;
+  const highlighted = hasResults ? items[highlightIdx] : undefined;
+  const activeId =
+    highlighted !== undefined
+      ? autocompleteOptionId(listboxId, getKey(highlighted))
+      : undefined;
 
   // Keep the highlighted row on screen as the arrows walk a list longer than
   // its height cap. Without this the highlight scrolls out of the box and a
   // sighted keyboard user is steering blind. `nearest` so a row already in
   // view does not jump. Optional-called: happy-dom has no layout.
+  //
+  // NEO-518 — on a new LIST too (`signature`), not only a moved highlight: an
+  // answer that lands while the list is scrolled resets the highlight to row
+  // 0, and an index that was already 0 would not re-run this, leaving the row
+  // Enter now takes out of sight.
   useEffect(() => {
-    if (!showPopup || !hasResults) return;
+    if (!showPopup || !activeId) return;
     const option = listRef.current?.querySelector<HTMLElement>(
-      `[id="${listboxId}-opt-${highlightIdx}"]`,
+      `[id="${activeId}"]`,
     );
     option?.scrollIntoView?.({ block: "nearest" });
-  }, [showPopup, hasResults, highlightIdx, listboxId]);
+  }, [showPopup, activeId, signature]);
 
   /*
    * NEO-307 — anchor the fixed-position list to the field, below it or,
@@ -388,6 +443,69 @@ export function Autocomplete<T>({
       ? -1
       : items.findIndex((item) => getKey(item) === selectedKey);
 
+  /** One option row; `idx` is its place in the flat `items` order. */
+  const renderOption = (item: T, idx: number) => {
+    const description = getDescription?.(item);
+    const isCurrent = idx === selectedIdx;
+    return (
+      <li
+        key={getKey(item)}
+        id={autocompleteOptionId(listboxId, getKey(item))}
+        role="option"
+        aria-selected={idx === highlightIdx}
+        // NEO-518 — mousemove, not mouseenter. A list that opens, or
+        // re-renders with new rows, under a RESTING pointer fires
+        // mouseenter on whatever row lands there, and that stole the
+        // highlight from row 0 — so Enter took the row under the
+        // mouse, not the best match. Only a pointer that actually
+        // moves claims it, and only when it is not already there.
+        onMouseMove={() => {
+          if (idx !== highlightIdx) setHighlightIdx(idx);
+        }}
+        // onMouseDown, not onClick: the input's blur fires first on a
+        // click and would close the list before the click lands.
+        onMouseDown={(e) => {
+          e.preventDefault();
+          select(item);
+        }}
+        className={`cursor-pointer px-3 py-2 text-sm ${
+          idx === highlightIdx
+            ? "bg-neon-green/20 text-neon-green-text"
+            : "text-ink-2 hover:bg-hover"
+        }`}
+      >
+        {selectedKey !== undefined && (
+          /* The current answer's mark. A fixed-width slot on EVERY
+             row, so labels stay aligned whether or not they carry it.
+             aria-hidden: the combobox's own value already announces
+             the answer, and the glyph must not join the option's
+             accessible name or its text (the label is the option's
+             only direct text node, which is what a flow matches). */
+          <span
+            aria-hidden="true"
+            className="mr-2 inline-block w-3 text-neon-green-text"
+          >
+            {isCurrent ? "✓" : ""}
+          </span>
+        )}
+        {getLabel(item)}
+        {description && (
+          <span
+            // `pl-5` = the check slot's `w-3 mr-2`, so a line under
+            // the label starts under the label and not under the mark.
+            className={`${
+              descriptionBelow
+                ? `block mt-0.5 ${selectedKey !== undefined ? "pl-5" : ""}`
+                : "ml-2"
+            } text-xs text-ink-3`}
+          >
+            {description}
+          </span>
+        )}
+      </li>
+    );
+  };
+
   return (
     <div ref={containerRef} className={`relative ${className}`}>
       <Input
@@ -472,7 +590,9 @@ export function Autocomplete<T>({
             // confirm shortcut while a suggestion is highlighted.
             if (showPopup && hasResults) {
               e.preventDefault();
-              select(items[highlightIdx]);
+              const item = items[highlightIdx];
+              if (item === undefined || holdEnter?.(item)) return;
+              select(item);
             }
           } else if (e.key === "Escape") {
             // Swallow Escape only while the list is open, so a host dialog's
@@ -527,56 +647,24 @@ export function Autocomplete<T>({
               {loading ? "Searching…" : emptyMessage}
             </li>
           )}
-          {items.map((item, idx) => {
-            const description = getDescription?.(item);
-            const isCurrent = idx === selectedIdx;
+          {groupRuns(items, getGroup).map((run) => {
+            const options = run.items.map(({ item, idx }) => renderOption(item, idx));
+            if (run.heading === undefined) {
+              return <Fragment key={`run-${run.start}`}>{options}</Fragment>;
+            }
+            const headingId = `${listboxId}-grp-${run.start}`;
             return (
-              <li
-                key={getKey(item)}
-                id={`${listboxId}-opt-${idx}`}
-                role="option"
-                aria-selected={idx === highlightIdx}
-                onMouseEnter={() => setHighlightIdx(idx)}
-                // onMouseDown, not onClick: the input's blur fires first on a
-                // click and would close the list before the click lands.
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  select(item);
-                }}
-                className={`cursor-pointer px-3 py-2 text-sm ${
-                  idx === highlightIdx
-                    ? "bg-neon-green/20 text-neon-green-text"
-                    : "text-ink-2 hover:bg-hover"
-                }`}
-              >
-                {selectedKey !== undefined && (
-                  /* The current answer's mark. A fixed-width slot on EVERY
-                     row, so labels stay aligned whether or not they carry it.
-                     aria-hidden: the combobox's own value already announces
-                     the answer, and the glyph must not join the option's
-                     accessible name or its text (the label is the option's
-                     only direct text node, which is what a flow matches). */
-                  <span
-                    aria-hidden="true"
-                    className="mr-2 inline-block w-3 text-neon-green-text"
+              <li key={headingId} role="presentation">
+                <ul role="group" aria-labelledby={headingId}>
+                  <li
+                    role="presentation"
+                    id={headingId}
+                    className="px-3 pt-2 pb-1 text-xs font-semibold text-ink-3"
                   >
-                    {isCurrent ? "✓" : ""}
-                  </span>
-                )}
-                {getLabel(item)}
-                {description && (
-                  <span
-                    // `pl-5` = the check slot's `w-3 mr-2`, so a line under
-                    // the label starts under the label and not under the mark.
-                    className={`${
-                      descriptionBelow
-                        ? `block mt-0.5 ${selectedKey !== undefined ? "pl-5" : ""}`
-                        : "ml-2"
-                    } text-xs text-ink-3`}
-                  >
-                    {description}
-                  </span>
-                )}
+                    {run.heading}
+                  </li>
+                  {options}
+                </ul>
               </li>
             );
           })}
@@ -585,4 +673,22 @@ export function Autocomplete<T>({
       )}
     </div>
   );
+}
+
+/**
+ * `items` cut into runs of one group heading each (`getGroup`), every item
+ * with its index in the flat order. Without `getGroup`, one ungrouped run.
+ */
+function groupRuns<T>(
+  items: ReadonlyArray<T>,
+  getGroup: ((item: T) => string | undefined) | undefined,
+): Array<{ heading: string | undefined; start: number; items: Array<{ item: T; idx: number }> }> {
+  const runs: Array<{ heading: string | undefined; start: number; items: Array<{ item: T; idx: number }> }> = [];
+  items.forEach((item, idx) => {
+    const heading = getGroup?.(item);
+    const last = runs[runs.length - 1];
+    if (last && last.heading === heading) last.items.push({ item, idx });
+    else runs.push({ heading, start: idx, items: [{ item, idx }] });
+  });
+  return runs;
 }

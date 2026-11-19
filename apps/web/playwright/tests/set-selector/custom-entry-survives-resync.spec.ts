@@ -1,6 +1,7 @@
 // Origin: .maestro/flows/set-selector/custom-entry-survives-resync.yaml (Maestro suite retired in NEO-341; see git history)
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { columnOption, columnSearch, setBuilderReady, addCustomEntry } from "../../support/set-builder";
+import { expectStepWithSportLots } from "../../support/marketplace-wait";
+import { columnOption, columnSearch, setBuilderReady, addCustomEntry, openAttributesPanel } from "../../support/set-builder";
 
 const PAUSE_NOTICE = "SportLots is on pause: nothing from SportLots was asked for or changed.";
 
@@ -33,10 +34,22 @@ test(
     // ── STEP 2: sync Sports from the marketplaces ──
     await reload();
     await expect(columnOption(page, "Sports", "Baseball")).toBeVisible();
-    await page.getByRole("button", { name: "Sync Sports" }).click();
+    const syncSports = page.getByRole("button", { name: "Sync Sports" });
+    await syncSports.click();
     await expect(page.getByText("Syncing Sport Options")).toBeVisible();
-    // A live marketplace Sports sync (the flow's 55 s), not our own server.
-    await expect(page.getByText("Syncing Sport Options")).toBeHidden({ timeout: 55_000 });
+    // The panel stands in for the idle row: the pressed button is gone, so
+    // the focus check below proves focus was handed back, not kept.
+    await expect(syncSports).toHaveCount(0);
+    // A marketplace Sports sync, not our own server: the flow's 55 s while SportLots is live;
+    // paused, BSC alone under the panel's wait line (measured 0.8 s on the #487 merge-group run (GUIDE)).
+    await expectStepWithSportLots(page, page.getByText("Syncing Sport Options"), env, {
+      liveMs: 55_000,
+      what: "the Sports sync",
+      state: "hidden",
+    });
+    // NEO-450 (a11y): the panel replaced the button the operator pressed, so
+    // when the sync ends focus goes back to that button rather than <body>.
+    await expect(syncSports).toBeFocused();
     if (!env.SL_PAUSED) {
       await expect(page.getByText(PAUSE_NOTICE)).toBeHidden();
     } else {
@@ -54,6 +67,8 @@ test(
     // ── STEP 4: remove it again, which keeps the flow self-cleaning ──
     await columnOption(page, "Sports", sport).click();
     await expect(page.getByRole("heading", { name: `Attributes for ${sport}` })).toBeVisible();
+    // NEO-569: the delete sits in the open panel only; a sport row starts it shut.
+    await openAttributesPanel(page);
     await page.getByRole("button", { name: `Delete ${sport}`, exact: true }).click();
     const confirm = page.getByRole("dialog", { name: `Delete Sport "${sport}"?` });
     await expect(confirm).toBeVisible();

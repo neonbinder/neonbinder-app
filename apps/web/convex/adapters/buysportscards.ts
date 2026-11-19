@@ -3,12 +3,15 @@
 import { action, internalAction, type ActionCtx } from "../_generated/server";
 import { v } from "convex/values";
 import { api, internal } from "../_generated/api";
-import { requireAdmin } from "../auth";
+import type { Id } from "../_generated/dataModel";
+import { getCurrentUserId, requireAdmin } from "../auth";
+import { siteTokenForCurrentUser } from "../credentials";
 import {
   recordAdapterCall,
   recordAdapterPhase,
   newRequestId,
   classifyAdapterError,
+  deploymentName,
 } from "../observability";
 // NEO-198: this adapter's retry policy and the aggregator's per-child deadline
 // are the same fact and now have one definition. See the header of that module.
@@ -69,11 +72,38 @@ import {
   logMarketplaceLimiter,
   type FetchFailure,
 } from "../lib/marketplaceFetchFailure";
+import { bscFetch, bscHeaders, isBscBreakerRefusal, type BscCallGate, type BscGrant } from "../lib/bscHttp";
+import { bscPacedCatalogueMessage, pacedRetryAfterS } from "../lib/bscPacedCopy";
+// NEO-552 — every BSC call goes through `bscFetch` and the deployment-wide
+// call gate (breaker + token bucket); fake mode carries a Google ID token.
+import { bscCallGateFor } from "../bscCallGate";
+import { nodeBscIdToken } from "../lib/bscFakeIdToken";
+import { fakeBscMode, fakeBscNamespaceFor, fakeBscPrefixFor } from "../testing";
+// NEO-475 — every BSC call is recorded (why it failed, how long it took); one
+// recorder per action invocation, flushed once in its `finally`.
+import {
+  createBscRecorder,
+  whileWaitingOnBsc,
+  type BscCallToken,
+  type BscRecorder,
+} from "../lib/bscCallTelemetry";
+import { flushBscRecorder } from "./bscSeller";
+// PR 451 (NEO-487) — the "Waiting on BuySportsCards…" rows, the 429 ladder's
+// constants (now the call gate's, NEO-552), and the background team lane's
+// item shapes.
+import { createMarketplaceWaitWriter } from "../lib/marketplaceWaitWriter";
+import { COOLDOWN_BASE_MS, COOLDOWN_MAX_MS, parseRetryAfterMs } from "../lib/bscCallGatePolicy";
+import {
+  bscTeamCheckItemResultValidator,
+  type BscTeamCheckItemResult,
+} from "../bscTeamPool";
 
-// Real BSC filter endpoint (ported from cardlister-server/script-frontend/src/listing-sites/bsc.ts).
-// The earlier www.buysportscards.com URL was a webpage path, not an API — CloudFront returned 403.
-const BSC_API_BASE = "https://api-prod.buysportscards.com";
-const BSC_FILTERS_PATH = "/search/bulk-upload/filters";
+// BSC's filter endpoint (ported from cardlister-server/script-frontend/src/listing-sites/bsc.ts).
+// It lives on the API host (`lib/bscHttp.ts`); the site host serves pages, and CloudFront 403s.
+// NEO-475 — the BSC paths as call telemetry names them (ids replaced by `:id`).
+const BSC_FILTERS_PATH_TEMPLATE = "search/bulk-upload/filters";
+const BSC_CHECKLIST_PATH_TEMPLATE = "search/bulk-upload/results";
+const BSC_CARD_LISTING_PATH_TEMPLATE = "marketplace/card/:id/card-listing";
 
 // Per-attempt timeout for a single BSC marketplace fetch. The product owner
 // caps any one shot at 10s (30s in one blocking call was too long to attribute
@@ -98,13 +128,37 @@ const BSC_CHECKLIST_FETCH_TIMEOUT_MS = 30_000;
 // seller-scoped call), so resolveBscCardTeam deliberately skips the
 // bearer-token machinery above rather than depending on the fragile
 // Puppeteer-backed BSC auth flow for a call that doesn't need it.
-const BSC_TEAM_LOOKUP_TIMEOUT_MS = 10_000;
-// Delay between cards in processBscTeamEnrichmentQueue. BSC has no
-// confirmed rate limit, but this stays conservative against the same
-// CDN/bot-detection this file already works around for the bulk
-// endpoint (see bscHeaders below). Much shorter than Wikidata's 3s gap
-// since there's no known limit to respect here — just don't hammer it.
-const BSC_TEAM_ENRICH_DELAY_MS = 300;
+//
+// NEO-475 — the house rule for BSC calls: 5 s per attempt, one retry. The
+// timeout covers the headers AND the body (one `AbortSignal` per attempt). A
+// timeout, a network error, a 5xx, or a 2xx whose body times out or will not
+// parse is retried once after a short jittered pause; a 4xx is an answer about
+// this card and is not. Worst case 5 s + 0.5 s + 5 s, the same as the single
+// 10 s attempt it replaces (CI saw a whole chunk of 10 time out at once).
+export const BSC_TEAM_LOOKUP_TIMEOUT_MS = 5_000;
+export const BSC_TEAM_LOOKUP_MAX_ATTEMPTS = 2;
+export const BSC_TEAM_LOOKUP_RETRY_PAUSE_MIN_MS = 250;
+export const BSC_TEAM_LOOKUP_RETRY_PAUSE_MAX_MS = 500;
+// Delay after each card's call on the `bscTeamPool` lane (PR 451; it was the
+// gap between cards in processBscTeamEnrichmentQueue's chain, at 300 ms).
+// BSC limits by volume (it answers 429 when we send too much; no published
+// figure), so the lane paces itself below that: 1.7 s after each call, plus
+// the call itself, is about one card-listing call every 2 s, deployment wide
+// (PR 451 / NEO-482). With no 429 a 300-card backlog drains in ~10 min. BSC
+// was measured to answer 429 about every 50 calls at this pace too (a burst
+// lockout lifting in 15 to 45 s), so expect ~6 cooldowns of 15 s (one may
+// escalate to 30 s): ~12 min in all. The lane's 30-minute deadline
+// (`bscTeamPool.BSC_TEAM_CHECK_OPERATOR_AFTER_MS`) is read only when a card
+// is deferred by a 429 or an open cooldown.
+export const BSC_TEAM_ENRICH_DELAY_MS = 1_700;
+// NEO-482 — a lane item that finds a card-listing window with at most this
+// long left waits it out in its slot and then asks, instead of deferring.
+// Windows are 15 s doubling to 120 s (`lib/bscCallGatePolicy`), so this covers
+// every window we open ourselves; only a longer Retry-After from BSC still
+// defers the card. Deferring meant every item the slot reached during a 15 s
+// window ran, read the cooldown and was re-enqueued: 150-400 extra function
+// runs per 300-card drain, and the cards shuffled to the back of the queue.
+export const BSC_TEAM_WAIT_IN_SLOT_MAX_MS = COOLDOWN_MAX_MS;
 // NEO-330 — the queue's bound on a card whose lookup keeps FAILING (network,
 // non-2xx, timeout; never "BSC has no team", which is an answer). Each pass
 // walks the whole queue; the cards that failed in it are walked again after
@@ -113,12 +167,64 @@ const BSC_TEAM_ENRICH_DELAY_MS = 300;
 // after 60s, one after a further 5 min. A card that fails all three is handed
 // to `bscTeamCheck.markBscTeamCheckGivenUp`, which flags it for the operator
 // ("no team on this card yet") and writes no team.
+//
+// PR 451: the ladder now runs on the `bscTeamPool` lane; these mirror
+// `bscTeamPool.BSC_TEAM_CHECK_MAX_PASSES` / `_RETRY_DELAYS_MS` for the
+// callers and tests that read them here.
 export const BSC_TEAM_CHECK_MAX_PASSES = 3;
 export const BSC_TEAM_CHECK_RETRY_DELAYS_MS = [60_000, 300_000] as const;
 // Bounded fan-out for fetchBscCardTeamNames's synchronous per-card lookups
 // during fetchCardChecklist — matches the existing MAX_SL_FAN_OUT=10
 // precedent in selectorOptions.ts for capping concurrent external calls.
 const BSC_TEAM_LOOKUP_CONCURRENCY = 10;
+
+// ── PR 451 (NEO-487): a bounded lookup ─────────────────────────────────────
+//
+// BSC's edge answers 429 (empty body, a few ms) and then blocks the IP for
+// 15 to 45 s (measured, NEO-482), and Convex deployments share egress IPs.
+// So a lookup:
+//   - asks the deployment-wide call gate (`bscCallGate`, NEO-552) once per
+//     wave, for the wave's cards, and makes no call while it refuses (open,
+//     probing, throttled, or unreadable). A half-open gate grants one probe;
+//     the rest of the wave is carried into the next one, never dropped;
+//   - stops at the first 429 (BSC's, or the gate's own refusal on a retry):
+//     never retried, and the lookup-wide flag stops every card still in its
+//     retry pause. `bscFetch` has already reported BSC's 429 to the gate,
+//     which opened (or kept) the window;
+//   - stops after a wave in which EVERY card failed (both attempts of a
+//     timeout or 5xx): BSC is down, and asking the rest only costs time.
+// Cards it never asked come back `success: false, skipped: true`: the caller
+// records them `teamLookup: "failed"`, so the commit queues them for the
+// background lane (`bscTeamPool`), which waits the window out.
+
+/** A lookup's shared stop flag: set by the first 429 any of its cards gets. */
+type BscLookupStop = { rateLimited: boolean; retryAfterMs?: number };
+
+/** NEO-552 — what a card-listing call needs to pass the gate. */
+type CardListingGate = {
+  gate: BscCallGate;
+  /** The wave's grant, for the first attempt only; a retry acquires its own. */
+  grant?: BscGrant;
+  /** Fake mode only: the run these calls belong to (`fakeBscCallerNs`). */
+  fakeNs?: string;
+};
+
+/**
+ * NEO-552 — fake mode only: which run a tokenless card-listing call belongs
+ * to, for the fake's `x-nb-fake-ns`. The caller's own namespace when the
+ * action runs as a signed-in user (the same derivation as `testing.ts`),
+ * else this deployment's prefix (the background team lane has no user).
+ * Undefined in real mode, or when the deployment URL cannot form one.
+ */
+function fakeBscCallerNs(userId: string | null): string | undefined {
+  if (!fakeBscMode()) return undefined;
+  try {
+    const cloudUrl = process.env.CONVEX_CLOUD_URL;
+    return userId ? fakeBscNamespaceFor(userId, cloudUrl) : fakeBscPrefixFor(cloudUrl);
+  } catch {
+    return undefined;
+  }
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -133,28 +239,8 @@ function sleep(ms: number): Promise<void> {
 //   NB insert        → BSC "variantName" (specific variant names)
 //   NB parallel      → NB only (no BSC facet)
 
-// Browser-mimicking headers required by the BSC API (without these CloudFront
-// rejects requests as bot traffic). `assumedrole: sellers` is mandatory and
-// scopes the session to a seller context.
-function bscHeaders(bearerToken: string): Record<string, string> {
-  return {
-    accept: "application/json, text/plain, */*",
-    "accept-language": "en-US,en;q=0.9",
-    assumedrole: "sellers",
-    "content-type": "application/json",
-    origin: "https://www.buysportscards.com",
-    referer: "https://www.buysportscards.com/",
-    "Sec-Ch-Ua":
-      '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": "macOS",
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-site",
-    authority: "api-prod.buysportscards.com",
-    authorization: `Bearer ${bearerToken}`,
-  };
-}
+// Browser-mimicking headers required by the BSC API: `bscHeaders` in
+// `lib/bscHttp.ts`, shared with the NEO-370 seller client.
 
 /**
  * Get BSC bearer token from Secret Manager (browser service extraction).
@@ -177,56 +263,70 @@ export const getBscToken = internalAction({
     error: v.optional(v.string()),
   }),
   handler: async (ctx, args): Promise<{ success: boolean; token?: string; error?: string }> => {
-    const requestId = args.requestId ?? newRequestId();
-    const start = Date.now();
-    try {
-      const tokenResult = await ctx.runAction(
-        internal.credentials.getSiteToken,
-        { site: "buysportscards" },
-      );
-
-      if (tokenResult?.token) {
-        await recordAdapterCall(ctx, {
-          requestId,
-          operation: "getBscToken",
-          platform: "bsc",
-          duration_ms: Date.now() - start,
-          success: true,
-        });
-        return { success: true, token: tokenResult.token };
-      }
-
-      await recordAdapterCall(ctx, {
-        requestId,
-        operation: "getBscToken",
-        platform: "bsc",
-        duration_ms: Date.now() - start,
-        success: false,
-        error_class: "no_credentials",
-      });
-      return {
-        success: false,
-        error: "No BSC token available. Connect your BSC account first.",
-      };
-    } catch (error) {
-      console.error("[getBscToken] Error:", error);
-      await recordAdapterCall(ctx, {
-        requestId,
-        operation: "getBscToken",
-        platform: "bsc",
-        duration_ms: Date.now() - start,
-        success: false,
-        error_class: classifyAdapterError(
-          error instanceof Error ? error.message : String(error),
-        ),
-      });
-      return {
-        success: false,
-        error: `Failed to get BSC token: ${error instanceof Error ? error.message : "Unknown error"}`,
-      };
-    }
+    return await readBscToken(ctx, args.requestId);
   },
 });
+
+/**
+ * The body of `getBscToken` as a plain function. The adapter's own actions
+ * call this directly instead of `ctx.runAction(getBscToken)`: that route is
+ * `getBscToken` -> `credentials.getSiteToken`, two action hops per fetch, and
+ * a CI run saw a parent sit idle for 27 s on a child that had finished in
+ * 0.4 s (NEO-605). Same answer, same `recordAdapterCall`, same error
+ * classification; the identity is `ctx.auth`'s, which is what `runAction`
+ * propagated, so a caller with none still gets "Not authenticated" (as a
+ * `success: false` answer). Never throws, never logs the token.
+ */
+export async function readBscToken(
+  ctx: ActionCtx,
+  requestId?: string,
+): Promise<{ success: boolean; token?: string; error?: string }> {
+  const rid = requestId ?? newRequestId();
+  const start = Date.now();
+  try {
+    const tokenResult = await siteTokenForCurrentUser(ctx, "buysportscards");
+
+    if (tokenResult?.token) {
+      await recordAdapterCall(ctx, {
+        requestId: rid,
+        operation: "getBscToken",
+        platform: "bsc",
+        duration_ms: Date.now() - start,
+        success: true,
+      });
+      return { success: true, token: tokenResult.token };
+    }
+
+    await recordAdapterCall(ctx, {
+      requestId: rid,
+      operation: "getBscToken",
+      platform: "bsc",
+      duration_ms: Date.now() - start,
+      success: false,
+      error_class: "no_credentials",
+    });
+    return {
+      success: false,
+      error: "No BSC token available. Connect your BSC account first.",
+    };
+  } catch (error) {
+    console.error("[getBscToken] Error:", error);
+    await recordAdapterCall(ctx, {
+      requestId: rid,
+      operation: "getBscToken",
+      platform: "bsc",
+      duration_ms: Date.now() - start,
+      success: false,
+      error_class: classifyAdapterError(
+        error instanceof Error ? error.message : String(error),
+      ),
+    });
+    return {
+      success: false,
+      error: `Failed to get BSC token: ${error instanceof Error ? error.message : "Unknown error"}`,
+    };
+  }
+}
 
 /**
  * NEO-239 — the levels a BSC request is SCOPED by, and the facets a checklist
@@ -275,6 +375,9 @@ export const fetchBscSelectorOptions = action({
     // Optional correlation id from a parent aggregator call. When absent we
     // mint a fresh one so standalone calls are still self-correlatable.
     requestId: v.optional(v.string()),
+    // PR 451 (NEO-487) — see `fetchBscChecklist.waitKey`. Absent or
+    // malformed: nothing is written. Never sent to BSC.
+    waitKey: v.optional(v.string()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -325,13 +428,24 @@ export const fetchBscSelectorOptions = action({
       };
     }
 
+    // NEO-475 — this invocation's BSC calls (the filters attempts below).
+    // PR 451 (NEO-487) — and their wait edges, for "Waiting on
+    // BuySportsCards…" on the Sync that asked.
+    const waits = createMarketplaceWaitWriter(ctx, args.waitKey, "fetchBscSelectorOptions");
+    const rec = createBscRecorder("fetchBscSelectorOptions", {
+      deployment: deploymentName(),
+      ...(waits ? { onWaitEdge: waits.onWaitEdge } : {}),
+    });
     try {
-      // Get BSC token
+      // Get BSC token. PR 451 (NEO-487) — as BSC wait time: a stale session
+      // is a BSC sign-in through the browser service (seconds), and the
+      // status must show during it. A cached token is milliseconds and joins
+      // the first call's wait, below the client's 1.5 s announce.
       const tokenStart = Date.now();
-      const tokenResult: { success: boolean; token?: string; error?: string } = await ctx.runAction(
-        internal.adapters.buysportscards.getBscToken,
-        { requestId },
-      );
+      const tokenResult: { success: boolean; token?: string; error?: string } =
+        await whileWaitingOnBsc(rec, () =>
+          readBscToken(ctx, requestId),
+        );
       tokenMs = Date.now() - tokenStart;
 
       if (!tokenResult.success || !tokenResult.token) {
@@ -454,37 +568,61 @@ export const fetchBscSelectorOptions = action({
 
       // Bounded retry loop for the selector-filters fetch. Per attempt we
       // cap at BSC_FETCH_TIMEOUT_MS (10s). We retry on transient failures —
-      // a per-attempt timeout, a network throw, or a 5xx/429 status — and
-      // stop immediately on a 2xx (success) or a permanent 4xx (non-429),
-      // which won't improve on retry. Up to BSC_FETCH_MAX_ATTEMPTS total.
+      // a per-attempt timeout, a network throw, or a 5xx status — and stop
+      // immediately on a 2xx (success) or any 4xx, which won't improve on
+      // retry. Up to BSC_FETCH_MAX_ATTEMPTS total.
+      //
+      // NEO-552: a 429 is never retried. It used to be, three times inside
+      // 1.5 s, which is exactly the burst that extends BSC's IP block.
+      // `bscFetch` reports it to the call gate, which opens the breaker for
+      // every caller; the gate's own refusal is a 429 too.
+      const gate = bscCallGateFor(ctx);
       let response: Response | undefined;
+      // NEO-475 — the attempt whose 2xx body is read below.
+      let okCall: BscCallToken | undefined;
       let attempt = 0;
       let lastErrorMsg = "";
       const filtersStart = Date.now();
       while (attempt < BSC_FETCH_MAX_ATTEMPTS) {
         attempt += 1;
         let attemptStatus: number | undefined;
+        const call = rec.start({
+          pathTemplate: BSC_FILTERS_PATH_TEMPLATE,
+          timeoutMs: BSC_FETCH_TIMEOUT_MS,
+          attempt,
+        });
         try {
-          const resp = await fetch(`${BSC_API_BASE}${BSC_FILTERS_PATH}`, {
-            method: "POST",
-            headers: bscHeaders(tokenResult.token),
-            body: JSON.stringify({ filters }),
-            signal: AbortSignal.timeout(BSC_FETCH_TIMEOUT_MS),
-          });
+          const resp = await bscFetch(
+            BSC_FILTERS_PATH_TEMPLATE,
+            {
+              method: "POST",
+              headers: bscHeaders(tokenResult.token),
+              body: JSON.stringify({ filters }),
+              signal: AbortSignal.timeout(BSC_FETCH_TIMEOUT_MS),
+            },
+            { idToken: nodeBscIdToken, pathTemplate: BSC_FILTERS_PATH_TEMPLATE, gate },
+          );
+          // Non-2xx: the recorder samples the body from a clone, so the
+          // `errText` reads below still get the whole body.
+          rec.respond(call, resp);
           attemptStatus = resp.status;
           statusCode = resp.status;
 
           if (resp.ok) {
             // Success — keep this response and break out of the loop.
             response = resp;
+            okCall = call;
             break;
           }
 
-          // Non-ok: decide retry vs. permanent failure by status.
-          const retryableStatus = resp.status >= 500 || resp.status === 429;
+          // Non-ok: decide retry vs. permanent failure by status. NEO-552:
+          // our own call gate's refusal (a 503 when the gate itself could not
+          // be read) is never retried: BSC was not asked, and asking the gate
+          // again inside 1.5 s gets the same answer.
+          const retryableStatus = resp.status >= 500 && !isBscBreakerRefusal(resp);
           if (!retryableStatus) {
-            // Permanent 4xx (non-429) — won't improve on retry. Keep the
-            // response and break so the non-ok handler below records it.
+            // Any 4xx, 429 included (NEO-552) — won't improve on retry. Keep
+            // the response and break so the non-ok handler below records it.
             response = resp;
             break;
           }
@@ -496,6 +634,7 @@ export const fetchBscSelectorOptions = action({
             `[fetchBscSelectorOptions] BSC API ${resp.status} (attempt ${attempt}/${BSC_FETCH_MAX_ATTEMPTS}): ${errText.slice(0, 300)}`,
           );
         } catch (err) {
+          rec.fail(call, { error: err });
           const isTimeout = err instanceof Error && err.name === "TimeoutError";
           lastErrorMsg = isTimeout
             ? `BSC API request timed out after ${BSC_FETCH_TIMEOUT_MS / 1000}s`
@@ -541,6 +680,32 @@ export const fetchBscSelectorOptions = action({
 
       // After the loop `response` is always set: either a 2xx (success) or a
       // permanent non-retryable status that broke out early.
+      if (response && isBscBreakerRefusal(response)) {
+        // NEO-552: NB's own call gate held this back, unsent. Say so in NB's
+        // words (the dialog shows `message` as written), never "BSC API 429".
+        await response.text().catch(() => "");
+        await recordAdapterCall(ctx, {
+          requestId,
+          operation: "fetchBscSelectorOptions",
+          platform: "bsc",
+          level: args.level,
+          parentSport: args.parentFilters.sport,
+          parentYear: args.parentFilters.year,
+          parentSetName: args.parentFilters.setName,
+          duration_ms: Date.now() - start,
+          token_ms: tokenMs,
+          filters_call_ms: filtersCallMs,
+          success: false,
+          stage: "marketplace_fetch",
+          attempt,
+          error_class: "paced",
+        });
+        return {
+          success: false,
+          options: [],
+          message: bscPacedCatalogueMessage(pacedRetryAfterS(response.headers)),
+        };
+      }
       if (!response || !response.ok) {
         const status = response?.status ?? statusCode;
         const errText = response ? await response.text().catch(() => "") : "";
@@ -573,7 +738,12 @@ export const fetchBscSelectorOptions = action({
 
       // Response shape: { aggregations: { sport: Filter[], year: Filter[], ... } }
       // where Filter = { label: string, slug: string, count: number, active: boolean }
-      const data = await response.json() as {
+      // NEO-475: a 2xx body that times out or will not parse is recorded on
+      // its attempt, then rethrown unchanged to the catch below.
+      const data = await response.json().catch((err: unknown) => {
+        if (okCall) rec.fail(okCall, { kind: isAbortTimeout(err) ? "body_timeout" : "parse", error: err });
+        throw err;
+      }) as {
         aggregations?: Record<
           string,
           Array<{ label?: string; slug?: string; count?: number; active?: boolean }>
@@ -642,6 +812,9 @@ export const fetchBscSelectorOptions = action({
         options: [],
         message: `BSC error: ${error instanceof Error ? error.message : "Unknown error"}`,
       };
+    } finally {
+      await flushBscRecorder(ctx, rec);
+      await waits?.drain();
     }
   },
 });
@@ -1050,6 +1223,11 @@ async function bscChecklistWithSession(
      * `fetchBscChecklist` passes none; the probe batch passes its budget.
      */
     deadlineAt?: number;
+    /**
+     * NEO-475 — the caller's call recorder; each request (first send and the
+     * post-re-auth retry) is recorded on it. The caller flushes it.
+     */
+    recorder?: BscRecorder;
   } = {},
 ): Promise<BscChecklistResult> {
   // Build nested `filters: { sport: [...], year: [...], ... }`.
@@ -1201,17 +1379,41 @@ async function bscChecklistWithSession(
     /** Time left before `limits.deadlineAt`; Infinity without one. */
     const remainingMs = (): number =>
       limits.deadlineAt === undefined ? Infinity : limits.deadlineAt - Date.now();
+    // NEO-475 — `last.call` is the request whose answer is read last, so a
+    // 2xx body that fails is recorded on it.
+    const rec = limits.recorder;
+    const last: { call?: BscCallToken } = {};
+    let sends = 0;
+    const gate = bscCallGateFor(ctx);
     const doFetch = async (token: string): Promise<Response> => {
       requestTimeoutMs = Math.max(
         1,
         Math.min(BSC_CHECKLIST_FETCH_TIMEOUT_MS, Math.floor(remainingMs())),
       );
-      return await fetch(`${BSC_API_BASE}/search/bulk-upload/results`, {
-        method: "POST",
-        headers: bscHeaders(token),
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(requestTimeoutMs),
+      sends += 1;
+      const call = rec?.start({
+        pathTemplate: BSC_CHECKLIST_PATH_TEMPLATE,
+        timeoutMs: requestTimeoutMs,
+        attempt: sends,
       });
+      last.call = call;
+      try {
+        const res = await bscFetch(
+          BSC_CHECKLIST_PATH_TEMPLATE,
+          {
+            method: "POST",
+            headers: bscHeaders(token),
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(requestTimeoutMs),
+          },
+          { idToken: nodeBscIdToken, pathTemplate: BSC_CHECKLIST_PATH_TEMPLATE, gate },
+        );
+        if (call) rec?.respond(call, res);
+        return res;
+      } catch (err) {
+        if (call) rec?.fail(call, { error: err });
+        throw err;
+      }
     };
     /** The caller's budget ran out before this step: nothing more is sent. */
     const outOfTime = (retry: boolean): OneResult => {
@@ -1345,11 +1547,15 @@ async function bscChecklistWithSession(
       // NEO-278 backoff and the per-(user, site) credential lock apply here
       // exactly as they do to `getSiteToken`'s own refresh. A skip or a busy
       // lock answers `refreshed: false`, the same as a failed login.
+      // PR 451 (NEO-487) — the re-auth (a BSC sign-in) and the token read
+      // after it are BSC wait time, like the first token read. Nothing is
+      // awaited between the two, so with the 401 before them they are one wait.
       let refreshedLogin = false;
       try {
-        const reAuth: { refreshed: boolean } = await ctx.runAction(
-          internal.credentials.refreshSiteTokenAfterRejection,
-          { site: "buysportscards" },
+        const reAuth: { refreshed: boolean } = await whileWaitingOnBsc(rec, () =>
+          ctx.runAction(internal.credentials.refreshSiteTokenAfterRejection, {
+            site: "buysportscards",
+          }),
         );
         refreshedLogin = reAuth.refreshed;
       } catch (err) {
@@ -1381,7 +1587,9 @@ async function bscChecklistWithSession(
         };
       }
       const refreshed: { success: boolean; token?: string; error?: string } =
-        await ctx.runAction(internal.adapters.buysportscards.getBscToken, {});
+        await whileWaitingOnBsc(rec, () =>
+          readBscToken(ctx),
+        );
       logMarketplaceLimiter({
         limiter: "bsc_token_reauth",
         platform: "bsc",
@@ -1413,6 +1621,20 @@ async function bscChecklistWithSession(
       }
     }
 
+    if (isBscBreakerRefusal(response)) {
+      // NEO-552: NB's own call gate held this back, unsent. Its own kind, so
+      // the operator reads that we are pacing ourselves, not that BSC failed.
+      await response.text().catch(() => "");
+      return {
+        ok: false,
+        message: bscPacedCatalogueMessage(pacedRetryAfterS(response.headers)),
+        failure: {
+          kind: "paced",
+          timedOut: false,
+          ...(reauthAttempted ? { reauthAttempted: true } : {}),
+        },
+      };
+    }
     if (!response.ok) {
       await response.text().catch(() => "");
       // A second 401, after a re-auth that said it worked, is still BSC
@@ -1435,6 +1657,9 @@ async function bscChecklistWithSession(
     try {
       data = await response.json();
     } catch (err) {
+      if (last.call) {
+        rec?.fail(last.call, { kind: isAbortTimeout(err) ? "body_timeout" : "parse", error: err });
+      }
       if (isAbortTimeout(err)) return threw(err, sentAt, reauthAttempted);
       return {
         ok: false,
@@ -1759,6 +1984,10 @@ export const fetchBscChecklist = action({
     // card can be attributed to the slot it came from. Omitted → the legacy
     // rule (the queried variantName, else the response's own setName).
     sourceFacet: v.optional(bscFacetValidator),
+    // PR 451 (NEO-487) — the client's run key for "Waiting on
+    // BuySportsCards…" (`marketplaceWaits`). Absent or malformed: nothing is
+    // written. Never sent to BSC.
+    waitKey: v.optional(v.string()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -1799,11 +2028,18 @@ export const fetchBscChecklist = action({
   }),
   handler: async (ctx, args): Promise<BscChecklistResult> => {
     await requireAdmin(ctx);
+    const waits = createMarketplaceWaitWriter(ctx, args.waitKey, "fetchBscChecklist");
+    const rec = createBscRecorder("fetchBscChecklist", {
+      deployment: deploymentName(),
+      ...(waits ? { onWaitEdge: waits.onWaitEdge } : {}),
+    });
     try {
-      const tokenResult: { success: boolean; token?: string; error?: string } = await ctx.runAction(
-        internal.adapters.buysportscards.getBscToken,
-        {},
-      );
+      // PR 451 (NEO-487) — the token read is BSC wait time (see
+      // `fetchBscSelectorOptions`).
+      const tokenResult: { success: boolean; token?: string; error?: string } =
+        await whileWaitingOnBsc(rec, () =>
+          readBscToken(ctx),
+        );
 
       if (!tokenResult.success || !tokenResult.token) {
         return {
@@ -1814,9 +2050,13 @@ export const fetchBscChecklist = action({
         };
       }
 
-      return await bscChecklistWithSession(ctx, args, {
-        token: tokenResult.token,
-      });
+      const { waitKey: _waitKey, ...checklistArgs } = args;
+      return await bscChecklistWithSession(
+        ctx,
+        checklistArgs,
+        { token: tokenResult.token },
+        { recorder: rec },
+      );
     } catch (error) {
       console.error("[fetchBscChecklist] Error:", error);
       return {
@@ -1827,6 +2067,9 @@ export const fetchBscChecklist = action({
           ? { kind: "timeout", timedOut: true, timeoutMs: BSC_CHECKLIST_FETCH_TIMEOUT_MS }
           : { kind: "unknown", timedOut: false },
       };
+    } finally {
+      await flushBscRecorder(ctx, rec);
+      await waits?.drain();
     }
   },
 });
@@ -1857,7 +2100,11 @@ export const fetchBscChecklist = action({
  * slots and caps the batch; the ids are checked again here.
  */
 export const probeBscChecklistBatch = internalAction({
-  args: { requests: v.array(bscProbeRequestValidator) },
+  args: {
+    requests: v.array(bscProbeRequestValidator),
+    // PR 451 (NEO-487) — see `fetchBscChecklist.waitKey`.
+    waitKey: v.optional(v.string()),
+  },
   returns: v.array(bscProbeSummaryValidator),
   handler: async (ctx, args): Promise<BscProbeSummary[]> => {
     await requireAdmin(ctx);
@@ -1895,57 +2142,72 @@ export const probeBscChecklistBatch = internalAction({
       return results;
     }
 
-    let token: string | undefined;
-    try {
-      const tokenResult: { success: boolean; token?: string; error?: string } =
-        await ctx.runAction(internal.adapters.buysportscards.getBscToken, {});
-      token = tokenResult.success ? tokenResult.token : undefined;
-    } catch {
-      const results = allFailed("unknown");
-      log(results, "token_read_failed");
-      return results;
-    }
-    if (!token) {
-      const results = allFailed("no_sign_in");
-      log(results, "no_token");
-      return results;
-    }
-
-    const session: BscSession = { token };
-    // One budget for the whole batch, from the first request: an id it does
-    // not reach fails `timeout` without a request (NEO-325).
-    const deadlineAt = Date.now() + BSC_PROBE_DEADLINE_MS;
+    // PR 451 (NEO-487) — the writer and recorder exist before the token read,
+    // so the read (which can be a BSC sign-in through the browser service) is
+    // BSC wait time on the same row as the requests after it.
+    const waits = createMarketplaceWaitWriter(ctx, args.waitKey, "probeBscChecklistBatch");
+    const rec = createBscRecorder("probeBscChecklistBatch", {
+      deployment: deploymentName(),
+      ...(waits ? { onWaitEdge: waits.onWaitEdge } : {}),
+    });
     const results: BscProbeSummary[] = [];
-    for (const request of args.requests) {
+    try {
+      let token: string | undefined;
       try {
-        const res = await bscChecklistWithSession(
-          ctx,
-          { parentFilters: {}, facetFilters: request.facetFilters },
-          session,
-          { deadlineAt },
-        );
-        if (!res.success) {
+        const tokenResult: { success: boolean; token?: string; error?: string } =
+          await whileWaitingOnBsc(rec, () =>
+            readBscToken(ctx),
+          );
+        token = tokenResult.success ? tokenResult.token : undefined;
+      } catch {
+        const failed = allFailed("unknown");
+        log(failed, "token_read_failed");
+        return failed;
+      }
+      if (!token) {
+        const failed = allFailed("no_sign_in");
+        log(failed, "no_token");
+        return failed;
+      }
+
+      const session: BscSession = { token };
+      // One budget for the whole batch, from the first request: an id it does
+      // not reach fails `timeout` without a request (NEO-325).
+      const deadlineAt = Date.now() + BSC_PROBE_DEADLINE_MS;
+      for (const request of args.requests) {
+        try {
+          const res = await bscChecklistWithSession(
+            ctx,
+            { parentFilters: {}, facetFilters: request.facetFilters },
+            session,
+            { deadlineAt, recorder: rec },
+          );
+          if (!res.success) {
+            results.push({
+              id: request.id,
+              status: "failed",
+              kind: res.failure?.kind ?? "unknown",
+            });
+            continue;
+          }
+          const summary = summarizeProbeCards(res.cards);
+          results.push({
+            id: request.id,
+            status: "ok",
+            count: summary.nonVariationRows,
+            ...(summary.first ? { first: summary.first } : {}),
+          });
+        } catch (err) {
           results.push({
             id: request.id,
             status: "failed",
-            kind: res.failure?.kind ?? "unknown",
+            kind: isAbortTimeout(err) ? "timeout" : "unknown",
           });
-          continue;
         }
-        const summary = summarizeProbeCards(res.cards);
-        results.push({
-          id: request.id,
-          status: "ok",
-          count: summary.nonVariationRows,
-          ...(summary.first ? { first: summary.first } : {}),
-        });
-      } catch (err) {
-        results.push({
-          id: request.id,
-          status: "failed",
-          kind: isAbortTimeout(err) ? "timeout" : "unknown",
-        });
       }
+    } finally {
+      await flushBscRecorder(ctx, rec);
+      await waits?.drain();
     }
     log(results, "done");
     return results;
@@ -2007,28 +2269,118 @@ type BscCardListingPayload = {
   playerAttribute?: unknown;
 };
 
+/**
+ * NEO-475 — one card's team lookup: up to {@link BSC_TEAM_LOOKUP_MAX_ATTEMPTS}
+ * attempts of {@link BSC_TEAM_LOOKUP_TIMEOUT_MS} each (see the constants).
+ * `success: false` only when every attempt failed: the card then goes to the
+ * operator teamless (rule 8), never with a guessed team.
+ */
 async function fetchBscCardTeamNameRaw(
   bscCardId: string,
-): Promise<BscCardTeamValue> {
-  const failed: BscCardTeamValue = {
+  /** NEO-475 — the invocation's call recorder; the caller flushes it. */
+  rec: BscRecorder | undefined,
+  /**
+   * PR 451 — the lookup's shared stop flag. A 429 sets it (and is never
+   * retried); a card in its retry pause sees it and does not retry.
+   */
+  stop: BscLookupStop | undefined,
+  /** NEO-552 — the call gate, and the wave's grant for the first attempt. */
+  access: CardListingGate,
+): Promise<BscCardTeamValue & { rateLimited?: true }> {
+  const failed = {
     teamNames: [],
     rawTeamName: "",
     success: false,
     attributeTokens: [],
   };
+  for (let attempt = 1; attempt <= BSC_TEAM_LOOKUP_MAX_ATTEMPTS; attempt += 1) {
+    if (stop?.rateLimited) break;
+    const outcome = await fetchBscCardTeamNameAttempt(bscCardId, attempt, rec, {
+      gate: access.gate,
+      ...(attempt === 1 && access.grant ? { grant: access.grant } : {}),
+      ...(access.fakeNs !== undefined ? { fakeNs: access.fakeNs } : {}),
+    });
+    if (outcome.ok) return outcome.value;
+    if (outcome.rateLimited) {
+      if (stop && !stop.rateLimited) {
+        stop.rateLimited = true;
+        if (outcome.retryAfterMs !== undefined) stop.retryAfterMs = outcome.retryAfterMs;
+      }
+      return { ...failed, rateLimited: true };
+    }
+    if (!outcome.retryable) break;
+    if (attempt < BSC_TEAM_LOOKUP_MAX_ATTEMPTS) {
+      await sleep(bscTeamLookupRetryPauseMs());
+    }
+  }
+  return failed;
+}
+
+/** NEO-475 — the pause before the retry: 250-500 ms, jittered. */
+export function bscTeamLookupRetryPauseMs(random: () => number = Math.random): number {
+  const span = BSC_TEAM_LOOKUP_RETRY_PAUSE_MAX_MS - BSC_TEAM_LOOKUP_RETRY_PAUSE_MIN_MS;
+  const r = Math.min(Math.max(random(), 0), 1);
+  return BSC_TEAM_LOOKUP_RETRY_PAUSE_MIN_MS + Math.round(r * span);
+}
+
+/**
+ * NEO-475 — one attempt. A 4xx is BSC's answer about this card and is not
+ * retried; a 5xx, a timeout or network error before the headers, and a 2xx
+ * whose body times out or will not parse are.
+ */
+type BscCardTeamAttempt =
+  | { ok: true; value: BscCardTeamValue }
+  | { ok: false; retryable: boolean; rateLimited?: true; retryAfterMs?: number };
+
+async function fetchBscCardTeamNameAttempt(
+  bscCardId: string,
+  attempt: number,
+  rec: BscRecorder | undefined,
+  access: CardListingGate,
+): Promise<BscCardTeamAttempt> {
+  const call = rec?.start({
+    pathTemplate: BSC_CARD_LISTING_PATH_TEMPLATE,
+    bscCardId,
+    timeoutMs: BSC_TEAM_LOOKUP_TIMEOUT_MS,
+    attempt,
+  });
+  // NEO-475 — the headers arrived: a later throw is the body (timeout or parse).
+  let answered = false;
   try {
-    const response = await fetch(
-      `${BSC_API_BASE}/marketplace/card/${bscCardId}/card-listing`,
+    const response = await bscFetch(
+      `marketplace/card/${encodeURIComponent(bscCardId)}/card-listing`,
       {
         headers: { Accept: "application/json" },
         signal: AbortSignal.timeout(BSC_TEAM_LOOKUP_TIMEOUT_MS),
       },
+      {
+        idToken: nodeBscIdToken,
+        pathTemplate: BSC_CARD_LISTING_PATH_TEMPLATE,
+        gate: access.gate,
+        ...(access.grant ? { grant: access.grant } : {}),
+        ...(access.fakeNs !== undefined ? { fakeNs: access.fakeNs } : {}),
+      },
     );
+    answered = true;
+    if (call) rec?.respond(call, response);
     if (!response.ok) {
       console.warn(
-        `[fetchBscCardTeamNameRaw] card-listing fetch failed status=${response.status} bscCardId=${bscCardId}`,
+        `[fetchBscCardTeamNameRaw] card-listing fetch failed status=${response.status} bscCardId=${bscCardId} attempt=${attempt}/${BSC_TEAM_LOOKUP_MAX_ATTEMPTS}`,
       );
-      return failed;
+      // PR 451 — a 429 is BSC's edge blocking the IP, not an answer about
+      // this card: never retried, and it stops the whole lookup. NEO-552:
+      // the call gate's own refusal (nothing sent) is a 429 too, and stops
+      // the lookup the same way.
+      if (response.status === 429) {
+        const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"), Date.now());
+        return {
+          ok: false,
+          retryable: false,
+          rateLimited: true,
+          ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+        };
+      }
+      return { ok: false, retryable: response.status >= 500 };
     }
     const data: unknown = await response.json();
     const payload: BscCardListingPayload =
@@ -2094,21 +2446,32 @@ async function fetchBscCardTeamNameRaw(
       );
     }
     return {
-      teamNames,
-      rawTeamName,
-      success: true,
-      attributeTokens,
-      ...(printRun !== undefined ? { printRun } : {}),
+      ok: true,
+      value: {
+        teamNames,
+        rawTeamName,
+        success: true,
+        attributeTokens,
+        ...(printRun !== undefined ? { printRun } : {}),
+      },
     };
   } catch (error) {
+    if (call) {
+      rec?.fail(
+        call,
+        answered
+          ? { kind: isAbortTimeout(error) ? "body_timeout" : "parse", error }
+          : { error },
+      );
+    }
     // The error's NAME only (NEO-288 precedent): a JSON SyntaxError's message
     // quotes the response body, which is marketplace bytes.
     console.warn(
       `[fetchBscCardTeamNameRaw] card-listing fetch error bscCardId=${bscCardId} error=${
         error instanceof Error ? error.name : "unknown"
-      }`,
+      } attempt=${attempt}/${BSC_TEAM_LOOKUP_MAX_ATTEMPTS}`,
     );
-    return failed;
+    return { ok: false, retryable: true };
   }
 }
 
@@ -2139,36 +2502,102 @@ export const resolveBscCardTeam = internalAction({
     ctx,
     args,
   ): Promise<"answered" | "notNeeded" | "failed"> => {
-    const row: { bscCardId: string; needsCheck: boolean } | null =
-      await ctx.runQuery(internal.cardChecklist.getForBscTeamCheck, {
-        cardChecklistId: args.cardChecklistId,
-      });
-    if (!row || !row.needsCheck) return "notNeeded";
-
-    const { teamNames, rawTeamName, success, attributeTokens, printRun } =
-      await fetchBscCardTeamNameRaw(row.bscCardId);
-    // The fetch itself failed — leave the row untouched (do NOT distinguish
-    // "no team" from "couldn't check" here; only a successful call is allowed
-    // to mark this done). The queue decides whether to ask again.
-    if (!success) return "failed";
-
-    // NEO-333: both forms. The mutation tries the whole raw string first and
-    // only then the split parts; the raw string is also the unmatched hint.
-    // An empty raw string means BSC had no team on file.
-    //
-    // NEO-345: the card's attribute tokens ride along, so the same answer
-    // fills NB's attributes, print run and flags (fill-empty, never
-    // overwrite: `applyBscAttributeFill`).
-    await ctx.runMutation(internal.cardChecklist.applyBscTeamResolution, {
-      cardChecklistId: args.cardChecklistId,
-      rawTeamName,
-      teamNames,
-      attributeTokens,
-      ...(printRun !== undefined ? { printRun } : {}),
-    });
-    return "answered";
+    const outcome = await resolveBscCardTeamOnce(ctx, args.cardChecklistId);
+    // PR 451 — a 429 has already opened the call gate (NEO-552); to this
+    // caller it is a call that failed.
+    return typeof outcome === "string" ? outcome : "failed";
   },
 });
+
+/**
+ * The body of `resolveBscCardTeam`, shared with the background lane's work
+ * item (`runBscTeamCheckItem`). PR 451: a 429 is reported apart from a
+ * failure (`{ rateLimited, until }`), after `record429` has opened the
+ * deployment-wide window, so the lane can push the card back without
+ * spending a pass.
+ */
+async function resolveBscCardTeamOnce(
+  ctx: ActionCtx,
+  cardChecklistId: Id<"cardChecklist">,
+): Promise<"answered" | "notNeeded" | "failed" | { rateLimited: true; until: number }> {
+  const row = await readBscTeamCheckRow(ctx, cardChecklistId);
+  if (!row || !row.needsCheck) return "notNeeded";
+  return askBscCardTeam(ctx, cardChecklistId, row);
+}
+
+/** The card's BSC id and whether it still needs asking; null when the row is gone or unlinked. */
+type BscTeamCheckRow = { bscCardId: string; needsCheck: boolean };
+
+function readBscTeamCheckRow(
+  ctx: Pick<ActionCtx, "runQuery">,
+  cardChecklistId: Id<"cardChecklist">,
+): Promise<BscTeamCheckRow | null> {
+  return ctx.runQuery(internal.cardChecklist.getForBscTeamCheck, { cardChecklistId });
+}
+
+/**
+ * The one `card-listing` call for a row already read and found to need it,
+ * and the write of its answer. Never "notNeeded": the caller decided that.
+ */
+async function askBscCardTeam(
+  ctx: ActionCtx,
+  cardChecklistId: Id<"cardChecklist">,
+  row: BscTeamCheckRow,
+): Promise<"answered" | "failed" | { rateLimited: true; until: number }> {
+  // NEO-475 — the one call is recorded, and its summary goes to the log
+  // only: this runs once per card from the background queue, and a table
+  // row per card would swamp the per-invocation rows the table is for.
+  const rec = createBscRecorder("resolveBscCardTeam", { deployment: deploymentName() });
+  const stop: BscLookupStop = { rateLimited: false };
+  const gate = bscCallGateFor(ctx);
+  let value: BscCardTeamValue & { rateLimited?: true };
+  try {
+    const fakeNs = fakeBscCallerNs(null);
+    value = await fetchBscCardTeamNameRaw(row.bscCardId, rec, stop, {
+      gate,
+      ...(fakeNs !== undefined ? { fakeNs } : {}),
+    });
+  } finally {
+    await flushBscRecorder(undefined, rec);
+  }
+  if (value.rateLimited) {
+    return { rateLimited: true, until: await rateLimitedUntil(gate, stop.retryAfterMs) };
+  }
+  const { teamNames, rawTeamName, success, attributeTokens, printRun } = value;
+  // The fetch itself failed — leave the row untouched (do NOT distinguish
+  // "no team" from "couldn't check" here; only a successful call is allowed
+  // to mark this done). The queue decides whether to ask again.
+  if (!success) return "failed";
+
+  // NEO-333: both forms. The mutation tries the whole raw string first and
+  // only then the split parts; the raw string is also the unmatched hint.
+  // An empty raw string means BSC had no team on file.
+  //
+  // NEO-345: the card's attribute tokens ride along, so the same answer
+  // fills NB's attributes, print run and flags (fill-empty, never
+  // overwrite: `applyBscAttributeFill`).
+  await ctx.runMutation(internal.cardChecklist.applyBscTeamResolution, {
+    cardChecklistId,
+    rawTeamName,
+    teamNames,
+    attributeTokens,
+    ...(printRun !== undefined ? { printRun } : {}),
+  });
+  return "answered";
+}
+
+/**
+ * NEO-552 — when a card stopped by a 429 may be asked again: the gate's
+ * window (BSC's 429 opened it inside `bscFetch`), or the Retry-After the
+ * answer carried (the gate's own refusal says how long), whichever is later;
+ * the base window when neither says.
+ */
+async function rateLimitedUntil(gate: BscCallGate, retryAfterMs: number | undefined): Promise<number> {
+  const blocked = await gate.blockedUntil();
+  const now = Date.now();
+  const until = Math.max(blocked ?? 0, retryAfterMs !== undefined ? now + retryAfterMs : 0);
+  return until > now ? until : now + COOLDOWN_BASE_MS;
+}
 
 /**
  * NEO-335 — one card's answer from the batch lookup below.
@@ -2185,7 +2614,11 @@ export const resolveBscCardTeam = internalAction({
  * NEO-333: the card's team value in BOTH forms, raw and comma split — see
  * `fetchBscCardTeamNameRaw`. A failed lookup carries neither.
  */
-export type BscCardTeamLookup = BscCardTeamValue & { bscCardId: string };
+export type BscCardTeamLookup = BscCardTeamValue & {
+  bscCardId: string;
+  /** PR 451 — never asked; see the validator. */
+  skipped?: true;
+};
 
 const bscCardTeamLookupValidator = v.object({
   bscCardId: v.string(),
@@ -2195,6 +2628,10 @@ const bscCardTeamLookupValidator = v.object({
   // NEO-345 — see `BscCardTeamValue`. Empty on a failed call.
   attributeTokens: v.array(v.string()),
   printRun: v.optional(v.number()),
+  // PR 451 (NEO-487) — this card was never asked: the lookup stopped (a 429,
+  // the call gate refusing, or a wave in which every card failed) first.
+  // Always with `success: false`. The caller stops asking, too.
+  skipped: v.optional(v.literal(true)),
 });
 
 /**
@@ -2222,41 +2659,110 @@ const bscCardTeamLookupValidator = v.object({
  * answered entry with both forms empty.
  */
 export const fetchBscCardTeamNames = internalAction({
-  args: { bscCardIds: v.array(v.string()) },
+  args: {
+    bscCardIds: v.array(v.string()),
+    // PR 451 (NEO-487) — see `fetchBscChecklist.waitKey`.
+    waitKey: v.optional(v.string()),
+  },
   returns: v.array(bscCardTeamLookupValidator),
-  handler: async (_ctx, args): Promise<BscCardTeamLookup[]> => {
+  handler: async (ctx, args): Promise<BscCardTeamLookup[]> => {
     const result: BscCardTeamLookup[] = [];
     const startedAt = Date.now();
-    for (let i = 0; i < args.bscCardIds.length; i += BSC_TEAM_LOOKUP_CONCURRENCY) {
-      const chunk = args.bscCardIds.slice(i, i + BSC_TEAM_LOOKUP_CONCURRENCY);
-      const results = await Promise.all(
-        chunk.map((bscCardId) => fetchBscCardTeamNameRaw(bscCardId)),
-      );
-      chunk.forEach((bscCardId, idx) => {
-        const { rawTeamName, teamNames, success, attributeTokens, printRun } =
-          results[idx];
-        // A failed call never carries a value (`fetchBscCardTeamNameRaw`
-        // returns both forms empty), so nothing downstream can attach a team
-        // the call did not return.
+    // NEO-475 — one recorder shared by every chunk of this invocation.
+    const waits = createMarketplaceWaitWriter(ctx, args.waitKey, "fetchBscCardTeamNames");
+    const rec = createBscRecorder("fetchBscCardTeamNames", {
+      deployment: deploymentName(),
+      ...(waits ? { onWaitEdge: waits.onWaitEdge } : {}),
+    });
+    // PR 451 — why the lookup stopped early, if it did (see the note at
+    // `BSC_TEAM_LOOKUP_CONCURRENCY`). NEO-552: "gate" is the call gate
+    // refusing a wave (open, probing, throttled or unreadable).
+    let stopped: "gate" | "rateLimited" | "waveFailed" | undefined;
+    const stop: BscLookupStop = { rateLimited: false };
+    const gate = bscCallGateFor(ctx);
+    // NEO-552 — the fetching operator's run on the fake (the caller's
+    // identity reaches a nested runAction), or the deployment's prefix.
+    const fakeNs = fakeBscCallerNs(fakeBscMode() ? await getCurrentUserId(ctx) : null);
+    let asked = 0;
+    // One answer per requested id, in request order, however the waves fell.
+    const answers = new Map<number, BscCardTeamLookup>();
+    try {
+      // NEO-552 — the cards not yet asked, by index. A wave asks the gate for
+      // its cards; a partial grant (a half-open gate's one probe) asks those
+      // and carries the rest into the next wave, never skipping them.
+      let next = 0;
+      const carried: number[] = [];
+      while (!stopped && (carried.length > 0 || next < args.bscCardIds.length)) {
+        const wave = carried.splice(0, BSC_TEAM_LOOKUP_CONCURRENCY);
+        while (wave.length < BSC_TEAM_LOOKUP_CONCURRENCY && next < args.bscCardIds.length) {
+          wave.push(next);
+          next += 1;
+        }
+        const acquired = await gate.acquire(wave.length);
+        if (!acquired.ok) {
+          stopped = "gate";
+          carried.unshift(...wave);
+          break;
+        }
+        const askNow = wave.slice(0, acquired.granted);
+        carried.unshift(...wave.slice(acquired.granted));
+        asked += askNow.length;
+        const results = await Promise.all(
+          askNow.map((idx) =>
+            fetchBscCardTeamNameRaw(args.bscCardIds[idx], rec, stop, {
+              gate,
+              grant: acquired.grant,
+              ...(fakeNs !== undefined ? { fakeNs } : {}),
+            }),
+          ),
+        );
+        askNow.forEach((idx, k) => {
+          const bscCardId = args.bscCardIds[idx];
+          const { rawTeamName, teamNames, success, attributeTokens, printRun } = results[k];
+          // A failed call never carries a value (`fetchBscCardTeamNameRaw`
+          // returns both forms empty), so nothing downstream can attach a team
+          // the call did not return.
+          answers.set(
+            idx,
+            success
+              ? {
+                  bscCardId,
+                  rawTeamName,
+                  teamNames,
+                  success,
+                  attributeTokens,
+                  ...(printRun !== undefined ? { printRun } : {}),
+                }
+              : {
+                  bscCardId,
+                  rawTeamName: "",
+                  teamNames: [],
+                  success,
+                  attributeTokens: [],
+                },
+          );
+        });
+        if (stop.rateLimited) {
+          stopped = "rateLimited";
+        } else if (results.every((r) => !r.success)) {
+          stopped = "waveFailed";
+        }
+      }
+      args.bscCardIds.forEach((bscCardId, idx) => {
         result.push(
-          success
-            ? {
-                bscCardId,
-                rawTeamName,
-                teamNames,
-                success,
-                attributeTokens,
-                ...(printRun !== undefined ? { printRun } : {}),
-              }
-            : {
-                bscCardId,
-                rawTeamName: "",
-                teamNames: [],
-                success,
-                attributeTokens: [],
-              },
+          answers.get(idx) ?? {
+            bscCardId,
+            rawTeamName: "",
+            teamNames: [],
+            success: false,
+            attributeTokens: [],
+            skipped: true,
+          },
         );
       });
+    } finally {
+      await flushBscRecorder(ctx, rec);
+      await waits?.drain();
     }
     const failed = result.filter((r) => !r.success).length;
     if (failed > 0) {
@@ -2267,7 +2773,9 @@ export const fetchBscCardTeamNames = internalAction({
           platform: "bsc",
           operation: "fetchBscCardTeamNames",
           requested: args.bscCardIds.length,
+          asked,
           failed,
+          ...(stopped ? { stopped } : {}),
           ms: Date.now() - startedAt,
         }),
       );
@@ -2277,21 +2785,13 @@ export const fetchBscCardTeamNames = internalAction({
 });
 
 /**
- * NEO-90: chained serial queue for BSC per-card team lookups — same shape
- * as adapters/wikidata.ts's processEnrichmentQueue. commitCardChecklist
- * hands the ids of newly-touched cards missing team data to this action
- * via `scheduler.runAfter(0, ...)`; it pops one id, resolves it, then
- * reschedules itself with the tail after BSC_TEAM_ENRICH_DELAY_MS. Errors
- * on a single card are caught/logged — the queue moves on rather than
- * abandoning the rest of the set.
- *
- * NEO-330 — a card whose lookup fails (or throws) is carried in `failedIds`
- * to the end of the pass. When the pass drains, those cards get another pass
- * after `BSC_TEAM_CHECK_RETRY_DELAYS_MS[pass - 1]`, up to
- * `BSC_TEAM_CHECK_MAX_PASSES`. A card that fails the last pass is flagged for
- * the operator through `bscTeamCheck.markBscTeamCheckGivenUp` — never given a
- * guessed team. Jason, 2026-10-11: "If a team lookup never returns then the
- * user must select a team."
+ * NEO-90 / PR 451 — the old self-rescheduling team queue, kept with its exact
+ * args for one release as a SHIM: everything it is handed goes onto the
+ * `bscTeamPool` lane (`bscTeamPool.enqueueBscTeamChecks`), which owns the
+ * NEO-330 ladder and the PR 451 push-back now. A chain already scheduled by
+ * the previous deploy lands here and is moved onto the lane, so no card is
+ * dropped across the deploy: `cardChecklistIds` at their pass, `failedIds`
+ * (cards that failed earlier in that pass) at the next one.
  */
 export const processBscTeamEnrichmentQueue = internalAction({
   args: {
@@ -2304,98 +2804,107 @@ export const processBscTeamEnrichmentQueue = internalAction({
   returns: v.null(),
   handler: async (ctx, args): Promise<null> => {
     const pass = args.pass ?? 1;
-    const failedIds = [...(args.failedIds ?? [])];
-    const [head, ...tail] = args.cardChecklistIds;
-
-    if (head) {
-      let outcome: "answered" | "notNeeded" | "failed" = "failed";
-      try {
-        outcome = await ctx.runAction(
-          internal.adapters.buysportscards.resolveBscCardTeam,
-          { cardChecklistId: head },
-        );
-      } catch (error) {
-        // Name only: a thrown mutation error can echo its arguments, which
-        // carry BSC's team value.
-        console.error(
-          `[bsc-team-enrichment-queue] resolveBscCardTeam ${head} failed error=${
-            error instanceof Error ? error.name : "unknown"
-          }`,
-        );
-      }
-      if (outcome === "failed") failedIds.push(head);
+    if (args.cardChecklistIds.length > 0) {
+      await ctx.runMutation(internal.bscTeamPool.enqueueBscTeamChecks, {
+        cardChecklistIds: args.cardChecklistIds,
+        pass,
+      });
     }
-
-    if (tail.length > 0) {
-      await ctx.scheduler.runAfter(
-        BSC_TEAM_ENRICH_DELAY_MS,
-        internal.adapters.buysportscards.processBscTeamEnrichmentQueue,
-        {
-          cardChecklistIds: tail,
-          ...(failedIds.length > 0 ? { failedIds } : {}),
-          ...(pass > 1 ? { pass } : {}),
-        },
-      );
-      return null;
+    const failedIds = args.failedIds ?? [];
+    if (failedIds.length > 0) {
+      await ctx.runMutation(internal.bscTeamPool.enqueueBscTeamChecks, {
+        cardChecklistIds: failedIds,
+        pass: Math.min(pass + 1, BSC_TEAM_CHECK_MAX_PASSES),
+      });
     }
-
-    // The pass has drained. (The "drained" line is kept to the empty call it
-    // always came from.)
-    if (failedIds.length === 0) {
-      if (!head) console.log(`[bsc-team-enrichment-queue] queue drained.`);
-      return null;
+    if (args.cardChecklistIds.length === 0 && failedIds.length === 0) {
+      console.log(`[bsc-team-enrichment-queue] queue drained.`);
     }
-    if (pass < BSC_TEAM_CHECK_MAX_PASSES) {
-      const delayMs = BSC_TEAM_CHECK_RETRY_DELAYS_MS[pass - 1];
-      // Counts and timing only — never a card name.
-      console.warn(
-        JSON.stringify({
-          msg: "bsc_team_check_retry_scheduled",
-          platform: "bsc",
-          operation: "resolveBscCardTeam",
-          failed: failedIds.length,
-          pass,
-          nextPass: pass + 1,
-          delayMs,
-        }),
-      );
-      await ctx.scheduler.runAfter(
-        delayMs,
-        internal.adapters.buysportscards.processBscTeamEnrichmentQueue,
-        { cardChecklistIds: failedIds, pass: pass + 1 },
-      );
-      return null;
-    }
-
-    let flagged = 0;
-    for (const id of failedIds) {
-      try {
-        if (
-          await ctx.runMutation(internal.bscTeamCheck.markBscTeamCheckGivenUp, {
-            cardChecklistId: id,
-          })
-        ) {
-          flagged++;
-        }
-      } catch (error) {
-        console.error(
-          `[bsc-team-enrichment-queue] markBscTeamCheckGivenUp ${id} failed error=${
-            error instanceof Error ? error.name : "unknown"
-          }`,
-        );
-      }
-    }
-    console.warn(
-      JSON.stringify({
-        msg: "bsc_team_check_gave_up",
-        platform: "bsc",
-        operation: "resolveBscCardTeam",
-        failed: failedIds.length,
-        flagged,
-        passes: pass,
-      }),
-    );
     return null;
+  },
+});
+
+/**
+ * PR 451 (NEO-487) — one card on the `bscTeamPool` lane (one slot,
+ * deployment wide). See bscTeamPool.ts for the ladder its completion applies.
+ *
+ *  - the card's row FIRST: gone, unlinked from BSC or already settled is
+ *    `notNeeded` at once, with no gate read and no call. An item left on
+ *    the lane by a previous E2E seed (its row wiped by the reset) therefore
+ *    ends on its first run instead of being pushed back for 30 minutes
+ *    behind an open window;
+ *  - a blocked call gate (NEO-552: an open window, or another caller's
+ *    probe) with at most `BSC_TEAM_WAIT_IN_SLOT_MAX_MS` left: the item waits
+ *    it out ONCE, holding the slot, then reads the row and the gate again and
+ *    asks (NEO-482). A gate still blocked after the wait (another caller's
+ *    429 extended it), or one with longer left (only a long Retry-After), is
+ *    `deferred` to its end with no call;
+ *  - a 429 (BSC's, which `bscFetch` reported to the gate, or the gate's own
+ *    refusal): `deferred` to the window's end (no pass spent);
+ *  - otherwise `resolveBscCardTeam`'s answer.
+ *
+ * Paced `BSC_TEAM_ENRICH_DELAY_MS` after its call (the old chain's gap), so
+ * the one slot never asks faster than the chain did.
+ */
+export const runBscTeamCheckItem = internalAction({
+  args: {
+    cardChecklistId: v.id("cardChecklist"),
+    pass: v.number(),
+    firstQueuedAt: v.number(),
+  },
+  returns: bscTeamCheckItemResultValidator,
+  handler: async (ctx, args): Promise<BscTeamCheckItemResult> => {
+    const logError = (error: unknown) =>
+      // Name only: a thrown mutation error can echo its arguments, which
+      // carry BSC's team value.
+      console.error(
+        `[bsc-team-pool] resolveBscCardTeam ${args.cardChecklistId} failed error=${
+          error instanceof Error ? error.name : "unknown"
+        }`,
+      );
+    let row: BscTeamCheckRow | null;
+    try {
+      row = await readBscTeamCheckRow(ctx, args.cardChecklistId);
+    } catch (error) {
+      // No call was made, so no pacing pause; the ladder decides the retry.
+      logError(error);
+      return { outcome: "failed" };
+    }
+    if (!row || !row.needsCheck) return { outcome: "notNeeded" };
+    // NEO-552 — the call gate, not the old card-listing cooldown: blocked by
+    // an open window or another caller's probe. An unreadable gate reads as
+    // blocked for a base window (fail closed).
+    const gate = bscCallGateFor(ctx);
+    let blockedUntil = await gate.blockedUntil();
+    if (blockedUntil !== null) {
+      const leftMs = blockedUntil - Date.now();
+      if (leftMs > BSC_TEAM_WAIT_IN_SLOT_MAX_MS) {
+        return { outcome: "deferred", until: blockedUntil };
+      }
+      // NEO-482 — a short window: wait it out in the slot, once.
+      await sleep(Math.max(0, leftMs));
+      try {
+        // The row again: a reset may have wiped the card during the wait.
+        row = await readBscTeamCheckRow(ctx, args.cardChecklistId);
+      } catch (error) {
+        logError(error);
+        return { outcome: "failed" };
+      }
+      if (!row || !row.needsCheck) return { outcome: "notNeeded" };
+      blockedUntil = await gate.blockedUntil();
+      if (blockedUntil !== null) return { outcome: "deferred", until: blockedUntil };
+    }
+    let outcome: Awaited<ReturnType<typeof askBscCardTeam>> = "failed";
+    try {
+      // The gate's grant (and its probe, and the success that closes a
+      // window) is taken inside `bscFetch`.
+      outcome = await askBscCardTeam(ctx, args.cardChecklistId, row);
+    } catch (error) {
+      logError(error);
+    }
+    await sleep(BSC_TEAM_ENRICH_DELAY_MS);
+    if (typeof outcome !== "string") return { outcome: "deferred", until: outcome.until };
+    return { outcome };
   },
 });
 

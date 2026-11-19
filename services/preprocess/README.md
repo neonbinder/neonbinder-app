@@ -24,8 +24,8 @@ The resulting design:
   image — as the fallback when classical fails its QC gate, and as a
   verification pass when classical succeeds — so size capacity and latency
   expectations around ~5-10s/image of ONNX inference per request. Both model
-  weights (BiRefNet via rembg, SAM) are baked into the image at build time so
-  there is no runtime download.
+  weights (BiRefNet, run through onnxruntime directly since NEO-484; SAM) are
+  baked into the image at build time so there is no runtime download.
 
   The pre-check is what keeps that cost off the scanner majority. Pixel
   strategies find the card by locating a card/background boundary, which does
@@ -43,6 +43,12 @@ The resulting design:
   settles a card on a mat or scanner bed in well under a second instead of
   escalating to the HEAVY role's ~40 s BiRefNet pass. It decides on the pixels
   alone and declines on any doubt; see [FAST role: the quad crop](#fast-role-the-quad-crop-neo-320).
+- **Frame-content identity in the FAST role** (NEO-399) — a tight scan with
+  no trustworthy resolution, which the classical pass calls `weak` and the
+  quad stage finds no outline in, is settled from its own pixels (a uniform
+  printed border running to every edge, no card-edge line inside it) and
+  returned untouched, instead of escalating to a BiRefNet pass that returned
+  it untouched anyway; see [FAST role: frame-content identity](#fast-role-frame-content-identity-neo-399).
 - **Orient** — Cloud Vision `DOCUMENT_TEXT_DETECTION` rather than a bundled
   EasyOCR model, keeping ~300MB out of the container.
 - **Classify** — Anthropic Claude Haiku, key from Secret Manager, never baked
@@ -63,6 +69,28 @@ clients that can't send the raw photo and let the service crop.
 - `POST /crop` — run one or all crop strategies on an image and return raw
   crops, no orient/classify. Companion to `/process` for human-in-the-loop
   picking when the cascade's automatic choice looks wrong.
+- `POST /derive-copy-photos` — one processed entry's listing size (1600px long
+  edge) and thumbnail (360px), base64-encoded JPEG with no EXIF, for Convex to
+  store on the copy saved from it (NEO-427). `/process-entry` stores the same two
+  files beside each output, and Convex reads those, so this route is the fallback
+  for an entry that has none. A scan the bucket has already expired answers
+  `404 OUTPUT_NOT_FOUND`, which Convex tells the collector.
+- `POST /render-edit` — a collector's hand edit (quarter turns clockwise, and a
+  crop box that can turn through 360°; the `PhotoEdit` geometry in
+  `app/edit.py`, pinned against the web editor by
+  `apps/web/lib/photo-edit/golden.json`) rendered into a new saved image
+  (NEO-481). The **scan form** (JSON: `user_id`, `job_id`, `entry_index`,
+  `edit`, `version`, `classify`) reads the scan's EXIF-uprighted original and
+  writes the version's write-once objects, `output/edits/{n:04d}/{v}.jpg` (the
+  crop at full resolution, written last) and `output/edits/{n:04d}/{v}/{image,thumb}.jpg`;
+  a version already rendered answers `409 VERSION_EXISTS`, and an original the
+  bucket has expired `404 ENTRY_NOT_FOUND`. With `classify` it re-reads the new
+  crop (Vision orient, Anthropic classify) as the collector turned it, and a
+  failed read never fails the render. The **bytes form** (multipart: `image`,
+  `edit`) takes a stored photo and returns the two sizes base64-encoded,
+  writing nothing. Both make the sizes with `app/copy_photos.py` and carry the
+  source's colour profile and pixel density. `/process-entry` reports the auto
+  crop's box as `crop_box` in the same geometry, so the editor can open on it.
 
 Auth: all non-health endpoints require the `x-internal-key` header matching
 the `INTERNAL_API_KEY` env var (sourced from Secret Manager in Cloud Run).
@@ -89,7 +117,8 @@ as `jsonPayload` and per-stage numbers (`gcs_ms`, `vision_calls`,
 FAST role's quad crop on its own (detection, checks and warp), kept out of
 `classical_ms` so its cost is visible. It stays at INFO whatever `LOG_LEVEL` says, and it carries
 only numbers, flags and stage labels: no identifiers, paths or image data.
-See `app/timing.py`.
+See `app/timing.py`. The dev cache adds its own counters and `cache_mode` to
+the same line; see [Dev cache](#dev-cache-neo-484).
 
 ### `POST /process` modes
 
@@ -100,7 +129,7 @@ modes — the mode only affects which work the server performs.
 
 | Mode | `image` | `precropped` | What runs | When to use |
 |---|:-:|:-:|---|---|
-| **image-only** | yes | — | Full crop cascade (scan metadata → classical identity → quad → tiered → PIL trim → SAM → Haiku bbox → passthrough) on the original. | Callers with no client-side crop capability. |
+| **image-only** | yes | — | Full crop cascade (scan metadata → classical identity → quad → frame content → tiered → PIL trim → SAM → Haiku bbox → passthrough) on the original. | Callers with no client-side crop capability. |
 | **image + precropped** | yes | yes | Tries the crop first; if rejected, falls back to the full cascade on the original. | Callers that can guess a crop but want a server-side safety net. |
 | **crop-only** | — | yes | Validates the crop; on pass, runs orient + classify on it. On reject, returns 422 so the caller retries with the original. | Bandwidth-constrained callers whose client-side crops are usually good. Skips the 22 MB-per-image upload entirely when the crop passes. |
 
@@ -177,7 +206,8 @@ when `strategy` was supplied, 4 when it was omitted):
 ```
 
 The fast-path stages that run ahead of these in `/process` and
-`/process-entry` (scan metadata, classical identity, and the quad crop) are
+`/process-entry` (scan metadata, classical identity, the quad crop and the
+frame-content identity) are
 not `/crop` strategies; see [FAST role: the quad crop](#fast-role-the-quad-crop-neo-320).
 
 `image_b64` and `error` together describe three outcomes per strategy:
@@ -281,7 +311,7 @@ just want every alternative.
 
 ### FAST role: the quad crop (NEO-320)
 
-With `crop_quality="fast"` (the default) the cascade tries three cheap stages
+With `crop_quality="fast"` (the default) the cascade tries four cheap stages
 before anything that loads a model. The FAST service (`PREPROCESS_ROLE=fast`)
 runs only these and declines the rest to HEAVY with its baseline attached.
 
@@ -290,6 +320,7 @@ runs only these and declines the rest to HEAVY with its baseline attached.
 | 1 | `scan_meta.is_card_sized_scan` | `scan_metadata` | the input, untouched | a frame whose stated resolution measures one card |
 | 2 | `tiered.fast_tiered_crop` | `tiered` | the input, untouched | a card-aspect frame the card fills |
 | 3 | `quad.quad_crop` | `quad` | a new, perspective-corrected crop | one card on a mat or bed, tilted or keystoned |
+| 4 | `frame_content.frame_content_identity` | `frame_content` | the input, untouched | a tight scan with no stated resolution whose printed border runs to every edge (NEO-399) |
 
 The quad stage is an OpenCV take on a Core Image rectangle detector plus
 perspective correction: Canny and background-distance edge maps, convex
@@ -326,6 +357,41 @@ frame). The constants in `app/cropper/quad.py` were tuned as a set against a
 private labelled set of real phone photos and scanner beds; re-run that
 evaluation rather than adjusting one alone.
 
+### FAST role: frame-content identity (NEO-399)
+
+A tightly auto-cropped scan that records no trustworthy resolution slips
+past all three stages above: `scan_meta` has nothing to read, the classical
+pass finds no background and calls the frame `weak`, and the quad stage finds
+no outline (`no_quad` / `weak_edges`). Such frames used to escalate, and
+HEAVY's ~40 s BiRefNet pass handed them back untouched. The fourth stage
+settles them from the pixels and, like the two identity stages, only ever
+returns the input untouched, through the same validator and text gate (the
+baseline orient is reused, so no extra Vision call).
+
+The cascade consults it only after a `weak` classical verdict and a `no_quad`
+or `weak_edges` quad decline (a quad that offered a crop is never
+second-guessed), and logs `fast: frame content accepted` or `fast: frame
+content declined reason=<check>`. Its own checks, in order:
+
+| Reason | What it refuses | How it is seen |
+|---|---|---|
+| `not_card_aspect` / `aspect` | a frame that is not one card | aspect more than 0.03 / 0.006 off 2.5:3.5 |
+| `ring` | artwork or bed texture at the frame edge | per side, the band 0.6%–1.5% of the short side in from the edge is not at least 95% the frame border's colour |
+| `no_content` | a blank frame, or a card far smaller than it | no row out to 25% differs from the border colour |
+| `edge_in_margin` | a card plus bed | a line parallel to a side between 0.6% and the first content row (a card edge or its shadow), or content that starts across the whole of every side at once (a cut edge on a wood or mat bed) |
+| `inset` | a deep same-colour margin | the first content row on any side is deeper than 6% |
+
+The outer 0.6% of each side is never judged: real tight scans carry a 3–7 px
+scanner sliver along their leading edge. **The bound on extra margin**: a
+visible card edge is declined anywhere beyond that 0.6% (~6 px at 400 dpi).
+An edge with no trace at all (a border the exact colour and texture of the
+bed) is not in the pixels; the 6% inset cap is all that bounds it, so a card
+whose printed border is shallow on every side could carry more than a few px.
+`scripts/eval_frame_content.py` runs the FAST order over any directory with
+resolution metadata stripped and prints every check's numbers; the constants
+were calibrated together with it against a private set of real tight scans
+and synthetic negatives. Re-run it rather than adjusting one alone.
+
 ### Client telemetry (for adopters of crop-only mode)
 
 The server emits per-request structured logs with `mode ∈ {image_only,
@@ -347,6 +413,205 @@ dominant cost this optimization attacks) is measurable:
 Gate the rollout on the PostHog feature flag
 `preprocess-crop-only-enabled` so adoption can be ramped or halted
 without a code deploy.
+
+## Dev cache (NEO-484)
+
+On the **dev base service only**, `/process-entry` reuses a Vision answer (A)
+or a BiRefNet alpha plane (B) it has already computed for the same input, so
+the E2E suite stops paying for the same model calls on every run. Everywhere
+else every call is live. Code: `app/devcache/`.
+
+**When it is on.** All three gates must pass, checked per request
+(`app/devcache/policy.py`); any exception while deciding means off:
+
+| Gate | Rule | Off mode |
+|---|---|---|
+| G1 | `ENVIRONMENT` is exactly `dev` | `off:not_dev` |
+| G2 | `PREPROCESS_DEV_CACHE_BUCKET` is set and not blank | `off:no_bucket` |
+| G3 | the request `Host` is not a tagged revision (no `---` in its first DNS label), so never a `pr-N` preview or a `sha-*` blue/green candidate | `off:tagged_host` (`off:no_host` without a Host) |
+
+Bucket IAM (only the dev preprocess runtime accounts can use it) and a CI check
+of each deploy's env and `/health` back the gates up. Only `/process-entry`
+binds a policy: `/process`, `/crop`, the smoke tests and the crop matrix always
+run live. A preview can never hit, which is why the live integration test below
+is the pre-merge proof.
+
+**What is cached.**
+
+- **A, Vision.** Key: sha256 of `nb-devcache/vision`, `VISION_CACHE_FORMAT`, the
+  google-cloud-vision version, `TEXT_DETECTION` and the sha256 of the bytes
+  actually sent (after the >9 MB shrink). Value: the `AnnotateImageResponse`
+  proto bytes. An answer carrying `error.message`, and any exception, is never
+  stored. A unit test pins the request to the image bytes alone; adding a
+  request option means bumping `VISION_CACHE_FORMAT`.
+- **B, BiRefNet.** Key: sha256 of `nb-devcache/birefnet`, `MASK_CACHE_FORMAT`,
+  a canonical JSON fingerprint (`INFERENCE_IMPL`, `PRE_POST_SPEC`, model,
+  baked weights sha256, session options, providers, and the onnxruntime,
+  Pillow and numpy versions) and the sha256, shape and dtype of the padded
+  input `tiered.pad_for_birefnet` builds. Value: the whole padded alpha plane
+  as a lossless PNG. Cropping, the `> 25` threshold and the close always run
+  after the cache. Without the bake's `<model>.onnx.sha256` file, B is off.
+
+**Storage.** Objects are `NBC1` + sha256(payload) + payload. Writes are
+create-only (`if_generation_match=0`; a 412 means another request stored the
+same answer first and counts as success). A damaged object is a miss: the call
+runs live and the answer overwrites that exact generation. An object over
+64 MiB is treated the same way and never decoded: a read fetches at most one
+byte past the cap. Reads time out
+after 2 s and writes after 5 s, with retries off; any failure runs live, bumps
+a counter and logs a rate-limited warning naming the exception class only,
+never a key. The bucket deletes objects after 7 days.
+
+**Telemetry.** The timing line carries `cache_mode`,
+`vision_cache_{hits,misses,errors}`, `birefnet_cache_{hits,misses,errors}`,
+`cache_write_failures` and `cache_ms`. `/health` reports `dev_cache` (the mode
+for the Host it was asked on).
+
+**Live test.** `tests/integration/test_devcache_live.py` writes under a fresh
+`itest/<run>/` prefix in the real bucket, runs each fixture twice (the second
+run must hit and answer byte-identically), replaces the stored entries with
+different valid ones (the answer must follow them), then deletes the prefix.
+It needs ADC for a developer account with access to the bucket and Vision, and
+the fixture images (`python scripts/fetch_fixtures.py`):
+
+```bash
+RUN_INTEGRATION_TESTS=1 DEVCACHE_ITEST_BUCKET=<dev cache bucket> \
+  pytest tests/integration/test_devcache_live.py -v
+```
+
+BiRefNet runs a deterministic stand-in there unless `BIREFNET_HOME` holds a
+baked model and `DEVCACHE_ITEST_REAL_BIREFNET=1` is set.
+
+**Trust.** IAM on the cache bucket is the security boundary; the gates decide
+correctness, and the envelope's sha256 catches damage, not forgery. See
+`app/devcache/__init__.py`.
+
+**Runbook.** If a dev E2E red looks like a wrong mask or a wrong OCR answer,
+wipe the cache prefix in the dev cache bucket (`vision/`, `birefnet/`, or
+both) and rerun; every entry is rebuilt live on its next miss.
+
+## BiRefNet: direct onnxruntime (NEO-484)
+
+`app/cropper/birefnet.py` runs the BiRefNet model through onnxruntime directly.
+It is a literal transcription of rembg 2.0.78's pre/post-processing
+(`BaseSession.normalize`, `BiRefNetSessionGeneral.predict`, and
+`naive_cutout`'s alpha), kept under rembg's MIT notice. rembg and its
+pymatting/numba/scipy/scikit-image stack are no longer installed: their numba
+compile cost ~100 s of every heavy cold start, for an alpha-matting step this
+service never used.
+
+**Bake.** `scripts/bake_birefnet.py` runs at image build:
+
+1. Download rembg's original model and verify rembg's md5 plus our pinned
+   sha256.
+2. Save it pre-optimised at `ORT_ENABLE_EXTENDED`. Never at ALL: that bakes
+   the build host's CPU kernels in.
+3. Fail the build unless the optimised model's raw output equals the
+   original's byte for byte on a fixed synthetic input.
+4. Delete the original and write `/opt/birefnet/<model>.onnx`,
+   `<model>.onnx.sha256` (the B mask-cache key) and
+   `<model>.onnx.provenance.json`.
+
+Runtime loads the file at `ORT_ENABLE_ALL` with the CPU arena off and four
+intra-op threads (`INTRA_OP_NUM_THREADS`): gen2 reports 5-6 CPUs against a
+4-vCPU quota, and 4 threads gave bit-identical masks on every host class and
+14-15% faster inference than ORT's default. Inter-op keeps rembg's
+`OMP_NUM_THREADS` rule. The session options feed the B cache key, so a change
+to them starts that cache over; they are not part of the parity fingerprint
+key, so a thread change that moved a mask would fail L2's exact check on a
+recorded host rather than drop it to tolerance.
+`get_session` refuses a model whose provenance names another onnxruntime
+version or model, so an onnxruntime bump means rebuilding the image. The model
+directory is root-owned and read-only.
+
+**Env.** `REMBG_MODEL` became `BIREFNET_MODEL` (allowlist: `birefnet-general`,
+`birefnet-general-lite`), and `U2NET_HOME` became `BIREFNET_HOME` (default
+`/opt/birefnet`). The Dockerfile ARG is now `BIREFNET_MODEL`. The lite model
+has no parity goldens; regenerate them before ever using it.
+
+**Mask parity (`preprocess-mask-parity`, blocking).** On every PR that touches
+the service, CI builds two images on this PR's pinned preprocess image
+(`tests/parity/Dockerfile`) and runs `tests/parity/` offline, read-only and as
+the non-root app user:
+
+- **Step A** checks the image as shipped: rembg's stack is absent, the bake's
+  provenance and permissions hold, the session loads, and SAM runs end to end.
+- **Step B** installs rembg 2.0.78 as a hash-pinned oracle
+  (`tests/parity/requirements-oracle.txt`). Per fixture it proves the direct
+  path equals rembg bit for bit on the same host (L1). It then compares with
+  the committed goldens (L2): exact on a recorded host fingerprint, otherwise
+  within the manifest's T, F, N, and the derived quad must sit within 1 px per
+  corner.
+- **Canaries** (BILINEAR, mean +1e-7, no sigmoid, x254, alpha +1) must each be
+  caught by the check that guards that step.
+
+BiRefNet is deterministic per host. AVX2 hosts (AMD Milan) differ from AVX-512
+hosts by up to 2 alpha levels and a few mask pixels, so the goldens record each
+host's own hashes. In the tolerance, T is the largest alpha difference, F the
+fraction of alpha pixels that differ, and N the pixels of tiered's binary mask
+(alpha > 25, then the 5x5 close) that differ, not alpha pixels. The current
+goldens use T=4, F=0.0015, N=10.
+
+**Regenerating the goldens.** Do this only for a deliberate change to the
+model, the transcription or the fixtures:
+
+1. In the current image, on gen1 and on gen2 hosts of each CPU type, run
+   `scripts/golden_masks.py generate --impl rembg --fixtures gs://<fixtures bucket> --out <dir>/{exec_env}-{task}-{run}`.
+2. Run `golden_masks.py compare` and set T, F, N to 2x the worst. Stop and ask
+   if that exceeds 8, 0.002 or 100.
+3. Run `golden_masks.py hash <runs…> --goldens-from <a gen1 run> --out tests/parity/goldens --tolerance T,F,N`
+   and commit the result.
+
+**Recording a new host.** When a run on a CPU type the manifest has not seen
+matches the goldens (M5 does this with the PR image), add its fingerprint
+without touching the PNGs: rerun step 3 with every run the manifest already
+lists plus the new one, keeping the same `--goldens-from` run and tolerance.
+The PNGs are copied from that run, so they come out byte-identical, and the
+manifest gains the new fingerprint and run. Check both before committing.
+
+Dependabot has its own block for `tests/parity` with version updates off
+(`open-pull-requests-limit: 0` in `.github/dependabot.yml`), so the oracle and
+check pins are bumped by hand, together with the goldens. A Dependabot security
+PR there gets the same treatment before it merges.
+
+## Cold start: deferred SDK imports (NEO-484)
+
+The startup hook writes one `cold_start` JSON line per process through the
+bare-JSON `timing` logger: role, host facts (`exec_env`, `isa`, `cpu_model`,
+`nproc`), `main_module_import_s`, `session_load_s`, `startup_hook_s`,
+`process_age_at_ready_s` and `prewarm`. `scripts/cold-start-report.py` at the
+repo root joins it with Cloud Run's start and probe lines.
+
+On gen2, image layers are read lazily, so a cold import waits on disk. The
+Anthropic, Cloud Vision and Cloud Storage SDKs (with the gRPC stack under them)
+were about 2,800 of the ~3,400 modules `import app.main` loaded, and
+`anthropic` alone was the bulk of the slow starts. None is needed to pass the
+startup probe, so:
+
+- **Each consumer imports its SDK on first use** (`classify.anthropic_sdk`,
+  `orient.vision_sdk`, the storage client in `app.jobs.gcs`).
+  `tests/unit/test_import_contract.py` fails if `import app.main` brings any of
+  them back, or starts the prewarm thread.
+- **The startup hook imports them in the background.** Its first act, on
+  every role, is `app.prewarm.start()`: a daemon thread imports storage, then
+  Vision, then Anthropic, while the heavy role loads its ORT session. A request
+  that needs an SDK the thread is still importing waits on that module's
+  import lock and then gets the finished module. Nothing ever waits for the
+  thread itself; `tests/unit/test_prewarm.py` covers the lock hand-off and a
+  real concurrent import of all three in a fresh interpreter.
+- **Logs.** `cold_start.prewarm` is the thread's progress when the hook
+  returned (`state`, `elapsed_s`, `imported_s` per module, `failed`), and the
+  thread writes its own `{"msg":"prewarm",...}` line with the same fields when
+  it finishes.
+- **Bytecode.** The image compiles `app/` at build (`python -m compileall`,
+  root-owned, read-only), so a cold start loads `.pyc` files rather than
+  compiling the service's own modules. `PYTHONDONTWRITEBYTECODE` still stops
+  any write at runtime.
+- **A broken SDK no longer fails the boot.** Its ImportError would reach the
+  first request that needs it instead, and the prewarm line lists it under
+  `failed`. Two checks stand in front of that: the image build imports all
+  three SDKs (a `RUN` right after `pip install`), and the deploy smokes'
+  `/process` and `/crop` calls reach Vision and Anthropic before traffic moves.
 
 ## Local dev
 
@@ -372,10 +637,11 @@ They differ along two axes — what they run against, and what they assert.
 | `tests/unit` | in-process, models stubbed | logic, routing, validators | `preprocess-test`, blocking |
 | `tests/functional` | a **deployed** revision | crop / deskew / rotate on real cards | `preprocess-crop-matrix`, blocking |
 | `tests/smoke` | a **deployed** revision | response envelope, auth, wiring | `preview-smoke`, advisory |
-| `tests/integration` | in-process, real Vision + Anthropic | classify accuracy | manual, `RUN_INTEGRATION_TESTS=1` |
+| `tests/integration` | in-process, real Vision + Anthropic (+ the dev cache bucket) | classify accuracy; the dev cache end to end | manual, `RUN_INTEGRATION_TESTS=1` |
 
 `tests/unit` can never exercise BiRefNet — `tests/unit/conftest.py` blocks
-`rembg.new_session` so a stray test cannot pull ~1GB of weights in CI. That is
+`app.cropper.birefnet._new_inference_session`, the one place an ORT session is
+built, so a stray test cannot load ~1GB of weights in CI. That is
 the whole reason `tests/functional` exists: the crop cascade's behaviour is a
 property of the deployed artifact, and the only honest way to assert it is to
 send a real card to a real revision. See `tests/functional/test_crop_matrix.py`
@@ -445,3 +711,5 @@ serving. Deploying at 0% removes the failure class instead of patching it.
 
 The deploy lane is gated on the `PREPROCESS_DEPLOY_ENABLED` repo variable; unset
 means dormant.
+
+Per-PR preview images and revisions are built by `preprocess.yml`: on the PR itself, or, once the merge queue is on (NEO-546), on the queue's merge group.

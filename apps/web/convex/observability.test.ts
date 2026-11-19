@@ -71,6 +71,7 @@ beforeEach(() => {
   // PostHog client short-circuits when no key is set. Force a value so the
   // mocked client actually gets invoked.
   process.env.POSTHOG_API_KEY = "test-posthog-key";
+  delete process.env.TESTING_RESET_SECRET; // NEO-475: testing deployments send no adapter_* events
   // NEO-188: the BSC token path pings the browser service (localhost:8080).
   // Unstubbed, "no token is available" was really "nothing is listening on
   // 8080" — so the test passed for an environmental reason and would have
@@ -116,6 +117,18 @@ describe("classifyAdapterError", () => {
     // session-actually-expired so we can drive different fixups.
     expect(classifyAdapterError("No BSC token available")).toBe("no_credentials");
     expect(classifyAdapterError("No SportLots session cookie")).toBe("no_credentials");
+  });
+
+  test("NEO-552: NB's own pacing copy is 'paced', never BSC's 'rate_limited'", () => {
+    expect(
+      classifyAdapterError(
+        "NeonBinder is pacing its calls to BuySportsCards, so it didn't ask just now. No sweat: give it about 30 seconds and try again.",
+      ),
+    ).toBe("paced");
+    // Even with a status in the same message (the fan-out joins them).
+    expect(classifyAdapterError("BSC error: a: BSC API error: 429; b: NeonBinder is pacing its calls to BuySportsCards")).toBe(
+      "paced",
+    );
   });
 
   test("maps rate limit responses to 'rate_limited'", () => {

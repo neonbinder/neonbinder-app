@@ -5,13 +5,27 @@
  * `prototypes/_shared/data`, which keeps its own copies for the prototypes.
  */
 
+import { setLabel as sharedSetLabel } from "@/convex/lib/catalogView";
 import { contrastRatio } from "@/lib/print/contrast";
 import { tokenHex } from "@/src/theme/tokens";
 import type { Card, CardTeam, SetRef, VariantKind, VariantRef } from "./types";
 
-/** "1996 Playoff Contenders", "1996-97 Upper Deck". */
+/**
+ * "1996 Playoff Contenders", "1996-97 Upper Deck". The shared wording from
+ * `convex/lib/catalogView`, so the rule summary the server writes and every
+ * screen here name a set alike (NEO-528).
+ */
 export function setLabel(set: Pick<SetRef, "season" | "name">): string {
-  return `${set.season} ${set.name}`;
+  return sharedSetLabel(set);
+}
+
+/**
+ * NEO-527 — where a set sits, under its name: "Baseball, Topps". The year's
+ * brand-unknown row is left out (a collector never sees it), and so is any
+ * part that is blank: "Baseball".
+ */
+export function setWhereLabel(set: Pick<SetRef, "sport" | "brand" | "brandUnknown">): string {
+  return [set.sport.name, set.brandUnknown ? "" : set.brand.name].filter(Boolean).join(", ");
 }
 
 /** "Base", "Pennant Flyers", "Gold Refractor", "Pennant Flyers Gold". */
@@ -34,6 +48,38 @@ export function teamNames(card: Pick<Card, "teams">): string {
 /** "Reggie White", or "A / B" on a multi-player card; "" when none is known. */
 export function playerNames(card: Pick<Card, "players">): string {
   return card.players.map((p) => p.name).join(" / ");
+}
+
+/** "Dan Marino", "Dan Marino and Mark Duper", "A, B and C". */
+function listedNames(names: readonly string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/**
+ * NEO-528 — what a card's line leads with: its players ("Reggie White");
+ * on a card with none, its own name ("Dolphins Leaders"); with neither, on a
+ * card that pictures someone only as a cameo, "With Dan Marino". "" when
+ * nothing is known. For visible lines only: accessible names stay on
+ * `cardLabel` / `shortCardName`.
+ */
+export function cardSubject(card: Pick<Card, "players" | "cardName" | "secondaryPlayers">): string {
+  const players = playerNames(card);
+  if (players) return players;
+  const own = card.cardName?.trim();
+  if (own) return own;
+  const pictured = (card.secondaryPlayers ?? []).map((p) => p.name).filter(Boolean);
+  return pictured.length > 0 ? `With ${listedNames(pictured)}` : "";
+}
+
+/**
+ * `cardLabel` with the card's subject (`cardSubject`) where the players go:
+ * the same string for any card that has a player, and "2024 Topps #528
+ * Dolphins Leaders" rather than a bare number for one that has none. Visible
+ * text only; the accessible names keep `cardLabel`.
+ */
+export function cardHeadline(card: Card): string {
+  return labelWith(card, cardSubject(card));
 }
 
 /** "RW" for Reggie White, "KG" for Ken Griffey Jr. (suffixes dropped); "?" for no name. */
@@ -61,6 +107,10 @@ export function playerInitials(name: string): string {
  * team known leaves that part out rather than printing a blank.
  */
 export function cardLabel(card: Card): string {
+  return labelWith(card, playerNames(card));
+}
+
+function labelWith(card: Card, players: string): string {
   const { variant } = card;
   const insert =
     (variant.kind === "insert" || variant.kind === "other") && variant.name
@@ -68,7 +118,6 @@ export function cardLabel(card: Card): string {
       : variant.kind === "parallel" && variant.insertName
         ? ` ${variant.insertName}`
         : "";
-  const players = playerNames(card);
   const head = `${setLabel(card.set)}${insert} #${card.cardNumber}${players ? ` ${players}` : ""}`;
   const parts = [head];
   const teams = teamNames(card);

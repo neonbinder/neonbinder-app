@@ -11,6 +11,7 @@
  *   SPORT_TO_ESPN_LEAGUE  (adapters/espn.ts)              keyed "Baseball"
  *   SPORT_SKU_CODE        (sku.ts)                        keyed "Baseball"
  *   SPORT_TO_LEAGUE       (features/deriveCardFeatures.ts) keyed "Baseball"
+ *                         (NEO-569: retired; a set's leagues are NB ids now)
  *
  * That coupled behaviour to a display string, with two consequences. First,
  * the casing split: `commitCardChecklist` was handed `fetchCardChecklist`'s
@@ -40,7 +41,10 @@
 export interface SportConfig {
   /** 2-char NeonBinder SKU prefix, e.g. "BB". */
   skuCode?: string;
-  /** e.g. "MLB". Feeds the `league` card feature. */
+  /**
+   * e.g. "MLB". NEO-569: no longer feeds a `league` card feature (retired);
+   * kept as reference data on the sport row.
+   */
   league?: string;
   /** ESPN site-API URL segments + the league's full display name. */
   espn?: { path: string; leagueName: string };

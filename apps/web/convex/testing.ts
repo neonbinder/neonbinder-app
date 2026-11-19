@@ -6,10 +6,11 @@
 // (under the retired Maestro suite, whose `inputText` appended rather than
 // replaced, that produced concatenated garbage).
 //
-// Fix: a test signs the user in, then calls this mutation to wipe that
-// user's own per-user state before the assertions run.
+// Fix: a test signs the user in, then calls `resetMyTestState` to wipe that
+// user's own per-user state (and, NEO-552, their fake BSC namespace) before
+// the assertions run.
 //
-// Security posture — why this is safe as a *public* mutation:
+// Security posture — why this is safe as a *public* function:
 // - It is scoped to the CALLER: it deletes only rows owned by
 //   getCurrentUserId(ctx). A signed-in user can only wipe their own data, never
 //   anyone else's. There is no clerkUserId argument to spoof.
@@ -22,7 +23,14 @@
 // - Deletes are strictly scoped to the three per-user tables via the by_user
 //   index. No bulk-wipe paths, no cross-user reach.
 
-import { mutation, action, internalMutation } from "./_generated/server";
+import {
+  mutation,
+  action,
+  internalAction,
+  internalMutation,
+  internalQuery,
+  type MutationCtx,
+} from "./_generated/server";
 import { api, internal } from "./_generated/api";
 import { v } from "convex/values";
 import { getCurrentUserId } from "./auth";
@@ -30,8 +38,32 @@ import { CLERK_USER_ID_RE, placeholderJobPrefix } from "./lib/placeholderObjects
 // NEO-287 — the operator switch. A paused marketplace is seeded as `skipped`,
 // before any read of its stored credentials.
 import { isPlatformPaused } from "./marketplacePause";
-import type { Id } from "./_generated/dataModel";
+import { ebayConfig, ebayConfigured } from "./lib/ebayEnv";
+import type { Doc, Id } from "./_generated/dataModel";
 import { dropOwnerPhotos } from "./copyPhotos";
+import { addOne, applyCopyChanges, defaultConditionOf, getOrCreateMain } from "./collection";
+import { ListingGate } from "./listingGate";
+import { intakePhotoFailureValidator, listingPlatformValidator, listingProblemReasonValidator } from "./schema";
+import { DRAIN_LEASE_MS } from "./listingDrain";
+import { LISTING_PLATFORMS, listingStateOf, listsAnywhere, newToken, pushesCounts } from "./listingOutbox";
+import { VISIT_GAP_MS } from "./dashboard";
+import type { ActionCtx } from "./_generated/server";
+import {
+  applySaleLinesCore,
+  eraOfVariant,
+  projectEbayOrderForRecord,
+  recordOrderCore,
+  SALE_ITEMS_PER_APPLY,
+  type ProjectedOrder,
+} from "./listingSales";
+import { ebayLineTitle, projectEbayOrder } from "./lib/ebayListing";
+import { TEST_OUTBOX_SEQ, TEST_SALE_ORDER_PREFIX, TEST_SYNC_MARK } from "./lib/testSeedMarks";
+import { bscConditionFor, type BscEra } from "./lib/bscConditions";
+import { buildListingSku } from "./lib/listingSku";
+import { BSC_LISTED_BOUNDS, BSC_ORDER_BOUNDS, bscListedText } from "./lib/bscOrders";
+import { CatalogReader } from "./lib/catalogView";
+import { slotIds } from "./platformSlots";
+import { resolveBscTarget } from "./lib/bscHttp";
 
 /**
  * What {@link seedMyTestLabelScans} hands back.
@@ -49,32 +81,217 @@ type ScanFixtureResult = {
   applied: boolean;
 };
 
-export const resetMyTestState = mutation({
+// ─── NEO-552 — the fake BuySportsCards account of a test user ───────────────
+//
+// On a deployment wired to the fake BSC (`resolveBscTarget` is not "real",
+// which needs `NEONBINDER_BSC_API_BASE` AND `TESTING_RESET_SECRET`:
+// services/fake-bsc/CONTRACT.md, "App seams"), every test user signs in
+// to the fake as `nb+<convexSlug>-<userTag>@fake.invalid`. The part between
+// `nb+` and the `@`, `<convexSlug>-<userTag>`, is the user's namespace on the
+// fake (CONTRACT.md, "Namespace"): their listings, photos, orders and faults
+// live under it, so two deployments, or two users on one, never share state.
+// The deployment's own namespaces all start with `<convexSlug>-`, which is
+// what the scripted reset clears (`resetFakeBscForDeploymentFromCli`).
+//
+// The password is the fake's fixed sign-in password, not a secret: the fake
+// is reachable only by our own service accounts (CONTRACT.md, "Who may call
+// it"), and a real BSC account never signs in through these helpers.
+
+/** The fake BSC's sign-in password (CONTRACT.md, "Accounts and per-run isolation"). */
+export const FAKE_BSC_PASSWORD = "fake-bsc-password";
+
+/**
+ * Whether this deployment's BSC calls go to the fake rather than the real
+ * site. A test deployment whose fake settings are unusable (`misconfigured`)
+ * counts as fake: it must still seed the fake account and fail on the fake's
+ * calls, never fall back to a real BSC account.
+ */
+export function fakeBscMode(env: Record<string, string | undefined> = process.env): boolean {
+  return resolveBscTarget(env).mode !== "real";
+}
+
+/**
+ * The Convex deployment's slug from `CONVEX_CLOUD_URL`
+ * (`https://<slug>.convex.cloud`), or null when it is missing or not the
+ * shape a Convex slug has. Lowercase letters, digits and hyphens only, so it
+ * is safe inside an email local part.
+ */
+export function convexSlugOf(cloudUrl: string | undefined): string | null {
+  if (!cloudUrl) return null;
+  const slug = /^https:\/\/([a-z0-9-]+)\.convex\.cloud\/?$/.exec(cloudUrl)?.[1];
+  return slug ?? null;
+}
+
+/**
+ * A stable, short tag for one test user: the first 12 hex digits of the
+ * FNV-1a 64-bit hash of their Clerk subject. Stable across runs and
+ * deployments (the same worker account always has the same tag), and it keeps
+ * the Clerk id itself off the fake. Synchronous and runtime-free, so a
+ * mutation and an action derive the same value.
+ */
+export function fakeBscUserTag(userId: string): string {
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of new TextEncoder().encode(userId)) {
+    hash ^= BigInt(byte);
+    hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return hash.toString(16).padStart(16, "0").slice(0, 12);
+}
+
+/**
+ * Every namespace this deployment owns on the fake starts with this:
+ * `<convexSlug>-`. The trailing hyphen keeps one slug from matching another
+ * that merely starts with it.
+ */
+export function fakeBscPrefixFor(cloudUrl: string | undefined): string {
+  const slug = convexSlugOf(cloudUrl);
+  if (!slug) {
+    // Fail closed: a namespace with no deployment in it could collide with
+    // another deployment's, and a reset by an empty prefix would clear them all.
+    throw new Error("Fake BuySportsCards needs this deployment's CONVEX_CLOUD_URL");
+  }
+  return `${slug}-`;
+}
+
+/** The test user's namespace on the fake: `<convexSlug>-<userTag>`. */
+export function fakeBscNamespaceFor(userId: string, cloudUrl: string | undefined): string {
+  return `${fakeBscPrefixFor(cloudUrl)}${fakeBscUserTag(userId)}`;
+}
+
+/** The test user's fake BSC sign-in, `nb+<namespace>@fake.invalid`. */
+export function fakeBscUsernameFor(userId: string, cloudUrl: string | undefined): string {
+  return `nb+${fakeBscNamespaceFor(userId, cloudUrl)}@fake.invalid`;
+}
+
+/**
+ * Every browser-service key this deployment's fake BSC sessions are stored
+ * under starts with this: `buysportscards-credentials-fake-<convexSlug>-`.
+ * Throws without a usable `CONVEX_CLOUD_URL`, like {@link fakeBscPrefixFor}.
+ */
+export function fakeBscCredentialKeyPrefixFor(cloudUrl: string | undefined): string {
+  return `buysportscards-credentials-fake-${fakeBscPrefixFor(cloudUrl)}`;
+}
+
+/**
+ * NEO-552 — the browser service's Secret Manager key for a test user's fake
+ * BSC session: `buysportscards-credentials-fake-<convexSlug>-<clerkUserId>`.
+ *
+ * The bare key (`buysportscards-credentials-<clerkUserId>`) is per Clerk user,
+ * and Secret Manager is one store per GCP project, so every deployment that
+ * signs in the same test user would share one session and overwrite each
+ * other's. Putting the deployment's slug in the key gives each deployment its
+ * own. `credentials.credKey` is the only caller, and only in fake mode: a
+ * deployment on the real BSC keeps the bare key byte for byte.
+ *
+ * The browser service treats the key as opaque under its `KEY_PATTERN`
+ * (`^[a-z0-9]+-credentials-[a-zA-Z0-9_-]+$`): the slug is lowercase letters,
+ * digits and hyphens, and a Clerk id is letters, digits and underscores.
+ */
+export function fakeBscCredentialKeyFor(userId: string, cloudUrl: string | undefined): string {
+  return `${fakeBscCredentialKeyPrefixFor(cloudUrl)}${userId}`;
+}
+
+/**
+ * The caller's namespace when this deployment is on the fake, else null. Only
+ * ever derived from the verified Clerk subject, so a caller can reach no
+ * namespace but their own.
+ */
+function fakeBscNamespaceOf(userId: string): string | null {
+  return fakeBscMode() ? fakeBscNamespaceFor(userId, process.env.CONVEX_CLOUD_URL) : null;
+}
+
+/** What every `internal.fakeBsc` control action answers (it reports, never throws). */
+type FakeBscControlResult = { ok: true; skipped: boolean } | { ok: false; status?: number; error: string };
+
+/**
+ * Throws unless the fake did what was asked. `skipped` means the fake module
+ * found no fake to talk to, which only a caller that already decided this
+ * deployment is on the fake can reach, so it is a failure too.
+ */
+function requireFakeBscDone(result: FakeBscControlResult, what: string): void {
+  if (!result.ok) {
+    throw new Error(`Fake BuySportsCards did not ${what}: ${result.error}${result.status ? ` (${result.status})` : ""}`);
+  }
+  if (result.skipped) {
+    throw new Error(`Fake BuySportsCards did not ${what}: this deployment has no fake to reach`);
+  }
+}
+
+/** What the caller's reset deletes, per table family. */
+const resetCountsFields = {
+  publicProfiles: v.number(),
+  userProfiles: v.number(),
+  prizePool: v.number(),
+  // NEO-358: the caller's collection (copies before the containers they
+  // live in). NEO-359: wants before the containers they may be scoped to.
+  collectionCopies: v.number(),
+  collectionWants: v.number(),
+  // NEO-361: the caller's requests, with their private cards and sets.
+  cardRequests: v.number(),
+  collectionContainers: v.number(),
+  collectionBuildingSets: v.number(),
+  // NEO-378: the caller's common prices per variant.
+  variantCommonPrices: v.number(),
+  // NEO-370: the caller's marketplace listing rows, all four tables
+  // (outbox, per-variant syncs, per-platform states, sales) summed.
+  // NEO-536: the caller's sync reports fold in here too.
+  marketplaceListing: v.number(),
+};
+
+/** Written out to cut the inference cycle described on {@link ScanFixtureResult}. */
+type ResetCounts = { [K in keyof typeof resetCountsFields]: number };
+
+/**
+ * The caller's per-user test state: their rows here, and (NEO-552) their
+ * namespace on the fake BSC when the deployment uses it.
+ *
+ * An action, not a mutation, so the fake's namespace is cleared before this
+ * returns. The reset page goes straight on to the credential seed and the
+ * spec, and a reset scheduled from a mutation could land on the fake after
+ * them, wiping the faults or orders a spec had just set up.
+ *
+ * The rows go first, in one transaction (`resetMyTestStateRows`). If the fake
+ * then fails to answer, the call throws: a spec must not run against a
+ * namespace still holding the last run's listings.
+ */
+export const resetMyTestState = action({
   args: {},
   returns: v.object({
-    publicProfiles: v.number(),
-    userProfiles: v.number(),
-    prizePool: v.number(),
-    // NEO-358: the caller's collection (copies before the containers they
-    // live in). NEO-359: wants before the containers they may be scoped to.
-    collectionCopies: v.number(),
-    collectionWants: v.number(),
-    // NEO-361: the caller's requests, with their private cards and sets.
-    cardRequests: v.number(),
-    collectionContainers: v.number(),
-    collectionBuildingSets: v.number(),
-    // NEO-378: the caller's common prices per variant.
-    variantCommonPrices: v.number(),
+    ...resetCountsFields,
+    // NEO-552: true when the caller's fake BSC namespace was cleared too
+    // (false on a deployment that talks to the real site).
+    fakeBscNamespaceReset: v.boolean(),
   }),
   handler: async (ctx) => {
     // Fail closed in production: the enabling flag is unset there.
     if (!process.env.TESTING_RESET_SECRET) {
       throw new Error("Test reset is not enabled on this deployment");
     }
-
     const userId = await getCurrentUserId(ctx);
     if (!userId) {
       throw new Error("Not authenticated");
+    }
+    const counts: ResetCounts = await ctx.runMutation(internal.testing.resetMyTestStateRows, { userId });
+    const ns = fakeBscNamespaceOf(userId);
+    if (ns) {
+      const done: FakeBscControlResult = await ctx.runAction(internal.fakeBsc.resetNamespace, { ns });
+      requireFakeBscDone(done, "clear your test account");
+    }
+    return { ...counts, fakeBscNamespaceReset: ns !== null };
+  },
+});
+
+/**
+ * The rows half of {@link resetMyTestState}: deletes `userId`'s own per-user
+ * rows. Internal; `userId` comes only from the public action's verified Clerk
+ * subject. Re-checks the testing flag, as every write helper here does.
+ */
+export const resetMyTestStateRows = internalMutation({
+  args: { userId: v.string() },
+  returns: v.object(resetCountsFields),
+  handler: async (ctx, { userId }): Promise<ResetCounts> => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test reset is not enabled on this deployment");
     }
 
     const publicProfiles = await ctx.db
@@ -112,6 +329,13 @@ export const resetMyTestState = mutation({
     }
     // NEO-377 — their photos and files, live or waiting on an Undo.
     await dropOwnerPhotos(ctx, userId);
+    // NEO-481 — their photo edit render tickets, so a rerun inside the hour
+    // starts with the full rate and in-flight allowance.
+    const editTickets = await ctx.db
+      .query("photoEditTickets")
+      .withIndex("by_owner_and_created", (q) => q.eq("ownerId", userId))
+      .collect();
+    for (const row of editTickets) await ctx.db.delete(row._id);
 
     // NEO-359 — wants may name a container as their binder, so they go
     // before the containers too.
@@ -185,6 +409,51 @@ export const resetMyTestState = mutation({
       await ctx.db.delete(row._id);
     }
 
+    // NEO-370 — the caller's listing outbox, per-variant sync records,
+    // per-platform states and sales. Every one is keyed on ownerId first, so
+    // each is a prefix read of its own index.
+    const listingOutbox = await ctx.db
+      .query("listingOutbox")
+      .withIndex("by_owner_platform_variant", (q) => q.eq("ownerId", userId))
+      .collect();
+    const listingSyncs = await ctx.db
+      .query("marketplaceListingSyncs")
+      .withIndex("by_owner_variant_platform", (q) => q.eq("ownerId", userId))
+      .collect();
+    const listingStates = await ctx.db
+      .query("marketplaceListingStates")
+      .withIndex("by_owner_platform", (q) => q.eq("ownerId", userId))
+      .collect();
+    const sales = await ctx.db
+      .query("marketplaceSales")
+      .withIndex("by_owner_date", (q) => q.eq("ownerId", userId))
+      .collect();
+    // NEO-415 — the caller's eBay link rows and eBay settings.
+    const listingLinks = await ctx.db
+      .query("marketplaceListingLinks")
+      .withIndex("by_owner_platform_card_condition", (q) => q.eq("ownerId", userId))
+      .collect();
+    const ebaySettings = await ctx.db
+      .query("ebaySellerSettings")
+      .withIndex("by_owner", (q) => q.eq("ownerId", userId))
+      .collect();
+    // NEO-536 — the caller's sync reports, every status (prefix owner).
+    const syncReports = await ctx.db
+      .query("syncReports")
+      .withIndex("by_owner_status_closed", (q) => q.eq("ownerId", userId))
+      .collect();
+    for (const row of [
+      ...listingOutbox,
+      ...listingSyncs,
+      ...listingStates,
+      ...sales,
+      ...listingLinks,
+      ...ebaySettings,
+      ...syncReports,
+    ]) {
+      await ctx.db.delete(row._id);
+    }
+
     return {
       publicProfiles: publicProfiles.length,
       userProfiles: userProfiles.length,
@@ -195,7 +464,269 @@ export const resetMyTestState = mutation({
       collectionContainers: collectionContainers.length,
       collectionBuildingSets: collectionBuildingSets.length,
       variantCommonPrices: variantCommonPrices.length,
+      marketplaceListing:
+        listingOutbox.length +
+        listingSyncs.length +
+        listingStates.length +
+        sales.length +
+        listingLinks.length +
+        ebaySettings.length +
+        syncReports.length,
     };
+  },
+});
+
+// ─── NEO-552 — the caller's fake BSC faults and orders ──────────────────────
+//
+// What a spec sets up on its own fake BSC account. Both are public actions,
+// because the E2E pages call them as the signed-in worker, and both carry the
+// testing seeds' locks: they throw where `TESTING_RESET_SECRET` is unset
+// (every production deployment), they refuse an anonymous caller, and they act
+// only on the caller's own namespace, derived from the verified Clerk subject
+// (no namespace argument exists to spoof). They also refuse a deployment that
+// talks to the real BSC, so a spec can never aim a fault or an order there.
+// The fake's caller key and ID token are added by `fakeBsc`; nothing secret
+// passes through these arguments or comes back from them.
+
+/** The most rules one call sets: a spec needs a handful, never a list. */
+export const MAX_FAKE_BSC_FAULT_RULES = 20;
+/** Longest delay a rule may ask for: two minutes, past every BSC call budget NB sets. */
+export const MAX_FAKE_BSC_DELAY_MS = 120_000;
+/** Longest a rule may live (the fake's default is 10 minutes). One hour. */
+export const MAX_FAKE_BSC_FAULT_TTL_S = 3_600;
+/** Most items on one injected order. */
+export const MAX_FAKE_BSC_ORDER_ITEMS = 50;
+
+/** One fault rule, as CONTRACT.md "Faults" names it. */
+export const fakeBscFaultRuleValidator = v.object({
+  match: v.object({
+    method: v.union(v.literal("GET"), v.literal("POST"), v.literal("PUT"), v.literal("DELETE")),
+    // The BSC path template NB's own call telemetry uses (`seller/order/:id`).
+    pathTemplate: v.string(),
+    cardId: v.optional(v.string()),
+  }),
+  kind: v.union(v.literal("429"), v.literal("503"), v.literal("delay"), v.literal("hang"), v.literal("reset")),
+  delayMs: v.optional(v.number()),
+  retryAfterS: v.optional(v.number()),
+  times: v.optional(v.number()),
+  ttlS: v.optional(v.number()),
+});
+type FakeBscFaultRule = (typeof fakeBscFaultRuleValidator)["type"];
+
+/**
+ * One order a spec injects into its fake seller's order history, in NB's own
+ * terms; the fake renders BSC's wire shape from it. Ids, conditions and SKUs
+ * are bounded as `parseBscOrder` bounds what it reads.
+ */
+export const fakeBscOrderValidator = v.object({
+  orderNo: v.optional(v.string()),
+  status: v.optional(v.string()),
+  /** When the order was placed, epoch ms. The fake's clock when absent. */
+  orderDateMs: v.optional(v.number()),
+  items: v.array(
+    v.object({
+      cardId: v.string(),
+      condition: v.string(),
+      quantity: v.number(),
+      priceCents: v.optional(v.number()),
+      sellerSku: v.optional(v.string()),
+    }),
+  ),
+});
+type FakeBscOrder = (typeof fakeBscOrderValidator)["type"];
+
+const isWholeIn = (n: number | undefined, min: number, max: number) =>
+  n === undefined || (Number.isInteger(n) && n >= min && n <= max);
+
+/** Throws on the first rule a spec could not have meant; the fake never sees it. */
+export function checkFakeBscFaultRules(rules: FakeBscFaultRule[]): void {
+  if (rules.length === 0 || rules.length > MAX_FAKE_BSC_FAULT_RULES) {
+    throw new Error(`Set between 1 and ${MAX_FAKE_BSC_FAULT_RULES} fault rules`);
+  }
+  for (const rule of rules) {
+    const template = rule.match.pathTemplate;
+    if (
+      template.length === 0 ||
+      template.length > 200 ||
+      !/^[A-Za-z0-9/_:.-]+$/.test(template) ||
+      template.includes("..") ||
+      template.includes("//") ||
+      // A scheme (`https:`) makes it a URL, not a path; `:id` placeholders follow a slash.
+      /^[A-Za-z][A-Za-z0-9+.-]*:/.test(template)
+    ) {
+      throw new Error("A fault rule's pathTemplate must be a BSC path template such as seller/order/:id");
+    }
+    if (rule.match.cardId !== undefined && !/^[A-Za-z0-9-]{1,64}$/.test(rule.match.cardId)) {
+      throw new Error("A fault rule's cardId must be a BSC card id");
+    }
+    if (rule.kind === "delay" && rule.delayMs === undefined) {
+      throw new Error("A delay fault needs delayMs");
+    }
+    if (!isWholeIn(rule.delayMs, 0, MAX_FAKE_BSC_DELAY_MS)) {
+      throw new Error(`delayMs must be a whole number from 0 to ${MAX_FAKE_BSC_DELAY_MS}`);
+    }
+    if (!isWholeIn(rule.retryAfterS, 0, 3_600)) throw new Error("retryAfterS must be a whole number from 0 to 3600");
+    if (!isWholeIn(rule.times, 1, 1_000)) throw new Error("times must be a whole number from 1 to 1000");
+    if (!isWholeIn(rule.ttlS, 1, MAX_FAKE_BSC_FAULT_TTL_S)) {
+      throw new Error(`ttlS must be a whole number from 1 to ${MAX_FAKE_BSC_FAULT_TTL_S}`);
+    }
+  }
+}
+
+/** Throws on an order `parseBscOrder` could not read back. */
+export function checkFakeBscOrder(order: FakeBscOrder): void {
+  const fits = (s: string | undefined, max: number) => s === undefined || (s.trim() !== "" && s.length <= max);
+  if (!fits(order.orderNo, BSC_ORDER_BOUNDS.orderNo)) throw new Error("orderNo is blank or too long");
+  if (!fits(order.status, BSC_ORDER_BOUNDS.status)) throw new Error("status is blank or too long");
+  if (order.orderDateMs !== undefined && !(Number.isInteger(order.orderDateMs) && order.orderDateMs >= 0)) {
+    throw new Error("orderDateMs must be epoch milliseconds");
+  }
+  if (order.items.length === 0 || order.items.length > MAX_FAKE_BSC_ORDER_ITEMS) {
+    throw new Error(`An order carries between 1 and ${MAX_FAKE_BSC_ORDER_ITEMS} items`);
+  }
+  for (const item of order.items) {
+    if (!/^[A-Za-z0-9-]{1,64}$/.test(item.cardId)) throw new Error("An item's cardId must be a BSC card id");
+    if (!fits(item.condition, BSC_ORDER_BOUNDS.condition)) throw new Error("An item's condition is blank or too long");
+    if (!fits(item.sellerSku, BSC_ORDER_BOUNDS.sku)) throw new Error("An item's sellerSku is blank or too long");
+    if (!isWholeIn(item.quantity, 1, 1_000)) throw new Error("An item's quantity must be a whole number from 1 to 1000");
+    if (!isWholeIn(item.priceCents, 0, 100_000_000)) throw new Error("An item's priceCents must be whole cents");
+  }
+}
+
+/**
+ * The caller's namespace for a fault or order call, after the testing locks.
+ * Throws off a testing deployment, for an anonymous caller, and on a
+ * deployment that talks to the real BSC.
+ */
+async function callerFakeBscNamespace(ctx: ActionCtx): Promise<string> {
+  if (!process.env.TESTING_RESET_SECRET) {
+    throw new Error("Fake BuySportsCards controls are not enabled on this deployment");
+  }
+  const userId = await getCurrentUserId(ctx);
+  if (!userId) {
+    throw new Error("Not authenticated");
+  }
+  const ns = fakeBscNamespaceOf(userId);
+  if (!ns) {
+    throw new Error("This deployment talks to the real BuySportsCards, so it takes no fake faults or orders");
+  }
+  return ns;
+}
+
+/**
+ * Replace the caller's fault rules on the fake BSC (CONTRACT.md, "Faults"):
+ * a 429, a 503, a delay, a hang or a reset on the calls a rule matches. The
+ * fake drops each rule after `times` matches or `ttlS` seconds.
+ */
+export const setMyBscFaults = action({
+  args: { rules: v.array(fakeBscFaultRuleValidator) },
+  returns: v.object({ rules: v.number() }),
+  handler: async (ctx, args) => {
+    const ns = await callerFakeBscNamespace(ctx);
+    checkFakeBscFaultRules(args.rules);
+    const done: FakeBscControlResult = await ctx.runAction(internal.fakeBsc.setFaults, { ns, rules: args.rules });
+    requireFakeBscDone(done, "set the fault rules");
+    return { rules: args.rules.length };
+  },
+});
+
+/**
+ * Add one order to the caller's fake seller order history, as a buyer's
+ * purchase would, so the sales poll has something to find.
+ */
+export const addMyBscOrder = action({
+  args: { order: fakeBscOrderValidator },
+  returns: v.object({ items: v.number() }),
+  handler: async (ctx, args) => {
+    const ns = await callerFakeBscNamespace(ctx);
+    checkFakeBscOrder(args.order);
+    const done: FakeBscControlResult = await ctx.runAction(internal.fakeBsc.addOrder, { ns, order: args.order });
+    requireFakeBscDone(done, "add the order");
+    return { items: args.order.items.length };
+  },
+});
+
+/**
+ * Drop every fault rule on the caller's fake BSC account, and nothing else
+ * (listings, photos and orders stay). The E2E suite's teardown for the rules
+ * `setMyBscFaults` set; a spec's own `finally` cannot rely on the rules' TTL,
+ * because a later spec on the same worker would meet whatever is left of it.
+ */
+export const clearMyBscFaults = action({
+  args: {},
+  returns: v.object({ cleared: v.boolean() }),
+  handler: async (ctx) => {
+    const ns = await callerFakeBscNamespace(ctx);
+    const done: FakeBscControlResult = await ctx.runAction(internal.fakeBsc.setFaults, { ns, rules: [] });
+    requireFakeBscDone(done, "clear the fault rules");
+    return { cleared: true };
+  },
+});
+
+/**
+ * Clear this deployment's BSC call gate (`bscCallGate`: the breaker and its
+ * failure run), so a spec that opened it, with a 429 or a run of 5xx or
+ * timeouts, leaves it closed. The gate is DEPLOYMENT-WIDE, not per user: it is
+ * the one control here that reaches past the caller, which is why only specs
+ * tagged `@bsc-breaker` (run alone, after every shard) may move it. Same locks
+ * as the other controls: a testing deployment, a signed-in caller, the fake.
+ */
+export const clearBscCallGate = action({
+  args: {},
+  returns: v.object({ deleted: v.number() }),
+  // Annotated: without it the action's type loops back through `internal` (TS7022).
+  handler: async (ctx): Promise<{ deleted: number }> => {
+    await callerFakeBscNamespace(ctx);
+    const cleared: { deleted: number } = await ctx.runMutation(internal.bscCallGate.clearForTesting, {});
+    return cleared;
+  },
+});
+
+/**
+ * NEO-552 — the scripted reset's fake BSC step (`e2e-baseline.sh reset`):
+ * clears every namespace this deployment owns on the fake (`<slug>-`), so
+ * a new pass starts with no listings, photos, orders or faults from the last.
+ * The fake keeps the catalogue misses (the recorder's to-do list) until they
+ * are recorded.
+ * Internal: reached only by `convex run` with deploy credentials, so the fake's
+ * keys stay on the deployment and never touch the runner. A deployment that
+ * talks to the real BSC has nothing to clear and says so.
+ *
+ * The BSC call breaker is not cleared here: the scripted reset clears it with
+ * the rest of the deployment's tables (`selectorOptions.resetSetBuilderData`).
+ */
+export const resetFakeBscForDeploymentFromCli = internalAction({
+  args: {},
+  returns: v.object({ fake: v.boolean(), prefix: v.optional(v.string()) }),
+  handler: async (ctx) => {
+    if (!process.env.TESTING_RESET_SECRET || !fakeBscMode()) {
+      return { fake: false };
+    }
+    const prefix = fakeBscPrefixFor(process.env.CONVEX_CLOUD_URL);
+    const done: FakeBscControlResult = await ctx.runAction(internal.fakeBsc.resetPrefix, { prefix });
+    requireFakeBscDone(done, "clear this deployment's accounts");
+    return { fake: true, prefix };
+  },
+});
+
+/** How many users one fake-session cleanup reads (a preview has a dozen). */
+export const FAKE_BSC_CLEANUP_MAX_USERS = 200;
+
+/**
+ * NEO-552 — the users whose fake BSC sessions `credentials.deleteFakeBscSessionsFromCli`
+ * deletes: every `userProfiles` row on this deployment, with or without a
+ * saved BSC flag (a per-user reset can drop the flag while the session
+ * stays). Only ids leave this query. Bounded; `truncated` says more exist.
+ * Internal, and empty where the testing flag is unset (production).
+ */
+export const fakeBscCleanupUserIds = internalQuery({
+  args: {},
+  returns: v.object({ userIds: v.array(v.string()), truncated: v.boolean() }),
+  handler: async (ctx) => {
+    if (!process.env.TESTING_RESET_SECRET) return { userIds: [], truncated: false };
+    const rows = await ctx.db.query("userProfiles").take(FAKE_BSC_CLEANUP_MAX_USERS + 1);
+    const userIds = [...new Set(rows.slice(0, FAKE_BSC_CLEANUP_MAX_USERS).map((row) => row.userId))];
+    return { userIds, truncated: rows.length > FAKE_BSC_CLEANUP_MAX_USERS };
   },
 });
 
@@ -251,6 +782,82 @@ export const markSiteNeedsReauth = mutation({
       ),
     });
     return { updated: true };
+  },
+});
+
+/** NEO-433: stands in for a drain run the platform killed: a real scheduled function that really fails. */
+export const failLikeAKilledDrain = internalAction({
+  args: {},
+  returns: v.null(),
+  handler: async () => {
+    throw new Error("E2E fixture: a drain run the platform killed");
+  },
+});
+
+/** NEO-433: how long the killed run below reads as running, so an open status page sees it flip. */
+const KILLED_DRAIN_TICK_MS = 3000;
+
+/**
+ * NEO-433 — the state a drain run the platform killed leaves behind, on the
+ * CALLER's own row: the lease held and their newest sync record running, both
+ * under one token and linked to a function that fails, with the real watcher
+ * on it. A kill can't be produced on demand, and the real 100 s grace is far
+ * past any spec's budget, so the watcher runs with no grace.
+ *
+ * Why this is safe as a public mutation: it throws where TESTING_RESET_SECRET
+ * is unset (production), it takes no owner (only the caller's rows), and it
+ * refuses while a real run holds the lease, so it never takes one from a run.
+ * It touches no outbox row and sends nothing itself. A kick landing on the held
+ * lease is honoured when the lease clears: a real drain, on the caller's row only.
+ */
+export const seedMyTestKilledDrain = mutation({
+  args: { platform: listingPlatformValidator },
+  returns: v.null(),
+  handler: async (ctx, args): Promise<null> => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("The killed-drain fixture is not enabled on this deployment");
+    }
+    const ownerId = await getCurrentUserId(ctx);
+    if (!ownerId) throw new Error("Not authenticated");
+    const state = await ctx.db
+      .query("marketplaceListingStates")
+      .withIndex("by_owner_platform", (q) => q.eq("ownerId", ownerId).eq("platform", args.platform))
+      .unique();
+    if (!state) throw new Error("The killed-drain fixture needs a listing platform");
+    const now = Date.now();
+    if (state.drainLeaseToken !== undefined && (state.drainLeaseExpiresAt ?? 0) > now) {
+      throw new Error("A drain is running; the killed-drain fixture never takes its lease");
+    }
+    const record = await ctx.db
+      .query("marketplaceListingSyncs")
+      .withIndex("by_owner_platform_run", (q) => q.eq("ownerId", ownerId).eq("platform", args.platform))
+      .order("desc")
+      .first();
+    if (!record) throw new Error("The killed-drain fixture needs a set that has synced");
+    const leaseToken = newToken();
+    const fnId = await ctx.scheduler.runAfter(0, internal.testing.failLikeAKilledDrain, {});
+    await ctx.db.patch(state._id, {
+      drainLeaseToken: leaseToken,
+      drainLeaseExpiresAt: now + DRAIN_LEASE_MS,
+      lastUpdated: now,
+    });
+    await ctx.db.patch(record._id, {
+      status: "running",
+      leaseToken,
+      leaseExpiresAt: now + DRAIN_LEASE_MS,
+      lastRunAt: now,
+      progress: { runStartedAt: now, steps: [{ kind: args.platform === "ebay" ? "items" : "send", status: "working" }] },
+      lastUpdated: now,
+    });
+    await ctx.scheduler.runAfter(KILLED_DRAIN_TICK_MS, internal.listingDrain.watchDrainRun, {
+      ownerId,
+      platform: args.platform,
+      leaseToken,
+      fnId,
+      graceMs: 0,
+      tickMs: KILLED_DRAIN_TICK_MS,
+    });
+    return null;
   },
 });
 
@@ -326,6 +933,528 @@ export const seedMyTestPlaceholderStream = mutation({
   },
 });
 
+/**
+ * NEO-411 — a run holding one photo that never got read, for the spec that
+ * proves a failed photo ends on screen and can be sent again.
+ *
+ * A photo the heavy service never answers is minutes of real spend and cannot
+ * be made to happen on cue, so this writes the end state directly: an open
+ * scanner run (the same row `seedMyTestPlaceholderStream` writes), one photo
+ * marked failed with PHOTO_TIMED_OUT, and the intake run that shows it, homed
+ * in the caller's Main. Nothing was uploaded under the photo's key, so Try
+ * again sends it to the fast service, which answers "no such photo" at once
+ * and the photo ends failed again: the real retry path, end to end, at no
+ * model cost.
+ *
+ * Same safety as the seed above: fails closed in production, writes only rows
+ * owned by the CALLER, and leaves an open run the idle sweep closes. Callers
+ * cancel their active runs first (the page does), for the 2-active cap.
+ */
+export const seedMyTestFailedPhotoRun = mutation({
+  args: {},
+  returns: v.object({ runId: v.id("intakeRuns"), jobId: v.string(), originalName: v.string() }),
+  handler: async (ctx) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test placeholder seeding is not enabled on this deployment");
+    }
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+    if (!CLERK_USER_ID_RE.test(userId)) throw new Error("Unexpected user id shape");
+
+    const jobId = crypto.randomUUID();
+    const now = Date.now();
+    const originalName = `never-read-${jobId.slice(0, 8)}.jpg`;
+    await ctx.db.insert("placeholderJobs", {
+      jobId,
+      userId,
+      objectPath: placeholderJobPrefix(userId, jobId),
+      createdAt: now,
+      mode: "stream",
+      status: "collecting",
+      startedAt: now,
+      totalImages: 1,
+      processedImages: 0,
+      failedImages: 1,
+      rejectedEntries: 0,
+      nextEntryIndex: 1,
+      lastActivityAt: now,
+    });
+    await ctx.db.insert("placeholderImages", {
+      jobId,
+      userId,
+      entryIndex: 0,
+      originalName,
+      status: "failed",
+      escalated: true,
+      errorCode: "PHOTO_TIMED_OUT",
+      errorDetail: "seeded for E2E: no answer from the heavy preprocess service",
+      queuedAt: now,
+      escalatedAt: now,
+      heavyStartedAt: now,
+      settledAt: now,
+    });
+    const homeId = await getOrCreateMain(ctx, userId);
+    const runId = await ctx.db.insert("intakeRuns", {
+      userId,
+      jobId,
+      homeId,
+      createdAt: now,
+      lastActivityAt: now,
+    });
+    return { runId, jobId, originalName };
+  },
+});
+
+/**
+ * NEO-481 — turn one of the caller's REAL, already-uploaded scans into a
+ * failed photo, as a 502 or a timeout from `/process-entry` leaves it, so a
+ * spec can prove "Crop by hand" rescues it live (read again, paired, matched).
+ * Preprocess always falls back to some crop, so no fixture fails by itself.
+ *
+ * What it writes, and only that: the image row goes `failed` with
+ * `PROCESS_ENTRY_FAILED` and a seeded detail, every field a read or an edit
+ * wrote is cleared (identity, side, orientation, text count, hash, crop box,
+ * edits), and the job's counters move one photo to failed. The scan's
+ * `extracted/` original is left in GCS: that is what the hand crop renders
+ * from. Pairing then re-runs (forced, so a finished batch re-pairs too), which
+ * drops the photo from its pair, as a real failure would never have paired it;
+ * the intake run's matches follow through the pairing writer.
+ *
+ * `file` is the photo's `originalName`, which must name exactly one photo of
+ * the job. `jobId` is optional: without it, the caller's most recently active
+ * job. Accepted on a photo already uploaded (`queued`, `processing` or
+ * `done`); a work item still in flight then settles into a terminal row and
+ * is ignored, as the pipeline ignores any late completion.
+ *
+ * Same safety as the seeds above: fails closed in production (no
+ * TESTING_RESET_SECRET), signed in, and only the CALLER's own job and photo.
+ * It writes no new rows, so whatever clears the job (the global E2E reset's
+ * `resetPlaceholderJobsBatch`, or the upload page's cancel-first) clears it.
+ */
+export const failMyTestPlaceholderEntry = mutation({
+  args: { file: v.string(), jobId: v.optional(v.string()) },
+  returns: v.object({
+    jobId: v.string(),
+    entryIndex: v.number(),
+    runId: v.union(v.id("intakeRuns"), v.null()),
+  }),
+  handler: async (ctx, args) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test placeholder seeding is not enabled on this deployment");
+    }
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+    if (!CLERK_USER_ID_RE.test(userId)) throw new Error("Unexpected user id shape");
+
+    const job = args.jobId
+      ? await ctx.db
+          .query("placeholderJobs")
+          .withIndex("by_job", (q) => q.eq("jobId", args.jobId as string))
+          .unique()
+      : await ctx.db
+          .query("placeholderJobs")
+          .withIndex("by_user", (q) => q.eq("userId", userId))
+          .order("desc")
+          .first();
+    if (!job || job.userId !== userId) throw new Error("No batch of yours to fail a photo in");
+
+    const named = (
+      await ctx.db
+        .query("placeholderImages")
+        .withIndex("by_job_and_index", (q) => q.eq("jobId", job.jobId))
+        .collect()
+    ).filter((image) => image.originalName === args.file);
+    if (named.length !== 1) {
+      throw new Error(`Expected one photo named ${args.file} in this batch, found ${named.length}`);
+    }
+    const image = named[0];
+    if (image.userId !== userId) throw new Error("No batch of yours to fail a photo in");
+    if (image.status !== "queued" && image.status !== "processing" && image.status !== "done") {
+      throw new Error(`Only an uploaded photo can be failed (this one is ${image.status})`);
+    }
+
+    const now = Date.now();
+    await ctx.db.patch(image._id, {
+      status: "failed",
+      errorCode: "PROCESS_ENTRY_FAILED",
+      errorDetail: "seeded for E2E: preprocess /process-entry answered 502",
+      settledAt: now,
+      workId: undefined,
+      players: undefined,
+      team: undefined,
+      cardNumber: undefined,
+      side: undefined,
+      sideByUser: undefined,
+      rotationDegrees: undefined,
+      orientConfidence: undefined,
+      textCount: undefined,
+      croppedSource: undefined,
+      dhash: undefined,
+      outputExtension: undefined,
+      pairStatus: undefined,
+      edit: undefined,
+      autoCrop: undefined,
+      edits: undefined,
+      pendingEdit: undefined,
+    });
+    await ctx.db.patch(job._id, {
+      processedImages: Math.max(0, (job.processedImages ?? 0) - (image.status === "done" ? 1 : 0)),
+      failedImages: (job.failedImages ?? 0) + 1,
+      lastActivityAt: now,
+    });
+    await ctx.scheduler.runAfter(0, internal.placeholderPairing.runPairing, {
+      jobId: job.jobId,
+      userId,
+      final: false,
+      force: true,
+    });
+    const run = await ctx.db
+      .query("intakeRuns")
+      .withIndex("by_job", (q) => q.eq("jobId", job.jobId))
+      .first();
+    return { jobId: job.jobId, entryIndex: image.entryIndex, runId: run?._id ?? null };
+  },
+});
+
+/**
+ * NEO-441 — a run holding four read photos that no pair claims, for the spec
+ * that drives the Pairing column's pair-by-hand button. Real photos pair
+ * themselves, so a spec cannot keep two of them loose; this writes the state
+ * after reading directly: an open scanner run, four photos `done` with nothing
+ * read off them (no side, no number, no player) and no pair row. Nothing here
+ * schedules `runPairing`, so nothing pairs them before the collector does.
+ *
+ * Same safety as the seeds above: fails closed in production, writes only rows
+ * owned by the CALLER, spends no model budget, and leaves an open run the idle
+ * sweep closes. Callers cancel their active runs first (the page does).
+ */
+const LOOSE_PHOTO_NAMES = ["loose-1.jpg", "loose-2.jpg", "loose-3.jpg", "loose-4.jpg"] as const;
+
+export const seedMyTestLoosePhotosRun = mutation({
+  args: {},
+  returns: v.object({ runId: v.id("intakeRuns") }),
+  handler: async (ctx) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test placeholder seeding is not enabled on this deployment");
+    }
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+    if (!CLERK_USER_ID_RE.test(userId)) throw new Error("Unexpected user id shape");
+
+    const jobId = crypto.randomUUID();
+    const now = Date.now();
+    await ctx.db.insert("placeholderJobs", {
+      jobId,
+      userId,
+      objectPath: placeholderJobPrefix(userId, jobId),
+      createdAt: now,
+      mode: "stream",
+      status: "collecting",
+      startedAt: now,
+      totalImages: LOOSE_PHOTO_NAMES.length,
+      processedImages: LOOSE_PHOTO_NAMES.length,
+      failedImages: 0,
+      rejectedEntries: 0,
+      nextEntryIndex: LOOSE_PHOTO_NAMES.length,
+      lastActivityAt: now,
+    });
+    for (const [entryIndex, originalName] of LOOSE_PHOTO_NAMES.entries()) {
+      await ctx.db.insert("placeholderImages", {
+        jobId,
+        userId,
+        entryIndex,
+        originalName,
+        status: "done",
+        queuedAt: now,
+        settledAt: now,
+      });
+    }
+    const homeId = await getOrCreateMain(ctx, userId);
+    const runId = await ctx.db.insert("intakeRuns", {
+      userId,
+      jobId,
+      homeId,
+      createdAt: now,
+      lastActivityAt: now,
+    });
+    return { runId };
+  },
+});
+
+/**
+ * Set aside every open scan (a match row neither saved nor set aside) in the
+ * caller's 20 newest intake runs, which is what `dashboard.intake` reads: the
+ * In the Hopper section then has nothing to count. Owned rows only.
+ */
+async function setAsideOpenScans(ctx: MutationCtx, userId: string): Promise<number> {
+  const runs = await ctx.db
+    .query("intakeRuns")
+    .withIndex("by_user_and_activity", (q) => q.eq("userId", userId))
+    .order("desc")
+    .take(20);
+  let cleared = 0;
+  for (const run of runs) {
+    const rows = await ctx.db
+      .query("intakeMatches")
+      .withIndex("by_run", (q) => q.eq("runId", run._id))
+      .take(200);
+    for (const row of rows) {
+      if (row.savedAt === undefined && row.setAside !== true) {
+        await ctx.db.patch(row._id, { setAside: true });
+        cleared += 1;
+      }
+    }
+  }
+  return cleared;
+}
+
+/**
+ * NEO-464 — the other half of {@link seedMyTestHopperRun}: leave the caller's
+ * hopper empty, for the dashboard spec that proves In the Hopper stays away
+ * when nothing is in intake. The spec cannot rely on which specs ran on the
+ * account before it, so it asks for the state it needs.
+ *
+ * Same safety as the seeds above: fails closed in production and touches only
+ * rows owned by the CALLER.
+ */
+export const clearMyTestHopper = mutation({
+  args: {},
+  returns: v.object({ cleared: v.number() }),
+  handler: async (ctx) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test placeholder seeding is not enabled on this deployment");
+    }
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+    if (!CLERK_USER_ID_RE.test(userId)) throw new Error("Unexpected user id shape");
+    return { cleared: await setAsideOpenScans(ctx, userId) };
+  },
+});
+
+/**
+ * NEO-464 — a run with one scan still open, for the spec that proves the
+ * signed-in dashboard's In the Hopper section counts it and links the run to
+ * the Add cards tab that finishes it. The hopper counts MATCH rows
+ * (`dashboard.intake`; a photo still being processed has no row yet), so this
+ * writes what a read pair leaves when nothing identified it: an open scanner
+ * run, two photos `done`, one manual pair and one match row with no card
+ * (band "none", reason "noMatch"), homed in the caller's Main. That is "1 scan
+ * processing" on the dashboard and a run the Add cards tab can open. The
+ * caller's earlier open scans are set aside first, so a repeat seeds one scan
+ * again, not another.
+ *
+ * Same safety as the seeds above: fails closed in production, writes only rows
+ * owned by the CALLER, spends no model budget, and leaves an open run the idle
+ * sweep closes. Callers cancel their active runs first (the page does).
+ */
+export const seedMyTestHopperRun = mutation({
+  args: {},
+  returns: v.object({ runId: v.id("intakeRuns") }),
+  handler: async (ctx) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test placeholder seeding is not enabled on this deployment");
+    }
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+    if (!CLERK_USER_ID_RE.test(userId)) throw new Error("Unexpected user id shape");
+
+    // Free the hopper first, like the page frees the active-run cap: the caller's
+    // earlier open scans (an earlier call of this seed leaves one) are set aside,
+    // so the dashboard counts exactly the scan written below.
+    await setAsideOpenScans(ctx, userId);
+
+    const jobId = crypto.randomUUID();
+    const now = Date.now();
+    await ctx.db.insert("placeholderJobs", {
+      jobId,
+      userId,
+      objectPath: placeholderJobPrefix(userId, jobId),
+      createdAt: now,
+      mode: "stream",
+      status: "collecting",
+      startedAt: now,
+      totalImages: 2,
+      processedImages: 2,
+      failedImages: 0,
+      rejectedEntries: 0,
+      nextEntryIndex: 2,
+      lastActivityAt: now,
+    });
+    for (const entryIndex of [0, 1]) {
+      await ctx.db.insert("placeholderImages", {
+        jobId,
+        userId,
+        entryIndex,
+        originalName: `hopper-${jobId.slice(0, 8)}-${entryIndex}.jpg`,
+        status: "done",
+        queuedAt: now,
+        settledAt: now,
+      });
+    }
+    const pairId = await ctx.db.insert("placeholderPairs", {
+      jobId,
+      userId,
+      frontIndex: 0,
+      backIndex: 1,
+      confidence: "side-only",
+      mechanism: "manual",
+      score: 0,
+    });
+    const homeId = await getOrCreateMain(ctx, userId);
+    const runId = await ctx.db.insert("intakeRuns", { userId, jobId, homeId, createdAt: now, lastActivityAt: now });
+    await ctx.db.insert("intakeMatches", {
+      runId,
+      userId,
+      pairId,
+      frontIndex: 0,
+      backIndex: 1,
+      readKey: "hopper",
+      confidence: 0,
+      band: "none",
+      reason: "noMatch",
+      candidates: [],
+      variations: [],
+    });
+    return { runId };
+  },
+});
+
+/**
+ * NEO-427 — a run with one saved card whose scans failed to reach its copy, for
+ * the spec that drives a Saved tile's failed states. A real attach can't be made
+ * to fail on cue, so this writes the end state over a real copy.
+ *
+ * The card sits in its own `PhotoFixture-<id>` set under the real Baseball >
+ * 2024 > Topps, and the copy in its own unlisted box, so nothing else on the
+ * account sees it and nothing lists. No file was uploaded under the job, so Try
+ * again on "error" runs the real path and comes back with the scans gone.
+ *
+ * Same safety as the seeds above: fails closed in production, writes only rows
+ * owned by the CALLER (the set is per seed), and leaves an open run the idle
+ * sweep closes. Callers cancel their active runs first (the page does).
+ */
+export const seedMyTestSavedPhotoFailureRun = mutation({
+  args: { photoFailure: intakePhotoFailureValidator },
+  returns: v.object({ runId: v.id("intakeRuns"), copyId: v.id("collectionCopies") }),
+  handler: async (ctx, args): Promise<{ runId: Id<"intakeRuns">; copyId: Id<"collectionCopies"> }> => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test placeholder seeding is not enabled on this deployment");
+    }
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+    if (!CLERK_USER_ID_RE.test(userId)) throw new Error("Unexpected user id shape");
+
+    const childNamed = async (level: "sport" | "year" | "manufacturer", value: string, parentId?: Id<"selectorOptions">) => {
+      const rows = await ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) => q.eq("level", level).eq("parentId", parentId))
+        .take(200);
+      const row = rows.find((r) => r.value === value);
+      if (!row) throw new Error(`This seed needs Baseball > 2024 > Topps on the deployment: no ${value}`);
+      return row._id;
+    };
+    const sportId = await childNamed("sport", "Baseball");
+    const yearId = await childNamed("year", "2024", sportId);
+    const brandId = await childNamed("manufacturer", "Topps", yearId);
+
+    const jobId = crypto.randomUUID();
+    const now = Date.now();
+    const minted = `PhotoFixture-${jobId.slice(0, 8)}`;
+    // The Set Builder's own writers, so the set and card are born as the app
+    // makes them. They are admin-gated, as every E2E account is.
+    const setId = await ctx.runMutation(api.selectorOptions.addCustomSelectorOption, {
+      level: "setName",
+      value: minted,
+      parentId: brandId,
+    });
+    const baseId = await ctx.runMutation(api.selectorOptions.addCustomSelectorOption, {
+      level: "variantType",
+      value: "Base",
+      parentId: setId,
+    });
+    const cardId = await ctx.runMutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: baseId,
+      cardNumber: "1",
+      cardName: "Testcard",
+    });
+    const homeId = await ctx.db.insert("collectionContainers", {
+      ownerId: userId,
+      kind: "box",
+      name: minted,
+      listedOnMarketplaces: false,
+      lastUpdated: now,
+    });
+    const { result, change } = await addOne(
+      ctx,
+      userId,
+      cardId,
+      { quantity: 1, homeId },
+      await defaultConditionOf(ctx, userId),
+      new ListingGate(ctx, userId),
+      { keepsOwnLine: true },
+    );
+    await applyCopyChanges(ctx, userId, [change]);
+
+    await ctx.db.insert("placeholderJobs", {
+      jobId,
+      userId,
+      objectPath: placeholderJobPrefix(userId, jobId),
+      createdAt: now,
+      mode: "stream",
+      status: "collecting",
+      startedAt: now,
+      totalImages: 2,
+      processedImages: 2,
+      failedImages: 0,
+      rejectedEntries: 0,
+      nextEntryIndex: 2,
+      lastActivityAt: now,
+    });
+    for (const entryIndex of [0, 1]) {
+      await ctx.db.insert("placeholderImages", {
+        jobId,
+        userId,
+        entryIndex,
+        originalName: `${minted}-${entryIndex}.jpg`,
+        status: "done",
+        queuedAt: now,
+        settledAt: now,
+      });
+    }
+    const pairId = await ctx.db.insert("placeholderPairs", {
+      jobId,
+      userId,
+      frontIndex: 0,
+      backIndex: 1,
+      confidence: "side-only",
+      mechanism: "manual",
+      score: 0,
+    });
+    const runId = await ctx.db.insert("intakeRuns", { userId, jobId, homeId, createdAt: now, lastActivityAt: now });
+    await ctx.db.insert("intakeMatches", {
+      runId,
+      userId,
+      pairId,
+      frontIndex: 0,
+      backIndex: 1,
+      readKey: "1",
+      cardId,
+      confidence: 97,
+      band: "matched",
+      reason: "numberAndPlayer",
+      candidates: [cardId],
+      variations: [],
+      savedCopyId: result.copyId,
+      savedQuantity: 1,
+      savedAt: now,
+      photos: "failed",
+      photoFailure: args.photoFailure,
+      photoAttempt: 1,
+    });
+    return { runId, copyId: result.copyId };
+  },
+});
+
 // Server-side marketplace-credential seeding for E2E test isolation (NEO-29).
 //
 // Problem: the retired Maestro flows received real BSC/SportLots passwords via
@@ -344,8 +1473,75 @@ const SEED_SITE_ENV: Record<string, { username: string; password: string }> = {
   sportlots: { username: "DEV_SPORTLOTS_USERNAME", password: "DEV_SPORTLOTS_PASSWORD" },
 };
 
+/** One entry of {@link seedMyTestCredentials}' `seeded` array. */
+type SeededSite = { site: string; stored: boolean; skipped?: boolean; reason?: string };
+
+/**
+ * NEO-489: the reason a listing-on BSC seed reports when its listing save
+ * left the row dormant on a seller conflict (another NB owner already lists
+ * from the same BSC seller account). Carries no id.
+ */
+export const SEED_BSC_SELLER_CONFLICT_REASON =
+  "BuySportsCards listing not started (sellerConflict): this seller account already lists from another NeonBinder account.";
+
+/**
+ * NEO-483 — a listing-on BuySportsCards seed: exactly one store with listing
+ * on (`credentials.storeTestCredentials`, a fresh password login), whatever
+ * the saved session's state. That login reads BSC's seller profile, and
+ * `credentials.runSiteLogin` saves the seller account when it answers; when
+ * the read stalls the seed does not wait for it. Listing is set up all the
+ * same, and the drain holds the queue (`listingDrain.claimDrain`,
+ * `awaitingSeller`) until the spaced background read lands the account
+ * (`bscSellerId`). Sync status says "Waiting on BuySportsCards…" meanwhile,
+ * which the seller specs wait on.
+ *
+ * NEO-489: when the login did save the account, `listingSync.setUpListing`
+ * checks one NB owner per seller account and can leave the row dormant on
+ * `sellerConflict`. The row is read after the store
+ * (`listingSync.listingSettings`); a conflict reports stored false with
+ * {@link SEED_BSC_SELLER_CONFLICT_REASON}, so the seed hop names it instead of
+ * a later step missing its "Listing your boxes" line. A conflict found later,
+ * when the background read lands the account, shows on Sync status as "Seller
+ * account in use".
+ *
+ * A failed store (`success: false` or a throw) reports that store's message,
+ * fixed per-site product copy that never carries an id, password or token.
+ */
+async function seedBscListing(
+  ctx: ActionCtx,
+  args: { userId: string; username: string; password: string },
+): Promise<SeededSite> {
+  const site = "buysportscards";
+  let stored: { success: boolean; message: string };
+  try {
+    stored = await ctx.runAction(internal.credentials.storeTestCredentials, {
+      userId: args.userId,
+      site,
+      username: args.username,
+      password: args.password,
+      listing: true,
+    });
+  } catch (error) {
+    stored = { success: false, message: error instanceof Error ? error.message : String(error) };
+  }
+  if (!stored.success) return { site, stored: false, reason: stored.message };
+  const settings = await ctx.runQuery(api.listingSync.listingSettings, {});
+  return settings.bsc.sellerConflict
+    ? { site, stored: false, reason: SEED_BSC_SELLER_CONFLICT_REASON }
+    : { site, stored: true };
+}
+
 export const seedMyTestCredentials = action({
-  args: { sites: v.optional(v.array(v.string())) },
+  args: {
+    sites: v.optional(v.array(v.string())),
+    // NEO-370 Revision 5: whether the seeded marketplace sign-ins LIST (a
+    // saved sign-in is listing: counts pushed, sales polled). Default false:
+    // the suite's accounts carry the test marker
+    // (`marketplaceListingStates.testListingOff`) so nothing reaches a real
+    // marketplace unless a spec asks (`/testing/seed-credentials?listing=on`).
+    // True clears the marker and starts listing as a collector's own save.
+    listing: v.optional(v.boolean()),
+  },
   returns: v.object({
     seeded: v.array(
       v.object({
@@ -382,12 +1578,7 @@ export const seedMyTestCredentials = action({
     const requested = args.sites ?? ["buysportscards", "sportlots"];
     const wantsScanFixture = requested.includes(SCAN_FIXTURE_SELECTOR);
     const sites = requested.filter((site) => site !== SCAN_FIXTURE_SELECTOR);
-    const seeded: Array<{
-      site: string;
-      stored: boolean;
-      skipped?: boolean;
-      reason?: string;
-    }> = [];
+    const seeded: SeededSite[] = [];
 
     if (wantsScanFixture) {
       const fixture: ScanFixtureResult = await ctx.runMutation(
@@ -408,9 +1599,41 @@ export const seedMyTestCredentials = action({
         seeded.push({ site, stored: false, skipped: true });
         continue;
       }
+      // NEO-415 — eBay signs in by OAuth, so the seed holds no password: it
+      // connects with a refresh token minted out of band for the sandbox
+      // seller (`DEV_EBAY_REFRESH_TOKEN`), through the browser service's
+      // refresh-token grant (`credentials.connectEbay`, refused off testing
+      // deployments and off the eBay sandbox, as the service refuses it in
+      // production). One token exchange, no browser login, so it simply
+      // reconnects every time. Skipped like any site with no dev secret.
+      if (site === "ebay") {
+        const refreshToken = process.env.DEV_EBAY_REFRESH_TOKEN;
+        if (!refreshToken || !ebayConfigured() || ebayConfig()?.environment !== "sandbox") {
+          seeded.push({ site, stored: false, skipped: true });
+          continue;
+        }
+        const connected = await ctx.runAction(internal.credentials.connectEbay, {
+          userId,
+          refreshToken,
+          listing: args.listing === true ? "save" : "testOff",
+        });
+        seeded.push({ site, stored: connected.ok, ...(connected.ok ? {} : { reason: connected.error }) });
+        continue;
+      }
+      // NEO-552 — on a deployment wired to the fake BSC, the BSC sign-in is
+      // the caller's own fake account (their namespace there) and the fake's
+      // fixed password, never the DEV_BSC_* account: no real BSC credential
+      // reaches the fake, and each test user gets state of their own. The rest
+      // of the seed (the renewable-session skip, the listing branch) is the
+      // same for both.
+      const fakeBsc = site === "buysportscards" && fakeBscMode();
       const envKeys = SEED_SITE_ENV[site];
-      const username = envKeys ? process.env[envKeys.username] : undefined;
-      const password = envKeys ? process.env[envKeys.password] : undefined;
+      const username = fakeBsc
+        ? fakeBscUsernameFor(userId, process.env.CONVEX_CLOUD_URL)
+        : envKeys
+          ? process.env[envKeys.username]
+          : undefined;
+      const password = fakeBsc ? FAKE_BSC_PASSWORD : envKeys ? process.env[envKeys.password] : undefined;
       if (!username || !password) {
         // No dev creds configured for this site on this deployment — skip
         // rather than failing the whole seed call.
@@ -484,6 +1707,14 @@ export const seedMyTestCredentials = action({
             (typeof existing.expiresAt !== "number" ||
               existing.expiresAt > Date.now() + REAUTH_LEEWAY_MS));
 
+      // NEO-483: a listing-on BSC seed is exactly one store with listing on
+      // (see seedBscListing), taking both branches below over. It no longer
+      // waits for the seller account: the drain does.
+      if (site === "buysportscards" && args.listing === true) {
+        seeded.push(await seedBscListing(ctx, { userId, username, password }));
+        continue;
+      }
+
       if (credsMatch && sessionRenewable) {
         // Correct secret already present — ensure the flag (a prior
         // /testing/reset may have cleared the userProfile row while Secret
@@ -503,20 +1734,26 @@ export const seedMyTestCredentials = action({
           site,
           hasCredentials: true,
           needsReauth: false,
+          listing: args.listing === true ? "save" : "testOff",
         });
         seeded.push({ site, stored: true });
         continue;
       }
 
-      // NEO-89: saveCredentials already updates hasCredentials server-side on
+      // NEO-89: the store already updates hasCredentials server-side on
       // a successful store, so no separate follow-up mutation is needed here
       // (unlike the credsMatch branch above, which skips the store call
       // entirely and so must set the flag itself).
-      const storeResult = await ctx.runAction(api.credentials.saveCredentials, {
-        site,
-        username,
-        password,
-      });
+      //
+      // NEO-370 Revision 5: through the internal store
+      // (`credentials.storeTestCredentials`, the same connect-and-store as
+      // `saveCredentials`) so the seed, not a collector's save, decides
+      // whether the sign-in lists: the marker is written in the same mutation
+      // as the credential flag, so nothing can start listing in between.
+      const storeResult: { success: boolean; message: string } = await ctx.runAction(
+        internal.credentials.storeTestCredentials,
+        { userId, site, username, password, listing: args.listing === true },
+      );
 
       // NEO-294: carry `saveCredentials`' own message through on a failure.
       // It is already product copy shown to real users (a fixed per-site
@@ -561,7 +1798,13 @@ export const seedMyTestCredentials = action({
         userId,
         apiKey: easypostKey,
       });
-      seeded.push({ site: "easypost", stored: result.success });
+      // NEO-604: carry the store's reason through on a failure, like the
+      // marketplace loop above (the message holds an HTTP status, never the key).
+      seeded.push({
+        site: "easypost",
+        stored: result.success,
+        ...(result.success ? {} : { reason: result.message }),
+      });
     }
 
     return { seeded };
@@ -779,5 +2022,821 @@ export const seedMyTestLabelScans = internalMutation({
       scans: scans.length,
       applied: result.applied,
     };
+  },
+});
+
+/**
+ * NEO-464: moves the caller's last dashboard open back past `VISIT_GAP_MS`, so
+ * the next open starts a new visit and "N cards filed since your last visit"
+ * can be proved live. Nothing else can produce it on demand: a new visit needs
+ * thirty minutes away from the dashboard, which no spec can wait.
+ *
+ * The open lands `VISIT_GAP_MS` plus a second ago, so the next visit's "new"
+ * starts there: everything filed in that window counts, which is why a spec
+ * reads its own binder's spine, not an exact total. `sinceAt` is dropped (the
+ * visit it belonged to is over).
+ *
+ * Safety, in the same shape as the other helpers in this file: fails closed in
+ * production (`TESTING_RESET_SECRET` is unset there); touches only the CALLER's
+ * own profile (no userId argument); and changes one timestamp that only decides
+ * what the dashboard calls new. It grants nothing and deletes nothing.
+ */
+export const backdateMyDashboardVisit = mutation({
+  args: {},
+  returns: v.object({ backdated: v.boolean() }),
+  handler: async (ctx) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test dashboard-visit backdating is not enabled on this deployment");
+    }
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) {
+      throw new Error("Not authenticated");
+    }
+    const profile = await ctx.db
+      .query("userProfiles")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .unique();
+    // No open yet: the next one is a first visit whatever this does.
+    if (!profile?.dashboardVisit) return { backdated: false };
+    await ctx.db.patch(profile._id, {
+      dashboardVisit: { seenAt: Date.now() - VISIT_GAP_MS - 1000 },
+    });
+    return { backdated: true };
+  },
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-464 — what a sale and a sync problem look like on the dashboard
+// ───────────────────────────────────────────────────────────────────────────
+
+// The marks live in `lib/testSeedMarks` so the order poll can skip a seeded
+// order without importing this file; the clear deletes only rows carrying them.
+export { TEST_SALE_ORDER_PREFIX, TEST_SYNC_MARK, TEST_OUTBOX_SEQ };
+
+/**
+ * A sync record exactly as `seedMyTestSync` wrote it, untouched by any real
+ * run since: marked, failed, and never claimed. A real run's claim
+ * (`listingDrain.claimVariant`) sets `status: "running"`, a lease and a
+ * `progress` ledger without clearing `lastError`, and a run that dies keeps
+ * the mark under `status: "error"` with the ledger and any conditions it
+ * pushed. Such a record is the drain's, so the seed never replaces it and the
+ * clear never deletes it. The seed writes three shapes, all marked: a failed
+ * set (`status: "error"`), a recovered one (`status: "idle"`, a later clean
+ * run: the mark rides on `lastError`, which a real finish always clears) and
+ * (NEO-536) a held one (`status: "idle"` with one card held back, the mark on
+ * `lastError` likewise).
+ */
+function isUntouchedTestSyncRecord(record: Doc<"marketplaceListingSyncs">): boolean {
+  return (
+    (record.status === "error" || record.status === "idle") &&
+    (record.lastError ?? "").startsWith(TEST_SYNC_MARK) &&
+    record.leaseToken === undefined &&
+    record.progress === undefined &&
+    record.conditionsPushed.length === 0
+  );
+}
+
+/**
+ * The caller's copy the dashboard seeds name: the most recently touched line
+ * of a catalog card in a box, else in any home, else null. A private card is
+ * never one (it has no listing and no variant). Bounded: 200 lines.
+ */
+async function seedCopyOf(
+  ctx: MutationCtx,
+  userId: string,
+): Promise<{ cardId: Id<"cardChecklist">; variantId: Id<"selectorOptions">; boxed: boolean } | null> {
+  const rows = await ctx.db
+    .query("collectionCopies")
+    .withIndex("by_owner_and_lastUpdated", (q) => q.eq("ownerId", userId))
+    .order("desc")
+    .take(200);
+  let fallback: { cardId: Id<"cardChecklist">; variantId: Id<"selectorOptions">; boxed: boolean } | null = null;
+  for (const row of rows) {
+    const cardId = ctx.db.normalizeId("cardChecklist", row.cardId);
+    if (!cardId || row.variantId === undefined) continue;
+    const home = await ctx.db.get(row.homeId);
+    if (home?.kind === "box") return { cardId, variantId: row.variantId, boxed: true };
+    fallback ??= { cardId, variantId: row.variantId, boxed: false };
+  }
+  return fallback;
+}
+
+/**
+ * The first platform where NB neither pushes the caller's counts nor polls
+ * their orders (`listingOutbox.pushesCounts`, the one rule for both), so a
+ * seeded order is not read by a poll while the seed is fresh. Null when the
+ * caller lists on all of them.
+ */
+async function quietPlatformOf(ctx: MutationCtx, userId: string): Promise<"bsc" | "ebay" | null> {
+  for (const platform of LISTING_PLATFORMS) {
+    const state = await listingStateOf(ctx, userId, platform);
+    if (!state || !pushesCounts(state)) return platform;
+  }
+  return null;
+}
+
+/**
+ * NEO-464: what a sale looks like on the dashboard, for the CALLER only.
+ * Writes one paid order waiting to ship (`marketplaceSales`, status
+ * READY_TO_SHIP on BuySportsCards, or eBay's PAID) for the caller's most
+ * recently touched boxed copy (else any catalog copy of theirs, else a line
+ * NB could not tie to a card), so the sales section and Out the Door draw.
+ * The copy is not lowered (`applied` is set so nothing ever applies it).
+ *
+ * No marketplace is called for it: the order goes on a platform NB does not
+ * poll for the caller (`quietPlatformOf`; with both being polled it is
+ * refused), and if the caller starts listing there later, the poll still
+ * leaves it out (`listingSales.pollInput` drops every order whose `orderId`
+ * carries `TEST_SALE_ORDER_PREFIX`), so it is never re-read by id. The same
+ * prefix lets `clearMyTestDashboardSeeds` remove exactly what this wrote.
+ *
+ * Safety, in the same shape as the other helpers in this file: fails closed
+ * in production (`TESTING_RESET_SECRET` is unset there); acts on the caller
+ * only (no userId argument).
+ */
+export const seedMyTestSale = mutation({
+  args: {},
+  returns: v.object({ platform: listingPlatformValidator, orderNo: v.string(), matched: v.boolean() }),
+  handler: async (ctx) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test sale seeding is not enabled on this deployment");
+    }
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) {
+      throw new Error("Not authenticated");
+    }
+    const platform = await quietPlatformOf(ctx, userId);
+    if (!platform) {
+      throw new Error("This account's orders are polled on every marketplace, so a test sale would be read as a real one.");
+    }
+    const copy = await seedCopyOf(ctx, userId);
+    const now = Date.now();
+    const token = newToken().slice(0, 8);
+    const orderNo = `TEST-${token.toUpperCase()}`;
+    await ctx.db.insert("marketplaceSales", {
+      ownerId: userId,
+      platform,
+      orderId: `${TEST_SALE_ORDER_PREFIX}${token}`,
+      orderNo,
+      // Sold yesterday, so the row reads "1 day".
+      orderDate: now - 86_400_000,
+      status: platform === "ebay" ? "PAID" : "READY_TO_SHIP",
+      totals: { subtotalCents: 500, shippingCents: 100, totalCents: 600 },
+      items: [
+        {
+          platformCardId: `${TEST_SALE_ORDER_PREFIX}${token}-1`,
+          ...(copy ? { cardId: copy.cardId } : {}),
+          condition: "Near Mint",
+          quantity: 1,
+          priceCents: 500,
+          applied: true,
+          appliedAt: now,
+          ...(copy ? {} : { problem: "unmatched" as const }),
+        },
+      ],
+      firstSeenAt: now,
+      lastUpdated: now,
+    });
+    return { platform, orderNo, matched: copy !== null };
+  },
+});
+
+/**
+ * NEO-464: what the dashboard's sync status looks like, for the CALLER only,
+ * on EVERY listing platform (`LISTING_PLATFORMS`), each one reported on its
+ * own. `pending`: one card queued for the next sync (`listingOutbox`, seq
+ * `TEST_OUTBOX_SEQ`). `error`: one set whose last run failed and held a card
+ * back (`marketplaceListingSyncs`, its sentences led by `TEST_SYNC_MARK`).
+ * Both name the caller's most recently touched catalog copy (a boxed one
+ * first); with none it is refused.
+ *
+ * Nothing it writes makes NB call a marketplace on its own account:
+ * - the queued card goes only on a platform NB does not push for the caller
+ *   (`pushesCounts`, as `quietPlatformOf`): a drain reads the queue and would
+ *   list it. On a platform NB pushes, it is skipped and the result says so.
+ *   It also needs a boxed copy (NB lists only boxed cards); with only a
+ *   binder copy it is skipped with a note.
+ * - the failed-set record is only a summary NB shows; no drain or cron acts on
+ *   an `error` record, and the next real run of that set rewrites it. It
+ *   never carries a `lastSuccessAt` and carries no conditions pushed, on any
+ *   platform, so that next run treats it exactly like no record (a full
+ *   read). A set that already has a record on a platform which is not this
+ *   seed's own untouched record (`isUntouchedTestSyncRecord`: a real one, or
+ *   a seeded one a real run has claimed) is left alone there: that platform
+ *   is skipped with a note, the others still seeded.
+ *
+ * `recovered` (instead of `error`, never with it): the set's failure, then a
+ * later clean sync, as the dashboard reads them: ONE record per set and
+ * marketplace, so the later run is the record. It is written as an idle record
+ * with a run time and no problems, no `lastSuccessAt` (so the next real run
+ * still reads in full, as for a failed seed) and the mark on `lastError`. It
+ * replaces a failed seed on the same set (the dashboard then shows the set no
+ * more: it put itself right) and, like the failed seed, is left alone where a
+ * real record stands, and cleared by the same clear.
+ *
+ * `held` (NEO-536, instead of `error` or `recovered`, never with them): the
+ * set's last sync went through but held the card back for that reason, so
+ * the dashboard lists it as holding a card back and, for a reason only the
+ * admin team can fix, offers to report it. Written as an idle record (no
+ * `lastSuccessAt`, the mark on `lastError` as for a recovered set) whose one
+ * problem names the card with that reason; `rejected` and `missingAspect`
+ * carry a marked detail. Replaced and left alone, and cleared, as the others.
+ * `noLeague` (NEO-569) is written on eBay only: no other platform holds a
+ * card back for its league, so the others get a note instead.
+ *
+ * Safety as `seedMyTestSale`: production refuses it; caller only.
+ */
+export const seedMyTestSync = mutation({
+  args: {
+    pending: v.boolean(),
+    error: v.boolean(),
+    recovered: v.optional(v.boolean()),
+    held: v.optional(listingProblemReasonValidator),
+  },
+  returns: v.object({
+    platforms: v.array(
+      v.object({
+        platform: listingPlatformValidator,
+        pending: v.boolean(),
+        error: v.boolean(),
+        recovered: v.optional(v.boolean()),
+        held: v.optional(v.boolean()),
+        note: v.optional(v.string()),
+      }),
+    ),
+  }),
+  handler: async (ctx, args) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test sync seeding is not enabled on this deployment");
+    }
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) {
+      throw new Error("Not authenticated");
+    }
+    if (args.error && args.recovered) {
+      throw new Error("Ask for a failed set or a recovered one: a recovered set is one a later sync put right.");
+    }
+    if (args.held !== undefined && (args.error || args.recovered)) {
+      throw new Error("Ask for a held set on its own: it is one set's last sync, and so is a failed or recovered one.");
+    }
+    const copy = await seedCopyOf(ctx, userId);
+    if (!copy) {
+      throw new Error("Add a card to a box first: the test sync names one of your cards.");
+    }
+    const now = Date.now();
+    const platforms = [];
+    for (const platform of LISTING_PLATFORMS) {
+      const state = await listingStateOf(ctx, userId, platform);
+      const pushes = state !== null && pushesCounts(state);
+      const notes: string[] = [];
+      let pending = false;
+      let error = false;
+      if (args.pending) {
+        if (pushes) {
+          notes.push("no queued card: NB lists this account here, so a real sync would pick it up");
+        } else if (!copy.boxed) {
+          notes.push("no queued card: your newest card is in a binder, and NB lists only boxed cards");
+        } else {
+          await ctx.db.insert("listingOutbox", {
+            ownerId: userId,
+            platform,
+            cardId: copy.cardId,
+            variantId: copy.variantId,
+            seq: TEST_OUTBOX_SEQ,
+            changedAt: now,
+          });
+          pending = true;
+        }
+      }
+      let recovered = false;
+      let held = false;
+      const heldElsewhere = args.held === "noLeague" && platform !== "ebay";
+      if (heldElsewhere) notes.push("no held set: only eBay holds a card back for its league");
+      if (!heldElsewhere && (args.error || args.recovered || args.held !== undefined)) {
+        const asked = args.held !== undefined ? "held set" : args.recovered ? "recovered set" : "failed set";
+        const existing = await ctx.db
+          .query("marketplaceListingSyncs")
+          .withIndex("by_owner_variant_platform", (q) =>
+            q.eq("ownerId", userId).eq("variantId", copy.variantId).eq("platform", platform),
+          )
+          .first();
+        if (existing && !isUntouchedTestSyncRecord(existing)) {
+          notes.push(
+            (existing.lastError ?? "").startsWith(TEST_SYNC_MARK)
+              ? `no ${asked}: a real sync has picked up the test record here`
+              : `no ${asked}: that set already has a real sync record here`,
+          );
+        } else {
+          const heldDetail =
+            args.held === "rejected"
+              ? `${TEST_SYNC_MARK}The marketplace turned this card down.`
+              : args.held === "missingAspect"
+                ? `${TEST_SYNC_MARK}Year Manufactured`
+                : undefined;
+          const record =
+            args.held !== undefined
+              ? {
+                  ownerId: userId,
+                  variantId: copy.variantId,
+                  platform,
+                  status: "idle" as const,
+                  lastRunAt: now - 5 * 60_000,
+                  // The mark rides on `lastError` as on a recovered record, so the clear finds it.
+                  lastError: `${TEST_SYNC_MARK}This set synced and held one card back.`,
+                  problems: [
+                    { cardId: copy.cardId, reason: args.held, ...(heldDetail !== undefined ? { detail: heldDetail } : {}) },
+                  ],
+                  problemsTotal: 1,
+                  conditionsPushed: [],
+                  lastUpdated: now,
+                }
+              : args.recovered
+                ? {
+                    ownerId: userId,
+                    variantId: copy.variantId,
+                    platform,
+                    status: "idle" as const,
+                    lastRunAt: now - 60_000,
+                    // The mark stays on a finished-clean record so the clear finds it; a real finish clears `lastError`.
+                    lastError: `${TEST_SYNC_MARK}A sync failed here once, and a later one went through.`,
+                    problems: [],
+                    problemsTotal: 0,
+                    conditionsPushed: [],
+                    lastUpdated: now,
+                  }
+                : {
+                    ownerId: userId,
+                    variantId: copy.variantId,
+                    platform,
+                    status: "error" as const,
+                    lastRunAt: now - 10 * 60_000,
+                    lastError: `${TEST_SYNC_MARK}The marketplace didn't answer, so this set didn't sync. NB tries again on the next sync.`,
+                    problems: [{ cardId: copy.cardId, reason: "noPrice" as const, detail: `${TEST_SYNC_MARK}No price set.` }],
+                    problemsTotal: 1,
+                    conditionsPushed: [],
+                    lastUpdated: now,
+                  };
+          if (existing) await ctx.db.replace(existing._id, record);
+          else await ctx.db.insert("marketplaceListingSyncs", record);
+          if (args.held !== undefined) held = true;
+          else if (args.recovered) recovered = true;
+          else error = true;
+        }
+      }
+      platforms.push({
+        platform,
+        pending,
+        error,
+        ...(args.recovered ? { recovered } : {}),
+        ...(args.held !== undefined ? { held } : {}),
+        ...(notes.length > 0 ? { note: notes.join("; ") } : {}),
+      });
+    }
+    return { platforms };
+  },
+});
+
+/**
+ * NEO-464: removes what `seedMyTestSale` and `seedMyTestSync` wrote for the
+ * CALLER, and nothing else: orders whose `orderId` carries
+ * `TEST_SALE_ORDER_PREFIX`, queued cards at `TEST_OUTBOX_SEQ`, and sync
+ * records still exactly as the seed wrote them (`isUntouchedTestSyncRecord`;
+ * one a real run has claimed is the drain's and stays). Bounded reads (the
+ * caller's newest 200 orders, 200 queued cards and 200 records per platform).
+ * Safety as `seedMyTestSale`.
+ */
+export const clearMyTestDashboardSeeds = mutation({
+  args: {},
+  returns: v.object({ sales: v.number(), queued: v.number(), records: v.number() }),
+  handler: async (ctx) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test dashboard seeds are not enabled on this deployment");
+    }
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) {
+      throw new Error("Not authenticated");
+    }
+    const out = { sales: 0, queued: 0, records: 0 };
+    const orders = await ctx.db
+      .query("marketplaceSales")
+      .withIndex("by_owner_date", (q) => q.eq("ownerId", userId))
+      .order("desc")
+      .take(200);
+    for (const order of orders) {
+      if (!order.orderId.startsWith(TEST_SALE_ORDER_PREFIX)) continue;
+      await ctx.db.delete(order._id);
+      out.sales += 1;
+    }
+    for (const platform of LISTING_PLATFORMS) {
+      const queued = await ctx.db
+        .query("listingOutbox")
+        .withIndex("by_owner_platform_changed", (q) => q.eq("ownerId", userId).eq("platform", platform))
+        .take(200);
+      for (const row of queued) {
+        if (row.seq !== TEST_OUTBOX_SEQ) continue;
+        await ctx.db.delete(row._id);
+        out.queued += 1;
+      }
+      const records = await ctx.db
+        .query("marketplaceListingSyncs")
+        .withIndex("by_owner_platform_run", (q) => q.eq("ownerId", userId).eq("platform", platform))
+        .take(200);
+      for (const record of records) {
+        if (!isUntouchedTestSyncRecord(record)) continue;
+        await ctx.db.delete(record._id);
+        out.records += 1;
+      }
+    }
+    return out;
+  },
+});
+
+// ── NEO-500: a BuySportsCards order to pick, for the Pick List spec ────────
+
+/** Lines one seeded order may name, and copies one line may sell. */
+const PICK_SEED_MAX_CARDS = 20;
+const PICK_SEED_MAX_QUANTITY = 10;
+/** Boxes and box copies the seed looks through (a suite account holds a handful). */
+const PICK_SEED_SCAN = 500;
+/** Described unmatched lines (`listedLines`) one seeded order may carry. */
+const PICK_SEED_MAX_LISTED = 3;
+/** The spec-minted order number: one token, so it is also a safe id suffix. */
+const PICK_SEED_ORDER_NO_RE = /^[A-Za-z0-9_-]{1,40}$/;
+
+/**
+ * NEO-500 — a BuySportsCards order on the CALLER's account, recorded and
+ * applied exactly as the order poll would, for the Pick List spec. Sales
+ * cannot be made on cue (the seller accounts are shared, and a real BSC order
+ * is a real buyer), so this builds the projected order the poll would have
+ * stored and runs the poll's own two steps (`recordOrderCore`,
+ * `applySaleLinesCore`) in this one mutation, skipping only the poll gate
+ * (whether the account's listing state polls sales).
+ *
+ * The order: status READY_TO_SHIP, `orderId` = `TEST_SALE_ORDER_PREFIX` +
+ * `orderNo` (so the poll never re-reads it from BSC), one line per
+ * `cards` entry over the caller's box named `boxName`: the card in that box
+ * with that card number (exactly one, or it refuses), its BSC card id from the
+ * card's own `platformData.bsc.ref`, the BSC condition the box copy's NB
+ * condition lists as, and the SKU NB would have pushed for (card, condition,
+ * box). `badLine` adds one line whose SKU is not NB's ("Can't find it").
+ * `listedLines` (NEO-509, at most `PICK_SEED_MAX_LISTED`) adds one more line
+ * per entry that NB cannot match, whose description (`listed`) names a card
+ * in the set of the order's first card: the sport row's name and its BSC
+ * sport id (its `platformData.bsc` slot, so the store resolves NB's sport by
+ * id as it would for a real order), the year row's name, the set as the Pick
+ * List labels it (`${season} ${name}`), the given players, the given card
+ * number, and variant "Base". A blank or absent `cardNumber` writes no
+ * `cardNo` at all: a description with too little to file the line under a
+ * set (it stays under "Can't find it" and still shows what BSC said). Each
+ * line carries its own BSC card id and SKU (`nb-test-listed-card-<n>`,
+ * `nb-test-listed-not-an-nb-sku-<n>`, n from 1), so the store keys them
+ * apart.
+ * Seeding an `orderNo` that exists records the stored order again as it is
+ * (a retried hop applies nothing twice and does not look at the box again);
+ * `ship` re-records it as SHIPPED, which takes it off the Pick List.
+ *
+ * Safety, in the same shape as the other seeds here:
+ *   - fails closed in production (`TESTING_RESET_SECRET` is unset there);
+ *   - only the CALLER's rows: their box, their copies, their sale (no owner
+ *     argument to spoof);
+ *   - calls no marketplace, and refuses outright while the caller pushes
+ *     counts to any platform (`listsAnywhere`): the suite's accounts carry the
+ *     test marker, so the copies it lowers queue nothing for a drain.
+ */
+export const seedMyTestPickOrder = mutation({
+  args: {
+    orderNo: v.string(),
+    boxName: v.optional(v.string()),
+    cards: v.optional(v.array(v.object({ cardNumber: v.string(), quantity: v.number() }))),
+    badLine: v.optional(v.boolean()),
+    listedLines: v.optional(v.array(v.object({ cardNumber: v.optional(v.string()), players: v.string() }))),
+    ship: v.optional(v.boolean()),
+  },
+  returns: v.object({ saleId: v.id("marketplaceSales"), lines: v.number(), applied: v.number() }),
+  handler: async (ctx, args) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("The pick-order seed is not enabled on this deployment");
+    }
+    const ownerId = await getCurrentUserId(ctx);
+    if (!ownerId) throw new Error("Not authenticated");
+    if (!PICK_SEED_ORDER_NO_RE.test(args.orderNo)) throw new Error("orderNo must be one token (letters, digits, - or _)");
+    if (await listsAnywhere(ctx, ownerId)) {
+      throw new Error("The pick-order seed refuses an account that pushes to a marketplace");
+    }
+    const orderId = `${TEST_SALE_ORDER_PREFIX}${args.orderNo}`;
+    const existing = await ctx.db
+      .query("marketplaceSales")
+      .withIndex("by_owner_platform_order", (q) => q.eq("ownerId", ownerId).eq("platform", "bsc").eq("orderId", orderId))
+      .unique();
+
+    let order: ProjectedOrder;
+    if (args.ship && !existing) throw new Error(`No seeded order ${args.orderNo} to ship`);
+    if (existing) {
+      // Seeded before: record the stored order again (a retried hop, or
+      // `ship`), never re-resolved from the box, whose copies it took.
+      order = {
+        orderId,
+        orderNo: existing.orderNo,
+        orderDate: existing.orderDate,
+        status: args.ship ? "SHIPPED" : existing.status,
+        totals: existing.totals,
+        items: existing.items.map((item) => ({
+          platformCardId: item.platformCardId,
+          condition: item.condition,
+          quantity: item.quantity,
+          priceCents: item.priceCents,
+          ...(item.sellerSku !== undefined ? { sellerSku: item.sellerSku } : {}),
+          graded: false,
+        })),
+      };
+    } else {
+      const cards = args.cards ?? [];
+      if (cards.length === 0 || cards.length > PICK_SEED_MAX_CARDS) {
+        throw new Error(`cards must name 1-${PICK_SEED_MAX_CARDS} cards`);
+      }
+      const wantListed = args.listedLines ?? [];
+      if (wantListed.length > PICK_SEED_MAX_LISTED) {
+        throw new Error(`listedLines may name at most ${PICK_SEED_MAX_LISTED} lines`);
+      }
+      // Checked before anything is read: players are required, a card number
+      // is optional (blank = none), and each present value is display text
+      // within the bound the store keeps.
+      const listedLines = wantListed.map((line, i): { players: string; cardNo?: string } => {
+        const players = bscListedText(line.players, BSC_LISTED_BOUNDS.players);
+        const rawNo = (line.cardNumber ?? "").trim();
+        const cardNo = rawNo === "" ? undefined : bscListedText(rawNo, BSC_LISTED_BOUNDS.cardNo);
+        if (players === null || cardNo === null) {
+          throw new Error(`listedLines[${i}] needs players, and a card number only if any, within bounds`);
+        }
+        return { players, ...(cardNo !== undefined ? { cardNo } : {}) };
+      });
+      const boxName = (args.boxName ?? "").trim();
+      const boxes = (
+        await ctx.db
+          .query("collectionContainers")
+          .withIndex("by_owner_and_system", (q) => q.eq("ownerId", ownerId).eq("system", undefined))
+          .take(PICK_SEED_SCAN)
+      ).filter((c) => c.kind === "box" && c.name.trim() === boxName);
+      if (boxes.length !== 1) throw new Error(`Expected exactly one box named "${boxName}", found ${boxes.length}`);
+      const box = boxes[0];
+      const copies = await ctx.db
+        .query("collectionCopies")
+        .withIndex("by_owner_home_slot", (q) => q.eq("ownerId", ownerId).eq("homeId", box._id))
+        .take(PICK_SEED_SCAN);
+      const eras = new Map<string, BscEra | null>();
+      const items: ProjectedOrder["items"] = [];
+      let firstCard: Doc<"cardChecklist"> | null = null;
+      for (const want of cards) {
+        if (!Number.isInteger(want.quantity) || want.quantity < 1 || want.quantity > PICK_SEED_MAX_QUANTITY) {
+          throw new Error(`quantity must be 1-${PICK_SEED_MAX_QUANTITY}`);
+        }
+        // The box's catalog cards with this number: exactly one.
+        const matches = new Map<string, Doc<"cardChecklist">>();
+        for (const copy of copies) {
+          const cardId = ctx.db.normalizeId("cardChecklist", copy.cardId);
+          if (!cardId || matches.has(cardId)) continue;
+          const card = await ctx.db.get(cardId);
+          if (card && card.cardNumber === want.cardNumber) matches.set(cardId, card);
+        }
+        if (matches.size !== 1) {
+          throw new Error(`Expected one card #${want.cardNumber} in "${boxName}", found ${matches.size}`);
+        }
+        const card = [...matches.values()][0];
+        firstCard ??= card;
+        const ref = card.platformData?.bsc?.ref;
+        if (!ref) throw new Error(`Card #${want.cardNumber} has no BuySportsCards id`);
+        const copy = copies.find((c) => c.cardId === card._id && c.grading === undefined && c.condition !== undefined);
+        if (!copy?.condition) throw new Error(`Card #${want.cardNumber} has no raw copy with a condition in "${boxName}"`);
+        const era = await eraOfVariant(ctx, card.selectorOptionId, eras);
+        if (era === null) throw new Error(`Card #${want.cardNumber} has no year to read its BSC era from`);
+        const bscCondition = bscConditionFor(copy.condition, era);
+        items.push({
+          platformCardId: ref,
+          condition: bscCondition,
+          quantity: want.quantity,
+          priceCents: 100,
+          sellerSku: buildListingSku({ cardId: card._id, bscCondition, boxId: box._id }),
+          graded: false,
+        });
+      }
+      if (args.badLine) {
+        items.push({
+          platformCardId: "nb-test-unknown-card",
+          condition: "near_mint",
+          quantity: 1,
+          priceCents: 100,
+          sellerSku: "nb-test-not-an-nb-sku",
+          graded: false,
+        });
+      }
+      if (listedLines.length > 0 && firstCard) {
+        const set = await new CatalogReader(ctx).setRef(firstCard.selectorOptionId);
+        if (!set?.sport || !set.year) throw new Error(`Card #${firstCard.cardNumber} has no sport, year or set above it`);
+        const sportRow = await ctx.db.get(set.sport._id);
+        const platformSportId = sportRow ? slotIds(sportRow, "bsc")[0] : undefined;
+        for (const [i, line] of listedLines.entries()) {
+          items.push({
+            platformCardId: `nb-test-listed-card-${i + 1}`,
+            condition: "near_mint",
+            quantity: 1,
+            priceCents: 100,
+            sellerSku: `nb-test-listed-not-an-nb-sku-${i + 1}`,
+            graded: false,
+            listed: {
+              sport: set.sport.name,
+              ...(platformSportId !== undefined ? { platformSportId } : {}),
+              year: set.year.name,
+              setName: `${set.season} ${set.name}`,
+              players: line.players,
+              ...(line.cardNo !== undefined ? { cardNo: line.cardNo } : {}),
+              variant: "Base",
+            },
+          });
+        }
+      }
+      const subtotalCents = items.reduce((sum, item) => sum + item.quantity * item.priceCents, 0);
+      order = {
+        orderId,
+        orderNo: args.orderNo,
+        orderDate: Date.now(),
+        status: "READY_TO_SHIP",
+        totals: { subtotalCents, totalCents: subtotalCents },
+        items,
+      };
+    }
+
+    const recorded = await recordOrderCore(ctx, { ownerId, platform: "bsc", order }, { skipPollGate: true });
+    if (recorded.saleId === null) throw new Error("The order was not recorded");
+    let applied = 0;
+    for (let i = 0; i < recorded.toApply.length; i += SALE_ITEMS_PER_APPLY) {
+      const r = await applySaleLinesCore(
+        ctx,
+        { ownerId, saleId: recorded.saleId, indexes: recorded.toApply.slice(i, i + SALE_ITEMS_PER_APPLY) },
+        { skipPollGate: true },
+      );
+      applied += r.applied;
+    }
+    return { saleId: recorded.saleId, lines: order.items.length, applied };
+  },
+});
+
+// ── NEO-520: an eBay order NB didn't list, for the unmatched-sale spec ─────
+
+/** Lines one seeded eBay order may carry, and copies one line may sell. */
+const EBAY_SEED_MAX_LINES = 3;
+const EBAY_SEED_MAX_QUANTITY = 10;
+
+/**
+ * A line's quantity, bounded in the validator: one of the whole numbers
+ * 1..`EBAY_SEED_MAX_QUANTITY`, so a zero, fractional or huge quantity is
+ * refused before the handler runs (typed `number` for the caller). The
+ * line count and the title cannot be bounded by a Convex validator, so
+ * `ebaySeedLinesProblem` checks them first thing in the handler.
+ */
+const ebaySeedQuantityValidator = v.union(
+  ...Array.from({ length: EBAY_SEED_MAX_QUANTITY }, (_, i) => v.literal(i + 1)),
+);
+
+/**
+ * Why `lines` is out of bounds, or null: at most `EBAY_SEED_MAX_LINES`
+ * lines, each quantity a whole number 1..`EBAY_SEED_MAX_QUANTITY` (again,
+ * beside the validator), each title one `ebayLineTitle` keeps (bounded,
+ * no control or format character). Runs before any read, on every call that
+ * names lines (a retry or `ship` included), so nothing unbounded goes
+ * further. Whether a new order names at least one line is checked where the
+ * order is built.
+ */
+function ebaySeedLinesProblem(lines: ReadonlyArray<{ title?: string; quantity: number }>): string | null {
+  if (lines.length > EBAY_SEED_MAX_LINES) return `lines must name 1-${EBAY_SEED_MAX_LINES} lines`;
+  for (let i = 0; i < lines.length; i += 1) {
+    const { quantity, title } = lines[i];
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > EBAY_SEED_MAX_QUANTITY) {
+      return `quantity must be 1-${EBAY_SEED_MAX_QUANTITY}`;
+    }
+    if (title !== undefined && ebayLineTitle(title) === null) return `lines[${i}].title is not a title NB would keep`;
+  }
+  return null;
+}
+
+/**
+ * NEO-520 — an eBay order on the CALLER's account whose every line is one
+ * NeonBinder didn't list (no NB SKU), recorded and applied exactly as the
+ * order poll would, for the unmatched-sale spec. A real sandbox order can't
+ * be made on cue, so this builds the raw Fulfillment `Order` the poll reads
+ * and runs it through the poll's own path: `projectEbayOrder` (the real
+ * projection, title bounds included) → `projectEbayOrderForRecord` (with no
+ * date floor) → `recordOrderCore` → `applySaleLinesCore`, skipping only the
+ * poll gate (whether the account's listing state polls sales).
+ *
+ * The order: PAID, NOT_STARTED, created now, `orderId` =
+ * `TEST_SALE_ORDER_PREFIX` + `orderNo` (so the poll never re-reads it from
+ * eBay; the order number shown is the spec's own token). One line per
+ * `lines` entry (1-3): legacy item id `nb-test-item-<n>`, SKU
+ * `nb-test-other-<n>` (not NB's, so the apply refuses it as unmatched and
+ * touches no box), the given quantity at $1.00 each, and the given title (a
+ * title the projection would drop is refused here instead, so the spec never
+ * lands on the no-title words by accident; an absent title sends none). No
+ * buyer, ship-to or any other buyer field is written.
+ * Seeding an `orderNo` that exists records the stored order again as it is;
+ * `ship` re-records it as FULFILLED, which takes it off the Pick List.
+ *
+ * Safety, in the same shape as `seedMyTestPickOrder`:
+ *   - fails closed in production (`TESTING_RESET_SECRET` is unset there);
+ *   - only the CALLER's rows (no owner argument to spoof);
+ *   - calls no marketplace, and refuses outright while the caller pushes
+ *     counts to any platform (`listsAnywhere`);
+ *   - every argument is bounded before any read: the quantity in the
+ *     validator, the order number, line count and titles first thing in the
+ *     handler.
+ */
+export const seedMyTestEbayOrder = mutation({
+  args: {
+    orderNo: v.string(),
+    lines: v.optional(v.array(v.object({ title: v.optional(v.string()), quantity: ebaySeedQuantityValidator }))),
+    ship: v.optional(v.boolean()),
+  },
+  returns: v.object({ saleId: v.id("marketplaceSales"), lines: v.number(), applied: v.number() }),
+  handler: async (ctx, args) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("The eBay order seed is not enabled on this deployment");
+    }
+    const ownerId = await getCurrentUserId(ctx);
+    if (!ownerId) throw new Error("Not authenticated");
+    if (!PICK_SEED_ORDER_NO_RE.test(args.orderNo)) throw new Error("orderNo must be one token (letters, digits, - or _)");
+    const linesProblem = args.lines !== undefined ? ebaySeedLinesProblem(args.lines) : null;
+    if (linesProblem !== null) throw new Error(linesProblem);
+    if (await listsAnywhere(ctx, ownerId)) {
+      throw new Error("The eBay order seed refuses an account that pushes to a marketplace");
+    }
+    const orderId = `${TEST_SALE_ORDER_PREFIX}${args.orderNo}`;
+    const existing = await ctx.db
+      .query("marketplaceSales")
+      .withIndex("by_owner_platform_order", (q) => q.eq("ownerId", ownerId).eq("platform", "ebay").eq("orderId", orderId))
+      .unique();
+
+    let order: ProjectedOrder;
+    if (args.ship && !existing) throw new Error(`No seeded eBay order ${args.orderNo} to ship`);
+    if (existing) {
+      // Seeded before: record the stored order again (a retried hop, or `ship`).
+      order = {
+        orderId,
+        orderNo: existing.orderNo,
+        orderDate: existing.orderDate,
+        status: args.ship ? "FULFILLED" : existing.status,
+        totals: existing.totals,
+        items: existing.items.map((item) => ({
+          platformCardId: item.platformCardId,
+          condition: item.condition,
+          quantity: item.quantity,
+          priceCents: item.priceCents,
+          ...(item.sellerSku !== undefined ? { sellerSku: item.sellerSku } : {}),
+          graded: false,
+        })),
+      };
+    } else {
+      // Bounded above (`ebaySeedLinesProblem`); a new order needs a line.
+      const lines = args.lines ?? [];
+      if (lines.length === 0) throw new Error(`lines must name 1-${EBAY_SEED_MAX_LINES} lines`);
+      const lineItems = lines.map((line, i) => ({
+        lineItemId: `nb-test-line-${i + 1}`,
+        legacyItemId: `nb-test-item-${i + 1}`,
+        sku: `nb-test-other-${i + 1}`,
+        ...(line.title !== undefined ? { title: line.title } : {}),
+        quantity: line.quantity,
+        lineItemCost: { value: line.quantity.toFixed(2), currency: "USD" },
+      }));
+      const subtotal = lines.reduce((sum, line) => sum + line.quantity, 0).toFixed(2);
+      const created = new Date().toISOString();
+      const raw = {
+        orderId,
+        creationDate: created,
+        lastModifiedDate: created,
+        orderPaymentStatus: "PAID",
+        orderFulfillmentStatus: "NOT_STARTED",
+        pricingSummary: {
+          priceSubtotal: { value: subtotal, currency: "USD" },
+          total: { value: subtotal, currency: "USD" },
+        },
+        lineItems,
+      };
+      const projected = projectEbayOrder(raw);
+      const recordable = projected ? projectEbayOrderForRecord(projected, { otherOrdersFrom: null }) : null;
+      if (!recordable) throw new Error("The seeded eBay order did not project");
+      // eBay shows the order id as its number; the spec reads its own token.
+      order = { ...recordable, orderNo: args.orderNo };
+    }
+
+    const recorded = await recordOrderCore(ctx, { ownerId, platform: "ebay", order }, { skipPollGate: true });
+    if (recorded.saleId === null) throw new Error("The order was not recorded");
+    let applied = 0;
+    for (let i = 0; i < recorded.toApply.length; i += SALE_ITEMS_PER_APPLY) {
+      const r = await applySaleLinesCore(
+        ctx,
+        { ownerId, saleId: recorded.saleId, indexes: recorded.toApply.slice(i, i + SALE_ITEMS_PER_APPLY) },
+        { skipPollGate: true },
+      );
+      applied += r.applied;
+    }
+    return { saleId: recorded.saleId, lines: order.items.length, applied };
   },
 });

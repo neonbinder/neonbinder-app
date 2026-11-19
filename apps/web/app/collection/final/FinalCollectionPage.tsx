@@ -1,6 +1,5 @@
 import {
   lazy,
-  startTransition,
   Suspense,
   useCallback,
   useContext,
@@ -10,10 +9,10 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useLocation, useNavigate, useNavigationType } from "react-router";
+import { useLocation, useNavigationType } from "react-router";
 import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
-import NoticeLine, { type Notice } from "../prototypes/p1/notice";
-import CardDrawer from "./CardDrawer";
+import NoticeLine, { NoticeSpokenContext } from "../prototypes/p1/notice";
+import { isOpen, OpenCardDrawer, useCardDrawer } from "./drawerControl";
 import type { RowActions } from "./CardRows";
 import { drillToCard, EMPTY_DRILL, type Drill } from "./catalog/drill";
 import { useDrillState } from "./catalog/useDrillState";
@@ -52,7 +51,6 @@ import {
   useSetPath,
   useWants,
   wantToggle,
-  writeErrorMessage,
 } from "./data/store";
 import type {
   Capabilities,
@@ -60,16 +58,29 @@ import type {
   CardId,
   CollectionTab,
   Container,
-  CopyId,
   Scope,
   Side,
   Suggestion,
-  Undo,
   Want,
 } from "./data/types";
 import { useHomeName, useScopedName } from "./catalog/home";
-import { DRAWER_MODE_PARAM, DRAWER_PARAM, viewOf } from "./drawerParams";
+import { viewOf } from "./drawerParams";
 import InventoryListTab from "./inventory/InventoryListTab";
+// The Sales and Sync status tabs (NEO-370) load only when opened.
+const SalesTab = lazy(() => import("./inventory/listing/SalesTab"));
+const SyncStatusTab = lazy(() => import("./inventory/listing/SyncStatusTab"));
+// NEO-500 — the Pick List: the demo's fixture, or the signed-in seller's
+// orders through the Convex store mounted around it.
+const PickListTab = lazy(() => import("./pick/PickListTab"));
+const ConvexPickListTab = lazy(() =>
+  import("./pick/convexPickStore").then(({ ConvexPickListProvider }) => ({
+    default: (props: { onTitleDetail: (detail: string | null) => void }) => (
+      <ConvexPickListProvider>
+        <PickListTab {...props} />
+      </ConvexPickListProvider>
+    ),
+  })),
+);
 // The inventory Checklists' target box (`box=`, NEO-364 D8): replaced in
 // place by the picker, carried here on each drill step within Checklists
 // like the scope, and dropped on a tab change (the Inventory list's rail
@@ -89,7 +100,6 @@ import {
   useCollectionParams,
   useCollectionSide,
   useGoToSide,
-  usePushParams,
   useReplaceParams,
   useSetScope,
   ViewScopeProvider,
@@ -98,9 +108,9 @@ import {
 import {
   PageApiContext,
   type ChecklistsTarget,
-  type OpenCardOptions,
   type PageApi,
 } from "./pageApi";
+import { useFloatingClearance, useStatusLine } from "./statusLine";
 import type { GoToTabParams } from "./store";
 
 /**
@@ -167,6 +177,11 @@ const TABS: Record<Side, TabDef[]> = {
     { key: "boxes", label: "My Boxes" },
     { key: "checklists", label: "Checklists" },
     { key: "add", label: "Add cards", needs: "intake" },
+    { key: "pick", label: "Pick List", needs: "pickList" },
+    // NEO-370 — orders from the marketplaces the collector lists on.
+    { key: "sales", label: "Sales", needs: "marketplaceListing" },
+    // NEO-370 Rev 4 — what is syncing, what waits, and each set's last result.
+    { key: "sync", label: "Sync status", needs: "marketplaceListing" },
   ],
 };
 
@@ -190,67 +205,16 @@ function redirectFor(side: Side, params: URLSearchParams): { side: Side; tab: Co
   if (side === "collection" && (tab === "inventory" || tab === "boxes")) return { side: "inventory", tab: "boxes" };
   if (side === "inventory" && tab === "inventory") return { side: "inventory", tab: "boxes" };
   if (side === "inventory" && tab === "binders") return { side: "collection", tab: "binders" };
+  // NEO-370: sales are the inventory's (what sold came out of a box).
+  if (side === "collection" && (tab === "sales" || tab === "sync" || tab === "pick")) return { side: "inventory", tab };
   return null;
 }
 
-/**
- * Runs a notice's undo. A store's undo is a write of its own: the demo's
- * lands in this same click, a server's when it answers. `onDone` runs once it
- * has landed (never before: a line the undo puts back is only the server's
- * once it answers), `onError` when it was refused.
- */
-function runUndo(undo: () => unknown, onDone: () => void, onError: (error: unknown) => void) {
-  let pending: unknown;
-  try {
-    pending = undo();
-  } catch (error) {
-    onError(error);
-    return;
-  }
-  if (pending instanceof Promise) pending.then(onDone, onError);
-  else onDone();
-}
-
-/** Room kept under a field the keyboard reaches while the floating status line is up. */
-const NOTICE_CLEARANCE = "6rem";
-
-/** What Ctrl/⌘+Z says when the status line has no Undo to give. */
-const NOTHING_TO_UNDO = "Nothing to undo.";
-
-/** What an undo that the server refused says on the status line. */
-function undoFailed(error: unknown): string {
-  return `That undo didn't go through. ${writeErrorMessage(error)}`;
-}
-
-const NOTICE_MS = 10_000;
 /** How long the search box waits for a pause in typing before it writes `q`. */
 const QUERY_SETTLE_MS = 300;
 
 /** The params that say a picked search suggestion. */
 const ENTITY_PARAMS = [PLAYER_PARAM, TEAM_PARAM, FRANCHISE_PARAM, WHOLE_PARAM];
-
-/**
- * What the opener knew that the URL does not carry: the list the drawer's
- * ↑ ↓ step through, the card as drawn, the copy to ring. Kept for the card
- * it was set for; a drawer reopened from the URL alone steps through just
- * its own card.
- */
-interface DrawerExtras {
-  cardId: CardId;
-  listIds: CardId[];
-  seed?: Card;
-  copyId?: CopyId;
-  /** The home the add form picks instead of the page's scope. */
-  binderId?: string;
-  /** Open `copyId`'s Edit form when it is the card's one line (a row click). */
-  edit?: boolean;
-  key: number;
-}
-
-/** The history state on an entry the drawer pushed: Close steps Back off it. */
-interface DrawerHistoryState {
-  drawer?: boolean;
-}
 
 export interface FinalCollectionPageProps {
   /** `"app"` (default): `/collection` or `/inventory`. `"public"`: the no-login demo. */
@@ -264,6 +228,12 @@ export interface FinalCollectionPageProps {
   keepParams?: Record<string, string>;
   /** Public mode: leave the demo ("Back to the tour"). */
   onExit?: () => void;
+  /**
+   * Public mode inside the dashboard demo's shell (NEO-464): the shell already
+   * has the tabs (both sides, Sign up, Back to the tour), so the demo drops
+   * its own right-edge rail, mobile exits and side switch.
+   */
+  shell?: boolean;
 }
 
 export default function FinalCollectionPage({
@@ -271,11 +241,12 @@ export default function FinalCollectionPage({
   surface = "collection",
   keepParams,
   onExit,
+  shell = false,
 }: FinalCollectionPageProps) {
   const mounted = useContext(CollectionStoreContext);
   const page = (
     <CollectionModeProvider mode={mode} keepParams={keepParams} surface={surface}>
-      <SidePage onExit={onExit} />
+      <SidePage onExit={onExit} shell={shell} />
     </CollectionModeProvider>
   );
   if (mounted) return page;
@@ -289,25 +260,35 @@ export default function FinalCollectionPage({
 }
 
 /** The page on its side: every view below reads the side from `SideProvider`. */
-function SidePage({ onExit }: { onExit?: () => void }) {
+function SidePage({ onExit, shell }: { onExit?: () => void; shell: boolean }) {
   const side = useCollectionSide();
   return (
     <SideProvider value={side}>
-      <CollectionPage side={side} onExit={onExit} />
+      <CollectionPage side={side} onExit={onExit} shell={shell} />
     </SideProvider>
   );
 }
 
-function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
+function CollectionPage({ side, onExit, shell }: { side: Side; onExit?: () => void; shell: boolean }) {
   const { mode, keepParams } = useCollectionMode();
   const isPublic = mode === "public";
-  const { capabilities, demo, binderMemory, kind: storeKind } = useCollectionStore();
+  const { capabilities: storeCapabilities, demo, binderMemory, listing, kind: storeKind } = useCollectionStore();
+  // NEO-370: listing needs the store's listing half as well as the flag.
+  // NEO-500: a store that lists shows the Pick List only beside Sales (sales
+  // are what it pulls); the demo, which never lists, shows its fixture's.
+  const capabilities = useMemo<Capabilities>(() => {
+    const listingOn = storeCapabilities.marketplaceListing && listing !== undefined;
+    return {
+      ...storeCapabilities,
+      marketplaceListing: listingOn,
+      pickList: storeCapabilities.pickList && (listingOn || !storeCapabilities.marketplaceListing),
+    };
+  }, [storeCapabilities, listing]);
   const containers = useContainers();
   const tabs = tabsFor(side, capabilities);
   const [params, setParams] = useCollectionParams();
   const replaceParams = useReplaceParams();
   const goToSide = useGoToSide();
-  const navigate = useNavigate();
   const tabParam = params.get("tab");
   const onInventory = side === "inventory";
   // A tab this side does not have (`?tab=binders` where binders are not
@@ -431,6 +412,8 @@ function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
     urlBox ? { ...p, [TARGET_BOX_PARAM]: urlBox } : p;
 
   // --- Page title ------------------------------------------------------------
+  // The Pick List's By the Box names the box it is on (NEO-500).
+  const [pickDetail, setPickDetail] = useState<string | null>(null);
   const titleSetId = !onChecklists ? params.get("set") : null;
   const titlePath = useSetPath(titleSetId);
   const titleSet = titlePath
@@ -455,6 +438,8 @@ function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
       )?.name ?? null;
   } else if (tab === "checklists") {
     detail = drillState.title;
+  } else if (tab === "pick") {
+    detail = pickDetail;
   }
   const label = TABS[side].find((t) => t.key === tab)?.label ?? SIDE_TITLE[side];
   const page = `${SIDE_TITLE[side]}${isPublic ? " demo" : ""}`;
@@ -490,67 +475,9 @@ function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
   }, [capabilities.scope, onInventory, containers, opening, scope, params, setScope]);
 
   // --- Status line -----------------------------------------------------------
-  const [notice, setNotice] = useState<Notice | null>(null);
-  // The line waits while the pointer rests on it or the keyboard is in it, so
-  // Undo can always be reached in time (WCAG 2.2.1); it counts again after.
-  const held = useNoticeHold();
-  // No manual memo here: the React Compiler memoizes these handlers itself.
-  const notify = (message: string, undo?: () => void) => {
-    setNotice((prev) => ({ id: (prev?.id ?? 0) + 1, message, undo }));
-  };
-  useEffect(() => {
-    // A running undo keeps its line up: "Undone." (or why not) replaces it.
-    if (!notice || held || notice.undoing) return;
-    const t = setTimeout(() => setNotice(null), NOTICE_MS);
-    return () => clearTimeout(t);
-  }, [notice, held]);
-  // One undo at a time: a second press while the first is running does nothing.
-  const undoing = useRef(false);
-  const undo = () => {
-    if (!notice?.undo || undoing.current) return;
-    const run = notice.undo;
-    undoing.current = true;
-    const ran = notice.id;
-    // Undo stays on the line, inert, until the write lands; "Undone." waits
-    // for it, so whatever it put back is already the server's when the
-    // collector reaches for it.
-    setNotice((prev) => (prev && prev.id === ran ? { ...prev, undoing: true } : prev));
-    runUndo(
-      run,
-      () => {
-        undoing.current = false;
-        notify("Undone.");
-      },
-      (error) => {
-        undoing.current = false;
-        notify(undoFailed(error));
-      },
-    );
-  };
-  /** Ctrl/⌘+Z from quick entry: the line's Undo, or a word that there is none. */
-  // An aside keeps a live Undo on the line: it is skipped rather than replace
-  // it (an undo running counts too: its "Undone." is on the way).
-  const inform = (message: string) => {
-    setNotice((prev) => (prev?.undo ? prev : { id: (prev?.id ?? 0) + 1, message }));
-  };
-  const undoLast = () => {
-    if (undoing.current) return;
-    if (notice?.undo) undo();
-    else notify(NOTHING_TO_UNDO);
-  };
-  const run = async <T extends { undo: Undo }>(
-    write: () => Promise<T>,
-    message: (result: T) => string,
-  ): Promise<T | null> => {
-    try {
-      const result = await write();
-      notify(message(result), result.undo);
-      return result;
-    } catch (error) {
-      notify(writeErrorMessage(error));
-      return null;
-    }
-  };
+  // One line with its Undo for every tab and the card drawer (`./statusLine`).
+  const line = useStatusLine();
+  const { notice, notify, inform, undoLast, run, beginWrite, undo, dismiss } = line;
 
   // --- Checklists: writing the URL ------------------------------------------
   const writeQuery = useCallback(
@@ -573,85 +500,9 @@ function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
   };
 
   // --- Card drawer -----------------------------------------------------------
-  // Opening a card pushes `detail=<id>` (Back closes it); ↑ ↓ replace it (Back
-  // never walks the cards one by one); Close steps Back off an entry the
-  // drawer pushed, and otherwise (a shared link, a refresh in a new tab)
-  // takes the params off in place.
-  const pushParams = usePushParams();
-  const [extras, setExtras] = useState<DrawerExtras | null>(null);
-  const drawerId = params.get(DRAWER_PARAM);
-  const ours = extras && extras.cardId === drawerId ? extras : null;
-  const drawer = drawerId
-    ? {
-        cardId: drawerId,
-        listIds:
-          extras && extras.listIds.includes(drawerId)
-            ? extras.listIds
-            : [drawerId],
-        seed: ours?.seed,
-        mode:
-          params.get(DRAWER_MODE_PARAM) === "add"
-            ? ("add" as const)
-            : ("view" as const),
-        copyId: ours?.copyId,
-        binderId: ours?.binderId,
-        edit: ours?.edit,
-        key: extras?.key ?? 0,
-      }
-    : null;
-  const pushedDrawer =
-    (location.state as DrawerHistoryState | null)?.drawer === true;
-  const openCard = (cardId: CardId, opts: OpenCardOptions = {}) => {
-    settleQuery();
-    // The URL commits in a transition: let the opener's extras land with it.
-    startTransition(() =>
-      setExtras((prev) => ({
-        cardId,
-        listIds: opts.list && opts.list.includes(cardId) ? opts.list : [cardId],
-        seed: opts.seed,
-        copyId: opts.copyId,
-        binderId: opts.binderId,
-        edit: opts.edit,
-        key: (prev?.key ?? 0) + 1,
-      })),
-    );
-    const write = (p: URLSearchParams) => {
-      p.set(DRAWER_PARAM, cardId);
-      if (opts.mode === "add") p.set(DRAWER_MODE_PARAM, "add");
-      else p.delete(DRAWER_MODE_PARAM);
-    };
-    // Already open (a card picked from inside it): swap the card in place.
-    if (drawerId) replaceParams(write);
-    else pushParams(write, { drawer: true } satisfies DrawerHistoryState);
-  };
-  const closeDrawer = () => {
-    if (pushedDrawer) void navigate(-1);
-    else
-      replaceParams((p) => {
-        p.delete(DRAWER_PARAM);
-        p.delete(DRAWER_MODE_PARAM);
-      });
-  };
-  const drawerIndex = drawer ? drawer.listIds.indexOf(drawer.cardId) : -1;
-  const step = (delta: 1 | -1) =>
-    drawer &&
-    drawerIndex + delta >= 0 &&
-    drawerIndex + delta < drawer.listIds.length
-      ? () => {
-          const next = drawer.listIds[drawerIndex + delta];
-          startTransition(() =>
-            setExtras((prev) => ({
-              cardId: next,
-              listIds: drawer.listIds,
-              key: (prev?.key ?? 0) + 1,
-            })),
-          );
-          replaceParams((p) => {
-            p.set(DRAWER_PARAM, next);
-            p.delete(DRAWER_MODE_PARAM);
-          });
-        }
-      : null;
+  // On the URL (`./drawerControl`): opening pushes `detail=<id>`, Back closes it.
+  const drawerControl = useCardDrawer(params, { beforeOpen: settleQuery });
+  const { drawer, openCard } = drawerControl;
 
   const checklistsSearch = (q?: string) => {
     const p = new URLSearchParams({ tab: "checklists" });
@@ -758,16 +609,7 @@ function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
 
   // The floating status line sits over the bottom of the page: while it is
   // up, keep a field the keyboard lands on clear of it (WCAG 2.4.11).
-  const floatingNotice = notice !== null && !drawer && !desk;
-  useEffect(() => {
-    if (!floatingNotice) return;
-    const root = document.documentElement;
-    const before = root.style.scrollPaddingBottom;
-    root.style.scrollPaddingBottom = NOTICE_CLEARANCE;
-    return () => {
-      root.style.scrollPaddingBottom = before;
-    };
-  }, [floatingNotice]);
+  useFloatingClearance(notice !== null && !drawer && !desk);
 
   // Arriving from the other side (a side link, the demo's switch): the
   // keyboard starts on this side's heading, not wherever the link was.
@@ -784,6 +626,7 @@ function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
     inform,
     undoLast,
     run,
+    beginWrite,
   };
 
   const resetDemo = () => {
@@ -793,137 +636,140 @@ function CollectionPage({ side, onExit }: { side: Side; onExit?: () => void }) {
 
   return (
     <PageApiContext.Provider value={pageApi}>
-      <ViewScopeProvider value={scope}>
-        <ScopedRows containers={containers} openCard={openCard} run={run}>
-          {(actions) => (
-            <div className="text-ink">
-              <div className="space-y-4">
-                {capabilities.demoChrome && demo && (
-                  <DemoBar onReset={resetDemo} onExit={onExit} />
+      {/* Every line that draws this status line (toast, desk, drawer, tray) shares what has been said. */}
+      <NoticeSpokenContext.Provider value={line.spoken}>
+        <ViewScopeProvider value={scope}>
+          <ScopedRows containers={containers} openCard={openCard} run={run}>
+            {(actions) => (
+              <div className="text-ink">
+                <div className="space-y-4">
+                  {capabilities.demoChrome && demo && (
+                    <DemoBar onReset={resetDemo} onExit={onExit} shell={shell} />
+                  )}
+                  <h1 ref={heading} tabIndex={-1} className="text-2xl font-bold focus:outline-none">
+                    {SIDE_TITLE[side]}
+                  </h1>
+
+                  <nav
+                    aria-label={`${SIDE_TITLE[side]} sections`}
+                    className="border-b border-rule"
+                  >
+                    <ul className="flex flex-wrap gap-x-6 gap-y-2">
+                      {tabs.map((t) => {
+                        const active = t.key === tab;
+                        return (
+                          <li key={t.key}>
+                            <ParamLink
+                              // Checklists opens where you left it.
+                              search={
+                                t.key === "checklists"
+                                  ? checklistsSearch()
+                                  : { tab: t.key }
+                              }
+                              onClick={settleQuery}
+                              aria-current={active ? "page" : undefined}
+                              className={
+                                "-mb-px block rounded-sm border-b-2 px-1 py-3 text-sm font-medium transition-colors focus-outline " +
+                                (active
+                                  ? // One hue per section: the collection's cyan, the inventory's yellow.
+                                    onInventory
+                                    ? "border-neon-yellow-text text-neon-yellow-text"
+                                    : "border-selection text-neon-blue-text"
+                                  : "border-transparent text-ink-3 hover:border-control hover:text-ink")
+                              }
+                            >
+                              {t.label}
+                            </ParamLink>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </nav>
+
+                  {!redirect && tab === "cards" && (onInventory ? <InventoryListTab /> : <MyCardsTab />)}
+                  {!redirect && desk && capabilities.binders && (
+                    // My Binders' pack tray is pinned to the bottom, where the floating
+                    // toast would sit on its search box, so the tray shows the notice
+                    // (My Boxes floats its own where no box is open). One desk per
+                    // side: what each has aimed or found stays its own.
+                    <MyBindersTab
+                      key={side}
+                      surface={side}
+                      openCard={openCard}
+                      goToTab={goToTab}
+                      notify={notify}
+                      // While the card drawer is open it carries the status
+                      // line; the desk's copy would say it a second time.
+                      notice={drawer ? null : notice}
+                      onUndo={undo}
+                      onDismissNotice={dismiss}
+                    />
+                  )}
+                  {!redirect && tab === "add" && capabilities.intake && (
+                    <Suspense fallback={<SkeletonBars rows={4} />}>
+                      {storeKind === "convex" ? <RealAddCardsTab /> : <AddCardsTab />}
+                    </Suspense>
+                  )}
+                  {!redirect && tab === "sales" && capabilities.marketplaceListing && (
+                    <Suspense fallback={<SkeletonBars rows={4} />}>
+                      <SalesTab />
+                    </Suspense>
+                  )}
+                  {!redirect && tab === "pick" && capabilities.pickList && (
+                    <Suspense fallback={<SkeletonBars rows={4} />}>
+                      {storeKind === "convex" ? (
+                        <ConvexPickListTab onTitleDetail={setPickDetail} />
+                      ) : (
+                        <PickListTab onTitleDetail={setPickDetail} />
+                      )}
+                    </Suspense>
+                  )}
+                  {!redirect && tab === "sync" && capabilities.marketplaceListing && (
+                    <Suspense fallback={<SkeletonBars rows={4} />}>
+                      <SyncStatusTab />
+                    </Suspense>
+                  )}
+                  {!redirect && tab === "checklists" && (
+                    <ChecklistsTab
+                      actions={actions}
+                      query={query}
+                      onQuery={setQuery}
+                      drill={drillState}
+                      cascadeKey={cascadeKey}
+                      onDrill={drillInto}
+                      onJump={jumpTo}
+                      highlightCardId={highlightCardId}
+                      selectedCardId={drawer?.cardId ?? null}
+                      entity={entity}
+                      onPickSuggestion={pickSuggestion}
+                      onFranchise={setFranchise}
+                      onClearEntity={clearEntity}
+                      missingCard={jumpCard === null}
+                      arrivalRef={arrival}
+                    />
+                  )}
+                </div>
+
+                {isPublic && capabilities.demoChrome && !shell && (
+                  <DemoRail onExit={onExit} />
                 )}
-                <h1 ref={heading} tabIndex={-1} className="text-2xl font-bold focus:outline-none">
-                  {SIDE_TITLE[side]}
-                </h1>
 
-                <nav
-                  aria-label={`${SIDE_TITLE[side]} sections`}
-                  className="border-b border-rule"
-                >
-                  <ul className="flex flex-wrap gap-x-6 gap-y-2">
-                    {tabs.map((t) => {
-                      const active = t.key === tab;
-                      return (
-                        <li key={t.key}>
-                          <ParamLink
-                            // Checklists opens where you left it.
-                            search={
-                              t.key === "checklists"
-                                ? checklistsSearch()
-                                : { tab: t.key }
-                            }
-                            onClick={settleQuery}
-                            aria-current={active ? "page" : undefined}
-                            className={
-                              "-mb-px block rounded-sm border-b-2 px-1 py-3 text-sm font-medium transition-colors focus-outline " +
-                              (active
-                                ? // One hue per section: the collection's cyan, the inventory's yellow.
-                                  onInventory
-                                  ? "border-neon-yellow-text text-neon-yellow-text"
-                                  : "border-selection text-neon-blue-text"
-                                : "border-transparent text-ink-3 hover:border-control hover:text-ink")
-                            }
-                          >
-                            {t.label}
-                          </ParamLink>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </nav>
-
-                {!redirect && tab === "cards" && (onInventory ? <InventoryListTab /> : <MyCardsTab />)}
-                {!redirect && desk && capabilities.binders && (
-                  // My Binders' pack tray is pinned to the bottom, where the floating
-                  // toast would sit on its search box, so the tray shows the notice
-                  // (My Boxes floats its own where no box is open). One desk per
-                  // side: what each has aimed or found stays its own.
-                  <MyBindersTab
-                    key={side}
-                    surface={side}
-                    openCard={openCard}
-                    goToTab={goToTab}
-                    notify={notify}
-                    // While the card drawer is open it carries the status
-                    // line; the desk's copy would say it a second time.
-                    notice={drawer ? null : notice}
+                {!drawer && !desk && (
+                  <NoticeLine
+                    notice={notice}
                     onUndo={undo}
-                    onDismissNotice={() => setNotice(null)}
+                    onDismiss={dismiss}
+                    floating
                   />
                 )}
-                {!redirect && tab === "add" && capabilities.intake && (
-                  <Suspense fallback={<SkeletonBars rows={4} />}>
-                    {storeKind === "convex" ? <RealAddCardsTab /> : <AddCardsTab />}
-                  </Suspense>
-                )}
-                {!redirect && tab === "checklists" && (
-                  <ChecklistsTab
-                    actions={actions}
-                    query={query}
-                    onQuery={setQuery}
-                    drill={drillState}
-                    cascadeKey={cascadeKey}
-                    onDrill={drillInto}
-                    onJump={jumpTo}
-                    highlightCardId={highlightCardId}
-                    selectedCardId={drawer?.cardId ?? null}
-                    entity={entity}
-                    onPickSuggestion={pickSuggestion}
-                    onFranchise={setFranchise}
-                    onClearEntity={clearEntity}
-                    missingCard={jumpCard === null}
-                    arrivalRef={arrival}
-                  />
+                {isOpen(drawerControl) && (
+                  <OpenCardDrawer control={drawerControl} line={line} />
                 )}
               </div>
-
-              {isPublic && capabilities.demoChrome && (
-                <DemoRail onExit={onExit} />
-              )}
-
-              {!drawer && !desk && (
-                <NoticeLine
-                  notice={notice}
-                  onUndo={undo}
-                  onDismiss={() => setNotice(null)}
-                  floating
-                />
-              )}
-              {drawer && (
-                <CardDrawer
-                  cardId={drawer.cardId}
-                  seed={drawer.seed}
-                  mode={drawer.mode}
-                  focusCopyId={drawer.copyId}
-                  editCopyId={drawer.edit ? drawer.copyId : undefined}
-                  addBinderId={drawer.binderId}
-                  openKey={drawer.key}
-                  notice={notice}
-                  onUndo={undo}
-                  onDismissNotice={() => setNotice(null)}
-                  onClose={closeDrawer}
-                  onPrev={step(-1)}
-                  onNext={step(1)}
-                  position={
-                    drawer.listIds.length > 1
-                      ? { index: drawerIndex, total: drawer.listIds.length }
-                      : null
-                  }
-                />
-              )}
-            </div>
-          )}
-        </ScopedRows>
-      </ViewScopeProvider>
+            )}
+          </ScopedRows>
+        </ViewScopeProvider>
+      </NoticeSpokenContext.Provider>
     </PageApiContext.Provider>
   );
 }
@@ -998,51 +844,3 @@ function ScopedRows({
 }
 
 const NO_WANTS: readonly Want[] = [];
-
-/** Marks a status line whose timer waits while it is pointed at or focused (`../prototypes/p1/notice`, the pack tray). */
-const NOTICE_HOLD_ATTR = "data-notice-hold";
-
-/**
- * True while the pointer rests on, or the keyboard focus is inside, an
- * element marked `data-notice-hold` (the status line with its Undo, wherever
- * it is drawn: the page toast, the card drawer, the pack tray).
- */
-function useNoticeHold(): boolean {
-  const [held, setHeld] = useState(false);
-  useEffect(() => {
-    let hover = false;
-    let focus = false;
-    const inLine = (t: EventTarget | null) =>
-      t instanceof Element && t.closest(`[${NOTICE_HOLD_ATTR}]`) !== null;
-    const sync = () => setHeld(hover || focus);
-    const onOver = (e: MouseEvent) => {
-      hover = inLine(e.target);
-      sync();
-    };
-    const onOut = (e: MouseEvent) => {
-      if (e.relatedTarget === null) {
-        hover = false;
-        sync();
-      }
-    };
-    const onFocusIn = (e: FocusEvent) => {
-      focus = inLine(e.target);
-      sync();
-    };
-    const onFocusOut = (e: FocusEvent) => {
-      focus = inLine(e.relatedTarget);
-      sync();
-    };
-    document.addEventListener("mouseover", onOver);
-    document.addEventListener("mouseout", onOut);
-    document.addEventListener("focusin", onFocusIn);
-    document.addEventListener("focusout", onFocusOut);
-    return () => {
-      document.removeEventListener("mouseover", onOver);
-      document.removeEventListener("mouseout", onOut);
-      document.removeEventListener("focusin", onFocusIn);
-      document.removeEventListener("focusout", onFocusOut);
-    };
-  }, []);
-  return held;
-}

@@ -1,7 +1,7 @@
 ---
 name: playwright-e2e-author
 description: "Authors, extends and debugs the Playwright web E2E specs under apps/web/playwright for the feature that just changed, following the rulebook in apps/web/playwright/GUIDE.md (R1-R9 and the hard rules). Use in the audit round after a user-facing change, when a CI spec is red and needs a diagnosis from the run artifacts, or to review specs for silent fall-through. Do not use for unit tests (unit-test-author), for coverage audits (test-coverage-auditor), for manual or exploratory testing (card-collector-tester), or to run the full suite.\n\nExamples:\n- \"NEO-236 split Team Location and Name; extend the New Team spec to assert both fields and the livery row.\"\n- \"checklist-one-marketplace-skips-match-dialog is red on its launch gate in CI run N; diagnose from the screenshot and error-context.md.\"\n- \"Review the set-selector specs touched this week for R2 silent fall-through and sleeps or settle waits.\""
-model: sonnet
+model: opus
 effort: high
 memory: project
 color: red
@@ -120,10 +120,15 @@ test-fixtures, test-parallel and test-sharding. Read the installed
    perceivable-only rule before `generator_write_test` or a plain Write.
 3. **Run only the specs you authored or changed**, with `test_run` or
    `npx playwright test <files>` from `apps/web`, against the backend the
-   coordinator names: dev before the first push, brought up to date first
-   (root CLAUDE.md, "Run your specs against dev before the first push"), and
-   the PR's Convex preview only when dev cannot reproduce a red (GUIDE
-   "Running"). Never run the seed's reset on dev unasked. Never run the
+   coordinator names: this worktree's own deployment before the first push
+   (root CLAUDE.md, "Run your specs on your own Convex deployment before the
+   first push"), and the PR's Convex preview only when it cannot reproduce a
+   red (GUIDE "Running"). Since NEO-552 BuySportsCards is a fake with one account per
+   test user, so BSC specs (listing included) run on your own deployment like any
+   other; only the eBay sandbox seller is one shared account, so `@marketplace-seller`
+   (eBay) specs run on shared dev or a preview, never on your own deployment. Specs that
+   make BSC 429, 503, hang or reset are `@bsc-breaker` (GUIDE, "BuySportsCards is the fake"). Never run the seed's reset on shared
+   dev unasked. Never run the
    full suite locally unless the coordinator says the harness itself changed.
 4. **Diagnose a red run** from its screenshot and `error-context.md` first.
    `test_debug` and `browser_snapshot` at the paused failure show the live

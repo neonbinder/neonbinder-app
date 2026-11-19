@@ -44,12 +44,13 @@
  *     credential lock.
  */
 
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { action, query } from "./_generated/server";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { QueryCtx } from "./_generated/server";
 import { requireAdmin } from "./auth";
+import { stripNbCardNumberPrefix } from "./cardNumberPrefix";
 import { variantTypeKind } from "./variantRole";
 import {
   MAX_INSERT_CARDS_FOR_BUILD,
@@ -59,6 +60,7 @@ import {
 } from "./parallelChecklistBuild";
 import { missingBscChecklistScope, resolveBscFacetFilters } from "./bscFacets";
 import { isPlatformPaused } from "./marketplacePause";
+import { isValidWaitKey } from "./lib/marketplaceWaitWriter";
 import {
   MAX_BSC_PROBE_IDS,
   MAX_BSC_PROBE_ID_LENGTH,
@@ -140,24 +142,6 @@ type BaseSignature =
   | {
       status: "notParallelType" | "noBase" | "manyBases" | "noCards" | "tooManyCards";
     };
-
-/**
- * A card number with the NB chain's `cardNumberPrefix` taken off the front:
- * the predicate `parallelCardLink`'s `stripPrefix` uses (trimmed,
- * case-insensitive, never down to nothing), but the case of what remains is
- * kept, since the client also shows it.
- */
-export function stripNbCardNumberPrefix(
-  cardNumber: string,
-  prefix: string | undefined,
-): string {
-  const n = cardNumber.trim();
-  const p = prefix?.trim();
-  if (!p) return n;
-  return n.toUpperCase().startsWith(p.toUpperCase()) && n.length > p.length
-    ? n.slice(p.length)
-    : n;
-}
 
 /** The deepest `metadata.cardNumberPrefix` on `row`'s chain, root to row. */
 async function deepestCardNumberPrefix(
@@ -367,10 +351,18 @@ export const probeBscSets = action({
   args: {
     variantTypeId: v.id("selectorOptions"),
     variantNameIds: v.array(v.string()),
+    // PR 451 (NEO-487) — the client's run key for "Waiting on
+    // BuySportsCards…" (`marketplaceWaits`), passed to the batch so its
+    // recorder emits wait edges. Shape-checked after the admin gate; never
+    // sent to BSC.
+    waitKey: v.optional(v.string()),
   },
   returns: v.array(bscProbeResultValidator),
   handler: async (ctx, args): Promise<BscProbeResult[]> => {
     await requireAdmin(ctx);
+    if (args.waitKey !== undefined && !isValidWaitKey(args.waitKey)) {
+      throw new ConvexError("probeBscSets: waitKey must be 1-64 letters, digits, _ or -.");
+    }
     const ids = checkProbeIds(args.variantNameIds, {
       max: MAX_BSC_PROBE_IDS,
       maxLength: MAX_BSC_PROBE_ID_LENGTH,
@@ -407,7 +399,7 @@ export const probeBscSets = action({
     if (requests.length > 0) {
       const summaries: BscProbeSummary[] = await ctx.runAction(
         internal.adapters.buysportscards.probeBscChecklistBatch,
-        { requests },
+        { requests, ...(args.waitKey !== undefined ? { waitKey: args.waitKey } : {}) },
       );
       for (const s of summaries) results.set(s.id, s);
     }

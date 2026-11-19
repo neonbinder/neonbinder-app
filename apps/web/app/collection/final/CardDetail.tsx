@@ -1,6 +1,7 @@
 import {
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
   type ComponentProps,
@@ -9,10 +10,12 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { ArchiveBoxIcon, BookOpenIcon, PlusIcon, StarIcon as StarSolid } from "@heroicons/react/20/solid";
+import { ArchiveBoxIcon, BookOpenIcon, ExclamationTriangleIcon, PlusIcon, StarIcon as StarSolid } from "@heroicons/react/20/solid";
 import { StarIcon as StarOutline } from "@heroicons/react/24/outline";
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
+import { COPY_PHOTO_ACCEPT } from "@/lib/collection/copy-photo-resize";
+import { MAX_PRICE_CENTS } from "@/lib/collection/price-cap";
 import CardFace from "../prototypes/_shared/CardFace";
 import CopyDetailsForm, { type FormHome } from "../prototypes/_shared/CopyDetailsForm";
 import { FOCUS, LABEL, QUIET_BUTTON, SELECT, shortDate, useLiverySurface } from "../prototypes/p1/ui";
@@ -40,13 +43,32 @@ import {
   useWants,
   wantOf,
   wantToggle,
+  writeErrorMessage,
 } from "./data/store";
-import type { Card, Container, ContainerId, Copy, CopyDetails, CopyId, MoveResult } from "./data/types";
+import type {
+  Card,
+  Container,
+  ContainerId,
+  Copy,
+  CopyDetails,
+  CopyId,
+  ListingPlatform,
+  ListingProblemReason,
+  MoveResult,
+  PhotoSide,
+} from "./data/types";
+import { heldBackNotice } from "./inventory/listing/copy";
+// NEO-569: the dashboard's Report, under a notice whose fix is the crew's.
+// Both are pure of the dashboard screen: a context and one form.
+import { useCrew } from "@/app/dashboard/screen/crew";
+import ReportToCrew from "@/app/dashboard/screen/ReportToCrew";
+import { isReportableSyncReason } from "@/lib/collection/sync-report";
 import { binderText, lineNames, lineSummary, lineWhat, type NamedBinder } from "./lineItems";
 import { useLineKeys } from "./lineKeys";
 import OwnCardNote from "./OwnCardNote";
-import CopyPhotosField, { LineThumb } from "./CopyPhotosField";
+import CopyPhotosField, { HeldPhotosField, LineThumb, PHOTO_SIDES, type HeldPhotos } from "./CopyPhotosField";
 import { usePageApi } from "./pageApi";
+import { parsePrice } from "./inventory/CommonPrice";
 
 /** What the shared copy form edits (the prototypes' copy shape). */
 type FormValue = ComponentProps<typeof CopyDetailsForm>["value"];
@@ -120,6 +142,18 @@ export function priceText(copy: Copy, commonPrice: number | null | undefined): s
   return typeof commonPrice === "number" ? `$${commonPrice.toFixed(2)}, common` : null;
 }
 
+/** The sides that failed, in words: "front", or "front and back". */
+const sidesSaid = (sides: readonly PhotoSide[]) => sides.join(" and ");
+const photosWord = (sides: readonly PhotoSide[]) => `photo${sides.length > 1 ? "s" : ""}`;
+
+/** What a new line's photo field says when a photo that came with the add didn't save. */
+function failedPhotoMessage(failed: readonly { side: PhotoSide; message: string }[]): string {
+  const sides = failed.map((f) => f.side);
+  const reasons = [...new Set(failed.map((f) => f.message))].join(" ");
+  const again = sides.length > 1 ? "Add them again here." : "Add it again here.";
+  return `Your copy is in, but the ${sidesSaid(sides)} ${photosWord(sides)} didn't save. ${reasons} ${again}`;
+}
+
 /** The homes as "Where it lives" and "Move to" offer them. */
 function formHomes(homes: readonly Container[]): FormHome[] {
   return homes.map((h) => ({ id: h.id, name: h.name, kind: h.kind }));
@@ -149,10 +183,32 @@ function formHomes(homes: readonly Container[]): FormHome[] {
  * successful add folds it away again, the keyboard back on Add. With no copy yet there is nothing to
  * list, so the form shows, and Cancel there closes the drawer as before.
  *
+ * NEO-431: the add form holds photos too (capability `copyPhotos`), with nothing
+ * uploaded until Add. An add with photos starts its own line and never stacks.
+ * If the copy saves and a photo doesn't, the copy stays: its Edit form opens with
+ * the failure in its photo field, for another try there.
+ *
  * The keyboard is never dropped: Edit puts it in the copy's form, and Save
  * copy or Cancel brings it back to that copy's Edit button (Remove's and
  * Move's parking are `CopyList`'s).
  */
+/**
+ * NEO-464 — why a card was held back from a sync, when the dashboard's Sync
+ * status opened its panel: the panel says it above "Your copies" and, for a
+ * missing price or photo, opens the for-sale copy's Edit form on that field.
+ */
+export interface HeldBack {
+  platform: ListingPlatform;
+  reason: ListingProblemReason;
+}
+
+/** The field in a copy's Edit form that fixes a held-back reason, when one does. */
+function heldFix(held: HeldBack | undefined, photos: boolean): "price" | "front" | null {
+  if (held?.reason === "noPrice") return "price";
+  if (held?.reason === "noPhoto" && photos) return "front";
+  return null;
+}
+
 export default function CardDetail({
   card,
   onCancelAdd,
@@ -160,6 +216,7 @@ export default function CardDetail({
   focusCopyId,
   editCopyId,
   addBinderId,
+  held,
 }: {
   card: Card;
   /** Escape / Cancel in the add form. */
@@ -176,8 +233,13 @@ export default function CardDetail({
   editCopyId?: CopyId;
   /** The home the add form picks instead of the page's scope (the hunt tray's open binder). */
   addBinderId?: string;
+  /** NEO-464: why this card was held back from a sync (the dashboard's Sync status opened it). */
+  held?: HeldBack;
 }) {
   const api = usePageApi();
+  // NEO-569 — the crew is there only on the signed-in dashboard (the panel
+  // over Sync status); everywhere else this is null and no Report shows.
+  const crew = useCrew();
   const writes = useCollectionActions();
   const capabilities = useCapabilities();
   const containers = useContainers();
@@ -227,8 +289,45 @@ export default function CardDetail({
   const [draftHome, setDraftHome] = useState<ContainerId | undefined>(undefined);
   const [draftTrade, setDraftTrade] = useState(false);
   const addHome = draftHome ?? defaultHome;
+  /** NEO-431 — the add form's photos, waiting for Add. */
+  const photosExt = useCopyPhotos();
+  const [heldPhotos, setHeldPhotos] = useState<HeldPhotos>({});
+  /**
+   * NEO-466: a photo starts resizing the moment it is held, so the Add press
+   * finds it ready. A photo replaced or dropped first is never used: `addPhoto`
+   * reads the resize by the file it is given (`preparePhoto`).
+   */
+  const holdPhotos = (files: HeldPhotos) => {
+    for (const side of PHOTO_SIDES) {
+      const file = files[side];
+      if (file) photosExt?.preparePhoto?.(file);
+    }
+    setHeldPhotos(files);
+  };
+  /** Bumped when the draft resets, to clear the photo box's status line with its photos. */
+  const [draftRound, setDraftRound] = useState(0);
+  /** An add's photos are uploading: Add says so and takes no second press. */
+  const [addingPhotos, setAddingPhotos] = useState(false);
+  /**
+   * The new line a photo failed on. `autoOpen`: `CopyList` opens its Edit form as
+   * soon as the line is in the list; false when another line's form was in use as
+   * the add finished, since opening this one would throw that draft away. `opened`
+   * once its form has been opened, by either route: the failure shows in it once.
+   */
+  const [failedAdd, setFailedAdd] = useState<{
+    copyId: CopyId;
+    side: PhotoSide;
+    message: string;
+    autoOpen: boolean;
+    opened: boolean;
+  } | null>(null);
   /** The line whose form is open, by its line key (`CopyList`), so it lives through the store's id swap. */
   const [editing, setEditing] = useState<{ key: string; value: FormValue; trade: boolean } | null>(null);
+  /** `editing` as of now, for an upload that finishes long after the Add press that started it. */
+  const editingNow = useRef(editing);
+  useEffect(() => {
+    editingNow.current = editing;
+  }, [editing]);
 
   /** The add form, open by the Add button or an "add" open; always shown while there is no copy to list. */
   const [adding, setAdding] = useState(mode === "add");
@@ -256,7 +355,7 @@ export default function CardDetail({
    * Edit button, or into the form's first field. By line key, like `editing`:
    * a save that waited for the line's real id still finds it.
    */
-  const [refocus, setRefocus] = useState<{ key: string; into: "edit" | "form" } | null>(null);
+  const [refocus, setRefocus] = useState<{ key: string; into: "edit" | "form" | "price" | PhotoSide } | null>(null);
   useEffect(() => {
     if (!refocus) return;
     const frame = requestAnimationFrame(() => {
@@ -265,7 +364,11 @@ export default function CardDetail({
       const target =
         refocus.into === "edit"
           ? root?.querySelector<HTMLElement>(`${line} [data-copy-edit]`)
-          : root?.querySelector<HTMLElement>(`${line} input, ${line} select`);
+          : refocus.into === "form"
+            ? root?.querySelector<HTMLElement>(`${line} input, ${line} select`)
+            : refocus.into === "price"
+              ? root?.querySelector<HTMLElement>(`${line} [data-copy-price]`)
+              : root?.querySelector<HTMLElement>(`${line} [data-copy-photo-add="${refocus.into}"]`);
       target?.focus();
       // Only this move: a newer one asked for meanwhile still runs.
       setRefocus((current) => (current === refocus ? null : current));
@@ -284,6 +387,21 @@ export default function CardDetail({
     setEditing({ key: only.id, value: toForm(only), trade: only.upForTrade });
     setRefocus({ key: only.id, into: "form" });
   }, [copies]);
+  /**
+   * NEO-464 — a held-back card whose fix is a field on its for-sale copy (a
+   * price, a photo): that copy's Edit form opens, the keyboard on the field,
+   * once, as soon as the copies are in (set while rendering, so the form
+   * draws with them).
+   */
+  const [heldEdit, setHeldEdit] = useState(() => (mode === "view" && !editCopyId ? heldFix(held, !!photosExt) : null));
+  if (heldEdit && copies !== undefined) {
+    setHeldEdit(null);
+    const forSale = copies.find((c) => c.homeKind === "box");
+    if (forSale) {
+      setEditing({ key: forSale.id, value: toForm(forSale), trade: forSale.upForTrade });
+      setRefocus({ key: forSale.id, into: heldEdit });
+    }
+  }
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
       if (mode === "add") {
@@ -304,9 +422,13 @@ export default function CardDetail({
     setDraft(blankForm());
     setDraftHome(undefined);
     setDraftTrade(false);
+    setHeldPhotos({});
+    setDraftRound((n) => n + 1);
   };
 
   const add = (value: FormValue) => {
+    if (addingPhotos) return;
+    const pressedAt = performance.now();
     const home = homeById(addHome);
     const details: CopyDetails = {
       ...fromForm(value, home?.kind === "box"),
@@ -314,6 +436,76 @@ export default function CardDetail({
       ...(capabilities.trade && draftTrade ? { upForTrade: true } : {}),
     };
     const shown = { ...details, ...(home ? { homeName: home.name } : {}) };
+    const held = PHOTO_SIDES.flatMap((side) => {
+      const file = heldPhotos[side];
+      return file ? [{ side, file }] : [];
+    });
+    if (photosExt && held.length > 0) {
+      setAddingPhotos(true);
+      void api
+        .run(
+          async () => {
+            // NEO-466: started when each photo was held; this only catches one
+            // that wasn't (already started, it is the same resize).
+            for (const { file } of held) photosExt.preparePhoto?.(file);
+            // Refused here (a full card, a box that needs a price), the photos stay in the form.
+            const added = await writes.addLineItem(card, details, { keepsOwnLine: true });
+            const addLineItemMs = Math.round(performance.now() - pressedAt);
+            // The write has answered, so this is the server's id, which `addPhoto` needs.
+            const copy: Copy = {
+              ...details,
+              id: added.copyId,
+              cardId: card.id,
+              homeId: addHome ?? "",
+              homeKind: home?.kind ?? "binder",
+              upForTrade: details.upForTrade ?? false,
+            };
+            // Front and back save side by side (NEO-466). `held` is in
+            // PHOTO_SIDES order, so `failed` is too: front first.
+            const saved = await Promise.allSettled(
+              held.map(({ side, file }) => photosExt.addPhoto(copy, side, file, { addLineItemMs })),
+            );
+            // The copy stays, and so does a photo that made it.
+            const failed: { side: PhotoSide; message: string }[] = held.flatMap(({ side }, i) => {
+              const result = saved[i];
+              return result.status === "rejected" ? [{ side, message: writeErrorMessage(result.reason) }] : [];
+            });
+            return { ...added, failed };
+          },
+          (r) => {
+            const lost = r.failed.map((f) => f.side);
+            const kept = held.map((h) => h.side).filter((side) => !lost.includes(side));
+            const said = `Added ${name}, ${lineSummary(shown, containers)}`;
+            const forSale = home?.kind === "box" ? " It's for sale." : "";
+            return lost.length > 0
+              ? `${said}. Its ${sidesSaid(lost)} ${photosWord(lost)} didn't save. Try again under Edit.${forSale}`
+              : `${said}, with its ${sidesSaid(kept)} ${photosWord(kept)}.${forSale}`;
+          },
+        )
+        .then((r) => {
+          setAddingPhotos(false);
+          if (!r) return;
+          // Read before the form folds. A keyboard already at work elsewhere stays there.
+          const active = document.activeElement;
+          const inAddForm = !active || active === document.body || !!addRef.current?.contains(active);
+          const otherFormOpen = editingNow.current !== null;
+          const failed = r.failed.length > 0;
+          resetDraft();
+          setAdding(false);
+          if (failed) {
+            setFailedAdd({
+              copyId: r.copyId,
+              side: r.failed[0].side,
+              message: failedPhotoMessage(r.failed),
+              autoOpen: !otherFormOpen,
+              opened: false,
+            });
+          }
+          // An Edit form opening on the failure takes the keyboard itself.
+          if (otherFormOpen ? inAddForm : !failed) setAddFocus("button");
+        });
+      return;
+    }
     void api
       .run(
         () => writes.addLineItem(card, details),
@@ -331,6 +523,9 @@ export default function CardDetail({
       });
   };
 
+  /** This line's form is closing, and its failure with it. Another line's waits for its own form. */
+  const clearFailedAddOn = (copy: Copy) => setFailedAdd((now) => (now?.copyId === copy.id ? null : now));
+
   const save = (copy: Copy, value: FormValue, trade: boolean, key: string) => {
     const patch: Partial<CopyDetails> = {
       ...fromForm(value, copy.homeKind === "box" || copy.minPrice !== undefined),
@@ -344,6 +539,7 @@ export default function CardDetail({
       .then((r) => {
         if (r) {
           setEditing(null);
+          clearFailedAddOn(copy);
           setRefocus({ key, into: "edit" });
         }
       });
@@ -356,18 +552,34 @@ export default function CardDetail({
     );
   };
 
-  const move = (copy: Copy, toHomeId: ContainerId, quantity: number) => {
+  /**
+   * NEO-479: `minPrice` (dollars) is the moving cards' own price, typed on
+   * Sell; left out, they keep theirs, or sell at the common price. This
+   * never writes the common price: a one-card panel prices only that card.
+   */
+  const move = (copy: Copy, toHomeId: ContainerId, quantity: number, minPrice?: number) => {
     const to = homeById(toHomeId);
     const whole = quantity >= copy.quantity;
     const many = quantity > 1;
+    const options = {
+      ...(whole ? {} : { quantity }),
+      ...(minPrice !== undefined ? { minPrice } : {}),
+    };
     return api.run(
-      () => writes.moveCopy(copy, toHomeId, whole ? undefined : { quantity }),
+      () => writes.moveCopy(copy, toHomeId, Object.keys(options).length > 0 ? options : undefined),
       (r) => {
         const what = whole ? name : `${quantity} of ${name}`;
         const stacked = r.folded ? ", stacked with the ones already there" : "";
         const where = to?.name ?? "its new home";
         if (to?.kind === "box" && copy.homeKind !== "box") {
-          return `${what} ${many ? "are" : "is"} up for sale in ${where}${stacked}.`;
+          const own = minPrice ?? copy.minPrice;
+          const at =
+            own !== undefined
+              ? ` at $${own.toFixed(2)}`
+              : typeof commonPrice === "number"
+                ? ` at your common price, $${commonPrice.toFixed(2)}`
+                : "";
+          return `${what} ${many ? "are" : "is"} up for sale in ${where}${at}${stacked}.`;
         }
         if (to?.kind !== "box" && copy.homeKind === "box") {
           return `Took ${what} off sale. ${many ? "They're" : "It's"} back in ${where}${stacked}.`;
@@ -446,6 +658,7 @@ export default function CardDetail({
                 <dd className="text-ink-2">{card.players.map((p) => p.name).join(", ")}</dd>
               </>
             )}
+            <AlsoPicturedRow players={card.secondaryPlayers} />
             {run && (
               <>
                 <dt className="text-ink-3">Print run</dt>
@@ -471,6 +684,28 @@ export default function CardDetail({
         </div>
       </div>
 
+      {held && (
+        <div>
+          <p className="flex items-start gap-2 rounded-md border border-notice-warn-rule bg-notice-warn-bg px-3 py-2 text-sm text-notice-warn-ink">
+            <ExclamationTriangleIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+            {/* "Report it" only beside a Report button; with no crew, where it is. */}
+            <span>{heldBackNotice(held.reason, held.platform, crew !== null)}</span>
+          </p>
+          {/* NEO-569: a reason only the crew can fix (a missing league, a
+              link, a sheet row) is reported from here too, with the same
+              form and the same "Reported" line as Sync status, about this
+              card's set. Never an inline fix: a card's league is set by an
+              admin in the set builder's card panel. */}
+          {crew && isReportableSyncReason(held.reason) && (
+            <ReportToCrew
+              crew={crew}
+              set={{ setLabel: setLabel(card.set), marketplace: held.platform }}
+              variantId={card.variant.id}
+            />
+          )}
+        </div>
+      )}
+
       <CopyList
         name={name}
         copies={copies}
@@ -488,6 +723,7 @@ export default function CardDetail({
               onSave={(value) => save(copy, value, editing.trade, editing.key)}
               onCancel={() => {
                 setEditing(null);
+                clearFailedAddOn(copy);
                 setRefocus({ key: editing.key, into: "edit" });
               }}
               hideSaleFields
@@ -503,9 +739,16 @@ export default function CardDetail({
           )
         }
         onEdit={(copy, key) => {
+          const waiting = failedAdd && !failedAdd.opened ? failedAdd : null;
+          const here = waiting?.copyId === copy.id;
           setEditing({ key, value: toForm(copy), trade: copy.upForTrade });
-          setRefocus({ key, into: "form" });
+          // A photo to try again: the keyboard goes to that side's Add.
+          setRefocus({ key, into: here ? waiting.side : "form" });
+          // Another line's form: the failure still waits for its own, but won't take this one's place.
+          setFailedAdd(waiting && (here ? { ...waiting, opened: true } : { ...waiting, autoOpen: false }));
         }}
+        openEditId={failedAdd && failedAdd.autoOpen && !failedAdd.opened ? failedAdd.copyId : null}
+        photoError={failedAdd}
         onRemove={remove}
         showTrade={capabilities.trade}
         showSale={capabilities.binders && capabilities.inventory}
@@ -541,6 +784,21 @@ export default function CardDetail({
             onUpForTradeChange={capabilities.trade ? setDraftTrade : undefined}
             heading={lines.length > 0 ? "Add another copy" : "Add a copy"}
             saveLabel={onInventory ? "Add to inventory" : "Add to collection"}
+            saving={addingPhotos}
+            savingLabel="Adding…"
+            extra={
+              photosExt ? (
+                <HeldPhotosField
+                  key={draftRound}
+                  files={heldPhotos}
+                  onChange={holdPhotos}
+                  line="your new copy"
+                  accept={COPY_PHOTO_ACCEPT}
+                  help="Stashed here until you add the copy."
+                  saving={addingPhotos ? "Saving your photos…" : undefined}
+                />
+              ) : null
+            }
           />
         </div>
       ) : copies !== undefined ? (
@@ -656,6 +914,24 @@ function locationNamesAHome(location: string | undefined, homes: readonly NamedB
  * into a twin lands the keyboard on the twin's Move (or Sell) button.
  */
 /**
+ * NEO-528 — who else is pictured on the card besides its own players (a
+ * teammate on a team leaders card): read-only, "Also on this card: Dan
+ * Marino".
+ * Nothing at all when the card pictures no one else. An admin sets it in the
+ * set builder; a smart binder with "Include cameos" takes the card in for
+ * them.
+ */
+export function AlsoPicturedRow({ players }: { players?: readonly { name: string }[] }) {
+  if (!players?.length) return null;
+  return (
+    <>
+      <dt className="text-ink-3">Also on this card</dt>
+      <dd className="min-w-0 text-ink-2 [overflow-wrap:anywhere]">{players.map((p) => p.name).join(", ")}</dd>
+    </>
+  );
+}
+
+/**
  * NEO-367 — NB's own note about the card, as one term of the detail list.
  * Nothing at all when the card has none. The admin's line breaks are part of
  * the note; `min-w-0` + `overflow-wrap:anywhere` keep a pasted URL from
@@ -687,6 +963,8 @@ export function CopyList({
   commonPrice,
   homes,
   onMove,
+  openEditId,
+  photoError,
 }: {
   name: string;
   copies: Copy[] | undefined;
@@ -703,17 +981,28 @@ export function CopyList({
   showTrade?: boolean;
   /** Sell / Take off sale, and a box line's "For sale · <box>" tag (capabilities `binders` and `inventory`). */
   showSale?: boolean;
-  /** NEO-378 — the variant's common price (dollars): a box line with no floor of its own sells at it. */
+  /**
+   * NEO-378 — the variant's common price (dollars): a box line with no floor
+   * of its own sells at it. `null`: none set; `undefined`: still loading
+   * (Sell's Price field waits for it, NEO-479).
+   */
   commonPrice?: number | null;
   /** Every home a line can go to (capability `binders`): Move, Sell and Take off sale pick from it. */
   homes?: readonly Container[];
-  /** Moves `quantity` of the line; resolves `null` when the server refused. */
-  onMove?: (copy: Copy, toHomeId: ContainerId, quantity: number) => Promise<MoveResult | null>;
+  /**
+   * Moves `quantity` of the line, at `minPrice` (dollars) when Sell set the
+   * cards' own price (NEO-479); resolves `null` when the server refused.
+   */
+  onMove?: (copy: Copy, toHomeId: ContainerId, quantity: number, minPrice?: number) => Promise<MoveResult | null>;
   /** Opens a line's form; `key` is the line's key, which `editing` names it by. */
   onEdit?: (copy: Copy, key: string) => void;
   onRemove: (copy: Copy) => void;
+  /** NEO-431 — open this line's form as soon as the line is in the list (`onEdit`, which should clear this). */
+  openEditId?: CopyId | null;
+  /** NEO-431 — what this line's photo field says when it opens. */
+  photoError?: { copyId: CopyId; message: string } | null;
 }) {
-  const lines = copies ?? [];
+  const lines = useMemo(() => copies ?? [], [copies]);
   const sectionRef = useRef<HTMLElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   /** A removal in flight from this list: the copy going, and whose button takes the keyboard. */
@@ -748,6 +1037,13 @@ export function CopyList({
    * say), so neither the row nor a panel open on it closes under the pointer.
    */
   const keyOf = useLineKeys(lines);
+  // Here, not in the caller: a new line's key can be the id it was drawn with, which only this list knows.
+  useEffect(() => {
+    if (!openEditId) return;
+    const copy = lines.find((c) => c.id === openEditId);
+    if (copy) onEdit?.(copy, keyOf(copy));
+    // `onEdit` opens it and clears `openEditId`, so this fires once however often a parent redraws.
+  }, [openEditId, lines, onEdit, keyOf]);
   /** NEO-377 — copy photos (capability `copyPhotos`): edited in the line's form. */
   const photosExt = useCopyPhotos();
   const photoMap = usePhotosOf(lines);
@@ -792,10 +1088,10 @@ export function CopyList({
   };
   const toggle = (copy: Copy, shift: Shift) =>
     setMoving(movingOn(copy) === shift ? null : { key: keyOf(copy), shift });
-  const submitMove = (copy: Copy, shift: Shift, toHomeId: ContainerId, quantity: number) => {
+  const submitMove = (copy: Copy, shift: Shift, toHomeId: ContainerId, quantity: number, minPrice?: number) => {
     if (!onMove) return;
     closeMove(copy.id, shift);
-    void onMove(copy, toHomeId, quantity).then((r) => {
+    void onMove(copy, toHomeId, quantity, minPrice).then((r) => {
       if (r) setLanded(r.copyId);
     });
   };
@@ -823,7 +1119,14 @@ export function CopyList({
                   copy,
                   i,
                   photosExt ? (
-                    <CopyPhotosField copy={copy} line={names[i]} photos={photoMap?.get(copy.id)} ext={photosExt} />
+                    <CopyPhotosField
+                      copy={copy}
+                      line={names[i]}
+                      card={name}
+                      photos={photoMap?.get(copy.id)}
+                      ext={photosExt}
+                      initialError={photoError?.copyId === copy.id ? photoError.message : undefined}
+                    />
                   ) : null,
                 )}
               </li>
@@ -840,7 +1143,7 @@ export function CopyList({
                   copy.id === focusCopyId ? "bg-pick-blue/20 ring-2 ring-inset ring-selection" : ""
                 }`}
               >
-                <LineThumb photos={photoMap?.get(copy.id)} line={names[i]} />
+                <LineThumb photos={photoMap?.get(copy.id)} line={names[i]} copy={copy} card={name} />
                 <span
                   className={`min-w-40 flex-1 ${
                     // At least 10rem wide; beside a thumbnail on a phone, the buttons wrap below rather than crush the words.
@@ -921,7 +1224,8 @@ export function CopyList({
                     defaultTo={
                       moving.shift === "unsell" ? unsellDefault(lines, shiftHomes(copy, shelf, "unsell")) : undefined
                     }
-                    onMove={(to, quantity) => submitMove(copy, moving.shift, to, quantity)}
+                    price={{ common: commonPrice }}
+                    onMove={(to, quantity, minPrice) => submitMove(copy, moving.shift, to, quantity, minPrice)}
                     onCancel={() => closeMove(copy.id, moving.shift)}
                   />
                 )}
@@ -932,6 +1236,35 @@ export function CopyList({
       )}
     </section>
   );
+}
+
+/** What Sell's Price field hands the store, or why it can't yet. */
+export type SellPrice =
+  | {
+      ok: true;
+      /** The cards' own price (dollars); `undefined`: the prefill untouched, so nothing is sent. */
+      minPrice: number | undefined;
+    }
+  | { ok: false; reason: "blank" | "invalid" | "tooHigh" };
+
+/**
+ * NEO-479 — Sell's Price field as the store takes it. A price is required.
+ * One the same number of cents as the prefill (0.5 and 0.50 alike) sends
+ * nothing: a copy at the common price keeps reading it live, and a copy with
+ * its own keeps that. Anything else becomes the cards' own price. Nothing
+ * here, or anywhere on the panel, writes the common price.
+ *
+ * `prefill`: the copy's own price, else the variant's common price, in
+ * dollars (`null`: neither; `undefined`: still loading, treated as none).
+ */
+export function sellPriceToStore(text: string, prefill: number | null | undefined): SellPrice {
+  const parsed = parsePrice(text);
+  if (parsed === null) return { ok: false, reason: "blank" };
+  if (parsed === "invalid") return { ok: false, reason: "invalid" };
+  const cents = Math.round(parsed * 100);
+  if (cents > MAX_PRICE_CENTS) return { ok: false, reason: "tooHigh" };
+  if (typeof prefill === "number" && cents === Math.round(prefill * 100)) return { ok: true, minPrice: undefined };
+  return { ok: true, minPrice: cents / 100 };
 }
 
 /** What each panel says. */
@@ -974,6 +1307,7 @@ export function MovePanel({
   shift,
   homes,
   defaultTo,
+  price,
   onMove,
   onCancel,
 }: {
@@ -984,11 +1318,20 @@ export function MovePanel({
   homes: readonly Container[];
   /** The home picked to start (Take off sale's `unsellDefault`); else the first offered. */
   defaultTo?: ContainerId;
-  onMove: (toHomeId: ContainerId, quantity: number) => void;
+  /**
+   * NEO-479 — asks a price when cards go from a binder into a box. `common`
+   * is the variant's common price in dollars (`null`: none; `undefined`:
+   * still loading, and the submit waits). Without it the panel asks none.
+   */
+  price?: { common: number | null | undefined };
+  /** `minPrice` (dollars): the cards' own price, only when the collector typed a new one. */
+  onMove: (toHomeId: ContainerId, quantity: number, minPrice?: number) => void;
   onCancel: () => void;
 }) {
   const selectId = useId();
   const helpId = useId();
+  const priceHelpId = useId();
+  const priceErrorId = useId();
   const words = SHIFT_WORDS[shift];
   // State holds only an explicit pick. Until there is one the select shows
   // the default (or the first home), derived on every render, so homes that
@@ -1003,6 +1346,47 @@ export function MovePanel({
   const [quantity, setQuantity] = useState<number>(copy.quantity);
   const stack = copy.quantity > 1;
   const valid = Number.isInteger(quantity) && quantity >= 1 && quantity <= copy.quantity;
+
+  // NEO-479 — Price, when cards go up for sale (out of a binder, into a box).
+  // Like `to`, state holds only what the collector typed; the shown value
+  // falls back to the prefill on every render, so a common price that loads
+  // after the panel opens still fills the field.
+  const picked = homes.find((h) => h.id === to);
+  const pricing = !!price && copy.homeKind !== "box" && picked?.kind === "box";
+  const prefill: number | null | undefined = copy.minPrice ?? price?.common;
+  const [typed, setTyped] = useState<string | null>(null);
+  const priceShown = typed ?? (typeof prefill === "number" ? prefill.toFixed(2) : "");
+  const priceLoading = pricing && prefill === undefined;
+  const sale = pricing ? sellPriceToStore(priceShown, prefill) : null;
+  const common = typeof price?.common === "number" ? `$${price.common.toFixed(2)}` : null;
+  // How many go, for the help's "this card" / "these 3".
+  const going = valid ? quantity : copy.quantity;
+  // A submit the price refused: from then on a blank field says so too.
+  const [refused, setRefused] = useState(false);
+  const priceRef = useRef<HTMLInputElement>(null);
+  const priceError =
+    !sale || sale.ok
+      ? null
+      : sale.reason === "invalid"
+        ? "Dollars and cents, like 1.50."
+        : sale.reason === "tooHigh"
+          ? "Whoa, that's past the $100,000,000.00 cap."
+          : // Blank: untouched with nothing to fall back on, the help already asks for a price.
+            typed === null && !refused
+            ? null
+            : common
+              ? `Blank won't sell. Put back ${common} or name your own price.`
+              : "Give it a price, like 1.50.";
+  const priceHelp =
+    copy.minPrice !== undefined
+      ? `${going > 1 ? "These cards' own price." : "This card's own price."}${common ? ` Your common price is ${common}.` : ""}`
+      : common
+        ? `Your common price, ${common}. Change it to price just ${going > 1 ? `these ${going}` : "this card"}; your common price stays put.`
+        : price?.common === null
+          ? "No common price on this one yet. Name your price to put it up for sale."
+          : "Looking up your common price…";
+  const ready = valid && !!to && !priceLoading && (!sale || sale.ok);
+
   const note =
     shift === "sell"
       ? "Everything in a box is for sale. Boxes live on Inventory."
@@ -1012,8 +1396,17 @@ export function MovePanel({
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    if (!valid || !to) return;
-    onMove(to, quantity);
+    if (sale && !sale.ok && !priceLoading) {
+      // Refused for the price: say why and put the keyboard where the fix is.
+      // (While the common price loads the submit just waits; it may fill the field.)
+      setRefused(true);
+      priceRef.current?.focus();
+      return;
+    }
+    if (!ready) return;
+    const minPrice = sale?.ok ? sale.minPrice : undefined;
+    if (minPrice === undefined) onMove(to, quantity);
+    else onMove(to, quantity, minPrice);
   };
   const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
     if (e.key === "Escape") {
@@ -1073,6 +1466,42 @@ export function MovePanel({
           />
         )}
       </div>
+      {pricing && (
+        // Its own row: the field beside its help on a wide drawer, the help
+        // under it on a phone. The help says where the shown price came from.
+        <div className="mt-3 grid gap-x-3 gap-y-1 sm:grid-cols-[9rem_minmax(0,1fr)]">
+          <label className="block">
+            <span className={LABEL}>Price</span>
+            <span className="relative block">
+              <span aria-hidden="true" className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-ink-3">
+                $
+              </span>
+              <Input
+                ref={priceRef}
+                bare
+                type="text"
+                inputMode="decimal"
+                autoComplete="off"
+                value={priceShown}
+                onChange={(e) => setTyped(e.target.value)}
+                aria-invalid={priceError ? true : undefined}
+                aria-describedby={priceError ? `${priceErrorId} ${priceHelpId}` : priceHelpId}
+                // `aria-invalid:` (class + attribute) outranks the primitive's own edge colour.
+                className="w-full py-2 pr-3 pl-7 text-base tabular-nums aria-invalid:border-neon-yellow-text"
+              />
+            </span>
+          </label>
+          <div className="text-xs sm:pt-7">
+            {/* Always rendered (an alert added already full may go unheard); empty, it takes no room. */}
+            <p id={priceErrorId} role="alert" className={`text-neon-yellow-text ${priceError ? "mb-1" : ""}`}>
+              {priceError}
+            </p>
+            <p id={priceHelpId} className="text-ink-3">
+              {priceHelp}
+            </p>
+          </div>
+        </div>
+      )}
       {note && (
         <p id={helpId} className="mt-2 text-xs text-ink-3">
           {note}
@@ -1087,7 +1516,10 @@ export function MovePanel({
           type="submit"
           variant="secondary"
           size="1"
-          aria-disabled={!valid || !to || undefined}
+          aria-disabled={!ready || undefined}
+          aria-busy={priceLoading || undefined}
+          // Why it waits on the price: the error, else what the help says (loading, or none set).
+          aria-describedby={pricing ? (priceError ? priceErrorId : priceHelpId) : undefined}
           className="max-sm:min-h-11"
         >
           {words.go(stack && valid ? quantity : null)}

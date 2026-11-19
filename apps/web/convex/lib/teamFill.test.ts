@@ -436,7 +436,7 @@ describe("careerTeamVerdict — keyed by anything (the browser keys by chip)", (
 });
 
 describe("teamPreferenceRank", () => {
-  const set = { leagueId: "league_mlb", level: "major" };
+  const set = { leagueIds: ["league_mlb"], levels: ["major"] };
 
   test("same league 0, same level 1, anything else 2", () => {
     expect(teamPreferenceRank({ leagueId: "league_mlb", leagueLevel: "major" }, set)).toBe(0);
@@ -449,8 +449,173 @@ describe("teamPreferenceRank", () => {
     expect(teamPreferenceRank({}, set)).toBe(2);
     expect(teamPreferenceRank({ leagueId: "league_mlb" }, null)).toBe(2);
     expect(
-      teamPreferenceRank({ leagueId: "x", leagueLevel: "major" }, { leagueId: "y", level: null }),
+      teamPreferenceRank({ leagueId: "x", leagueLevel: "major" }, { leagueIds: ["y"], levels: [null] }),
     ).toBe(2);
-    expect(teamPreferenceRank({ leagueId: "y" }, { leagueId: "y", level: null })).toBe(0);
+    expect(teamPreferenceRank({ leagueId: "y" }, { leagueIds: ["y"], levels: [null] })).toBe(0);
+    expect(teamPreferenceRank({ leagueId: "y" }, { leagueIds: [], levels: [] })).toBe(2);
+  });
+
+  test("NEO-569: any of the set's leagues — by id, then by any of their levels", () => {
+    const multi = { leagueIds: ["league_mlb", "league_ncaa"], levels: ["major", "college"] };
+    expect(teamPreferenceRank({ leagueId: "league_ncaa", leagueLevel: "college" }, multi)).toBe(0);
+    expect(teamPreferenceRank({ leagueId: "league_mlb", leagueLevel: "major" }, multi)).toBe(0);
+    expect(teamPreferenceRank({ leagueId: "league_npb", leagueLevel: "major" }, multi)).toBe(1);
+    expect(teamPreferenceRank({ leagueId: "league_juco", leagueLevel: "college" }, multi)).toBe(1);
+    expect(teamPreferenceRank({ leagueId: "league_il", leagueLevel: "minor" }, multi)).toBe(2);
+  });
+});
+
+describe("careerTeamVerdict — NEO-569 undated stints", () => {
+  type K = "wake" | "duke" | "mets";
+  const rank = (inLeague: ReadonlyArray<K>) => (key: K): TeamPreferenceRank =>
+    inLeague.includes(key) ? 0 : 2;
+
+  test("one team, undated, in the set's leagues → it covers every year (pre-filled)", () => {
+    const verdict = careerTeamVerdict<K>({
+      stints: [{ key: "wake" }],
+      year: 2025,
+      currentYear: CURRENT_YEAR,
+      rankOf: rank(["wake"]),
+      setHasLeagues: true,
+    });
+    expect(verdict.answer?.key).toBe("wake");
+  });
+
+  test("two undated teams in the set's leagues → both ignored", () => {
+    const verdict = careerTeamVerdict<K>({
+      stints: [{ key: "wake" }, { key: "duke" }],
+      year: 2025,
+      currentYear: CURRENT_YEAR,
+      rankOf: rank(["wake", "duke"]),
+      setHasLeagues: true,
+    });
+    expect(verdict.answer).toBeNull();
+    expect(verdict.candidates).toEqual([]);
+  });
+
+  test("the undated team is the one in scope, a dated team outside the leagues beside it → the undated one counts", () => {
+    const verdict = careerTeamVerdict<K>({
+      stints: [{ key: "wake" }, { key: "mets", fromYear: 2030 }],
+      year: 2025,
+      currentYear: CURRENT_YEAR,
+      rankOf: rank(["wake"]),
+      setHasLeagues: true,
+    });
+    expect(verdict.answer?.key).toBe("wake");
+  });
+
+  test("the one team in scope also has a dated stint → its undated stint is ignored", () => {
+    const verdict = careerTeamVerdict<K>({
+      stints: [{ key: "wake" }, { key: "wake", fromYear: 2020, toYear: 2021 }],
+      year: 2025,
+      currentYear: CURRENT_YEAR,
+      rankOf: rank(["wake"]),
+      setHasLeagues: true,
+    });
+    // Out of window: only the legend rule could pick it, from the dated stint.
+    expect(verdict.answer?.key).toBe("wake");
+    const inWindow = careerTeamVerdict<K>({
+      stints: [{ key: "wake" }, { key: "wake", fromYear: 2020, toYear: 2021 }, { key: "duke", fromYear: 2025 }],
+      year: 2025,
+      currentYear: CURRENT_YEAR,
+      rankOf: rank(["wake", "duke"]),
+      setHasLeagues: true,
+    });
+    expect(inWindow.answer?.key).toBe("duke");
+  });
+
+  test("an undated team outside the set's leagues never decides the card", () => {
+    const verdict = careerTeamVerdict<K>({
+      stints: [{ key: "wake" }],
+      year: 2025,
+      currentYear: CURRENT_YEAR,
+      rankOf: rank([]),
+      setHasLeagues: true,
+    });
+    expect(verdict.answer).toBeNull();
+    expect(verdict.candidates).toEqual([]);
+  });
+
+  test("a set with no league: the one team of the whole career, undated, covers every year", () => {
+    const verdict = careerTeamVerdict<K>({
+      stints: [{ key: "wake" }],
+      year: 2025,
+      currentYear: CURRENT_YEAR,
+      setHasLeagues: false,
+    });
+    expect(verdict.answer?.key).toBe("wake");
+  });
+
+  test("a set with no league and two career teams: the undated one is ignored", () => {
+    const verdict = careerTeamVerdict<K>({
+      stints: [{ key: "wake" }, { key: "mets", fromYear: 2025 }],
+      year: 2025,
+      currentYear: CURRENT_YEAR,
+      setHasLeagues: false,
+    });
+    expect(verdict.answer?.key).toBe("mets");
+    expect(verdict.candidates).not.toContain("wake");
+  });
+});
+
+describe("careerTeamVerdict — NEO-569 undated stints, adversarial", () => {
+  type K = "wake" | "duke" | "mets";
+  const rank = (inLeague: ReadonlyArray<K>) => (key: K): TeamPreferenceRank =>
+    inLeague.includes(key) ? 0 : 2;
+
+  test("one undated team in scope, a dated out-of-scope team in the window: the in-scope team wins on preference", () => {
+    const verdict = careerTeamVerdict<K>({
+      stints: [{ key: "wake" }, { key: "mets", fromYear: 2025 }],
+      year: 2025,
+      currentYear: CURRENT_YEAR,
+      rankOf: rank(["wake"]),
+      setHasLeagues: true,
+    });
+    expect(verdict.answer?.key).toBe("wake");
+  });
+
+  test("two teams in scope, one dated one undated: the undated one is ignored", () => {
+    const verdict = careerTeamVerdict<K>({
+      stints: [{ key: "wake" }, { key: "duke", fromYear: 2025 }],
+      year: 2025,
+      currentYear: CURRENT_YEAR,
+      rankOf: rank(["wake", "duke"]),
+      setHasLeagues: true,
+    });
+    expect(verdict.answer?.key).toBe("duke");
+    expect(verdict.candidates).not.toContain("wake");
+  });
+
+  test("setHasLeagues true with no rankOf: nothing is in scope, so an undated stint is ignored", () => {
+    const verdict = careerTeamVerdict<K>({
+      stints: [{ key: "wake" }],
+      year: 2025,
+      currentYear: CURRENT_YEAR,
+      setHasLeagues: true,
+    });
+    expect(verdict.answer).toBeNull();
+    expect(verdict.candidates).toEqual([]);
+  });
+
+  test("two undated stints of the one in-scope team still cover every year (no dated stint)", () => {
+    const verdict = careerTeamVerdict<K>({
+      stints: [{ key: "wake" }, { key: "wake" }],
+      year: 1990,
+      currentYear: CURRENT_YEAR,
+      rankOf: rank(["wake"]),
+      setHasLeagues: true,
+    });
+    expect(verdict.answer?.key).toBe("wake");
+  });
+
+  test("an undated team ranked 1 (same level, not the set's league) is not in scope", () => {
+    const verdict = careerTeamVerdict<K>({
+      stints: [{ key: "wake" }],
+      year: 2025,
+      currentYear: CURRENT_YEAR,
+      rankOf: () => 1,
+      setHasLeagues: true,
+    });
+    expect(verdict.answer).toBeNull();
   });
 });

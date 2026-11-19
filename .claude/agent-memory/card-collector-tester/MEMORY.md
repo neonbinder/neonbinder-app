@@ -13,3 +13,9 @@
 - [Team pre-fill set-year traps](team-prefill-set-year-traps.md) — season≠set year, one-team-career vs college draft cards, org not affiliate, legends, split groups, multi-team, team cards
 - [Wizard chip and title review checks](wizard-chip-and-title-review-checks.md) — livery dot reads as radio; title cut eats player names; clip meter noise; one-team legend pre-fill; playerless lines
 - [Retro cards: set year is not card year](retro-cards-set-year-is-not-card-year.md) — legends in modern sets; "same player in this set" fill is a guess; never "this set says"
+- [Pasted checklist format traps](pasted-checklist-format-traps.md) — paste/CSV shapes that break checklist parsers; a teamless row is not a 'no team' claim
+- [Pull sheet dealer checks](pull-sheet-dealer-checks.md) — sale must record which copy/box/slot it took; merge then split; server check-off; no buyer PII; colour collisions
+- [Local build exploratory driver](local-build-exploratory-driver.md) — headless Playwright via scratch config + support helpers; sign-in/seed URL; what was refused
+- [Derived value survival is order-dependent](derived-value-survival-is-order-dependent.md) — "keep while valid" without a picked flag = order decides; test A-then-B and B-then-A
+- [None-answer copy traps](none-answer-copy-traps.md) — "listed" = for sale; new-card overclaim; inherited state in quick-add; one-way toggles; visible control names
+- [Exploratory pass driving recipe](exploratory_pass_driving_recipe.md) — headless persistent-profile driver, reaching Card titles step, Back/blank-history trap

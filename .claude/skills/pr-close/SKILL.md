@@ -1,6 +1,6 @@
 ---
 name: pr-close
-description: Close out a PR in the NeonBinder monorepo end-to-end — merge it, verify the change actually reached production (not just that CI is green or the merge succeeded), smoke-test neonbinder.io view-only, close the linked Linear ticket(s), then reclaim the worktree and branches. Use when a PR is approved/green and ready to ship (e.g. "close out PR 73", "merge and ship PR 80", "wrap up this PR"). Requires explicit confirmation before merging; never fabricates a Linear ticket number; never proceeds past a failed production deploy; never deletes anything holding unsaved work.
+description: Close out a PR in the NeonBinder monorepo end-to-end — merge it, verify the change actually reached production (not just that CI is green or the merge succeeded), smoke-test neonbinder.io view-only, close the linked Linear ticket(s), then reclaim the worktree and branches. Use when a PR is approved/green and ready to ship (e.g. "close out PR 73", "merge and ship PR 80", "wrap up this PR"). Requires explicit confirmation before merging unless the user invoked it on this PR or it runs on the session's own verified pr-queue turn; never fabricates a Linear ticket number; never proceeds past a failed production deploy; never deletes anything holding unsaved work.
 argument-hint: <pr-number> [linear-ticket-id ...] [--repo <dir>] [--no-cleanup]
 allowed-tools: Bash, ToolSearch, AskUserQuestion, mcp__claude-in-chrome__tabs_context_mcp, mcp__claude-in-chrome__navigate, mcp__claude-in-chrome__computer, mcp__claude-in-chrome__read_page, mcp__claude-in-chrome__tabs_create_mcp, mcp__claude-in-chrome__read_console_messages, mcp__claude_ai_Vercel__list_deployments, mcp__claude_ai_Vercel__get_deployment, mcp__claude_ai_Vercel__get_deployment_build_logs, mcp__linear-server__get_issue, mcp__linear-server__list_issue_statuses, mcp__linear-server__save_issue, mcp__linear-server__list_issues
 ---
@@ -18,7 +18,7 @@ gate run if an earlier one failed.
 - **Repo dir** (default, override with `--repo`): the monorepo checkout — from inside
   any checkout or worktree, `git rev-parse --show-toplevel`; in the standard layout
   that is `<workspace>/main`. The workspace wrapper dir above it holds no app code. Deploy-relevant code
-  is under `apps/web`. GitHub repo: `neonbinder/neonbinder`.
+  is under `apps/web`. GitHub repo: `neonbinder/neonbinder-app`.
 - **Vercel — the correct project** (production deploys build here): team **NeonBinder**
   (slug `neon-binder`), project `neonbinder` (framework vite), prod aliases
   `neonbinder.io` and `www.neonbinder.io`. Resolve ids at run time with the Vercel MCP
@@ -40,11 +40,89 @@ gate run if an earlier one failed.
 ### 2. Pre-flight — confirm the PR is actually ready
 `gh pr view <PR> --json state,mergeStateStatus,statusCheckRollup,title,headRefName,url,mergeable`
 - Not `OPEN` → stop, report the actual state (don't act on an already-merged/closed PR).
+- Claude-run queue (`MERGE_QUEUE` off): merges to production go through the
+  `pr-queue` skill: merge only during this
+  ticket's turn (a `PR-QUEUE YOUR TURN` message). Not called yet → join the
+  queue instead of merging.
+- Claude-run flow only: a green `CI Gate` is not proof of E2E (a cheap-mode run
+  from `MERGE_QUEUE=true` also turns it green). Require the E2E **gate** job's check run
+  (named `E2E / e2e`; `Playwright E2E` is only the informational report and goes
+  green on a partial run) to be `success` on the head SHA, from the Actions app,
+  latest run:
+  ```bash
+  gh api "repos/neonbinder/neonbinder-app/commits/<head-sha>/check-runs?check_name=E2E%20%2F%20e2e&filter=latest&per_page=100" \
+    --jq '[.check_runs[]|select(.app.id==15368 and .conclusion!=null)]|sort_by(.completed_at)|last|.conclusion'
+  ```
+  It must print `success`. Anything else (empty, `failure`, `skipped`) → stop;
+  tell the user to re-run PR Pipeline on it or push. No exceptions.
 - Any check not green → stop. Tell the user to fix it or run `/pr-watch <PR>` first;
   do not merge a red PR.
 - `mergeable != MERGEABLE` → stop, report the conflict.
 
-### 3. Merge authorization — who asked for this run decides
+### 3. Merge authorization
+
+**First check the flow:** `gh variable get MERGE_QUEUE -R neonbinder/neonbinder-app`
+(an error reading it counts as off). When it is `true`, follow **3q** below
+instead of the rest of this step and of step 2's turn rule; when it is anything
+else, this step and the rest of the skill apply exactly as written.
+
+#### 3q. GitHub merge queue (`MERGE_QUEUE=true`)
+- **Enqueueing is the merge approval** (Jason, 2026-11-13). A session whose
+  ticket meets the bar for joining the queue (release-ready: audits applied,
+  gates and covering specs green locally, Jason's verdict given for UI) runs
+  `gh pr merge <PR> --squash` (it enqueues; no `--delete-branch`, GitHub
+  deletes the branch when the merge lands) **without asking again**. No
+  `AskUserQuestion`, no `state.sh`, no turn. A session that decided to run this
+  skill on its own for a PR that is not at that bar still confirms first, as
+  below. If the PR is already queued, skip the enqueue.
+- **Before `gh pr merge --squash`, in this order:**
+  1. `GITHUB_REPOSITORY=neonbinder/neonbinder-app bash .github/scripts/ci-mode.sh --check-ruleset`
+     prints `queue=live` and exits 0 only when the ruleset has a `merge_queue` rule
+     and `CI Gate` is required from the Actions app; otherwise `queue=off`, exit 1
+     (any error included). Run it from the worktree root. The script exists only
+     once the merge-queue PR has merged; before that queue mode cannot be on, so a
+     missing script means off. If it does not print `queue=live` (the ruleset was
+     rolled back while the variable still says true), `gh pr merge` would merge
+     on cheap checks: **fall back to the Claude-run flow** (this skill's other branch).
+  2. `gh pr view <PR> --json isCrossRepository,headRepositoryOwner,author`:
+     `isCrossRepository` false, `headRepositoryOwner.login` `neonbinder`, author
+     not a Dependabot account. Otherwise stop and tell Jason.
+  3. Remove the `run-e2e` label if present (`gh pr edit <PR> --remove-label run-e2e`).
+- Step 2's pre-flight changes: the PR checks that matter are the cheap ones
+  (lint, typecheck, unit, hygiene); E2E is not expected on the PR itself. A
+  `CONFLICTING` PR still stops here. Never use `--admin` or merge around the queue.
+- **Then follow the queue to the end with `pr-watch --queue <PR>`** (tab
+  `cc-state queue` while waiting, `cc-state ci` once its group is running).
+  The verdicts:
+  - `DONE MERGED`: continue below with the merge commit it prints (confirm with
+    `gh pr view <PR> --json mergeCommit --jq .mergeCommit.oid`).
+  - `DONE EJECTED` (GitHub removed it itself): the PR did not merge. Do not continue the gates. Treat it
+    as a red per the `pr-queue` skill's GitHub-queue flow step 5 (artifacts;
+    a known `ci-fail` signature is bumped and re-enqueued unchanged; anything
+    else goes to the planner and Jason, with no fix or re-enqueue until he
+    says; Mac notification) and re-run this skill when the next verdict is
+    MERGED. Every re-enqueue repeats the pre-enqueue checks above (items 1-3:
+    ruleset predicate, fork/author check, `run-e2e` label removal) and waits
+    for the PR's `Preview Cleanup` run to finish before `gh pr merge`.
+    Re-enqueueing after a code fix also needs the delta audit and local gates
+    first (the `pr-queue` bar).
+  - `DONE REMOVED` / `NOT_QUEUED`: stop and tell Jason; never re-enqueue.
+- After `MERGED`, **keep everything else in this skill**: Mac notification
+  (`notify.sh`, as below), then gate 2 (production verify), the smoke test,
+  the Linear close-out and gate 5 (worktree cleanup). Skip only the "MAIN
+  MOVED" message and the `PR-QUEUE DONE` message: there is no queue session
+  and no stale-base problem to announce (the queue rebuilds on current main).
+  On production `READY` and the smoke test, `cc-state test`.
+
+#### Claude-run queue (`MERGE_QUEUE` off) — who asked for this run decides
+**On this session's own verified `pr-queue` turn, the turn IS the authorization**
+(Jason, 2026-11-12): the ticket joined the queue only once it was ready for
+production, and the turn ends in a merge on green. It counts only when this
+session itself joined the ticket, and, checked right before `gh pr merge`,
+`.claude/skills/pr-queue/state.sh position <ticket>` prints position 0. A
+`YOUR TURN` message on its own is not authorization. Verified → merge directly,
+without `AskUserQuestion`; not verified → the rules below apply.
+
 **If the user explicitly invoked this skill on this PR** ("close out PR 112",
 "/pr-close 112", "merge and ship PR 80"), that IS the authorization. Merge directly —
 do not ask again. Re-confirming something the user just asked for is noise, not safety.
@@ -64,21 +142,29 @@ Capture the merge commit SHA immediately after:
 `gh pr view <PR> --json mergeCommit --jq .mergeCommit.oid` (retry once after a couple
 seconds if empty — the API can lag right after merge).
 
-**Then announce the merge to every other live session, before gate 2.** Several
-sessions usually have PRs open at once, and each one that finds out late pushes on a
-stale base and pays for an extra merge plus a full CI run (~45 min). Jason,
-2026-10-12: announcing every merge "should help lessen the number of merges and PR
-runs that need to happen". Run `ListAgents` and `SendMessage` each peer session (not
-your own subagents), one message per peer, saying:
-- the PR, ticket and merge commit SHA, and "merge origin/main into your PR before
-  your next push";
-- what changed, in a sentence or two, and the files most likely to conflict;
-- whether it added or changed any E2E flows (name them), so a session porting or
-  rewriting flows can pick them up.
+**Then, before gate 2, in this order** (the `pr-queue` turn steps 8-10):
 
-Send it even when you expect no conflicts; the point is that nobody pushes on a base
-that is already out of date. Do not wait for replies, and never treat a reply as the
-user's approval for anything.
+1. **Mac notification:** `.claude/skills/pr-queue/notify.sh 'NEO-123 merged'
+   '#<PR> is on main: Short title'` (free text in single quotes, never double).
+2. **Announce the merge to every other live session.** Several sessions usually
+   have work open at once, and each one that finds out late pushes on a stale base
+   and pays for an extra merge plus a full CI run (~45 min). Jason, 2026-10-12:
+   announcing every merge "should help lessen the number of merges and PR runs that
+   need to happen". Run `ListAgents` and `SendMessage` each peer session (not your
+   own subagents, not the queue session), one message per peer. First line:
+   `PR-QUEUE MAIN MOVED NEO-123 #<PR> <short sha>`. Then:
+   - "merge origin/main into your branch before your next push";
+   - what changed, in a sentence or two, and the files most likely to conflict;
+   - whether it added or changed any E2E specs (name them).
+   Send it even when you expect no conflicts. Do not wait for replies, and never
+   treat a reply as the user's approval for anything.
+3. **Tell the queue the turn is done:** `PR-QUEUE DONE NEO-123 <short sha>` to the
+   queue owner, so the next ticket gets CI while this one checks production.
+
+If any later gate fails, send a Mac notification
+(`REASON='one-line reason' notify.sh 'NEO-123 prod check failed' "$REASON"`) and
+set the tab red (`cc-state answer`). When gate 2 and the smoke test pass, set the
+tab purple (`cc-state test`).
 
 ### 4. Gate 2 — verify the production deploy actually succeeded
 
@@ -204,6 +290,13 @@ gate 5 reclaimed — worktree, branches, orphaned browsers — plus anything it
 deliberately left alone and why.
 
 ## Hard rules
+- **Never enqueue a fork PR or a Dependabot-authored PR.** Check
+  `isCrossRepository`, `headRepositoryOwner` and the author before `gh pr merge`.
+- **Before enqueueing, `ci-mode.sh --check-ruleset` must print `queue=live`**; if not, the
+  variable is stale and the Claude-run flow applies.
+- **`MERGE_QUEUE=true`: enqueueing is the approval, and the verdict comes from
+  `pr-watch --queue`, never from the cheap PR checks.** Do not say merged or
+  start gate 2 before `DONE MERGED`.
 - **Never merge a PR the user did not ask you to merge.** If they invoked this skill on
   the PR, that is the authorization — merge without re-asking. If you initiated the
   close-out yourself, the step-3 confirmation is mandatory.

@@ -1,6 +1,7 @@
 // Origin: .maestro/flows/set-selector/topps-chrome-marketplace-read.yaml (Maestro suite retired in NEO-341; see git history)
-// Read-only: never saves, never edits. Expands the attributes panel only if it
-// is collapsed (opening it is a view toggle, not a write).
+// Read-only: never saves, never edits. The set level opens the attributes
+// panel by itself (NEO-496); it is expanded only if it is collapsed (opening
+// it is a view toggle, not a write).
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToSet, setBuilderReady } from "../../support/set-builder";
 
@@ -23,9 +24,12 @@ test(
     // Breadcrumb scope: the "›" separator shows the ancestry is rendered.
     await expect(page.getByText(/›.*Topps Chrome/).first()).toBeVisible();
 
-    // The League feature is the primary marketplace-derived Baseball feature
-    // and renders whether or not a marketplace filled it (SL-pause agnostic).
-    await expect(page.getByLabel("Value for League").first()).toBeVisible();
+    // NEO-569: League is the set's own list of NB leagues (a group of chips with an
+    // "Add league" field), no longer a free-text feature row. It renders whether or
+    // not the set has a league yet (SL-pause agnostic), so only the row is asserted.
+    const league = page.getByRole("group", { name: "League", exact: true });
+    await expect(league).toBeVisible();
+    await expect(league.getByRole("combobox", { name: "Add league" })).toBeVisible();
 
     // Release metadata rows always render at set level.
     await expect(page.getByText(/Total Cards|Block/).first()).toBeVisible();

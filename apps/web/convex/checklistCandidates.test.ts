@@ -13,7 +13,7 @@ import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 // NEO-294 — the page the clear and the write are bounded at, so a
 // deliberately multi-page batch is built from the real number.
-import { CHECKLIST_CANDIDATE_PAGE } from "./checklistCandidates";
+import { CHECKLIST_CANDIDATE_PAGE, MAX_CHECKLIST_TEAM_TEXTS } from "./checklistCandidates";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -1218,5 +1218,82 @@ describe("ready === total marks the end of the team lookups (NEO-341)", () => {
 
     await t.finishAllScheduledFunctions(vi.runAllTimers);
     expect(await readAs(t, ADMIN, id)).toMatchObject({ total: 2, ready: 2 });
+  });
+});
+
+describe("resolveChecklistTeamTexts past its cap (PR 451)", () => {
+  test("resolves the first MAX_CHECKLIST_TEAM_TEXTS texts and answers null for the rest, without throwing", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedRow(t);
+    // No team rows exist, so each comma text splits on its commas.
+    const texts = Array.from({ length: MAX_CHECKLIST_TEAM_TEXTS + 2 }, (_, i) => ({
+      raw: `Alpha${i}, Beta${i}`,
+      parts: [`Alpha${i}`, `Beta${i}`],
+    }));
+    const out = await t.query(internal.checklistCandidates.resolveChecklistTeamTexts, {
+      selectorOptionId,
+      texts,
+    });
+    expect(out).toHaveLength(MAX_CHECKLIST_TEAM_TEXTS + 2);
+    expect(out[0]).toEqual(["Alpha0", "Beta0"]);
+    const last = MAX_CHECKLIST_TEAM_TEXTS - 1;
+    expect(out[last]).toEqual([`Alpha${last}`, `Beta${last}`]);
+    expect(out.slice(MAX_CHECKLIST_TEAM_TEXTS)).toEqual([null, null]);
+  });
+});
+
+describe("NEO-496 — checklist-only candidates and checklistLink", () => {
+  test("a checklistOnly candidate (no refs) and a card's checklistLink come back as written", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    await t.mutation(internal.checklistCandidates.startCandidateBatch, {
+      selectorOptionId: id,
+      batchId: "batch-496",
+      userId: ADMIN.subject,
+      readyImmediately: true,
+      candidates: [
+        {
+          ...cand("1", "b1"),
+          checklistLink: { via: "number" as const },
+        },
+        {
+          ...cand("7", "b7"),
+          checklistLink: {
+            via: "playerFuzzy" as const,
+            confidence: 0.96,
+            checklistNumber: "77",
+            row: { number: "77", players: ["Rhett Lowder"], teams: ["Cincinnati Reds"], cardName: "Rhett Lowder" },
+            revert: { players: ["Rhet Lowder"], teamsFromRow: true, teamLookup: "failed" as const },
+          },
+        },
+        {
+          cardNumber: "NNO",
+          cardName: "Noelvi Marte",
+          platformData: {},
+          bucket: "checklistOnly" as const,
+          players: ["Noelvi Marte"],
+          teams: ["Cincinnati Reds"],
+          teamLookup: "checklist" as const,
+        },
+      ],
+    });
+
+    const res = await readAs(t, ADMIN, id);
+
+    const byNumber = new Map(res.cards.map((c) => [c.cardNumber, c]));
+    expect(byNumber.get("1")?.checklistLink).toEqual({ via: "number" });
+    expect(byNumber.get("7")?.checklistLink).toEqual({
+      via: "playerFuzzy",
+      confidence: 0.96,
+      checklistNumber: "77",
+      row: { number: "77", players: ["Rhett Lowder"], teams: ["Cincinnati Reds"], cardName: "Rhett Lowder" },
+      revert: { players: ["Rhet Lowder"], teamsFromRow: true, teamLookup: "failed" },
+    });
+    expect(byNumber.get("NNO")).toMatchObject({
+      bucket: "checklistOnly",
+      platformData: {},
+      teams: ["Cincinnati Reds"],
+    });
+    expect(byNumber.get("NNO")?.checklistLink).toBeUndefined();
   });
 });

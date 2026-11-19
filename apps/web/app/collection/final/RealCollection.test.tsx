@@ -11,6 +11,8 @@ import {
   type CollectionActions,
   type CollectionData,
   type CollectionStoreValue,
+  type CopyPhotosExtension,
+  type ListingExtension,
 } from "./data/store";
 import {
   REAL_CAPABILITIES,
@@ -36,6 +38,18 @@ import {
  */
 vi.mock("@clerk/clerk-react", () => ({ useAuth: () => ({ isLoaded: true, isSignedIn: true }) }));
 vi.mock("convex/react", () => ({}));
+// NEO-536 — the real "Can't find it?" dialog reads Convex itself; here only
+// which tab it opens on and its close matter.
+vi.mock("./requests/RequestsDialog", () => ({
+  default: ({ initialTab, onClose }: { initialTab?: string; onClose: () => void }) => (
+    <div role="dialog" aria-label="Can't find it?">
+      <p>Opened on {initialTab}</p>
+      <button type="button" onClick={onClose}>
+        Close requests
+      </button>
+    </div>
+  ),
+}));
 
 const SET: SetRef = {
   id: "set-chrome",
@@ -165,12 +179,21 @@ function makeStore({
   loading = false,
   capabilities = REAL_CAPABILITIES,
   boxCopies = [],
+  extraCopies = [],
   binderMemory,
+  listing,
+  photos,
 }: {
+  /** NEO-377 — the store's copy-photo half; absent in a store with none. */
+  photos?: CopyPhotosExtension;
   loading?: boolean;
+  /** NEO-370 — the store's marketplace-listing half; absent in a store with none. */
+  listing?: ListingExtension;
   capabilities?: Capabilities;
   /** Copies in a box: only the every-home read (`useCopiesOfCards`) lists them, as on Convex. */
   boxCopies?: Copy[];
+  /** More lines the card drawer lists, as a line just added would be. */
+  extraCopies?: Copy[];
   /** NEO-374 — Profile → Settings' where-it-opens, as the Convex store hands it over. */
   binderMemory?: BinderMemoryExtension;
 } = {}) {
@@ -197,6 +220,7 @@ function makeStore({
     setSmartRule: vi.fn(async () => ({ undo })),
     declineCard: vi.fn(async () => ({ undo })),
     undeclineCard: vi.fn(async () => ({ undo })),
+    retryBinderFits: vi.fn(async () => {}),
     setCommonPrice: vi.fn(async () => ({ undo })),
   } satisfies CollectionActions;
   const wants: Want[] = [];
@@ -254,7 +278,7 @@ function makeStore({
       return L({ cards, truncated: false });
     },
     useBuildingSets: () => L([SET]),
-    useCopiesOf: (id) => (id === null ? undefined : L([COPY_OHTANI, COPY_GOLD].filter((c) => c.cardId === id))),
+    useCopiesOf: (id) => (id === null ? undefined : L([COPY_OHTANI, COPY_GOLD, ...extraCopies].filter((c) => c.cardId === id))),
     useCopiesInVariant: (id) => (id === null ? undefined : L([COPY_OHTANI, COPY_GOLD].filter((c) => c.variantId === id))),
     useSummary: () => L({ copies: 2, cards: 2, exact: true, offBuild: 0 }),
     useContainers: () => L(CONTAINERS),
@@ -300,14 +324,19 @@ function makeStore({
         goneCardIds: [],
         truncated: false,
       }),
-    useBinderNeeds: (id) => (id === null ? undefined : L({ cards: [], held: new Set<string>(), supported: true, truncated: false })),
-    useRuleMatches: (id, ids) => (id === null || ids === null ? undefined : L(new Set<string>())),
-    useFindCards: (id) => (id === null ? undefined : L({ copies: [], done: true, more: () => {} })),
+    useBinderNeeds: (id) =>
+      id === null
+        ? undefined
+        : L({ cards: [], held: new Set<string>(), secondary: new Set<string>(), supported: true, truncated: false }),
+    useRuleMatches: (id, ids) =>
+      id === null || ids === null ? undefined : L({ fits: new Set<string>(), secondary: new Set<string>() }),
+    useFindCards: (id) =>
+      id === null ? undefined : L({ copies: [], secondary: new Set<string>(), done: true, more: () => {} }),
     useDeclined: (id) => (id === null ? undefined : L([])),
     useRuleBrands: (id) => (id === null ? undefined : L([])),
     useCommonPrices: (ids) => (ids === null ? undefined : L({})),
   };
-  const value: CollectionStoreValue = { kind: "convex", capabilities, data, actions, binderMemory };
+  const value: CollectionStoreValue = { kind: "convex", capabilities, data, actions, binderMemory, listing, photos };
   return { value, actions, undo, log };
 }
 
@@ -350,6 +379,10 @@ function renderAt(start: string, store = makeStore()) {
 
 const pageUrl = () => screen.getByRole("status", { name: "Page URL" }).textContent ?? "";
 const searchBox = () => screen.getByRole("searchbox", { name: "Search every card" });
+/** The listing gate's refusal text (`convex/listingGate.ts`), as a ConvexError hands it over. */
+const GATE_WORDS =
+  "Show box sells on your marketplaces, so cards going in need a price first. Set a common price for the checklist, or give the card a price of its own.";
+
 const statuses = () => screen.getAllByRole("status").map((s) => s.textContent);
 
 beforeEach(() => {
@@ -810,6 +843,12 @@ describe("Checklists on the real collection", () => {
     renderAt("/collection?tab=checklists", makeStore({ loading: true }));
     expect(statuses()).toContain("Loading sports…");
   });
+
+  it("the drill's intro names brand or set as one step (NEO-527: a year's loose sets sit in the brand column)", () => {
+    renderAt("/collection?tab=checklists");
+    const browse = screen.getByRole("region", { name: "Browse sets" });
+    expect(within(browse).getByText("Or drill down: sport, year, brand or set, then base, an insert or a parallel.")).toBeTruthy();
+  });
 });
 
 describe("the card drawer on the real collection", () => {
@@ -833,6 +872,428 @@ describe("the card drawer on the real collection", () => {
     expect(details).not.toHaveProperty("demo");
     expect(details.homeId).toBe("main");
     await waitFor(() => expect(within(drawer).getAllByRole("status").some((s) => s.textContent?.startsWith("Added #2 Aaron Judge"))).toBe(true));
+  });
+
+  describe("an add with held photos (NEO-431)", () => {
+    const photosExt = () =>
+      ({
+        usePhotos: () => new Map(),
+        useCardImages: () => new Map(),
+        addPhoto: vi.fn(async () => {}),
+        removePhoto: vi.fn(async () => {}),
+        swapPhotos: vi.fn(async () => {}),
+      }) satisfies CopyPhotosExtension;
+    const jpeg = () => new File(["x"], "card.jpg", { type: "image/jpeg" });
+    function openAddForm(photos: CopyPhotosExtension) {
+      const store = makeStore({ photos });
+      renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`, store);
+      fireEvent.click(screen.getByRole("button", { name: "Details for #2 Aaron Judge" }));
+      const drawer = screen.getByRole("dialog");
+      const form = within(drawer).getByRole("form", { name: "Add a copy" });
+      const box = within(form).getByRole("region", { name: /^Photos of / });
+      const pick = (side: "front" | "back") =>
+        act(async () => {
+          fireEvent.change(box.querySelector(`[data-copy-photo-input="${side}"]`)!, { target: { files: [jpeg()] } });
+        });
+      return { ...store, drawer, form, box, pick };
+    }
+    beforeEach(() => {
+      URL.createObjectURL = vi.fn(() => "blob:held");
+      URL.revokeObjectURL = vi.fn();
+    });
+
+    it("a plain add from the same form stays a plain add", async () => {
+      const photos = photosExt();
+      const { actions, form, drawer } = openAddForm(photos);
+      fireEvent.click(within(form).getByRole("button", { name: "Add to collection" }));
+      expect(actions.addLineItem.mock.calls[0]).toHaveLength(2);
+      await waitFor(() => expect(within(drawer).getAllByRole("status").some((s) => s.textContent?.startsWith("Added #2"))).toBe(true));
+      expect(photos.addPhoto).not.toHaveBeenCalled();
+    });
+
+    it("keeps its own line, uploads against the id the write answered, and Add is busy until they land", async () => {
+      const photos = photosExt();
+      let finish = () => {};
+      photos.addPhoto.mockImplementationOnce(() => new Promise<void>((resolve) => (finish = resolve)));
+      const { actions, form, box, pick, drawer } = openAddForm(photos);
+      await pick("front");
+      await pick("back");
+      expect(photos.addPhoto).not.toHaveBeenCalled();
+
+      fireEvent.click(within(form).getByRole("button", { name: "Add to collection" }));
+      const busy = await within(form).findByRole("button", { name: "Adding…" });
+      expect(busy.getAttribute("aria-disabled")).toBe("true");
+      // NEO-466: front and back go up side by side, both against the answered id.
+      await waitFor(() => expect(photos.addPhoto).toHaveBeenCalledTimes(2));
+      expect(actions.addLineItem.mock.calls[0]).toEqual([JUDGE, expect.objectContaining({ quantity: 1 }), { keepsOwnLine: true }]);
+      const sent = photos.addPhoto.mock.calls as unknown as [Copy, string, File, { addLineItemMs?: number }][];
+      expect(sent.map(([copy, side]) => [copy.id, side])).toEqual([
+        ["new-line", "front"],
+        ["new-line", "back"],
+      ]);
+      expect(sent.every(([, , , context]) => typeof context?.addLineItemMs === "number")).toBe(true);
+      expect(within(box).getByRole("status").textContent).toBe("Saving your photos…");
+
+      // A second press and Cancel both wait; nothing is sent twice.
+      fireEvent.click(busy);
+      fireEvent.submit(form);
+      fireEvent.click(within(form).getByRole("button", { name: "Cancel" }));
+      fireEvent.keyDown(form, { key: "Escape" });
+      expect(actions.addLineItem).toHaveBeenCalledTimes(1);
+      expect(within(drawer).getByRole("form", { name: "Add a copy" })).toBe(form);
+
+      // The back has landed; the add still waits on the front.
+      expect(within(drawer).getAllByRole("status").some((s) => s.textContent?.startsWith("Added #2"))).toBe(false);
+      await act(async () => finish());
+      expect(photos.addPhoto).toHaveBeenCalledTimes(2);
+      await waitFor(() =>
+        expect(within(drawer).getAllByRole("status").some((s) => /^Added #2 Aaron Judge, .*, with its front and back photos\.$/.test(s.textContent ?? ""))).toBe(true),
+      );
+      expect(actions.addLineItem).toHaveBeenCalledTimes(1);
+    });
+
+    it("refused (a card at its line limit): the existing refusal shows and the photos stay in the form", async () => {
+      const photos = photosExt();
+      const { actions, form, box, pick, drawer } = openAddForm(photos);
+      actions.addLineItem.mockRejectedValueOnce(new Error("You already have 200 lines of this card. Stack some together first."));
+      await pick("front");
+      fireEvent.click(within(form).getByRole("button", { name: "Add to collection" }));
+      await waitFor(() =>
+        expect(within(drawer).getAllByRole("status").some((s) => s.textContent === "You already have 200 lines of this card. Stack some together first.")).toBe(true),
+      );
+      expect(photos.addPhoto).not.toHaveBeenCalled();
+      expect(within(box).getByRole("img", { name: /^Front of your new copy/ })).toBeTruthy();
+      expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+      // Add is ready for another go.
+      expect(within(form).getByRole("button", { name: "Add to collection" }).getAttribute("aria-disabled")).toBeNull();
+    });
+
+    it("a store without photos shows no photo box in the Add form", () => {
+      renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`);
+      fireEvent.click(screen.getByRole("button", { name: "Details for #2 Aaron Judge" }));
+      expect(within(screen.getByRole("dialog")).queryByRole("region", { name: /^Photos of / })).toBeNull();
+    });
+  });
+
+  describe("an add with held photos: adversarial pass (NEO-431)", () => {
+    const photosExt = () =>
+      ({
+        usePhotos: () => new Map(),
+        useCardImages: () => new Map(),
+        addPhoto: vi.fn(async (_copy: Copy, _side: string, _file: File) => {}),
+        removePhoto: vi.fn(async () => {}),
+        swapPhotos: vi.fn(async () => {}),
+      }) satisfies CopyPhotosExtension;
+    const jpeg = (name = "card.jpg") => new File(["x"], name, { type: "image/jpeg" });
+    /** Ohtani already has a line (`copy-1`), so the write answering with that id stands in for "the new line is in the list". */
+    function openAnotherCopy(photos: CopyPhotosExtension) {
+      const store = makeStore({ photos });
+      store.actions.addLineItem.mockResolvedValue({ copyId: "copy-1", merged: false, undo: store.undo });
+      renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`, store);
+      fireEvent.click(screen.getByRole("button", { name: "Details for #1 Shohei Ohtani" }));
+      const drawer = screen.getByRole("dialog");
+      fireEvent.click(within(drawer).getByRole("button", { name: /add another copy|add a copy/i }));
+      const form = within(drawer).getByRole("form", { name: "Add another copy" });
+      const box = within(form).getByRole("region", { name: /^Photos of / });
+      const pick = (side: "front" | "back", file = jpeg()) =>
+        act(async () => {
+          fireEvent.change(box.querySelector(`[data-copy-photo-input="${side}"]`)!, { target: { files: [file] } });
+        });
+      return { ...store, drawer, form, box, pick };
+    }
+    let seq = 0;
+    beforeEach(() => {
+      URL.createObjectURL = vi.fn(() => `blob:held-${(seq += 1)}`);
+      URL.revokeObjectURL = vi.fn();
+    });
+
+    it("one photo fails: the copy stays, the photo that made it is not tried again, the failed side's Add is where the keyboard lands", async () => {
+      const photos = photosExt();
+      photos.addPhoto.mockImplementation(async (_c, side) => {
+        if (side === "back") throw new Error("That photo is too big. Add it again.");
+      });
+      const { form, drawer, pick } = openAnotherCopy(photos);
+      await pick("front");
+      await pick("back");
+      fireEvent.click(within(form).getByRole("button", { name: /^Add to collection$/ }));
+      await waitFor(() => expect(photos.addPhoto).toHaveBeenCalledTimes(2));
+      await waitFor(() =>
+        expect(within(drawer).getAllByRole("status").some((s) => /Its back photo didn't save\. Try again under Edit\./.test(s.textContent ?? ""))).toBe(true),
+      );
+      // Edit opens by itself with the failure in the photo field.
+      const editForm = await within(drawer).findByRole("form", { name: /edit/i });
+      expect(within(editForm).getByRole("alert").textContent).toMatch(/Your copy is in, but the back photo didn't save\. That photo is too big\. Add it again\. Add it again here\./);
+      expect(photos.addPhoto).toHaveBeenCalledTimes(2);
+      expect(photos.addPhoto.mock.calls.map((c) => c[1])).toEqual(["front", "back"]);
+    });
+
+    it("both photos fail: one message names both, once per distinct reason", async () => {
+      const photos = photosExt();
+      photos.addPhoto.mockRejectedValue(new Error("Couldn't reach the photo store."));
+      const { form, drawer, pick } = openAnotherCopy(photos);
+      await pick("front");
+      await pick("back");
+      fireEvent.click(within(form).getByRole("button", { name: /^Add to collection$/ }));
+      const editForm = await within(drawer).findByRole("form", { name: /edit/i });
+      const alertText = within(editForm).getByRole("alert").textContent ?? "";
+      expect(alertText).toContain("front and back photos didn't save");
+      expect(alertText).toContain("Add them again here.");
+      expect(alertText.match(/Couldn't reach the photo store\./g)).toHaveLength(1);
+      // Neither attempt was skipped because the other failed.
+      expect(photos.addPhoto).toHaveBeenCalledTimes(2);
+      // The line's live region is written a frame after the notice lands (`useLiveWords`).
+      await waitFor(() =>
+        expect(
+          within(drawer).getAllByRole("status").some((s) => /\. Its front and back photos didn't save\. Try again under Edit\.$/.test(s.textContent ?? "")),
+        ).toBe(true),
+      );
+    });
+
+    describe("a held photo starts its resize when picked (NEO-466)", () => {
+      const preparing = () => ({ ...photosExt(), preparePhoto: vi.fn((_file: File) => {}) });
+      const sentFiles = (photos: ReturnType<typeof preparing>) =>
+        (photos.addPhoto.mock.calls as unknown as [Copy, string, File][]).map(([, side, file]) => [side, file]);
+
+      it("prepares each side as it is picked, before Add, and the save gets those same files", async () => {
+        const photos = preparing();
+        const { actions, form, pick } = openAnotherCopy(photos);
+        const front = jpeg("front.jpg");
+        const back = jpeg("back.jpg");
+        await pick("front", front);
+        expect(photos.preparePhoto).toHaveBeenCalledWith(front);
+        await pick("back", back);
+        expect(photos.preparePhoto).toHaveBeenCalledWith(back);
+        expect(actions.addLineItem).not.toHaveBeenCalled();
+        fireEvent.click(within(form).getByRole("button", { name: /^Add to collection$/ }));
+        await waitFor(() => expect(photos.addPhoto).toHaveBeenCalledTimes(2));
+        expect(sentFiles(photos)).toEqual([
+          ["front", front],
+          ["back", back],
+        ]);
+      });
+
+      it("a photo replaced before Add was prepared but is never saved; its replacement is", async () => {
+        const photos = preparing();
+        const { form, pick } = openAnotherCopy(photos);
+        const first = jpeg("first.jpg");
+        const second = jpeg("second.jpg");
+        await pick("front", first);
+        await pick("front", second);
+        expect(photos.preparePhoto).toHaveBeenCalledWith(first);
+        expect(photos.preparePhoto).toHaveBeenCalledWith(second);
+        fireEvent.click(within(form).getByRole("button", { name: /^Add to collection$/ }));
+        await waitFor(() => expect(photos.addPhoto).toHaveBeenCalledTimes(1));
+        expect(sentFiles(photos)).toEqual([["front", second]]);
+      });
+    });
+
+    it("both fail, the back first: the notice still reads front first (NEO-466)", async () => {
+      const photos = photosExt();
+      let failFront = (_e: Error) => {};
+      photos.addPhoto.mockImplementation((_c, side) =>
+        side === "front"
+          ? new Promise<void>((_, reject) => (failFront = reject))
+          : Promise.reject(new Error("The back is too big.")),
+      );
+      const { form, drawer, pick } = openAnotherCopy(photos);
+      await pick("front");
+      await pick("back");
+      fireEvent.click(within(form).getByRole("button", { name: /^Add to collection$/ }));
+      await waitFor(() => expect(photos.addPhoto).toHaveBeenCalledTimes(2));
+      await act(async () => failFront(new Error("The front is blurry.")));
+      const editForm = await within(drawer).findByRole("form", { name: /edit/i });
+      const alertText = within(editForm).getByRole("alert").textContent ?? "";
+      expect(alertText).toContain("front and back photos didn't save");
+      expect(alertText.indexOf("The front is blurry.")).toBeLessThan(alertText.indexOf("The back is too big."));
+      expect(alertText.indexOf("The front is blurry.")).toBeGreaterThanOrEqual(0);
+    });
+
+    describe("a photo fails while another line's Edit form is open", () => {
+      const NEW_LINE: Copy = { ...COPY_OHTANI, id: "copy-new", quantity: 2 };
+      /** Line X (`copy-1`) open in Edit with a draft in it, and an add with one held photo ready to go. */
+      async function editingX() {
+        const photos = photosExt();
+        photos.addPhoto.mockRejectedValue(new Error("Nope."));
+        const store = makeStore({ photos, extraCopies: [NEW_LINE] });
+        store.actions.addLineItem.mockResolvedValue({ copyId: NEW_LINE.id, merged: false, undo: store.undo });
+        renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`, store);
+        fireEvent.click(screen.getByRole("button", { name: /^Details for #1 Shohei Ohtani/ }));
+        const drawer = screen.getByRole("dialog");
+        const editButton = (id: string) => drawer.querySelector<HTMLElement>(`[data-copy-edit="${id}"]`)!;
+        const editor = (id: string) => drawer.querySelector<HTMLElement>(`[data-copy-editor="${id}"]`);
+        fireEvent.click(editButton("copy-1"));
+        const notes = within(editor("copy-1")!).getByRole("textbox", { name: /^Notes/ }) as HTMLInputElement;
+        fireEvent.change(notes, { target: { value: "My draft" } });
+        fireEvent.click(within(drawer).getByRole("button", { name: /^Add another copy of / }));
+        const form = within(drawer).getByRole("form", { name: "Add another copy" });
+        const box = within(form).getByRole("region", { name: /^Photos of / });
+        await act(async () => {
+          fireEvent.change(box.querySelector('[data-copy-photo-input="front"]')!, { target: { files: [jpeg()] } });
+        });
+        const add = within(form).getByRole("button", { name: /^Add to collection$/ });
+        return { drawer, form, notes, add, editButton, editor };
+      }
+      const failureSaid = (drawer: HTMLElement) =>
+        waitFor(() =>
+          expect(within(drawer).getAllByRole("status").some((s) => /Its front photo didn't save\./.test(s.textContent ?? ""))).toBe(true),
+        );
+      /** Longer than any queued focus move or open would take. */
+      const settle = () => act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+
+      it("X keeps its draft and the keyboard, and the new line's Edit opened by hand shows the failure", async () => {
+        const { drawer, notes, add, editButton, editor } = await editingX();
+        notes.focus();
+        fireEvent.click(add);
+        await failureSaid(drawer);
+        await settle();
+        expect(editor("copy-new")).toBeNull();
+        expect(notes.isConnected).toBe(true);
+        expect(notes.value).toBe("My draft");
+        expect(document.activeElement).toBe(notes);
+
+        fireEvent.click(editButton("copy-new"));
+        const field = within(editor("copy-new")!).getByRole("region", { name: /^Photos of / });
+        expect(within(field).getByRole("alert").textContent).toMatch(/^Your copy is in, but the front photo didn't save\./);
+        await waitFor(() => expect(document.activeElement).toBe(within(field).getByRole("button", { name: "Add front" })));
+      });
+
+      it("the keyboard still in the Add form goes back to Add as it folds, leaving X alone", async () => {
+        const { drawer, notes, add, editor } = await editingX();
+        add.focus();
+        fireEvent.click(add);
+        await failureSaid(drawer);
+        await waitFor(() => expect(document.activeElement).toBe(within(drawer).getByRole("button", { name: /^Add another copy of / })));
+        expect(editor("copy-1")).not.toBeNull();
+        expect(notes.value).toBe("My draft");
+      });
+
+      it("Cancel on X leaves the failure waiting for the new line's own form, which stays shut until asked", async () => {
+        const { drawer, add, editButton, editor } = await editingX();
+        fireEvent.click(add);
+        await failureSaid(drawer);
+        fireEvent.click(within(editor("copy-1")!).getByRole("button", { name: "Cancel" }));
+        await settle();
+        expect(editor("copy-new")).toBeNull();
+        fireEvent.click(editButton("copy-new"));
+        const field = within(editor("copy-new")!).getByRole("region", { name: /^Photos of / });
+        expect(within(field).getByRole("alert").textContent).toMatch(/front photo didn't save/);
+        // Once it has been read in its form, Cancel there drops it.
+        fireEvent.click(within(editor("copy-new")!).getByRole("button", { name: "Cancel" }));
+        await waitFor(() => expect(editor("copy-new")).toBeNull());
+        fireEvent.click(editButton("copy-new"));
+        expect(within(within(editor("copy-new")!).getByRole("region", { name: /^Photos of / })).getByRole("alert").textContent).toBe("");
+      });
+
+      it("with no form open it opens the new line's Edit by itself, once, and that form can be closed", async () => {
+        const photos = photosExt();
+        photos.addPhoto.mockRejectedValue(new Error("Nope."));
+        const store = makeStore({ photos, extraCopies: [NEW_LINE] });
+        store.actions.addLineItem.mockResolvedValue({ copyId: NEW_LINE.id, merged: false, undo: store.undo });
+        renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`, store);
+        fireEvent.click(screen.getByRole("button", { name: /^Details for #1 Shohei Ohtani/ }));
+        const drawer = screen.getByRole("dialog");
+        fireEvent.click(within(drawer).getByRole("button", { name: /^Add another copy of / }));
+        const form = within(drawer).getByRole("form", { name: "Add another copy" });
+        await act(async () => {
+          fireEvent.change(form.querySelector('[data-copy-photo-input="front"]')!, { target: { files: [jpeg()] } });
+        });
+        fireEvent.click(within(form).getByRole("button", { name: /^Add to collection$/ }));
+        await waitFor(() => expect(drawer.querySelector('[data-copy-editor="copy-new"]')).not.toBeNull());
+        const opened = drawer.querySelector<HTMLElement>('[data-copy-editor="copy-new"]')!;
+        fireEvent.click(within(opened).getByRole("button", { name: "Cancel" }));
+        await settle();
+        expect(drawer.querySelector('[data-copy-editor="copy-new"]')).toBeNull();
+      });
+    });
+
+    it("a box add with photos says it's for sale, last", async () => {
+      const photos = photosExt();
+      renderAt(`/inventory?tab=checklists&set=${SET.id}&type=vt-base`, makeStore({ photos }));
+      fireEvent.click(screen.getByRole("button", { name: "Details for #2 Aaron Judge" }));
+      const drawer = screen.getByRole("dialog");
+      const form = within(drawer).getByRole("form", { name: "Add a copy" });
+      await act(async () => {
+        fireEvent.change(form.querySelector('[data-copy-photo-input="front"]')!, { target: { files: [jpeg()] } });
+      });
+      fireEvent.click(within(form).getByRole("button", { name: "Add to inventory" }));
+      await waitFor(() => expect(photos.addPhoto).toHaveBeenCalledTimes(1));
+      await waitFor(() =>
+        expect(within(drawer).getAllByRole("status").some((s) => /, with its front photo\. It's for sale\.$/.test(s.textContent ?? ""))).toBe(true),
+      );
+    });
+
+    it("Cancel on the opened Edit form drops the failure, so reopening Edit shows no stale alert", async () => {
+      const photos = photosExt();
+      photos.addPhoto.mockRejectedValue(new Error("Nope."));
+      const { form, drawer, pick } = openAnotherCopy(photos);
+      await pick("front");
+      fireEvent.click(within(form).getByRole("button", { name: /^Add to collection$/ }));
+      const editForm = await within(drawer).findByRole("form", { name: /edit/i });
+      expect(within(editForm).getByRole("alert").textContent).toMatch(/front photo didn't save/);
+      fireEvent.click(within(editForm).getByRole("button", { name: "Cancel" }));
+      await waitFor(() => expect(within(drawer).queryByRole("form", { name: /edit/i })).toBeNull());
+      fireEvent.click(within(drawer).getAllByRole("button", { name: /^Edit/ })[0]);
+      const again = await within(drawer).findByRole("form", { name: /edit/i });
+      expect(within(again).getByRole("alert").textContent).toBe("");
+    });
+
+    it("the draft resets after a good add: no held photo rides along into the next add, and no object URL is left unrevoked", async () => {
+      const photos = photosExt();
+      const { form, box, pick, drawer } = openAnotherCopy(photos);
+      await pick("front");
+      await pick("back");
+      const made = (URL.createObjectURL as ReturnType<typeof vi.fn>).mock.results.map((r) => r.value);
+      fireEvent.click(within(form).getByRole("button", { name: /^Add to collection$/ }));
+      await waitFor(() => expect(photos.addPhoto).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(within(drawer).getAllByRole("status").some((s) => /with its front and back photos/.test(s.textContent ?? ""))).toBe(true));
+      for (const url of made) expect(URL.revokeObjectURL).toHaveBeenCalledWith(url);
+      expect(box.isConnected && within(box).queryByRole("img")).toBeFalsy();
+    });
+
+    it("Enter, Enter and a click on the busy button send one add", async () => {
+      const photos = photosExt();
+      let finish = () => {};
+      photos.addPhoto.mockImplementationOnce(() => new Promise<void>((resolve) => (finish = resolve)));
+      const { actions, form, pick } = openAnotherCopy(photos);
+      await pick("front");
+      // Each event is its own discrete event, so React has re-rendered between them.
+      fireEvent.submit(form);
+      fireEvent.submit(form);
+      fireEvent.click(within(form).getByRole("button", { name: "Adding…" }));
+      expect(actions.addLineItem).toHaveBeenCalledTimes(1);
+      await act(async () => finish());
+    });
+
+    it("the Close button mid-upload does not lose the failure notice: the toast still says what happened", async () => {
+      const photos = photosExt();
+      let fail = (_e: Error) => {};
+      photos.addPhoto.mockImplementationOnce(() => new Promise<void>((_, reject) => (fail = reject)));
+      const { form, pick, drawer } = openAnotherCopy(photos);
+      await pick("front");
+      fireEvent.click(within(form).getByRole("button", { name: /^Add to collection$/ }));
+      await waitFor(() => expect(photos.addPhoto).toHaveBeenCalledTimes(1));
+      fireEvent.click(within(drawer).getByRole("button", { name: "Close card detail" }));
+      await act(async () => fail(new Error("Gone.")));
+      await waitFor(() => expect(screen.getAllByRole("status").some((s) => /front photo didn't save/.test(s.textContent ?? ""))).toBe(true));
+    });
+
+    it("the line-limit refusal keeps both held files, Add is ready, and a retry that succeeds uploads exactly those two files", async () => {
+      const photos = photosExt();
+      const { actions, form, pick, drawer } = openAnotherCopy(photos);
+      actions.addLineItem.mockRejectedValueOnce(new Error("You already have 200 lines of this card. Stack some together first."));
+      const front = jpeg("front.jpg");
+      const back = jpeg("back.jpg");
+      await pick("front", front);
+      await pick("back", back);
+      fireEvent.click(within(form).getByRole("button", { name: /^Add to collection$/ }));
+      await waitFor(() => expect(actions.addLineItem).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(within(form).getByRole("button", { name: /^Add to collection$/ }).getAttribute("aria-disabled")).toBeNull());
+      expect(photos.addPhoto).not.toHaveBeenCalled();
+      fireEvent.click(within(form).getByRole("button", { name: /^Add to collection$/ }));
+      await waitFor(() => expect(photos.addPhoto).toHaveBeenCalledTimes(2));
+      expect(photos.addPhoto.mock.calls.map((c) => (c[2] as File).name)).toEqual(["front.jpg", "back.jpg"]);
+      expect(drawer.isConnected).toBe(true);
+    });
   });
 
   it("edits and removes a copy, each with Undo", async () => {
@@ -968,6 +1429,58 @@ describe("Inventory is on for the real collection (NEO-364)", () => {
     expect(within(into).getAllByRole("option").map((o) => o.textContent)).toEqual(["Unsorted", "Show box"]);
   });
 
+  it("a Sell the listing gate refuses says the gate's own words on the status line, and the copy stays where it was (NEO-370)", async () => {
+    const store = makeStore();
+    store.actions.moveCopy.mockRejectedValueOnce(
+      Object.assign(new Error("[Request ID: x] Server Error"), { data: { code: "LISTING_NEEDS_DETAILS", message: GATE_WORDS } }),
+    );
+    renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`, store);
+    fireEvent.click(screen.getByRole("button", { name: "Details for #1 Shohei Ohtani" }));
+    const drawer = screen.getByRole("dialog");
+    fireEvent.click(within(drawer).getByRole("button", { name: "Sell #1 Shohei Ohtani, Raw" }));
+    const form = within(drawer).getByRole("form", { name: "Sell Raw" });
+    fireEvent.change(within(form).getByRole("combobox", { name: "Into which box" }), { target: { value: "box-show" } });
+    // NEO-479: no common price for the card, so Sell needs one of its own.
+    fireEvent.change(within(form).getByRole("textbox", { name: "Price" }), { target: { value: "1.50" } });
+    fireEvent.submit(form);
+    await waitFor(() => expect(store.actions.moveCopy).toHaveBeenCalledWith(COPY_OHTANI, "box-show", { minPrice: 1.5 }));
+    await waitFor(() => expect(within(drawer).getAllByRole("status").some((s) => s.textContent === GATE_WORDS)).toBe(true));
+    expect(within(drawer).queryByRole("button", { name: "Undo" })).toBeNull();
+    expect(within(drawer).queryByText(/up for sale in/)).toBeNull();
+  });
+
+  it("an undo the listing gate refuses (a removed line put back into a listed box) says why on the status line, never Undone. (NEO-370)", async () => {
+    const store = makeStore();
+    store.undo.mockImplementationOnce(async () => {
+      throw Object.assign(new Error("[Request ID: x] Server Error"), { data: { code: "LISTING_NEEDS_DETAILS", message: GATE_WORDS } });
+    });
+    renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`, store);
+    fireEvent.click(screen.getByRole("button", { name: "Details for #1 Shohei Ohtani" }));
+    const drawer = screen.getByRole("dialog");
+    fireEvent.click(within(drawer).getByRole("button", { name: "Remove #1 Shohei Ohtani, Raw" }));
+    await waitFor(() => expect(within(drawer).getByRole("button", { name: "Undo" })).toBeTruthy());
+    fireEvent.click(within(drawer).getByRole("button", { name: "Undo" }));
+    await waitFor(() =>
+      expect(within(drawer).getAllByRole("status").some((s) => s.textContent === `That undo didn't go through. ${GATE_WORDS}`)).toBe(true),
+    );
+    expect(within(drawer).getAllByRole("status").some((s) => s.textContent === "Undone.")).toBe(false);
+  });
+
+  it("Move here into an open box the listing gate refuses says the gate's words on the status line (NEO-370)", async () => {
+    // The Inventory side hunts what the boxes hold: a card in Unsorted, moved into the open Show box.
+    const inUnsorted: Copy = { ...COPY_OHTANI, id: "copy-unsorted", homeId: "box-unsorted", homeKind: "box", homeName: "Unsorted" };
+    const store = makeStore({ boxCopies: [inUnsorted] });
+    store.actions.moveCopy.mockRejectedValueOnce(
+      Object.assign(new Error("[Request ID: x] Server Error"), { data: { code: "LISTING_NEEDS_DETAILS", message: GATE_WORDS } }),
+    );
+    renderAt("/inventory?tab=boxes&b=box-show", store);
+    fireEvent.change(screen.getByRole("searchbox", { name: "Hunt for one of your cards" }), { target: { value: "ohtani" } });
+    fireEvent.click(await screen.findByRole("button", { name: /^Move here: .*Shohei Ohtani/ }));
+    await waitFor(() => expect(store.actions.moveCopy).toHaveBeenCalledWith(inUnsorted, "box-show", {}));
+    await waitFor(() => expect(statuses()).toContain(GATE_WORDS));
+    expect(statuses().some((t) => t?.startsWith("Moved "))).toBe(false);
+  });
+
   it("the collection's checklists never show a quantity field: Have / Want / Trade stay", () => {
     renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base`);
     expect(screen.getAllByRole("button", { name: /^Have #/ }).length).toBeGreaterThan(0);
@@ -994,3 +1507,113 @@ describe("Inventory is on for the real collection (NEO-364)", () => {
 function escapeRe(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+
+/** NEO-370 — a listing half whose reads are still loading: enough to open the Sales and Sync status tabs. */
+const LISTING: ListingExtension = {
+  useSettings: () => undefined,
+  syncVariant: vi.fn(async () => ({ queued: true })),
+  setContainerListed: vi.fn(async () => {}),
+  useSyncStatus: () => ({ platforms: [] }),
+  loadSetProblems: vi.fn(async () => ({ problems: [], problemsTotal: 0 })),
+  useSales: () => ({ sales: [], canLoadMore: false, loadingMore: false, loadMore: () => {} }),
+  useGate: () => undefined,
+};
+
+const inventoryTabs = () =>
+  within(screen.getByRole("navigation", { name: "Inventory sections" }))
+    .getAllByRole("link")
+    .map((l) => l.textContent);
+
+describe("the Sales tab (NEO-370)", () => {
+  it("a store with a listing extension ends the inventory's tabs with Sales, then Sync status", () => {
+    renderAt("/inventory", makeStore({ listing: LISTING }));
+    const names = inventoryTabs();
+    expect(names.slice(-2)).toEqual(["Sales", "Sync status"]);
+    expect(names).toContain("Add cards");
+  });
+
+  it("Sync status is deep-linkable (?tab=sync), and /collection?tab=sync goes there", async () => {
+    renderAt("/collection?tab=sync", makeStore({ listing: LISTING }));
+    await waitFor(() => expect(pageUrl()).toBe("/inventory?tab=sync"));
+    expect(await screen.findByText(/^No marketplaces hooked up yet\./)).toBeTruthy();
+    const link = within(screen.getByRole("navigation", { name: "Inventory sections" })).getByRole("link", {
+      name: "Sync status",
+    });
+    expect(link.getAttribute("aria-current")).toBe("page");
+  });
+
+  it("/collection?tab=sales goes to the inventory's Sales tab", async () => {
+    renderAt("/collection?tab=sales", makeStore({ listing: LISTING }));
+    await waitFor(() => expect(pageUrl()).toBe("/inventory?tab=sales"));
+    expect(await screen.findByRole("heading", { level: 2, name: "What sold" })).toBeTruthy();
+  });
+
+  it("without a listing extension the tabs are absent", () => {
+    renderAt("/inventory", makeStore());
+    expect(inventoryTabs()).not.toContain("Sales");
+    expect(inventoryTabs()).not.toContain("Sync status");
+  });
+
+  it("without a listing extension, tab=sales renders no Sales content and opens the first tab", () => {
+    renderAt("/inventory?tab=sales", makeStore());
+    expect(screen.queryByRole("list", { name: "Orders, newest first" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "What sold" })).toBeNull();
+    expect(inventoryTabs()).not.toContain("Sales");
+  });
+
+  it("an open box carries Listed on marketplaces; a binder never does", async () => {
+    renderAt("/inventory?tab=boxes&b=box-show", makeStore({ listing: LISTING }));
+    const toggle = (await screen.findByRole("checkbox", { name: "Listed on marketplaces" })) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    fireEvent.click(toggle);
+    expect(LISTING.setContainerListed).toHaveBeenCalledWith("box-show", false);
+    cleanup();
+    renderAt("/collection?tab=binders&b=binder-rainbow", makeStore({ listing: LISTING }));
+    await screen.findByRole("heading", { level: 2, name: "Ohtani rainbow" });
+    expect(screen.queryByRole("checkbox", { name: "Listed on marketplaces" })).toBeNull();
+  });
+
+  it("without a listing half (the demo's case) an open box has no Listed on marketplaces", async () => {
+    renderAt("/inventory?tab=boxes&b=box-show", makeStore());
+    await screen.findByRole("heading", { level: 2, name: "Show box" });
+    expect(screen.queryByRole("checkbox", { name: "Listed on marketplaces" })).toBeNull();
+  });
+
+  it("the flag alone is not enough: capabilities on but no listing half still hides the tab", () => {
+    renderAt("/inventory", makeStore({ capabilities: { ...REAL_CAPABILITIES, marketplaceListing: true } }));
+    expect(inventoryTabs()).not.toContain("Sales");
+  });
+});
+
+describe("?ask=mine (NEO-536)", () => {
+  it("opens My requests on arrival, and closing takes the param off without a Back step", () => {
+    renderAt("/collection?tab=checklists&ask=mine");
+    const dialog = screen.getByRole("dialog", { name: "Can't find it?" });
+    within(dialog).getByText("Opened on mine");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close requests" }));
+    expect(screen.queryByRole("dialog", { name: "Can't find it?" })).toBeNull();
+    expect(pageUrl()).toBe("/collection?tab=checklists");
+  });
+
+  it("closing a link-opened My requests hands the keyboard to the search box when no checklist is open", async () => {
+    renderAt("/collection?tab=checklists&ask=mine");
+    const dialog = screen.getByRole("dialog", { name: "Can't find it?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close requests" }));
+    await waitFor(() => expect(document.activeElement).toBe(searchBox()));
+  });
+
+  it("closing a link-opened My requests over an open checklist hands the keyboard to its heading", async () => {
+    renderAt(`/collection?tab=checklists&set=${SET.id}&type=vt-base&ask=mine`);
+    const dialog = screen.getByRole("dialog", { name: "Can't find it?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close requests" }));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("heading", { level: 3, name: "2024 Topps Chrome Base" })),
+    );
+  });
+
+  it("leaves it shut on the inventory side, where requests don't live", () => {
+    renderAt("/inventory?tab=checklists&ask=mine");
+    expect(screen.queryByRole("dialog", { name: "Can't find it?" })).toBeNull();
+  });
+});

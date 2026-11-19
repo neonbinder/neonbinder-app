@@ -19,7 +19,7 @@
 // Not covered here: a failed save (no way to make the mutation fail from the
 // UI); app/profile/settings/DefaultConditionSection.test.tsx pins it. A quick
 // count writing the default is pinned by convex/defaultCondition.test.ts.
-import { collectorCascade } from "../../support/collection";
+import { collectorCascade, confirmRemoved } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 test(
@@ -100,7 +100,7 @@ test(
 
       // Self-cleaning: the copy goes, and the card needs again.
       await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Near Mint`, exact: true }).click();
-      await expect(drawer.getByRole("status").filter({ hasText: `Removed ${short}, Raw, Near Mint` })).toBeVisible();
+      await confirmRemoved(drawer, `Removed ${short}, Raw, Near Mint`);
       await expect(drawer.getByText("Need it")).toBeVisible();
       await drawer.getByRole("button", { name: "Close card detail" }).click();
       await expect(drawer).toBeHidden();
@@ -109,9 +109,18 @@ test(
       // R7: the account is back on Excellent, whatever happened above.
       await page.goto("/profile/settings");
       await expect(collection).toBeVisible({ timeout: LAUNCH_GATE });
-      await excellent.click();
+      // Settle on the stored default first (the group draws once it has loaded,
+      // one radio checked), then write only when it is not Excellent: a pick of
+      // the stored value saves nothing and says nothing. The radio flips
+      // optimistically, so the server's "Saved." is the proof the write landed
+      // before the test ends; "Saving…" gone would also pass on a failed save
+      // or a dead page. NEO-603.
+      await expect(group.getByRole("radio", { checked: true })).toHaveCount(1);
+      if (!(await excellent.isChecked())) {
+        await excellent.click();
+        await expect(saved).toBeVisible();
+      }
       await expect(excellent).toBeChecked();
-      await expect(page.getByText("Saving…")).toHaveCount(0);
     }
   },
 );

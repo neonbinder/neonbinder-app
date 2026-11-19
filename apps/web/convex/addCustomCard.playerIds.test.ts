@@ -545,3 +545,63 @@ describe("addCustomCard — the listing title names the LINKED players", () => {
     expect(preview.inputs.playerNames).toEqual(["Aaron Judge (renamed)"]);
   });
 });
+
+describe("addCustomCard on a parallel leaf (NEO-535)", () => {
+  test("is born naming the leaf, as a parallel copy is, not the name its snapshot inherited", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const leafId = await t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        sportConfig: { skuCode: "BB", league: "MLB" },
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      const setNameId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Bowman",
+        platformData: {},
+        parentId: sportId,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      const inserts = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Inserts",
+        platformData: {},
+        parentId: setNameId,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      const anime = await ctx.db.insert("selectorOptions", {
+        level: "insert",
+        value: "Anime",
+        platformData: {},
+        parentId: inserts,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      return ctx.db.insert("selectorOptions", {
+        level: "parallel",
+        value: "Anime Red Refractors",
+        platformData: {},
+        features: { season: "2026", manufacturer: "Bowman", parallelName: "Base" },
+        parentId: anime,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+    });
+
+    const cardId = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: leafId,
+      cardNumber: "BA-3",
+      cardName: "Murakami",
+      players: ["Murakami"],
+    });
+    const row = await getCard(t, cardId);
+    expect(row!.features?.parallelName).toBe("Anime Red Refractors");
+    expect(row!.listingTitle.startsWith("2026 Bowman Anime Red Refractors Parallel Murakami")).toBe(true);
+  });
+});

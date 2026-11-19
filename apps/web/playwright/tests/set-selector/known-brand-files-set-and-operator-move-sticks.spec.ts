@@ -2,6 +2,14 @@
 // NEO-294, two halves of one placement rule on live marketplace data:
 //   1. Sync Sets on a cold year files a BSC set whose name starts with a known
 //      brand (CMC, Baseball 1990) under a brand row the sync CREATES for it.
+//      Since NEO-527 the list also names the majors SportLots used to supply,
+//      so the same sync files the 1990 flagship "Topps" under a Topps row it
+//      creates (with SportLots paused, nothing else can). Topps stands for
+//      the whole list: every major goes through the same matcher, so one live
+//      major proves the path, and `convex/knownBrands.test.ts` pins each name.
+//      The paused-year backfill (`convex/backfillKnownBrands.ts`, re-filing
+//      sets a year already holds under Unknown) is proved by its unit test
+//      only (`convex/backfillKnownBrands.test.ts`); no spec runs it.
 //   2. The operator moves it to Unknown; a FORCED year-wide Sync Sets leaves it
 //      exactly where the operator put it.
 // Sole writer of Baseball 1990; FRESH-ONLY per deployment (a second run finds
@@ -18,10 +26,23 @@ import {
   type Column,
 } from "../../support/set-builder";
 import type { Locator, Page } from "@playwright/test";
+import { expectStepWithSportLots } from "../../support/marketplace-wait";
 
 const SPORT = "Baseball";
 const YEAR = "1990";
 const BRAND = "CMC";
+/** NEO-527: a major SportLots used to supply, now on NB's own known-brands list. */
+const MAJOR = "Topps";
+
+/**
+ * The year's flagship set named exactly `MAJOR`, as the All Brands view lists
+ * it: the set's name, then the brand it is filed under ("Topps Topps").
+ */
+function flagship(page: Page, brand: string): Locator {
+  return page
+    .getByRole("listbox", { name: "Sets" satisfies Column })
+    .getByRole("option", { name: `${MAJOR} ${brand}`, exact: true });
+}
 
 /** The first set row in the All Brands view whose name starts with the brand. */
 function brandSet(page: Page): Locator {
@@ -40,8 +61,18 @@ test(
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
 
     // ── STEP 1: cold drill to Baseball > 1990 > All Brands; the year-wide Sets sync has run.
-    await drillToColdManufacturer(page, env, { sport: SPORT, year: YEAR, manufacturer: "All Brands" });
+    await drillToColdManufacturer(page, env, { sport: SPORT, year: YEAR, manufacturer: "All Brands", expectSets: true });
     await expect(columnHeading(page, "Sets")).toBeVisible({ timeout: 15_000 });
+
+    // ── STEP 1b (NEO-527): the list names the majors SportLots used to supply.
+    // With SportLots paused nothing else can mint a Topps row for 1990 (the
+    // seed never drills the year, and this spec is its sole writer), so the
+    // flagship "Topps" set reads as filed under a sync-made Topps brand, never
+    // under Unknown. Live, SportLots' own brand list supplies the row and the
+    // claim still holds.
+    await columnSearch(page, "Sets").fill(MAJOR);
+    await expect(flagship(page, MAJOR)).toBeVisible();
+    await expect(flagship(page, "Unknown")).toHaveCount(0);
 
     // ── STEP 2: the sync created a CMC brand row for the set; picking the set
     // files the cascade under it.
@@ -50,8 +81,13 @@ test(
     await expect(columnHeading(page, "Variant Types")).toBeVisible();
     await expect(columnSelection(page, "Manufacturers", BRAND)).toBeVisible();
     await expectAccessible(page, { label: "Set filed under the sync-created brand" });
-    // The set's first visit fires a cold variant-type sync (the flow's 60 s).
-    await expect(page.getByText("Syncing Variant Types")).toBeHidden({ timeout: 60_000 });
+    // The set's first visit fires a cold variant-type sync (the flow's 60 s while SportLots is
+    // live; paused, BSC alone under the column's wait line, measured 9 ms on the #487 merge-group run (GUIDE)).
+    await expectStepWithSportLots(page, page.getByText("Syncing Variant Types"), env, {
+      liveMs: 60_000,
+      what: "the variant-type sync",
+      state: "hidden",
+    });
     await expect(columnHeading(page, "Variant Types")).toBeVisible();
 
     // ── STEP 3: the operator moves it to Unknown.
@@ -84,13 +120,22 @@ test(
     // the SportLots side finishes), and a reload mid-sync shows the "Syncing
     // Sets" panel INSTEAD of the Sync Sets button; the drill's "Syncing Sets
     // hidden" check can pass before the status subscription answers. Wait for
-    // that first sync to finish (a cold-sync ceiling: marketplace round trips)
-    // so the click below starts a second, forced sync, after the move.
-    await expect(page.getByRole("button", { name: "Sync Sets" })).toBeVisible({ timeout: COLD_SYNC });
+    // that first sync to finish (a cold-sync ceiling while SportLots is live; paused, BSC
+    // alone under the column's wait line) so the click below starts a second, forced sync,
+    // after the move.
+    await expectStepWithSportLots(page, page.getByRole("button", { name: "Sync Sets" }), env, {
+      liveMs: COLD_SYNC,
+      what: "the first year-wide Sets sync finishing",
+    });
     await page.getByRole("button", { name: "Sync Sets" }).click();
     await expect(page.getByRole("heading", { name: "Syncing Sets" })).toBeVisible();
-    // The whole year again from BSC (the flow's 150 s).
-    await expect(page.getByRole("heading", { name: "Syncing Sets" })).toBeHidden({ timeout: COLD_SYNC });
+    // The whole year again from BSC (the flow's 150 s while SportLots is live; paused, 7 s plus
+    // the seconds BSC is visibly holding it: the longest run measured 3.3 s on the #487 merge-group run (GUIDE)).
+    await expectStepWithSportLots(page, page.getByRole("heading", { name: "Syncing Sets" }), env, {
+      liveMs: COLD_SYNC,
+      what: "the forced Sets sync finishing",
+      state: "hidden",
+    });
     await expect(page.getByRole("button", { name: "Sync Sets" })).toBeVisible();
 
     await columnSearch(page, "Sets").fill(BRAND);

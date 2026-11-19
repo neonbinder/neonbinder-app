@@ -161,7 +161,10 @@ async function backfillSetSubtree(
     // the setName node (the setName isn't a variant leaf).
   };
   const setLevelHeuristic = deriveSetLevelFeatures(setLevelInputs);
-  for (const key of ["league", "era", "vintage", "manufacturer", "isReprint"]) {
+  // NEO-569 — "league" left this list: it is `selectorOptions.leagueIds`
+  // now, and seeding the free-text key here would re-add what
+  // `leagueBackfill` strips.
+  for (const key of ["era", "vintage", "manufacturer", "isReprint"]) {
     const derived = setLevelHeuristic[key];
     if (derived === undefined) continue; // heuristic produced nothing here
     // Fill-absent: only seed when the setName node has no own value for the key.

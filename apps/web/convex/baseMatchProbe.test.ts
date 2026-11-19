@@ -21,7 +21,6 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import { stripNbCardNumberPrefix } from "./baseMatchProbe";
 import { SL_PROBE_ID_PATTERN, checkProbeIds, isProbeId } from "./lib/baseMatchProbe";
 import { insertTestCard } from "../lib/testing/card-row";
 
@@ -57,19 +56,24 @@ vi.mock("./credentials", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./credentials")>();
   const { internalAction } = await import("./_generated/server");
   const { v } = await import("convex/values");
+  const getSiteToken = internalAction({
+    args: { site: v.string() },
+    returns: v.any(),
+    handler: async (_ctx, args) => {
+      st.reads[args.site] = (st.reads[args.site] ?? 0) + 1;
+      const token = st.tokens[args.site];
+      return token ? { token } : null;
+    },
+  });
   return {
     ...actual,
-    getSiteToken: internalAction({
-      args: { site: v.string() },
-      returns: v.any(),
-      handler: async (_ctx, args) => {
-        st.reads[args.site] = (st.reads[args.site] ?? 0) + 1;
-        const token = st.tokens[args.site];
-        return token ? { token } : null;
-      },
-    }),
+    getSiteToken,
+    // NEO-605: the BSC adapter reads the token by calling this directly,
+    // not through `runAction(getSiteToken)`; the same stub answers both.
+    siteTokenForCurrentUser: (ctx: unknown, site: string) =>
+      (getSiteToken as unknown as { _handler: (c: unknown, a: { site: string }) => unknown })._handler(ctx, { site }),
     authenticateBsc: internalAction({
-      args: {},
+      args: { userId: v.optional(v.string()), tokenRefused: v.optional(v.boolean()) },
       returns: v.any(),
       handler: async () => {
         st.authCalls++;
@@ -661,21 +665,6 @@ describe("getBaseSignatureForVariantType: auth", () => {
         variantTypeId: parallel,
       }),
     ).rejects.toThrow(/Admin access required/);
-  });
-});
-
-describe("stripNbCardNumberPrefix", () => {
-  test.each([
-    ["TC-1", "TC-", "1"],
-    ["tc-1", "TC-", "1"],
-    ["TC-", "TC-", "TC-"],
-    ["  TC-9 ", " TC- ", "9"],
-    ["12", "TC-", "12"],
-    ["TC-1", undefined, "TC-1"],
-    ["TC-1", "", "TC-1"],
-    ["TC-1", "   ", "TC-1"],
-  ])("%s with prefix %j gives %s", (num, prefix, expected) => {
-    expect(stripNbCardNumberPrefix(num, prefix)).toBe(expected);
   });
 });
 
@@ -1408,7 +1397,10 @@ describe("the probes write nothing and log no secret", () => {
         ],
       } as never),
     );
-    const before = await rowCounts(t, ["userProfiles"]);
+    // NEO-552: the BSC call gate (`marketplaceCallGates`) is transport state
+    // every BSC call writes (its token bucket), not data a probe owns: it is
+    // compared apart too.
+    const before = await rowCounts(t, ["userProfiles", "marketplaceCallGates"]);
     const profileBefore = await profileWithoutLock(t);
 
     stubSl((id, start) =>
@@ -1422,7 +1414,7 @@ describe("the probes write nothing and log no secret", () => {
     await probeBsc(t, parallel, ["a", "b"]);
     await sig(t, parallel);
 
-    expect(await rowCounts(t, ["userProfiles"])).toEqual(before);
+    expect(await rowCounts(t, ["userProfiles", "marketplaceCallGates"])).toEqual(before);
     expect(await profileWithoutLock(t)).toEqual(profileBefore);
   });
 
@@ -1681,5 +1673,41 @@ describe("a non-numeric SportLots set id refuses the whole call before any cooki
     });
 
     expect(out.map((r) => r.id)).toEqual(["328996"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR 451 (NEO-487) — "Waiting on BuySportsCards…" for the probe
+// ---------------------------------------------------------------------------
+
+describe("probeBscSets: waitKey", () => {
+  const waitRows = (t: T) => t.run(async (ctx) => ctx.db.query("marketplaceWaits").collect());
+
+  test("the batch's wait row is written under the caller's key, and the key never reaches BSC", async () => {
+    const calls = stubBsc(() => [bscCard("1", "Mike Trout")]);
+    const t = convexTest(schema, modules);
+    const { parallel } = await seedTree(t);
+
+    await asAdmin(t).action(api.baseMatchProbe.probeBscSets, {
+      variantTypeId: parallel,
+      variantNameIds: ["gold"],
+      waitKey: "probe_run-487",
+    });
+
+    const rows = await waitRows(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ ownerId: ADMIN.subject, runKey: "probe_run-487", platform: "bsc" });
+    expect(rows[0].waitingSince).toBeUndefined();
+    expect(JSON.stringify(calls)).not.toContain("probe_run-487");
+  });
+
+  test("no key: nothing is written", async () => {
+    stubBsc(() => [bscCard("1", "Mike Trout")]);
+    const t = convexTest(schema, modules);
+    const { parallel } = await seedTree(t);
+
+    await probeBsc(t, parallel, ["gold"]);
+
+    expect(await waitRows(t)).toEqual([]);
   });
 });

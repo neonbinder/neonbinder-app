@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import {
   cardLabel,
   getSet,
@@ -10,7 +10,11 @@ import {
   type Finish,
 } from "./data";
 import type { Card as ModelCard } from "../../final/data/types";
-import { cardLabel as modelLabel, playerInitials as initialsOf } from "../../final/data/labels";
+import {
+  cardLabel as modelLabel,
+  cardSubject,
+  playerInitials as initialsOf,
+} from "../../final/data/labels";
 import { useCardImage } from "../../final/data/cardImages";
 import type { CopyPhotos } from "../../final/data/types";
 import "./card-face.css";
@@ -105,13 +109,21 @@ function faceOf(card: Card | undefined, model: ModelCard | undefined): Face {
   if (model) {
     const player = model.players[0];
     const team = model.teams[0];
+    // NEO-528 — a card with no player (a cameo-only card) still names
+    // itself on the nameplate: its own name, else "With <cameo>"
+    // (`cardSubject`). The photo window's monogram follows: the card's own
+    // name, else the first player pictured on it.
+    const stand = player ? null : cardSubject(model);
+    const pictured = model.secondaryPlayers?.[0]?.name;
     return {
       label: modelLabel(model),
       season: model.set.season,
       setName: model.set.name,
       cardNumber: model.cardNumber,
-      playerName: player?.nameOnCard ?? player?.name ?? "",
-      initials: player ? initialsOf(player.name) : "?",
+      playerName: player ? (player.nameOnCard ?? player.name) : (stand ?? ""),
+      initials: player
+        ? initialsOf(player.name)
+        : initialsOf(model.cardName?.trim() || pictured || ""),
       teamName: team?.name ?? "",
       primary: team?.primary ?? NO_LIVERY.primary,
       secondary: team?.secondary ?? team?.primary ?? NO_LIVERY.secondary,
@@ -154,6 +166,26 @@ function frameBackground(face: Face, primary: string): string {
   }
   if (kind === "refractor" && tint) return tint;
   return primary;
+}
+
+/** A card's photo, with a quiet tone until it arrives so it never reads as an empty pocket. */
+function CardPicture({ src, dimmed }: { src: string; dimmed: boolean }) {
+  const [settled, setSettled] = useState(false);
+  return (
+    <>
+      {!settled && <span className="nb-card-loading" />}
+      <img
+        src={src}
+        alt=""
+        draggable={false}
+        decoding="async"
+        onLoad={() => setSettled(true)}
+        onError={() => setSettled(true)}
+        className="relative h-full w-full object-contain"
+        style={{ filter: dimmed ? "grayscale(0.9) brightness(0.5)" : undefined }}
+      />
+    </>
+  );
 }
 
 export default function CardFace({
@@ -211,14 +243,8 @@ export default function CardFace({
           className="absolute inset-0 overflow-hidden"
           style={{ borderRadius: cq(5), background: "#0b0f1a", boxShadow: "0 6px 18px rgba(0,0,0,0.45)" }}
         >
-          <img
-            src={picture.thumbUrl}
-            alt=""
-            draggable={false}
-            decoding="async"
-            className="h-full w-full object-contain"
-            style={{ filter: need ? "grayscale(0.9) brightness(0.5)" : undefined }}
-          />
+          {/* Keyed: a reused <img> keeps painting the last picture until the new one arrives. */}
+          <CardPicture key={picture.thumbUrl} src={picture.thumbUrl} dimmed={need} />
         </div>
         {serial && (
           <span
@@ -394,9 +420,7 @@ export default function CardFace({
                 className="block truncate"
                 style={{ fontSize: cq(6.2), lineHeight: 1.2 }}
               >
-                {face.teamName}
-                {face.variation ? `, ${face.variation}` : ""}
-                {face.variantName ? `, ${face.variantName}` : ""}
+                {[face.teamName, face.variation, face.variantName].filter(Boolean).join(", ")}
               </span>
             )}
           </div>

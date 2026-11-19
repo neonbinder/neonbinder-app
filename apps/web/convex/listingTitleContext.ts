@@ -15,8 +15,9 @@
  * from: the leaf's own `features` snapshot, the NEAREST `setName` ancestor's
  * value, that set's parent manufacturer ROLE (NEO-272), the sport row's value,
  * the chain's insert role, parallel leaf and short name (NEO-335,
- * `listingShortName.titleChainFacts`), and (NEO-277, in the chunk) the leaf's
- * set-level teams. `titleSetFacts`
+ * `listingShortName.titleChainFacts`), (NEO-277, in the chunk) the leaf's
+ * set-level teams, and (NEO-528 round 3, in the chunk) the leaf's default
+ * player ("Player on every card"). `titleSetFacts`
  * reads exactly those, the same way, so a title shown before save is the
  * title written at insert.
  *
@@ -33,18 +34,27 @@ import { internalQuery, type ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { inheritedTeamIds } from "./lib/selectorTeams";
-import { teamFullName } from "../lib/teams/team-name";
+import { teamDefaultOf } from "./lib/selectorTeams";
+import { teamFullName, teamSplitOf } from "../lib/teams/team-name";
 import type { TitleContext } from "./features/listingInputs";
+import type { ListingTeamSplit } from "./features/generateListing";
 import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
 import { titleChainFacts, titleChainFactsFields } from "./listingShortName";
+import { effectiveCardPlayerDefaults } from "./cardPlayersBulk";
+import { MAX_CHECKLIST_TEAM_TEXTS } from "./checklistCandidates";
+import { mapBounded, settleAll } from "./lib/boundedConcurrency";
 
 /** Player ids read per `playerNamesByIds` call: one transaction's budget. */
 export const TITLE_CONTEXT_PLAYER_PAGE = 200;
 
+/** `playerNamesByIds` pages asked at once by `buildTitleContext`. */
+const TITLE_CONTEXT_PAGE_CONCURRENCY = 4;
+
 /** Depth cap on the ancestor walk, as the prelude's sibling walks have. */
 const MAX_ANCESTOR_DEPTH = 16;
+
+const teamSplitValidator = v.object({ location: v.string(), name: v.string() });
 
 const nameMapValidator = v.array(v.object({ printed: v.string(), name: v.string() }));
 
@@ -57,6 +67,15 @@ export const titleContextValidator = v.object({
   // NEO-335 — the insert role, a parallel leaf, the nearest short name.
   ...titleChainFactsFields,
   setTeamNames: v.array(v.string()),
+  // NEO-606 — Location / Name of the teams the context names (the set-level
+  // ones and every resolved printed team) that have a location; the title
+  // matches them to a card's team by whole name.
+  teamSplits: v.optional(v.array(teamSplitValidator)),
+  // NEO-528 round 3 — optional on the wire: an older server sends none.
+  setPlayerNames: v.optional(v.array(v.string())),
+  setPlayerId: v.optional(v.id("players")),
+  // NEO-528 + NEO-535 — the default cameos a new card is born with.
+  setCameoNames: v.optional(v.array(v.string())),
   players: nameMapValidator,
   teams: nameMapValidator,
 });
@@ -68,6 +87,11 @@ const setFactsValidator = v.object({
   inheritedFeatures: v.optional(v.record(v.string(), v.string())),
   ...titleChainFactsFields,
   setTeamNames: v.array(v.string()),
+  teamSplits: v.optional(v.array(teamSplitValidator)),
+  setPlayerNames: v.optional(v.array(v.string())),
+  setPlayerId: v.optional(v.id("players")),
+  // NEO-528 + NEO-535 — the default cameos a new card is born with.
+  setCameoNames: v.optional(v.array(v.string())),
 });
 
 /**
@@ -81,9 +105,22 @@ export const titleSetFacts = internalQuery({
   args: {
     selectorOptionId: v.id("selectorOptions"),
     sportId: v.id("selectorOptions"),
+    /**
+     * NEO-606 — the teams the resolve gate resolved. Their Location / Name
+     * splits ride back in `teamSplits` beside the set-level ones, in this same
+     * read (NEO-592: no round trip of their own).
+     */
+    resolvedTeamIds: v.optional(v.array(v.id("teams"))),
   },
   returns: setFactsValidator,
   handler: async (ctx, args) => {
+    // The gate resolves at most `MAX_CHECKLIST_TEAM_TEXTS` distinct team
+    // names, so no honest caller sends more ids than that.
+    if ((args.resolvedTeamIds?.length ?? 0) > MAX_CHECKLIST_TEAM_TEXTS) {
+      throw new Error(
+        `titleSetFacts: ${args.resolvedTeamIds!.length} resolved team ids exceeds the ${MAX_CHECKLIST_TEAM_TEXTS} the gate resolves`,
+      );
+    }
     const leaf = await ctx.db.get(args.selectorOptionId);
     const inheritedFeatures =
       leaf?.features && Object.keys(leaf.features).length > 0 ? leaf.features : undefined;
@@ -114,11 +151,50 @@ export const titleSetFacts = internalQuery({
     const sportRow = await ctx.db.get(args.sportId);
 
     // NEO-277 — a new card with no team of its own is born with these.
+    // NEO-556 — a No Team leaf names none: a stamped card's title carries no
+    // team, exactly as a teamless one's does.
     const setTeamNames: string[] = [];
+    const setTeamSplits: ListingTeamSplit[] = [];
+    const leafDefault = teamDefaultOf(leaf);
     // Not sliced: the chunk reads the whole list, and this must match it.
-    for (const teamId of inheritedTeamIds(leaf) ?? []) {
+    for (const teamId of leafDefault.kind === "teams" ? leafDefault.teamIds : []) {
       const team = await ctx.db.get(teamId);
-      if (team) setTeamNames.push(teamFullName(team));
+      if (team) {
+        setTeamNames.push(teamFullName(team));
+        const split = teamSplitOf(team);
+        if (split) setTeamSplits.push(split);
+      }
+    }
+
+    // NEO-606 — and the resolved teams', after the set-level ones. A flat
+    // list: a card's team finds its split by whole name, so a team named
+    // twice is listed once. A team with no location (or gone) adds nothing.
+    const resolvedTeams = await mapBounded(args.resolvedTeamIds ?? [], (id) => ctx.db.get(id));
+    const seenSplits = new Set(setTeamSplits.map((split) => teamFullName(split)));
+    for (const team of resolvedTeams) {
+      const split = team ? teamSplitOf(team) : undefined;
+      if (!split || seenSplits.has(teamFullName(split))) continue;
+      seenSplits.add(teamFullName(split));
+      setTeamSplits.push(split);
+    }
+
+    // NEO-528 round 3 — "Player on every card": the player a new card with
+    // no player of its own (none resolved, no name waiting for review) is
+    // born with, by the same lookup the commit chunk makes. The title names
+    // them, and (NEO-535 merge) the cameos below, while there is room. The id rides along so the checklist
+    // can tell which rows the default covers; nothing writes it from here.
+    const setPlayerNames: string[] = [];
+    let setPlayerId: Id<"players"> | undefined;
+    const setCameoNames: string[] = [];
+    if (leaf) {
+      const defaults = await effectiveCardPlayerDefaults(ctx, leaf._id, { sportId: args.sportId });
+      if (defaults.player) {
+        setPlayerNames.push(defaults.player.name);
+        setPlayerId = defaults.player._id;
+      }
+      // NEO-528 + NEO-535 — and the cameos it is born with: the title names
+      // them while it has room (the first meaningful thing it drops).
+      for (const cameo of defaults.cameos) setCameoNames.push(cameo.name);
     }
 
     return {
@@ -128,6 +204,10 @@ export const titleSetFacts = internalQuery({
       ...(inheritedFeatures ? { inheritedFeatures } : {}),
       ...titleChainFacts(titleChain),
       setTeamNames,
+      ...(setTeamSplits.length > 0 ? { teamSplits: setTeamSplits } : {}),
+      setPlayerNames,
+      ...(setPlayerId ? { setPlayerId } : {}),
+      ...(setCameoNames.length > 0 ? { setCameoNames } : {}),
     };
   },
 });
@@ -145,11 +225,14 @@ export const playerNamesByIds = internalQuery({
         `playerNamesByIds: ${args.ids.length} ids exceeds the ${TITLE_CONTEXT_PLAYER_PAGE}-id page`,
       );
     }
+    // NEO-592 — independent point reads, issued together (up to 16 to storage
+    // per round) rather than one round trip each; input order kept.
+    const players = await mapBounded(args.ids, (id) => ctx.db.get(id));
     const out: Array<{ id: Id<"players">; name: string }> = [];
-    for (const id of args.ids) {
-      const player = await ctx.db.get(id);
+    args.ids.forEach((id, i) => {
+      const player = players[i];
       if (player) out.push({ id, name: player.name });
-    }
+    });
     return out;
   },
 });
@@ -162,10 +245,15 @@ export const playerNamesByIds = internalQuery({
 export type ResolvedNames = {
   playerIdByNorm: Map<string, Id<"players">>;
   teamNameByNorm: Map<string, string>;
+  /**
+   * NEO-606 — the team row behind each `teamNameByNorm` entry (same key), so
+   * the context can carry the row's Location / Name split.
+   */
+  teamIdByNorm: Map<string, Id<"teams">>;
 };
 
 export function emptyResolvedNames(): ResolvedNames {
-  return { playerIdByNorm: new Map(), teamNameByNorm: new Map() };
+  return { playerIdByNorm: new Map(), teamNameByNorm: new Map(), teamIdByNorm: new Map() };
 }
 
 /**
@@ -176,7 +264,7 @@ export function emptyResolvedNames(): ResolvedNames {
  * normaliser.
  */
 export async function buildTitleContext(
-  ctx: ActionCtx,
+  ctx: Pick<ActionCtx, "runQuery">,
   args: {
     selectorOptionId: Id<"selectorOptions">;
     sportId: Id<"selectorOptions">;
@@ -185,20 +273,31 @@ export async function buildTitleContext(
   },
 ): Promise<TitleContext> {
   type SetFacts = Omit<TitleContext, "players" | "teams">;
-  const facts: SetFacts = await ctx.runQuery(internal.listingTitleContext.titleSetFacts, {
-    selectorOptionId: args.selectorOptionId,
-    sportId: args.sportId,
-  });
-
   const ids = Array.from(new Set(args.resolved.playerIdByNorm.values()));
-  const nameById = new Map<string, string>();
+  const pages: Array<Array<Id<"players">>> = [];
   for (let i = 0; i < ids.length; i += TITLE_CONTEXT_PLAYER_PAGE) {
-    const page: Array<{ id: Id<"players">; name: string }> = await ctx.runQuery(
-      internal.listingTitleContext.playerNamesByIds,
-      {
-        ids: ids.slice(i, i + TITLE_CONTEXT_PLAYER_PAGE),
-      },
-    );
+    pages.push(ids.slice(i, i + TITLE_CONTEXT_PLAYER_PAGE));
+  }
+  // NEO-592 — the set facts and the player-name pages do not depend on each
+  // other, so they are asked together (the pages at most four at once) rather
+  // than one after another; every answer is merged in the same order.
+  const [facts, namePages] = await settleAll<
+    [SetFacts, Array<Array<{ id: Id<"players">; name: string }>>]
+  >([
+    ctx.runQuery(internal.listingTitleContext.titleSetFacts, {
+      selectorOptionId: args.selectorOptionId,
+      sportId: args.sportId,
+      // NEO-606 — the resolved teams' splits come back with the set facts.
+      resolvedTeamIds: Array.from(new Set(args.resolved.teamIdByNorm.values())),
+    }) as Promise<SetFacts>,
+    mapBounded(
+      pages,
+      (page) => ctx.runQuery(internal.listingTitleContext.playerNamesByIds, { ids: page }),
+      TITLE_CONTEXT_PAGE_CONCURRENCY,
+    ),
+  ]);
+  const nameById = new Map<string, string>();
+  for (const page of namePages) {
     for (const { id, name } of page) nameById.set(id, name);
   }
 

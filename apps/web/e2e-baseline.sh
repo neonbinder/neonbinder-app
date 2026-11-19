@@ -87,6 +87,8 @@ Usage: ./e2e-baseline.sh reset [--deployment <name>] [--except-reference-seed] [
   reset             Run selectorOptions:resetSetBuilderDataFromCli. DESTRUCTIVE
                      — wipes selectorOptions / cardChecklist / cardCrossListings
                      / players / teams / leagues on the target deployment.
+                     Then (NEO-552) clears the deployment's accounts on the
+                     fake BuySportsCards, when it is wired to one.
 
   --deployment NAME  Target Convex deployment slug (e.g. a PR preview). Same
                      as setting $CONVEX_NAME; this flag wins if both are given.
@@ -331,3 +333,28 @@ if [ -z "$reset_complete" ]; then
   exit 1
 fi
 echo "✅ Set Builder data reset on $DISPLAY_TARGET."
+
+# ── NEO-552: clear this deployment's accounts on the fake BuySportsCards ────
+# A deployment wired to the fake owns every fake account whose namespace
+# starts `<its slug>-` (sign-in `nb+<slug>-<user tag>@fake.invalid`); this clears their listings, photos, orders and faults so
+# the next pass starts clean (the BSC call breaker was cleared with the
+# tables above). It goes through a Convex internal action, deploy credentials
+# only and no --identity (same reason as the reset above), so the fake's keys
+# stay on the deployment and never reach this runner. A deployment on the
+# real BSC answers {"fake": false} and nothing is sent anywhere.
+echo "▶ clearing this deployment's fake BuySportsCards accounts on $DISPLAY_TARGET ..."
+fake_out=""
+fake_rc=0
+fake_out="$("${DOTENV[@]+"${DOTENV[@]}"}" npx --yes "$CONVEX_CLI" run testing:resetFakeBscForDeploymentFromCli '{}' \
+  --typecheck disable --codegen disable \
+  "${DEPLOY_ARGS[@]+"${DEPLOY_ARGS[@]}"}")" || fake_rc=$?
+printf '%s\n' "$fake_out"
+if [ "$fake_rc" -ne 0 ]; then
+  echo "✗ clearing the fake BuySportsCards accounts failed — see the convex run output above. The fake must answer before BSC specs can run on this deployment." >&2
+  exit 1
+fi
+if printf '%s' "$fake_out" | grep -Eq '"fake":[[:space:]]*true'; then
+  echo "✅ fake BuySportsCards accounts cleared."
+else
+  echo "   this deployment talks to the real BuySportsCards; no fake accounts to clear."
+fi

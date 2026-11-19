@@ -3,9 +3,17 @@ import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
+import { WaitingOnMarketplaceRun } from "../modules/WaitingOnMarketplace";
+import { mintWaitKey } from "@/lib/marketplace/wait-key";
 import { primarySlot, slotEntries, slotIds, slotLabel } from "../../convex/platformSlots";
 import { variantTypeKind } from "../../convex/variantRole";
-import ReconciliationModal, { type ReconciledResult, type MatchedPair, type PlatformItem, type SlCandidateGroup } from "./ReconciliationModal";
+import ReconciliationModal, {
+  type ReconcileChecklist,
+  type ReconciledResult,
+  type MatchedPair,
+  type PlatformItem,
+  type SlCandidateGroup,
+} from "./ReconciliationModal";
 import SyncDoneNotice from "./SyncDoneNotice";
 import {
   blockedMessageFromErrors,
@@ -58,7 +66,41 @@ type RawOptionsResult = {
    * Optional so an older result shape reads as "no twins".
    */
   twinIds?: TwinIds;
+  /**
+   * NEO-287 — slot sides the operator has paused (a subset of the result's
+   * `skippedSides`). Handed to Reconcile so a paused column says so.
+   * Optional: an older result reads as "none".
+   */
+  pausedSides?: string[];
+  /**
+   * NEO-496 — the set's uploaded checklist, when it has a ready one: its
+   * sections not linked to any row, the server's auto-matches, and the links
+   * the rows under this variant type already hold. Absent without one.
+   */
+  checklist?: Omit<ReconcileChecklist, "scope"> & {
+    baseSectionNames?: string[];
+    unmatchedSectionKeys?: string[];
+  };
 };
+
+/**
+ * NEO-496 (coordinator decision 1, row A's rule) — how many sources a fetch
+ * brought: each marketplace that returned anything, plus the checklist when
+ * it has a section still to place. Two or more open Reconcile, exactly as two
+ * marketplaces always have; a checklist alone opens it too, so its sections
+ * become sets only when the operator says so. Exported for its tests.
+ */
+export function fetchSourceCount(result: {
+  bscOptions: readonly unknown[];
+  slOptions: readonly unknown[];
+  checklist?: { sections: readonly unknown[] };
+}): { marketplaces: number; checklist: boolean } {
+  return {
+    marketplaces:
+      (result.bscOptions.length > 0 ? 1 : 0) + (result.slOptions.length > 0 ? 1 : 0),
+    checklist: (result.checklist?.sections.length ?? 0) > 0,
+  };
+}
 
 // Stable, unique-to-this-error-mode string. Maestro flows assert on this
 // substring to verify the column surfaced (not silently swallowed) a
@@ -85,6 +127,8 @@ export default function VariantForm({
     id: variantTypeId,
   });
   const [loading, setLoading] = useState(false);
+  // PR 451 (NEO-487) — the current fetch's run key for the wait line.
+  const [waitKey, setWaitKey] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [showReconciliation, setShowReconciliation] = useState(false);
   const [reconciliationData, setReconciliationData] = useState<RawOptionsResult | null>(null);
@@ -151,6 +195,11 @@ export default function VariantForm({
   // variant type's title IS its kind). Parallels of an insert (ParallelForm)
   // are out of scope.
   const checksAgainstBase = variantTypeKind(variantTypeRow) === "parallel";
+  // NEO-496 — the checklist column opens on the sections of this type's kind:
+  // the Base's coloured runs for Parallels, everything else for Inserts.
+  const variantKind = variantTypeKind(variantTypeRow);
+  const checklistScope: ReconcileChecklist["scope"] =
+    variantKind === "parallel" ? "base-child" : variantKind === "insert" ? "other" : "all";
   // Pluralized variantType label ("Insert" → "Inserts") for headings and
   // the reconciliation modal title. Falls back to "Variants" until the
   // ancestor chain resolves.
@@ -235,8 +284,11 @@ export default function VariantForm({
     setHeldTotal(0);
     setBrandHeldSkipped([]);
     setStoreHolds(null);
+    const key = mintWaitKey();
+    setWaitKey(key);
     try {
       const result = await fetchRawOptions({
+        waitKey: key,
         level: "insert",
         parentId: variantTypeId,
         parentFilters: {
@@ -299,12 +351,31 @@ export default function VariantForm({
         return;
       }
 
+      const sourceCount = fetchSourceCount(result);
       if (result.bscOptions.length > 0 && result.slOptions.length > 0) {
         // Both platforms have data — show reconciliation modal
         setReconciliationData(result);
         setShowReconciliation(true);
         // Not `result.message`: its warning suffix interpolates each adapter's
         // own error text. The modal is opening anyway, so there is nothing to say.
+        setMessage(null);
+      } else if (sourceCount.checklist) {
+        // NEO-496 — one marketplace plus the checklist is two sources, and a
+        // checklist alone is one the operator must place by hand: Reconcile
+        // opens on this fetch, the first auto-sync included, exactly as it
+        // does for two marketplaces. A marketplace side that FAILED still
+        // blocks, as it would the single-platform store: nothing is known
+        // about it, and lining sets up against half a picture is a guess.
+        const plan = planSinglePlatformStore(
+          result.errors,
+          skippedSidesOf(result),
+        );
+        if (plan.kind === "blocked") {
+          setMessage(partialFailureMessage(SYNC_FAILED_PREFIX, plan));
+          return;
+        }
+        setReconciliationData(result);
+        setShowReconciliation(true);
         setMessage(null);
       } else {
         // Only ONE platform has data. Storing that is a claim about BOTH sides:
@@ -517,6 +588,11 @@ export default function VariantForm({
       // by identity only, so a twin saved after its namesake is its own row
       // instead of being withheld against it by name.
       ...(item.identityOnly ? { identityOnly: true } : {}),
+      // NEO-496: the checklist sections, only when the dialog says them —
+      // absent leaves the row's links untouched, present replaces them.
+      ...(item.checklistSectionKeys !== undefined
+        ? { checklistSectionKeys: item.checklistSectionKeys }
+        : {}),
     }));
     let drained;
     try {
@@ -658,6 +734,16 @@ export default function VariantForm({
             Fetching {variantsLabel.toLowerCase()} for {setNameValue || "..."} from all connected platforms...
           </p>
         )}
+        {/* PR 451 (NEO-487) — "Waiting on BuySportsCards… 12s" while the
+            fetch is held up by a BSC call. Not while the Reconcile dialog is
+            open over this panel: it carries its own line for its Base
+            check, and one wait line on the page is the rule. */}
+        <WaitingOnMarketplaceRun
+          runKey={waitKey}
+          active={loading && !showReconciliation}
+          marketplace="BuySportsCards"
+          className="mb-4"
+        />
 
         {(() => {
           const isError =
@@ -790,8 +876,10 @@ export default function VariantForm({
           }
           twinNotice={
             // Said only when twins are WHY the modal opened (one side empty);
-            // a two-sided reconcile is what the operator expects.
+            // a two-sided reconcile is what the operator expects. NEO-496: a
+            // dialog the checklist opened was never going to be a store.
             reconciliationData.twinIds &&
+            !fetchSourceCount(reconciliationData).checklist &&
             (reconciliationData.bscOptions.length === 0 ||
               reconciliationData.slOptions.length === 0)
               ? twinReconcileNotice(reconciliationData.twinIds)
@@ -799,8 +887,21 @@ export default function VariantForm({
           }
           showAllSlInitially={
             !!reconciliationData.twinIds &&
+            !fetchSourceCount(reconciliationData).checklist &&
             (reconciliationData.bscOptions.length === 0 ||
               reconciliationData.slOptions.length === 0)
+          }
+          pausedSides={reconciliationData.pausedSides ?? []}
+          skippedSides={skippedSidesOf(reconciliationData)}
+          checklist={
+            reconciliationData.checklist
+              ? {
+                  sections: reconciliationData.checklist.sections,
+                  matches: reconciliationData.checklist.matches,
+                  rowLinks: reconciliationData.checklist.rowLinks,
+                  scope: checklistScope,
+                }
+              : undefined
           }
           initialData={{
             autoMatched: reconciliationData.autoMatched,

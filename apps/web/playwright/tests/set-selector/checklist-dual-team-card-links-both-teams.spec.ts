@@ -32,7 +32,7 @@ import {
   columnSearch,
   drillToColdManufacturer,
   drillToSet,
-  INSERT_FETCH,
+  expectAfterBscSync,
   openInsertsReconcile,
   pick,
   setBuilderReady,
@@ -40,11 +40,13 @@ import {
   VARIANT_TYPES_SYNC,
 } from "../../support/set-builder";
 import { expectTeamsLoaded, teamsCounter } from "../../support/players";
+import { bscLookupOutcome, expectStepWithSportLots } from "../../support/marketplace-wait";
+import { CHECKLISTS, confirmChecklistMatchCards, matchCardsDialog, usePublishersChecklist } from "../../support/published-checklist";
 import { advanceToSave, confirmSaveButton, newStepHeading, personSkip, reviewWizard } from "../../support/wizard";
 
 const INSERT = "Prospect Dual Autographs";
 const BOWMAN_DRAFT = { sport: "Baseball", year: "2025", manufacturer: "Bowman", set: "Bowman Draft" };
-/** A live BSC (+ SportLots) checklist round trip (the cold insert-level fetch is `INSERT_FETCH`). */
+/** A live BSC (+ SportLots) checklist round trip, the ceiling kept while SportLots is live (`expectStepWithSportLots`). */
 const CHECKLIST_FETCH = 120_000;
 /** The wizard opens behind the live lookups the batch queues. */
 const WIZARD_OPENS = 60_000;
@@ -67,13 +69,16 @@ test(
     await drillToColdManufacturer(page, env, { sport: "Baseball", year: "2025", manufacturer: "Bowman" });
     // The Sets column's LISTBOX renders only once it holds a row. The helper
     // waited the sync out with SportLots live; paused, BSC's sets can still be
-    // landing, so this carries the helper's own cold-sync ceiling.
-    await expect(page.getByRole("listbox", { name: "Sets" })).toBeVisible({ timeout: COLD_SYNC });
+    // landing, so this waits by the marketplace rule (measured 0.2 s on the #487 merge-group run (GUIDE)).
+    await expectStepWithSportLots(page, page.getByRole("listbox", { name: "Sets" }), env, {
+      liveMs: COLD_SYNC,
+      what: "the Sets list",
+    });
     await pick(page, "Sets", "Bowman Draft");
     await expect(columnHeading(page, "Variant Types")).toBeVisible();
     // Selecting the set fires its COLD variant-type sync (BSC + SportLots).
     const insertType = columnOption(page, "Variant Types", "Insert");
-    await expect(insertType).toBeVisible({ timeout: VARIANT_TYPES_SYNC });
+    await expectStepWithSportLots(page, insertType, env, { liveMs: VARIANT_TYPES_SYNC, what: "Variant Types row Insert" });
 
     // ── STEP 2: make the insert an NB set: the Inserts reconcile (sole writer) ──
     await insertType.click();
@@ -85,7 +90,7 @@ test(
       // its own insert in this same column, so when it ran first the column is
       // already saved and the dialog opens from "Sync Inserts" instead
       // (`openInsertsReconcile` takes either). REQUIRED either way.
-      await openInsertsReconcile(page);
+      await openInsertsReconcile(page, env);
 
       // Narrow both lists to the insert; the Save still writes every Ready set.
       await reconcile.getByRole("textbox", { name: "Filter NeonBinder sets" }).fill(INSERT);
@@ -116,7 +121,8 @@ test(
     } else {
       // Paused: one marketplace, nothing to reconcile; the column fills
       // straight from BSC (the same cold fetch).
-      await expect(columnHeading(page, "Inserts")).toBeVisible({ timeout: INSERT_FETCH });
+      // BSC alone: 7 s plus the seconds the column's wait line is up (measured 0.2 s on the #487 merge-group run (GUIDE)).
+      await expectAfterBscSync(page, columnHeading(page, "Inserts"), "the Inserts column opening");
       await expect(reconcile).toBeHidden();
     }
 
@@ -127,36 +133,31 @@ test(
     // ── STEP 4: fetch from the marketplaces on the insert ──
     // The empty-checklist assert makes the saved cards below THIS fetch's.
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
+    // The publisher's checklist (NEO-478): the 13 other cards' teams are BSC's own answers, uploaded, so
+    // BSC is asked per card for ONE card, PDA-WW, whose two-club value is what this spec reads live. (Its
+    // row is left out of the file on purpose; the fixture is fixtures/checklists/2025-bowman-draft-insert-
+    // prospect-dual-autographs.csv.) Fourteen live lookups in a burst met a BSC 429 here (every one of
+    // them), so the card the spec is about was never answered.
+    const facts = await usePublishersChecklist(page, CHECKLISTS.prospectDualAutographs2025);
     await syncChecklistButton(page).click();
 
-    // Legitimate shapes: a SportLots set paired with the insert opens "Match
-    // Cards"; one source takes the one-marketplace path ("Kept all N cards
-    // from BSC"), and with every name known (the catalogue) that path commits
-    // at once, the commit's "Saved N cards" REPLACING the Kept-all line (the
-    // checklist holds one notice). "Saved" is accepted as the same fetch's
-    // later state: the checklist was empty a step ago, so it can only be this
-    // fetch's. A fetch that lost the BSC side would carry no BSC team values,
-    // and STEP 6's row read fails it by name. BSC's per-card team lookup (the
-    // code NEO-333 changed) runs INSIDE this fetch: live round trip.
-    const matchCards = page.getByText(/Match Cards/).first();
-    const kept = page.getByText(/Kept all [0-9]+ cards? from BSC/);
+    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards
+    // opens with SportLots paused or live (before NEO-496 a paused fetch took the
+    // one-marketplace path). BSC's per-card team lookup (the code NEO-333 changed) runs
+    // INSIDE this fetch, before Confirm unlocks: a live round trip. PDA-WW, the card this
+    // spec reads, is the row the file leaves out, so it is BSC-only here and MUST be kept;
+    // the helper keeps every BSC-only card, proves the teams line and confirms. A fetch that
+    // lost the BSC side would carry no BSC team values, and STEP 6's row read fails it by name.
+    const matchCards = matchCardsDialog(page);
+    await expectStepWithSportLots(page, matchCards.getByRole("button", { name: "Confirm card matches", disabled: false }), env, {
+      liveMs: CHECKLIST_FETCH,
+      what: "the insert checklist fetch",
+    });
+    await expect(matchCards.getByRole("heading", { name: `Match Cards — ${INSERT}` })).toBeVisible();
+    await expectAccessible(page, { within: matchCards, label: "Match Cards dialog (Prospect Dual Autographs)" });
+    await confirmChecklistMatchCards(page, { facts, what: "the Prospect Dual Autographs fetch" });
+    // With every name known (the catalogue) the commit goes straight through: "Saved N cards".
     const saved = page.getByText(/Saved [1-9][0-9]* cards?/);
-    await expect(matchCards.or(kept).or(saved).first()).toBeVisible({ timeout: CHECKLIST_FETCH });
-    // NEO-287: paused, nothing was asked of SportLots, so the pairing dialog is the bug.
-    if (env.SL_PAUSED) await expect(matchCards).toBeHidden();
-    if (await matchCards.isVisible()) {
-      // The dialog OPENING is not the fetch FINISHING: Confirm reads
-      // "Loading…" and is inert until the action resolves.
-      const confirm = page.getByRole("button", { name: "Confirm card matches", disabled: false });
-      await expect(confirm).toBeVisible({ timeout: CHECKLIST_FETCH });
-      await expect(page.getByText(new RegExp(`Match Cards — ${INSERT}`))).toBeVisible();
-      await expectAccessible(page, {
-        within: page.getByRole("dialog", { name: /^Match Cards/ }),
-        label: "Match Cards dialog (Prospect Dual Autographs)",
-      });
-      await confirm.click();
-      await expect(page.getByText(/Match Cards/)).toBeHidden();
-    }
 
     // ── STEP 5: claim (a): no team step is a comma-joined name ──
     // TWO LEGITIMATE SHAPES, and the gate names both (R2): "Saved N cards" (the
@@ -170,7 +171,7 @@ test(
     // behind the card write (the flow's 60 s, a live round trip).
     await expect(wizard.or(saved).first()).toBeVisible({ timeout: WIZARD_OPENS });
     if (await wizard.isVisible()) {
-      await expectAccessible(page, { within: wizard, label: "Tidy up this set wizard" });
+      await expectAccessible(page, { within: wizard, label: "Tidy-up wizard" });
 
       // Wait out the lookups first: team rows go through the same Wikidata pool
       // as players and are presented only once settled, so draining earlier
@@ -253,12 +254,26 @@ test(
     // text node (linked teams' full names joined ", ", then " · /N", ...), so
     // a FULL match means an `<name> (unconfirmed)` tail, or a card linked to
     // only one club, cannot answer. Either order is accepted. No other card
-    // in the set carries either club, so the pair IS PDA-WW, the list's last
-    // row (the list opens on it). The links are written BY THE SAVE (the
-    // NEO-333 fence), so the 7 s bar is the whole budget.
-    await expect(
-      page.getByText(/^(Boston Red Sox, Detroit Tigers|Detroit Tigers, Boston Red Sox)( · .*)?$/),
-    ).toBeVisible();
+    // in the set carries either club, so the pair IS PDA-WW. The links are written BY
+    // THE SAVE (the NEO-333 fence), so the 7 s bar is the whole budget.
+    // The list sits where its first streamed batch left it, which can be above the
+    // last row (this assert failed on both projects in CI run 42844015539, and locally
+    // with the list at its first card), so the card is found the way a collector would,
+    // by its number.
+    //
+    // NEO-489 (Jason, 2026-11-11: a BSC 429 or an open cooldown on the spec's live card is a
+    // pass). PDA-WW's one live lookup either ANSWERED (both clubs linked, the row reads them)
+    // or was SKIPPED (the card has no team and waits in the background queue, so the
+    // checklist says "Still looking up teams for 1 card."). Never a third shape: the row never
+    // reads ONE club alone, which is the unsplit/half-resolved value NEO-333 forbids, and the
+    // wizard loop above already refused every comma-joined or half-of-the-value step.
+    await page.getByRole("searchbox", { name: "Search cards" }).fill("PDA-WW");
+    const bothClubs = page.getByText(/^(Boston Red Sox, Detroit Tigers|Detroit Tigers, Boston Red Sox)( · .*)?$/);
+    const lookingUp = page.getByRole("status").filter({ hasText: "Still looking up teams for 1 card." });
+    await expect(bothClubs.or(lookingUp).first()).toBeVisible();
+    await expect(page.getByText(/^(Boston Red Sox|Detroit Tigers)( · .*)?$/)).toHaveCount(0);
+    const answered = await bothClubs.isVisible();
+    bscLookupOutcome(answered ? "answered" : "cooldown", "PDA-WW");
     await expectAccessible(page, { label: "Prospect Dual Autographs checklist, dual-team card saved" });
 
     // ── STEP 7: claim (c): no combined team exists ──

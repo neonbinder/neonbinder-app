@@ -5,17 +5,37 @@
  * do not apply (R3/R9). Used by the `collection/*` specs; one implementation.
  */
 import { expect, type Locator, type Page } from "@playwright/test";
+import { expectAccessible, test } from "./fixtures";
+import { expectAfterMarketplace } from "./marketplace-wait";
+
+/**
+ * NEO-527 — the title of the brand column in every year the suite drills BY
+ * BRAND (`drill("Brands", ...)`: Baseball 2024, Football 2026, the private
+ * sports). The app titles that column with `brandColumnTitle`
+ * (app/collection/final/catalog/drill.ts): "Brands" when it holds only brand
+ * rows, "Sets" when every row is a set listed in place of the year's
+ * brand-unknown row, "Brands and sets" when it holds both. So a drilled year
+ * whose brand-unknown row gains a set WITH CARDS turns its column into
+ * "Brands and sets": every brand drill then fails here, on this one constant,
+ * matched exactly. Picking a brand still collapses to "Brands: <name>, change"
+ * (`brandColumnPickTitle`), whatever the column's title.
+ */
+export const BRAND_COLUMN_TITLE = "Brands";
 
 /**
  * The cascade and a `drill` that picks one option and waits for its summary
  * card. `name` is the cascade's group: Checklists' by default, or the Add
- * cards set pick's ("Sport, year, brand, set and variant").
+ * cards set pick's ("Sport, year, brand, set and variant"). The brand step is
+ * named "Brands" by the caller and found by `BRAND_COLUMN_TITLE`.
  */
 export function collectorCascade(page: Page, name = "Sport, year, brand and set") {
   const cascade = page.getByRole("group", { name });
+  const listbox = (column: string) =>
+    column === "Brands"
+      ? cascade.getByRole("listbox", { name: BRAND_COLUMN_TITLE, exact: true })
+      : cascade.getByRole("listbox", { name: column });
   const drill = async (column: string, option: string, next?: string) => {
-    await cascade
-      .getByRole("listbox", { name: column })
+    await listbox(column)
       .getByRole("option")
       .filter({ has: page.getByText(option, { exact: true }) })
       .click();
@@ -24,7 +44,7 @@ export function collectorCascade(page: Page, name = "Sport, year, brand and set"
     if (next) {
       // The columns sit in one row that scrolls sideways; on a phone the next
       // one starts off screen. It must be reachable (and on a desktop, it is).
-      const nextList = cascade.getByRole("listbox", { name: next });
+      const nextList = listbox(next);
       await nextList.scrollIntoViewIfNeeded();
       await expect(nextList).toBeInViewport();
     }
@@ -32,22 +52,136 @@ export function collectorCascade(page: Page, name = "Sport, year, brand and set"
   return { cascade, drill };
 }
 
-/** From the Checklists tab to the seed's 2024 Topps Chrome Base checklist; returns its region. */
-export async function drillToCollectorBase(page: Page): Promise<Locator> {
+/**
+ * A real set the collector's cascade can be driven to (sport, year, brand,
+ * set) and the checklist under it: the set's Base, unless `checklist` names a
+ * variant type and the row under it that is the checklist (an insert, a
+ * parallel).
+ */
+export interface CollectorSet {
+  sport: string;
+  year: string;
+  manufacturer: string;
+  set: string;
+  /**
+   * The checklist below the set when it is not the Base: the variant type's
+   * title as the Variant Types column lists it ("Insert"), which is also the
+   * next column's name, and the row picked there ("Future Stars").
+   */
+  checklist?: { type: string; name: string };
+}
+
+/** The seed's 2024 Topps Chrome (the default of `drillToCollectorBase`). */
+export const TOPPS_CHROME_2024: CollectorSet = {
+  sport: "Baseball",
+  year: "2024",
+  manufacturer: "Topps",
+  set: "Topps Chrome",
+};
+
+/**
+ * The seed's 2024 Topps Chrome › Insert › Future Stars (20 cards), the
+ * marketplace-seller listing specs' fixture (NEO-475; SET-REGISTRY.md). Its
+ * checklist and Sync status both name it "2024 Topps Chrome Future Stars": an
+ * insert reads as part of the set's name.
+ */
+export const TOPPS_CHROME_2024_FUTURE_STARS: CollectorSet = {
+  ...TOPPS_CHROME_2024,
+  checklist: { type: "Insert", name: "Future Stars" },
+};
+
+/**
+ * The checklist's own name, as its heading, region and the Add cards "Set:"
+ * button read it: "2024 Topps Chrome Base", "2024 Topps Chrome Future Stars".
+ */
+export function checklistTitle(target: CollectorSet): string {
+  return `${target.year} ${target.set} ${target.checklist?.name ?? "Base"}`;
+}
+
+/** The set's Base checklist's name ("2024 Topps Chrome Base"), whatever `target.checklist` says. */
+export function baseChecklistTitle(target: CollectorSet): string {
+  return checklistTitle({ ...target, checklist: undefined });
+}
+
+/**
+ * From the Checklists tab (Collection or Inventory) down to `target`'s
+ * checklist: the set's Base, or the variant type and row its `checklist`
+ * names. Returns the checklist's region.
+ */
+export async function drillToCollectorChecklist(page: Page, target: CollectorSet): Promise<Locator> {
   const { drill } = collectorCascade(page);
-  await drill("Sports", "Baseball", "Years");
-  await drill("Years", "2024", "Brands");
-  await drill("Brands", "Topps", "Sets");
-  await drill("Sets", "Topps Chrome", "Variant Types");
-  await drill("Variant Types", "Base");
-  const checklist = page.getByRole("region", { name: "2024 Topps Chrome Base" });
-  await expect(checklist.getByRole("heading", { level: 3, name: "2024 Topps Chrome Base" })).toBeVisible();
+  await drill("Sports", target.sport, "Years");
+  await drill("Years", target.year, "Brands");
+  await drill("Brands", target.manufacturer, "Sets");
+  await drill("Sets", target.set, "Variant Types");
+  if (target.checklist) {
+    // The picked type's rows are the next column, named for the type.
+    await drill("Variant Types", target.checklist.type, target.checklist.type);
+    await drill(target.checklist.type, target.checklist.name);
+  } else {
+    await drill("Variant Types", "Base");
+  }
+  const title = checklistTitle(target);
+  const checklist = page.getByRole("region", { name: title });
+  await expect(checklist.getByRole("heading", { level: 3, name: title })).toBeVisible();
   return checklist;
 }
 
 /**
- * The Base rows that read `#N First Last` (two or more words, one player, no
- * variation), never #300 (the signed-by spec's card). The `Details` button of
+ * From the Checklists tab to a seeded set's Base checklist (the seed's 2024
+ * Topps Chrome unless `target` says otherwise); returns its region.
+ */
+export async function drillToCollectorBase(page: Page, target: CollectorSet = TOPPS_CHROME_2024): Promise<Locator> {
+  return drillToCollectorChecklist(page, { ...target, checklist: undefined });
+}
+
+/** Add cards' drop zone, by the name a screen reader hears. */
+export function intakeDropzone(page: Page): Locator {
+  return page.getByLabel("Drag your card photos here, or browse your files");
+}
+
+/**
+ * On Add cards (NEO-452): pick a set's variant as the run's set through the
+ * "Set: ..." button and its cascade; the panel folds back into the button
+ * once the variant is picked. A run needs a set before anything starts (photos
+ * wait, "Use a scanner" is held), so every spec that starts a run calls this
+ * first. By default the variant is the seeded set's Base type itself; a
+ * `target` with a `checklist` picks that type's row instead (an insert such as
+ * Future Stars); pass `under` for a set whose Base sits inside another type (a
+ * hand-made set's `Insert` > `Base`). Returns the title the button now reads
+ * ("2024 Topps Chrome Base", "2024 Topps Chrome Future Stars"). Works whether
+ * or not a set is already picked (a pick replaces it).
+ */
+export async function pickIntakeSet(
+  page: Page,
+  target: CollectorSet = TOPPS_CHROME_2024,
+  { under }: { under?: string } = {},
+): Promise<string> {
+  // `under` is a Base inside a type; a target's own checklist is a row inside one. Never both.
+  expect(under && target.checklist, "pickIntakeSet takes `under` or a target checklist, not both").toBeFalsy();
+  await page.getByRole("button", { name: /^Set: / }).click();
+  const { cascade, drill } = collectorCascade(page, "Sport, year, brand, set and variant");
+  await drill("Sports", target.sport, "Years");
+  await drill("Years", target.year, "Brands");
+  await drill("Brands", target.manufacturer, "Sets");
+  await drill("Sets", target.set, "Variant Types");
+  // Picking a variant folds the panel back into its button.
+  const type = target.checklist?.type ?? under;
+  if (type) await drill("Variant Types", type);
+  await cascade
+    .getByRole("listbox", { name: type ?? "Variant Types" })
+    .getByRole("option")
+    .filter({ has: page.getByText(target.checklist?.name ?? "Base", { exact: true }) })
+    .click();
+  const title = checklistTitle(target);
+  await expect(page.getByRole("button", { name: `Set: ${title}`, exact: true })).toBeVisible();
+  return title;
+}
+
+/**
+ * The checklist rows that read `#N First Last` (two or more words, one player,
+ * no variation; `#FS-5 ...` on an insert too), never #300 (the signed-by spec's
+ * Base card). The `Details` button of
  * a card with two or more lines carries the line in its name (a comma), so
  * read the names you need BEFORE writing to any of them.
  */
@@ -100,11 +234,16 @@ export async function countOf(control: Locator, re: RegExp): Promise<number> {
 }
 
 /**
- * Follow a link of the signed-in shell (the top tabs on a desktop, the Menu
- * dialog on a phone) to another screen: "Collection" or "Inventory". The tab
- * is a plain link named for the screen.
+ * Follow a link of the shell (the top tabs on a desktop, the Menu dialog on a
+ * phone) to another screen: "Collection" or "Inventory". The tab is a plain
+ * link named for the screen. The logged-out demo (/demo) wears the same shell,
+ * so its own "Back to the tour" tab goes through here too.
  */
-export async function goViaShell(page: Page, isMobile: boolean, name: "Collection" | "Inventory"): Promise<void> {
+export async function goViaShell(
+  page: Page,
+  isMobile: boolean,
+  name: "Collection" | "Inventory" | "Back to the tour",
+): Promise<void> {
   if (isMobile) {
     await page.getByRole("button", { name: "Open menu" }).click();
     const menu = page.getByRole("dialog", { name: "Menu" });
@@ -189,6 +328,25 @@ export async function deleteOpenBox(
   await expect(confirm).toBeHidden();
 }
 
+/**
+ * From anywhere: open My Boxes, open the box with this name and delete it
+ * through its "Rename or delete" dialog (an empty box; the spec has emptied it).
+ * The box must exist: a hook calls it only for a box whose creation the body saw
+ * finish (`createBox` returned), and the click waits for the box like any other.
+ * (A "skip it when it is not listed" branch was tried and leaked boxes: a shelf
+ * that has painted is no proof that a name is absent.)
+ */
+export async function deleteBoxNamed(page: Page, name: string): Promise<void> {
+  await page.goto("/inventory?tab=boxes");
+  const spine = page
+    .getByRole("list", { name: "Your boxes" })
+    .getByLabel(new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}, box, `));
+  await spine.click();
+  await deleteOpenBox(page, name);
+  await expect(page.getByRole("list", { name: "Your boxes" })).toBeVisible();
+  await expect(spine).toHaveCount(0);
+}
+
 /** A checklist row's quantity field on the inventory side: "Quantity of <card> in <box>". */
 export function quantityField(scope: Locator, short: string, box: string): Locator {
   return scope.getByRole("textbox", { name: `Quantity of ${short} in ${box}`, exact: true });
@@ -205,4 +363,602 @@ export async function openListFilters(page: Page, isMobile: boolean): Promise<vo
   const button = page.getByRole("button", { name: /^Filters/ });
   await button.click();
   await expect(button).toHaveAttribute("aria-expanded", "true");
+}
+
+/**
+ * On My Boxes (`/inventory?tab=boxes`): every box the worker has EXCEPT
+ * `keep` goes in-person, BEFORE a marketplace connection starts listing
+ * (saving one walks every card in a listed box, so stock an earlier spec left
+ * on this worker must not reach a real marketplace). The boxes on the shelf
+ * and Unsorted in "Special places" are each opened and their "Listed on
+ * marketplaces" turned off (a box starts on), and each ends unchecked,
+ * asserted. They are left in-person afterwards: putting them back would queue
+ * their cards. The Up for Trade pile is not a box that lists. Used by the
+ * listing specs (BuySportsCards, eBay); one implementation.
+ */
+export async function putOtherBoxesInPerson(page: Page, keep: string): Promise<void> {
+  const boxName = keep;
+  const boxes = page.getByRole("list", { name: "Your boxes" });
+  const said = (text: string | RegExp) => page.getByRole("status").filter({ hasText: text });
+  // Every other box the worker has: the boxes on the shelf and Unsorted in
+  // "Special places" (the Up for Trade pile is not a box that lists). Each is
+  // opened and its "Listed on marketplaces" turned off (a box starts on), and
+  // each ends unchecked, asserted. They are left in-person afterwards:
+  // putting them back would queue their cards.
+  const special = page.getByRole("list", { name: "Special places" });
+  const spineRe = /^(.+), box, (?!.*up for trade)/;
+  const spines = boxes.getByRole("button", { name: spineRe }).or(special.getByRole("button", { name: spineRe }));
+  // The shelf has settled when Unsorted is drawn and no box is still "counting"
+  // (its spine reads ", box, counting" until its count is known).
+  await expect(special.getByRole("button", { name: /^Unsorted, box, / })).toBeVisible();
+  await expect(
+    boxes.getByRole("button", { name: /, box, counting$/ }).or(special.getByRole("button", { name: /, box, counting$/ })),
+  ).toHaveCount(0);
+  const boxNameOf = (spineName: string) => spineRe.exec(spineName)![1];
+  const readBoxes = async () => {
+    const names: string[] = [];
+    for (let i = 0, n = await spines.count(); i < n; i++) names.push(await nameOf(spines.nth(i)));
+    return names;
+  };
+  const others = (await readBoxes()).filter((name) => boxNameOf(name) !== boxName);
+  // Unsorted is never skipped: it is the box most likely to hold earlier stock.
+  expect(others.map(boxNameOf), "the shelf names Unsorted").toContain("Unsorted");
+  for (const spineName of others) {
+    const box = boxNameOf(spineName);
+    await boxes.getByRole("button", { name: spineName, exact: true }).or(special.getByRole("button", { name: spineName, exact: true })).click();
+    await expect(page).toHaveURL(/[?&]b=[^&]+/);
+    const toggle = page.getByRole("checkbox", { name: "Listed on marketplaces", exact: true });
+    await expect(toggle).toBeVisible();
+    if (await toggle.isChecked()) {
+      await toggle.uncheck();
+      await expect(said(`${box} is in-person only now.`)).toBeVisible();
+    }
+    await expect(toggle).not.toBeChecked();
+    await backToBoxes(page);
+  }
+  // Nothing arrived on the shelf while they were handled: a late box fails here, never skipped.
+  const handled = new Set([boxName, ...others.map(boxNameOf)]);
+  await expect
+    .poll(async () => (await readBoxes()).map(boxNameOf).filter((name) => !handled.has(name)))
+    .toEqual([]);
+}
+
+/**
+ * On the open checklist `title`: clear its common price (read as `was`
+ * first). The listing specs' tidy-up and failure hooks use it, so a rerun
+ * starts without one and sees the listing gate's hold.
+ */
+export async function clearChecklistCommonPrice(page: Page, checklist: Locator, title: string, was: string): Promise<void> {
+  await checklist.getByRole("button", { name: `Change the common price for ${title}`, exact: true }).click();
+  const priceField = checklist.getByRole("textbox", { name: "Common price", exact: true });
+  await expect(priceField).toHaveValue(was);
+  await priceField.fill("");
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("status").filter({ hasText: `Cleared the common price for ${title}` })).toBeVisible();
+}
+
+/**
+ * On the Inventory Checklists tab with the Adding-to box picked: set the
+ * `cards`' quantities in `box` to 0 (only those not already 0) on `target`'s
+ * checklist (its Base, or the row its `checklist` names). Returns the
+ * checklist. Idempotent, for the listing specs' tidy-up and failure hooks.
+ *
+ * `arrival` says how the tab was reached. The Checklists tab link reopens the
+ * checklist last open on the same page ("Checklists opens where you left it"),
+ * so after a tab change within the page it is already open ("reopened"); a
+ * fresh page load starts at the cascade ("fresh") and drills.
+ */
+export async function emptyBoxCards(
+  page: Page,
+  target: CollectorSet,
+  box: string,
+  cards: readonly string[],
+  isMobile: boolean,
+  arrival: "fresh" | "reopened",
+): Promise<Locator> {
+  const title = checklistTitle(target);
+  const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const adding = page.getByRole("combobox", { name: "Adding to" });
+  await expect(adding).toBeVisible();
+  let checklist: Locator;
+  if (arrival === "fresh") {
+    checklist = await drillToCollectorChecklist(page, target);
+  } else {
+    checklist = page.getByRole("region", { name: title });
+    await expect(checklist.getByRole("heading", { level: 3, name: title })).toBeVisible();
+  }
+  await adding.selectOption({ label: box });
+  const boxList = checklist.getByRole("list", { name: `Quantities in ${box}` });
+  for (const short of cards) {
+    const field = quantityField(boxList, short, box);
+    await expect(field).toBeVisible();
+    if ((await field.inputValue()) !== "0") {
+      await field.fill("0");
+      // The key that leaves a quantity field: Tab on a desktop, Enter on a phone.
+      await page.keyboard.press(isMobile ? "Enter" : "Tab");
+      await expect(field).toHaveValue("0");
+      await expect(
+        page.getByRole("status").filter({ hasText: new RegExp(`^Pulled \\d+ of ${escape(short)} from `) }),
+      ).toBeVisible();
+    }
+  }
+  return checklist;
+}
+
+/** The check step a run that sends nothing holds (NEO-433): running label, and what the finished row folds it into. */
+export const CHECK_STEP = "Compare with your boxes";
+const GATHERING_DATA = "Gathering data";
+/** The second folded line of a clean run that sent or changed nothing (NEO-433): the positive proof the press sent nothing. */
+export const NOTHING_NEW = "Nothing new to send";
+
+/**
+ * NEO-415: Sync status's step ledger for one set on one marketplace, so a spec
+ * waits on each step of a live round trip (the standard 7 s each) instead of on
+ * the whole trip. `platform` is the platform's region on Sync status;
+ * `platformName` is how the screen names it ("BuySportsCards", "eBay").
+ *
+ * A run's steps live in one of two lists, never both: "Sync steps for <set> on
+ * <platform>" under Running now while the run is under way (every step, one
+ * item each), "Last sync steps for <set> on <platform>" on the set's row once
+ * it has finished. The finished BuySportsCards row FOLDS: every `Read ...`
+ * becomes one "Gathering data" item at the first read's place, the
+ * `Double-check ...` steps are dropped (unless one failed), and the update
+ * steps (`Upload photos`, `Send changes to ...`) stay. eBay's finished row is
+ * unchanged. So:
+ *  - `step` matches the same label in either list: right for the steps both
+ *    lists hold (the send, eBay's steps), WRONG for a BSC read or confirm,
+ *    which the finished row no longer has;
+ *  - `readLanded` / `confirmLanded` (BSC) are the right waits for those two:
+ *    each is satisfied by the running list's done item, or by the finished
+ *    row's folded form, so a run that ends before the spec looks cannot hang
+ *    them.
+ *
+ * NEO-433: every finished run has a non-empty ledger. A run that sends nothing
+ * (a press that lands after the 15-minute sales poll already listed the stocked
+ * box does a full read and sends nothing) holds one step, the check "Compare
+ * with your boxes" (`CHECK_STEP`), which the finished row folds into "Gathering
+ * data" like a read. So "the run gathered its data" (`readLanded`, `gathered`)
+ * is the same wait whether the run read sheets or only compared, and a spec
+ * that must tell a sending run from a non-sending one asserts the send (or its
+ * absence) itself, never inferring it from this wait.
+ *
+ * Stale ledgers: the row keeps the PREVIOUS run's finished steps until the
+ * next run claims the set (the claim empties them, and the row draws none while
+ * the set is running). A spec therefore calls `underWay` first, with the new
+ * run's own result line, before it trusts any step: after that, the running
+ * list is the new run's, and a finished row can only be the new run's too.
+ */
+export function syncRun(platform: Locator, setLabel: string, platformName: string) {
+  const running = platform.getByRole("list", { name: `Sync steps for ${setLabel} on ${platformName}`, exact: true });
+  const last = platform.getByRole("list", { name: `Last sync steps for ${setLabel} on ${platformName}`, exact: true });
+  const steps = running.or(last);
+  /**
+   * A step in `state` ("done" unless said), by its label: the whole label as a
+   * string, or a pattern for the label alone (the state is appended to it).
+   */
+  const step = (label: string | RegExp, state: "done" | "working" | "waiting" | "failed" = "done"): Locator =>
+    typeof label === "string"
+      ? steps.getByRole("listitem", { name: `${label}, ${state}`, exact: true })
+      : steps.getByRole("listitem", { name: new RegExp(`${label.source.replace(/\$$/, "")}, ${state}$`, label.flags) });
+  /** The finished row's folded "Gathering data, done": every read (and the check) of the run, landed. */
+  const gathered = (): Locator => last.getByRole("listitem", { name: `${GATHERING_DATA}, done`, exact: true });
+  /**
+   * BSC: the run's data gathering has landed: the running list's done read or
+   * its done check ("Compare with your boxes"), or the finished row's "Gathering
+   * data" (a run that ends first, or one that only compared, NEO-433).
+   */
+  const readLanded = (): Locator =>
+    running
+      .getByRole("listitem", { name: /^Read .+, done$/ })
+      .first()
+      .or(running.getByRole("listitem", { name: `${CHECK_STEP}, done`, exact: true }))
+      .or(gathered());
+  /**
+   * BSC: a confirm has landed: the running list's done `Double-check ...`, or the
+   * finished row (which no longer lists confirms) once its send is done.
+   */
+  const confirmLanded = (): Locator =>
+    running
+      .getByRole("listitem", { name: /^Double-check .+, done$/ })
+      .first()
+      .or(last.getByRole("listitem", { name: /^Send changes to .+, done$/ }));
+  return {
+    running,
+    last,
+    steps,
+    step,
+    readLanded,
+    gathered,
+    /** The "Nothing new to send" line of a finished run's ledger; absent on any run that sent or changed something. */
+    nothingNew: (): Locator => last.getByRole("listitem", { name: new RegExp(`^${NOTHING_NEW}`) }),
+    confirmLanded,
+    /**
+     * The new run is visible: its ledger under Running now, or (a run that
+     * finished before the spec looked) its own result line. Gate every `step`
+     * wait on this, so the last run's finished ledger can never stand in.
+     */
+    underWay: (resultLine: Locator): Locator => running.or(resultLine).first(),
+  };
+}
+
+/** A signed-off longer landing ceiling per step label: a label map, or a function for labels that vary (a read's condition). */
+export type StepCeilings = Readonly<Record<string, number>> | ((label: string) => number | undefined);
+
+/**
+ * One step of a walk lands (`landing`). A step with a signed-off ceiling in
+ * `slow` waits that long (GUIDE hard rule 3). Any other step waits 7 s of our
+ * own time, and, when the walk names the `marketplace` it talks to (NEO-487),
+ * plus every second the "Waiting on <marketplace>..." status was up
+ * (`expectAfterMarketplace`): a marketplace that makes a step slow never fails
+ * a spec, and a slow step of ours still does. Without `marketplace` it is the
+ * plain 7 s.
+ */
+async function stepLands(
+  platform: Locator,
+  label: string,
+  landing: Locator,
+  slow: StepCeilings,
+  marketplace: string | undefined,
+): Promise<void> {
+  const budget = typeof slow === "function" ? slow(label) : slow[label];
+  if (budget === undefined && marketplace !== undefined) {
+    await expectAfterMarketplace(platform.page(), landing, { platform: marketplace, what: `the step "${label}"` });
+    return;
+  }
+  await expect(landing).toBeVisible(budget === undefined ? undefined : { timeout: budget });
+}
+
+/**
+ * Walks the set's run under way one step at a time: every wait covers exactly
+ * ONE step landing, within the standard budget, so a run of many serial sheet
+ * reads is never held to one 7 s window. Each pass waits for the step the run
+ * is on (the first working or waiting item of the running list) to reach done
+ * (or failed: the run goes on past a snag), then looks again.
+ *
+ * Used where a spec does not know how many steps a run holds: a throttled
+ * press reads fewer sheets, a failure hook cleans up whatever is in flight, and
+ * a run that has already ended (its finished, folded row) needs no walking.
+ * It returns when the platform says "Nothing syncing right now." or, if given,
+ * when `until` is visible (e.g. the send's done item, after which the spec
+ * waits for the confirm and the result line itself). A bounded loop, one pass
+ * per step (a modern set's longest plan is ten steps).
+ *
+ * `slow` gives ONE named step a longer landing budget than the standard 7 s:
+ * `{ "Go live": 15_000 }`. Only a ceiling Jason has signed off belongs here,
+ * recorded at the call site (GUIDE hard rule 3); every other step keeps the
+ * config's budget, and a step not named in `slow` is never given more. `slow`
+ * may also be a function of the label. `marketplace` (NEO-487,
+ * "BuySportsCards") makes every OTHER step wait 7 s plus the time the
+ * marketplace's "Waiting on ..." status is up (`expectAfterMarketplace`).
+ */
+export async function followRunToEnd(
+  platform: Locator,
+  run: ReturnType<typeof syncRun>,
+  until?: Locator,
+  slow: StepCeilings = {},
+  marketplace?: string,
+): Promise<void> {
+  const idle = platform.getByText(/^Nothing syncing right now\./);
+  const over = until ? idle.or(until).first() : idle;
+  const open = run.running.getByRole("listitem", { name: /, (working|waiting)$/ });
+  for (let pass = 0; pass < 12; pass++) {
+    // Either the walk is over, or the run shows the step it is on.
+    await expect(over.or(open.first()).first()).toBeVisible();
+    if (await over.isVisible()) return;
+    const label = ((await open.first().textContent()) ?? "").trim().replace(/, (working|waiting)$/, "");
+    // That one step lands (or snags), or the run ends, or the walk's goal is reached.
+    await stepLands(platform, label, run.step(label).or(run.step(label, "failed")).or(over).first(), slow, marketplace);
+  }
+  await expect(over).toBeVisible();
+}
+
+/**
+ * NEO-433: the queued rows a press writes are the evidence that a run which
+ * started AFTER the press has finished. A press writes (or touches) the set's
+ * queued cards before its toast, and the drain's finish clears them in the very
+ * write that records the run's result and releases its lease; a run that
+ * claimed before the press cannot clear them (their sequence moved), so the
+ * set goes round again. So "nothing queued for this set" on Sync status, with
+ * a press already toasted, means a run that read the press's rows has ended,
+ * and the set's row (line, ledger) is that run's. Nothing about a stale row
+ * left by the sales poll can satisfy it.
+ *
+ * Visible when the platform's queue holds no card of `setLabel`: the empty
+ * queue's "Nothing waiting." line, or a queue list with other sets' cards only.
+ */
+export function queueSettled(platform: Locator, setLabel: string): Locator {
+  const escaped = setLabel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // The row's text is "<card> in <set>queued <when>" (two spans, no space in the
+  // DOM; hasNotText reads textContent, not the aria snapshot's spacing), so a
+  // sibling whose name starts with this one ("2024 Topps Chrome Future Stars
+  // Autographs" beside "2024 Topps Chrome Future Stars") never
+  // counts as this set's.
+  const ofSet = new RegExp(` in ${escaped}\\s*queued\\s`);
+  return platform
+    .getByText(/^Nothing waiting\./)
+    .or(
+      platform
+        .getByRole("list", { name: /^Queued for the next sync/ })
+        .filter({ hasNotText: ofSet }),
+    );
+}
+
+/**
+ * NEO-433: a failure hook's walk of a run. A live read can stall past one step's
+ * budget (the body's red says so), and that must not stop the rest of the tidy-up.
+ * Walks again up to `tries` times, then returns the last error for the hook to
+ * rethrow once it has finished; `undefined` when the walk got through. Never for
+ * a test body: there a stalled step is the failure.
+ */
+export async function walkForCleanup(walk: () => Promise<void>, tries = 3): Promise<unknown> {
+  let last: unknown;
+  for (let attempt = 0; attempt < tries; attempt++) {
+    try {
+      await walk();
+      return undefined;
+    } catch (error) {
+      last = error;
+    }
+  }
+  return last;
+}
+
+/** The most steps `followRunToRest` walks: two runs at the ledger's cap (`MAX_PROGRESS_STEPS` 40) is the ceiling, in practice a set's run is under 25. */
+const MAX_REST_PASSES = 45;
+
+/**
+ * NEO-483: how long a press may wait for its run to START while NeonBinder waits
+ * for BuySportsCards to say which seller account the collector lists from.
+ *
+ * A drain that finds no seller account refuses the run (Sync status keeps the set
+ * queued and reads "Waiting on BuySportsCards...") and a spaced background read
+ * asks BuySportsCards again; the run starts on its own the moment the answer
+ * lands. The read's delays are 30 s, 60 s, then 120 s (`BSC_SELLER_ID_FETCH_DELAYS_MS`
+ * in convex/bscSellerId.ts).
+ *
+ * NEO-552 follow-up (Jason approved tightening every BSC wait to the fake's pace on
+ * 2026-11-15). BuySportsCards is the fake: it answers the seller profile at once and
+ * never stalls, so the first background try (30 s after the chain starts) lands the
+ * account. That try's read may hold for up to 20 s (the read's own timeout) and every
+ * step is allowed 7 s of our own time (`expectAfterMarketplace`): 30 + 20 + 7 = 57 s,
+ * rounded up to 60 s. Measured on the #487 merge-group run (GUIDE) that sized this: the one press
+ * of four that met the wait was held 20.3 s. The old 240 s was the real BSC's worst
+ * stall (150 s) plus all three tries; the fake has no such stall, and a spec that
+ * wants the wait longer holds the read itself (`bscFault.slow`, shorter than the
+ * 20 s read timeout), which this still covers.
+ *
+ * VOID if the first delay, the 20 s read, or the fake's answer-at-once change.
+ * Used for the CLAIM wait only; every later step keeps the default.
+ */
+export const SELLER_ACCOUNT_CAP_MS = 60_000;
+
+/** The state word Sync status gives a platform whose seller account lists from another NeonBinder account. */
+const SELLER_CONFLICT_WORD = "Seller account in use";
+
+/**
+ * The collector's seller-account sentences on Sync status (NEO-483), matched on a
+ * distinctive phrase so the platform's name and the sentences' tails can change.
+ * The wait line "Waiting on BuySportsCards..." is NOT the signal: it also shows
+ * during any ordinary step that is waiting on the marketplace, so only this
+ * sentence says the run is held for the seller account. Spec code does not import
+ * app copy (it is a running product's text, read here the way a user reads it).
+ */
+const SELLER_WAIT_SENTENCE = /slow to confirm your seller account/;
+const SELLER_GAVE_UP_SENTENCE = /still hasn['\u2019]t confirmed your seller account/;
+const SELLER_NO_PROFILE_SENTENCE = /isn['\u2019]t set up to sell yet/;
+
+function sellerConflictOf(platform: Locator): Locator {
+  return platform.getByText(SELLER_CONFLICT_WORD, { exact: true }).first();
+}
+
+function sellerAwaitedOf(platform: Locator): Locator {
+  return platform.getByText(SELLER_WAIT_SENTENCE).first();
+}
+
+/** Both states the seller-account wait can end in without an account: the run will never start. */
+function sellerGaveUpOf(platform: Locator): Locator {
+  return platform.getByText(SELLER_GAVE_UP_SENTENCE).or(platform.getByText(SELLER_NO_PROFILE_SENTENCE)).first();
+}
+
+function sellerInUse(marketplace: string): Error {
+  return new Error(
+    `${marketplace} reads "${SELLER_CONFLICT_WORD}" on Sync status: its seller account lists from another NeonBinder account, so this run will never start. ` +
+      "Nothing waits that out: the account the seed saved is held elsewhere (a seller spec ran on the same account, or a cleanup left a stale claim).",
+  );
+}
+
+function sellerGaveUp(marketplace: string, reading: string): Error {
+  return new Error(
+    `${marketplace} Sync status reads "${reading.trim()}": NeonBinder stopped asking for the seller account (it never confirmed, or says the account is not set up to sell), so this run will never start. ` +
+      "Nothing waits that out: it is a finding about the seed's seller account or the marketplace, not a wait to lengthen.",
+  );
+}
+
+/** Throws by name when Sync status shows a state the run cannot leave: another account holds the seller account, or the seller-account read gave up. */
+async function throwIfSellerBlocked(platform: Locator, marketplace: string): Promise<void> {
+  if (await sellerConflictOf(platform).isVisible()) throw sellerInUse(marketplace);
+  const gaveUp = sellerGaveUpOf(platform);
+  if (await gaveUp.isVisible()) throw sellerGaveUp(marketplace, (await gaveUp.textContent()) ?? "");
+}
+
+/**
+ * NEO-483: the press has been taken; wait (the standard 7 s, our own time) until
+ * Sync status shows ONE of the states a press leads to, then say which. A first
+ * press can meet a worker whose BuySportsCards seller account NeonBinder does
+ * not know yet; the screen then reads "Waiting on <marketplace>..." and the run
+ * starts by itself once BuySportsCards answers. So:
+ *  - the run is under way, or already over (the press's queued cards are gone,
+ *    `settled`): "started";
+ *  - the seller-account sentence ("... slow to confirm your seller account ...")
+ *    is up: "waiting". The screen is a state of its own, so the axe check runs on
+ *    it (light and dark) before the walk. The live line "Waiting on <marketplace>..."
+ *    is not the signal: it also shows during an ordinary step's wait;
+ *  - "Seller account in use", or either gave-up sentence ("... still hasn't
+ *    confirmed your seller account", "... isn't set up to sell yet"), is up:
+ *    thrown by name, none of them resolves.
+ * Both returns lead to the same walk (`followRunToRest`, whose claim wait covers
+ * the seller read) and the same hard asserts after it (R2), so a spec that calls
+ * this proves its feature in either order; the answer goes to the report as a
+ * `seller-wait` annotation so the run shows which branch it took. The wait line
+ * can lift between the look and the axe check (the answer landed): the walk is
+ * still the next call, and a page that moved on is a page axe may check.
+ *
+ * Contract: ENTRY the press was toasted and Sync status is open. EXIT a run is
+ * under way (or done) or the wait line has been checked; the walk is NOT done.
+ */
+export async function expectRunOrSellerWait(
+  platform: Locator,
+  run: ReturnType<typeof syncRun>,
+  settled: Locator,
+  { marketplace, label }: { marketplace: string; label: string },
+): Promise<"started" | "waiting"> {
+  const page = platform.page();
+  const waiting = sellerAwaitedOf(platform);
+  await expect(waiting.or(run.running).or(settled).or(sellerConflictOf(platform)).or(sellerGaveUpOf(platform)).first()).toBeVisible();
+  await throwIfSellerBlocked(platform, marketplace);
+  const outcome = (await waiting.isVisible()) ? "waiting" : "started";
+  try {
+    test.info().annotations.push({
+      type: "seller-wait",
+      description: outcome === "waiting" ? `${marketplace}: seller account awaited at arrival` : `${marketplace}: run under way at arrival`,
+    });
+  } catch {
+    // Not inside a test: nothing to annotate.
+  }
+  if (outcome === "waiting") await expectAccessible(page, { label });
+  return outcome;
+}
+
+/**
+ * Walks the set to rest after a press: every wait covers exactly ONE step
+ * landing (the standard budget, or what `slow` gives a step with a signed-off
+ * longer ceiling, recorded at the call site, GUIDE hard rule 3: a label map, or
+ * a function for labels that vary, such as a read's condition), until the
+ * press's queued rows are gone (`settled`, from `queueSettled`) and the
+ * platform is idle. Unlike `followRunToEnd` it never ends on an idle platform
+ * alone: a stale row left by the sales poll shows "Nothing syncing right now."
+ * too, and a press during a run goes round again after the first run ends,
+ * with an idle moment between the two. The press's rows are what tell the
+ * runs apart, so a press whose run never claims leaves them queued and this
+ * goes red, whichever way the poll raced it.
+ *
+ * Call it with the press already toasted, and read the set's row only after
+ * it returns: the row is then a run that started after the press, finished.
+ *
+ * `marketplace` (NEO-487): the platform's name as the screen says it
+ * ("BuySportsCards"). Every step not named in `slow` then waits 7 s of our own
+ * time plus the seconds "Waiting on <marketplace>..." was showing, with the
+ * measured wait in the test report, instead of a flat 7 s.
+ *
+ * NEO-483: with `marketplace` given, the FIRST wait (the run's claim) also covers
+ * a press whose run is held while NeonBinder waits for the marketplace to name
+ * the seller account: it is `expectAfterMarketplace` with `SELLER_ACCOUNT_CAP_MS`,
+ * so the wait line's seconds are the marketplace's and our own share stays 7 s.
+ * Pass `marketplace` on every press that could be the worker's first run. If the
+ * platform reads "Seller account in use", or a gave-up sentence, the walk throws by name instead. Without
+ * `marketplace` (eBay) a claim is the plain 7 s, as before.
+ */
+export async function followRunToRest(
+  platform: Locator,
+  run: ReturnType<typeof syncRun>,
+  settled: Locator,
+  slow: StepCeilings = {},
+  marketplace?: string,
+): Promise<void> {
+  const idle = platform.getByText(/^Nothing syncing right now\./);
+  const open = run.running.getByRole("listitem", { name: /, (working|waiting)$/ });
+  const blocked = sellerConflictOf(platform).or(sellerGaveUpOf(platform)).first();
+  for (let pass = 0; pass < MAX_REST_PASSES; pass++) {
+    // Either the press's rows are gone, or a run shows the step it is on (a run
+    // not yet claimed shows neither, and 7 s is the whole claim's budget). With a
+    // marketplace named, a claim held for its seller account waits as long as the
+    // marketplace's wait line is up (the first pass only; later gaps are our own).
+    const next = settled.or(open.first()).first();
+    if (marketplace === undefined) {
+      await expect(next).toBeVisible();
+    } else {
+      await expectAfterMarketplace(platform.page(), next.or(blocked).first(), {
+        platform: marketplace,
+        cap: pass === 0 ? SELLER_ACCOUNT_CAP_MS : undefined,
+        what: pass === 0 ? "the press's run to start (the seller account may be awaited)" : "the next step of the run",
+      });
+      await throwIfSellerBlocked(platform, marketplace);
+    }
+    if (await settled.isVisible()) break;
+    // One look at the open steps that never waits (a compare-only run's one step is
+    // gone in a moment): none left means the step landed between the two looks.
+    const [text] = await open.allTextContents();
+    if (text === undefined) continue;
+    const label = text.trim().replace(/, (working|waiting)$/, "");
+    await stepLands(platform, label, run.step(label).or(run.step(label, "failed")).or(settled).first(), slow, marketplace);
+  }
+  await expect(settled).toBeVisible();
+  await expect(idle).toBeVisible();
+}
+
+/**
+ * NEO-433: a finished run that sent and changed nothing (the sales poll got
+ * there first, so the press was a full read) shows exactly two folded lines, in
+ * this order: "Gathering data, done", then "Nothing new to send". That pair is
+ * the positive proof the press sent nothing; a spec's sending branch asserts
+ * `run.nothingNew()` absent instead.
+ */
+export async function expectNothingSent(run: ReturnType<typeof syncRun>): Promise<void> {
+  await expect(run.last).toBeVisible();
+  await expect(run.last.getByRole("listitem")).toHaveText([
+    new RegExp(`^${GATHERING_DATA}, done$`),
+    new RegExp(`^${NOTHING_NEW}`),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// NEO-377, NEO-431: a copy line's photos. Used by `collection/copy-photos-*`,
+// `collection/add-copy-with-photos-*` and `collection/inventory-photo-line-*`.
+// ---------------------------------------------------------------------------
+
+// A 50x70 JPEG, inline: no fixture file to keep.
+const CARD_JPEG = Buffer.from(
+  "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAoHBwgHBgoICAgLCgoLDhgQDg0NDh0VFhEYIx8lJCIfIiEmKzcvJik0KSEiMEExNDk7Pj4+JS5ESUM8SDc9Pjv/2wBDAQoLCw4NDhwQEBw7KCIoOzs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozv/wAARCABGADIDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwCcDccCl8s+1Ef3vwptYxjQp0IznBttvrba3k+5+YjvLPtR5Z9qbRU+1wv/AD6f/gX/AAA1HeWfakKlRk0lOP8Aqx9a0gsPVhPlg00r736ry8w1G0UUV5ox0f3vwptOj+9+FNruq/7rS9ZfoLqFFFFcIwpx/wBWPrTacf8AVj613YT4av8Ahf5oTG0UUVwjHR/e/Cm06P734U2u6r/utL1l+guoUUUVwjCnH/Vj602nH/Vj613YT4av+F/mhMbRRRXCMdH978KbTo/vfhSbG9K9KVGpUwtPki3rLZX7C6iUUuxvSjY3pXN9UxH/AD7l9zHdCU4/6sfWk2N6UrDEYB9a68PQq04VXOLS5XumuqExtFFFeWMM46Ubj6miirjUnFWTYBuPqaNx9TRRVe2qfzP7wDcfU0ZJ6miik6s2rOTAKKKKzA//2Q==",
+  "base64",
+);
+
+/** A small card-shaped JPEG for a photo file input (`setInputFiles`). */
+export const photoFile = (name: string) => ({ name, mimeType: "image/jpeg", buffer: CARD_JPEG });
+
+/**
+ * The photo behind a thumbnail or a "full size" link comes back as a picture:
+ * the address a new tab would open (a redirect to a short-lived signed URL)
+ * answers with a non-empty image. A page cannot be asked "did this decode"
+ * by what a user perceives, so this fetches what the user's browser fetches.
+ */
+export async function expectPhotoServed(page: Page, shown: Locator, attribute: "src" | "href"): Promise<void> {
+  await expect(shown).toHaveAttribute(attribute, /\/copy-photo\/[0-9a-f]{32}\/(thumb|image)$/);
+  const address = await shown.getAttribute(attribute);
+  expect(address, `a ${attribute} to fetch`).not.toBeNull();
+  const response = await page.request.get(new URL(address!, page.url()).toString());
+  expect(response.ok(), "the photo's address answers").toBe(true);
+  expect(response.headers()["content-type"] ?? "", "it answers with a picture").toMatch(/^image\//);
+  expect((await response.body()).length, "and the picture is not empty").toBeGreaterThan(100);
+}
+
+/**
+ * The server has answered a Remove: wait for the drawer's "Removed ..." notice,
+ * dismiss it, and see the status empty. A Remove flips the list optimistically,
+ * so the list proves nothing about the write, and every "Removed ..." notice of
+ * one card reads the same: left up, an earlier one would satisfy the next wait
+ * (a press lost to the notice reflow would then pass unseen). Call it after
+ * EVERY Remove, the last one included, before pressing the next Remove or
+ * leaving the drawer.
+ *
+ * `text` pins which line went: the notice must begin with it, e.g.
+ * `Removed ${short}, Raw, Excellent` (the drawer may add the line's home after
+ * it). Pass it wherever the spec knows the line it removed; without it any
+ * "Removed ..." notice answers.
+ */
+export async function confirmRemoved(drawer: Locator, text?: string): Promise<void> {
+  const notice = text === undefined ? /^Removed / : new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`);
+  const removed = drawer.getByRole("status").filter({ hasText: notice });
+  await expect(removed).toBeVisible();
+  await drawer.getByRole("button", { name: "Dismiss message", exact: true }).click();
+  await expect(removed).toHaveCount(0);
 }

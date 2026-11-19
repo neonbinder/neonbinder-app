@@ -20,6 +20,15 @@ on:
           this suite to run against.
         required: true
         type: string
+      pr:
+        description: >-
+          NEO-546: the PR number this run is about, so the sticky results
+          comment can land on the PR when the caller is a merge_group run
+          (no pull_request in that event's context). Empty for a standalone
+          run, and ignored on a pull_request run.
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       preview_url:
@@ -38,7 +47,8 @@ on:
 # to direct workflow_dispatch runs.)
 concurrency:
   group: e2e-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # NEO-546: never cancel a merge-queue run; a cancelled queue run ejects the PR.
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 # Least privilege: every job reads the repo at most. Only `report` widens, at
 # job level, to publish the check run and the sticky comment. (A called
@@ -84,6 +94,23 @@ permissions:
 #                  mobile timings. `bootstrap` is a dependency of e2e-mobile
 #                  too, so each mobile shard re-seeds its account after the
 #                  reset.
+#   seller-desktop / seller-mobile (NEO-415)
+#                → the two marketplace-seller listing specs (project-scope.mjs
+#                  SELLER_SPECS, tag @marketplace-seller), which no shard runs:
+#                  every PR's CI shares one BuySportsCards and one eBay sandbox
+#                  seller account, so they run one PR at a time repo-wide behind
+#                  an in-job queue (never a cancel; see the job). Worker 8.
+#                  seller-desktop starts beside the desktop shards and
+#                  seed-mobile needs it (its reset would wipe the preview it
+#                  runs on); seller-mobile starts beside the mobile shards.
+#   breaker-desktop / breaker-mobile (NEO-552)
+#                → the BSC breaker specs (project-scope.mjs BREAKER_SPECS, tag
+#                  @bsc-breaker), which no shard runs: a spec that makes the
+#                  fake BuySportsCards answer 429, 5xx or nothing opens Convex's
+#                  DEPLOYMENT-WIDE BSC call gate for every shard. They run alone,
+#                  after every shard and seller job of their pass, as worker 8;
+#                  seed-mobile needs breaker-desktop (its reset would wipe the
+#                  preview the job runs on). The spec clears the gate itself.
 #   e2e          → the single ruleset-gated verdict (job id and name are
 #                  load-bearing: pr-pipeline.yml's `e2e` job and ci-gate read
 #                  it). Merges every pass's report and is green iff all five
@@ -114,9 +141,12 @@ permissions:
 # values in plaintext) and the screenshots, plus the sanitised axe JSON.
 # Accepted as the main red-run diagnostic: real marketplace passwords never
 # reach the browser. Artifact names:
-# pw-report-seed, pw-report-desktop-<i>, pw-report-seed-mobile,
-# pw-report-mobile-<i>, pw-merged (+ convex-logs-* on the first shard of each
-# pass and each seed).
+# pw-report-seed-a<attempt>, pw-report-desktop-<i>-a<attempt>,
+# pw-report-seed-mobile-a<attempt>, pw-report-mobile-<i>-a<attempt>,
+# pw-report-seller-desktop-a<attempt>, pw-report-seller-mobile-a<attempt>,
+# pw-report-breaker-desktop-a<attempt>, pw-report-breaker-mobile-a<attempt>,
+# pw-merged (unsuffixed; the report job keeps each name's latest attempt)
+# (+ convex-logs-*-a<attempt> on the first shard of each pass and each seed).
 
 jobs:
   setup:
@@ -216,7 +246,7 @@ jobs:
           # erroring.
           name="${cloud#https://}"; name="${name%.convex.cloud}"
           if [ -z "$name" ] || [[ ! "$name" =~ ^[a-z-]+-[0-9]+$ ]]; then
-            echo "::error::Could not derive a Convex preview deployment name from '$cloud'"
+            echo "::error::Could not derive a Convex preview deployment name from the preview's Convex URL"
             exit 1
           fi
           # The slug shape above also matches production's. Refuse it: the
@@ -231,7 +261,9 @@ jobs:
             echo "::error::Refusing: the preview resolves to the PRODUCTION Convex deployment"
             exit 1
           fi
-          echo "Convex deployment: $name"
+          # The name is not echoed: this log is public on a public repo, and a
+          # masked value would be dropped from the job output below.
+          echo "Convex preview deployment resolved."
           echo "convex_name=$name" >> "$GITHUB_OUTPUT"
 
   timings:
@@ -263,7 +295,7 @@ jobs:
             apps/web/playwright
           persist-credentials: false
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         continue-on-error: true
         with:
           node-version-file: apps/web/.nvmrc
@@ -282,14 +314,20 @@ jobs:
           # and is passed over; a failed run never counts, so a stalled run
           # cannot set the plan.
           files=()
-          for rid in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/pr-pipeline.yml/runs?status=success&per_page=30" \
-                         --jq '.workflow_runs[] | select(.head_repository.full_name == env.GITHUB_REPOSITORY) | .id'); do
-            d="$RUNNER_TEMP/pw-merged-$rid"
-            if gh run download "$rid" -R "$GITHUB_REPOSITORY" -n pw-merged -D "$d" >/dev/null 2>&1 \
-                && [ -f "$d/results.json" ]; then
-              files+=("$d/results.json")
-              [ "${#files[@]}" -ge 5 ] && break
-            fi
+          # NEO-546: once the merge queue is live the E2E run is the merge_group
+          # run and pull_request runs are cheap (no report), so look there
+          # first, then at pull_request runs.
+          for ev in merge_group pull_request; do
+            for rid in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/pr-pipeline.yml/runs?status=success&event=$ev&per_page=30" \
+                           --jq '.workflow_runs[] | select(.head_repository.full_name == env.GITHUB_REPOSITORY) | .id'); do
+              d="$RUNNER_TEMP/pw-merged-$rid"
+              if gh run download "$rid" -R "$GITHUB_REPOSITORY" -n pw-merged -D "$d" >/dev/null 2>&1 \
+                  && [ -f "$d/results.json" ]; then
+                files+=("$d/results.json")
+                [ "${#files[@]}" -ge 5 ] && break
+              fi
+            done
+            [ "${#files[@]}" -ge 5 ] && break
           done
           if [ "${#files[@]}" -lt 3 ]; then
             echo "::notice::Only ${#files[@]} recent green report(s) found; the shards plan from the committed timings.json."
@@ -310,7 +348,7 @@ jobs:
       - name: Hand the timings to the shards
         if: steps.refresh.outputs.fresh == 'true'
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: shard-timings
           path: apps/web/playwright/timings.json
@@ -347,14 +385,19 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: apps/web/.nvmrc
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      # NEO-491: no --with-deps. That flag runs apt, which made CI depend on
+      # Ubuntu mirror DNS (an outage failed every seed job before tests ran).
+      # Chromium's shared libraries already ship on the ubuntu-latest image;
+      # the only packages apt fetched were fonts nothing here uses (no spec
+      # compares screenshots; the app loads its own web fonts).
+      - run: npx playwright install chromium
 
       # NEO-301: capture this PR preview's Convex logs for the seed job's own
       # lifetime. Preview log HISTORY is only ~15 minutes, and every attempt to
@@ -424,9 +467,9 @@ jobs:
               [ -z "$_key" ] && continue
               _key_lower="$(echo "$_key" | tr '[:upper:]' '[:lower:]')"
               case "$_key_lower" in
-                buysportscards|sportlots) ;;
+                buysportscards|sportlots|ebay) ;;
                 *)
-                  echo "::error::vars.NEONBINDER_PAUSED_PLATFORMS contains an unknown platform key '$_key' (from '$PAUSED_PLATFORMS'). Valid keys: buysportscards, sportlots."
+                  echo "::error::vars.NEONBINDER_PAUSED_PLATFORMS contains an unknown platform key '$_key' (from '$PAUSED_PLATFORMS'). Valid keys: buysportscards, sportlots, ebay."
                   exit 1
                   ;;
               esac
@@ -456,6 +499,47 @@ jobs:
       # no longer depends on query.wikidata.org's health. Read back like the
       # NEONBINDER_BROWSER_URL wiring in pr-pipeline.yml — a silent no-op here would
       # otherwise pass and just seed slow/flaky instead of failing loudly.
+      # NEO-552: every BuySportsCards call from this PR's Convex preview goes to
+      # the standing fake BSC (a dev Cloud Run service), never to the real site.
+      # This replaces the old NEONBINDER_TEST_BSC_STALL_CARD_IDS stall switch:
+      # the stall specs now arm a fault on the fake (POST /__fake/faults).
+      # `bscFetch` (convex/lib/bscHttp.ts) honours NEONBINDER_BSC_API_BASE only
+      # when TESTING_RESET_SECRET is also set and the URL is https on *.run.app,
+      # so a stray value on a non-preview deployment is inert. Written every run
+      # (a branch-reused preview keeps old env, NEO-184) and read back so a silent
+      # no-op fails here instead of letting a run reach the real BSC. The caller
+      # key is set later, in "Set the fake BSC caller key", once the deployer's
+      # GCP credentials exist (it is read from Secret Manager, never a GH secret).
+      - name: Point the Convex preview at the fake BSC
+        working-directory: apps/web
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+          FAKE_BSC_URL: ${{ vars.NEONBINDER_FAKE_BSC_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
+            exit 1
+          fi
+          if [ -z "${FAKE_BSC_URL:-}" ]; then
+            echo "::error::Repo variable NEONBINDER_FAKE_BSC_URL must be set. The E2E never falls back to the real BuySportsCards (NEO-552)."
+            exit 1
+          fi
+          re='^https://neonbinder-fake-bsc-[a-z0-9-]+(\.[a-z0-9-]+)*\.run\.app$'
+          base="${FAKE_BSC_URL%/}"
+          if [[ "$base" == *$'\n'* ]] || [[ ! "$base" =~ $re ]] || [[ "$base" == *---* ]]; then
+            echo "::error::vars.NEONBINDER_FAKE_BSC_URL must be https://neonbinder-fake-bsc-….run.app, the fake's own service URL, with no tag or path"
+            exit 1
+          fi
+          # The bare ROOT origin: Convex's resolveBscTarget appends /api itself.
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_BSC_API_BASE "$base" --deployment "$CONVEX_NAME"
+          got=$(npx --yes convex@1.39.1 env get NEONBINDER_BSC_API_BASE --deployment "$CONVEX_NAME")
+          if [ "$got" != "$base" ]; then
+            echo "::error::read-back mismatch for NEONBINDER_BSC_API_BASE"; exit 1
+          fi
+          echo "Convex preview NEONBINDER_BSC_API_BASE set to the fake (read-back ok)"
+
       - name: Set NEONBINDER_ENRICHMENT_FIXTURES on the Convex preview
         working-directory: apps/web
         env:
@@ -509,6 +593,107 @@ jobs:
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
 
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      # NEO-552: the caller key for the fake lives in ONE place, Secret Manager.
+      # The dev deployer (already authenticated here) can read it. Masked, set on
+      # the Convex preview and read back; never echoed.
+      - name: Set the fake BSC caller key on the Convex preview
+        working-directory: apps/web
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -euo pipefail
+          key=$(gcloud secrets versions access latest --secret=fake-bsc-caller-key --project=neonbinder-dev)
+          if [ -z "$key" ]; then echo "::error::fake-bsc-caller-key is empty"; exit 1; fi
+          echo "::add-mask::${key}"
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_FAKE_BSC_KEY "$key" --deployment "$CONVEX_NAME"
+          got=$(npx --yes convex@1.39.1 env get NEONBINDER_FAKE_BSC_KEY --deployment "$CONVEX_NAME")
+          if [ "$got" != "$key" ]; then
+            echo "::error::read-back mismatch for NEONBINDER_FAKE_BSC_KEY"; exit 1
+          fi
+          echo "Convex preview NEONBINDER_FAKE_BSC_KEY set (read-back ok)"
+
+      # NEO-552: prove the browser service this run talks to is wired to the
+      # FAKE BSC before anything signs in. The Convex preview's
+      # NEONBINDER_BROWSER_URL (the PR's own pr-<N> preview, or canonical dev)
+      # is read back from the preview, and its /health must say
+      # bscTarget=fake. A browser revision without NEONBINDER_FAKE_BSC_URL
+      # would sign in to the real BuySportsCards, so this fails the run here.
+      # The token audience is the BASE service URL, never the tagged host.
+      # Runs before the bundle download, which drops the GCP credentials.
+      # (Once per run: the mobile pass uses the same preview and browser.)
+      - name: Resolve the browser service this run uses
+        id: browser-target
+        working-directory: apps/web
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -euo pipefail
+          url=$(npx --yes convex@1.39.1 env get NEONBINDER_BROWSER_URL --deployment "$CONVEX_NAME")
+          re='^https://([a-z0-9-]+---)?neonbinder-browser-[a-z0-9]+-uc\.a\.run\.app$'
+          if [[ "$url" == *$'\n'* ]] || [[ ! "$url" =~ $re ]]; then
+            echo "::error::the Convex preview's NEONBINDER_BROWSER_URL is not a dev browser Cloud Run URL"
+            exit 1
+          fi
+          base=$(gcloud run services describe neonbinder-browser \
+            --region=us-central1 --project=neonbinder-dev --format='value(status.url)')
+          if [ -z "$base" ]; then echo "::error::could not resolve the browser base URL"; exit 1; fi
+          echo "target_url=$url" >> "$GITHUB_OUTPUT"
+          echo "base_url=$base" >> "$GITHUB_OUTPUT"
+
+      - id: browser-token
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+          token_format: id_token
+          id_token_audience: ${{ steps.browser-target.outputs.base_url }}
+          id_token_include_email: true
+
+      - name: Assert the browser service talks to the fake BSC
+        env:
+          TARGET_URL: ${{ steps.browser-target.outputs.target_url }}
+          PROBE_ID_TOKEN: ${{ steps.browser-token.outputs.id_token }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/bsc-probe.sh" fake --health-only
+
+      # NEO-552: the fake's own tests judge its synthesised write answers
+      # against the stored real captures, and pass without judging anything when
+      # none is stored. So the seed asks the fake which write endpoints (the
+      # listing PUT and the photo upload) still have no capture, through an
+      # internal Convex action on the preview (the fake's /__fake/health, caller auth
+      # only, no admin key on this runner), and fails here, before any spec runs
+      # against an unchecked fake.
+      - name: Require a stored write capture for every write the specs drive
+        working-directory: apps/web
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/fake-bsc-write-captures.json"
+          npx --yes convex@1.39.1 run fakeBsc:writeCaptureStatus '{}' --deployment "$CONVEX_NAME" > "$out"
+          if [ "$(jq -r '.ok' "$out")" != "true" ]; then
+            if [ "$(jq -r '.error // ""' "$out")" = "fake still loading" ]; then
+              echo "::error::The fake BSC was still loading its recordings and write captures after about 45 s (a cold start). Re-run the workflow; if it repeats, the fake's load is too slow or stuck: check its boot log."
+              exit 1
+            fi
+            err=$(jq -r '"status=\(.status // "n/a") error=\(.error // "unknown")"' "$out" | head -c 300)
+            echo "::error::Could not read the fake BSC's write-capture status (${err}). An older fake without writeCaptures in /__fake/health needs redeploying."
+            exit 1
+          fi
+          if [ "$(jq -r '.skipped' "$out")" = "true" ]; then
+            echo "::error::The Convex preview is not in fake-BSC mode, so write captures cannot be checked."
+            exit 1
+          fi
+          missing=$(jq -r '.missing | join(", ")' "$out")
+          if [ -n "$missing" ]; then
+            echo "::error::The fake BSC has no stored write capture for: ${missing}. Capture each before pushing (services/fake-bsc/README.md), so its synthesised answers are checked against the real ones."
+            bash "$GITHUB_WORKSPACE/.github/scripts/fake-capture-hints.sh" "$out"
+            exit 1
+          fi
+          echo "Fake BSC holds a write capture for every write endpoint."
 
       - name: Download reference-seed bundle
         env:
@@ -565,6 +750,29 @@ jobs:
       # --replace`, which is the clear for those tables). The reset alone does
       # not empty them, so each pass must load again; the sequence is
       # idempotent on a preview the earlier pass wrote to.
+      # NEO-407: the latency probe also runs through the reset and reference
+      # import, with a WRITE ping (pingWrite commits one tiny patch every 4 s)
+      # beside the read and mutation pings. A slow import whose write pings
+      # stall while reads stay fast points at the commit path; everything
+      # slowing together points at the deployment. Best-effort: never fails.
+      - name: Start Convex latency probe (desktop seed)
+        working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_NAME:-}" ]; then
+            echo "::warning::No preview deployment name — skipping the latency probe."
+            exit 0
+          fi
+          OUT="${RUNNER_TEMP}/convex-probe-seed-desktop.jsonl"
+          rm -f "$OUT"
+          nohup node scripts/convex-probe.mjs --url "https://${CONVEX_NAME}.convex.cloud" --out "$OUT" \
+            --write-every 4 >"${RUNNER_TEMP}/convex-probe-seed.stdout.log" 2>&1 &
+          disown
+          echo "CONVEX_PROBE_PID=$!" >> "$GITHUB_ENV"
+          echo "Started the latency probe (pid $!) -> $OUT"
+
       - name: Scripted reset + reference catalogue (e2e-seed-reset.sh)
         id: seed_reset
         env:
@@ -574,6 +782,9 @@ jobs:
           # e2e-seed-reset.sh); the next steps delete it so a re-run
           # (recreate-degraded-preview.yml) gets a fresh one.
           NB_SEED_MAX_IMPORT_S: "300"
+          # NEO-407: any Convex step of the seed past this is stopped (exit 75,
+          # the same degraded-preview path) instead of hanging the job.
+          NB_SEED_HANG_S: "900"
         run: |
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
             echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
@@ -584,8 +795,8 @@ jobs:
           ./e2e-seed-reset.sh || rc=$?
           if [ "$rc" -eq 75 ]; then
             echo "degraded=true" >> "$GITHUB_OUTPUT"
-            echo "::error::Convex preview $CONVEX_NAME is degraded: the reference import ran past ${NB_SEED_MAX_IMPORT_S}s (desktop pass). No specs ran, so this says nothing about the PR. The next step deletes the preview, and the whole workflow re-runs on its own with a fresh one (NEO-392)."
-            echo "- Preview degraded: reference import past ${NB_SEED_MAX_IMPORT_S}s; deleting it for a fresh one (NEO-392)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::The Convex preview is degraded: the reset or reference import ran past its limit (desktop pass; see the step log). No specs ran, so this says nothing about the PR. The next step deletes the preview, and the whole workflow re-runs on its own with a fresh one (NEO-392)."
+            echo "- Preview degraded: reset or reference import past its limit; deleting it for a fresh one (NEO-392)" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           [ "$rc" -eq 0 ] || exit "$rc"
@@ -597,6 +808,42 @@ jobs:
               sed 's/^/- /' "$NB_REFERENCE_SEED_SUMMARY"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop Convex latency probe (desktop seed)
+        if: always()
+        working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -n "${CONVEX_PROBE_PID:-}" ]; then
+            kill "${CONVEX_PROBE_PID}" 2>/dev/null || true
+            sleep 1
+          fi
+          OUT="${RUNNER_TEMP}/convex-probe-seed-desktop.jsonl"
+          if [ -s "$OUT" ]; then
+            node scripts/convex-probe.mjs --summary "$OUT" --stall-ms 2000 || true
+            # Public artifact: through the one redactor first (it carries
+            # this run's Convex deployment name); dropped if that fails.
+            if REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" < "$OUT" > "$OUT.safe"; then
+              gzip -c "$OUT.safe" > "convex-probe-seed-desktop.jsonl.gz" || true
+            else
+              rm -f "convex-probe-seed-desktop.jsonl.gz"
+              echo "::warning::Probe redaction failed; the latency probe artifact was not written."
+            fi
+            rm -f "$OUT.safe"
+          else
+            echo "No latency probe data for this seed."
+          fi
+
+      - name: Upload Convex latency probe (desktop seed)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: convex-probe-seed-desktop-a${{ github.run_attempt }}
+          path: apps/web/convex-probe-seed-desktop.jsonl.gz
+          if-no-files-found: ignore
+          retention-days: 14
 
       # Its own step so the team-scoped token (which can delete any
       # deployment) never shares an environment with npx or PR scripts:
@@ -611,13 +858,13 @@ jobs:
 
       - name: Mark the preview degraded (NEO-392)
         if: failure() && steps.delete_degraded.outputs.deleted == 'true'
-        env:
-          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
-        run: printf '%s\n' "$CONVEX_NAME" > "$RUNNER_TEMP/preview-degraded.txt"
+        # recreate-degraded-preview.yml only counts artifacts by name; the file
+        # holds a fixed string, never the (public-artifact) deployment name.
+        run: printf 'degraded\n' > "$RUNNER_TEMP/preview-degraded.txt"
 
       - name: Upload the degraded marker (NEO-392)
         if: failure() && steps.delete_degraded.outputs.deleted == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: preview-degraded-desktop
           path: ${{ runner.temp }}/preview-degraded.txt
@@ -645,9 +892,10 @@ jobs:
       # AND tolerating a missing function are both deliberate: this can run
       # before the Convex-side change (enrichmentFixtures.ts) has landed on
       # this preview, and coverage drifting (a fixture set going stale) is an
-      # operator signal, not a CI failure — the seed itself already fell back
-      # to live lookups for anything uncovered, so the suite is correct either
-      # way. The coverage action is read-only and internal (reachable only
+      # operator signal, not a CI failure. Since NEO-413 an uncovered name is
+      # NOT looked up live: it is answered no-match (logged as
+      # `enrichment_fixture_live_refused`), so a gap here means a bare seed row,
+      # not just a slower seed. The coverage action is read-only and internal (reachable only
       # with the deploy key), so it takes just the `confirm` literal — NOT the
       # `ALLOW_ENRICHMENT_FIXTURE_CAPTURE` deployment env var that arms the
       # capture action: a shell env var on `convex run` never reaches the
@@ -694,6 +942,8 @@ jobs:
       - name: Stop Convex log capture (seed)
         if: always()
         working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
         run: |
           set -uo pipefail
           if [ -n "${CONVEX_LOGS_SEED_PID:-}" ]; then
@@ -725,7 +975,10 @@ jobs:
                     select((.error != null) or ($keep | length) > 0)
                     | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
                   end
-              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-seed-jq.stderr.log" || true
+              ' "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-seed-jq.stderr.log" \
+                | REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" > "$OUT_FILE"
+              # Never publish an unredacted log: drop it if the redaction pass failed.
+              if [ "${PIPESTATUS[1]}" != "0" ]; then rm -f "$OUT_FILE"; echo "::warning::Log redaction failed; the Convex log artifact was not written."; fi
             gzip -f "$OUT_FILE" || true
             echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for the seed job."
           else
@@ -734,18 +987,18 @@ jobs:
 
       - name: Upload Convex log capture (seed)
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: convex-logs-seed
+          name: convex-logs-seed-a${{ github.run_attempt }}
           path: apps/web/convex-logs-seed.jsonl.gz
           if-no-files-found: ignore
           retention-days: 14
 
       - name: Upload seed report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: pw-report-seed
+          name: pw-report-seed-a${{ github.run_attempt }}
           # Not under a dot-directory: upload-artifact skips hidden paths by
           # default. report/ holds the blob, results.json and junit.xml;
           # results/ holds failure screenshots. The blob in report/ also embeds
@@ -798,7 +1051,7 @@ jobs:
       # timings.json.
       - name: Download this run's shard timings
         if: needs.timings.outputs.fresh == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: shard-timings
           path: ${{ runner.temp }}/shard-timings
@@ -806,14 +1059,14 @@ jobs:
         if: needs.timings.outputs.fresh == 'true'
         run: cp "$RUNNER_TEMP/shard-timings/timings.json" playwright/timings.json
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: apps/web/.nvmrc
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install chromium
 
       # NEO-301: the seed job ends before the shard matrix starts, so it can
       # only cover its own window (captured above) — nothing spans the WHOLE
@@ -844,6 +1097,30 @@ jobs:
           disown
           echo "CONVEX_LOGS_DESKTOP1_PID=$!" >> "$GITHUB_ENV"
           echo "Started Convex log capture for desktop shard ${{ matrix.shard }} (pid $!) -> $RAW_LOG_FILE"
+
+      # NEO-407: a latency probe beside the shard. It calls a one-document
+      # query every second (and a no-write mutation every fourth) on this pass's
+      # preview and records each answer's latency, so a stall in the preview
+      # shows as a run of slow probe calls with its own timestamps, apart from
+      # whatever the specs were doing. Needs only the deployment URL (public
+      # functions, no key). Best-effort only: never fails the job.
+      - name: Start Convex latency probe (desktop shard ${{ matrix.shard }})
+        working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_NAME:-}" ]; then
+            echo "::warning::No preview deployment name — skipping the latency probe."
+            exit 0
+          fi
+          OUT="${RUNNER_TEMP}/convex-probe-desktop-${{ matrix.shard }}.jsonl"
+          rm -f "$OUT"
+          nohup node scripts/convex-probe.mjs --url "https://${CONVEX_NAME}.convex.cloud" --out "$OUT" \
+            >"${RUNNER_TEMP}/convex-probe-desktop.stdout.log" 2>&1 &
+          disown
+          echo "CONVEX_PROBE_PID=$!" >> "$GITHUB_ENV"
+          echo "Started the latency probe (pid $!) -> $OUT"
 
       - name: Run desktop shard ${{ matrix.shard }}/8
         env:
@@ -878,6 +1155,17 @@ jobs:
           echo "Shard ${SHARD} ($PROJECT): exit ${code:-0}, $(( $(date +%s) - start ))s"
           exit "${code:-0}"
 
+      # NEO-592: this shard's retried specs (failed once, passed on retry) in the
+      # job summary. The flaky reporter writes flaky.json beside the blob report
+      # (PW_REPORT_DIR); the e2e job prints the combined table for the run.
+      # Informational only: it says "no retried specs" for an empty list and "not
+      # written" for a missing file, and never fails the job.
+      - name: Retried specs (desktop shard ${{ matrix.shard }})
+        if: always()
+        working-directory: apps/web
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/retry-summary.sh" shard playwright/report/flaky.json "desktop shard ${{ matrix.shard }}" >> "$GITHUB_STEP_SUMMARY" || true
+
       # NEO-301: stop the background capture and filter before upload — same
       # filter and same reasoning as "Stop Convex log capture (seed)" above
       # (keep ERROR/WARN + our structured `{"msg": …}` lines, drop plain
@@ -885,6 +1173,8 @@ jobs:
       - name: Stop Convex log capture (desktop shard ${{ matrix.shard }})
         if: always()
         working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
         run: |
           set -uo pipefail
           if [ -n "${CONVEX_LOGS_DESKTOP1_PID:-}" ]; then
@@ -916,27 +1206,66 @@ jobs:
                     select((.error != null) or ($keep | length) > 0)
                     | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
                   end
-              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-desktop-${{ matrix.shard }}-jq.stderr.log" || true
+              ' "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-desktop-${{ matrix.shard }}-jq.stderr.log" \
+                | REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" > "$OUT_FILE"
+              # Never publish an unredacted log: drop it if the redaction pass failed.
+              if [ "${PIPESTATUS[1]}" != "0" ]; then rm -f "$OUT_FILE"; echo "::warning::Log redaction failed; the Convex log artifact was not written."; fi
             gzip -f "$OUT_FILE" || true
             echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for desktop shard ${{ matrix.shard }}."
           else
             echo "No Convex logs captured for desktop shard ${{ matrix.shard }} (capture may have been skipped or produced nothing)."
           fi
 
+      - name: Stop Convex latency probe (desktop shard ${{ matrix.shard }})
+        if: always()
+        working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -n "${CONVEX_PROBE_PID:-}" ]; then
+            kill "${CONVEX_PROBE_PID}" 2>/dev/null || true
+            sleep 1
+          fi
+          OUT="${RUNNER_TEMP}/convex-probe-desktop-${{ matrix.shard }}.jsonl"
+          if [ -s "$OUT" ]; then
+            node scripts/convex-probe.mjs --summary "$OUT" --stall-ms 2000 || true
+            # Public artifact: through the one redactor first (it carries
+            # this run's Convex deployment name); dropped if that fails.
+            if REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" < "$OUT" > "$OUT.safe"; then
+              gzip -c "$OUT.safe" > "convex-probe-desktop-${{ matrix.shard }}.jsonl.gz" || true
+            else
+              rm -f "convex-probe-desktop-${{ matrix.shard }}.jsonl.gz"
+              echo "::warning::Probe redaction failed; the latency probe artifact was not written."
+            fi
+            rm -f "$OUT.safe"
+          else
+            echo "No latency probe data for this shard."
+          fi
+
+      - name: Upload Convex latency probe (desktop shard ${{ matrix.shard }})
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: convex-probe-desktop-${{ matrix.shard }}-a${{ github.run_attempt }}
+          path: apps/web/convex-probe-desktop-${{ matrix.shard }}.jsonl.gz
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Upload Convex log capture (desktop shard ${{ matrix.shard }})
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: convex-logs-desktop-${{ matrix.shard }}
+          name: convex-logs-desktop-${{ matrix.shard }}-a${{ github.run_attempt }}
           path: apps/web/convex-logs-desktop-${{ matrix.shard }}.jsonl.gz
           if-no-files-found: ignore
           retention-days: 14
 
       - name: Upload shard report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: pw-report-desktop-${{ matrix.shard }}
+          name: pw-report-desktop-${{ matrix.shard }}-a${{ github.run_attempt }}
           # Same paths and the same published-content rule as the seed report.
           path: |
             apps/web/playwright/report/
@@ -945,13 +1274,385 @@ jobs:
           retention-days: 14
 
 
+  seller-desktop:
+    # NEO-415: the marketplace-seller specs (playwright/project-scope.mjs
+    # SELLER_SPECS: the BuySportsCards and eBay sandbox listing specs) on the
+    # desktop project. NEO-552: BuySportsCards is the fake now (a namespace per
+    # run), so only the ONE eBay sandbox seller is still shared; two PRs running
+    # these at once clobber each other on eBay, and sharding cannot fix that. No shard runs them (shard-plan.mjs
+    # leaves them out); this job does, and only after it has had its turn in a
+    # repo-wide queue (the seller-queue step).
+    #
+    # Ordering inside one PR: starts beside the desktop shards (right after `seed`) and seed-mobile waits for it, because seed-mobile's reset wipes the preview this job runs on. A long queue therefore delays the mobile pass; that is the price of never running during our own reset.
+    needs: [setup, seed]
+    if: ${{ !cancelled() && needs.setup.result == 'success' && needs.seed.result == 'success' }}
+    name: Marketplace seller specs (desktop)
+    runs-on: ubuntu-latest
+    # install ~3 min + queue wait (bounded below) + the specs (step-bounded) + teardown.
+    timeout-minutes: 100
+    permissions:
+      contents: read
+      actions: read   # the queue reads other runs' jobs
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      # NEO-552: BuySportsCards is the fake, so the BSC listing specs left the seller
+      # list and run in the shards. Until the eBay sandbox spec is restored the list
+      # is empty; then this job installs nothing, queues for nothing and succeeds
+      # (the gate requires every seller job to succeed). The list is read here, once,
+      # and every later step is conditional on it.
+      - name: List the seller specs
+        id: sellers
+        run: |
+          set -euo pipefail
+          files=$(node playwright/shard-plan.mjs --seller)
+          if [ -z "$files" ]; then
+            echo "any=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No marketplace seller specs are listed (project-scope.mjs SELLER_SPECS): nothing to queue for or run."
+          else
+            echo "any=true" >> "$GITHUB_OUTPUT"
+            echo "Seller specs:"; echo "$files"
+          fi
+
+      - run: npm ci
+        if: ${{ steps.sellers.outputs.any == 'true' }}
+      - run: npx playwright install chromium
+        if: ${{ steps.sellers.outputs.any == 'true' }}
+
+      # The queue (logic and trust rules: .github/scripts/seller-queue.sh).
+      # A GitHub `concurrency` group cannot do this: with cancel-in-progress
+      # false it still CANCELS an older *pending* job when a newer one joins, so
+      # with three PRs in flight the middle one would be dropped. The script
+      # instead polls this repo's own in-progress runs (head repo == this repo,
+      # fail closed on any API error) and goes first come, first served, never
+      # cancelling anyone. Waiting is after install so the job's place in line
+      # is its start time and the specs begin the moment the turn comes. The wait
+      # is capped at 60 min; a cancelled or dead holder stops counting at once.
+      # The literal name is defined in .github/scripts/seller-queue.sh (STEP_NAME);
+      # keep them identical (seller-queue.test.mjs checks).
+      - name: Wait for the seller queue
+        if: ${{ steps.sellers.outputs.any == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SELLER_QUEUE_MAX_MIN: "60"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/seller-queue.sh"
+
+      # NEO-445: a run that died mid-spec leaves listings on the shared seller,
+      # and no later run can end them through the product (an eBay SKU names a
+      # per-deployment card). So the account is cleared here, inside this job's
+      # turn and before any spec: every published eBay offer ended. (NEO-552: the
+      # BuySportsCards zeroing is gone with the shared BSC seller; the fake keeps
+      # listings per run namespace. The action must skip BSC.) A cleanup that
+      # cannot finish fails the job instead of running specs on a dirty account.
+      # Never in the seed: seeds run outside the queue. The action
+      # (convex/testingSellerCleanup.ts) is internal, so only this deploy key
+      # reaches it; it refuses off the eBay sandbox and skips a paused
+      # marketplace. `convex run` prints the function's logs (counts and
+      # outcomes, no tokens) to stderr, so they read in this step.
+      - name: Clear the seller accounts for the specs
+        if: ${{ steps.sellers.outputs.any == 'true' }}
+        # It holds the queue; a hang must not hold every other PR's.
+        timeout-minutes: 12
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_NAME:-}" ] || [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::error::No Convex preview name or deploy key, so the seller accounts cannot be cleared."
+            exit 1
+          fi
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" --version
+          out="${RUNNER_TEMP}/seller-cleanup.json"
+          if ! npx --yes convex@1.39.1 run testingSellerCleanup:clearSellerAccounts '{}' --deployment "$CONVEX_NAME" | tee "$out"; then
+            echo "::error::Clearing the seller accounts failed (the reason is above), so the seller specs did not run. Re-run the workflow."
+            exit 1
+          fi
+          # NEO-552: BuySportsCards is the fake now, one namespace per run, so there
+          # is no shared BSC seller to clear and no twin-key warning to print.
+          # Only the eBay sandbox seller is shared.
+
+      - name: Start Convex log capture (seller desktop)
+        if: ${{ steps.sellers.outputs.any == 'true' }}
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" --version
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for the seller desktop job."
+            exit 0
+          fi
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-seller-desktop.raw.jsonl"
+          rm -f "$RAW_LOG_FILE"
+          nohup npx --yes convex@1.39.1 logs --deployment "$CONVEX_NAME" --jsonl \
+            > "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-seller-desktop.stderr.log" &
+          disown
+          echo "CONVEX_LOGS_SELLER_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Run the marketplace seller specs (desktop)
+        if: ${{ steps.sellers.outputs.any == 'true' }}
+        # The specs take minutes; a hang must not hold every other PR's queue.
+        timeout-minutes: 25
+        env:
+          CI: "true"
+          APP_URL: http://localhost:3000
+          PREVIEW_URL: ${{ needs.setup.outputs.url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          # Worker 8: no shard uses it (shards are 0-7); accounts 0-11 exist.
+          # The `bootstrap` project dependency seeds it first, as for a shard.
+          WORKER_INDEX: "8"
+          PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
+          PW_REPORT_DIR: playwright/report
+          PROJECT: e2e
+        run: |
+          set -euo pipefail
+          files=$(node playwright/shard-plan.mjs --seller)
+          if [ -z "$files" ]; then
+            # No file arguments would run the WHOLE suite; refuse.
+            echo "::error::The seller spec list is empty."
+            exit 1
+          fi
+          echo "Seller job runs --project=$PROJECT:"; echo "$files"
+          start=$(date +%s)
+          # shellcheck disable=SC2086 # one path per line, no spaces
+          npx playwright test "--project=$PROJECT" $files || code=$?
+          echo "Seller specs ($PROJECT): exit ${code:-0}, $(( $(date +%s) - start ))s"
+          exit "${code:-0}"
+
+      - name: Stop Convex log capture (seller desktop)
+        if: ${{ always() && steps.sellers.outputs.any == 'true' }}
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -n "${CONVEX_LOGS_SELLER_PID:-}" ]; then
+            kill "${CONVEX_LOGS_SELLER_PID}" 2>/dev/null || true
+            wait "${CONVEX_LOGS_SELLER_PID}" 2>/dev/null || true
+          fi
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-seller-desktop.raw.jsonl"
+          OUT_FILE="convex-logs-seller-desktop.jsonl"
+          if [ -s "$RAW_LOG_FILE" ]; then
+            # Same filter as the shards' capture (keep ERROR/WARN and our
+            # structured lines, every completion's timing; drop INFO chatter).
+            jq -c '
+                ((.logLines // [])
+                | map(select(
+                    .level == "ERROR" or .level == "WARN"
+                    or ((.messages // []) | join(" ") | test("\"msg\""))
+                  )))
+                as $keep
+                | if .kind == "Completion" then
+                    {identifier, udfType, timestamp, executionTimestamp,
+                     executionTime, userExecutionTime, requestId, executionId,
+                     parentExecutionId, cachedResult, willRetry, occInfo, kind, error,
+                     readDocs: .usageStats.databaseReadDocuments,
+                     readBytes: .usageStats.databaseReadBytes,
+                     writeDocs: .usageStats.databaseWriteDocuments,
+                     logLines: $keep}
+                  else
+                    select((.error != null) or ($keep | length) > 0)
+                    | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+                  end
+              ' "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-seller-desktop-jq.stderr.log" \
+                | REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" > "$OUT_FILE"
+              # Never publish an unredacted log: drop it if the redaction pass failed.
+              if [ "${PIPESTATUS[1]}" != "0" ]; then rm -f "$OUT_FILE"; echo "::warning::Log redaction failed; the Convex log artifact was not written."; fi
+            gzip -f "$OUT_FILE" || true
+          else
+            echo "No Convex logs captured for the seller desktop job."
+          fi
+
+      - name: Upload Convex log capture (seller desktop)
+        if: ${{ always() && steps.sellers.outputs.any == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: convex-logs-seller-desktop-a${{ github.run_attempt }}
+          path: apps/web/convex-logs-seller-desktop.jsonl.gz
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload seller report
+        if: ${{ always() && steps.sellers.outputs.any == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pw-report-seller-desktop-a${{ github.run_attempt }}
+          # Same paths and the same published-content rule as the shard reports.
+          path: |
+            apps/web/playwright/report/
+            apps/web/playwright/results/**/*.png
+          if-no-files-found: ignore
+          retention-days: 14
+
+  breaker-desktop:
+    # NEO-552: the BSC breaker specs (playwright/project-scope.mjs BREAKER_SPECS,
+    # tag @bsc-breaker) on the desktop project, ALONE. BuySportsCards is the fake and
+    # every test user has an account of their own, but Convex keeps ONE call gate
+    # per deployment (convex/bscCallGate.ts): a spec that injects a 429, or a run of
+    # 5xx, hangs or dropped connections, opens it for every shard on this preview
+    # until its window passes. So these specs are planned in no shard and run here,
+    # after every shard and seller job of the pass has finished, and the spec's own
+    # teardown (the bscFake fixture) clears the rules and the gate. The gate (`e2e`)
+    # still requires each to pass on both projects.
+    #
+    # Ordering inside one PR: starts when every desktop shard and the seller job have finished (a red among them does not stop it), and seed-mobile waits for it, because seed-mobile's reset wipes the preview it runs on.
+    needs: [setup, seed, shard-desktop, seller-desktop]
+    if: ${{ !cancelled() && needs.setup.result == 'success' && needs.seed.result == 'success' }}
+    name: BSC breaker specs (desktop)
+    runs-on: ubuntu-latest
+    # install ~3 min + bootstrap + the specs (step-bounded) + teardown.
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - run: npm ci
+      - run: npx playwright install chromium
+
+      - name: Start Convex log capture (breaker desktop)
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" --version
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for the breaker desktop job."
+            exit 0
+          fi
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-breaker-desktop.raw.jsonl"
+          rm -f "$RAW_LOG_FILE"
+          nohup npx --yes convex@1.39.1 logs --deployment "$CONVEX_NAME" --jsonl \
+            > "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-breaker-desktop.stderr.log" &
+          disown
+          echo "CONVEX_LOGS_BREAKER_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Run the BSC breaker specs (desktop)
+        # Two or three specs, a few minutes each; a hang must not hold the pass.
+        timeout-minutes: 25
+        env:
+          CI: "true"
+          APP_URL: http://localhost:3000
+          PREVIEW_URL: ${{ needs.setup.outputs.url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          # Worker 8: no shard uses it (shards are 0-7) and the seller job, the only other
+          # user, has finished (this job needs it). The `bootstrap` project dependency
+          # seeds the account first, as for a shard.
+          WORKER_INDEX: "8"
+          PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
+          PW_REPORT_DIR: playwright/report
+          PROJECT: e2e
+        run: |
+          set -euo pipefail
+          files=$(node playwright/shard-plan.mjs --breaker)
+          if [ -z "$files" ]; then
+            # No file arguments would run the WHOLE suite; refuse.
+            echo "::error::The BSC breaker spec list is empty."
+            exit 1
+          fi
+          echo "Breaker job runs --project=$PROJECT:"; echo "$files"
+          start=$(date +%s)
+          # shellcheck disable=SC2086 # one path per line, no spaces
+          npx playwright test "--project=$PROJECT" $files || code=$?
+          echo "Breaker specs ($PROJECT): exit ${code:-0}, $(( $(date +%s) - start ))s"
+          exit "${code:-0}"
+
+      - name: Stop Convex log capture (breaker desktop)
+        if: always()
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -n "${CONVEX_LOGS_BREAKER_PID:-}" ]; then
+            kill "${CONVEX_LOGS_BREAKER_PID}" 2>/dev/null || true
+            wait "${CONVEX_LOGS_BREAKER_PID}" 2>/dev/null || true
+          fi
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-breaker-desktop.raw.jsonl"
+          OUT_FILE="convex-logs-breaker-desktop.jsonl"
+          if [ -s "$RAW_LOG_FILE" ]; then
+            # Same filter as the shards' capture (keep ERROR/WARN and our
+            # structured lines, every completion's timing; drop INFO chatter).
+            jq -c '
+                ((.logLines // [])
+                | map(select(
+                    .level == "ERROR" or .level == "WARN"
+                    or ((.messages // []) | join(" ") | test("\"msg\""))
+                  )))
+                as $keep
+                | if .kind == "Completion" then
+                    {identifier, udfType, timestamp, executionTimestamp,
+                     executionTime, userExecutionTime, requestId, executionId,
+                     parentExecutionId, cachedResult, willRetry, occInfo, kind, error,
+                     readDocs: .usageStats.databaseReadDocuments,
+                     readBytes: .usageStats.databaseReadBytes,
+                     writeDocs: .usageStats.databaseWriteDocuments,
+                     logLines: $keep}
+                  else
+                    select((.error != null) or ($keep | length) > 0)
+                    | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+                  end
+              ' "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-breaker-desktop-jq.stderr.log" \
+                | REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" > "$OUT_FILE"
+              # Never publish an unredacted log: drop it if the redaction pass failed.
+              if [ "${PIPESTATUS[1]}" != "0" ]; then rm -f "$OUT_FILE"; echo "::warning::Log redaction failed; the Convex log artifact was not written."; fi
+            gzip -f "$OUT_FILE" || true
+          else
+            echo "No Convex logs captured for the breaker desktop job."
+          fi
+
+      - name: Upload Convex log capture (breaker desktop)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: convex-logs-breaker-desktop-a${{ github.run_attempt }}
+          path: apps/web/convex-logs-breaker-desktop.jsonl.gz
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload breaker report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pw-report-breaker-desktop-a${{ github.run_attempt }}
+          # Same paths and the same published-content rule as the shard reports.
+          path: |
+            apps/web/playwright/report/
+            apps/web/playwright/results/**/*.png
+          if-no-files-found: ignore
+          retention-days: 14
+
   seed-mobile:
     # The second pass's seed: the same Convex env switches, scripted reset and
     # `setup` project as `seed` (see its comments), run again so every spec
     # starts the mobile pass on a fresh baseline. Strictly after every
     # desktop shard (the reset wipes the shared preview), and independent of
     # their verdict so a red desktop pass still yields mobile results.
-    needs: [setup, seed, shard-desktop]
+    needs: [setup, seed, shard-desktop, seller-desktop, breaker-desktop]
     if: ${{ !cancelled() && needs.setup.result == 'success' && needs.seed.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -970,14 +1671,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: apps/web/.nvmrc
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install chromium
 
       - name: Start Convex log capture (seed-mobile)
         working-directory: apps/web
@@ -1025,9 +1726,9 @@ jobs:
               [ -z "$_key" ] && continue
               _key_lower="$(echo "$_key" | tr '[:upper:]' '[:lower:]')"
               case "$_key_lower" in
-                buysportscards|sportlots) ;;
+                buysportscards|sportlots|ebay) ;;
                 *)
-                  echo "::error::vars.NEONBINDER_PAUSED_PLATFORMS contains an unknown platform key '$_key' (from '$PAUSED_PLATFORMS'). Valid keys: buysportscards, sportlots."
+                  echo "::error::vars.NEONBINDER_PAUSED_PLATFORMS contains an unknown platform key '$_key' (from '$PAUSED_PLATFORMS'). Valid keys: buysportscards, sportlots, ebay."
                   exit 1
                   ;;
               esac
@@ -1044,6 +1745,47 @@ jobs:
             echo "- \`vars.NEONBINDER_PAUSED_PLATFORMS\` = \`${PAUSED_PLATFORMS:-<empty>}\`";
             echo "- Convex preview \`NEONBINDER_PAUSED_PLATFORMS\` = \`${got:-<unset>}\`";
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # NEO-552: every BuySportsCards call from this PR's Convex preview goes to
+      # the standing fake BSC (a dev Cloud Run service), never to the real site.
+      # This replaces the old NEONBINDER_TEST_BSC_STALL_CARD_IDS stall switch:
+      # the stall specs now arm a fault on the fake (POST /__fake/faults).
+      # `bscFetch` (convex/lib/bscHttp.ts) honours NEONBINDER_BSC_API_BASE only
+      # when TESTING_RESET_SECRET is also set and the URL is https on *.run.app,
+      # so a stray value on a non-preview deployment is inert. Written every run
+      # (a branch-reused preview keeps old env, NEO-184) and read back so a silent
+      # no-op fails here instead of letting a run reach the real BSC. The caller
+      # key is set later, in "Set the fake BSC caller key", once the deployer's
+      # GCP credentials exist (it is read from Secret Manager, never a GH secret).
+      - name: Point the Convex preview at the fake BSC
+        working-directory: apps/web
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+          FAKE_BSC_URL: ${{ vars.NEONBINDER_FAKE_BSC_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
+            exit 1
+          fi
+          if [ -z "${FAKE_BSC_URL:-}" ]; then
+            echo "::error::Repo variable NEONBINDER_FAKE_BSC_URL must be set. The E2E never falls back to the real BuySportsCards (NEO-552)."
+            exit 1
+          fi
+          re='^https://neonbinder-fake-bsc-[a-z0-9-]+(\.[a-z0-9-]+)*\.run\.app$'
+          base="${FAKE_BSC_URL%/}"
+          if [[ "$base" == *$'\n'* ]] || [[ ! "$base" =~ $re ]] || [[ "$base" == *---* ]]; then
+            echo "::error::vars.NEONBINDER_FAKE_BSC_URL must be https://neonbinder-fake-bsc-….run.app, the fake's own service URL, with no tag or path"
+            exit 1
+          fi
+          # The bare ROOT origin: Convex's resolveBscTarget appends /api itself.
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_BSC_API_BASE "$base" --deployment "$CONVEX_NAME"
+          got=$(npx --yes convex@1.39.1 env get NEONBINDER_BSC_API_BASE --deployment "$CONVEX_NAME")
+          if [ "$got" != "$base" ]; then
+            echo "::error::read-back mismatch for NEONBINDER_BSC_API_BASE"; exit 1
+          fi
+          echo "Convex preview NEONBINDER_BSC_API_BASE set to the fake (read-back ok)"
 
       - name: Set NEONBINDER_ENRICHMENT_FIXTURES on the Convex preview
         working-directory: apps/web
@@ -1121,6 +1863,26 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
+      # NEO-552: the caller key for the fake lives in ONE place, Secret Manager.
+      # The dev deployer (already authenticated here) can read it. Masked, set on
+      # the Convex preview and read back; never echoed.
+      - name: Set the fake BSC caller key on the Convex preview
+        working-directory: apps/web
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -euo pipefail
+          key=$(gcloud secrets versions access latest --secret=fake-bsc-caller-key --project=neonbinder-dev)
+          if [ -z "$key" ]; then echo "::error::fake-bsc-caller-key is empty"; exit 1; fi
+          echo "::add-mask::${key}"
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_FAKE_BSC_KEY "$key" --deployment "$CONVEX_NAME"
+          got=$(npx --yes convex@1.39.1 env get NEONBINDER_FAKE_BSC_KEY --deployment "$CONVEX_NAME")
+          if [ "$got" != "$key" ]; then
+            echo "::error::read-back mismatch for NEONBINDER_FAKE_BSC_KEY"; exit 1
+          fi
+          echo "Convex preview NEONBINDER_FAKE_BSC_KEY set (read-back ok)"
+
       - name: Download reference-seed bundle
         env:
           REFERENCE_SEED_URI: ${{ vars.NEONBINDER_REFERENCE_SEED_URI }}
@@ -1163,6 +1925,29 @@ jobs:
       # desktop shards wrote to the same preview, and the reset (except the
       # reference tables) plus the bundle's `import --replace` returns it to the
       # same baseline as the first pass. See the `seed` job's step for why.
+      # NEO-407: the latency probe also runs through the reset and reference
+      # import, with a WRITE ping (pingWrite commits one tiny patch every 4 s)
+      # beside the read and mutation pings. A slow import whose write pings
+      # stall while reads stay fast points at the commit path; everything
+      # slowing together points at the deployment. Best-effort: never fails.
+      - name: Start Convex latency probe (mobile seed)
+        working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_NAME:-}" ]; then
+            echo "::warning::No preview deployment name — skipping the latency probe."
+            exit 0
+          fi
+          OUT="${RUNNER_TEMP}/convex-probe-seed-mobile.jsonl"
+          rm -f "$OUT"
+          nohup node scripts/convex-probe.mjs --url "https://${CONVEX_NAME}.convex.cloud" --out "$OUT" \
+            --write-every 4 >"${RUNNER_TEMP}/convex-probe-seed.stdout.log" 2>&1 &
+          disown
+          echo "CONVEX_PROBE_PID=$!" >> "$GITHUB_ENV"
+          echo "Started the latency probe (pid $!) -> $OUT"
+
       - name: Scripted reset + reference catalogue for the mobile pass (e2e-seed-reset.sh)
         id: seed_reset
         env:
@@ -1172,6 +1957,9 @@ jobs:
           # e2e-seed-reset.sh); the next steps delete it so a re-run
           # (recreate-degraded-preview.yml) gets a fresh one.
           NB_SEED_MAX_IMPORT_S: "300"
+          # NEO-407: any Convex step of the seed past this is stopped (exit 75,
+          # the same degraded-preview path) instead of hanging the job.
+          NB_SEED_HANG_S: "900"
         run: |
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
             echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
@@ -1182,8 +1970,8 @@ jobs:
           ./e2e-seed-reset.sh || rc=$?
           if [ "$rc" -eq 75 ]; then
             echo "degraded=true" >> "$GITHUB_OUTPUT"
-            echo "::error::Convex preview $CONVEX_NAME is degraded: the reference import ran past ${NB_SEED_MAX_IMPORT_S}s (mobile pass). No specs ran, so this says nothing about the PR. The next step deletes the preview, and the whole workflow re-runs on its own with a fresh one (NEO-392)."
-            echo "- Preview degraded: reference import past ${NB_SEED_MAX_IMPORT_S}s; deleting it for a fresh one (NEO-392)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::The Convex preview is degraded: the reset or reference import ran past its limit (mobile pass; see the step log). No specs ran, so this says nothing about the PR. The next step deletes the preview, and the whole workflow re-runs on its own with a fresh one (NEO-392)."
+            echo "- Preview degraded: reset or reference import past its limit; deleting it for a fresh one (NEO-392)" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           [ "$rc" -eq 0 ] || exit "$rc"
@@ -1193,6 +1981,42 @@ jobs:
               sed 's/^/- /' "$NB_REFERENCE_SEED_SUMMARY"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop Convex latency probe (mobile seed)
+        if: always()
+        working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -n "${CONVEX_PROBE_PID:-}" ]; then
+            kill "${CONVEX_PROBE_PID}" 2>/dev/null || true
+            sleep 1
+          fi
+          OUT="${RUNNER_TEMP}/convex-probe-seed-mobile.jsonl"
+          if [ -s "$OUT" ]; then
+            node scripts/convex-probe.mjs --summary "$OUT" --stall-ms 2000 || true
+            # Public artifact: through the one redactor first (it carries
+            # this run's Convex deployment name); dropped if that fails.
+            if REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" < "$OUT" > "$OUT.safe"; then
+              gzip -c "$OUT.safe" > "convex-probe-seed-mobile.jsonl.gz" || true
+            else
+              rm -f "convex-probe-seed-mobile.jsonl.gz"
+              echo "::warning::Probe redaction failed; the latency probe artifact was not written."
+            fi
+            rm -f "$OUT.safe"
+          else
+            echo "No latency probe data for this seed."
+          fi
+
+      - name: Upload Convex latency probe (mobile seed)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: convex-probe-seed-mobile-a${{ github.run_attempt }}
+          path: apps/web/convex-probe-seed-mobile.jsonl.gz
+          if-no-files-found: ignore
+          retention-days: 14
 
       # Its own step so the team-scoped token (which can delete any
       # deployment) never shares an environment with npx or PR scripts:
@@ -1207,13 +2031,13 @@ jobs:
 
       - name: Mark the preview degraded (NEO-392)
         if: failure() && steps.delete_degraded.outputs.deleted == 'true'
-        env:
-          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
-        run: printf '%s\n' "$CONVEX_NAME" > "$RUNNER_TEMP/preview-degraded.txt"
+        # recreate-degraded-preview.yml only counts artifacts by name; the file
+        # holds a fixed string, never the (public-artifact) deployment name.
+        run: printf 'degraded\n' > "$RUNNER_TEMP/preview-degraded.txt"
 
       - name: Upload the degraded marker (NEO-392)
         if: failure() && steps.delete_degraded.outputs.deleted == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: preview-degraded-mobile
           path: ${{ runner.temp }}/preview-degraded.txt
@@ -1256,6 +2080,8 @@ jobs:
       - name: Stop Convex log capture (seed-mobile)
         if: always()
         working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
         run: |
           set -uo pipefail
           if [ -n "${CONVEX_LOGS_SEED_MOBILE_PID:-}" ]; then
@@ -1287,7 +2113,10 @@ jobs:
                     select((.error != null) or ($keep | length) > 0)
                     | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
                   end
-              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-seed-mobile-jq.stderr.log" || true
+              ' "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-seed-mobile-jq.stderr.log" \
+                | REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" > "$OUT_FILE"
+              # Never publish an unredacted log: drop it if the redaction pass failed.
+              if [ "${PIPESTATUS[1]}" != "0" ]; then rm -f "$OUT_FILE"; echo "::warning::Log redaction failed; the Convex log artifact was not written."; fi
             gzip -f "$OUT_FILE" || true
             echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for the seed-mobile job."
           else
@@ -1296,18 +2125,18 @@ jobs:
 
       - name: Upload Convex log capture (seed-mobile)
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: convex-logs-seed-mobile
+          name: convex-logs-seed-mobile-a${{ github.run_attempt }}
           path: apps/web/convex-logs-seed-mobile.jsonl.gz
           if-no-files-found: ignore
           retention-days: 14
 
       - name: Upload seed report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: pw-report-seed-mobile
+          name: pw-report-seed-mobile-a${{ github.run_attempt }}
           # Not under a dot-directory: upload-artifact skips hidden paths by
           # default. report/ holds the blob, results.json and junit.xml;
           # results/ holds failure screenshots. The blob in report/ also embeds
@@ -1360,7 +2189,7 @@ jobs:
       # timings.json.
       - name: Download this run's shard timings
         if: needs.timings.outputs.fresh == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: shard-timings
           path: ${{ runner.temp }}/shard-timings
@@ -1368,14 +2197,14 @@ jobs:
         if: needs.timings.outputs.fresh == 'true'
         run: cp "$RUNNER_TEMP/shard-timings/timings.json" playwright/timings.json
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: apps/web/.nvmrc
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install chromium
 
       # NEO-301: the seed job ends before the shard matrix starts, so it can
       # only cover its own window (captured above) — nothing spans the WHOLE
@@ -1406,6 +2235,30 @@ jobs:
           disown
           echo "CONVEX_LOGS_MOBILE1_PID=$!" >> "$GITHUB_ENV"
           echo "Started Convex log capture for mobile shard ${{ matrix.shard }} (pid $!) -> $RAW_LOG_FILE"
+
+      # NEO-407: a latency probe beside the shard. It calls a one-document
+      # query every second (and a no-write mutation every fourth) on this pass's
+      # preview and records each answer's latency, so a stall in the preview
+      # shows as a run of slow probe calls with its own timestamps, apart from
+      # whatever the specs were doing. Needs only the deployment URL (public
+      # functions, no key). Best-effort only: never fails the job.
+      - name: Start Convex latency probe (mobile shard ${{ matrix.shard }})
+        working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_NAME:-}" ]; then
+            echo "::warning::No preview deployment name — skipping the latency probe."
+            exit 0
+          fi
+          OUT="${RUNNER_TEMP}/convex-probe-mobile-${{ matrix.shard }}.jsonl"
+          rm -f "$OUT"
+          nohup node scripts/convex-probe.mjs --url "https://${CONVEX_NAME}.convex.cloud" --out "$OUT" \
+            >"${RUNNER_TEMP}/convex-probe-mobile.stdout.log" 2>&1 &
+          disown
+          echo "CONVEX_PROBE_PID=$!" >> "$GITHUB_ENV"
+          echo "Started the latency probe (pid $!) -> $OUT"
 
       - name: Run mobile shard ${{ matrix.shard }}/8
         env:
@@ -1440,6 +2293,17 @@ jobs:
           echo "Shard ${SHARD} ($PROJECT): exit ${code:-0}, $(( $(date +%s) - start ))s"
           exit "${code:-0}"
 
+      # NEO-592: this shard's retried specs (failed once, passed on retry) in the
+      # job summary. The flaky reporter writes flaky.json beside the blob report
+      # (PW_REPORT_DIR); the e2e job prints the combined table for the run.
+      # Informational only: it says "no retried specs" for an empty list and "not
+      # written" for a missing file, and never fails the job.
+      - name: Retried specs (mobile shard ${{ matrix.shard }})
+        if: always()
+        working-directory: apps/web
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/retry-summary.sh" shard playwright/report/flaky.json "mobile shard ${{ matrix.shard }}" >> "$GITHUB_STEP_SUMMARY" || true
+
       # NEO-301: stop the background capture and filter before upload — same
       # filter and same reasoning as "Stop Convex log capture (seed)" above
       # (keep ERROR/WARN + our structured `{"msg": …}` lines, drop plain
@@ -1447,6 +2311,8 @@ jobs:
       - name: Stop Convex log capture (mobile shard ${{ matrix.shard }})
         if: always()
         working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
         run: |
           set -uo pipefail
           if [ -n "${CONVEX_LOGS_MOBILE1_PID:-}" ]; then
@@ -1478,28 +2344,439 @@ jobs:
                     select((.error != null) or ($keep | length) > 0)
                     | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
                   end
-              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-mobile-${{ matrix.shard }}-jq.stderr.log" || true
+              ' "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-mobile-${{ matrix.shard }}-jq.stderr.log" \
+                | REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" > "$OUT_FILE"
+              # Never publish an unredacted log: drop it if the redaction pass failed.
+              if [ "${PIPESTATUS[1]}" != "0" ]; then rm -f "$OUT_FILE"; echo "::warning::Log redaction failed; the Convex log artifact was not written."; fi
             gzip -f "$OUT_FILE" || true
             echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for mobile shard ${{ matrix.shard }}."
           else
             echo "No Convex logs captured for mobile shard ${{ matrix.shard }} (capture may have been skipped or produced nothing)."
           fi
 
+      - name: Stop Convex latency probe (mobile shard ${{ matrix.shard }})
+        if: always()
+        working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -n "${CONVEX_PROBE_PID:-}" ]; then
+            kill "${CONVEX_PROBE_PID}" 2>/dev/null || true
+            sleep 1
+          fi
+          OUT="${RUNNER_TEMP}/convex-probe-mobile-${{ matrix.shard }}.jsonl"
+          if [ -s "$OUT" ]; then
+            node scripts/convex-probe.mjs --summary "$OUT" --stall-ms 2000 || true
+            # Public artifact: through the one redactor first (it carries
+            # this run's Convex deployment name); dropped if that fails.
+            if REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" < "$OUT" > "$OUT.safe"; then
+              gzip -c "$OUT.safe" > "convex-probe-mobile-${{ matrix.shard }}.jsonl.gz" || true
+            else
+              rm -f "convex-probe-mobile-${{ matrix.shard }}.jsonl.gz"
+              echo "::warning::Probe redaction failed; the latency probe artifact was not written."
+            fi
+            rm -f "$OUT.safe"
+          else
+            echo "No latency probe data for this shard."
+          fi
+
+      - name: Upload Convex latency probe (mobile shard ${{ matrix.shard }})
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: convex-probe-mobile-${{ matrix.shard }}-a${{ github.run_attempt }}
+          path: apps/web/convex-probe-mobile-${{ matrix.shard }}.jsonl.gz
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Upload Convex log capture (mobile shard ${{ matrix.shard }})
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: convex-logs-mobile-${{ matrix.shard }}
+          name: convex-logs-mobile-${{ matrix.shard }}-a${{ github.run_attempt }}
           path: apps/web/convex-logs-mobile-${{ matrix.shard }}.jsonl.gz
           if-no-files-found: ignore
           retention-days: 14
 
       - name: Upload shard report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: pw-report-mobile-${{ matrix.shard }}
+          name: pw-report-mobile-${{ matrix.shard }}-a${{ github.run_attempt }}
           # Same paths and the same published-content rule as the seed report.
+          path: |
+            apps/web/playwright/report/
+            apps/web/playwright/results/**/*.png
+          if-no-files-found: ignore
+          retention-days: 14
+
+  seller-mobile:
+    # NEO-415: the marketplace-seller specs (playwright/project-scope.mjs
+    # SELLER_SPECS: the BuySportsCards and eBay sandbox listing specs) on the
+    # mobile project. NEO-552: BuySportsCards is the fake now (a namespace per
+    # run), so only the ONE eBay sandbox seller is still shared; two PRs running
+    # these at once clobber each other on eBay, and sharding cannot fix that. No shard runs them (shard-plan.mjs
+    # leaves them out); this job does, and only after it has had its turn in a
+    # repo-wide queue (the seller-queue step).
+    #
+    # Ordering inside one PR: starts beside the mobile shards (right after `seed-mobile`) and nothing waits on it but the `e2e` gate, so a long queue delays only the verdict.
+    needs: [setup, seed-mobile]
+    if: ${{ !cancelled() && needs.setup.result == 'success' && needs.seed-mobile.result == 'success' }}
+    name: Marketplace seller specs (mobile)
+    runs-on: ubuntu-latest
+    # install ~3 min + queue wait (bounded below) + the specs (step-bounded) + teardown.
+    timeout-minutes: 100
+    permissions:
+      contents: read
+      actions: read   # the queue reads other runs' jobs
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      # NEO-552: BuySportsCards is the fake, so the BSC listing specs left the seller
+      # list and run in the shards. Until the eBay sandbox spec is restored the list
+      # is empty; then this job installs nothing, queues for nothing and succeeds
+      # (the gate requires every seller job to succeed). The list is read here, once,
+      # and every later step is conditional on it.
+      - name: List the seller specs
+        id: sellers
+        run: |
+          set -euo pipefail
+          files=$(node playwright/shard-plan.mjs --seller)
+          if [ -z "$files" ]; then
+            echo "any=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No marketplace seller specs are listed (project-scope.mjs SELLER_SPECS): nothing to queue for or run."
+          else
+            echo "any=true" >> "$GITHUB_OUTPUT"
+            echo "Seller specs:"; echo "$files"
+          fi
+
+      - run: npm ci
+        if: ${{ steps.sellers.outputs.any == 'true' }}
+      - run: npx playwright install chromium
+        if: ${{ steps.sellers.outputs.any == 'true' }}
+
+      # The queue (logic and trust rules: .github/scripts/seller-queue.sh).
+      # A GitHub `concurrency` group cannot do this: with cancel-in-progress
+      # false it still CANCELS an older *pending* job when a newer one joins, so
+      # with three PRs in flight the middle one would be dropped. The script
+      # instead polls this repo's own in-progress runs (head repo == this repo,
+      # fail closed on any API error) and goes first come, first served, never
+      # cancelling anyone. Waiting is after install so the job's place in line
+      # is its start time and the specs begin the moment the turn comes. The wait
+      # is capped at 60 min; a cancelled or dead holder stops counting at once.
+      # The literal name is defined in .github/scripts/seller-queue.sh (STEP_NAME);
+      # keep them identical (seller-queue.test.mjs checks).
+      - name: Wait for the seller queue
+        if: ${{ steps.sellers.outputs.any == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SELLER_QUEUE_MAX_MIN: "60"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/seller-queue.sh"
+
+      # NEO-445: a run that died mid-spec leaves listings on the shared seller,
+      # and no later run can end them through the product (an eBay SKU names a
+      # per-deployment card). So the account is cleared here, inside this job's
+      # turn and before any spec: every published eBay offer ended. (NEO-552: the
+      # BuySportsCards zeroing is gone with the shared BSC seller; the fake keeps
+      # listings per run namespace. The action must skip BSC.) A cleanup that
+      # cannot finish fails the job instead of running specs on a dirty account.
+      # Never in the seed: seeds run outside the queue. The action
+      # (convex/testingSellerCleanup.ts) is internal, so only this deploy key
+      # reaches it; it refuses off the eBay sandbox and skips a paused
+      # marketplace. `convex run` prints the function's logs (counts and
+      # outcomes, no tokens) to stderr, so they read in this step.
+      - name: Clear the seller accounts for the specs
+        if: ${{ steps.sellers.outputs.any == 'true' }}
+        # It holds the queue; a hang must not hold every other PR's.
+        timeout-minutes: 12
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_NAME:-}" ] || [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::error::No Convex preview name or deploy key, so the seller accounts cannot be cleared."
+            exit 1
+          fi
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" --version
+          out="${RUNNER_TEMP}/seller-cleanup.json"
+          if ! npx --yes convex@1.39.1 run testingSellerCleanup:clearSellerAccounts '{}' --deployment "$CONVEX_NAME" | tee "$out"; then
+            echo "::error::Clearing the seller accounts failed (the reason is above), so the seller specs did not run. Re-run the workflow."
+            exit 1
+          fi
+          # NEO-552: BuySportsCards is the fake now, one namespace per run, so there
+          # is no shared BSC seller to clear and no twin-key warning to print.
+          # Only the eBay sandbox seller is shared.
+
+      - name: Start Convex log capture (seller mobile)
+        if: ${{ steps.sellers.outputs.any == 'true' }}
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" --version
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for the seller mobile job."
+            exit 0
+          fi
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-seller-mobile.raw.jsonl"
+          rm -f "$RAW_LOG_FILE"
+          nohup npx --yes convex@1.39.1 logs --deployment "$CONVEX_NAME" --jsonl \
+            > "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-seller-mobile.stderr.log" &
+          disown
+          echo "CONVEX_LOGS_SELLER_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Run the marketplace seller specs (mobile)
+        if: ${{ steps.sellers.outputs.any == 'true' }}
+        # The specs take minutes; a hang must not hold every other PR's queue.
+        timeout-minutes: 25
+        env:
+          CI: "true"
+          APP_URL: http://localhost:3000
+          PREVIEW_URL: ${{ needs.setup.outputs.url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          # Worker 8: no shard uses it (shards are 0-7); accounts 0-11 exist.
+          # The `bootstrap` project dependency seeds it first, as for a shard.
+          WORKER_INDEX: "8"
+          PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
+          PW_REPORT_DIR: playwright/report
+          PROJECT: e2e-mobile
+        run: |
+          set -euo pipefail
+          files=$(node playwright/shard-plan.mjs --seller)
+          if [ -z "$files" ]; then
+            # No file arguments would run the WHOLE suite; refuse.
+            echo "::error::The seller spec list is empty."
+            exit 1
+          fi
+          echo "Seller job runs --project=$PROJECT:"; echo "$files"
+          start=$(date +%s)
+          # shellcheck disable=SC2086 # one path per line, no spaces
+          npx playwright test "--project=$PROJECT" $files || code=$?
+          echo "Seller specs ($PROJECT): exit ${code:-0}, $(( $(date +%s) - start ))s"
+          exit "${code:-0}"
+
+      - name: Stop Convex log capture (seller mobile)
+        if: ${{ always() && steps.sellers.outputs.any == 'true' }}
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -n "${CONVEX_LOGS_SELLER_PID:-}" ]; then
+            kill "${CONVEX_LOGS_SELLER_PID}" 2>/dev/null || true
+            wait "${CONVEX_LOGS_SELLER_PID}" 2>/dev/null || true
+          fi
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-seller-mobile.raw.jsonl"
+          OUT_FILE="convex-logs-seller-mobile.jsonl"
+          if [ -s "$RAW_LOG_FILE" ]; then
+            # Same filter as the shards' capture (keep ERROR/WARN and our
+            # structured lines, every completion's timing; drop INFO chatter).
+            jq -c '
+                ((.logLines // [])
+                | map(select(
+                    .level == "ERROR" or .level == "WARN"
+                    or ((.messages // []) | join(" ") | test("\"msg\""))
+                  )))
+                as $keep
+                | if .kind == "Completion" then
+                    {identifier, udfType, timestamp, executionTimestamp,
+                     executionTime, userExecutionTime, requestId, executionId,
+                     parentExecutionId, cachedResult, willRetry, occInfo, kind, error,
+                     readDocs: .usageStats.databaseReadDocuments,
+                     readBytes: .usageStats.databaseReadBytes,
+                     writeDocs: .usageStats.databaseWriteDocuments,
+                     logLines: $keep}
+                  else
+                    select((.error != null) or ($keep | length) > 0)
+                    | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+                  end
+              ' "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-seller-mobile-jq.stderr.log" \
+                | REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" > "$OUT_FILE"
+              # Never publish an unredacted log: drop it if the redaction pass failed.
+              if [ "${PIPESTATUS[1]}" != "0" ]; then rm -f "$OUT_FILE"; echo "::warning::Log redaction failed; the Convex log artifact was not written."; fi
+            gzip -f "$OUT_FILE" || true
+          else
+            echo "No Convex logs captured for the seller mobile job."
+          fi
+
+      - name: Upload Convex log capture (seller mobile)
+        if: ${{ always() && steps.sellers.outputs.any == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: convex-logs-seller-mobile-a${{ github.run_attempt }}
+          path: apps/web/convex-logs-seller-mobile.jsonl.gz
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload seller report
+        if: ${{ always() && steps.sellers.outputs.any == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pw-report-seller-mobile-a${{ github.run_attempt }}
+          # Same paths and the same published-content rule as the shard reports.
+          path: |
+            apps/web/playwright/report/
+            apps/web/playwright/results/**/*.png
+          if-no-files-found: ignore
+          retention-days: 14
+
+  breaker-mobile:
+    # NEO-552: the BSC breaker specs (playwright/project-scope.mjs BREAKER_SPECS,
+    # tag @bsc-breaker) on the mobile project, ALONE. BuySportsCards is the fake and
+    # every test user has an account of their own, but Convex keeps ONE call gate
+    # per deployment (convex/bscCallGate.ts): a spec that injects a 429, or a run of
+    # 5xx, hangs or dropped connections, opens it for every shard on this preview
+    # until its window passes. So these specs are planned in no shard and run here,
+    # after every shard and seller job of the pass has finished, and the spec's own
+    # teardown (the bscFake fixture) clears the rules and the gate. The gate (`e2e`)
+    # still requires each to pass on both projects.
+    #
+    # Ordering inside one PR: starts when every mobile shard and the seller job have finished (a red among them does not stop it); nothing waits on it but the `e2e` gate.
+    needs: [setup, seed-mobile, shard-mobile, seller-mobile]
+    if: ${{ !cancelled() && needs.setup.result == 'success' && needs.seed-mobile.result == 'success' }}
+    name: BSC breaker specs (mobile)
+    runs-on: ubuntu-latest
+    # install ~3 min + bootstrap + the specs (step-bounded) + teardown.
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - run: npm ci
+      - run: npx playwright install chromium
+
+      - name: Start Convex log capture (breaker mobile)
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" --version
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for the breaker mobile job."
+            exit 0
+          fi
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-breaker-mobile.raw.jsonl"
+          rm -f "$RAW_LOG_FILE"
+          nohup npx --yes convex@1.39.1 logs --deployment "$CONVEX_NAME" --jsonl \
+            > "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-breaker-mobile.stderr.log" &
+          disown
+          echo "CONVEX_LOGS_BREAKER_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Run the BSC breaker specs (mobile)
+        # Two or three specs, a few minutes each; a hang must not hold the pass.
+        timeout-minutes: 25
+        env:
+          CI: "true"
+          APP_URL: http://localhost:3000
+          PREVIEW_URL: ${{ needs.setup.outputs.url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          # Worker 8: no shard uses it (shards are 0-7) and the seller job, the only other
+          # user, has finished (this job needs it). The `bootstrap` project dependency
+          # seeds the account first, as for a shard.
+          WORKER_INDEX: "8"
+          PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
+          PW_REPORT_DIR: playwright/report
+          PROJECT: e2e-mobile
+        run: |
+          set -euo pipefail
+          files=$(node playwright/shard-plan.mjs --breaker)
+          if [ -z "$files" ]; then
+            # No file arguments would run the WHOLE suite; refuse.
+            echo "::error::The BSC breaker spec list is empty."
+            exit 1
+          fi
+          echo "Breaker job runs --project=$PROJECT:"; echo "$files"
+          start=$(date +%s)
+          # shellcheck disable=SC2086 # one path per line, no spaces
+          npx playwright test "--project=$PROJECT" $files || code=$?
+          echo "Breaker specs ($PROJECT): exit ${code:-0}, $(( $(date +%s) - start ))s"
+          exit "${code:-0}"
+
+      - name: Stop Convex log capture (breaker mobile)
+        if: always()
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -n "${CONVEX_LOGS_BREAKER_PID:-}" ]; then
+            kill "${CONVEX_LOGS_BREAKER_PID}" 2>/dev/null || true
+            wait "${CONVEX_LOGS_BREAKER_PID}" 2>/dev/null || true
+          fi
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-breaker-mobile.raw.jsonl"
+          OUT_FILE="convex-logs-breaker-mobile.jsonl"
+          if [ -s "$RAW_LOG_FILE" ]; then
+            # Same filter as the shards' capture (keep ERROR/WARN and our
+            # structured lines, every completion's timing; drop INFO chatter).
+            jq -c '
+                ((.logLines // [])
+                | map(select(
+                    .level == "ERROR" or .level == "WARN"
+                    or ((.messages // []) | join(" ") | test("\"msg\""))
+                  )))
+                as $keep
+                | if .kind == "Completion" then
+                    {identifier, udfType, timestamp, executionTimestamp,
+                     executionTime, userExecutionTime, requestId, executionId,
+                     parentExecutionId, cachedResult, willRetry, occInfo, kind, error,
+                     readDocs: .usageStats.databaseReadDocuments,
+                     readBytes: .usageStats.databaseReadBytes,
+                     writeDocs: .usageStats.databaseWriteDocuments,
+                     logLines: $keep}
+                  else
+                    select((.error != null) or ($keep | length) > 0)
+                    | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+                  end
+              ' "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-breaker-mobile-jq.stderr.log" \
+                | REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" > "$OUT_FILE"
+              # Never publish an unredacted log: drop it if the redaction pass failed.
+              if [ "${PIPESTATUS[1]}" != "0" ]; then rm -f "$OUT_FILE"; echo "::warning::Log redaction failed; the Convex log artifact was not written."; fi
+            gzip -f "$OUT_FILE" || true
+          else
+            echo "No Convex logs captured for the breaker mobile job."
+          fi
+
+      - name: Upload Convex log capture (breaker mobile)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: convex-logs-breaker-mobile-a${{ github.run_attempt }}
+          path: apps/web/convex-logs-breaker-mobile.jsonl.gz
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload breaker report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pw-report-breaker-mobile-a${{ github.run_attempt }}
+          # Same paths and the same published-content rule as the shard reports.
           path: |
             apps/web/playwright/report/
             apps/web/playwright/results/**/*.png
@@ -1517,7 +2794,7 @@ jobs:
   #     project (desktop and mobile) — so a shard, or one project's half of
   #     it, that died before reporting cannot pass by omission.
   e2e:
-    needs: [setup, seed, shard-desktop, seed-mobile, shard-mobile]
+    needs: [setup, seed, shard-desktop, seller-desktop, breaker-desktop, seed-mobile, shard-mobile, seller-mobile, breaker-mobile]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1537,8 +2814,12 @@ jobs:
           R_SHARD_DESKTOP: ${{ needs.shard-desktop.result }}
           R_SEED_MOBILE: ${{ needs.seed-mobile.result }}
           R_SHARD_MOBILE: ${{ needs.shard-mobile.result }}
+          R_SELLER_DESKTOP: ${{ needs.seller-desktop.result }}
+          R_SELLER_MOBILE: ${{ needs.seller-mobile.result }}
+          R_BREAKER_DESKTOP: ${{ needs.breaker-desktop.result }}
+          R_BREAKER_MOBILE: ${{ needs.breaker-mobile.result }}
         run: |
-          echo "jobs: setup=$R_SETUP seed=$R_SEED shard-desktop=$R_SHARD_DESKTOP seed-mobile=$R_SEED_MOBILE shard-mobile=$R_SHARD_MOBILE"
+          echo "jobs: setup=$R_SETUP seed=$R_SEED shard-desktop=$R_SHARD_DESKTOP seller-desktop=$R_SELLER_DESKTOP breaker-desktop=$R_BREAKER_DESKTOP seed-mobile=$R_SEED_MOBILE shard-mobile=$R_SHARD_MOBILE seller-mobile=$R_SELLER_MOBILE breaker-mobile=$R_BREAKER_MOBILE"
           if [ "$R_SETUP" != "success" ] || [ "$R_SEED" != "success" ] || [ "$R_SEED_MOBILE" != "success" ]; then
             echo "::error::setup or a seed did not succeed (setup=$R_SETUP seed=$R_SEED seed-mobile=$R_SEED_MOBILE)"
             # Record, don't exit: the reports still merge and publish so a red
@@ -1548,7 +2829,7 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: apps/web/.nvmrc
           cache: npm
@@ -1557,14 +2838,19 @@ jobs:
       - run: npm ci
 
       - name: Download all reports
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: pw-report-*
           path: apps/web/pw-all
 
       - name: Merge reports
+        env:
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
+          # After "Re-run failed jobs" pw-all holds several attempts of a
+          # report; keep the newest <= this attempt per name (NEO-466).
+          node scripts/pick-report-attempts.mjs pw-all "$RUN_ATTEMPT"
           mkdir -p pw-blobs pw-merged
           # Prefix each blob with its artifact (pass) name so two passes can
           # never overwrite one another's report-*.zip.
@@ -1583,11 +2869,20 @@ jobs:
           PLAYWRIGHT_HTML_OPEN=never \
             npx playwright merge-reports --reporter=json,junit,html pw-blobs
 
+      # NEO-592: one table of every spec that failed once and passed on retry,
+      # read from the merged report. This is the same data as the per-shard
+      # tables, joined across both passes. Informational: the verdict is the
+      # "Verify results" step below, which counts a pass-on-retry as a pass.
+      - name: Retried specs (whole run)
+        if: always()
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/retry-summary.sh" combined pw-merged/results.json >> "$GITHUB_STEP_SUMMARY" || true
+
       # Screenshots and reports only (see the header). The merged HTML report
       # embeds attachments, which in CI are failure screenshots.
       - name: Upload merged report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pw-merged
           path: apps/web/pw-merged/
@@ -1603,7 +2898,11 @@ jobs:
           # (NEO-389).
           node playwright/shard-plan.mjs --projects > projects.txt
           while read -r proj; do
-            node playwright/shard-plan.mjs 1 1 --project "$proj" | sed 's#^playwright/tests/##' | sort -u > "planned-${proj}.txt"
+            # Shards plan everything but the marketplace-seller specs (NEO-415) and the
+            # BSC breaker specs (NEO-552), which the seller-<pass> and breaker-<pass>
+            # jobs run; all three sets are required here.
+            { node playwright/shard-plan.mjs 1 1 --project "$proj"; node playwright/shard-plan.mjs --seller; node playwright/shard-plan.mjs --breaker; } \
+              | sed 's#^playwright/tests/##' | sort -u > "planned-${proj}.txt"
             if [ ! -s "planned-${proj}.txt" ]; then
               echo "::error::The shard planner lists no specs for ${proj}."
               exit 1
@@ -1682,6 +2981,10 @@ jobs:
         env:
           R_SHARD_DESKTOP: ${{ needs.shard-desktop.result }}
           R_SHARD_MOBILE: ${{ needs.shard-mobile.result }}
+          R_SELLER_DESKTOP: ${{ needs.seller-desktop.result }}
+          R_SELLER_MOBILE: ${{ needs.seller-mobile.result }}
+          R_BREAKER_DESKTOP: ${{ needs.breaker-desktop.result }}
+          R_BREAKER_MOBILE: ${{ needs.breaker-mobile.result }}
         run: |
           if [ "${UPSTREAM_FAILED:-0}" = "1" ]; then
             echo "::error::Upstream verdict: setup or a seed did not succeed (see the Upstream jobs step)"
@@ -1691,6 +2994,59 @@ jobs:
             echo "::error::a shard job did not succeed (desktop=$R_SHARD_DESKTOP mobile=$R_SHARD_MOBILE)"
             exit 1
           fi
+          if [ "$R_SELLER_DESKTOP" != "success" ] || [ "$R_SELLER_MOBILE" != "success" ]; then
+            echo "::error::a marketplace seller job did not succeed (desktop=$R_SELLER_DESKTOP mobile=$R_SELLER_MOBILE)"
+            exit 1
+          fi
+          if [ "$R_BREAKER_DESKTOP" != "success" ] || [ "$R_BREAKER_MOBILE" != "success" ]; then
+            echo "::error::a BSC breaker job did not succeed (desktop=$R_BREAKER_DESKTOP mobile=$R_BREAKER_MOBILE)"
+            exit 1
+          fi
+
+      # NEO-552: every test user's fake BSC session is a Secret Manager secret
+      # keyed by this preview (`buysportscards-credentials-fake-<slug>-<user>`),
+      # and Secret Manager bills per active version. Both passes are done here
+      # (this job needs every shard, seller and breaker job), so delete this
+      # preview's sessions now rather than leave them for the browser service's
+      # 72 h TTL. The action (credentials.ts) is internal, so only this deploy
+      # key reaches it; it deletes nothing outside fake mode and only keys with
+      # this deployment's own prefix. Cleanup never decides the verdict: it
+      # runs after it, warns on any failure and always exits 0.
+      - name: Delete this preview's fake BSC sessions
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        working-directory: ${{ github.workspace }}
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_NAME:-}" ] || [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::warning::No Convex preview name or deploy key, so this preview's fake BSC sessions were left for the 72 h TTL."
+            exit 0
+          fi
+          if [ ! -d apps/web ]; then
+            echo "::warning::No checkout, so this preview's fake BSC sessions were left for the 72 h TTL."
+            exit 0
+          fi
+          cd apps/web
+          out="${RUNNER_TEMP}/fake-bsc-session-cleanup.json"
+          if ! npx --yes convex@1.39.1 run credentials:deleteFakeBscSessionsFromCli '{}' --deployment "$CONVEX_NAME" > "$out"; then
+            echo "::warning::Deleting this preview's fake BSC sessions failed (the reason is above); the 72 h TTL will remove them."
+            exit 0
+          fi
+          if [ "$(jq -r '.fake' "$out" 2>/dev/null)" != "true" ]; then
+            echo "The preview is not on the fake BSC; no sessions to delete."
+            exit 0
+          fi
+          summary=$(jq -r '"users=\(.users) deleted=\(.deleted) failed=\(.failed) truncated=\(.truncated)"' "$out" 2>/dev/null || echo "unreadable answer")
+          if [ "$(jq -r '.failed' "$out" 2>/dev/null)" != "0" ] || [ "$(jq -r '.truncated' "$out" 2>/dev/null)" != "false" ]; then
+            echo "::warning::Some fake BSC sessions were not deleted (${summary}); the 72 h TTL will remove them."
+          else
+            echo "Deleted this preview's fake BSC sessions (${summary})."
+          fi
+          exit 0
 
   report:
     # Publish even when the gate is red. Informational only: the `e2e` job is
@@ -1734,16 +3090,65 @@ jobs:
           fi
           "$GITHUB_WORKSPACE/.github/scripts/enrichment-fixture-coverage.sh"
 
+      # NEO-552: what this run asked the fake BSC for that it had no recording
+      # of (it answers 501 and keeps a miss list per preview). Printed so the
+      # recorder's to-do list is in the run log. It goes through an internal
+      # Convex action on the preview, so the fake's admin key never reaches
+      # this runner. Non-failing: a miss already failed its own spec.
+      - name: Print the fake BSC's misses for this preview
+        working-directory: apps/web
+        continue-on-error: true
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_NAME:-}" ] || [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::warning::No Convex preview name or deploy key; cannot read the fake BSC's misses."
+            exit 0
+          fi
+          out="${RUNNER_TEMP}/fake-bsc-misses.json"
+          if ! npx --yes convex@1.39.1 run fakeBsc:reportMisses '{}' --deployment "$CONVEX_NAME" > "$out"; then
+            echo "::warning::Reading the fake BSC's misses failed (the reason is above)."
+            exit 0
+          fi
+          # {ok:true, skipped, misses:[{method,path}]} or {ok:false, status?, error}.
+          # Non-failing either way, but an ok:false must not read as "0 misses".
+          if [ "$(jq -r '.ok' "$out" 2>/dev/null)" = "false" ]; then
+            err=$(jq -r '"status=\(.status // "n/a") error=\(.error // "unknown")"' "$out" 2>/dev/null | head -c 300)
+            echo "::warning::The fake BSC's misses could not be read: ${err}"
+            { echo "### Fake BSC misses for this preview"; echo "Could not be read: ${err}"; } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ "$(jq -r '.skipped // false' "$out" 2>/dev/null)" = "true" ]; then
+            echo "::notice::The fake BSC's misses were skipped for this preview (not applicable here)."
+            exit 0
+          fi
+          count=$(jq -r '(.misses // []) | length' "$out" 2>/dev/null || echo "?")
+          {
+            echo "### Fake BSC misses for this preview"
+            if [ "$count" = "0" ]; then
+              echo "None: every catalogue read was recorded."
+            else
+              echo "${count} unrecorded request(s), stored under this preview's namespace prefix (its Convex deployment name plus \"-\", left out here because this summary is public; the Convex dashboard lists it)."
+              echo "They persist in the fake's bucket for 30 days: record them later with the local recorder, \`--prefix <that prefix>\`, or \`--all\` once this preview is gone."
+              echo
+              echo '```json'
+              jq -c '.misses[]' "$out" 2>/dev/null | head -n 100
+              echo '```'
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Download merged report
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: pw-merged
           path: merged
 
       - name: Publish Playwright JUnit report (merged)
         if: always()
-        uses: mikepenz/action-junit-report@a9170d5795813c01ab4901ffb045b52bab4ab09d # v6.5.0
+        uses: mikepenz/action-junit-report@6ef3fdcfcd5f0b5d14df3e659ef19b8c6820f93d # v6.6.1
         with:
           report_paths: merged/junit.xml
           check_name: Playwright E2E
@@ -1804,8 +3209,9 @@ jobs:
           cat combined-summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Post Playwright summary as sticky PR comment
-        if: always() && github.event_name == 'pull_request'
+        if: always() && (github.event_name == 'pull_request' || inputs.pr != '')
         uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         with:
           header: e2e-results
+          number: ${{ github.event.pull_request.number || inputs.pr }}
           path: combined-summary.md

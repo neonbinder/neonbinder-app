@@ -13,13 +13,15 @@ import {
 import {
   // NEO-331: automatic paths link an existing league; they never create one.
   findLeagueByName,
-  // NEO-331: the picker's abbreviation fallback compares on the same reading.
-  normalizeLeagueName,
   // NEO-236: the operator's own league choice — the only league a new team
   // gets (NEO-331: no sport-default fallback).
   resolveOperatorLeagueId,
 } from "./leagues";
 import { normalizePlayerName } from "./players";
+// NEO-569 — the levels that carry a set's `leagueIds` (the picker's walk).
+import { LEAGUE_BEARING_LEVELS } from "./lib/selectorLeagues";
+// NEO-569 — a team's league edit re-settles the cards that followed it.
+import { scheduleTeamLeagueRecompute } from "./cardLeague";
 import { MANUAL_COLOR_SOURCE_URL } from "./teamColorSources";
 import { longestToken, nameTokens, rankTeamCandidates } from "./lib/entityNearMatch";
 // NEO-212 security review: the shared `Q<digits>` chokepoint — see
@@ -40,11 +42,16 @@ import {
   findTeamsByAlias,
   findTeamsByExactName,
   findTeamsByFullName,
+  narrowTeamRowsByCardPlayers,
   resolveTeamForSetYear,
   teamRowFields,
 } from "./lib/teamRow";
 // NEO-296: the bound on the batch id -> row read, with the op arithmetic.
 import { readManyByIds } from "./lib/batchIdReads";
+// NEO-592: bounded concurrency for independent reads inside one query.
+import { mapBounded } from "./lib/boundedConcurrency";
+// NEO-535 — a rename reaches the descriptions of the team's cards.
+import { refreshDescriptionsAfterRename } from "./cardDescriptionFanOut";
 import { eraLabel, teamOptionLabel } from "../lib/teams/team-era";
 import { splitTeamName, teamFullName } from "../lib/teams/team-name";
 // NEO-330: the one definition of "this team matches what was typed", shared
@@ -134,6 +141,35 @@ const teamDocValidator = v.object({
   lastUpdated: v.number(),
 });
 
+/**
+ * NEO-592 — the one derivation of "which team does this card name mean" as a
+ * DOCUMENT, shared by `findByNameAndSport` (one name, public) and
+ * `findManyByNameAndSport` (the review gate's batch).
+ *
+ * `resolveTeamForSetYear` already holds the winning row among its candidates,
+ * so the row is returned from there instead of being read a second time. The
+ * `db.get` fallback only answers a row that somehow is not among its own
+ * candidates, which `pickTeamForYear` cannot produce.
+ *
+ * NEO-236: `name` is a FULL name — a marketplace payload, a Wikidata label, or
+ * an operator's typed string. NEO-254: it resolves to at most ONE of that
+ * name's eras; `null` where it used to return `.first()` is the point.
+ * NEO-307: `setYear` here is the SET's year (the review gate's), so a card may
+ * show a team's past (`allowPastEra`).
+ */
+async function resolveTeamDocForSetYear(
+  ctx: QueryCtx,
+  sportId: Id<"selectorOptions">,
+  name: string,
+  setYear: number | undefined,
+): Promise<Doc<"teams"> | null> {
+  const { teamId, candidates } = await resolveTeamForSetYear(ctx, sportId, name, setYear, {
+    allowPastEra: true,
+  });
+  if (!teamId) return null;
+  return candidates.find((row) => row._id === teamId) ?? (await ctx.db.get(teamId));
+}
+
 export const findByNameAndSport = query({
   args: {
     name: v.string(),
@@ -153,25 +189,45 @@ export const findByNameAndSport = query({
   returns: v.union(teamDocValidator, v.null()),
   handler: async (ctx, args) => {
     await requireSignedIn(ctx);
-    // NEO-236: `name` here is a FULL name — a marketplace payload, a Wikidata
-    // label, or an operator's typed string. It resolves to a split row because
-    // the dedup key is derived from the composed full name; see
-    // convex/lib/teamRow.ts.
-    //
-    // NEO-254: and to at most ONE of that name's eras. `null` where it used to
-    // return `.first()` is the point of the change — an ambiguous name is not
-    // an answer, and handing back an arbitrary era is what pointed 1985 cards
-    // at a 2011 franchise.
-    const { teamId } = await resolveTeamForSetYear(
-      ctx,
-      args.sportId,
-      args.name,
-      args.setYear,
-      // NEO-307: `setYear` here is the SET's year (the review gate's), so a
-      // card may show a team's past. See `resolveTeamForSetYear` rule 1.
-      { allowPastEra: true },
+    return await resolveTeamDocForSetYear(ctx, args.sportId, args.name, args.setYear);
+  },
+});
+
+/** NEO-592 — names one `findManyByNameAndSport` call answers, at most. */
+export const FIND_MANY_TEAMS_BY_NAME_MAX = 50;
+
+/**
+ * NEO-592 — `findByNameAndSport` for up to 50 names in ONE query, so the
+ * review gate pays one action-to-query hop for its team names instead of one
+ * per name (a 2024 set prints ~30 of them).
+ *
+ * The sport and the set year are the batch's. The answer is ALIGNED with
+ * `names`: element i is exactly what `findByNameAndSport` returns for
+ * `{ name: names[i], sportId, setYear }`, through the same helper, so a batch
+ * can never answer a name differently from the single call. Names are resolved
+ * concurrently (`mapBounded`) and share nothing. More than 50 is refused, never
+ * truncated: a silently short answer would read as "no such team" for the tail.
+ *
+ * Internal: the gate is its only caller, and it has already checked the
+ * operator. The public single-name query keeps its own sign-in gate.
+ */
+export const findManyByNameAndSport = internalQuery({
+  args: {
+    sportId: v.id("selectorOptions"),
+    setYear: v.optional(v.number()),
+    names: v.array(v.string()),
+  },
+  returns: v.array(v.union(teamDocValidator, v.null())),
+  handler: async (ctx, args): Promise<Array<Doc<"teams"> | null>> => {
+    if (args.names.length > FIND_MANY_TEAMS_BY_NAME_MAX) {
+      throw new ConvexError({
+        code: "too_many_names",
+        message: `findManyByNameAndSport answers at most ${FIND_MANY_TEAMS_BY_NAME_MAX} names per call; got ${args.names.length}.`,
+      });
+    }
+    return await mapBounded(args.names, (name) =>
+      resolveTeamDocForSetYear(ctx, args.sportId, name, args.setYear),
     );
-    return teamId ? await ctx.db.get(teamId) : null;
   },
 });
 
@@ -1179,6 +1235,54 @@ export const findByFullNameInternal = internalQuery({
   },
 });
 
+/**
+ * NEO-490 (2b) — a team name the set year could not settle to one era, settled
+ * by the players on the cards that print it.
+ *
+ * `cardPlayerIds` holds, per card printing `name`, the NB players that card's
+ * names resolved to (see `narrowTeamRowsByCardPlayers` for the rule and its
+ * bounds). Returns the one era every card's players point at, or null.
+ *
+ * Null also when the name resolves WITHOUT the players — no row at all, or
+ * the set year (with the card's past-era allowance) already picks one. That
+ * answer is `resolveTeamForSetYear`'s, not this rule's, and the caller labels
+ * what this returns as a career-team link ("Satchel Paige's club"); handing
+ * back an ordinary resolution would put that label on a link the players did
+ * not make. The review gate calls this only for names still unresolved.
+ *
+ * Never inserts; a caller treats null as "ask the operator", never "create".
+ */
+export const resolveTeamByCardPlayers = internalQuery({
+  args: {
+    sportId: v.id("selectorOptions"),
+    name: v.string(),
+    setYear: v.optional(v.number()),
+    cardPlayerIds: v.array(v.array(v.id("players"))),
+  },
+  // NEO-592 — the row itself, so the gate does not read it back in a second hop.
+  returns: v.union(teamDocValidator, v.null()),
+  handler: async (ctx, args): Promise<Doc<"teams"> | null> => {
+    // A CARD caller: the past-era allowance applies, exactly as the gate's own
+    // resolution of the same name did (NEO-307).
+    const { teamId, candidates } = await resolveTeamForSetYear(
+      ctx,
+      args.sportId,
+      args.name,
+      args.setYear,
+      { allowPastEra: true },
+    );
+    if (teamId !== null) return null;
+    const narrowedId = await narrowTeamRowsByCardPlayers(
+      ctx,
+      candidates,
+      args.cardPlayerIds,
+      args.setYear,
+    );
+    // The answer is one of `candidates`, so its row is already in hand.
+    return narrowedId ? (candidates.find((row) => row._id === narrowedId) ?? null) : null;
+  },
+});
+
 export const applyEnrichmentInternal = internalMutation({
   args: {
     id: v.id("teams"),
@@ -1322,6 +1426,10 @@ export const applyEnrichmentInternal = internalMutation({
       };
     }
     await ctx.db.patch(args.id, patch);
+    // NEO-569 — a league filled in here re-settles the cards showing the team.
+    if (patch.leagueId !== undefined && patch.leagueId !== existing.leagueId) {
+      await scheduleTeamLeagueRecompute(ctx, args.id, existing.leagueId);
+    }
     return null;
   },
 });
@@ -1462,6 +1570,8 @@ export const convertLegacyLeagueInternal = internalMutation({
       league: undefined,
       lastUpdated: Date.now(),
     });
+    // NEO-569 — the cards showing the team follow its new league.
+    await scheduleTeamLeagueRecompute(ctx, args.id, undefined);
     return null;
   },
 });
@@ -1769,6 +1879,34 @@ export const saveTeamFields = mutation({
     }
 
     await ctx.db.patch(args.id, patch);
+    // NEO-569 — a league change (set, moved or cleared) re-settles the cards
+    // that followed the team's old league.
+    if ("leagueId" in patch && patch.leagueId !== existing.leagueId) {
+      await scheduleTeamLeagueRecompute(ctx, args.id, existing.leagueId);
+    }
+    // NEO-535 — a card's description names its team by its full name
+    // ("San Diego Padres"), and collector search reads it. A name or location
+    // edit that changes the full name reaches the cards whose description is
+    // still the builder's; one an operator wrote is left alone. The first
+    // page here, any rest on a scheduled chain.
+    if (
+      typeof patch.name === "string" &&
+      teamFullName({ name: patch.name, location: patch.location as string | undefined }) !==
+        teamFullName(existing)
+    ) {
+      await refreshDescriptionsAfterRename(
+        ctx,
+        {
+          kind: "team",
+          teamId: args.id,
+          before: {
+            name: existing.name,
+            ...(existing.location !== undefined ? { location: existing.location } : {}),
+          },
+        },
+        { inline: true },
+      );
+    }
     return null;
   },
 });
@@ -1842,10 +1980,30 @@ export const listForPicker = query({
  * `_creationTime` within a sport, and one sport alone can pass the cap. The
  * rows are still sorted by NAME for display below; the order only decides
  * which rows survive the cap.
+ *
+ * NEO-495 — `leagueId` reads ONE league's teams by `by_league_id`, so the
+ * league dropdown is answered from that league's own rows rather than by
+ * filtering the newest-2000 window in the browser. Filtered client-side, MLB
+ * showed only the handful of MLB-tagged rows that happened to be recent, and
+ * every real club (all of them older than the window) was unreachable.
+ * `"none"` is the screen's "No league" value: `leagueId` is optional, and an
+ * index equality on `undefined` reads exactly the rows that carry none.
+ *
+ * Same cap and the same `truncated` report as the unscoped window, newest
+ * first within the league (`by_league_id` orders by `_creationTime` inside
+ * one key).
+ *
+ * `leagueId` and `sportId` together are REFUSED. Applied after the capped
+ * league read, a sport filter could drop rows the cap had already spent, and
+ * `truncated` would then say "complete" about a list that is not. A real league
+ * belongs to one sport anyway, and no caller passes both.
  */
 
 export const listForManagement = query({
-  args: { sportId: v.optional(v.id("selectorOptions")) },
+  args: {
+    sportId: v.optional(v.id("selectorOptions")),
+    leagueId: v.optional(v.union(v.id("leagues"), v.literal("none"))),
+  },
   returns: v.object({
     teams: v.array(teamDocValidator),
     totalCount: v.number(),
@@ -1853,17 +2011,32 @@ export const listForManagement = query({
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
+    if (args.leagueId !== undefined && args.sportId !== undefined) {
+      throw new ConvexError(
+        "Pass a league or a sport to listForManagement, not both.",
+      );
+    }
 
-    const rows = args.sportId
-      ? await ctx.db
-          .query("teams")
-          .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId!))
-          .order("desc")
-          .take(TEAM_MANAGEMENT_CAP + 1)
-      : await ctx.db
-          .query("teams")
-          .order("desc")
-          .take(TEAM_MANAGEMENT_CAP + 1);
+    let rows: Doc<"teams">[];
+    if (args.leagueId !== undefined) {
+      const leagueKey = args.leagueId === "none" ? undefined : args.leagueId;
+      rows = await ctx.db
+        .query("teams")
+        .withIndex("by_league_id", (q) => q.eq("leagueId", leagueKey))
+        .order("desc")
+        .take(TEAM_MANAGEMENT_CAP + 1);
+    } else if (args.sportId) {
+      rows = await ctx.db
+        .query("teams")
+        .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId!))
+        .order("desc")
+        .take(TEAM_MANAGEMENT_CAP + 1);
+    } else {
+      rows = await ctx.db
+        .query("teams")
+        .order("desc")
+        .take(TEAM_MANAGEMENT_CAP + 1);
+    }
 
     const truncated = rows.length > TEAM_MANAGEMENT_CAP;
     const teams = rows.slice(0, TEAM_MANAGEMENT_CAP);
@@ -2221,31 +2394,43 @@ function parsePickerYear(raw: string | undefined): number | undefined {
 }
 
 /**
- * NEO-331 — the set context a picker ranks by: the league named on the
- * context row's `features.league`, resolved by name OR alias within the
- * SEARCHED sport ("MLB" is an alias of Major League Baseball) — falling back
- * to an exactly-one `abbreviation` match (see below) — and the year of the
- * nearest `year`-level ancestor (the row itself included).
+ * NEO-331 / NEO-569 — the set context a picker ranks by: the context row's
+ * effective `leagueIds` (its own, else the nearest ancestor's up to the set —
+ * the same walk `lib/selectorLeagues.effectiveSetLeagueIds` makes), kept to
+ * the leagues of the SEARCHED sport, and the year of the nearest `year`-level
+ * ancestor (the row itself included).
  *
- * Resolved in the searched sport on purpose: a picker switched to another
- * sport (a football player's guest card in a baseball set) finds no league of
- * that name there, so tiers 1 and 3 empty out rather than ranking by a league
- * from the wrong sport. Nothing about the context is stored — the free-text
- * feature stays the one source, so an operator editing it re-ranks at once.
+ * Kept to the searched sport on purpose: a picker switched to another sport
+ * (a football player's guest card in a baseball set) has none of the set's
+ * leagues there, so tiers 1 and 3 empty out rather than ranking by a league
+ * from the wrong sport. Nothing about the context is stored, so an operator
+ * editing the set's leagues re-ranks at once. No name is resolved: the set
+ * names its leagues by id.
  */
 async function pickerContext(
   ctx: QueryCtx,
   contextOptionId: Id<"selectorOptions"> | undefined,
-  sportId: Id<"selectorOptions"> | undefined,
   sportLeagues: ReadonlyArray<Doc<"leagues">>,
-): Promise<{ leagueId?: Id<"leagues">; year?: number }> {
+): Promise<{ leagueIds?: Array<Id<"leagues">>; year?: number }> {
   if (!contextOptionId) return {};
   const row = await ctx.db.get(contextOptionId);
   if (!row) return {};
 
   let year: number | undefined;
+  let leagueIds: Array<Id<"leagues">> | undefined;
+  let leaguesSettled = !LEAGUE_BEARING_LEVELS.has(row.level);
   let node: Doc<"selectorOptions"> | null = row;
   for (let depth = 0; node && depth <= PICKER_YEAR_WALK_DEPTH; depth++) {
+    if (!leaguesSettled) {
+      if (!LEAGUE_BEARING_LEVELS.has(node.level)) {
+        leaguesSettled = true;
+      } else if (node.leagueIds && node.leagueIds.length > 0) {
+        leagueIds = node.leagueIds;
+        leaguesSettled = true;
+      } else if (node.level === "setName") {
+        leaguesSettled = true;
+      }
+    }
     if (node.level === "year") {
       year = parsePickerYear(node.value);
       break;
@@ -2253,48 +2438,13 @@ async function pickerContext(
     node = node.parentId ? await ctx.db.get(node.parentId) : null;
   }
 
-  const leagueName = row.features?.league?.trim();
-  const league =
-    leagueName && sportId
-      ? ((await findLeagueByName(ctx, { name: leagueName, sportId })) ??
-        leagueByUniqueAbbreviation(sportLeagues, leagueName))
-      : null;
+  const inSport = new Set<string>(sportLeagues.map((league) => league._id));
+  const usable = [...new Set(leagueIds ?? [])].filter((id) => inSport.has(id));
 
   return {
-    ...(league ? { leagueId: league._id } : {}),
+    ...(usable.length > 0 ? { leagueIds: usable } : {}),
     ...(year !== undefined ? { year } : {}),
   };
-}
-
-/**
- * NEO-331 — the picker's fallback when `findLeagueByName` misses: the ONE
- * league of the sport whose `abbreviation` reads the same as `name`.
- *
- * `features.league` carries the sport's short form ("MLB", from
- * SPORT_TO_LEAGUE), and a league minted through the wizard's New League step
- * stores that short form as `abbreviation` with no alias — so on fresh data
- * the name/alias lookup finds nothing and the set's league silently drops out
- * of the ranking. This is read-only and scoped to the picker on purpose:
- * `findLeagueByName` is what writers dedupe through, and widening it to
- * abbreviations would change which row a writer links or mints.
- *
- * Exactly one match or nothing. Abbreviations are not unique (two leagues may
- * both say "IL"), and taking the first of several would rank by a league the
- * operator never named — so a tie gives no league, and tiers 1 and 3 stay
- * empty rather than guessed.
- */
-function leagueByUniqueAbbreviation(
-  sportLeagues: ReadonlyArray<Doc<"leagues">>,
-  name: string,
-): Doc<"leagues"> | null {
-  const wanted = normalizeLeagueName(name);
-  if (!wanted) return null;
-  const matches = sportLeagues.filter(
-    (league) =>
-      league.abbreviation !== undefined &&
-      normalizeLeagueName(league.abbreviation) === wanted,
-  );
-  return matches.length === 1 ? matches[0] : null;
 }
 
 /**
@@ -2394,11 +2544,11 @@ export const pickerCandidates = query({
     // they are published). This query is merely signed-in, so honouring the
     // context for anyone would turn it into an oracle on an admin-gated row:
     // the tier each team lands in, and the order they come back in, say which
-    // league the row's `features.league` names and which year it sits under.
+    // leagues the row carries (`leagueIds`) and which year it sits under.
     // A non-admin's context is therefore IGNORED, not refused — the picker
     // still works, context-free, every row at tier 4.
     // The sport's leagues, ONCE: tier 2's level check (never a `db.get` per
-    // candidate) and the context's abbreviation fallback both read them.
+    // candidate) and the context's sport filter both read them.
     // Leagues are tens of rows per sport.
     const sportLeagues = sportId
       ? await ctx.db
@@ -2409,14 +2559,13 @@ export const pickerCandidates = query({
     const levelById = new Map<string, string>();
     for (const league of sportLeagues) levelById.set(league._id, league.level);
 
-    const { leagueId, year } = await pickerContext(
+    const { leagueIds, year } = await pickerContext(
       ctx,
       identity.role === "admin" ? args.contextOptionId : undefined,
-      sportId,
       sportLeagues,
     );
     const rankContext = {
-      ...(leagueId ? { leagueId } : {}),
+      ...(leagueIds ? { leagueIds } : {}),
       ...(year !== undefined ? { year } : {}),
       levelById,
     };
@@ -2427,12 +2576,24 @@ export const pickerCandidates = query({
       if (sportId && team.sportId !== sportId) return;
       if (!pool.has(team._id)) pool.set(team._id, team);
     };
-    // The set's league, by plain index range — never a search (see above).
-    const leagueLeg = (id: Id<"leagues">) =>
-      ctx.db
-        .query("teams")
-        .withIndex("by_league_id", (q) => q.eq("leagueId", id))
-        .take(PICKER_LEAGUE_LEG_TAKE);
+    // The set's leagues, by plain index ranges — never a search (see above).
+    // NEO-569: one range per league, in the operator's order, sharing ONE
+    // budget of `PICKER_LEAGUE_LEG_TAKE` teams in total, so a twelve-league
+    // set reads no more than a one-league set did.
+    const leagueLeg = async (ids: ReadonlyArray<Id<"leagues">>) => {
+      const out: Array<Doc<"teams">> = [];
+      for (const id of ids) {
+        const remaining = PICKER_LEAGUE_LEG_TAKE - out.length;
+        if (remaining <= 0) break;
+        out.push(
+          ...(await ctx.db
+            .query("teams")
+            .withIndex("by_league_id", (q) => q.eq("leagueId", id))
+            .take(remaining)),
+        );
+      }
+      return out;
+    };
 
     // ── Browse ────────────────────────────────────────────────────────────
     if (!typed.trim()) {
@@ -2443,7 +2604,7 @@ export const pickerCandidates = query({
         PICKER_BROWSE_DEFAULT_LIMIT,
         PICKER_BROWSE_MAX_LIMIT,
       );
-      if (leagueId) (await leagueLeg(leagueId)).forEach(add);
+      if (leagueIds) (await leagueLeg(leagueIds)).forEach(add);
       const inSport = sportId
         ? await ctx.db
             .query("teams")
@@ -2469,9 +2630,9 @@ export const pickerCandidates = query({
       PICKER_SEARCH_MAX_LIMIT,
     );
 
-    // Leg A — only when the league resolved, which needs a sport. A plain
-    // index range, name-matched below with every other leg's rows.
-    if (leagueId) (await leagueLeg(leagueId)).forEach(add);
+    // Leg A — only when the set has leagues in the searched sport. Plain
+    // index ranges, name-matched below with every other leg's rows.
+    if (leagueIds) (await leagueLeg(leagueIds)).forEach(add);
 
     // Leg B — the ONLY search read in this query (see the note above).
     const runSearch = (text: string) =>

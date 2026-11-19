@@ -62,7 +62,14 @@ import { fastPreprocessPool } from "./placeholderPool";
 import { heavyPreprocessPool } from "./placeholderHeavyPool";
 import { readEscalationHints } from "./lib/preprocessBaseline";
 import { PLACEHOLDER_MAX_ENTRY_INDEX } from "./lib/placeholderObjects";
-import { noteIntakePairsChanged } from "./intakeRuns";
+import { parseCropBox } from "./lib/photoEdit";
+import { pendingPhotoEditValidator } from "./schema";
+import {
+  rejectedSummaryValidator,
+  summarizeRejections,
+  terminalEntryErrorCode,
+} from "./lib/extractRejections";
+import { noteIntakeJobFinished, noteIntakePairsChanged } from "./intakeRuns";
 
 /**
  * How many images are handled per chunked mutation — registration, enqueuing,
@@ -563,6 +570,8 @@ export const startPlaceholderBatch = mutation({
       processedImages: 0,
       failedImages: 0,
       rejectedEntries: 0,
+      // Goes with `rejectedEntries`: the last registration chunk writes both.
+      rejected: undefined,
       // The previous attempt's heavy warm-gate says nothing about this one — a
       // restart that escalates should fire its own warm-up. Cleared so the
       // first escalation of the new run is detected as first.
@@ -759,7 +768,7 @@ export const cancelPlaceholderBatch = mutation({
  * ACTIVE_STATUSES, and `closePlaceholderStream` moves a stream job
  * collecting → pairing, which is STILL active — so only reaching a terminal
  * status frees a slot, and only `cancelJobImpl` does that. Back-to-back E2E runs
- * therefore accumulate active jobs until the seed page can no longer start one.
+ * therefore accumulate active jobs until a spec can no longer start one.
  * This gives an entry page a way to clear the caller's own slots before seeding
  * a fresh run.
  *
@@ -1015,6 +1024,8 @@ async function cancelJobImpl(
       canceledBy === "admin" ? "canceled by an administrator" : "canceled by user",
     finishedAt: canceledAt,
   });
+  // NEO-370: an intake run over this job may have settled with it.
+  await noteIntakeJobFinished(ctx, job.jobId);
 
   // Unconditional rather than gated on `mode === "stream"`, for the same
   // reason `startPlaceholderBatch` schedules `sweepJobPairs` unconditionally:
@@ -1161,7 +1172,9 @@ export const cancelRemainingWork = internalMutation({
  * so the rejected count is derived here rather than trusted as a separate
  * number. Only accepted entries become rows: a rejected entry has no work to
  * do and would otherwise sit in the counters forever, since nothing will ever
- * call onComplete for it.
+ * call onComplete for it. Why each was rejected (NEO-446) is summarised on the
+ * job, from the same whole list and written once by the last chunk, so chunking
+ * can neither lose nor double count it.
  */
 export const registerExtractedImages = internalMutation({
   args: {
@@ -1174,6 +1187,8 @@ export const registerExtractedImages = internalMutation({
         index: v.number(),
         name: v.string(),
         accepted: v.boolean(),
+        /** `/extract`'s machine reason for a rejected entry. */
+        reason: v.optional(v.string()),
       }),
     ),
     /** Chunk cursor into the deduped accepted list. Absent means "start". */
@@ -1294,6 +1309,16 @@ export const registerExtractedImages = internalMutation({
           queuedAt: now,
           escalatedAt: undefined,
           settledAt: undefined,
+          heavyStartedAt: undefined,
+          // NEO-446: this photo is being read again, so it comes back to the
+          // collector as a new answer. A kept done row above keeps its set-aside:
+          // same bytes, same decision, like its `sideByUser` and `unpairedFrom`.
+          setAside: undefined,
+          // NEO-481: a hand edit and the auto crop belong to the read being
+          // thrown away. `edits` stays: it is the paid-call cap, like `retries`.
+          edit: undefined,
+          autoCrop: undefined,
+          pendingEdit: undefined,
         });
       }
     }
@@ -1321,6 +1346,7 @@ export const registerExtractedImages = internalMutation({
       processedImages: keptDone,
       failedImages: 0,
       rejectedEntries,
+      rejected: summarizeRejections(args.entries),
       // Refresh the heartbeat as the batch enters processing, so the window
       // before the first image completes (enqueue + first `/process-entry`) is
       // measured from here rather than from when extraction started. Settle
@@ -1570,6 +1596,38 @@ function imageFieldsFromResult(returnValue: unknown): Partial<Doc<"placeholderIm
     textCount: asNumber(body.text_count),
     croppedSource: asString(body.cropped_source),
     dhash: asDhash(body.dhash),
+    // NEO-481: the box the winning stage cut, narrowed field by field; a bad
+    // box is dropped (undefined), never refused, because this is the settle.
+    autoCrop: parseCropBox(body.crop_box),
+  };
+}
+
+/**
+ * NEO-481 — what a hand crop's re-read (`/render-edit` with `classify`) may
+ * write, narrowed exactly as a `/process-entry` result is. Never orientation
+ * (`rotationDegrees`, `croppedSource`): the edit's `turns` is the photo's
+ * orientation now. The commit decides which of these it writes (the
+ * first-read rule, `photoEditRows.commitScanEdit`).
+ */
+export function readFieldsFromResult(returnValue: unknown): {
+  players?: string[];
+  team?: string;
+  cardNumber?: string;
+  side?: string;
+  textCount?: number;
+  dhash?: string;
+  orientConfidence?: number;
+} {
+  if (!returnValue || typeof returnValue !== "object") return {};
+  const body = returnValue as Record<string, unknown>;
+  return {
+    players: asStringArray(body.players),
+    team: asString(body.team),
+    cardNumber: asString(body.card_number),
+    side: asString(body.side),
+    textCount: asNumber(body.text_count),
+    dhash: asDhash(body.dhash),
+    orientConfidence: asNumber(body.orient_confidence),
   };
 }
 
@@ -1688,9 +1746,13 @@ export function recordImageOutcomeImpl(
   context: { jobId: string; imageId: Id<"placeholderImages"> },
   result: RunResult,
   origin?: CompletionOrigin,
+  // NEO-411: the errorCode a FAILED settle records, when the caller knows a
+  // more specific one than PROCESS_ENTRY_FAILED (the photo deadline passes
+  // "PHOTO_TIMED_OUT"). Ignored for a success or a cancel.
+  failureCode?: string,
 ): Promise<null> {
   return withJobSettleLock(context.jobId, () =>
-    settleImageOutcome(ctx, context, result, origin),
+    settleImageOutcome(ctx, context, result, origin, failureCode),
   );
 }
 
@@ -1727,6 +1789,7 @@ async function settleImageOutcome(
   context: { jobId: string; imageId: Id<"placeholderImages"> },
   result: RunResult,
   origin: CompletionOrigin | undefined,
+  failureCode?: string,
 ): Promise<null> {
   const image = await ctx.db.get(context.imageId);
   // The row can legitimately be gone: restarting a failed job deletes the
@@ -1830,7 +1893,15 @@ async function settleImageOutcome(
     await ctx.db.patch(image._id, {
       status: "failed",
       settledAt,
-      errorCode: result.kind === "canceled" ? "CANCELED" : "PROCESS_ENTRY_FAILED",
+      errorCode:
+        result.kind === "canceled"
+          ? "CANCELED"
+          : (failureCode ??
+            // NEO-446 / NEO-484: a raster over the pixel ceiling, or an entry
+            // that is not a decodable image, is terminal, and the photo can say
+            // so rather than offering a Try again that cannot work.
+            terminalEntryErrorCode(result.error) ??
+            "PROCESS_ENTRY_FAILED"),
       errorDetail:
         result.kind === "failed"
           ? result.error.slice(0, 1000)
@@ -1934,6 +2005,97 @@ export const recordImageOutcome = internalMutation({
 });
 
 /**
+ * NEO-411: how long a heavy photo may go from the start of its heavy work to an
+ * answer before it is marked failed.
+ *
+ * Before this, nothing ended a heavy photo's wait but the retry ladder, which
+ * the pool comments put at up to ~48 minutes, and the intake screen said
+ * "Working on your photos." the whole time. In the red E2E runs of 2026-10-30/31
+ * a cold heavy call took 174-272s and warm ones 34-75s. Seven minutes is longer
+ * than one heavy call's whole budget (PREPROCESS_HEAVY_TIMEOUT_MS, 400s), so a
+ * first attempt is never cut short by its own deadline, and a fast-failing
+ * first attempt still leaves time for a retry on the instance it warmed.
+ */
+export const HEAVY_PHOTO_DEADLINE_MS = 7 * 60 * 1000;
+
+/**
+ * Called by `processHeavyEntryWorker` as each heavy attempt starts. The FIRST
+ * call for a row stamps `heavyStartedAt` and schedules the photo's deadline;
+ * every later attempt (a retry) finds the stamp and does nothing, so the
+ * deadline counts from the start of the first attempt. A row that is gone, no
+ * longer heavy-processing, or already settled is left alone.
+ */
+export const noteHeavyStart = internalMutation({
+  args: { jobId: v.string(), entryIndex: v.number() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const image = await ctx.db
+      .query("placeholderImages")
+      .withIndex("by_job_and_index", (q) =>
+        q.eq("jobId", args.jobId).eq("entryIndex", args.entryIndex),
+      )
+      .unique();
+    if (!image || image.status !== "processing" || image.escalated !== true) return null;
+    if (image.heavyStartedAt !== undefined) return null;
+    const heavyStartedAt = Date.now();
+    await ctx.db.patch(image._id, { heavyStartedAt });
+    // The stamp travels with the deadline: a retry or a restart clears it and a
+    // later attempt writes a new one, so this deadline then finds a different
+    // stamp and does nothing (it belongs to an attempt that already ended).
+    await ctx.scheduler.runAfter(
+      HEAVY_PHOTO_DEADLINE_MS,
+      internal.placeholderHeavyPool.expireHeavyPhoto,
+      { imageId: image._id, heavyStartedAt },
+    );
+    return null;
+  },
+});
+
+/**
+ * The photo deadline itself, as a plain function so the tests drive it without
+ * the heavy pool component (see `recordImageOutcomeImpl`). If the row is still
+ * heavy-processing, settle it as failed with errorCode "PHOTO_TIMED_OUT"
+ * through the one shared settle, so the counters, pairing and batch completion
+ * all move exactly as for any other failed photo. Only the deadline of the
+ * row's CURRENT attempt acts: `heavyStartedAt` must still equal the stamp the
+ * deadline was scheduled with. Returns the row's heavy
+ * `workId` so the caller can cancel the work still queued or retrying, or null
+ * when there was nothing to expire. A heavy answer that lands later finds the
+ * row terminal and is dropped by settle.
+ */
+export async function expireHeavyPhotoImpl(
+  ctx: MutationCtx,
+  imageId: Id<"placeholderImages">,
+  heavyStartedAt: number,
+): Promise<{ expired: boolean; workId: string | null }> {
+  const image = await ctx.db.get(imageId);
+  if (!image || image.status !== "processing" || image.escalated !== true) {
+    return { expired: false, workId: null };
+  }
+  // A deadline from an earlier attempt of this photo (before a Try again or a
+  // restart) is not this attempt's deadline: the row's stamp has moved on.
+  if (image.heavyStartedAt !== heavyStartedAt) return { expired: false, workId: null };
+  const minutes = HEAVY_PHOTO_DEADLINE_MS / 60_000;
+  await recordImageOutcomeImpl(
+    ctx,
+    { jobId: image.jobId, imageId },
+    { kind: "failed", error: `no answer from the heavy preprocess service within ${minutes} minutes` },
+    "heavy",
+    "PHOTO_TIMED_OUT",
+  );
+  console.warn(
+    JSON.stringify({
+      msg: "placeholder_photo_timed_out",
+      jobId: image.jobId,
+      entryIndex: image.entryIndex,
+      heavyStartedAt: image.heavyStartedAt,
+      escalatedAt: image.escalatedAt,
+    }),
+  );
+  return { expired: true, workId: image.workId ?? null };
+}
+
+/**
  * Put a job into its terminal failure state.
  *
  * `errorCode` is the low-cardinality tag (ZIP_REJECTED, EXTRACT_FAILED,
@@ -2011,6 +2173,8 @@ export async function markJobFailedImpl(
     errorDetail,
     finishedAt: Date.now(),
   });
+  // NEO-370: an intake run over this job may have settled with it.
+  await noteIntakeJobFinished(ctx, job.jobId);
 }
 
 /**
@@ -2070,6 +2234,8 @@ export async function markJobSucceededImpl(
     errorCode: undefined,
     errorDetail: undefined,
   });
+  // NEO-370: an intake run over this job may have settled with it.
+  await noteIntakeJobFinished(ctx, job.jobId);
 }
 
 // ---------------------------------------------------------------------------
@@ -2113,7 +2279,7 @@ export const getJobInternal = internalQuery({
 });
 
 /**
- * The successfully-processed images of a job, in zip order.
+ * The successfully-processed images of a job, in filename order.
  *
  * Order is not cosmetic: the scan-order fallback (`guardedAdjacencyFallback`)
  * pairs identity leftovers that sit next to each other in entry order, so
@@ -2151,6 +2317,8 @@ export const listDoneImagesForPairing = internalQuery({
       dhash: v.optional(v.string()),
       pairStatus: v.optional(v.union(v.literal("paired"), v.literal("unmatched"))),
       unpairedFrom: v.optional(v.array(v.number())),
+      // NEO-446: `computePairingDiff` leaves these out of the pairing.
+      setAside: v.optional(v.boolean()),
     }),
   ),
   handler: async (ctx, args) => {
@@ -2173,6 +2341,7 @@ export const listDoneImagesForPairing = internalQuery({
         dhash: r.dhash,
         pairStatus: r.pairStatus,
         unpairedFrom: r.unpairedFrom,
+        setAside: r.setAside,
       }));
   },
 });
@@ -2202,6 +2371,8 @@ export const getImageForDownload = internalQuery({
       imageId: v.id("placeholderImages"),
       /** Absent until the first mint for this image probes for it. */
       outputExtension: v.optional(v.string()),
+      /** NEO-481: the hand edit whose render is current; the mint serves it instead. */
+      editVersion: v.optional(v.number()),
     }),
   ),
   handler: async (ctx, args) => {
@@ -2220,7 +2391,7 @@ export const getImageForDownload = internalQuery({
     // that looks like an infrastructure fault rather than "not ready yet".
     if (image.status !== "done") return null;
 
-    return { imageId: image._id, outputExtension: image.outputExtension };
+    return { imageId: image._id, outputExtension: image.outputExtension, editVersion: image.edit?.version };
   },
 });
 
@@ -2343,10 +2514,18 @@ export const getPlaceholderJob = query({
       // (lastActivityAt + PLACEHOLDER_STREAM_IDLE_MS), which is the difference
       // between a batch that "vanished" and one the user was warned about.
       lastActivityAt: v.optional(v.number()),
+      // NEO-459: who closed a stream job, passed through as stored; absent until
+      // one is closed. "user" means "no more photos are coming", from whichever
+      // screen or app said it. The intake screen treats that close landing while
+      // it watches as Done pressed.
+      streamClosedBy: v.optional(v.union(v.literal("user"), v.literal("idle"))),
       totalImages: v.number(),
       processedImages: v.number(),
       failedImages: v.number(),
       rejectedEntries: v.number(),
+      // Why they were rejected (NEO-446). Example names never include one that
+      // failed name validation; a client still renders them as plain text.
+      rejected: v.optional(rejectedSummaryValidator),
       pairCount: v.number(),
       // Identity-resolver calls as measured by the FINAL pairing run — see the
       // schema comment. Diagnostics, not spend: since NEO-170 the identity is
@@ -2391,10 +2570,12 @@ export const getPlaceholderJob = query({
       startedAt: job.startedAt,
       finishedAt: job.finishedAt,
       lastActivityAt: job.lastActivityAt,
+      streamClosedBy: job.streamClosedBy,
       totalImages: job.totalImages ?? 0,
       processedImages: job.processedImages ?? 0,
       failedImages: job.failedImages ?? 0,
       rejectedEntries: job.rejectedEntries ?? 0,
+      rejected: job.rejected,
       pairCount: pairs.length,
       resolverCalls: job.resolverCalls ?? 0,
       heavyWarming: deriveHeavyWarming(images),
@@ -2448,6 +2629,18 @@ export const listPlaceholderImages = query({
       queuedAt: v.optional(v.number()),
       escalatedAt: v.optional(v.number()),
       settledAt: v.optional(v.number()),
+      // NEO-411: Try again presses so far, so the screen hides the button at the cap.
+      retries: v.optional(v.number()),
+      // NEO-446: the collector set this loose photo aside.
+      setAside: v.optional(v.boolean()),
+      // NEO-481: the current hand edit's version (the photo's URL key: a new
+      // version is a new file), the renders reserved so far (the cap is
+      // PLACEHOLDER_MAX_IMAGE_EDITS), and an edit still rendering or whose
+      // render failed. The full `edit` and `autoCrop` stay out of this
+      // subscription; `photoEdits.photoEditSource` returns them on open.
+      editVersion: v.optional(v.number()),
+      edits: v.optional(v.number()),
+      pendingEdit: v.optional(pendingPhotoEditValidator),
     }),
   ),
   handler: async (ctx, args) => {
@@ -2480,6 +2673,11 @@ export const listPlaceholderImages = query({
       queuedAt: r.queuedAt,
       escalatedAt: r.escalatedAt,
       settledAt: r.settledAt,
+      retries: r.retries,
+      setAside: r.setAside,
+      editVersion: r.edit?.version,
+      edits: r.edits,
+      pendingEdit: r.pendingEdit,
       // `workId` is intentionally omitted — it is a handle into the workpool
       // component, not something a client has any use for.
     }));

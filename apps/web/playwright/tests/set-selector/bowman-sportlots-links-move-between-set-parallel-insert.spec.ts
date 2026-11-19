@@ -16,11 +16,13 @@
 // review fixture is consumed by the moves). Paused SportLots has its own
 // branches, both ending in hard asserts.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { expectAfterMarketplace } from "../../support/marketplace-wait";
 import {
   columnOption,
   columnSearch,
   drillToColdManufacturer,
   drillToSet,
+  openAttributesPanel,
   setBuilderReady,
 } from "../../support/set-builder";
 import type { Page } from "@playwright/test";
@@ -34,7 +36,11 @@ const NEW_PARALLEL = "Red Ink";
 const TYPE_PARALLEL = "Parallel";
 const TYPE_INSERT = "Insert";
 
-/** The live marketplace round trip of a Parallels sync (the flow's 240 s). */
+/**
+ * The live two-sided round trip of a Parallels sync (the flow's 240 s), kept while SportLots is
+ * live. Paused it is BuySportsCards alone (the fake, NEO-552) and waited on by the marketplace
+ * rule: 7 s plus the seconds the column's "Waiting on BuySportsCards" line is up.
+ */
 const PARALLELS_FETCH = 240_000;
 
 const drillBowman = (page: Page, env: Parameters<typeof drillToSet>[1]) =>
@@ -73,8 +79,10 @@ test(
       await reconcile.getByRole("button", { name: /Save [0-9]+ sets/ }).click();
       await expect(reconcile).toBeHidden();
     } else {
-      await expect(page.getByRole("listbox", { name: `${TYPE_PARALLEL}s` })).toBeVisible({
-        timeout: PARALLELS_FETCH,
+      // Measured 1.8 s at most on the #487 merge-group run (GUIDE).
+      await expectAfterMarketplace(page, page.getByRole("listbox", { name: `${TYPE_PARALLEL}s` }), {
+        platform: "BuySportsCards",
+        what: "the Parallels column's sync",
       });
       await expect(reconcile).toBeHidden();
     }
@@ -88,12 +96,16 @@ test(
     // render. `.*` after the name admits a twin suffix ` (#<id>)`.
     await expect(page.getByRole("button", { name: new RegExp(`^Parallels: ${COLOUR}.* — change$`) })).toBeVisible();
     await expect(columnSearch(page, "Parallels")).toBeHidden();
-    await expect(page.getByRole("button", { name: "Sync Sub-Variants" })).toBeHidden();
     await expect(page.getByRole("button", { name: "Add custom Sub-Variants" })).toBeHidden();
     await expect(page.getByText(new RegExp(`Attributes for ${COLOUR}`))).toBeVisible();
     await expectAccessible(page, { label: "Blue parallel with its attributes" });
 
     // ── Promote to set (live only: paused, Blue carries no SportLots link) ──
+    // NEO-569: the Set actions sit in the open panel only, and a parallel starts
+    // it shut. Open it, and anchor on the pencil the open panel draws beside the
+    // title (R2), so the paused branch's absence is read on the open panel.
+    await openAttributesPanel(page);
+    await expect(page.getByRole("button", { name: `Rename ${COLOUR}`, exact: true })).toBeVisible();
     if (env.SL_PAUSED) {
       await expect(page.getByRole("button", { name: "Promote to set" })).toBeHidden();
     } else {
@@ -108,6 +120,8 @@ test(
       // ── Make parallel of…: the promoted set goes back under Bowman's Blue ──
       await drillToSet(page, env, { sport: "Baseball", year: "2026", manufacturer: BRAND, set: SL_SET });
       await expect(page.getByText(new RegExp(`Attributes for ${SL_SET}`))).toBeVisible();
+      // NEO-569: Set actions sit in the open panel (a set opens itself unless closed this session).
+      await openAttributesPanel(page);
       await page.getByRole("button", { name: "Make parallel of…" }).click();
       const makeParallel = page.getByRole("dialog", { name: `Make “${SL_SET}” a parallel` });
       await expect(makeParallel).toBeVisible();
@@ -131,6 +145,8 @@ test(
       await columnOption(page, "Variant Types", TYPE_PARALLEL).click();
       await pickParallel(page, SOURCE_ROW);
       await expect(page.getByText(new RegExp(`Attributes for ${SOURCE_ROW}`))).toBeVisible();
+      // NEO-569: Set actions sit in the open panel, and a parallel starts it shut.
+      await openAttributesPanel(page);
       await page.getByRole("button", { name: "Make insert of…" }).click();
       const makeInsert = page.getByRole("dialog", { name: new RegExp(`^Make “${SOURCE_ROW}” (an insert|a parallel)$`) });
       await expect(makeInsert).toBeVisible();
@@ -170,7 +186,11 @@ test(
       // store had nothing to report (the usual re-sync); a store with something
       // to say keeps its message instead. Either way: it ran, and did not fail.
       await expect(page.getByText("Syncing Parallels")).toBeVisible();
-      await expect(page.getByText("Syncing Parallels")).toBeHidden({ timeout: PARALLELS_FETCH });
+      await expectAfterMarketplace(page, page.getByText("Syncing Parallels"), {
+        platform: "BuySportsCards",
+        what: "the Parallels re-sync finishing",
+        state: "hidden",
+      });
       await expect(page.getByText(/Sync failed: could not load (variants|parallels)/)).toBeHidden();
       await expect(
         syncParallels.or(page.getByText(/Stored [0-9]+ (variants|parallels) \(single platform\)|Some (variants|parallels) were not stored/)).first(),
@@ -194,14 +214,19 @@ test(
       await columnOption(page, "Parallels", NEW_PARALLEL).click();
 
       // CLAIM 10, POSITIVE HALF (NEO-334, live only: paused, no moved row exists
-      // to stand on): an insert has a sub-variants column. The pick collapsed
-      // the Parallels column to its card (the gate: the click took, R2), and the
-      // seventh column's own "Sync Sub-Variants" is on screen.
+      // to stand on): an insert has a sub-variants column (this one has Red
+      // Ink, so NEO-425 shows it). The pick collapsed the Parallels column to
+      // its card (the gate: the click took, R2), and the seventh column's own
+      // "+ Custom" is on screen. Sub-variants are NB's own rows, so that column
+      // carries no Sync button (NEO-425).
       await expect(
         page.getByRole("button", { name: new RegExp(`^Parallels: ${NEW_PARALLEL}.* — change$`) }),
       ).toBeVisible();
-      await expect(page.getByRole("button", { name: "Sync Sub-Variants" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Add custom Sub-Variants" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Sync Sub-Variants" })).toBeHidden();
 
+      // NEO-496: the sources live inside the attributes panel, closed below the set.
+      await openAttributesPanel(page);
       await expect(page.getByText("Multi-source sets")).toBeVisible();
       const chip = page.getByRole("button", { name: new RegExp(`^Remove .*${NEW_PARALLEL}$`) });
       await chip.click();

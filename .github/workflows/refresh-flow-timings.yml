@@ -48,7 +48,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # shard-plan.mjs is plain node (no dependencies), so no npm ci.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: apps/web/.nvmrc
 
@@ -64,12 +64,17 @@ jobs:
           rids=()
           # This repo's own branches only: a fork PR runs its own copy of the
           # workflow, so its artifacts are not trusted input.
-          for rid in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/pr-pipeline.yml/runs?status=success&per_page=30" \
-                         --jq '.workflow_runs[] | select(.head_repository.full_name == env.GITHUB_REPOSITORY) | .id'); do
-            if gh run download "$rid" -n pw-merged -D "dl/$rid" 2>/dev/null && [ -f "dl/$rid/results.json" ]; then
-              rids+=("$rid")
-              [ "${#rids[@]}" -ge 5 ] && break
-            fi
+          # NEO-546: merge_group runs first. Once the merge queue is live, E2E
+          # runs there and pull_request runs are cheap (no pw-merged).
+          for ev in merge_group pull_request; do
+            for rid in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/pr-pipeline.yml/runs?status=success&event=$ev&per_page=30" \
+                           --jq '.workflow_runs[] | select(.head_repository.full_name == env.GITHUB_REPOSITORY) | .id'); do
+              if gh run download "$rid" -n pw-merged -D "dl/$rid" 2>/dev/null && [ -f "dl/$rid/results.json" ]; then
+                rids+=("$rid")
+                [ "${#rids[@]}" -ge 5 ] && break
+              fi
+            done
+            [ "${#rids[@]}" -ge 5 ] && break
           done
           if [ "${#rids[@]}" -eq 0 ]; then
             echo "No recent successful 'PR Pipeline' run has a pw-merged artifact (expired, or none ran E2E) — nothing to refresh."

@@ -1,6 +1,7 @@
 # Unit Test Author — Agent Memory Index
 
 - [Feedback adversarial pass patterns](feedback_adversarial_pass_patterns.md) — What an adversarial unit-test pass on an already-well-tested NeonBinder feature (NEO-101) actually found — where the real gaps hide when the author already wrote thoro…
+- [NEO-611 roster players tests](reference_neo611_roster_players_tests.md) — epoch helper, budget fixture, held asserts, source pin, boundary + twinOfKey quirks
 - [Feedback batch mutation same row staleness](feedback_batch_mutation_same_row_staleness.md) — A batch mutation that OCC-checks baseVersion per decision, using a workingVersion map it updates after each write, will falsely mark every decision after the first on…
 - [Feedback concurrent agent commit scoping](feedback_concurrent_agent_commit_scoping.md) — When another agent shares this worktree, `git commit -m` after `git add <paths>` still commits their pre-staged files too — use `git commit -F <msgfile> -- <paths>` in…
 - [Project convex test patterns](project_convex_test_patterns.md) — convex-test patterns confirmed working in this repo — calling internal functions directly, spying on structured console.log lines, and simulating stale/concurrent stat…
@@ -33,3 +34,20 @@
 - [NEO-325 security/a11y round tests](reference_neo325_security_a11y_round_tests.md) — real refresh under stubbed login, Date.now skew deadlines, status-region filter, twice-mapped fixture, equivalent mutants
 - [NEO-335 team answer commit tests](reference_neo335_team_answer_commit_tests.md) — re-sync queue asserts count a delta, 501-id paging, leaf default vs teamNone, rows keyed by ref
 - [NEO-331 picker ranking test patterns](reference_neo331_picker_ranking_test_patterns.md) — ranked mock shape, radio level helpers, convex-test window fixtures, NaN limit, alias-hit client filter
+- [NEO-415 eBay test patterns](reference_neo415_ebay_test_patterns.md) — convex-test ids vs the real SKU/id checks, fake-eBay fetch class, product code moving under you
+- [NEO-452 held intake test patterns](reference_neo452_held_intake_test_patterns.md) — realZone switch, two-frame pick, double-layer guards, aria-disabled "false", break-check by inverse replace
+- [RealAddCardsTab harness](reference_realaddcardstab_test_harness.md) — mocked Dropzone, status-role noise, runExtract fetch stub shape
+- [Axe break-check plant](reference_axe_break_check_plant.md) — plant aria-live="bogus" not aria-hidden (RTL skips hidden); hash-guarded restore in shared worktrees
+- [NEO-535 title cut loop test patterns](reference_neo535_title_cut_loop_test_patterns.md) — tsx for exact strings, STOP-era fuzz invariants, box-seeded commit fixtures, leftOutOfTitle takes text
+- [XHR guard and fake XHR](xhr-guard-and-fake-xhr.md) — guard refuses XHR; installFakeXhr; R2-env convex-test needs fetch stub + cancelScheduled
+- [NEO-450 sync failure box tests](reference_neo450_sync_failure_box_tests.md) — locate via aria-describedby, stored vs fresh alert mocks, thenable for re-throw/null handlers
+- [NEO-487 lane/wait test patterns](reference_neo487_bsc_lane_wait_test_patterns.md) — stop-rule/cooldown/wait-edge recipes, ledger chain timing, safe shared-worktree mutation runner
+- [NEO-500 pick list apply tests](reference_neo500_pick_list_apply_tests.md) — truncated-read fixture + boundary control, getDocumentSize cap proof, cleared-literal check
+- [NEO-527 paused mint + title fixture](reference_neo527_paused_mint_and_title_fixture.md) — stub PAUSED_PLATFORMS_ENV, resume-links-onto-NB-row recipe, copy-features-down so leaks reach titles
+- [NEO-483 background chain tests](reference_neo483_background_chain_test_patterns.md) — scheduled args array, stub arg widening, timeout retry doubles reads, token-guard break-checks
+- [Fake-BSC miss store tests](reference_fake_bsc_miss_store_test_patterns.md) — unref timer hang, owner reachability, dist break-checks, sheet drift fixtures
+- [NEO-555 probe/capture adversarial](reference_neo555_probe_capture_adversarial.md) — shallow-freeze trap, signal guard, body-read leak, break-check by revert
+- [NEO-556 No Team adversarial patterns](reference_neo556_no_team_adversarial_patterns.md) — oracle cartesian, ?raw source pins, client-vs-server commit agreement
+- [NEO-609 title levels tests](reference_neo609_title_levels_test_patterns.md) — atFullLength padding, refill hides city cuts, Proof parity fixture, tsx probe loop
+- [NEO-581 countSeq + busy window](reference_neo581_countseq_and_busy_window.md) — which door seq checks bite; busy-at-zero label window is unobservable
+- [NEO-592 gate parity patterns](reference_neo592_gate_parity_patterns.md) — origin/main differential via sibling copy, db probe, outside-in call counting, mutant runner

@@ -6,8 +6,11 @@
 // mirrors the title. Every claim below is that one rule seen from a different
 // side, on a type the operator titled by hand:
 //
-//   1. "Inserts" is an Insert type: its column reads "Inserts", and an insert
-//      under it opens the Sub-Variants column, which takes a sub-variant.
+//   1. "Inserts" is an Insert type: its column reads "Inserts", Group
+//      Parallels can nest one insert under another, and the insert that then
+//      has a sub-variant opens the Sub-Variants column (NEO-425: the column
+//      shows only for an insert that has some, and Group Parallels is the
+//      door to the first one).
 //   2. Singular and plural are one word: "Insert" beside "Inserts" is refused.
 //   3. "Parallel" is a Parallel type: an insert under it opens NO Sub-Variants
 //      column, and its checklist holds the build-from-Base stand-in instead of
@@ -18,6 +21,10 @@
 //   5. An EMPTY type renamed "Base" becomes the Base: terminal (no Variants
 //      column), its checklist hangs off the type, and the Base mapping panel
 //      answers. A second type renamed "Base" is refused.
+//   6. NEO-496 (NQ2): with a card on that Base, the "Parallel" type's
+//      Parallels of Base section lists the parallel row, which has no
+//      marketplace id, as one to build (never skipped for want of a link), and
+//      a run copies Base's card onto it with no marketplace badge.
 //
 // R2 - WHY HAND-MADE TYPES: before NEO-334 the kind was a flag that only a sync
 // conferred, so a type an operator typed in had no kind at all and every claim
@@ -34,13 +41,15 @@
 // the very creates it needs. Nothing is deleted; the set is the debris.
 //
 // MINTED NAMES are single tokens: `vtk<token>` (set) and `vtkins` / `vtksub` /
-// `vtkpar` / `vtkpro` / `vtksec` + token (rows), from env.ATTEMPT_TOKEN, which
+// `vtkpar` / `vtkpro` / `vtksec` + token (rows), and claim 6's Base card
+// `vtknum<token>` / `Vtkcard<token>`, from env.ATTEMPT_TOKEN, which
 // carries the project marker, so desktop and mobile never meet. The kind words
 // themselves ("Inserts", "Insert", "Parallel", "Base", "Promos") are the inputs
 // under test and are deliberately NOT minted: the per-attempt set scopes them.
 //
 // R9: the Sport > Year > Manufacturer > Set drill goes through drillToCustom.
-// The variant types and rows are created inline from the selected set, because
+// The variant types and rows are created inline from the selected set (the
+// sub-variant as an insert, then moved under its insert by Group Parallels), because
 // the drill helpers cannot drill to two of these types: they wait for
 // `${type}s` as the Variants header, which would be "Insertss" for "Inserts",
 // and "Base" has no Variants column at all (claim 5).
@@ -65,7 +74,9 @@ import {
   columnOption,
   columnSelection,
   pick,
+  openAttributesPanel,
 } from "../../support/set-builder";
+import { addCardViaForm, editCardButton } from "../../support/cards";
 import type { Page } from "@playwright/test";
 
 /** A refusal rendered in a role=alert line (the custom form's, or the rename's). */
@@ -84,6 +95,8 @@ async function repickVariantType(page: Page, from: string, name: string) {
 
 /** Open the attributes panel's rename field for the option it is showing. */
 async function openRename(page: Page, current: string) {
+  // NEO-569: the pencil sits in the open panel only, and a variant type starts it shut.
+  await openAttributesPanel(page);
   await page.getByRole("button", { name: `Rename ${current}`, exact: true }).click();
   const field = page.getByRole("textbox", { name: `Edit name for ${current}` });
   await expect(field).toBeVisible();
@@ -101,6 +114,12 @@ test(
     const PARALLEL_ROW = `vtkpar${T}`;
     const PROMO_TYPE = `vtkpro${T}`;
     const SECOND_TYPE = `vtksec${T}`;
+    const CARD_NUMBER = `vtknum${T}`;
+    const CARD_NAME = `Vtkcard${T}`;
+    const panel = page.getByRole("region", { name: "Set attributes panel" });
+    const edit = panel.getByRole("button", { name: "Edit attributes" });
+    const hide = panel.getByRole("button", { name: "Hide attributes" });
+    const baseTag = page.getByTitle("Titled Base, so this type holds the set's base checklist.");
 
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
@@ -139,22 +158,36 @@ test(
     // Positive after the negative: the column is back on its card, and "Inserts" is still the pick.
     await expect(columnSelection(page, "Variant Types", "Inserts")).toBeVisible();
 
-    // ── CLAIM 1, continued: AN INSERT UNDER "Inserts" OPENS THE SUB-VARIANTS COLUMN ──
+    // ── CLAIM 1, continued: AN INSERT UNDER "Inserts" TAKES A SUB-VARIANT ──
+    // NEO-425: an insert with no sub-variants opens no column, so the first
+    // one comes from Group Parallels: SUB is made as an insert, then moved
+    // under INSERT. The door is shown only under an Insert type.
     await addCustomEntry(page, "Inserts", INSERT, { confirm: "required" });
+    await addCustomEntry(page, "Inserts", SUB, { confirm: "required" });
     await columnOption(page, "Inserts", INSERT).click();
     await expect(columnSelection(page, "Inserts", INSERT)).toBeVisible();
 
-    // The Sub-Variants column is there. Its "+ Custom" is named from its Sync
-    // button ("Sync Sub-Variants" -> "Add custom Sub-Variants"), a name no other
-    // column carries; the column's own header reads "Parallels", so it is
-    // reached by these button names, not by a heading.
-    await expect(page.getByRole("button", { name: "Add custom Sub-Variants" })).toBeVisible();
-    await addCustomEntry(page, "Sub-Variants", SUB, { confirm: "required" });
+    const grouping = page.getByRole("dialog", { name: "Group Parallels" });
+    await page.getByRole("button", { name: "Group Parallels" }).click();
+    await expect(grouping.getByText(/Drag inserts under a parent/)).toBeVisible();
+    await grouping.getByRole("checkbox", { name: `Select ${SUB}` }).click();
+    await grouping.getByText(`Parallels of "${INSERT}"`).click();
+    await expect(grouping.getByText("1 promotion, 0 demotions")).toBeVisible();
+    await grouping.getByRole("button", { name: "Save 1 change" }).click();
     // A refusal here would mean "Inserts" was not read as an Insert type (the
-    // server guard assertSubVariantParent reads the parent type's TITLE). The row
-    // is in the column.
-    const subRow = page.getByRole("option").filter({ has: page.getByText(SUB, { exact: true }) });
+    // server guard assertSubVariantParent reads the parent type's TITLE), and
+    // the dialog would stay open on its error.
+    await expect(grouping).toBeHidden();
+
+    // The Sub-Variants column is there, holding the row. Its "+ Custom" is
+    // named from the column's noun ("Add custom Sub-Variants"), a name no
+    // other column carries; the column's own header reads "Parallels", so it
+    // is reached by that button name, not by a heading. Sub-variants are NB's
+    // own rows, so the column has no Sync button.
+    const subRow = columnOption(page, "Parallels", SUB);
     await expect(subRow).toBeVisible();
+    await expect(page.getByRole("button", { name: "Add custom Sub-Variants" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Sync Sub-Variants" })).toBeHidden();
     await expectAccessible(page, { label: "Sub-Variants column under an Insert type" });
 
     // ── CLAIM 3: "Parallel" IS A PARALLEL TYPE, SO THERE IS NO SUB-VARIANTS COLUMN ──
@@ -163,8 +196,9 @@ test(
 
     await addCustomEntry(page, "Parallels", PARALLEL_ROW, { confirm: "required" });
     // Scoped to the Parallels listbox: the Base-parallels section under the
-    // columns lists this row too ("<row> - skipped: not linked to a marketplace
-    // yet"), and must not be what gets clicked.
+    // columns can name this row too, and must not be what gets clicked. (No
+    // marketplace id is no reason to skip it: since NEO-496 an unlinked
+    // parallel is built like any other, claim 6.)
     await columnOption(page, "Parallels", PARALLEL_ROW).click();
     // The pick has rendered: its column is on its card. The Sub-Variants column
     // is decided in the SAME render (it reads the selection and the
@@ -200,9 +234,31 @@ test(
     await expect(panelFor(page, "Inserts")).toBeVisible();
     await expectAccessible(page, { label: "Rename refused while sub-variants exist" });
 
-    // The field stays open holding "Promos" after a refusal, so replace it.
-    await field.fill("Insert");
-    await field.press("Enter");
+    // NEO-569: the panel will not shut over an open name field. A press on "Hide
+    // attributes" blurs the field (which sends "Promos" again, refused again), is
+    // itself refused, and hands focus to the field with what was typed still in it.
+    // A refused name is the hold a real browser can keep still: an accepted one
+    // closes the field as soon as its save lands.
+    await hide.click();
+    await expect(field).toBeFocused();
+    await expect(field).toHaveValue("Promos");
+    await expect(refusal(page, /only live under an Insert type/)).toBeVisible();
+    // The re-sent save has answered (the field is read-only while it is in flight).
+    await expect(field).toBeEditable();
+    await expect(hide).toBeVisible();
+    await expect(edit).toHaveCount(0);
+    await expectAccessible(page, { label: "Hide refused while the name field is open" });
+    // Escape lets the field go; the next press shuts the panel, and focus parks on its toggle.
+    await field.press("Escape");
+    await expect(field).toHaveCount(0);
+    await hide.click();
+    await expect(edit).toBeFocused();
+    await expect(panelFor(page, "Inserts")).toBeVisible();
+
+    // Same kind, so the rename goes through.
+    const sameKind = await openRename(page, "Inserts");
+    await sameKind.fill("Insert");
+    await sameKind.press("Enter");
     // Same kind (insert -> insert), so the guard lets it through. The header is
     // the stored row, still the selection.
     await expect(panelFor(page, "Insert")).toBeVisible();
@@ -241,10 +297,21 @@ test(
     await expect(page.getByRole("button", { name: `Add custom ${PROMO_TYPE}s` })).toBeHidden();
     // The panel header is the stored title, with the static Base tag beside it ...
     await expect(panelFor(page, "Base")).toBeVisible();
-    await expect(page.getByTitle("Titled Base, so this type holds the set's base checklist.")).toBeVisible();
+    await expect(baseTag).toBeVisible();
     // ... and the checklist hangs off the type itself, with no variant picked.
     await expect(page.getByRole("button", { name: "Open add card form" })).toBeVisible();
     await expectAccessible(page, { label: "A type titled Base: terminal, with its checklist" });
+    // NEO-569: shut, the panel keeps its title and drops the Base tag with the pencil and the delete.
+    await hide.click();
+    await expect(edit).toBeVisible();
+    await expect(panelFor(page, "Base")).toBeVisible();
+    await expect(baseTag).toHaveCount(0);
+    await expect(panel.getByRole("button", { name: "Rename Base", exact: true })).toHaveCount(0);
+    await expect(panel.getByRole("button", { name: "Delete Base", exact: true })).toHaveCount(0);
+    await edit.click();
+    await expect(baseTag).toBeVisible();
+    // Claim 6's source: one hand-made card on the Base.
+    await addCardViaForm(page, { cardNumber: CARD_NUMBER, playerName: CARD_NAME });
 
     // ── CLAIM 5b: A SECOND TYPE RENAMED "Base" IS REFUSED ──
     await addCustomEntry(page, "Variant Types", SECOND_TYPE, { confirm: "required" });
@@ -258,7 +325,37 @@ test(
     // DRAFT copy, see the header. The one-Base rule runs before the sibling
     // clash in renameSelectorOption, so this is the sentence, not the same-word one.
     await expect(refusal(page, /already has a Base/)).toBeVisible();
-    // The title stands: the spec ends on a positive.
+    // The title stands.
     await expect(panelFor(page, SECOND_TYPE)).toBeVisible();
+
+    // ── CLAIM 6 (NEO-496, NQ2): A PARALLEL WITH NO MARKETPLACE ID IS BUILT FROM BASE ──
+    // Rows with and without marketplace ids behave the same (product invariant 6): the section
+    // counts the row as one to build, says its copies carry no link, and names nothing blocked
+    // or skipped.
+    await repickVariantType(page, SECOND_TYPE, "Parallel");
+    const section = page.getByRole("region", { name: "Parallels of Base" });
+    await expect(
+      section.getByText(/^1 parallel, all empty\. 1 has no marketplace link yet, so its cards copy over without one\. /),
+    ).toBeVisible();
+    await expect(section.getByText(/ — (blocked|skipped)/i)).toHaveCount(0);
+    const build = section.getByRole("button", { name: "Build 1 parallel from Base" });
+    await expect(build).toBeVisible();
+    await expectAccessible(page, { label: "Parallels of Base on a hand-made set, its parallel unlinked" });
+    // Empty, so nothing asks before replacing: the run starts on the press.
+    await build.click();
+    await expect(section.getByRole("heading", { name: "Base parallels — 1 built" })).toBeVisible();
+    await expect(
+      section.getByRole("listitem").filter({ hasText: new RegExp(`^${PARALLEL_ROW} — Built 1 card`) }),
+    ).toBeVisible();
+    await expectAccessible(page, { label: "Base parallels run on an unlinked parallel" });
+
+    // The copy is on the parallel, with no marketplace badge ("BSC" / "SL" on a linked card).
+    await columnOption(page, "Parallels", PARALLEL_ROW).click();
+    await expect(columnSelection(page, "Parallels", PARALLEL_ROW)).toBeVisible();
+    await expect(editCardButton(page, CARD_NUMBER)).toBeVisible();
+    await expect(page.getByText("BSC", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("SL", { exact: true })).toHaveCount(0);
+    // The spec ends on a positive: the card is still listed.
+    await expect(editCardButton(page, CARD_NUMBER)).toBeVisible();
   },
 );

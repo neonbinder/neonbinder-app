@@ -123,6 +123,21 @@ describe("light palette contrast (NEO-356 spec)", () => {
   });
 });
 
+describe("the divider (rule), both modes", () => {
+  // A divider is quiet, not a control: it has no 3:1 bar. It must still show on every ground it is
+  // drawn on (dark's old rule was the graphite card's own tone, 1.00:1, so a divider in a raised panel
+  // vanished), and stay a step under rule-strong, the card and panel edge.
+  for (const mode of ["dark", "light"] as const) {
+    it(`${mode}: rule shows on surface, raised and raised-deep, and is quieter than rule-strong on each`, () => {
+      for (const bg of ["surface", "raised", "raised-deep"] as TokenRole[]) {
+        const rule = contrastRatio(tokenHex("rule", mode), tokenHex(bg, mode));
+        const strong = contrastRatio(tokenHex("rule-strong", mode), tokenHex(bg, mode));
+        expect({ bg, shows: rule >= 1.2, quieter: rule < strong }).toEqual({ bg, shows: true, quieter: true });
+      }
+    });
+  }
+});
+
 const PICK_HUES = ["pink", "blue", "green", "purple", "orange", "teal", "amber", "red", "emerald"] as const;
 
 describe("hued picks and badges, both modes", () => {
@@ -183,6 +198,99 @@ describe("NeonButton's fills (NEO-356)", () => {
       }
     }
   });
+});
+
+describe("named pairs a screen relies on (DESIGN.md, Notices)", () => {
+  // Reconcile's paused / unasked pane paints notice-warn-ink straight on the
+  // dialog's raised-deep ground; Match Cards' outline Keep buttons paint
+  // neon-green-text on the same ground. Pinned by name so a palette change
+  // that breaks either screen says which one.
+  const PAIRS: [TextRole, SurfaceRole][] = [
+    ["notice-warn-ink", "raised-deep"],
+    ["neon-green-text", "raised-deep"],
+  ];
+  for (const mode of ["dark", "light"] as const) {
+    it(`${mode}: each reads 4.5:1`, () => {
+      for (const [fg, bg] of PAIRS) {
+        const ratio = contrastRatio(tokenHex(fg, mode), tokenHex(bg, mode));
+        expect({ fg, bg, ok: ratio >= 4.5 }).toEqual({ fg, bg, ok: true });
+      }
+    });
+  }
+});
+
+describe("the danger notice is neon pink, never red or salmon (NEO-606)", () => {
+  // Jason, 2026-11-18: "there shouldn't be any salmon, that is not one of our
+  // colors. errors are neon pink." One pink for errors: the ink IS
+  // neon-pink-text, so the adversarial sweep below holds it to that role's bars
+  // (TEXT_NEVER_ON). This pins that, the pink hue of all three roles, and the
+  // ink on its own tinted ground over the page and a card.
+  const px = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  const over = (fg: string, alpha: number, bg: string) =>
+    `#${px(fg)
+      .map((c, i) => Math.round(alpha * c + (1 - alpha) * px(bg)[i]).toString(16).padStart(2, "0"))
+      .join("")}`;
+  /** Hue (degrees) of a `#rrggbb` colour in OKLCH. */
+  const oklchHue = (hex: string) => {
+    const [r, g, b] = px(hex).map((c) => {
+      const x = c / 255;
+      return x <= 0.04045 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
+    });
+    const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+    const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+    const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+    const a = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s;
+    const bb = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s;
+    return ((Math.atan2(bb, a) * 180) / Math.PI + 360) % 360;
+  };
+  const colourIn = (value: string) => /oklch\([^)]*\)|#[0-9a-f]{6}/i.exec(value)?.[0] ?? "";
+
+  for (const [mode, css] of [
+    ["dark", dark],
+    ["light", light],
+  ] as const) {
+    it(`${mode}: the ink is neon-pink-text and carries its bars`, () => {
+      expect(css["notice-danger-ink"]).toBe("var(--neon-pink-text)");
+      expect(tokenHex("notice-danger-ink", mode)).toBe(tokenHex("neon-pink-text", mode));
+      expect(TEXT_NEVER_ON[mode]["notice-danger-ink"]).toEqual(TEXT_NEVER_ON[mode]["neon-pink-text"]);
+    });
+
+    it(`${mode}: ink, rule and ground are all in the neon pink's hue band`, () => {
+      const hexes = [
+        tokenHex("notice-danger-ink", mode),
+        cssColorToHex(css["notice-danger-rule"]),
+        cssColorToHex(colourIn(css["notice-danger-bg"])),
+      ];
+      for (const hex of hexes) {
+        const hue = oklchHue(hex);
+        expect({ hex, ok: hue > 340 && hue < 365 }).toEqual({ hex, ok: true });
+      }
+    });
+
+    // The CardPairingModal error wells sit on `field`; the CardTitlesStep
+    // short-name refusal sits on `raised-deep`.
+    it(`${mode}: the ink reads 4.5:1 on field and on raised-deep`, () => {
+      const ink = tokenHex("notice-danger-ink", mode);
+      for (const surface of ["field", "raised-deep"] as SurfaceRole[]) {
+        const ratio = contrastRatio(ink, tokenHex(surface, mode));
+        expect({ mode, surface, ok: ratio >= 4.5, ratio }).toEqual({ mode, surface, ok: true, ratio });
+      }
+    });
+
+    it(`${mode}: the ink reads 4.6:1 on its own ground over the page and a card; the rule reaches 3:1 on both`, () => {
+      const ink = tokenHex("notice-danger-ink", mode);
+      const rule = cssColorToHex(css["notice-danger-rule"]);
+      const translucent = css["notice-danger-bg"].startsWith("color-mix");
+      const tint = cssColorToHex(colourIn(css["notice-danger-bg"]));
+      for (const surface of ["surface", "raised"] as SurfaceRole[]) {
+        const under = tokenHex(surface, mode);
+        const ground = translucent ? over(tint, 0.3, under) : tint;
+        // 4.6, not 4.5: protects the margin (dark over raised measured 4.88).
+        expect({ mode, surface, ink: contrastRatio(ink, ground) >= 4.6 }).toEqual({ mode, surface, ink: true });
+        expect({ mode, surface, rule: contrastRatio(rule, under) >= 3 }).toEqual({ mode, surface, rule: true });
+      }
+    });
+  }
 });
 
 describe("adversarial: every text and ink role, both modes", () => {

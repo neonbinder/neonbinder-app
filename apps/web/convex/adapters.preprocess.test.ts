@@ -32,9 +32,16 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { isNonRetryableError } from "@convex-dev/workpool";
+import {
+  ENTRY_TOO_MANY_PIXELS,
+  ENTRY_UNDECODABLE,
+  isRasterTooLargeError,
+  terminalEntryErrorCode,
+} from "./lib/extractRejections";
 import { getFunctionName } from "convex/server";
 import type { ActionCtx } from "./_generated/server";
 import {
+  callDeriveCopyPhotos,
   callExtract,
   callProcessEntryFast,
   callProcessEntryHeavy,
@@ -321,6 +328,77 @@ describe("error taxonomy — terminal statuses stop the pool immediately", () =>
       callProcessEntryHeavy(stubCtx(), { jobId: "j", userId: "u", entryIndex: 0 }),
     );
     expect(isNonRetryableError(err)).toBe(true);
+  });
+});
+
+describe("NEO-446: the pixel-ceiling 413 round-trips through the real adapter", () => {
+  // The service's body (services/preprocess/app/main.py) is { error_code, detail }.
+  const body = { error_code: "ENTRY_TOO_MANY_PIXELS", detail: "image has 70000000 pixels, over the 65000000 limit" };
+
+  test("the constant is the code the service sends", () => {
+    expect(ENTRY_TOO_MANY_PIXELS).toBe(body.error_code);
+  });
+
+  test.each([
+    ["fast", callProcessEntryFast],
+    ["heavy", callProcessEntryHeavy],
+  ] as const)("the %s /process-entry error is one isRasterTooLargeError accepts", async (_tier, call) => {
+    stubFetch(async () => errorResponse(413, body));
+    const err = await captureThrow(() => call(stubCtx(), { jobId: "j", userId: "u", entryIndex: 0 }));
+    expect(isNonRetryableError(err)).toBe(true);
+    const message = String((err as Error).message);
+    expect(parsePreprocessErrorCode(message)).toBe(ENTRY_TOO_MANY_PIXELS);
+    expect(isRasterTooLargeError(message)).toBe(true);
+    // As the workpool hands it to the hook: prefixed by the runtime, or enveloped.
+    expect(isRasterTooLargeError(`Uncaught Error: ${message}`)).toBe(true);
+    expect(isRasterTooLargeError(JSON.stringify({ __convexWorkpoolNonRetryable: true, message }))).toBe(true);
+  });
+
+  test("a different 413 from the same adapter is not read as a too-big photo", async () => {
+    stubFetch(async () => errorResponse(413, { error_code: "INPUT_TOO_LARGE" }));
+    const err = await captureThrow(() => callExtract(stubCtx(), { jobId: "j", userId: "u" }));
+    expect(isRasterTooLargeError(String((err as Error).message))).toBe(false);
+  });
+
+  test("a 413 with no machine code is not read as a too-big photo", async () => {
+    stubFetch(async () => new Response("<html>too large</html>", { status: 413 }));
+    const err = await captureThrow(() =>
+      callProcessEntryFast(stubCtx(), { jobId: "j", userId: "u", entryIndex: 0 }),
+    );
+    expect(isRasterTooLargeError(String((err as Error).message))).toBe(false);
+  });
+});
+
+describe("NEO-484: the not-an-image 422 round-trips through the real adapter", () => {
+  // The service's body (services/preprocess/app/main.py) is { error_code, detail }.
+  const body = { error_code: "ENTRY_UNDECODABLE", detail: "cannot identify image file" };
+
+  test("the constant is the code the service sends", () => {
+    expect(ENTRY_UNDECODABLE).toBe(body.error_code);
+  });
+
+  test.each([
+    ["fast", callProcessEntryFast],
+    ["heavy", callProcessEntryHeavy],
+  ] as const)("the %s /process-entry error is terminal and reads as ENTRY_UNDECODABLE", async (_tier, call) => {
+    stubFetch(async () => errorResponse(422, body));
+    const err = await captureThrow(() => call(stubCtx(), { jobId: "j", userId: "u", entryIndex: 0 }));
+    expect(isNonRetryableError(err)).toBe(true);
+    const message = String((err as Error).message);
+    expect(parsePreprocessErrorCode(message)).toBe(ENTRY_UNDECODABLE);
+    expect(terminalEntryErrorCode(message)).toBe(ENTRY_UNDECODABLE);
+    // As the workpool hands it to the hook: prefixed by the runtime, or enveloped.
+    expect(terminalEntryErrorCode(`Uncaught Error: ${message}`)).toBe(ENTRY_UNDECODABLE);
+    expect(
+      terminalEntryErrorCode(JSON.stringify({ __convexWorkpoolNonRetryable: true, message })),
+    ).toBe(ENTRY_UNDECODABLE);
+    expect(isRasterTooLargeError(message)).toBe(false);
+  });
+
+  test("a different 422 from the same adapter is not read as not-an-image", async () => {
+    stubFetch(async () => errorResponse(422, { error_code: "ZIP_REJECTED" }));
+    const err = await captureThrow(() => callExtract(stubCtx(), { jobId: "j", userId: "u" }));
+    expect(terminalEntryErrorCode(String((err as Error).message))).toBeUndefined();
   });
 });
 
@@ -775,6 +853,37 @@ describe("per-call fetch timeouts (NEO-299)", () => {
   });
 });
 
+describe("no 300 s cut under the call budget (NEO-411)", () => {
+  // Node's built-in fetch gives up waiting for response headers after 300 s,
+  // below the 330/400 s budgets above. Every preprocess call goes through a
+  // dispatcher with that cut switched off, so AbortSignal.timeout is the bound.
+  test("process-entry and warm-up calls carry the preprocess dispatcher", async () => {
+    const inits: Array<RequestInit | undefined> = [];
+    stubFetch(async (_url, init) => {
+      inits.push(init);
+      return new Response(JSON.stringify(PROCESS_OK), { status: 200 });
+    });
+
+    await callProcessEntryHeavy(stubCtx(), { jobId: "j", userId: "u", entryIndex: 0 });
+    await callWarmupHeavy(stubCtx());
+
+    expect(inits).toHaveLength(2);
+    const [entry, warm] = inits.map((i) => (i as { dispatcher?: unknown } | undefined)?.dispatcher);
+    expect(entry).toBeDefined();
+    expect(warm).toBe(entry);
+  });
+
+  test("a network failure names its cause in the thrown error", async () => {
+    stubFetch(async () => {
+      throw new TypeError("fetch failed", { cause: { code: "UND_ERR_HEADERS_TIMEOUT" } });
+    });
+
+    await expect(
+      callProcessEntryHeavy(stubCtx(), { jobId: "j", userId: "u", entryIndex: 0 }),
+    ).rejects.toThrow(/fetch failed \(UND_ERR_HEADERS_TIMEOUT\)/);
+  });
+});
+
 describe("escalation hints — FAST decline baseline + dhash (NEO-315 D4)", () => {
   const WIRE_BASELINE = { rotation_degrees: 90, confidence: 0.75, text_count: 42 };
   const DECLINE_WITH_HINTS = {
@@ -994,5 +1103,74 @@ describe("escalation hints — FAST decline baseline + dhash (NEO-315 D4)", () =
     });
     expect(bodies[1]).not.toHaveProperty("dhash");
     expect(bodies[2]).toEqual({ job_id: "j", user_id: "u", entry_index: 0 });
+  });
+});
+
+describe("callDeriveCopyPhotos (NEO-427)", () => {
+  const ARGS = { jobId: "job-1", userId: "user_a", entryIndex: 4 };
+  const OK = {
+    image: Buffer.from("the image").toString("base64"),
+    thumb: Buffer.from("the thumb").toString("base64"),
+    content_type: "image/jpeg",
+  };
+  const okResponse = (body: unknown = OK) =>
+    new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+
+  beforeEach(() => {
+    vi.stubEnv("NEONBINDER_PREPROCESS_URL", "http://localhost:8081");
+    vi.stubEnv("NEONBINDER_PREPROCESS_FAST_URL", "http://localhost:8082");
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  test("goes to the fast service with ids, never a path, and decodes both sizes", async () => {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    stubFetch(async (url, init) => {
+      calls.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+      return okResponse();
+    });
+    const out = await callDeriveCopyPhotos(stubCtx(), ARGS);
+    expect(calls).toEqual([
+      {
+        url: "http://localhost:8082/derive-copy-photos",
+        body: { job_id: "job-1", user_id: "user_a", entry_index: 4 },
+      },
+    ]);
+    expect(Buffer.from(out.image).toString()).toBe("the image");
+    expect(Buffer.from(out.thumb).toString()).toBe("the thumb");
+    expect(out.contentType).toBe("image/jpeg");
+  });
+
+  test("a gone scan is terminal and carries its code", async () => {
+    stubFetch(async () => errorResponse(404, { error_code: "OUTPUT_NOT_FOUND" }));
+    const err: unknown = await callDeriveCopyPhotos(stubCtx(), ARGS).catch((e: unknown) => e);
+    expect(isNonRetryableError(err)).toBe(true);
+    expect(parsePreprocessErrorCode((err as Error).message)).toBe("OUTPUT_NOT_FOUND");
+  });
+
+  test("a 404 with no code carries no code", async () => {
+    stubFetch(async () => new Response("Not Found", { status: 404 }));
+    const err = (await callDeriveCopyPhotos(stubCtx(), ARGS).catch((e: unknown) => e)) as Error;
+    expect(parsePreprocessErrorCode(err.message)).toBeUndefined();
+  });
+
+  test("a busy service is retryable", async () => {
+    stubFetch(async () => errorResponse(429, {}));
+    const err: unknown = await callDeriveCopyPhotos(stubCtx(), ARGS).catch((e: unknown) => e);
+    expect(isNonRetryableError(err)).toBe(false);
+  });
+
+  test.each([
+    ["an unknown content type", { ...OK, content_type: "image/svg+xml" }],
+    ["a missing content type", { image: OK.image, thumb: OK.thumb }],
+    ["a missing image", { thumb: OK.thumb, content_type: "image/jpeg" }],
+    ["an empty thumb", { ...OK, thumb: "" }],
+    ["a non-base64 image", { ...OK, image: "not base64!" }],
+    ["a non-string image", { ...OK, image: 12 }],
+  ])("refuses %s", async (_label, body) => {
+    stubFetch(async () => okResponse(body));
+    await expect(callDeriveCopyPhotos(stubCtx(), ARGS)).rejects.toThrow(/derive-copy-photos/);
   });
 });

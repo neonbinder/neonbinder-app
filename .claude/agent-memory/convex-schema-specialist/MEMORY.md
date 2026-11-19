@@ -6,7 +6,7 @@
 - [Patterns service derived field validators](patterns_service_derived_field_validators.md) — Convex validator rule for this repo — columns written from an external service response get loose validators, columns our own code produces get unions; plus the return…
 - [Project neo170 placeholder batch schema](project_neo170_placeholder_batch_schema.md) — NEO-170 placeholder batch pipeline — the three-table design (placeholderJobs/Images/Pairs), its load-bearing invariants, and the review findings from 2026-08-17
 - [Project neo21 cross release home set](project_neo21_cross_release_home_set.md) — NEO-21 cross-release cards — cardChecklist.selectorOptionId is the immutable "home"/printed-in pointer; guest appearances go in the cardCrossListings junction table
-- [Reference typecheck convex changes](reference_typecheck_convex_changes.md) — How to typecheck apps/web/convex changes — which tsconfig matters, the known-failing baseline, and getting deps into a fresh worktree
+- [Reference typecheck convex changes](reference_typecheck_convex_changes.md) — convex tsconfig is the gate; a new module needs api.d.ts regenerated (tests hide it); completeness check vs parallel builders
 - [Staging tables scope per operator](staging-tables-scope-per-operator.md) — Per-selectorOption staging tables must be scoped by operator (createdByUserId), because multiple admins sync the same shared set concurrently
 - [Strict returns drift is invisible to typecheck](strict-returns-drift-is-invisible-to-typecheck.md) — whole-doc `returns` copies refuse at runtime, not compile; convex-test validates returns, so test every reader; or strip a derived copy in the public helper
 - [Transient side-table checklist](transient-side-table-checklist.md) — a table keyed on a selectorOptions/cardChecklist id must join the reset steps (4 toEqual blocks), the delete sweep, holdings note, ops doc and the subtree-wipe graph
@@ -20,3 +20,18 @@
 - [Tightening a validator shared with stored drafts](tightening-a-validator-shared-with-stored-drafts.md) — args+returns shared validators tighten only in the handler; required args make auth tests vacuous; reset runs after deploy
 - [Per-card derived state hook points](per-card-derived-state-hook-points.md) — every card insert/delete/move/re-parent site; moves cross sets; ledger flushed once per mutation
 - [Schema pins: text scan vs export walk](schema-pins-text-scan-vs-export-walk.md) — wipe-graph pin greps table-block text; reference-seed pin walks schema.export(); ids in a shared validator const hit only the second
+- [Cached lookup answer must reverify membership](cached-lookup-answer-must-reverify-membership.md) — a cached name→id answer confirmed by get alone survives rename/alias/sport removal; re-check membership in memory; Convex arrays cap at 8,192
+- [Table-number discovery by normalizeId](table-number-discovery-by-normalize-id.md) — normalizeId is a SYNC syscall: budget = 1 s execution, cost = numbers x pending tables per query; start at 10001; convex-test cannot pin it
+- [Outbox rows per platform, seq-guarded clear](outbox-rows-per-platform-seq-guarded-clear.md) — change outbox: row per (owner, platform, item); upsert bumps seq; drainer deletes only at the seq it pushed
+- [Workpool cancel does not stop running work](workpool-cancel-does-not-stop-running-work.md) — cancel only blocks retries; the running attempt's real result or 'canceled' still hits onComplete later; reset-in-place rows need a generation guard (workId or context gen)
+- [Reference-seed tests run under vitest](reference-seed-tests-run-under-vitest.md) — `node --test` on scripts/reference-seed dies at import even on main; use `npx vitest run scripts/reference-seed`
+- [Edit counter allocates write-once versions](edit-counter-allocates-write-once-versions.md) — reserve bumps the cap counter = version; commit first-wins on expectVersion/token; lineage on the row
+- [Live status rows: one writer per row](live-status-rows-one-writer-per-row.md) — hot-loop UI status: row per action invocation, patch by _id, op-keyed, no shared counter, expiry at insert
+- [Card lastUpdated is re-sync baseVersion](card-lastupdated-is-resync-baseversion.md) — NEO-203 review gates applyFields on it; card backfills of undiffed fields must not bump it
+- [Character caps are not byte caps](character-caps-are-not-byte-caps.md) — 120-char name = up to 360 B; worst checklist row 10.3 KB not 3.6; byte-cap every bulk text shape via getConvexSize
+- [Card-derived table checklist](card-derived-table-checklist.md) — strict getCardChecklist returns, removeCardRow, subtree wipe graph, E2E reset drain, pin test, parallel copy
+- [Version-stamp rewind pattern](version-stamp-rewind-pattern.md) — "absent = old version" rewinds: stamp at insert, give-up path for page-capped reads, never move the stored cursor back
+- [Filter after take caps read rows](filter-after-take-caps-read-rows.md) — capped read + in-memory filter hides shown rows; index the filter field; undefined sorts before numbers, so "unknown or >0" = two ranges
+- [Derived card field from an entity fact](derived-card-field-from-entity-fact.md) — settle at the link seam (id→doc param), compute pre-insert, follow-rule recompute off the live entity
+- [Retiring a features key](retiring-a-features-key.md) — every mint/copy point of a features key incl. backfillCardFeatures seed list; strip leaves sport rows
+- [Concurrent reads are batched](convex-concurrent-reads-are-batched.md) — Promise.all reads go to storage in batches (16 OSS); "system operations" error = 15 s syscall wall time

@@ -1,4 +1,5 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useSetNameInTitlesTarget } from "./set-name-in-titles-jump";
 import { PencilSquareIcon, TrashIcon } from "@heroicons/react/24/outline";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import { useConvex, useMutation, useQuery } from "convex/react";
@@ -23,23 +24,27 @@ import {
   isBrandUnknownRow,
 } from "../../convex/selectorSyncMatch";
 import { activateOnEnter } from "@/lib/dom/activate-on-enter";
+import { EDIT_ATTRIBUTES_LABEL } from "./control-labels";
 import { ConfirmDialog } from "../modules/confirm-dialog";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
-import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
-import { useTheme } from "@/src/theme/ThemeProvider";
-import type { ThemeMode } from "@/src/theme/theme-mode";
-import { tokenHex } from "@/src/theme/tokens";
-import { teamFullName, teamShortName } from "../../lib/teams/team-name";
+import { teamFullName } from "../../lib/teams/team-name";
 import { FeatureValueControl } from "./FeatureValueControl";
 import { AUTOGRAPH_CHOICE_LABEL, AUTOGRAPH_FORMATS } from "./entity-review-steps";
 import CardPrefixRow from "./CardPrefixRow";
-import RenameEntityControl from "./RenameEntityControl";
+import RenameEntityControl, { type RenameEntityHandle } from "./RenameEntityControl";
 import { variantTypeKind } from "../../convex/variantRole";
+import { titleChainFacts } from "../../convex/listingShortName";
+import { setDescriptionForTitles } from "../../convex/features/listingInputs";
 import MoveSetToBrandControl from "./MoveSetToBrandControl";
 import MakeParallelControl, { type ReshapeStep } from "./MakeParallelControl";
 import MakeInsertControl from "./MakeInsertControl";
 import PromoteToSetControl from "./PromoteToSetControl";
+import PublishedChecklistPanel from "./PublishedChecklistPanel";
 import TeamPicker, { type TeamPickerLabels } from "./TeamPicker";
+import { NO_TEAM_LABELS, NO_TEAM_TEXT } from "./team-picker-labels";
+import EveryCardPlayerControl from "./EveryCardPlayerControl";
+import SetLeagueRow from "./SetLeagueRow";
+import NoTeamCardsControl from "./NoTeamCardsControl";
 import {
   ALL_SIDES,
   joinLabels,
@@ -72,9 +77,12 @@ import {
  * editable at every set-side level, copied down at creation like the rest.
  *
  * Collapsible so it never pushes the card list off-screen. Collapsed shows
- * a single summary bar (breadcrumb + an "Edit attributes" toggle). Default
+ * one compact line: the title and the "Edit attributes" toggle, nothing else
+ * (NEO-569; a run's ledger is the one thing kept on screen). Default
  * collapsed only when `defaultCollapsed` (cards present); expanded otherwise
- * so the setName-with-no-cards flow needs no extra tap.
+ * so the setName-with-no-cards flow needs no extra tap. NEO-496: the set
+ * level itself always opens by default, its official checklist first,
+ * unless the operator closed it on that set this tab session.
  *
  * None of these fields are actually required — blank is a perfectly
  * acceptable, complete answer for most of them (not every card is
@@ -138,6 +146,7 @@ import {
  * old `focus:outline-none` with only a colour change left a keyboard operator
  * a focus indicator in name only.
  */
+const HIDE_ATTRIBUTES_LABEL = "Hide attributes";
 const ATTRIBUTES_TOGGLE_CLASS =
   "text-xs py-1 rounded text-ink-3 hover:text-neon-green-text focus-outline";
 
@@ -157,7 +166,7 @@ function showsCardPrefix(level: Level, value: string): boolean {
 }
 
 /**
- * NEO-335 — where "Short name for titles" is edited: the set row, and the
+ * NEO-335 — where "Set name in titles" is edited: the set row, and the
  * levels cards hang from (`showsCardPrefix`). The title reads the nearest
  * self-or-ancestor short name up to the set, so a set-wide name lives on the
  * set and an insert can carry its own.
@@ -166,8 +175,6 @@ function showsShortNameRow(level: Level, value: string): boolean {
   return level === "setName" || showsCardPrefix(level, value);
 }
 
-/** Set-side levels, root to leaf: which ancestor is nearest. */
-const SET_SIDE_ORDER: readonly string[] = ["setName", "variantType", "insert", "parallel"];
 
 /**
  * NEO-277 — where the Team row is editable. Sport, year and manufacturer are
@@ -179,6 +186,57 @@ const TEAM_LEVELS: ReadonlySet<string> = new Set([
   "insert",
   "parallel",
 ]);
+
+/**
+ * NEO-496 — the set level opens this panel by default (Jason, 2026-11-12):
+ * the set's official checklist upload sits at its top, and a set is where an
+ * operator goes to give it one. Every other level keeps the caller's default
+ * (collapsed in the set builder, NEO-38). An operator who closes the panel
+ * on a set keeps it closed on that set for the rest of the tab session, so
+ * Back to the set or a re-pick never reopens what they put away.
+ * `sessionStorage` can throw (private windows, blocked site data), so every
+ * touch is guarded and the set simply opens by default if it does.
+ */
+const CLOSED_SETS_KEY = "nb.setAttributesClosedSets";
+/**
+ * NEO-496 (a11y audit) — the most sets remembered as closed; the oldest
+ * close is dropped first. A long session walks a few dozen sets at most, so
+ * this only keeps the stored list from growing without end.
+ */
+export const CLOSED_SETS_CAP = 200;
+
+function readClosedSets(): string[] {
+  try {
+    const raw = window.sessionStorage.getItem(CLOSED_SETS_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((id): id is string => typeof id === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberSetClosed(id: string, closed: boolean) {
+  try {
+    const rest = readClosedSets().filter((other) => other !== id);
+    // Newest last, so the oldest close is the one dropped at the cap.
+    const next = closed ? [...rest, id].slice(-CLOSED_SETS_CAP) : rest;
+    window.sessionStorage.setItem(CLOSED_SETS_KEY, JSON.stringify(next));
+  } catch {
+    // Storage unavailable: the set opens by default next time.
+  }
+}
+
+/** Whether the panel starts open on this row (see `CLOSED_SETS_KEY`). */
+function opensByDefault(
+  level: string | undefined,
+  id: string,
+  defaultCollapsed: boolean | undefined,
+): boolean {
+  if (level === "setName") return !readClosedSets().includes(id);
+  return !defaultCollapsed;
+}
 
 type Level =
   | "sport"
@@ -206,6 +264,7 @@ export default function SetAttributesPanel({
   onDeleted,
   onMoved,
   onReshaped,
+  sources,
 }: {
   selectorOptionId: Id<"selectorOptions">;
   /** Start collapsed (cards present) so the panel doesn't push them off-screen. */
@@ -235,6 +294,16 @@ export default function SetAttributesPanel({
    * division as `onDeleted` and `onMoved`.
    */
   onReshaped?: (path: ReshapeStep[]) => void;
+  /**
+   * NEO-496 — the row's marketplace sources (the set builder's
+   * `MultiSourcePanel`), drawn inside the open panel only. Attaching a second
+   * BSC or SportLots set happens, but it is the exception (Jason, 2026-11-12),
+   * so it no longer takes its own card above the panel: it sits behind
+   * "Edit attributes" with the rest of the row's settings. The owner decides
+   * whether there is one (it has the row the cards are read from); the source
+   * panel itself decides which levels it shows on.
+   */
+  sources?: ReactNode;
 }) {
   const row = useQuery(api.selectorOptions.getSelectorOptionById, {
     id: selectorOptionId,
@@ -261,17 +330,91 @@ export default function SetAttributesPanel({
     api.brandView.setManufacturerSlViaAllBrands,
   );
 
-  const [expanded, setExpanded] = useState(!defaultCollapsed);
-  const [toast, setToast] = useState<string | null>(null);
-
+  // The row's level decides the default (NEO-496: open at the set level). The
+  // row may still be loading on the first render; the effect below settles
+  // it once the level is known, before the panel draws anything.
+  const rowLevel = row?.level;
+  /** The open body, for the toggle's `aria-controls`. */
+  const bodyId = useId();
+  const [expanded, setExpanded] = useState(() =>
+    opensByDefault(rowLevel, selectorOptionId, defaultCollapsed),
+  );
   // Re-evaluate the default whenever the source intent flips (cards
   // appear/disappear or the selected node changes). Without this, drilling
   // from a card-less set into a node with cards would keep the panel
-  // expanded (pushing the list down) because state initializes once.
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- re-evaluates the collapse default when the source intent flips; useState only initialises once
-    setExpanded(!defaultCollapsed);
-  }, [defaultCollapsed, selectorOptionId]);
+  // expanded (pushing the list down) because state initializes once. The
+  // level is in the key too: it is unknown until the row loads (NEO-496).
+  //
+  // Settled DURING render (the previous-value pattern), not in an effect:
+  // an effect lets the first paint of a newly picked row wear the previous
+  // row's open state, so for a frame the set's open panel (NEO-496) sat on
+  // the variant picked below it, and a reader checking which toggle is
+  // showing could act on the wrong one.
+  const openKey = `${selectorOptionId}|${rowLevel ?? ""}|${defaultCollapsed ? 1 : 0}`;
+  const [openSettledFor, setOpenSettledFor] = useState(openKey);
+  if (openSettledFor !== openKey) {
+    setOpenSettledFor(openKey);
+    setExpanded(opensByDefault(rowLevel, selectorOptionId, defaultCollapsed));
+  }
+  /**
+   * NEO-528 — the collapsed panel's "Edit attributes" toggle: where focus
+   * lands when the bulk control's finished ledger is dismissed with the panel
+   * shut (the ledger was all the control drew, so nothing of it is left).
+   */
+  const expandToggleRef = useRef<HTMLButtonElement | null>(null);
+  /**
+   * NEO-556 — the Team row itself: where a dismissed No Team run puts focus
+   * (the attributes toggle above is the fallback). Refs, never a document
+   * query, so a second panel on the page can never take it.
+   */
+  const teamRowRef = useRef<HTMLDivElement | null>(null);
+  // NEO-412 — the panel's two toasts, at most one showing: a confirmation or
+  // progress line (`toast`, the polite status region) and a failure
+  // (`failure`, the alert region). Raising either clears the other.
+  const [toast, setToast] = useState<string | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  // NEO-569 — what keeps the panel open. The name field (open or saving) and
+  // the delete confirm (open or busy) live inside the collapsible header; shut
+  // under them, the typed name, a refusal's reason and the "Deleting…" state
+  // would unmount with them. Each control reports here; `setOpen(false)` is a
+  // no-op while either holds, and the delete confirm's modal also makes the
+  // toggle inert (it is a sibling outside the dialog, reachable by a virtual
+  // cursor).
+  const [renameHeld, setRenameHeld] = useState(false);
+  /** The rename control's handle: where a refused toggle press sends focus. */
+  const renameRef = useRef<RenameEntityHandle>(null);
+  /**
+   * Set when the operator's own press shuts the panel. Shutting unmounts what
+   * had focus (the rename pencil the field hands focus to, a field in the
+   * body), which drops focus to <body>; the layout effect below parks it on
+   * the toggle instead.
+   */
+  const parkFocusOnToggle = useRef(false);
+  useLayoutEffect(() => {
+    if (expanded || !parkFocusOnToggle.current) return;
+    parkFocusOnToggle.current = false;
+    const active = document.activeElement;
+    if (!active || active === document.body) {
+      expandToggleRef.current?.focus({ preventScroll: true });
+    }
+  }, [expanded]);
+  const [deleteHeld, setDeleteHeld] = useState(false);
+  /** NEO-569 — the collapsed toggle's description (the set's team). */
+  const teamNoteId = useId();
+  // NEO-528 — bumped on every raise and keyed onto the toast's box, so the
+  // same sentence raised twice (a second "Saved, every new card gets X") is
+  // a new node in the live region and is read again, not a no-op.
+  const [toastSeq, setToastSeq] = useState(0);
+  // The one pending dismissal. Every toast replaces the one before it, so it
+  // also cancels that toast's timer: otherwise "Saving…"'s timer (or an older
+  // save's) wipes the "Saved" that followed it.
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+    },
+    [],
+  );
 
   // Derive the sport from the ancestor chain so we can drop features that
   // don't apply (e.g. "League" hidden for Pokemon).
@@ -286,21 +429,90 @@ export default function SetAttributesPanel({
     return chain.find((c) => c.level === "sport")?._id;
   }, [chain]);
 
+  // NEO-535 — the walker's "Trim Set name in titles" door lands here: the
+  // panel opens and the row's box takes focus (`set-name-in-titles-jump`).
+  // Counted rather than flagged, so a second trip re-runs the effect. Focused
+  // a frame late: the walker closing restores focus to its opener first. A
+  // collapsed panel may take a few frames to draw the box, so the look is
+  // retried for `SHORT_NAME_FRAMES`; if the box never shows, focus lands on
+  // the panel itself rather than staying wherever the walker left it.
+  const regionRef = useRef<HTMLDivElement | null>(null);
+  const [shortNameTrips, setShortNameTrips] = useState(0);
+  const openShortName = useCallback(() => {
+    setExpanded(true);
+    setShortNameTrips((n) => n + 1);
+  }, []);
+  useEffect(() => {
+    if (shortNameTrips === 0) return;
+    let frame = 0;
+    let tries = 0;
+    const look = () => {
+      const region = regionRef.current;
+      const field = region?.querySelector<HTMLElement>(
+        `[data-feat-key="${SHORT_NAME_FEATURE.key}"]`,
+      );
+      if (field) {
+        field.scrollIntoView({ block: "center" });
+        field.focus({ preventScroll: true });
+        return;
+      }
+      tries += 1;
+      if (tries < SHORT_NAME_FRAMES) {
+        frame = requestAnimationFrame(look);
+        return;
+      }
+      region?.scrollIntoView({ block: "start" });
+      region?.focus({ preventScroll: true });
+    };
+    frame = requestAnimationFrame(look);
+    return () => cancelAnimationFrame(frame);
+  }, [shortNameTrips]);
+
   const applicable = useMemo(() => {
     return EXPECTED_FEATURES.filter((f) => {
       if (f.hiddenAtLevels?.includes("set")) return false;
       // NEO-345 — rendered as its own row (`AUTOGRAPH_FORMAT_FEATURE`), saved
       // through `setAutographFormat` so the leaf's AU cards follow it.
       if (f.key === AUTOGRAPH_FORMAT_FEATURE.key) return false;
+      // NEO-569 — League is the row's own list of NB leagues (`SetLeagueRow`),
+      // never the retired free-text `features.league`.
+      if (f.key === "league") return false;
       if (!f.applicableSports) return true;
       if (!ancestorSport) return true;
       return f.applicableSports.includes(ancestorSport);
     });
   }, [ancestorSport]);
 
+  // NEO-569 — the shut panel shows only its title and the toggle, so the set's
+  // team reaches a screen reader as the toggle's description instead. The read
+  // is skipped while the panel is open (the Team row's own picker says it).
+  const collapsedTeamIds =
+    !expanded && row && TEAM_LEVELS.has(row.level as Level)
+      ? (row.teamIds ?? [])
+      : [];
+  const collapsedTeamRows = useQuery(
+    api.teams.getManyByIds,
+    collapsedTeamIds.length > 0 ? { ids: collapsedTeamIds } : "skip",
+  );
+
   if (!row || !chain) return null;
 
   const leafLevel = row.level as Level;
+  // The operator's own open or close. On a set it is remembered for the tab
+  // session (`CLOSED_SETS_KEY`); elsewhere the default is collapsed anyway.
+  const setOpen = (open: boolean) => {
+    // NEO-569: not while a rename or a delete confirm is in flight (see above).
+    if (!open && renameHeld) {
+      // Refused, and said so: focus goes to the name field, where the reason
+      // (or the saving state) is read, not left on the toggle.
+      renameRef.current?.focusField();
+      return;
+    }
+    if (!open && deleteHeld) return;
+    if (!open) parkFocusOnToggle.current = true;
+    setExpanded(open);
+    if (leafLevel === "setName") rememberSetClosed(selectorOptionId, !open);
+  };
   // NEO-334 — a variant type's title IS its kind (Jason, 2026-10-10): the
   // type titled "Base" is the set's Base. Read once for the header's tag and
   // the delete confirm.
@@ -312,21 +524,20 @@ export default function SetAttributesPanel({
   const ancestorYear = chain.find((c) => c.level === "year")?.value;
   const features = row.features ?? {};
   const teamIds: Array<Id<"teams">> = row.teamIds ?? [];
+  // NEO-556 — the Team default's third state. A row never stores both (the
+  // one writer refuses it); one that somehow did reads as its teams, the
+  // server's own rule (`teamDefaultOf`: a value that names a team wins).
+  const noTeamDefault = teamIds.length === 0 && row.noTeamDefault !== undefined;
   const showTeamRow = TEAM_LEVELS.has(leafLevel);
   const showCardPrefixRow = showsCardPrefix(leafLevel, row.value);
   const cardNumberPrefix = row.metadata?.cardNumberPrefix;
-  // NEO-335 — this row's own short name, and the one it inherits (the
-  // nearest ancestor's, up to the set) for the field's placeholder.
+  // NEO-335/535 — this row's own "Set name in titles", and the description
+  // this row's cards get without one, for the field's placeholder.
   const showShortNameRow = showsShortNameRow(leafLevel, row.value);
   const listingShortName = row.metadata?.listingShortName;
-  const leafDepth = SET_SIDE_ORDER.indexOf(leafLevel);
-  const inheritedShortName = chain
-    .filter((c) => {
-      const depth = SET_SIDE_ORDER.indexOf(c.level);
-      return depth >= 0 && depth < leafDepth && !!c.metadata?.listingShortName?.trim();
-    })
-    .sort((a, b) => SET_SIDE_ORDER.indexOf(b.level) - SET_SIDE_ORDER.indexOf(a.level))[0]
-    ?.metadata?.listingShortName?.trim();
+  const titlesDescription = showShortNameRow
+    ? setNameInTitlesFor(row, chain, features)
+    : undefined;
   // NEO-237: manufacturer rows only, and never the year's Unknown row — that
   // row holds the sets whose brand is NOT known, so a prefix on it is a
   // contradiction, and the server refuses one.
@@ -372,6 +583,43 @@ export default function SetAttributesPanel({
   // Breadcrumb: "Attributes for {leaf} ({levelLabel}) — a › b › c".
   const breadcrumb = chain.map((c) => c.value).join(" › ");
   const headerTitle = `Attributes for ${row.value} (${LEVEL_LABEL[leafLevel]})`;
+  // NEO-569 — said by the shut toggle, never drawn: "Team: Durham Bulls" (the
+  // full names), "Team: No Team", or nothing when the set has no team default.
+  const teamNote =
+    expanded || !showTeamRow
+      ? null
+      : teamIds.length > 0
+        ? // Only when every id resolved: a partial list reads as the whole.
+          collapsedTeamRows && collapsedTeamRows.length === teamIds.length
+          ? `Team: ${joinLabels(collapsedTeamRows.map((t) => teamFullName(t)))}`
+          : null
+        : noTeamDefault
+          ? `Team: ${NO_TEAM_TEXT}`
+          : null;
+
+  /**
+   * Put `message` in the `kind` toast, replacing whatever either toast shows
+   * and cancelling its dismissal. `dismissAfterMs` schedules this one's;
+   * without it the toast stays until the next one replaces it.
+   */
+  const raiseToast = (
+    kind: "status" | "failure",
+    message: string,
+    dismissAfterMs?: number,
+  ) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = null;
+    setToast(kind === "status" ? message : null);
+    setFailure(kind === "failure" ? message : null);
+    setToastSeq((n) => n + 1);
+    if (dismissAfterMs !== undefined) {
+      toastTimer.current = setTimeout(() => {
+        toastTimer.current = null;
+        setToast(null);
+        setFailure(null);
+      }, dismissAfterMs);
+    }
+  };
 
   /**
    * Raise a transient confirmation.
@@ -380,10 +628,35 @@ export default function SetAttributesPanel({
    * than an inline setToast: each caller raising a 6s toast has to agree on
    * the 6s.
    */
-  const showToast = (message: string) => {
-    setToast(message);
-    setTimeout(() => setToast(null), 6000);
+  const showToast = (message: string) => raiseToast("status", message, 6000);
+
+  /**
+   * NEO-556 — take the confirmation down early, when the operator has moved
+   * on to the next step it pointed at (the "Mark N teamless cards" confirm
+   * opening under it). A failure stays: it is news still to act on.
+   */
+  const dismissStatusToast = () => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = null;
+    setToast(null);
   };
+
+  /**
+   * NEO-412 — "Saving {label}…" while a write is in flight. It never dismisses
+   * itself: the save's own "Saved"/"Cleared"/"Failed" replaces it, so the
+   * panel never says Saved before the server has the value.
+   */
+  const showSavingToast = (label: string) =>
+    raiseToast("status", `Saving ${label}…`);
+
+  /**
+   * A failure stays up until the next toast replaces it, as it always has.
+   * It goes to the alert region, not the status one: it is news the operator
+   * must act on, not a confirmation. Routed through `raiseToast` so an
+   * earlier toast's timer cannot wipe it.
+   */
+  const showFailedToast = (message: string) =>
+    raiseToast("failure", `Failed: ${message}`);
 
   /**
    * NEO-217 — an empty value CLEARS the attribute; it is not a no-op.
@@ -408,13 +681,17 @@ export default function SetAttributesPanel({
     if (clearing ? features[key] === undefined : features[key] === trimmed) {
       return;
     }
-    // Optimistic confirmation — the mutation is a single-row patch
-    // (NEO-71-74), no propagation counts to report. "Saved {label}" is
-    // unchanged (Maestro asserts it); "Cleared {label}" is the new string,
-    // deliberately distinct so the toast never claims a value was stored.
-    showToast(clearing ? `Cleared ${label}` : `Saved ${label}`);
+    // NEO-412 — "Saving {label}…" while the write is in flight, and the
+    // confirmation only once it has landed: an optimistic "Saved" let a fast
+    // operator (and an E2E spec) act on a value the server did not have yet.
+    // The mutation is a single-row patch (NEO-71-74), no propagation counts
+    // to report. "Saved {label}" is unchanged (E2E asserts it); "Cleared
+    // {label}" is deliberately distinct so the toast never claims a value was
+    // stored.
+    showSavingToast(label);
     try {
       await setSelectorOptionFeature({ selectorOptionId, key, value: trimmed });
+      showToast(clearing ? `Cleared ${label}` : `Saved ${label}`);
     } catch (e) {
       // NEVER a raw `.message`. Production redacts a plain Error to "Server
       // Error", and even a surviving message reaches the client wrapped in
@@ -423,15 +700,15 @@ export default function SetAttributesPanel({
       // nothing useful or a request id. Only a ConvexError's `data` is text a
       // backend deliberately chose for a person, and `userFacingMessage` is
       // the one place that rule lives.
-      setToast(`Failed: ${userFacingMessage(e, `Could not save ${label}`)}`);
+      showFailedToast(userFacingMessage(e, `Could not save ${label}`));
     }
   };
 
   /**
    * NEO-291 — the Card prefix row's save. Same shape as `handleSaveFeature`
-   * (no-op on an unchanged value, optimistic toast, `userFacingMessage` on
-   * failure) with its own mutation, because the prefix is
-   * `metadata.cardNumberPrefix` rather than a `features` key. The server
+   * (no-op on an unchanged value, "Saving…" until the write lands,
+   * `userFacingMessage` on failure) with its own mutation, because the prefix
+   * is `metadata.cardNumberPrefix` rather than a `features` key. The server
    * trims and treats `""` as "remove the key", so the clear/save split here
    * is only for the toast's sake.
    */
@@ -444,23 +721,26 @@ export default function SetAttributesPanel({
     ) {
       return;
     }
-    showToast(clearing ? `Cleared ${label}` : `Saved ${label}`);
+    showSavingToast(label);
     try {
       await setSelectorOptionCardNumberPrefix({
         id: selectorOptionId,
         cardNumberPrefix: trimmed,
       });
+      showToast(clearing ? `Cleared ${label}` : `Saved ${label}`);
     } catch (e) {
-      setToast(`Failed: ${userFacingMessage(e, `Could not save ${label}`)}`);
+      showFailedToast(userFacingMessage(e, `Could not save ${label}`));
     }
   };
 
   /**
-   * NEO-335 — the "Short name for titles" row's save. The card prefix's
-   * shape: no-op on an unchanged value, optimistic toast, the server's own
-   * sentence on a refusal. The server trims, refuses control/invisible
-   * characters and anything past 60, and treats `""` as "remove the key".
-   * Existing titles are not rewritten; Regenerate reads the new name.
+   * NEO-335 — the "Set name in titles" row's save. The card prefix's
+   * shape: no-op on an unchanged value, "Saving…" until the write lands, the
+   * server's own sentence on a refusal. The server trims, refuses
+   * control/invisible characters and anything past 80, and treats `""` as
+   * "remove the key". Existing titles are not rewritten; Regenerate reads the
+   * new name, which is why "Saved" waits for the server (NEO-412): a
+   * Regenerate pressed on an early "Saved" read the old name.
    */
   const handleSaveListingShortName = async (value: string) => {
     const label = SHORT_NAME_FEATURE.label;
@@ -469,23 +749,24 @@ export default function SetAttributesPanel({
     if (clearing ? listingShortName === undefined : listingShortName === trimmed) {
       return;
     }
-    showToast(clearing ? `Cleared ${label}` : `Saved ${label}`);
+    showSavingToast(label);
     try {
       await setSelectorOptionListingShortName({
         id: selectorOptionId,
         listingShortName: trimmed,
       });
+      showToast(clearing ? `Cleared ${label}` : `Saved ${label}`);
     } catch (e) {
-      setToast(`Failed: ${userFacingMessage(e, `Could not save ${label}`)}`);
+      showFailedToast(userFacingMessage(e, `Could not save ${label}`));
     }
   };
 
   /**
    * NEO-345 — the "Autograph format" row's save. `handleSaveFeature`'s shape
-   * (no-op on an unchanged value, optimistic toast, the server's own sentence
-   * on a refusal) through `setAutographFormat`, which also carries the format
-   * onto the leaf's AU cards. `""` clears the leaf's format and touches no
-   * card.
+   * (no-op on an unchanged value, "Saving…" until the write lands, the
+   * server's own sentence on a refusal) through `setAutographFormat`, which
+   * also carries the format onto the leaf's AU cards. `""` clears the leaf's
+   * format and touches no card.
    */
   const handleSaveAutographFormat = async (value: string) => {
     const label = AUTOGRAPH_FORMAT_FEATURE.label;
@@ -494,23 +775,25 @@ export default function SetAttributesPanel({
     const current = features[AUTOGRAPH_FORMAT_FEATURE.key];
     if (clearing ? current === undefined : current === trimmed) return;
     if (!clearing && !(AUTOGRAPH_FORMATS as readonly string[]).includes(trimmed)) return;
-    showToast(clearing ? `Cleared ${label}` : `Saved ${label}`);
+    showSavingToast(label);
     try {
       await setAutographFormat({
         selectorOptionId,
         value: trimmed as (typeof AUTOGRAPH_FORMATS)[number] | "",
       });
+      showToast(clearing ? `Cleared ${label}` : `Saved ${label}`);
     } catch (e) {
-      setToast(`Failed: ${userFacingMessage(e, `Could not save ${label}`)}`);
+      showFailedToast(userFacingMessage(e, `Could not save ${label}`));
     }
   };
 
   /**
-   * NEO-237 — the Brand row's save. Unlike the other rows the toast waits for
-   * the server: a non-empty save can MOVE prefix-matching sets out of the
-   * year's Unknown row, and the count is the one thing worth saying about
-   * it ("Saved Brand · 3 sets moved out of Unknown"). A save that moved
-   * nothing, and a clear, read like every other row's.
+   * NEO-237 — the Brand row's save. The toast waits for the server, as every
+   * row's does since NEO-412, and here the answer carries news: a non-empty
+   * save can MOVE prefix-matching sets out of the year's Unknown row, and the
+   * count is the one thing worth saying about it ("Saved Brand · 3 sets
+   * moved out of Unknown"). A save that moved nothing, and a clear, read like
+   * every other row's.
    */
   const handleSaveSetNamePrefix = async (value: string) => {
     const label = "Brand";
@@ -534,11 +817,9 @@ export default function SetAttributesPanel({
             : `Saved ${label}`,
       );
     } catch (e) {
-      setToast(
-        `Failed: ${
-          prefixTakenRefusal(e, trimmed) ??
-          userFacingMessage(e, `Could not save ${label}`)
-        }`,
+      showFailedToast(
+        prefixTakenRefusal(e, trimmed) ??
+          userFacingMessage(e, `Could not save ${label}`),
       );
     }
   };
@@ -557,11 +838,9 @@ export default function SetAttributesPanel({
           : "Unlinked — SportLots sets no longer match this brand by name",
       );
     } catch (e) {
-      setToast(
-        `Failed: ${
-          slViaAllBrandsRefusal(e) ??
-          userFacingMessage(e, "Could not change the SportLots link")
-        }`,
+      showFailedToast(
+        slViaAllBrandsRefusal(e) ??
+          userFacingMessage(e, "Could not change the SportLots link"),
       );
     }
   };
@@ -578,120 +857,160 @@ export default function SetAttributesPanel({
 
   return (
     <div
-      className="border border-rule-strong rounded-lg bg-raised-deep/60 p-4 space-y-3"
+      // NEO-569: collapsed, the panel is one compact line (its title and the
+      // "Edit attributes" toggle), so it takes less padding than the open
+      // panel. `space-y-3` stays for a run ledger that is kept on screen.
+      className={`border border-rule-strong rounded-lg bg-raised-deep/60 space-y-3 focus-outline ${
+        expanded ? "p-4" : "px-4 py-2"
+      }`}
+      ref={regionRef}
+      // NEO-535: the "Trim Set name in titles" jump's fallback focus target;
+      // never a Tab stop.
+      tabIndex={-1}
       role="region"
       aria-label="Set attributes panel"
     >
-      {/* Breadcrumb header (fixes QA #2 — which level/column applies). */}
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
+      {showShortNameRow && <SetNameInTitlesTarget open={openShortName} />}
+      {/* Breadcrumb header (fixes QA #2 — which level/column applies).
+          NEO-569 (Jason, 2026-11-17): collapsed, this shows ONLY the title and
+          the "Edit attributes" toggle. The rename pencil, the Base tag, the
+          delete, the breadcrumb and the Set actions all come back with the
+          open panel, in the places they have always sat. */}
+      <div
+        className={`flex justify-between gap-3 ${expanded ? "items-start" : "items-center"}`}
+      >
+        <div className="relative min-w-0">
+          {/* NEO-569: the collapsed toggle's description. Always mounted (empty
+              when there is nothing to say) and `sr-only`: the closed bar shows
+              only the title and the toggle. `relative` on this box keeps the
+              absolute span from escaping the `truncate` clip (NEO-341). */}
+          <span id={teamNoteId} className="sr-only">
+            {teamNote}
+          </span>
           {/* NEO-96: the rename pencil sits immediately after the title
               because the title IS the name it edits — that adjacency is the
               only thing making it discoverable. The panel scopes itself to the
               deepest current selection at ANY level, so this one control
               renames sports, years, manufacturers, sets and variants alike. */}
           <div className="flex flex-wrap items-center gap-1.5">
-            <h3 className="text-sm font-semibold text-ink">
+            {/* NEO-499: `min-w-0 wrap-anywhere` (WizardChrome's h2 pattern). A
+                set name can be one unbroken token up to the 200-character
+                cap; as a flex item the heading's minimum width was that whole
+                token, so past about 100 characters it ran off a phone's right
+                edge, widened the page and put the page under the reader's
+                taps. Now the name breaks wherever it has to. */}
+            <h3 className="min-w-0 wrap-anywhere text-sm font-semibold text-ink">
               {headerTitle}
             </h3>
-            {/* NEO-239: every level renames, variantType included.
-                NEO-294: with ONE exception — the year's Unknown row, which is
-                frozen at the mutation. The pencil is replaced rather than
-                removed, so the answer to "why can't I rename this one" is
-                where the question gets asked.
-                NEO-334: a variant type's title IS its kind, so renaming one
-                to or from Base / Insert / Parallel changes what it is. The
-                server refuses that while rows sit beneath it, and the pencil
-                says why in its own refusal line under this header. */}
-            {brandUnknownRow ? (
-              <BrandUnknownRenameNotice value={row.value} />
-            ) : (
-              <RenameEntityControl
+            {expanded && (
+              <>
+              {/* NEO-239: every level renames, variantType included.
+                  NEO-294: with ONE exception — the year's Unknown row, which is
+                  frozen at the mutation. The pencil is replaced rather than
+                  removed, so the answer to "why can't I rename this one" is
+                  where the question gets asked.
+                  NEO-334: a variant type's title IS its kind, so renaming one
+                  to or from Base / Insert / Parallel changes what it is. The
+                  server refuses that while rows sit beneath it, and the pencil
+                  says why in its own refusal line under this header. */}
+              {brandUnknownRow ? (
+                <BrandUnknownRenameNotice value={row.value} />
+              ) : (
+                <RenameEntityControl
+                  ref={renameRef}
+                  id={selectorOptionId}
+                  currentValue={row.value}
+                  onBusyChange={setRenameHeld}
+                />
+              )}
+              {/* NEO-239: which variant type is the set's base is IDENTITY, not
+                  an attribute, so it sits with the name rather than in the grid
+                  below.
+                  NEO-334: the type titled "Base" IS the base (Jason,
+                  2026-10-10), so there is nothing to mark: "Mark as base set"
+                  and its mutation are gone, and a type becomes the base by
+                  being renamed "Base" with the pencil beside this tag. */}
+              {isBaseVariantType && <BaseSetTag />}
+              {/* NEO-219: the one sanctioned delete, next to the pencil for the
+                  same reason the pencil is next to the title — the title IS the
+                  row it acts on.
+                  NEO-239: this used to be wrapped in `canRenameSelectorRow(row)`,
+                  which meant "hide it on a variantType that is not custom". That
+                  predicate is gone with the custom concept — a row either carries
+                  marketplace ids or it does not, and both behave the same — so
+                  the gate is now the control's OWN, and it is a better one: on
+                  click it reads `getSelectorOptionHoldings` once (NEO-400: never
+                  subscribed, that read is too heavy to re-run on every write)
+                  and shows an explained refusal for a row with something below
+                  it, or the confirm when the row is genuinely empty. The server's
+                  emptiness check still runs independently. Nothing became
+                  deletable that the server would not already have let go. */}
+              <DeleteSelectorRowControl
+                // Keyed on the row: this panel does NOT remount when the
+                // selection moves, so without this a dialog opened for one row
+                // — or a revealed reason belonging to it — would survive onto
+                // the next one and ask its question about the wrong thing.
+                key={selectorOptionId}
                 id={selectorOptionId}
-                currentValue={row.value}
+                row={row}
+                level={leafLevel}
+                isBase={isBaseVariantType}
+                onDeleted={onDeleted}
+                onOpenChange={setDeleteHeld}
               />
+              </>
             )}
-            {/* NEO-239: which variant type is the set's base is IDENTITY, not
-                an attribute, so it sits with the name rather than in the grid
-                below, and stays visible while the panel is collapsed.
-                NEO-334: the type titled "Base" IS the base (Jason,
-                2026-10-10), so there is nothing to mark: "Mark as base set"
-                and its mutation are gone, and a type becomes the base by
-                being renamed "Base" with the pencil beside this tag. */}
-            {isBaseVariantType && <BaseSetTag />}
-            {/* NEO-219: the one sanctioned delete, next to the pencil for the
-                same reason the pencil is next to the title — the title IS the
-                row it acts on.
-                NEO-239: this used to be wrapped in `canRenameSelectorRow(row)`,
-                which meant "hide it on a variantType that is not custom". That
-                predicate is gone with the custom concept — a row either carries
-                marketplace ids or it does not, and both behave the same — so
-                the gate is now the control's OWN, and it is a better one: on
-                click it reads `getSelectorOptionHoldings` once (NEO-400: never
-                subscribed, that read is too heavy to re-run on every write)
-                and shows an explained refusal for a row with something below
-                it, or the confirm when the row is genuinely empty. The server's
-                emptiness check still runs independently. Nothing became
-                deletable that the server would not already have let go. */}
-            <DeleteSelectorRowControl
-              // Keyed on the row: this panel does NOT remount when the
-              // selection moves, so without this a dialog opened for one row
-              // — or a revealed reason belonging to it — would survive onto
-              // the next one and ask its question about the wrong thing.
-              key={selectorOptionId}
-              id={selectorOptionId}
-              row={row}
-              level={leafLevel}
-              isBase={isBaseVariantType}
-              onDeleted={onDeleted}
-            />
           </div>
-          {/* NEO-341: `relative` so this line's `truncate` clips the team's
-              `sr-only` "Team:" too. Unpositioned, that absolute span took
+          {/* NEO-341: `relative` so this line's `truncate` clips the `sr-only`
+              text in it too. Unpositioned, an absolute span took
               binder-layout's wrapper as its containing block, escaped the
-              clip at the end of the nowrap team name, and widened a 412px
-              page by ~50px, sliding the whole page (and the card drawer)
-              sideways on a phone. */}
-          <p className="relative text-xs text-ink-3 mt-0.5 truncate" title={breadcrumb}>
-            {breadcrumb}
-            {/* NEO-277: the set's team, said the way a collector says it —
-                "Bulls", in Durham Bulls blue — on the collapsed summary bar,
-                which is the state this panel spends almost all of its life in.
-                Only while collapsed: expanded, the picker two lines down shows
-                the same fact with the full name and a remove button, and a
-                chip that repeats it is an accessory to take off. */}
-            {!expanded && showTeamRow && teamIds.length > 0 && (
-              <SetTeamLivery teamIds={teamIds} />
-            )}
-          </p>
+              clip at the end of a nowrap run, and widened a 412px page by
+              ~50px, sliding the whole page (and the card drawer) sideways on
+              a phone.
+              NEO-569: open panel only. The team livery (NEO-277) and the No
+              Team summary (NEO-556) that used to ride this line while the
+              panel was shut are gone with it: the Team row below says both. */}
+          {expanded && (
+            <p className="relative text-xs text-ink-3 mt-0.5 truncate" title={breadcrumb}>
+              {breadcrumb}
+            </p>
+          )}
         </div>
-        {expanded ? (
-          <button
-            type="button"
-            onClick={() => setExpanded(false)}
-            onKeyDown={(e) => activateOnEnter(e, () => setExpanded(false))}
-            aria-label="Hide attributes"
-            className={`shrink-0 ${ATTRIBUTES_TOGGLE_CLASS}`}
-          >
-            Hide attributes ▴
-          </button>
-        ) : (
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => setExpanded(true)}
-              onKeyDown={(e) => activateOnEnter(e, () => setExpanded(true))}
-              aria-label="Edit attributes"
-              className={ATTRIBUTES_TOGGLE_CLASS}
-            >
-              Edit attributes ▾
-            </button>
-          </div>
-        )}
+        {/* NEO-496 (a11y audit): ONE button for both states, so toggling
+            keeps focus on it. Two elements swapped under the press and
+            dropped focus to <body>. Its name still says what a press does
+            ("Edit attributes" / "Hide attributes": specs and copy name
+            them), and `aria-expanded` says the state. */}
+        <button
+          ref={expandToggleRef}
+          type="button"
+          onClick={() => setOpen(!expanded)}
+          // NEO-569: Safari does not focus a button on a click, so an open name
+          // field would never blur (and so never commit or cancel) under the
+          // press. Take focus on the press, as Chrome does.
+          onMouseDown={(e) => {
+            if (renameHeld) e.currentTarget.focus();
+          }}
+          onKeyDown={(e) => activateOnEnter(e, () => setOpen(!expanded))}
+          aria-label={expanded ? HIDE_ATTRIBUTES_LABEL : EDIT_ATTRIBUTES_LABEL}
+          aria-expanded={expanded}
+          // NEO-569: the delete confirm is modal and this button sits outside
+          // it; inert keeps a virtual cursor from pressing it under the dialog.
+          inert={deleteHeld || undefined}
+          // The set's team, said while shut (not drawn). No description when
+          // the set has no team default.
+          aria-describedby={teamNote ? teamNoteId : undefined}
+          // NEO-569: the body is not mounted while collapsed, so there is
+          // nothing for `aria-controls` to name until it opens.
+          aria-controls={expanded ? bodyId : undefined}
+          className={`shrink-0 ${ATTRIBUTES_TOGGLE_CLASS}`}
+        >
+          {expanded ? `${HIDE_ATTRIBUTES_LABEL} ▴` : `${EDIT_ATTRIBUTES_LABEL} ▾`}
+        </button>
       </div>
 
       {/* NEO-306: the things that can be DONE to this row, as its own row of
-          visibly-button chips under the breadcrumb — out of the title line,
+          visibly-button chips under the breadcrumb (NEO-569: open panel only) — out of the title line,
           where they were grey text beside the name and did not read as
           controls. The title line keeps what is about the row's identity:
           its name (pencil), whether it is the base (tag) and the delete.
@@ -706,7 +1025,7 @@ export default function SetAttributesPanel({
           Every control keeps its own `key` prefix: the panel does not remount
           when the selection moves, and two siblings sharing a key is the one
           thing React refuses to reconcile (NEO-279, CI run 34930152576). */}
-      {hasRowActions && (
+      {expanded && hasRowActions && (
         <div
           role="group"
           aria-label="Set actions"
@@ -771,51 +1090,178 @@ export default function SetAttributesPanel({
         </div>
       )}
 
-      {toast && (
-        // NEO-47: position the save confirmation FIXED in the viewport, not
-        // in-flow above the grid. A save made while scrolled down to the
-        // feature rows would otherwise render the toast off-screen above
-        // the fold — invisible to the user (and the e2e assertion).
-        //
-        // NEO-239: outside the `expanded` branch, so a confirmation raised
-        // while the panel is collapsed is still seen. (The header control that
-        // first needed this, "Mark as base set", went with NEO-334.)
-        <div
-          className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-raised-deep border border-neon-green-text/60 rounded text-xs text-neon-green-text shadow-lg"
-          role="status"
-          aria-live="polite"
-        >
-          {toast}
+      {/* NEO-47: position the save confirmation FIXED in the viewport, not
+          in-flow above the grid. A save made while scrolled down to the
+          feature rows would otherwise render the toast off-screen above the
+          fold — invisible to the user (and the e2e assertion).
+
+          NEO-239: outside the `expanded` branch, so a confirmation raised
+          while the panel is collapsed is still seen. (The header control that
+          first needed this, "Mark as base set", went with NEO-334.)
+
+          NEO-412: both regions are always mounted (empty when idle): a live
+          region inserted with its text is not reliably announced; a text
+          change on a mounted node is. The box is drawn only while there is a
+          message. The status region is the panel's one `status`; a failure
+          is the separate `alert`, in the negative colour. */}
+      {/* NEO-499: the wrapper spans the viewport less a 1rem gutter each side
+          (`inset-x-4`) and centres the box in that band, so the box can grow
+          to the band's full width and a toast quoting a long unbroken set
+          name breaks anywhere inside it on a phone. (A fixed box at
+          `left-1/2 -translate-x-1/2` shrink-wraps to half the viewport, so a
+          width cap on it never binds.) EntityColumn's toast copies this
+          wrapper verbatim; change both together. */}
+      <div className="pointer-events-none fixed inset-x-4 top-20 z-50 flex flex-col items-center">
+        <div role="status" aria-live="polite" aria-atomic="true" className="max-w-full">
+          {toast && (
+            <div
+              key={toastSeq}
+              className="max-w-full wrap-anywhere px-4 py-2 bg-raised-deep border border-neon-green-text/60 rounded text-xs text-neon-green-text shadow-lg">
+              {toast}
+            </div>
+          )}
         </div>
-      )}
+        <div role="alert" aria-atomic="true" className="max-w-full">
+          {failure && (
+            <div
+              key={toastSeq}
+              className="max-w-full wrap-anywhere px-4 py-2 bg-raised-deep border border-neon-pink-text/60 rounded text-xs text-neon-pink-text shadow-lg">
+              {failure}
+            </div>
+          )}
+        </div>
+      </div>
 
       {expanded && (
-        <>
+        // The body the toggle's `aria-controls` names (NEO-496 a11y).
+        <div id={bodyId} className="space-y-3">
+          {/* NEO-496: the set's publisher checklist, one file for the whole
+              set, at the set level only. First and full width (Jason,
+              2026-11-12): the upload is what an operator opens a set to do,
+              and the panel opens itself at the set level to offer it. It is
+              a source the set's syncs read, not a fact about this row, so
+              it sits above the "Set attributes" label, not among them. */}
+          {leafLevel === "setName" && (
+            <PublishedChecklistPanel
+              setId={selectorOptionId}
+              setName={row.value}
+              setYear={ancestorYear ?? null}
+              onStatus={showToast}
+            />
+          )}
+
+          {/* NEO-496: where this row's cards come from, when it draws on
+              marketplace sets (insert, parallel, a terminal variant). Above
+              the attributes for the same reason as the checklist: a source,
+              not a fact about the row. The two never meet, since the
+              checklist lives on the set and the sources below it. */}
+          {sources}
+
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-ink-3 uppercase tracking-wide">
               Set attributes
             </span>
           </div>
 
-          {/* NEO-277: FIRST, full width, and outside the grid — the position
-              is the information. Every row below is a fact about THIS node
-              only (write-once snapshots, no cascade); this one flows down to
-              every card. Keyed on the row so a confirm opened for one set can
-              never ask its question about the next one — the same reason
+          {/* NEO-277 / NEO-569: League and Team FIRST, outside the grid —
+              the position is the information. Every row below is a fact about
+              THIS node only (write-once snapshots, no cascade); these two flow
+              down to every card. League on the left, Team on the right,
+              because the team pickers rank by the leagues (Jason, NEO-569):
+              side by side while the panel is wide enough for both, League
+              above Team when it is not. flex-wrap on the panel's own width,
+              not a viewport breakpoint, since the panel is narrow inside the
+              set builder's split view on any screen. Each is keyed on the
+              row so a confirm or a save in flight for one set never carries
+              over to the next one — the same reason
               `DeleteSelectorRowControl` is keyed. */}
           {showTeamRow && (
-            <SetTeamRow
-              key={selectorOptionId}
-              selectorOptionId={selectorOptionId}
-              level={leafLevel}
-              teamIds={teamIds}
-              teamCascadeStartedAt={row.teamCascadeStartedAt}
-              sportId={ancestorSportId}
-              onSaved={showToast}
-              onFailed={(message) => setToast(`Failed: ${message}`)}
-            />
+            <div className="flex flex-wrap gap-2">
+              <div className="flex min-w-0 flex-1 basis-64 flex-col *:flex-1">
+                <SetLeagueRow
+                  key={`set-league-${selectorOptionId}`}
+                  selectorOptionId={selectorOptionId}
+                  levelLabel={LEVEL_LABEL[leafLevel]}
+                  isSet={leafLevel === "setName"}
+                  ancestors={chain}
+                  onSaving={showSavingToast}
+                  onSaved={showToast}
+                  onFailed={showFailedToast}
+                />
+              </div>
+              <div className="flex min-w-0 flex-1 basis-64 flex-col *:flex-1">
+                <SetTeamRow
+                  key={selectorOptionId}
+                  rowRef={teamRowRef}
+                  selectorOptionId={selectorOptionId}
+                  level={leafLevel}
+                  teamIds={teamIds}
+                  noTeam={noTeamDefault}
+                  teamCascadeStartedAt={row.teamCascadeStartedAt}
+                  sportId={ancestorSportId}
+                  onSaved={showToast}
+                  onFailed={showFailedToast}
+                />
+              </div>
+            </div>
           )}
+        </div>
+      )}
 
+      {/* NEO-556 — "Mark N teamless cards No Team": the follow-up to a No
+          Team row, directly under the Team row it follows from. Outside the
+          `expanded` branch for the reason NEO-528's control below is: a run's
+          ledger stays on screen when the panel is collapsed, until it is
+          dismissed. Keyed on the row so a count or a finished run never
+          carries over to the next one. */}
+      {showTeamRow && (
+        <NoTeamCardsControl
+          key={`no-team-cards-${selectorOptionId}`}
+          selectorOptionId={selectorOptionId}
+          isNoTeam={noTeamDefault}
+          teamCascadeStartedAt={row.teamCascadeStartedAt}
+          expanded={expanded}
+          // The No Team finish toast has done its job once the Mark confirm
+          // opens; it must not sit over the dialog for the rest of its 6s.
+          onConfirmOpen={dismissStatusToast}
+          onDismissed={() => {
+            if (!expanded) {
+              expandToggleRef.current?.focus({ preventScroll: true });
+              return;
+            }
+            // This panel's own Team row's toggle; when it is disabled (a save
+            // or a cascade in flight) a focus() on it is a no-op that drops
+            // focus to <body>, so the panel's attributes toggle takes it.
+            const toggle = teamRowRef.current?.querySelector<HTMLButtonElement>(NO_TEAM_TOGGLE_SELECTOR);
+            const target = toggle && !toggle.disabled ? toggle : expandToggleRef.current;
+            target?.focus({ preventScroll: true });
+          }}
+        />
+      )}
+
+      {/* NEO-528 — "Player on every card": the stored player and cameos every
+          new card beneath this row is born with, and the run that brings the
+          cards already here along. At EVERY level (a whole year of one
+          player's cards is a real thing), under Team and League: it is the
+          other attribute here that reaches every card. Outside the
+          `expanded` branch so a run's ledger stays on screen when the panel
+          is collapsed, until it is dismissed; the control draws its section
+          only while expanded. Keyed on the row so a confirm or a finished run
+          never carries over to the next one. Its "Saved…" / "Cleared…"
+          notes are its own status line, beside its actions, not this panel's
+          toast (pinned to the top of the viewport, a screen away on a phone). */}
+      <EveryCardPlayerControl
+        key={`every-card-player-${selectorOptionId}`}
+        variantId={selectorOptionId}
+        level={leafLevel}
+        rowName={row.value}
+        sportId={ancestorSportId}
+        expanded={expanded}
+        onDismissedCollapsed={() => expandToggleRef.current?.focus({ preventScroll: true })}
+      />
+
+      {expanded && (
+        <div className="space-y-3">
           {toggleFeatures.length > 0 && (
             <div
               className="flex flex-wrap items-center gap-2"
@@ -874,7 +1320,7 @@ export default function SetAttributesPanel({
             {showShortNameRow && (
               <ShortNameRow
                 value={listingShortName}
-                inherited={inheritedShortName}
+                inherited={titlesDescription}
                 onSave={handleSaveListingShortName}
               />
             )}
@@ -895,29 +1341,92 @@ export default function SetAttributesPanel({
               />
             ))}
           </div>
-        </>
+        </div>
       )}
     </div>
   );
 }
 
 /**
- * NEO-335 — the set's shorter name for listing titles, as a row in the
- * Attributes panel. `metadata.listingShortName`, its own mutation, and
- * `CardPrefixRow`'s shape exactly (hydration, clear on empty, the hint in
- * the DOM as the input's description). Maestro targets the input as
- * `Value for Short name for titles`; the wrapper is
- * `Set feature Short name for titles`.
+ * NEO-335/535 — "Set name in titles", as a row in the Attributes panel: the
+ * WHOLE set description a title opens with (year, brand, set, insert,
+ * parallel), used as typed. `metadata.listingShortName`, its own mutation,
+ * and `CardPrefixRow`'s shape exactly (hydration, clear on empty, the hint in
+ * the DOM as the input's description). E2E targets the input as
+ * `Value for Set name in titles`; the wrapper is
+ * `Set feature Set name in titles`.
  *
- * A row with no name of its own shows the one it inherits as the
- * placeholder: that is the name its new cards' titles use.
+ * A row with no value of its own shows, as the placeholder, the description
+ * its cards get: the value it inherits (with its insert and parallel names
+ * added, `titleChainFacts`), else the builder's own (`setDescriptionForTitles`).
  */
+/** Frames the "Set name in titles" jump waits for the box before focusing the panel. */
+const SHORT_NAME_FRAMES = 10;
+
 const SHORT_NAME_FEATURE: ExpectedFeature = {
   key: "listingShortName",
-  label: "Short name for titles",
+  label: "Set name in titles",
   inputType: "text",
-  hint: "Used in card titles when the full name won't fit. New cards only.",
+  hint: "How titles name this set: year, brand, set, insert, parallel. Only steps in when a title runs long or drops a first name. New cards only.",
 };
+
+/**
+ * NEO-535 — the description a row's new cards open their titles with when the
+ * row has no "Set name in titles" of its own: the nearest ancestor's (as the
+ * builder reads the chain), else the builder's own description. `chain` is
+ * root first; the row itself may or may not end it.
+ */
+function setNameInTitlesFor(
+  row: { _id: string; level: string; value: string },
+  chain: ReadonlyArray<{
+    _id: string;
+    level: string;
+    value: string;
+    metadata?: { listingShortName?: string; isBrandUnknown?: boolean } | null;
+  }>,
+  features: Record<string, string>,
+): string | undefined {
+  // The row's own value is what the field shows; the placeholder is what the
+  // cards get without it, so the row is read with no value of its own.
+  const above = chain.filter((c) => c._id !== row._id).reverse();
+  const facts = titleChainFacts([
+    { level: row.level, value: row.value },
+    ...above.map(asChainRow),
+  ]);
+  if (facts.listingShortName) return facts.listingShortName;
+  const at = (level: string) => chain.find((c) => c.level === level);
+  const manufacturer = at("manufacturer");
+  const description = setDescriptionForTitles({
+    sportValue: at("sport")?.value ?? "",
+    setNameValue: at("setName")?.value,
+    ...(manufacturer?.metadata?.isBrandUnknown ? { manufacturerBrandUnknown: true } : {}),
+    inheritedFeatures: {
+      ...(at("year") ? { season: at("year")!.value } : {}),
+      ...(manufacturer ? { manufacturer: manufacturer.value } : {}),
+      ...features,
+    },
+    ...facts,
+  });
+  return description || undefined;
+}
+
+function asChainRow(row: {
+  level: string;
+  value: string;
+  metadata?: { listingShortName?: string } | null;
+}) {
+  return {
+    level: row.level,
+    value: row.value,
+    ...(row.metadata?.listingShortName ? { metadata: { listingShortName: row.metadata.listingShortName } } : {}),
+  };
+}
+
+/** Registers this panel as where "Set name in titles" lives, while mounted. */
+function SetNameInTitlesTarget({ open }: { open: () => void }) {
+  useSetNameInTitlesTarget(open);
+  return null;
+}
 
 function ShortNameRow({
   value,
@@ -926,7 +1435,7 @@ function ShortNameRow({
 }: {
   /** The row's stored `metadata.listingShortName`; `undefined` when absent. */
   value: string | undefined;
-  /** The nearest ancestor's short name, up to the set, if any. */
+  /** The description this row's cards get without a value of their own. */
   inherited: string | undefined;
   /** `""` clears. Trimming and validation are the server's. */
   onSave: (value: string) => Promise<unknown>;
@@ -1607,15 +2116,86 @@ export function teamSavedToast(preview: TeamCascadePreview | null): string {
 }
 
 /**
- * The visible hint under the picker, keyed on the level because the set is
- * where a collector meets this (a team issue, a police set, a college set, a
- * stadium giveaway) and a variant beneath it only needs the mechanism.
+ * NEO-556 — the toast after No Team is saved. "Teamless": a new card whose
+ * listing names a team keeps it (invariant 8), so not every new card.
  */
-export function teamHintCopy(level: Level): string {
-  if (level === "setName") {
-    return "Team issues, police sets, college sets, stadium giveaways: pick the team once and every card in this set gets it.";
+export const NO_TEAM_SAVED_TOAST = "Saved No Team · teamless new cards get it";
+/**
+ * NEO-556 — the line when a No Team save's cascade finishes. No Team reaches
+ * the checklists beneath, never a card, so "Team applied to cards" would
+ * claim what did not happen. Names the row's level ("under this set"), the
+ * noun its confirm's title uses, rather than a bare "under it".
+ */
+export function noTeamAppliedToast(levelLabel: string): string {
+  return `No Team applied to the checklists under this ${levelLabel.toLowerCase()}`;
+}
+/** NEO-556 — the toast after No Team is withdrawn (the row goes back to unset). */
+export const NO_TEAM_CLEARED_TOAST = "Cleared No Team · cards unchanged";
+
+/**
+ * NEO-556 — the confirm before a row becomes No Team, asked only when the
+ * answer reaches past the row: checklists beneath that follow it (they were
+ * unset, or said what this row said), or cards still carrying the team being
+ * replaced. A row with neither is saved straight away.
+ *
+ * No Team never moves a card that already exists, so the body says what
+ * happens to new cards, what follows beneath, what stays, and that the
+ * teamless cards already here are the next step (`NoTeamCardsControl`).
+ *
+ *   title: "Set this set to No Team?"
+ *   body:  "New cards with nothing naming a team get No Team. 3 checklists
+ *           under this set switch to No Team too. 28 cards keep Durham Bulls. Cards already here
+ *           stay as they are; you can mark the teamless ones next."
+ */
+export function setNoTeamConfirmCopy({
+  levelLabel,
+  preview,
+  currentTeamNames,
+}: {
+  levelLabel: string;
+  preview: Pick<TeamCascadePreview, "nodesFollowing" | "cardsCarryingCurrent">;
+  /** The row's team being replaced, when it has one. */
+  currentTeamNames: string | null;
+}): { title: string; description: string } {
+  const noun = levelLabel.toLowerCase();
+  const parts = ["New cards with nothing naming a team get No Team."];
+  if (preview.nodesFollowing > 0) {
+    parts.push(
+      `${plural(preview.nodesFollowing, "checklist", "checklists")} under this ${noun} switch${preview.nodesFollowing === 1 ? "es" : ""} to No Team too.`,
+    );
   }
-  return `Every card in this ${LEVEL_LABEL[level].toLowerCase()} gets this team. Pick it once.`;
+  if (preview.cardsCarryingCurrent > 0 && currentTeamNames) {
+    parts.push(
+      `${plural(preview.cardsCarryingCurrent, "card keeps", "cards keep")} ${currentTeamNames}.`,
+    );
+  }
+  parts.push("Cards already here stay as they are; you can mark the teamless ones next.");
+  return { title: `Set this ${noun} to No Team?`, description: parts.join(" ") };
+}
+
+/**
+ * The picker's accessible description (not shown, NEO-569: label + control
+ * only, no always-on helper line). It says the one thing the screen does not,
+ * that the save reaches every card beneath the row.
+ *
+ * NEO-556: with No Team on (stored or pending, as the toggle shows it) it
+ * says what that answer does and how to undo it, at every level, rather than
+ * offering the choice already made.
+ */
+export function teamHintCopy(level: Level, noTeam = false): string {
+  if (noTeam) {
+    return "No Team: new cards with nothing naming a team get it. Pick a team to replace it.";
+  }
+  return `Every card in this ${LEVEL_LABEL[level].toLowerCase()} gets this team.`;
+}
+
+/**
+ * The No Team toggle's own accessible description (not shown). Off, it says
+ * what pressing does; on, it is the on-state sentence the group already reads.
+ */
+export function noTeamToggleHintCopy(level: Level, noTeam: boolean): string {
+  if (noTeam) return teamHintCopy(level, true);
+  return "New cards with nothing naming a team get No Team.";
 }
 
 /** Order-insensitive equality: the picker appends, the row stores a set. */
@@ -1656,6 +2236,8 @@ export const SET_TEAM_PICKER_LABELS: TeamPickerLabels = {
 
 /** The picker trigger inside the row, for parking focus after a decision. */
 const PICKER_TRIGGER_SELECTOR = `button[aria-label="${SET_TEAM_PICKER_LABELS.trigger}"]`;
+/** NEO-556 — the row's No Team toggle, for parking focus after a No Team decision. */
+const NO_TEAM_TOGGLE_SELECTOR = `button[aria-label="${NO_TEAM_LABELS.everyCard}"]`;
 
 /**
  * The Team row.
@@ -1709,18 +2291,24 @@ const PICKER_TRIGGER_SELECTOR = `button[aria-label="${SET_TEAM_PICKER_LABELS.tri
  * unmounted under the operator's finger). Focus never falls to `<body>`.
  */
 function SetTeamRow({
+  rowRef,
   selectorOptionId,
   level,
   teamIds,
+  noTeam,
   teamCascadeStartedAt,
   sportId,
   onSaved,
   onFailed,
 }: {
+  /** The row's container, shared with the panel (a dismissed run's focus target). */
+  rowRef: RefObject<HTMLDivElement | null>;
   selectorOptionId: Id<"selectorOptions">;
   level: Level;
   /** The row's stored value; `[]` when the field is absent. */
   teamIds: Array<Id<"teams">>;
+  /** NEO-556 — the row's stored value is No Team (`noTeamDefault`). */
+  noTeam: boolean;
   /** Set when a cascade is scheduled, cleared by its last chunk. */
   teamCascadeStartedAt: number | undefined;
   sportId: Id<"selectorOptions"> | undefined;
@@ -1742,16 +2330,22 @@ function SetTeamRow({
       : null;
   const labelId = useId();
   const hintId = useId();
-  const rowRef = useRef<HTMLDivElement | null>(null);
+  const noTeamHintId = useId();
   const seqRef = useRef(0);
 
   /** The picker's value while a pick is being previewed or saved. */
   const [pending, setPending] = useState<Array<Id<"teams">> | null>(null);
+  /**
+   * NEO-556 — No Team pressed and being previewed or saved (`true`), or
+   * withdrawn on screen (`false`); `null` when the toggle shows what is
+   * stored. A pending team pick over a stored No Team shows it off.
+   */
+  const [pendingNoTeam, setPendingNoTeam] = useState<boolean | null>(null);
   /** The last chip was removed and the operator has not yet said which way. */
   const [pendingEmpty, setPendingEmpty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState<{
-    kind: "apply" | "clear";
+    kind: "apply" | "clear" | "noTeam";
     next: Array<Id<"teams">>;
     preview: TeamCascadePreview | null;
     title: string;
@@ -1781,32 +2375,94 @@ function SetTeamRow({
     const prev = prevStartedAtRef.current;
     prevStartedAtRef.current = teamCascadeStartedAt;
     if (prev !== undefined && teamCascadeStartedAt === undefined) {
-      onSaved("Team applied to cards");
+      // NEO-556: a No Team save's cascade moved checklists, not cards; its
+      // finish line says so rather than replacing the No Team toast with a
+      // claim about cards.
+      onSaved(noTeam ? noTeamAppliedToast(LEVEL_LABEL[level]) : "Team applied to cards");
     }
     // `onSaved` is a fresh closure per parent render; the transition is what
     // this effect is about.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [teamCascadeStartedAt]);
 
-  const focusTrigger = () => {
-    setTimeout(() => {
-      rowRef.current
-        ?.querySelector<HTMLElement>(PICKER_TRIGGER_SELECTOR)
-        ?.focus();
-    }, 0);
-  };
+  /**
+   * NEO-556 — focus while the row's controls are disabled (a save, or a
+   * cascade in flight: a No Team save that moves checklists beneath leaves
+   * the row in flight). A focused button that turns disabled drops focus to
+   * <body>, and focus() on a disabled one does nothing. So the row itself
+   * holds focus meanwhile (a labelled group whose "Applying to cards…" line
+   * says why its controls rest), remembering the control it stands in for,
+   * and hands focus back to it once the controls are free again.
+   */
+  const parkedRef = useRef<HTMLButtonElement | null>(null);
+  const controlsDisabled = busy || inFlight;
+  // Layout effect: before the browser's own focus fixup moves focus off the
+  // newly disabled button.
+  useLayoutEffect(() => {
+    const row = rowRef.current;
+    if (!row) return;
+    const active = document.activeElement;
+    if (controlsDisabled) {
+      if (active instanceof HTMLButtonElement && active.disabled && row.contains(active)) {
+        parkedRef.current = active;
+        row.focus({ preventScroll: true });
+      }
+      return;
+    }
+    const parked = parkedRef.current;
+    parkedRef.current = null;
+    if (active === row && parked?.isConnected && !parked.disabled) parked.focus();
+  }, [controlsDisabled, rowRef]);
+
+  /**
+   * Park focus on a control in this row after a decision (see above). A
+   * request, carried out in an effect after the commit it lands in: that
+   * commit also unmounts a closing ConfirmDialog, whose own restore (to the
+   * control that opened it, possibly disabled now) runs first, so this word
+   * is the last one. A timer raced that unmount.
+   */
+  const [focusRequest, setFocusRequest] = useState<{ selector: string; seq: number } | null>(null);
+  const focusInRow = (selector: string) =>
+    setFocusRequest((r) => ({ selector, seq: (r?.seq ?? 0) + 1 }));
+  useEffect(() => {
+    if (!focusRequest) return;
+    const row = rowRef.current;
+    if (!row) return;
+    const control = row.querySelector<HTMLButtonElement>(focusRequest.selector);
+    if (!control) return;
+    if (!control.disabled) {
+      parkedRef.current = null;
+      control.focus();
+      return;
+    }
+    parkedRef.current = control;
+    row.focus({ preventScroll: true });
+  }, [focusRequest, rowRef]);
+  const focusTrigger = () => focusInRow(PICKER_TRIGGER_SELECTOR);
+  const focusNoTeamToggle = () => focusInRow(NO_TEAM_TOGGLE_SELECTOR);
 
   const save = async (
     next: Array<Id<"teams">>,
     preview: TeamCascadePreview | null,
+    asNoTeam = false,
   ) => {
     setBusy(true);
     try {
-      await setSelectorOptionTeams({ selectorOptionId, teamIds: next });
+      // Every key written out (never a conditional spread): a renamed server
+      // arg must fail to compile. `undefined` is dropped on the wire.
+      await setSelectorOptionTeams({
+        selectorOptionId,
+        teamIds: next,
+        noTeam: asNoTeam ? true : undefined,
+      });
       onSaved(
-        next.length === 0
-          ? "Cleared Team · cards unchanged"
-          : teamSavedToast(preview),
+        asNoTeam
+          ? NO_TEAM_SAVED_TOAST
+          : next.length === 0
+            ? noTeam
+              ? NO_TEAM_CLEARED_TOAST
+              : "Cleared Team · cards unchanged"
+            : teamSavedToast(preview),
       );
     } catch (e) {
       // Same rule as the feature rows: only a ConvexError's `data` is text a
@@ -1817,12 +2473,18 @@ function SetTeamRow({
     } finally {
       setBusy(false);
       setPending(null);
+      setPendingNoTeam(null);
       setPendingEmpty(false);
     }
   };
 
   const handleChange = async (next: Array<Id<"teams">>) => {
     if (busy || inFlight) return;
+    // NEO-556: a team picked over No Team (stored or pending) replaces it.
+    // From a stored No Team the ordinary path below is the right one: the
+    // server's preview compares against the stored No Team, so the teamless
+    // cards it would fill are the ones reported as following.
+    setPendingNoTeam(null);
     if (sameTeamIds(next, teamIds)) {
       // Includes re-adding the stored team from the pending-empty state:
       // that is "Keep", spelled with the picker.
@@ -1880,6 +2542,67 @@ function SetTeamRow({
     });
   };
 
+  /**
+   * NEO-556 — the No Team toggle. Pressed: preview the row as No Team, and
+   * ask only when the answer reaches past the row (`setNoTeamConfirmCopy`).
+   * Withdrawn from a stored No Team: saved straight away as a clear, which
+   * patches the row only, like clearing a team (rows beneath and cards keep
+   * what they have). Withdrawn from a pending No Team: the picker reads the
+   * row again.
+   */
+  const handleNoTeam = async (next: boolean) => {
+    if (busy || inFlight) return;
+    const seq = ++seqRef.current;
+    setPendingEmpty(false);
+    if (!next) {
+      setPending(null);
+      if (!noTeam) {
+        setPendingNoTeam(null);
+        return;
+      }
+      setPendingNoTeam(false);
+      await save([], null);
+      focusNoTeamToggle();
+      return;
+    }
+    if (noTeam) {
+      setPending(null);
+      setPendingNoTeam(null);
+      return;
+    }
+    setPending([]);
+    setPendingNoTeam(true);
+    let preview: TeamCascadePreview;
+    try {
+      preview = await convex.query(
+        api.selectorOptions.getSelectorOptionTeamCascadePreview,
+        { selectorOptionId, teamIds: [], noTeam: true },
+      );
+    } catch (e) {
+      if (seq !== seqRef.current) return;
+      setPending(null);
+      setPendingNoTeam(null);
+      onFailed(userFacingMessage(e, "Could not save Team"));
+      return;
+    }
+    if (seq !== seqRef.current) return;
+    if (preview.nodesFollowing === 0 && preview.cardsCarryingCurrent === 0) {
+      await save([], preview, true);
+      focusNoTeamToggle();
+      return;
+    }
+    setConfirm({
+      kind: "noTeam",
+      next: [],
+      preview,
+      ...setNoTeamConfirmCopy({
+        levelLabel: LEVEL_LABEL[level],
+        preview,
+        currentTeamNames: storedNames,
+      }),
+    });
+  };
+
   const handleClear = async () => {
     if (busy || inFlight) return;
     const seq = ++seqRef.current;
@@ -1927,6 +2650,11 @@ function SetTeamRow({
   };
 
   const showPendingActions = pendingEmpty && !inFlight;
+  // What the No Team toggle shows: a pending team pick over a stored No Team
+  // shows it off; a pending No Team shows it on. The hint follows it.
+  const noTeamShown = inFlight
+    ? noTeam
+    : (pendingNoTeam ?? (pending !== null && pending.length > 0 ? false : noTeam));
 
   return (
     <div
@@ -1934,7 +2662,10 @@ function SetTeamRow({
       role="group"
       aria-labelledby={labelId}
       aria-describedby={hintId}
-      className="flex flex-col gap-1 p-2 rounded border text-xs border-rule-strong bg-raised-deep/30"
+      // Focusable by script only: where focus rests while the row's controls
+      // are disabled (`focusInRow`).
+      tabIndex={-1}
+      className="flex flex-col gap-1 p-2 rounded border text-xs border-rule-strong bg-raised-deep/30 focus-outline"
     >
       <span
         id={labelId}
@@ -1945,6 +2676,12 @@ function SetTeamRow({
       <TeamPicker
         value={inFlight ? teamIds : (pending ?? teamIds)}
         onChange={(next) => void handleChange(next)}
+        noTeam={{
+          value: noTeamShown,
+          onChange: (next) => void handleNoTeam(next),
+          label: NO_TEAM_LABELS.everyCard,
+          describedBy: noTeamHintId,
+        }}
         sportId={sportId}
         disabled={busy || inFlight}
         labels={SET_TEAM_PICKER_LABELS}
@@ -1987,26 +2724,49 @@ function SetTeamRow({
           </button>
         </div>
       )}
-      {/* Visible, not a tooltip like the feature hints: this is the one row
-          whose save reaches beyond the row, and that has to be readable
-          before the pick, not discoverable after it. gray-400 on this
-          ground clears 4.5:1 (the pair every sub-line in this panel uses). */}
-      <p id={hintId} className="text-[10px] text-ink-3">
-        {teamHintCopy(level)}
-      </p>
+      {/* NEO-569 (Jason: "too much text on the screen"): no visible hint.
+          What the screen does not show is that the save reaches every card
+          beneath the row, so a reader hears that one sentence and nothing
+          more (with No Team on, the sentence for that answer). The confirm
+          dialog says how many cards before any change lands. */}
+      <span id={hintId} className="sr-only">
+        {teamHintCopy(level, noTeamShown)}
+      </span>
+      {/* The No Team toggle's own description: the sentence above says what a
+          picked team reaches, which misdescribes the toggle while it is off. */}
+      <span id={noTeamHintId} className="sr-only">
+        {noTeamToggleHintCopy(level, noTeamShown)}
+      </span>
       {confirm && (
         <ConfirmDialog
           title={confirm.title}
           description={confirm.description}
-          confirmLabel={confirm.kind === "clear" ? "Yes, clear" : "Yes, apply"}
-          busyLabel={confirm.kind === "clear" ? "Clearing…" : "Applying…"}
+          confirmLabel={
+            confirm.kind === "clear"
+              ? "Yes, clear"
+              : confirm.kind === "noTeam"
+                ? "Yes, set No Team"
+                : "Yes, apply"
+          }
+          busyLabel={
+            confirm.kind === "clear"
+              ? "Clearing…"
+              : confirm.kind === "noTeam"
+                ? "Saving…"
+                : "Applying…"
+          }
+          // Only a clear takes something away (pink yes, cyan Cancel). An
+          // apply or a No Team adds an answer: the green yes beside a pink
+          // Cancel, the same pair NoTeamCardsControl's confirm shows.
+          confirmVariant={confirm.kind === "clear" ? "negative" : "primary"}
           busy={busy}
           onConfirm={() => {
             if (busy) return;
-            const { next, preview } = confirm;
-            void save(next, preview).finally(() => {
+            const { next, preview, kind } = confirm;
+            void save(next, preview, kind === "noTeam").finally(() => {
               setConfirm(null);
-              focusTrigger();
+              if (kind === "noTeam") focusNoTeamToggle();
+              else focusTrigger();
             });
           }}
           onCancel={() => {
@@ -2018,82 +2778,13 @@ function SetTeamRow({
               return;
             }
             setPending(null);
-            focusTrigger();
+            setPendingNoTeam(null);
+            if (confirm.kind === "noTeam") focusNoTeamToggle();
+            else focusTrigger();
           }}
         />
       )}
     </div>
-  );
-}
-
-/**
- * The panel ground for the contrast gate below, per mode. Dark: `bg-raised-deep/60`
- * (gray-900 at 60%) over the near-black page, worked out once here rather
- * than guessed, because a franchise colour can clear 4.5:1 on pure black and
- * miss it on this slightly lifted surface. Light: the panel is white.
- */
-const PANEL_GROUND = { dark: "#0e121b", light: tokenHex("raised-deep", "light") } as const;
-
-/** WCAG 2.2 SC 1.4.3 for text this size. A gate, not a readout — this is UI. */
-const LIVERY_MIN_CONTRAST = 4.5;
-
-/**
- * The team's own colour for its name, or null to leave it muted.
- *
- * Primary first, secondary as the fallback, muted when neither clears the
- * floor — the same order the Players page uses, for the same reason: many
- * franchises are built on a near-black navy or maroon whose secondary is the
- * pale one they print the dark on, so the fallback is usually the right
- * colour as well as the readable one. Colour is never the only carrier: the
- * word reads the same whichever branch is taken (SC 1.4.1).
- */
-function teamTextColor(
-  colors: { primary?: string; secondary?: string } | undefined,
-  mode: ThemeMode,
-): string | null {
-  for (const candidate of [colors?.primary, colors?.secondary]) {
-    if (!candidate) continue;
-    const hex = normalizeHexColor(candidate);
-    if (!hex) continue;
-    const ratio = contrastRatio(hex, PANEL_GROUND[mode]);
-    if (ratio !== null && ratio >= LIVERY_MIN_CONTRAST) return hex;
-  }
-  return null;
-}
-
-/**
- * NEO-277 — the set's team on the collapsed summary bar, in livery.
- *
- * The short name ("Bulls"), because that is what a collector says and the
- * bar is one truncating line; the full name rides on `title` and in the
- * accessible text. Renders nothing until the rows arrive rather than a
- * "Loading…" — a summary bar that flickers a placeholder on every selection
- * change is worse than one that fills in a beat later.
- */
-function SetTeamLivery({ teamIds }: { teamIds: Array<Id<"teams">> }) {
-  const { mode } = useTheme();
-  const rows = useQuery(api.teams.getManyByIds, { ids: teamIds });
-  if (!rows || rows.length === 0) return null;
-  return (
-    <span className="ml-1.5 whitespace-nowrap">
-      <span aria-hidden="true">· </span>
-      <span className="sr-only">Team: </span>
-      {rows.map((team, i) => {
-        const color = teamTextColor(team.colors, mode);
-        return (
-          <span key={team._id}>
-            {i > 0 && ", "}
-            <span
-              title={teamFullName(team)}
-              className={color ? "font-semibold" : "font-semibold text-ink-2"}
-              style={color ? { color } : undefined}
-            >
-              {teamShortName(team)}
-            </span>
-          </span>
-        );
-      })}
-    </span>
   );
 }
 
@@ -2266,6 +2957,7 @@ function DeleteSelectorRowControl({
   level,
   isBase = false,
   onDeleted,
+  onOpenChange,
 }: {
   id: Id<"selectorOptions">;
   row: Pick<SlotBearingRow, "platformData"> & { value: string };
@@ -2277,6 +2969,12 @@ function DeleteSelectorRowControl({
    */
   isBase?: boolean;
   onDeleted?: (level: SelectorLevel) => void;
+  /**
+   * NEO-569 — told `true` while the confirm is open (busy included) and
+   * `false` when it is not (and on unmount). The panel stays open and makes
+   * its toggle inert meanwhile.
+   */
+  onOpenChange?: (open: boolean) => void;
 }) {
   // NEO-400: the holdings are read ONCE, on click, never subscribed. The
   // subscribed form re-read every row and card below the selection on every
@@ -2302,6 +3000,15 @@ function DeleteSelectorRowControl({
   /** The check itself failed — not a refusal, so the control stays live. */
   const [checkError, setCheckError] = useState<string | null>(null);
   const reasonId = useId();
+
+  const onOpenChangeRef = useRef(onOpenChange);
+  useEffect(() => {
+    onOpenChangeRef.current = onOpenChange;
+  });
+  useEffect(() => {
+    onOpenChangeRef.current?.(open);
+  }, [open]);
+  useEffect(() => () => onOpenChangeRef.current?.(false), []);
 
   const blocked = reason !== null && reason.length > 0;
 

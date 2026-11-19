@@ -75,6 +75,171 @@ Delists a card using web automation.
 }
 ```
 
+### POST /login/bsc and POST /login/sportlots
+
+Signs in to the marketplace for one credential key. Only Convex calls these
+(Cloud Run IAM); the NEO-43 canary jobs call them with `canary: true`.
+
+**Request body:**
+
+| Field | Type | Meaning |
+|---|---|---|
+| `key` | string | The credential key. Required. |
+| `username`, `password` | string | Optional, together or not at all. Used for this one sign-in and never stored (NEO-141). |
+| `canary` | boolean | Synthetic probe: skip the cached token and the write-back. Only `true` counts. |
+| `tokenRefused` | boolean | **BSC only, contract version 2 (NEO-483).** Convex sets it after BSC answered 401 to the stored access token. The adapter then skips its cached-token branch and goes straight to the refresh grant, the silent re-authorize, or `reauth_required`. Only a strict boolean `true` counts; the string `"true"` is ignored. An older service ignores the field; an older Convex never sends it (see the release note under **Version history**). |
+
+**Response (200):** `{ success, message, expiresAt, storeName?, sellerId? }`.
+`storeName` and `sellerId` are optional and Convex must not depend on them:
+
+- A password sign-in (Connect) reads BSC's seller profile and returns them
+  when it answers.
+- The cached-token branch returns them when the profile read validates the
+  token. Since NEO-483, a read that gives no verdict (a timeout, a throw, a 5xx
+  after its one retry, a 429 or any 4xx other than 401/403) still returns
+  success with the cached token, without the seller fields. Only a 401 or 403
+  discards the token and moves on to renewal.
+- The refresh grant and the silent re-authorize never read the profile and
+  never return them (NEO-483). Convex fetches the seller account on its own
+  schedule.
+- A cached token inside the 5-minute renewal leeway (Convex's
+  `TOKEN_REFRESH_LEEWAY_MS`) with a live refresh token or SSO session is
+  renewed instead of validated. If that renewal fails, the still-unexpired
+  cached token is served rather than failing the login.
+
+Failures: 422 when the marketplace refused the credentials
+(`invalid_credentials`) or the stored session is gone (`reauth_required`), 502
+for an integration or marketplace failure, 500 when our code threw. Every failure
+body is `{ error, error_class, diagnostic? }`, with no credential material.
+
+### POST /probe/bsc and the fake BSC (NEO-552)
+
+`src/bsc-endpoints.ts` is the only file that names a BuySportsCards host
+(`tests/bsc-endpoints.test.mjs` fails on a host literal anywhere else in
+`src/`). Every BSC request goes through `bscFetch` (`src/bsc-fetch.ts`).
+
+- **Fake mode.** `NEONBINDER_FAKE_BSC_URL` (the fake's origin) points the B2C
+  sign-in and the API at the standing fake BSC (`services/fake-bsc`):
+  `<FAKE>/identity/...` and `<FAKE>/api/...`. Every request to it carries
+  `x-nb-fake-bsc-key` (`NEONBINDER_FAKE_BSC_KEY`) and, over https, this
+  service's Google ID token in `X-Serverless-Authorization` and again, bare,
+  in `x-nb-fake-id-token` (the fake verifies its signature itself). The URL
+  must be the fake's own `neonbinder-fake-bsc-*.run.app` origin (or
+  loopback); anything else refuses to boot. **A process with the fake URL set
+  and `ENVIRONMENT=prod` refuses to boot.** `GET /health`
+  reports `bscTarget: "real" | "fake"`.
+- **Per-deployment sessions.** A Convex deployment on the fake stores its BSC
+  session under `buysportscards-credentials-fake-<convexSlug>-<clerkUserId>`
+  instead of the bare per-user key, so two deployments that sign in the same
+  test user keep separate sessions. The key passes the ordinary key pattern
+  (no contract change), with two extra refusals, both a 400
+  (`Invalid credential key format`) before any Secret Manager call: the fake
+  form on any site but `buysportscards`, and any fake key while this process
+  talks to real BSC (so prod refuses them all). A fake key's secret is created
+  with an expiry 72 hours out (`FAKE_CREDENTIAL_TTL_MS`), and every write to it
+  moves the expiry to now + 72 h before adding the version, so a session in use
+  never expires mid-run and one left behind by a deleted preview or worktree is
+  deleted, versions and all, three days after its last write. The expiry is set
+  as `expire_time` (update mask `expire_time`), not `ttl`. A failed extension is
+  logged and never fails the write. Real keys never carry an expiry.
+- **Fake accounts only.** On the fake, a BSC sign-in or session renewal whose
+  username is not `nb+<namespace>@fake.invalid` (lowercase letters, digits and
+  hyphens; `nb+probe-ci@fake.invalid` is the CI probe's) is refused before any
+  network call: `/login/bsc` answers 422 `invalid_credentials` (transient or
+  stored credentials alike, so a real user's or the canary's session is never
+  sent to the fake), `bscPasswordSignIn` returns the same refusal, and
+  `/probe/bsc` answers 400. The rule follows each call's own target, so the
+  recorder's forced-real sign-in (`fetchOptions.env = {}`) is unaffected, and
+  nothing changes against real BSC.
+- **429 breaker.** A 429 from BSC stops every BSC call from this process for its
+  `Retry-After` (default 60 s, 1 s to 15 min); callers see a synthetic 429 with
+  `x-nb-bsc-breaker: open`. Against the fake it is scoped per credential key,
+  so one test's injected 429 does not stall the others. Attempts stay fixed:
+  one per B2C step (15 s each), one refresh grant, one silent re-authorize, at
+  most two profile reads; a 429 is never retried.
+- **`bscPasswordSignIn({username, password, authority?})`** (`src/bsc-signin.ts`)
+  is the persistence-free B2C sign-in shared by `/login/bsc`, the probe and the
+  fake's local recorder.
+- **`POST /probe/bsc`** (`src/routes/bsc-probe.ts`): a fresh sign-in plus
+  pinned catalogue and seller reads, returning statuses, parser verdicts and
+  value-free shapes, never values. Each shape lists only the paths NB's
+  parsers read (`SHAPE_PATHS`); every other key is dropped, because the prod
+  probe's shapes end up in a public drift artifact. In prod it ignores the body and signs in
+  with the canary account; on a fake revision it uses the body's fake
+  credentials. One call a minute; honours the BSC pause flag. Contract:
+  `services/fake-bsc/CONTRACT.md`, "Probe, drift and ops wiring"; verdict:
+  `.github/scripts/bsc-probe-verdict.sh`.
+
+### POST /probe/ebay (NEO-555)
+
+The prod deploy gate's eBay leg and the daily eBay drift source, built like
+`/probe/bsc` (same Cloud Run IAM auth, same global limiter, its own one call a
+minute). Code: `src/routes/ebay-probe.ts` and `src/routes/ebay-probe-allowlist.ts`.
+
+- **Read-only by construction.** In prod it reads a real seller account (eBay
+  has no separate prod test seller), so the raw transport is wrapped once per
+  run by `createProbeTransport` and only that wrapper reaches the code that
+  makes requests. The wrapper forwards a `GET` only when its URL is exactly
+  one entry of the frozen `EBAY_PROBE_ALLOWLIST` on the target (fixed host,
+  path and query: rows 1, 3, 5, 6, 7, 10 GET, 13 with `limit=1`, 15 of the
+  NEO-555 eBay surface) and a `POST` only when it is a `client_credentials` or
+  `refresh_token` grant to the target's token URL. Each may carry only the
+  header names its own sender uses (plus the fake caller's on the fake
+  target), so a method-override header such as `X-HTTP-Method-Override`
+  cannot ride on an allowlisted `GET`. Any other method, however
+  spelt (a lowercase `delete` included) and however the wrapper is called, is
+  refused before anything leaves the process. Every eBay read goes through
+  `probeGet`, which accepts only an allowlist entry and takes no path, query or
+  body of its own; the token grants go through `tokenGrant` and the existing
+  `fetchApplicationToken` / `refreshAccessToken`. `tests/ebay-probe.test.mjs`
+  fails on egress anywhere else in either module, on an aliased call
+  (`.call`, `.apply`, `.bind`, `Reflect.apply`), on a write-method literal in
+  any case, on a new import, on any Secret Manager write or credential lock,
+  and on any non-GET entry.
+- **Two legs.** The app leg (a `client_credentials` token, then the card
+  category's item aspects, row 7) is hard: its failure is `outcome:
+  "app_failed"`. The account leg (the seller's refresh token, then the
+  account reads) only warns: `outcome: "account_warning"` with
+  `accountLeg.outcome` `skipped_not_connected`, `credential_read_failed`,
+  `refresh_failed`, `ebay_unavailable` or `read_failed`.
+- **Which account.** Real target (no `NEONBINDER_FAKE_BSC_URL`; prod only,
+  elsewhere `409`): the body is ignored; the key is read from
+  `NEONBINDER_EBAY_PROBE_CREDENTIAL_KEY` (an `ebay-credentials-<id>` key, set
+  on the prod deploy only; unset means the account leg is skipped) and the
+  app from `EBAY_ENVIRONMENT=production`, `EBAY_CLIENT_ID`,
+  `EBAY_CLIENT_SECRET`, `EBAY_RU_NAME`. The refresh is in memory only: the
+  minted token is never written back, no lock is taken, and a rotated refresh
+  token would be dropped. The user token is asked for with the `.readonly`
+  scopes first (`EBAY_READONLY_SCOPES`) and with the consented scopes only
+  when eBay answers `invalid_scope` (`accountLeg.scopes`, and an
+  `ebay_probe_scope_fallback` log line). Any other refusal, such as
+  `invalid_grant`, is `refresh_failed` with no second grant. Fake target (`NEONBINDER_FAKE_BSC_URL`
+  set): the fake eBay at `<FAKE>/ebay/api|apiz/...` with the fake's fixed
+  public client and the fake BSC's caller key and ID token; the body may be
+  `{refreshToken}` (a fake refresh token), else the account leg is skipped.
+- **Pause.** On the real target the eBay pause flag
+  (`NEONBINDER_PAUSED_PLATFORMS`, site key `ebay`, the canary's lookup)
+  answers `outcome: "skipped_paused"` without calling eBay. This check is
+  **best-effort**: the lookup fails open like the canary's, so when it cannot
+  answer (Convex down, a token mint that fails, a malformed reply) the probe
+  runs against eBay and the failure is only logged. Do not rely on it to keep
+  the probe off a seller account. A real stop for the account leg is to
+  delete the `NEONBINDER_EBAY_PROBE_CREDENTIAL_KEY` repository secret: the
+  next prod deploy clears the env var and the leg answers
+  `skipped_not_connected` without reading any credential. To stop every call,
+  also disable `bsc-drift.yml` (`gh workflow disable`); CI is the only caller.
+- **Answer.** `{ebayTarget, outcome, appLeg, accountLeg, shapes, statuses,
+  hashes, steps, durationMs, detail?}`. `shapes` holds only each entry's
+  `shapePaths` (the fields NB's parsers read; buyer and ship-to data never;
+  for row 13 the paging keys `href`, `limit`, `offset` and `total` only, not
+  even `orders`, which eBay may leave out of an empty page, so the public
+  artifact never says whether the seller had orders),
+  and `shapes`, `statuses` and `hashes` are keyed by the fake's endpoint names,
+  so they post to `/__fake/drift-compare {marketplace: "ebay"}` unchanged
+  (`services/fake-bsc/CONTRACT.md`, "Drift"). The two hashes (rows 5 and 7)
+  are sha256 of the sorted, unique shipping-service codes and aspect names.
+  Never a value: no token, key, user id or eBay message.
+
 ### EasyPost postage routes
 
 Convex never holds a seller's EasyPost API key (NEO-20's credential boundary),
@@ -106,6 +271,32 @@ Two status contracts on this router are load-bearing and must not drift:
   URL contains a per-seller bearer token in its path and EasyPost quotes the URL
   it rejected in its error text, so `redactWebhookToken` scrubs
   `/webhooks/easypost/<token>` on the way out of both the client and the router.
+
+### eBay OAuth routes (NEO-415)
+
+eBay is a listing destination reached through its REST APIs with a per-seller
+OAuth user token. The app's client secret and each seller's refresh token
+(about 18 months) stay in this service; Convex sees only the two-hour access
+token. Plain HTTP, no Chromium. Both routes refuse any key that is not an
+`ebay-credentials-*` secret.
+
+| Route | What it does |
+|---|---|
+| `POST /oauth/ebay/connect` `{key, code, expectEbayUserId?}` | Exchange the consent's authorization code (redirect_uri = the RuName), read the seller's identity (Commerce Identity `getUser`; `userId` must match `^[A-Za-z0-9._-]{1,64}$`), store `{username, ebayUserId, token, expiresAt, refreshToken, refreshExpiresAt}`. Returns `{username, ebayUserId, environment, expiresAt}`, `environment` being `"sandbox" | "production"`, or `"fake"` for an `ebay-credentials-fake-…` key. With `expectEbayUserId`, a different eBay account is `409 account_mismatch` and nothing is written |
+| `POST /oauth/ebay/connect` `{key, refreshToken, expectEbayUserId?}` | The testing seed: the same, from a refresh token minted out of band. Refused (`400`) when `EBAY_ENVIRONMENT=production`, except for a fake key on a non-prod process |
+| `POST /oauth/ebay/refresh` `{key}` | Mint a new access token from the stored refresh token, store it, return `{token, expiresAt}` |
+| `POST /webhooks/ebay/verify` `{signatureHeader, body}` | Verify an eBay Notification API push (`X-EBAY-SIGNATURE`, ECDSA over SHA-1, key from `getPublicKey` with a cached application token). Returns `{valid}`; a malformed header or unknown key is `valid:false`, failing to reach eBay is `502`. Own rate-limit bucket |
+
+Reads and disconnect use the existing `GET /credentials/:key/token`,
+`/metadata` and `DELETE /credentials/:key`. Errors are `{error_class}` only:
+`400 bad_request`, `401 consent_refused` (connect) / `401 reauth_required`
+(refresh: eBay refused the refresh token, or nothing is stored), `502
+ebay_unavailable`, `503 ebay_not_configured`, `500 internal` (a Secret Manager
+fault, never reported as a re-auth). Configuration: `EBAY_ENVIRONMENT`
+(`sandbox` or `production`, anything else is "not configured"),
+`EBAY_CLIENT_ID`, `EBAY_CLIENT_SECRET`, `EBAY_RU_NAME`. Each call logs one
+`ebay_oauth_call` line, kept apart from `browser_login_call` so the login
+alert metrics are unaffected.
 
 ## Docker
 
@@ -140,7 +331,7 @@ The project uses strict TypeScript settings with:
 ## Deployment
 
 This service deploys to Cloud Run from the consolidated monorepo
-(`neonbinder/neonbinder`). As of the NEO-18 cutover (2026-06-27), the monorepo
+(`neonbinder/neonbinder-app`). As of the NEO-18 cutover (2026-06-27), the monorepo
 is the sole deploy source of truth for the browser service; the standalone
 `neonbinder_browser` repo is retired.
 
@@ -397,6 +588,37 @@ Do **not** make this service reject unknown request fields. An older service
 lockstep deploy, which is the opposite of what the rule above needs.
 (Contradictory fields *are* rejected — see `parseTransientCredentials`, where
 half a credential pair is a 400 rather than a silent fallback.)
+
+### Version history
+
+| Version | Ticket | Change |
+|---|---|---|
+| 1 | NEO-143 | The version check itself; transient login credentials. |
+| 2 | NEO-483 | `/login/bsc` accepts `tokenRefused`. Refresh and silent re-authorize stop returning `storeName`/`sellerId`; a cached token whose profile read gives no verdict is served without them. Convex's `REQUIRED_CONTRACT_VERSION` stays 1 in this release. Not safe in every release order; see below. |
+
+**Version 2 during a release.** Old service with new Convex is safe: the old
+service ignores `tokenRefused` and keeps its old cached-branch behaviour.
+New service with old Convex is not fully safe, and it is the window every
+release passes through, because `release.yml` promotes this service before it
+pushes Convex (a few minutes). Old Convex never sends `tokenRefused`. If BSC
+answers 401 to the stored token while its profile endpoint is stalling, the new
+cached branch gets no verdict from the profile read and serves the refused
+token again instead of renewing it. BSC calls in that window keep failing with
+401, and a collector can be told to sign in to BuySportsCards again for a few
+minutes, until new Convex is live (its next renewal sends `tokenRefused`) or
+the stall ends. Nothing is lost: the stored session is untouched, and waiting or
+signing in again clears it.
+
+**Additive fields that did not bump the version.** `bscTarget` on `/health`
+(NEO-552) is informational: Convex never acts on it, and an older service
+simply omits it (CI's probe verdict reads a missing value as the wrong target).
+`POST /probe/bsc` is new and Convex never calls it. Neither does it call
+`POST /probe/ebay` (NEO-555); CI is its only caller. `ebayFake` and
+`ebayTarget` on `/health` (NEO-555) are informational too, and Convex does not
+read them: `ebayFake` is true only when this process would honour a fake eBay
+credential key (a valid fake URL and caller key, never in prod), and
+`ebayTarget` is the environment a bare eBay key uses (`production`, `sandbox`,
+or `null` when no eBay app is configured).
 
 ### The mechanical check
 

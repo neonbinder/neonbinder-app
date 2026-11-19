@@ -188,7 +188,8 @@ describe("NEO-358: every teamOnCardIds writer and every card delete reaches the 
     const patch = body.indexOf("...contentPatch,");
     expect(patch).toBeGreaterThan(0);
     expect(body.slice(patch, patch + 4000)).toMatch(
-      /const teamsWritten = operatorFill \?\? teamIdsWritten;[\s\S]*syncCardTeamLinks\(ctx, existing\._id, teamsWritten\)/,
+      // NEO-569: the seam takes the stored card (its league is settled there).
+      /const teamsWritten = operatorFill \?\? teamIdsWritten;[\s\S]*syncCardTeamLinks\(ctx, existing, teamsWritten, \{ leagueCache \}\)/,
     );
   });
 
@@ -198,16 +199,17 @@ describe("NEO-358: every teamOnCardIds writer and every card delete reaches the 
     const fn = create.slice(create.indexOf("export async function insertCardRow"));
     const insertAt = fn.search(/ctx\.db\.insert\(\s*"cardChecklist"/);
     expect(insertAt).toBeGreaterThan(0);
+    // NEO-569: the seam takes the new card's shape (league already in the insert).
     expect(fn.slice(insertAt)).toMatch(
-      /syncCardTeamLinks\(ctx, id, card\.teamOnCardIds, \{ fresh: true \}\)/,
+      /syncCardTeamLinks\(ctx, \{ _id: id,[^}]*\}, card\.teamOnCardIds, \{\s*fresh: true,/,
     );
     // addCustomCard.
     const src = read("selectorOptions.ts");
     const lines = src.split("\n");
     const site = lines.findIndex((line) => /ctx\.db\.insert\("cardChecklist"/.test(line));
     expect(site).toBeGreaterThan(0);
-    expect(lines.slice(site, site + 120).join("\n")).toContain(
-      "syncCardTeamLinks(ctx, id, teamOnCardIds, { fresh: true })",
+    expect(lines.slice(site, site + 120).join("\n")).toMatch(
+      /syncCardTeamLinks\(\s*ctx,\s*\{ _id: id,[^}]*\},\s*teamOnCardIds,\s*\{ fresh: true,/,
     );
   });
 

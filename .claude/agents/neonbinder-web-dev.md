@@ -7,7 +7,7 @@ description: |
   - "Add a card-detail drawer to the set builder that autosaves each field on the live row" → neonbinder-web-dev builds the drawer, its Convex mutation with validators, and the row update path.
   - "The entity-review wizard should show a team's location and name as separate fields" → neonbinder-web-dev changes the wizard form, the `teams` mutations it calls, and the display row.
   - "Add an admin page listing leagues with alias dedup" → neonbinder-web-dev adds the route under `app/admin/`, the `AdminLayout`-gated `<Route>` in `src/main.tsx`, and the indexed Convex queries.
-model: opus
+model: sonnet
 effort: high
 memory: project
 color: purple
@@ -68,9 +68,9 @@ security test goes stale silently. Query with `.withIndex()`, never `.filter()`.
 Actions have no `ctx.db`; go through `ctx.runQuery`/`ctx.runMutation`. Convex
 tests use `convex-test` on the edge runtime; look at a neighbouring `*.test.ts`
 before writing one. Never run `npx convex deploy`. `npx convex dev --once`
-pushes the branch to the shared dev deployment so its specs run there before
-the first push; do it only from a branch merged up to latest main, as the root
-CLAUDE.md's "Run your specs against dev before the first push" describes.
+pushes the branch to the deployment `.env.local` names. Check that it is this
+worktree's own deployment before you run it, as the root CLAUDE.md's "Run your
+specs on your own Convex deployment before the first push" describes.
 
 ## UI rules that hold here
 

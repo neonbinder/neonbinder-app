@@ -95,6 +95,18 @@ crons.interval(
 );
 
 /**
+ * NEO-402 — a fetch's stored name answers whose session was neither confirmed
+ * nor cancelled. Readers ignore them after a day already; this keeps the
+ * table from growing.
+ */
+crons.interval(
+  "reap stale checklist name resolutions",
+  { hours: 1 },
+  internal.checklistNameResolutions.sweepStaleResolutions,
+  {},
+);
+
+/**
  * NEO-221 — delete entity-review batches nobody is coming back to.
  *
  * A separate entry from "age stale entity-review lookups" above, and
@@ -155,6 +167,52 @@ crons.daily(
   "refresh smart binder fits",
   { hourUTC: 9, minuteUTC: 0 },
   internal.binderRules.refreshStaleFits,
+  {},
+);
+
+/**
+ * NEO-370 — read what sold on BuySportsCards and apply it to the collector's
+ * box copies, and push the box changes nothing else has pushed yet. Every 15
+ * minutes: the poll reads order history across ALL statuses back to a stored
+ * cursor, so an order that ships inside the window is still caught. One
+ * scheduled `pollOwner` per owner and listing platform (BSC, and eBay since
+ * NEO-415 when this deployment is wired to it) with credentials saved and a listing
+ * state that lists and is not dormant (NEO-370 Revision 5: a saved sign-in
+ * is listing, so pushing and polling go together; nothing while BSC is
+ * paused), plus one pass that sets up sign-ins saved before that rule;
+ * an owner with nothing new costs one history page. After each owner's poll
+ * their listing drain runs when changes are queued (`finishPoll`): the
+ * drain's only timed trigger, and what picks up an intake run left without
+ * "Done adding photos". See `listingSales.ts`.
+ */
+crons.interval(
+  "poll marketplace sales",
+  { minutes: 15 },
+  internal.listingSales.pollAll,
+  {},
+);
+
+/**
+ * NEO-410 — re-queue any smart binder whose fits have been pending (rule
+ * just saved, recompute scheduled) for more than ten minutes. A recompute
+ * that throws retries itself; this catches the one Convex never finished
+ * at all, so no binder waits forever. See `requeueStuckFits`.
+ */
+crons.interval(
+  "re-queue stuck smart binder fits",
+  { minutes: 10 },
+  internal.binderRules.requeueStuckFits,
+  {},
+);
+
+/**
+ * NEO-481 — drop hand photo edit render tickets older than the hour their
+ * rate limit counts (`photoEditRows.sweepPhotoEditTickets`).
+ */
+crons.interval(
+  "sweep photo edit render tickets",
+  { hours: 1 },
+  internal.photoEditRows.sweepPhotoEditTickets,
   {},
 );
 

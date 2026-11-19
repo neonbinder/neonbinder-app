@@ -1,10 +1,17 @@
 import { v, type Infer } from "convex/values";
-import { internalMutation, mutation, query } from "./_generated/server";
-import type { MutationCtx } from "./_generated/server";
+import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { requireAdmin, getCurrentUserIdentity } from "./auth";
-import { cardPlatformWireDataValidator } from "./schema";
+import { clearRecord } from "./checklistNameResolutions";
+import {
+  cardPlatformWireDataValidator,
+  cardTeamLookupValidator,
+  checklistConflictValidator,
+  checklistPairRevertValidator,
+  checklistPairedRowValidator,
+} from "./schema";
 import { cardNumberStem } from "../lib/cards/variations";
 // NEO-251 security review: the same two bounds the write path enforces, applied
 // at this boundary too — see `startCandidateBatch`'s handler.
@@ -69,16 +76,39 @@ const bucketValidator = v.union(
   v.literal("matched"),
   v.literal("bscOnly"),
   v.literal("slOnly"),
+  // NEO-496 — a publisher checklist row no marketplace card matched. Its
+  // `platformData` is `{}`; Keep makes a card from the row.
+  v.literal("checklistOnly"),
 );
 
 /**
- * NEO-335 — how a card's fetch-time BSC team lookup ended. See the field's
- * note on `checklistCandidates` in schema.ts.
+ * NEO-496 — how a card paired with a publisher-checklist row (Match Cards'
+ * badge). `confidence` is set for a near-name pair only; `checklistNumber`
+ * for a name pair with a numbered row (shown beside the card's own number,
+ * never a conflict). Mirrors the schema field.
  */
-const teamLookupValidator = v.union(
-  v.literal("answered"),
-  v.literal("failed"),
-);
+export const checklistLinkValidator = v.object({
+  via: v.union(
+    v.literal("number"),
+    v.literal("caseFolded"),
+    v.literal("prefixStripped"),
+    v.literal("player"),
+    v.literal("playerName"),
+    v.literal("playerFuzzy"),
+  ),
+  confidence: v.optional(v.number()),
+  checklistNumber: v.optional(v.string()),
+  /** The paired row and the card before it, for Match Cards' Unlink. */
+  row: v.optional(checklistPairedRowValidator),
+  revert: v.optional(checklistPairRevertValidator),
+});
+
+/**
+ * NEO-335 — how a card's fetch-time BSC team lookup ended. See the field's
+ * note on `checklistCandidates` in schema.ts. PR 451 adds "checklist": the
+ * operator's publisher checklist answered it and BSC was not asked.
+ */
+const teamLookupValidator = cardTeamLookupValidator;
 
 /**
  * NEO-251 — both marketplaces' player lists for one card, plus an optional
@@ -120,7 +150,17 @@ const candidateInputValidator = v.object({
   // string that `parseSlSubjects` splits). Count- and length-bounded by
   // `startCandidateBatch`'s handler, not by this validator — see there.
   playersConflict: v.optional(playersConflictValidator),
+  // PR 451 (NEO-478) — the publisher checklist disagrees with the marketplace
+  // on this card (see the schema note). Bounded in the handler like
+  // `playersConflict`.
+  checklistConflict: v.optional(checklistConflictValidator),
+  // PR 451 (NEO-478) — "checklist" when the card's team came from the
+  // publisher checklist at fetch (written `ready`, no BSC lookup). The BSC
+  // outcomes are still written by `resolveCandidateTeams`.
+  teamLookup: v.optional(teamLookupValidator),
   bucket: bucketValidator,
+  // NEO-496 — see `checklistLinkValidator`.
+  checklistLink: v.optional(checklistLinkValidator),
   confidence: v.optional(v.number()),
   /**
    * NEO-330 / NEO-341 — this card is waiting on a BSC team lookup the action
@@ -405,6 +445,26 @@ export const startCandidateBatch = internalMutation({
         "player",
       );
       assertNames(c.cardNumber, c.teams ?? [], MAX_CARD_TEAMS, "teams", "team");
+      // PR 451 — the checklist conflict's four lists, on the same terms.
+      const checklist = c.checklistConflict;
+      if (checklist) {
+        for (const side of ["marketplace", "checklist"] as const) {
+          assertNames(
+            c.cardNumber,
+            checklist.players?.[side] ?? [],
+            MAX_CARD_PLAYERS,
+            `${side} players in its checklist conflict`,
+            "player",
+          );
+          assertNames(
+            c.cardNumber,
+            checklist.teams?.[side] ?? [],
+            MAX_CARD_TEAMS,
+            `${side} teams in its checklist conflict`,
+            "team",
+          );
+        }
+      }
       const conflict = c.playersConflict;
       if (!conflict) continue;
       for (const side of ["bsc", "sportlots"] as const) {
@@ -561,7 +621,7 @@ async function writeCandidatePage(
  * An over-length raw string is never matched.
  */
 async function chooseCandidateTeams(
-  ctx: MutationCtx,
+  ctx: QueryCtx | MutationCtx,
   rawTeamName: string | undefined,
   teamNames: string[] | undefined,
   scope: () => Promise<{
@@ -860,6 +920,56 @@ export const resolveCandidateTeams = internalMutation({
 });
 
 /**
+ * PR 451 (NEO-478) — the publisher checklist's team texts, through the SAME
+ * whole-name-first resolution BSC's raw value takes (`chooseCandidateTeams`):
+ * a text that names an existing team row in the set's sport (by name or
+ * alias, any era the set year allows) stays whole ("Korea, South"); any other
+ * text is split on commas. Each answer is aligned with `texts`: the names the
+ * card carries for that text, or `null` when its split is refused (over the
+ * team cap or an over-length part), which the caller treats as no team from
+ * the checklist.
+ *
+ * Only texts carrying a comma need asking: any other text splits to itself.
+ * Internal: `fetchCardChecklist` calls it from behind its own `requireAdmin`.
+ *
+ * At most `MAX_CHECKLIST_TEAM_TEXTS` texts are resolved, which bounds the
+ * reads. The caller sends no more than that; should it ever send more, the
+ * texts past the cap answer `null` rather than failing the fetch, so their
+ * cards fall back to the per-card BSC lookup like an unmatched card (D2).
+ */
+export const MAX_CHECKLIST_TEAM_TEXTS = 500;
+export const resolveChecklistTeamTexts = internalQuery({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    texts: v.array(v.object({ raw: v.string(), parts: v.array(v.string()) })),
+  },
+  returns: v.array(v.union(v.array(v.string()), v.null())),
+  handler: async (ctx, args) => {
+    let scope:
+      | { sportId: Id<"selectorOptions"> | undefined; setYear: number | undefined }
+      | undefined;
+    const out: Array<string[] | null> = [];
+    for (const [i, t] of args.texts.entries()) {
+      if (i >= MAX_CHECKLIST_TEAM_TEXTS) {
+        out.push(null);
+        continue;
+      }
+      const teams = await chooseCandidateTeams(ctx, t.raw, t.parts, async () => {
+        if (!scope) {
+          scope = {
+            sportId: await findSportForSelectorOption(ctx, args.selectorOptionId),
+            setYear: await findSetYearForSelectorOption(ctx, args.selectorOptionId),
+          };
+        }
+        return scope;
+      });
+      out.push(teams ?? null);
+    }
+    return out;
+  },
+});
+
+/**
  * The modal's live view, scoped to the signed-in operator.
  *
  * Scoping matters as much here as it does in `startCandidateBatch`: this query
@@ -922,7 +1032,12 @@ export const getReadyCandidates = query({
           v.object({ bsc: v.string(), sportlots: v.string() }),
         ),
         playersConflict: v.optional(playersConflictValidator),
+        // PR 451 (NEO-478) — see the schema note; the wizard's "Checklist
+        // says otherwise" step reads it.
+        checklistConflict: v.optional(checklistConflictValidator),
         bucket: bucketValidator,
+        // NEO-496 — how the card paired with the publisher checklist.
+        checklistLink: v.optional(checklistLinkValidator),
         confidence: v.optional(v.number()),
         stem: v.string(),
         teamResolved: v.boolean(),
@@ -979,7 +1094,9 @@ export const getReadyCandidates = query({
         // withheld from the streamed view is one the operator reviews the row
         // without.
         playersConflict: r.playersConflict,
+        checklistConflict: r.checklistConflict,
         bucket: r.bucket,
+        checklistLink: r.checklistLink,
         confidence: r.confidence,
         stem: r.stem,
         // Lets the row show "resolving team…" rather than an empty cell that
@@ -1104,6 +1221,9 @@ export const discardCandidates = mutation({
       args.selectorOptionId,
       userId,
     );
+    // NEO-402 — the fetch's name answers belong to the same session and end
+    // with it: confirm and cancel both arrive here.
+    await clearRecord(ctx, args.selectorOptionId, userId);
     if (hasMore) {
       await ctx.scheduler.runAfter(
         0,

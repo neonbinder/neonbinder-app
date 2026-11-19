@@ -25,6 +25,7 @@
 import { ConvexError } from "convex/values";
 import type { Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
+import { mapBounded, STORAGE_BATCH_WIDTH } from "./boundedConcurrency";
 import {
   SUB_VARIANT_INSERT_ONLY,
   SUB_VARIANT_INSERT_ONLY_MESSAGE,
@@ -173,6 +174,183 @@ export async function findSetForSelectorOption(
     depth += 1;
   }
   return undefined;
+}
+
+/**
+ * NEO-424 — every node of a subtree with its level, root included, capped.
+ *
+ * The set-history scan reads committed cards node by node and wants the
+ * parallel-level nodes LAST (see `convex/setHistory.ts`), so it needs each
+ * node's level, which `collectDescendantIds` does not return.
+ *
+ * Walked through the `by_parent` index rather than the `children` pointers,
+ * because of what it costs: one index range per EXPANDED node instead of one
+ * point read per node. A `parallel` row is the bottom of the hierarchy (a
+ * sub-variant is a parallel under an insert, and nothing sits beneath one), so
+ * parallels are listed by their parent's range and never expanded themselves.
+ * A big set is a few dozen ranges (the set, its variant types and its
+ * inserts) where a pointer walk would be hundreds of reads — the NEO-294
+ * failure was ~750 per-name index calls in one query, and this runs on every
+ * fetch. `parentId` and `children` are written together by every row writer,
+ * so the two walks see the same subtree.
+ *
+ * `seen` guards a `parentId` cycle the way `MAX_ANCESTOR_DEPTH` guards the
+ * upward walks, and `maxNodes` caps the answer: `truncated` says it was hit,
+ * and the caller then treats the history as incomplete rather than deciding
+ * on part of it.
+ */
+export async function collectSubtreeNodes(
+  ctx: Pick<QueryCtx, "db">,
+  rootId: Id<"selectorOptions">,
+  maxNodes: number,
+): Promise<{
+  nodes: Array<{ _id: Id<"selectorOptions">; level: string }>;
+  truncated: boolean;
+}> {
+  const root = await ctx.db.get(rootId);
+  if (!root) return { nodes: [], truncated: false };
+  const nodes: Array<{ _id: Id<"selectorOptions">; level: string }> = [
+    { _id: root._id, level: root.level ?? "" },
+  ];
+  const seen = new Set<string>([rootId]);
+  // NEO-592 — walked a LEVEL at a time: every expandable node of a level has
+  // its children read together (a set's inserts are dozens of independent
+  // ranges, and read one after another each paid a storage round trip), then
+  // the children are filed in the order the nodes were listed. That is the
+  // order the one-node-at-a-time walk produced (its queue was first in, first
+  // out), so the node list, the truncation point and which `maxNodes` rows are
+  // kept are unchanged; only the ranges of one level are read at once, a
+  // chunk at a time (see below).
+  let level: Array<{ _id: Id<"selectorOptions">; level: string }> = [nodes[0]];
+  while (level.length > 0) {
+    const parents = level.filter((node) => node.level !== "parallel");
+    const next: Array<{ _id: Id<"selectorOptions">; level: string }> = [];
+    // The level is read a CHUNK of storage-batch width at a time, and each
+    // chunk is filed before the next is dispatched, so a level far wider than
+    // the cap cannot read `width x (maxNodes + 1)` rows in one transaction:
+    // the walk stops at the chunk in which the cap is crossed. A parent needs
+    // at most `remaining + 1` unseen children to prove the cap is crossed
+    // (`remaining` is what the cap still has room for at the chunk's start,
+    // and only shrinks while the chunk is filed), plus one for the root, the
+    // only row a `parentId` cycle can hand back as an already-seen child.
+    for (let from = 0; from < parents.length; from += STORAGE_BATCH_WIDTH) {
+      const take = Math.max(maxNodes - nodes.length, 0) + 2;
+      const chunk = parents.slice(from, from + STORAGE_BATCH_WIDTH);
+      const childLists = await mapBounded(chunk, (parent) =>
+        ctx.db
+          .query("selectorOptions")
+          .withIndex("by_parent", (q) => q.eq("parentId", parent._id))
+          .take(take),
+      );
+      for (const children of childLists) {
+        for (const child of children) {
+          if (seen.has(child._id)) continue;
+          seen.add(child._id);
+          if (nodes.length >= maxNodes) return { nodes, truncated: true };
+          const node = { _id: child._id, level: child.level ?? "" };
+          nodes.push(node);
+          next.push(node);
+        }
+      }
+    }
+    level = next;
+  }
+  return { nodes, truncated: false };
+}
+
+/**
+ * NEO-424 — the most children `findPriorYearSameProduct` reads under any one
+ * row. Far above any real level (a sport's years are ~150; a year's brands and
+ * a brand's sets are dozens to low hundreds), so a real hierarchy never
+ * reaches it; what it bounds is a malformed or runaway one.
+ */
+export const PRIOR_PRODUCT_CHILD_CAP = 500;
+
+/**
+ * NEO-424 (rule E1) — the same product one year earlier: the `setName` row
+ * whose value equals this set's, under a `manufacturer` whose value equals
+ * this set's manufacturer, under the `year` exactly one before this set's
+ * year, in the same sport. Undefined unless every step finds EXACTLY one row.
+ *
+ * One year back only, by design: "the nearest earlier year" in the plan is the
+ * previous year, because a product skipped for a year is very often a
+ * different product carrying an old name, and a preselect built from it would
+ * be a guess dressed as a fact.
+ *
+ * Matching on `value` is matching NB's own selector values against NB's own
+ * selector values — the hierarchy is NB data (invariant 1), and nothing here
+ * reads a marketplace field. Exact string equality, deliberately: a renamed
+ * product is not the same product as far as this preselect is concerned, and
+ * the cost of a miss is only that the operator is not offered a default.
+ *
+ * Reads: the ancestor walk (≤ 4 point reads) plus three `by_level_and_parent`
+ * ranges, each the children of one row — a sport's years (a century and a
+ * half at most), a year's manufacturers and a manufacturer's sets. Each range
+ * is BOUNDED at `PRIOR_PRODUCT_CHILD_CAP` rows (read as `.take(cap + 1)`), and
+ * a range that overflows its cap is undefined: an "exactly one" decided on
+ * part of a range is the partial-evidence answer the set-history module
+ * refuses everywhere ("incomplete means unused"). The cost of hitting it is
+ * only a missing preselect.
+ */
+export async function findPriorYearSameProduct(
+  ctx: Pick<QueryCtx, "db">,
+  selectorOptionId: Id<"selectorOptions">,
+  /**
+   * Test seam. `cap` can only SHRINK `PRIOR_PRODUCT_CHILD_CAP`, never raise
+   * it — the bound is the query's, not the caller's.
+   */
+  opts?: { cap?: number },
+): Promise<Id<"selectorOptions"> | undefined> {
+  const cap = Math.max(
+    1,
+    Math.min(PRIOR_PRODUCT_CHILD_CAP, Math.floor(opts?.cap ?? PRIOR_PRODUCT_CHILD_CAP)),
+  );
+  const setId = await findSetForSelectorOption(ctx, selectorOptionId);
+  if (!setId) return undefined;
+  const set = await ctx.db.get(setId);
+  if (!set?.parentId) return undefined;
+  const manufacturer = await ctx.db.get(set.parentId);
+  if (!manufacturer || manufacturer.level !== "manufacturer" || !manufacturer.parentId) {
+    return undefined;
+  }
+  const year = await ctx.db.get(manufacturer.parentId);
+  if (!year || year.level !== "year" || !year.parentId) return undefined;
+  const yearNumber = parseYear(year.value);
+  if (yearNumber === undefined) return undefined;
+  const sportId = year.parentId;
+
+  const exactlyOne = <T,>(rows: T[]): T | undefined =>
+    rows.length === 1 ? rows[0] : undefined;
+  /** The children of `parentId` at `level`, or null when they exceed `cap`. */
+  const childrenWithin = async (
+    level: "year" | "manufacturer" | "setName",
+    parentId: Id<"selectorOptions">,
+  ) => {
+    const rows = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", level).eq("parentId", parentId),
+      )
+      .take(cap + 1);
+    return rows.length > cap ? null : rows;
+  };
+
+  const years = await childrenWithin("year", sportId);
+  if (!years) return undefined;
+  const priorYear = exactlyOne(
+    years.filter((row) => parseYear(row.value) === yearNumber - 1),
+  );
+  if (!priorYear) return undefined;
+  const manufacturers = await childrenWithin("manufacturer", priorYear._id);
+  if (!manufacturers) return undefined;
+  const priorManufacturer = exactlyOne(
+    manufacturers.filter((row) => row.value === manufacturer.value),
+  );
+  if (!priorManufacturer) return undefined;
+  const sets = await childrenWithin("setName", priorManufacturer._id);
+  if (!sets) return undefined;
+  const priorSet = exactlyOne(sets.filter((row) => row.value === set.value));
+  return priorSet?._id;
 }
 
 /**

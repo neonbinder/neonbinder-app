@@ -4,8 +4,9 @@
  * or typed, and My requests puts a confirm that counts the copies in front of
  * withdraw. The server half is collectionRequests.test.ts; E2E proves it live.
  */
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { installFakeXhr } from "@/lib/testing/fake-xhr";
 import { EMPTY_DRILL } from "../catalog/drill";
 
 const calls = vi.hoisted(() => [] as { name: string; args: unknown }[]);
@@ -77,7 +78,9 @@ describe("Request a card", () => {
     fireEvent.change(within(form).getByLabelText("Card number"), { target: { value: "#41" } });
     fireEvent.change(within(form).getByLabelText("Player"), { target: { value: "Reggie White" } });
     fireEvent.click(within(form).getByRole("button", { name: "Send request" }));
-    expect((await within(form).findByRole("status")).textContent).toContain("Sent #41 Reggie White.");
+    await waitFor(() =>
+      expect(within(form).getAllByRole("status").some((s) => s.textContent?.includes("Sent #41 Reggie White."))).toBe(true),
+    );
     expect(calls).toEqual([
       {
         name: "collectionRequests:requestCard",
@@ -97,6 +100,105 @@ describe("Request a card", () => {
     await waitFor(() => expect(calls).toHaveLength(1));
     expect(calls[0].args).toMatchObject({ setId: "st", variantName: "Gold Foil" });
     expect(calls[0].args).not.toHaveProperty("variantId");
+  });
+});
+
+describe("Request a card's photos (NEO-431)", () => {
+  const jpeg = (name = "card.jpg") => new File(["x"], name, { type: "image/jpeg" });
+  const pick = (form: HTMLElement, side: "Front" | "Back", file: File) =>
+    fireEvent.change(within(form).getByLabelText(`${side} photo file`), { target: { files: [file] } });
+  const fill = (form: HTMLElement) => {
+    fireEvent.change(within(form).getByLabelText("Card number"), { target: { value: "41" } });
+    fireEvent.change(within(form).getByLabelText("Player"), { target: { value: "Reggie White" } });
+  };
+  let n = 0;
+  beforeEach(() => {
+    n = 0;
+    URL.createObjectURL = vi.fn(() => `blob:request-${++n}`);
+    URL.revokeObjectURL = vi.fn();
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("holds them, uploads nothing until Send, then sends both and clears the box", async () => {
+    const xhrs = installFakeXhr((xhr) =>
+      queueMicrotask(() => xhr.respond(200, JSON.stringify({ storageId: `st${xhrs.all.length}` }))),
+    );
+    answers.set("collectionRequests:generateUploadUrl", "https://upload.example/1");
+    open();
+    const form = screen.getByRole("form", { name: "Request a card" });
+    const box = within(form).getByRole("region", { name: /^Photos of / });
+    expect(box.textContent).toContain("Stashed here until you send the request.");
+    expect(box.textContent).not.toContain("Saved as soon as");
+    pick(form, "Front", jpeg());
+    pick(form, "Back", jpeg());
+    await within(box).findByRole("img", { name: /^Back of this card/ });
+    expect(xhrs.all).toHaveLength(0);
+    expect(calls).toEqual([]);
+
+    fill(form);
+    fireEvent.click(within(form).getByRole("button", { name: "Send request" }));
+    await waitFor(() => expect(calls.some((c) => c.name === "collectionRequests:requestCard")).toBe(true));
+    expect(xhrs.all).toHaveLength(2);
+    expect(calls.find((c) => c.name === "collectionRequests:requestCard")?.args).toMatchObject({
+      frontImageId: "st1",
+      backImageId: "st2",
+    });
+    await waitFor(() => expect(within(form).getByText("No front photo yet")).toBeTruthy());
+    expect(within(form).getByText("No back photo yet")).toBeTruthy();
+    expect(within(form).getByRole("region", { name: /^Photos of / }).querySelector('[role="status"]')?.textContent).toBe("");
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:request-1");
+  });
+
+  it("turns away what photoProblem turns away, in the form's own alert, and a good pick clears it", async () => {
+    open();
+    const form = screen.getByRole("form", { name: "Request a card" });
+    pick(form, "Front", new File(["x"], "list.pdf", { type: "application/pdf" }));
+    expect(within(form).getByRole("alert").textContent).toMatch(/isn't a photo/);
+    expect(within(form).getByText("No front photo yet")).toBeTruthy();
+
+    pick(form, "Front", new File([new Uint8Array(10 * 1024 * 1024 + 1)], "huge.jpg", { type: "image/jpeg" }));
+    expect(within(form).getByRole("alert").textContent).toMatch(/over 10 MB/);
+
+    pick(form, "Front", jpeg());
+    expect(within(form).getByRole("alert").textContent).toBe("");
+    await within(form).findByRole("img", { name: /^Front of this card/ });
+  });
+
+  it("while it sends, the box only mentions photos when there are some", async () => {
+    let answer: (value: unknown) => void = () => {};
+    answers.set("collectionRequests:requestCard", () => new Promise((resolve) => (answer = resolve)));
+    open();
+    const form = screen.getByRole("form", { name: "Request a card" });
+    const box = within(form).getByRole("region", { name: /^Photos of / });
+    fill(form);
+    fireEvent.click(within(form).getByRole("button", { name: "Send request" }));
+    await waitFor(() => expect(within(box).getByRole("status").textContent).toBe("Sending…"));
+    await act(async () => answer({ requestId: "r1", privateCardId: "p1" }));
+    // A sent request starts the box over, so this is a new one.
+    await waitFor(() => expect(within(within(form).getByRole("region", { name: /^Photos of / })).getByRole("status").textContent).toBe(""));
+  });
+
+  it("while it sends with a photo, the box says the photos are going", async () => {
+    installFakeXhr((xhr) => queueMicrotask(() => xhr.respond(200, JSON.stringify({ storageId: "st1" }))));
+    answers.set("collectionRequests:generateUploadUrl", "https://upload.example/1");
+    let answer: (value: unknown) => void = () => {};
+    answers.set("collectionRequests:requestCard", () => new Promise((resolve) => (answer = resolve)));
+    open();
+    const form = screen.getByRole("form", { name: "Request a card" });
+    const box = within(form).getByRole("region", { name: /^Photos of / });
+    pick(form, "Front", jpeg());
+    await within(box).findByRole("img", { name: /^Front of this card/ });
+    fill(form);
+    fireEvent.click(within(form).getByRole("button", { name: "Send request" }));
+    await waitFor(() => expect(within(box).getByRole("status").textContent).toBe("Sending your photos…"));
+    await act(async () => answer({ requestId: "r1", privateCardId: "p1" }));
+  });
+
+  it("offers its own accepted types", () => {
+    open();
+    const form = screen.getByRole("form", { name: "Request a card" });
+    const input = within(form).getByLabelText("Front photo file") as HTMLInputElement;
+    expect(input.accept).toBe("image/jpeg,image/png,image/webp,image/heic,image/heif");
   });
 });
 
@@ -198,5 +300,124 @@ describe("My requests", () => {
     const item = screen.getByRole("listitem");
     within(item).getByText("Added");
     expect(within(item).queryByRole("button")).toBeNull();
+  });
+});
+
+describe("My requests: sync reports (NEO-536)", () => {
+  const report = (over: Record<string, unknown> = {}) => ({
+    _id: "sr1",
+    status: "open",
+    label: "2024 Topps Chrome Base",
+    platform: "bsc",
+    variantId: "v1",
+    heldBack: 3,
+    note: "Ohtani never lists.",
+    reportedAt: 1,
+    ...over,
+  });
+
+  it("lists every report with where it stands and the crew's note", () => {
+    answers.set("collectionRequests:mine", []);
+    answers.set("syncReports:mine", [
+      report(),
+      report({ _id: "sr2", status: "fixed", label: "1996 Contenders Base", closedAt: 2, closeNote: "Relinked it." }),
+      report({ _id: "sr3", status: "notABug", label: "1990 Score Base", platform: "ebay", closedAt: 3, closeNote: "eBay wants the team." }),
+    ]);
+    open("mine");
+    screen.getByText("No card or set requests yet.");
+    const items = within(screen.getByRole("list", { name: "My sync reports" })).getAllByRole("listitem");
+    expect(items).toHaveLength(3);
+    within(items[0]).getByText("Waiting on our crew");
+    expect(items[0].textContent).toContain("BuySportsCards: 2024 Topps Chrome Base");
+    expect(items[0].textContent).toContain("3 cards held back");
+    within(items[0]).getByText("Your note: Ohtani never lists.");
+    within(items[1]).getByText("Fixed");
+    within(items[1]).getByText(/Relinked it\./);
+    within(items[2]).getByText("Not a bug");
+    expect(items[2].textContent).toContain("eBay: 1990 Score Base");
+    within(items[2]).getByText(/eBay wants the team\./);
+    // Only an open report can be withdrawn.
+    expect(within(items[1]).queryByRole("button")).toBeNull();
+    expect(within(items[2]).queryByRole("button")).toBeNull();
+  });
+
+  it("withdraws an open report in one press, and the keyboard lands on the section", async () => {
+    answers.set("collectionRequests:mine", []);
+    answers.set("syncReports:mine", [report()]);
+    answers.set("syncReports:withdraw", null);
+    open("mine");
+    fireEvent.click(screen.getByRole("button", { name: "Withdraw the report on 2024 Topps Chrome Base (BuySportsCards)" }));
+    await waitFor(() => expect(calls).toEqual([{ name: "syncReports:withdraw", args: { id: "sr1" } }]));
+    const done = await screen.findByText("Withdrew the report on 2024 Topps Chrome Base (BuySportsCards).");
+    expect(done.getAttribute("role")).toBe("status");
+    expect(document.activeElement).toBe(screen.getByRole("heading", { level: 3, name: "Sets you reported" }));
+  });
+
+  it("while it withdraws, the name starts with the words on the button (WCAG 2.5.3)", async () => {
+    answers.set("collectionRequests:mine", []);
+    answers.set("syncReports:mine", [report()]);
+    answers.set("syncReports:withdraw", () => new Promise(() => {}));
+    open("mine");
+    fireEvent.click(screen.getByRole("button", { name: "Withdraw the report on 2024 Topps Chrome Base (BuySportsCards)" }));
+    const busy = await screen.findByRole("button", { name: "Withdrawing… the report on 2024 Topps Chrome Base (BuySportsCards)" });
+    expect(busy.hasAttribute("aria-label")).toBe(false);
+    expect(busy.getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("a long unbroken name or note wraps rather than pushing the row past a phone's width", () => {
+    answers.set("collectionRequests:mine", []);
+    answers.set("syncReports:mine", [report({ label: "X".repeat(120), note: "Y".repeat(200) })]);
+    open("mine");
+    const item = within(screen.getByRole("list", { name: "My sync reports" })).getByRole("listitem");
+    const text = within(item).getByText(`Your note: ${"Y".repeat(200)}`).parentElement!;
+    expect(text.className).toContain("min-w-0");
+    expect(text.className).toContain("[overflow-wrap:anywhere]");
+  });
+
+  it("shows the server's refusal on a withdraw", async () => {
+    answers.set("collectionRequests:mine", []);
+    answers.set("syncReports:mine", [report()]);
+    // This file's store stub reads an error's message (the real one reads a ConvexError's data first).
+    answers.set("syncReports:withdraw", () => {
+      throw new Error("The crew closed that report already.");
+    });
+    open("mine");
+    const item = within(screen.getByRole("list", { name: "My sync reports" })).getByRole("listitem");
+    fireEvent.click(screen.getByRole("button", { name: "Withdraw the report on 2024 Topps Chrome Base (BuySportsCards)" }));
+    await waitFor(() => expect(within(item).getByRole("alert").textContent).toBe("The crew closed that report already."));
+  });
+
+  it("each report's alert and the section's status are there, empty, before anything happens, so they are announced", () => {
+    answers.set("collectionRequests:mine", []);
+    answers.set("syncReports:mine", [report(), report({ _id: "sr2", status: "fixed", label: "1996 Contenders Base", closedAt: 2 })]);
+    open("mine");
+    const items = within(screen.getByRole("list", { name: "My sync reports" })).getAllByRole("listitem");
+    for (const item of items) {
+      const alert = within(item).getByRole("alert");
+      expect(alert.textContent).toBe("");
+      // Empty, it gives back the gap it would take.
+      expect(alert.className).toContain("empty:-mt-2");
+    }
+    const status = screen
+      .getAllByRole("status")
+      .find((el) => el.parentElement?.querySelector("h3")?.textContent === "Sets you reported");
+    expect(status?.textContent).toBe("");
+    expect(status?.className).toContain("empty:-mt-2");
+  });
+
+  it("a fixed report says the cards go up next sync, no hedging", () => {
+    answers.set("collectionRequests:mine", []);
+    answers.set("syncReports:mine", [report({ status: "fixed", closedAt: 2 })]);
+    open("mine");
+    const item = within(screen.getByRole("list", { name: "My sync reports" })).getByRole("listitem");
+    within(item).getByText("Those cards go up next sync.");
+  });
+
+  it("keeps the old empty line when there is nothing at all", () => {
+    answers.set("collectionRequests:mine", []);
+    answers.set("syncReports:mine", []);
+    open("mine");
+    screen.getByText("Nothing asked for yet. Your requests show up here.");
+    expect(screen.queryByRole("heading", { name: "Sets you reported" })).toBeNull();
   });
 });

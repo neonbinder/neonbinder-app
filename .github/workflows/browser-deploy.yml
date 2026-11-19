@@ -43,7 +43,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: services/browser/.nvmrc
           cache: npm
@@ -109,13 +109,19 @@ jobs:
         # cwd = services/browser (workflow default); Dockerfile.prod + context here.
         env:
           SHA: ${{ github.sha }}
+        # NEO-484: --provenance=false --sbom=false pushes ONE image manifest,
+        # not an OCI index + attestation (see .github/scripts/image-push-report.sh).
         run: |
-          docker build -f Dockerfile.prod \
+          set -euo pipefail
+          docker build --provenance=false --sbom=false \
+            --label "org.opencontainers.image.revision=$SHA" \
+            -f Dockerfile.prod \
             -t gcr.io/neonbinder-dev/neonbinder-browser:$SHA \
             -t gcr.io/neonbinder-dev/neonbinder-browser:latest \
             .
           docker push gcr.io/neonbinder-dev/neonbinder-browser:$SHA
           docker push gcr.io/neonbinder-dev/neonbinder-browser:latest
+          bash "$GITHUB_WORKSPACE/.github/scripts/image-push-report.sh" "gcr.io/neonbinder-dev/neonbinder-browser:$SHA"
 
       # Prod-GCR retag only on a real (enabled) push — a dispatch validation
       # stays dev-only and never touches the prod registry.
@@ -139,6 +145,7 @@ jobs:
           docker tag gcr.io/neonbinder-dev/neonbinder-browser:$SHA gcr.io/neonbinder/neonbinder-browser:latest
           docker push gcr.io/neonbinder/neonbinder-browser:$SHA
           docker push gcr.io/neonbinder/neonbinder-browser:latest
+          bash "$GITHUB_WORKSPACE/.github/scripts/image-push-report.sh" "gcr.io/neonbinder/neonbinder-browser:$SHA"
 
   # Dev blue/green: land the new image at 0% traffic under the sha tag. Live dev
   # keeps serving the prior revision until dev-promote.
@@ -148,8 +155,9 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && vars.BROWSER_DEPLOY_ENABLED == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # No checkout — override the workflow's services/browser working-dir so the
-    # gcloud run steps don't fail on a missing directory.
+    # Sparse checkout of .github/scripts only — override the workflow's
+    # services/browser working-dir so the gcloud run steps don't fail on a
+    # missing directory.
     defaults:
       run:
         working-directory: ${{ github.workspace }}
@@ -161,11 +169,66 @@ jobs:
       tagged_url: ${{ steps.capture-new.outputs.tagged_url }}
       prev_revision: ${{ steps.capture-prev.outputs.prev_revision }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+      - id: ebay
+        name: Preflight eBay config (sandbox, dev project)
+        env:
+          EBAY_CLIENT_ID: ${{ vars.EBAY_CLIENT_ID_SANDBOX }}
+          EBAY_RU_NAME: ${{ vars.EBAY_RU_NAME_SANDBOX }}
+          GCP_PROJECT: neonbinder-dev
+        # NEO-415. Fail the deploy loudly rather than ship a revision whose eBay
+        # routes answer 503 ebay_not_configured, or hand Cloud Run a secret
+        # reference whose latest version is not enabled (an opaque deploy
+        # failure). Resolves `latest` to its number and pins that number in the
+        # deploy: Cloud Run reads secret env vars at instance start, so a
+        # floating :latest would take a newly added version live on the next
+        # cold start without a deploy. Needs the deployer's viewer grant on the
+        # secret (neonbinder_ioc).
+        run: |
+          set -uo pipefail
+          missing=()
+          [ -n "$EBAY_CLIENT_ID" ] || missing+=("repo variable EBAY_CLIENT_ID_SANDBOX")
+          [ -n "$EBAY_RU_NAME" ] || missing+=("repo variable EBAY_RU_NAME_SANDBOX")
+          if ! out=$(gcloud secrets versions describe latest \
+              --secret=ebay-client-secret --project="$GCP_PROJECT" \
+              --format='value(state,name)' 2>&1); then
+            missing+=("secret ebay-client-secret readable in $GCP_PROJECT (gcloud: $(printf '%s' "$out" | head -n1))")
+          else
+            state=$(printf '%s' "$out" | awk '{print $1}')
+            version=$(printf '%s' "$out" | awk '{print $2}' | awk -F/ '{print $NF}')
+            if [ "$state" != "ENABLED" ] || ! [[ "$version" =~ ^[0-9]+$ ]]; then
+              missing+=("the latest version of secret ebay-client-secret in $GCP_PROJECT to be ENABLED (state: $state)")
+            else
+              echo "version=$version" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+          if [ "${#missing[@]}" -gt 0 ]; then
+            for m in "${missing[@]}"; do echo "::error::eBay config missing: $m"; done
+            echo "::error::See NEO-415. Set the repo variables with gh variable set and add the secret version with gcloud secrets versions add ebay-client-secret."
+            exit 1
+          fi
+      # NEO-552: dev talks to the FAKE BSC. Never set in the prod lane below.
+      - id: fakebsc
+        name: Preflight fake BSC config (dev project)
+        env:
+          FAKE_BSC_URL: ${{ vars.NEONBINDER_FAKE_BSC_URL }}
+        run: |
+          set -euo pipefail
+          re='^https://neonbinder-fake-bsc-[a-z0-9-]+(\.[a-z0-9-]+)*\.run\.app$'
+          if [[ -z "${FAKE_BSC_URL:-}" ]] || [[ ! "${FAKE_BSC_URL%/}" =~ $re ]] || [[ "${FAKE_BSC_URL%/}" == *---* ]]; then
+            echo "::error::Repo variable NEONBINDER_FAKE_BSC_URL must be https://neonbinder-fake-bsc-….run.app, the fake's own service URL, with no tag or path (NEO-552)."
+            exit 1
+          fi
+          version=$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-secret-version.sh" fake-bsc-caller-key neonbinder-dev)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - id: capture-prev
         name: Capture dev's currently-serving revision
         run: |
@@ -181,11 +244,21 @@ jobs:
           region: us-central1
           image: gcr.io/neonbinder-dev/neonbinder-browser:${{ github.sha }}
           project_id: neonbinder-dev
-          env_vars: ENVIRONMENT=dev
+          env_vars: |
+            ENVIRONMENT=dev
+            EBAY_CLIENT_ID=${{ vars.EBAY_CLIENT_ID_SANDBOX }}
+            EBAY_RU_NAME=${{ vars.EBAY_RU_NAME_SANDBOX }}
+            EBAY_ENVIRONMENT=sandbox
+            NEONBINDER_FAKE_BSC_URL=${{ vars.NEONBINDER_FAKE_BSC_URL }}
+          secrets: |
+            EBAY_CLIENT_SECRET=ebay-client-secret:${{ steps.ebay.outputs.version }}
+            NEONBINDER_FAKE_BSC_KEY=fake-bsc-caller-key:${{ steps.fakebsc.outputs.version }}
           no_traffic: true
           tag: ${{ needs.build-push.outputs.deploy_tag }}
           # Cost control (NEO-95): min-instances=0 intentionally, allow cold start.
-          flags: '--min-instances=0 --max-instances=20'
+          # env_vars MERGES, so a PREVIEW_SHA a pr-<N> preview left on the
+          # service template (browser.yml, NEO-555) would carry over; remove it.
+          flags: '--min-instances=0 --max-instances=20 --remove-env-vars=PREVIEW_SHA'
       - id: capture-new
         name: Capture new dev revision + tagged URL
         env:
@@ -204,10 +277,22 @@ jobs:
           echo "new_revision=$NEW" >> "$GITHUB_OUTPUT"
           echo "tagged_url=$TAGGED_URL" >> "$GITHUB_OUTPUT"
 
+      # NEO-555: assert what landed on the new revision. env_vars merges, so a
+      # PREVIEW_SHA left by a pr-<N> preview must be gone. Same script as the
+      # preprocess lane's G5 check (service-generic).
+      - name: Assert the new revision's env
+        env:
+          NEW_REVISION: ${{ steps.capture-new.outputs.new_revision }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/preprocess-revision-check.sh env \
+            --project neonbinder-dev --service neonbinder-browser \
+            --revision "$NEW_REVISION" --absent PREVIEW_SHA
+
   # Real BSC + SportLots login round-trip against the dev tagged revision
   # (catches auth regressions before any traffic shift).
   dev-login-probe:
-    name: Dev login probe (BSC + SportLots)
+    name: Dev login probe (fake BSC + SportLots)
     needs: deploy-dev
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && vars.BROWSER_DEPLOY_ENABLED == 'true')
     runs-on: ubuntu-latest
@@ -217,7 +302,7 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: services/browser/.nvmrc
           cache: npm
@@ -246,21 +331,38 @@ jobs:
           token_format: id_token
           id_token_audience: ${{ steps.base-url.outputs.base_url }}
           id_token_include_email: true
-      - name: Run login suite against dev tagged URL
+      # NEO-552: dev's BSC is the fake. Signs in with the fake's constant
+      # credentials and asserts /health says bscTarget=fake. SportLots is real.
+      #
+      # A WARNING here, never a failure: this probe only proves our code against
+      # a test double (the PR preview probe already proved that before merge),
+      # and a broken or empty fake must never stop a production promotion. The
+      # real gate is the prod probe against real BSC below.
+      - id: dev-bsc-probe
+        name: BSC probe against the dev tagged URL (fake, warning only)
+        continue-on-error: true
+        env:
+          TARGET_URL: ${{ needs.deploy-dev.outputs.tagged_url }}
+          PROBE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/bsc-probe.sh" fake
+      - name: Report a failed fake-BSC probe as a warning
+        if: steps.dev-bsc-probe.outcome == 'failure'
+        run: |
+          echo "::warning::The dev fake-BSC probe failed (see the step above). Not blocking the release: it only exercises the test fake. Check the fake's recordings and health."
+          {
+            echo "### Dev fake-BSC probe failed (warning only)"
+            echo "The release continues; the prod probe against real BSC is the gate. Check the fake BSC's recordings and health (services/fake-bsc/README.md)."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Run SportLots login suite against dev tagged URL
         working-directory: services/browser
         env:
           TARGET_URL: ${{ needs.deploy-dev.outputs.tagged_url }}
           PROBE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
-          BSC_USERNAME: ${{ secrets.MAESTRO_BSC_USERNAME }}
-          BSC_PASSWORD: ${{ secrets.MAESTRO_BSC_PASSWORD }}
           SPORTLOTS_USERNAME: ${{ secrets.MAESTRO_SPORTLOTS_USERNAME }}
           SPORTLOTS_PASSWORD: ${{ secrets.MAESTRO_SPORTLOTS_PASSWORD }}
-          # NEO-287: mirrors the Convex-side NEONBINDER_PAUSED_PLATFORMS switch
-          # so this gate (which promotion depends on) skips only the SportLots
-          # half during a known, operator-chosen outage. No `if:` gating: BSC
-          # keeps probing unconditionally.
+          # NEO-287: mirrors the Convex-side NEONBINDER_PAUSED_PLATFORMS switch.
           PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
-        run: npm run test:prod-gate
+        run: node --test tests/integration/sportlots-login.test.mjs
 
   # Shift 100% dev traffic to the new revision. Gated (enabled-push only) — never
   # on dispatch, so a validation dispatch can't move live dev traffic.
@@ -319,11 +421,68 @@ jobs:
       tagged_url: ${{ steps.capture-new.outputs.tagged_url }}
       prev_revision: ${{ steps.capture-prev.outputs.prev_revision }}
     steps:
+      # Before auth: checkout after google-github-actions/auth deletes its
+      # credentials file. The eBay probe key check below is a repo script.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER }}
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+      - id: ebay
+        name: Preflight eBay config (production, prod project)
+        env:
+          EBAY_CLIENT_ID: ${{ vars.EBAY_CLIENT_ID_PRODUCTION }}
+          EBAY_RU_NAME: ${{ vars.EBAY_RU_NAME_PRODUCTION }}
+          GCP_PROJECT: neonbinder
+        # NEO-415. Fail the deploy loudly rather than ship a revision whose eBay
+        # routes answer 503 ebay_not_configured, or hand Cloud Run a secret
+        # reference whose latest version is not enabled (an opaque deploy
+        # failure). Resolves `latest` to its number and pins that number in the
+        # deploy: Cloud Run reads secret env vars at instance start, so a
+        # floating :latest would take a newly added version live on the next
+        # cold start without a deploy. Needs the deployer's viewer grant on the
+        # secret (neonbinder_ioc).
+        run: |
+          set -uo pipefail
+          missing=()
+          [ -n "$EBAY_CLIENT_ID" ] || missing+=("repo variable EBAY_CLIENT_ID_PRODUCTION")
+          [ -n "$EBAY_RU_NAME" ] || missing+=("repo variable EBAY_RU_NAME_PRODUCTION")
+          if ! out=$(gcloud secrets versions describe latest \
+              --secret=ebay-client-secret --project="$GCP_PROJECT" \
+              --format='value(state,name)' 2>&1); then
+            missing+=("secret ebay-client-secret readable in $GCP_PROJECT (gcloud: $(printf '%s' "$out" | head -n1))")
+          else
+            state=$(printf '%s' "$out" | awk '{print $1}')
+            version=$(printf '%s' "$out" | awk '{print $2}' | awk -F/ '{print $NF}')
+            if [ "$state" != "ENABLED" ] || ! [[ "$version" =~ ^[0-9]+$ ]]; then
+              missing+=("the latest version of secret ebay-client-secret in $GCP_PROJECT to be ENABLED (state: $state)")
+            else
+              echo "version=$version" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+          if [ "${#missing[@]}" -gt 0 ]; then
+            for m in "${missing[@]}"; do echo "::error::eBay config missing: $m"; done
+            echo "::error::See NEO-415. Set the repo variables with gh variable set and add the secret version with gcloud secrets versions add ebay-client-secret."
+            exit 1
+          fi
+      # NEO-555: the account the prod eBay probe reads (POST /probe/ebay), named
+      # by the credential key of one connected eBay seller. It is a repository
+      # SECRET, not a variable: the value names an operator's account, and
+      # Actions masks secrets in every log line (including the deploy action's
+      # own output) where variables are printed. UNSET IS FINE: the service
+      # then skips the probe's account leg (a warning, never a failure), and
+      # an empty value written to env_vars clears a key set by an earlier
+      # deploy. A set value must look like a credential key (and not a fake-
+      # one), which also keeps a stray comma or newline out of env_vars. The
+      # check never echoes the value.
+      - name: Check the eBay probe account secret (optional)
+        env:
+          PROBE_KEY: ${{ secrets.NEONBINDER_EBAY_PROBE_CREDENTIAL_KEY }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ebay-probe-key-check.sh"
       - id: capture-prev
         name: Capture prod's currently-serving revision
         run: |
@@ -346,6 +505,12 @@ jobs:
           env_vars: |
             ENVIRONMENT=prod
             NEONBINDER_CONVEX_SITE_URL=https://first-starfish-800.convex.site
+            EBAY_CLIENT_ID=${{ vars.EBAY_CLIENT_ID_PRODUCTION }}
+            EBAY_RU_NAME=${{ vars.EBAY_RU_NAME_PRODUCTION }}
+            EBAY_ENVIRONMENT=production
+            NEONBINDER_EBAY_PROBE_CREDENTIAL_KEY=${{ secrets.NEONBINDER_EBAY_PROBE_CREDENTIAL_KEY }}
+          secrets: |
+            EBAY_CLIENT_SECRET=ebay-client-secret:${{ steps.ebay.outputs.version }}
           no_traffic: true
           tag: ${{ needs.build-push.outputs.deploy_tag }}
           flags: '--min-instances=0 --max-instances=20'
@@ -370,7 +535,7 @@ jobs:
   # The signal the dev probe can't give: prod env + prod Secret Manager + prod SA
   # actually authenticating to BSC + SportLots, against the prod tagged revision.
   prod-login-probe:
-    name: Prod login probe (BSC + SportLots)
+    name: Prod login probe (real BSC + SportLots)
     needs: deploy-prod
     if: github.event_name == 'push' && vars.BROWSER_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
@@ -380,7 +545,7 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: services/browser/.nvmrc
           cache: npm
@@ -407,21 +572,40 @@ jobs:
           token_format: id_token
           id_token_audience: ${{ steps.base-url.outputs.base_url }}
           id_token_include_email: true
-      - name: Run login suite against prod tagged URL
+      # NEO-552: the prod gate. /probe/bsc runs the service's OWN stored
+      # account through sign-in, one catalogue read and the parser, against the
+      # tagged revision. No BSC credential is ever in CI. Fails on a sign-in
+      # failure, a non-2xx catalogue read, a parser rejection, or /health not
+      # saying bscTarget=real (a prod revision that reaches the fake, or an
+      # old service with no probe, never promotes). The fake var is never set
+      # in this lane.
+      - name: BSC probe against the prod tagged URL (real)
+        env:
+          TARGET_URL: ${{ needs.deploy-prod.outputs.tagged_url }}
+          PROBE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/bsc-probe.sh" real
+      # NEO-555: the eBay gate, same tagged revision. Two legs inside the one
+      # call: the APP leg (client_credentials + a catalogue read) fails the
+      # deploy; the seller-ACCOUNT leg only warns. Also fails when the answer's
+      # ebayTarget is not "real". skipped_paused (eBay paused by an operator)
+      # passes with a warning. A 429 (the one-call-a-minute window) is waited
+      # out and retried, at most twice. This is a different instance from the
+      # one the daily bsc-drift eBay leg calls, so they do not share a window.
+      - name: eBay probe against the prod tagged URL (real)
+        env:
+          TARGET_URL: ${{ needs.deploy-prod.outputs.tagged_url }}
+          PROBE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ebay-probe.sh" real
+      - name: Run SportLots login suite against prod tagged URL
         working-directory: services/browser
         env:
           TARGET_URL: ${{ needs.deploy-prod.outputs.tagged_url }}
           PROBE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
-          BSC_USERNAME: ${{ secrets.MAESTRO_BSC_USERNAME }}
-          BSC_PASSWORD: ${{ secrets.MAESTRO_BSC_PASSWORD }}
           SPORTLOTS_USERNAME: ${{ secrets.MAESTRO_SPORTLOTS_USERNAME }}
           SPORTLOTS_PASSWORD: ${{ secrets.MAESTRO_SPORTLOTS_PASSWORD }}
-          # NEO-287: mirrors the Convex-side NEONBINDER_PAUSED_PLATFORMS switch
-          # so this gate (which promotion depends on) skips only the SportLots
-          # half during a known, operator-chosen outage. No `if:` gating: BSC
-          # keeps probing unconditionally.
+          # NEO-287: mirrors the Convex-side NEONBINDER_PAUSED_PLATFORMS switch.
           PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
-        run: npm run test:prod-gate
+        run: node --test tests/integration/sportlots-login.test.mjs
 
   prod-promote:
     name: Promote prod to 100%
@@ -539,7 +723,7 @@ jobs:
           [Deploy run]($RUN_URL)
           EOF
           gh issue create \
-            --repo neonbinder/neonbinder \
+            --repo neonbinder/neonbinder-app \
             --title "Browser deploy failed at ${STAGE}: ${{ github.sha }}" \
             --body-file body.md
 

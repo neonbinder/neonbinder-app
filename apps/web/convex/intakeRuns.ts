@@ -17,12 +17,36 @@
  * re-scan?", setting a pair aside, and the card search for "Wrong card? Find
  * it". Nothing here saves on its own: every save is a collector's click.
  *
- * Not here yet: attaching the pair's photos to the saved line (NEO-377), the
- * per-copy price and the common-price prompt (NEO-378), and the catalog-wide
- * set finder for a run with no variant.
+ * NEO-370: a run that saves into a listed box syncs to the collector's
+ * listing platforms once the collector pressed "Done adding photos" (the
+ * stream was closed by them, `placeholderJobs.streamClosedBy === "user"`)
+ * AND every column but Saved is clear: its photos are all processed (the job
+ * finished) and every pair is saved or set aside. At that point the listing
+ * drain runs (`kickListingIfRunSettled`). A run whose stream the idle sweep
+ * closed, or that was left without Done, waits for the 15-minute cron.
+ *
+ * NEO-370: a collector set up for syncing starts a run into a listed box
+ * with a price and a condition, and every save from it carries them
+ * (`listingGate.ts`); the run's price is the saved copy's own floor.
+ *
+ * NEO-427: a save puts the pair's scans on the saved line, server side and
+ * after the save commits (`intakePhotos.attachIntakePhotos`), on a line of its
+ * own (`addOne`'s `keepsOwnLine`), so a scanned card in a listed box lists with
+ * no further action. `intakeMatches.photos` carries the state to the tile, and
+ * "pending" holds the listing kick so a settled run doesn't list ahead of its
+ * photos. An attach that never reports is called failed after
+ * `INTAKE_PHOTO_ATTACH_TIMEOUT_MS` (`expireIntakePhotoAttach`).
+ *
+ * NEO-452: every new run starts with a set, listed or not (`createIntakeRun`
+ * refuses without one), and the screen holds photos in the browser until the
+ * run is ready (`lib/listingReadiness.ts`, `intakeRunReadiness`). A run from
+ * before that with no variant still opens: `noVariant`, `searchIntakeCards`'
+ * empty answer and `setIntakeRunVariant` stay for it.
+ *
+ * Not here yet: the common-price prompt (NEO-378).
  */
 
-import { internalMutation, mutation, query } from "./_generated/server";
+import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
@@ -31,16 +55,29 @@ import { requireSignedIn, getCurrentUserId } from "./auth";
 import {
   addOne,
   applyCopyChanges,
+  canRetryIntakePhotos,
+  COLLECTION_ERRORS,
   defaultConditionOf,
+  isPriceCents,
   MAX_COPY_QUANTITY,
+  MAX_INTAKE_PHOTO_ATTEMPTS,
+  refuse,
 } from "./collection";
 import {
   intakeBandValidator,
   intakeDefaultsValidator,
+  intakePhotoFailureValidator,
+  intakePhotosValidator,
   intakeReasonValidator,
   collectionContainerKindValidator,
 } from "./schema";
+import { photoUrlsOf } from "./copyPhotos";
+import { intakePhotoPool } from "./intakePhotoPool";
+import { kickOwnerDrains, listsOnMarketplaces } from "./listingOutbox";
+import { commonPriceCentsOf, ListingGate } from "./listingGate";
 import {
+  INTAKE_NEEDS_PRICE,
+  INTAKE_NEEDS_PRICE_LINE,
   intakeNamesFor,
   matchIntakePair,
   normalizeIntakeCardNumber,
@@ -56,6 +93,60 @@ const MAX_DEFAULT_TEXT = 500;
 
 /** Variant ancestry walked for a `cardNumberPrefix` (variant → set). */
 const MAX_PREFIX_HOPS = 4;
+
+/**
+ * Match rows the settle check reads. A larger run is not checked on each
+ * save (the 15-minute cron runs its drain).
+ */
+export const INTAKE_SETTLE_SCAN = 1000;
+
+/** Job statuses after which no more photos arrive or get processed. */
+const JOB_DONE = new Set(["succeeded", "failed"]);
+
+/**
+ * How long a save's photos may stay "pending" before they count as failed.
+ * The clock starts at the save, so it has to outlast the queue: 500 cards at a
+ * slow 30 seconds each, at `intakePhotoPool`'s prod width of 5, is 50 minutes
+ * (about 5 when warm). An attach that was lost would otherwise spin on its tile
+ * for good, and the listing drain doesn't wait on it past its next tick. A
+ * timeout that beats a slow attach is corrected by that attach's own report.
+ */
+export const INTAKE_PHOTO_ATTACH_TIMEOUT_MS = 60 * 60 * 1000;
+
+/**
+ * NEO-370: run the collector's listing drain once a listed-box run is
+ * settled: the collector pressed "Done adding photos" (Jason, 2026-11-01:
+ * that click means no more photos are coming, not "sync now"), the job
+ * finished processing every photo, and every pair of the run is saved or set
+ * aside (at least one saved), so every column but Saved is clear. NEO-427: and
+ * no saved pair's photos are still on their way (a row saved before that
+ * shipped has no `photos` and holds nothing). Called after each set-aside, when
+ * a save's photos report (`recordIntakePhotos`), and when the job finishes.
+ * Cheap until then: the home is read first (a binder or an in-person box stops
+ * there), then the job, then the run's match rows (bounded). The kick itself
+ * is a no-op when the collector lists nowhere or nothing is queued.
+ */
+export async function kickListingIfRunSettled(ctx: MutationCtx, run: Doc<"intakeRuns">): Promise<boolean> {
+  const home = await ctx.db.get(run.homeId);
+  if (!home || !listsOnMarketplaces(home)) return false;
+  const job = await ctx.db
+    .query("placeholderJobs")
+    .withIndex("by_job", (q) => q.eq("jobId", run.jobId))
+    .unique();
+  if (!job || !JOB_DONE.has(job.status)) return false;
+  // Only "Done adding photos" counts: never the idle sweep, never a run left open.
+  if (job.streamClosedBy !== "user") return false;
+  const rows = await ctx.db
+    .query("intakeMatches")
+    .withIndex("by_run", (q) => q.eq("runId", run._id))
+    .take(INTAKE_SETTLE_SCAN + 1);
+  if (rows.length === 0 || rows.length > INTAKE_SETTLE_SCAN) return false;
+  if (rows.some((row) => row.savedAt === undefined && !row.setAside)) return false;
+  if (!rows.some((row) => row.savedAt !== undefined)) return false;
+  if (rows.some((row) => row.photos === "pending")) return false;
+  await kickOwnerDrains(ctx, run.userId);
+  return true;
+}
 
 async function ownedRun(
   ctx: QueryCtx,
@@ -77,18 +168,30 @@ async function requireOwnedRun(
   return run;
 }
 
-/** A variant to match in must exist and hold cards directly. */
+/**
+ * A variant to match in must exist and hold cards directly. A collector can
+ * pick one with no cards, or one that left the catalog while the tab sat open,
+ * so both refusals are `ConvexError`s: production Convex hides a plain `Error`'s
+ * words from the client.
+ */
 async function requireVariant(
   ctx: QueryCtx,
   variantId: Id<"selectorOptions">,
 ): Promise<void> {
   const row = await ctx.db.get(variantId);
-  if (!row) throw new Error("Variant not found");
+  if (!row) refuse(COLLECTION_ERRORS.notFound, "That set isn't in the catalog any more. Pick another one.");
   const card = await ctx.db
     .query("cardChecklist")
     .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantId))
     .first();
-  if (!card) throw new Error("That variant has no cards to match against");
+  if (!card) refuse(COLLECTION_ERRORS.invalid, "That set has no cards to match against yet. Pick another one.");
+}
+
+/** A run's Min price: whole cents, zero to the cap, by the copies' rule; else refused. */
+function minPrice(n: number | undefined): number | undefined {
+  if (n === undefined) return undefined;
+  if (!isPriceCents(n)) refuse(COLLECTION_ERRORS.invalid, "Minimum price needs to be a dollar amount of zero or more.");
+  return n;
 }
 
 function cleanDefaults(
@@ -111,7 +214,9 @@ function cleanDefaults(
     acquiredOn: text(defaults.acquiredOn),
     location: text(defaults.location),
     notes: text(defaults.notes),
-    minPriceCents: cents(defaults.minPriceCents, "Minimum price"),
+    // NEO-370: the copies' own price rule (`isPriceCents`), so a run that
+    // could never save is refused at its start, in the words a save would use.
+    minPriceCents: minPrice(defaults.minPriceCents),
   };
 }
 
@@ -132,6 +237,54 @@ export async function noteIntakePairsChanged(
   await queueSync(ctx, run);
 }
 
+/** A row the collector has answered: a copy stands on it, or a decision does. */
+const answeredByCollector = (row: Doc<"intakeMatches">) => row.savedAt !== undefined || row.setAside === true;
+
+/** NEO-446: the job's pairs a run has saved or set aside, which pairing must leave as they are. */
+export async function pairIdsHeldByIntake(
+  ctx: QueryCtx,
+  jobId: string,
+): Promise<Set<Id<"placeholderPairs">>> {
+  const run = await ctx.db
+    .query("intakeRuns")
+    .withIndex("by_job", (q) => q.eq("jobId", jobId))
+    .first();
+  if (!run) return new Set();
+  const rows = await ctx.db
+    .query("intakeMatches")
+    .withIndex("by_run", (q) => q.eq("runId", run._id))
+    .collect();
+  return new Set(rows.filter(answeredByCollector).map((row) => row.pairId));
+}
+
+/** The same question for one pair, asked inside a pairing write. */
+export async function pairIsHeldByIntake(
+  ctx: QueryCtx,
+  pairId: Id<"placeholderPairs">,
+): Promise<boolean> {
+  const row = await ctx.db
+    .query("intakeMatches")
+    .withIndex("by_pair", (q) => q.eq("pairId", pairId))
+    .first();
+  return row !== null && answeredByCollector(row);
+}
+
+/**
+ * NEO-370 — a placeholder job reached a terminal status (succeeded, failed
+ * or cancelled). A run whose pairs were all answered before the job finished
+ * (its last photo failed, say) settles now, so its saved box copies reach the
+ * listing platforms without waiting for the 15-minute cron. Called by every
+ * writer of a job's terminal status, in the same transaction, after the patch.
+ */
+export async function noteIntakeJobFinished(ctx: MutationCtx, jobId: string): Promise<boolean> {
+  const run = await ctx.db
+    .query("intakeRuns")
+    .withIndex("by_job", (q) => q.eq("jobId", jobId))
+    .first();
+  if (!run) return false;
+  return await kickListingIfRunSettled(ctx, run);
+}
+
 async function queueSync(ctx: MutationCtx, run: Doc<"intakeRuns">): Promise<void> {
   if (run.matchScheduled) return;
   await ctx.db.patch(run._id, { matchScheduled: true });
@@ -145,6 +298,11 @@ async function queueSync(ctx: MutationCtx, run: Doc<"intakeRuns">): Promise<void
 /**
  * Start a run over a placeholder job the caller owns, filing into a home the
  * caller owns. One run per job: asking again returns the existing run.
+ *
+ * NEO-452: a new run needs a set, wherever it files. `variantId` stays optional
+ * on the wire so a tab left open from before gets these words, not an argument
+ * validator error, and both set refusals come after the `existing` check so a
+ * retry still gets its run back, whatever became of the set since.
  */
 export const createIntakeRun = mutation({
   args: {
@@ -163,7 +321,6 @@ export const createIntakeRun = mutation({
     if (!job || job.userId !== userId) throw new Error("Job not found");
     const home = await ctx.db.get(args.homeId);
     if (!home || home.ownerId !== userId) throw new Error("Binder or box not found");
-    if (args.variantId) await requireVariant(ctx, args.variantId);
 
     const existing = await ctx.db
       .query("intakeRuns")
@@ -171,13 +328,32 @@ export const createIntakeRun = mutation({
       .first();
     if (existing) return existing._id;
 
+    const variantId = args.variantId;
+    if (!variantId) refuse(COLLECTION_ERRORS.invalid, "Pick a set first: cards are matched in it.");
+    await requireVariant(ctx, variantId);
+
+    // NEO-370: a run into a listed box, by a collector set up for syncing,
+    // starts with a price (the run's own, else the picked variant's common
+    // price) and a condition, as every save from it will need
+    // (`listingGate.ts`).
+    const defaults = cleanDefaults(args.defaults);
+    const gate = new ListingGate(ctx, userId);
+    if (await gate.applies(home)) {
+      await gate.require(home, {
+        variantId,
+        graded: defaults?.grading !== undefined,
+        condition: defaults?.condition ?? (await defaultConditionOf(ctx, userId)),
+        ...(defaults?.minPriceCents !== undefined ? { ownPriceCents: defaults.minPriceCents } : {}),
+      });
+    }
+
     const now = Date.now();
     const runId = await ctx.db.insert("intakeRuns", {
       userId,
       jobId: args.jobId,
       homeId: args.homeId,
-      variantId: args.variantId,
-      defaults: cleanDefaults(args.defaults),
+      variantId,
+      defaults,
       createdAt: now,
       lastActivityAt: now,
     });
@@ -352,9 +528,39 @@ const matchRowValidator = v.object({
   savedCopyId: v.optional(v.id("collectionCopies")),
   savedQuantity: v.optional(v.number()),
   savedAt: v.optional(v.number()),
+  /** NEO-427 — the pair's scans on their way onto the saved line, and why they failed. */
+  photos: v.optional(intakePhotosValidator),
+  photoFailure: v.optional(intakePhotoFailureValidator),
+  /** True while Try again can still help a failed row. */
+  photoCanRetry: v.optional(v.boolean()),
   /** Copies of the proposed card already in the run's home ("You have N here"). */
   haveHere: v.number(),
+  /** NEO-481 — this tile's own price (box runs), cents; absent = the run's default. */
+  minPriceCents: v.optional(v.number()),
 });
+
+/**
+ * A row's photo state as its tile should say it. A failed attach stops asking
+ * once there is nothing left to ask for: the copy left the collection (plain
+ * Saved), or the collector made it up by hand (attached). With no Try again
+ * left the tile asks for a photo, so any photo answers it; Try again asks for
+ * both sides, and a side a scan landed on counts even if the collector has
+ * since taken it off. Reads only for failed rows.
+ */
+async function photoStateOf(
+  ctx: QueryCtx,
+  row: Doc<"intakeMatches">,
+): Promise<Pick<Doc<"intakeMatches">, "photos" | "photoFailure"> & { photoCanRetry?: boolean }> {
+  const { photos, photoFailure } = row;
+  if (photos !== "failed" || !row.savedCopyId) return { photos, photoFailure };
+  const copy = await ctx.db.get(row.savedCopyId);
+  if (!copy) return {};
+  const { front, back } = await photoUrlsOf(ctx, copy);
+  const landed = (side: "front" | "back") => row.photoSidesAttached?.includes(side);
+  const canRetry = canRetryIntakePhotos(row);
+  const madeUp = canRetry ? (front || landed("front")) && (back || landed("back")) : front || back;
+  return madeUp ? { photos: "attached" } : { photos, photoFailure, photoCanRetry: canRetry };
+}
 
 /**
  * The run's matches, in scan order, with the cards they name. Empty when the
@@ -426,7 +632,9 @@ export const listIntakeMatches = query({
         savedCopyId: row.savedCopyId,
         savedQuantity: row.savedQuantity,
         savedAt: row.savedAt,
+        ...(await photoStateOf(ctx, row)),
         haveHere: row.cardId ? await haveHere(row.cardId) : 0,
+        minPriceCents: row.minPriceCents,
       });
     }
     return out;
@@ -455,8 +663,9 @@ export const pickIntakeCard = mutation({
     if (row.savedAt !== undefined) throw new Error("That card is already saved");
 
     if (args.cardId === null) {
-      // Clearing the readKey makes the next sync match it afresh.
-      await ctx.db.patch(row._id, { byUser: undefined, readKey: "" });
+      // Clearing the readKey makes the next sync match it afresh. NEO-481: a
+      // tile's price was for the card it named, so a clear drops it.
+      await ctx.db.patch(row._id, { byUser: undefined, readKey: "", minPriceCents: undefined });
       await queueSync(ctx, run);
     } else {
       const card = await ctx.db.get(args.cardId);
@@ -472,6 +681,8 @@ export const pickIntakeCard = mutation({
         reason: "byUser",
         byUser: true,
         variations: variations.map((c) => c._id),
+        // NEO-481: a price set for one card never carries over to another.
+        ...(row.cardId !== card._id ? { minPriceCents: undefined } : {}),
       });
       await queueSync(ctx, run); // re-flags repeats
     }
@@ -504,13 +715,20 @@ async function requireRunRow(
 
 /**
  * Save one reviewed pair: `quantity` new copies of its card go in the run's
- * home with the run's defaults, overridden by `details`. They fold into an
- * identical line there (the collection's fold rule), else start a new line.
+ * home with the run's defaults, overridden by `details`, on a new line of their
+ * own (NEO-427: they are the copies in these scans, so they never fold into an
+ * identical line). The pair's scans follow in the background and the save never
+ * waits on them; a failed attach leaves the saved copies as they are.
  *
  * Idempotent per pair: a second save of the same pair (a double click, a
  * retried request) returns the first save and adds nothing. A repeat must be
  * answered first ("second copy" saves; "same card" sets it aside), so a
  * jammed feeder never counts one card twice.
+ *
+ * NEO-481: into a box, a card with no price (its own, the run's Min price,
+ * or a common price for its set) is refused with `INTAKE_NEEDS_PRICE`. This
+ * is the one save door: Yes, Enter, y, "Save this card" and "Save N matched"
+ * all come here, one card per call.
  */
 export const saveIntakeMatch = mutation({
   args: {
@@ -534,11 +752,29 @@ export const saveIntakeMatch = mutation({
     }
 
     // A per-card field overrides the run's; one the card leaves out keeps it.
+    // NEO-481: the price is, in order, the one passed in `details`, the
+    // tile's own (`setIntakeMatchPrice`), then the run's Min price.
     const overrides = Object.fromEntries(
       Object.entries(args.details ?? {}).filter(([, value]) => value !== undefined),
     );
-    const d = cleanDefaults({ ...run.defaults, ...overrides }) ?? {};
-    // The per-copy price (`minPriceCents`) waits for NEO-378's field on copies.
+    // A tile's own price is a box run's only: a binder holds no cards for sale,
+    // so a row price left on a binder run's tile (one moved, or written before
+    // the run moved) is never applied.
+    const home = await ctx.db.get(run.homeId);
+    const inBox = home?.kind === "box";
+    const rowPrice = row.minPriceCents !== undefined && inBox ? { minPriceCents: row.minPriceCents } : {};
+    const d = cleanDefaults({ ...run.defaults, ...rowPrice, ...overrides }) ?? {};
+    // NEO-481 (Jason, 2026-11-10): a card goes in a box with a price, synced
+    // or not: the one above, else the collector's common price for the card's
+    // own set (the price its copy lists at). Refused before anything is written.
+    if (inBox && d.minPriceCents === undefined) {
+      const card = await ctx.db.get(row.cardId);
+      const common = card ? await commonPriceCentsOf(ctx, run.userId, card.selectorOptionId) : null;
+      if (common === null) refuse(INTAKE_NEEDS_PRICE, INTAKE_NEEDS_PRICE_LINE);
+    }
+    // NEO-370: the run's price goes on the copy (NEO-378's `minPriceCents`),
+    // so a listed box's saves list at it. `addOne` refuses a save into a
+    // listed box with no price and no common price (`listingGate.ts`).
     const { result, change } = await addOne(
       ctx,
       run.userId,
@@ -551,9 +787,12 @@ export const saveIntakeMatch = mutation({
         acquiredOn: d.acquiredOn,
         location: d.location,
         notes: d.notes,
+        ...(d.minPriceCents !== undefined ? { minPriceCents: d.minPriceCents } : {}),
         homeId: run.homeId,
       },
       await defaultConditionOf(ctx, run.userId),
+      new ListingGate(ctx, run.userId),
+      { keepsOwnLine: true },
     );
     await applyCopyChanges(ctx, run.userId, [change]);
 
@@ -562,11 +801,68 @@ export const saveIntakeMatch = mutation({
       savedCopyId: result.copyId,
       savedQuantity: args.quantity,
       savedAt: now,
+      photos: "pending",
+      photoAttempt: 1,
     });
     await ctx.db.patch(run._id, { lastActivityAt: now });
+    // The run can't settle on this save: its photos are pending. Their report
+    // (`recordIntakePhotos`) makes the settle check.
+    await queueIntakePhotoAttach(ctx, row._id, 1);
     return { copyId: result.copyId, alreadySaved: false };
   },
 });
+
+/**
+ * NEO-481 — the collector's own price for one tile of a box run, in cents.
+ * `null` (a blank field) goes back to the default, and so does a price equal
+ * to the default the tile was prefilled with: the run's Min price, else the
+ * collector's common price for the run's set. Writing that number down would
+ * freeze today's default onto this one card. Only ever this row's
+ * `minPriceCents`, which the save puts on the copy; a common price is never
+ * written here. A saved row is refused: its price lives on the copy now.
+ */
+export const setIntakeMatchPrice = mutation({
+  args: {
+    runId: v.id("intakeRuns"),
+    pairId: v.id("placeholderPairs"),
+    priceCents: v.union(v.number(), v.null()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const run = await requireOwnedRun(ctx, args.runId);
+    const row = await requireRunRow(ctx, run, args.pairId);
+    if (row.savedAt !== undefined) {
+      refuse(COLLECTION_ERRORS.invalid, "That card is already saved. Change its price on the card.");
+    }
+    const home = args.priceCents !== null ? await ctx.db.get(run.homeId) : null;
+    if (args.priceCents !== null && home?.kind !== "box") {
+      refuse(COLLECTION_ERRORS.invalid, "Only cards going in a box get a price here.");
+    }
+    if (args.priceCents !== null && !isPriceCents(args.priceCents)) {
+      refuse(COLLECTION_ERRORS.invalid, "Price needs to be a dollar amount of zero or more.");
+    }
+    let next: number | undefined = args.priceCents ?? undefined;
+    if (next !== undefined && next === (await intakePricePrefill(ctx, run))) next = undefined;
+    if (row.minPriceCents !== next) await ctx.db.patch(row._id, { minPriceCents: next });
+    await ctx.db.patch(run._id, { lastActivityAt: Date.now() });
+    return null;
+  },
+});
+
+/**
+ * The price a box run's tile shows before the collector types one: the run's
+ * Min price, else their common price for the run's set. Read only.
+ */
+async function intakePricePrefill(ctx: QueryCtx, run: Doc<"intakeRuns">): Promise<number | undefined> {
+  if (run.defaults?.minPriceCents !== undefined) return run.defaults.minPriceCents;
+  const variantId = run.variantId;
+  if (!variantId) return undefined;
+  const common = await ctx.db
+    .query("variantCommonPrices")
+    .withIndex("by_owner_and_variant", (q) => q.eq("ownerId", run.userId).eq("variantId", variantId))
+    .unique();
+  return common?.priceCents;
+}
 
 /**
  * Answer "this card is already in this run": a second copy (it can then be
@@ -589,6 +885,7 @@ export const answerIntakeRepeat = mutation({
       args.secondCopy ? { repeatIsSecondCopy: true } : { setAside: true },
     );
     await ctx.db.patch(run._id, { lastActivityAt: Date.now() });
+    if (!args.secondCopy) await kickListingIfRunSettled(ctx, run);
     return null;
   },
 });
@@ -611,6 +908,72 @@ export const setIntakeMatchAside = mutation({
       ...(args.setAside ? {} : { repeatIsSecondCopy: undefined }),
     });
     await ctx.db.patch(run._id, { lastActivityAt: Date.now() });
+    if (args.setAside) await kickListingIfRunSettled(ctx, run);
+    return null;
+  },
+});
+
+/**
+ * NEO-446: set a loose photo aside, or bring it back with `setAside: false`. For
+ * a side whose partner never made it in, or a photo that failed and won't read:
+ * neither can leave the Pairing column any other way, and either would hold the
+ * run open for good.
+ *
+ * Only a photo the pipeline has finished with, in no pair. The pairs are read
+ * here as well as `pairStatus` because a run stores a pair and stamps its images
+ * in separate transactions (see `manuallyPairPlaceholderImages`).
+ *
+ * Touches no counter on the job, so it cannot change how the job is judged. And
+ * no listing kick: `kickListingIfRunSettled` reads match rows, so a loose photo
+ * was never what it was waiting on.
+ *
+ * Setting aside schedules no re-pair: nothing was waiting on this photo, and the
+ * next run leaves it out anyway. Bringing back does, forced so it works on a
+ * finished job, as a corrected identity does: the photo is eligible again now.
+ */
+export const setIntakePhotoAside = mutation({
+  args: {
+    runId: v.id("intakeRuns"),
+    entryIndex: v.number(),
+    setAside: v.boolean(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const run = await requireOwnedRun(ctx, args.runId);
+    const image = await ctx.db
+      .query("placeholderImages")
+      .withIndex("by_job_and_index", (q) =>
+        q.eq("jobId", run.jobId).eq("entryIndex", args.entryIndex),
+      )
+      .unique();
+    if (!image || image.userId !== run.userId) throw new Error("Photo not found in this run");
+    if (args.setAside) {
+      if (image.status !== "done" && image.status !== "failed") {
+        throw new Error("That photo is still being read");
+      }
+      const pairs = await ctx.db
+        .query("placeholderPairs")
+        .withIndex("by_job", (q) => q.eq("jobId", run.jobId))
+        .collect();
+      const inAPair = pairs.some(
+        (pair) => pair.frontIndex === args.entryIndex || pair.backIndex === args.entryIndex,
+      );
+      if (inAPair || image.pairStatus === "paired") {
+        throw new Error("That photo is in a pair. Unpair it first.");
+      }
+    }
+    // A double press: nothing to write, and no second re-pair.
+    if ((image.setAside === true) === args.setAside) return null;
+    await ctx.db.patch(image._id, { setAside: args.setAside ? true : undefined });
+    await ctx.db.patch(run._id, { lastActivityAt: Date.now() });
+    if (!args.setAside && image.status === "done") {
+      await ctx.scheduler.runAfter(0, internal.placeholderPairing.runPairing, {
+        jobId: run.jobId,
+        userId: run.userId,
+        final: false,
+        force: true,
+      });
+    }
     return null;
   },
 });
@@ -643,6 +1006,184 @@ export const searchIntakeCards = query({
       else if (c.cardName.toLowerCase().includes(words)) byName.push(summary);
     }
     return [...byNumber, ...byName].slice(0, MAX_SEARCH_HITS);
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Internal: a saved pair's photos (NEO-427, `intakePhotos.ts` drives these)
+// ---------------------------------------------------------------------------
+
+/** What attaching a saved pair's photos needs. Null when it has nowhere to go. */
+export const intakePhotoWork = internalQuery({
+  args: { matchId: v.id("intakeMatches") },
+  returns: v.union(
+    v.null(),
+    v.object({
+      ownerId: v.string(),
+      copyId: v.id("collectionCopies"),
+      jobId: v.string(),
+      frontIndex: v.number(),
+      backIndex: v.number(),
+      photoSidesAttached: v.optional(v.array(v.union(v.literal("front"), v.literal("back")))),
+      /**
+       * NEO-481 — each side's current hand edit version, read when the attach
+       * runs: an edit committed before the save is carried onto the line.
+       */
+      frontEditVersion: v.optional(v.number()),
+      backEditVersion: v.optional(v.number()),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const row = await ctx.db.get(args.matchId);
+    if (!row?.savedCopyId) return null;
+    const run = await ctx.db.get(row.runId);
+    if (!run) return null;
+    const editVersion = async (entryIndex: number) => {
+      const image = await ctx.db
+        .query("placeholderImages")
+        .withIndex("by_job_and_index", (q) => q.eq("jobId", run.jobId).eq("entryIndex", entryIndex))
+        .unique();
+      return image?.edit?.version;
+    };
+    return {
+      ownerId: row.userId,
+      copyId: row.savedCopyId,
+      jobId: run.jobId,
+      frontIndex: row.frontIndex,
+      backIndex: row.backIndex,
+      photoSidesAttached: row.photoSidesAttached,
+      frontEditVersion: await editVersion(row.frontIndex),
+      backEditVersion: await editVersion(row.backIndex),
+    };
+  },
+});
+
+/** Queue one attempt at a saved pair's photos, with the timeout that clears it if it is lost. */
+async function queueIntakePhotoAttach(
+  ctx: MutationCtx,
+  matchId: Id<"intakeMatches">,
+  attempt: number,
+): Promise<void> {
+  await intakePhotoPool.enqueueAction(ctx, internal.intakePhotos.attachIntakePhotos, { matchId });
+  await ctx.scheduler.runAfter(INTAKE_PHOTO_ATTACH_TIMEOUT_MS, internal.intakeRuns.expireIntakePhotoAttach, {
+    matchId,
+    attempt,
+  });
+}
+
+/**
+ * One side's scan landed on the copy. Try again won't bring that side back if the
+ * collector takes it off. A copy removed while its sides were in flight has nothing
+ * landed on it (`commitUpload` drops the photo and says nothing), so that refuses and
+ * the side counts as failed.
+ */
+export const recordIntakePhotoSide = internalMutation({
+  args: { matchId: v.id("intakeMatches"), side: v.union(v.literal("front"), v.literal("back")) },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const row = await ctx.db.get(args.matchId);
+    if (!row) return null;
+    if (!row.savedCopyId || !(await ctx.db.get(row.savedCopyId))) {
+      refuse(COLLECTION_ERRORS.notFound, "That card left your collection, so its photos have nowhere to go.");
+    }
+    const landed = row.photoSidesAttached ?? [];
+    if (!landed.includes(args.side)) await ctx.db.patch(row._id, { photoSidesAttached: [...landed, args.side] });
+    return null;
+  },
+});
+
+/** Write how an attach ended, then let the run settle if this was its last. */
+async function settleIntakePhotos(
+  ctx: MutationCtx,
+  row: Doc<"intakeMatches">,
+  photos: "attached" | "failed",
+  photoFailure: Doc<"intakeMatches">["photoFailure"],
+): Promise<void> {
+  // A late failure never takes back photos that did land (a retry racing the
+  // attach before it, or the timeout's guess).
+  if (row.photos === "attached" && photos === "failed") return;
+  await ctx.db.patch(row._id, {
+    photos,
+    photoFailure: photos === "failed" ? (photoFailure ?? "error") : undefined,
+  });
+  const run = await ctx.db.get(row.runId);
+  if (run) await kickListingIfRunSettled(ctx, run);
+}
+
+/** An attach's report. Sets the row's state and makes the settle check. */
+export const recordIntakePhotos = internalMutation({
+  args: {
+    matchId: v.id("intakeMatches"),
+    photos: v.union(v.literal("attached"), v.literal("failed")),
+    photoFailure: v.optional(intakePhotoFailureValidator),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const row = await ctx.db.get(args.matchId);
+    if (row) await settleIntakePhotos(ctx, row, args.photos, args.photoFailure);
+    return null;
+  },
+});
+
+/**
+ * An attach that never reported: its tile offers Try again, and the run
+ * settles. A timer from an earlier attempt does nothing, so a Try again gets
+ * its full time.
+ */
+export const expireIntakePhotoAttach = internalMutation({
+  args: { matchId: v.id("intakeMatches"), attempt: v.optional(v.number()) },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const row = await ctx.db.get(args.matchId);
+    if (row?.photos === "pending" && row.photoAttempt === args.attempt) {
+      await settleIntakePhotos(ctx, row, "failed", "error");
+    }
+    return null;
+  },
+});
+
+/** Try again: the caller's failed row goes back to pending and joins the queue. */
+export const beginIntakePhotoRetry = internalMutation({
+  args: { matchId: v.id("intakeMatches"), ownerId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const row = await ctx.db.get(args.matchId);
+    if (!row || row.userId !== args.ownerId) {
+      refuse(COLLECTION_ERRORS.notFound, "That card isn't in this run anymore.");
+    }
+    if (row.photos !== "failed") {
+      refuse(COLLECTION_ERRORS.invalid, "Those photos are already in, or on their way.");
+    }
+    if (row.photoFailure === "scanGone") {
+      refuse(COLLECTION_ERRORS.invalid, "Those scans aged out. Add a photo from the card instead.");
+    }
+    if (row.photoFailure === "unusable") {
+      refuse(COLLECTION_ERRORS.invalid, "Those scans won't cut it. Add a photo from the card instead.");
+    }
+    const tried = row.photoAttempt ?? 1;
+    if (tried >= MAX_INTAKE_PHOTO_ATTEMPTS) {
+      refuse(COLLECTION_ERRORS.limit, `We've tried these scans ${tried} times. Add a photo from the card instead.`);
+    }
+    if (!row.savedCopyId || !(await ctx.db.get(row.savedCopyId))) {
+      refuse(COLLECTION_ERRORS.notFound, "That card left your collection, so its photos have nowhere to go.");
+    }
+    const attempt = tried + 1;
+    await ctx.db.patch(row._id, { photos: "pending", photoFailure: undefined, photoAttempt: attempt });
+    await queueIntakePhotoAttach(ctx, row._id, attempt);
+    return null;
+  },
+});
+
+/** A run's saved rows, for putting photos on a run saved before NEO-427. Bounded. */
+export const intakeRunSavedMatches = internalQuery({
+  args: { runId: v.id("intakeRuns") },
+  returns: v.array(v.id("intakeMatches")),
+  handler: async (ctx, args) => {
+    const rows = await ctx.db
+      .query("intakeMatches")
+      .withIndex("by_run", (q) => q.eq("runId", args.runId))
+      .take(INTAKE_SETTLE_SCAN);
+    return rows.filter((row) => row.savedCopyId !== undefined).map((row) => row._id);
   },
 });
 
@@ -683,7 +1224,7 @@ async function imagePlayers(
 }
 
 /**
- * Bring the run's match rows in line with the job's pairs: drop rows whose
+ * Bring the run's match rows in line with the job's pairs: drop unsaved rows whose
  * pair is gone, match new pairs and pairs that read differently (never one
  * the collector picked), then flag repeats. At most `INTAKE_MATCH_CHUNK`
  * pairs are matched per call; the rest re-queue.
@@ -708,7 +1249,10 @@ export const syncIntakeMatches = internalMutation({
     const pairIds = new Set(pairs.map((p) => p._id));
     let removed = 0;
     for (const row of rows) {
-      if (!pairIds.has(row.pairId)) {
+      // NEO-446: never a saved row. It is the run's only record of the copy it
+      // made, and pairing no longer takes such a pair away, so its pair being gone
+      // means someone split it on purpose (`unpairPlaceholderImages` doesn't refuse).
+      if (!pairIds.has(row.pairId) && row.savedAt === undefined) {
         await ctx.db.delete(row._id);
         removed += 1;
       }
@@ -785,9 +1329,12 @@ export const syncIntakeMatches = internalMutation({
         variations: (answer?.variations ?? []) as Id<"cardChecklist">[],
       };
       if (existing) {
-        // A different card asks the repeat question again.
+        // A different card asks the repeat question again, and (NEO-481) drops
+        // the tile's own price: it was set for the card the row named.
         const patch =
-          existing.cardId === fields.cardId ? fields : { ...fields, repeatIsSecondCopy: undefined };
+          existing.cardId === fields.cardId
+            ? fields
+            : { ...fields, repeatIsSecondCopy: undefined, minPriceCents: undefined };
         await ctx.db.patch(existing._id, patch);
         byPair.set(pair._id, { ...existing, ...patch });
       } else {

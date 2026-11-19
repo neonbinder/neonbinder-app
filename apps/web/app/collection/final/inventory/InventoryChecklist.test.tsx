@@ -73,6 +73,16 @@ describe("the inventory's checklist", () => {
     expect(screen.getByRole("list", { name: "Quantities in Unsorted" })).toBeTruthy();
   });
 
+  it("the demo never lists anywhere: no Sales or Sync status section and no Sync button (NEO-370)", () => {
+    renderChecklist();
+    const sections = screen.getByRole("navigation", { name: "Inventory sections" });
+    expect(within(sections).getByRole("link", { name: "Checklists" })).toBeTruthy();
+    expect(within(sections).queryByRole("link", { name: "Sales" })).toBeNull();
+    expect(within(sections).queryByRole("link", { name: "Sync status" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Sync / })).toBeNull();
+    expect(screen.queryByRole("switch")).toBeNull();
+  });
+
   it("has no Have, Want or Trade controls: a field and Details only", () => {
     renderChecklist();
     expect(screen.queryByRole("button", { name: /^Have #/ })).toBeNull();
@@ -165,7 +175,7 @@ describe("the inventory's checklist", () => {
     fireEvent.change(a, { target: { value: "" } });
     fireEvent.blur(a);
     await flush();
-    expect(says(/^Nothing changed\. Type 0 to clear it\.$/)).toBe(true);
+    await waitFor(() => expect(says(/^Nothing changed\. Type 0 to clear it\.$/)).toBe(true));
   });
 
   it("after Dismiss, the same blank blur is allowed to speak", async () => {
@@ -179,7 +189,7 @@ describe("the inventory's checklist", () => {
     fireEvent.change(b, { target: { value: "" } });
     fireEvent.blur(b);
     await flush();
-    expect(says(/^Nothing changed\. Type 0 to clear it\.$/)).toBe(true);
+    await waitFor(() => expect(says(/^Nothing changed\. Type 0 to clear it\.$/)).toBe(true));
   });
 
   it("a collection copy never counts: nothing held in a binder lights a field", () => {

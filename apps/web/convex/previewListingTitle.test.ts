@@ -147,9 +147,10 @@ describe("previewListingTitle (NEO-101)", () => {
     // NEO-101: the sport ancestor and the second "Rookie" spelling are part
     // of the packed title now, and both are resolved by THIS query.
     expect(preview.title).toBe(
-      "2024 Topps Chrome Elly De La Cruz #50 RC Rookie Baseball",
+      "2024 Topps Chrome Base Elly De La Cruz #50 RC Rookie Baseball",
     );
     expect(preview.coreFits).toBe(true);
+    expect(preview.tidyUp).toBe(false);
     expect(preview.dropped).toEqual([]);
     // The chips the panel renders come straight off this.
     expect(preview.inputs).toMatchObject({
@@ -163,6 +164,165 @@ describe("previewListingTitle (NEO-101)", () => {
       teamNames: [],
       sport: "Baseball",
     });
+  });
+
+  test("NEO-609: a title that lost a first name says tidyUp, and coreFits is its inverse", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, variantTypeId } = await seedSubtree(t);
+    const NAME = "Bartholomew Maximilian Alexander Christopher Fitzgerald-Worthington";
+    const playerId = await t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name: NAME,
+        nameNormalized: NAME.toLowerCase().split(" ").sort().join(" "),
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+    const cardId = await insertCard(t, variantTypeId, {
+      cardNumber: "19",
+      playerIds: [playerId],
+      features: { season: "2024", manufacturer: "Topps", parallelName: "Base" },
+    });
+    const preview = await asAdmin.query(api.selectorOptions.previewListingTitle, { cardId });
+    expect(preview.firstNameLost).toBe(true);
+    expect(preview.tidyUp).toBe(true);
+    expect(preview.coreFits).toBe(false);
+  });
+
+  // NEO-609 — Regenerate in the card drawer stores the previewed title through
+  // `updateCard`. A title the generator itself builds for the card as it stands
+  // carries the flag its assessment gives it; only a typed one clears it.
+  describe("updateCard stores a Regenerate title with the generator's flag", () => {
+    const LONG_NAME = "Bartholomew Maximilian Alexander Christopher Fitzgerald-Worthington";
+
+    async function seedTidyUpCard() {
+      const t = convexTest(schema, modules);
+      const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+      const { sportId, variantTypeId } = await seedSubtree(t);
+      const playerId = await t.run(async (ctx) =>
+        ctx.db.insert("players", {
+          name: LONG_NAME,
+          nameNormalized: LONG_NAME.toLowerCase().split(" ").sort().join(" "),
+          sportId,
+          lastUpdated: Date.now(),
+        }),
+      );
+      const cardId = await insertCard(t, variantTypeId, {
+        cardNumber: "19",
+        playerIds: [playerId],
+        features: { season: "2024", manufacturer: "Topps", parallelName: "Base" },
+        listingTitle: "Something an earlier build wrote",
+        listingTitleTruncated: true,
+      });
+      return { t, asAdmin, cardId };
+    }
+
+    const flagOf = (t: ReturnType<typeof convexTest>, cardId: Id<"cardChecklist">) =>
+      t.run(async (ctx) => (await ctx.db.get(cardId))?.listingTitleTruncated ?? null);
+
+    test("the previewed title of a card still in Tidy Up keeps the flag", async () => {
+      const { t, asAdmin, cardId } = await seedTidyUpCard();
+      const preview = await asAdmin.query(api.selectorOptions.previewListingTitle, { cardId });
+      expect(preview.tidyUp).toBe(true);
+      await asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        listingTitle: preview.title,
+      });
+      expect(await flagOf(t, cardId)).toBe(true);
+    });
+
+    test("a previewed title that fits cleanly clears the flag", async () => {
+      const { t, asAdmin, cardId } = await seedTidyUpCard();
+      await t.run(async (ctx) => {
+        await ctx.db.patch(cardId, { playerIds: [] });
+      });
+      const preview = await asAdmin.query(api.selectorOptions.previewListingTitle, { cardId });
+      expect(preview.coreFits).toBe(true);
+      await asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        listingTitle: preview.title,
+      });
+      expect(await flagOf(t, cardId)).toBeNull();
+    });
+
+    test("the Tidy Up walker's save (titleReviewed) clears the flag on a generated title still carrying a cut", async () => {
+      const { t, asAdmin, cardId } = await seedTidyUpCard();
+      const preview = await asAdmin.query(api.selectorOptions.previewListingTitle, { cardId });
+      expect(preview.tidyUp).toBe(true);
+      await asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        listingTitle: preview.title,
+        titleReviewed: true,
+      });
+      expect(await flagOf(t, cardId)).toBeNull();
+    });
+
+    test("the walker's save of a title already stored clears the flag too", async () => {
+      const { t, asAdmin, cardId } = await seedTidyUpCard();
+      await asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        listingTitle: "Something an earlier build wrote",
+        titleReviewed: true,
+      });
+      expect(await flagOf(t, cardId)).toBeNull();
+    });
+
+    test("a title the operator typed clears the flag", async () => {
+      const { t, asAdmin, cardId } = await seedTidyUpCard();
+      await asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        listingTitle: "2024 Topps Chrome Base #19 Fitzgerald-Worthington",
+      });
+      expect(await flagOf(t, cardId)).toBeNull();
+    });
+  });
+
+  test("NEO-535: a stored card on a parallel leaf names the leaf, not the name its features inherited", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { setNameId } = await seedSubtree(t);
+    const leafId = await t.run(async (ctx) => {
+      const inserts = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Inserts",
+        platformData: {},
+        parentId: setNameId,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      const anime = await ctx.db.insert("selectorOptions", {
+        level: "insert",
+        value: "Anime",
+        platformData: {},
+        parentId: inserts,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      const red = await ctx.db.insert("selectorOptions", {
+        level: "parallel",
+        value: "Anime Red Refractors",
+        platformData: {},
+        features: { manufacturer: "Topps", season: "2024", parallelName: "Base" },
+        parentId: anime,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      await ctx.db.patch(inserts, { children: [anime] });
+      await ctx.db.patch(anime, { children: [red] });
+      return red;
+    });
+    // Committed before NEO-535: its features carry the leaf's inherited "Base".
+    const cardId = await insertCard(t, leafId, {
+      cardNumber: "BA-3",
+      pendingPlayerNames: ["Murakami"],
+      features: { season: "2024", manufacturer: "Topps", parallelName: "Base" },
+    });
+
+    const preview = await asAdmin.query(api.selectorOptions.previewListingTitle, { cardId });
+    expect(preview.inputs.parallelName).toBe("Anime Red Refractors");
+    // The insert's word is said once (the parallel's leading "Anime").
+    expect(preview.title.startsWith("2024 Topps Chrome Anime Red Refractors Parallel Murakami")).toBe(true);
   });
 
   test("falls back to pendingPlayerNames when a custom card has no resolved players", async () => {
@@ -186,7 +346,7 @@ describe("previewListingTitle (NEO-101)", () => {
     });
     expect(preview.inputs.playerNames).toEqual(["Nobody In The Players Table"]);
     expect(preview.title).toBe(
-      "2024 Topps Chrome Nobody In The Players Table #7 Baseball",
+      "2024 Topps Chrome Base Nobody In The Players Table #7 Baseball",
     );
   });
 
@@ -212,14 +372,16 @@ describe("previewListingTitle (NEO-101)", () => {
     const preview = await asAdmin.query(api.selectorOptions.previewListingTitle, {
       cardId,
     });
+    // NEO-535: the parallel ("Gold") is part of the description, before the
+    // number; the tail keeps its order.
     expect(preview.title).toBe(
-      "2024 Topps Chrome #300b AUTO RELIC Gold /25 Image Variation SP Baseball",
+      "2024 Topps Chrome Base Gold #300b AUTO RELIC /25 Image Variation SP Baseball",
     );
     expect(preview.inputs.printRun).toBe(25);
     expect(preview.inputs.cardVariation).toBe("Image Variation");
   });
 
-  test("reports coreFits: false and the dropped tokens when the row cannot fit", async () => {
+  test("reports fits: false, coreFits: false and what was left out when the row cannot fit", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { sportId, variantTypeId } = await seedSubtree(t);
@@ -244,14 +406,16 @@ describe("previewListingTitle (NEO-101)", () => {
     const preview = await asAdmin.query(api.selectorOptions.previewListingTitle, {
       cardId,
     });
+    // NEO-535, end to end: every cut is made (number, first name, RC, AUTO),
+    // the surname part is never cut, and the title STOPs over the cap.
     expect(preview.coreFits).toBe(false);
-    // "skip, don't stop", end to end: the 5-character " AUTO" did not fit, the
-    // 3-character " RC" behind it did, and the result lands exactly on the cap.
-    expect(preview.dropped).toEqual(["AUTO", "Rookie", "Baseball"]);
+    expect(preview.fits).toBe(false);
+    expect(preview.firstNameLost).toBe(true);
+    expect(preview.dropped).toEqual(["#99999", "An", "RC", "AUTO"]);
     expect(preview.title).toBe(
-      "2024 Topps Chrome An Absurdly Long Player Full Name That Alone Exceeds #99999 RC",
+      "2024 Topps Chrome Absurdly Long Player Full Name That Alone Exceeds The Entire Title Budget",
     );
-    expect(preview.title.length).toBe(80);
+    expect(preview.title.length).toBeGreaterThan(80);
     expect(preview.title).not.toContain("…");
   });
 
@@ -305,7 +469,14 @@ describe("previewListingTitle (NEO-101)", () => {
     );
     expect(widePreview.inputs.playerNames).toHaveLength(MAX_CARD_PLAYERS);
     expect(widePreview.inputs.playerNames[0]).toBe("Player 00");
-    expect(widePreview.title.length).toBeLessThanOrEqual(80);
+    // Twenty players lose every first name ("Player") and the title still
+    // STOPs over the cap (NEO-535): each surname part stays, none is sliced.
+    expect(widePreview.fits).toBe(false);
+    expect(widePreview.title.length).toBeGreaterThan(80);
+    for (let i = 0; i < MAX_CARD_PLAYERS; i++) {
+      expect(widePreview.title).toContain(String(i).padStart(2, "0"));
+    }
+    expect(widePreview.title).not.toContain("Player");
   });
 
   test("resolves team names from teamOnCardIds, deduped and bounded", async () => {
@@ -370,7 +541,7 @@ describe("previewListingTitle (NEO-101)", () => {
     });
     expect(preview.inputs.teamNames).toEqual(["Savannah Bananas"]);
     expect(preview.title).toBe(
-      "2024 Topps Chrome #9001 Savannah Bananas Baseball",
+      "2024 Topps Chrome Base #9001 Savannah Bananas Baseball",
     );
   });
 

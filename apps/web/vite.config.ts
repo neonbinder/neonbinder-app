@@ -2,8 +2,10 @@ import { defineConfig, loadEnv, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { sentryVitePlugin } from "@sentry/vite-plugin";
+import fs from "fs";
 import path from "path";
 import { issueClerkTestingTokens } from "./lib/testing/issue-clerk-tokens";
+import { shouldUploadSentrySourcemaps } from "./lib/observability/sentry-upload-gate";
 
 // `vite-plugin-mkcert@2` pulls in `undici@8.x` whose CacheStorage init
 // calls `webidl.util.markAsUncloneable`. That API landed in Node 22.13+;
@@ -173,6 +175,63 @@ function clerkTestingApiPlugin(): Plugin {
   };
 }
 
+// NEO-422: eBay's OAuth return pages are standalone static HTML in
+// public/oauth/ebay/, served OUTSIDE the app shell so nothing third party runs
+// while eBay's code and state are on that page's address. The app they forward
+// to takes them off its own address first (src/ebay-return-address.ts).
+// Their extensionless paths are rewritten
+// to the files here for `vite dev` and `vite preview`, as vercel.json's
+// rewrites do on Vercel; without it Vite's SPA fallback serves index.html and
+// boots the whole app on that URL. Keep this map and vercel.json in step.
+const STATIC_PAGE_REWRITES: Record<string, string> = {
+  "/oauth/ebay/return": "/oauth/ebay/return.html",
+  "/oauth/ebay/sandbox-return": "/oauth/ebay/sandbox-return.html",
+};
+
+// The pages' script is the app's own parser module, served unbundled at this
+// URL: read from lib/ in dev, emitted byte for byte into dist at build (where
+// `vite preview` and Vercel serve it as a plain static file). It lives in lib/
+// rather than public/ so app code can import it without Vite's public-dir
+// warning, and so there is one copy.
+const EBAY_RETURN_SCRIPT_URL = "/oauth/ebay/ebay-return.js";
+const EBAY_RETURN_SCRIPT_SOURCE = path.resolve(__dirname, "lib/marketplace/ebay-oauth-return.js");
+
+function staticPageRewritesPlugin(): Plugin {
+  const rewrite = (req: { url?: string }, _res: unknown, next: () => void) => {
+    const url = req.url ?? "";
+    const queryAt = url.indexOf("?");
+    const pathname = queryAt === -1 ? url : url.slice(0, queryAt);
+    const target = STATIC_PAGE_REWRITES[pathname];
+    if (target) req.url = target + (queryAt === -1 ? "" : url.slice(queryAt));
+    next();
+  };
+  return {
+    name: "static-page-rewrites",
+    configureServer(server) {
+      server.middlewares.use(rewrite);
+      server.middlewares.use(EBAY_RETURN_SCRIPT_URL, (_req, res) => {
+        res.setHeader("Content-Type", "text/javascript; charset=utf-8");
+        res.setHeader("Cache-Control", "no-cache");
+        res.end(fs.readFileSync(EBAY_RETURN_SCRIPT_SOURCE, "utf8"));
+      });
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(rewrite);
+    },
+    generateBundle() {
+      this.emitFile({
+        type: "asset",
+        fileName: EBAY_RETURN_SCRIPT_URL.slice(1),
+        source: fs.readFileSync(EBAY_RETURN_SCRIPT_SOURCE, "utf8"),
+      });
+    },
+  };
+}
+
+// NEO-439: snapshot the real process environment before the .env merge below,
+// so nothing in a .env file can switch Sentry uploading on.
+const uploadToSentry = shouldUploadSentrySourcemaps(process.env);
+
 export default defineConfig(async ({ mode }) => {
   // Load .env* into process.env for server-side code (Vite only populates
   // import.meta.env.VITE_* by default; the dev-only Clerk testing middleware
@@ -185,7 +244,10 @@ export default defineConfig(async ({ mode }) => {
     tailwindcss(),
     ...(mkcertPlugin ? [mkcertPlugin] : []),
     clerkTestingApiPlugin(),
+    staticPageRewritesPlugin(),
     sentryVitePlugin({
+      // Release + source-map upload only on a Vercel hosted build (NEO-439).
+      disable: !uploadToSentry,
       org: "neon-binder",
       project: "javascript-nextjs",
       sourcemaps: {
@@ -200,7 +262,9 @@ export default defineConfig(async ({ mode }) => {
     },
   },
   build: {
-    sourcemap: true,
+    // Tied to the gate: `disable` also drops the plugin's delete-after-upload,
+    // so maps built where nothing uploads or deletes them would ship public.
+    sourcemap: uploadToSentry,
   },
   server: {
     port: 3000,

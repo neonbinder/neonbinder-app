@@ -7,7 +7,8 @@
 //   * 2024 Topps Chrome Baseball: Base (335 cards, both marketplaces paired),
 //     the Future Stars insert (20 cards), the Gold Wave Refractors parallel
 //     (300 cards built from Base);
-//   * 2024 Topps Big League: Base mapped, checklist left empty;
+//   * 2024 Topps Stars of MLB Network: Base mapped, checklist left empty
+//     (the read-only wizard specs' fixture; NEO-475, it was Topps Big League);
 //   * 2026 Bowman: SportLots sets sorted (NEO-312 fixture).
 //
 // NOT provisioned here, deliberately: the entity-review fixtures each wizard
@@ -19,17 +20,30 @@
 // columns at once double a round-trip and never a row (SET-REGISTRY.md, "The
 // 1995 minor-league hockey wizard fixtures"), so those are not pre-synced.
 //
+// The Base fetch is given the publisher's checklist (NEO-478/482, D8 amended):
+// BSC's own per-card answers for 2024 Topps Chrome Base, captured to
+// fixtures/checklists/2024-topps-chrome-base.csv with card #300's row left OUT.
+// So the fetch asks BSC for the bulk checklist and for ONE card, #300, and the seed
+// no longer makes a card-listing call per card (it was about 300 calls, and the
+// reason a seed met BSC's 429). The seed is therefore NOT the live proof for
+// per-card lookups: those are `checklist-bsc-team-enrichment` (card #300),
+// `checklist-fetch-bounds-a-bsc-stall-and-queues-the-cards` and
+// `checklist-published-upload-skips-bsc-and-asks-on-disagreement`. The Insert and
+// the Gold Wave build stay live syncs.
+//
 // R5 exempts the seed as a class: every wait below is the flow's own measured
 // cold-path value (live marketplace round trips on unwarmed data).
 // "A SYNC THAT HALF-WORKED IS A FAILED SEED": after every sync the partial-
 // failure banners must be absent (expectNoSyncFailure).
 import { test, expect } from "../support/fixtures";
-import { loginToBsc, loginToSportLots } from "../support/credentials";
+import { loginToSportLots, openBscCredentials } from "../support/credentials";
 import {
   addCustomManufacturer,
+  ANY_COLUMN_SYNC_FAILED,
   columnHeading,
   columnOption,
   columnSearch,
+  columnSyncError,
   drillToBaseVariant,
   drillToColdManufacturer,
   drillToSet,
@@ -37,14 +51,28 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../support/set-builder";
-import { addAsNewStep, advanceToSave, answerStepAsNew, confirmSaveButton, reviewWizard } from "../support/wizard";
+import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist, type ChecklistFacts } from "../support/published-checklist";
+import {
+  addAsNewStep,
+  advanceToSave,
+  answerStepAsNew,
+  checklistDisagreementHeading,
+  confirmSaveButton,
+  reviewWizard,
+  stepCounter,
+} from "../support/wizard";
 import type { Page } from "@playwright/test";
 
 const SL_PAUSE_NOTICE = "SportLots is on pause: nothing from SportLots was asked for or changed.";
 
+// NEO-450: ANY_COLUMN_SYNC_FAILED (support/set-builder.ts) matches any
+// column's failed-sync sentence; column-sync-failed-shows-only-the-error
+// proves it matches the rendered one.
 async function expectNoSyncFailure(page: Page) {
   await expect(page.getByText(/could not be reached, so nothing from .* was changed/)).toBeHidden();
-  await expect(page.getByText(/Couldn.t sync options/)).toBeHidden();
+  // Count, not visibility: two failed columns would make `toBeHidden` a
+  // strict-mode error rather than a failure that names the sentence.
+  await expect(page.getByText(ANY_COLUMN_SYNC_FAILED), "a set-builder column's sync failed").toHaveCount(0);
 }
 
 /**
@@ -54,7 +82,7 @@ async function expectNoSyncFailure(page: Page) {
  */
 async function fetchChecklist(
   page: Page,
-  slPaused: boolean,
+  facts: ChecklistFacts,
   { open, settle }: { open: number; settle: number },
 ) {
   const pairing = page.getByRole("dialog", { name: /^Match Cards/ });
@@ -62,30 +90,87 @@ async function fetchChecklist(
   const saved = page.getByText(/Saved [0-9]+/);
 
   await syncChecklistButton(page).click();
-  await expect(pairing.or(wizard).or(saved).first()).toBeVisible({ timeout: open });
-
-  if (!slPaused) {
-    if (await pairing.isVisible()) {
-      // The confirm button reads "Loading…" until both sides have streamed in.
-      const confirm = pairing.getByRole("button", { name: "Confirm card matches" });
-      await expect(confirm).toHaveText("Confirm", { timeout: 120_000 });
-      await expect(pairing.getByRole("button", { name: "Confirm card matches", disabled: false })).toBeVisible();
-      for (const side of ["BSC", "SportLots"]) {
-        // Each side's unmatched section is headed "<side> only (<n>)"; there
-        // is no section at all when everything paired.
-        const unmatched = pairing.getByRole("heading", { name: new RegExp(`^${side} only \\([1-9][0-9]*\\)$`) });
-        if (await unmatched.isVisible()) {
-          await pairing.getByRole("button", { name: `Keep all ${side}-only cards` }).click();
-        }
-      }
-      await confirm.click();
-      await expect(pairing).toBeHidden({ timeout: settle });
+  // NEO-496 (D10, NQ1): the uploaded checklist is a source of its own, so Match Cards opens on
+  // both branches: live it lines up BSC, SportLots and the checklist; with SportLots paused, BSC
+  // and the checklist (two sources, as two marketplaces always were).
+  await expect(pairing).toBeVisible({ timeout: open });
+  // The confirm button reads "Loading…" until every source has streamed in and the teams landed.
+  const confirm = pairing.getByRole("button", { name: "Confirm card matches" });
+  await expect(confirm).toHaveText("Confirm", { timeout: 120_000 });
+  await expect(pairing.getByRole("button", { name: "Confirm card matches", disabled: false })).toBeVisible();
+  // The result line is the proof the file, not BSC, supplied the teams (N read off the file). It
+  // is on the page while the dialog is open; after Confirm only the saved line repeats it.
+  await expectTeamsFromChecklist(page, facts);
+  for (const side of ["BSC", "SportLots"]) {
+    // Each side's unmatched section is headed "<side> only (<n>)"; a card the file leaves out (the
+    // Base's #300) waits there and is discarded unless kept. The seed keeps every marketplace card.
+    const unmatched = pairing.getByRole("heading", { name: new RegExp(`^${side} only \\([1-9][0-9]*\\)$`) });
+    if (await unmatched.isVisible()) {
+      await pairing.getByRole("button", { name: `Keep all ${side}-only cards` }).click();
+      await expect(pairing.getByRole("heading", { name: `${side} only (0)` })).toBeVisible();
     }
-  } else {
-    // One marketplace only: nothing to pair, the dialog never opens.
-    await expect(pairing).toBeHidden();
   }
+  // Checklist rows no card paired are left in their column: the seed saves the marketplace's cards.
+  await confirm.click();
+  await expect(pairing).toBeHidden({ timeout: settle });
   await expect(wizard.or(saved).first()).toBeVisible({ timeout: settle });
+}
+
+/**
+ * Walk the entity-review wizard of a freshly fetched Base checklist to its
+ * Save step and save: bulk-add the unknown players, then answer every team,
+ * league and pick step one at a time (live enrichment lookups), leave the
+ * post-name steps on their defaults, confirm. Shared by the seed's big Base
+ * checklists; `maxSteps` bounds the walk (a team/league/pick step each).
+ */
+async function walkWizardToSave(page: Page, maxSteps: number) {
+  const wizard = reviewWizard(page);
+  await wizard.getByRole("button", { name: /^Add remaining players as new/ }).click();
+  // Enabled only: the button is aria-disabled while the row's enrichment
+  // lookup is in flight, and between rows.
+  // Any state: a league step's primary is held until a level is pressed
+  // (NEO-331), and answerStepAsNew presses "Other" first.
+  const addAsNew = addAsNewStep(page);
+  // NEO-335: "names done" is two footer states. With every name decided the
+  // wizard walks on to "Cards with no team" / "Card titles" (footer "Next
+  // (Enter)", no Confirm & Save), then "Ready to save" (the only step with
+  // Confirm & Save). Neither button is on screen while a name is undecided.
+  const namesDone = wizard.getByRole("button", { name: /^Next \(Enter\)$|Confirm & Save/ });
+  // NEO-330: with the reference catalogue loaded the Base batch is a
+  // handful of names, and some are same-name players the bulk leaves for
+  // the operator. Such a row is the PICK step (NEO-332), inserted ready, so
+  // it can be on screen from the start. It is answered by LINKING the top
+  // candidate, never `Add as New Player` (that mints one more same-name
+  // player). No spec reads these rows and the reset rebuilds them. Scoped
+  // to the candidate list so the footer's `Link to existing instead` is out.
+  const pickStep = wizard.getByRole("heading", { level: 3, name: /^Which .* is this\?$/ });
+  const firstCandidate = wizard
+    .getByRole("list", { name: "Players already filed under this name" })
+    .getByRole("button", { name: /^Link to / })
+    .first();
+  // Teams and leagues are walked one at a time (enrichment lookups; the
+  // flow's 240 s per step and 250 steps at most). The wait wakes on every
+  // answerable outcome: a team/league step, a pick step, or the end.
+  for (let i = 0; i < maxSteps; i++) {
+    await expect(addAsNew.or(pickStep).or(namesDone).first()).toBeVisible({ timeout: 240_000 });
+    if (await namesDone.isVisible()) break;
+    if (await pickStep.isVisible()) {
+      const step = ((await pickStep.textContent()) ?? "").trim();
+      await firstCandidate.click();
+      // By the exact heading: a following pick step has another name.
+      await expect(
+        wizard.getByRole("heading", { level: 3, name: step, exact: true }),
+        `"${step}" is still on screen after Link to`,
+      ).toBeHidden();
+    } else {
+      await answerStepAsNew(page);
+    }
+  }
+  // The teams / titles steps, each left on its defaults by Next (the answers
+  // the old final step's Confirm & Save saved), then the Save step. The seed
+  // is a data-loading track; it proves none of those steps.
+  await advanceToSave(page);
+  await confirmSaveButton(page).click();
 }
 
 /**
@@ -115,7 +200,7 @@ async function reconcileAndFind(page: Page, column: "Inserts" | "Parallels", nam
 }
 
 test(
-  "Setup — global reset + warm + sync 2024 Topps Chrome Baseball (Base + Insert + Parallel) + 2026 Bowman's SportLots review",
+  "Setup — global reset + warm + sync 2024 Topps Chrome Baseball (Base + Insert + Parallel) + 2024 Topps Stars of MLB Network (Base mapped) + 2026 Bowman's SportLots review",
   { tag: ["@setup"] },
   async ({ page, signIn, env }) => {
     // ── sign in, per-user reset, seed creds, land on /admin ────────────────
@@ -123,7 +208,8 @@ test(
     await expect(page.getByText(/Build set parameters from marketplace data/)).toBeVisible({
       timeout: 120_000,
     });
-    await loginToBsc(page);
+    // NEO-445: the seed hop above already signed in live; the Test press is proven by test-credentials and credentials-lifecycle, and a BSC stall must not fail the seed.
+    await openBscCredentials(page);
     await loginToSportLots(page, env);
 
     // ── Sports → Baseball ──────────────────────────────────────────────────
@@ -149,7 +235,11 @@ test(
 
     // ── Years → 2024 ───────────────────────────────────────────────────────
     await expect(columnHeading(page, "Years")).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByRole("listbox", { name: "Years" })).toBeVisible({ timeout: 90_000 });
+    // A failed sync shows the column's alert and no listbox: wake on it too
+    // and fail at once, by name (NEO-450).
+    await expect(
+      page.getByRole("listbox", { name: "Years" }).or(columnSyncError(page, "Years")).first(),
+    ).toBeVisible({ timeout: 90_000 });
     await expectNoSyncFailure(page);
     if (env.SL_PAUSED) {
       // Baseball carries SportLots' id from the seeded catalogue, so SportLots
@@ -175,17 +265,21 @@ test(
       await topps.click();
     } else {
       await expect(page.getByText("Syncing Manufacturer Options")).toBeHidden({ timeout: 45_000 });
-      await expect(
-        page.getByText("No manufacturers available. Sync from marketplaces to populate."),
-      ).toBeVisible({ timeout: 45_000 });
+      // NEO-450: a failed sync hides the idle line and shows the column's
+      // alert instead; wake on either so a failure reds here, by name.
+      const noManufacturers = page.getByText("No manufacturers available. Sync from marketplaces to populate.");
+      await expect(noManufacturers.or(columnSyncError(page, "Manufacturers"))).toBeVisible({ timeout: 45_000 });
       await expectNoSyncFailure(page);
+      await expect(noManufacturers).toBeVisible();
       await addCustomManufacturer(page, "Topps");
       await columnOption(page, "Manufacturers", "Topps").click();
     }
 
     // ── Sets → Topps Chrome ────────────────────────────────────────────────
     await expect(columnHeading(page, "Sets")).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByRole("listbox", { name: "Sets" })).toBeVisible({ timeout: 45_000 });
+    await expect(
+      page.getByRole("listbox", { name: "Sets" }).or(columnSyncError(page, "Sets")).first(),
+    ).toBeVisible({ timeout: 45_000 });
     await expectNoSyncFailure(page);
     await pick(page, "Sets", "Topps Chrome");
 
@@ -193,8 +287,13 @@ test(
     await expect(columnHeading(page, "Variant Types")).toBeVisible({ timeout: 20_000 });
     const base = columnOption(page, "Variant Types", "Base");
     const noTypes = page.getByText("No variant types available. Sync from marketplaces to populate.");
-    await expect(base.or(noTypes)).toBeVisible({ timeout: 45_000 });
-    if (await noTypes.isVisible()) {
+    // NEO-450: a failed sync hides the idle line and shows the column's alert
+    // instead. Either one earns the seed's single retry (the `Sync Variant
+    // Types` press below), exactly as forgiving as before; a second failure
+    // leaves no Base and fails the hard asserts after it.
+    const typesError = columnSyncError(page, "Variant Types");
+    await expect(base.or(noTypes).or(typesError).first()).toBeVisible({ timeout: 45_000 });
+    if ((await noTypes.isVisible()) || (await typesError.isVisible())) {
       await page.getByRole("button", { name: "Sync Variant Types" }).click();
       await expect(page.getByText("Syncing Variant Types")).toBeHidden({ timeout: 45_000 });
       const close = page.getByRole("button", { name: "Close", exact: true });
@@ -225,7 +324,7 @@ test(
         await picker.getByRole("option", { name: /^BSC base candidate: / }).first().click();
         await sl.first().click();
       } else {
-        await expect(picker.getByText(/^SportLots returned no base set for /)).toBeVisible();
+        await expect(picker.getByText(/^SportLots wasn't asked: /)).toBeVisible();
         await expect(sl).toHaveCount(0);
         await picker.getByRole("option", { name: /^BSC base candidate: / }).first().click();
       }
@@ -243,65 +342,25 @@ test(
       timeout: 30_000,
     });
     await expect(syncChecklistButton(page)).toBeVisible();
-    await fetchChecklist(page, env.SL_PAUSED, { open: 60_000, settle: 60_000 });
-
-    if (!env.SL_PAUSED) {
-      // Pairing confirmed: no partial-pairing notice.
-    } else {
-      await expect(page.getByText(/Kept all [0-9]+ cards? from BSC/)).toBeVisible();
-    }
+    // The captured checklist goes in before the Sync: the fetch then asks BSC for no card
+    // the file answers (a seed with a card-listing call per card met BSC's 429).
+    const facts = await usePublishersChecklist(page, CHECKLISTS.toppsChrome2024Base);
+    await fetchChecklist(page, facts, { open: 60_000, settle: 60_000 });
 
     // First run: confirm every new player/team/league the checklist names.
-    // NEO-335: the wizard's dialog name is "Tidy up this set"; "Confirm New
-    // Players & Teams" is gone.
+    // NEO-335: the wizard's dialog name starts "Tidy up" ("Tidy up 2024 Topps
+    // Chrome" since NEO-497); "Confirm New Players & Teams" is gone.
     const wizard = reviewWizard(page);
     if (await wizard.isVisible()) {
-      await wizard.getByRole("button", { name: /^Add remaining players as new/ }).click();
-      // Enabled only: the button is aria-disabled while the row's enrichment
-      // lookup is in flight, and between rows.
-      // Any state: a league step's primary is held until a level is pressed
-      // (NEO-331), and answerStepAsNew presses "Other" first.
-      const addAsNew = addAsNewStep(page);
-      // NEO-335: "names done" is two footer states. With every name decided the
-      // wizard walks on to "Cards with no team" / "Card titles" (footer "Next
-      // (Enter)", no Confirm & Save), then "Ready to save" (the only step with
-      // Confirm & Save). Neither button is on screen while a name is undecided.
-      const namesDone = wizard.getByRole("button", { name: /^Next \(Enter\)$|Confirm & Save/ });
-      // NEO-330: with the reference catalogue loaded the Base batch is a
-      // handful of names, and some are same-name players the bulk leaves for
-      // the operator. Such a row is the PICK step (NEO-332), inserted ready, so
-      // it can be on screen from the start. It is answered by LINKING the top
-      // candidate, never `Add as New Player` (that mints one more same-name
-      // player). No spec reads these rows and the reset rebuilds them. Scoped
-      // to the candidate list so the footer's `Link to existing instead` is out.
-      const pickStep = wizard.getByRole("heading", { level: 3, name: /^Which .* is this\?$/ });
-      const firstCandidate = wizard
-        .getByRole("list", { name: "Players already filed under this name" })
-        .getByRole("button", { name: /^Link to / })
-        .first();
-      // Teams and leagues are walked one at a time (enrichment lookups; the
-      // flow's 240 s per step and 250 steps at most). The wait wakes on every
-      // answerable outcome: a team/league step, a pick step, or the end.
-      for (let i = 0; i < 250; i++) {
-        await expect(addAsNew.or(pickStep).or(namesDone).first()).toBeVisible({ timeout: 240_000 });
-        if (await namesDone.isVisible()) break;
-        if (await pickStep.isVisible()) {
-          const step = ((await pickStep.textContent()) ?? "").trim();
-          await firstCandidate.click();
-          // By the exact heading: a following pick step has another name.
-          await expect(
-            wizard.getByRole("heading", { level: 3, name: step, exact: true }),
-            `"${step}" is still on screen after Link to`,
-          ).toBeHidden();
-        } else {
-          await answerStepAsNew(page);
-        }
-      }
-      // The teams / titles steps, each left on its defaults by Next (the answers
-      // the old final step's Confirm & Save saved), then the Save step. The seed
-      // is a data-loading track; it proves none of those steps.
-      await advanceToSave(page);
-      await confirmSaveButton(page).click();
+      // The file is BSC's own answers, so it cannot disagree with BSC: a "Checklist says
+      // otherwise" step here means the capture is stale (re-capture it, SET-REGISTRY.md),
+      // and the walk below would sit on a step it has no answer for until its 240 s ran out.
+      await expect(stepCounter(page)).toBeVisible();
+      await expect(
+        checklistDisagreementHeading(page),
+        "the seed's 2024-topps-chrome-base.csv disagrees with BSC (Checklist says otherwise): the capture is stale",
+      ).toBeHidden();
+      await walkWizardToSave(page, 250);
     }
     await expect(page.getByText(/Saved 335 cards/)).toBeVisible({ timeout: 120_000 });
     await expect(page.getByText(/^#[0-9]/).first()).toBeVisible();
@@ -315,7 +374,10 @@ test(
     await expect(page.getByRole("button", { name: "Open add card form" })).toBeVisible({
       timeout: 30_000,
     });
-    await fetchChecklist(page, env.SL_PAUSED, { open: 90_000, settle: 90_000 });
+    // The seed's Future Stars checklist is BSC's own answers (the 20 cards), so the fetch asks BSC
+    // for no card (D4): the BSC listing specs that read this set no longer depend on 20 live reads.
+    const futureStars = await usePublishersChecklist(page, CHECKLISTS.futureStars2024);
+    await fetchChecklist(page, futureStars, { open: 90_000, settle: 90_000 });
     // Every Future Stars player is already known from Base: no NAMES review.
     // NEO-335: one wizard shape is legitimate here, NO NAMES and past-the-names
     // steps only: a card that would save with no team (a SportLots-only card
@@ -324,6 +386,12 @@ test(
     // fetchChecklist waited for the wizard or the "Saved" banner, so which one
     // is up is settled and read once. The seed answers nothing on those steps.
     if (await wizard.isVisible()) {
+      // The file is BSC's own answers, so a "Checklist says otherwise" step means the capture is stale.
+      await expect(stepCounter(page)).toBeVisible();
+      await expect(
+        checklistDisagreementHeading(page),
+        "the seed's 2024-topps-chrome-insert-future-stars.csv disagrees with BSC (Checklist says otherwise): the capture is stale",
+      ).toBeHidden();
       // A names review fails here, by name: nothing is undecided.
       await expect(wizard.getByRole("button", { name: /Skip remaining names|Add remaining players as new/ })).toHaveCount(0);
       await expect(wizard.getByText(/^(Cards with no team|Card titles)$/)).toBeVisible();
@@ -365,8 +433,16 @@ test(
       await expect(page.getByText("SL", { exact: true })).toHaveCount(0);
     }
 
-    // ── 2024 Topps Big League: base mapped, checklist left empty ───────────
-    await drillToBaseVariant(page, env, { set: "Topps Big League" });
+    // ── 2024 Topps Stars of MLB Network: base mapped, checklist left empty ──
+    // The read-only wizard specs' fixture (fetchChecklistToWizard's default;
+    // SET-REGISTRY.md "Topps Stars of MLB Network"). NEO-475: it replaced Topps
+    // Big League (310 cards) with a 10-card set, so every wizard fetch reads 10
+    // BSC cards instead of 310. Filed under 2024 Topps by its name, so the
+    // year-wide Sets sync above already listed it. The live branch is
+    // UNMEASURED on this set (retargeted while SportLots was paused): the
+    // drill maps the picker's first SportLots candidate, as it did on Big
+    // League; the first live run must check that candidate is this set.
+    await drillToBaseVariant(page, env, { set: "Topps Stars of MLB Network" });
     if (!env.SL_PAUSED) {
       await expect(page.getByRole("button", { name: /Re-map Base/ })).toBeVisible({
         timeout: 60_000,
@@ -386,7 +462,7 @@ test(
     const INSERT_ROW = "All-America Game Autos";
     const SOURCE_ROW = "All-America Game Autos Red Ink";
 
-    await drillToColdManufacturer(page, env, { sport: "Baseball", year: "2026", manufacturer: BRAND });
+    await drillToColdManufacturer(page, env, { sport: "Baseball", year: "2026", manufacturer: BRAND, expectSets: true });
     const sets = page.getByRole("listbox", { name: "Sets" });
     await expect(page.getByRole("button", { name: "Sync Sets" })).toBeVisible({ timeout: 150_000 });
     await expect(columnOption(page, "Sets", "Bowman Chrome")).toBeVisible();

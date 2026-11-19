@@ -1,21 +1,118 @@
 // Origin: .maestro/flows/set-selector/bowman-insert-grouping-builds-parallels.yaml (Maestro suite retired in NEO-341; see git history)
 // Fresh-only: it saves 2026 Bowman's inserts as sets, groups them, and builds
 // Anime Kanji's cards from Anime.
+//
+// NEO-535 (parallel copies and the Card titles dialog), the second claim of
+// this spec. The build's copies take their title in Jason's order: the builder's
+// own, else the source card's hand edit re-headed with the parallel's
+// description, else the builder's flagged result, and those go to a "Card
+// titles" dialog. This flow proves that order on Anime's real parallels:
+//   * `Anime Black Refractors` is renamed to a name so long that its
+//     description alone is over 80 (the rename lands BEFORE the cards are
+//     fetched, so the automatic build writes titles that cannot fit). The
+//     dialog opens by itself when the build ends, lists THAT parallel only
+//     (the other three parallels fit). NEO-581: one card's own title saved
+//     alone lowers the ticker's "Fix N card titles" and its built line's
+//     "N titles need a fix" by one; then one shorter "Set name in titles"
+//     fixes every other title ("Every title fits now."), and the button and
+//     the clause leave the ticker (it used to keep a button that said
+//     "Nothing to fix."). The parallel opens with the box text in its titles,
+//     the card's own title intact, and no attention.
+//   * `Anime Red Refractors` is renamed to a name whose description is 65
+//     characters (the builder says the shared word "Anime" once: the parallel's
+//     name starts with its insert's, so the description reads
+//     "2026 Bowman <parallel>"), and Anime's BA-3 title is hand edited to drop
+//     the first name ("Murakami #BA-3"). Rebuilt, BA-3 is the one card the
+//     builder fails on (it would lose "Munetaka") that the hand edit rescues,
+//     so the copy carries the edit at exactly 80 characters and is not in the
+//     dialog; every other card had to leave something out (NEO-609: a team,
+//     the number or a first name), so the other 28 are, the four whose names
+//     are longest (BA-12, BA-19, BA-20, BA-29) among them. The checklist's own
+//     "Fix card titles" reopens the dialog after a reload.
+//   * The dialog's "Set name in titles" box opens holding the full set
+//     description including the parallel's name (never a bare insert name);
+//     typing it past 80 is refused in place and again on Save; Escape after an
+//     edit asks "Toss your title edits?" and tossing forgets the edit.
+//   Both are renamed back at the end. The arithmetic (`calc` of the builder over
+//   the 29 BA- cards of fixtures/checklists/2026-bowman-insert-anime.csv) is
+//   in the comment at LONG_PARALLEL and CARRY_PARALLEL.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { expectAfterMarketplace, expectStepWithSportLots } from "../../support/marketplace-wait";
 import {
   columnHeading,
   columnOption,
   columnSearch,
   drillToSet,
+  escapeRe,
+  expectAfterBscSync,
+  openAttributesPanel,
   setBuilderReady,
   syncChecklistButton,
 } from "../../support/set-builder";
+import { editCardButton } from "../../support/cards";
+import { CHECKLISTS, confirmChecklistMatchCards, matchCardsDialog, usePublishersChecklist } from "../../support/published-checklist";
 import { advanceToSave, confirmSaveButton, reviewWizard } from "../../support/wizard";
 import type { Page } from "@playwright/test";
 
 const BOWMAN = { sport: "Baseball", year: "2026", manufacturer: "Bowman", set: "Bowman" };
 /** 201 and up: the grouping suggestions the flow expects for the whole Bowman year. */
 const OVER_200 = "(20[1-9]|2[1-9][0-9]|[3-9][0-9][0-9]|[1-9][0-9]{3,})";
+
+// NEO-535 ── the parallels the flow renames, and the arithmetic behind each name.
+// Every copy's description is "2026 Bowman Anime " + the parallel's name (the
+// builder never cuts a description word).
+/** Anime's first parallel, as BSC names it. */
+const BLACK = "Anime Black Refractors";
+/**
+ * BLACK renamed: the description is 102 characters, so no title of this
+ * parallel can fit and every card of it (29) is failing.
+ */
+const LONG_PARALLEL = "Anime Black Refractors Hologram Collectors Anniversary Platinum Rainbow Foil Edition";
+/**
+ * A parallel's description is "2026 Bowman " + its name: the name starts with
+ * the insert's ("Anime"), and the builder says that word once. LONG_PARALLEL's
+ * is 96 characters, so no title of the parallel can fit.
+ */
+const descriptionOf = (parallel: string) => `2026 Bowman ${parallel}`;
+/** What the operator types into "Set name in titles" for LONG_PARALLEL: the box replaces the whole description. */
+const FIX_BOX = "2026 Bowman Anime Black";
+/** The cards each parallel holds (the 29 `BA-` rows of the Anime checklist file). */
+const COPIES = 29;
+/**
+ * NEO-581 — BA-1's own title, saved on its own in LONG_PARALLEL's dialog
+ * before the box (the partial fix). 32 characters, so it fits; it starts with
+ * FIX_BOX so PART 5's "every title starts with the box text" holds for it too.
+ */
+const OWN_TITLE = `${FIX_BOX} Oh #BA-1`;
+/** Anime's third parallel, as BSC names it. */
+const RED = "Anime Red Refractors";
+/**
+ * RED renamed: the description is 65 characters, so with a player's name and
+ * number no title of it fits whole: every one of the 29 has to give up its
+ * team, its number or a first name (NEO-609: a Tidy Up cut, so it is on the
+ * Card titles dialog). BA-12, BA-19, BA-20 and BA-29, whose names are the
+ * longest, lose a first name; BA-3 (Munetaka Murakami) would too, and its hand
+ * edit below, re-headed, is exactly 80, so it is carried and is the one card
+ * off the dialog: 28 titles.
+ */
+const CARRY_PARALLEL = "Anime Red Refractors Hologram Foils Anniversary Prism";
+/** BA-3's title as the operator edits it on Anime: the first name dropped. */
+const HAND_EDIT = "2026 Bowman Anime Murakami #BA-3";
+/** What BA-3's copy on CARRY_PARALLEL reads: the edit, re-headed with that parallel's description. */
+const CARRIED_TITLE = `${descriptionOf(CARRY_PARALLEL)} Murakami #BA-3`;
+/** Rename the option the attributes panel is showing, by its pencil. */
+async function renameSelected(page: Page, from: string, to: string): Promise<void> {
+  // NEO-569: the pencil sits in the open panel only, and a parallel starts it
+  // shut. Gate on the row's own header first, so the open lands on `from`.
+  await expect(page.getByRole("heading", { name: new RegExp(`^Attributes for ${escapeRe(from)} \\(Parallel\\)$`) })).toBeVisible();
+  await openAttributesPanel(page);
+  await page.getByRole("button", { name: `Rename ${from}`, exact: true }).click();
+  const field = page.getByRole("textbox", { name: `Edit name for ${from}`, exact: true });
+  await field.fill(to);
+  await field.press("Enter");
+  // The panel header names the row it shows: the rename landed on the row meant.
+  await expect(page.getByRole("heading", { name: new RegExp(`^Attributes for ${escapeRe(to)} \\(Parallel\\)$`) })).toBeVisible();
+}
 
 test(
   "2026 Bowman inserts — BSC's inserts become NB sets, Group Parallels nests Anime Kanji under Anime, and saving Anime builds Kanji's cards (NEO-293…312)",
@@ -84,8 +181,15 @@ test(
       await openInserts();
     } else {
       // Paused: SportLots offers no twin, so the sets come in without a reconcile.
-      await expect(columnHeading(page, "Inserts")).toBeVisible({ timeout: 240_000 });
+      // BSC alone (the fake, NEO-552): the column's own wait line covers its sync, so 7 s plus
+      // the seconds BSC is visibly holding it (measured on the #487 merge-group run (GUIDE): 0.2 s for the heading, 1.8 s for the row).
+      await expectAfterBscSync(page, columnHeading(page, "Inserts"), "the Inserts column opening");
       await expect(reconcile).toBeHidden();
+      // The heading shows while the column's BSC sync is still running ("Syncing Inserts"),
+      // before Anime is written: searching at that moment reads "No matches found", so the row
+      // is waited on by the marketplace rule, not by a flat number.
+      await columnSearch(page, "Inserts").fill("Anime");
+      await expectAfterBscSync(page, columnOption(page, "Inserts", "Anime"), "the Inserts row Anime");
     }
 
     // ── PART 2: both are inserts; Group Parallels nests Kanji under Anime ──
@@ -117,11 +221,14 @@ test(
     if (!env.SL_PAUSED) {
       await expect(reconcile).toBeVisible({ timeout: 240_000 });
     } else {
-      await expect(
+      // BSC alone: 7 s plus the seconds the column's wait line is up (measured 1.3 s on the #487 merge-group run (GUIDE)).
+      await expectAfterMarketplace(
+        page,
         page.getByText(
           /Stored [0-9]+ variants \(single platform\)|Some variants were not stored|Sync failed: could not load variants/,
         ),
-      ).toBeVisible({ timeout: 240_000 });
+        { platform: "BuySportsCards", what: "the Inserts re-sync's result line" },
+      );
     }
     await expect(
       page.getByText(/[0-9]+ already grouped as (a parallel|parallels)\. Leaving (it|those) be\./),
@@ -140,34 +247,52 @@ test(
     await columnOption(page, "Inserts", "Anime").click();
     await expect(columnHeading(page, "Parallels")).toBeVisible();
     await expect(columnOption(page, "Parallels", "Anime Kanji")).toBeVisible();
+
+    // NEO-535, before any card exists: one parallel gets a name so long that its
+    // description alone is over 80, so the build's copies for it cannot fit. A
+    // rename never reaches the marketplaces (product invariant 4: they are
+    // asked by their ids), and the other three parallels are left alone.
+    await columnOption(page, "Parallels", BLACK).click();
+    await renameSelected(page, BLACK, LONG_PARALLEL);
+    await openInserts();
+    await searchAnime();
+    await columnOption(page, "Inserts", "Anime").click();
+    await expect(columnOption(page, "Parallels", LONG_PARALLEL)).toBeVisible();
+    await expect(columnOption(page, "Parallels", BLACK)).toBeHidden();
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
+    // The publisher's checklist (NEO-478): Anime's teams are BSC's own answers, uploaded, so the fetch
+    // asks BSC for the cards' list and for no card's team (NEO-489: the number column is trusted as
+    // printed, so the `TBD` card pairs by its number like the rest, 36 of 36). Six of the cards are
+    // football players; the file carries their teams as BSC named them.
+    const facts = await usePublishersChecklist(page, CHECKLISTS.bowmanAnime2026);
     await syncChecklistButton(page).click();
 
-    // The cards come from BSC (and SportLots, paired, when it is live): the flow's 120 s.
-    const matchCards = page.getByText(/Match Cards/).first();
-    const kept = page.getByText(/Kept all [0-9]+ cards? from BSC/);
-    await expect(matchCards.or(kept)).toBeVisible({ timeout: 120_000 });
-    if (env.SL_PAUSED) await expect(matchCards).toBeHidden();
-    if (await matchCards.isVisible()) {
-      const confirm = page.getByRole("button", { name: "Confirm card matches", disabled: false });
-      await expect(confirm).toBeVisible({ timeout: 120_000 });
-      await expect(page.getByText(/Match Cards — Anime/)).toBeVisible();
-      await expectAccessible(page, { within: page.getByRole("dialog", { name: /^Match Cards/ }), label: "Match Cards dialog" });
-      await confirm.click();
-      await expect(page.getByText(/Match Cards/)).toBeHidden();
-    }
+    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards opens
+    // with SportLots paused or live. The cards come from BSC (and SportLots, paired, when it is
+    // live): GUIDE R5's marketplace wait, measured time plus 7 s, never a flat ceiling.
+    const matchCards = matchCardsDialog(page);
+    await expectAfterMarketplace(page, matchCards.getByRole("button", { name: "Confirm card matches", disabled: false }), {
+      platform: "BuySportsCards",
+      what: "the Anime fetch's Match Cards",
+    });
+    await expect(matchCards.getByRole("heading", { name: "Match Cards — Anime" })).toBeVisible();
+    await expectAccessible(page, { within: matchCards, label: "Match Cards dialog" });
+    // Proves the teams line while the dialog is open, keeps any card the file leaves out, confirms.
+    await confirmChecklistMatchCards(page, { facts, what: "the Anime fetch" });
 
     // Either new names need review, or the cards save straight away. Since
-    // NEO-335 the wizard ("Tidy up this set") has THREE shapes: names to decide
+    // NEO-335 the wizard ("Tidy up <year> <set> <variant>" since NEO-497) has THREE shapes: names to decide
     // (footer "Skip remaining names (N)"), or every name known and the open
     // question is a teamless card or a trimmed title (it opens on that step with
     // "Next (Enter)"). Same branch below: past the names, advanceToSave leaves
     // the teams / titles steps on their defaults and stops on the Save step.
     const wizard = reviewWizard(page);
     const saved = page.getByText(/Saved [0-9]+ cards/);
-    await expect(wizard.or(saved)).toBeVisible({ timeout: 60_000 });
+    // Live, the wizard opens after the pairing's Confirm (the flow's 60 s); paused, once the
+    // Match Cards is confirmed above: our own queueing, measured 1.8 s at most on the #487 merge-group run (GUIDE), the standard 7 s.
+    await expectStepWithSportLots(page, wizard.or(saved).first(), env, { liveMs: 60_000, what: "the tidy-up dialog or the save", statusLine: false });
     if (await wizard.isVisible()) {
-      await expectAccessible(page, { within: wizard, label: "Tidy up this set wizard" });
+      await expectAccessible(page, { within: wizard, label: "Tidy-up wizard" });
       // The footer's first action says which shape opened (it paints with the batch).
       const skipRemaining = wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ });
       await expect(
@@ -189,9 +314,147 @@ test(
     await expect(
       page.getByText(/Building parallels of Anime — [0-9]+ of [0-9]+|Anime parallels — [^.]+/).first(),
     ).toBeVisible();
+
+    // ── NEO-535: the build ends with titles to fix, and Card titles opens by itself ──
+    // The build fetches each parallel's checklist from BSC before writing it, and
+    // the dialog follows the last parallel's write: 7 s plus the seconds BSC is
+    // visibly holding it (the marketplace rule, GUIDE).
+    const titlesDialog = page.getByRole("dialog", { name: "Card titles" });
+    const titleRow = (number: string) => titlesDialog.getByRole("textbox", { name: new RegExp(`^Title for #${escapeRe(number)} `) });
+    await expectAfterMarketplace(page, titlesDialog, {
+      platform: "BuySportsCards",
+      what: "the Card titles dialog after the Anime parallels build",
+    });
+    // It lists the one parallel whose names were made too long, not the other three.
+    const sections = titlesDialog.getByRole("heading", { level: 3 });
+    await expect(sections).toHaveCount(1);
+    await expect(sections).toContainText(LONG_PARALLEL);
+    // Every one of the 29 cards fails: the description alone is 96 characters.
+    expect(descriptionOf(LONG_PARALLEL)).toHaveLength(96);
+    await expect(sections).toContainText(`${COPIES} titles`);
+    await expect(titlesDialog.getByRole("textbox", { name: /^Title for #/ }).first()).toBeVisible();
+    await expectAccessible(page, { within: titlesDialog, label: "Card titles dialog, a parallel's copies that run long" });
+
+    // The box opens holding the FULL set description, the parallel's name in it
+    // (the insert's word said once), not a bare insert name; 96 is over the
+    // box's 80, so it says it is sitting out.
+    const box = titlesDialog.getByRole("textbox", { name: "Set name in titles", exact: true });
+    await expect(box).toHaveValue(descriptionOf(LONG_PARALLEL));
+    await expect(titlesDialog.getByRole("status").filter({ hasText: "Over 80, so it's sitting out." })).toBeVisible();
+
+    // A box typed past 80 is refused in place, and again when Save is pressed
+    // (naming the parallel, with focus on the box); nothing is written.
+    const fixTitles = page.getByRole("button", { name: /^Fix [1-9][0-9]* card titles?$/ });
+    await box.fill(`${descriptionOf(LONG_PARALLEL)} extra`);
+    await box.press("Tab");
+    await expect(titlesDialog.getByRole("alert").filter({ hasText: "Set name in titles tops out at 80 characters." })).toBeVisible();
+    await titlesDialog.getByRole("button", { name: "Save titles" }).click();
     await expect(
+      titlesDialog.getByRole("alert").filter({
+        hasText: `${LONG_PARALLEL}'s Set name in titles won't save as typed. Fix it or put it back, then save.`,
+      }),
+    ).toBeVisible();
+    await expect(box).toBeFocused();
+    await expect(titlesDialog).toBeVisible();
+    await expectAccessible(page, { within: titlesDialog, label: "Card titles dialog, a box refused" });
+
+    // Escape after an edit asks first; Cancel keeps the edit, "Toss 'em" forgets it.
+    const toss = page.getByRole("dialog", { name: "Toss your title edits?", exact: true });
+    await box.fill(FIX_BOX);
+    await box.press("Tab");
+    await expect(titlesDialog.getByRole("status").filter({ hasText: "Every title fits now." })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(toss).toBeVisible();
+    await expectAccessible(page, { within: toss, label: "Toss your title edits confirm" });
+    await toss.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(toss).toBeHidden();
+    await expect(titlesDialog).toBeVisible();
+    await expect(box).toHaveValue(FIX_BOX);
+    await page.keyboard.press("Escape");
+    await expect(toss).toBeVisible();
+    await toss.getByRole("button", { name: "Toss 'em", exact: true }).click();
+    await expect(titlesDialog).toBeHidden();
+    await expect(fixTitles).toBeFocused();
+    // Nothing was written: the door opens it again holding the description, not the edit.
+    await fixTitles.click();
+    await expect(titlesDialog).toBeVisible();
+    await expect(box).toHaveValue(descriptionOf(LONG_PARALLEL));
+
+    // ── NEO-581: the ticker reads the live count, not the one the build stored ──
+    // The parallel's line in the ticker's ledger (a list item of the build
+    // panel), and the clause it carries while titles still fail.
+    const builtLine = page
+      .getByRole("listitem")
+      .filter({ hasText: new RegExp(`^${escapeRe(LONG_PARALLEL)} — Built ${COPIES} cards`) });
+    const fixClause = /titles? needs? a fix/;
+    const fixTitlesNamed = (count: number) =>
+      page.getByRole("button", { name: `Fix ${count} card ${count === 1 ? "title" : "titles"}`, exact: true });
+
+    // A partial fix: BA-1's own title, saved with the box untouched. Every other
+    // row is answered "kept" (still over 80), so the save fixes exactly one.
+    await titleRow("BA-1").fill(OWN_TITLE);
+    await titleRow("BA-1").press("Tab");
+    await titlesDialog.getByRole("button", { name: "Save titles" }).click();
+    await expect(titlesDialog).toBeHidden();
+    const left = COPIES - 1;
+    // The door's line beside it and the ticker's live line (role status, always
+    // on screen to Playwright): exactly one of them a status.
+    await expect(
+      page.getByRole("status").filter({ hasText: `Saved 1 title. ${left} still run long.` }),
+    ).toHaveCount(1);
+    // The button and the built line's clause drop by one; focus is back on the door.
+    await expect(fixTitlesNamed(left)).toBeVisible();
+    await expect(fixTitlesNamed(left)).toBeFocused();
+    await expect(fixTitlesNamed(COPIES)).toHaveCount(0);
+    await expect(builtLine).toBeVisible();
+    await expect(builtLine).toContainText(`, ${left} titles need a fix`);
+    await expect(builtLine).not.toContainText(`${COPIES} titles need a fix`);
+
+    // The door opens on the rest: BA-1 is no longer in it.
+    await fixTitlesNamed(left).click();
+    await expect(titlesDialog).toBeVisible();
+    await expect(sections).toHaveCount(1);
+    await expect(sections).toContainText(`${left} titles`);
+    await expect(titleRow("BA-2")).toBeVisible();
+    await expect(titleRow("BA-1")).toHaveCount(0);
+    await expect(box).toHaveValue(descriptionOf(LONG_PARALLEL));
+
+    // One shorter box fixes every other title: it replaces the description on the cards that need it.
+    await box.fill(FIX_BOX);
+    await box.press("Tab");
+    await expect(titlesDialog.getByRole("status").filter({ hasText: "Every title fits now." })).toBeVisible();
+    await expectAccessible(page, { within: titlesDialog, label: "Card titles dialog, every title fits" });
+    await titlesDialog.getByRole("button", { name: "Save titles" }).click();
+    await expect(titlesDialog).toBeHidden();
+
+    // NEO-581: nothing left to fix, so the button leaves with the last title,
+    // and so does the built line's clause. The saved sentence stays, said twice:
+    // the plain text where the door was, and the ticker's live line (exactly
+    // one of them a status). A positive first: a negative passes on a page
+    // that never drew (GUIDE, "negative asserts").
+    const savedLine = `Saved ${left} titles.`;
+    await expect(page.getByRole("status").filter({ hasText: savedLine })).toHaveCount(1);
+    await expect(page.getByText(savedLine)).toHaveCount(2);
+    await expect(builtLine).toBeVisible();
+    await expect(builtLine).not.toContainText(fixClause);
+    await expect(page.getByRole("button", { name: /^Fix [0-9]+ card titles?$/ })).toHaveCount(0);
+    // Neither the clause nor the end-of-run tail ("N card titles need a fix.")
+    // is anywhere on the page, the live line included.
+    await expect(page.getByText(fixClause)).toHaveCount(0);
+    // The stale button's old answer is never needed: nothing says "Nothing to fix".
+    await expect(page.getByText("Every title fits now. Nothing to fix.")).toHaveCount(0);
+    // The button had focus as it left; focus is parked on the ticker (its
+    // region, named by its heading), never dropped to the page.
+    await expect(page.getByRole("region", { name: /^Anime parallels — [1-9][0-9]* built/ })).toBeFocused();
+    await expectAccessible(page, { label: "Parallel build ticker, every title fixed" });
+
+    // Building Kanji's cards fetches its checklist from BSC under the build's wait line: 7 s plus
+    // the seconds BSC is visibly holding it (measured 5.4 s at most on the #487 merge-group run (GUIDE)).
+    await expectAfterMarketplace(
+      page,
       page.getByRole("heading", { name: /Anime parallels — [1-9][0-9]* built(, [0-9]+ (blocked|skipped|failed))*/ }),
-    ).toBeVisible({ timeout: 60_000 });
+      { platform: "BuySportsCards", what: "the Anime parallels build finishing" },
+    );
     // (a status line may repeat this for screen readers: any one of them will do)
     await expect(page.getByText(/Anime Kanji — Built [1-9][0-9]* cards?(, .+)?/).first()).toBeVisible();
     await expectAccessible(page, { label: "Anime parallels build ledger" });
@@ -203,6 +466,14 @@ test(
     // to BSC's slug: that is what the operator sees, so that is the handle.
     const chip = env.SL_PAUSED ? "anime-kanji" : "Anime Kanji";
     await columnOption(page, "Parallels", "Anime Kanji").click();
+    // NEO-496 (Jason): the Cards section speaks only about the row on screen. Kanji's own
+    // slot is up (its cards were built, so it offers a rebuild), and Anime's "Saved N cards."
+    // and its parallels ledger went with the pick.
+    await expect(page.getByRole("button", { name: "Rebuild from Anime" })).toBeVisible();
+    await expect(page.getByText(/Saved [0-9]+ cards?/)).toBeHidden();
+    await expect(page.getByRole("heading", { name: /^Anime parallels — / })).toBeHidden();
+    // NEO-496: the sources live inside the attributes panel, closed below the set.
+    await openAttributesPanel(page);
     await expect(page.getByText("Multi-source sets")).toBeVisible();
     const remove = page.getByRole("button", { name: `Remove ${chip}`, exact: true });
     await expect(remove).toBeVisible();
@@ -216,5 +487,121 @@ test(
     await expect(warning).toBeHidden();
     await expect(remove).toBeVisible();
     await expect(page.getByRole("button", { name: "Rebuild from Anime" })).toBeVisible();
+
+    // ── PART 5 (NEO-535): the parallel opens with the box text, and attention is gone ──
+    /** Re-open Anime's parallels from a fresh page load and select one. */
+    const openParallel = async (name: string) => {
+      await openInserts();
+      await searchAnime();
+      await columnOption(page, "Inserts", "Anime").click();
+      await columnOption(page, "Parallels", name).click();
+      await expect(page.getByRole("heading", { name: new RegExp(`^Attributes for ${escapeRe(name)} \\(Parallel\\)$`) })).toBeVisible();
+    };
+    const cardTitle = page.getByRole("textbox", { name: "Card title", exact: true });
+    const doneEditing = page.getByRole("button", { name: "Done editing card" });
+    const search = page.getByRole("searchbox", { name: "Search cards" });
+    const needYou = page.getByRole("button", { name: /^[0-9]+ needs? you$/ });
+    const fixCardTitles = page.getByRole("button", { name: "Fix card titles", exact: true });
+
+    await openParallel(LONG_PARALLEL);
+    await expect(page.getByRole("heading", { name: /^Cards \([1-9][0-9]*\)$/ })).toBeVisible();
+    // A positive first (a negative passes on a list that never drew): the
+    // rows are on screen, so "no attention" and "no Fix card titles" are read
+    // off a loaded checklist.
+    await expect(page.getByRole("button", { name: /^Edit card .+/ }).first()).toBeVisible();
+    await expect(needYou).toBeHidden();
+    await expect(fixCardTitles).toBeHidden();
+    // NEO-581, after the reload: no door anywhere offers the fixed titles
+    // again, and nothing says they need a fix.
+    await expect(page.getByRole("button", { name: /^Fix [0-9]+ card titles?$/ })).toHaveCount(0);
+    await expect(page.getByText(/titles? needs? a fix/)).toHaveCount(0);
+    await page.getByRole("button", { name: /^Edit card .+/ }).first().click();
+    await expect(cardTitle).toHaveValue(new RegExp(`^${escapeRe(FIX_BOX)} `));
+    await doneEditing.click();
+    await expect(cardTitle).toBeHidden();
+    // NEO-581: the partial fix's own title was written, and the box saved after it left it alone.
+    await search.fill("BA-1");
+    await editCardButton(page, "BA-1").click();
+    await expect(cardTitle).toHaveValue(OWN_TITLE);
+    await doneEditing.click();
+    await expect(cardTitle).toBeHidden();
+
+    // ── PART 6: a hand edit on Anime is carried onto the copy when the builder's title fails ──
+    await openInserts();
+    await searchAnime();
+    await columnOption(page, "Inserts", "Anime").click();
+    await search.fill("BA-3");
+    // NEO-581: Anime's own page after the reload (where the build ticker stood)
+    // offers no Fix button and no clause either; the row is the positive.
+    await expect(editCardButton(page, "BA-3")).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Fix [0-9]+ card titles?$/ })).toHaveCount(0);
+    await expect(page.getByText(/titles? needs? a fix/)).toHaveCount(0);
+    await editCardButton(page, "BA-3").click();
+    await cardTitle.fill(HAND_EDIT);
+    await cardTitle.press("Tab");
+    await expect(page.getByText(/Saved Card title/)).toBeVisible();
+    await doneEditing.click();
+    await expect(cardTitle).toBeHidden();
+
+    // Red Refractors takes the long name WITH its cards (a rename never touches them), then is rebuilt.
+    await columnOption(page, "Parallels", RED).click();
+    await expect(page.getByRole("heading", { name: new RegExp(`^Attributes for ${escapeRe(RED)} \\(Parallel\\)$`) })).toBeVisible();
+    await renameSelected(page, RED, CARRY_PARALLEL);
+    await page.getByRole("button", { name: "Rebuild from Anime" }).click();
+    await page.getByRole("button", { name: "Replace the cards" }).click();
+    // The rebuild reads this parallel's checklist from BSC first: 7 s plus the seconds BSC holds it.
+    await expectAfterMarketplace(page, titlesDialog, {
+      platform: "BuySportsCards",
+      what: "the Card titles dialog after the rebuild",
+    });
+    await expect(sections).toHaveCount(1);
+    await expect(sections).toContainText(CARRY_PARALLEL);
+    // The arithmetic at CARRY_PARALLEL: every card had to leave something out
+    // (NEO-609) but BA-3, whose hand edit fits, so it is carried.
+    await expect(sections).toContainText(`${COPIES - 1} titles`);
+    // The box holds the full description, the parallel's name in it, said once
+    // after "2026 Bowman" (65 characters: it fits, so it is not sitting out).
+    expect(descriptionOf(CARRY_PARALLEL)).toHaveLength(65);
+    expect(CARRIED_TITLE).toHaveLength(80);
+    await expect(titlesDialog.getByRole("textbox", { name: "Set name in titles", exact: true })).toHaveValue(
+      descriptionOf(CARRY_PARALLEL),
+    );
+    for (const number of ["BA-12", "BA-19", "BA-20", "BA-29"]) await expect(titleRow(number)).toBeVisible();
+    await expect(titleRow("BA-3")).toBeHidden();
+    // Not now writes nothing and closes the dialog.
+    await titlesDialog.getByRole("button", { name: "Not now" }).click();
+    await expect(titlesDialog).toBeHidden();
+
+    // BA-3's copy carries the edit, its description swapped for the parallel's.
+    await search.fill("BA-3");
+    await editCardButton(page, "BA-3").click();
+    await expect(cardTitle).toHaveValue(CARRIED_TITLE);
+    await doneEditing.click();
+    await expect(cardTitle).toBeHidden();
+
+    // After a reload the parallel's own checklist offers the dialog again.
+    await openParallel(CARRY_PARALLEL);
+    await expect(needYou).toBeVisible();
+    await expect(fixCardTitles).toBeVisible();
+    await fixCardTitles.click();
+    await expect(titlesDialog).toBeVisible();
+    await expect(titleRow("BA-12")).toBeVisible();
+    await expect(titleRow("BA-3")).toBeHidden();
+    await expectAccessible(page, { within: titlesDialog, label: "Card titles dialog, opened again after a reload" });
+    await titlesDialog.getByRole("button", { name: "Not now" }).click();
+    await expect(titlesDialog).toBeHidden();
+    await expect(fixCardTitles).toBeFocused();
+
+    // ── Rename both back: the registry's rows read as they did ──
+    await renameSelected(page, CARRY_PARALLEL, RED);
+    await openParallel(LONG_PARALLEL);
+    await renameSelected(page, LONG_PARALLEL, BLACK);
+    await openInserts();
+    await searchAnime();
+    await columnOption(page, "Inserts", "Anime").click();
+    await expect(columnOption(page, "Parallels", BLACK)).toBeVisible();
+    await expect(columnOption(page, "Parallels", RED)).toBeVisible();
+    await expect(columnOption(page, "Parallels", LONG_PARALLEL)).toBeHidden();
+    await expect(columnOption(page, "Parallels", CARRY_PARALLEL)).toBeHidden();
   },
 );

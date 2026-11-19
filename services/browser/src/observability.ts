@@ -124,7 +124,8 @@ export type CanaryPauseLookupFailureReason =
 
 export interface CanaryPauseLookupFailedLine {
   msg: "canary_pause_lookup_failed";
-  platform: "bsc" | "sportlots";
+  /** "ebay" only from the eBay probe's pause check (NEO-555). */
+  platform: "bsc" | "sportlots" | "ebay";
   reason: CanaryPauseLookupFailureReason;
 }
 
@@ -141,6 +142,64 @@ export function logCanaryPauseLookupFailed(props: CanaryPauseLookupFailedLine): 
     );
   } catch {
     // Logging must never break the fail-open path.
+  }
+}
+
+/**
+ * NEO-415: one structured line per /oauth/ebay/* call.
+ *
+ * Deliberately NOT `browser_login_call`. That message feeds the
+ * `browser_login_failures` and `browser_login_duration_ms` log-based metrics
+ * and their alert policies, which are about the BSC/SportLots sign-in and its
+ * canary; eBay OAuth traffic there would page on a seller declining consent.
+ * A separate `msg` keeps those series exactly as they are.
+ *
+ * Built from named fields only — the props object is never spread — so a
+ * token, code or eBay body passed by mistake cannot reach Cloud Logging. The
+ * credential key is not logged either: it names the user, and nothing about
+ * an OAuth failure is triaged by user. Never throws.
+ */
+export interface EbayOAuthLine {
+  msg: "ebay_oauth_call";
+  operation: "connect" | "refresh" | "verify";
+  /** "code" or "refresh_token" on connect; omitted on refresh. */
+  grant?: "code" | "refresh_token";
+  environment?: "sandbox" | "production" | "fake";
+  /** NEO-555: "fake" when the credential key was a fake-session key. Absent otherwise. */
+  target?: "fake";
+  duration_ms: number;
+  success: boolean;
+  status_code: number;
+  /** The closed set the route returns in `error_class`, or a finer tag. */
+  error_class?: string;
+  /** eBay's HTTP status, when eBay answered. */
+  ebay_status?: number;
+  /** eBay's OAuth `error` code, only from the known RFC 6749 set. */
+  ebay_error?: string;
+  /** verify only: the verdict. Never the header, body or kid. */
+  valid?: boolean;
+}
+
+export function logEbayOAuthOp(props: EbayOAuthLine): void {
+  try {
+    console.log(
+      JSON.stringify({
+        msg: props.msg,
+        operation: props.operation,
+        grant: props.grant,
+        environment: props.environment,
+        target: props.target,
+        duration_ms: props.duration_ms,
+        success: props.success,
+        status_code: props.status_code,
+        error_class: props.error_class,
+        ebay_status: props.ebay_status,
+        ebay_error: props.ebay_error,
+        valid: props.valid,
+      }),
+    );
+  } catch {
+    // Logging must never break the request.
   }
 }
 
@@ -329,4 +388,18 @@ export interface LoginOptions {
  */
 export function challengeFlag(diagnostic: LoginDiagnostic | undefined): boolean | undefined {
   return diagnostic ? diagnostic.challengeDetected === true : undefined;
+}
+
+/**
+ * Error name + message with every double-quoted segment elided, for catches
+ * that wrap a fetch whose headers carry a secret. Node's fetch rejects a
+ * header containing CR/LF/NUL by throwing
+ * `TypeError: Headers.append: "<FULL HEADER VALUE>" is an invalid header value`
+ * — so logging `error.message` verbatim from such a catch can put a session
+ * cookie or bearer token into Cloud Logging. Everything else in the message
+ * (the error class, "fetch failed", an ECONNRESET code) survives.
+ */
+export function summarizeFetchError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  return `${error.name}: ${error.message.replace(/"[^"]*"/g, '"…"')}`;
 }

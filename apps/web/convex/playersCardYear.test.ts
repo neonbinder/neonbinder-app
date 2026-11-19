@@ -21,11 +21,12 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import {
+  CAREER_TEAM_READS_PER_NAME,
   CARD_YEAR_TEAM_READS_PER_TRANSACTION,
   createCardYearTeamCache,
   narrowSameNamePlayersByCardYear,
@@ -1382,5 +1383,568 @@ describe("NEO-296: the shared cache counts READS, and the ceiling cannot be rais
     expect(
       createCardYearTeamCache({ budget: Number.POSITIVE_INFINITY }).budget,
     ).toBe(Number.POSITIVE_INFINITY);
+  });
+});
+
+// ===========================================================================
+// NEO-424 rule D — the Hall of Fame tie-break
+// ===========================================================================
+
+/** A "Bob Allen" with an explicit Hall of Fame flag; `insertBobAllen` has none. */
+async function insertFamer(
+  t: ReturnType<typeof convexTest>,
+  sportId: Id<"selectorOptions">,
+  hof: boolean,
+  teamYears?: Array<{ teamId: Id<"teams">; fromYear: number; toYear?: number }>,
+): Promise<Id<"players">> {
+  return t.run(async (ctx) =>
+    ctx.db.insert("players", {
+      name: "Bob Allen",
+      nameNormalized: "allen bob",
+      sportId,
+      ...(teamYears ? { teamYears } : {}),
+      ...(hof ? { isHallOfFame: true } : {}),
+      lastUpdated: Date.now(),
+    }),
+  );
+}
+
+describe("NEO-424: Hall of Fame breaks a tie only when nobody was active in the card's year", () => {
+  test("an active namesake in the set year beats the Hall of Famer", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "diego padres san");
+    const active = await insertFamer(t, sportId, false, [{ teamId: padres, fromYear: 2020 }]);
+    await insertFamer(t, sportId, true, [{ teamId: padres, fromYear: 1951, toYear: 1966 }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024 });
+    expect(resolved.playerId).toBe(active);
+    // The year did it, not fame: the gate must treat this as a silent link.
+    expect(resolved.narrowedBy).toBe("cardYear");
+  });
+
+  test("two active namesakes and a retired Hall of Famer is still review", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "diego padres san");
+    await insertFamer(t, sportId, false, [{ teamId: padres, fromYear: 2020 }]);
+    await insertFamer(t, sportId, false, [{ teamId: padres, fromYear: 2022 }]);
+    await insertFamer(t, sportId, true, [{ teamId: padres, fromYear: 1951, toYear: 1966 }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024 });
+    expect(resolved.matchCount).toBe(3);
+    expect(resolved.playerId).toBeUndefined();
+  });
+
+  test("an active Hall of Famer and an active non-Famer is review: fame does not break an active tie", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "diego padres san");
+    await insertFamer(t, sportId, true, [{ teamId: padres, fromYear: 2010 }]);
+    await insertFamer(t, sportId, false, [{ teamId: padres, fromYear: 2020 }]);
+
+    expect((await resolve(t, { sportId, cardYear: 2024 })).playerId).toBeUndefined();
+  });
+
+  test("two Hall of Famers, nobody active, is review", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "diego padres san");
+    await insertFamer(t, sportId, true, [{ teamId: padres, fromYear: 1951, toYear: 1966 }]);
+    await insertFamer(t, sportId, true, [{ teamId: padres, fromYear: 1930, toYear: 1945 }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024 });
+    expect(resolved.playerId).toBeUndefined();
+    expect(resolved.candidatePlayerIds).toHaveLength(2);
+  });
+
+  test("no Hall of Famer among legends of a modern card is review", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "diego padres san");
+    await insertFamer(t, sportId, false, [{ teamId: padres, fromYear: 1951, toYear: 1966 }]);
+    await insertFamer(t, sportId, false, [{ teamId: padres, fromYear: 1930, toYear: 1945 }]);
+
+    expect((await resolve(t, { sportId, cardYear: 2024 })).playerId).toBeUndefined();
+  });
+
+  test("with survivors, the pool is the survivors: a retired Hall of Famer outside them does not win", async () => {
+    // Two namesakes with no dated career are never excluded by the year, so
+    // both survive, and neither is KNOWN active. The third is a Hall of Famer
+    // the year ruled out. Only the survivors are weighed, and neither is one.
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "diego padres san");
+    await insertFamer(t, sportId, false);
+    await insertFamer(t, sportId, false);
+    await insertFamer(t, sportId, true, [{ teamId: padres, fromYear: 1951, toYear: 1966 }]);
+
+    expect((await resolve(t, { sportId, cardYear: 2024 })).playerId).toBeUndefined();
+  });
+
+  test("with survivors, a Hall of Famer among them wins", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    await insertFamer(t, sportId, false);
+    const famer = await insertFamer(t, sportId, true);
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024 });
+    expect(resolved.playerId).toBe(famer);
+    expect(resolved.narrowedBy).toBe("hallOfFame");
+  });
+
+  test("a rival's stint on the card's team, in ANY year, holds the Hall of Famer back", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "diego padres san");
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    const famer = await insertFamer(t, sportId, true, [
+      { teamId: cubs, fromYear: 1951, toYear: 1966 },
+    ]);
+    // The rival's Padres years are nowhere near the card's year.
+    const rival = await insertFamer(t, sportId, false, [
+      { teamId: padres, fromYear: 1930, toYear: 1937 },
+    ]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: ["Padres"] });
+    expect(resolved.playerId).not.toBe(famer);
+    // NEO-490 — the card's team is the evidence, and only the rival ever
+    // played for it, so rule 6b (career team) names him.
+    expect(resolved.playerId).toBe(rival);
+    expect(resolved.narrowedBy).toBe("careerTeam");
+  });
+
+  test("the Hall of Famer's OWN team on the card supports him, and a third team blocks nobody", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "diego padres san");
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    const mets = await insertTeam(t, sportId, "New York", "Mets", "mets new york");
+    const famer = await insertFamer(t, sportId, true, [
+      { teamId: cubs, fromYear: 1951, toYear: 1966 },
+    ]);
+    await insertFamer(t, sportId, false, [{ teamId: padres, fromYear: 1930, toYear: 1937 }]);
+
+    for (const team of ["Chicago Cubs", "Cubs", "New York Mets"]) {
+      const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: [team] });
+      expect(resolved.playerId, team).toBe(famer);
+    }
+    void mets;
+  });
+
+  test("a rival whose stint points at a deleted team cannot block him", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const ghostTeam = await insertTeam(t, sportId, "Ghost", "Town", "ghost town");
+    const famer = await insertFamer(t, sportId, true);
+    await insertFamer(t, sportId, false, [{ teamId: ghostTeam, fromYear: 1930, toYear: 1937 }]);
+    await t.run(async (ctx) => ctx.db.delete(ghostTeam));
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: ["Padres"] });
+    expect(resolved.playerId).toBe(famer);
+  });
+
+  test("no card year means no Hall of Fame guess", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    await insertFamer(t, sportId, true);
+    await insertFamer(t, sportId, false);
+
+    expect((await resolve(t, { sportId })).playerId).toBeUndefined();
+  });
+});
+
+describe("NEO-424: the commit prelude applies the Hall of Fame tie-break to a name with no review row", () => {
+  test("a lone Hall of Famer gets the card, and the narrowing is logged by id", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, ids.sportId, "San Diego", "Padres", "diego padres san");
+    const famer = await insertFamer(t, ids.sportId, true, [
+      { teamId: padres, fromYear: 1951, toYear: 1966 },
+    ]);
+    await insertFamer(t, ids.sportId, false, [{ teamId: padres, fromYear: 1930, toYear: 1937 }]);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const cards = await commit(t, ids, [makeCard({ players: ["Bob Allen"] })]);
+      expect(cards[0].playerIds).toEqual([famer]);
+      const lines = log.mock.calls
+        .map((c) => String(c[0]))
+        .filter((s) => s.includes("player_narrowed_by_hall_of_fame"));
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0])).toMatchObject({ playerId: famer, matchCount: 2 });
+      expect(lines[0]).not.toContain("Bob Allen");
+    } finally {
+      log.mockRestore();
+    }
+    expect(await t.run(async (ctx) => ctx.db.query("players").collect())).toHaveLength(2);
+  });
+
+  test("an operator's link to the other man beats the Hall of Fame tie-break", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedSetOfYear(t, "2024");
+    await insertFamer(t, ids.sportId, true);
+    const operatorsPick = await insertFamer(t, ids.sportId, false);
+    await t.run(async (ctx) =>
+      ctx.db.insert("entityReviewQueue", {
+        selectorOptionId: ids.variantTypeId,
+        batchId: "batch-hof",
+        createdByUserId: ADMIN_IDENTITY.subject,
+        kind: "player" as const,
+        name: "Bob Allen",
+        sportId: ids.sportId,
+        status: "ready" as const,
+        decision: { action: "link" as const, linkedPlayerId: operatorsPick },
+      }),
+    );
+
+    const cards = await commit(t, ids, [makeCard({ players: ["Bob Allen"] })], "batch-hof");
+    expect(cards[0].playerIds).toEqual([operatorsPick]);
+  });
+
+  test("two Hall of Famers leave the card unlinked", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedSetOfYear(t, "2024");
+    await insertFamer(t, ids.sportId, true);
+    await insertFamer(t, ids.sportId, true);
+
+    const cards = await commit(t, ids, [makeCard({ players: ["Bob Allen"] })]);
+    expect(cards[0].playerIds ?? []).toEqual([]);
+    expect(cards[0].pendingPlayerNames).toContain("Bob Allen");
+  });
+});
+
+// ===========================================================================
+// NEO-490 rule 6b — the career-team tie-break
+// ===========================================================================
+
+/** Stints long before any card year these tests use, so no span covers it. */
+const LONG_AGO = { fromYear: 1930, toYear: 1937 };
+
+describe("NEO-490: the career-team tie-break (rule 6b) names the one namesake who ever played for the card's team", () => {
+  test("one career stint on the card's team wins, reported as careerTeam", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "padres san diego");
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    const onPadres = await insertBobAllen(t, sportId, [{ teamId: padres, ...LONG_AGO }]);
+    await insertBobAllen(t, sportId, [{ teamId: cubs, ...LONG_AGO }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: ["Padres"] });
+
+    expect(resolved.playerId).toBe(onPadres);
+    expect(resolved.narrowedBy).toBe("careerTeam");
+    expect(resolved.narrowedByCardYear).toBe(true);
+  });
+
+  test("a stint in ANY year counts, not only the card's year", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "padres san diego");
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    await insertBobAllen(t, sportId, [{ teamId: cubs, fromYear: 1960, toYear: 1965 }]);
+    const early = await insertBobAllen(t, sportId, [
+      { teamId: cubs, fromYear: 1970, toYear: 1971 },
+      { teamId: padres, fromYear: 1972, toYear: 1974 },
+    ]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: ["Padres"] });
+    expect(resolved.playerId).toBe(early);
+  });
+
+  test("a rival with no career on file sends the name to review", async () => {
+    // A namesake with no stints has an unknown career, and unknown is not
+    // absent: he could have played for the card's team too. (Two such rivals
+    // here: a lone career-less namesake would be the year's only survivor and
+    // win by rule 5, which is a different rule.)
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "padres san diego");
+    await insertBobAllen(t, sportId, [{ teamId: padres, ...LONG_AGO }]);
+    await insertBobAllen(t, sportId);
+    await insertBobAllen(t, sportId);
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: ["Padres"] });
+
+    expect(resolved.playerId).toBeUndefined();
+    expect(resolved.narrowedBy).toBeUndefined();
+    expect(resolved.matchCount).toBe(3);
+  });
+
+  test("two namesakes who both played for the card's team go to review", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "padres san diego");
+    await insertBobAllen(t, sportId, [{ teamId: padres, ...LONG_AGO }]);
+    await insertBobAllen(t, sportId, [{ teamId: padres, fromYear: 1950, toYear: 1955 }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: ["Padres"] });
+
+    expect(resolved.playerId).toBeUndefined();
+    expect(resolved.matchCount).toBe(2);
+  });
+
+  test("two namesakes with stints on the card's team in different eras, among other clubs: rule 6b does not decide", async () => {
+    // Collector review (NEO-490): the second Bob Allen reached the Padres
+    // twenty years after the first, mid-way through a longer career. Each is
+    // "a namesake who played for the card's team", so the career-team rule
+    // has two answers and must give none; neither era is the card's year, so
+    // no year rule can separate them either.
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "padres san diego");
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    const mets = await insertTeam(t, sportId, "New York", "Mets", "mets new york");
+    await insertBobAllen(t, sportId, [
+      { teamId: padres, fromYear: 1972, toYear: 1975 },
+      { teamId: cubs, fromYear: 1976, toYear: 1978 },
+    ]);
+    await insertBobAllen(t, sportId, [
+      { teamId: mets, fromYear: 1990, toYear: 1993 },
+      { teamId: cubs, fromYear: 1994, toYear: 1995 },
+      { teamId: padres, fromYear: 1996, toYear: 1998 },
+    ]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: ["Padres"] });
+
+    expect(resolved.playerId).toBeUndefined();
+    expect(resolved.narrowedBy).toBeUndefined();
+    expect(resolved.matchCount).toBe(2);
+
+    // The narrowing itself, so the reason is pinned too, not only the gate.
+    await t.run(async (ctx) => {
+      const candidates = await ctx.db
+        .query("players")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", "allen bob").eq("sportId", sportId),
+        )
+        .collect();
+      const narrowed = await narrowSameNamePlayersByCardYear(ctx, candidates, {
+        cardYear: 2024,
+        cardTeamNames: ["San Diego Padres"],
+      });
+      expect(narrowed.playerId).toBeNull();
+      expect(narrowed.viaCareerTeam).toBeUndefined();
+      expect(narrowed.transactionBudgetExhausted).toBeUndefined();
+    });
+  });
+
+  test("nobody ever played for the card's team: review", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    const mets = await insertTeam(t, sportId, "New York", "Mets", "mets new york");
+    await insertBobAllen(t, sportId, [{ teamId: cubs, ...LONG_AGO }]);
+    await insertBobAllen(t, sportId, [{ teamId: mets, ...LONG_AGO }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: ["Padres"] });
+    expect(resolved.playerId).toBeUndefined();
+  });
+
+  test("a card naming no team never reaches it", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "padres san diego");
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    await insertBobAllen(t, sportId, [{ teamId: padres, ...LONG_AGO }]);
+    await insertBobAllen(t, sportId, [{ teamId: cubs, ...LONG_AGO }]);
+
+    expect((await resolve(t, { sportId, cardYear: 2024 })).playerId).toBeUndefined();
+  });
+
+  test("when the Hall of Fame rule fires, 6b never runs", async () => {
+    // The Hall of Famer's own team is on the card and no rival played there,
+    // so rule 6 answers. Rule 6b would have named the same man, which is why
+    // the REASON is what proves the order: hallOfFame, never careerTeam.
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "padres san diego");
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    const famer = await insertFamer(t, sportId, true, [{ teamId: cubs, fromYear: 1951, toYear: 1966 }]);
+    await insertFamer(t, sportId, false, [{ teamId: padres, ...LONG_AGO }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: ["Chicago Cubs"] });
+
+    expect(resolved.playerId).toBe(famer);
+    expect(resolved.narrowedBy).toBe("hallOfFame");
+  });
+
+  test("a lone year-survivor still wins by rule 5, even when a rival ever played for the card's team", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "padres san diego");
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    const active = await insertBobAllen(t, sportId, [{ teamId: cubs, fromYear: 2020 }]);
+    await insertBobAllen(t, sportId, [{ teamId: padres, ...LONG_AGO }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: ["Padres"] });
+
+    expect(resolved.playerId).toBe(active);
+    expect(resolved.narrowedBy).toBe("cardYear");
+  });
+
+  test.each([
+    ["the nickname", "Padres"],
+    ["the full name", "San Diego Padres"],
+    ["the full name in another case", "san diego padres"],
+  ])("the card naming the team by %s matches its stint", async (_label, cardTeam) => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "padres san diego");
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    const onPadres = await insertBobAllen(t, sportId, [{ teamId: padres, ...LONG_AGO }]);
+    await insertBobAllen(t, sportId, [{ teamId: cubs, ...LONG_AGO }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: [cardTeam] });
+    expect(resolved.playerId).toBe(onPadres);
+  });
+});
+
+describe("NEO-490: rule 6b is bounded, and a bound always means review", () => {
+  /** `count` old teams "Club0".."Club<count-1>" in one sport. */
+  async function seedClubs(
+    t: ReturnType<typeof convexTest>,
+    sportId: Id<"selectorOptions">,
+    count: number,
+  ) {
+    const ids: Id<"teams">[] = [];
+    for (let i = 0; i < count; i++) {
+      ids.push(await insertTeam(t, sportId, `City${i}`, `Club${i}`, `city${i} club${i}`));
+    }
+    return ids;
+  }
+
+  /**
+   * One namesake whose career covers `clubs` (the card names the LAST of
+   * them), and a rival parked on the first club so he adds no consultation.
+   */
+  async function seedLongCareer(
+    t: ReturnType<typeof convexTest>,
+    sportId: Id<"selectorOptions">,
+    clubs: Id<"teams">[],
+  ) {
+    const longCareer = await insertBobAllen(
+      t,
+      sportId,
+      clubs.map((teamId) => ({ teamId, ...LONG_AGO })),
+    );
+    await insertBobAllen(t, sportId, [{ teamId: clubs[0], ...LONG_AGO }]);
+    return longCareer;
+  }
+
+  test("a name consulting exactly the allowance still resolves", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const clubs = await seedClubs(t, sportId, CAREER_TEAM_READS_PER_NAME);
+    const longCareer = await seedLongCareer(t, sportId, clubs);
+
+    const resolved = await resolve(t, {
+      sportId,
+      cardYear: 2024,
+      cardTeamNames: [`City${clubs.length - 1} Club${clubs.length - 1}`],
+    });
+
+    expect(resolved.playerId).toBe(longCareer);
+    expect(resolved.narrowedBy).toBe("careerTeam");
+  });
+
+  test("one team past the allowance is review, never a guess on half the careers", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const clubs = await seedClubs(t, sportId, CAREER_TEAM_READS_PER_NAME + 1);
+    await seedLongCareer(t, sportId, clubs);
+
+    const resolved = await resolve(t, {
+      sportId,
+      cardYear: 2024,
+      cardTeamNames: [`City${clubs.length - 1} Club${clubs.length - 1}`],
+    });
+
+    expect(resolved.playerId).toBeUndefined();
+    expect(resolved.matchCount).toBe(2);
+  });
+
+  test("when rule 4's allowance is already blown, 6b does not run", async () => {
+    // Same fixture as NEO-296's per-name budget test: twelve concurrent stints
+    // in the card's year, the card names the twelfth. Rule 4 is abandoned. 6b
+    // reads the same career and WOULD name him (he is the only one on that
+    // team), so a name that comes back unresolved proves it stood down.
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "1994");
+    const clubs = await seedClubs(t, sportId, 12);
+    const other = await insertTeam(t, sportId, "Elsewhere", "Nine", "elsewhere nine");
+    await insertBobAllen(
+      t,
+      sportId,
+      clubs.map((teamId) => ({ teamId, fromYear: 1990, toYear: 1999 })),
+    );
+    await insertBobAllen(t, sportId, [{ teamId: other, fromYear: 1993, toYear: 1995 }]);
+
+    const resolved = await resolve(t, {
+      sportId,
+      cardYear: 1994,
+      cardTeamNames: ["City11 Club11"],
+    });
+
+    expect(resolved.playerId).toBeUndefined();
+    expect(resolved.narrowedBy).toBeUndefined();
+  });
+
+  test("a spent shared cache defers the name whole, reading nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "padres san diego");
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    await insertBobAllen(t, sportId, [{ teamId: padres, ...LONG_AGO }]);
+    await insertBobAllen(t, sportId, [{ teamId: cubs, ...LONG_AGO }]);
+
+    await t.run(async (ctx) => {
+      const cache = createCardYearTeamCache({ budget: 2 });
+      cache.reads = 2;
+      const candidates = await ctx.db
+        .query("players")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", "allen bob").eq("sportId", sportId),
+        )
+        .collect();
+
+      const narrowed = await narrowSameNamePlayersByCardYear(ctx, candidates, {
+        cardYear: 2024,
+        cardTeamNames: ["Padres"],
+        teamCache: cache,
+      });
+
+      expect(narrowed.transactionBudgetExhausted).toBe(true);
+      expect(narrowed.playerId).toBeNull();
+      expect(narrowed.viaCareerTeam).toBeUndefined();
+      expect(cache.reads).toBe(2);
+    });
+  });
+
+  test("a fresh shared cache lets it answer and meters its reads", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "padres san diego");
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    const onPadres = await insertBobAllen(t, sportId, [{ teamId: padres, ...LONG_AGO }]);
+    await insertBobAllen(t, sportId, [{ teamId: cubs, ...LONG_AGO }]);
+
+    await t.run(async (ctx) => {
+      const cache = createCardYearTeamCache();
+      const candidates = await ctx.db
+        .query("players")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", "allen bob").eq("sportId", sportId),
+        )
+        .collect();
+
+      const narrowed = await narrowSameNamePlayersByCardYear(ctx, candidates, {
+        cardYear: 2024,
+        cardTeamNames: ["Padres"],
+        teamCache: cache,
+      });
+
+      expect(narrowed).toMatchObject({ playerId: onPadres, viaCareerTeam: true });
+      expect(cache.reads).toBeGreaterThan(0);
+    });
   });
 });

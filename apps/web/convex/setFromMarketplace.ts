@@ -1,7 +1,8 @@
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
-import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
-import { inheritedTeamIds } from "./lib/selectorTeams";
+import { deriveOwnLevelFeatures, inheritableFeatures } from "./features/deriveCardFeatures";
+import { bornSetLeagueIds } from "./leagues";
+import { inheritedTeamDefault } from "./lib/selectorTeams";
 import { newRowSubtreeCounts } from "./cardCounts";
 import { initialSlots } from "./platformSlots";
 import {
@@ -31,7 +32,7 @@ import { unionChildren } from "./selectorSyncStore";
  *  - The SET is NB's row: `platformData: {}`, no marketplace ids. Its
  *    `features` are the brand's plus the level's own derivation
  *    (`deriveOwnLevelFeatures("setName", name)`), its `teamIds` the brand's
- *    set-level team copied down (`inheritedTeamIds`), `children: []` until
+ *    set-level team (or No Team) copied down (`inheritedTeamDefault`), `children: []` until
  *    the Base exists, and `createdByUserId` from the caller's identity when
  *    there is one — never a client argument.
  *  - The BASE is the one row that carries the marketplace link, exactly
@@ -398,16 +399,20 @@ export async function insertSetWithBaseFromSl(
   }
 
   const now = Date.now();
-  const brandTeamIds = inheritedTeamIds(brand);
+  const brandTeamDefault = inheritedTeamDefault(brand);
   const audit = args.createdByUserId
     ? { createdByUserId: args.createdByUserId }
     : {};
 
   // 1. The set: NB's row, no marketplace ids.
+  // NEO-569 — through `inheritableFeatures`, like every other copy-down, so
+  // the retired free-text League is never copied onto a new set.
   const setFeatures = {
-    ...(brand.features ?? {}),
+    ...inheritableFeatures(brand.features),
     ...deriveOwnLevelFeatures("setName", value),
   };
+  // NEO-569 — and born with its sport's major league.
+  const bornLeagueIds = await bornSetLeagueIds(ctx, brand._id);
   const setId = await ctx.db.insert("selectorOptions", {
     ...newRowSubtreeCounts("setName"),
     level: "setName",
@@ -417,7 +422,8 @@ export async function insertSetWithBaseFromSl(
     children: [],
     ...audit,
     ...(Object.keys(setFeatures).length > 0 ? { features: setFeatures } : {}),
-    ...(brandTeamIds ? { teamIds: brandTeamIds } : {}),
+    ...brandTeamDefault,
+    ...(bornLeagueIds ? { leagueIds: bornLeagueIds } : {}),
     lastUpdated: now,
   });
 
@@ -440,7 +446,7 @@ export async function insertSetWithBaseFromSl(
     children: [],
     ...audit,
     ...(Object.keys(baseFeatures).length > 0 ? { features: baseFeatures } : {}),
-    ...(brandTeamIds ? { teamIds: [...brandTeamIds] } : {}),
+    ...inheritedTeamDefault(brand),
     lastUpdated: now,
   });
 

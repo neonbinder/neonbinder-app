@@ -16,7 +16,7 @@ colors:
   dark-sheet: "#020618"
   dark-field: "#0F172B"
   dark-hover: "#1E2939"
-  dark-rule: "#1D293D"
+  dark-rule: "#2A394E"
   dark-rule-strong: "#314158"
   dark-control: "#62748E"
   dark-ink: "#FFFFFF"
@@ -26,6 +26,7 @@ colors:
   dark-selection: "#00C2FF"
   dark-neon-purple-text: "#B56BFF"
   dark-neon-pink-text: "#FF40A3"
+  dark-notice-danger-rule: "#DF1C8A"
   light-surface: "#F7F8FC"
   light-raised: "#FFFFFF"
   light-field: "#FFFFFF"
@@ -41,6 +42,8 @@ colors:
   light-offset: "#00C2FF"
   light-neon-green-text: "#007A3B"
   light-neon-pink-text: "#C40068"
+  light-notice-danger-bg: "#FDE9F2"
+  light-notice-danger-rule: "#C40068"
   light-neon-blue-text: "#006DA6"
   light-neon-yellow-text: "#7A6400"
   light-neon-orange-text: "#9A4D00"
@@ -158,7 +161,7 @@ The ESLint rule `theme/no-raw-palette` bans, in `app/`, `components/`, `src/` an
 
 ### Neon (the same fills in both modes)
 - **Binder Green** (`neon-green`): the brand and the forward action. Primary buttons, the Dashboard tab, success, the Radix accent (`accentColor="green"`; the green scale's step 9 is this value on sRGB screens, and wide-gamut screens get its Display P3 equivalent).
-- **Show-Sign Pink** (`neon-pink`): negative. Backing out (Cancel, Close, Stop, Sign out) and taking something away (Delete, Remove, Discard, Abort, Clear, an irreversible confirm, a destructive menu item or × on a chip). Never a decorative accent. (A Tilt Red for destructive was tried in NEO-356 and dropped: Jason, 2026-10-23, "the red has really lost the Neon vibe".)
+- **Show-Sign Pink** (`neon-pink`): negative. Backing out (Cancel, Close, Stop, Sign out), taking something away (Delete, Remove, Discard, Abort, Clear, an irreversible confirm, a destructive menu item or × on a chip), and an error (an invalid field's note, counter and box: see Components, Error; every inline error message and error banner is the pink `notice-danger-*` family, see Notices). Never a decorative accent. (A Tilt Red for destructive was tried in NEO-356 and dropped: Jason, 2026-10-23, "the red has really lost the Neon vibe".)
 - **Marquee Cyan** (`neon-blue`): secondary buttons, the Collection tab, the light mode's offset shadow.
 - **Hazard Yellow** (`neon-yellow`): Inventory; also warnings.
 - **Admin Amber** (`neon-orange`): Admin and other gated features.
@@ -177,7 +180,7 @@ Each hue plays three roles: the fill (`bg-neon-X`, borders, rings), the hue as t
 | `sheet` | big sheets and dialogs | #020618 (slate-950) | #FFFFFF |
 | `field` | input wells | #0F172B (slate-900) | #FFFFFF |
 | `hover` | a row on the page under the pointer | #1E2939 | #F0F2F9 |
-| `rule` | dividers, the header rule | #1D293D | #DDE0EA |
+| `rule` | dividers, the header rule: decorative separators only (a boundary that identifies a control uses `control` or `field-rule`). Visible on `surface`, `raised` and `raised-deep` in both modes, and quieter than `rule-strong` on each | #2A394E | #DDE0EA |
 | `rule-strong` | card and panel edges | #314158 | #BCB9CF |
 | `field-rule` | a text field's edge (3:1) | #314158 | #757090 |
 | `control` | a control's boundary: checkbox, radio, chip, a field on a card (3:1) | #62748E | #757090 |
@@ -198,11 +201,11 @@ Each hue plays three roles: the fill (`bg-neon-X`, borders, rings), the hue as t
 | `list-hover-raised` | a checklist row on a raised card under the pointer | gray-700 at 50% | #F0F2F9 |
 | `chip` | a neutral tag or filter chip at rest | gray-700 | #E8EAF2 |
 | `chip-strong` | one step up: a tag sitting on a row tile, a chip under the pointer | gray-600 | #DDE0EA |
-| `button-neutral`, `button-neutral-hover` | a neutral filled button (Sign In on the landing page, a Cancel beside a neon Save), and a disabled button's fill | slate-700, slate-600 | #E8EAF2, #DDE0EA |
+| `button-neutral`, `button-neutral-hover` | a neutral filled button (Sign In on the landing page, a Cancel beside a neon Save), and the fill of a disabled button or a held text field | slate-700, slate-600 | #E8EAF2, #DDE0EA |
 
 `bg-hover` equals `bg-raised` in dark, so never use it for a hover that sits on a raised surface; that is what `hover-raised` is for.
 
-In dark these tiles are light greys, and `ink-3` and the pink and violet `-text` hues miss 4.5:1 on all of them (green, cyan and amber miss on the -600 step); in light the one-step-up grey (`chip-strong`, `button-neutral-hover`) misses for green, pink, cyan and yellow text. Quiet text there is `ink-2`, and a destructive hover is a pink fill with black ink. `TEXT_NEVER_ON` in `src/theme/tokens.ts` lists every pair; `tokens.test.tsx` holds it to the palette and scans the class strings.
+In dark these tiles are light greys, and `ink-3`, the pink and violet `-text` hues and the error ink (the pink) miss 4.5:1 on all of them (green, cyan and amber miss on the -600 step); in light the one-step-up grey (`chip-strong`, `button-neutral-hover`) misses for green, pink, cyan and yellow text. Quiet text there is `ink-2`, and a destructive hover is a pink fill with black ink. `TEXT_NEVER_ON` in `src/theme/tokens.ts` lists every pair; `tokens.test.tsx` holds it to the palette and scans the class strings.
 
 ### Panels and washes
 
@@ -218,7 +221,18 @@ In dark these tiles are light greys, and `ink-3` and the pink and violet `-text`
 
 ### Notices
 
-`notice-{info,warn,danger,success}-{bg,ink,rule}`: a tinted ground, readable ink, a rule. Dark is the -900 ground / -200 to -300 ink / -700 rule family; light is a pale ground with deep ink. Danger is red in both modes: dark's red-900 family, and in light a pale red ground (#FDECEE), deep red ink (#A3001A) and a red rule (#C4001F). A notice is not a button: buttons never borrow its red.
+`notice-{info,warn,danger,success}-{bg,ink,rule}`: a tinted ground, readable ink, a rule. Dark is the -900 ground / -200 to -300 ink / -700 rule family; light is a pale ground with deep ink. Danger is neon pink in both modes, never red or salmon (Jason, 2026-11-18: "there shouldn't be any salmon, that is not one of our colors. errors are neon pink."). There is one pink for errors, and it is `neon-pink-text`: `notice-danger-ink` is an alias of it (`var(--neon-pink-text)`, #FF40A3 in dark, #C40068 in light), so it carries that role's bars (`TEXT_NEVER_ON`): dark error text never sits on a row, chip or neutral tile (it reads 3.2:1 on `row`, 2.3:1 on `row-hover`); light never on `chip-strong` or `button-neutral-hover`. Where an error has to appear inside such a tile, it sits on its own `field` well (Match Cards' inline name and players editors). The rest of the family is the neon pink's own hue (OKLCH 354). Dark: a 30% wash of `oklch(26% 0.1 354)` for the ground, dark enough that the ink reads 4.9:1 or better on it over a card (floor 4.6:1), and `oklch(60% 0.235 354)` (#DF1C8A) for the rule. Light: a pale pink ground (#FDE9F2) and a rule that is the pink text's own value (#C40068). Do not raise the wash alpha above 30%: the 4.6:1 floor was measured at 30%, and a stronger wash lifts the ground and drops the pink under it. A notice is not a button: buttons never borrow its ground. `text-notice-danger-ink` is the ink for inline error messages. A field past its limit paints the same pink: its count ("84/80 · 4 over"), its note ("Too long to list as-is.") and its box (Jason, 2026-11-18: "our error state color is the neon pink").
+
+A notice ink also stands alone as text on a dialog's `raised-deep` ground, with no tinted ground under it. Measured pairs that screens rely on, pinned by name in `tokens.test.tsx` (the adversarial sweep there covers every other text-on-surface pair):
+
+| Text | Ground | Where | Dark | Light |
+|---|---|---|---|---|
+| `notice-warn-ink` | `raised-deep` | Reconcile's paused and unasked pane | 12.26:1 | 7.74:1 |
+| `neon-green-text` | `raised-deep` | Match Cards' outline Keep buttons on a column | 9.01:1 | 5.46:1 |
+| `notice-danger-ink` | `raised` | an error in a card or drawer (CardDetailPanel) | 4.55:1 | 5.92:1 |
+| `notice-danger-ink` | `field` | an error in its own well inside a Match Cards tile | 5.53:1 | 5.92:1 |
+| `notice-danger-ink` | its own `notice-danger-bg` over `surface` / `raised` / `raised-deep` / `field` | a danger banner | 5.96:1 / 4.88:1 / 5.53:1 / 5.56:1 | 5.11:1 |
+| `notice-danger-rule` | `surface` / `raised` | a danger banner's edge (3:1 for a mark) | 4.40:1 / 3.26:1 | 5.58:1 / 5.92:1 |
 
 ### State that differs by mode
 
@@ -252,10 +266,13 @@ In dark these tiles are light greys, and `ink-3` and the pink and violet `-text`
 - **Headline** (700, 1.5rem): page titles.
 - **Title** (700, 1.25rem): section and card headings. `text-xl` is the most-used heading size.
 - **Body** (400, 0.875rem): the working size. `text-sm` is the most-used class in the app.
-- **Label** (400, 0.75rem): metadata, badges, helper text. Field labels are `text-sm` in `ink-2`.
+- **Label** (400, 0.75rem): metadata, badges, helper text, meters. Field labels are `text-sm` in `ink-2`.
+- **Numeral** (Neon, `text-4xl` up to `text-7xl`): a stat's number, lit in its hue with a glow in dark (`cb-numeral cb-glow` on the dashboard, `mc-percent` on the collection scoreboards). Its words lock up beside it as two lines on its baseline, sized to fill the figure's height (`cb-numeral-words`: `text-sm` beside `text-4xl`, `text-base` beside `text-5xl`, 600, `ink`), or sit centred beneath it in a narrow block. Never one small line at the numeral's foot a word-space away: it reads as a caption that has drifted off.
+
+Label is the floor. Nothing in the working UI is set below `text-xs`: an arbitrary `text-[10px]` or `text-[11px]` is off the scale.
 
 ### Named Rules
-**The One Sign Rule.** The Neon face is the wordmark. It is never used for headings, buttons or body copy.
+**The One Sign Rule.** The Neon face is the wordmark, and the one other place it lights up is a stat's numeral. It is never used for headings, buttons or body copy.
 
 **The Four Weights Rule.** Lexend runs at 400 (body), 500 (labels, tabs), 600 (card and section titles) and 700 (page headings, numbers). Nothing lighter than 400, nothing heavier than 700. Headings wrap balanced and prose wraps `pretty` by default.
 
@@ -308,16 +325,18 @@ Crisp, solid and few. One neon fill per decision. Every action button is `NeonBu
 - **`variant="primary"`:** Binder Green fill, black ink. Hover is `neon-green-hover`.
 - **`variant="secondary"`:** Marquee Cyan fill, black ink.
 - **`variant="tertiary"`:** Profile Violet fill, black ink.
-- **`variant="negative"`:** Show-Sign Pink fill, black ink. Cancel and destructive alike. A quiet destructive link or × is `ink-3` that turns `text-neon-pink-text` under the pointer. In a confirm dialog the pink confirm sits beside a cyan (`secondary`) Cancel, so the two read apart.
+- **`variant="negative"`:** Show-Sign Pink fill, black ink. Cancel and destructive alike. A quiet destructive link or × is `ink-3` that turns `text-neon-pink-text` under the pointer. In a confirm dialog (`ConfirmDialog`) the pink confirm sits beside a cyan (`secondary`) Cancel, so the two read apart. A confirm that adds or applies rather than takes away passes `confirmVariant="primary"`: a green confirm beside a pink Cancel. Below Tailwind's `sm` (640px) the dialog's two buttons stack full width, so a long label never runs past the dialog's edge on a phone.
 - **`outline`:** any of the four as an outline: the hue's `-text` role as text and a 1px edge on a clear ground, filling with the neon and its black ink under the pointer. A quiet neutral action (Back, Swap sides, Check for new scans) is `secondary outline`.
 - **Neutral:** `button-neutral` fill, `ink` or `ink-2` text, `button-neutral-hover` under the pointer.
-- **Disabled:** keyed off `disabled` and `aria-disabled` alike, so a button can stay in the tab order and still read as not live. A fill: dark dims the neon to 45% opacity; light swaps it for the `button-neutral` fill and `ink-3` ink, because a neon fill at 45% on white reads as a pale, still-pressable button. An outline fades to 50%. Not-allowed cursor in both.
+- **Disabled:** keyed off `disabled` and `aria-disabled` alike, so a button can stay in the tab order and still read as not live. A fill swaps to the `button-neutral` fill and `ink-3` ink in both modes: a dimmed neon (dark once used 45% opacity) still reads as the same hue and looks pressable, and on white a faded neon reads as a pale, still-pressable button. An outline fades to 50%. Not-allowed cursor in both.
 - **Quiet actions:** text or ghost buttons in `ink-2` that brighten on hover, for everything that isn't the decision.
 
 ### Inputs / Fields
 - **Style:** `field` background, 1px `field-rule` border (3:1 in light), 6px radius, `ink` text, `ink-3` placeholder, 8px × 12px.
 - **Focus:** the `focus-outline` (cyan in dark, violet in light).
-- **Labels:** visible `text-sm` labels in `ink-2`, above the field (or left of it at 84px minimum width).
+- **Labels:** visible `text-sm` labels in `ink-2`, above the field (or left of it at 84px minimum width). A row's own name beside its field (`#12 Ohtani` beside its title) is that field's label, and takes the same size and ink.
+- **Error:** neon pink is the error colour for an invalid field (Jason, 2026-11-18: "our error state color is the neon pink"). The whole field says so, not just the note: past its cap the box takes a neon pink border, a 1px ring and a 10% tint through `OVER_FIELD_CLASS` (`components/SetSelector/TitleLengthMeter.tsx`), and the note and the counter are `text-neon-pink-text`. The box follows LENGTH alone (`data-over="true"`, set by `overFieldProps`), never `aria-invalid`: a refused save also sets `aria-invalid`, and its message is `notice-danger-ink`, which is the same `neon-pink-text` (see Notices); the box is what stays specific to the cap, so the pink box still means one thing: this text is over its cap. It goes the moment the text fits. A blocking field (the title) also sets `aria-invalid`; an advisory one that still saves (a variation past 65) does not. Either way the note is tied to the field by `aria-describedby`. A held field (`aria-disabled`, `readOnly`) keeps the pink edge and ring and shows the grey `button-neutral` fill (the stacked `aria-disabled:data-[over=true]:` variant outranks the tint). Measured contrast: pink text 4.55:1 on `raised` in dark (a margin of 0.05, so no dimmer pink) and 5.92:1 on white in light; 5.53:1 on `field` in dark; 5.58:1 on `surface` in light; 5.09:1 (dark) and 5.17:1 (light) on the 10% tint. The edge against its ground is 5.53:1 on `field` and 4.55:1 on `raised` in dark, 5.92:1 in light. Pink text fails on `row` and `chip` surfaces in dark (`TEXT_NEVER_ON`). The title and variation fields (card detail panel, Title fixer, Card titles step) use it today; other inline errors use `notice-danger-ink` (neon pink too, see Notices).
+- **Off:** native `disabled`, or `aria-disabled` on a `readOnly` field that keeps focus while it waits, swaps the well for the `button-neutral` fill and the ink for `ink-2`, with a not-allowed cursor: the same swap a disabled button makes, one ink step lighter so the held value stays readable (`ink-3` misses 4.5:1 on that fill in dark). `Input` and `Textarea` own it (`components/primitives/field-off.ts`); a caller never fades a field with an opacity. Bare `readOnly` alone is not off: a field read-only only while an autosave lands must not flash grey.
 
 ### Lists and pickers
 - **Tile rows** (the set picker's columns): `bg-row border-row-rule hover:bg-row-hover`. White tiles with a visible edge in light, never a heavy grey tile.
@@ -370,5 +389,7 @@ Spinners keep turning under reduced motion, at 2.4s a turn, because they are the
 - **Don't** set headings in gradient text; a heading takes its section's one hue (One Hue Per Section).
 - **Don't** hand-mix a near-neon hex. `#00B7FF` and `#FF2EB3` crept into 80 files before the 2026-10 audit folded them back into Marquee Cyan `#00C2FF` and Show-Sign Pink `#FF2E9A`.
 - **Don't** put a glow on a resting element.
-- **Don't** use neon pink for anything but negative actions (cancel and destructive).
+- **Don't** use neon pink for anything but the negative: cancel, destructive, and errors (an invalid field, an error message, an error banner).
+- **Don't** paint an error red or salmon. Errors are neon pink (`notice-danger-*`); the only reds left are a sport's and a team's own colours and the SP attribute badge (`pick-red`).
 - **Don't** reach for a hued palette step (`bg-red-600`). Every hue has a role; the lint rule refuses the step.
+- **Don't** draw a divider with `border-rule` inside a `bg-raised` card. In dark mode `rule` (#1D293D) matches the card's fill (#1E2939) and the line vanishes; use `border-rule-strong`.

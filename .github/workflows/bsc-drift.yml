@@ -1,0 +1,427 @@
+name: BSC drift
+
+# NEO-552: once a day, check that the real BuySportsCards still looks the way
+# the fake BSC models it.
+#
+#   1. prod  : the PROD browser service runs its own stored account through
+#              sign-in, one catalogue read and the parser (POST /probe/bsc) and
+#              returns response SHAPES (key paths and types, never values) and
+#              the canonical catalogue requests (public).
+#   2. dev   : those shapes, and only those, go to the fake's
+#              POST /__fake/drift-compare, which says whether the fake's recorded
+#              and synthesised shapes still match.
+#   3. verdict (.github/scripts/bsc-drift-verdict.sh):
+#                signin_failed   fails now
+#                bsc_unavailable fails on the second consecutive day
+#                shape_drift     fails, listing the paths
+#
+# The two legs are separate jobs on purpose: each authenticates through its own
+# project's WIF provider, and only the shapes artifact crosses between them.
+# No BSC credential is in CI; prod uses the account it already has in Secret
+# Manager. Schedule and dispatch only; never a push trigger.
+#
+# NEO-555 adds an eBay chain beside it (ebay-prod-probe, ebay-drift-compare,
+# ebay-verdict), independent of the BSC chain: a shape mismatch fails, a hash
+# mismatch is a warning annotation.
+
+on:
+  schedule:
+    # 11:23 UTC daily. Offset from :07/:37 and from the other crons here.
+    - cron: "23 11 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: bsc-drift
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prod-probe:
+    name: Probe the real BSC through prod
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      outcome: ${{ steps.probe.outputs.outcome }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - id: base-url
+        name: Capture the prod browser service URL (token audience)
+        run: |
+          set -euo pipefail
+          url=$(gcloud run services describe neonbinder-browser \
+            --region=us-central1 --project=neonbinder --format='value(status.url)')
+          [ -n "$url" ] || { echo "::error::no prod browser URL"; exit 1; }
+          echo "base_url=$url" >> "$GITHUB_OUTPUT"
+
+      - id: token
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER }}
+          token_format: id_token
+          id_token_audience: ${{ steps.base-url.outputs.base_url }}
+          id_token_include_email: true
+
+      # Never fails the step: the verdict job decides what each outcome means.
+      - id: probe
+        name: Probe the real BSC
+        continue-on-error: true
+        env:
+          TARGET_URL: ${{ steps.base-url.outputs.base_url }}
+          PROBE_ID_TOKEN: ${{ steps.token.outputs.id_token }}
+          OUT_DIR: ${{ runner.temp }}/bsc-probe
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/bsc-probe.sh" real
+
+      # Only shapes and the public canonical catalogue requests leave this job: key
+      # paths and types, no values.
+      - name: Extract the shapes
+        if: steps.probe.outputs.outcome == 'ok'
+        env:
+          OUT_DIR: ${{ runner.temp }}/bsc-probe
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/shapes"
+          jq -e '.shapes | type == "object"' "$OUT_DIR/probe.json" >/dev/null
+          # `requests` = the catalogue templates' canonical requests (public), so
+          # the fake can find the recording each shape is compared with.
+          jq -e '.requests | type == "object"' "$OUT_DIR/probe.json" >/dev/null
+          jq '{shapes: .shapes, requests: .requests}' "$OUT_DIR/probe.json" > "$RUNNER_TEMP/shapes/shapes.json"
+
+      - name: Hand the shapes to the dev leg
+        if: steps.probe.outputs.outcome == 'ok'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bsc-shapes
+          path: ${{ runner.temp }}/shapes/shapes.json
+          if-no-files-found: error
+          retention-days: 1
+
+  drift-compare:
+    name: Compare the shapes with the fake
+    needs: prod-probe
+    if: needs.prod-probe.outputs.outcome == 'ok'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      outcome: ${{ steps.compare.outputs.outcome }}
+      paths: ${{ steps.compare.outputs.paths }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bsc-shapes
+          path: ${{ runner.temp }}/shapes
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - id: token
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+          token_format: id_token
+          id_token_audience: ${{ vars.NEONBINDER_FAKE_BSC_URL }}
+          id_token_include_email: true
+
+      - id: compare
+        name: POST the shapes to the fake
+        env:
+          FAKE_URL: ${{ vars.NEONBINDER_FAKE_BSC_URL }}
+          ID_TOKEN: ${{ steps.token.outputs.id_token }}
+        run: |
+          set -uo pipefail
+          if ! out=$(bash "$GITHUB_WORKSPACE/.github/scripts/fake-bsc-url.sh"); then
+            echo "::error::vars.NEONBINDER_FAKE_BSC_URL must be https://neonbinder-fake-bsc-….run.app, the fake's own service URL, with no tag or path"; echo "outcome=bad_fake_url" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          base="${out#base=}"
+          caller=$(gcloud secrets versions access latest --secret=fake-bsc-caller-key --project=neonbinder-dev) || { echo "outcome=key_unreadable" >> "$GITHUB_OUTPUT"; exit 0; }
+          admin=$(gcloud secrets versions access latest --secret=fake-bsc-admin-key --project=neonbinder-dev) || { echo "outcome=key_unreadable" >> "$GITHUB_OUTPUT"; exit 0; }
+          echo "::add-mask::$caller"; echo "::add-mask::$admin"; echo "::add-mask::$ID_TOKEN"
+          out="$RUNNER_TEMP/drift.json"
+          code=$(curl -sS --max-time 60 -o "$out" -w '%{http_code}' -X POST \
+            -H "Content-Type: application/json" \
+            -H "X-Serverless-Authorization: Bearer $ID_TOKEN" \
+            -H "x-nb-fake-id-token: $ID_TOKEN" \
+            -H "x-nb-fake-bsc-key: $caller" \
+            -H "x-nb-fake-bsc-admin-key: $admin" \
+            --data-binary "@$RUNNER_TEMP/shapes/shapes.json" \
+            "$base/__fake/drift-compare" || echo 000)
+          if [ "$code" != "200" ]; then
+            echo "outcome=http_$code" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          outcome=$(jq -r '.outcome // "unreadable"' "$out" 2>/dev/null || echo unreadable)
+          paths=$(jq -r '(.paths // []) | map(tostring) | join(",")' "$out" 2>/dev/null || echo "")
+          echo "outcome=$outcome" >> "$GITHUB_OUTPUT"
+          echo "paths=$paths" >> "$GITHUB_OUTPUT"
+
+  verdict:
+    name: Verdict
+    needs: [prod-probe, drift-compare]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read   # the previous run's outcome
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      # bsc_unavailable fails only on the second consecutive day, so read the
+      # newest earlier completed SCHEDULED run's recorded outcome (--event schedule:
+      # a dispatched or forked run must not feed the leniency) (a tiny artifact every
+      # run uploads below). Unreadable or missing means "unknown", which is the
+      # lenient answer.
+      - id: prev
+        name: Read the previous run's outcome
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT: ${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          prev=""
+          for rid in $(gh run list --workflow bsc-drift.yml --status completed --limit 10 --event schedule \
+                         --json databaseId --jq '.[].databaseId' 2>/dev/null); do
+            [ "$rid" = "$CURRENT" ] && continue
+            d="$RUNNER_TEMP/prev-$rid"
+            if gh run download "$rid" -n bsc-drift-outcome -D "$d" >/dev/null 2>&1 && [ -f "$d/outcome.txt" ]; then
+              prev=$(tr -cd 'a-z0-9_' < "$d/outcome.txt" | head -c 40)
+              break
+            fi
+          done
+          echo "outcome=$prev" >> "$GITHUB_OUTPUT"
+
+      - id: verdict
+        name: Decide
+        env:
+          PROD_OUTCOME: ${{ needs.prod-probe.outputs.outcome }}
+          PREV_OUTCOME: ${{ steps.prev.outputs.outcome }}
+          DRIFT_OUTCOME: ${{ needs.drift-compare.outputs.outcome }}
+          DRIFT_PATHS: ${{ needs.drift-compare.outputs.paths }}
+        run: |
+          set -uo pipefail
+          printf '%s' "${PROD_OUTCOME:-none}" > "$RUNNER_TEMP/outcome.txt"
+          bash .github/scripts/bsc-drift-verdict.sh | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "${PIPESTATUS[0]}"
+
+      - name: Record today's outcome for tomorrow
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bsc-drift-outcome
+          path: ${{ runner.temp }}/outcome.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # NEO-555: the same daily check for eBay. Same three-step shape as BSC above:
+  # the LIVE prod browser service reads eBay (POST /probe/ebay; the app token
+  # plus, when NEONBINDER_EBAY_PROBE_CREDENTIAL_KEY names an account, that
+  # account's read-only endpoints), only value-free shapes/statuses/digests go to
+  # the dev fake's POST /__fake/drift-compare {marketplace:"ebay"}.
+  #
+  # One-call-a-minute limit: the probe runs once per instance per minute. This
+  # job calls the LIVE service; the prod deploy gate (browser-deploy.yml) calls
+  # the new TAGGED revision, a different instance, so the two do not share a
+  # window. If a deploy and this cron ever land on the same instance, the
+  # probe script waits out Retry-After and retries (bounded: 2 retries, 65 s).
+  # BSC and eBay have separate limiters, so the BSC leg above is no obstacle.
+  # ---------------------------------------------------------------------------
+  ebay-prod-probe:
+    name: Probe the real eBay through prod
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      outcome: ${{ steps.probe.outputs.outcome }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - id: base-url
+        name: Capture the prod browser service URL (token audience)
+        run: |
+          set -euo pipefail
+          url=$(gcloud run services describe neonbinder-browser \
+            --region=us-central1 --project=neonbinder --format='value(status.url)')
+          [ -n "$url" ] || { echo "::error::no prod browser URL"; exit 1; }
+          echo "base_url=$url" >> "$GITHUB_OUTPUT"
+
+      - id: token
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER }}
+          token_format: id_token
+          id_token_audience: ${{ steps.base-url.outputs.base_url }}
+          id_token_include_email: true
+
+      # Never fails the step: the verdict job decides what each outcome means.
+      - id: probe
+        name: Probe the real eBay
+        continue-on-error: true
+        env:
+          TARGET_URL: ${{ steps.base-url.outputs.base_url }}
+          PROBE_ID_TOKEN: ${{ steps.token.outputs.id_token }}
+          OUT_DIR: ${{ runner.temp }}/ebay-probe
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ebay-probe.sh" real
+
+      # Only the drift-compare payload leaves this job: key paths and types,
+      # status codes and two digests of public catalogue lists. No value.
+      - name: Extract the drift payload
+        if: steps.probe.outputs.outcome == 'ok' || steps.probe.outputs.outcome == 'account_warning'
+        env:
+          OUT_DIR: ${{ runner.temp }}/ebay-probe
+        run: |
+          bash "$GITHUB_WORKSPACE/.github/scripts/ebay-drift-payload.sh" "$OUT_DIR/probe.json" "$RUNNER_TEMP/ebay-shapes/payload.json"
+
+      - name: Hand the payload to the dev leg
+        if: steps.probe.outputs.outcome == 'ok' || steps.probe.outputs.outcome == 'account_warning'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ebay-shapes
+          path: ${{ runner.temp }}/ebay-shapes/payload.json
+          if-no-files-found: error
+          retention-days: 1
+
+  ebay-drift-compare:
+    name: Compare the eBay shapes with the fake
+    needs: ebay-prod-probe
+    if: needs.ebay-prod-probe.outputs.outcome == 'ok' || needs.ebay-prod-probe.outputs.outcome == 'account_warning'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      outcome: ${{ steps.compare.outputs.outcome }}
+      paths: ${{ steps.compare.outputs.paths }}
+      warnings: ${{ steps.compare.outputs.warnings }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ebay-shapes
+          path: ${{ runner.temp }}/ebay-shapes
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - id: token
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+          token_format: id_token
+          id_token_audience: ${{ vars.NEONBINDER_FAKE_BSC_URL }}
+          id_token_include_email: true
+
+      - id: compare
+        name: POST the eBay payload to the fake
+        env:
+          FAKE_URL: ${{ vars.NEONBINDER_FAKE_BSC_URL }}
+          ID_TOKEN: ${{ steps.token.outputs.id_token }}
+        run: |
+          set -uo pipefail
+          if ! out=$(bash "$GITHUB_WORKSPACE/.github/scripts/fake-bsc-url.sh"); then
+            echo "::error::vars.NEONBINDER_FAKE_BSC_URL must be https://neonbinder-fake-bsc-….run.app, the fake's own service URL, with no tag or path"; echo "outcome=bad_fake_url" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          base="${out#base=}"
+          caller=$(gcloud secrets versions access latest --secret=fake-bsc-caller-key --project=neonbinder-dev) || { echo "outcome=key_unreadable" >> "$GITHUB_OUTPUT"; exit 0; }
+          admin=$(gcloud secrets versions access latest --secret=fake-bsc-admin-key --project=neonbinder-dev) || { echo "outcome=key_unreadable" >> "$GITHUB_OUTPUT"; exit 0; }
+          echo "::add-mask::$caller"; echo "::add-mask::$admin"; echo "::add-mask::$ID_TOKEN"
+          out="$RUNNER_TEMP/ebay-drift.json"
+          code=$(curl -sS --max-time 60 -o "$out" -w '%{http_code}' -X POST \
+            -H "Content-Type: application/json" \
+            -H "X-Serverless-Authorization: Bearer $ID_TOKEN" \
+            -H "x-nb-fake-id-token: $ID_TOKEN" \
+            -H "x-nb-fake-bsc-key: $caller" \
+            -H "x-nb-fake-bsc-admin-key: $admin" \
+            --data-binary "@$RUNNER_TEMP/ebay-shapes/payload.json" \
+            "$base/__fake/drift-compare" || echo 000)
+          if [ "$code" != "200" ]; then
+            echo "outcome=http_$code" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          outcome=$(jq -r '.outcome // "unreadable"' "$out" 2>/dev/null || echo unreadable)
+          paths=$(jq -r '(.paths // []) | map(tostring) | join(",")' "$out" 2>/dev/null || echo "")
+          warnings=$(jq -r '(.warnings // []) | map("\(.endpoint):\(.kind)") | join(",")' "$out" 2>/dev/null || echo "")
+          {
+            echo "outcome=$outcome"
+            echo "paths=$paths"
+            echo "warnings=$warnings"
+          } >> "$GITHUB_OUTPUT"
+
+  ebay-verdict:
+    name: eBay verdict
+    needs: [ebay-prod-probe, ebay-drift-compare]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      # Shape mismatch fails; a hash mismatch is a ::warning:: annotation only.
+      - name: Decide
+        env:
+          PROD_OUTCOME: ${{ needs.ebay-prod-probe.outputs.outcome }}
+          DRIFT_OUTCOME: ${{ needs.ebay-drift-compare.outputs.outcome }}
+          DRIFT_PATHS: ${{ needs.ebay-drift-compare.outputs.paths }}
+          DRIFT_WARNINGS: ${{ needs.ebay-drift-compare.outputs.warnings }}
+        run: |
+          set -uo pipefail
+          bash .github/scripts/ebay-drift-verdict.sh | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "${PIPESTATUS[0]}"

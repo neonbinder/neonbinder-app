@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useClosesForSetNameInTitles } from "./set-name-in-titles-jump";
 import { createPortal } from "react-dom";
 import { Theme } from "@radix-ui/themes";
 import type { Id } from "../../convex/_generated/dataModel";
 import { compareCardNumbers } from "@/lib/cards/card-number";
 import NeonButton from "../modules/NeonButton";
-import { deriveCardAttention } from "./card-attention";
+import { deriveCardAttention, stillLookingUpTeams } from "./card-attention";
 import WizardChrome from "./WizardChrome";
 import {
   AttentionSportContext,
@@ -41,9 +42,7 @@ export function walkDoneLine(awaitingLookup: number): string {
   if (awaitingLookup <= 0) {
     return "All clear — nothing on this checklist needs attention.";
   }
-  return `All clear for now. Still looking up teams for ${awaitingLookup} ${
-    awaitingLookup === 1 ? "card" : "cards"
-  }.`;
+  return `All clear for now. ${stillLookingUpTeams(awaitingLookup)}`;
 }
 
 /**
@@ -94,7 +93,7 @@ export function walkStep(
  * save, so what reaches this walk is what that could not settle: a team
  * lookup that failed, a review the operator cancelled, an edit made since, a
  * set saved before the wizard asked. It wears the wizard's chrome
- * (`WizardChrome`): "Tidy up this set", ONE "Step x of y" across every card
+ * (`WizardChrome`): "Tidy up <year set variant>" (NEO-497), ONE "Step x of y" across every card
  * the sitting walks (`walkStep`), and the question's type as the subtitle
  * (`attentionWalkSubtitle`). No per-kind counts anywhere.
  *
@@ -149,6 +148,7 @@ export default function CardAttentionWalker({
   contextOptionId,
   onClose,
   restoreFocusRef,
+  title,
 }: {
   isOpen: boolean;
   /**
@@ -175,6 +175,12 @@ export default function CardAttentionWalker({
    * instead — same reasoning as SyncReviewModal's prop of the same name.
    */
   restoreFocusRef?: RefObject<HTMLElement | null>;
+  /**
+   * NEO-497 — the header's title and so the dialog's name: "Tidy up 2024
+   * Topps Chrome Base" (`tidyUpTitleFromChain`). Absent, WizardChrome's
+   * "Tidy up this set".
+   */
+  title?: string;
 }) {
   // Mount-scoped session state. CardChecklist mounts this only while it is
   // open, so a fresh sitting starts with fresh state and there is no reset to
@@ -188,6 +194,9 @@ export default function CardAttentionWalker({
   //                 would flash back on screen in between.
   //  - `seen`     — every card that has been in the walk this sitting, for
   //                 "Step x of y" (see `walkStep`). Only ever grows.
+  // NEO-535 — TitleFixer's "Trim Set name in titles" door closes the walker
+  // so the Attributes panel behind it can take focus.
+  useClosesForSetNameInTitles(onClose);
   const [skipped, setSkipped] = useState<Set<string>>(() => new Set());
   const [answered, setAnswered] = useState<Set<string>>(() => new Set());
   const dialogRef = useRef<HTMLDivElement | null>(null);
@@ -453,8 +462,8 @@ export default function CardAttentionWalker({
         */}
         <div className="flex max-h-full w-full max-w-[45rem] flex-col rounded-lg border border-rule-strong bg-raised-deep shadow-xl shadow-offset">
           {/*
-            NEO-335 Phase 2 (D9) — the wizard's own header: "Tidy up this
-            set", "Step x of y" (a role="status" region, so moving it is
+            NEO-335 Phase 2 (D9) — the wizard's own header: "Tidy up" plus
+            the set's year, name and variant (NEO-497), "Step x of y" (a role="status" region, so moving it is
             announced, as the "N cards need attention · K fixed" line it
             replaces was), the question's type as the subtitle, and the neon
             rail as the header's bottom edge. The rail only animates forward
@@ -463,6 +472,7 @@ export default function CardAttentionWalker({
           */}
           <WizardChrome
             titleId="card-attention-walker-title"
+            title={title}
             step={step}
             total={total}
             subtitle={subtitle}

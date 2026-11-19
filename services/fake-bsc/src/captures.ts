@@ -1,0 +1,135 @@
+/**
+ * Write captures (CONTRACT.md, "Write capture"): the status and shape of one
+ * real BSC write, uploaded by `recorder capture-write`. The latest per write
+ * endpoint is kept, and the fake's synthesised answer is checked against it.
+ */
+import { WRITE_ENDPOINTS, isWriteEndpoint, type WriteEndpoint } from "./paths";
+import { readShape, shapeOf, synthConformsTo, type Shape } from "./shape";
+import { photoAnswer, putAnswer } from "./synth/sheet";
+import type { Listing, NamespaceState } from "./state";
+import type { ObjectStore } from "./store/types";
+import { EBAY_CAPTURE_ENDPOINTS, EBAY_REQUIRED_CAPTURES, ebayCaptureSlug, ebaySynthesisedCapture, isEbayCaptureEndpoint, isOptionalCapturePath } from "./ebay/captures";
+
+/** A BSC write endpoint, or an eBay read or write capture name (`src/ebay/captures.ts`). */
+export type CaptureEndpoint = WriteEndpoint | string;
+
+function captureObject(endpoint: CaptureEndpoint): string {
+  return `write-captures/${isWriteEndpoint(endpoint) ? WRITE_ENDPOINTS[endpoint] : ebayCaptureSlug(endpoint)}.json`;
+}
+
+export interface WriteCapture {
+  endpoint: CaptureEndpoint;
+  status: number;
+  shape: Shape;
+  capturedAt: string;
+}
+
+export type CaptureRead = { ok: true; capture: WriteCapture } | { ok: false; error: string };
+
+export function readCapture(input: unknown, now: () => Date = () => new Date()): CaptureRead {
+  if (!input || typeof input !== "object") return { ok: false, error: "body must be an object" };
+  const b = input as Record<string, unknown>;
+  if (!isWriteEndpoint(b.endpoint) && !isEbayCaptureEndpoint(b.endpoint)) {
+    return { ok: false, error: `endpoint must be one of: ${Object.keys(WRITE_ENDPOINTS).join(", ")}, or an eBay capture endpoint (CONTRACT.md, "Write and read captures (eBay)")` };
+  }
+  if (typeof b.status !== "number" || !Number.isInteger(b.status) || b.status < 100 || b.status > 599) return { ok: false, error: "status" };
+  const shape = readShape(b.shape);
+  if (!shape) return { ok: false, error: "shape must map key paths to type lists" };
+  const capturedAt = typeof b.capturedAt === "string" && !Number.isNaN(Date.parse(b.capturedAt)) ? b.capturedAt : now().toISOString();
+  return { ok: true, capture: { endpoint: b.endpoint, status: b.status, shape, capturedAt } };
+}
+
+const SAMPLE_STATE: NamespaceState = {
+  ns: "sample",
+  sellerId: "fake-sample",
+  storeName: "Fake Store sample",
+  userId: "fake-user-sample",
+  listings: new Map(),
+  photos: 0,
+  orders: new Map(),
+  faults: [],
+  misses: new Map(),
+  lastSeen: 0,
+};
+
+const SAMPLE_LISTING: Listing = {
+  cardId: "samplecard",
+  condition: "near_mint",
+  productId: "sampleproduct",
+  availableQuantity: 1,
+  price: 0.25,
+  sellerSku: "1|1",
+  sellerImgFront: null,
+  sellerImgBack: null,
+  updatedTimestamp: "2026-01-01T00:00:00.000000",
+  // A card with a year and a sport, so every field the answer derives from it
+  // has its real type (a null would match anything and check nothing).
+  card: { id: "samplecard", cardNo: "1", year: "2024", sport: "baseball" },
+};
+
+/** The status and shape the fake answers a successful write with. */
+export function synthesisedWrite(endpoint: CaptureEndpoint): { status: number; shape: Shape } {
+  if (!isWriteEndpoint(endpoint)) return ebaySynthesisedCapture(endpoint);
+  switch (endpoint) {
+    case "PUT seller/bulk-upload":
+      return { status: 200, shape: shapeOf(putAnswer([SAMPLE_LISTING], SAMPLE_STATE)) };
+    case "POST common/card/undefined/product/undefined/attachment":
+      return { status: 200, shape: shapeOf(photoAnswer("/prod/card/undefined/product/undefined/sample.jpg")) };
+  }
+}
+
+export interface CaptureVerdict {
+  endpoint: CaptureEndpoint;
+  capturedAt: string;
+  verdict: "ok" | "shape_drift";
+  paths: string[];
+}
+
+/** Does the fake's answer fit the real one? Paths only. */
+export function checkCapture(capture: WriteCapture): CaptureVerdict {
+  const synth = synthesisedWrite(capture.endpoint);
+  const paths = synthConformsTo(synth.shape, capture.shape, isWriteEndpoint(capture.endpoint) ? undefined : (p) => isOptionalCapturePath(capture.endpoint, p, capture.shape)).paths;
+  const statusClass = (s: number) => Math.floor(s / 100);
+  if (statusClass(synth.status) !== statusClass(capture.status)) paths.unshift("$status");
+  return { endpoint: capture.endpoint, capturedAt: capture.capturedAt, verdict: paths.length ? "shape_drift" : "ok", paths };
+}
+
+export class Captures {
+  private readonly latest = new Map<CaptureEndpoint, WriteCapture>();
+
+  constructor(private readonly store: ObjectStore) {}
+
+  async load(): Promise<number> {
+    this.latest.clear();
+    const endpoints = [...Object.keys(WRITE_ENDPOINTS), ...EBAY_CAPTURE_ENDPOINTS];
+    // In parallel: the eBay names add about thirty reads to the boot.
+    const raws = await Promise.all(endpoints.map((e) => this.store.read(captureObject(e))));
+    endpoints.forEach((endpoint, i) => {
+      const raw = raws[i];
+      if (raw === null) return;
+      const r = readCapture(raw);
+      if (r.ok && r.capture.endpoint === endpoint) this.latest.set(r.capture.endpoint, r.capture);
+    });
+    return this.latest.size;
+  }
+
+  async save(c: WriteCapture): Promise<void> {
+    await this.store.write(captureObject(c.endpoint), c);
+    this.latest.set(c.endpoint, c);
+  }
+
+  list(): WriteCapture[] {
+    return [...this.latest.values()];
+  }
+
+  /**
+   * The required write endpoints that have no stored capture: BSC's two (the
+   * specs drive them; stored by `recorder capture-write`) and the eBay writes
+   * the recorder stores (`EBAY_REQUIRED_CAPTURES`; stored by `recorder
+   * ebay-capture`, sandbox and `--prod`). Empty once each has one. Without a
+   * capture the fake's synthesised write answer is checked against nothing.
+   */
+  missing(): CaptureEndpoint[] {
+    return [...Object.keys(WRITE_ENDPOINTS), ...EBAY_REQUIRED_CAPTURES].filter((e) => !this.latest.has(e));
+  }
+}

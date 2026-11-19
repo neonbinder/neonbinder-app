@@ -116,6 +116,14 @@ test(
     await expect(page.getByText("Team applied to cards")).toBeVisible();
     await expect(removeChip(teamA.full)).toBeVisible();
     await expectAccessible(page, { label: "Set attributes panel with the set team" });
+    // NEO-569: shut, the panel draws only its title and toggle, so the team is not on
+    // screen; the toggle says it to a screen reader instead, by its full name.
+    await hide.click();
+    await expect(edit).toBeVisible();
+    await expect(panel.getByRole("heading", { name: `Attributes for ${SET} (Set)`, exact: true })).toBeVisible();
+    await expect(edit).toHaveAccessibleDescription(new RegExp(`^Team: ${teamA.full}$`));
+    await expect(panel.getByText(teamA.short, { exact: true })).toHaveCount(0);
+    await expect(removeChip(teamA.full)).toHaveCount(0);
 
     // ── STEP 3: two cards under the set's Insert > Base row, NO team picked on the way in,
     // are born with the set's team.

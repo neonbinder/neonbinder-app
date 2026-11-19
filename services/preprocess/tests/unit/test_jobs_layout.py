@@ -85,8 +85,25 @@ class TestKeys:
             layout.output_prefix(USER, JOB),
             layout.extracted_image_object(USER, JOB, 0, "jpg"),
             layout.output_image_object(USER, JOB, 0, "jpg"),
+            layout.copy_photo_image_object(USER, JOB, 0),
+            layout.copy_photo_thumb_object(USER, JOB, 0),
         ):
             assert key.startswith(prefix)
+
+    def test_copy_photo_keys_match_what_convex_builds(self):
+        # `placeholderCopyPhotoObject` in convex/lib/placeholderObjects.ts builds
+        # these same keys to read them back. If the two ever disagree, every save
+        # silently pays for a derive.
+        output = f"placeholders/{USER}/{JOB}/output/"
+        assert layout.copy_photo_image_object(USER, JOB, 7) == f"{output}copy-photos/image/0007.jpg"
+        assert layout.copy_photo_thumb_object(USER, JOB, 7) == f"{output}copy-photos/thumb/0007.jpg"
+
+    @pytest.mark.parametrize("payload", TRAVERSAL_PAYLOADS)
+    def test_copy_photo_keys_refuse_a_bad_user_id(self, payload):
+        with pytest.raises(InvalidJobIdentifierError):
+            layout.copy_photo_image_object(payload, JOB, 0)
+        with pytest.raises(InvalidJobIdentifierError):
+            layout.copy_photo_thumb_object(payload, JOB, 0)
 
     def test_input_object_matches_the_upload_policy_path(self):
         # convex/adapters/placeholderUploads.ts builds exactly this path when
@@ -194,3 +211,38 @@ class TestConvexMirror:
         # reverse. This pins the direction.
         long_body = "user_" + "a" * 200
         assert layout.CLERK_USER_ID_PATTERN.match(long_body) is None
+
+
+class TestEditKeys:
+    """NEO-481: a hand edit's versioned, write-once objects. Convex builds the
+    same keys (`convex/lib/placeholderObjects.ts`), so these strings are the
+    contract, not an implementation detail."""
+
+    def test_the_crop_key(self):
+        assert layout.edit_output_object(USER, JOB, 7, 3) == (
+            f"placeholders/{USER}/{JOB}/output/edits/0007/3.jpg"
+        )
+
+    @pytest.mark.parametrize("size", ["image", "thumb"])
+    def test_the_size_keys(self, size):
+        assert layout.edit_copy_photo_object(USER, JOB, 7, 12, size) == (
+            f"placeholders/{USER}/{JOB}/output/edits/0007/12/{size}.jpg"
+        )
+
+    @pytest.mark.parametrize("version", [0, -1, layout.MAX_EDIT_VERSION + 1, True, 1.0, "1"])
+    def test_a_version_out_of_shape_is_refused(self, version):
+        with pytest.raises(InvalidJobIdentifierError):
+            layout.edit_output_object(USER, JOB, 7, version)
+
+    def test_another_size_name_is_refused(self):
+        with pytest.raises(InvalidJobIdentifierError):
+            layout.edit_copy_photo_object(USER, JOB, 7, 1, "../original")
+
+    @pytest.mark.parametrize("payload", TRAVERSAL_PAYLOADS)
+    def test_identifiers_are_checked(self, payload):
+        with pytest.raises(InvalidJobIdentifierError):
+            layout.edit_output_object(payload, JOB, 7, 1)
+
+    def test_a_negative_index_is_refused(self):
+        with pytest.raises(InvalidJobIdentifierError):
+            layout.edit_copy_photo_object(USER, JOB, -1, 1, "image")

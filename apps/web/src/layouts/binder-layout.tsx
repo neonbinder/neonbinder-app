@@ -1,8 +1,9 @@
-import { useState, useCallback } from "react";
-import { Outlet } from "react-router";
+import { useState, useCallback, type ReactNode } from "react";
+import { Outlet, useLocation } from "react-router";
 import BinderHeader from "@/components/modules/binder-header";
-import BinderTabs from "@/components/modules/binder-tabs";
+import BinderTabs, { type NavItem } from "@/components/modules/binder-tabs";
 import MobileNav from "@/components/modules/mobile-nav";
+import { isPickListPage } from "@/src/hooks/usePickDensity";
 
 /**
  * SCROLL HEADROOM — 208px of empty, non-interactive space below every page in
@@ -44,16 +45,30 @@ import MobileNav from "@/components/modules/mobile-nav";
  * within 208px of filling the fold — a page shorter than that still does not
  * scroll and gains no scrollbar.
  */
-export default function BinderLayout() {
+export default function BinderLayout({
+  navItems,
+  headerActions,
+}: {
+  /** The tabs to show; left out, the signed-in shell's (the dashboard demo passes its own, NEO-464). */
+  navItems?: NavItem[];
+  /** The header's right-hand controls; left out, the account controls. */
+  headerActions?: ReactNode;
+} = {}) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const closeMobileMenu = useCallback(() => setMobileMenuOpen(false), []);
+  // The Pick List's table takes the wide page whatever the row size, signed in and
+  // in the demo (NEO-598: Condensed fits more text on a line, so it needs the room
+  // too). Every other page keeps the 6xl column.
+  const { pathname, search } = useLocation();
+  const wide = isPickListPage(pathname, search);
 
   return (
     <div className="min-h-screen flex flex-col">
       <BinderHeader
         isMobileMenuOpen={mobileMenuOpen}
         onMobileMenuToggle={() => setMobileMenuOpen((prev) => !prev)}
+        actions={headerActions}
       />
       <div className="flex flex-1 relative">
         {/* min-w-0 lets this flex item shrink below its content's min-content
@@ -63,15 +78,15 @@ export default function BinderLayout() {
             min-width:auto pins main to its widest child, the document scrolls
             horizontally, and a deep column slides under the fixed nav (NEO-63). */}
         <main className="flex-1 min-w-0 lg:pr-[170px]">
-          <div className="max-w-6xl mx-auto p-6">
+          <div className={`${wide ? "max-w-[1600px]" : "max-w-6xl"} mx-auto p-6`}>
             <Outlet />
           </div>
           {/* Scroll headroom — read the SCROLL HEADROOM note on this component
               before changing or deleting this. */}
           <div aria-hidden="true" className="h-[208px]" />
         </main>
-        <BinderTabs />
-        {mobileMenuOpen && <MobileNav onClose={closeMobileMenu} />}
+        <BinderTabs items={navItems} />
+        {mobileMenuOpen && <MobileNav items={navItems} onClose={closeMobileMenu} />}
       </div>
     </div>
   );

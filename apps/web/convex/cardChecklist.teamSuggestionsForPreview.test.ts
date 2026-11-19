@@ -118,7 +118,8 @@ async function player(
   t: T,
   sportId: Id<"selectorOptions">,
   name: string,
-  teamYears: Array<{ teamId: Id<"teams">; fromYear: number; toYear?: number }> = [],
+  // NEO-569: `fromYear` absent = an undated stint.
+  teamYears: Array<{ teamId: Id<"teams">; fromYear?: number; toYear?: number }> = [],
 ) {
   return t.run((ctx) =>
     ctx.db.insert("players", {
@@ -331,6 +332,7 @@ describe("teamSuggestionsForPreview — gate and bounds", () => {
     ).resolves.toEqual({
       setYear: 1985,
       sportId: s.sportId,
+      setLeagueIds: [],
       setLeagueId: null,
       players: [],
       teamNames: [],
@@ -406,6 +408,7 @@ describe("teamSuggestionsForPreview — gate and bounds", () => {
     expect(result).toEqual({
       setYear: null,
       sportId: null,
+      setLeagueIds: [],
       setLeagueId: null,
       players: [{ playerId: null, answer: null, candidates: [] }],
       teamNames: [],
@@ -550,15 +553,14 @@ describe("teamSuggestionsForPreview — adversarial", () => {
 // ---------------------------------------------------------------------------
 
 /**
- * A baseball set whose sport carries `features.league: "MLB"` the way
- * `deriveSetLevelFeatures` writes it, with the two leagues a prospect plays
- * in, and an org + an affiliate + a college side.
+ * A baseball set carrying `leagueIds: [MLB]` (NEO-569: the default a new set
+ * is born with), with the two leagues a prospect plays in, and an org + an
+ * affiliate + a college side.
  */
 async function seedLeagues(t: T) {
   const s = await seed(t);
   return t.run(async (ctx) => {
     const now = Date.now();
-    await ctx.db.patch(s.sportId, { features: { league: "MLB" } });
     const league = (name: string, level: "major" | "minor" | "college", aliases?: string[]) =>
       ctx.db.insert("leagues", {
         name,
@@ -572,6 +574,8 @@ async function seedLeagues(t: T) {
     const npb = await league("Nippon Professional Baseball", "major");
     const il = await league("International League", "minor");
     const ncaa = await league("NCAA Division I", "college");
+    const setId = (await ctx.db.get(s.baseId))!.parentId!;
+    await ctx.db.patch(setId, { leagueIds: [mlb] });
     const team = (name: string, leagueId: Id<"leagues">) =>
       ctx.db.insert("teams", {
         name,
@@ -584,12 +588,12 @@ async function seedLeagues(t: T) {
     const bulls = await team("Durham Bulls", il);
     const fighters = await team("Nippon-Ham Fighters", npb);
     const badgers = await team("Wisconsin Badgers", ncaa);
-    return { ...s, mlb, npb, il, ncaa, rays, bulls, fighters, badgers };
+    return { ...s, setId, mlb, npb, il, ncaa, rays, bulls, fighters, badgers };
   });
 }
 
 describe("teamSuggestionsForPreview — league preference (C2b)", () => {
-  test("the set's league comes from features.league, resolved by its alias; the org is preferred over the affiliate", async () => {
+  test("the set's league is its leagueIds; the org is preferred over the affiliate", async () => {
     const t = convexTest(schema, modules);
     const s = await seedLeagues(t);
     const prospect = await player(t, s.sportId, "Prospect Guy", [
@@ -600,6 +604,7 @@ describe("teamSuggestionsForPreview — league preference (C2b)", () => {
       selectorOptionId: s.insertId,
       players: [{ playerId: prospect }],
     });
+    expect(result.setLeagueIds).toEqual([s.mlb]);
     expect(result.setLeagueId).toBe(s.mlb);
     expect(result.players[0].answer).toEqual({
       tier: "preferredInWindow",
@@ -652,22 +657,65 @@ describe("teamSuggestionsForPreview — league preference (C2b)", () => {
     });
   });
 
-  test("an operator's league on a nearer node wins over the sport's", async () => {
+  test("a nearer node's own leagues win over its set's", async () => {
     const t = convexTest(schema, modules);
     const s = await seedLeagues(t);
-    const setId = await t.run(async (ctx) => (await ctx.db.get(s.baseId))!.parentId!);
-    await t.run((ctx) => ctx.db.patch(setId, { features: { league: "NCAA Division I" } }));
+    await t.run((ctx) => ctx.db.patch(s.insertId, { leagueIds: [s.ncaa] }));
     const result = await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
       selectorOptionId: s.insertId,
       players: [],
     });
+    expect(result.setLeagueIds).toEqual([s.ncaa]);
     expect(result.setLeagueId).toBe(s.ncaa);
   });
 
-  test("no league row for the set's league → nothing is ranked, a tie stays a tie", async () => {
+  test("NEO-569: any of the set's leagues ranks 0", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedLeagues(t);
+    await t.run((ctx) => ctx.db.patch(s.setId, { leagueIds: [s.mlb, s.ncaa] }));
+    const journeyman = await player(t, s.sportId, "Two Level Guy", [
+      { teamId: s.badgers, fromYear: 1960, toYear: 1963 },
+      { teamId: s.fighters, fromYear: 1964, toYear: 1966 },
+      { teamId: s.rays, fromYear: 1967, toYear: 1970 },
+    ]);
+    const result = await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+      selectorOptionId: s.insertId,
+      players: [{ playerId: journeyman }],
+    });
+    expect(result.setLeagueIds).toEqual([s.mlb, s.ncaa]);
+    const rankOf = new Map(result.players[0].candidates.map((c) => [c.teamId, c.rank]));
+    expect(rankOf.get(s.rays)).toBe(0);
+    expect(rankOf.get(s.badgers)).toBe(0);
+    expect(rankOf.get(s.fighters)).toBe(1);
+    // Same-league first: the NPB side sorts after both.
+    expect(result.players[0].candidates.at(-1)?.teamId).toBe(s.fighters);
+  });
+
+  test("NEO-569: a set league of another sport is not ranked by", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedLeagues(t);
+    const otherLeague = await t.run(async (ctx) => {
+      const otherSport = (await ctx.db.get(s.jets))!.sportId;
+      return ctx.db.insert("leagues", {
+        name: "National Football League",
+        nameNormalized: normalizeLeagueName("National Football League"),
+        sportId: otherSport,
+        level: "major",
+        lastUpdated: Date.now(),
+      });
+    });
+    await t.run((ctx) => ctx.db.patch(s.setId, { leagueIds: [otherLeague] }));
+    const result = await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+      selectorOptionId: s.insertId,
+      players: [],
+    });
+    expect(result.setLeagueIds).toEqual([]);
+    expect(result.setLeagueId).toBeNull();
+  });
+
+  test("a set with no leagues → nothing is ranked, a tie stays a tie", async () => {
     const t = convexTest(schema, modules);
     const s = await seed(t);
-    await t.run((ctx) => ctx.db.patch(s.sportId, { features: { league: "MLB" } }));
     const traded = await player(t, s.sportId, "Traded Guy", [
       { teamId: s.reds, fromYear: 1980, toYear: 1984 },
       { teamId: s.phillies, fromYear: 1985 },
@@ -704,8 +752,7 @@ describe("teamSuggestionsForPreview — legends: a one-team career in the set's 
   test("the same legend on a college-league set is not pre-filled", async () => {
     const t = convexTest(schema, modules);
     const s = await seedLeagues(t);
-    const setId = await t.run(async (ctx) => (await ctx.db.get(s.baseId))!.parentId!);
-    await t.run((ctx) => ctx.db.patch(setId, { features: { league: "NCAA Division I" } }));
+    await t.run((ctx) => ctx.db.patch(s.setId, { leagueIds: [s.ncaa] }));
     const bench = await player(t, s.sportId, "Legend Guy", benchCareer(s));
     const [result] = (
       await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
@@ -763,6 +810,55 @@ describe("teamSuggestionsForPreview — legends: a one-team career in the set's 
       })
     ).players;
     expect(result.answer?.tier).toBe("oneTeamCareerInLeague");
+  });
+});
+
+describe("teamSuggestionsForPreview — NEO-569 undated stints (the Jackson Burns rule)", () => {
+  const ask = async (t: T, s: { insertId: Id<"selectorOptions"> }, playerId: Id<"players">) =>
+    (
+      await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+        selectorOptionId: s.insertId,
+        players: [{ playerId }],
+      })
+    ).players[0];
+
+  test("the player's one team in the set's leagues, undated, covers every year", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedLeagues(t);
+    await t.run((ctx) => ctx.db.patch(s.setId, { leagueIds: [s.ncaa] }));
+    const burns = await player(t, s.sportId, "Jackson Burns", [{ teamId: s.badgers }]);
+    const result = await ask(t, s, burns);
+    expect(result.answer?.teams.map((x) => x.teamId)).toEqual([s.badgers]);
+  });
+
+  test("an undated college stint never decides a pro set", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedLeagues(t);
+    const burns = await player(t, s.sportId, "Jackson Burns", [{ teamId: s.badgers }]);
+    const result = await ask(t, s, burns);
+    expect(result.answer).toBeNull();
+  });
+
+  test("two undated teams in the set's leagues → both ignored", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedLeagues(t);
+    const longhorns = await t.run((ctx) =>
+      ctx.db.insert("teams", {
+        name: "Texas Longhorns",
+        nameNormalized: normalizeTeamName("Texas Longhorns"),
+        sportId: s.sportId,
+        leagueId: s.ncaa,
+        lastUpdated: Date.now(),
+      }),
+    );
+    await t.run((ctx) => ctx.db.patch(s.setId, { leagueIds: [s.ncaa] }));
+    const transfer = await player(t, s.sportId, "Transfer Guy", [
+      { teamId: s.badgers },
+      { teamId: longhorns },
+    ]);
+    const result = await ask(t, s, transfer);
+    expect(result.answer).toBeNull();
+    expect(result.candidates).toEqual([]);
   });
 });
 

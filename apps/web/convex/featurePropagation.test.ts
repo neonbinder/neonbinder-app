@@ -31,6 +31,11 @@ import { Id } from "./_generated/dataModel";
 import { teamRowFields } from "./lib/teamRow";
 import { teamFullName } from "../lib/teams/team-name";
 import { insertTestCard } from "../lib/testing/card-row";
+import {
+  captureBscTeamLane,
+  runBscTeamLane,
+  type BscTeamLaneItem,
+} from "../lib/testing/bsc-team-lane";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -50,7 +55,7 @@ const modules = (import.meta as unknown as {
  */
 beforeEach(() => {
   // Fake timers file-wide: `processBscTeamEnrichmentQueue` walks the card list
-  // by RESCHEDULING ITSELF after BSC_TEAM_ENRICH_DELAY_MS (300ms) per card. On
+  // by RESCHEDULING ITSELF after BSC_TEAM_ENRICH_DELAY_MS (now 1.7 s) per card. On
   // real timers only the head runs inside the test — every remaining card is a
   // pending timeout that fires during whichever test happens to be running
   // next. That, not the head call, is what made this leak cross-test and
@@ -169,12 +174,12 @@ describe("setSelectorOptionFeature", () => {
 
     const result = await asAdmin.mutation(
       api.selectorOptions.setSelectorOptionFeature,
-      { selectorOptionId: subtree.sportId, key: "league", value: "MLB" },
+      { selectorOptionId: subtree.sportId, key: "subsetLabel", value: "MLB" },
     );
     expect(result).toBeNull();
 
     const root = await t.run(async (ctx) => ctx.db.get(subtree.sportId));
-    expect(root!.features?.league).toBe("MLB");
+    expect(root!.features?.subsetLabel).toBe("MLB");
 
     // Descendant nodes and cards — even though the OLD cascade would have
     // fill-absent-matched every one of them — must stay untouched.
@@ -184,11 +189,11 @@ describe("setSelectorOptionFeature", () => {
     const variantTypeNode = await t.run(async (ctx) =>
       ctx.db.get(subtree.variantTypeId),
     );
-    expect(setNameNode!.features?.league).toBeUndefined();
-    expect(variantTypeNode!.features?.league).toBeUndefined();
+    expect(setNameNode!.features?.subsetLabel).toBeUndefined();
+    expect(variantTypeNode!.features?.subsetLabel).toBeUndefined();
     for (const id of subtree.cardIds) {
       const card = await t.run(async (ctx) => ctx.db.get(id));
-      expect(card!.features?.league).toBeUndefined();
+      expect(card!.features?.subsetLabel).toBeUndefined();
     }
   });
 
@@ -199,39 +204,39 @@ describe("setSelectorOptionFeature", () => {
 
     await asAdmin.mutation(api.selectorOptions.setSelectorOptionFeature, {
       selectorOptionId: subtree.sportId,
-      key: "league",
+      key: "subsetLabel",
       value: "MLB",
     });
     await asAdmin.mutation(api.selectorOptions.setSelectorOptionFeature, {
       selectorOptionId: subtree.sportId,
-      key: "league",
+      key: "subsetLabel",
       value: "MLB-International",
     });
 
     const root = await t.run(async (ctx) => ctx.db.get(subtree.sportId));
-    expect(root!.features?.league).toBe("MLB-International");
+    expect(root!.features?.subsetLabel).toBe("MLB-International");
   });
 
   test("a descendant card that independently already holds the same value is not touched by an ancestor edit", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    // Card 0 already has league=MLB from its OWN fixture value (simulating
+    // Card 0 already has subsetLabel=MLB from its OWN fixture value (simulating
     // it having been resolved at its own creation, unrelated to the edit
     // below) — the edit must not be the reason it holds that value.
     const subtree = await seedSubtree(t, {
-      cardFeaturesPerIndex: { 0: { league: "MLB" } },
+      cardFeaturesPerIndex: { 0: { subsetLabel: "MLB" } },
     });
 
     await asAdmin.mutation(api.selectorOptions.setSelectorOptionFeature, {
       selectorOptionId: subtree.sportId,
-      key: "league",
+      key: "subsetLabel",
       value: "MLB",
     });
 
     const card0 = await t.run(async (ctx) => ctx.db.get(subtree.cardIds[0]));
-    expect(card0!.features?.league).toBe("MLB");
+    expect(card0!.features?.subsetLabel).toBe("MLB");
     const card1 = await t.run(async (ctx) => ctx.db.get(subtree.cardIds[1]));
-    expect(card1!.features?.league).toBeUndefined();
+    expect(card1!.features?.subsetLabel).toBeUndefined();
   });
 
   test("preserves other existing keys on the row when patching one key", async () => {
@@ -247,12 +252,12 @@ describe("setSelectorOptionFeature", () => {
 
     await asAdmin.mutation(api.selectorOptions.setSelectorOptionFeature, {
       selectorOptionId: subtree.sportId,
-      key: "league",
+      key: "subsetLabel",
       value: "MLB",
     });
 
     const root = await t.run(async (ctx) => ctx.db.get(subtree.sportId));
-    expect(root!.features?.league).toBe("MLB");
+    expect(root!.features?.subsetLabel).toBe("MLB");
     expect(root!.features?.manufacturer).toBe("Topps");
   });
 
@@ -279,7 +284,7 @@ describe("setSelectorOptionFeature", () => {
     await expect(
       asAdmin.mutation(api.selectorOptions.setSelectorOptionFeature, {
         selectorOptionId: subtree.sportId,
-        key: "league",
+        key: "subsetLabel",
         value: "MLB",
       }),
     ).rejects.toThrow();
@@ -567,36 +572,29 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
       api.selectorOptions.addCustomSelectorOption,
       { level: "sport", value: "Baseball" },
     );
-    // auto: sportId.features = { league: "MLB" }
+    // NEO-569: a sport row derives no league any more.
 
     const setNameId = await asAdmin.mutation(
       api.selectorOptions.addCustomSelectorOption,
       { level: "setName", value: "2024 Topps", parentId: sportId },
     );
-    // auto: copies league="MLB" down from sport + own isReprint="false"
+    // auto: own isReprint="false"
 
     // Operator overrides at the setName level, BEFORE the variantType child
     // exists, so copy-down carries them forward. `subsetLabel` has no
     // deriver at all — proves an arbitrary key still flows through
-    // copy-down. Overriding `league` here (deeper than sport's auto value)
-    // proves deeper-wins now happens via copy-down timing, not a cascade.
+    // copy-down.
     await asAdmin.mutation(api.selectorOptions.setSelectorOptionFeature, {
       selectorOptionId: setNameId,
       key: "subsetLabel",
       value: "Flagship",
     });
-    await asAdmin.mutation(api.selectorOptions.setSelectorOptionFeature, {
-      selectorOptionId: setNameId,
-      key: "league",
-      value: "MLB-Flagship",
-    });
-
     const variantTypeId = await asAdmin.mutation(
       api.selectorOptions.addCustomSelectorOption,
       { level: "variantType", value: "Base", parentId: setNameId },
     );
-    // auto: copies league="MLB-Flagship", subsetLabel="Flagship",
-    // isReprint="false" down from setName + own cardType="Base"
+    // auto: copies subsetLabel="Flagship", isReprint="false" down from
+    // setName + own cardType="Base"
 
     await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
@@ -651,9 +649,8 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
 
     expect(cards).toHaveLength(2);
     for (const card of cards) {
-      // setName's override survived copy-down onto the leaf, and from
-      // there onto the card — proves deeper-wins without any cascade.
-      expect(card.features?.league).toBe("MLB-Flagship");
+      // NEO-569: the retired League is never minted or copied.
+      expect(card.features).not.toHaveProperty("league");
       // Arbitrary non-heuristic key flows through copy-down untouched.
       expect(card.features?.subsetLabel).toBe("Flagship");
       // Own-level heuristic at the leaf (variantType).
@@ -791,9 +788,11 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
     const c1 = byNumber.get("1")!;
     const c2 = byNumber.get("2")!;
 
-    // Inherited from the leaf node's snapshot.
-    expect(c1.features?.league).toBe("MLB");
-    expect(c2.features?.league).toBe("MLB");
+    // NEO-569: the leaf's legacy `league` is NOT copied onto a new card
+    // (`mergeCardFeatures` drops retired keys); the card's league is
+    // `cardChecklist.leagueId`.
+    expect(c1.features).not.toHaveProperty("league");
+    expect(c2.features).not.toHaveProperty("league");
 
     // Derived from per-card columns — wins over the inherited snapshot.
     expect(c1.features?.isRookie).toBe("true");
@@ -1106,7 +1105,7 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
   // carries neither the player names (they are behind `playerIds`) nor the set
   // name (an ancestor walk), so "did the core fit?" is not a question the row
   // can answer about itself. See `cardChecklist.listingTitleTruncated`.
-  test("an overflowing core writes listingTitleTruncated: true", async () => {
+  test("a title that lost a first name writes listingTitleTruncated: true (NEO-535)", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
@@ -1153,13 +1152,16 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
         .collect(),
     );
 
+    // NEO-535: the number and the first word "An" are cut; the rest of the
+    // name is never cut, so the title STOPs over the cap. The flag puts the
+    // card on the Card titles step for the first name; the length raises
+    // `titleOverLimit` besides. No ellipsis, nothing sliced.
     expect(card.listingTitleTruncated).toBe(true);
-    // Still a VALID, listable title — cut at a whole word, no ellipsis, card
-    // number intact. The flag says "a human should put the missing words
-    // back", not "this is broken".
-    expect(card.listingTitle!.length).toBeLessThanOrEqual(80);
+    expect(card.listingTitle).toBe(
+      "2024 Topps Chrome Absurdly Long Player Full Name That Alone Exceeds The Entire Title Budget",
+    );
+    expect(card.listingTitle!.length).toBeGreaterThan(80);
     expect(card.listingTitle).not.toContain("…");
-    expect(card.listingTitle!.endsWith("#99999")).toBe(true);
   });
 
   test("a card whose core fits omits listingTitleTruncated entirely", async () => {
@@ -1270,7 +1272,7 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
     );
 
     expect(card.listingTitle).toBe(
-      "2024 Topps Chrome Julio Rodriguez #12 RC Seattle Mariners Rookie Baseball",
+      "2024 Topps Chrome Base Julio Rodriguez #12 RC Seattle Mariners Rookie Baseball",
     );
     // The old generator stopped at 37 characters here. Sold listings average
     // 70; this is the whole point of the change.
@@ -1330,13 +1332,15 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
         .collect(),
     );
     expect(card.listingTitle).toBe(
-      "2024 Topps Chrome Julio Rodriguez #300b Image Variation Baseball",
+      "2024 Topps Chrome Base Julio Rodriguez #300b Image Variation Baseball",
     );
     // Once, not twice: `deriveCardObservedFeatures` also copies cardVariation
-    // into `features.parallelName`, so the identity sentence already names it.
+    // into `features.parallelName`; a parallel that IS the variation is stated
+    // as the variation only (NEO-535 gives it its own line).
     expect(card.listingDescription).toBe(
-      "2024 Topps Chrome Image Variation card of Julio Rodriguez, #300b.",
+      "2024 Topps Chrome card of Julio Rodriguez, #300b.\nVariation: Image Variation.\nSport: Baseball.",
     );
+    expect(card.listingDescription!.split("Image Variation")).toHaveLength(2);
   });
 });
 
@@ -1392,12 +1396,20 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
     );
   }
 
+  // PR 451 (NEO-487): the commit queues the card on the `bscTeamPool` lane,
+  // a workpool component convex-test cannot register. The pool's enqueue is
+  // captured and the lane run by hand after the drain
+  // (lib/testing/bsc-team-lane.ts); the item's pacing pause elapses in real
+  // time.
+  let lane: BscTeamLaneItem[] = [];
   beforeEach(() => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    lane = captureBscTeamLane();
   });
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   test("a new card with a BSC ref and no team is LINKED to the team BSC names", async () => {
@@ -1453,8 +1465,9 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
       ],
     });
 
-    // Drain the scheduled processBscTeamEnrichmentQueue chain.
+    // Drain the commit's scheduled enqueue, then run the lane it fed.
     await t.finishAllScheduledFunctions(vi.runAllTimers);
+    await runBscTeamLane(t, lane);
 
     // The enrichment called BSC for THIS card and nothing else. Asserting the
     // exact call list (not just "contains") is what makes a stray request from
@@ -1526,6 +1539,7 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
     });
 
     await t.finishAllScheduledFunctions(vi.runAllTimers);
+    await runBscTeamLane(t, lane);
 
     // The lookup still HAPPENED — this is a miss, not a skip.
     expect(fetchedUrls).toEqual([
@@ -1600,6 +1614,7 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
     });
 
     await t.finishAllScheduledFunctions(vi.runAllTimers);
+    await runBscTeamLane(t, lane);
     expect(bscFetchCalled).toBe(false);
 
     const cards = await t.run(async (ctx) =>
@@ -1657,6 +1672,7 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
     });
 
     await t.finishAllScheduledFunctions(vi.runAllTimers);
+    await runBscTeamLane(t, lane);
     expect(bscFetchCalled).toBe(false);
   });
 });
