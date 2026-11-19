@@ -5,10 +5,12 @@
 // or a Back step does not replay the return, and the analytics calls the page
 // makes along the way never carry what eBay sent.
 //
-// Needs the deployment wired to eBay (it FAILS loudly, naming the setup, when
-// it is not: `expectEbayHookedUp`), but no seller account: the code is a
-// made-up marker with a state NeonBinder never issued, so the server refuses it
-// in NeonBinder's words (the copy itself is held by `ebay-return-and-errors`).
+// Needs the deployment wired to eBay (on a test deployment, the stand-in eBay,
+// NEO-555; it FAILS loudly, naming the setup, when eBay is not wired at all:
+// `expectEbayHookedUp`), but no seller: the code is a made-up marker with a
+// state NeonBinder never issued, so the server refuses it in NeonBinder's words
+// before any eBay call (the copy itself is held by `ebay-return-and-errors`,
+// which also follows Connect to the stand-in's consent page and declines there).
 // Under an eBay pause the panel offers no Connect, so the paused branch asserts
 // that and stops (R2). R7: connects nothing and removes nothing.
 //

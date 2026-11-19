@@ -197,7 +197,7 @@ function isShownSetupStep(step: typeof ebaySetupStepValidator.type): step is Sho
 
 const connectionStateValidator = v.object({
   configured: v.boolean(),
-  environment: v.union(v.literal("sandbox"), v.literal("production"), v.null()),
+  environment: v.union(v.literal("sandbox"), v.literal("production"), v.literal("fake"), v.null()),
   status: v.union(
     v.literal("notConnected"),
     v.literal("connected"),
@@ -365,6 +365,9 @@ export function returnStateFor(
   environment: EbayEnvironment,
 ): string {
   if (returnOrigin === undefined || returnOrigin.length === 0) return nonce;
+  // NEO-555: the fake's consent page is this deployment's own testing route,
+  // so there is no hop through eBay's return page to steer: the bare nonce.
+  if (environment === "fake") return nonce;
   if (returnOrigin.length > MAX_RETURN_ORIGIN_LENGTH) return nonce;
   let parsed: URL;
   try {

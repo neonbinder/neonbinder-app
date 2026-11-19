@@ -5,7 +5,7 @@ metadata:
   type: pattern
 ---
 
-A full local run (`--project=e2e|e2e-mobile --no-deps --grep-invert @marketplace-seller`,
+A full local run (`--project=e2e|e2e-mobile --no-deps`, nothing excluded since NEO-555,
 `WORKER_INDEX=0`, `--output=<scratch>` so failure artifacts survive) squeezes what CI
 spreads over 8 accounts onto one. Reds that are the run, not the product:
 

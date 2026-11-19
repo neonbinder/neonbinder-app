@@ -74,6 +74,8 @@ const TestSeedPlaceholderRun = lazy(() => import("@/app/testing/seed-placeholder
 const TestFailPlaceholderEntry = lazy(() => import("@/app/testing/fail-placeholder-entry/page"));
 const TestSeedPickOrder = lazy(() => import("@/app/testing/seed-pick-order/page"));
 const TestBscFake = lazy(() => import("@/app/testing/bsc-fake/page"));
+const TestEbayFake = lazy(() => import("@/app/testing/ebay-fake/page"));
+const TestFakeEbayAuthorize = lazy(() => import("@/app/testing/fake-ebay/authorize/page"));
 const Dashboard = lazy(loadDashboard);
 const ProfilePublic = lazy(loadProfilePublic);
 const ProfileCredentials = lazy(() => import("@/app/profile/credentials/page"));
@@ -234,6 +236,10 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
           <Route path="/testing/seed-pick-order" element={<Deferred><TestSeedPickOrder /></Deferred>} />
           {/* NEO-552: sets and clears the caller's fake BuySportsCards faults, orders and the BSC call gate. */}
           <Route path="/testing/bsc-fake" element={<Deferred><TestBscFake /></Deferred>} />
+          {/* NEO-555: sets up the caller's fake eBay seller and orders, and runs their sales poll now. */}
+          <Route path="/testing/ebay-fake" element={<Deferred><TestEbayFake /></Deferred>} />
+          {/* NEO-555: the fake eBay's consent screen; Connect lands here on a deployment wired to the fake. */}
+          <Route path="/testing/fake-ebay/authorize" element={<Deferred><TestFakeEbayAuthorize /></Deferred>} />
 
           {/* Protected routes — wrapped in binder shell */}
           <Route element={<ProtectedLayout />}>

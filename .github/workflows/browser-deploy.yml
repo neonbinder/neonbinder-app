@@ -178,43 +178,6 @@ jobs:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
-      - id: ebay
-        name: Preflight eBay config (sandbox, dev project)
-        env:
-          EBAY_CLIENT_ID: ${{ vars.EBAY_CLIENT_ID_SANDBOX }}
-          EBAY_RU_NAME: ${{ vars.EBAY_RU_NAME_SANDBOX }}
-          GCP_PROJECT: neonbinder-dev
-        # NEO-415. Fail the deploy loudly rather than ship a revision whose eBay
-        # routes answer 503 ebay_not_configured, or hand Cloud Run a secret
-        # reference whose latest version is not enabled (an opaque deploy
-        # failure). Resolves `latest` to its number and pins that number in the
-        # deploy: Cloud Run reads secret env vars at instance start, so a
-        # floating :latest would take a newly added version live on the next
-        # cold start without a deploy. Needs the deployer's viewer grant on the
-        # secret (neonbinder_ioc).
-        run: |
-          set -uo pipefail
-          missing=()
-          [ -n "$EBAY_CLIENT_ID" ] || missing+=("repo variable EBAY_CLIENT_ID_SANDBOX")
-          [ -n "$EBAY_RU_NAME" ] || missing+=("repo variable EBAY_RU_NAME_SANDBOX")
-          if ! out=$(gcloud secrets versions describe latest \
-              --secret=ebay-client-secret --project="$GCP_PROJECT" \
-              --format='value(state,name)' 2>&1); then
-            missing+=("secret ebay-client-secret readable in $GCP_PROJECT (gcloud: $(printf '%s' "$out" | head -n1))")
-          else
-            state=$(printf '%s' "$out" | awk '{print $1}')
-            version=$(printf '%s' "$out" | awk '{print $2}' | awk -F/ '{print $NF}')
-            if [ "$state" != "ENABLED" ] || ! [[ "$version" =~ ^[0-9]+$ ]]; then
-              missing+=("the latest version of secret ebay-client-secret in $GCP_PROJECT to be ENABLED (state: $state)")
-            else
-              echo "version=$version" >> "$GITHUB_OUTPUT"
-            fi
-          fi
-          if [ "${#missing[@]}" -gt 0 ]; then
-            for m in "${missing[@]}"; do echo "::error::eBay config missing: $m"; done
-            echo "::error::See NEO-415. Set the repo variables with gh variable set and add the secret version with gcloud secrets versions add ebay-client-secret."
-            exit 1
-          fi
       # NEO-552: dev talks to the FAKE BSC. Never set in the prod lane below.
       - id: fakebsc
         name: Preflight fake BSC config (dev project)
@@ -246,19 +209,17 @@ jobs:
           project_id: neonbinder-dev
           env_vars: |
             ENVIRONMENT=dev
-            EBAY_CLIENT_ID=${{ vars.EBAY_CLIENT_ID_SANDBOX }}
-            EBAY_RU_NAME=${{ vars.EBAY_RU_NAME_SANDBOX }}
-            EBAY_ENVIRONMENT=sandbox
             NEONBINDER_FAKE_BSC_URL=${{ vars.NEONBINDER_FAKE_BSC_URL }}
           secrets: |
-            EBAY_CLIENT_SECRET=ebay-client-secret:${{ steps.ebay.outputs.version }}
             NEONBINDER_FAKE_BSC_KEY=fake-bsc-caller-key:${{ steps.fakebsc.outputs.version }}
           no_traffic: true
           tag: ${{ needs.build-push.outputs.deploy_tag }}
           # Cost control (NEO-95): min-instances=0 intentionally, allow cold start.
           # env_vars MERGES, so a PREVIEW_SHA a pr-<N> preview left on the
-          # service template (browser.yml, NEO-555) would carry over; remove it.
-          flags: '--min-instances=0 --max-instances=20 --remove-env-vars=PREVIEW_SHA'
+          # service template (browser.yml, NEO-555) would carry over; remove it. The
+          # sandbox eBay config an older dev revision carried goes the same way: eBay
+          # is the fake on dev (NEO-555). The prod lane below is unchanged.
+          flags: '--min-instances=0 --max-instances=20 --remove-env-vars=PREVIEW_SHA,EBAY_CLIENT_ID,EBAY_RU_NAME,EBAY_ENVIRONMENT --remove-secrets=EBAY_CLIENT_SECRET'
       - id: capture-new
         name: Capture new dev revision + tagged URL
         env:
