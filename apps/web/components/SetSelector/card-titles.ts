@@ -61,6 +61,12 @@ export interface PreviewCardForTitles {
   team?: string;
   teams?: string[];
   players?: string[];
+  /**
+   * NEO-574 — a printed name the operator pointed at a different existing
+   * player in the career step. The commit titles that card with the picked
+   * player's own name, so this does too (`TitleNameSources.playerNameById`).
+   */
+  playerIdByName?: ReadonlyArray<{ name: string; playerId: string }>;
   attributes?: string[];
   isRookie?: boolean;
   isRelic?: boolean;
@@ -117,6 +123,8 @@ export interface TitleNameSources {
   linkedTeamNameById?: ReadonlyMap<string, string>;
   /** Team id → full name, for the ids in a card's team answer (`teamIdNamesFromGroups`). */
   teamNameById?: ReadonlyMap<string, string>;
+  /** NEO-574 — Player id → name, for the players a career-step relink picked. */
+  playerNameById?: ReadonlyMap<string, string>;
   /**
    * NEO-606 — the Location / Name of the teams in the two maps above (and any
    * the operator picked), so a title can give a team's location up before the
@@ -129,6 +137,7 @@ const norm = (raw: string): string => normalizeEntityName(raw.trim());
 
 interface NameIndex {
   player: (printed: string) => string | null;
+  playerById: (id: string) => string | null;
   team: (printed: string) => string | null;
   teamById: (id: string) => string | null;
   /**
@@ -197,6 +206,9 @@ function nameIndex(context: TitleContext, sources: TitleNameSources | undefined)
     teamById(id) {
       return sources?.teamNameById?.get(id) ?? null;
     },
+    playerById(id) {
+      return sources?.playerNameById?.get(id) ?? null;
+    },
   };
 }
 
@@ -224,7 +236,11 @@ function cardNames(
 } {
   let playerNames: string[] = [];
   for (const p of card.players ?? []) {
-    const name = index.player(p);
+    // NEO-574 — a name the operator relinked to another player is that
+    // player's, as the commit writes it. A relinked player whose name has not
+    // arrived yet falls back to the printed name's own reading.
+    const relinked = card.playerIdByName?.find((r) => norm(r.name) === norm(p));
+    const name = (relinked && index.playerById(relinked.playerId)) || index.player(p);
     if (name) playerNames.push(name);
   }
   // NEO-528 — a new card whose listing names nobody is born with the row's

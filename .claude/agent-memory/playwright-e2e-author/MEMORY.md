@@ -79,6 +79,9 @@
 ## From the NEO-552 consolidation
 - [Local run backend, Vite, previews](patterns_local_run_backend_and_vite.md) — function-spec check, one Vite per worktree, CI seed resets
 - [BSC budget rules and the SportLots helper](patterns_bsc_budget_rules_and_sportlots_helper.md) — rules 1-3, expectStepWithSportLots, TSV mis-match trap
+- [NEO-574 career check step](patterns_career_check_step_neo574.md) — handles, advanceToSave guard 5, prefill, both sides checked, 6b year-rule staging
+- [Planted break in convex/ code](reference_planted_break_on_convex_code.md) — linked-worktree copy named like the ticket; script pushes it; frozen wrapper
+- [Console check from traces + Vite log](patterns_console_check_from_traces_and_vite_log.md) — --trace=on outside repo, scan JSONL; Vite 8 forwards client console; baseline = PostHog+Clerk warns
 - [Set League and card League specs](patterns_set_league_and_card_league_specs.md) — NEO-569 handles, born-with-MLB needs real sport, noLeague dashboard Report scoping
 - [Near-match absence proved by the same locator](patterns_near_match_absence_proved_by_the_same_locator.md) — NEO-578: pin row count, flip query so the locator matches; admin add form = minted route
 - [Set-level No Team spec shape](patterns_set_no_team_spec_shape.md) — NEO-556: pressed-role toggles, cascade replaces the save toast, run ledger handles, badge proves teamless

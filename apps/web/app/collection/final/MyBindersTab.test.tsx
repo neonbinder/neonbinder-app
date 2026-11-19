@@ -74,6 +74,9 @@ afterEach(() => {
   window.sessionStorage.clear();
 });
 
+/** Resolves once a frame has run after the caller's: the status line writes its words in one (NEO-529), so a "says nothing" check is only meaningful after this. */
+const afterFrame = () => act(async () => { await new Promise<void>((resolve) => requestAnimationFrame(() => resolve())); });
+
 describe("My Binders", () => {
   it("puts All my cards, Want List, Up for Trade and the Inventory long box on their own shelf", () => {
     renderBinders();
@@ -284,11 +287,12 @@ describe("My Binders", () => {
     expect(screen.queryByRole("group", { name: /^Where should/ })).toBeNull();
   });
 
-  it("a single character is below the search minimum: the hunt says nothing and guesses nothing", () => {
+  it("a single character is below the search minimum: the hunt says nothing and guesses nothing", async () => {
     renderBinders("/collection?tab=binders&all=1");
     const search = screen.getByRole("searchbox", { name: "Hunt for one of your cards" });
     fireEvent.change(search, { target: { value: "1" } });
     fireEvent.keyDown(search, { key: "Enter" });
+    await afterFrame();
     expect(screen.getAllByRole("status").some((s) => /we won't guess/.test(s.textContent ?? ""))).toBe(false);
     expect(screen.queryByRole("group", { name: /^Where should/ })).toBeNull();
     expect(screen.queryByRole("list", { name: "In your binders" })).toBeNull();
@@ -1011,6 +1015,7 @@ describe("the scope files new cards into the scoped home", () => {
     const have = screen.getAllByRole("button", { name: /^Have #/ }).find((b) => b.getAttribute("aria-pressed") === "false")!;
     expect(have.getAttribute("aria-disabled")).toBe("true");
     fireEvent.click(have);
+    await afterFrame();
     expect(have.getAttribute("aria-pressed")).toBe("false");
     expect(screen.getAllByRole("status").some((s) => /^Added /.test(s.textContent ?? ""))).toBe(false);
     expect((screen.getByRole("textbox", { name: "Mark a range as Have" }) as HTMLInputElement).disabled).toBe(true);

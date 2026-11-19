@@ -239,6 +239,7 @@
 - [Neo535 rename fan-out + title chain](patterns_neo535_rename_fanout_and_title_chain.md) — per-row probe × row cap in budget doors; value-keyed chain stop ≠ generation; fan-out skips eBay requeue; chained second leg doubles cap; merge --cc audit
 - [Neo552 fake upstream + recorder](patterns_neo552_fake_upstream_and_recorder.md) — unsigned token trusts IAM; miss list; NaN cap; probe leaks; TOCTOU; prefix delete via ..; mode guard; undo-by-SKU namespace
 - [Neo552 fake upstream + recorder](patterns_neo552_fake_upstream_and_recorder.md) — unsigned token trusts IAM; miss list; NaN cap; TOCTOU; .. prefix; SKU ns; durable list needs write rate; sweep only older versions
+- [Neo574 client id override](patterns_neo574_client_id_override.md) — per-card id override + stint writer: validator shape that held; dedupe gap
 - [Neo556 copied-down decision stamp](patterns_neo556_copied_down_decision_stamp.md) — server-minted {setAt,setByUserId} copied down + reused for background stamps; cursor {i,t,c,r}; one bool two caps
 - [Merge guard survival; bscTeamPool enqueue](patterns_merge_resolution_guard_survival_and_bsc_lane_enqueue.md) — comm -23 line-survival check for merges; one-slot lane enqueue is bounded if admin/internal + row re-read
 - [Cross-workflow preview wait](patterns_cross_workflow_preview_wait.md) — waiter gate ⊆ builder's merge_group scope; tag-exists wait = stale revision

@@ -53,6 +53,8 @@ const adding = () => screen.getByRole("combobox", { name: "Adding to" }) as HTML
 const qty = () => screen.getAllByRole("textbox", { name: /^Quantity of / }) as HTMLInputElement[];
 const says = (re: RegExp) => screen.getAllByRole("status").some((s) => re.test(s.textContent ?? ""));
 const flush = () => act(async () => {});
+/** Resolves once a frame has run after the caller's: the status line writes its words in one (NEO-529), so a "says nothing" check is only meaningful after this. */
+const afterFrame = () => act(async () => { await new Promise<void>((resolve) => requestAnimationFrame(() => resolve())); });
 
 /** The numbers on the rows, in the order the list shows them. */
 const numbers = () => qty().map((el) => /Quantity of #(\S+) /.exec(el.getAttribute("aria-label") ?? "")![1]);
@@ -161,7 +163,8 @@ describe("the inventory's checklist", () => {
     fireEvent.change(b, { target: { value: "" } });
     fireEvent.blur(b);
     await flush();
-    expect(says(/^Boxed 3 more of /)).toBe(true);
+    await afterFrame();
+    await waitFor(() => expect(says(/^Boxed 3 more of /)).toBe(true));
     expect(says(/Nothing changed/)).toBe(false);
     expect(b.value).toBe("0");
     fireEvent.click(screen.getAllByRole("button", { name: "Undo" })[0]);

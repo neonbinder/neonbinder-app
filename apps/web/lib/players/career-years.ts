@@ -75,3 +75,43 @@ export const MIN_BIRTH_YEAR = 1850;
 export function maxBirthYear(now: Date = new Date()): number {
   return now.getFullYear();
 }
+
+/**
+ * The loose bounds a career stint's years have to sit inside, in the one place
+ * both writers can reach.
+ *
+ * NEO-574 moved it here from `entityReviewQueue.ts` so the commit's career-stint
+ * phase checks the same bounds. NEO-248 put a SECOND route into the same numbers — `stageCareerTeamRows` now
+ * carries the operator's years so the wizard can rebuild the chip after the
+ * team's own step, and years that reach `entityReviewQueue.source` must be
+ * exactly as well-formed as the ones that reach `decision.manualCareerTeams`,
+ * because the same pair ends up in `players.teamYears` either way. Two copies
+ * of the rule is how one of them drifts.
+ *
+ * `forName` reproduces `recordDecision`'s existing message verbatim — those
+ * strings are asserted — and is omitted by the staging path, where the caller
+ * is answering for one entry at a time and the name adds nothing.
+ */
+export function assertCareerStintYears(
+  fromYear: number,
+  toYear: number | undefined,
+  maxYear: number,
+  forName?: string,
+): void {
+  const suffix = forName === undefined ? "" : ` for "${forName}"`;
+  if (
+    !Number.isInteger(fromYear) ||
+    fromYear < MIN_CAREER_YEAR ||
+    fromYear > maxYear
+  ) {
+    throw new Error(
+      `Invalid career-team fromYear ${fromYear}${suffix} (expected an integer in ${MIN_CAREER_YEAR}–${maxYear})`,
+    );
+  }
+  if (toYear === undefined) return;
+  if (!Number.isInteger(toYear) || toYear > maxYear || toYear < fromYear) {
+    throw new Error(
+      `Invalid career-team toYear ${toYear}${suffix} (expected an integer between fromYear ${fromYear} and ${maxYear})`,
+    );
+  }
+}

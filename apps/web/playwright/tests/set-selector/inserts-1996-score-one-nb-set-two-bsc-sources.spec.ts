@@ -32,6 +32,7 @@ import {
   LOOKUPS,
   newStepHeading,
   nextStepButton,
+  passCareerAndTeamsSteps,
   readStep,
   reviewWizard,
   stepCounter,
@@ -165,11 +166,11 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await expect(next.or(confirmSave)).toBeVisible();
 
   // ── P4. THE CARD TITLES STEP ──
-  // Which post-name step came first: teams only when a card would save teamless (every card
-  // here carries the checklist's team, so normally not); Next leaves its lines on their default.
-  const subtitle = wizard.getByText(/^(Cards with no team|Card titles|Ready to save)$/);
-  await expect(subtitle).toBeVisible();
-  if ((await subtitle.textContent()) === "Cards with no team") await next.click();
+  // Which post-name steps come first: the career check (NEO-574) when a known player's career
+  // does not show a card's team for 1996, teams only when a card would save teamless (every
+  // card here carries the checklist's team, so normally not); Next leaves their lines on
+  // their default ("Keep as is", "Leave for later").
+  await passCareerAndTeamsSteps(page);
   await expect(wizard.getByText("Card titles", { exact: true })).toBeVisible();
   await expect(
     wizard.getByRole("heading", {
@@ -490,14 +491,11 @@ test(
     // verbatim, it rides the commit as the batch's `listingShortName`, and STEP
     // 5 reads it back off a stored card. ONE alphanumeric token per attempt.
     const short = `DCAP${env.ATTEMPT_TOKEN}`;
-    // Which post-name step came first: the teams step only when a card would save
-    // teamless (this fetch names its teams, so usually not). Teams are not this
-    // spec's business: Next leaves every line on its default.
-    const subtitle = wizard.getByText(/^(Cards with no team|Card titles|Ready to save)$/);
-    await expect(subtitle).toBeVisible();
-    if ((await subtitle.textContent()) === "Cards with no team") {
-      await next.click();
-    }
+    // Which post-name steps come first: the career check (NEO-574) when a known
+    // player's career does not show a card's team for 1996, the teams step only when
+    // a card would save teamless (this fetch names its teams, so usually not).
+    // Neither is this spec's business: Next leaves every line on its default.
+    await passCareerAndTeamsSteps(page);
     await expect(wizard.getByText("Card titles", { exact: true })).toBeVisible();
     const shortName = wizard.getByRole("textbox", { name: "Set name in titles", exact: true });
     // The prefill: the builder's whole description, year, maker and the insert
@@ -568,7 +566,9 @@ test(
       // The precondition, by name: no names to decide, and a post-name step is
       // the sitting's first.
       await expect(wizard.getByRole("button", { name: /Skip remaining names/ })).toBeHidden();
-      await expect(wizard.getByText(/^(Cards with no team|Card titles)$/)).toBeVisible();
+      // NEO-574: "Career check" too (its subtitle and heading read the same, so `.first()`:
+      // any one of these subtitles is the post-name step being up).
+      await expect(wizard.getByText(/^(Career check|Cards with no team|Card titles)$/).first()).toBeVisible();
       await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
       // Teams are not this spec's business: Next leaves every line on its default.
       await advanceToSave(page);

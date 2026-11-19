@@ -52,6 +52,7 @@ vi.mock("../../convex/_generated/api", () => ({
 }));
 
 let currentTeams: unknown;
+let mapped: { source: unknown; rows: unknown[] } | undefined;
 let queryCalls: Array<{ ref: string; args: unknown }>;
 
 vi.mock("convex/react", () => ({
@@ -60,9 +61,17 @@ vi.mock("convex/react", () => ({
     if (args === "skip") return undefined;
     if (ref === "teams.pickerCandidates") {
       if (!Array.isArray(currentTeams)) return currentTeams;
-      return currentTeams.map((row: Record<string, unknown>) =>
-        "team" in row ? row : { team: row, tier: 4 },
-      );
+      // Stable between renders, as Convex's is: the component holds the last
+      // answer by identity, so a fresh array per call would never settle.
+      if (mapped?.source !== currentTeams) {
+        mapped = {
+          source: currentTeams,
+          rows: currentTeams.map((row: Record<string, unknown>) =>
+            "team" in row ? row : { team: row, tier: 4 },
+          ),
+        };
+      }
+      return mapped.rows;
     }
     return undefined;
   },
@@ -98,6 +107,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
   currentTeams = [];
+  mapped = undefined;
   queryCalls = [];
 });
 
@@ -438,7 +448,37 @@ describe("CareerTeamEntry — 'Did you mean' prompt", () => {
     renderEntry();
 
     typeName("NY Yankees");
+    // The list is open and already offers that team, so the prompt waits...
+    expect(screen.getByRole("option", { name: "Use New York Yankees" })).toBeTruthy();
+    expect(screen.queryByText(/Did you mean/)).toBeNull();
 
+    // ...and shows once the list is closed.
+    fireEvent.keyDown(screen.getByLabelText("Career team name"), { key: "Escape" });
+    expect(screen.queryAllByRole("option")).toHaveLength(0);
+    expect(
+      screen.getByRole("button", { name: "Did you mean New York Yankees?" }),
+    ).toBeTruthy();
+  });
+
+  it("says nothing while the open list already offers the team it would name", () => {
+    renderEntry({ stagedNames: ["New York Yankees"] });
+
+    typeName("New York Yankee");
+
+    expect(screen.getByRole("option", { name: "Use New York Yankees" })).toBeTruthy();
+    expect(screen.queryByText(/Did you mean/)).toBeNull();
+  });
+
+  it("shows beside an open list that offers a different team", () => {
+    // The server returns a row that is not the near match: the list is open,
+    // but it does not list the team the prompt would name.
+    currentTeams = [makeTeam("Hudson Valley Renegades", "t9")];
+    renderEntry({ stagedNames: ["New York Yankees"] });
+
+    typeName("NY Yankees");
+
+    expect(screen.getByRole("option", { name: "Use Hudson Valley Renegades" })).toBeTruthy();
+    expect(screen.queryByRole("option", { name: "Use New York Yankees" })).toBeNull();
     expect(
       screen.getByRole("button", { name: "Did you mean New York Yankees?" }),
     ).toBeTruthy();
@@ -558,6 +598,9 @@ describe("CareerTeamEntry — one box", () => {
 
     // The nickname alone is a near match against "San Diego Padres"...
     typeName("Padres");
+    // The open list offers it already; the prompt shows once the list is closed.
+    expect(screen.queryByText(/Did you mean/)).toBeNull();
+    fireEvent.keyDown(screen.getByLabelText("Career team name"), { key: "Escape" });
     expect(screen.getByText("Did you mean San Diego Padres?")).toBeTruthy();
 
     // ...and typing the whole name is an EXACT one, so there is nothing to
@@ -766,6 +809,425 @@ describe("CareerTeamEntry — dismissing the suggestion list", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// NEO-574 — a list that only echoes the box does not cover + Add
+// ---------------------------------------------------------------------------
+
+describe("CareerTeamEntry — whole team name typed (NEO-574)", () => {
+  const listbox = () => screen.queryByRole("listbox", { name: "Existing team suggestions" });
+  const RIVERKINGS = makeTeam("Memphis RiverKings", "t-rk");
+  const RIVERKINGS_II = makeTeam("Memphis RiverKings II", "t-rk2");
+  const nameBox = () => screen.getByLabelText("Career team name") as HTMLInputElement;
+
+  it("shows no list once the box holds a known team's whole name, so + Add is clickable", () => {
+    // The list is an overlay under the field: it used to sit on the years and
+    // + Add, and a click on + Add picked a suggestion instead of adding.
+    currentTeams = [RIVERKINGS, RIVERKINGS_II];
+    const { onAdd } = renderEntry();
+
+    typeName("Memphis RiverKings");
+
+    expect(listbox()).toBeNull();
+    expect(nameBox().getAttribute("aria-expanded")).toBe("false");
+
+    fireEvent.change(screen.getByLabelText("From year"), { target: { value: "2012" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
+    expect(onAdd).toHaveBeenCalledWith({ name: "Memphis RiverKings", fromYear: 2012 });
+  });
+
+  it("treats case and accents as the same name", () => {
+    currentTeams = [RIVERKINGS];
+    renderEntry();
+
+    typeName("memphis riverkings");
+
+    expect(listbox()).toBeNull();
+  });
+
+  it("applies to a staged name too", () => {
+    renderEntry({ stagedNames: ["Toronto Blue Jays"] });
+
+    typeName("Toronto Blue Jays");
+
+    expect(listbox()).toBeNull();
+  });
+
+  it("still lists the team while the name is only part-typed", () => {
+    currentTeams = [RIVERKINGS, RIVERKINGS_II];
+    renderEntry();
+
+    typeName("Memphis River");
+
+    expect(listbox()).toBeTruthy();
+    expect(nameBox().getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("brings the list back when typing moves off the whole name", () => {
+    currentTeams = [RIVERKINGS, RIVERKINGS_II];
+    renderEntry();
+    typeName("Memphis RiverKings");
+    expect(listbox()).toBeNull();
+
+    typeName("Memphis RiverKings I");
+
+    expect(
+      screen.getByRole("option", { name: "Use Memphis RiverKings II" }),
+    ).toBeTruthy();
+  });
+
+  it("Enter moves to From year and leaves the typed name alone", () => {
+    // The sibling ranked first must not replace what the operator typed.
+    currentTeams = [RIVERKINGS_II, RIVERKINGS];
+    const { onAdd } = renderEntry();
+    typeName("Memphis RiverKings");
+
+    fireEvent.keyDown(nameBox(), { key: "Enter" });
+
+    expect(nameBox().value).toBe("Memphis RiverKings");
+    expect(document.activeElement).toBe(screen.getByLabelText("From year"));
+    expect(onAdd).not.toHaveBeenCalled();
+  });
+
+  it("ArrowDown still shows the list on purpose, and typing hides it again", () => {
+    currentTeams = [RIVERKINGS, RIVERKINGS_II];
+    renderEntry();
+    typeName("Memphis RiverKings");
+    expect(listbox()).toBeNull();
+
+    fireEvent.keyDown(nameBox(), { key: "ArrowDown" });
+    expect(listbox()).toBeTruthy();
+
+    typeName("Memphis RiverKing");
+    typeName("Memphis RiverKings");
+    expect(listbox()).toBeNull();
+  });
+
+  it("Escape on a whole name with the list hidden clears the name, as for any closed list", () => {
+    currentTeams = [RIVERKINGS];
+    renderEntry();
+    typeName("Memphis RiverKings");
+
+    fireEvent.keyDown(nameBox(), { key: "Escape" });
+
+    expect(nameBox().value).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-574 — keyboard, stale results, combobox semantics, in-flow list
+// ---------------------------------------------------------------------------
+
+describe("CareerTeamEntry — list behaviour after the audit (NEO-574)", () => {
+  const listbox = () => screen.queryByRole("listbox", { name: "Existing team suggestions" });
+  const RK = makeTeam("Memphis RiverKings", "t-rk");
+  const RK2 = makeTeam("Memphis RiverKings II", "t-rk2");
+  const nameBox = () => screen.getByLabelText("Career team name") as HTMLInputElement;
+  const typeNow = (value: string) =>
+    fireEvent.change(nameBox(), { target: { value } });
+  const settle = (ms = 0) =>
+    act(() => {
+      vi.advanceTimersByTime(ms);
+    });
+
+  describe("ArrowDown", () => {
+    it("first press on a whole name opens the list on that team, not the row after it", () => {
+      currentTeams = [RK2, RK];
+      renderEntry();
+      typeName("Memphis RiverKings");
+      expect(listbox()).toBeNull();
+
+      fireEvent.keyDown(nameBox(), { key: "ArrowDown" });
+
+      expect(
+        screen.getByRole("option", { name: "Use Memphis RiverKings" }).getAttribute("aria-selected"),
+      ).toBe("true");
+      expect(
+        screen.getByRole("option", { name: "Use Memphis RiverKings II" }).getAttribute("aria-selected"),
+      ).toBe("false");
+    });
+
+    it("with the list already showing, moves down a row", () => {
+      currentTeams = [RK, RK2];
+      renderEntry();
+      typeName("Memphis River");
+
+      fireEvent.keyDown(nameBox(), { key: "ArrowDown" });
+
+      expect(
+        screen.getByRole("option", { name: "Use Memphis RiverKings II" }).getAttribute("aria-selected"),
+      ).toBe("true");
+    });
+
+    it("after ArrowDown then Escape, Enter on the whole name moves on to From year", () => {
+      currentTeams = [RK2, RK];
+      renderEntry();
+      typeName("Memphis RiverKings");
+      fireEvent.keyDown(nameBox(), { key: "ArrowDown" });
+      fireEvent.keyDown(nameBox(), { key: "Escape" });
+      expect(listbox()).toBeNull();
+
+      fireEvent.keyDown(nameBox(), { key: "Enter" });
+
+      expect(nameBox().value).toBe("Memphis RiverKings");
+      expect(document.activeElement).toBe(screen.getByLabelText("From year"));
+    });
+
+    it("picking a row ends the browsing: the list stays away from the same name", () => {
+      currentTeams = [RK2, RK];
+      renderEntry();
+      typeName("Memphis RiverKings");
+      // Whole name, list hidden: this ArrowDown is what starts the browsing.
+      fireEvent.keyDown(nameBox(), { key: "ArrowDown" });
+      fireEvent.click(screen.getByRole("option", { name: "Use Memphis RiverKings" }));
+
+      // Back in the name box: Enter on the whole name goes on to From year, as
+      // it would had the operator never pressed ArrowDown.
+      nameBox().focus();
+      expect(document.activeElement).toBe(nameBox());
+      fireEvent.keyDown(nameBox(), { key: "Enter" });
+      expect(listbox()).toBeNull();
+      expect(document.activeElement).toBe(screen.getByLabelText("From year"));
+    });
+  });
+
+  describe("results that have not caught up", () => {
+    it("keeps the list mounted while a keystroke still matches the rows it holds", () => {
+      // Hiding stale rows used to make the in-flow list vanish and return on
+      // every keystroke: aria-expanded flipping, the status re-read, + Add
+      // jumping.
+      currentTeams = [RK, RK2];
+      renderEntry();
+      typeName("Memphis");
+      const list = listbox()!;
+      const status = screen.getByRole("status");
+      expect(nameBox().getAttribute("aria-expanded")).toBe("true");
+      expect(status.textContent).toBe("2 suggestions");
+
+      // Debounce not elapsed: the mock still answers for "Memphis".
+      for (const text of ["Memphis R", "Memphis Ri", "Memphis Riv"]) {
+        typeNow(text);
+        expect(listbox()).toBe(list);
+        expect(nameBox().getAttribute("aria-expanded")).toBe("true");
+        expect(status.textContent).toBe("2 suggestions");
+      }
+
+      settle(DEBOUNCE_MS);
+      expect(listbox()).toBe(list);
+      expect(nameBox().getAttribute("aria-expanded")).toBe("true");
+    });
+
+    it("drops stale rows that no longer match the text, keeps those that do, and closes when none are left", () => {
+      currentTeams = [RK, makeTeam("Memphis Mud Hens", "t-mh")];
+      renderEntry();
+      typeName("Memphis");
+      expect(screen.getAllByRole("option")).toHaveLength(2);
+
+      typeNow("Memphis River");
+      expect(screen.getAllByRole("option").map((o) => o.getAttribute("aria-label"))).toEqual([
+        "Use Memphis RiverKings",
+      ]);
+      expect(nameBox().getAttribute("aria-expanded")).toBe("true");
+
+      typeNow("Zzz");
+      expect(listbox()).toBeNull();
+      expect(nameBox().getAttribute("aria-expanded")).toBe("false");
+    });
+
+    it("keeps matching rows, and the list open, while a query with new arguments loads", () => {
+      // Convex returns undefined for the new arguments until they answer; the
+      // last answer, narrowed to the text, stands in so the list does not blink.
+      currentTeams = [RK, RK2, makeTeam("Memphis Mud Hens", "t-mh")];
+      renderEntry();
+      typeName("Memphis");
+      const list = listbox()!;
+      expect(screen.getAllByRole("option")).toHaveLength(3);
+
+      currentTeams = undefined;
+      typeNow("Memphis River");
+      settle(DEBOUNCE_MS);
+
+      expect(listbox()).toBe(list);
+      expect(nameBox().getAttribute("aria-expanded")).toBe("true");
+      expect(screen.getAllByRole("option").map((o) => o.getAttribute("aria-label"))).toEqual([
+        "Use Memphis RiverKings",
+        "Use Memphis RiverKings II",
+      ]);
+
+      // Nothing held matches: now it closes.
+      typeNow("Zzz");
+      settle(DEBOUNCE_MS);
+      expect(listbox()).toBeNull();
+    });
+
+    it("offers no saved rows while the query has not answered at all", () => {
+      currentTeams = undefined;
+      renderEntry();
+      typeName("Memphis");
+      expect(listbox()).toBeNull();
+
+      currentTeams = [RK];
+      typeNow("Memphis R");
+      settle(DEBOUNCE_MS);
+      expect(screen.getByRole("option", { name: "Use Memphis RiverKings" })).toBeTruthy();
+    });
+
+    it("keeps a staged match instant, without the stale saved rows", () => {
+      currentTeams = [RK, RK2];
+      renderEntry({ stagedNames: ["Memphis Mud Hens"] });
+      typeName("Memphis");
+
+      typeNow("Memphis M");
+
+      expect(screen.getByRole("option", { name: "Use Memphis Mud Hens" })).toBeTruthy();
+      expect(screen.queryByRole("option", { name: "Use Memphis RiverKings" })).toBeNull();
+    });
+  });
+
+  describe("combobox semantics", () => {
+    it("wires aria-controls, aria-activedescendant and unique option ids", () => {
+      currentTeams = [RK, RK2];
+      renderEntry();
+
+      // Closed: nothing active, and the list is not claimed as open.
+      expect(nameBox().getAttribute("aria-expanded")).toBe("false");
+      expect(nameBox().getAttribute("aria-activedescendant")).toBeNull();
+
+      typeName("Memphis River");
+      const list = listbox()!;
+      expect(nameBox().getAttribute("aria-controls")).toBe(list.id);
+      expect(list.id).not.toBe("");
+
+      const options = screen.getAllByRole("option");
+      const ids = options.map((o) => o.id);
+      expect(new Set(ids).size).toBe(2);
+      expect(ids.every((id) => id !== "")).toBe(true);
+      expect(nameBox().getAttribute("aria-activedescendant")).toBe(ids[0]);
+
+      fireEvent.keyDown(nameBox(), { key: "ArrowDown" });
+      expect(nameBox().getAttribute("aria-activedescendant")).toBe(ids[1]);
+      expect(document.getElementById(ids[1])).toBe(options[1]);
+
+      fireEvent.keyDown(nameBox(), { key: "Escape" });
+      expect(nameBox().getAttribute("aria-activedescendant")).toBeNull();
+    });
+
+    it("keeps options out of the Tab order", () => {
+      currentTeams = [RK, RK2];
+      renderEntry();
+      typeName("Memphis River");
+
+      for (const option of screen.getAllByRole("option")) {
+        expect(option.getAttribute("tabindex")).toBe("-1");
+      }
+    });
+
+    it("announces the count through a status region that stays mounted", () => {
+      currentTeams = [RK, RK2];
+      renderEntry();
+      const status = screen.getByRole("status");
+      expect(status.textContent).toBe("");
+
+      typeName("Memphis River");
+      expect(screen.getByRole("status")).toBe(status);
+      expect(status.textContent).toBe("2 suggestions");
+
+      fireEvent.keyDown(nameBox(), { key: "Escape" });
+      expect(screen.getByRole("status")).toBe(status);
+      expect(status.textContent).toBe("");
+    });
+
+    it("says '1 suggestion' for one row", () => {
+      currentTeams = [RK];
+      renderEntry();
+      typeName("Memphis River");
+      expect(screen.getByRole("status").textContent).toBe("1 suggestion");
+    });
+  });
+
+  describe("in the flow, not over the years", () => {
+    it("sits between the name box and the years row, not absolutely positioned", () => {
+      currentTeams = [RK, RK2];
+      renderEntry();
+      typeName("Memphis River");
+
+      const list = listbox()!;
+      expect(list.className).not.toMatch(/\babsolute\b/);
+      expect(list.className).toMatch(/\bmax-h-32\b/);
+      expect(list.className).toMatch(/max-sm:max-h-\[30vh\]/);
+      const follows = (a: Element, b: Element) =>
+        Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+      expect(follows(nameBox(), list)).toBe(true);
+      expect(follows(list, screen.getByLabelText("From year"))).toBe(true);
+      expect(follows(list, screen.getByRole("button", { name: "Add career team" }))).toBe(true);
+    });
+
+    it("scrolls the entry into view when the list opens", () => {
+      currentTeams = [RK, RK2];
+      const scrollIntoView = vi.fn();
+      Element.prototype.scrollIntoView = scrollIntoView;
+      try {
+        renderEntry();
+        typeName("Memphis River");
+        expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
+      } finally {
+        delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+      }
+    });
+
+    it("keeps the list while + Add is pressed, so the click lands, then closes it", () => {
+      // Blur from the name box used to close the list on mousedown, which pulled
+      // + Add up from under the pointer before mouseup: no click.
+      currentTeams = [RK, RK2];
+      const { onAdd } = renderEntry();
+      typeName("Memphis River");
+      fireEvent.change(screen.getByLabelText("From year"), { target: { value: "2012" } });
+      const add = screen.getByRole("button", { name: "Add career team" });
+
+      fireEvent.mouseDown(add);
+      add.focus();
+      fireEvent.blur(nameBox());
+      settle();
+      expect(listbox()).toBeTruthy();
+
+      fireEvent.mouseUp(window);
+      fireEvent.click(add);
+      settle();
+
+      expect(onAdd).toHaveBeenCalledWith({ name: "Memphis River", fromYear: 2012 });
+      expect(listbox()).toBeNull();
+    });
+
+    it("closes the list after a press on a year box is released", () => {
+      currentTeams = [RK, RK2];
+      renderEntry();
+      typeName("Memphis River");
+      const from = screen.getByLabelText("From year");
+
+      fireEvent.mouseDown(from);
+      from.focus();
+      fireEvent.blur(nameBox());
+      settle();
+      expect(listbox()).toBeTruthy();
+
+      fireEvent.mouseUp(window);
+      settle();
+      expect(listbox()).toBeNull();
+    });
+
+    it("a blur with no press still closes at once", () => {
+      currentTeams = [RK, RK2];
+      renderEntry();
+      typeName("Memphis River");
+
+      screen.getByLabelText("From year").focus();
+      fireEvent.blur(nameBox());
+      settle();
+
+      expect(listbox()).toBeNull();
+    });
+  });
+});
+
 // ===========================================================================
 // NEO-326 — Enter in a year field is "+ Add"
 //
@@ -885,5 +1347,118 @@ describe("CareerTeamEntry — Enter in a year field adds", () => {
     expect(onAdd).not.toHaveBeenCalled();
     expect(nameInput().value).toBe("Brand New Club");
     expect(fromInput().value).toBe("2021");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-574 — a prefill (the card's team and the set's year) and quick picks
+// ---------------------------------------------------------------------------
+
+describe("CareerTeamEntry — prefill and quick picks (NEO-574)", () => {
+  const nameInput = () => screen.getByLabelText("Career team name") as HTMLInputElement;
+  const fromInput = () => screen.getByLabelText("From year") as HTMLInputElement;
+
+  it("opens with the team and year filled in, and adds nothing by itself", () => {
+    const { onAdd } = renderEntry({ initialTeam: "San Diego Padres", initialFromYear: 2022 });
+    expect(nameInput().value).toBe("San Diego Padres");
+    expect(fromInput().value).toBe("2022");
+    expect(onAdd).not.toHaveBeenCalled();
+  });
+
+  it("a prefill left as it came is not dirty; a change to it is", () => {
+    const onDirtyChange = vi.fn();
+    renderEntry({ initialTeam: "San Diego Padres", initialFromYear: 2022, onDirtyChange });
+    expect(onDirtyChange).not.toHaveBeenCalledWith(true);
+    fireEvent.change(fromInput(), { target: { value: "2020" } });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+  });
+
+  it("+ Add sends the prefilled entry", () => {
+    const { onAdd } = renderEntry({ initialTeam: "San Diego Padres", initialFromYear: 2022 });
+    fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
+    expect(onAdd).toHaveBeenCalledWith({ name: "San Diego Padres", fromYear: 2022 });
+  });
+
+  it("follows a new prefill when the form is untouched, and focuses From year after an add", () => {
+    const onAdd = vi.fn();
+    const { rerender } = render(
+      <CareerTeamEntry
+        sportId={SPORT_ID}
+        stagedNames={[]}
+        onAdd={onAdd}
+        initialTeam="San Diego Padres"
+        initialFromYear={2022}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
+    rerender(
+      <CareerTeamEntry
+        sportId={SPORT_ID}
+        stagedNames={[]}
+        onAdd={onAdd}
+        initialTeam="Chicago Cubs"
+        initialFromYear={2022}
+      />,
+    );
+    expect(nameInput().value).toBe("Chicago Cubs");
+    expect(fromInput().value).toBe("2022");
+    expect(document.activeElement).toBe(fromInput());
+  });
+
+  it("leaves a form the operator has typed in alone when the prefill changes", () => {
+    const onAdd = vi.fn();
+    const { rerender } = render(
+      <CareerTeamEntry
+        sportId={SPORT_ID}
+        stagedNames={[]}
+        onAdd={onAdd}
+        initialTeam="San Diego Padres"
+        initialFromYear={2022}
+      />,
+    );
+    typeName("Somewhere Else");
+    rerender(
+      <CareerTeamEntry
+        sportId={SPORT_ID}
+        stagedNames={[]}
+        onAdd={onAdd}
+        initialTeam="Chicago Cubs"
+        initialFromYear={2022}
+      />,
+    );
+    expect(nameInput().value).toBe("Somewhere Else");
+  });
+
+  it("quick picks fill the team and year without adding, and move focus to From year", () => {
+    const { onAdd } = renderEntry({
+      quickPicks: [{ team: "Chicago Cubs", fromYear: 2022 }],
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Fill in Chicago Cubs" }));
+    expect(nameInput().value).toBe("Chicago Cubs");
+    expect(fromInput().value).toBe("2022");
+    expect(document.activeElement).toBe(fromInput());
+    expect(onAdd).not.toHaveBeenCalled();
+    // Already in the form, so no longer offered.
+    expect(screen.queryByRole("button", { name: "Fill in Chicago Cubs" })).toBeNull();
+  });
+
+  it("quick-pick chips are at least 24px tall on desktop and 44px on a phone (A7)", () => {
+    renderEntry({ quickPicks: [{ team: "Chicago Cubs", fromYear: 2022 }] });
+    const chip = screen.getByRole("button", { name: "Fill in Chicago Cubs" });
+    expect(chip.className).toContain("min-h-6");
+    expect(chip.className).toContain("max-sm:min-h-11");
+    expect(chip.className).toContain("py-1");
+    expect(chip.className).not.toContain("py-0.5");
+  });
+
+  it("the To year box says 'To year' and keeps (optional) in its name", () => {
+    renderEntry();
+    const to = screen.getByLabelText("To year (optional)");
+    expect(to.getAttribute("placeholder")).toBe("To year");
+  });
+
+  it("shows no quick-pick group when there are none", () => {
+    renderEntry({ quickPicks: [] });
+    expect(screen.queryByRole("group", { name: "Also on the cards" })).toBeNull();
   });
 });
