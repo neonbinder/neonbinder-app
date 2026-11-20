@@ -1073,6 +1073,36 @@ async function teamRowsForPlace(
 }
 
 /**
+ * The set's sport and league(s) a place is read in, or null when it has no
+ * sport or no league (no guessing across leagues). Read once per query.
+ */
+async function placeScope(
+  ctx: QueryCtx | MutationCtx,
+  selectorOptionId: Id<"selectorOptions">,
+): Promise<{ sportId: Id<"selectorOptions">; leagues: ReadonlySet<string> } | null> {
+  const sportId = await findSportForSelectorOption(ctx, selectorOptionId);
+  if (!sportId) return null;
+  const leagues = new Set<string>(await effectiveSetLeagueIds(ctx, selectorOptionId));
+  return leagues.size === 0 ? null : { sportId, leagues };
+}
+
+/**
+ * Every team of the set's league(s), of any era, located at `x`; null when the
+ * text is not read as a place (a team answers to it by name or alias, or the
+ * read came back full and a further team may be past it: rule 8, a count read
+ * from a window is not trusted).
+ */
+async function inLeagueTeamsAtPlace(
+  ctx: QueryCtx | MutationCtx,
+  scope: { sportId: Id<"selectorOptions">; leagues: ReadonlySet<string> },
+  x: string,
+): Promise<Doc<"teams">[] | null> {
+  const { byName, byLocation, saturated } = await teamRowsForPlace(ctx, scope.sportId, x);
+  if (byName.length > 0 || saturated) return null;
+  return byLocation.filter((row) => row.leagueId && scope.leagues.has(row.leagueId));
+}
+
+/**
  * The one team these candidates mean, as the string the card carries, or null.
  * `qualifying` is EVERY in-league team at the place, whatever its era, and it
  * must be exactly one (`pickPlaceTeam`): with several, the set year does not
@@ -1120,8 +1150,9 @@ async function settleOneTeam(
  *    Mariners without a word. The text is left as printed; the Names gate and
  *    the commit decide per card from the players' stints, else the operator
  *    (`resolveCardTeamName`, `placeLeagueIds`). At pairing it stands as the
- *    checklist's printed text, so against a marketplace team it is a team
- *    disagreement the operator settles.
+ *    checklist's printed text; against a marketplace team that is one of the
+ *    place's teams it AGREES (`resolveChecklistPlaceTeamIds`), against any
+ *    other team it is a disagreement the operator settles.
  *  - A set with no league skips this entirely: no guessing across leagues.
  *  - A text some team already answers to by name or alias is left alone (the
  *    commit resolves it as it always did), as is a text with a comma (the
@@ -1143,26 +1174,51 @@ export const resolveChecklistPlaceTeams = internalQuery({
   },
   returns: v.array(v.union(v.string(), v.null())),
   handler: async (ctx, args) => {
-    const none = args.texts.map(() => null);
-    const sportId = await findSportForSelectorOption(ctx, args.selectorOptionId);
-    if (!sportId) return none;
-    const leagues = new Set<string>(await effectiveSetLeagueIds(ctx, args.selectorOptionId));
-    if (leagues.size === 0) return none;
+    const scope = await placeScope(ctx, args.selectorOptionId);
+    if (!scope) return args.texts.map(() => null);
     const setYear = await findSetYearForSelectorOption(ctx, args.selectorOptionId);
     const out: Array<string | null> = [];
     for (const [i, raw] of args.texts.entries()) {
       const x = i >= MAX_PLACE_TEXTS_PER_QUERY ? null : placeTextOrNull(raw);
-      if (!x) {
-        out.push(null);
-        continue;
-      }
-      const { byName, byLocation, saturated } = await teamRowsForPlace(ctx, sportId, x);
-      if (byName.length > 0 || saturated) {
-        out.push(null);
-        continue;
-      }
-      const inLeague = byLocation.filter((row) => row.leagueId && leagues.has(row.leagueId));
-      out.push(await settleOneTeam(ctx, sportId, setYear, inLeague));
+      const inLeague = x ? await inLeagueTeamsAtPlace(ctx, scope, x) : null;
+      out.push(inLeague ? await settleOneTeam(ctx, scope.sportId, setYear, inLeague) : null);
+    }
+    return out;
+  },
+});
+
+/**
+ * NEO-591 (Jason, 2026-11-20) — the teams a printed PLACE could mean, as ids:
+ * EVERY team of the set's league(s), whatever its era, whose location is the
+ * text. `resolveChecklistPlaceTeams` settles a place only when it is one team;
+ * this answers for the places it left as printed ("Seattle": the Pilots and
+ * the Mariners), so a card whose marketplace names one of those teams can be
+ * recognised as agreeing with the checklist instead of raising a team conflict
+ * (`applyChecklistRow`, `resolvePlaceTeamIds`). The place adds no claim beyond
+ * the marketplace's team; it never chooses a team and never writes one.
+ *
+ * Same scope and guards as `resolveChecklistPlaceTeams`, read once and shared
+ * (`placeScope`, `inLeagueTeamsAtPlace`): a set with no league, a text some
+ * team answers to by name or alias, a text read as no place (blank, a comma,
+ * over-long), a read that came back full, and a place no in-league team holds
+ * all answer null. Aligned with `texts`; at most `MAX_PLACE_TEXTS_PER_QUERY`
+ * texts are read per call (the caller batches). Internal: only the admin-gated
+ * pairing actions ask.
+ */
+export const resolveChecklistPlaceTeamIds = internalQuery({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    texts: v.array(v.string()),
+  },
+  returns: v.array(v.union(v.array(v.id("teams")), v.null())),
+  handler: async (ctx, args) => {
+    const scope = await placeScope(ctx, args.selectorOptionId);
+    if (!scope) return args.texts.map(() => null);
+    const out: Array<Array<Id<"teams">> | null> = [];
+    for (const [i, raw] of args.texts.entries()) {
+      const x = i >= MAX_PLACE_TEXTS_PER_QUERY ? null : placeTextOrNull(raw);
+      const inLeague = x ? await inLeagueTeamsAtPlace(ctx, scope, x) : null;
+      out.push(inLeague && inLeague.length > 0 ? inLeague.map((row) => row._id) : null);
     }
     return out;
   },

@@ -16518,6 +16518,68 @@ export async function resolveChecklistTeamIdentities(
   return (name) => at.get(name.trim()) ?? null;
 }
 
+/**
+ * NEO-591 (Jason, 2026-11-20) — the NB teams each UNSETTLED place text could
+ * mean ("Seattle" in an MLB set with the 1969 Pilots and the Mariners), as
+ * team ids, through `checklistCandidates.resolveChecklistPlaceTeamIds`, handed
+ * back as the `resolvePlaceTeamIds` that `applyChecklistRow` asks. When the
+ * marketplace names one of those teams the checklist's place agrees with it:
+ * no team conflict, and the card keeps the marketplace's team. Shared by
+ * `fetchCardChecklist` step 3c and `publishedChecklistPairs`, like the other
+ * resolvers, so a link the operator makes agrees exactly as the matcher's does.
+ *
+ * Asks only about the texts that can matter: a plain (comma-free) team text
+ * `resolvePlace` left as printed, on a row paired with a card that has a
+ * marketplace team of its own (a card with none has nothing to agree with;
+ * the card rule decides it at the gate and the commit). Distinct by the folded
+ * key, batches of `MAX_PLACE_TEXTS_PER_QUERY`, at most `MAX_PLACE_TEAM_TEXTS`
+ * texts per call. A text past the cap, or in a batch that fails, answers null:
+ * the place stays a disagreement the operator settles. The fetch neither fails
+ * nor guesses (rule 8).
+ */
+export async function resolveChecklistPlaceSets(
+  ctx: Pick<ActionCtx, "runQuery">,
+  selectorOptionId: Id<"selectorOptions">,
+  pairs: ReadonlyArray<{
+    card: { teams?: readonly string[]; team?: string };
+    row: { teams: readonly string[] };
+  }>,
+  resolvePlace?: (text: string) => string | null,
+): Promise<(text: string) => string[] | null> {
+  const keyOf = (text: string) => normalizeEntityName(text);
+  const at = new Map<string, number>();
+  const toResolve: string[] = [];
+  for (const { card, row } of pairs) {
+    if (!(card.teams?.length || card.team)) continue;
+    for (const raw of row.teams) {
+      const t = raw.trim();
+      if (!t || checklistTeamTextNeedsResolving(t) || resolvePlace?.(t)) continue;
+      const key = keyOf(t);
+      if (at.has(key) || toResolve.length >= MAX_PLACE_TEAM_TEXTS) continue;
+      at.set(key, toResolve.length);
+      toResolve.push(t);
+    }
+  }
+  const answers: Array<string[] | null> = [];
+  for (let i = 0; i < toResolve.length; i += MAX_PLACE_TEXTS_PER_QUERY) {
+    const batch = toResolve.slice(i, i + MAX_PLACE_TEXTS_PER_QUERY);
+    try {
+      answers.push(
+        ...(await ctx.runQuery(internal.checklistCandidates.resolveChecklistPlaceTeamIds, {
+          selectorOptionId,
+          texts: batch,
+        })),
+      );
+    } catch {
+      answers.push(...batch.map(() => null));
+    }
+  }
+  return (text) => {
+    const i = at.get(keyOf(text.trim()));
+    return i === undefined ? null : (answers[i] ?? null);
+  };
+}
+
 const previewCardFields = {
   cardNumber: v.string(),
   cardName: v.string(),
@@ -18159,6 +18221,15 @@ export const fetchCardChecklist = action({
           resolveText,
           resolvePlace,
         );
+        // NEO-591 (Jason 2026-11-20) — a place left as printed ("Seattle": the
+        // Pilots and the Mariners) agrees with a marketplace team that is one
+        // of the place's teams.
+        const resolvePlaceTeamIds = await resolveChecklistPlaceSets(
+          ctx,
+          args.selectorOptionId,
+          match.matches.map((m) => ({ card: out[m.cardIndex], row: published.rows[m.rowIndex] })),
+          resolvePlace,
+        );
         // NEO-591 (variations) — how many cards hold each row. A stem link
         // gives one row to several cards; each keeps its own link, revert and
         // team conflict (rule 8: a card's own differing team is never
@@ -18215,6 +18286,7 @@ export const fetchCardChecklist = action({
             resolveText,
             resolvePlace,
             resolveTeamId,
+            resolvePlaceTeamIds,
           );
           // NEO-591 — the Prospect Card attribute is a claim about the card,
           // whatever became of the team (even a conflict).

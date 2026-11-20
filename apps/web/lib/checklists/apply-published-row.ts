@@ -38,12 +38,24 @@
  *    answers the full name when exactly one team in the set's league(s), of
  *    any era, has that location. Several (the 1969 Seattle Pilots and the
  *    Mariners) are never settled by the set year (Jason, 2026-11-20): the text
- *    stays as printed, so against a marketplace team it is a team conflict the
- *    operator settles, and at the Names gate and the commit the card's players
+ *    stays as printed (against a marketplace team: see the next point), and at the Names gate and the commit the card's players
  *    decide, else the operator. When one is settled, the card then carries that
  *    team as a checklist team, and
  *    against a marketplace team it is the ordinary conflict or agreement: a
  *    card whose data names another team is never written over (rule 8).
+ *  - A place left as printed AGREES with the marketplace's team when that team
+ *    is one of the place's teams (Jason, 2026-11-20: BSC "Seattle Mariners"
+ *    against the checklist's "Seattle", the Pilots being the other). The place
+ *    adds no claim beyond the marketplace's team, so there is no team conflict
+ *    and the row is NOT `answered`: the card keeps the marketplace's team and
+ *    the place text is never written over it. `resolvePlaceTeamIds` answers
+ *    the place's teams as ids and `resolveTeamId` the marketplace's, both the
+ *    product's own resolver (aliases, any era). The marketplace's team not
+ *    being one of them stays a disagreement, as does a place nothing resolved
+ *    (a lookup that failed or was past its bound): the operator decides. With
+ *    no marketplace team the card rule decides at the Names gate and the
+ *    commit, as before. Every checklist text must be accounted for and so must
+ *    every marketplace team (one each), the way plain names are compared.
  *
  * ## Prospect (NEO-591, `prospect.ts`)
  *
@@ -124,6 +136,90 @@ function sameTeams(
 }
 
 /**
+ * Jason, 2026-11-20 — does a checklist whose texts include a place left as
+ * printed agree with the marketplace's teams? Each checklist text is a set of
+ * NB teams it could mean: a name is the one team `resolveTeamId` answers; a
+ * place is the teams `resolvePlaceTeamIds` answers (every in-league team there,
+ * any era). The two agree when the texts and the marketplace's teams pair off
+ * one to one, each marketplace team being one of its text's teams, so a place
+ * is consistent with the marketplace's team without being a team of its own.
+ * Anything unresolved (no team, no place set, a marketplace name that answers
+ * no team) is no agreement: the operator decides (rules 7 and 8).
+ */
+function placesAgree(
+  rowTexts: readonly string[],
+  marketplace: readonly string[],
+  resolvePlace: ((text: string) => string | null) | undefined,
+  resolveText: (text: string) => readonly string[] | null,
+  resolveTeamId: ((name: string) => string | null) | undefined,
+  resolvePlaceTeamIds: ((text: string) => readonly string[] | null) | undefined,
+): boolean {
+  if (!resolveTeamId || !resolvePlaceTeamIds || marketplace.length === 0) return false;
+  const mine = new Set<string>();
+  for (const raw of marketplace) {
+    const id = resolveTeamId(raw.trim());
+    if (!id) return false;
+    mine.add(id);
+  }
+  // What each checklist text could mean; a named team repeats nowhere.
+  const options: Array<ReadonlySet<string>> = [];
+  const seen = new Set<string>();
+  const named = (name: string): boolean => {
+    const id = resolveTeamId(name.trim());
+    if (!id) return false;
+    if (!seen.has(id)) {
+      seen.add(id);
+      options.push(new Set([id]));
+    }
+    return true;
+  };
+  const places = new Set<string>();
+  for (const raw of rowTexts) {
+    const t = raw.trim();
+    if (!t) continue;
+    if (checklistTeamTextNeedsResolving(t)) {
+      const names = resolveText(t);
+      if (!names) return false;
+      for (const name of names) if (!named(name)) return false;
+      continue;
+    }
+    const settled = resolvePlace?.(t);
+    if (settled) {
+      if (!named(settled)) return false;
+      continue;
+    }
+    const ids = resolvePlaceTeamIds(t);
+    if (ids && ids.length > 0) {
+      const key = checklistNameKey(t);
+      if (!places.has(key)) {
+        places.add(key);
+        options.push(new Set(ids));
+      }
+    } else if (!named(t)) {
+      return false;
+    }
+  }
+  if (options.length !== mine.size) return false;
+  // One marketplace team per text, found by augmenting paths (a handful of
+  // texts at most: the card carries `MAX_CARD_TEAMS`).
+  const owner = new Map<string, number>();
+  const place = (i: number, visited: Set<string>): boolean => {
+    for (const id of options[i]) {
+      if (!mine.has(id) || visited.has(id)) continue;
+      visited.add(id);
+      const other = owner.get(id);
+      if (other === undefined || place(other, visited)) {
+        owner.set(id, i);
+        return true;
+      }
+    }
+    return false;
+  };
+  for (let i = 0; i < options.length; i++) if (!place(i, new Set())) return false;
+  return true;
+}
+
+/**
  * Apply one row to one card. `resolveText` is asked only about a team text
  * with a comma (`checklistTeamTextNeedsResolving`) and answers the names the
  * card would carry for it, or `null` when it is refused (over the team cap, an
@@ -148,6 +244,14 @@ export function applyChecklistRow(
    * resolve to the same teams. Absent, strings are all that are compared.
    */
   resolveTeamId?: (name: string) => string | null,
+  /**
+   * Jason, 2026-11-20 — asked for a plain team text `resolvePlace` left as
+   * printed: the NB teams (ids, every in-league team at the place, any era)
+   * the text could mean, or null when it is no place or the read failed. A
+   * marketplace team among them means the place agrees (see `placesAgree`).
+   * Absent, an unsettled place is compared as printed, as before.
+   */
+  resolvePlaceTeamIds?: (text: string) => readonly string[] | null,
 ): AppliedChecklistRow {
   const isProspect = row.prospect === true;
 
@@ -182,10 +286,19 @@ export function applyChecklistRow(
         ...(compared.conflict.teams ? { teams: compared.conflict.teams } : {}),
       }
     : undefined;
+  // The place text agrees with the marketplace's team without being one: the
+  // card keeps the marketplace's team and nothing is written over it.
+  let placeAgrees = false;
   if (conflict?.teams) {
     const marketplace = conflict.teams.marketplace;
     if (!teams || sameNames(teams, marketplace) || sameTeams(teams, marketplace, resolveTeamId)) {
       delete conflict.teams;
+    } else if (
+      !row.noTeam &&
+      placesAgree(row.teams, marketplace, resolvePlace, resolveText, resolveTeamId, resolvePlaceTeamIds)
+    ) {
+      delete conflict.teams;
+      placeAgrees = true;
     } else {
       conflict.teams = { marketplace, checklist: teams };
     }
@@ -196,7 +309,7 @@ export function applyChecklistRow(
   // makes no claim unless it says "No Team" (NEO-489: answered with `[]`); a
   // refused list says nothing usable.
   const answered =
-    teams !== null && (teams.length > 0 || row.noTeam === true) && !conflict?.teams;
+    teams !== null && (teams.length > 0 || row.noTeam === true) && !conflict?.teams && !placeAgrees;
 
   return {
     ...(compared.fillPlayers ? { fillPlayers: compared.fillPlayers } : {}),

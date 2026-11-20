@@ -225,3 +225,140 @@ describe("applyChecklistRow: team names compared as NB teams, not strings", () =
     expect(r.conflict).toBeUndefined();
   });
 });
+
+// NEO-591 (Jason, 2026-11-20) — a place left as printed agrees with a
+// marketplace team that is one of the place's teams. The resolvers are tables:
+// the product's own (aliases, any era), the place resolver that settles only a
+// LONE team, and the set-valued one that answers every in-league team.
+describe("applyChecklistRow: a place left as printed agrees with the marketplace's team", () => {
+  const ids: Record<string, string> = {
+    "Seattle Mariners": "team-mariners",
+    Mariners: "team-mariners",
+    "M's": "team-mariners",
+    "Seattle Pilots": "team-pilots",
+    "Boston Red Sox": "team-redsox",
+    "Chicago Cubs": "team-cubs",
+    "Tampa Bay Rays": "team-rays",
+  };
+  const resolveTeamId = (name: string) => ids[name] ?? null;
+  // Seattle has two in-league teams (so `resolvePlace` leaves it); Chicago has
+  // two (Cubs, White Sox); Tampa has one (settled by `resolvePlace`).
+  const places: Record<string, string[]> = {
+    Seattle: ["team-pilots", "team-mariners"],
+    Chicago: ["team-cubs", "team-whitesox"],
+  };
+  const resolvePlaceTeamIds = (text: string) => places[text] ?? null;
+  const resolvePlace = (text: string) => (text === "Tampa" ? "Tampa Bay Rays" : null);
+  const card = (...teams: string[]) => ({ players: ["Ken Griffey Jr."], teams });
+  const row = (...teams: string[]) => ({ players: ["Ken Griffey Jr."], teams });
+  const apply = (c: ReturnType<typeof card>, r: ReturnType<typeof row>) =>
+    applyChecklistRow(c, r, noResolve, resolvePlace, resolveTeamId, resolvePlaceTeamIds);
+
+  test("Seattle against BSC's Seattle Mariners: no conflict, and the card keeps the marketplace's team", () => {
+    const r = apply(card("Seattle Mariners"), row("Seattle"));
+    expect(r.conflict).toBeUndefined();
+    expect(r.answered).toBe(false);
+  });
+
+  test("the marketplace may name the team by an alias of it", () => {
+    const r = apply(card("M's"), row("Seattle"));
+    expect(r.conflict).toBeUndefined();
+    expect(r.answered).toBe(false);
+  });
+
+  test("the other team of the place agrees just the same (Pilots)", () => {
+    const r = apply(card("Seattle Pilots"), row("Seattle"));
+    expect(r.conflict).toBeUndefined();
+    expect(r.answered).toBe(false);
+  });
+
+  test("a marketplace team that is not one of the place's teams is still a disagreement, with the place as printed", () => {
+    const r = apply(card("Seattle Mariners"), row("Chicago"));
+    expect(r.conflict?.teams).toEqual({
+      marketplace: ["Seattle Mariners"],
+      checklist: ["Chicago"],
+    });
+    expect(r.answered).toBe(false);
+  });
+
+  test("a marketplace name no team answers to is still a disagreement", () => {
+    expect(apply(card("Seattle Elephants"), row("Seattle")).conflict?.teams).toBeDefined();
+  });
+
+  test("without the set-valued resolver, or with no answer for the text, the place is a disagreement as before", () => {
+    const without = applyChecklistRow(
+      card("Seattle Mariners"),
+      row("Seattle"),
+      noResolve,
+      resolvePlace,
+      resolveTeamId,
+    );
+    expect(without.conflict?.teams).toBeDefined();
+    const unanswered = applyChecklistRow(
+      card("Seattle Mariners"),
+      row("Seattle"),
+      noResolve,
+      resolvePlace,
+      resolveTeamId,
+      () => null,
+    );
+    expect(unanswered.conflict?.teams).toBeDefined();
+  });
+
+  test("a lone in-league place is unchanged: the settled name is the checklist's team, agreeing or conflicting", () => {
+    const agree = apply(card("Tampa Bay Rays"), row("Tampa"));
+    expect(agree.conflict).toBeUndefined();
+    expect(agree.answered).toBe(true);
+    expect(agree.teams).toEqual(["Tampa Bay Rays"]);
+    const differ = apply(card("Seattle Mariners"), row("Tampa"));
+    expect(differ.conflict?.teams).toEqual({
+      marketplace: ["Seattle Mariners"],
+      checklist: ["Tampa Bay Rays"],
+    });
+  });
+
+  test("no marketplace team: nothing to agree with, the row answers with the place as printed (the card rule decides later)", () => {
+    const r = apply({ players: ["Ken Griffey Jr."], teams: [] }, row("Seattle"));
+    expect(r.conflict).toBeUndefined();
+    expect(r.answered).toBe(true);
+    expect(r.teams).toEqual(["Seattle"]);
+  });
+
+  test("a place beside a named team: each text pairs with one marketplace team", () => {
+    const agree = apply(card("Boston Red Sox", "Seattle Mariners"), row("Seattle", "Boston Red Sox"));
+    expect(agree.conflict).toBeUndefined();
+    expect(agree.answered).toBe(false);
+    // One place twice is one text: the Red Sox are left unaccounted for.
+    const unpaired = apply(card("Boston Red Sox", "Seattle Mariners"), row("Seattle", "Seattle"));
+    expect(unpaired.conflict?.teams).toBeDefined();
+    // The checklist names a team the marketplace does not.
+    const extra = apply(card("Seattle Mariners"), row("Seattle", "Boston Red Sox"));
+    expect(extra.conflict?.teams).toBeDefined();
+  });
+
+  test("a marketplace team the checklist does not account for stays a disagreement", () => {
+    const r = apply(card("Seattle Mariners", "Boston Red Sox"), row("Seattle"));
+    expect(r.conflict?.teams).toBeDefined();
+  });
+
+  test("a players conflict is kept when the place agrees", () => {
+    const r = apply(
+      { players: ["Ken Griffey Sr."], teams: ["Seattle Mariners"] },
+      { players: ["Ken Griffey Jr."], teams: ["Seattle"] },
+    );
+    expect(r.conflict?.teams).toBeUndefined();
+    expect(r.conflict?.players).toBeDefined();
+  });
+
+  test("a No Team row against a card with a team is still a disagreement", () => {
+    const r = applyChecklistRow(
+      card("Seattle Mariners"),
+      { players: ["Ken Griffey Jr."], teams: [], noTeam: true },
+      noResolve,
+      resolvePlace,
+      resolveTeamId,
+      resolvePlaceTeamIds,
+    );
+    expect(r.conflict?.teams).toEqual({ marketplace: ["Seattle Mariners"], checklist: [] });
+  });
+});

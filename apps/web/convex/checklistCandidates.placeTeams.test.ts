@@ -21,7 +21,12 @@ import {
   MAX_PLACE_TEXTS_PER_QUERY,
   PLACE_TEAM_SEARCH_HITS,
 } from "./checklistCandidates";
-import { resolveChecklistPlaceTexts, resolveChecklistTeamIdentities } from "./selectorOptions";
+import {
+  MAX_PLACE_TEAM_TEXTS,
+  resolveChecklistPlaceSets,
+  resolveChecklistPlaceTexts,
+  resolveChecklistTeamIdentities,
+} from "./selectorOptions";
 import { TEAM_ERA_SCAN_LIMIT, teamRowFields } from "./lib/teamRow";
 import { normalizeEntityName } from "./lib/entityNearMatch";
 import { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
@@ -274,6 +279,151 @@ describe("resolveChecklistPlaceTeams — a team printed as a place", () => {
     );
     await addTeam(t, world, { name: "Seahawks", location: "Seattle", level: "major", sportId: football });
     expect(await resolvePlaces(t, world, ["Seattle"])).toEqual([null]);
+  });
+});
+
+async function resolvePlaceIds(t: T, world: World, texts: string[]) {
+  return t.query(internal.checklistCandidates.resolveChecklistPlaceTeamIds, {
+    selectorOptionId: world.leafId,
+    texts,
+  });
+}
+
+// Jason, 2026-11-20 — the places `resolveChecklistPlaceTeams` leaves as printed
+// still say which teams they could mean, so a marketplace team among them
+// agrees with the checklist.
+describe("resolveChecklistPlaceTeamIds — every in-league team a printed place could mean", () => {
+  test("several eras at one place: all of them, the set year choosing none; other leagues' teams excluded", async () => {
+    const t = convexTest(schema, modules);
+    const world = await seedWorld(t, "2001");
+    await inLeague(t, world, "major");
+    const pilots = await addTeam(t, world, { name: "Pilots", location: "Seattle", level: "major", yearsActive: { from: 1969, to: 1969 } });
+    const mariners = await addTeam(t, world, { name: "Mariners", location: "Seattle", level: "major", yearsActive: { from: 1977 } });
+    await addTeam(t, world, { name: "Kraken", location: "Seattle", level: "other" });
+    const [ids] = await resolvePlaceIds(t, world, ["Seattle"]);
+    expect([...(ids ?? [])].sort()).toEqual([pilots, mariners].sort());
+  });
+
+  test("a lone team answers as a set of one", async () => {
+    const t = convexTest(schema, modules);
+    const world = await seedWorld(t);
+    await inLeague(t, world, "major");
+    const mariners = await addTeam(t, world, { name: "Mariners", location: "Seattle", level: "major" });
+    expect(await resolvePlaceIds(t, world, ["Seattle"])).toEqual([[mariners]]);
+  });
+
+  test("the same null guards as the settling query", async () => {
+    const t = convexTest(schema, modules);
+    const world = await seedWorld(t);
+    await inLeague(t, world, "major");
+    await addTeam(t, world, { name: "Mariners", location: "Seattle", level: "major", aliases: ["Sea"] });
+    await addTeam(t, world, { name: "Rays", location: "Tampa Bay", level: "major" });
+    const out = await resolvePlaceIds(t, world, [
+      "Sea", // some team answers to it by alias
+      "Tampa Bay Rays", // a team's full name, not a place
+      "Seattle, Washington", // a comma
+      "  ",
+      "x".repeat(MAX_PLAYER_NAME_LENGTH + 1),
+      "Nowhere", // no team there
+    ]);
+    expect(out).toEqual([null, null, null, null, null, null]);
+  });
+
+  test("no league on the set, or a league the place's teams are not in, answers null", async () => {
+    const none = convexTest(schema, modules);
+    const w1 = await seedWorld(none);
+    await addTeam(none, w1, { name: "Mariners", location: "Seattle", level: "major" });
+    expect(await resolvePlaceIds(none, w1, ["Seattle"])).toEqual([null]);
+    const wrong = convexTest(schema, modules);
+    const w2 = await seedWorld(wrong);
+    await inLeague(wrong, w2, "college");
+    await addTeam(wrong, w2, { name: "Mariners", location: "Seattle", level: "major" });
+    expect(await resolvePlaceIds(wrong, w2, ["Seattle"])).toEqual([null]);
+  });
+
+  test("a full search window answers null (a count read from a window is not trusted)", async () => {
+    const t = convexTest(schema, modules);
+    const world = await seedWorld(t);
+    await inLeague(t, world, "major");
+    await addTeam(t, world, { name: "Sooners", location: "Crowded", level: "major" });
+    for (let i = 0; i < PLACE_TEAM_SEARCH_HITS - 1; i++) {
+      await addTeam(t, world, { name: `Club ${i}`, location: "Crowded", level: "college" });
+    }
+    await addTeam(t, world, { name: "Some Very Long Nickname With Many Additional Words In It Here", location: "Crowded", level: "major" });
+    expect(await resolvePlaceIds(t, world, ["Crowded"])).toEqual([null]);
+  });
+
+  test("texts past the per-call cap answer null", async () => {
+    const t = convexTest(schema, modules);
+    const world = await seedWorld(t);
+    await inLeague(t, world, "major");
+    const mariners = await addTeam(t, world, { name: "Mariners", location: "Seattle", level: "major" });
+    const out = await resolvePlaceIds(t, world, Array.from({ length: MAX_PLACE_TEXTS_PER_QUERY + 1 }, () => "Seattle"));
+    expect(out[MAX_PLACE_TEXTS_PER_QUERY - 1]).toEqual([mariners]);
+    expect(out.at(-1)).toBeNull();
+  });
+});
+
+describe("resolveChecklistPlaceSets — the wrapper asks only for the places that can matter", () => {
+  type Args = { selectorOptionId: string; texts: string[] };
+  const id = "sel" as Id<"selectorOptions">;
+  const ctxWith = (answer: (texts: string[]) => Array<string[] | null> | Error) => {
+    const runQuery = vi.fn(async (_ref: unknown, args: Args) => {
+      const got = answer(args.texts);
+      if (got instanceof Error) throw got;
+      return got;
+    });
+    return { ctx: { runQuery } as never, runQuery };
+  };
+  const asked = (runQuery: ReturnType<typeof ctxWith>["runQuery"]) =>
+    runQuery.mock.calls.flatMap((c) => (c[1] as Args).texts);
+
+  test("distinct plain texts the place resolver left as printed, on rows paired with a card that has a team", async () => {
+    const { ctx, runQuery } = ctxWith((texts) => texts.map((x) => [`team of ${x}`]));
+    const resolve = await resolveChecklistPlaceSets(
+      ctx,
+      id,
+      [
+        { card: { teams: ["Seattle Mariners"] }, row: { teams: ["Seattle", "Tampa", "Seattle, Boston", "  "] } },
+        { card: { team: "Chicago Cubs" }, row: { teams: ["SEATTLE", "Chicago"] } },
+        { card: {}, row: { teams: ["Houston"] } }, // no marketplace team: nothing to agree with
+      ],
+      (text) => (text === "Tampa" ? "Tampa Bay Rays" : null), // settled: not asked
+    );
+    expect(runQuery).toHaveBeenCalledTimes(1);
+    expect(asked(runQuery)).toEqual(["Seattle", "Chicago"]);
+    expect(resolve(" seattle ")).toEqual(["team of Seattle"]);
+    expect(resolve("Tampa")).toBeNull();
+    expect(resolve("Houston")).toBeNull();
+  });
+
+  test("nothing to ask means no query", async () => {
+    const { ctx, runQuery } = ctxWith(() => []);
+    const resolve = await resolveChecklistPlaceSets(ctx, id, [{ card: {}, row: { teams: ["Seattle"] } }]);
+    expect(runQuery).not.toHaveBeenCalled();
+    expect(resolve("Seattle")).toBeNull();
+  });
+
+  test("a failed batch leaves only its texts unanswered; the rest are asked in batches of the per-query cap", async () => {
+    const first = Array.from({ length: MAX_PLACE_TEXTS_PER_QUERY }, (_, i) => `Aaa${String.fromCharCode(97 + i)}`);
+    const { ctx, runQuery } = ctxWith((texts) =>
+      texts.includes("Seattle") ? texts.map(() => ["team-x"]) : new Error("boom"),
+    );
+    const resolve = await resolveChecklistPlaceSets(ctx, id, [
+      { card: { teams: ["Seattle Mariners"] }, row: { teams: [...first, "Seattle"] } },
+    ]);
+    expect(runQuery).toHaveBeenCalledTimes(2);
+    expect(resolve(first[0])).toBeNull();
+    expect(resolve("Seattle")).toEqual(["team-x"]);
+  });
+
+  test("distinct texts past the call cap are never asked", async () => {
+    const { ctx, runQuery } = ctxWith((texts) => texts.map(() => ["team-x"]));
+    const texts = Array.from({ length: MAX_PLACE_TEAM_TEXTS + 5 }, (_, i) => `Town ${i}`);
+    const resolve = await resolveChecklistPlaceSets(ctx, id, [{ card: { teams: ["A"] }, row: { teams: texts } }]);
+    expect(asked(runQuery)).toHaveLength(MAX_PLACE_TEAM_TEXTS);
+    expect(resolve(`Town ${MAX_PLACE_TEAM_TEXTS - 1}`)).toEqual(["team-x"]);
+    expect(resolve(`Town ${MAX_PLACE_TEAM_TEXTS}`)).toBeNull();
   });
 });
 

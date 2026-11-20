@@ -45,6 +45,7 @@ import {
   checkPublishedChecklist,
   publishedChecklistRowValidator,
   resolveChecklistCommaTexts,
+  resolveChecklistPlaceSets,
   resolveChecklistPlaceTexts,
   resolveChecklistTeamIdentities,
 } from "./selectorOptions";
@@ -53,7 +54,9 @@ import {
  * One answer per pair, in pair order, ready to spread onto the card:
  *  - `players` — the row's players, only when the card has none;
  *  - `teams` + `teamLookup: "checklist"` — only when the row answers the
- *    team (it names one, it resolves, and the card names no different one);
+ *    team (it names one, it resolves, and the card names no different one;
+ *    a printed place that is one of the card's team's places adds no claim,
+ *    so the card keeps its team);
  *  - `checklistConflict` — only when the card and the row disagree, the
  *    checklist side resolved as the card would carry it;
  *  - NEO-591: `isProspect` — the row says Prospect (its X, if any, is a
@@ -169,6 +172,14 @@ export const applyPublishedChecklistPairs = action({
       resolveText,
       resolvePlace,
     );
+    // NEO-591 (Jason 2026-11-20) — a place left as printed agrees with a
+    // marketplace team that is one of the place's teams, as in the fetch.
+    const resolvePlaceTeamIds = await resolveChecklistPlaceSets(
+      ctx,
+      args.selectorOptionId,
+      cards.map((card, i) => ({ card, row: rows[i] })),
+      resolvePlace,
+    );
     let answered = 0;
     let conflicts = 0;
     const answers = cards.map((card, i) => {
@@ -178,6 +189,7 @@ export const applyPublishedChecklistPairs = action({
         resolveText,
         resolvePlace,
         resolveTeamId,
+        resolvePlaceTeamIds,
       );
       if (applied.answered) answered++;
       if (applied.conflict) conflicts++;
