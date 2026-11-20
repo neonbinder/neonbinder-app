@@ -83,6 +83,11 @@ jobs:
       scripts: ${{ steps.filter.outputs.scripts }}
       scanner: ${{ steps.filter.outputs.scanner }}
       deps_only: ${{ steps.deps.outputs.deps_only }}
+      # NEO-627 (see .github/scripts/e2e-scope.sh): "true" only when every
+      # changed path is on the inert allow-list (.claude, docs, root *.md, the
+      # fake-bsc recorder). Fail-closed like deps_only. Everything that builds a
+      # preview or runs E2E skips on it, together.
+      e2e_inert: ${{ steps.scope.outputs.e2e_inert }}
       # NEO-546 (see .github/scripts/ci-mode.sh). `full` is "false" ONLY for a
       # pull_request run while the merge queue is verifiably live; every other
       # case, and every error, is "true". `pr`, `sha`, `head_sha` and
@@ -110,6 +115,22 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: bash .github/scripts/ci-mode.sh >> "$GITHUB_OUTPUT"
+
+      # NEO-627: is every changed path inert, so the preview and E2E can skip?
+      # Runs on pull_request and merge_group (the script is fail-closed on
+      # anything else). The label and the PR number come from the live API and
+      # from ci-mode's `pr` output, which also carries the PR number on a
+      # merge_group run. On merge_group the file list is the git diff between
+      # the group's base and head (PRs queued ahead included, on purpose).
+      - name: Decide whether the change is inert (NEO-627)
+        id: scope
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ steps.mode.outputs.pr }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        run: bash .github/scripts/e2e-scope.sh >> "$GITHUB_OUTPUT"
 
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
@@ -347,10 +368,13 @@ jobs:
   # deployment, and E2E reads its `.convex.site` URL out of the built page. So
   # "skip the preview" is never only a build saving — it removes the substrate
   # the entire E2E suite stands on. That is why the condition below is
-  # `deps_only`, matching the `e2e` job EXACTLY rather than the narrower
-  # `changes.outputs.web`: E2E deliberately runs on preprocess- and browser-only
-  # PRs, and every one of those needs a preview. If you ever want a tighter skip,
-  # the two conditions have to move together — see the note on `e2e`.
+  # `deps_only` AND `e2e_inert` (NEO-627), matching the `e2e` job EXACTLY rather
+  # than the narrower `changes.outputs.web`: E2E deliberately runs on
+  # preprocess- and browser-only PRs, and every one of those needs a preview.
+  # If you ever want a tighter skip, the two conditions have to move together —
+  # see the note on `e2e`. An inert-only PR (docs, .claude, root *.md, the
+  # recorder) builds no preview and so makes no Convex preview; the cleanup
+  # workflow already treats "no Deployment record" as nothing to clean up.
   #
   # Hosted build, not `vercel build`. The CLI refuses a LOCAL build for a project
   # pinned to Node 24.x ("Found invalid Node.js Version: 24.x"), while Vercel's
@@ -364,6 +388,7 @@ jobs:
       needs.changes.outputs.full == 'true'
       && needs.changes.outputs.pr != ''
       && needs.changes.outputs.deps_only != 'true'
+      && needs.changes.outputs.e2e_inert != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # deployments:write is for the GitHub Deployment record this job creates at
@@ -513,6 +538,7 @@ jobs:
       && needs.changes.outputs.pr != ''
       && needs.changes.outputs.browser_preview == 'true'
       && needs.changes.outputs.deps_only != 'true'
+      && needs.changes.outputs.e2e_inert != 'true'
     runs-on: ubuntu-latest
     # Covers browser.yml's worst case (scope 5 + test 10 + deploy-preview 15
     # min) plus the ~5 min of steps before the wait; the wait step's own
@@ -680,6 +706,7 @@ jobs:
       && needs.changes.outputs.pr != ''
       && needs.changes.outputs.preprocess == 'true'
       && needs.changes.outputs.deps_only != 'true'
+      && needs.changes.outputs.e2e_inert != 'true'
     runs-on: ubuntu-latest
     # 90, not 20 like wire-browser-url: the preprocess preview image is multi-GB
     # (torch + baked SAM) and rebuilds with NO layer cache (~20-25 min), and the
@@ -975,6 +1002,7 @@ jobs:
       && needs.changes.outputs.pr != ''
       && needs.changes.result == 'success'
       && needs.changes.outputs.deps_only != 'true'
+      && needs.changes.outputs.e2e_inert != 'true'
       && needs.web-preview.result == 'success'
       && (needs.wire-preprocess-url.result == 'success' || needs.wire-preprocess-url.result == 'skipped')
     runs-on: ubuntu-latest
@@ -1081,11 +1109,14 @@ jobs:
   # skipped (no false green against dev) and the red wiring job surfaces the
   # problem.
   #
-  # Also skipped for dependency-manifest-only PRs (NEO-87). That skip is the ONE
-  # case ci-gate treats as acceptable — every other skip still fails the gate.
+  # Also skipped for dependency-manifest-only PRs (NEO-87) and for changes whose
+  # every path is inert (NEO-627, e2e-scope.sh). Those two skips are the ONLY
+  # cases ci-gate treats as acceptable (each keyed on its own job output) —
+  # every other skip still fails the gate.
   #
   # NEO-162: `web-preview` is now a hard prerequisite, and its `if:` is
-  # deliberately the SAME `deps_only` condition this job uses. That pairing is
+  # deliberately the SAME `deps_only` AND `e2e_inert` conditions this job uses
+  # (so are the wire-* jobs'). That pairing is
   # load-bearing — the preview build is what creates the Convex preview this
   # suite runs against, so a PR shape that runs E2E without building a preview
   # would fail in `setup` with nothing useful to say. If either condition is ever
@@ -1098,6 +1129,7 @@ jobs:
       && needs.changes.result == 'success'
       && needs.changes.outputs.full == 'true'
       && needs.changes.outputs.deps_only != 'true'
+      && needs.changes.outputs.e2e_inert != 'true'
       && needs.web-preview.result == 'success'
       && (needs.wire-browser-url.result == 'success' || needs.wire-browser-url.result == 'skipped')
       && (needs.wire-preprocess-url.result == 'success' || needs.wire-preprocess-url.result == 'skipped')
@@ -1368,6 +1400,8 @@ jobs:
   # Verdict: `changes` + `e2e` MUST succeed; area/wiring jobs pass on
   # success OR skipped (out-of-area); any failure/cancelled fails.
   # NEO-87 carve-out: `e2e` may be `skipped` IFF changes.deps_only == 'true'.
+  # NEO-627 carve-out: or IFF changes.e2e_inert == 'true' (every changed path is
+  # on e2e-scope.sh's inert allow-list), on merge_group too.
   # That pairing is what keeps the NEO-68 vacuous-skip trap closed — a skipped
   # E2E is green only when an authoritative, fail-closed signal says the PR
   # touched nothing but dependency manifests. Every other skip is still red.
@@ -1879,6 +1913,7 @@ jobs:
           R_WEB_PREVIEW: ${{ needs.web-preview.result }}
           R_E2E: ${{ needs.e2e.result }}
           R_DEPS_ONLY: ${{ needs.changes.outputs.deps_only }}
+          R_E2E_INERT: ${{ needs.changes.outputs.e2e_inert }}
           R_HYGIENE: ${{ needs.repo-hygiene.result }}
           R_CAPACITY_PARITY: ${{ needs.capacity-parity.result }}
         run: bash .github/scripts/ci-gate-verdict.sh

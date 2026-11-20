@@ -30,6 +30,7 @@ const GREEN = {
   R_WEB_PREVIEW: "success",
   R_E2E: "success",
   R_DEPS_ONLY: "false",
+  R_E2E_INERT: "false",
   R_HYGIENE: "success",
   R_CAPACITY_PARITY: "success",
 };
@@ -186,4 +187,62 @@ test("merge_group claiming FULL=false is a fault even when everything is green",
 test("merge_group: deps_only cannot excuse a skipped e2e unless it says so (it never does)", () => {
   const mg = { ...GREEN, EVENT_NAME: "merge_group", FULL: "true", R_E2E: "skipped", R_DEPS_ONLY: "false" };
   assert.equal(run(mg).status, 1);
+});
+
+// --- NEO-627: inert-paths skip -------------------------------------------------
+
+const INERT = { ...GREEN, R_E2E: "skipped", R_E2E_INERT: "true", R_WEB_PREVIEW: "skipped" };
+
+test("inert: a skipped e2e passes on pull_request (full) and says why", () => {
+  const r = run(INERT);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /every changed path is inert/);
+});
+
+test("inert: a skipped e2e passes on merge_group", () => {
+  const mg = { ...INERT, EVENT_NAME: "merge_group", FULL: "true" };
+  const r = run(mg);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /every changed path is inert/);
+});
+
+test("inert=true but e2e failed or was cancelled fails", () => {
+  for (const e2e of ["failure", "cancelled"]) {
+    assert.equal(run({ ...INERT, R_E2E: e2e }).status, 1, e2e);
+    assert.equal(run({ ...INERT, R_E2E: e2e, EVENT_NAME: "merge_group" }).status, 1, e2e);
+  }
+});
+
+test("inert=false and e2e skipped fails, on both events", () => {
+  assert.equal(run({ ...INERT, R_E2E_INERT: "false" }).status, 1);
+  assert.equal(run({ ...INERT, R_E2E_INERT: "false", EVENT_NAME: "merge_group" }).status, 1);
+});
+
+test("inert unset, empty or garbage with e2e skipped fails", () => {
+  for (const v of ["", "TRUE", "yes", "1"]) {
+    assert.equal(run({ ...INERT, R_E2E_INERT: v }).status, 1, JSON.stringify(v));
+  }
+  const { R_E2E_INERT, ...unset } = INERT; // eslint-disable-line no-unused-vars
+  const r = spawnSync("bash", [SCRIPT], { env: { PATH: process.env.PATH, ...unset }, encoding: "utf8" });
+  assert.equal(r.status, 1);
+});
+
+test("inert: a green e2e with inert=true is fine (the flag only widens skips)", () => {
+  assert.equal(run({ ...GREEN, R_E2E_INERT: "true" }).status, 0);
+});
+
+test("inert does not excuse other failures", () => {
+  assert.equal(run({ ...INERT, R_WEB_LINT: "failure" }).status, 1);
+  assert.equal(run({ ...INERT, R_HYGIENE: "skipped" }).status, 1);
+  assert.equal(run({ ...INERT, R_CHANGES: "failure" }).status, 1);
+  assert.equal(run({ ...INERT, R_WEB_PREVIEW: "failure" }).status, 1);
+  assert.equal(run({ ...INERT, R_WIRE: "failure" }).status, 1);
+});
+
+test("inert: preprocess changed still needs mask parity to succeed (unchanged rule)", () => {
+  assert.equal(run({ ...INERT, R_PREPROCESS_CHANGED: "true", R_MASK_PARITY: "skipped" }).status, 1);
+});
+
+test("inert: a cheap pull_request run still accepts the skip as before", () => {
+  assert.equal(run({ ...CHEAP, R_E2E_INERT: "true" }).status, 0);
 });
