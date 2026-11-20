@@ -235,6 +235,35 @@ describe("assessParallelCopyTitle", () => {
     expect(outcome.failing).toBe(false);
   });
 
+  test("NEO-618 step 2: a Tidy Up source that fits still heads the carried rest with the box when the box-headed title fits", () => {
+    // A box long enough that its own builder title still gives up the Angels.
+    const box = "Anime Kanji Gold Refractor Sapphire Orange Wave";
+    const inputs = parallel("Kanji Gold Refractor", 50, { setShortName: box });
+    expect(assessListingTitle({ ...inputs, setShortName: undefined })).toMatchObject({ fits: true, tidyUp: true });
+    expect(assessListingTitle(inputs)).toMatchObject({ fits: true, tidyUp: true, shortNameUsed: true });
+    // The builder's own description would also fit with the rest.
+    expect(`${titleDescription(inputs)} Trout Halos /50`.length).toBeLessThanOrEqual(80);
+    const outcome = assessParallelCopyTitle(inputs, "Trout Halos");
+    expect(outcome.title).toBe(`${box} Trout Halos /50`);
+    expect(outcome).toMatchObject({ carried: true, fits: true, tidyUp: false, failing: false });
+  });
+
+  test("NEO-618 step 2: a box-headed title over 80 leaves the builder's description heading the rest", () => {
+    const box = "Anime Kanji Gold Refractor Sapphire Orange Wave Padparadscha Superfractor Edition";
+    const inputs = parallel("Kanji Gold Refractor", 50, { setShortName: box });
+    expect(assessListingTitle({ ...inputs, setShortName: undefined })).toMatchObject({ fits: true, tidyUp: true });
+    expect(`${box} Trout Halos /50`.length).toBeGreaterThan(80);
+    const outcome = assessParallelCopyTitle(inputs, "Trout Halos");
+    expect(outcome.title).toBe("2024 Topps Chrome Anime Kanji Gold Refractor Trout Halos /50");
+    expect(outcome.carried).toBe(true);
+    expect(outcome.failing).toBe(false);
+  });
+
+  test("NEO-618 step 2: a blank box leaves the builder's description heading the rest", () => {
+    const outcome = assessParallelCopyTitle(parallel("Kanji Gold Refractor", 50, { setShortName: "   " }), "Trout Halos");
+    expect(outcome.title).toBe("2024 Topps Chrome Anime Kanji Gold Refractor Trout Halos /50");
+  });
+
   test("step 2 re-heads with the box text when the description runs long", () => {
     // A box the builder will not take: its own title loses Mike as well.
     const box = "Anime Kanji Orange Wave Refractor Sapphire Padparadscha Superfractor";

@@ -23,6 +23,7 @@ import { normalizeEntityName } from "../lib/entities/normalize-name";
 import { insertTestCard } from "../lib/testing/card-row";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import { PAUSED_PLATFORMS_ENV } from "./lib/marketplacePause";
+import { assessListingTitle } from "./features/generateListing";
 import { pickTitleChainFacts } from "./listingShortName";
 
 const modules = (import.meta as unknown as {
@@ -193,6 +194,42 @@ describe("previewListingTitle and titleForStoredCard", () => {
         "variation": "Topps Chrome Base Dwight Gooden #16 Image Variation Baseball",
       }
     `);
+  });
+
+  test("NEO-618: a Tidy Up card with a fitting box is built from the box, the same in the preview and the stored title", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    // A long name leaves no room for the Mets (a whole team out, no first name lost): Tidy Up.
+    const cardId = await t.run(async (ctx) => {
+      const base = (await ctx.db.get(s.base))!;
+      await ctx.db.patch(base.parentId!, { metadata: { listingShortName: "Chrome Debut" } });
+      return insertTestCard(ctx, {
+        selectorOptionId: s.base,
+        cardNumber: "BOX-1xxxxxxxxxxxxxxxxxxxxxxxx",
+        cardName: "Card BOX-1",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: NOW,
+        pendingPlayerNames: ["Bartholomew Fitzgerald-Worthington"],
+        teamOnCardIds: [s.mets],
+        features: { season: "2024" },
+      });
+    });
+    const preview = await t
+      .withIdentity(ADMIN)
+      .query(api.selectorOptions.previewListingTitle, { cardId });
+    const stored = await t.run(async (ctx) => titleForStoredCard(ctx, (await ctx.db.get(cardId))!));
+    expect(preview.title).toBe(stored.title);
+    expect(preview.inputs.setShortName).toBe("Chrome Debut");
+    expect(stored.shortNameUsed).toBe(true);
+    expect(preview.shortNameUsed).toBe(true);
+    expect(preview.title.startsWith("Chrome Debut ")).toBe(true);
+    expect(preview.fits).toBe(true);
+    // The fixture is what it claims: without the box the builder needs Tidy Up.
+    const builder = assessListingTitle({ ...preview.inputs, setShortName: undefined });
+    expect(builder.fits).toBe(true);
+    expect(builder.tidyUp).toBe(true);
+    expect(builder.firstNameLost).toBe(false);
   });
 
   test("a card born through the commit chunk stores the title Regenerate offers", async () => {

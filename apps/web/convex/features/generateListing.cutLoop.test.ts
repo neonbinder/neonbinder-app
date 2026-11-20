@@ -1370,3 +1370,95 @@ describe("NEO-535 + NEO-528 leftOutOfTitle lists a dropped cameo", () => {
     ).toEqual(["Mike Trout"]);
   });
 });
+
+/**
+ * NEO-618 — the box gate, branch by branch. The box (`setShortName`) replaces
+ * the builder's description when the builder's title is over 80 (whatever the
+ * box version comes to), or needs Tidy Up and the box version fits.
+ */
+describe("NEO-618 the box gate", () => {
+  const NY = { location: "New York", name: "Yankees" };
+  const room = (...words: string[]) => words.reduce((sum, w) => sum + w.length + 1, 0);
+  const at = (inputs: Parameters<typeof atFullLength>[0], tokens: number) =>
+    atFullLength(inputs, 80 + tokens);
+  const noNumber = { ...ichiro, cardNumber: "" };
+  /** A word string of exactly `n` characters. */
+  const boxOf = (n: number) => `Box ${"x".repeat(n - 4)}`;
+  /** Fits at 80 once the Yankees go; nothing in it can be cut but the team. */
+  const teamTidy = at(
+    { ...noNumber, teamNames: ["New York Yankees"], teamSplits: [NY] },
+    room("New", "York", "Yankees"),
+  );
+
+  test("the fixture is what it claims: it fits at 80 with only the team out", () => {
+    const a = assessListingTitle(teamTidy);
+    expect(a.title).toHaveLength(80);
+    expect(a.dropped).toEqual(["New York Yankees"]);
+    expect(a.tidyUp).toBe(true);
+    expect(a.shortNameUsed).toBeUndefined();
+  });
+
+  // Each Tidy Up cut (rows 12-20) alone sends a fitting box to the title.
+  const tidyCuts: Array<[string, Parameters<typeof atFullLength>[0], string[], string]> = [
+    ["team", { ...ichiro, teamNames: ["New York Yankees"], teamSplits: [NY] }, ["New", "York", "Yankees"], "New York Yankees"],
+    ["number", { ...ichiro, playerNames: ["Ichiro Suzuki"], cardNumber: "123" }, ["#123"], "#123"],
+    ["SP", { ...noNumber, shortPrint: "SSP", isRelic: true }, ["SSP"], "SSP"],
+    ["RELIC", { ...noNumber, playerNames: ["Ichiro Suzuki"], isRelic: true }, ["RELIC"], "RELIC"],
+    ["first name", { ...noNumber, playerNames: ["Ichiro Suzuki", "Ken Griffey Jr."], printRun: 10 }, ["Ken"], "Ken"],
+    ["RC", { ...noNumber, isRookie: true, autographed: "On Card" }, ["Rookie", "RC"], "RC"],
+    ["AUTO", { ...noNumber, autographed: "On Card", printRun: 99 }, ["AUTO"], "AUTO"],
+  ];
+
+  test.each(tidyCuts)("%s cut: a fitting box is used (shortNameUsed)", (_name, inputs, words, dropped) => {
+    const card = at(inputs, room(...words));
+    const builder = assessListingTitle(card);
+    expect(builder.fits).toBe(true);
+    expect(builder.tidyUp).toBe(true);
+    expect(builder.dropped).toContain(dropped);
+    expect(builder.shortNameUsed).toBeUndefined();
+
+    const boxed = assessListingTitle({ ...card, setShortName: "Box Set" });
+    expect(boxed.shortNameUsed).toBe(true);
+    expect(boxed.fits).toBe(true);
+    expect(boxed.title.startsWith("Box Set ")).toBe(true);
+  });
+
+  test("builder over 80 and the box over 80: the box version is returned, not fitting", () => {
+    const card = { ...noNumber, setName: `S${"x".repeat(89)}` };
+    expect(assessListingTitle(card).fits).toBe(false);
+    const box = boxOf(85);
+    const a = assessListingTitle({ ...card, setShortName: box });
+    expect(a.fits).toBe(false);
+    expect(a.shortNameUsed).toBe(true);
+    expect(a.title).toBe(`${box} Ichiro`);
+  });
+
+  test("a Tidy Up box version wins over a Tidy Up builder, as long as it fits", () => {
+    // 66 + " Ichiro" is 73; the team still has to go, but the title fits.
+    const a = assessListingTitle({ ...teamTidy, setShortName: boxOf(66) });
+    expect(a.shortNameUsed).toBe(true);
+    expect(a.fits).toBe(true);
+    expect(a.tidyUp).toBe(true);
+    expect(a.dropped).toEqual(["New York Yankees"]);
+    expect(a.title).toBe(`${boxOf(66)} Ichiro`);
+  });
+
+  test("a whitespace-only box on a Tidy Up card is no box", () => {
+    expect(assessListingTitle({ ...teamTidy, setShortName: "   " })).toEqual(
+      assessListingTitle({ ...teamTidy, setShortName: undefined }),
+    );
+  });
+
+  test("the box version at exactly 80 is used", () => {
+    const a = assessListingTitle({ ...teamTidy, setShortName: boxOf(73) });
+    expect(a.title).toHaveLength(80);
+    expect(a.shortNameUsed).toBe(true);
+  });
+
+  test("the box version at 81 is not; the Tidy Up builder keeps its title", () => {
+    const a = assessListingTitle({ ...teamTidy, setShortName: boxOf(74) });
+    expect(a.shortNameUsed).toBeUndefined();
+    expect(a.title).toBe(assessListingTitle(teamTidy).title);
+    expect(a.tidyUp).toBe(true);
+  });
+});

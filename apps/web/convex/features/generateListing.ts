@@ -42,10 +42,12 @@
  *    (rows 1-3) comes back only when
  *    no real token (rows 9+) is still out. The number may come back without
  *    its "#" when that is the only way it fits.
- * 5. Still over 80 after the whole list: when the set has box text ("Set name
- *    in titles", `setShortName`), build again from it and rerun the list.
- *    Still over: STOP. The over-cap title is returned as it stands
- *    (`fits: false`), the card is flagged `titleOverLimit` by its length, and
+ * 5. Still over 80 after the whole list, or still needing Tidy Up (a Tidy Up
+ *    cut the refill could not undo; NEO-618): when the set has box text ("Set
+ *    name in titles", `setShortName`), build again from it and rerun the
+ *    list. Over 80, the box version is taken whatever it comes to; needing
+ *    Tidy Up, only when the box version fits. Still over: STOP. The over-cap
+ *    title is returned as it stands (`fits: false`), the card is flagged `titleOverLimit` by its length, and
  *    the operator fixes it in the Card titles dialog. Description words are
  *    never cut: a title that drops "Dugout Collection" is a title for a
  *    different card.
