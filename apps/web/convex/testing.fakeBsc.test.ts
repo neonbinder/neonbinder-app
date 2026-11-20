@@ -485,6 +485,22 @@ describe("clearBscCallGate", () => {
     expect(calls).toEqual([{ fn: "resetNamespace", args: { ns: fakeBscNamespaceFor(USER_A, CLOUD_URL) } }]);
   });
 
+  test("resetMyTestState on a misconfigured fake does not throw over the gate row, and leaves every row alone", async () => {
+    vi.stubEnv("TESTING_RESET_SECRET", "test-enabled");
+    vi.stubEnv("CONVEX_CLOUD_URL", CLOUD_URL);
+    vi.stubEnv("NEONBINDER_FAKE_BSC_KEY", "caller-key");
+    // Not the pinned neonbinder-fake-bsc-* host: misconfigured, not fake.
+    vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://evil.example.com");
+    expect(resolveBscTarget(process.env).mode).toBe("misconfigured");
+    const t = convexTest(schema, modules);
+    await openGate(t, gateKeyOf(USER_A));
+    await openGate(t, "deployment");
+
+    await expect(t.withIdentity({ subject: USER_A }).action(api.testing.resetMyTestState, {})).resolves.toBeDefined();
+
+    expect(await gateRows(t)).toHaveLength(2);
+  });
+
   test("resetMyTestState on the real BSC touches no gate row", async () => {
     vi.stubEnv("TESTING_RESET_SECRET", "test-enabled");
     const t = convexTest(schema, modules);

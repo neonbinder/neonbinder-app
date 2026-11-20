@@ -241,8 +241,11 @@ export const resetMyTestState = action({
       // NEO-628: the caller's own BSC call gate goes with their namespace (a
       // breaker spec's window or failure run must not outlive its reset). Only
       // this user's row: the key is derived from the verified subject.
+      // A no-op unless the deployment is really on the fake: no `ns:` row can
+      // exist elsewhere (a misconfigured fake must not fail every reset over a
+      // row that cannot be there).
       const key = bscGateKey({ mode: "fake", fakeNs: ns });
-      if (key !== BSC_GATE_DEPLOYMENT_KEY) {
+      if (key !== BSC_GATE_DEPLOYMENT_KEY && resolveBscTarget(process.env).mode === "fake") {
         await ctx.runMutation(internal.bscCallGate.clearForTesting, { key });
       }
       const done: FakeBscControlResult = await ctx.runAction(internal.fakeBsc.resetNamespace, { ns });
