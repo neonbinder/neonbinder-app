@@ -50,7 +50,7 @@ describe("isBscGateKey / bscGateKeyKind", () => {
   test("accepts exactly 'deployment' and ns:<namespace>", () => {
     expect(isBscGateKey(BSC_GATE_DEPLOYMENT_KEY)).toBe(true);
     expect(isBscGateKey(`ns:${NS}`)).toBe(true);
-    for (const bad of ["", "Deployment", "deployment ", "ns:", "ns:-a", "ns:A", "ns:a b", "ns:a:b", `ns:${"a".repeat(101)}`, "scope", " ns:a"]) {
+    for (const bad of ["", "Deployment", "deployment ", "ns:", "ns:-a", "ns:happy-otter-123-", "ns:a-", "ns:A", "ns:a b", "ns:a:b", `ns:${"a".repeat(101)}`, "scope", " ns:a"]) {
       expect(isBscGateKey(bad)).toBe(false);
     }
   });

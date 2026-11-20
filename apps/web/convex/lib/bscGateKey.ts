@@ -21,8 +21,10 @@ export const BSC_GATE_DEPLOYMENT_KEY = "deployment";
 /** A fake namespace as the fake reads it: the same shape as `FAKE_NS_VALUE`. */
 const NAMESPACE_SHAPE = /^[a-z0-9][a-z0-9-]{0,99}$/;
 
-/** A stored gate key: `"deployment"`, or `ns:` and a namespace. */
-const GATE_KEY_SHAPE = /^ns:[a-z0-9][a-z0-9-]{0,99}$/;
+/** A stored gate key: `"deployment"`, or `ns:` and a namespace (never a prefix). */
+// Ends in an alphanumeric character: a trailing hyphen is a deployment PREFIX,
+// which `bscGateKey` never mints as a key (it is the deployment's).
+const GATE_KEY_SHAPE = /^ns:[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$/;
 
 export type BscGateKeyKind = "deployment" | "ns";
 

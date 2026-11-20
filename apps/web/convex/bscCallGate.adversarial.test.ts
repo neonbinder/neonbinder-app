@@ -96,12 +96,10 @@ describe("the fake's namespace can never forge a key shape", () => {
     }
   });
 
-  // KNOWN GAP (reported, product code untouched): convexSlugOf accepts a slug the
-  // namespace shape rejects (leading hyphen, or over 88 characters), so the gate
-  // falls back to "deployment" while the header still names the user's namespace.
-  // Real Convex slugs are word-word-digits, so it is unreachable today. `test.fails`
-  // passes while the gap exists and goes red the day it is fixed: flip it to `test`.
-  test.fails("KNOWN GAP: key and header agree for a slug the namespace shape rejects", () => {
+  // convexSlugOf accepts a slug the namespace shape rejects (leading hyphen, or
+  // over 88 characters): the gate falls back to "deployment", so the header must
+  // not name a user's namespace the gate does not know (fixed in NEO-628).
+  test("key and header agree for a slug the namespace shape rejects", () => {
     const urls = [
       undefined,
       "",
@@ -132,9 +130,8 @@ describe("the fake's namespace can never forge a key shape", () => {
     }
   });
 
-  // KNOWN GAP: isBscGateKey accepts `ns:<slug>-` (the prefix), which bscGateKey never
-  // mints. Only an internal caller could name it; no one does. Flip to `test` when fixed.
-  test.fails("KNOWN GAP: a trailing-hyphen prefix is not accepted as a gate key", () => {
+  // isBscGateKey must not accept `ns:<slug>-` (the prefix), which bscGateKey never mints.
+  test("a trailing-hyphen prefix is not accepted as a gate key", () => {
     const prefixKey = `ns:${fakeBscPrefixFor(CLOUD)}`;
     expect(bscGateKey({ mode: "fake", fakeNs: fakeBscPrefixFor(CLOUD) })).toBe("deployment");
     // Whatever isBscGateKey accepts must be reachable from bscGateKey, or a

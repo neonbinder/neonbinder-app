@@ -336,7 +336,13 @@ export function bscCallDomainFor(
   } catch {
     fakeNs = undefined;
   }
-  return { gateKey: bscGateKey({ mode, fakeNs }), ...(fakeNs !== undefined ? { fakeNs } : {}) };
+  const gateKey = bscGateKey({ mode, fakeNs });
+  // The key and the header describe ONE domain. When the key fell back to the
+  // deployment's (a slug the namespace shape rejects), a user's namespace the
+  // gate does not know is dropped; only the deliberate prefix (a call with no
+  // user) is still sent.
+  const send = fakeNs !== undefined && (gateKey !== BSC_GATE_DEPLOYMENT_KEY || !userId);
+  return { gateKey, ...(send ? { fakeNs } : {}) };
 }
 
 /**
