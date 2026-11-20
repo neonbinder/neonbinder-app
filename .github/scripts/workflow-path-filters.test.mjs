@@ -212,18 +212,42 @@ test("the marketplace-seller jobs, queue and spec list are fully retired", async
   }
 });
 
-test("e2e.yml points both seeds at the fake eBay and asserts it", () => {
+test("e2e.yml points the desktop seed at the fake eBay and both seeds assert it", () => {
   const text = read("e2e.yml").join("\n");
   const count = (re) => (text.match(re) || []).length;
-  assert.equal(count(/- name: Point the Convex preview at the fake eBay/g), 2);
-  assert.equal(count(/env set EBAY_ENVIRONMENT fake /g), 2);
-  assert.equal(count(/env remove "\$name"/g), 2);
-  for (const n of ["DEV_EBAY_REFRESH_TOKEN", "EBAY_CLIENT_ID", "EBAY_RU_NAME"]) assert.equal(count(new RegExp(`for name in [^\\n]*${n}`, "g")), 2, n);
+  // NEO-628: seed-mobile no longer rewrites the env switches (the desktop seed
+  // set them on the same preview); it only re-asserts the eBay target.
+  assert.equal(count(/- name: Point the Convex preview at the fake eBay/g), 1);
+  assert.equal(count(/env set EBAY_ENVIRONMENT fake /g), 1);
+  assert.equal(count(/env remove "\$name"/g), 1);
+  for (const n of ["DEV_EBAY_REFRESH_TOKEN", "EBAY_CLIENT_ID", "EBAY_RU_NAME"]) assert.equal(count(new RegExp(`for name in [^\\n]*${n}`, "g")), 1, n);
   assert.equal(count(/fakeBsc:ebayTarget '\{\}'/g), 2);
   assert.equal(count(/credentials:deleteFakeSessionsFromCli/g), 1);
   assert.doesNotMatch(text, /deleteFakeBscSessionsFromCli/);
   // The eBay env is written after the BSC base it depends on.
   assert.ok(text.indexOf("env set EBAY_ENVIRONMENT") > text.indexOf("env set NEONBINDER_BSC_API_BASE"));
+});
+
+// NEO-628: seed-mobile starts right after the desktop seed and waits for the
+// desktop pass by polling, so a revert to a `needs` edge, a dropped wait or a
+// miscounted pattern turns red here instead of in a wiped preview.
+test("seed-mobile starts early and waits for the desktop shards and breaker by name", () => {
+  const text = read("e2e.yml").join("\n");
+  const a = text.indexOf("\n  seed-mobile:\n");
+  const job = text.slice(a, text.indexOf("\n  shard-mobile:\n"));
+  assert.match(job, /\n {4}needs: \[setup, seed\]\n/);
+  assert.match(job, /\n {6}actions: read\n/);
+  assert.match(job, /wait-for-jobs\.sh/);
+  assert.match(job, /--pattern '\^shard-desktop \\\(' --count 8/);
+  assert.match(job, /--pattern '\^BSC breaker specs \\\(desktop\\\)\$' --count 1/);
+  assert.ok(job.indexOf("wait-for-jobs.sh") < job.indexOf("e2e-seed-reset.sh"), "wait precedes the reset");
+  assert.ok(job.indexOf("wait-for-jobs.sh") < job.indexOf("Enrichment fixture coverage (desktop shards drained)"), "wait precedes the drained-coverage read");
+  assert.doesNotMatch(job, /convex-env-retry\.sh" env (set|remove)/, "no env writes in seed-mobile");
+  assert.match(job, /fakeBsc:ebayTarget/);
+  // The jobs it waits for are named exactly so, and are never skipped when it runs.
+  assert.match(text, /\n {2}shard-desktop:\n/);
+  assert.match(text, /\n {4}name: BSC breaker specs \(desktop\)\n/);
+  assert.match(text, /\n {2}breaker-desktop:[\s\S]*?\n {4}if: \$\{\{ !cancelled\(\) && needs\.setup\.result == 'success' && needs\.seed\.result == 'success' \}\}\n/);
 });
 
 test("the e2e gate depends on no seller job", () => {

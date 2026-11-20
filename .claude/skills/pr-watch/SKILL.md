@@ -155,7 +155,11 @@ push is still worth one `gh pr checks <PR>` before acting on it.
 ## What the E2E fields mean
 `seed ✓/▶ · shards 3/16 · e2e ▶ · playwright ✓` reads the PR's own check rollup:
 the reusable E2E workflow runs two passes (desktop, then mobile, each on a fresh
-seed), so `seed a/b` is the desktop seed job then the `seed-mobile` job, `shards
+seed), so `seed a/b` is the desktop seed job then the `seed-mobile` job (NEO-628: that
+one starts right after the desktop seed and sits waiting for the desktop pass
+while it runs, so `seed-mobile` shows in progress, with a long wait step, from
+the first minutes; the progress count does not mean the mobile pass has started,
+only its `shard-mobile` jobs do), `shards
 n/m` counts finished `shard-desktop` + `shard-mobile` jobs (m grows from 8 to 16
 once the mobile pass starts), `e2e` is the single gate job (the real verdict), and `playwright` is
 the merged-JUnit check, which publishes after the gate. No secret or Convex
