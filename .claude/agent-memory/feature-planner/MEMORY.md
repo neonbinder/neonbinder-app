@@ -84,3 +84,5 @@
 - [Suite red rate is a long tail](suite-red-rate-is-a-long-tail.md) — 470 executions at zero retries: 0.3% per execution is 75% red; plan by family and policy; first red on a worker is the cause
 - [Checklist parallels: Inserts then Group Parallels](checklist-parallels-reach-nb-through-inserts-and-group-parallels.md) — no parallel-level checklist door; prefix grouping misplaces "X Mini"; summary classify = unknown on initials numbers; no checklist print runs
 - [Parallel names literal; print run is a row attribute](parallel-names-stay-literal-print-run-is-a-row-attribute.md) — no name tidying, no "/N" in names; row run at >=90% card agreement (NEO-616)
+- [Check sibling worktrees before a rule change](check-sibling-worktrees-before-planning-a-rule-change.md) — a fresh rule's core may sit on another unmerged branch; list overlaps, sequence merges
+- [Section near-match needs one extension](section-near-match-needs-a-single-extension.md) — 2+ targets extending a section = tie; foil-only marketplaces mislink subsets (NEO-616)
