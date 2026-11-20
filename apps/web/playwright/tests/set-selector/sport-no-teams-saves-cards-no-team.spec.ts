@@ -50,6 +50,7 @@ import {
 } from "../../support/set-builder";
 import { addCardViaForm, confirmDeleteCardButton, deleteCardButton, editCardButton, escapeRe } from "../../support/cards";
 import { usePastedChecklist } from "../../support/published-checklist";
+import { ensureSportHasTeams, openSportAttributes, pressTeamlessToggle, teamlessToggle } from "../../support/teamless-sport";
 import {
   answerPlayerAsNew,
   answerStepAsNew,
@@ -66,10 +67,6 @@ import {
 
 const YEAR = "2026";
 const MANUFACTURER = "Topps";
-const TOGGLE_TEXT = "No teams in this sport";
-// The toasts are held to their claims, not their full sentences, so the wording can settle.
-const MARKED = /^Marked — .*save with No Team/;
-const CLEARED = /^Cleared — .*ask for a team again/;
 
 /** What the afterEach must undo, recorded the line after each write lands. */
 const written: {
@@ -87,13 +84,6 @@ const written: {
   sportFlagged: false,
   cards: [],
 };
-
-/** The sport row's toggle, scoped to its Attributes cell. */
-function teamlessToggle(page: Page) {
-  return page
-    .getByLabel(`Set feature ${TOGGLE_TEXT}`)
-    .getByRole("button", { name: TOGGLE_TEXT, exact: true });
-}
 
 /** A checklist row is one run of text; the match stops at the next row's "#". */
 function rowSays(page: Page, number: string, text: string) {
@@ -132,16 +122,7 @@ test.afterEach(async ({ page }, testInfo) => {
     if (written.sportFlagged && written.sport) {
       const sport = written.sport;
       await tidyStep("turn No teams in this sport off", async () => {
-        await drillToCustom(tidy, { sport });
-        await openAttributesPanel(tidy);
-        const toggle = teamlessToggle(tidy);
-        await expect(toggle).toBeVisible();
-        // A fresh page holds no write in flight, so the attribute is the stored flag.
-        if ((await toggle.getAttribute("aria-pressed")) === "true") {
-          await toggle.click();
-          await expect(tidy.getByText(CLEARED).first()).toBeVisible();
-        }
-        await expect(tidy.getByLabel(`Set feature ${TOGGLE_TEXT}`).getByRole("button", { name: TOGGLE_TEXT, pressed: false })).toBeVisible();
+        await ensureSportHasTeams(tidy, sport);
         written.sportFlagged = false;
       });
     }
@@ -216,17 +197,11 @@ test(
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
 
     // ══ 1. THE SPORT: "No teams in this sport" on ══
-    await drillToCustom(page, { sport });
-    await expect(page.getByRole("heading", { name: `Attributes for ${sport} (Sport)` })).toBeVisible();
-    await openAttributesPanel(page);
-    const cell = page.getByLabel(`Set feature ${TOGGLE_TEXT}`);
-    const toggle = (pressed: boolean) => cell.getByRole("button", { name: TOGGLE_TEXT, exact: true, pressed });
+    await openSportAttributes(page, sport);
     // R2 precondition: the sport starts with teams (a leftover flag fails here, by name).
-    await expect(toggle(false)).toBeVisible();
+    await expect(teamlessToggle(page, false)).toBeVisible();
     written.sportFlagged = true; // from the press on, the afterEach owns turning it off
-    await toggle(false).click();
-    await expect(page.getByText(MARKED).first()).toBeVisible();
-    await expect(toggle(true)).toBeVisible();
+    await pressTeamlessToggle(page, false);
     await expectAccessible(page, { label: "Sport attributes with No teams in this sport on" });
 
     // ══ 2. THE SET: a hand-made per-attempt leaf, its one-row checklist pasted ══
@@ -351,12 +326,8 @@ test(
     await expect(page.getByRole("button", { name: /^[0-9]+ needs? you$/ })).toHaveCount(0);
 
     // ══ 7. FLAG OFF: the sport asks for a team again, and no existing card changes ══
-    await drillToCustom(page, { sport });
-    await openAttributesPanel(page);
-    await expect(toggle(true)).toBeVisible();
-    await toggle(true).click();
-    await expect(page.getByText(CLEARED).first()).toBeVisible();
-    await expect(toggle(false)).toBeVisible();
+    await openSportAttributes(page, sport);
+    await pressTeamlessToggle(page, true);
     written.sportFlagged = false;
     await expectAccessible(page, { label: "Sport attributes with No teams in this sport off" });
     // The leaf again, by its address: clearing the flag touched no card. Card 1 keeps

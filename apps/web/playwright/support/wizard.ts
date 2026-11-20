@@ -470,15 +470,24 @@ export async function walkToAutographStep(page: Page): Promise<void> {
  * (retargeted while SportLots was paused, so neither the seed's SportLots base
  * mapping nor this Match Cards pairing has run on it); the first live run must
  * check both.
+ *
+ * `firstFetch` (a set's sole writer, which commits it): the precondition of a
+ * FIRST fetch, asserted before the upload. A committed set re-syncs instead and
+ * a re-sync raises no review, so a local re-run on an already-committed seed
+ * fails here, by name: re-seed first.
  */
 export async function fetchChecklistToWizard(
   page: Page,
   env: FlowEnv,
   target: DrillTarget = {},
-  { checklist = target.set === undefined ? CHECKLISTS.starsOfMlbNetwork : undefined }: { checklist?: ChecklistName } = {},
+  {
+    checklist = target.set === undefined ? CHECKLISTS.starsOfMlbNetwork : undefined,
+    firstFetch = false,
+  }: { checklist?: ChecklistName; firstFetch?: boolean } = {},
 ): Promise<void> {
   const drilled = { set: "Topps Stars of MLB Network", ...target };
   await drillToBaseVariant(page, env, drilled);
+  if (firstFetch) await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
   // NEO-478/482/489: the publisher's checklist is uploaded before the fetch. The default
   // set's file answers every card (each row says "No Team": the hosts and the show card
   // have none), so BSC is asked for nothing per card and none of its cards reaches "Cards
@@ -696,10 +705,17 @@ export async function cancelUndecided(page: Page): Promise<void> {
  *
  * Contract: ENTRY the wizard is open. EXIT a batch is on screen with nothing
  * expired; a resumed one has been discarded and re-fetched (via
- * `fetchChecklistToWizard`, default set). Not a licence to ignore a dirty
- * batch: the caller still asserts `expectNothingDecided` itself right after.
+ * `fetchChecklistToWizard`, with the same `target` and `options` the caller
+ * fetched with; the default set and its file when none are given). Not a
+ * licence to ignore a dirty batch: the caller still asserts
+ * `expectNothingDecided` itself right after.
  */
-export async function discardResumedReviewBatch(page: Page, env: FlowEnv): Promise<void> {
+export async function discardResumedReviewBatch(
+  page: Page,
+  env: FlowEnv,
+  target: DrillTarget = {},
+  options: { checklist?: ChecklistName; firstFetch?: boolean } = {},
+): Promise<void> {
   // Settled into one state first (the header is up), then branch on it.
   await expect(wizardProgress(page)).toBeVisible();
   if (await decidedSummary(page).isVisible()) {
@@ -707,7 +723,7 @@ export async function discardResumedReviewBatch(page: Page, env: FlowEnv): Promi
     await expect(page.getByText(/Discard [0-9]+ decisions?/)).toBeVisible();
     await page.getByRole("button", { name: "Discard", exact: true }).click();
     await expect(page.getByText("Fetch cancelled — no cards saved.")).toBeVisible({ timeout: 30_000 });
-    await fetchChecklistToWizard(page, env);
+    await fetchChecklistToWizard(page, env, target, options);
   }
   // A fresh batch opens with nothing decided, but its own lookups start
   // settling rows at once: what must hold here is that a batch is on screen
@@ -882,6 +898,51 @@ export async function answerStepAsNew(
  */
 export async function awaitLookupsSettled(page: Page): Promise<void> {
   await expect(reviewWizard(page).getByText(/still looking up/)).toBeHidden({ timeout: LOOKUPS });
+}
+
+/**
+ * NEO-426: decide every name in the batch, one row at a time, for a spec about
+ * ONE person on a real set whose other names it does not care about: that
+ * person's row is handed to `decide`, every other row is skipped as not a
+ * person. The rows come in the wizard's own order (a row waiting on its card's
+ * live BSC lookup is presented late), so the walk is by the presented row's
+ * name, never by position.
+ *
+ * Every row must be a person: a team, league or any other step fails by name
+ * (a skipped team would rule a real team "not a team" for the set). Each skip
+ * is proved landed (`expectNameStepLeft`) before the next row is read.
+ *
+ * Contract: ENTRY the wizard is open on the names. `decide` is called with the
+ * person's row presented and lookups drained, and must leave that row
+ * (`answerPlayerAsNew` does). EXIT every name is decided: the names-done footer
+ * (`Next (Enter)` or Confirm & Save) is up, and `person`'s row was presented
+ * and handed to `decide` exactly once. `maxRows` is a runaway guard.
+ */
+export async function skipEveryNameBut(
+  page: Page,
+  person: string,
+  decide: () => Promise<void>,
+  { maxRows = 40 }: { maxRows?: number } = {},
+): Promise<void> {
+  const own = `Skip ${person} — not a person`;
+  const namesDone = nextStepButton(page).or(confirmSaveButton(page));
+  let decided = 0;
+  for (let i = 0; i < maxRows; i++) {
+    await awaitLookupsSettled(page);
+    await expect(nameStepSkip(page).or(namesDone).first()).toBeVisible();
+    if (!(await nameStepSkip(page).isVisible())) break;
+    const row = await readNameStep(page);
+    await expect(personSkip(page), `"${row}" is not a person's row`).toBeVisible();
+    if (row === own) {
+      await decide();
+      decided++;
+    } else {
+      await personSkip(page).click();
+      await expectNameStepLeft(page, row);
+    }
+  }
+  await expect(namesDone.first(), `names still waiting after ${maxRows} rows`).toBeVisible();
+  expect(decided, `${person}'s row was presented and decided once`).toBe(1);
 }
 
 /**
