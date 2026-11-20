@@ -3,8 +3,8 @@
  * players.
  *
  * `narrowTeamRowsByCardPlayers` is the pure-ish rule (reads player documents
- * only); `teams.resolveTeamByCardPlayers` is the internal query the review
- * gate calls for names `resolveTeamForSetYear` could not settle. Fixtures are
+ * only); `selectorOptions.resolveGateTeamNames` is the internal query the
+ * review gate asks for its printed team names. Fixtures are
  * raw `t.run` inserts: a sport, one team name with two eras (and a third,
  * modern one for the future-era cases), and players whose `teamYears` point at
  * the eras.
@@ -15,7 +15,7 @@ import { describe, expect, test } from "vitest";
 import schema from "../schema";
 import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
-import { normalizeTeamName } from "../teams";
+import { MAX_TEAM_NAME_LENGTH, normalizeTeamName } from "../teams";
 import {
   CARD_PLAYER_TEAM_MAX_CARDS,
   CARD_PLAYER_TEAM_MAX_PLAYERS_PER_CARD,
@@ -322,24 +322,30 @@ describe("NEO-490: narrowTeamRowsByCardPlayers", () => {
   });
 });
 
-describe("NEO-490: teams.resolveTeamByCardPlayers", () => {
+describe("NEO-490 / NEO-602: selectorOptions.resolveGateTeamNames, the players' answer", () => {
   type ResolveArgs = {
     sportId: Id<"selectorOptions">;
     name?: string;
     setYear?: number;
     cardPlayerIds: Id<"players">[][];
   };
-  // NEO-592 — the query answers with the team ROW (the gate no longer reads it
-  // back in a second hop); `resolve` reduces it to the id the cases below
-  // assert on, and `resolveRow` keeps the row for the case that pins its shape.
-  const resolveRow = (t: T, args: ResolveArgs) =>
-    t.query(internal.teams.resolveTeamByCardPlayers, {
+  // The gate's batch query answers per ask with the row's id, HOW the rule got
+  // there (`via`) and whether the players' row is the year's own
+  // (`agreesWithYear`). `resolveAnswer` keeps the whole answer; `resolve`
+  // reduces it to the id of an answer the PLAYERS made, which is what a visible
+  // career-team link needs: a year's answer, or none, is null.
+  const resolveAnswer = async (t: T, args: ResolveArgs) => {
+    const [answer] = await t.query(internal.selectorOptions.resolveGateTeamNames, {
       sportId: args.sportId,
-      name: args.name ?? "St. Louis Browns",
       ...(args.setYear !== undefined ? { setYear: args.setYear } : {}),
-      cardPlayerIds: args.cardPlayerIds,
+      asks: [{ name: args.name ?? "St. Louis Browns", cardPlayerIds: args.cardPlayerIds }],
     });
-  const resolve = async (t: T, args: ResolveArgs) => (await resolveRow(t, args))?._id ?? null;
+    return answer;
+  };
+  const resolve = async (t: T, args: ResolveArgs) => {
+    const { answer } = await resolveAnswer(t, args);
+    return answer?.via === "players" ? answer.teamId : null;
+  };
 
   test("returns the era the card's player played for when the name has several and no year", async () => {
     const t = convexTest(schema, modules);
@@ -347,32 +353,45 @@ describe("NEO-490: teams.resolveTeamByCardPlayers", () => {
     const paige = await insertPlayer(t, w.sportId, "Satchel Paige", [w.early]);
 
     expect(await resolve(t, { sportId: w.sportId, cardPlayerIds: [[paige]] })).toBe(w.early);
-    // NEO-592 — and what comes back is the row itself, not just its id.
-    const row = await resolveRow(t, { sportId: w.sportId, cardPlayerIds: [[paige]] });
-    expect(row).toMatchObject({ _id: w.early, name: "Browns", location: "St. Louis" });
+    // And what comes back names the row (id, sport and full name).
+    const { answer } = await resolveAnswer(t, { sportId: w.sportId, cardPlayerIds: [[paige]] });
+    expect(answer).toMatchObject({
+      teamId: w.early,
+      rowSportId: w.sportId,
+      fullName: "St. Louis Browns",
+      via: "players",
+    });
   });
 
   test("returns the row the players chose even when the set year lands on the same row", async () => {
     // 1930 sits only inside the 1902-1953 era, so the year alone would pick it
-    // too. The player points at that SAME era: the players' row comes back (the
-    // caller decides, via resolveCardTeamName's agreesWithYear, to link it
-    // silently).
+    // too. The player points at that SAME era: the players' row comes back,
+    // flagged `agreesWithYear` so the caller links it silently.
     const t = convexTest(schema, modules);
     const w = await seed(t);
     const paige = await insertPlayer(t, w.sportId, "Satchel Paige", [w.early]);
 
-    expect(
-      await resolve(t, { sportId: w.sportId, setYear: 1930, cardPlayerIds: [[paige]] }),
-    ).toBe(w.early);
+    const { answer } = await resolveAnswer(t, {
+      sportId: w.sportId,
+      setYear: 1930,
+      cardPlayerIds: [[paige]],
+    });
+    expect(answer).toMatchObject({ teamId: w.early, via: "players", agreesWithYear: true });
   });
 
-  test("returns null when the set year settles the name and no player has a stint on a row", async () => {
-    // The year's answer is not a career-team link the players made, so the
-    // internal query stays silent rather than label it as one.
+  test("the set year's answer is not the players' when no player has a stint on a row", async () => {
+    // The year's answer is not a career-team link the players made, so it comes
+    // back as `via: "year"` and the caller does not label it as one.
     const t = convexTest(schema, modules);
     const w = await seed(t);
     const blank = await insertPlayer(t, w.sportId, "Satchel Paige", []);
 
+    const { answer } = await resolveAnswer(t, {
+      sportId: w.sportId,
+      setYear: 1930,
+      cardPlayerIds: [[blank]],
+    });
+    expect(answer).toMatchObject({ teamId: w.early, via: "year", agreesWithYear: true });
     expect(
       await resolve(t, { sportId: w.sportId, setYear: 1930, cardPlayerIds: [[blank]] }),
     ).toBeNull();
@@ -380,7 +399,7 @@ describe("NEO-490: teams.resolveTeamByCardPlayers", () => {
 
   test("returns the players' row when it differs from the year's (the visible-row case)", async () => {
     // A 1990 card: the year covers neither era; only the late (1961-65) player
-    // evidence names a row. Players decide, so the query returns it.
+    // evidence names a row. Players decide, so the answer is theirs.
     const t = convexTest(schema, modules);
     const w = await seed(t);
     const late = await insertPlayer(t, w.sportId, "Other Player", [w.late]);
@@ -412,6 +431,8 @@ describe("NEO-490: teams.resolveTeamByCardPlayers", () => {
     const a = await insertPlayer(t, w.sportId, "Satchel Paige", [w.early]);
     const b = await insertPlayer(t, w.sportId, "Other Player", [w.late]);
 
+    const answer = await resolveAnswer(t, { sportId: w.sportId, cardPlayerIds: [[a], [b]] });
+    expect(answer.answer).toBeNull();
     expect(await resolve(t, { sportId: w.sportId, cardPlayerIds: [[a], [b]] })).toBeNull();
   });
 
@@ -421,8 +442,8 @@ describe("NEO-490: teams.resolveTeamByCardPlayers", () => {
     const paige = await insertPlayer(t, w.sportId, "Satchel Paige", [w.early]);
 
     expect(
-      await resolve(t, { sportId: w.sportId, name: "Nowhere Nobodies", cardPlayerIds: [[paige]] }),
-    ).toBeNull();
+      await resolveAnswer(t, { sportId: w.sportId, name: "Nowhere Nobodies", cardPlayerIds: [[paige]] }),
+    ).toEqual({ answer: null, ambiguous: false, candidateTeamIds: [] });
   });
 
   test("never inserts a team", async () => {
@@ -434,6 +455,35 @@ describe("NEO-490: teams.resolveTeamByCardPlayers", () => {
     await resolve(t, { sportId: w.sportId, cardPlayerIds: [[paige]] });
 
     expect(await t.run((ctx) => ctx.db.query("teams").collect())).toHaveLength(before.length);
+  });
+
+  test("refuses, never truncates, an ask past the card rule's bounds or a name no team can have", async () => {
+    const t = convexTest(schema, modules);
+    const w = await seed(t);
+    const paige = await insertPlayer(t, w.sportId, "Satchel Paige", [w.early]);
+    const ask = (asks: Array<{ name: string; cardPlayerIds?: Id<"players">[][] }>) =>
+      t.query(internal.selectorOptions.resolveGateTeamNames, { sportId: w.sportId, asks });
+    const name = "St. Louis Browns";
+
+    // At the bounds: answered.
+    const atCards = Array.from({ length: CARD_PLAYER_TEAM_MAX_CARDS }, () => [paige]);
+    const atPlayers = [Array.from({ length: CARD_PLAYER_TEAM_MAX_PLAYERS_PER_CARD }, () => paige)];
+    expect(await ask([{ name, cardPlayerIds: atCards }])).toHaveLength(1);
+    expect(await ask([{ name, cardPlayerIds: atPlayers }])).toHaveLength(1);
+    expect(await ask([{ name: "x".repeat(MAX_TEAM_NAME_LENGTH) }])).toHaveLength(1);
+
+    // One past: refused, even when it is only the second ask that breaches.
+    const pastCards = Array.from({ length: CARD_PLAYER_TEAM_MAX_CARDS + 1 }, () => [paige]);
+    const pastPlayers = [Array.from({ length: CARD_PLAYER_TEAM_MAX_PLAYERS_PER_CARD + 1 }, () => paige)];
+    await expect(ask([{ name }, { name, cardPlayerIds: pastCards }])).rejects.toMatchObject({
+      data: { code: "too_many_cards" },
+    });
+    await expect(ask([{ name, cardPlayerIds: pastPlayers }])).rejects.toMatchObject({
+      data: { code: "too_many_players" },
+    });
+    await expect(ask([{ name: "x".repeat(MAX_TEAM_NAME_LENGTH + 1) }])).rejects.toMatchObject({
+      data: { code: "name_too_long" },
+    });
   });
 });
 

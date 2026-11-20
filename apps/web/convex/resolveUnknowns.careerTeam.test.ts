@@ -1,7 +1,7 @@
 /**
  * NEO-490 (2b) — the review gate's team side of the career-team rule, driven
  * through the real action (`selectorOptions.resolveChecklistEntities`) and the
- * real `teams.resolveTeamByCardPlayers` query.
+ * real `selectorOptions.resolveGateTeamNames` query.
  *
  * A printed team name with several closed eras that neither the set year nor
  * the set's history separates is settled by the players on the cards that
@@ -454,19 +454,23 @@ describe("the gate: a name that is one row's own name and another's alias (NEO-6
     expect(result.unknownTeams).toEqual([NAME]);
   });
 
-  test("resolveGateTeamName: the shape of each answer", async () => {
+  test("resolveGateTeamNames: the shape of each answer", async () => {
     const t = newT();
     const s = await athleticsSetup(t);
     const rickey = await withStints(t, s.sportId, "Rickey Henderson", [
       { teamId: s.oakland, fromYear: 1979, toYear: 1984 },
     ]);
-    const ask = (cardPlayerIds?: Id<"players">[][], setYear: number | undefined = 2025) =>
-      t.query(internal.selectorOptions.resolveGateTeamName, {
+    const askNames = (
+      asks: Array<{ name: string; cardPlayerIds?: Id<"players">[][] }>,
+      setYear: number | undefined = 2025,
+    ) =>
+      t.query(internal.selectorOptions.resolveGateTeamNames, {
         sportId: s.sportId,
-        name: NAME,
         ...(setYear !== undefined ? { setYear } : {}),
-        ...(cardPlayerIds ? { cardPlayerIds } : {}),
+        asks,
       });
+    const ask = async (cardPlayerIds?: Id<"players">[][], setYear: number | undefined = 2025) =>
+      (await askNames([{ name: NAME, ...(cardPlayerIds ? { cardPlayerIds } : {}) }], setYear))[0];
 
     const byPlayers = await ask([[rickey]]);
     expect(byPlayers.ambiguous).toBe(false);
@@ -485,24 +489,27 @@ describe("the gate: a name that is one row's own name and another's alias (NEO-6
     const byYear = await ask(undefined, 2000);
     expect(byYear.answer).toMatchObject({ teamId: s.oakland, via: "year", agreesWithYear: true });
     // A name no row holds: no answer, and nothing ambiguous about it.
-    expect(
-      await t.query(internal.selectorOptions.resolveGateTeamName, {
-        sportId: s.sportId,
-        name: "Nowhere Nobodies",
-        setYear: 2025,
-      }),
-    ).toEqual({ answer: null, ambiguous: false, candidateTeamIds: [] });
+    expect(await askNames([{ name: "Nowhere Nobodies" }])).toEqual([
+      { answer: null, ambiguous: false, candidateTeamIds: [] },
+    ]);
+    // And the batch answers each ask in place, whatever the others hold.
+    const batch = await askNames([
+      { name: "Nowhere Nobodies" },
+      { name: NAME, cardPlayerIds: [[rickey]] },
+      { name: NAME },
+    ]);
+    expect(batch.map((b) => b.answer?.teamId ?? null)).toEqual([null, s.oakland, null]);
   });
 
-  test("resolveGateTeamName: a LONE row that begins after the set year is no answer, but not ambiguous (set history may still help)", async () => {
+  test("resolveGateTeamNames: a LONE row that begins after the set year is no answer, but not ambiguous (set history may still help)", async () => {
     const t = newT();
     const s = await athleticsSetup(t);
     // "Athletics" is the 2025- row's own name and nobody else's; a 1990 set
     // is before it began, and nothing shows a team's future.
-    const answer = await t.query(internal.selectorOptions.resolveGateTeamName, {
+    const [answer] = await t.query(internal.selectorOptions.resolveGateTeamNames, {
       sportId: s.sportId,
-      name: "Athletics",
       setYear: 1990,
+      asks: [{ name: "Athletics" }],
     });
     expect(answer).toEqual({ answer: null, ambiguous: false, candidateTeamIds: [] });
   });

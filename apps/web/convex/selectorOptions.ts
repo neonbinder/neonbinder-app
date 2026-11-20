@@ -325,6 +325,7 @@ import {
   FIND_MANY_TEAMS_BY_NAME_MAX,
   MAX_TEAM_ALIASES,
   MAX_TEAM_ALIAS_LENGTH,
+  MAX_TEAM_NAME_LENGTH,
   // NEO-284 security audit: the warn-and-skip flavour of the primary-name
   // lock-out check, for the two commit-time alias writers below.
   dropAliasesThatArePrimaryNames,
@@ -1394,7 +1395,7 @@ function addCardTeamNames(
  * NEO-490 — which players appeared on each card printing a team name: per
  * NORMALIZED team name (the gate's `teamByNorm` key), one entry per card, the
  * card's player names as printed. The gate turns them into player ids and asks
- * `teams.resolveTeamByCardPlayers` to settle a team name the set year could
+ * `selectorOptions.resolveGateTeamNames` to settle a team name the set year could
  * not settle to one era.
  *
  * Bounded by that helper's own bounds: a name printed on more than
@@ -1800,9 +1801,7 @@ type GateTeamAnswer = {
 
 /**
  * NEO-602 — the one derivation of the gate's answer for ONE printed team name,
- * shared by `resolveGateTeamName` (one name) and `resolveGateTeamNames` (the
- * gate's batch), so a batch can never answer a name differently from the
- * single call.
+ * behind `resolveGateTeamNames`, the gate's batch.
  */
 async function resolveGateTeamAnswer(
   ctx: QueryCtx,
@@ -1840,10 +1839,16 @@ async function resolveGateTeamAnswer(
   };
 }
 
+/** NEO-602 — names one `resolveGateTeamNames` call answers, at most. */
+export const RESOLVE_GATE_TEAMS_MAX = 50;
+
 /**
- * NEO-602 — what the review gate asks about ONE printed team name: which team
- * row it means, by the shared card rule (`resolveCardTeamName`), and HOW the
- * rule got there.
+ * NEO-602 / NEO-592 — what the review gate asks about its printed team names,
+ * up to 50 in ONE query, so the player-aware team pass pays one
+ * action-to-query hop per slice: which team row each name means, by the shared
+ * card rule (`resolveCardTeamName`), and HOW the rule got there. The answer is
+ * ALIGNED with `asks`. Names are read concurrently (`mapBounded`) and share
+ * nothing.
  *
  * `cardPlayerIds` holds, per card printing the name, the NB players that card
  * names resolved to (absent when a player did not resolve at the gate, or the
@@ -1856,28 +1861,13 @@ async function resolveGateTeamAnswer(
  * row. Null: nothing the rule can settle, so the name goes on to set history
  * and then to the operator. Internal: the gate is an action with no `ctx.db`,
  * and the answer needs one query's worth of reads under one snapshot.
- */
-export const resolveGateTeamName = internalQuery({
-  args: {
-    sportId: v.id("selectorOptions"),
-    name: v.string(),
-    setYear: v.optional(v.number()),
-    cardPlayerIds: v.optional(v.array(v.array(v.id("players")))),
-  },
-  returns: gateTeamAnswerValidator,
-  handler: async (ctx, args): Promise<GateTeamAnswer> => resolveGateTeamAnswer(ctx, args),
-});
-
-/** NEO-602 — names one `resolveGateTeamNames` call answers, at most. */
-export const RESOLVE_GATE_TEAMS_MAX = 50;
-
-/**
- * NEO-602 / NEO-592 — `resolveGateTeamName` for up to 50 names in ONE query,
- * so the gate's player-aware team pass pays one action-to-query hop per slice
- * instead of one per name. The answer is ALIGNED with `asks`: element i is
- * what `resolveGateTeamName` returns for `asks[i]`, through the same helper.
- * Names are read concurrently (`mapBounded`) and share nothing. More than 50
- * is refused, never truncated.
+ *
+ * The arguments are bounded and a breach is refused, never truncated: more
+ * than 50 names, a name longer than a team name can be, more cards than the
+ * card rule reads (`CARD_PLAYER_TEAM_MAX_CARDS`), or a card with more players
+ * than it reads (`CARD_PLAYER_TEAM_MAX_PLAYERS_PER_CARD`). The gate sends
+ * nothing past these (`addCardPlayerNames` marks such a name `overflow` and it
+ * is asked without players).
  */
 export const resolveGateTeamNames = internalQuery({
   args: {
@@ -1897,6 +1887,28 @@ export const resolveGateTeamNames = internalQuery({
         code: "too_many_names",
         message: `resolveGateTeamNames answers at most ${RESOLVE_GATE_TEAMS_MAX} names per call; got ${args.asks.length}.`,
       });
+    }
+    for (const ask of args.asks) {
+      if (ask.name.length > MAX_TEAM_NAME_LENGTH) {
+        throw new ConvexError({
+          code: "name_too_long",
+          message: `resolveGateTeamNames answers names of at most ${MAX_TEAM_NAME_LENGTH} characters; got ${ask.name.length}.`,
+        });
+      }
+      const cards = ask.cardPlayerIds;
+      if (!cards) continue;
+      if (cards.length > CARD_PLAYER_TEAM_MAX_CARDS) {
+        throw new ConvexError({
+          code: "too_many_cards",
+          message: `resolveGateTeamNames reads at most ${CARD_PLAYER_TEAM_MAX_CARDS} cards per name; got ${cards.length}.`,
+        });
+      }
+      if (cards.some((ids) => ids.length > CARD_PLAYER_TEAM_MAX_PLAYERS_PER_CARD)) {
+        throw new ConvexError({
+          code: "too_many_players",
+          message: `resolveGateTeamNames reads at most ${CARD_PLAYER_TEAM_MAX_PLAYERS_PER_CARD} players per card.`,
+        });
+      }
     }
     return await mapBounded(args.asks, (ask) =>
       resolveGateTeamAnswer(ctx, {
@@ -2553,6 +2565,12 @@ async function resolveUnknownsAndStartBatch(
       args.resolvedNames?.teamNameByNorm.set(normalized, teamFullName(existing));
       // NEO-606 / NEO-574 — and the row, for the title split and the career check.
       args.resolvedNames?.teamIdByNorm.set(normalized, existing._id);
+      continue;
+    }
+    // A name longer than any team's can hold no row, and the batch query
+    // refuses it: it is unresolved, as the query would have answered.
+    if (name.length > MAX_TEAM_NAME_LENGTH) {
+      unresolvedTeams.push({ normalized, name });
       continue;
     }
     ruleAsks.push({ normalized, name, cardPlayerIds });

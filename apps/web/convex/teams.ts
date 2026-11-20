@@ -160,7 +160,7 @@ const teamDocValidator = v.object({
  * (no players): the set year (with the card's past-era allowance, NEO-307:
  * `setYear` is the SET's year) and the alias-vs-own-name guard. Where the
  * players are known (the review gate), the gate asks `resolveGateTeamNames`
- * (selectorOptions.ts) or `resolveTeamByCardPlayers` instead.
+ * (selectorOptions.ts) instead.
  *
  * The candidate rows are already in hand, so the winning row is returned from
  * there instead of being read a second time. The `db.get` fallback only
@@ -317,7 +317,7 @@ export const erasByNameAndSport = query({
  * at. Over-length is refused rather than trimmed: silently storing something
  * other than what was typed is how a mangled name gets treated as canonical.
  */
-const MAX_TEAM_NAME_LENGTH = 120;
+export const MAX_TEAM_NAME_LENGTH = 120;
 
 /**
  * NEO-284 — how many "also known as" names one team row may carry, and how
@@ -1371,49 +1371,6 @@ export const findByFullNameInternal = internalQuery({
       args.setYear,
     );
     return teamId;
-  },
-});
-
-/**
- * NEO-490 (2b), NEO-602 — a team name printed on cards, settled by the players
- * on those cards when they have a stint on one of the name's rows.
- *
- * `cardPlayerIds` holds, per card printing `name`, the NB players that card's
- * names resolved to (see `resolveCardTeamName` and `pickCardTeam` for the rule
- * and the bounds). Returns the row the players chose, or null.
- *
- * Null also when the name resolves WITHOUT the players — no row at all, or the
- * set year (with the card's past-era allowance and the alias-vs-own-name guard)
- * settles it. That answer is the year's, and the caller labels what this
- * returns as a career-team link ("Satchel Paige's club"); handing back an
- * ordinary resolution would put that label on a link the players did not
- * make. It does return the players' row when it agrees with the year: whether
- * to link that silently is the caller's call, using `resolveCardTeamName`'s
- * `agreesWithYear`.
- *
- * Never inserts; a caller treats null as "ask the operator", never "create".
- */
-export const resolveTeamByCardPlayers = internalQuery({
-  args: {
-    sportId: v.id("selectorOptions"),
-    name: v.string(),
-    setYear: v.optional(v.number()),
-    cardPlayerIds: v.array(v.array(v.id("players"))),
-  },
-  // NEO-592 — the row itself, so the gate does not read it back in a second hop.
-  returns: v.union(teamDocValidator, v.null()),
-  handler: async (ctx, args): Promise<Doc<"teams"> | null> => {
-    const { teamId, via, candidates } = await resolveCardTeamName(
-      ctx,
-      args.sportId,
-      args.name,
-      args.setYear,
-      { cardPlayerIds: args.cardPlayerIds },
-    );
-    // Only an answer the PLAYERS made: the year's own is not a career-team link.
-    if (via !== "players" || !teamId) return null;
-    // The answer is one of `candidates`, so its row is already in hand.
-    return candidates.find((row) => row._id === teamId) ?? null;
   },
 });
 
