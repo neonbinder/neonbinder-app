@@ -1336,6 +1336,48 @@ describe("NEO-291: the card-prefix write is admin-gated, and the whole-metadata 
     });
   });
 
+  /**
+   * NEO-619 — "Parallels name themselves" has its own narrow mutation, gated
+   * like the short name above. The seeded row is a valid target (an insert
+   * under an Insert type), so the refusal is the admin gate, not the role check.
+   */
+  test("selectorOptions.setSelectorOptionParallelsNameThemselves refuses a signed-in non-admin and a signed-out caller", async () => {
+    const t = convexTest(schema, modules);
+    const insertId = await t.run(async (ctx) => {
+      const typeId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Inserts",
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      return ctx.db.insert("selectorOptions", {
+        level: "insert",
+        value: "Zorbo Special Purple",
+        parentId: typeId,
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+    });
+    const call = (tt: ReturnType<typeof convexTest>) =>
+      tt.mutation(api.selectorOptions.setSelectorOptionParallelsNameThemselves, {
+        id: insertId,
+        on: true,
+      });
+    await expect(call(t.withIdentity(SIGNED_IN))).rejects.toThrow();
+    await expect(call(t)).rejects.toThrow();
+    // Refused before any write: the row is exactly as seeded.
+    const row = await t.run(async (ctx) => ctx.db.get(insertId));
+    expect(row!.lastUpdated).toBe(1_700_000_000_000);
+    expect(row!.metadata).toBeUndefined();
+    // And it is the admin gate that refused them: an admin's call lands.
+    await call(t.withIdentity(ADMIN));
+    expect((await t.run(async (ctx) => ctx.db.get(insertId)))!.metadata).toEqual({
+      parallelsNameThemselves: true,
+    });
+  });
+
   test("the whole-metadata mutation stays deleted", () => {
     // `api` is a proxy that resolves any name, so the source is the proof.
     const src = readFileSync(join(__dirname, "selectorOptions.ts"), "utf8");
@@ -3912,6 +3954,53 @@ describe("NEO-556: the No Team run is admin-gated", () => {
     const t = convexTest(schema, modules);
     const ids = await seedIds(t);
     await expect(call(t.withIdentity(ADMIN) as never, ids)).resolves.toBeDefined();
+  });
+});
+
+/**
+ * NEO-426 — the "No teams in this sport" switch and its list are operator
+ * tooling (`requireAdmin`). A refused call must not have flagged the sport.
+ * `playersWithTeamlessHomeSport` is internal (no client path).
+ */
+describe("NEO-426: the teamless-sport switch is admin-gated", () => {
+  const flagged = (t: ReturnType<typeof convexTest>, sportId: Id<"selectorOptions">) =>
+    t.run(async (ctx) => (await ctx.db.get(sportId))?.teamlessSport ?? null);
+  const ADMIN_GATED: Array<
+    [string, (t: ReturnType<typeof convexTest>, sportId: Id<"selectorOptions">) => Promise<unknown>]
+  > = [
+    [
+      "sportTeamless.setTeamlessSport",
+      (t, sportId) => t.mutation(api.sportTeamless.setTeamlessSport, { sportId, teamless: true }),
+    ],
+    ["sportTeamless.listTeamlessSportIds", (t) => t.query(api.sportTeamless.listTeamlessSportIds, {})],
+  ];
+
+  test.each(ADMIN_GATED)("%s rejects an anonymous caller and flags nothing", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await expect(call(t, sportId)).rejects.toThrow(/not authenticated/i);
+    expect(await flagged(t, sportId)).toBeNull();
+  });
+
+  test.each(ADMIN_GATED)("%s rejects a signed-in non-admin and flags nothing", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await expect(call(t.withIdentity({ subject: "member", role: "member" }) as never, sportId)).rejects.toThrow(
+      /admin access required/i,
+    );
+    expect(await flagged(t, sportId)).toBeNull();
+  });
+
+  test.each(ADMIN_GATED)("%s answers an admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await expect(call(t.withIdentity(ADMIN) as never, sportId)).resolves.toBeDefined();
+  });
+
+  test("playersWithTeamlessHomeSport is declared internalQuery, not query", () => {
+    const src = readFileSync(join(__dirname, "sportTeamless.ts"), "utf8");
+    expect(src).toContain("export const playersWithTeamlessHomeSport = internalQuery({");
+    expect(src).not.toContain("export const playersWithTeamlessHomeSport = query(");
   });
 });
 

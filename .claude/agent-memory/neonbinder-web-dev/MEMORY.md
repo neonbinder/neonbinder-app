@@ -284,6 +284,9 @@
 - [One-shot status read races the live-words frame](reference_one_shot_status_read_races_the_live_words_frame.md) — NoticeLine text lands a rAF later; waitFor it; notice timers clear only their own id
 - [Restore setTimeout spy before real timers](reference_restore_spy_before_real_timers.md) — spy restored after useRealTimers hangs the afterAll hook 10 s with green tests; monotonic ref ids for notices
 - [Bounded-fetch test: timer arms before the stub](reference_bounded_fetch_test_timer_arms_before_the_stub_is_reached.md) — sign() is async; stub sees an aborted signal; wait on stalled-body count; wrap setTimeout for drain tests
+- [Source pins trip on stamp/playerIds spellings](reference_source_pins_trip_on_stamp_and_playerids_spellings.md) — noTeamDefault.pin + playerLinksPin reject new `teamNoneConfirmedAt:` / `playerIds:` spellings; shorthand, early return
+- [Client teamless default mirrors server](client-teamless-default-mirrors-server-conservatively.md) — client may ASK about a card the server stamps, never skip one it would not; gate on every server data-claim
+- [convex-test typed harness](convex-test-typed-harness-alias.md) — makeT factory alias, not bare ReturnType<typeof convexTest>
 - [Testing hop status lines are an API](reference_testing_hop_status_lines_are_an_api.md) — /testing/*-fake status lines feed DONE/FAILED regexes in playwright/support; new op = FAILED-matching refusals, report the DONE prefix
 - [Typecheck gate skips components](typecheck-gate-skips-components.md) — npm run typecheck covers convex/ only; filter the root tsc to your files
 - [Radio pill that opens a picker](radio-pill-that-opens-a-picker.md) — arrows pick only; click/Enter open; Escape returns to the opener
@@ -291,3 +294,5 @@
 - [Row status region via portal](reference_row_status_region_via_portal.md) — one always-mounted role=status per row, panels createPortal text into it; dirty-after-load needs a baseline
 - [Two team resolvers after NEO-602](reference_merge_two_team_resolvers_pairing_stays_year_only.md) — card text -> resolveCardTeamName (year-only if no cards); stint/existence -> resolveTeamForSetYear
 - [Printed place reads players, never the year](reference_printed_place_reads_players_never_the_year.md) — pairing settles only a lone in-league place team; several → card rule, playersMustDecide; a marketplace team among them AGREES
+- [Latch a conditionally shown control by row id](reference_latch_a_conditionally_shown_control_by_row_id.md) — id-keyed latch keeps a gated control (and focus) mounted; sample titles via the real builder
+- [Wizard plan waits on teamless-sport mock](reference_wizard_plan_waits_on_teamless_sport_mock.md) — test useQuery mock must answer listTeamlessSportIds or the bar stays 0; how to port a new step onto trackSteps

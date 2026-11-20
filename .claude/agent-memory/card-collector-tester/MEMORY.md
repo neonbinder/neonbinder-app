@@ -21,3 +21,4 @@
 - [Exploratory pass driving recipe](exploratory_pass_driving_recipe.md) — headless persistent-profile driver, reaching Card titles step, Back/blank-history trap
 - [Unlicensed city teams and Prospect cells](unlicensed-checklist-city-teams-and-prospect-cells.md) — city/(A)(N) teams, place-name alias poisoning, Prospect (X) by maker, HS/intl edges
 - [Names-first pairing hobby traps](names-first-pairing-hobby-traps.md) — ties pre-kept = duplicates; digit-vs-digit; 38 vs 38a; picker only where numbers truly differ
+- [Home-sport defaults in mixed sets](home-sport-defaults-in-mixed-sets.md) — A&G: created people inherit set sport; name sport+people in copy; "No Team" casing

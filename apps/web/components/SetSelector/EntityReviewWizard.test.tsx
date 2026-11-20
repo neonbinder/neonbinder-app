@@ -101,6 +101,10 @@ function markerClassOf(el: HTMLElement): string {
 
 vi.mock("../../convex/_generated/api", () => ({
   api: {
+    // NEO-426: the teams step's flagged-sports read.
+    sportTeamless: {
+      listTeamlessSportIds: "sportTeamless.listTeamlessSportIds",
+    },
     entityReviewQueue: {
       getBatch: "entityReviewQueue.getBatch",
       recordDecision: "entityReviewQueue.recordDecision",
@@ -196,6 +200,7 @@ vi.mock("convex/react", () => ({
     queryCalls.push({ ref, args });
     if (args === "skip") return undefined;
     if (ref === "entityReviewQueue.getBatch") return currentRows;
+    if (ref === "sportTeamless.listTeamlessSportIds") return [];
     if (ref === "players.nearMatches" || ref === "teams.nearMatches")
       return currentNearMatches;
     if (ref === "teams.resolveNames") return currentResolvedNames;
@@ -472,10 +477,11 @@ function discardButton(): HTMLElement {
 /** NEO-335 Phase 2 — the Save step's heading, "Save N cards?" / "Save 1 card?". */
 const SAVE_HEADING = /^Save \d+ cards?\?$/;
 
-function progressText(): string {
-  // NEO-335 Phase 2 — the header's one counter, "Step x of y".
-  const texts = screen.getAllByRole("status").map((el) => el.textContent ?? "");
-  return texts.find((t) => /^Step \d+ of \d+$/.test(t)) ?? "";
+function progressNow(): number {
+  // NEO-467 — the header's progress bar, as a rounded percent of the plan.
+  return Number(
+    screen.getByRole("progressbar", { name: "Wizard progress" }).getAttribute("aria-valuenow"),
+  );
 }
 
 /**
@@ -564,9 +570,9 @@ describe("EntityReviewWizard — current-item selection", () => {
     renderWizard();
 
     expect(screen.getByText(/Looking up 2 more names/)).toBeTruthy();
-    // NEO-335 Phase 2: two names + Save, the first still to come. What is
-    // being looked up is the footer's to say, not the header's.
-    expect(progressText()).toBe("Step 1 of 3");
+    // NEO-467: two names + Save, none done yet. What is being looked up is
+    // the footer's to say, not the header's.
+    expect(progressNow()).toBe(0);
     expect(footerStatusText()).toBe("2 still looking up — wait or skip");
   });
 
@@ -661,11 +667,10 @@ describe("EntityReviewWizard — progress counters", () => {
     ];
     renderWizard();
 
-    // NEO-335 Phase 2: ONE counter over every screen — three names + Save,
-    // one decided, so the row on screen is step 2. The still-pending row is
-    // counted as a step to come, and the footer (not the header) says it is
-    // being looked up.
-    expect(progressText()).toBe("Step 2 of 4");
+    // NEO-467: one bar over every screen — three names + Save, one decided,
+    // so a quarter is done. The still-pending row is counted as a step to
+    // come, and the footer (not the header) says it is being looked up.
+    expect(progressNow()).toBe(25);
     expect(footerStatusText()).toBe("1 still looking up — wait or skip");
   });
 
@@ -673,7 +678,7 @@ describe("EntityReviewWizard — progress counters", () => {
     currentRows = [makeRow({ status: "ready" })];
     renderWizard();
 
-    expect(progressText()).toBe("Step 1 of 2");
+    expect(progressNow()).toBe(0);
     expect(screen.queryByText(/still being looked up/)).toBeNull();
     expect(screen.queryByText(/of \d+ reviewed/)).toBeNull();
     expect(footerStatusText()).toBe("");
@@ -1887,8 +1892,8 @@ describe("EntityReviewWizard — bulk walks the batch a page at a time", () => {
       makeRow({ _id: "row-b" as unknown as Id<"entityReviewQueue">, status: "ready", name: "B" }),
     ];
     const { rerender } = renderWizard();
-    // NEO-335 Phase 2 — "Step x of y" (two names + Save) is the counter now.
-    expect(screen.getByText("Step 1 of 3")).toBeTruthy();
+    // NEO-467 — the progress bar (two names + Save) is the counter now.
+    expect(progressNow()).toBe(0);
 
     fireEvent.click(
       screen.getByRole("button", { name: "Add remaining players as new (2)" }),
@@ -1909,7 +1914,7 @@ describe("EntityReviewWizard — bulk walks the batch a page at a time", () => {
       makeRow({ _id: "row-b" as unknown as Id<"entityReviewQueue">, status: "ready", name: "B" }),
     ];
     rerenderWizard(rerender);
-    expect(screen.getByText("Step 2 of 3")).toBeTruthy();
+    expect(progressNow()).toBe(33);
 
     await act(async () => {
       secondPage.resolve(LAST_PAGE);
@@ -2554,9 +2559,9 @@ describe("EntityReviewWizard — bulk 'Skip remaining names'", () => {
       await screen.findByRole("button", { name: /Confirm & Save/ }),
     ).toBeTruthy();
     expect(screen.queryByRole("heading", { name: /New Team: Kia Tigers/ })).toBeNull();
-    // NEO-335 Phase 2: twelve rows + Save, and the walk is ON Save — every
-    // row, the skipped Kia Tigers step included, counted as done.
-    expect(progressText()).toBe("Step 13 of 13");
+    // NEO-467: twelve rows + Save, and the walk is ON Save — every row, the
+    // skipped Kia Tigers step included, counted as done: a full bar.
+    expect(progressNow()).toBe(100);
     // The ten skipped rows still `pending` are not lookups anyone waits on:
     // the footer's lookup line is gone, and so is the body's.
     expect(footerStatusText()).toBe("");
@@ -2583,10 +2588,10 @@ describe("EntityReviewWizard — bulk 'Skip remaining names'", () => {
 
     expect(screen.getByRole("heading", { name: /New Team: Kia Tigers/ })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Confirm & Save/ })).toBeNull();
-    // NEO-335 Phase 2: three rows + Save, the skipped player already done, so
-    // the staged team on screen is step 2 — it is counted, not dropped with
+    // NEO-467: three rows + Save, the skipped player already done, so a
+    // quarter is behind us and the staged team is counted, not dropped with
     // the skipped player.
-    expect(progressText()).toBe("Step 2 of 4");
+    expect(progressNow()).toBe(25);
     // The skipped row's lookup is not something the operator waits on.
     expect(footerStatusText()).toBe("");
     expect(screen.queryByText(/still looking up/)).toBeNull();
@@ -7701,8 +7706,8 @@ describe("EntityReviewWizard — the decided count and the scroll box", () => {
     expect(
       screen.getByRole("heading", { name: /New Team: Southern Illinois/ }),
     ).toBeTruthy();
-    // NEO-335 Phase 2: one decided of two names, plus Save.
-    expect(screen.getByText("Step 2 of 3")).toBeTruthy();
+    // NEO-467: one decided of two names, plus Save.
+    expect(progressNow()).toBe(33);
     expect(screen.getByText("Decided (1)")).toBeTruthy();
   });
 
@@ -7717,7 +7722,7 @@ describe("EntityReviewWizard — the decided count and the scroll box", () => {
     const scrollBox = document.querySelector(".overflow-y-auto");
     expect(scrollBox).toBeTruthy();
 
-    const header = screen.getByText("Step 2 of 3");
+    const header = screen.getByRole("progressbar", { name: "Wizard progress" });
     expect(scrollBox!.contains(header)).toBe(false);
 
     const disclosure = screen.getByText("Decided (1)");

@@ -33,6 +33,21 @@ const DIRECTORY = fileURLToPath(new URL("../fixtures/checklists/", import.meta.u
 export const CHECKLISTS = {
   /** Baseball 2024 Topps Stars of MLB Network Base: the default wizard fixture (10 cards, "No Team" on every row: the hosts and the show card have none). */
   starsOfMlbNetwork: "2024-topps-stars-of-mlb-network-base",
+  /**
+   * The same file with card 1's row (Lauren Shehadi) LEFT OUT: 9 rows, so exactly one card is asked
+   * of BSC live, and BSC answers that it names no team (NEO-426's teamless-sport reader).
+   */
+  starsOfMlbNetworkShehadiLive: "2024-topps-stars-of-mlb-network-base-shehadi-live",
+  /**
+   * Baseball 2026 ONIT Athlete Arizona State Sun Devils Base, ALL 29 cards (`B-1`..`B-29`), every one
+   * naming "Arizona State Sun Devils". No spec uploads it whole: it is the source of the copy below.
+   */
+  onitArizonaState2026Full: "2026-onit-athlete-arizona-state-sun-devils-base",
+  /**
+   * The ONIT Arizona State file with `B-1`'s row (Austin Musso) LEFT OUT: 28 rows, so exactly one card
+   * is asked of BSC live, and its listing names the team (NEO-426: a listed team beats the default).
+   */
+  onitArizonaState2026OneLive: "2026-onit-athlete-arizona-state-sun-devils-base-one-live",
   tulsaOilers: "1995-hockey-tulsa-oilers-chl-base",
   memphisRiverKings: "1995-hockey-memphis-riverkings-chl-base",
   sanAntonioIguanas: "1995-hockey-san-antonio-iguanas-chl-base",

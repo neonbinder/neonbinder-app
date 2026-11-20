@@ -11,7 +11,7 @@ import {
   openDecidedList,
   readBackDecision,
   reviewWizard,
-  stepCounter,
+  expectNothingDecided,
   walkToPlayerRow,
 } from "../../support/wizard";
 
@@ -25,8 +25,8 @@ test(
     await fetchChecklistToWizard(page, env);
     await discardResumedReviewBatch(page, env);
     const wizard = reviewWizard(page);
-    // Nothing decided: on a name step x is the decided count plus one (NEO-335).
-    await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+    // Nothing decided: a name step is up and there is no "Decided (N)" history (NEO-467).
+    await expectNothingDecided(page);
 
     // NEO-496 (D10, NQ1): the default fetch uploads the publisher's checklist, and BSC plus
     // the checklist are two sources, so Match Cards always stands before the wizard, with

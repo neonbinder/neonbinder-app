@@ -1,7 +1,8 @@
 /**
- * NEO-335 Phase 2 — the wizard wearing the shared chrome: one "Step x of y"
- * over every screen, a subtitle per screen type, growth announced politely,
- * nothing added on Save, and the teams / titles / save steps in order.
+ * NEO-335 Phase 2 — the wizard wearing the shared chrome: a subtitle per
+ * screen type, one progress bar over every screen (NEO-467: no "Step x of y",
+ * no growth line), nothing added on Save, and the teams / titles / save steps
+ * in order.
  *
  * The rules themselves are pure and pinned in entity-review-steps.test.tsx;
  * this file is the wiring.
@@ -23,6 +24,8 @@ vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
     if (args === "skip") return undefined;
     if (ref === "entityReviewQueue.getBatch") return currentRows;
+    // NEO-426 — no sport flagged: the teams step is exactly what it was.
+    if (ref === "sportTeamless.listTeamlessSportIds") return [];
     return undefined;
   },
   useQueries: (queries: Record<string, { args: { players: unknown[] } }>) => {
@@ -96,15 +99,10 @@ function wizard(props: Record<string, unknown> = {}, cards?: Card[]) {
   );
 }
 
-const counter = () =>
-  screen
-    .getAllByRole("status")
-    .map((el) => el.textContent ?? "")
-    .find((t) => /^Step \d+ of \d+$/.test(t)) ?? "";
-const growthRegion = () => {
-  const header = document.querySelector("header")!;
-  return header.querySelector('[aria-live="polite"]')!;
-};
+const bar = () => screen.getByRole("progressbar", { name: "Wizard progress" });
+/** The step the operator is on, as the progress bar reads it. */
+const onStep = () => bar().getAttribute("aria-valuetext") ?? "";
+const percent = () => Number(bar().getAttribute("aria-valuenow"));
 
 beforeEach(() => {
   seq = 0;
@@ -136,7 +134,9 @@ describe("the chrome on every screen", () => {
     currentRows = [row(overrides)];
     render(wizard());
     expect(screen.getByText(subtitle)).toBeTruthy();
-    expect(counter()).toBe("Step 1 of 2");
+    expect(onStep()).toBe(subtitle);
+    expect(percent()).toBe(0);
+    expect(screen.queryByText(/Step \d+ of \d+/)).toBeNull();
   });
 
   it("subtitles a NEO-332 same-name pick as 'Which player is this?', and counts it as one step", () => {
@@ -154,18 +154,17 @@ describe("the chrome on every screen", () => {
     ];
     render(wizard());
     expect(screen.getByText("Which player is this?")).toBeTruthy();
-    expect(counter()).toBe("Step 1 of 3");
+    expect(onStep()).toBe("Which player is this?");
   });
 });
 
-describe("growth", () => {
-  it("announces staged career steps — '2 more steps: teams for {player}' — and clears on the next move", () => {
+describe("a plan that grows", () => {
+  it("staged career steps stall the bar, never move it back, and say nothing", () => {
     const thome = row({ name: "Jim Thome" });
     const other = row({ name: "Other Guy" });
     currentRows = [thome, other];
     const { rerender } = render(wizard());
-    expect(counter()).toBe("Step 1 of 3");
-    expect(growthRegion().textContent).toBe("");
+    expect(percent()).toBe(0);
 
     // His lookup lands and stages two New Team steps ahead of him.
     currentRows = [
@@ -175,36 +174,37 @@ describe("growth", () => {
       other,
     ];
     rerender(wizard());
-    expect(counter()).toBe("Step 1 of 5");
-    expect(growthRegion().textContent).toBe("2 more steps: teams for Jim Thome");
+    expect(percent()).toBe(0);
+    expect(screen.queryByText(/more steps?/)).toBeNull();
 
-    // The operator answers the first staged step: the line has been said.
+    // The operator answers the first staged step: one of five done.
     currentRows = [
       { ...(currentRows[0] as object), decision: { action: "create" } },
       ...currentRows.slice(1),
     ];
     rerender(wizard());
-    expect(counter()).toBe("Step 2 of 5");
-    expect(growthRegion().textContent).toBe("");
+    expect(percent()).toBe(20);
   });
 
-  it("a skipped team name adds the teams step — '1 more step: cards with no team'", () => {
+  it("a skipped team name adds the teams step, and the bar still moves forward", () => {
     const reds = row({ kind: "team", name: "Reds" });
     const rose = row({ name: "Pete Rose", decision: { action: "create" } });
     currentRows = [reds, rose];
     const cards = [{ cardNumber: "1", cardName: "Base", players: ["Pete Rose"], teams: ["Reds"] }];
     const { rerender } = render(wizard({}, cards));
     // The team name is assumed to resolve: no teams step yet.
-    expect(counter()).toBe("Step 2 of 3");
+    expect(onStep()).toBe("New team");
+    expect(percent()).toBe(33);
 
     currentRows = [{ ...reds, decision: { action: "skip" } }, rose];
     rerender(wizard({}, cards));
-    expect(counter()).toBe("Step 3 of 4");
+    expect(onStep()).toBe("Cards with no team");
     expect(screen.getByText("Cards with no team")).toBeTruthy();
-    expect(growthRegion().textContent).toBe("1 more step: cards with no team");
+    expect(percent()).toBe(50);
+    expect(screen.queryByText(/more steps?/)).toBeNull();
   });
 
-  it("never shrinks: a staged step that goes away keeps its place in y", () => {
+  it("never shrinks: a staged step that goes away keeps its place in the plan", () => {
     const player = row({ name: "Jim Thome" });
     const staged = row({
       kind: "team",
@@ -213,10 +213,11 @@ describe("growth", () => {
     });
     currentRows = [staged, player];
     const { rerender } = render(wizard());
-    expect(counter()).toBe("Step 1 of 3");
+    expect(percent()).toBe(0);
     currentRows = [player];
     rerender(wizard());
-    expect(counter()).toBe("Step 1 of 3");
+    expect(percent()).toBe(0);
+    expect(onStep()).toBe("New player");
   });
 });
 
@@ -230,27 +231,32 @@ describe("the post-review steps", () => {
     { cardNumber: "2", cardName: "Base", players: ["Johnny Bench"] },
   ];
 
-  it("walks teams → titles → save, each in the chrome, Save always y of y", () => {
+  it("walks teams → titles → save, each in the chrome, Save a full bar", () => {
     currentRows = decidedRows();
     render(wizard({ titleContext: LONG_TITLES }, teamless));
-    expect(counter()).toBe("Step 3 of 5");
+    expect(onStep()).toBe("Cards with no team");
+    expect(percent()).toBe(40);
     expect(screen.getByText("Cards with no team")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
-    expect(counter()).toBe("Step 4 of 5");
+    expect(onStep()).toBe("Card titles");
+    expect(percent()).toBe(60);
     expect(screen.getByText("Card titles")).toBeTruthy();
     // Unit B's CardTitlesStep, mounted in the slot.
     expect(screen.getByRole("heading", { name: TITLES_LEAD })).toBeTruthy();
     expect(document.activeElement).toBe(screen.getByRole("button", { name: NEXT_NAME }));
 
     fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
-    expect(counter()).toBe("Step 5 of 5");
+    expect(onStep()).toBe("Ready to save");
+    expect(percent()).toBe(100);
     expect(screen.getByText("Ready to save")).toBeTruthy();
     expect(screen.getByText("Save 2 cards?")).toBeTruthy();
 
-    // Back walks the same road the other way.
+    // Back walks the same road the other way; the bar holds where it got to.
     fireEvent.click(screen.getByRole("button", { name: "Back to previous step" }));
     expect(screen.getByText("Card titles")).toBeTruthy();
+    expect(onStep()).toBe("Card titles");
+    expect(percent()).toBe(100);
   });
 
   it("the one-step Back is an outlined secondary button beside the footer buttons", () => {
@@ -298,9 +304,11 @@ describe("the post-review steps", () => {
   it("has no titles step when no new card's title needs a look", () => {
     currentRows = decidedRows();
     render(wizard({ titleContext: SHORT_TITLES }, teamless));
-    expect(counter()).toBe("Step 3 of 4");
+    expect(onStep()).toBe("Cards with no team");
+    expect(percent()).toBe(50);
     fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
-    expect(counter()).toBe("Step 4 of 4");
+    expect(onStep()).toBe("Ready to save");
+    expect(percent()).toBe(100);
     expect(screen.queryByText("Card titles")).toBeNull();
   });
 
@@ -311,13 +319,13 @@ describe("the post-review steps", () => {
       wizard({ titleContext: SHORT_TITLES, onTitleAnswersChange }, teamless),
     );
     fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
-    expect(counter()).toBe("Step 4 of 4");
+    expect(onStep()).toBe("Ready to save");
 
     // A titles step turning up now is the walker's, after the save.
     rerender(wizard({ titleContext: LONG_TITLES, onTitleAnswersChange }, teamless));
-    expect(counter()).toBe("Step 4 of 4");
+    expect(onStep()).toBe("Ready to save");
+    expect(percent()).toBe(100);
     expect(screen.getByText("Ready to save")).toBeTruthy();
-    expect(growthRegion().textContent).toBe("");
     // Never shown, so never "kept": the walker still flags them after save.
     expect(onTitleAnswersChange.mock.calls.every(([fields]) => fields === undefined)).toBe(true);
   });
@@ -328,24 +336,28 @@ describe("the post-review steps", () => {
         { cardNumber: "1", cardName: "Base", players: ["Pete Rose"] },
       ]),
     );
-    expect(counter()).toBe("Step 1 of 3");
+    expect(onStep()).toBe("Cards with no team");
+    expect(percent()).toBe(0);
     expect(screen.getByText("Cards with no team")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
-    expect(counter()).toBe("Step 2 of 3");
+    expect(onStep()).toBe("Card titles");
+    expect(percent()).toBe(33);
     expect(screen.getByText("Card titles")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
-    expect(counter()).toBe("Step 3 of 3");
+    expect(onStep()).toBe("Ready to save");
+    expect(percent()).toBe(100);
     expect(screen.getByText("Save 1 card?")).toBeTruthy();
   });
 
-  it("D7: with no names and every card teamed, opens on Card titles as Step 1 of 2", () => {
+  it("D7: with no names and every card teamed, opens on Card titles", () => {
     const onTitleAnswersChange = vi.fn();
     render(
       wizard({ teamsOnly: true, batchId: "", titleContext: LONG_TITLES, onTitleAnswersChange }, [
         { cardNumber: "1", cardName: "Base", players: ["Pete Rose"], teams: ["Reds"] },
       ]),
     );
-    expect(counter()).toBe("Step 1 of 2");
+    expect(onStep()).toBe("Card titles");
+    expect(percent()).toBe(0);
     expect(screen.getByText("Card titles")).toBeTruthy();
     expect(screen.getByRole("heading", { name: TITLES_LEAD })).toBeTruthy();
     expect(screen.queryByText("Cards with no team")).toBeNull();
@@ -358,7 +370,8 @@ describe("the post-review steps", () => {
     expect(screen.queryByRole("button", { name: "Back to previous step" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
-    expect(counter()).toBe("Step 2 of 2");
+    expect(onStep()).toBe("Ready to save");
+    expect(percent()).toBe(100);
     expect(screen.getByText("Save 1 card?")).toBeTruthy();
     // Back from Save returns to the titles step.
     fireEvent.click(screen.getByRole("button", { name: "Back to previous step" }));
@@ -403,18 +416,22 @@ describe("the post-review steps", () => {
     const rose = row({ name: "Pete Rose" });
     currentRows = [rose];
     const { rerender } = render(wizard({}, [teamless[0]]));
-    expect(counter()).toBe("Step 1 of 3");
+    expect(onStep()).toBe("New player");
+    expect(percent()).toBe(0);
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /^Add as New Player/ }));
     });
     currentRows = [{ ...rose, decision: { action: "create" } }];
     rerender(wizard({}, [teamless[0]]));
-    expect(counter()).toBe("Step 2 of 3");
+    expect(onStep()).toBe("Cards with no team");
+    expect(percent()).toBe(33);
     expect(screen.getByText("Cards with no team")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Back to previous step" }));
     expect(screen.getByText(/Already decided/)).toBeTruthy();
-    expect(counter()).toBe("Step 1 of 3");
+    expect(onStep()).toBe("New player");
+    // Back never moves the bar backwards.
+    expect(percent()).toBe(33);
     expect(screen.getByText("New player")).toBeTruthy();
     expect(screen.queryByRole("button", { name: CONFIRM_SAVE_NAME })).toBeNull();
   });

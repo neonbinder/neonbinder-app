@@ -318,6 +318,15 @@ type FetchPreview = {
    */
   defaultPlayer?: DefaultPlayerWire;
   /**
+   * NEO-426 — `resolveChecklistEntities`' `teamlessPlayerNames`: printed
+   * player names that resolved to a known player whose HOME sport has no
+   * teams. A card every one of whose people is such a player (or a player the
+   * wizard creates or links in a teamless sport) is not asked about in the
+   * teams step: the commit saves it as "No team". Absent on an older server,
+   * or when no sport is flagged.
+   */
+  teamlessPlayerNames?: string[];
+  /**
    * NEO-335 Phase 2 — the titles step's answers, POSITIONALLY ALIGNED with
    * `cards`, as `titleAnswersForCommit` decided them. Absent unless the step
    * was part of the sitting (the wizard reports nothing otherwise). Client
@@ -365,7 +374,7 @@ type PendingReview = {
  * The sync banner's line while names wait in the review wizard.
  *
  * NEO-335 Phase 2 (Jason, 2026-10-10): one count, no per-type counts. The
- * wizard's header says "Step x of y" over every screen; the banner only has to
+ * wizard's header shows progress over every screen; the banner only has to
  * say that names are holding the save, and how many. New players, new teams
  * and NEO-332's same-name picks are all names that need a look, so they are
  * one number: every unknown player (an ambiguous one included — it is in
@@ -2221,11 +2230,12 @@ export default function CardChecklist({
       titleContext,
       careerContext,
       autoLinkedCount: autoLinkedWire,
+      teamlessPlayerNames,
     } = await resolveEntities({
-        selectorOptionId: variantId,
-        sportId,
-        cards: kept.map(({ card }) => card),
-      });
+      selectorOptionId: variantId,
+      sportId,
+      cards: kept.map(({ card }) => card),
+    });
     // NEO-424 — names the batch linked on its own (set history, the Hall of
     // Fame tie-break). They are left out of `unknownPlayers`/`unknownTeams`
     // because nobody has to answer them, but every one must still be SEEN
@@ -2301,6 +2311,7 @@ export default function CardChecklist({
       playerlessIndexes,
       ...(defaultPlayer ? { defaultPlayer } : {}),
       ...(titleContext ? { titleContext } : {}),
+      ...(teamlessPlayerNames && teamlessPlayerNames.length > 0 ? { teamlessPlayerNames } : {}),
       ...(careerContext ? { careerContext } : {}),
       cards: kept.map(({ card }) => card),
       decisions: kept.map(({ index }) => ({
@@ -2323,6 +2334,13 @@ export default function CardChecklist({
     // save skipped (the gate drops it): it is not a team, so a card printing
     // only that is teamless and asked about.
     //
+    // NEO-426 — and a NEW card every one of whose people plays a sport with no
+    // teams is not asked about either: the commit saves it as "No team" (the
+    // server reads the same facts). Every name resolved on this path, so the
+    // fetch's `teamlessPlayerNames` is the whole fact; a sitting left with
+    // nothing to ask commits without the wizard. Re-synced rows ride along as
+    // `existingIndexes` so they are still asked about.
+    //
     // NEO-424 — and a batch the server linked names in is NOT "no names",
     // even with nothing left to answer: it opens the full wizard (the else
     // branch below), whose Save step lists every link with its Change. Keyed
@@ -2337,7 +2355,10 @@ export default function CardChecklist({
         preview.cards,
         [],
         new Set(settledTeamIndexes),
-        storedPeople(undefined, undefined, skippedTeamNames),
+        storedPeople(undefined, skippedPlayerNames, skippedTeamNames, undefined, {
+          teamlessPlayerNames: preview.teamlessPlayerNames,
+          existingIndexes: preview.existingIndexes,
+        }),
       ).length > 0;
     // NEO-335 Phase 2 (D7) — and the same for titles: a NEW card that would be
     // born with a title the walker flags gets the wizard's "Card titles" step
@@ -4574,6 +4595,8 @@ export default function CardChecklist({
           skippedPlayerNames={skippedPlayerNames}
           // NEO-335: and the team names they rule "not a team".
           skippedTeamNames={skippedTeamNames}
+          // NEO-426: names the fetch found playing a sport with no teams.
+          teamlessPlayerNames={pendingPreview.teamlessPlayerNames}
           // NEO-335 Phase 2 (C7): with no set-level team on this node, a long
           // teams step points at "Edit attributes" instead.
           // NEO-556: a "No Team" default counts too — the hint then points

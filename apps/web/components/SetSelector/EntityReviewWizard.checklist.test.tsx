@@ -23,6 +23,8 @@ vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
     if (args === "skip") return undefined;
     if (ref === "entityReviewQueue.getBatch") return currentRows;
+    // NEO-426 — no sport flagged: the teams step is exactly what it was.
+    if (ref === "sportTeamless.listTeamlessSportIds") return [];
     return undefined;
   },
   useQueries: (queries: Record<string, { args: { players: unknown[] } }>) => {
@@ -103,11 +105,10 @@ function wizard(cards: Card[], onCancel: () => void = vi.fn()) {
   );
 }
 
-const counter = () =>
-  screen
-    .getAllByRole("status")
-    .map((el) => el.textContent ?? "")
-    .find((t) => /^Step \d+ of \d+$/.test(t)) ?? "";
+const bar = () => screen.getByRole("progressbar", { name: "Wizard progress" });
+/** The step the operator is on, as the progress bar reads it (NEO-467). */
+const onStep = () => bar().getAttribute("aria-valuetext") ?? "";
+const percent = () => Number(bar().getAttribute("aria-valuenow"));
 const NEXT = () => screen.getByRole("button", { name: "Next (Enter)" });
 const keep = () => screen.getByRole("radio", { name: "Keep the marketplace's" });
 const use = () => screen.getByRole("radio", { name: "Use the checklist's" });
@@ -124,11 +125,12 @@ beforeEach(() => {
 });
 
 describe("the checklist step in the wizard (NEO-478)", () => {
-  it("opens on the checklist step, as step 1, before any name", () => {
+  it("opens on the checklist step, first in the plan, before any name", () => {
     render(wizard([CONFLICT_CARD, PLAIN_CARD]));
     expect(screen.getByRole("heading", { name: "Checklist says otherwise" })).toBeTruthy();
     expect(screen.getByText("Checklist disagreements")).toBeTruthy();
-    expect(counter()).toMatch(/^Step 1 of \d+$/);
+    expect(onStep()).toBe("Checklist disagreements");
+    expect(percent()).toBe(0);
     // No name step is on screen yet.
     expect(screen.queryByText("New player")).toBeNull();
   });
@@ -151,17 +153,20 @@ describe("the checklist step in the wizard (NEO-478)", () => {
     expect(onChecklistChoicesChange).toHaveBeenLastCalledWith(["checklist", undefined]);
   });
 
-  it("shifts every name step down by one: the first name is step 2, not step 1", () => {
+  it("counts the checklist step ahead of the names: answering it moves the bar a quarter", () => {
     const { unmount } = render(wizard([PLAIN_CARD]));
-    expect(counter()).toMatch(/^Step 1 of \d+$/);
+    expect(onStep()).toBe("New player");
+    expect(percent()).toBe(0);
     unmount();
 
     render(wizard([CONFLICT_CARD, PLAIN_CARD]));
-    expect(counter()).toMatch(/^Step 1 of \d+$/);
+    expect(percent()).toBe(0);
     fireEvent.click(use());
     fireEvent.click(NEXT());
-    // The checklist step is 1; the names follow it, then Save.
-    expect(counter()).toBe("Step 2 of 4");
+    // The checklist step is one of the four steps (it, two names, Save) and
+    // is behind us; the first name is on screen.
+    expect(onStep()).toBe("New player");
+    expect(percent()).toBe(25);
   });
 
   it.each([
@@ -193,7 +198,9 @@ describe("the checklist step in the wizard (NEO-478)", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Back to previous step" }));
     expect(screen.getByRole("heading", { name: "Checklist says otherwise" })).toBeTruthy();
-    expect(counter()).toMatch(/^Step 1 of \d+$/);
+    expect(onStep()).toBe("Checklist disagreements");
+    // The bar never goes back: it stays where the names had taken it.
+    expect(percent()).toBe(25);
     expect(use().getAttribute("aria-checked")).toBe("true");
     expect(keep().getAttribute("aria-checked")).toBe("false");
     // Nothing was reported as unanswered on the way back.

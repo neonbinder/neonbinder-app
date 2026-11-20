@@ -118,6 +118,7 @@
 - [Neo552 fake upstream](patterns_neo552_fake_upstream_and_recorder.md) — unsigned token trusts IAM; miss list; NaN cap; probe leaks; TOCTOU
 - [Live-account probe and capture](patterns_live_account_probe_and_capture.md) — wrap transport; signal guard; stderr EPIPE/EIO kills it; scripts need checkout
 - [Neo569 league ids](patterns_neo569_league_ids.md) — registry fixture the body refuses = vacuous gate test; new hold reason freezes live qty/price
+- [Neo426 teamless sport default](patterns_neo426_teamless_sport_default.md) — default stamps birth-only; BSC-answer door still hits existing rows; scan fails closed
 - [Neo590 title catalog probe](patterns_neo590_title_catalog_probe.md) — text-to-catalog query: compare to players.search; fan-out per call; derived answer stays client-side
 - [Neo592 concurrent reads](patterns_neo592_concurrent_reads.md) — batching drops early-exit caps (level BFS); moved checks need own test
 - [Neo592 CI redactors](patterns_neo592_ci_redactors.md) — one rule list now; redact before slicing; secret-pair residual gaps; blank+close pages
@@ -136,4 +137,5 @@
 - [Review-queue read pattern](review-queue-read-pattern.md) — entityReviewQueue reads: requireAdmin then assertOwnsRow; pin + cross-admin test; team pick is per name; cardNumber unbounded
 - [Neo555 fake eBay cutover](patterns_neo555_fake_ebay_cutover.md) — two-gate resolver; request-keyed key names; merge-deploy removals; retired lane leaves creds
 - [Listing text trust path](patterns_listing_text_trust_path.md) — generator text reaches eBay unescaped; a new input from a non-admin/marketplace write = finding
+- [Patterns neo426 teamless sport default](patterns_neo426_teamless_sport_default.md) — re-sync stamp ignores unaccepted incoming team; un-confirm has no marker
 - [Neo574 client id override](patterns_neo574_client_id_override.md) — per-card id override + stint writer: validator shape that held; dedupe gap

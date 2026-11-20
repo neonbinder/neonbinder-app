@@ -397,7 +397,7 @@ test(
     await answerClubStep(page);
 
     // NEO-574: the catalogue's prospects here have no stint with their card's club by 2026, so a
-    // "Career check" comes first; it is not this spec's business ("Keep as is" writes nothing).
+    // "Career check" comes first; it is not this spec's business (`passCareerCheck` answers every line "Keep as is", which writes nothing).
     await passCareerCheck(page);
     // "Cards with no team" holds Mike Lowell ONLY: the other 13 took their team from the checklist.
     await expect(wizard.getByText("Cards with no team", { exact: true })).toBeVisible();

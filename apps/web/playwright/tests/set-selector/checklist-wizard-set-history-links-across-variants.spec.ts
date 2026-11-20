@@ -90,14 +90,14 @@ import {
   advanceToSave,
   awaitLookupsSettled,
   confirmSaveButton,
-  expectStepLeft,
+  expectNameStepLeft,
+  expectNothingDecided,
   openDecidedList,
   passCareerCheck,
   personSkip,
   readBackDecision,
-  readStep,
+  readNameStep,
   reviewWizard,
-  stepCounter,
   walkToPlayerRow,
 } from "../../support/wizard";
 
@@ -272,14 +272,15 @@ async function skipEverythingLeft(page: Page): Promise<void> {
   for (let i = 0; i < 40; i++) {
     await expect(person.or(stepSkip).or(namesDone).first()).toBeVisible();
     if (await namesDone.isVisible()) break;
-    // x is the decided count plus one on a name step, so any decision moves it.
-    const { x } = await readStep(page);
+    // The presented row, by its own skip; any decision takes the wizard off it
+    // (NEO-467: rows of a kind share a subtitle, so the row's control is the proof).
+    const row = await readNameStep(page);
     if (await stepSkip.first().isVisible()) {
       await stepSkip.first().click();
     } else {
       await skipRemaining.click();
     }
-    await expectStepLeft(page, x);
+    await expectNameStepLeft(page, row);
   }
   await expect(namesDone).toBeVisible();
 }
@@ -383,7 +384,7 @@ test(
 
     // FIRST. Its one unknown name is STAR; he is a FOOTBALL player on a Baseball card.
     await fetchInsertToWizard(page, env, FIRST, { reconcile: true });
-    await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+    await expectNothingDecided(page);
     await walkToPlayerRow(page);
     await addAsFootballPlayer(page, STAR, "Entity review wizard, a name moved to Football");
 
@@ -571,7 +572,7 @@ test(
       what: "Variant Types row Insert",
     });
     await fetchInsertToWizard(page, env, PRIOR, { reconcile: true, target: TARGET_2009, inserts: [PRIOR] });
-    await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+    await expectNothingDecided(page);
     // Two Chris Carpenters are on file (b. 1975, Cardinals 2004-2012; b. 1985, Cubs 2011 and Red Sox
     // 2012) and Career Best has two of his cards, both "St. Louis Cardinals" in the uploaded file.
     // The checklist's team reaches the name gate with the card, and only the b. 1975 Carpenter was on

@@ -345,6 +345,21 @@ export const selectorOptionMetadataFields = {
    * Absent on every row the dialog never saved; no backfill.
    */
   listingShortNameSavedAt: v.optional(v.number()),
+  /**
+   * NEO-619 — on an INSERT-role row (an insert-level row under an Insert type):
+   * the parallels beneath it (its sub-variants) name themselves in a card's
+   * title, leaving the insert's name out ("2026 Pulse Aura Aeon Special Gold",
+   * not "... Aeon Special Purple Gold"). The insert's own cards still name the
+   * insert. One switch covers every parallel beneath it, later ones included.
+   *
+   * Writer: `setSelectorOptionParallelsNameThemselves` (the set attributes
+   * panel), the only door. Reader: `titleChainFacts`, which drops the insert's
+   * level and skips the insert's own `listingShortName` for a parallel leaf.
+   * An operator choice: never derived, never written by a sync. `true` or
+   * absent; off deletes the key. Existing titles are never rewritten when it
+   * flips (write-once titles); Regenerate reads the new value.
+   */
+  parallelsNameThemselves: v.optional(v.boolean()),
 };
 
 export const selectorOptionFields = {
@@ -636,6 +651,34 @@ export const selectorOptionFields = {
    * is unchanged. No index, no backfill: absent is what every row said.
    */
   noTeamDefault: v.optional(
+    v.object({ setAt: v.number(), setByUserId: v.string() }),
+  ),
+  /**
+   * NEO-426 — this SPORT has no teams (Non Sport, Golf, Tennis): a card whose
+   * every player's HOME sport (`players.sportId`; extra `playerSports` never
+   * count) carries this stamp saves as "No team" by default, with nothing to
+   * answer in the wizard's Teams step.
+   *
+   * Meaningful on `level: "sport"` rows only, and set only there
+   * (`sportTeamless.setTeamlessSport` refuses any other level). Same shape as
+   * `noTeamDefault`, for the same reason: `setAt` / `setByUserId` are
+   * server-stamped (the time and `requireAdmin`'s subject), because a
+   * background path (`applyBscTeamResolution`) stamps the card on the
+   * operator's behalf and needs someone to credit.
+   *
+   * A DEFAULT, never a block: one more reason to stamp, decided by
+   * `noTeamCardVerdict` on the card as it is born (so a listing that names a
+   * team, a pending team name, or a lookup still owed holds it back — product
+   * invariant 8). Nothing refuses, strips or hides a team because of it; a
+   * team from any source wins. Read only through `convex/lib/teamlessSport.ts`,
+   * never by the sport's display name (invariant 4).
+   *
+   * ABSENT means "this sport has teams"; switching it off removes the field
+   * (a stored `false` would be a second way to say the same thing). Touches
+   * no existing card. NB data only: no adapter or sync reads or writes it. No
+   * index (sports are a handful of rows under `by_level`); no backfill.
+   */
+  teamlessSport: v.optional(
     v.object({ setAt: v.number(), setByUserId: v.string() }),
   ),
   /**

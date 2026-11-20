@@ -33,6 +33,8 @@ vi.mock("convex/react", () => ({
     if (args === "skip") return undefined;
     if (ref === "entityReviewQueue.getBatch") return currentRows;
     if (ref === "teams.pickerCandidates") return pickerRows;
+    // NEO-426: no sport is flagged teamless, so the plan's teams step is known.
+    if (ref === "sportTeamless.listTeamlessSportIds") return [];
     if (ref === "players.getManyByIds") {
       playerIdReads.push((args as { ids: string[] }).ids);
       const known: Record<string, string> = {
@@ -173,11 +175,10 @@ function wizard(props: Record<string, unknown> = {}, cards: Card[] = CARDS) {
   );
 }
 
-const counter = () =>
-  screen
-    .getAllByRole("status")
-    .map((el) => el.textContent ?? "")
-    .find((t) => /^Step \d+ of \d+$/.test(t)) ?? "";
+const bar = () => screen.getByRole("progressbar", { name: "Wizard progress" });
+/** The step the operator is on, as the progress bar reads it (NEO-467). */
+const onStep = () => bar().getAttribute("aria-valuetext") ?? "";
+const percent = () => Number(bar().getAttribute("aria-valuenow"));
 const next = () => screen.getByRole("button", { name: NEXT_NAME });
 
 beforeEach(() => {
@@ -196,20 +197,23 @@ describe("when the step is asked", () => {
     render(wizard());
     expect(screen.getByRole("heading", { name: careerHeading(1) })).toBeTruthy();
     expect(screen.getAllByText(STEP_SUBTITLE.career).length).toBeGreaterThan(0);
-    expect(counter()).toBe("Step 1 of 2");
+    expect(onStep()).toBe(STEP_SUBTITLE.career);
+    // First of two (the career check, then Save): nothing is behind it.
+    expect(percent()).toBe(0);
   });
 
-  it("counts the step it lands on, but does not announce it as one more to come", () => {
+  it("counts the step it lands on: the bar names it, and Next moves on to Save", () => {
     // The career check is judged once the names are decided, so it can turn up
-    // under the operator's feet: y grows, and the growth line stays quiet
-    // rather than naming the step they are already on.
+    // under the operator's feet. NEO-467: there is no growth line to keep
+    // quiet; the plan just grows by one and the bar reads the new screen.
     const { rerender } = render(wizard({ careerContext: { ...CONTEXT, gaps: [] } }));
-    expect(counter()).toBe("Step 1 of 1");
+    expect(screen.queryByText(STEP_SUBTITLE.career)).toBeNull();
     rerender(wizard());
     expect(screen.getByRole("heading", { name: careerHeading(1) })).toBeTruthy();
-    expect(counter()).toBe("Step 1 of 2");
-    const growth = document.querySelector("header")!.querySelector('[aria-live="polite"]')!;
-    expect(growth.textContent).toBe("");
+    expect(onStep()).toBe(STEP_SUBTITLE.career);
+    fireEvent.click(next());
+    expect(onStep()).toBe(STEP_SUBTITLE.save);
+    expect(percent()).toBe(100);
   });
 
   it("lists only the pair the gate called a gap", () => {

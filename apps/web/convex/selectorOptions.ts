@@ -249,6 +249,12 @@ import {
 } from "./lib/selectorAncestry";
 // NEO-592: bounded concurrency for the review gate's reads.
 import { mapBounded, settleAll } from "./lib/boundedConcurrency";
+// NEO-426 — "this sport has no teams": one more reason to stamp "No team".
+import {
+  createSportNoTeamReader,
+  TEAMLESS_PLAYER_LOOKUP_PAGE,
+  teamlessSportIdSet,
+} from "./sportTeamless";
 // NEO-277: the set-level team rules — copy-down at creation, and the
 // equal-to-previous cascade the edit path and its preview both apply.
 import {
@@ -1635,9 +1641,21 @@ export const reviewGatePrelude = internalQuery({
     skippedKeys: v.union(v.array(v.string()), v.null()),
     setYear: v.union(v.number(), v.null()),
     priorYearProductId: v.union(v.id("selectorOptions"), v.null()),
+    // NEO-426 — the sports flagged "no teams", read in this same hop so
+    // `teamlessPlayerNames` costs no hop of its own (and no player read at
+    // all) when none is flagged.
+    teamlessSportIds: v.array(v.id("selectorOptions")),
   }),
   handler: async (ctx, args) => {
-    const [sportMatches, sportRow, pending, skippedKeys, setYear, priorYearProductId] =
+    const [
+      sportMatches,
+      sportRow,
+      pending,
+      skippedKeys,
+      setYear,
+      priorYearProductId,
+      teamlessSportIds,
+    ] =
       await Promise.all([
         // The topmost `sport` row on the way up, as `getAncestorChain`'s
         // `chain.find(level === "sport")` read it (root first).
@@ -1666,8 +1684,10 @@ export const reviewGatePrelude = internalQuery({
         })(),
         findSetYearForSelectorOption(ctx, args.selectorOptionId),
         findPriorYearSameProduct(ctx, args.selectorOptionId),
+        teamlessSportIdSet(ctx),
       ]);
     return {
+      teamlessSportIds: [...teamlessSportIds],
       sportMatches,
       sportLabel: sportRow?.value ?? "",
       pendingPlayerNames: pending.players,
@@ -7022,8 +7042,9 @@ export const addCustomCard = mutation({
      * Stamped server-side (`teamNoneConfirmedAt` now, this admin), never a
      * client timestamp. The card's own answer, so it beats the leaf's
      * set-level team as a picker value does; refused beside a picked team
-     * or a typed name. Absent, a card under a No Team leaf is still born
-     * stamped (it has no listing and no lookup to wait on). `false` is the
+     * or a typed name. Absent, a card under a No Team leaf, or whose every
+     * player is from a teamless sport (NEO-426), is still born stamped (it
+     * has no listing and no lookup to wait on). `false` is the
      * operator turning that off for this one card: it is born teamless and
      * unstamped, so the missing-team item asks about it. `false` never
      * touches a set-level TEAM: under a team leaf the card still takes it.
@@ -7156,15 +7177,23 @@ export const addCustomCard = mutation({
     // `stamp` whenever it has no team and no typed name; asked anyway, so
     // this path and every other birth path apply one rule. `teamNone: false`
     // opts this card out of the leaf's No Team.
+    //
+    // NEO-426 — or a teamless sport: the same verdict, vouched for by the
+    // card's players instead of the leaf (every player's HOME sport flagged,
+    // no player name waiting on review; the default player counts).
     const bornNoTeam =
       explicitTeamNone ||
       (!explicitNoStamp &&
-        teamDefaultOf(parentNode).kind === "noTeam" &&
         noTeamCardVerdict({
           teamOnCardIds,
           pendingTeamNames,
           platformData: {},
-        }).verdict === "stamp");
+        }).verdict === "stamp" &&
+        (teamDefaultOf(parentNode).kind === "noTeam" ||
+          (await createSportNoTeamReader(ctx).defaultFor({
+            playerIds,
+            pendingPlayerNameCount: pendingPlayerNames?.length ?? 0,
+          })) !== undefined));
     const noTeamStamp = bornNoTeam ? stampNoTeam(operatorUserId, Date.now()) : {};
 
     // NEO-71-74: `parentNode` (read above) is the full resolved feature
@@ -8760,6 +8789,50 @@ export const setSelectorOptionListingShortName = mutation({
     const next = { ...(row.metadata ?? {}) };
     if (shortName) next.listingShortName = shortName;
     else delete next.listingShortName;
+    await ctx.db.patch(args.id, {
+      metadata: Object.keys(next).length > 0 ? next : undefined,
+      lastUpdated: Date.now(),
+    });
+    return null;
+  },
+});
+
+/**
+ * NEO-619 — turn "Parallels name themselves" on or off for an insert: the
+ * parallels beneath it (its sub-variants) leave the insert's name out of their
+ * card titles and use their own, and the insert's own cards still name the
+ * insert (`titleChainFacts` reads the switch; see `metadata.
+ * parallelsNameThemselves` in schema.ts).
+ *
+ * Same shape as `setSelectorOptionListingShortName` above: one key, nothing
+ * else in `metadata` touched; on stores `true`, off DELETES the key, and an
+ * emptied metadata object is dropped. Refused on anything but an insert-level
+ * row under an Insert type (the row's role is its variant type's KIND, read
+ * through `derivedVariantFlags`), the only row that has parallels beneath it.
+ * Existing titles are not rewritten (write-once): Regenerate reads the switch.
+ */
+export const setSelectorOptionParallelsNameThemselves = mutation({
+  args: {
+    id: v.id("selectorOptions"),
+    on: v.boolean(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const row = await ctx.db.get(args.id);
+    if (!row) {
+      throw new ConvexError("That row is gone. Refresh and try again.");
+    }
+    const parent = row.parentId ? await ctx.db.get(row.parentId) : null;
+    if (
+      row.level !== "insert" ||
+      derivedVariantFlags(row.level, parent)?.isInsert !== true
+    ) {
+      throw new ConvexError("Only an insert's parallels can skip its name.");
+    }
+    const next = { ...(row.metadata ?? {}) };
+    if (args.on) next.parallelsNameThemselves = true;
+    else delete next.parallelsNameThemselves;
     await ctx.db.patch(args.id, {
       metadata: Object.keys(next).length > 0 ? next : undefined,
       lastUpdated: Date.now(),
@@ -18782,6 +18855,68 @@ export const fetchCardChecklist = action({
 });
 
 /**
+ * NEO-426 — the printed player spellings on these cards whose resolved
+ * player's HOME sport (`players.sportId`) is flagged "no teams".
+ *
+ * Reads only what the resolve gate already answered (`resolved.playerIdByNorm`),
+ * so a name the gate left unknown, ambiguous or skipped is never in it: the
+ * wizard decides those players' sport itself once they are linked. Extra
+ * sports (`playerSports`) never count. The checklist's side of an unsettled
+ * disagreement is included, since the gate resolved those names too.
+ *
+ * With no sport flagged (`teamlessSportIds` empty, the usual case) nothing is
+ * read: no hop, no player. Otherwise each distinct resolved player is read
+ * once, in pages asked together.
+ *
+ * Spellings come back verbatim (trimmed), like `titleContext`, so the browser
+ * matches a card's own string without re-implementing the normaliser.
+ */
+async function collectTeamlessPlayerNames(
+  ctx: Pick<ActionCtx, "runQuery">,
+  args: {
+    cards: ReadonlyArray<{
+      players?: string[];
+      checklistConflict?: { players?: { checklist?: string[] } };
+    }>;
+    resolved: ResolvedNames;
+    teamlessSportIds: ReadonlyArray<Id<"selectorOptions">>;
+  },
+): Promise<string[]> {
+  if (args.teamlessSportIds.length === 0) return [];
+  const ids = Array.from(new Set(args.resolved.playerIdByNorm.values()));
+  if (ids.length === 0) return [];
+  const pages: Array<Array<Id<"players">>> = [];
+  for (let i = 0; i < ids.length; i += TEAMLESS_PLAYER_LOOKUP_PAGE) {
+    pages.push(ids.slice(i, i + TEAMLESS_PLAYER_LOOKUP_PAGE));
+  }
+  const answers = await mapBounded(
+    pages,
+    (playerIds) =>
+      ctx.runQuery(internal.sportTeamless.playersWithTeamlessHomeSport, {
+        playerIds,
+        teamlessSportIds: [...args.teamlessSportIds],
+      }),
+    4,
+  );
+  const teamlessIds = new Set<string>(answers.flat());
+  if (teamlessIds.size === 0) return [];
+
+  const names = new Set<string>();
+  for (const card of args.cards) {
+    for (const raw of [
+      ...(card.players ?? []),
+      ...(card.checklistConflict?.players?.checklist ?? []),
+    ]) {
+      const trimmed = raw.trim();
+      if (!trimmed || names.has(trimmed)) continue;
+      const playerId = args.resolved.playerIdByNorm.get(normalizePlayerName(trimmed));
+      if (playerId && teamlessIds.has(playerId)) names.add(trimmed);
+    }
+  }
+  return [...names];
+}
+
+/**
  * Action — NEO-137: resolve player/team unknowns for the CONFIRMED card set.
  *
  * This used to be step 5 of `fetchCardChecklist`. It moved out because
@@ -18830,6 +18965,13 @@ export const resolveChecklistEntities = action({
     // has rows the operator must see before the commit. Optional so the wire
     // change is purely additive; this action always sends it.
     autoLinkedCount: v.optional(v.number()),
+    // NEO-426 — the printed player spellings on `cards` (trimmed, verbatim,
+    // deduped) whose RESOLVED player's HOME sport is flagged "no teams". The
+    // wizard reads them to save those players' cards as No team without
+    // asking. A fact about players, never a block: a card carrying any team
+    // keeps it. Optional so the wire change is purely additive; always sent
+    // (empty when no sport is flagged).
+    teamlessPlayerNames: v.optional(v.array(v.string())),
     // NEO-574 — what the wizard's "career check" step starts from: the
     // existing players and NB teams the gate resolved, and the (team,
     // players) the players' careers do not cover as of the set's year.
@@ -18843,6 +18985,7 @@ export const resolveChecklistEntities = action({
     batchId?: string;
     titleContext?: TitleContext;
     autoLinkedCount?: number;
+    teamlessPlayerNames?: string[];
     careerContext?: CareerContext;
   }> => {
     await requireAdmin(ctx);
@@ -18959,22 +19102,35 @@ export const resolveChecklistEntities = action({
       timing,
     });
     // NEO-335 — after the gate, from the gate's own answers.
-    const titleContext = await timedPhase(timing, "title", () =>
-      buildTitleContext(gate, {
-        selectorOptionId: args.selectorOptionId,
-        sportId: args.sportId,
-        cards: args.cards,
-        resolved: resolvedNames,
-      }),
-    );
-    // NEO-574 — the career check's starting point, from the same answers.
-    const careerContext = await timedPhase(timing, "career", () =>
-      buildCareerContext(gate, {
-        sportId: args.sportId,
-        cards: args.cards,
-        resolved: resolvedNames,
-      }),
-    );
+    // NEO-426 — and, beside it (they read independent rows, so they are asked
+    // together), which of those resolved players play a teamless HOME sport.
+    // NEO-574 — and the career check's starting point, from the same answers.
+    const [titleContext, teamlessPlayerNames, careerContext] = await settleAll<
+      [TitleContext, string[], CareerContext]
+    >([
+      timedPhase(timing, "title", () =>
+        buildTitleContext(gate, {
+          selectorOptionId: args.selectorOptionId,
+          sportId: args.sportId,
+          cards: args.cards,
+          resolved: resolvedNames,
+        }),
+      ),
+      timedPhase(timing, "teamless", () =>
+        collectTeamlessPlayerNames(gate, {
+          cards: args.cards,
+          resolved: resolvedNames,
+          teamlessSportIds: prelude.teamlessSportIds,
+        }),
+      ),
+      timedPhase(timing, "career", () =>
+        buildCareerContext(gate, {
+          sportId: args.sportId,
+          cards: args.cards,
+          resolved: resolvedNames,
+        }),
+      ),
+    ]);
     // NEO-592 — ids, counts and milliseconds only, never a name.
     console.log(
       JSON.stringify({
@@ -18992,7 +19148,7 @@ export const resolveChecklistEntities = action({
         phasesMs: timing.phases,
       }),
     );
-    return { ...result, titleContext, careerContext };
+    return { ...result, titleContext, teamlessPlayerNames, careerContext };
   },
 });
 /**
@@ -22810,6 +22966,10 @@ export const commitCardChecklistChunk = internalMutation({
       return chunkPlayerDefaults;
     };
 
+    // NEO-426 — the sport default's reader: the flagged sports once per chunk
+    // (and no player read at all when none is flagged), each player once.
+    const sportNoTeam = createSportNoTeamReader(ctx);
+
     for (const card of args.cards) {
       // Deliberately `rowsById.get`, not `ctx.db.get`: the map is this
       // selectorOption's own snapshot, so an id that is foreign to this
@@ -23096,6 +23256,15 @@ export const commitCardChecklistChunk = internalMutation({
           now: Date.now(),
         });
 
+        // NEO-426 — a re-synced row is NEVER stamped with a sport default.
+        // The sport default is a birth-time answer only (new-row insert,
+        // `addCustomCard`, and BSC's "no team" answer in
+        // `applyBscTeamResolution`), exactly NEO-556's shape. Stamping here
+        // would fire when an incoming team was named but not accepted (stale
+        // baseVersion, no applyFields, unchecked), which writes "No team"
+        // over a listing that names one (product invariant 8), and would
+        // re-stamp a card an operator deliberately took out of No team.
+        // Existing cards are the operator's to mark (NEO-556's bulk action).
         await ctx.db.patch(existing._id, {
           ...contentPatch,
           ...(operatorFill ? { teamOnCardIds: operatorFill } : {}),
@@ -23217,45 +23386,6 @@ export const commitCardChecklistChunk = internalMutation({
           now: Date.now(),
         });
 
-        // NEO-556 — the leaf's "No Team", for a card the answer above left
-        // with no team and no ruling. Asked of the card as it will be born
-        // (its teams, pending names, and the lookup bookkeeping just
-        // settled), so a listing that names a team, or a BSC lookup still to
-        // run, holds the stamp back (product invariant 8):
-        // `applyBscTeamResolution` stamps it once BSC answers with no team.
-        // Credited to the committing admin, else whoever set the No Team.
-        // A set team X beats a checklist's "No team" exactly as before
-        // (NEO-556 Q3) — that card has a team, so it never reaches here.
-        const insertNoTeamStamp =
-          leafNoTeam &&
-          insertTeamAnswer.fields.teamNoneConfirmedAt === undefined &&
-          noTeamCardVerdict({
-            teamOnCardIds: insertTeamOnCardIds,
-            pendingTeamNames: insertPendingTeamNames,
-            bscTeamName: insertTeamAnswer.fields.bscTeamName,
-            teamCheckDoneAt: insertTeamAnswer.fields.teamCheckDoneAt,
-            teamCheckOutcome: insertTeamAnswer.fields.teamCheckOutcome,
-            platformData: card.platformData?.bsc ? { bsc: { ref: card.platformData.bsc.ref } } : {},
-          }).verdict === "stamp"
-            ? stampNoTeam(args.operatorUserId ?? leafNoTeam.setByUserId, Date.now())
-            : {};
-        const insertCarried = { ...insertTeamAnswer.fields, ...insertNoTeamStamp };
-
-        // NEO-335 — the operator's pre-save title answer. The action already
-        // refused an over-cap one before any phase wrote; capped again here
-        // because this is the writer (`checkTitleAnswer`).
-        let insertTitleAnswer: { listingTitle?: string; listingTitleKept?: string } = {};
-        try {
-          insertTitleAnswer = checkTitleAnswer(
-            { listingTitle: card.listingTitle, listingTitleKept: card.listingTitleKept },
-            `card #${card.cardNumber}`,
-          );
-        } catch (error) {
-          throw new ConvexError(
-            error instanceof Error ? error.message : "Card title is too long.",
-          );
-        }
-
         // NEO-528 round 3 — a card that resolved no player and carries no
         // name waiting for review is born with the leaf's default player (ids,
         // printed name and the names the title and Signed By read, together);
@@ -23275,6 +23405,57 @@ export const commitCardChecklistChunk = internalMutation({
             ? { ...chunkDefaults, playerId: null, player: null }
             : chunkDefaults,
         );
+
+        // NEO-556 — the leaf's "No Team", or NEO-426's teamless sport, for a
+        // card the answer above left with no team and no ruling. Asked of the
+        // card as it will be born (its teams, pending names, and the lookup
+        // bookkeeping just settled), so a listing that names a team, or a BSC
+        // lookup still to run, holds the stamp back (product invariant 8):
+        // `applyBscTeamResolution` stamps it once BSC answers with no team.
+        // ONE verdict for both reasons; they differ only in who vouches. The
+        // set's No Team is asked first (it needs no read), then the sport
+        // default on the players the card is BORN with (NEO-528's default
+        // player counts, a pending player name does not).
+        // Credited to the committing admin, else whoever set the default.
+        // A set team X beats a checklist's "No team" exactly as before
+        // (NEO-556 Q3) — that card has a team, so it never reaches here.
+        const insertNoTeamStamp = await (async () => {
+          if (insertTeamAnswer.fields.teamNoneConfirmedAt !== undefined) return {};
+          const verdict = noTeamCardVerdict({
+            teamOnCardIds: insertTeamOnCardIds,
+            pendingTeamNames: insertPendingTeamNames,
+            bscTeamName: insertTeamAnswer.fields.bscTeamName,
+            teamCheckDoneAt: insertTeamAnswer.fields.teamCheckDoneAt,
+            teamCheckOutcome: insertTeamAnswer.fields.teamCheckOutcome,
+            platformData: card.platformData?.bsc ? { bsc: { ref: card.platformData.bsc.ref } } : {},
+          });
+          if (verdict.verdict !== "stamp") return {};
+          const vouchedBy =
+            leafNoTeam ??
+            (await sportNoTeam.defaultFor({
+              playerIds: born.playerIds ?? [],
+              pendingPlayerNameCount: insertPendingPlayerNames.length,
+            }));
+          return vouchedBy
+            ? stampNoTeam(args.operatorUserId ?? vouchedBy.setByUserId, Date.now())
+            : {};
+        })();
+        const insertCarried = { ...insertTeamAnswer.fields, ...insertNoTeamStamp };
+
+        // NEO-335 — the operator's pre-save title answer. The action already
+        // refused an over-cap one before any phase wrote; capped again here
+        // because this is the writer (`checkTitleAnswer`).
+        let insertTitleAnswer: { listingTitle?: string; listingTitleKept?: string } = {};
+        try {
+          insertTitleAnswer = checkTitleAnswer(
+            { listingTitle: card.listingTitle, listingTitleKept: card.listingTitleKept },
+            `card #${card.cardNumber}`,
+          );
+        } catch (error) {
+          throw new ConvexError(
+            error instanceof Error ? error.message : "Card title is too long.",
+          );
+        }
 
         // NEO-312 — the row itself (features, Signed By, the write-once
         // listing title and description, the SKU) is built by the helper the

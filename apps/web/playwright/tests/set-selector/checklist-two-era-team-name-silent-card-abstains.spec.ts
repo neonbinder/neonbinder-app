@@ -49,8 +49,8 @@ import {
   CAREER_STEP_SUBTITLE,
   careerLine,
   confirmSaveButton,
+  expectWizardStep,
   reviewWizard,
-  stepCounter,
   tidyUpName,
 } from "../../support/wizard";
 
@@ -149,11 +149,12 @@ test(
     const wizard = reviewWizard(page);
     await expect(wizard).toBeVisible();
     await expect(wizard).toHaveAccessibleName(tidyUpName({ year: "2025", set: SET }));
-    // Positive: the wizard opens straight on the Career check (nothing decided
-    // before it, so x is 1), and its one line is the silent card's player on the
-    // CURRENT era: the team the name linked to, by its own name.
+    // Positive: the wizard opens straight on the Career check (nothing pressed
+    // yet, and the progress bar names it: NEO-467, no step count), and its one
+    // line is the silent card's player on the CURRENT era: the team the name
+    // linked to, by its own name.
     await expect(wizard.getByRole("heading", { level: 3, name: `${CAREER_STEP_SUBTITLE} · 1 to look at` })).toBeVisible();
-    await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+    await expectWizardStep(page, CAREER_STEP_SUBTITLE);
     const line = careerLine(page, SILENT, CURRENT);
     await expect(line).toBeVisible();
     // NEO-591: the line OPENS on "Add to career" with the card's team staged, and

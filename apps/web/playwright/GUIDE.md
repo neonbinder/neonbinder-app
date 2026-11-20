@@ -382,8 +382,11 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   person per worker for a spec that adds a Baseball player as scaffolding
   (see "Enrichment fixtures").
 - `support/theme.ts`: `expectLook`, `expectPageLook` (a light or dark page, proven by painted colour; theme specs), `paintsLook`, `pageHasBanner` (what `expectAccessible` uses to prove each mode; see "Accessibility checks").
-- `support/wizard.ts`: entity-review wizard (`reviewWizard`, `stepCounter`,
-  `readStep`, `expectStepLeft`, `fetchChecklistToWizard`,
+- `support/wizard.ts`: entity-review wizard (`reviewWizard`, `wizardProgress`,
+  `STEP_SUBTITLE`, `expectWizardStep`, `readProgress`, `expectNoStepCount`,
+  `expectNothingDecided`, `decidedSummary`, `readDecidedCount`,
+  `expectDecidedCount`, `nameStepSkip`, `readNameStep`, `expectNameStepLeft`,
+  `expectPostNameStepLeft`, `fetchChecklistToWizard`,
   `fetchOneMarketplaceSetChecklistToWizard`, `cancelAndDiscard`,
   `discardResumedReviewBatch`, `personSkip`, `walkToPlayerRow`,
   `advanceToSave`, `readBackDecision`, `confirmSaveButton`). Each helper's
@@ -504,15 +507,26 @@ Idioms:
   "N of M reviewed" line and its "N still being looked up" tail are gone (the
   footer still says "N still looking up"). Header facts a spec may assert:
   the subtitle (`New league`, `New team`, `New player`, `Which player is
-  this?`, `Cards with no team`, `Card titles`, `Ready to save`) and the ONE
-  `Step x of y` counter (`stepCounter`, `readStep`). On a NAME step x is the
-  decided count plus one, so `Step 1 of N` is a batch with nothing decided and
-  one decision reads `Step 2 of N`; y grows as staged steps arrive, so pin x,
-  never y. "Every name is decided" is the footer state `Next (Enter)` or
+  this?`, `Cards with no team`, `Card titles`, `Ready to save`) and, since
+  NEO-467, the progress bar `getByRole("progressbar", { name: "Wizard
+  progress" })` (`wizardProgress`), whose `aria-valuetext` is the subtitle and
+  `aria-valuenow` a rounded percent (100 on Save). There is NO exact count: no
+  `Step x of y` anywhere, no growth line. Say where the wizard is by subtitle
+  (`expectWizardStep`); a batch with nothing decided is `expectNothingDecided`
+  (a name step, no "Decided (N)" history). Name steps of a kind share a
+  subtitle, so "this row was decided" is the row's own skip going
+  (`readNameStep`, then `expectNameStepLeft`), and "exactly one decision" is
+  the "Decided (N)" history growing by one (`readDecidedCount`, then
+  `expectDecidedCount`; read it on a settled name step, and only there: the
+  history is not shown on the teams, autograph or titles steps). A Next on a
+  post-name step is proved by `expectPostNameStepLeft` (a later subtitle). A
+  percent may only be held not to go down across a change, and only once the
+  new step is asserted; never pin its value except 100 on Save.
+  "Every name is decided" is the footer state `Next (Enter)` or
   `Confirm & Save`: past the names come `Cards with no team`, `Autographed
   cards` and `Card titles` (each only when needed, each with `Next (Enter)`
   and NO Confirm & Save), then `Ready to save` (heading `Save N cards?`),
-  always `Step y of y` and the only step with Confirm & Save. `Autographed
+  the end of the progress bar and the only step with Confirm & Save. `Autographed
   cards` (NEO-345) is asked when a card the save will create carries BSC's AU
   tag and the synced part has no autograph format; it is a radio group (`On
   card` / `Sticker`, placeholder copy in `support/wizard.ts`) whose answer is
@@ -521,11 +535,13 @@ Idioms:
   `advanceToSave` to reach Save (Next leaves every line on its default); a
   spec whose feature is the teams or titles step drives that step itself. A
   sync with no unknown names opens the wizard only when a post-name step is
-  needed, straight onto it (`Step 1 of 2`). The wizard only opens for names
+  needed, straight onto it (subtitle `Cards with no team` or `Card titles`). The wizard only opens for names
   the reference catalogue does not know, so a wizard spec needs a registered
   fixture set (SET-REGISTRY.md). The post-save attention walker wears the same
-  title, subtitles and counter: tell them apart by the walker's `Skip for now,
-  card <number>`. To prove WHAT a decision was, read it back with
+  title, subtitles and progress bar: tell them apart by the walker's `Skip for
+  now, card <number>`, and scope its progress bar to the walker's dialog. A
+  walker sitting's size is proved by the walk (one answer or skip per card,
+  then `All clear`), not by a count. To prove WHAT a decision was, read it back with
   `readBackDecision` (the footer Back opens the most recent decision read-only
   in the group `Decision for <name>`); the "Decided (N)" list is batch-ordered
   and collapses past five entries, so it is no read-back. A Maestro-era scroll

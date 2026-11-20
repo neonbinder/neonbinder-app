@@ -39,9 +39,9 @@ import {
 import { setChecklistPanel } from "../../support/published-checklist";
 import {
   cancelAndDiscard,
-  expectStepLeft,
+  expectNameStepLeft,
   personSkip,
-  readStep,
+  readNameStep,
   reviewWizard,
   tidyUpName,
   walkToPlayerRow,
@@ -129,9 +129,9 @@ test(
     for (let i = 0; i < SECTION_ROWS; i++) {
       await expect(personSkip(page)).toBeVisible();
       if (await avery.isVisible()) break;
-      const { x } = await readStep(page);
+      const row = await readNameStep(page);
       await personSkip(page).click();
-      await expectStepLeft(page, x);
+      await expectNameStepLeft(page, row);
     }
     await expect(avery).toBeVisible();
     await expect(reviewWizard(page).getByRole("button", { name: `Skip ${PLAYER} — not a person` })).toBeVisible();

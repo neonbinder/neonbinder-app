@@ -11,7 +11,7 @@
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
 import { recordedNoMatchName } from "../../support/recorded-names";
-import { answerPlayerAsNew, cancelAndDiscard, discardResumedReviewBatch, fetchChecklistToWizard, readBackDecision, readStep, reviewWizard, stepCounter, walkToPlayerRow } from "../../support/wizard";
+import { answerPlayerAsNew, cancelAndDiscard, discardResumedReviewBatch, expectDecidedCount, expectWizardStep, fetchChecklistToWizard, readBackDecision, readDecidedCount, reviewWizard, STEP_SUBTITLE, walkToPlayerRow } from "../../support/wizard";
 
 test(
   "Entity review — a player row takes hand-entered career teams, refuses an entry with no from-year, and carries the staged history into the Add as New decision",
@@ -82,9 +82,9 @@ test(
 
     // Enter commits a staged entry from the keyboard; a second team opens ended "present".
     await careerName.fill(temp);
-    // The step number now (x is the decided count plus one on a name step). The
-    // total grows by the staged team row, so only x is pinned.
-    const { x: stepBefore } = await readStep(page);
+    // The decisions so far (NEO-467: the "Decided (N)" history, not a step
+    // count; the staged team row adds a step, never a decision).
+    const decidedBefore = await readDecidedCount(page);
     await careerName.press("Enter");
     await expect(careerName).toHaveValue(temp);
     await fromYear.fill("2010");
@@ -94,9 +94,13 @@ test(
     await expect(tempStep.or(lookingUp).first()).toBeVisible();
     await expect(lookingUp).toBeHidden({ timeout: 180_000 });
     await expect(tempStep).toBeVisible();
-    // Nothing was decided since the capture (the staged team step the walk hopped
-    // to is undecided like the player was), so x has not moved.
-    await expect(stepCounter(page)).toHaveText(new RegExp(`^Step ${stepBefore} of [0-9]+$`));
+    // Nothing was decided since the capture: the staged team step the walk
+    // hopped to is an UNDECIDED row (its own skip is up, the header says "New
+    // team"), the player it was typed on is still undecided (the return to his
+    // row below proves it), and the "Decided (N)" history has not grown.
+    await expect(wizard.getByRole("button", { name: `Skip ${temp} — not a team`, exact: true })).toBeVisible();
+    await expectWizardStep(page, STEP_SUBTITLE.team);
+    await expectDecidedCount(page, decidedBefore);
 
     await wizard.getByRole("combobox", { name: "League" }).fill(league);
     await wizard.getByRole("option", { name: `${league} (new)` }).click();

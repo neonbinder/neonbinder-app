@@ -1,47 +1,53 @@
 /**
  * NEO-335 Phase 2 — the shared "Tidy up …" header. NEO-497 — its title names
  * the set ("Tidy up 2024 Topps Chrome"), never with a trailing "Base".
+ * NEO-467 — its only progress indicator is the bar.
  */
 import { render, screen } from "@testing-library/react";
 import React from "react";
 import { describe, expect, it } from "vitest";
 import WizardChrome, {
-  railFraction,
-  stepCounterText,
+  progressFraction,
   tidyUpTitle,
   tidyUpTitleFromChain,
+  WIZARD_PROGRESS_LABEL,
   WIZARD_TITLE,
 } from "./WizardChrome";
 import { STEP_SUBTITLE, type WizardStepKind } from "./entity-review-steps";
+import { contrastRatio, tokenHex } from "../../src/theme/tokens";
 
 const fill = () => document.querySelector<HTMLElement>("[data-rail-fill]")!;
+const bar = () => screen.getByRole("progressbar", { name: WIZARD_PROGRESS_LABEL });
 
 describe("WizardChrome", () => {
   it("titles the screen 'Tidy up this set' by default and exposes the title by id", () => {
-    render(<WizardChrome titleId="t-id" step={3} total={12} subtitle="New team" />);
+    render(<WizardChrome titleId="t-id" done={2} planned={12} subtitle="New team" />);
     const heading = screen.getByRole("heading", { name: WIZARD_TITLE });
     expect(WIZARD_TITLE).toBe("Tidy up this set");
     expect(heading.id).toBe("t-id");
   });
 
-  it("shows the host's title, and lets a long one wrap beside the counter", () => {
+  it("shows the host's title, and lets a long one wrap", () => {
     const long = "Tidy up 2024 Topps Chrome Update Series Gold Wave Refractors";
-    render(<WizardChrome titleId="t-id" title={long} step={3} total={12} subtitle="New team" />);
+    render(
+      <WizardChrome titleId="t-id" title={long} done={2} planned={12} subtitle="New team" />,
+    );
     const heading = screen.getByRole("heading", { level: 2 });
     expect(heading.textContent).toBe(long);
     expect(heading.id).toBe("t-id");
     expect(screen.queryByText(WIZARD_TITLE)).toBeNull();
-    // Wraps (never truncates) and may shrink; the counter never does.
+    // Wraps (never truncates) and may shrink.
     expect(heading.className).toContain("min-w-0");
     expect(heading.className).toContain("wrap-anywhere");
     expect(heading.className).not.toContain("truncate");
-    expect(screen.getByText("Step 3 of 12").className).toContain("shrink-0");
   });
 
   it("clamps a long title to three lines visually, keeping the full text as its name and title", () => {
     const long =
       "Tidy up 2024 Topps Chrome Update Series Sapphire Edition Future Stars Gold Wave Refractors";
-    render(<WizardChrome titleId="t-id" title={long} step={3} total={12} subtitle="New team" />);
+    render(
+      <WizardChrome titleId="t-id" title={long} done={2} planned={12} subtitle="New team" />,
+    );
     // The accessible name is the WHOLE title: the clamp is CSS only.
     const heading = screen.getByRole("heading", { level: 2, name: long });
     expect(heading.textContent).toBe(long);
@@ -49,48 +55,86 @@ describe("WizardChrome", () => {
     expect(heading.getAttribute("title")).toBe(long);
   });
 
-  it("gives the title the whole row below sm and the counter its own right-aligned line", () => {
-    render(<WizardChrome step={9} total={12} subtitle="New team" />);
-    const heading = screen.getByRole("heading", { level: 2 });
-    const counter = screen.getByText("Step 9 of 12");
-    const row = heading.parentElement!;
-    // Title and counter share one wrapping row.
-    expect(counter.parentElement).toBe(row);
-    expect(row.className.split(/\s+/)).toEqual(expect.arrayContaining(["flex", "flex-wrap"]));
-    // Below sm the title takes the full row, so the counter wraps to its own
-    // line; from sm up the title takes what the counter leaves.
-    expect(heading.className.split(/\s+/)).toEqual(
-      expect.arrayContaining(["basis-full", "sm:basis-auto", "sm:flex-1"]),
-    );
-    // The counter sits at the right on its own line, and from sm up holds a
-    // constant width ("Step 99 of 99"), so "Step 9" -> "Step 10" never
-    // re-wraps the title beside it.
-    expect(counter.className.split(/\s+/)).toEqual(
-      expect.arrayContaining(["ml-auto", "text-right", "whitespace-nowrap", "sm:min-w-[6.5rem]"]),
-    );
+  it("is a 'Wizard progress' progressbar whose value text is the subtitle", () => {
+    render(<WizardChrome done={3} planned={12} subtitle="Cards with no team" />);
+    const progress = bar();
+    expect(WIZARD_PROGRESS_LABEL).toBe("Wizard progress");
+    expect(progress.getAttribute("aria-valuemin")).toBe("0");
+    expect(progress.getAttribute("aria-valuemax")).toBe("100");
+    expect(progress.getAttribute("aria-valuenow")).toBe("25");
+    expect(progress.getAttribute("aria-valuetext")).toBe("Cards with no team");
+    expect(fill().style.width).toBe("25.000%");
   });
 
-  it("says 'Step x of y' as one text node in a status region", () => {
-    render(<WizardChrome step={3} total={12} subtitle="New team" />);
-    const counter = screen.getByText("Step 3 of 12");
-    expect(counter.getAttribute("role")).toBe("status");
-    // One text node, so a matcher on the visible phrase sees all of it.
-    expect(counter.childNodes).toHaveLength(1);
-    expect(counter.className).toContain("tabular-nums");
-    expect(stepCounterText(1, 2)).toBe("Step 1 of 2");
+  it("rounds the value to a whole percent", () => {
+    render(<WizardChrome done={1} planned={3} subtitle="New player" />);
+    expect(bar().getAttribute("aria-valuenow")).toBe("33");
   });
 
-  it("keeps the counter's region mounted but empty when there is no count", () => {
-    render(<WizardChrome step={0} total={0} subtitle="" />);
+  it("has no step counter and no growth line; the subtitle is the only live region", () => {
+    render(<WizardChrome done={3} planned={12} subtitle="New team" />);
+    expect(screen.queryByText(/Step \d+ of \d+/)).toBeNull();
+    // One polite status, and it is the subtitle: the bar and its percent never speak.
     const statuses = screen.getAllByRole("status");
-    expect(statuses.map((s) => s.textContent)).toEqual([""]);
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0].textContent).toBe("New team");
+    expect(bar().closest("[aria-live], [role=status]")).toBeNull();
+    expect(screen.queryByText(/%/)).toBeNull();
+  });
+
+  it("announces a step change: the status stays mounted and its text moves", () => {
+    const { rerender } = render(<WizardChrome done={1} planned={4} subtitle="New team" />);
+    const region = screen.getByRole("status");
+    rerender(<WizardChrome done={2} planned={4} subtitle="Ready to save" />);
+    // The same node, so a screen reader sees a text change rather than a new region.
+    expect(screen.getByRole("status")).toBe(region);
+    expect(region.textContent).toBe("Ready to save");
+  });
+
+  it("keeps the status mounted, empty, when there is no subtitle (the expired wizard)", () => {
+    const { rerender } = render(<WizardChrome done={1} planned={4} subtitle="" />);
+    const region = screen.getByRole("status");
+    expect(region.textContent).toBe("");
+    rerender(<WizardChrome done={1} planned={4} subtitle="New team" />);
+    expect(screen.getByRole("status")).toBe(region);
+    expect(region.textContent).toBe("New team");
+  });
+
+  it("paints the fill in the green text role, which meets 3:1 on the track in both themes", () => {
+    render(<WizardChrome done={1} planned={2} subtitle="New team" />);
+    expect(fill().className).toMatch(/(^|\s)bg-neon-green-text(\s|$)/);
+    expect(fill().className).not.toMatch(/(^|\s)bg-neon-green(\s|$)/);
+    // The bar's track is `bg-rule`. The bright fill (neon-green) is ~1.5:1 on it in light.
+    expect(contrastRatio(tokenHex("neon-green", "light"), tokenHex("rule", "light"))).toBeLessThan(3);
+    for (const mode of ["light", "dark"] as const) {
+      expect({
+        mode,
+        ok: contrastRatio(tokenHex("neon-green-text", mode), tokenHex("rule", mode)) >= 3,
+      }).toEqual({ mode, ok: true });
+    }
+    // Dark is unchanged: the text role is the fill itself.
+    expect(tokenHex("neon-green-text", "dark")).toBe(tokenHex("neon-green", "dark"));
+  });
+
+  it("is empty with no plan, and drops the value text with no subtitle", () => {
+    render(<WizardChrome done={0} planned={0} subtitle="" />);
+    expect(bar().getAttribute("aria-valuenow")).toBe("0");
+    expect(bar().hasAttribute("aria-valuetext")).toBe(false);
     expect(fill().style.width).toBe("0.000%");
+    expect(progressFraction(2, 0)).toBe(0);
+    expect(progressFraction(5, 4)).toBe(1);
+  });
+
+  it("is full when every planned step is done (the Save step)", () => {
+    render(<WizardChrome done={7} planned={7} subtitle={STEP_SUBTITLE.save} />);
+    expect(bar().getAttribute("aria-valuenow")).toBe("100");
+    expect(bar().getAttribute("aria-valuetext")).toBe("Ready to save");
   });
 
   it.each(Object.entries(STEP_SUBTITLE) as Array<[WizardStepKind, string]>)(
     "shows the %s subtitle on the line below",
     (_kind, subtitle) => {
-      render(<WizardChrome step={1} total={2} subtitle={subtitle} />);
+      render(<WizardChrome done={1} planned={2} subtitle={subtitle} />);
       const line = screen.getByText(subtitle);
       const heading = screen.getByRole("heading", { name: WIZARD_TITLE });
       // DOCUMENT_POSITION_FOLLOWING: the subtitle comes after the title row.
@@ -99,74 +143,41 @@ describe("WizardChrome", () => {
     },
   );
 
-  it("fills the rail to x/y and hides it from assistive tech", () => {
-    render(<WizardChrome step={3} total={12} subtitle="New team" />);
-    expect(fill().style.width).toBe("25.000%");
-    expect(fill().parentElement!.getAttribute("aria-hidden")).toBe("true");
-    expect(railFraction(5, 4)).toBe(1);
-    expect(railFraction(2, 0)).toBe(0);
+  it("never moves back: a plan that grew, or a step back, holds the bar", () => {
+    const { rerender } = render(<WizardChrome done={3} planned={10} subtitle="New player" />);
+    expect(bar().getAttribute("aria-valuenow")).toBe("30");
+
+    // The plan grew (3/12 = 25%): the bar stalls at 30.
+    rerender(<WizardChrome done={3} planned={12} subtitle="New player" />);
+    expect(bar().getAttribute("aria-valuenow")).toBe("30");
+    expect(fill().style.width).toBe("30.000%");
+
+    // Back a step: still 30.
+    rerender(<WizardChrome done={2} planned={12} subtitle="New team" />);
+    expect(bar().getAttribute("aria-valuenow")).toBe("30");
+    // The value text still follows the step on screen.
+    expect(bar().getAttribute("aria-valuetext")).toBe("New team");
+
+    // Catching up past it moves it on again.
+    rerender(<WizardChrome done={6} planned={12} subtitle="New player" />);
+    expect(bar().getAttribute("aria-valuenow")).toBe("50");
   });
 
   it("animates the width only forward, and never under reduced motion", () => {
-    const { rerender } = render(<WizardChrome step={1} total={4} subtitle="New team" />);
+    const { rerender } = render(<WizardChrome done={1} planned={4} subtitle="New team" />);
     // First paint: nothing to animate from.
     expect(fill().className).toContain("transition-none");
 
-    rerender(<WizardChrome step={2} total={4} subtitle="New team" />);
+    rerender(<WizardChrome done={2} planned={4} subtitle="New team" />);
     expect(fill().getAttribute("data-rail-forward")).toBe("true");
     expect(fill().className).toContain("transition-[width]");
     // Reduced motion switches the transition off.
     expect(fill().className).toContain("motion-reduce:transition-none");
-
-    // Back a step: the fill moves without a transition.
-    rerender(<WizardChrome step={1} total={4} subtitle="New team" />);
-    expect(fill().getAttribute("data-rail-forward")).toBe("false");
-    expect(fill().className).not.toContain("transition-[width]");
-    expect(fill().style.width).toBe("25.000%");
-
-    // A total that grew is also "backwards" (x/y shrank): no slide back.
-    rerender(<WizardChrome step={2} total={4} subtitle="New team" />);
-    rerender(<WizardChrome step={2} total={6} subtitle="New team" />);
-    expect(fill().className).not.toContain("transition-[width]");
-  });
-
-  it("carries the growth line in an always-mounted polite region", () => {
-    const { rerender } = render(<WizardChrome step={3} total={10} subtitle="New player" />);
-    const region = document.querySelector('[aria-live="polite"]')!;
-    expect(region.textContent).toBe("");
-
-    rerender(
-      <WizardChrome
-        step={3}
-        total={12}
-        subtitle="New player"
-        announcement="2 more steps: teams for Jim Thome"
-      />,
-    );
-    // The same node, now with text — a region that mounts with its message
-    // announces unreliably.
-    expect(document.querySelector('[aria-live="polite"]')).toBe(region);
-    expect(region.textContent).toBe("2 more steps: teams for Jim Thome");
-    expect(screen.getByText("Step 3 of 12")).toBeTruthy();
-  });
-
-  it("lets a long growth line wrap rather than clip it, in a row whose height is reserved", () => {
-    const long =
-      "3 more steps: teams for Jean-Baptiste Giancarlo Fernández-Montgomery and Ken Griffey Jr.";
-    render(<WizardChrome step={3} total={12} subtitle="New player" announcement={long} />);
-    const line = document.querySelector<HTMLElement>("[data-growth-line]")!;
-    expect(line.textContent).toBe(long);
-    // a11y audit: never truncated, at any width.
-    expect(line.className).not.toMatch(/(^|\s)(sm:)?truncate(\s|$)/);
-    expect(line.className).toContain("sm:whitespace-normal");
-    // Two lines reserved from `sm` up, so a line arriving or wrapping does not
-    // move the body.
-    expect(line.parentElement!.className).toContain("sm:min-h-8");
   });
 
   it("renders children under the subtitle row", () => {
     render(
-      <WizardChrome step={1} total={2} subtitle="Cards with no team">
+      <WizardChrome done={1} planned={2} subtitle="Cards with no team">
         <p>extra</p>
       </WizardChrome>,
     );

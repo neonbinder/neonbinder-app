@@ -73,12 +73,12 @@ import {
 import {
   answerStepAsNew,
   confirmSaveButton,
+  expectDecidedCount,
   newStepHeading,
   nextStepButton,
   openDecidedList,
   passCareerCheck,
   reviewWizard,
-  stepCounter,
   tidyUpName,
 } from "../../support/wizard";
 
@@ -165,9 +165,9 @@ test(
     await expect(wizard).toHaveAccessibleName(tidyUpName({ year: target.year, set }));
     await expect(matchCardsDialog(page)).toHaveCount(0);
     // Chicago is already decided, by his Cubs stint, as a row the operator looks over: one name
-    // linked, so the wizard opens on Step 2. Seattle settled silently (his Mariners stint is the
+    // linked, so the wizard opens with one decision on its history. Seattle settled silently (his Mariners stint is the
     // year's team too), so it is not among the linked names, and the Sooners matched by name.
-    await expect(stepCounter(page)).toHaveText(/^Step 2 of [0-9]+$/);
+    await expectDecidedCount(page, 1);
     // Names are still owed, so the cue is the Decided summary's count, not the all-linked notice.
     await expect(wizard.getByText("· 1 linked for you", { exact: true })).toBeVisible();
     const decided = await openDecidedList(page);

@@ -172,8 +172,11 @@ export type ParallelCopyTitle = ListingTitleAssessment & {
  * chain); `carriedRest` is `carriedTitleRest` over its source card, when the
  * caller has one.
  *
- * Step 2's description is the builder's own for the parallel card; when that
- * puts the title over 80 and the parallel has box text, the box text instead.
+ * Step 2 is reached only when the builder's title needs Tidy Up (or is over
+ * 80). Its description is the box text when the parallel has one and the
+ * box-headed title fits (NEO-618: the same rule as `assessListingTitle`), or
+ * when the builder's description puts the title over 80; otherwise the
+ * builder's own.
  */
 export function assessParallelCopyTitle(
   inputs: ListingCardInputs,
@@ -188,7 +191,10 @@ export function assessParallelCopyTitle(
     const headed = (description: string) => [description, rest].filter(Boolean).join(" ");
     let title = headed(titleDescription(inputs));
     const box = inputs.setShortName?.trim();
-    if (title.length > LISTING_TITLE_MAX && box) title = headed(box);
+    if (box) {
+      const boxed = headed(box);
+      if (boxed.length <= LISTING_TITLE_MAX || title.length > LISTING_TITLE_MAX) title = boxed;
+    }
     if (title && title.length <= LISTING_TITLE_MAX) {
       return {
         title,
