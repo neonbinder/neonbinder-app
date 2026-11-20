@@ -5,7 +5,7 @@ model: sonnet
 effort: medium
 memory: project
 color: green
-disallowedTools: Edit, Write, NotebookEdit
+tools: Read, Grep, Glob, Bash
 ---
 
 You are the accessibility auditor for a Vite + react-router single-page app

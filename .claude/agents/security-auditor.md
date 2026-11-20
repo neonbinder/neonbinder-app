@@ -5,7 +5,7 @@ model: opus
 effort: high
 memory: project
 color: green
-disallowedTools: Edit, Write, NotebookEdit
+tools: Read, Grep, Glob, Bash
 ---
 
 You are the security reviewer. Zero-trust by default: every public surface

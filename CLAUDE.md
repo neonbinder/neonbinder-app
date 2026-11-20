@@ -299,6 +299,10 @@ integrations. Cloud threads are the exception (next section).
    npx playwright test --project=e2e --no-deps <path-substring>
    ```
 
+   Or, all of the above in one command with its guards and a short digest:
+   `node playwright/tools/e2e-run.mjs run <path-substring>` (usage in
+   `apps/web/playwright/QUICK.md`; GUIDE.md → **Running**).
+
 5. **The deployment is yours.** Push new code with `npx convex dev --once` whenever
    the branch changes, and reset and re-seed as often as a fresh-only spec needs.
 6. **Delete it when the ticket closes**, before removing the worktree. An idle
@@ -731,7 +735,7 @@ All workflows live in `.github/workflows/`. `pr-pipeline.yml` is the single all-
 
 ## E2E Testing (Playwright)
 
-The E2E suite is Playwright, in `apps/web/playwright/` (specs under `tests/`, helpers under `support/`, config `apps/web/playwright.config.ts`). **`apps/web/playwright/GUIDE.md` is the authoring and running guide** — hard rules (role/label/text locators only, 7 s budget, no sleeps), the R1–R9 spec rules, tags, support helpers, the seed, the PAUSED_PLATFORMS switch, local commands, CI shape, and how to read a red run. Read it before writing or changing a spec. `SET-REGISTRY.md` beside it lists the real sets the suite touches and who may write to them.
+The E2E suite is Playwright, in `apps/web/playwright/` (specs under `tests/`, helpers under `support/`, config `apps/web/playwright.config.ts`). **`apps/web/playwright/GUIDE.md` is the authoring and running guide** — hard rules (role/label/text locators only, 7 s budget, no sleeps), the R-rules, tags, support helpers, the seed, the PAUSED_PLATFORMS switch, local commands, CI shape, and how to read a red run. Read it before writing or changing a spec; `QUICK.md` beside it is its one-page card (every hard rule and R-rule in a line, the `tools/e2e-run.mjs` run tool, the common helpers, an index of GUIDE sections), which agents read first. `SET-REGISTRY.md` beside it lists the real sets the suite touches and who may write to them.
 
 **Every PR that changes user-facing behaviour ships a spec that proves the feature live**, and the audit round includes the `test-coverage-auditor` agent, which checks the diff against the suite (and, for a new screen, `/impeccable audit`; see **UI & Styling**). `playwright-e2e-author` writes and debugs specs.
 

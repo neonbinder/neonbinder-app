@@ -5,13 +5,23 @@ THE guide: every spec is written to it, and the `playwright-e2e-author` agent
 and the `test-coverage-auditor` read it first. The suite is web-only; the React
 Native app is paused and has no E2E.
 
+**`QUICK.md` is this guide's one-page card** (every hard rule and R-rule in a
+line, the run tool, the common helpers, the top gotchas, an index of these
+sections by heading, the coverage checklist); agents read it first and open
+sections here by heading. A change to a hard rule, an R-rule or the coverage
+checklist, or a rename of a heading the card's index cites, updates `QUICK.md`
+in the same PR. A unit test checks that every heading the card cites exists
+here; nothing checks the wording, so the PR author does.
+
 Layout:
 
 | Path | What |
 |---|---|
+| `QUICK.md` | the one-page card of this guide (above) |
 | `tests/<area>/<name>.spec.ts` | one `test()` per file |
 | `support/` | shared helpers (see "Support") |
 | `SET-REGISTRY.md` | every real set the suite touches, who provisions it, who may write |
+| `tools/e2e-run.mjs` | the local run tool (see "Running") |
 | `shard-plan.mjs`, `timings.json` | how CI splits files across shards |
 | `../playwright.config.ts` | projects `setup`, `bootstrap`, `e2e` (desktop), `e2e-mobile` (phone); 7 s budget; one retry in CI, none locally (hard rule 5) |
 
@@ -1265,12 +1275,60 @@ nothing live). Re-seed before re-running.
 
 All commands run from `apps/web`.
 
+**Run specs locally through `playwright/tools/e2e-run.mjs`** (NEO-622; also
+`npm run e2e:run -- ...`). It does everything the manual recipe below does, on
+this worktree's own Convex deployment, and refuses anything else (a deployment
+that is not `dev:`, the main checkout's deployment, a deploy key or token in the
+environment or `.env.local`, or `CI` set). One run at a time per worktree (a lock).
+
+```bash
+node playwright/tools/e2e-run.mjs run [opts] <spec-substring>...  # waits up to 230 s
+node playwright/tools/e2e-run.mjs wait [--slice 230]               # on exit 75: keep waiting
+node playwright/tools/e2e-run.mjs plant (--edit f.json | --patch f.diff) [--expect <regex>] [opts] <spec>...
+node playwright/tools/e2e-run.mjs seed                             # reset + reference import + setup + bootstrap
+node playwright/tools/e2e-run.mjs status | digest [last|<runDir>] | stop | stop-vite
+# opts: --project desktop|mobile|both (default desktop)  --fresh  --setup  --push
+#       --worker N (default 8)  --grep <re>  --slice <s> (0 = wait to the end)  --port N  --allow-shared-dev
+```
+
+- **Exit codes.** 0 pass; 1 Playwright failures; 2 a guard or setup refused (the
+  reason is printed); 3 another run holds the lock; 75 still running, so call
+  `wait`. `plant`: 0 red and restored; 1 stayed green and restored (the spec
+  does not prove the break), or red but `--expect` did not match, or a
+  setup/bootstrap phase failed before the spec ran; 4 the restore failed (stop and report it).
+- **Seed and projects.** It records the last seed and the `setup` / `bootstrap`
+  passes in `.e2e-local/seed-state.json` and runs those two first whenever they
+  have not passed since the seed (the fake BSC cold start, below); `--setup`
+  forces them. `--fresh` re-seeds first (the root `CLAUDE.md` step-3 recipe);
+  a spec that already ran on this seed gets a note in its failure block, since
+  a fresh-only spec's second run is red by design. `--project both` runs
+  desktop, re-seeds, then mobile ("Desktop and mobile"). `--push` pushes
+  `convex/` and is the only way an agent pushes code to the deployment.
+- **Environment.** Vite on port `3` + the ticket number of the worktree's
+  directory, started detached when nothing listens there and left running
+  (`stop-vite` ends it); `APP_URL`, `WORKER_INDEX` and `PAUSED_PLATFORMS` (read
+  from the deployment) set for the child; `--retries=0`.
+  `--allow-shared-dev` is for cloud threads; `seed` and `--fresh` refuse there.
+- **Output.** A digest of at most 8,000 characters: each failure's source line,
+  error, a window of `error-context.md` around the locator, and the artifact
+  paths. The run's files are in `.e2e-local/runs/<stamp>-<project>/` (gitignored;
+  the last ten kept). The digest names no deployment and prints no env value;
+  never copy a trace, header or token out of the run folder.
+- **Plant a break** (Companion rules: "A green suite can mean the test stopped
+  testing"). `--edit` takes `[{ "file", "find", "replace" }]`, each `find`
+  matching exactly once; `--patch` a unified diff. The touched files are backed
+  up with their hashes, the specs run, and the files are restored byte-exact
+  (and Convex re-pushed when `convex/` was touched) even on interrupt; any later
+  invocation restores a leftover plant first.
+
+The rest of this section is what the tool does, by hand, and how CI runs.
+
 | Command | What |
 |---|---|
 | `npm run test:e2e` | `playwright test`: everything (CI's job; not for your laptop) |
 | `npm run test:e2e:list` | list tests; `-- --project=e2e` to check a new spec is listed once |
 | `npm run test:e2e:typecheck` | `tsc -p playwright/tsconfig.json` |
-| `npm run test:e2e:seed` | `./e2e-baseline.sh reset` then the `setup` project: seeds the target deployment |
+| `npm run test:e2e:seed` | `./e2e-seed-reset.sh && playwright test --project=setup`: seeds the target deployment |
 | `npx eslint playwright` | lint the suite |
 
 **Locally: only the specs covering your change, on this worktree's own Convex
@@ -1280,10 +1338,10 @@ root `CLAUDE.md` → **Run your specs on your own Convex deployment before the f
 ```bash
 # both shells; the unset keeps a later CLI command from trusting a stale value
 set -a; . ./.env.local; set +a; unset CONVEX_DEPLOYMENT CONVEX_DEPLOY_KEY CONVEX_DEPLOYMENT_TOKEN
-# shell 1: local Vite on a spare port (.env.local names your deployment)
-VITE_DEV_DISABLE_HTTPS=1 npx vite --port 3001 --strictPort
+# shell 1: local Vite on 3 + the ticket number (the tool's rule; .env.local names your deployment)
+VITE_DEV_DISABLE_HTTPS=1 npx vite --port <3 + ticket number> --strictPort
 # shell 2: setup and bootstrap once per seed, then one spec at a time
-export APP_URL=http://localhost:3001 WORKER_INDEX=8 PAUSED_PLATFORMS=<the repo variable's value>
+export APP_URL=http://localhost:<3 + ticket number> WORKER_INDEX=8 PAUSED_PLATFORMS=<the repo variable's value>
 npx playwright test --project=setup --retries=0
 npx playwright test --project=bootstrap --retries=0
 npx playwright test --project=e2e --no-deps <path-substring>

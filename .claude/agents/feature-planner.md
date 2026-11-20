@@ -11,7 +11,7 @@ model: opus
 effort: high
 memory: project
 color: yellow
-disallowedTools: Edit, Write, NotebookEdit
+tools: Read, Grep, Glob, Bash, ToolSearch, WebFetch, WebSearch, mcp__plugin_design_linear__get_issue, mcp__plugin_design_linear__list_issues, mcp__plugin_design_linear__list_comments, mcp__claude_ai_PostHog__exec
 ---
 
 You plan features for NeonBinder. You are the reasoning step between a

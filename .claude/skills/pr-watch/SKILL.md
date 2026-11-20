@@ -1,6 +1,6 @@
 ---
 name: pr-watch
-description: Watch a GitHub PR's CI until it is fully green or any check fails, surfacing a progress update roughly every 2 minutes and a clear terminal verdict. Read-only — it never comments, merges, pushes, or edits. Use whenever a PR has been pushed and you want hands-off monitoring (e.g. "watch PR 53", "babysit this PR", "tell me when CI finishes / goes green / fails"). Replaces the old pr-watcher agent.
+description: Watch a GitHub PR's CI until it is fully green or any check fails, printing a line only when its state changes (it polls every 2 minutes) and a clear terminal verdict. Read-only — it never comments, merges, pushes, or edits. Use whenever a PR has been pushed and you want hands-off monitoring (e.g. "watch PR 53", "babysit this PR", "tell me when CI finishes / goes green / fails"). Replaces the old pr-watcher agent.
 argument-hint: <pr-number> [--queue] [--repo <dir>]
 allowed-tools: Bash, Monitor, ToolSearch, TaskStop
 ---
@@ -30,7 +30,7 @@ The old `pr-watcher` *agent* armed a Monitor too, but a subagent can't receive
 Monitor notifications after it returns control — so the watch died on launch and
 you only ever got one (premature) "final" message. Arming the Monitor **here, in
 the main loop**, fixes that: each line the script prints becomes a notification
-**to you**, so you get the ~2-minute progress updates AND the terminal line
+**to you**, so you get a line on each state change AND the terminal line
 reliably. Do **not** delegate this to a subagent.
 
 ## Steps
@@ -55,20 +55,28 @@ reliably. Do **not** delegate this to a subagent.
    existed under Hard rules and was still broken on 2026-08-02 — the trigger,
    not the principle, is the part worth remembering.)
 
-   Then **arm ONE persistent Monitor** running the engine:
+   Then **arm ONE Monitor** running the engine:
    - `description`: `"PR #<PR> CI"` (it shows in every notification — keep it specific)
-   - `persistent: true`
+   - `timeout_ms: 1800000` (Monitor's maximum, 30 min; there is no persistent option)
    - `command`: `bash <abs-path-to-this-skill-dir>/watch.sh [--queue] <PR> <repo-dir>`
      (resolve the skill dir absolutely, e.g.
      `$(git rev-parse --show-toplevel)/.claude/skills/pr-watch`).
-   The script prints one status line per tick (every ~120s) and a single `DONE …`
-   line at the terminal state, then exits — which ends the Monitor.
+   The script polls every ~120s but prints a status line only when its coarse
+   state changes (the first tick always prints), and a single `DONE …` line at
+   the terminal state, then exits — which ends the Monitor. Every printed line
+   wakes this session, so silence between changes is the point.
+   **On the Monitor's timeout notice (the 30-min expiry), re-arm the identical
+   command silently** — no message to the user. The engine keeps its start time
+   and last printed state in `${TMPDIR}/pr-watch/`, keyed by head SHA (PR mode) or
+   enqueue time (queue mode), so the re-arm prints nothing until something
+   changes and `PR_WATCH_MAX_MIN` still counts from the original start. A new
+   push is a new SHA and starts a fresh watch. `PR_WATCH_VERBOSE=1` prints every tick.
 
-5. **Tell the user you're watching** in one line (PR #, title, that you'll post
-   ~2-min updates and ping them the moment it goes green or a check fails), then
+5. **Tell the user you're watching** in one line (PR #, title, that you'll report each
+   state change and ping them the moment it goes green or a check fails), then
    **yield** so they can keep working. Updates arrive as notifications.
 
-6. **On each notification line**, relay a tight one-liner. The script's line is
+6. **On each state-change line**, relay a tight one-liner. The script's line is
    already concise (`[t+4m] RUNNING — checks 6/15 done, 0 failed · seed ✓/▶ ·
    shards 3/8 · e2e ▶ · playwright ▶`) — pass it through;
    don't pad it.
@@ -95,7 +103,8 @@ Follows the PR through GitHub's merge queue and never prints GREEN. Every tick
 reads the PR (state, queue entry, queue add/remove events), the `merge_group`
 runs on `gh-readonly-queue/main/pr-<N>-*` (from the latest enqueue on, so an
 earlier ejected attempt does not colour the current one) and those runs' jobs.
-Tick lines look like `[t+12m] RUNNING — MERGEABLE pos 1 · group runs 2 active/3 ·
+Status lines (printed when the phase, head-of-queue, `CI Gate` state or first
+failing job changes; job and shard counts are shown but are not changes) look like `[t+12m] RUNNING — MERGEABLE pos 1 · group runs 2 active/3 ·
 jobs 20/31 done · shards 6/8 · CI Gate in_progress`; before the group starts
 they say `queued (...) — waiting for its merge group to start`.
 
@@ -124,8 +133,10 @@ Terminal lines (one, then the Monitor ends):
 - Discord is only a backup for when no session is alive; never rely on it.
 
 ## Tuning (optional env on the Monitor command)
-- `PR_WATCH_INTERVAL=120` — seconds between ticks (default 120; the ~2-min cadence).
-- `PR_WATCH_MAX_MIN=90` — safety stop.
+- `PR_WATCH_INTERVAL=120` — seconds between ticks (default 120; the poll cadence, not the print cadence).
+- `PR_WATCH_MAX_MIN=90` — safety stop (counted from the first arm, across re-arms).
+- `PR_WATCH_VERBOSE=1` — print every tick. `PR_WATCH_RESUME_SEC=3600` — a state
+  file whose last tick is older than this is not resumed.
 - `PR_WATCH_QUEUE_MAX_MIN=150` / `PR_WATCH_ENQUEUE_GRACE_MIN=3` / `PR_WATCH_REPO` /
   `PR_WATCH_EJECT_REASONS` (regex of automatic dequeue reasons) — `--queue` only.
 - `PR_WATCH_REQUIRED_CHECK="CI Gate"` — the gate check that must be green before
@@ -152,6 +163,15 @@ the safety timeout. While waiting, the tick line says
 **Corollary for the agent:** a `DONE GREEN` that arrives within a minute of a
 push is still worth one `gh pr checks <PR>` before acting on it.
 
+## What changes the printed state
+PR mode prints when any of these flips: the verdict, the pipeline registering
+(`CI Gate` appears), the `seed` job, the `seed-mobile` job, the `e2e` gate job,
+or whether any check has failed. Check counts, shard counts and the `playwright`
+check are in the line but never trigger one. Queue mode prints when the verdict,
+the phase (not queued / queued, waiting for its group / group running), being at
+the head of the queue (position 1), the `CI Gate` job state or the first failing
+job changes. A repeated `poll error` prints once.
+
 ## What the E2E fields mean
 `seed ✓/▶ · shards 3/16 · e2e ▶ · playwright ✓` reads the PR's own check rollup:
 the reusable E2E workflow runs two passes (desktop, then mobile, each on a fresh
@@ -167,7 +187,9 @@ shard cannot pass.
 `bash .claude/skills/pr-watch/test/queue.test.sh` drives `watch.sh --queue`
 against a fake `gh` (merged, ejected with reason and failing job, timeout
 ejection, removed by hand, closed, re-enqueue then merge, never enqueued).
-Run it, and `shellcheck` on both scripts, after any change to the queue code.
+`bash .claude/skills/pr-watch/test/pr.test.sh` covers the change-only output,
+VERBOSE, DONE after silent ticks, re-arm resume, MAX_MIN across a re-arm and the
+state file's lifetime. Run both, and `shellcheck` on the scripts, after any change.
 
 ## Hard rules
 - **Never call a PR green in queue mode on cheap checks.** Only `DONE MERGED` ends it.

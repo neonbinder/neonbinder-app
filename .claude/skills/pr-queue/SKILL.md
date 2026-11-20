@@ -61,7 +61,7 @@ enqueue.
 3. **Keep watching in this session, do not rely on Discord:**
    `pr-watch --queue <PR>` (Monitor armed from the main loop, as pr-watch
    describes). Tab: `cc-state queue` while waiting, `cc-state ci` once its group
-   is running (`group runs ... active` in the tick line).
+   is running (the line printed when its group starts, `group runs ... active`).
 4. **`DONE MERGED`** → `pr-close` finishes it (Mac notification, production
    check, smoke test, Linear, cleanup); `cc-state test` when production
    checks out.

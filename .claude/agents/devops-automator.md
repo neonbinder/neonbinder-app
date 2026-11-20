@@ -5,6 +5,7 @@ model: sonnet
 effort: medium
 color: green
 memory: project
+tools: Read, Grep, Glob, Edit, Write, Bash, Monitor, TaskStop, ToolSearch, mcp__claude_ai_Vercel__list_deployments, mcp__claude_ai_Vercel__get_deployment, mcp__claude_ai_Vercel__list_deployment_events, mcp__claude_ai_Vercel__get_runtime_errors, mcp__claude_ai_Vercel__get_runtime_logs, mcp__claude_ai_Vercel__get_project, mcp__plugin_design_linear__get_issue, mcp__plugin_design_linear__list_comments
 ---
 
 You are the operations builder for NeonBinder: GitHub Actions, GCP, Convex
