@@ -339,6 +339,7 @@ tick_queue() {
   elif [ "$VERDICT" = "RUNNING" ]; then phase="not in the queue yet (waiting for the enqueue to register)"
   else phase="${DETAIL}"; fi
   LINE=$(printf '[t+%sm] %s — %s' "$(elapsed_min)" "$VERDICT" "$phase")
+  [ -n "$FIRST_FAIL" ] && LINE="$LINE · first failure: $FIRST_FAIL"
   # Coarse key: phase, at the head of the queue, the gate job's state and the
   # first failing job. Job/shard counts and the active-run count are not in it.
   local kphase="not-queued" khead="no"

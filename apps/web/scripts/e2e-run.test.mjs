@@ -2,7 +2,7 @@
 // effects; its spawn/lsof/git seams sit behind `io`. These tests cover the pure parts:
 // argument parsing, the target guard (what it refuses), the port rule, phase planning,
 // the digest (size cap, no deployment name), exactly-once edits, and byte-exact restore.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -47,6 +47,12 @@ import {
   strayChanges,
   vitePort,
 } from "../playwright/tools/e2e-run.mjs";
+
+// Only `spawn` is wrapped (still the real one by default) so a command-flow test can refuse to start a runner.
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, spawn: vi.fn(actual.spawn) };
+});
 
 // A deployment name that must never appear in output. Built so the literal is not a
 // plausible real one.
@@ -1264,6 +1270,279 @@ describe("NEO-622 security round", () => {
       out();
       expect(await main(["stop"])).toBe(0);
       expect(kill).toHaveBeenCalledWith(4242, "SIGTERM");
+    });
+  });
+});
+
+// ---------------------------------------------------------------- NEO-622 command flows (runner, lock, wait, recovery)
+
+describe("NEO-622 command flows through the io seam", () => {
+  const dirs = [];
+  const tmp = () => {
+    const d = mkdtempSync(join(tmpdir(), "e2e-flow-"));
+    dirs.push(d);
+    return d;
+  };
+  const prevLocal = process.env.E2E_RUN_LOCAL_DIR;
+  const prevCi = process.env.CI;
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+    if (prevLocal === undefined) delete process.env.E2E_RUN_LOCAL_DIR;
+    else process.env.E2E_RUN_LOCAL_DIR = prevLocal;
+    if (prevCi === undefined) delete process.env.CI;
+    else process.env.CI = prevCi;
+    vi.restoreAllMocks();
+    vi.mocked(spawn).mockReset();
+  });
+
+  const REL = "apps/web/lib/zz-plant-target.ts";
+  const ORIGINAL = "export const v = ORIGINAL;\n";
+
+  /** A fake repo root holding one plantable file, a local dir, and every io seam stubbed; no process is started. */
+  function harness() {
+    const root = tmp();
+    mkdirSync(dirname(join(root, REL)), { recursive: true });
+    writeFileSync(join(root, REL), ORIGINAL);
+    const local = join(tmp(), ".e2e-local");
+    mkdirSync(local, { recursive: true });
+    process.env.E2E_RUN_LOCAL_DIR = local;
+    delete process.env.CI;
+    const lines = [];
+    vi.spyOn(console, "log").mockImplementation((...a) => lines.push(a.join(" ")));
+    vi.spyOn(io, "readTarget").mockImplementation((opts, destructive) => target({ allowSharedDev: opts.allowSharedDev, destructive }));
+    vi.spyOn(io, "capture").mockImplementation((cmd, args) => ({ code: 0, stdout: cmd === "git" && args[0] === "rev-parse" ? `${root}\n` : "", stderr: "" }));
+    vi.spyOn(io, "listenerPid").mockReturnValue(111);
+    vi.spyOn(io, "processCwd").mockReturnValue(APP_DIR);
+    vi.spyOn(io, "sleep").mockResolvedValue(undefined);
+    return { root, local, lines };
+  }
+
+  /** A queued plant job on disk, ready for `main(["__runner", runDir])`. */
+  function plantJob(local, expect = null) {
+    const runDir = join(local, "runs", "20260101-000000-plant-e2e");
+    mkdirSync(runDir, { recursive: true });
+    const opts = { ...parseArgs(["plant", "--edit", "e.json", "area/a"]).opts, expect };
+    const plant = { files: [REL], edits: [{ file: REL, find: "ORIGINAL", replace: "BROKEN" }], expect };
+    writeFileSync(join(runDir, "job.json"), JSON.stringify({ kind: "plant", opts, specs: ["area/a"], plant }));
+    return runDir;
+  }
+
+  /** runLogged stub: setup and bootstrap pass; the spec phase returns `specCode` after `during()` and writes a Playwright report. */
+  function fakePlaywright({ specCode, error = "Error: boom", during = () => {}, throws = false }) {
+    return vi.spyOn(io, "runLogged").mockImplementation(async (_cmd, args, { env }) => {
+      if (throws) throw new Error("spawn exploded");
+      if (!args.includes("--project=e2e") || !args.includes("--no-deps")) return 0;
+      during();
+      const failed = specCode !== 0;
+      writeFileSync(
+        env.PLAYWRIGHT_JSON_OUTPUT_FILE,
+        JSON.stringify({ suites: [{ title: "a.spec.ts", file: "area/a.spec.ts", specs: [{ title: "t", file: "area/a.spec.ts", tests: [{ projectName: "e2e", status: failed ? "unexpected" : "expected", results: [{ duration: 1, error: failed ? { message: error } : undefined }] }] }] }] }),
+      );
+      return specCode;
+    });
+  }
+  const finished = (runDir) => ({
+    status: JSON.parse(readFileSync(join(runDir, "status.json"), "utf8")),
+    meta: JSON.parse(readFileSync(join(runDir, "meta.json"), "utf8")),
+  });
+  const manifestPath = (local) => join(local, "plant", "manifest.json");
+
+  describe("a plant always ends restored", () => {
+    it("a runner that throws mid-plant leaves the file restored and the manifest gone, not exit 4", async () => {
+      const { root, local } = harness();
+      const runDir = plantJob(local);
+      fakePlaywright({ throws: true });
+      await main(["__runner", runDir]);
+      expect(readFileSync(join(root, REL), "utf8")).toBe(ORIGINAL);
+      expect(existsSync(manifestPath(local))).toBe(false);
+      const { status, meta } = finished(runDir);
+      expect(status.state).toBe("done");
+      expect(status.exit).not.toBe(EXIT.restoreFailed);
+      expect(status.exit).toBeGreaterThan(0); // the runner's own failure code (today EXIT.refused)
+      expect(meta.plant).toBeNull();
+    });
+
+    it("the planted file really is broken while the spec runs, then comes back after a red as planted (exit 0)", async () => {
+      const { root, local } = harness();
+      const runDir = plantJob(local, "boom");
+      let seen = null;
+      fakePlaywright({ specCode: 1, during: () => (seen = readFileSync(join(root, REL), "utf8")) });
+      await main(["__runner", runDir]);
+      expect(seen).toBe("export const v = BROKEN;\n");
+      expect(readFileSync(join(root, REL), "utf8")).toBe(ORIGINAL);
+      expect(existsSync(manifestPath(local))).toBe(false);
+      const { status, meta } = finished(runDir);
+      expect(status.exit).toBe(0);
+      expect(meta.plant[0]).toMatch(/^PLANT RED as planted/);
+    });
+
+    it("a plant whose spec stays green exits 1 and is restored", async () => {
+      const { root, local } = harness();
+      const runDir = plantJob(local);
+      fakePlaywright({ specCode: 0 });
+      await main(["__runner", runDir]);
+      expect(readFileSync(join(root, REL), "utf8")).toBe(ORIGINAL);
+      const { status, meta } = finished(runDir);
+      expect(status.exit).toBe(1);
+      expect(meta.plant[0]).toMatch(/^PLANT STAYED GREEN/);
+    });
+
+    it("a red for another reason than --expect exits 1 and is restored", async () => {
+      const { root, local } = harness();
+      const runDir = plantJob(local, "never-this-text");
+      fakePlaywright({ specCode: 1, error: "Error: something else entirely" });
+      await main(["__runner", runDir]);
+      expect(readFileSync(join(root, REL), "utf8")).toBe(ORIGINAL);
+      const { status, meta } = finished(runDir);
+      expect(status.exit).toBe(1);
+      expect(meta.plant[0]).toMatch(/did not match/);
+    });
+
+    it("a file the operator edits during the run is kept, the manifest stays, and the exit is 4", async () => {
+      const { root, local } = harness();
+      const runDir = plantJob(local);
+      fakePlaywright({ specCode: 0, during: () => writeFileSync(join(root, REL), "export const v = MY_OWN_EDIT;\n") });
+      await main(["__runner", runDir]);
+      expect(readFileSync(join(root, REL), "utf8")).toBe("export const v = MY_OWN_EDIT;\n");
+      expect(existsSync(manifestPath(local))).toBe(true);
+      const { status, meta } = finished(runDir);
+      expect(status.exit).toBe(EXIT.restoreFailed);
+      expect(meta.plant[0]).toMatch(/^PLANT RESTORE FAILED/);
+    });
+  });
+
+  describe("a leftover manifest", () => {
+    function leftover(root, local) {
+      const m = buildManifest(root, [REL], { pid: 99999999 }); // the original bytes
+      writeFileSync(join(root, REL), "export const v = BROKEN;\n");
+      recordPlanted(m, root);
+      mkdirSync(dirname(manifestPath(local)), { recursive: true });
+      writeFileSync(manifestPath(local), JSON.stringify(m));
+    }
+
+    it("run restores the file bytes before it starts, while status and digest leave it broken", async () => {
+      const { root, local, lines } = harness();
+      leftover(root, local);
+      vi.spyOn(io, "isAlive").mockReturnValue(false);
+      expect(await main(["status"])).toBe(0);
+      expect(await main(["digest"])).toBe(EXIT.refused);
+      expect(readFileSync(join(root, REL), "utf8")).toBe("export const v = BROKEN;\n");
+      io.readTarget.mockReturnValue({ ok: false, reason: "stubbed: stop after recovery" });
+      expect(await main(["run", "area/a"])).toBe(EXIT.refused);
+      expect(readFileSync(join(root, REL), "utf8")).toBe(ORIGINAL);
+      expect(existsSync(manifestPath(local))).toBe(false);
+      expect(lines.join("\n")).toMatch(/restoring a leftover plant/);
+      expect(spawn).not.toHaveBeenCalled();
+    });
+
+    it("a manifest whose runner is still alive is not restored by another run", async () => {
+      const { root, local } = harness();
+      leftover(root, local);
+      const m = JSON.parse(readFileSync(manifestPath(local), "utf8"));
+      m.pid = 4242;
+      writeFileSync(manifestPath(local), JSON.stringify(m));
+      vi.spyOn(io, "isAlive").mockReturnValue(true);
+      io.readTarget.mockReturnValue({ ok: false, reason: "stubbed" });
+      await main(["run", "area/a"]);
+      expect(readFileSync(join(root, REL), "utf8")).toBe("export const v = BROKEN;\n");
+      expect(existsSync(manifestPath(local))).toBe(true);
+    });
+  });
+
+  describe("the lock", () => {
+    const fakeChild = (local) => {
+      vi.mocked(spawn).mockImplementationOnce((_cmd, args) => {
+        // The runner would write its status; here the "runner" is alive and unfinished.
+        const runDir = args[2];
+        writeFileSync(join(runDir, "status.json"), JSON.stringify({ state: "running", phase: "e2e", pid: 777001, startedAt: "2026-01-01T00:00:00Z" }));
+        return { pid: 777001, unref: vi.fn() };
+      });
+      return local;
+    };
+    // Every Date.now() call jumps ten minutes, so a --slice 1 wait expires on its first check, with no real waiting.
+    const skipClock = () => {
+      let t = 0;
+      vi.spyOn(Date, "now").mockImplementation(() => (t += 600_000));
+    };
+
+    it("a live pid in run.lock gives exit 3 and starts nothing", async () => {
+      const { local, lines } = harness();
+      writeFileSync(join(local, "run.lock"), "4242");
+      vi.spyOn(io, "isAlive").mockImplementation((pid) => pid === 4242);
+      expect(await main(["run", "area/a"])).toBe(EXIT.locked);
+      expect(lines.join("\n")).toMatch(/lock held/);
+      expect(spawn).not.toHaveBeenCalled();
+      expect(readFileSync(join(local, "run.lock"), "utf8")).toBe("4242");
+    });
+
+    it("a dead pid in run.lock is reclaimed: a runner is started and the lock names it", async () => {
+      const { local } = harness();
+      writeFileSync(join(local, "run.lock"), "4242");
+      vi.spyOn(io, "isAlive").mockImplementation((pid) => pid !== 4242);
+      fakeChild(local);
+      skipClock();
+      expect(await main(["run", "--slice", "1", "area/a"])).toBe(EXIT.running);
+      expect(spawn).toHaveBeenCalledTimes(1);
+      const [self, mode] = vi.mocked(spawn).mock.calls[0][1];
+      expect(self).toMatch(/e2e-run\.mjs$/);
+      expect(mode).toBe("__runner");
+      expect(readFileSync(join(local, "run.lock"), "utf8")).toBe("777001");
+    });
+
+    it("an empty or garbage run.lock counts as free", async () => {
+      const { local } = harness();
+      writeFileSync(join(local, "run.lock"), "not-a-pid");
+      vi.spyOn(io, "isAlive").mockReturnValue(true);
+      fakeChild(local);
+      skipClock();
+      expect(await main(["run", "--slice", "1", "area/a"])).toBe(EXIT.running);
+      expect(spawn).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("wait", () => {
+    const runWith = (local, status) => {
+      const name = "20260101-000000-desktop";
+      mkdirSync(join(local, "runs", name), { recursive: true });
+      writeFileSync(join(local, "current"), name);
+      writeFileSync(join(local, "runs", name, "status.json"), JSON.stringify(status));
+      return join(local, "runs", name);
+    };
+    const skipClock = () => {
+      let t = 0;
+      vi.spyOn(Date, "now").mockImplementation(() => (t += 600_000));
+    };
+
+    it("an unfinished run whose runner is alive returns 75 when the slice is up", async () => {
+      const { local, lines } = harness();
+      runWith(local, { state: "running", phase: "e2e", pid: 4242, startedAt: "2026-01-01T00:00:00Z" });
+      vi.spyOn(io, "isAlive").mockReturnValue(true);
+      skipClock();
+      expect(await main(["wait", "--slice", "1"])).toBe(EXIT.running);
+      expect(lines.join("\n")).toMatch(/still running: phase e2e/);
+    });
+
+    it("an unfinished run whose runner died returns 1, not 75, and shows the log tail", async () => {
+      const { local, lines } = harness();
+      const dir = runWith(local, { state: "running", phase: "e2e", pid: 4242 });
+      writeFileSync(join(dir, "run.log"), "line one\nline two\n");
+      vi.spyOn(io, "isAlive").mockReturnValue(false);
+      expect(await main(["wait", "--slice", "1"])).toBe(EXIT.fail);
+      expect(lines.join("\n")).toMatch(/runner died without finishing/);
+      expect(lines.join("\n")).toMatch(/line two/);
+    });
+
+    it("a finished run returns its own exit code", async () => {
+      const { local } = harness();
+      const dir = runWith(local, { state: "done", exit: 1 });
+      writeFileSync(join(dir, "meta.json"), JSON.stringify({ runId: "r", exit: 1, kind: "run", phases: [], literals: [], startedAt: "2026-01-01T00:00:00Z", finishedAt: "2026-01-01T00:01:00Z", refused: "stubbed refusal" }));
+      expect(await main(["wait", "--slice", "1"])).toBe(1);
+    });
+
+    it("with no run at all it says so and refuses", async () => {
+      const { lines } = harness();
+      expect(await main(["wait"])).toBe(EXIT.refused);
+      expect(lines.join("\n")).toMatch(/no run yet/);
     });
   });
 });

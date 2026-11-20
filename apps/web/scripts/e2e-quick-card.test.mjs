@@ -9,7 +9,9 @@ import { describe, expect, it } from "vitest";
 
 const dir = join(dirname(fileURLToPath(import.meta.url)), "..", "playwright");
 const quick = readFileSync(join(dir, "QUICK.md"), "utf8").split(/\r?\n/);
-const guideLines = new Set(readFileSync(join(dir, "GUIDE.md"), "utf8").split(/\r?\n/));
+const guideText = readFileSync(join(dir, "GUIDE.md"), "utf8");
+const guideLines = new Set(guideText.split(/\r?\n/));
+const quickText = quick.join("\n");
 
 /** First cells of the table rows under "## GUIDE index" (header and separator skipped). */
 function indexedHeadings() {
@@ -44,5 +46,35 @@ describe("QUICK.md GUIDE index", () => {
 
   it("names no heading twice", () => {
     expect(new Set(headings).size).toBe(headings.length);
+  });
+});
+
+describe("QUICK.md rule references and budgets", () => {
+  // QUICK's own aside says which numbers GUIDE does not define ("GUIDE defines no R6 or R8").
+  const disclaimer = quick.find((l) => /GUIDE defines no/.test(l)) ?? "";
+  const undefinedRefs = new Set((disclaimer.split("GUIDE defines no")[1]?.match(/\bR\d+a?\b/g) ?? []));
+  const cited = quick.filter((l) => !/GUIDE defines no/.test(l)).join("\n");
+  const refs = [...new Set(cited.match(/\bR\d+a?\b/g) ?? [])].filter((r) => !undefinedRefs.has(r));
+  const guideRefs = new Set(guideText.match(/\bR\d+a?\b/g) ?? []);
+
+  it("names rules at all (the scan finds them)", () => {
+    expect(refs.length).toBeGreaterThanOrEqual(5);
+  });
+
+  it("the numbers QUICK says GUIDE lacks really are absent (the aside is true)", () => {
+    expect([...undefinedRefs].sort()).toEqual(["R6", "R8"]);
+    for (const r of undefinedRefs) expect(guideRefs.has(r), r).toBe(false);
+  });
+
+  it("every other R<n> / R<n>a it cites is named in GUIDE.md", () => {
+    expect(refs.filter((r) => !guideRefs.has(r))).toEqual([]);
+  });
+
+  it("every time budget QUICK quotes for actions and launch is in GUIDE.md too", () => {
+    // The 7 s UX budget, the 3.5 s BSC measurement line, the 45 s launch gate and the 170 s wait slice.
+    for (const budget of ["7 s", "3.5 s", "45 s", "170 s"]) {
+      expect(quickText, `QUICK no longer quotes ${budget}`).toContain(budget);
+      expect(guideText, `GUIDE does not mention ${budget}`).toContain(budget);
+    }
   });
 });

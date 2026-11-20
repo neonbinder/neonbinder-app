@@ -22,6 +22,9 @@ GATE_RUN='CI Gate:IN_PROGRESS:'; GATE_OK='CI Gate:COMPLETED:SUCCESS'
 SH1='E2E / shard-desktop (1, 8):COMPLETED:SUCCESS'; SH2='E2E / shard-desktop (2, 8):COMPLETED:SUCCESS'; SH3='E2E / shard-desktop (3, 8):IN_PROGRESS:'
 
 fresh() { FIX=$(mktemp -d); export FIX; rm -rf "$TMPDIR/pr-watch-$(id -u)"; }
+xfail() { # name ok  -- a known bug: failing is expected and reported, passing means remove the marker
+  if [ "$2" != 0 ]; then echo "xfail $1 (KNOWN BUG, see report)"; else echo "FAIL $1 (now passes: drop the xfail marker)"; fails=$((fails+1)); fi
+}
 check() { # name ok
   if [ "$2" = 0 ]; then echo "ok   $1"; else echo "FAIL $1"; printf "%s\n" "${out//$'\n'/$'\n     '}"; fails=$((fails+1)); fi
 }
@@ -61,8 +64,11 @@ runpr
 # silently, prints the next real change once, and never repeats the old line.
 fresh
 roll aaa "$VERCEL" "$GATE_RUN" "$SEED_RUN" > "$FIX/pr.json"
-PR_WATCH_INTERVAL=0.2 bash "$HERE/../watch.sh" 42 > "$FIX/out1" 2>&1 & pid=$!
-sleep 1.5; kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+# A long interval parks the watch in its sleep after tick 1; the state file
+# appearing is the signal (bounded by an iteration count, never by wall time).
+PR_WATCH_INTERVAL=30 bash "$HERE/../watch.sh" 42 > "$FIX/out1" 2>&1 & pid=$!
+for _ in $(seq 1 2000); do [ -s "$STATE" ] && break; sleep 0.01; done
+pkill -P "$pid" 2>/dev/null; kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
 [ "$(grep -c '^\[t+' "$FIX/out1")" = 1 ] && [ -s "$STATE" ]; r=$?; check "first run prints once and persists state" "$r"
 echo 0 > "$FIX/.pn"
 roll aaa "$VERCEL" "$GATE_RUN" "$SEED_RUN" > "$FIX/pr.json.1"
@@ -155,5 +161,86 @@ qpr MERGED null > "$FIX/graphql.json.5"
 jobs in_progress "" success > "$FIX/run-7.json"
 out=$(bash "$HERE/../watch.sh" --queue 42 2>&1); rc=$?
 [ "$(lines '^\[t+')" = 1 ] && [ "$rc" = 0 ]; r=$?; check "queue: steady group-running ticks are silent" "$r"
+
+# ── queue mode: first failure, re-arm and enqueue identity ───────────────────
+qnodes() { # state mqEntryJson nodesJson
+  printf '{"data":{"repository":{"pullRequest":{"state":"%s","mergeCommit":{"oid":"abc123"},"mergeQueueEntry":%s,"timelineItems":{"nodes":%s}}}}}' "$1" "$2" "$3"
+}
+ADD2='{"__typename":"AddedToMergeQueueEvent","createdAt":"2026-11-14T11:00:00Z"}'
+qjobs() { # then name:status:conclusion ... -> a `gh run view --json jobs` payload
+  local items='{"name":"CI Gate","status":"in_progress","conclusion":"","url":"g"},' c n s k
+  for c in "$@"; do IFS=: read -r n s k <<<"$c"; items="$items{\"name\":\"$n\",\"status\":\"$s\",\"conclusion\":\"$k\",\"url\":\"u-$n\"},"; done
+  printf '{"jobs":[%s]}' "${items%,}"
+}
+QSTATE="$TMPDIR/pr-watch-$(id -u)/acme_widgets-42-queue"
+seed_qstate() { # id seconds-ago-started
+  mkdir -p "$TMPDIR/pr-watch-$(id -u)"; chmod 700 "$TMPDIR/pr-watch-$(id -u)"
+  printf '%s\n%s\n%s\n\n\n' "$1" "$(( $(date +%s) - $2 ))" "$(date +%s)" > "$QSTATE"
+}
+runq() { out=$(bash "$HERE/../watch.sh" --queue 42 2>&1); rc=$?; }
+
+# (a) success -> one job fails -> the job order swaps with a second failure:
+# exactly one extra line, and the first failure is sticky for the attempt.
+fresh
+echo "$RUNS" > "$FIX/runs.json"
+for i in 1 2 3 4; do qnodes OPEN "$(qe 1)" "[$ADD]" > "$FIX/graphql.json.$i"; done
+qnodes MERGED null "[$ADD]" > "$FIX/graphql.json.5"
+qjobs a:completed:success b:completed:success > "$FIX/run-7.json.1"
+qjobs a:completed:success b:completed:failure > "$FIX/run-7.json.2"
+qjobs a:completed:failure b:completed:failure > "$FIX/run-7.json.3"
+qjobs a:completed:failure b:completed:failure > "$FIX/run-7.json.4"
+runq
+[ "$rc" = 0 ] && [ "$(lines '^\[t+')" = 2 ] && echo "$out" | tail -1 | grep -q '^DONE MERGED'; r=$?
+check "queue: first failing job adds exactly one line and stays sticky when job order swaps" "$r"
+# The extra line should say which job failed; today it is only the key that changes.
+printf '%s\n' "$out" | grep '^\[t+' | sed -n 2p | grep -q 'PR Pipeline / b'; r=$?
+check "queue: the extra first-failure line names the failing job" "$r"
+
+# (b) kill + re-arm in queue mode, same enqueue time: resumes silently.
+fresh
+echo "$RUNS" > "$FIX/runs.json"
+qnodes OPEN "$(qe 1)" "[$ADD]" > "$FIX/graphql.json"
+qjobs a:completed:success b:completed:success > "$FIX/run-7.json"
+PR_WATCH_INTERVAL=30 bash "$HERE/../watch.sh" --queue 42 > "$FIX/out1" 2>&1 & pid=$!
+for _ in $(seq 1 2000); do [ -s "$QSTATE" ] && break; sleep 0.01; done
+pkill -P "$pid" 2>/dev/null; kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+[ "$(grep -c '^\[t+' "$FIX/out1")" = 1 ] && [ -s "$QSTATE" ]; r=$?; check "queue: first run prints once and persists state" "$r"
+echo 0 > "$FIX/.n"; echo 0 > "$FIX/.rn"
+qnodes OPEN "$(qe 1)" "[$ADD]" > "$FIX/graphql.json.1"
+qnodes MERGED null "[$ADD]" > "$FIX/graphql.json.2"
+runq
+[ "$rc" = 0 ] && [ "$(lines '^\[t+')" = 0 ] && [ "$(lines '^DONE MERGED')" = 1 ]; r=$?
+check "queue: re-arm with the same enqueue time resumes silently" "$r"
+
+# (c) id "none" then the real enqueue time keeps the original start.
+fresh
+echo '[]' > "$FIX/runs.json"
+seed_qstate none 6000                                             # started 100 min ago, not enqueued yet
+qnodes OPEN null "[]" > "$FIX/graphql.json.1"
+qnodes OPEN "$(qe 1)" "[$ADD]" > "$FIX/graphql.json.2"
+qnodes MERGED null "[$ADD]" > "$FIX/graphql.json.3"
+PR_WATCH_ENQUEUE_GRACE_MIN=100000 runq
+[ "$rc" = 0 ] && printf '%s\n' "$out" | grep '^\[t+' | sed -n 2p | grep -Eq '^\[t\+10[0-9]m\]'; r=$?
+check "queue: adopting the first enqueue time keeps the clock from the original start" "$r"
+
+# (d) a different enqueue time starts fresh, from a state file and within one run.
+fresh
+echo '[]' > "$FIX/runs.json"
+seed_qstate 2026-11-14T09:00:00Z 6000
+qnodes OPEN "$(qe 1)" "[$ADD]" > "$FIX/graphql.json.1"
+qnodes MERGED null "[$ADD]" > "$FIX/graphql.json.2"
+runq
+printf '%s\n' "$out" | grep '^\[t+' | sed -n 1p | grep -Eq '^\[t\+0m\]'; r=$?
+check "queue: a state file for another enqueue time is not resumed" "$r"
+fresh
+echo '[]' > "$FIX/runs.json"
+seed_qstate 2026-11-14T10:00:00Z 6000
+qnodes OPEN "$(qe 1)" "[$ADD]" > "$FIX/graphql.json.1"
+qnodes OPEN "$(qe 1)" "[$ADD,$ADD2]" > "$FIX/graphql.json.2"     # re-enqueued
+qnodes MERGED null "[$ADD,$ADD2]" > "$FIX/graphql.json.3"
+runq
+[ "$(lines '^\[t+')" = 2 ] && printf '%s\n' "$out" | grep '^\[t+' | sed -n 1p | grep -Eq '^\[t\+10[0-9]m\]' \
+  && printf '%s\n' "$out" | grep '^\[t+' | sed -n 2p | grep -Eq '^\[t\+0m\]'; r=$?
+check "queue: a re-enqueue mid-watch restarts the clock and prints" "$r"
 
 if [ "$fails" = 0 ]; then echo "all passed"; else echo "$fails failed"; exit 1; fi
