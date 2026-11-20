@@ -1,0 +1,56 @@
+{
+  "file": "1995-hockey-tulsa-oilers-chl-base.csv",
+  "mode": "set",
+  "options": {"setYear":"1995","mode":"set"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [],
+    "skipped": [
+      {"line":2,"text":"1,Colin Baustad,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":3,"text":"2,Mike Berger,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":4,"text":"3,Mike Chase,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":5,"text":"4,Trevor Ellerman,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":6,"text":"5,Bryan Forslund,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":7,"text":"6,Taylor Hall,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":8,"text":"7,Craig Hamelin,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":9,"text":"8,Ryan Harrison,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":10,"text":"9,John Laan,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":11,"text":"10,Glen Lang,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":12,"text":"11,Dave Larouche,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":13,"text":"12,Tony Martino,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":14,"text":"13,Sylvain Naud,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":15,"text":"14,Jim Peters,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":16,"text":"15,Cory Peterson,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":17,"text":"16,Chris Robertson,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":18,"text":"17,Kyuin Shim,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":19,"text":"18,Garry Unger,Tulsa Oilers","reason":"Not under any section heading"}
+    ],
+    "format": "csv"
+  },
+  "sections": {
+    "format": "csv",
+    "sections": [],
+    "skipped": [
+      {"line":2,"text":"1,Colin Baustad,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":3,"text":"2,Mike Berger,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":4,"text":"3,Mike Chase,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":5,"text":"4,Trevor Ellerman,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":6,"text":"5,Bryan Forslund,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":7,"text":"6,Taylor Hall,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":8,"text":"7,Craig Hamelin,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":9,"text":"8,Ryan Harrison,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":10,"text":"9,John Laan,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":11,"text":"10,Glen Lang,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":12,"text":"11,Dave Larouche,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":13,"text":"12,Tony Martino,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":14,"text":"13,Sylvain Naud,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":15,"text":"14,Jim Peters,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":16,"text":"15,Cory Peterson,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":17,"text":"16,Chris Robertson,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":18,"text":"17,Kyuin Shim,Tulsa Oilers","reason":"Not under any section heading"},
+      {"line":19,"text":"18,Garry Unger,Tulsa Oilers","reason":"Not under any section heading"}
+    ],
+    "skippedSections": [],
+    "rowCount": 0
+  }
+}

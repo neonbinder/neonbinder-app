@@ -1,0 +1,33 @@
+{
+  "file": "2010-topps-insert-team-bonus.csv",
+  "mode": "leaf",
+  "options": {"setYear":"2010","mode":"leaf"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [
+      {"number":"AS1","players":["Hideki Matsui"],"teams":["Los Angeles Angels"]},
+      {"number":"AS2","players":["Kendry Morales"],"teams":["Los Angeles Angels"]},
+      {"number":"AS3","players":["Torii Hunter"],"teams":["Los Angeles Angels"]},
+      {"number":"AS4","players":["Scott Kazmir"],"teams":["Los Angeles Angels"]},
+      {"number":"AS5","players":["Bobby Abreu"],"teams":["Los Angeles Angels"]},
+      {"number":"BOS1","players":["Dustin Pedroia"],"teams":["Boston Red Sox"]},
+      {"number":"BOS2","players":["Jacoby Ellsbury"],"teams":["Boston Red Sox"]},
+      {"number":"BOS3","players":["Victor Martinez"],"teams":["Boston Red Sox"]},
+      {"number":"BOS4","players":["John Lackey"],"teams":["Boston Red Sox"]},
+      {"number":"BOS5","players":["Daisuke Matsuzaka"],"teams":["Boston Red Sox"]},
+      {"number":"NYY1","players":["Derek Jeter"],"teams":["New York Yankees"]},
+      {"number":"NYY2","players":["Alex Rodriguez"],"teams":["New York Yankees"]},
+      {"number":"NYY3","players":["Mariano Rivera"],"teams":["New York Yankees"]},
+      {"number":"NYY4","players":["Mark Teixeira"],"teams":["New York Yankees"]},
+      {"number":"NYY5","players":["Curtis Granderson"],"teams":["New York Yankees"]},
+      {"number":"PHI1","players":["Roy Halladay"],"teams":["Philadelphia Phillies"]},
+      {"number":"PHI2","players":["Ryan Howard"],"teams":["Philadelphia Phillies"]},
+      {"number":"PHI3","players":["Chase Utley"],"teams":["Philadelphia Phillies"]},
+      {"number":"PHI4","players":["Jimmy Rollins"],"teams":["Philadelphia Phillies"]},
+      {"number":"PHI5","players":["Jayson Werth"],"teams":["Philadelphia Phillies"]}
+    ],
+    "skipped": [],
+    "format": "csv"
+  },
+  "sections": {"format":"csv","sections":[],"skipped":[],"skippedSections":[],"rowCount":0}
+}

@@ -1,0 +1,60 @@
+{
+  "file": "2010-topps-insert-team-bonus.csv",
+  "mode": "set",
+  "options": {"setYear":"2010","mode":"set"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [],
+    "skipped": [
+      {"line":2,"text":"AS1,Hideki Matsui,Los Angeles Angels","reason":"Not under any section heading"},
+      {"line":3,"text":"AS2,Kendry Morales,Los Angeles Angels","reason":"Not under any section heading"},
+      {"line":4,"text":"AS3,Torii Hunter,Los Angeles Angels","reason":"Not under any section heading"},
+      {"line":5,"text":"AS4,Scott Kazmir,Los Angeles Angels","reason":"Not under any section heading"},
+      {"line":6,"text":"AS5,Bobby Abreu,Los Angeles Angels","reason":"Not under any section heading"},
+      {"line":7,"text":"BOS1,Dustin Pedroia,Boston Red Sox","reason":"Not under any section heading"},
+      {"line":8,"text":"BOS2,Jacoby Ellsbury,Boston Red Sox","reason":"Not under any section heading"},
+      {"line":9,"text":"BOS3,Victor Martinez,Boston Red Sox","reason":"Not under any section heading"},
+      {"line":10,"text":"BOS4,John Lackey,Boston Red Sox","reason":"Not under any section heading"},
+      {"line":11,"text":"BOS5,Daisuke Matsuzaka,Boston Red Sox","reason":"Not under any section heading"},
+      {"line":12,"text":"NYY1,Derek Jeter,New York Yankees","reason":"Not under any section heading"},
+      {"line":13,"text":"NYY2,Alex Rodriguez,New York Yankees","reason":"Not under any section heading"},
+      {"line":14,"text":"NYY3,Mariano Rivera,New York Yankees","reason":"Not under any section heading"},
+      {"line":15,"text":"NYY4,Mark Teixeira,New York Yankees","reason":"Not under any section heading"},
+      {"line":16,"text":"NYY5,Curtis Granderson,New York Yankees","reason":"Not under any section heading"},
+      {"line":17,"text":"PHI1,Roy Halladay,Philadelphia Phillies","reason":"Not under any section heading"},
+      {"line":18,"text":"PHI2,Ryan Howard,Philadelphia Phillies","reason":"Not under any section heading"},
+      {"line":19,"text":"PHI3,Chase Utley,Philadelphia Phillies","reason":"Not under any section heading"},
+      {"line":20,"text":"PHI4,Jimmy Rollins,Philadelphia Phillies","reason":"Not under any section heading"},
+      {"line":21,"text":"PHI5,Jayson Werth,Philadelphia Phillies","reason":"Not under any section heading"}
+    ],
+    "format": "csv"
+  },
+  "sections": {
+    "format": "csv",
+    "sections": [],
+    "skipped": [
+      {"line":2,"text":"AS1,Hideki Matsui,Los Angeles Angels","reason":"Not under any section heading"},
+      {"line":3,"text":"AS2,Kendry Morales,Los Angeles Angels","reason":"Not under any section heading"},
+      {"line":4,"text":"AS3,Torii Hunter,Los Angeles Angels","reason":"Not under any section heading"},
+      {"line":5,"text":"AS4,Scott Kazmir,Los Angeles Angels","reason":"Not under any section heading"},
+      {"line":6,"text":"AS5,Bobby Abreu,Los Angeles Angels","reason":"Not under any section heading"},
+      {"line":7,"text":"BOS1,Dustin Pedroia,Boston Red Sox","reason":"Not under any section heading"},
+      {"line":8,"text":"BOS2,Jacoby Ellsbury,Boston Red Sox","reason":"Not under any section heading"},
+      {"line":9,"text":"BOS3,Victor Martinez,Boston Red Sox","reason":"Not under any section heading"},
+      {"line":10,"text":"BOS4,John Lackey,Boston Red Sox","reason":"Not under any section heading"},
+      {"line":11,"text":"BOS5,Daisuke Matsuzaka,Boston Red Sox","reason":"Not under any section heading"},
+      {"line":12,"text":"NYY1,Derek Jeter,New York Yankees","reason":"Not under any section heading"},
+      {"line":13,"text":"NYY2,Alex Rodriguez,New York Yankees","reason":"Not under any section heading"},
+      {"line":14,"text":"NYY3,Mariano Rivera,New York Yankees","reason":"Not under any section heading"},
+      {"line":15,"text":"NYY4,Mark Teixeira,New York Yankees","reason":"Not under any section heading"},
+      {"line":16,"text":"NYY5,Curtis Granderson,New York Yankees","reason":"Not under any section heading"},
+      {"line":17,"text":"PHI1,Roy Halladay,Philadelphia Phillies","reason":"Not under any section heading"},
+      {"line":18,"text":"PHI2,Ryan Howard,Philadelphia Phillies","reason":"Not under any section heading"},
+      {"line":19,"text":"PHI3,Chase Utley,Philadelphia Phillies","reason":"Not under any section heading"},
+      {"line":20,"text":"PHI4,Jimmy Rollins,Philadelphia Phillies","reason":"Not under any section heading"},
+      {"line":21,"text":"PHI5,Jayson Werth,Philadelphia Phillies","reason":"Not under any section heading"}
+    ],
+    "skippedSections": [],
+    "rowCount": 0
+  }
+}

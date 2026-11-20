@@ -1,0 +1,31 @@
+{
+  "file": "1995-hockey-tulsa-oilers-chl-base.csv",
+  "mode": "leaf",
+  "options": {"setYear":"1995","mode":"leaf"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [
+      {"number":"1","players":["Colin Baustad"],"teams":["Tulsa Oilers"]},
+      {"number":"2","players":["Mike Berger"],"teams":["Tulsa Oilers"]},
+      {"number":"3","players":["Mike Chase"],"teams":["Tulsa Oilers"]},
+      {"number":"4","players":["Trevor Ellerman"],"teams":["Tulsa Oilers"]},
+      {"number":"5","players":["Bryan Forslund"],"teams":["Tulsa Oilers"]},
+      {"number":"6","players":["Taylor Hall"],"teams":["Tulsa Oilers"]},
+      {"number":"7","players":["Craig Hamelin"],"teams":["Tulsa Oilers"]},
+      {"number":"8","players":["Ryan Harrison"],"teams":["Tulsa Oilers"]},
+      {"number":"9","players":["John Laan"],"teams":["Tulsa Oilers"]},
+      {"number":"10","players":["Glen Lang"],"teams":["Tulsa Oilers"]},
+      {"number":"11","players":["Dave Larouche"],"teams":["Tulsa Oilers"]},
+      {"number":"12","players":["Tony Martino"],"teams":["Tulsa Oilers"]},
+      {"number":"13","players":["Sylvain Naud"],"teams":["Tulsa Oilers"]},
+      {"number":"14","players":["Jim Peters"],"teams":["Tulsa Oilers"]},
+      {"number":"15","players":["Cory Peterson"],"teams":["Tulsa Oilers"]},
+      {"number":"16","players":["Chris Robertson"],"teams":["Tulsa Oilers"]},
+      {"number":"17","players":["Kyuin Shim"],"teams":["Tulsa Oilers"]},
+      {"number":"18","players":["Garry Unger"],"teams":["Tulsa Oilers"]}
+    ],
+    "skipped": [],
+    "format": "csv"
+  },
+  "sections": {"format":"csv","sections":[],"skipped":[],"skippedSections":[],"rowCount":0}
+}

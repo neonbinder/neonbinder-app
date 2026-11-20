@@ -1,0 +1,56 @@
+{
+  "file": "1995-hockey-memphis-riverkings-chl-base.csv",
+  "mode": "set",
+  "options": {"setYear":"1995","mode":"set"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [],
+    "skipped": [
+      {"line":2,"text":"1,Scott Brower,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":3,"text":"2,Dan Brown,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":4,"text":"3,Jamie Cooke,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":5,"text":"4,Kevin Evans,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":6,"text":"5,Brent Fleetwood,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":7,"text":"6,Ron Fogarty,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":8,"text":"7,Trent Gleason,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":9,"text":"8,Derek Grant,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":10,"text":"9,Mike Jackson,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":11,"text":"10,Scott Kelsey,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":12,"text":"11,Steve Magnusson,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":13,"text":"12,Carl Menard,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":14,"text":"13,Chris Morque,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":15,"text":"14,Rick Robus,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":16,"text":"15,Andy Ross,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":17,"text":"16,Stephane Roy,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":18,"text":"17,Doug Stromback,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":19,"text":"18,Herb Boxer,Memphis RiverKings","reason":"Not under any section heading"}
+    ],
+    "format": "csv"
+  },
+  "sections": {
+    "format": "csv",
+    "sections": [],
+    "skipped": [
+      {"line":2,"text":"1,Scott Brower,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":3,"text":"2,Dan Brown,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":4,"text":"3,Jamie Cooke,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":5,"text":"4,Kevin Evans,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":6,"text":"5,Brent Fleetwood,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":7,"text":"6,Ron Fogarty,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":8,"text":"7,Trent Gleason,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":9,"text":"8,Derek Grant,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":10,"text":"9,Mike Jackson,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":11,"text":"10,Scott Kelsey,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":12,"text":"11,Steve Magnusson,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":13,"text":"12,Carl Menard,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":14,"text":"13,Chris Morque,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":15,"text":"14,Rick Robus,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":16,"text":"15,Andy Ross,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":17,"text":"16,Stephane Roy,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":18,"text":"17,Doug Stromback,Memphis RiverKings","reason":"Not under any section heading"},
+      {"line":19,"text":"18,Herb Boxer,Memphis RiverKings","reason":"Not under any section heading"}
+    ],
+    "skippedSections": [],
+    "rowCount": 0
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "file": "1996-new-haven-ravens-rally-raffle-base.csv",
+  "mode": "set",
+  "options": {"setYear":"1996","mode":"set"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [],
+    "skipped": [
+      {"line":2,"text":"12,Edgard Velazquez,New Haven Ravens","reason":"Not under any section heading"},
+      {"line":3,"text":"13,Roger Miller,New Haven Ravens","reason":"Not under any section heading"},
+      {"line":4,"text":"16,Chris Sexton,New Haven Ravens","reason":"Not under any section heading"},
+      {"line":5,"text":"19,Rodney Pedraza,New Haven Ravens","reason":"Not under any section heading"},
+      {"line":6,"text":"21,Jamey Wright,New Haven Ravens","reason":"Not under any section heading"},
+      {"line":7,"text":"22,Todd Helton,New Haven Ravens","reason":"Not under any section heading"},
+      {"line":8,"text":"23,John Thomson,New Haven Ravens","reason":"Not under any section heading"},
+      {"line":9,"text":"34,Derrick Gibson,New Haven Ravens","reason":"Not under any section heading"},
+      {"line":10,"text":"NNO,raffle entry card,No Team","reason":"Not under any section heading"}
+    ],
+    "format": "csv"
+  },
+  "sections": {
+    "format": "csv",
+    "sections": [],
+    "skipped": [
+      {"line":2,"text":"12,Edgard Velazquez,New Haven Ravens","reason":"Not under any section heading"},
+      {"line":3,"text":"13,Roger Miller,New Haven Ravens","reason":"Not under any section heading"},
+      {"line":4,"text":"16,Chris Sexton,New Haven Ravens","reason":"Not under any section heading"},
+      {"line":5,"text":"19,Rodney Pedraza,New Haven Ravens","reason":"Not under any section heading"},
+      {"line":6,"text":"21,Jamey Wright,New Haven Ravens","reason":"Not under any section heading"},
+      {"line":7,"text":"22,Todd Helton,New Haven Ravens","reason":"Not under any section heading"},
+      {"line":8,"text":"23,John Thomson,New Haven Ravens","reason":"Not under any section heading"},
+      {"line":9,"text":"34,Derrick Gibson,New Haven Ravens","reason":"Not under any section heading"},
+      {"line":10,"text":"NNO,raffle entry card,No Team","reason":"Not under any section heading"}
+    ],
+    "skippedSections": [],
+    "rowCount": 0
+  }
+}

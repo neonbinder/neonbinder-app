@@ -1,0 +1,56 @@
+{
+  "file": "1995-hockey-fort-worth-fire-chl-base.csv",
+  "mode": "set",
+  "options": {"setYear":"1995","mode":"set"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [],
+    "skipped": [
+      {"line":2,"text":"1,Scott Allen,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":3,"text":"2,Trevor Burgess,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":4,"text":"3,Brian Caruso,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":5,"text":"4,Trevor Converse,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":6,"text":"5,Steve Dykstra,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":7,"text":"6,Troy Frederick,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":8,"text":"7,Phil Groeneveld,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":9,"text":"8,Mark Hilton,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":10,"text":"9,Jeff Massey,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":11,"text":"10,Dennis Miller,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":12,"text":"11,Dwight Mullins,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":13,"text":"12,Steve Plouffe,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":14,"text":"13,Vern Ray,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":15,"text":"14,Kyle Reeves,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":16,"text":"15,Troy Stephens,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":17,"text":"16,Sean Whyte,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":18,"text":"17,Scorch,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":19,"text":"18,Bill McDonald,Fort Worth Fire","reason":"Not under any section heading"}
+    ],
+    "format": "csv"
+  },
+  "sections": {
+    "format": "csv",
+    "sections": [],
+    "skipped": [
+      {"line":2,"text":"1,Scott Allen,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":3,"text":"2,Trevor Burgess,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":4,"text":"3,Brian Caruso,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":5,"text":"4,Trevor Converse,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":6,"text":"5,Steve Dykstra,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":7,"text":"6,Troy Frederick,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":8,"text":"7,Phil Groeneveld,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":9,"text":"8,Mark Hilton,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":10,"text":"9,Jeff Massey,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":11,"text":"10,Dennis Miller,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":12,"text":"11,Dwight Mullins,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":13,"text":"12,Steve Plouffe,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":14,"text":"13,Vern Ray,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":15,"text":"14,Kyle Reeves,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":16,"text":"15,Troy Stephens,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":17,"text":"16,Sean Whyte,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":18,"text":"17,Scorch,Fort Worth Fire","reason":"Not under any section heading"},
+      {"line":19,"text":"18,Bill McDonald,Fort Worth Fire","reason":"Not under any section heading"}
+    ],
+    "skippedSections": [],
+    "rowCount": 0
+  }
+}

@@ -1,0 +1,134 @@
+{
+  "file": "2025-bowman-draft-insert-prospect-dual-autographs.csv",
+  "mode": "set",
+  "options": {"setYear":"2025","mode":"set"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [],
+    "skipped": [
+      {
+        "line": 2,
+        "text": "PDA-AD,Liam Doyle; Kade Anderson,St. Louis Cardinals; Seattle Mariners",
+        "reason": "Not under any section heading"
+      },
+      {
+        "line": 3,
+        "text": "PDA-BW,Travis Bazzana; Eli Willits,Cleveland Guardians; Washington Nationals",
+        "reason": "Not under any section heading"
+      },
+      {
+        "line": 4,
+        "text": "PDA-CE,Billy Carlson; Brady Ebel,Chicago White Sox; Milwaukee Brewers",
+        "reason": "Not under any section heading"
+      },
+      {
+        "line": 5,
+        "text": "PDA-CH,Seth Hernandez; Bubba Chandler,Pittsburgh Pirates",
+        "reason": "Not under any section heading"
+      },
+      {
+        "line": 6,
+        "text": "PDA-DM,Leo De Vries; Jesus Made,Athletics; Milwaukee Brewers",
+        "reason": "Not under any section heading"
+      },
+      {
+        "line": 7,
+        "text": "PDA-GHE,Konnor Griffin; Seth Hernandez,Pittsburgh Pirates",
+        "reason": "Not under any section heading"
+      },
+      {
+        "line": 8,
+        "text": "PDA-HC,Billy Carlson; Seth Hernandez,Chicago White Sox; Pittsburgh Pirates",
+        "reason": "Not under any section heading"
+      },
+      {"line":9,"text":"PDA-IB,Caden Bodine; Ike Irish,Baltimore Orioles","reason":"Not under any section heading"},
+      {"line":10,"text":"PDA-MP,Jesus Made; Luis Pena,Milwaukee Brewers","reason":"Not under any section heading"},
+      {
+        "line": 11,
+        "text": "PDA-PH,JoJo Parker; Steele Hall,Toronto Blue Jays; Cincinnati Reds",
+        "reason": "Not under any section heading"
+      },
+      {
+        "line": 12,
+        "text": "PDA-SS,Tate Southisene; Ty Southisene,Atlanta Braves; Chicago Cubs",
+        "reason": "Not under any section heading"
+      },
+      {
+        "line": 13,
+        "text": "PDA-WB,Tyler Bremner; Eli Willits,Los Angeles Angels; Washington Nationals",
+        "reason": "Not under any section heading"
+      },
+      {
+        "line": 14,
+        "text": "PDA-WC,Billy Carlson; Eli Willits,Chicago White Sox; Washington Nationals",
+        "reason": "Not under any section heading"
+      }
+    ],
+    "format": "csv"
+  },
+  "sections": {
+    "format": "csv",
+    "sections": [],
+    "skipped": [
+      {
+        "line": 2,
+        "text": "PDA-AD,Liam Doyle; Kade Anderson,St. Louis Cardinals; Seattle Mariners",
+        "reason": "Not under any section heading"
+      },
+      {
+        "line": 3,
+        "text": "PDA-BW,Travis Bazzana; Eli Willits,Cleveland Guardians; Washington Nationals",
+        "reason": "Not under any section heading"
+      },
+      {
+        "line": 4,
+        "text": "PDA-CE,Billy Carlson; Brady Ebel,Chicago White Sox; Milwaukee Brewers",
+        "reason": "Not under any section heading"
+      },
+      {
+        "line": 5,
+        "text": "PDA-CH,Seth Hernandez; Bubba Chandler,Pittsburgh Pirates",
+        "reason": "Not under any section heading"
+      },
+      {
+        "line": 6,
+        "text": "PDA-DM,Leo De Vries; Jesus Made,Athletics; Milwaukee Brewers",
+        "reason": "Not under any section heading"
+      },
+      {
+        "line": 7,
+        "text": "PDA-GHE,Konnor Griffin; Seth Hernandez,Pittsburgh Pirates",
+        "reason": "Not under any section heading"
+      },
+      {
+        "line": 8,
+        "text": "PDA-HC,Billy Carlson; Seth Hernandez,Chicago White Sox; Pittsburgh Pirates",
+        "reason": "Not under any section heading"
+      },
+      {"line":9,"text":"PDA-IB,Caden Bodine; Ike Irish,Baltimore Orioles","reason":"Not under any section heading"},
+      {"line":10,"text":"PDA-MP,Jesus Made; Luis Pena,Milwaukee Brewers","reason":"Not under any section heading"},
+      {
+        "line": 11,
+        "text": "PDA-PH,JoJo Parker; Steele Hall,Toronto Blue Jays; Cincinnati Reds",
+        "reason": "Not under any section heading"
+      },
+      {
+        "line": 12,
+        "text": "PDA-SS,Tate Southisene; Ty Southisene,Atlanta Braves; Chicago Cubs",
+        "reason": "Not under any section heading"
+      },
+      {
+        "line": 13,
+        "text": "PDA-WB,Tyler Bremner; Eli Willits,Los Angeles Angels; Washington Nationals",
+        "reason": "Not under any section heading"
+      },
+      {
+        "line": 14,
+        "text": "PDA-WC,Billy Carlson; Eli Willits,Chicago White Sox; Washington Nationals",
+        "reason": "Not under any section heading"
+      }
+    ],
+    "skippedSections": [],
+    "rowCount": 0
+  }
+}

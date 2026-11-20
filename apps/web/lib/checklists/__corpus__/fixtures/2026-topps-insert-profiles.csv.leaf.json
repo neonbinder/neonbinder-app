@@ -1,0 +1,38 @@
+{
+  "file": "2026-topps-insert-profiles.csv",
+  "mode": "leaf",
+  "options": {"setYear":"2026","mode":"leaf"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [
+      {"number":"TP-1","players":["Shohei Ohtani"],"teams":["Los Angeles Dodgers"]},
+      {"number":"TP-2","players":["Mike Trout"],"teams":["Los Angeles Angels"]},
+      {"number":"TP-3","players":["Hank Aaron"],"teams":["Atlanta Braves"]},
+      {"number":"TP-4","players":["Gunnar Henderson"],"teams":["Baltimore Orioles"]},
+      {"number":"TP-5","players":["Elly De La Cruz"],"teams":["Cincinnati Reds"]},
+      {"number":"TP-6","players":["Corbin Carroll"],"teams":["Arizona Diamondbacks"]},
+      {"number":"TP-7","players":["Ronald Acuna Jr."],"teams":["Atlanta Braves"]},
+      {"number":"TP-8","players":["Mookie Betts"],"teams":["Los Angeles Dodgers"]},
+      {"number":"TP-9","players":["Jose Ramirez"],"teams":["Cleveland Guardians"]},
+      {"number":"TP-10","players":["Francisco Lindor"],"teams":["New York Mets"]},
+      {"number":"TP-11","players":["Juan Soto"],"teams":["New York Mets"]},
+      {"number":"TP-12","players":["Ichiro"],"teams":["Seattle Mariners"]},
+      {"number":"TP-13","players":["Pete Crow-Armstrong"],"teams":["Chicago Cubs"]},
+      {"number":"TP-14","players":["Paul Skenes"],"teams":["Pittsburgh Pirates"]},
+      {"number":"TP-15","players":["James Wood"],"teams":["Washington Nationals"]},
+      {"number":"TP-16","players":["Bobby Witt Jr."],"teams":["Kansas City Royals"]},
+      {"number":"TP-17","players":["Vladimir Guerrero Jr."],"teams":["Toronto Blue Jays"]},
+      {"number":"TP-18","players":["Aaron Judge"],"teams":["New York Yankees"]},
+      {"number":"TP-19","players":["Bryce Harper"],"teams":["Philadelphia Phillies"]},
+      {"number":"TP-20","players":["Jackie Robinson"],"teams":["Brooklyn Dodgers"]},
+      {"number":"TP-21","players":["Julio Rodriguez"],"teams":["Seattle Mariners"]},
+      {"number":"TP-22","players":["Jac Caglianone"],"teams":["Kansas City Royals"]},
+      {"number":"TP-23","players":["Roman Anthony"],"teams":["Boston Red Sox"]},
+      {"number":"TP-24","players":["Cal Raleigh"],"teams":["Seattle Mariners"]},
+      {"number":"TP-25","players":["Randy Johnson"],"teams":["Seattle Mariners"]}
+    ],
+    "skipped": [],
+    "format": "csv"
+  },
+  "sections": {"format":"csv","sections":[],"skipped":[],"skippedSections":[],"rowCount":0}
+}
