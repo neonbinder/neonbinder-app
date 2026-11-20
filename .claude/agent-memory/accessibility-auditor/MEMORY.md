@@ -54,3 +54,4 @@
 - [No Team toggle and ledger NEO-556](no-team-toggle-and-ledger-neo556.md) — toggle beside Add team, offer/ledger control: held-up parts and recurring gaps
 - [Park on unmount needs had-focus NEO-581](park-on-unmount-needs-had-focus-neo581.md) — body-only guard also fires on reload/silent recount; gate on the control having held focus
 - [describedby on activedescendant options NEO-616](describedby-on-activedescendant-options-neo616.md) — option description via aria-describedby is unreliable; ink-2 ratios on row/pick fills
+- [Step counter high-water vs vanishing step NEO-426](step-counter-high-water-vs-vanishing-step-neo426.md) — trackSteps never shrinks; async-fact step drop-outs leave a phantom step; Save sentence needs describedby on Confirm

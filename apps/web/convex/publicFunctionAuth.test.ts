@@ -32,7 +32,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 import type { Id } from "./_generated/dataModel";
@@ -190,15 +190,26 @@ describe("NEO-154: taxonomy reads and writes require a signed-in caller", () => 
     expect("list" in teamsModule).toBe(false);
   });
 
-  test("players.findByNameAndSport and teams.findByNameAndSport reject anonymously", async () => {
+  test("players.findByNameAndSport rejects anonymously", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     await expect(
       t.query(api.players.findByNameAndSport, { name: "Mike Trout", sportId }),
     ).rejects.toThrow(/Not authenticated/);
+  });
+
+  test("teams.findByNameAndSport is internal-only (NEO-602): no public caller is left", async () => {
+    // The review gate and the commit prelude moved to `resolveCardTeamName`, so
+    // the signed-in query had no client caller. It is an `internalQuery` now
+    // and no longer part of the public surface.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
     await expect(
-      t.query(api.teams.findByNameAndSport, { name: "Yankees", sportId }),
-    ).rejects.toThrow(/Not authenticated/);
+      t.query(internal.teams.findByNameAndSport, { name: "Yankees", sportId }),
+    ).resolves.toBeNull();
+    const src = readFileSync(join(__dirname, "teams.ts"), "utf8");
+    expect(src).toMatch(/export const findByNameAndSport = internalQuery\(/);
+    expect(src).not.toMatch(/export const findByNameAndSport = query\(/);
   });
 });
 
@@ -270,6 +281,24 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
     // instead of the capped list. It stands in for `teams.listForManagement`,
     // so it carries that list's gate.
     ["teams.searchForManagement", (t) => t.query(api.teams.searchForManagement, { query: "Yankees" })],
+    // NEO-602. The editor that writes a team's name, years and aliases (and so
+    // the alias-holder refusals). `requireAdmin` runs before the team lookup,
+    // but the id validator runs before the handler, so a real row is seeded
+    // for a well-formed id; the refusal is the gate, not a missing row.
+    [
+      "teams.saveTeamFields",
+      async (t, sportId) => {
+        const id = await t.run(async (ctx) =>
+          ctx.db.insert("teams", {
+            name: "Yankees",
+            nameNormalized: "yankees",
+            sportId,
+            lastUpdated: 1,
+          }),
+        );
+        return t.mutation(api.teams.saveTeamFields, { id, name: "Bombers" });
+      },
+    ],
     // NEO-495. The list it stands in for, now that it also answers the league
     // dropdown from the league's own rows. Admin-only since NEO-156; pinned
     // here when its arguments grew.
@@ -446,6 +475,45 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
           }),
         );
         return t.mutation(api.entityReviewQueue.requestPlayerLookup, { reviewRowId });
+      },
+    ],
+    // NEO-602. The team step's cards, players and stints: reads other
+    // people's player careers, so admin like the batch it belongs to. The row
+    // is read after the gate, so the refusal is the gate.
+    [
+      "entityReviewQueue.teamStepContext",
+      async (t, sportId) => {
+        const reviewRowId = await t.run(async (ctx) =>
+          ctx.db.insert("entityReviewQueue", {
+            selectorOptionId: sportId,
+            batchId: "batch-1",
+            createdByUserId: "somebody",
+            kind: "team" as const,
+            name: "Baltimore Orioles",
+            sportId,
+            status: "ready" as const,
+          }),
+        );
+        return t.query(api.entityReviewQueue.teamStepContext, { reviewRowId });
+      },
+    ],
+    // NEO-602. The same-name player step's cards and candidates' stints: reads
+    // other people's player careers, so admin like the batch it belongs to.
+    [
+      "entityReviewQueue.playerStepContext",
+      async (t, sportId) => {
+        const reviewRowId = await t.run(async (ctx) =>
+          ctx.db.insert("entityReviewQueue", {
+            selectorOptionId: sportId,
+            batchId: "batch-1",
+            createdByUserId: "somebody",
+            kind: "player" as const,
+            name: "Luis Castillo",
+            sportId,
+            status: "ready" as const,
+          }),
+        );
+        return t.query(api.entityReviewQueue.playerStepContext, { reviewRowId });
       },
     ],
     // NEO-313. Writes a player's additional sports — globally-shared
@@ -1265,6 +1333,48 @@ describe("NEO-291: the card-prefix write is admin-gated, and the whole-metadata 
     await call(t.withIdentity(ADMIN));
     expect((await t.run(async (ctx) => ctx.db.get(setNameId)))!.metadata).toEqual({
       listingShortName: "UD Choice",
+    });
+  });
+
+  /**
+   * NEO-619 — "Parallels name themselves" has its own narrow mutation, gated
+   * like the short name above. The seeded row is a valid target (an insert
+   * under an Insert type), so the refusal is the admin gate, not the role check.
+   */
+  test("selectorOptions.setSelectorOptionParallelsNameThemselves refuses a signed-in non-admin and a signed-out caller", async () => {
+    const t = convexTest(schema, modules);
+    const insertId = await t.run(async (ctx) => {
+      const typeId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Inserts",
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      return ctx.db.insert("selectorOptions", {
+        level: "insert",
+        value: "Zorbo Special Purple",
+        parentId: typeId,
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+    });
+    const call = (tt: ReturnType<typeof convexTest>) =>
+      tt.mutation(api.selectorOptions.setSelectorOptionParallelsNameThemselves, {
+        id: insertId,
+        on: true,
+      });
+    await expect(call(t.withIdentity(SIGNED_IN))).rejects.toThrow();
+    await expect(call(t)).rejects.toThrow();
+    // Refused before any write: the row is exactly as seeded.
+    const row = await t.run(async (ctx) => ctx.db.get(insertId));
+    expect(row!.lastUpdated).toBe(1_700_000_000_000);
+    expect(row!.metadata).toBeUndefined();
+    // And it is the admin gate that refused them: an admin's call lands.
+    await call(t.withIdentity(ADMIN));
+    expect((await t.run(async (ctx) => ctx.db.get(insertId)))!.metadata).toEqual({
+      parallelsNameThemselves: true,
     });
   });
 
@@ -3582,6 +3692,7 @@ describe("NEO-500: the Pick List is the signed-in seller's own", () => {
     ["pickList.open", (t) => t.query(api.pickList.open, {})],
     ["pickList.cards", (t) => t.query(api.pickList.cards, { cardIds: [] })],
     ["pickList.sports", (t) => t.query(api.pickList.sports, { sportIds: [] })],
+    ["pickList.titleSports", (t) => t.query(api.pickList.titleSports, { titles: [] })],
     ["pickList.soldPhotos", (t) => t.query(api.pickList.soldPhotos, { copyIds: [] })],
     ["pickList.setPulled", (t) => t.mutation(api.pickList.setPulled, { ids: [], pulled: true })],
   ];
@@ -3834,6 +3945,53 @@ describe("NEO-556: the No Team run is admin-gated", () => {
     const t = convexTest(schema, modules);
     const ids = await seedIds(t);
     await expect(call(t.withIdentity(ADMIN) as never, ids)).resolves.toBeDefined();
+  });
+});
+
+/**
+ * NEO-426 — the "No teams in this sport" switch and its list are operator
+ * tooling (`requireAdmin`). A refused call must not have flagged the sport.
+ * `playersWithTeamlessHomeSport` is internal (no client path).
+ */
+describe("NEO-426: the teamless-sport switch is admin-gated", () => {
+  const flagged = (t: ReturnType<typeof convexTest>, sportId: Id<"selectorOptions">) =>
+    t.run(async (ctx) => (await ctx.db.get(sportId))?.teamlessSport ?? null);
+  const ADMIN_GATED: Array<
+    [string, (t: ReturnType<typeof convexTest>, sportId: Id<"selectorOptions">) => Promise<unknown>]
+  > = [
+    [
+      "sportTeamless.setTeamlessSport",
+      (t, sportId) => t.mutation(api.sportTeamless.setTeamlessSport, { sportId, teamless: true }),
+    ],
+    ["sportTeamless.listTeamlessSportIds", (t) => t.query(api.sportTeamless.listTeamlessSportIds, {})],
+  ];
+
+  test.each(ADMIN_GATED)("%s rejects an anonymous caller and flags nothing", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await expect(call(t, sportId)).rejects.toThrow(/not authenticated/i);
+    expect(await flagged(t, sportId)).toBeNull();
+  });
+
+  test.each(ADMIN_GATED)("%s rejects a signed-in non-admin and flags nothing", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await expect(call(t.withIdentity({ subject: "member", role: "member" }) as never, sportId)).rejects.toThrow(
+      /admin access required/i,
+    );
+    expect(await flagged(t, sportId)).toBeNull();
+  });
+
+  test.each(ADMIN_GATED)("%s answers an admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await expect(call(t.withIdentity(ADMIN) as never, sportId)).resolves.toBeDefined();
+  });
+
+  test("playersWithTeamlessHomeSport is declared internalQuery, not query", () => {
+    const src = readFileSync(join(__dirname, "sportTeamless.ts"), "utf8");
+    expect(src).toContain("export const playersWithTeamlessHomeSport = internalQuery({");
+    expect(src).not.toContain("export const playersWithTeamlessHomeSport = query(");
   });
 });
 

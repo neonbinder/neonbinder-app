@@ -86,3 +86,6 @@
 - [Parallel names literal; print run is a row attribute](parallel-names-stay-literal-print-run-is-a-row-attribute.md) — no name tidying, no "/N" in names; row run at >=90% card agreement (NEO-616)
 - [Check sibling worktrees before a rule change](check-sibling-worktrees-before-planning-a-rule-change.md) — a fresh rule's core may sit on another unmerged branch; list overlaps, sequence merges
 - [Section near-match needs one extension](section-near-match-needs-a-single-extension.md) — 2+ targets extending a section = tie; foil-only marketplaces mislink subsets (NEO-616)
+- [Teams-step membership is synchronous](teams-step-membership-is-synchronous.md) — decide "who is on the Cards with no team step" from rows + fetch-time preview facts, never evidence; the step counter never shrinks
+- [Preprocess route merge opens an E2E window](preprocess-route-merge-opens-an-e2e-window.md) — bare FastAPI 404 on dev preprocess until release.yml promotes dev; full rerun, never a timeout
+- [No Team defaults share one gate](no-team-defaults-share-one-gate.md) — new auto-"No team" rules feed noTeamCardVerdict in the commit chunk + BSC answer; sport rows cannot hold the set Team

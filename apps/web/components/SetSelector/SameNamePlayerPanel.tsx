@@ -317,7 +317,7 @@ export default function SameNamePlayerPanel({
                   verdict we have not earned.
                 */}
                 <span className="flex w-full items-baseline gap-2">
-                  <span className="min-w-0 truncate text-sm text-ink">
+                  <span className="min-w-0 break-words text-sm text-ink">
                     {candidate.name}
                   </span>
                   {candidate.activeInSetYear && (

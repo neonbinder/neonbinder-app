@@ -23,6 +23,7 @@ import { normalizeEntityName } from "../lib/entities/normalize-name";
 import { insertTestCard } from "../lib/testing/card-row";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import { PAUSED_PLATFORMS_ENV } from "./lib/marketplacePause";
+import { assessListingTitle } from "./features/generateListing";
 import { pickTitleChainFacts } from "./listingShortName";
 
 const modules = (import.meta as unknown as {
@@ -195,6 +196,42 @@ describe("previewListingTitle and titleForStoredCard", () => {
     `);
   });
 
+  test("NEO-618: a Tidy Up card with a fitting box is built from the box, the same in the preview and the stored title", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    // A long name leaves no room for the Mets (a whole team out, no first name lost): Tidy Up.
+    const cardId = await t.run(async (ctx) => {
+      const base = (await ctx.db.get(s.base))!;
+      await ctx.db.patch(base.parentId!, { metadata: { listingShortName: "Chrome Debut" } });
+      return insertTestCard(ctx, {
+        selectorOptionId: s.base,
+        cardNumber: "BOX-1xxxxxxxxxxxxxxxxxxxxxxxx",
+        cardName: "Card BOX-1",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: NOW,
+        pendingPlayerNames: ["Bartholomew Fitzgerald-Worthington"],
+        teamOnCardIds: [s.mets],
+        features: { season: "2024" },
+      });
+    });
+    const preview = await t
+      .withIdentity(ADMIN)
+      .query(api.selectorOptions.previewListingTitle, { cardId });
+    const stored = await t.run(async (ctx) => titleForStoredCard(ctx, (await ctx.db.get(cardId))!));
+    expect(preview.title).toBe(stored.title);
+    expect(preview.inputs.setShortName).toBe("Chrome Debut");
+    expect(stored.shortNameUsed).toBe(true);
+    expect(preview.shortNameUsed).toBe(true);
+    expect(preview.title.startsWith("Chrome Debut ")).toBe(true);
+    expect(preview.fits).toBe(true);
+    // The fixture is what it claims: without the box the builder needs Tidy Up.
+    const builder = assessListingTitle({ ...preview.inputs, setShortName: undefined });
+    expect(builder.fits).toBe(true);
+    expect(builder.tidyUp).toBe(true);
+    expect(builder.firstNameLost).toBe(false);
+  });
+
   test("a card born through the commit chunk stores the title Regenerate offers", async () => {
     const t = convexTest(schema, modules);
     const s = await seed(t);
@@ -222,6 +259,39 @@ describe("previewListingTitle and titleForStoredCard", () => {
       .withIdentity(ADMIN)
       .query(api.selectorOptions.previewListingTitle, { cardId });
     expect(stored.listingTitle).toBe(preview.title);
+  });
+});
+
+/**
+ * NEO-619 — "Parallels name themselves" on the insert: Regenerate and the
+ * stored-card path read the one chain, so they agree with the switch on, and
+ * the parallel's card drops the insert's name while the insert's own keeps it.
+ */
+describe("parallels name themselves (NEO-619)", () => {
+  test("the preview and the stored title agree, and the parallel's card leaves the insert out", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await t.run(async (ctx) => {
+      const parallel = (await ctx.db.get(s.cards.underParallel))!;
+      const insertId = (await ctx.db.get(parallel.selectorOptionId))!.parentId!;
+      await ctx.db.patch(insertId, { metadata: { parallelsNameThemselves: true } });
+    });
+    const titles: Record<string, string> = {};
+    for (const key of ["underParallel", "underInsert"] as const) {
+      const cardId = s.cards[key];
+      const preview = await t
+        .withIdentity(ADMIN)
+        .query(api.selectorOptions.previewListingTitle, { cardId });
+      const stored = await t.run(async (ctx) => titleForStoredCard(ctx, (await ctx.db.get(cardId))!));
+      expect(preview.title, key).toBe(stored.title);
+      expect(preview.inputs, key).toEqual(stored.inputs);
+      titles[key] = preview.title;
+    }
+    expect(titles.underParallel).toBe("2024 Topps Chrome Gold Refractor Parallel Darryl Strawberry #FS-2 Baseball");
+    // The parallel keeps its "Parallel" type name: a top level says its type.
+    expect(titles.underParallel).not.toContain("Future Stars");
+    // The insert's own card still names the insert.
+    expect(titles.underInsert).toContain("Future Stars");
   });
 });
 

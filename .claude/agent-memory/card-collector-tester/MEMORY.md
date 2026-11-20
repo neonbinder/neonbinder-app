@@ -20,3 +20,4 @@
 - [None-answer copy traps](none-answer-copy-traps.md) — "listed" = for sale; new-card overclaim; inherited state in quick-add; one-way toggles; visible control names
 - [Exploratory pass driving recipe](exploratory_pass_driving_recipe.md) — headless persistent-profile driver, reaching Card titles step, Back/blank-history trap
 - [Foil x colour checklist quirks](pro-set-foil-colour-checklist-quirks.md) — doubled names, mini numbers, Auto column, team blank on some rows
+- [Home-sport defaults in mixed sets](home-sport-defaults-in-mixed-sets.md) — A&G: created people inherit set sport; name sport+people in copy; "No Team" casing

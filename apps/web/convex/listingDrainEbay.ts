@@ -54,7 +54,7 @@ import { internal } from "./_generated/api";
 import { ebayConditionCodeValidator } from "./schema";
 import { copyPhotoObjectKey, MAX_COPY_PHOTO_BYTES } from "./copyPhotos";
 import { commonPriceCentsOf } from "./listingGate";
-import { titleChainFacts } from "./listingShortName";
+import { parallelsNameThemselvesApplies, titleChainFacts } from "./listingShortName";
 import { teamFullName } from "../lib/teams/team-name";
 import {
   DRAIN_BUDGET_MS,
@@ -363,7 +363,13 @@ export const ebayCardFacts = internalQuery({
       const out = {
         ...(setNameRow ? { setName: setNameRow.value } : {}),
         ...(manufacturer ? { manufacturer } : {}),
-        ...(facts.insertIsRole && facts.insertNameValue ? { insertName: facts.insertNameValue } : {}),
+        // NEO-619 — a parallel whose insert has "Parallels name themselves" on
+        // names itself in the title, so the Insert Set aspect is left off too
+        // (the same question `titleChainFacts` asks; `insertNameValue` itself
+        // is unchanged for its other readers).
+        ...(facts.insertIsRole && facts.insertNameValue && !parallelsNameThemselvesApplies(rows)
+          ? { insertName: facts.insertNameValue }
+          : {}),
         ...(facts.parallelLeafValue ? { parallelLeaf: facts.parallelLeafValue } : {}),
       };
       chains.set(leafId, out);

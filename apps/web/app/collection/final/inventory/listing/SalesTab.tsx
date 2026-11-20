@@ -224,8 +224,9 @@ function Order({
   const name = PLATFORM_NAME[sale.platform];
   const total = sale.totals.totalCents ?? sale.totals.subtotalCents;
   const copies = sale.items.reduce((n, item) => n + item.quantity, 0);
-  // NEO-520: a line with no NB card may not be a card at all, so the count says items.
-  const unit = sale.items.some((item) => item.cardId === undefined) ? "item" : "card";
+  // NEO-520: an eBay line with no NB card may not be a card at all, so the count says items.
+  // BuySportsCards lines are always cards. Same rule as the dashboard's Out the Door (`unitOf`).
+  const unit = sale.platform === "ebay" && sale.items.some((item) => item.cardId === undefined) ? "item" : "card";
   return (
     <li>
       <article

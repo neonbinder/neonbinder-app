@@ -656,3 +656,52 @@ describe("a stray 'Base' word in an unrelated field does not make a Base level",
     expect(a.title).toBe("2001 Chrome Gold Insert Base Ruth #7");
   });
 });
+
+/**
+ * NEO-619 — "Parallels name themselves": the card's title and description
+ * through the real chain reading. Invented words: the insert is "Zorbo
+ * Special Purple", its parallel "Zorbo Special Gold".
+ */
+describe("NEO-619: parallels name themselves, end to end", () => {
+  const row = (level: string, value: string, metadata?: TitleChainRow["metadata"]): TitleChainRow => ({
+    level,
+    value,
+    ...(metadata ? { metadata } : {}),
+  });
+  const setFor = (chain: TitleChainRow[]): ListingSetContext => ({
+    sportValue: "Baseball",
+    setNameValue: "Pulse",
+    inheritedFeatures: { manufacturer: "Leaf", season: "2026" },
+    ...titleChainFacts(chain),
+  });
+  const names = { playerNames: ["Cole Carlon"] };
+  const goldChain = (on: boolean) => [
+    row("parallel", "Zorbo Special Gold"),
+    row("insert", "Zorbo Special Purple", on ? { parallelsNameThemselves: true } : undefined),
+    row("variantType", "Inserts"),
+    row("setName", "Pulse"),
+  ];
+  const insertChain = (on: boolean) => goldChain(on).slice(1);
+
+  test("the Gold card's title and description never say Purple; the Gold name is whole", () => {
+    const inputs = listingInputsForCard({ cardNumber: "7" }, setFor(goldChain(true)), names);
+    const { title } = assessListingTitle(inputs);
+    expect(title).toContain("Zorbo Special Gold");
+    expect(title).not.toContain("Purple");
+    expect(title).not.toContain("Insert");
+    expect(titleDescription(inputs)).not.toContain("Purple");
+    expect(generateListingDescription(inputs)).not.toContain("Purple");
+  });
+
+  test("the insert's own card still says Purple, switch on or off", () => {
+    for (const on of [true, false]) {
+      const inputs = listingInputsForCard({ cardNumber: "7" }, setFor(insertChain(on)), names);
+      expect(assessListingTitle(inputs).title).toContain("Zorbo Special Purple");
+    }
+  });
+
+  test("switch off: the Gold card's title names the insert (the previous behaviour)", () => {
+    const inputs = listingInputsForCard({ cardNumber: "7" }, setFor(goldChain(false)), names);
+    expect(assessListingTitle(inputs).title).toContain("Purple");
+  });
+});

@@ -96,11 +96,10 @@ import {
   confirmSaveButton,
   disagreementOn,
   expectChecklistDisagreementFirst,
-  expectStepLeft,
+  expectNameStepLeft,
   nextStepButton,
   personSkip,
   pickSideForAllCards,
-  readStep,
   reviewWizard,
   tidyUpName,
 } from "../../support/wizard";
@@ -163,7 +162,7 @@ async function fetchAndCommit(page: Page, env: FlowEnv, section: Locator): Promi
   // Every name nobody knows is ruled out on its own step, "Skip <name> — not a
   // person" (the storyline captions, Harry 'Pete' Rose, "Pete" and "Coach"); a
   // team step (#1's high school) is skipped as not a team. Each press is proved
-  // to have moved the wizard.
+  // to have moved the wizard off that row (its own skip gone, NEO-467).
   const skipped: string[] = [];
   const teamSkip = wizard.getByRole("button", { name: /^Skip .* — (not a team|this team has no league)$/, disabled: false });
   const usablePerson = wizard.getByRole("button", { name: /^Skip .* — not a person$/, disabled: false });
@@ -171,7 +170,6 @@ async function fetchAndCommit(page: Page, env: FlowEnv, section: Locator): Promi
   for (let i = 0; i < 20; i++) {
     await expect(usablePerson.or(teamSkip).or(namesDone).first()).toBeVisible({ timeout: NAME_STEP });
     if (await namesDone.isVisible()) break;
-    const { x } = await readStep(page);
     // One read of whichever skip is up now, then person or team is told from
     // its label: choosing the control first (`isVisible() ? a : b`) let the
     // wizard move to a team step in between and `nameOf(a)` wait for a button
@@ -180,7 +178,7 @@ async function fetchAndCommit(page: Page, env: FlowEnv, section: Locator): Promi
     const label = await nameOf(usablePerson.or(teamSkip).first());
     if (/ — not a person$/.test(label)) skipped.push(label.replace(/^Skip (.*) — not a person$/, "$1"));
     await wizard.getByRole("button", { name: label, exact: true, disabled: false }).click();
-    await expectStepLeft(page, x);
+    await expectNameStepLeft(page, label);
   }
   await expect(namesDone).toBeVisible();
   await expect(personSkip(page)).toHaveCount(0);

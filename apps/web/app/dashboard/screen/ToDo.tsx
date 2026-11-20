@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { Link, useLocation } from "react-router";
 import { ArchiveBoxIcon, CheckCircleIcon, ChevronDownIcon, ExclamationTriangleIcon } from "@heroicons/react/24/outline";
+import { EBAY_UNTITLED_ITEM, EBAY_UNTITLED_SALE } from "@/app/collection/final/inventory/listing/copy";
 import type { DashboardData, SaleLine, SaleProblem, SalesData, UnshippedSale } from "../fake-data";
 import { daysAgoLabel, isLate, MARKETPLACES } from "../dash-labels";
 import { CardTitle, count, MarketBadge, orderAnchor, Thumb } from "./bits";
@@ -8,7 +9,7 @@ import { PanelLink } from "./panelLink";
 
 /**
  * NEO-464 combined dashboard — the to-do: Out the Door (every order still to
- * ship, oldest first) and Needs a Look (problem lines, boxed cards not
+ * ship, oldest first) and Needs a Look (oversold lines, boxed cards not
  * listed). The screen places them (`DashboardScreen`); each shows only when
  * the account's data has something for it: Out the Door when the account
  * sells (`data.sales`), Needs a Look when there is a problem order or a box
@@ -18,6 +19,13 @@ import { PanelLink } from "./panelLink";
  * (`./panelLink`), as stock for sale: its title on the order, each line when
  * the order is opened, and the card an oversold line names.
  *
+ * NEO-590: all that matters here is that there was a sale. A line NB holds no
+ * card for is named by the sale's own words (`SaleLine.title`), or "A sale
+ * with no title" (inside an opened order, "An item with no title"), as plain
+ * text; the screen never says the card is not in NB, and such a line is not a
+ * problem. Only an oversold line is. The counts say "items" when an eBay order
+ * has such a line, as the Sales tab does (BuySportsCards lines are always cards).
+ *
  * With orders to ship, Out the Door also links to Inventory's Pick List, where
  * they are pulled. An account that sells has that tab (NEO-500: signed in, it
  * sits beside Sales, which every seller has; the demo shows its fixture's).
@@ -26,6 +34,15 @@ import { PanelLink } from "./panelLink";
 /** An order's card, by its full listing title: opens the card's panel. */
 const CARD_LINK =
   "block rounded-sm underline decoration-ink-3/60 underline-offset-2 hover:text-neon-blue-text hover:decoration-current focus-outline";
+
+/**
+ * "item" when an eBay order has a line NB holds no card for (it may not be a
+ * card at all), else "card": the same word the Sales tab picks.
+ * BuySportsCards lines are always cards.
+ */
+export function unitOf(order: Pick<UnshippedSale, "marketplace" | "lines">): "card" | "item" {
+  return order.marketplace === "ebay" && order.lines.some((l) => !l.card) ? "item" : "card";
+}
 
 /** Whether Needs a Look has anything in it. */
 export function needsALook(data: DashboardData): boolean {
@@ -74,6 +91,7 @@ export function OutTheDoor({ sales }: { sales: SalesData }) {
   }
 
   const cards = orders.reduce((n, o) => n + o.cardCount, 0);
+  const unit = orders.some((o) => unitOf(o) === "item") ? "item" : "card";
   const late = orders.filter(isLate).length;
 
   return (
@@ -84,7 +102,7 @@ export function OutTheDoor({ sales }: { sales: SalesData }) {
         </h2>
         <div className="flex flex-col gap-0.5 sm:items-end">
           <p className="text-sm text-ink-2">
-            {count(orders.length, "order")}, {count(cards, "card")}. Oldest first
+            {count(orders.length, "order")}, {count(cards, unit)}. Oldest first
             {late > 0 ? `, ${late} waiting 2 days or more.` : "."}
           </p>
           <Link
@@ -112,7 +130,12 @@ function OrderRow({ order }: { order: UnshippedSale }) {
   const late = isLate(order);
   const market = MARKETPLACES[order.marketplace].name;
   const problems = order.lines.filter((l): l is SaleLine & { problem: SaleProblem } => Boolean(l.problem));
-  const more = order.cardCount - 1;
+  // One line of several copies has nothing to open, so its count rides on the lead as "×N"
+  // (as an opened line shows it); "and N more" is for an order of several lines.
+  const single = order.lines.length === 1;
+  const more = single ? 0 : order.cardCount - 1;
+  const leadQuantity = single ? order.lines[0].quantity : 1;
+  const unit = unitOf(order);
   const anchor = orderAnchor(order.id);
   // ↑ ↓ in a card's panel walk the order's cards.
   const orderIds = order.lines.flatMap((l) => (l.card ? [l.card.id] : []));
@@ -140,7 +163,7 @@ function OrderRow({ order }: { order: UnshippedSale }) {
             <Thumb card={order.firstCard} className="w-11 sm:w-14" />
           </PanelLink>
         ) : (
-          <NoCardThumb className="w-11 sm:w-14" />
+          <NoCardThumb className="w-11 self-start sm:w-14" />
         )}
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -148,10 +171,6 @@ function OrderRow({ order }: { order: UnshippedSale }) {
             <h3 id={`${anchor}-title`} tabIndex={-1} className="rounded-sm text-sm font-bold tabular-nums text-ink focus-outline">
               <span className="sr-only">{market} order </span>#{order.orderNumber}
             </h3>
-            <span className="rounded-md border border-control px-1.5 text-xs text-ink-2">
-              <span className="sr-only">Marketplace status: </span>
-              {order.statusText}
-            </span>
           </div>
           <div className="mt-1 text-sm font-semibold leading-snug text-ink">
             {order.firstCard ? (
@@ -159,12 +178,13 @@ function OrderRow({ order }: { order: UnshippedSale }) {
                 <CardTitle card={order.firstCard} />
               </PanelLink>
             ) : (
-              <span className="block">Not matched to a card yet</span>
+              <span className="block [overflow-wrap:anywhere]">{order.lines[0]?.title ?? EBAY_UNTITLED_SALE}</span>
             )}
-            {more > 0 && <span className="block font-normal text-ink-2">and {count(more, "more card")}</span>}
+            {leadQuantity > 1 && <span className="block font-normal tabular-nums text-ink-3">×{leadQuantity}</span>}
+            {more > 0 && <span className="block font-normal text-ink-2">and {count(more, `more ${unit}`)}</span>}
           </div>
           <p className="text-xs text-ink-3">
-            {count(order.cardCount, "card")}. Sold {daysAgoLabel(order.daysSinceSold).toLowerCase()}.
+            {count(order.cardCount, unit)}. Sold {daysAgoLabel(order.daysSinceSold).toLowerCase()}.
           </p>
 
           {problems.length > 0 && (
@@ -197,7 +217,7 @@ function OrderRow({ order }: { order: UnshippedSale }) {
                   className={`size-4 transition-transform motion-reduce:transition-none ${open ? "rotate-180" : ""}`}
                 />
                 {/* Visible words first, then a stable "which order" for a reader; aria-expanded says the state. */}
-                {open ? "Hide the cards" : `Show all ${count(order.cardCount, "card")}`}
+                {open ? `Hide the ${unit}s` : `Show all ${count(order.cardCount, unit)}`}
                 <span className="sr-only">
                   {" "}
                   in {market} order {order.orderNumber}
@@ -218,15 +238,13 @@ function OrderRow({ order }: { order: UnshippedSale }) {
   );
 }
 
-/** The sleeve a line with no card wears: a dashed outline and a question mark, hidden from a reader (the words say it). */
+/** The sleeve a line with no card wears: an empty dashed outline, hidden from a reader (the words say it). */
 function NoCardThumb({ className }: { className: string }) {
   return (
     <div
       aria-hidden="true"
-      className={`flex aspect-[5/7] shrink-0 items-center justify-center rounded border-2 border-dashed border-control text-sm font-bold text-ink-3 ${className}`}
-    >
-      ?
-    </div>
+      className={`aspect-[5/7] shrink-0 rounded border-2 border-dashed border-control ${className}`}
+    />
   );
 }
 
@@ -235,8 +253,8 @@ function LineRow({ line, list }: { line: SaleLine; list: readonly string[] }) {
     return (
       <>
         <NoCardThumb className="w-8" />
-        <span className="text-sm text-ink-2">
-          Not matched to a card yet
+        <span className="min-w-0 text-sm text-ink [overflow-wrap:anywhere]">
+          {line.title ?? EBAY_UNTITLED_ITEM}
           {line.quantity > 1 && <span className="tabular-nums text-ink-3"> ×{line.quantity}</span>}
         </span>
       </>
@@ -253,9 +271,7 @@ function LineRow({ line, list }: { line: SaleLine; list: readonly string[] }) {
           <CardTitle card={c} className="text-ink" />
         </PanelLink>
         {line.quantity > 1 && <span className="tabular-nums text-ink-3"> ×{line.quantity}</span>}
-        {line.problem && (
-          <span className="ml-1 font-semibold text-notice-danger-ink">{line.problem.kind === "oversold" ? "Oversold" : "Unmatched"}</span>
-        )}
+        {line.problem && <span className="ml-1 font-semibold text-notice-danger-ink">Oversold</span>}
       </span>
     </>
   );
@@ -267,7 +283,7 @@ function LineRow({ line, list }: { line: SaleLine; list: readonly string[] }) {
  */
 function ProblemText({ line, list }: { line: SaleLine & { problem: SaleProblem }; list: readonly string[] }) {
   const p = line.problem;
-  if (p.kind !== "oversold" || !line.card) return <>{problemText(line)}</>;
+  if (!line.card) return <>{problemText(line)}</>;
   return (
     <>
       Oversold:{" "}
@@ -284,15 +300,11 @@ function ProblemText({ line, list }: { line: SaleLine & { problem: SaleProblem }
   );
 }
 
-/** One sentence per problem line. The listing title is quoted only to say which line it is. */
+/** One sentence per problem line: only an oversold line is one. */
 function problemText(line: SaleLine & { problem: SaleProblem }): string {
   const p = line.problem;
-  if (p.kind === "oversold") {
-    const who = line.card ? line.card.title : "A card";
-    return `Oversold: ${who} sold ${p.sold}, your boxes hold ${p.inBoxes}.`;
-  }
-  if (!p.listingTitle) return "A line isn't matched to a card of yours yet.";
-  return `Not matched to a card of yours: “${p.listingTitle}”.`;
+  const who = line.card ? line.card.title : "A card";
+  return `Oversold: ${who} sold ${p.sold}, your boxes hold ${p.inBoxes}.`;
 }
 
 // ------------------------------------------------------------- Needs a Look

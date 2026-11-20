@@ -22,10 +22,17 @@
 //      Washington Senators, Philadelphia Athletics and St. Louis Browns arrive
 //      LINKED for the operator (NEO-490, rule 2b: the era is read off the stints of
 //      the player on the card, "<player> played there"), so no team step is asked.
-//   4. Turkey Red (team rule): the St. Louis Browns arrive linked from the set's
-//      history; every other name is already answered, so the wizard opens on its
-//      Save step for that one link ("This name was linked for you. Give it a look
-//      before you save.") with its Decided line and Change, and saves on Confirm.
+//   4. Turkey Red (a team in several eras): the St. Louis Browns arrive linked
+//      again, and the reason is the player on the card (George Sisler's stint),
+//      NOT the set's history. NEO-602 (Jason, 2026-11-19): a name several eras
+//      answer to is settled by the players' stints, and when they are silent the
+//      operator is ASKED, even if the set already carries one era on a card, so
+//      set history never links such a name. Every other name is already answered,
+//      so the wizard opens on its Save step for that one link ("This name was
+//      linked for you. Give it a look before you save.") with its Decided line
+//      and Change, and saves on Confirm. Team set history, where it still applies
+//      (a name no other row settles), is proved by
+//      checklist-wizard-set-history-links-a-team.
 // Then STAR's player page lists exactly his two cards as Baseball guest cards.
 //   6. Prior year (rule E1): in Baseball -> 2009 -> Topps -> Topps, the insert
 //      Career Best Jumbo Jerseys is fetched and Rickie Weeks, its one unknown
@@ -83,14 +90,14 @@ import {
   advanceToSave,
   awaitLookupsSettled,
   confirmSaveButton,
-  expectStepLeft,
+  expectNameStepLeft,
+  expectNothingDecided,
   openDecidedList,
   passCareerCheck,
   personSkip,
   readBackDecision,
-  readStep,
+  readNameStep,
   reviewWizard,
-  stepCounter,
   walkToPlayerRow,
 } from "../../support/wizard";
 
@@ -265,14 +272,15 @@ async function skipEverythingLeft(page: Page): Promise<void> {
   for (let i = 0; i < 40; i++) {
     await expect(person.or(stepSkip).or(namesDone).first()).toBeVisible();
     if (await namesDone.isVisible()) break;
-    // x is the decided count plus one on a name step, so any decision moves it.
-    const { x } = await readStep(page);
+    // The presented row, by its own skip; any decision takes the wizard off it
+    // (NEO-467: rows of a kind share a subtitle, so the row's control is the proof).
+    const row = await readNameStep(page);
     if (await stepSkip.first().isVisible()) {
       await stepSkip.first().click();
     } else {
       await skipRemaining.click();
     }
-    await expectStepLeft(page, x);
+    await expectNameStepLeft(page, row);
   }
   await expect(namesDone).toBeVisible();
 }
@@ -344,7 +352,7 @@ async function fetchInsertToWizard(
 }
 
 test(
-  "Entity review — a name linked on a committed card of the set links to the same player on the set's next variant (a player of another sport, a Hall of Famer, a team), shows in the Decided list, and Change reopens it on the suggestion; a year on, the prior year's edition suggests the same player (NEO-424)",
+  "Entity review — a name linked on a committed card of the set links to the same player on the set's next variant (a player of another sport, a Hall of Famer), shows in the Decided list, and Change reopens it on the suggestion; a club held in several eras links from its player's stint, never from set history; a year on, the prior year's edition suggests the same player (NEO-424, NEO-602)",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     const wizard = reviewWizard(page);
@@ -376,7 +384,7 @@ test(
 
     // FIRST. Its one unknown name is STAR; he is a FOOTBALL player on a Baseball card.
     await fetchInsertToWizard(page, env, FIRST, { reconcile: true });
-    await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+    await expectNothingDecided(page);
     await walkToPlayerRow(page);
     await addAsFootballPlayer(page, STAR, "Entity review wizard, a name moved to Football");
 
@@ -498,11 +506,15 @@ test(
     await confirmSaveButton(page).click();
     await expect(page.getByText(/Saved [1-9][0-9]* cards?/)).toBeVisible();
 
-    // ── PHASE 4: FOURTH. The team rule: the Browns arrive linked; the wizard opens on Save ──
+    // ── PHASE 4: FOURTH. The Browns arrive linked from the PLAYER, not the set; the wizard opens on Save ──
     // Every other name is already answered by what THIRD committed, so the only
     // thing this fetch has is one link made for the operator. That alone opens
     // the wizard, on its Save step (never a silent commit), with the Decided list
     // open at any length and a line saying the name was linked for them.
+    // NEO-602: the Browns are two rows (1883–1898, 1902–1953) and neither covers
+    // 2010, so TR92's player decides, as on THIRD; THIRD's committed Browns card
+    // is not what links it (with a silent player the name would be ASKED, Jason
+    // 2026-11-19), so the line names Sisler and never the set's history.
     await drillToSet(page, env, TARGET);
     await fetchInsertToWizard(page, env, FOURTH, { reconcile: false });
     await expect(wizard.getByText("Ready to save", { exact: true })).toBeVisible();
@@ -511,7 +523,8 @@ test(
     ).toBeVisible();
     const teamDecided = await openDecidedList(page);
     const browns = teamDecided.getByRole("listitem").filter({ has: page.getByText(BROWNS, { exact: true }) });
-    await expect(browns.getByText(`Linked to ${BROWNS} · already on another card in this set`)).toBeVisible();
+    await expect(browns.getByText(`Linked to ${BROWNS} · George Sisler played there`, { exact: true })).toBeVisible();
+    await expect(browns.getByText(/already on another card in this set/)).toHaveCount(0);
     await expect(browns.getByRole("button", { name: `Change decision for ${BROWNS}` })).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, a links-only Save step" });
     await confirmSaveButton(page).click();
@@ -559,7 +572,7 @@ test(
       what: "Variant Types row Insert",
     });
     await fetchInsertToWizard(page, env, PRIOR, { reconcile: true, target: TARGET_2009, inserts: [PRIOR] });
-    await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+    await expectNothingDecided(page);
     // Two Chris Carpenters are on file (b. 1975, Cardinals 2004-2012; b. 1985, Cubs 2011 and Red Sox
     // 2012) and Career Best has two of his cards, both "St. Louis Cardinals" in the uploaded file.
     // The checklist's team reaches the name gate with the card, and only the b. 1975 Carpenter was on

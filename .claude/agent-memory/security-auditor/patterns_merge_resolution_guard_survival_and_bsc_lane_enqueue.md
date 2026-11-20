@@ -22,3 +22,12 @@ stale items cost a mutation, not a BSC request; (4) a looser caller-side predica
 paced by one slot, with 429 push-back and a 30-min operator hand-off: a note, not a finding,
 while the trigger is admin-only. Compare [[patterns-wikidata-pool-abuse-surface]], where a
 signed-in-only path enqueuing is the finding.
+
+**Merged agent-memory index (MEMORY.md) resolution:** a raw "lines in parent not in merge"
+diff overstates loss, because main's own index can already carry a duplicated block (old long
+descriptions appended) and links to files a PR deleted. Classify each lost line by its link
+target instead: exists in the merge tree AND linked exactly once = fine (a description variant
+was kept); target absent from the merge tree = a dangling link correctly dropped; exists but
+unlinked = loss. Then check every file in `git ls-tree <merge> <dir>/` is linked once. An
+unindexed file that is also unindexed in the merge base and both parents is pre-existing, not
+the resolution's fault: a note, not a finding.

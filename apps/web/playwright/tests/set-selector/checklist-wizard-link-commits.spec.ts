@@ -18,7 +18,7 @@
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { CHECKLISTS, checklistFacts, expectTeamsFromChecklist } from "../../support/published-checklist";
 import { addPlayerByHand, expectPlayersLoaded, PLAYERS_MATCHES, playersCounter } from "../../support/players";
-import { advanceToSave, fetchOneMarketplaceSetChecklistToWizard, readBackDecision, reviewWizard, stepCounter, walkToPlayerRow } from "../../support/wizard";
+import { advanceToSave, fetchOneMarketplaceSetChecklistToWizard, expectNothingDecided, readBackDecision, reviewWizard, walkToPlayerRow } from "../../support/wizard";
 import { recordedNoMatchName } from "../../support/recorded-names";
 
 test(
@@ -34,8 +34,8 @@ test(
 
     await fetchOneMarketplaceSetChecklistToWizard(page, env, { set: "San Antonio Iguanas CHL", checklist: CHECKLISTS.sanAntonioIguanas });
     const wizard = reviewWizard(page);
-    // Nothing decided: on a name step x is the decided count plus one (NEO-335).
-    await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+    // Nothing decided: a name step is up and there is no "Decided (N)" history (NEO-467).
+    await expectNothingDecided(page);
 
     // Row 1: link to an existing player by search.
     await walkToPlayerRow(page);

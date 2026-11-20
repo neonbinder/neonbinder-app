@@ -25,9 +25,11 @@
  * folded into one row, so a 1985 card and a 2015 card pointed at the same team.
  *
  * The consequence for this module is that a lookup by name returns a LIST.
- * `findTeamsByFullName` is that lookup; `resolveTeamForSetYear` is the one
- * place a list becomes a single row, and it does so only when the card's own
- * year leaves exactly one candidate. There is deliberately no helper here that
+ * `findTeamsByFullName` is that lookup; `resolveTeamForSetYear` is the place a
+ * list becomes a single row for a stint or a bare year, and it does so only
+ * when the year leaves exactly one candidate. NEO-602: for a name printed on a
+ * CARD the place is `resolveCardTeamName`, which also lets the card's players
+ * decide between eras (`pickCardTeam`). There is deliberately no helper here that
  * takes a name and hands back "the" team — that shape is what bound 1985 cards
  * to a 2011 franchise, and `convex/teams.dedupPin.test.ts` greps to keep it
  * from coming back.
@@ -64,7 +66,11 @@ import { normalizeEntityName } from "./entityNearMatch";
 import { stintCountsForYear } from "./careerCoverage";
 import {
   erasOverlap,
+  pickCardTeam,
   pickTeamForYear,
+  stintOverlapsEra,
+  type CardTeamPick,
+  type Stint,
   type TeamEra,
   type TeamEraPickOptions,
 } from "../../lib/teams/team-era";
@@ -380,6 +386,162 @@ export async function resolveTeamForSetYear(
   return { teamId: pick ? pick.row._id : null, candidates };
 }
 
+/** A `players.teamYears[]` entry as the pure era rules read it. */
+function toStint(stint: { teamId: Id<"teams">; fromYear?: number; toYear?: number }): Stint {
+  return {
+    teamId: stint.teamId as string,
+    ...(stint.fromYear !== undefined ? { fromYear: stint.fromYear } : {}),
+    ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
+  };
+}
+
+/** What `resolveCardTeamName` concluded: the row, and how it was reached. */
+export type CardTeamResolution = TeamNameResolution & {
+  /**
+   * `"year"` — the set year settled it. `"players"` — the cards' players'
+   * stints did. `null` exactly when `teamId` is null.
+   */
+  via: CardTeamPick<Doc<"teams">>["via"] | null;
+  /**
+   * Whether the set year alone lands on the row the players chose. `false`
+   * when `teamId` is null.
+   *
+   * What a caller does with `via: "players"` and `agreesWithYear: false`
+   * depends on whether an operator is looking:
+   * - The review gate and the commit prelude link silently only when
+   *   `via === "year"` or `agreesWithYear`. A players' answer that contradicts
+   *   the year is shown as a decided row the operator can Change (the gate), or
+   *   left unreviewed (the prelude); never linked quietly.
+   * - Unattended per-card fills (`applyBscTeamResolution`,
+   *   `backfillTeamToOnCardIds`) have no review row to show, and link the
+   *   players' answer. The player's years decide (Jason, 2026-11-18); a card
+   *   whose year disagrees with them is not ambiguous, it is a retro or a
+   *   reprint of the player's own team.
+   */
+  agreesWithYear: boolean;
+};
+
+/**
+ * NEO-602 — the ONE place a team name printed on a CARD becomes a team id.
+ *
+ * `resolveTeamForSetYear` reads only the set's year, which cannot tell
+ * "Oakland Athletics" the 1968–2024 franchise from the 2025– Athletics that
+ * carries it as an alias. This reads the cards' PLAYERS too: `cardPlayerIds`
+ * holds, per card printing the name, the NB players its names resolved to, and
+ * a stint of theirs on one of the name's rows decides between them. The rule
+ * itself is the pure `pickCardTeam` (`lib/teams/team-era.ts`); this wrapper
+ * only loads what it needs — the name's rows, which of them the name reached
+ * by alias alone, and the players' stints — and applies the same bounds as
+ * `narrowTeamRowsByCardPlayers`.
+ *
+ * Stint callers (career teams) keep `resolveTeamForSetYear` without the card
+ * allowance: nobody plays for a team after it folds, and a stint's own year is
+ * not a card's.
+ *
+ * Reads no player unless the name has two or more rows and the caller handed
+ * players. Past the bounds the players are not read at all and the year decides
+ * (with the alias-vs-own-name guard): too common a name to sample is no reason
+ * to ask about every set that prints it.
+ */
+export async function resolveCardTeamName(
+  ctx: QueryCtx | MutationCtx,
+  sportId: Id<"selectorOptions">,
+  fullName: string,
+  setYear: number | undefined,
+  options: {
+    cardPlayerIds?: ReadonlyArray<ReadonlyArray<Id<"players">>>;
+    /**
+     * The same evidence, loaded only when it can matter: called once, and only
+     * when the name reaches two or more rows (one row is nobody's to choose
+     * between). For a caller whose player ids cost reads to find. Undefined
+     * means the caller has no player evidence; `cardPlayerIds` wins when both
+     * are given.
+     */
+    loadCardPlayerIds?: () => Promise<
+      ReadonlyArray<ReadonlyArray<Id<"players">>> | undefined
+    >;
+  } = {},
+): Promise<CardTeamResolution> {
+  const candidates = await findTeamsByFullName(ctx, sportId, fullName);
+  if (candidates.length === 0) {
+    return { teamId: null, candidates, via: null, agreesWithYear: false };
+  }
+  const key = normalizeEntityName(fullName);
+  // The name leg is `nameNormalized === key`; a row in the union that does not
+  // satisfy it got in through an alias.
+  const aliasOnlyIds = new Set<string>(
+    candidates.filter((row) => row.nameNormalized !== key).map((row) => row._id as string),
+  );
+
+  let cards: Stint[][][] | undefined;
+  const cardPlayerIds =
+    options.cardPlayerIds ??
+    (candidates.length >= 2 ? await options.loadCardPlayerIds?.() : undefined);
+  if (
+    candidates.length >= 2 &&
+    cardPlayerIds &&
+    cardPlayerIds.length > 0 &&
+    cardPlayerIds.length <= CARD_PLAYER_TEAM_MAX_CARDS &&
+    !cardPlayerIds.some((ids) => ids.length > CARD_PLAYER_TEAM_MAX_PLAYERS_PER_CARD)
+  ) {
+    const candidateIds = new Set<string>(candidates.map((row) => row._id as string));
+    const stintsByPlayer = new Map<string, Stint[]>();
+    cards = [];
+    for (const ids of cardPlayerIds) {
+      const players: Stint[][] = [];
+      for (const playerId of ids) {
+        const k = playerId as string;
+        let stints = stintsByPlayer.get(k);
+        if (!stints) {
+          const player = await ctx.db.get(playerId);
+          // NEO-574 — same rule as `narrowTeamRowsByCardPlayers`: a stint
+          // that begins after the set's year cannot say which era a card shows.
+          stints = (player?.teamYears ?? [])
+            .filter(
+              (stint) =>
+                candidateIds.has(stint.teamId as string) &&
+                (setYear === undefined || stintCountsForYear(stint, setYear)),
+            )
+            .map(toStint);
+          stintsByPlayer.set(k, stints);
+        }
+        players.push(stints);
+      }
+      cards.push(players);
+    }
+  }
+
+  const pick = pickCardTeam(candidates, {
+    setYear,
+    aliasOnlyIds,
+    ...(cards ? { cards } : {}),
+  });
+  if (!pick) return { teamId: null, candidates, via: null, agreesWithYear: false };
+  if (pick.via === "year" && candidates.length === 1) {
+    const only = pickTeamForYear(candidates, setYear, { allowPastEra: true });
+    if (only?.pastEra) {
+      // Same breadcrumb as `resolveTeamForSetYear`: the one link made OUTSIDE
+      // a row's era is the one worth finding afterwards.
+      console.log(
+        JSON.stringify({
+          msg: "team_linked_past_era",
+          sportId,
+          teamId: pick.row._id,
+          setYear,
+          eraFrom: pick.row.yearsActive?.from,
+          eraTo: pick.row.yearsActive?.to,
+        }),
+      );
+    }
+  }
+  return {
+    teamId: pick.row._id,
+    candidates,
+    via: pick.via,
+    agreesWithYear: pick.agreesWithYear,
+  };
+}
+
 /**
  * NEO-490 (2b) — the bounds on `narrowTeamRowsByCardPlayers`. A team name
  * printed on more than 16 cards, or a card carrying more than 4 players, is
@@ -396,7 +558,8 @@ export const CARD_PLAYER_TEAM_MAX_PLAYERS_PER_CARD = 4;
  *
  * `cardPlayerIds` holds, per card printing this team name, the NB players the
  * card's names resolved to. For each card, the candidate rows any of its
- * players has a stint on (`teamYears[].teamId`) are collected. The answer is
+ * players has a stint on (`teamYears[].teamId`, with years that overlap the
+ * row's era, NEO-602) are collected. The answer is
  * a row only when EVERY card gives exactly one and every card gives the SAME
  * one. A card with no resolved player, a card whose players point at two
  * eras, or two cards that disagree, all leave it to the operator: the
@@ -441,28 +604,35 @@ export async function narrowTeamRowsByCardPlayers(
   );
   if (eligible.size === 0) return null;
 
-  const stintTeamsByPlayer = new Map<string, Set<string>>();
+  // NEO-602 — a stint only supports a row whose era it overlaps. Rickey
+  // Henderson's 1979-84 and 1989-93 stints on Oakland say nothing for a row
+  // that began in 2025; before this a stint on the right TEAM ID was enough,
+  // whatever years it carried.
+  const eraByTeam = new Map<string, TeamEra | undefined>(
+    candidates.map((row) => [row._id as string, row.yearsActive]),
+  );
+  const stintsByPlayer = new Map<string, Stint[]>();
   let answer: string | null = null;
   for (const ids of cardPlayerIds) {
     const onCard = new Set<string>();
     for (const playerId of ids) {
       const key = playerId as string;
-      let teams = stintTeamsByPlayer.get(key);
-      if (!teams) {
+      let stints = stintsByPlayer.get(key);
+      if (!stints) {
         const player = await ctx.db.get(playerId);
         // NEO-574 — a stint counts only when undated or begun by the set's
         // year (the shared coverage rule): a stint that starts after the
         // card was printed says nothing about which era the card shows.
         // With no set year there is nothing to compare, so all count.
-        teams = new Set(
-          (player?.teamYears ?? [])
-            .filter((stint) => year === undefined || stintCountsForYear(stint, year))
-            .map((stint) => stint.teamId as string),
-        );
-        stintTeamsByPlayer.set(key, teams);
+        stints = (player?.teamYears ?? [])
+          .filter((stint) => year === undefined || stintCountsForYear(stint, year))
+          .map(toStint);
+        stintsByPlayer.set(key, stints);
       }
-      for (const teamId of teams) {
-        if (eligible.has(teamId)) onCard.add(teamId);
+      for (const stint of stints) {
+        if (eligible.has(stint.teamId) && stintOverlapsEra(stint, eraByTeam.get(stint.teamId))) {
+          onCard.add(stint.teamId);
+        }
       }
     }
     if (onCard.size !== 1) return null;

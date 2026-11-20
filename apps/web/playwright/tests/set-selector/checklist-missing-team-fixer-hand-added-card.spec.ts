@@ -114,10 +114,15 @@ test(
     const walker = page.getByRole("dialog", { name: TIDY_UP_NAME });
     await expect(walker).toBeVisible();
     // The walker is on THIS card (its Skip control names the number; the wizard
-    // shares the title), its counter agrees with the pill (one card), the
-    // subtitle names the question, and the fixer shows the linked player.
+    // shares the title), the subtitle names the question (also the progress
+    // bar's value text since NEO-467; that the sitting holds the pill's one card
+    // is proved by Save & Next going straight to All clear below), and the fixer
+    // shows the linked player.
     await expect(walker.getByRole("button", { name: `Skip for now, card ${num}` })).toBeVisible();
-    await expect(walker.getByText("Step 1 of 1", { exact: true })).toBeVisible();
+    await expect(walker.getByRole("progressbar", { name: "Wizard progress" })).toHaveAttribute(
+      "aria-valuetext",
+      "Cards with no team",
+    );
     await expect(walker.getByText("Cards with no team", { exact: true })).toBeVisible();
     await expect(walker.getByText("Players: George Brett")).toBeVisible();
 
@@ -152,8 +157,9 @@ test(
     await walker.getByRole("button", { name: /Save & Next/ }).click();
 
     await expect(walker.getByText("All clear — nothing on this checklist needs attention.")).toBeVisible();
-    // y never shrinks and there is no "fixed" count; the write is proved on the row below.
-    await expect(walker.getByText("Step 1 of 1", { exact: true })).toBeVisible();
+    // One Save & Next reached All clear: this card was the sitting's only one.
+    // There is no "fixed" count; the write is proved on the row below.
+    await expect(walker.getByRole("button", { name: `Skip for now, card ${num}` })).toBeHidden();
     await walker.getByRole("button", { name: "Done (Esc)" }).click();
     await expect(walker).toBeHidden();
 

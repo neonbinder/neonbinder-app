@@ -68,7 +68,6 @@ import {
   saleLineOf,
   salesDataOf,
   shelfBinderOf,
-  statusWordsOf,
   TRADE_PREVIEW,
   tradePileOf,
   unlistedBoxesOf,
@@ -901,10 +900,9 @@ function saleRaw(over: Partial<SaleRaw> = {}): SaleRaw {
     platform: "bsc",
     orderNo: "BSC-1",
     orderDate: new Date(2026, 10, 9, 9).getTime(),
-    status: "READY_TO_SHIP",
     lines: [{ cardId: cardA.id as never, quantity: 1 }],
     cardCount: 1,
-    problemPastCut: false,
+    oversoldPastCut: false,
     ...over,
   };
 }
@@ -915,14 +913,7 @@ const cardsAB = () =>
     [cardB.id, cardB],
   ]);
 
-describe("statusWordsOf and daysSinceSold", () => {
-  it("reads the platform's word in plain case, never changing the word", () => {
-    expect(statusWordsOf("READY_TO_SHIP")).toBe("Ready to ship");
-    expect(statusWordsOf("PAID")).toBe("Paid");
-    expect(statusWordsOf("IN_PROGRESS")).toBe("In progress");
-    expect(statusWordsOf("")).toBe("");
-  });
-
+describe("daysSinceSold", () => {
   it("counts calendar days since the order date, never below 0", () => {
     const now = new Date(2026, 10, 9, 8).getTime();
     expect(daysSinceSold(new Date(2026, 10, 9, 1).getTime(), now)).toBe(0);
@@ -935,9 +926,33 @@ describe("statusWordsOf and daysSinceSold", () => {
 describe("sales: shipped vs still to ship, and the lines", () => {
   const now = new Date(2026, 10, 9, 12).getTime();
 
-  it("a line with no card, or a card gone from the catalog, is unmatched with no card: never a guess", () => {
-    expect(saleLineOf({ quantity: 2, problem: "unmatched" }, cardsAB())).toEqual({ card: null, quantity: 2, problem: { kind: "unmatched" } });
-    expect(saleLineOf({ cardId: "gone" as never, quantity: 1 }, cardsAB())).toEqual({ card: null, quantity: 1, problem: { kind: "unmatched" } });
+  it("a line with no card, or a card gone from the catalog, has no card and no problem: never a guess", () => {
+    expect(saleLineOf({ quantity: 2 }, cardsAB())).toEqual({ card: null, quantity: 2 });
+    expect(saleLineOf({ cardId: "gone" as never, quantity: 1 }, cardsAB())).toEqual({ card: null, quantity: 1 });
+  });
+
+  it("a cardless eBay line is named by its listing title", () => {
+    const line = saleLineOf({ quantity: 1, listed: { title: "2023 Topps Chrome #121 Gunnar Henderson RC" } }, cardsAB());
+    expect(line).toEqual({ card: null, quantity: 1, title: "2023 Topps Chrome #121 Gunnar Henderson RC" });
+    expect(line.problem).toBeUndefined();
+  });
+
+  it("a cardless BSC line is named by the words it describes", () => {
+    const line = saleLineOf({ quantity: 1, listed: { year: "2024", setName: "Score", cardNo: "333", players: "Rome Odunze" } }, cardsAB());
+    expect(line.card).toBeNull();
+    expect(line.title).toBe("2024 Score #333 · Rome Odunze");
+  });
+
+  it("a cardless line with no listed words, or blank ones, has no title", () => {
+    expect(saleLineOf({ quantity: 1 }, cardsAB())).not.toHaveProperty("title");
+    expect(saleLineOf({ quantity: 1, listed: {} }, cardsAB())).not.toHaveProperty("title");
+    expect(saleLineOf({ quantity: 1, listed: { title: "   ", players: " " } }, cardsAB())).not.toHaveProperty("title");
+  });
+
+  it("a line that has a card carries no title, even when the sale had words", () => {
+    const line = saleLineOf({ cardId: cardA.id as never, quantity: 1, listed: { title: "Some listing" } }, cardsAB());
+    expect(line.card?.id).toBe(cardA.id);
+    expect(line).not.toHaveProperty("title");
   });
 
   it("an oversold line says how many sold and how many the boxes held", () => {
@@ -951,21 +966,23 @@ describe("sales: shipped vs still to ship, and the lines", () => {
       saleRaw({
         platform: "ebay",
         orderNo: "14-1",
-        status: "PAID",
-        lines: [{ quantity: 1, problem: "unmatched" }, { cardId: cardB.id as never, quantity: 1 }],
+        lines: [{ quantity: 1 }, { cardId: cardB.id as never, quantity: 1, problem: "oversold", shortBy: 1 }],
         cardCount: 5,
-        problemPastCut: false,
+        oversoldPastCut: false,
         orderDate: new Date(2026, 10, 7, 12).getTime(),
       }),
       cardsAB(),
       now,
     );
-    expect(order).toMatchObject({ marketplace: "ebay", orderNumber: "14-1", statusText: "Paid", daysSinceSold: 2, cardCount: 5, hasProblem: true });
+    expect(order).toMatchObject({ marketplace: "ebay", orderNumber: "14-1", daysSinceSold: 2, cardCount: 5, hasProblem: true });
     expect(order.firstCard?.id).toBe(cardB.id);
-    expect(unshippedSaleOf(saleRaw({ problemPastCut: true }), cardsAB(), now).hasProblem).toBe(true);
+    expect(unshippedSaleOf(saleRaw({ oversoldPastCut: true }), cardsAB(), now).hasProblem).toBe(true);
     expect(unshippedSaleOf(saleRaw(), cardsAB(), now).hasProblem).toBe(false);
-    // No line tied to a card: no first card, nothing guessed.
-    expect(unshippedSaleOf(saleRaw({ lines: [{ quantity: 1, problem: "unmatched" }] }), cardsAB(), now).firstCard).toBeNull();
+    // No line tied to a card: no first card, nothing guessed, and not a problem.
+    const cardless = unshippedSaleOf(saleRaw({ lines: [{ quantity: 1, listed: { title: "A listing" } }] }), cardsAB(), now);
+    expect(cardless.firstCard).toBeNull();
+    expect(cardless.lines).toEqual([{ card: null, quantity: 1, title: "A listing" }]);
+    expect(cardless.hasProblem).toBe(false);
   });
 
   it("not a dealer: no sales panel; a dealer: the orders oldest first", () => {

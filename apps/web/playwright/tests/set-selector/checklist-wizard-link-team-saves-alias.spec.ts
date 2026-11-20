@@ -67,12 +67,15 @@ import {
   advanceToSave,
   careerLine,
   confirmSaveButton,
-  expectStepLeft,
+  expectPostNameStepLeft,
   fetchOneMarketplaceSetChecklistToWizard,
+  expectDecidedCount,
+  expectNothingDecided,
   nextStepButton,
-  readStep,
+  readDecidedCount,
+  readProgress,
   reviewWizard,
-  stepCounter,
+  STEP_SUBTITLE,
 } from "../../support/wizard";
 import type { Locator, Page } from "@playwright/test";
 
@@ -138,6 +141,10 @@ test(
     await newAli.getByRole("textbox", { name: "New team location (optional)" }).fill(`Loc${T}`);
     // The alias holder for the NEO-307 refusal below: inert, no checklist carries it.
     await newAli.getByRole("textbox", { name: "New team aliases (optional)" }).fill(`Pca${T}`);
+    // NEO-602: DATED (1990–1996, still covering the set's 1996), so a New Team
+    // draft dated clear of it is no clash and one left undated may overlap it.
+    await newAli.getByLabel("New team active from (optional)").fill("1990");
+    await newAli.getByLabel("New team active to").fill("1996");
     await expectAccessible(page, { within: newAli, label: "New team dialog, location and name" });
     // The Create button's name is the composed full name: Location then Name.
     await newAli.getByRole("button", { name: `Create team ${FIXTURE_TEAM}` }).click();
@@ -167,9 +174,8 @@ test(
     const wizard = reviewWizard(page);
 
     // ── PART 3: walk the team and league steps, acting on one club by name ──
-    // NEO-335's counter: on a name step x is the decided count plus one, so
-    // nothing decided is "Step 1 of N" (a full match: not "Step 11 of ...").
-    await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+    // Nothing decided: a name step is up and there is no "Decided (N)" history (NEO-467).
+    await expectNothingDecided(page);
     // Wait the batch's lookups out so every step the walk reads is settled and
     // nothing that settles later out-ranks the row under test (leagues before
     // teams before players). Marketplace-class wait: one lookup per unknown
@@ -229,27 +235,60 @@ test(
       await expectAccessible(page, { within: wizard, label: "Entity review wizard, team step with the link section" });
 
       // NEO-307: a New Team name that is another team's alias is refused.
+      // NEO-602: refused while the two teams' years may overlap, in the server's
+      // words. The holder is dated (PART 1) and this step's draft is not (the
+      // recording answers the club's lookup with no match), so the clause is
+      // "this team has no years on file" and the holder is named with its era.
       const teamName = wizard.getByRole("textbox", { name: "New team name" });
       await expect(teamName).toHaveValue(ROW);
       await teamName.fill(`Pca${T}`);
-      await expect(
-        wizard
-          .getByText(
-            `${FIXTURE_TEAM} already answers to this name as an alias — remove it there before a team can take the name.`,
-          )
-          .first(),
-      ).toBeVisible();
-      await expect(wizard.getByRole("button", { name: `Link to ${FIXTURE_TEAM}` })).toBeVisible();
-      const { x: stepBefore } = await readStep(page);
-      await expect(wizard.getByRole("button", { name: "Add as New Team" })).toBeDisabled();
+      const CLASH = `${FIXTURE_TEAM} · 1990–1996 already answers to this name as an alias, and this team has no years on file, so they may overlap. Remove it there, or give this team years that don't overlap.`;
+      // Said twice: in the step (beside its "Link to <holder>" way out) and in
+      // the footer, as the refused create's reason.
+      await expect(wizard.getByText(CLASH)).toHaveCount(2);
+      await expect(wizard.getByText(CLASH).first()).toBeVisible();
+      const addAsNew = wizard.getByRole("button", { name: "Add as New Team" });
+      await expect(addAsNew).toBeDisabled();
+      await expect(addAsNew).toHaveAccessibleDescription(CLASH);
+      // The footer's copy (last in reading order) wraps rather than clips: the
+      // whole sentence is on screen, at a phone's width too.
+      await expect(wizard.getByText(CLASH).last()).toBeInViewport({ ratio: 1 });
+      await expect(wizard.getByRole("button", { name: `Link to ${FIXTURE_TEAM} · 1990–1996` })).toBeVisible();
+      // This row's own skip: it stays on screen exactly while the row is undecided.
+      const rowSkip = wizard.getByRole("button", { name: `Skip ${ROW} — not a team`, exact: true });
+      await expect(rowSkip).toBeVisible();
+      const decidedBefore = await readDecidedCount(page);
       await expect(wizard.getByRole("heading", { name: `New Team: ${ROW}` })).toBeVisible();
       await expectAccessible(page, { within: wizard, label: "Entity review wizard, new team name refused as an alias" });
+
+      // Dated clear of the holder (1997 on), the clash is gone, the footer's
+      // status line says so, and the create is offered.
+      await wizard.getByLabel("New team active from (optional)").fill("1997");
+      const cleared = wizard.getByText("No clash with that name now.", { exact: true });
+      await expect(cleared).toBeVisible();
+      // The refusal (", and <reason>. Remove it there, …") is gone from the step
+      // and the footer. What stays is the form's statement of who answers to
+      // the name: allowed now, so told, never refused, and without the advice
+      // clause because the draft's years already clear the holder's (NEO-602).
+      await expect(wizard.getByText(/already answers to this name as an alias, and /)).toHaveCount(0);
+      await expect(
+        wizard.getByText(
+          `${FIXTURE_TEAM} · 1990–1996 already answers to this name as an alias.`,
+          { exact: true },
+        ),
+      ).toBeVisible();
+      await expect(addAsNew).toBeEnabled();
+      await expectAccessible(page, { within: wizard, label: "Entity review wizard, alias clash cleared by the draft's years" });
 
       // Link through the search: the typed token finds the fixture by name.
       await searchAll.fill(`Ali${T}`);
       await expect(searchAll).toHaveValue(`Ali${T}`);
-      // Still undecided: the refused create recorded nothing.
-      await expect(stepCounter(page)).toHaveText(new RegExp(`^Step ${stepBefore} of [0-9]+$`));
+      // Still undecided: the refused create recorded nothing, so the wizard is
+      // still on this row (its heading and its own skip) and the "Decided (N)"
+      // history has not grown (NEO-467: no step count to pin).
+      await expect(wizard.getByRole("heading", { name: `New Team: ${ROW}` })).toBeVisible();
+      await expect(rowSkip).toBeVisible();
+      await expectDecidedCount(page, decidedBefore);
       await page.getByRole("option", { name: new RegExp(`^${FIXTURE_TEAM}`) }).click();
       await expect(wizard.getByRole("heading", { name: `New Team: ${ROW}` })).toBeHidden();
 
@@ -371,9 +410,10 @@ test(
     await expect(lineMarlins.getByRole("radio", { name: "Keep as is" })).toBeChecked();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, Career check answered" });
 
-    const { x: careerStep } = await readStep(page);
+    const { subtitle: careerStep } = await readProgress(page);
+    expect(careerStep, "the wizard is on its Career check").toBe(STEP_SUBTITLE.career);
     await nextStepButton(page).click();
-    await expectStepLeft(page, careerStep);
+    await expectPostNameStepLeft(page, careerStep);
     await expect(wizard.getByText(/^(Card titles|Autographed cards|Ready to save)$/)).toBeVisible();
     await expect(wizard.getByText("Cards with no team", { exact: true })).toBeHidden();
     // The teams / titles steps stay on their defaults; this spec's feature is the alias.

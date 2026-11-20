@@ -46,24 +46,21 @@ export function walkDoneLine(awaitingLookup: number): string {
 }
 
 /**
- * NEO-335 Phase 2 (D9) — "Step x of y" for the walker.
+ * NEO-335 Phase 2 (D9), NEO-467 — the walker's progress bar.
  *
  * - `seen` is every card that has been in the walk at any point this sitting.
- *   It only grows, so y never shrinks: a card answered here, skipped, or
- *   resolved somewhere else (a lookup landing, another tab) still counts as
- *   walked. A card flagged mid-sitting joins it and y grows by one.
+ *   It only grows, so the plan never shrinks: a card answered here, skipped,
+ *   or resolved somewhere else (a lookup landing, another tab) still counts as
+ *   walked. A card flagged mid-sitting joins it and the plan grows by one.
  * - `left` is how many are still to be asked, the card on screen included.
- * - With a card on screen, x is the walked count plus one. Once nothing is left
- *   the counter reads y of y and the rail is full.
+ * - `done` is the walked count; once nothing is left the bar is full.
  */
-export function walkStep(
+export function walkProgress(
   seen: number,
   left: number,
-  onScreen: boolean,
-): { step: number; total: number } {
-  const total = Math.max(seen, left);
-  const walked = total - left;
-  return { step: onScreen ? Math.min(total, walked + 1) : total, total };
+): { done: number; planned: number } {
+  const planned = Math.max(seen, left);
+  return { done: planned - left, planned };
 }
 
 /**
@@ -93,8 +90,8 @@ export function walkStep(
  * save, so what reaches this walk is what that could not settle: a team
  * lookup that failed, a review the operator cancelled, an edit made since, a
  * set saved before the wizard asked. It wears the wizard's chrome
- * (`WizardChrome`): "Tidy up <year set variant>" (NEO-497), ONE "Step x of y" across every card
- * the sitting walks (`walkStep`), and the question's type as the subtitle
+ * (`WizardChrome`): "Tidy up <year set variant>" (NEO-497), one progress bar across every card
+ * the sitting walks (`walkProgress`), and the question's type as the subtitle
  * (`attentionWalkSubtitle`). No per-kind counts anywhere.
  *
  * ## The order (NEO-335)
@@ -193,7 +190,7 @@ export default function CardAttentionWalker({
   //                 update are not the same instant, and without it the card
   //                 would flash back on screen in between.
   //  - `seen`     — every card that has been in the walk this sitting, for
-  //                 "Step x of y" (see `walkStep`). Only ever grows.
+  //                 the progress bar (see `walkProgress`). Only ever grows.
   // NEO-535 — TitleFixer's "Trim Set name in titles" door closes the walker
   // so the Attributes panel behind it can take focus.
   useClosesForSetNameInTitles(onClose);
@@ -227,12 +224,12 @@ export default function CardAttentionWalker({
   );
 
   /*
-   * y's memory. Seeded with the walk as it opens, and grown in the render
+   * The plan's memory. Seeded with the walk as it opens, and grown in the render
    * that first sees a newly flagged card — the render-phase update React
    * documents for "information from previous renders", which is what keeps
    * this from being an effect that chases the derived list (one extra render
-   * with a stale y) or a ref read during render. Cards are only ever ADDED:
-   * one that leaves the list by any route has been walked, and y holds.
+   * with a stale plan) or a ref read during render. Cards are only ever ADDED:
+   * one that leaves the list by any route has been walked, and the plan holds.
    */
   const [seen, setSeen] = useState<ReadonlySet<string>>(
     () => new Set(attentionCards.map((c) => c._id as string)),
@@ -291,12 +288,8 @@ export default function CardAttentionWalker({
   const { item: primaryItem, Fixer } = pickAttentionFixer(items);
 
   // `unseen` is counted in too: the render that first sees a card already
-  // shows it in y, rather than waiting on the queued `setSeen`.
-  const { step, total } = walkStep(
-    seen.size + unseen.length,
-    remaining.length,
-    current !== null,
-  );
+  // counts it in the plan, rather than waiting on the queued `setSeen`.
+  const { done, planned } = walkProgress(seen.size + unseen.length, remaining.length);
   // The question's type. Empty once the walk is done: the body's done line is
   // the whole story then, and a subtitle naming the last group would be stale.
   const subtitle = current ? attentionWalkSubtitle(items) : "";
@@ -463,18 +456,18 @@ export default function CardAttentionWalker({
         <div className="flex max-h-full w-full max-w-[45rem] flex-col rounded-lg border border-rule-strong bg-raised-deep shadow-xl shadow-offset">
           {/*
             NEO-335 Phase 2 (D9) — the wizard's own header: "Tidy up" plus
-            the set's year, name and variant (NEO-497), "Step x of y" (a role="status" region, so moving it is
-            announced, as the "N cards need attention · K fixed" line it
-            replaces was), the question's type as the subtitle, and the neon
-            rail as the header's bottom edge. The rail only animates forward
-            and never under prefers-reduced-motion — see WizardChrome.
+            the set's year, name and variant (NEO-497), the question's type as
+            the subtitle, and (NEO-467) the progress bar as the header's
+            bottom edge, its value text the subtitle. The bar only moves
+            forward, and never animates under prefers-reduced-motion — see
+            WizardChrome.
             `<header class="shrink-0">`, so it stays out of the scrolling body.
           */}
           <WizardChrome
             titleId="card-attention-walker-title"
             title={title}
-            step={step}
-            total={total}
+            done={done}
+            planned={planned}
             subtitle={subtitle}
           />
 

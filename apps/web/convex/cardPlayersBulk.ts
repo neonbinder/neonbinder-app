@@ -140,7 +140,7 @@ export const BULK_MISSING_PLAYER = "Can't find that player anymore. Pick them ag
  */
 export const BULK_CHECKLIST_CHANGED = "This checklist changed mid-way. Give it another go.";
 /** The row asked about is gone. */
-export const DEFAULT_ROW_MISSING = "That part of the set isn't in NB anymore.";
+export const DEFAULT_ROW_MISSING = "That part of the set isn't in Neon Binder anymore.";
 /** A cameo store past the cap. */
 export const DEFAULT_CAMEOS_FULL = `Every card can carry at most ${MAX_CARD_PLAYERS} cameos.`;
 /** A cameo store of the row's own stored player. */
