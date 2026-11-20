@@ -127,7 +127,8 @@ function stubListing(status = 200): Array<string | null> {
 }
 
 describe("queuedBy on the lane's items", () => {
-  test("enqueueBscTeamChecks stamps every item with the operator, and the chunked rest keeps it", async () => {
+  test("enqueueBscTeamChecks stamps every item with the operator on the fake, and the chunked rest keeps it", async () => {
+    armFake();
     const t = convexTest(schema, modules);
     const ids = await seedCards(t, BSC_TEAM_ENQUEUE_CHUNK_SIZE + 2);
     const lane = captureBscTeamLane();
@@ -139,6 +140,31 @@ describe("queuedBy on the lane's items", () => {
     const scheduled = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
     expect(scheduled).toHaveLength(1);
     expect(scheduled[0].args[0]).toMatchObject({ from: BSC_TEAM_ENQUEUE_CHUNK_SIZE, queuedBy: USER_A });
+  });
+
+  test("on real BSC no item stores the operator, whatever the caller passed, chunked rest included", async () => {
+    vi.stubEnv("CONVEX_CLOUD_URL", CLOUD_URL);
+    const t = convexTest(schema, modules);
+    const ids = await seedCards(t, BSC_TEAM_ENQUEUE_CHUNK_SIZE + 2);
+    const lane = captureBscTeamLane();
+
+    await t.mutation(internal.bscTeamPool.enqueueBscTeamChecks, { cardChecklistIds: ids, queuedBy: USER_A });
+
+    expect(lane).toHaveLength(BSC_TEAM_ENQUEUE_CHUNK_SIZE);
+    for (const l of lane) expect("queuedBy" in l.item).toBe(false);
+    const scheduled = await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled).toHaveLength(1);
+    expect("queuedBy" in (scheduled[0].args[0] as object)).toBe(false);
+  });
+
+  test("a misconfigured fake stores no operator either (nothing can be sent)", async () => {
+    armFake();
+    vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://evil.example.com");
+    const t = convexTest(schema, modules);
+    const [a] = await seedCards(t, 1);
+    const lane = captureBscTeamLane();
+    await t.mutation(internal.bscTeamPool.enqueueBscTeamChecks, { cardChecklistIds: [a], queuedBy: USER_A });
+    expect("queuedBy" in lane[0].item).toBe(false);
   });
 
   test("an enqueue without one stamps nothing (no key at all, not undefined)", async () => {
@@ -278,7 +304,7 @@ describe("the lane asks in the queuing operator's namespace, behind their gate",
     expect(lane).toHaveLength(0);
   });
 
-  test("on real BSC an item with queuedBy is still the one deployment key: a 15 s window is waited out, and sends no namespace", async () => {
+  test("on real BSC a queuedBy the caller passed is never stored; the item is the one deployment key: a 15 s window is waited out, and sends no namespace", async () => {
     vi.stubEnv("CONVEX_CLOUD_URL", CLOUD_URL);
     const t = convexTest(schema, modules);
     const [a] = await seedCards(t, 1);
@@ -287,6 +313,7 @@ describe("the lane asks in the queuing operator's namespace, behind their gate",
     await openWindow(t, "deployment", NOW + 15_000);
     const lane = captureBscTeamLane();
     await t.mutation(internal.bscTeamPool.enqueueBscTeamChecks, { cardChecklistIds: [a], queuedBy: USER_A });
+    expect("queuedBy" in lane[0].item).toBe(false);
 
     expect(await runBscTeamLane(t, lane, 5)).toBe(1);
 

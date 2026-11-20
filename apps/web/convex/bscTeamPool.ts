@@ -36,6 +36,7 @@ import { internalMutation, type MutationCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { markBscTeamCheckGivenUpImpl } from "./bscTeamCheck";
 import { assertResetArmed } from "./resetArming";
+import { resolveBscTarget } from "./lib/bscHttp";
 
 /** One BSC call at a time, deployment wide. */
 export const BSC_TEAM_POOL_MAX_PARALLELISM = 1;
@@ -65,9 +66,10 @@ export const bscTeamCheckItemValidator = v.object({
   /**
    * NEO-628 — the Clerk subject of the operator who queued the card, passed by
    * the server's enqueue callers (never read in scheduled code, never sent by
-   * a client). On the fake the card is asked in that user's namespace and
-   * behind that user's BSC call gate. Absent (an item in flight across the
-   * deploy, or one from the old shim) is the deployment's own domain.
+   * a client), and only on the fake, where it is used: the card is asked in
+   * that user's namespace and behind that user's BSC call gate. Absent (real
+   * BSC, an item in flight across the deploy, or one from the old shim) is the
+   * deployment's own domain.
    */
   queuedBy: v.optional(v.string()),
 });
@@ -151,6 +153,11 @@ export const enqueueBscTeamChecks = internalMutation({
   returns: v.null(),
   handler: async (ctx, args): Promise<null> => {
     const from = args.from ?? 0;
+    // The ONE rule (NEO-628): the operator is recorded on an item only where it
+    // is used, on the fake. Real BSC has one gate, so a Clerk subject would be
+    // stored in the pool's args and completion context for nothing. Every
+    // re-enqueue spreads the item, so what is stored here is all there is.
+    const queuedBy = resolveBscTarget(process.env).mode === "fake" ? args.queuedBy : undefined;
     const firstQueuedAt = args.firstQueuedAt ?? Date.now();
     const pass = Math.min(Math.max(1, Math.floor(args.pass ?? 1)), BSC_TEAM_CHECK_MAX_PASSES);
     const chunk = args.cardChecklistIds.slice(from, from + BSC_TEAM_ENQUEUE_CHUNK_SIZE);
@@ -159,7 +166,7 @@ export const enqueueBscTeamChecks = internalMutation({
         cardChecklistId,
         pass,
         firstQueuedAt,
-        ...(args.queuedBy !== undefined ? { queuedBy: args.queuedBy } : {}),
+        ...(queuedBy !== undefined ? { queuedBy } : {}),
       });
     }
     const next = from + BSC_TEAM_ENQUEUE_CHUNK_SIZE;
@@ -169,7 +176,7 @@ export const enqueueBscTeamChecks = internalMutation({
         pass,
         firstQueuedAt,
         from: next,
-        ...(args.queuedBy !== undefined ? { queuedBy: args.queuedBy } : {}),
+        ...(queuedBy !== undefined ? { queuedBy } : {}),
       });
     } else {
       // Counts only.

@@ -446,11 +446,13 @@ As built (`apps/web/convex/bscCallGate.ts`, policy in
   Builder reset still drains every row, whatever its scope, first.
 - **The background team lane** (`bscTeamPool`, one slot, no caller identity)
   carries the Clerk subject of the operator who queued each card (`queuedBy`,
-  set by the server's enqueue callers, kept across re-enqueue) and asks in
+  set by the server's enqueue callers, kept across re-enqueue, and stored ONLY
+  when the deployment is wired to the fake: on real BSC `enqueueBscTeamChecks`
+  drops it, so no subject sits in the pool's args or completion context) and asks in
   that user's namespace behind that user's key. A blocked `ns:` key defers the
   card at once (the one slot is every shard's); only the `"deployment"` key is
   waited out in the slot (`BSC_TEAM_WAIT_IN_SLOT_MAX_MS`). An item with no
-  `queuedBy` (queued before NEO-628) keeps the prefix and `"deployment"`.
+  `queuedBy` (queued before NEO-628, or on real BSC) keeps the prefix and `"deployment"`.
 - `bsc_gate_opened` logs the key kind (`deployment` or `ns`), never the
   namespace.
 
