@@ -54,8 +54,8 @@
 #                 on it, queued-ahead PRs included (intended, conservative),
 #                 and a PR ahead that has already merged is correctly absent.
 #                 The base branch and the head are fetched (depth 200); a
-#                 truncated history can only make the merge base older, so the
-#                 diff larger, never smaller. Any failure is false.
+#                 truncated history yields the true merge base or none (fail
+#                 closed). Any failure is false.
 #
 # Environment: EVENT_NAME, GITHUB_REPOSITORY, PR_NUMBER, GH_TOKEN, HEAD_SHA, and
 # BASE_SHA (pull_request) or BASE_REF (merge_group, github.event.merge_group.base_ref).
