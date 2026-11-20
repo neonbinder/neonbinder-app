@@ -174,8 +174,9 @@ export default function CardAttentionWalker({
   restoreFocusRef?: RefObject<HTMLElement | null>;
   /**
    * NEO-497 — the header's title and so the dialog's name: "Tidy up 2024
-   * Topps Chrome Base" (`tidyUpTitleFromChain`). Absent, WizardChrome's
-   * "Tidy up this set".
+   * Topps Chrome Future Stars" (`tidyUpTitleFromChain`). A Base variant
+   * type leaves its own name out ("Tidy up 2024 Topps Chrome"); no other
+   * name is trimmed (NEO-616). Absent, WizardChrome's "Tidy up this set".
    */
   title?: string;
 }) {
