@@ -40,6 +40,10 @@ metadata:
   N teams by that name. Pick the one on these cards."), Remember box enabled+unticked. A fixture
   for "operator asked" needs a player with no stint at that place (Seiya Suzuki + New York).
   Skipping it drops it from "Listed as" on the Teams step (skipped = the operator's ruling).
+- **"Linked for you" has two cues**: "N name(s) was/were linked for you. Give it a look…" is the
+  checklist status ONLY when nothing else is owed (`entityConfirmationMessage`). With names still
+  to answer, the cue is the wizard's Decided summary span `· N linked for you` (beside
+  "Decided (N)"), and the Decided list is already open inline; the wizard opens on Step N+1.
 - **Checking the catalogue's teams**: `npx convex data teams --limit 8000` is the CLI's ceiling
   (8192 refused); dump `--order asc` and the default desc and union them by `_id`.
 - **A team conflict needs a marketplace team in the BULK answer**: with a checklist no card is
