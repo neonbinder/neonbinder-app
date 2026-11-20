@@ -1932,6 +1932,52 @@ describe("TeamPicker — single mode (NEO-617)", () => {
     expect(screen.queryByRole("button", { name: "Change team" })).toBeNull();
   });
 
+  it("clearing the chip hands focus to the '+ Add team' trigger, not <body>", async () => {
+    function Harness() {
+      const [value, setValue] = React.useState<Array<Id<"teams">>>([tid("t1")]);
+      return <TeamPicker single value={value} onChange={setValue} sportId={SPORT_ID} />;
+    }
+    render(<Harness />);
+    const remove = screen.getByLabelText("Remove team New York Yankees");
+    remove.focus();
+
+    fireEvent.click(remove);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(document.activeElement).toBe(screen.getByLabelText("Add team"));
+  });
+
+  it("describes the held team on the trigger without changing its name", () => {
+    renderPicker({ single: true, value: [tid("t1")], ariaDescribedBy: "stint-hint" });
+
+    const trigger = screen.getByRole("button", { name: "Change team" });
+    const tokens = trigger.getAttribute("aria-describedby")!.split(" ");
+    expect(tokens).toHaveLength(2);
+    expect(tokens[0]).toBe("stint-hint");
+    const chipText = document.getElementById(tokens[1]);
+    expect(chipText?.textContent).toBe("New York Yankees");
+  });
+
+  it("describes the held team with no empty tokens when the caller passes none", () => {
+    renderPicker({ single: true, value: [tid("t1")] });
+
+    const described = screen
+      .getByRole("button", { name: "Change team" })
+      .getAttribute("aria-describedby")!;
+    expect(described).not.toMatch(/^\s|\s$|\s\s/);
+    expect(document.getElementById(described)?.textContent).toBe("New York Yankees");
+  });
+
+  it("an empty single picker, and a multi one, keep the caller's description alone", () => {
+    const { unmount } = renderPicker({ single: true, value: [], ariaDescribedBy: "h" });
+    expect(screen.getByLabelText("Add team").getAttribute("aria-describedby")).toBe("h");
+    unmount();
+    renderPicker({ value: [tid("t1")] });
+    expect(screen.getByLabelText("Add team").hasAttribute("aria-describedby")).toBe(false);
+  });
+
   it("an empty single picker reads exactly like a multi one", () => {
     currentSelectedRows = [];
     renderPicker({ single: true, value: [] });

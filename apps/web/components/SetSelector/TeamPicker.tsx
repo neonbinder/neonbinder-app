@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useQuery } from "convex/react";
 import { CheckIcon, NoSymbolIcon } from "@heroicons/react/16/solid";
 import { Input } from "../primitives/Input";
@@ -238,6 +238,7 @@ export default function TeamPicker({
   single?: boolean;
 }) {
   const noTeamOn = noTeam?.value === true;
+  const chipIdBase = useId();
   // Resolve currently-selected ids → display rows for the chip labels.
   // Convex deduplicates this between sibling pickers on the same page.
   const selectedRows = useQuery(api.teams.getManyByIds, { ids: value });
@@ -548,6 +549,13 @@ export default function TeamPicker({
   const removeChip = (idToRemove: Id<"teams">) => {
     if (disabled) return;
     onChange(value.filter((id) => id !== idToRemove));
+    // NEO-617: clearing the one chip unmounts the × that holds focus, which
+    // would drop it to <body>. Hand it to the trigger (now "+ Add team"). Not
+    // while the popover is open: Backspace there removes the chip from the
+    // search box, which stays mounted and keeps focus.
+    if (single && !popoverOpen) {
+      setTimeout(() => triggerRef.current?.focus(), 0);
+    }
   };
 
   const addChip = (id: Id<"teams">) => {
@@ -624,6 +632,14 @@ export default function TeamPicker({
 
   // NEO-617: a single picker that holds its team swaps rather than adds.
   const changing = single && value.length > 0;
+  // The held team's name, as the trigger's DESCRIPTION: focus comes back to
+  // "Change team" after a pick, and the name alone would never say which team
+  // is now held. The accessible name stays put (the E2E keys on it).
+  const chipTextId = (id: Id<"teams">) => `${chipIdBase}-${id}`;
+  const triggerDescribedBy =
+    [ariaDescribedBy, changing ? chipTextId(value[0]) : undefined]
+      .filter((token): token is string => !!token)
+      .join(" ") || undefined;
   const triggerLabel = changing
     ? (labels.change ?? DEFAULT_TEAM_PICKER_LABELS.change!)
     : labels.trigger;
@@ -640,7 +656,7 @@ export default function TeamPicker({
           key={id}
           className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-chip text-xs"
         >
-          <span className="truncate max-w-[140px]" aria-label={`Team: ${labelById.get(id as unknown as string) ?? "Loading…"}`}>
+          <span id={chipTextId(id)} className="truncate max-w-[140px]" aria-label={`Team: ${labelById.get(id as unknown as string) ?? "Loading…"}`}>
             {labelById.get(id as unknown as string) ?? "Loading…"}
           </span>
           {guestSportById.has(id as unknown as string) && (
@@ -695,7 +711,7 @@ export default function TeamPicker({
             first.focus();
           }}
           aria-label={triggerLabel}
-          aria-describedby={ariaDescribedBy}
+          aria-describedby={triggerDescribedBy}
           aria-expanded={popoverOpen}
           // a11y (SC 1.4.11 Non-text Contrast): the dashed border IS this
           // control's boundary, and `dark:border-gray-600` measures 2.35:1 on
