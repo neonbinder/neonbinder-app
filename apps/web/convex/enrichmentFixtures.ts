@@ -96,11 +96,12 @@
  *       '{"confirm":"CAPTURE_ENRICHMENT_FIXTURES","sportQid":"Q5369"}'
  *
  * A capture holds only the names one run looked up, so its `fixture.entries`
- * are MERGED into the committed file (the runbook's merge step), never
+ * (an array of `{ key, entry }`: a Convex return value cannot carry an accented
+ * key as a field name) are MERGED into the committed file (the runbook's merge step), never
  * written over it: the file also carries batches recorded on other runs.
  *
  * `offset`/`limit` page the name list when a single run would outlast the
- * CLI's wait; merge the pages' `entries` objects by hand (keys are unique
+ * CLI's wait; merge the pages' `entries` arrays by hand (keys are unique
  * across pages). `since` overrides the boundary above for both actions.
  * `skippedTransport` lists names whose lookup did not
  * complete — a timeout, a 429, ESPN down — and which were therefore NOT
@@ -126,7 +127,7 @@ import {
   captureItemValidator,
   captureSkipValidator,
   captureSportValidator,
-  fixtureFileValidator,
+  captureFixtureValidator,
   fixtureKey,
   hasFixtureEntry,
   type EnrichmentFixtureEntry,
@@ -408,7 +409,7 @@ export const listLookedUpNames = internalQuery({
 // ---------------------------------------------------------------------------
 
 const captureResultValidator = v.object({
-  fixture: fixtureFileValidator,
+  fixture: captureFixtureValidator,
   skippedTransport: v.array(captureSkipValidator),
   /** Looked-up names for the sport (see the header), before paging. */
   total: v.number(),
@@ -480,9 +481,13 @@ export const captureFromCli = internalAction({
       skippedTransport.push(...result.skippedTransport);
     }
 
-    // Sorted keys, so two captures of the same deployment diff cleanly.
-    const sortedEntries: Record<string, EnrichmentFixtureEntry> = {};
-    for (const key of Object.keys(entries).sort()) sortedEntries[key] = entries[key];
+    // Sorted keys, so two captures of the same deployment diff cleanly. An
+    // array of `{ key, entry }`, not an object: a key can carry a non-ASCII
+    // character (an accented name), which a Convex return value refuses as a
+    // field name.
+    const sortedEntries: Array<{ key: string; entry: EnrichmentFixtureEntry }> = Object.keys(entries)
+      .sort()
+      .map((key) => ({ key, entry: entries[key] }));
 
     console.log(
       JSON.stringify({
@@ -491,7 +496,7 @@ export const captureFromCli = internalAction({
         total: listed.items.length,
         offset,
         scanned: page.length,
-        recorded: Object.keys(sortedEntries).length,
+        recorded: sortedEntries.length,
         skippedTransport: skippedTransport.length,
         since: listed.since,
         sinceSource: listed.sinceSource,

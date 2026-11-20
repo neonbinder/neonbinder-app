@@ -206,12 +206,18 @@ Capture **refuses** when the name list is truncated (more than 2,000 rows in
 one source since the boundary). The error names the source and the boundary.
 Past that size the list is no longer one run's names. Pass `"since"` set to
 the start of the run you mean to capture. `offset`/`limit` page a long list,
-and `since` is accepted alongside them.
+and `since` is accepted alongside them; each page's `fixture.entries` is an
+array, so concatenate the pages' arrays (keys are unique across pages) or run
+the `jq` rebuild below on each.
 
 Then:
 
 1. **Merge, never overwrite.** `capture.json`'s `fixture.entries` hold one
-   run's names, and the committed
+   run's names (an array of `{ "key", "entry" }`, because Convex refuses an
+   accented key as a return-value field name; the committed file's `entries`
+   is still an object keyed by the same `key`). Rebuild that object with
+   `jq '.fixture.entries | map({(.key): .entry}) | add // {}' capture.json > entries.json`.
+   The committed
    `apps/web/convex/adapters/__fixtures__/enrichment-lookups.json` holds every
    recorded batch. Merge as §4a step 5 does, except that a re-capture
    **replaces** the keys it captured (that is the point of re-capturing) and
@@ -270,8 +276,10 @@ those (§3).
    `process.env`, then call `readFixture(kind, sportQid, name, knownQid)` for
    every lookup the batch makes, with the merged file in place. The count of
    misses must be zero.
-5. **Merge without disturbing the file.** Add only keys that are absent,
-   never change an existing entry, and re-sort the keys. Python's
+5. **Merge without disturbing the file.** This script builds its entries as
+   an object already, so there is no `jq` step (a `captureFromCli` array
+   becomes that object with the one-liner in §4 step 1). Add only keys that
+   are absent, never change an existing entry, and re-sort the keys. Python's
    `json.dumps(data, indent=2, ensure_ascii=True) + "\n"` reproduces the
    committed file byte for byte, so the diff shows only the new entries.
    `apps/web/convex/enrichmentFixtureFile.test.ts` pins the key format, the
