@@ -207,8 +207,11 @@ export default function StaticColumn({
   const renderOption = (item: ColumnItem) => {
     const isSelected = selectedId === item.id;
     const isHighlighted = highlighted === item.id;
-    // The extra line ("/5") is read as the option's description, not as part of its name.
-    const descriptionId = item.description ? `${optionDomId(item.id)}-description` : undefined;
+    // A spoken form ("numbered to 5") replaces the visible line ("/5") for a
+    // listener, inside the option's own name: an option the list drives by
+    // aria-activedescendant gets no reliable aria-describedby. With no spoken
+    // form the visible line is read as it is, as it always was.
+    const spoken = item.description ? item.descriptionSpoken : undefined;
     return (
       <button
         key={item.id}
@@ -216,7 +219,6 @@ export default function StaticColumn({
         type="button"
         role="option"
         aria-selected={isSelected}
-        aria-describedby={descriptionId}
         tabIndex={-1}
         onClick={() => select(item.id)}
         onKeyDown={(e) => activateOnEnter(e, () => select(item.id))}
@@ -225,8 +227,10 @@ export default function StaticColumn({
         }${isHighlighted ? ` ${HIGHLIGHT_STROKE}` : ""}`}
       >
         <span className="block font-semibold">{item.name}</span>
+        {/* A sibling of the name, so a locator that finds the row by its exact name text still does. */}
+        {spoken && <span className="sr-only">, {spoken}</span>}
         {item.description && (
-          <span id={descriptionId} aria-hidden="true" className={`block wrap-anywhere ${DESCRIPTION_TONE}`}>
+          <span aria-hidden={spoken ? true : undefined} className={`block wrap-anywhere ${DESCRIPTION_TONE}`}>
             {item.description}
           </span>
         )}

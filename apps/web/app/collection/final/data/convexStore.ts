@@ -73,7 +73,7 @@ import type {
 import { setLabel } from "@/convex/lib/catalogView";
 import { isOptimisticId, OPTIMISTIC_ID_PREFIX } from "../lineKeys";
 import { finishForVariant } from "./finish";
-import { printRunLabel } from "./labels";
+import { printRunLabel, printRunSpoken } from "./labels";
 import { resizeCopyPhoto, type ResizedPhoto } from "@/lib/collection/copy-photo-resize";
 import { startCopyPhotoTimer } from "@/lib/collection/copy-photo-timing";
 import { uploadWithRetry, type PhotoFileKind } from "@/lib/collection/upload-with-retry";
@@ -591,6 +591,7 @@ function toDrillItem(level: DrillLevel, raw: RawDrillItem): DrillItem {
   // holds inserts is a step, not a checklist.
   const isChecklist = cardBearing && (raw.childCount === 0 || (raw.cardCount ?? 0) > 0);
   const run = raw.printRun === undefined ? null : printRunLabel({ printRun: raw.printRun });
+  const spoken = raw.printRun === undefined ? null : printRunSpoken({ printRun: raw.printRun });
   // NEO-527: a set the server listed in a year's brand column in place of the
   // brand-unknown row is a set, carrying that row's id for the brand step.
   if (raw.brandId) {
@@ -605,7 +606,9 @@ function toDrillItem(level: DrillLevel, raw: RawDrillItem): DrillItem {
     ...(cardBearing ? { cardCount: raw.cardCount, baseCardCount: raw.baseCardCount } : {}),
     // NEO-616 — the run the row's cards share, as the drill's one extra line
     // ("/5"); absent for a row that carries none, exactly as before.
-    ...(run ? { description: run } : {}),
+    ...(run && spoken && raw.printRun !== undefined
+      ? { description: run, descriptionSpoken: spoken, printRun: raw.printRun }
+      : {}),
     hasChildren: raw.childCount > 0,
   };
 }

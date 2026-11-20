@@ -52,7 +52,12 @@ const SELECTED_FOR: Record<DrillStep, string> = {
  * parallel's print run, "/50").
  */
 function toColumnItems(items: DrillItem[], step: DrillStep): ColumnItem[] {
-  const rows = items.map((i) => ({ id: i.id, name: i.name, description: i.description }));
+  const rows = items.map((i) => ({
+    id: i.id,
+    name: i.name,
+    description: i.description,
+    descriptionSpoken: i.descriptionSpoken,
+  }));
   if (step !== "brand") return rows;
   // NEO-527: majors first. The sets listed in place of the brand-unknown row
   // follow the brands under a quiet "More sets" divider (never "Unknown").

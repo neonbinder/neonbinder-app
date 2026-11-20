@@ -369,19 +369,26 @@ describe("NEO-616: a row's print run", () => {
   const row = (over: object) =>
     ({ _id: "x", level: "insert", name: "Gold Refractor", kind: "parallel", childCount: 0, cardCount: 10, baseCardCount: 10, ...over }) as never;
 
-  it("rides the drill's one extra line as /N", () => {
-    expect(toDrillItem("variant", row({ printRun: 5 })).description).toBe("/5");
+  it("rides the drill's one extra line as /N, with its spoken form and the run itself", () => {
+    expect(toDrillItem("variant", row({ printRun: 5 }))).toMatchObject({
+      description: "/5",
+      descriptionSpoken: "numbered to 5",
+      printRun: 5,
+    });
     expect(toDrillItem("variant", row({ printRun: 50 })).description).toBe("/50");
   });
 
-  it("a one-of-one reads 1/1, as everywhere else", () => {
-    expect(toDrillItem("variant", row({ printRun: 1 })).description).toBe("1/1");
+  it("a one-of-one reads 1/1 and is said one of one", () => {
+    expect(toDrillItem("variant", row({ printRun: 1 }))).toMatchObject({
+      description: "1/1",
+      descriptionSpoken: "one of one",
+      printRun: 1,
+    });
   });
 
-  it("absent stays absent: no description key, no second field", () => {
+  it("absent stays absent: no description, spoken form or run key", () => {
     const d = toDrillItem("variant", row({}));
-    expect("description" in d).toBe(false);
-    expect(Object.keys(d)).not.toContain("printRun");
+    for (const key of ["description", "descriptionSpoken", "printRun"]) expect(key in d).toBe(false);
   });
 
   it("the set summary's variant carries it, else null", () => {

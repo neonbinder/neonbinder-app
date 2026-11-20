@@ -40,6 +40,15 @@ export function printRunLabel(card: Pick<Card, "printRun">): string | null {
   return card.printRun === 1 ? "1/1" : `/${card.printRun}`;
 }
 
+/**
+ * How a print run is said aloud: "numbered to 50", "one of one". The same
+ * "numbered" wording a card's label uses (`cardLabel`); null when unnumbered.
+ */
+export function printRunSpoken(card: Pick<Card, "printRun">): string | null {
+  if (card.printRun === null) return null;
+  return card.printRun === 1 ? "one of one" : `numbered to ${card.printRun}`;
+}
+
 /** "Packers", "Red Wings / Whalers" for a multi-team card; "" when none is known. */
 export function teamNames(card: Pick<Card, "teams">): string {
   return card.teams.map((t) => t.name).join(" / ");

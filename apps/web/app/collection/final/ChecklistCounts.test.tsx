@@ -128,7 +128,10 @@ describe("a checklist's counts agree", () => {
     const parallels = optionsOf("Parallels");
     for (const option of parallels) expect(option.textContent ?? "").not.toMatch(COUNT);
     const gold = parallels.find((o) => (o.textContent ?? "").startsWith("Gold Refractor"));
-    expect(gold?.textContent).toBe("Gold Refractor/50");
+    // Seen as "/50" (hidden from a screen reader), heard as "numbered to 50"
+    // after the name (NEO-616).
+    expect(within(gold!).getByText("/50").getAttribute("aria-hidden")).toBe("true");
+    expect(within(screen.getByRole("listbox", { name: "Parallels" })).getByRole("option", { name: /^Gold Refractor ?, numbered to 50$/ })).toBe(gold);
   });
 
   it("a board's bulbs are spoken base first, variations after", () => {

@@ -83,7 +83,7 @@ import {
   type DemoContainer,
   type DemoCopy,
 } from "../store";
-import { compareCards, printRunLabel, setLabel } from "./labels";
+import { compareCards, printRunLabel, printRunSpoken, setLabel } from "./labels";
 import {
   bySlot,
   CollectionStoreContext,
@@ -494,10 +494,17 @@ function drillItem(level: DrillLevel, item: ColumnItem, extra: Partial<DrillItem
   return { id: item.id, level, name: item.name, hasChildren: true, ...extra };
 }
 
-/** "/50", "1/1", or nothing: a parallel's print run, the one line the drill keeps. */
-function printRunOf(set: FixtureSet, type: VariantType, name: string): string | undefined {
+/** A parallel's print run, the one extra line the drill keeps: the run, its "/50" and how it is said. */
+function printRunOf(
+  set: FixtureSet,
+  type: VariantType,
+  name: string,
+): Pick<DrillItem, "description" | "descriptionSpoken" | "printRun"> {
   const printRun = set.variants.find((v) => v.path.type === type && v.path.name === name)?.printRun ?? null;
-  return printRunLabel({ printRun }) ?? undefined;
+  const description = printRunLabel({ printRun });
+  const descriptionSpoken = printRunSpoken({ printRun });
+  if (printRun === null || !description || !descriptionSpoken) return {};
+  return { description, descriptionSpoken, printRun };
 }
 
 /** The prototype's set rows want a completion; the drill shows none of it. */
@@ -536,12 +543,11 @@ function drillColumn(level: DrillLevel, parents: DrillParents): DrillItem[] {
       if (!set || (type !== "Inserts" && type !== "Parallels")) return [];
       return variantItems(set, type, NO_COMPLETION).map((i) => {
         const variantId = demoVariantId(set.id, { type, name: i.id });
-        const run = printRunOf(set, type, i.id);
         return drillItem(level, i, {
           variantId,
           hasChildren: false,
           ...countsOf(variantId),
-          ...(run ? { description: run } : {}),
+          ...printRunOf(set, type, i.id),
         });
       });
     }
