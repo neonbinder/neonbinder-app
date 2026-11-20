@@ -6,7 +6,9 @@ import { test, expect, expectAccessible } from "../../support/fixtures";
 test(
   "Privacy policy: reachable from the landing footer and About, with its eBay section and contact address",
   { tag: ["@smoke", "@home"] },
-  async ({ page }) => {
+  async ({ page }, testInfo) => {
+    // NEO-627 PLANTED RED: desktop only, proves fail fast. Revert before the queue.
+    if (testInfo.project.name === "e2e") throw new Error("NEO-627 planted desktop red");
     // Signed out: every test starts in a fresh browser context (R4).
     await page.goto("/");
 
