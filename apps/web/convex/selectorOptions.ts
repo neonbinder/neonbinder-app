@@ -10476,7 +10476,7 @@ function resetTimeBudgetMs(): number {
 /** The per-table reset counts, plus whether the run got through every table. */
 type SetBuilderResetResult = {
   /**
-   * NEO-552 — the deployment-wide BSC call gate (breaker and token bucket).
+   * NEO-552 — the BSC call gate rows, every domain's (breaker and token bucket).
    * A window or probe lease left by the last run would hold the next run's
    * BSC calls behind it.
    */
@@ -10685,11 +10685,11 @@ async function runSetBuilderReset(
   // cardChecklist, cardCrossListings,
   // entityReviewQueue, checklistCandidates) is among them.
   const allSteps: Array<[keyof typeof counts, ResetBatchRef]> = [
-    // NEO-552 — the BSC call gate, FIRST of all: deployment-wide, it names no
-    // other row, and a breaker the previous run opened would refuse the next
-    // run's every BSC call. Not a reference-seed table: every scope drains
-    // it. The per-user `/testing/reset` leaves it alone (eight shards run
-    // that at once, and the gate is shared).
+    // NEO-552 — the BSC call gate, FIRST of all: it names no other row, and a
+    // breaker the previous run opened would refuse the next run's BSC calls.
+    // Not a reference-seed table: every scope drains every row, whatever its
+    // domain (`deployment` or any `ns:<namespace>`). The per-user reset clears
+    // only the caller's own `ns:` row (NEO-628), never another user's.
     [
       "marketplaceCallGatesDeleted",
       internal.selectorOptions.resetMarketplaceCallGatesBatch,
@@ -10991,7 +10991,8 @@ const RESET_BATCH_SIZE = 500;
  * it skips the eight reference-seed tables among those and wipes the rest.
  * Every scope also clears the BSC call gate (`marketplaceCallGates`, NEO-552),
  * the BSC wait rows (`marketplaceWaits`) and the BSC team lane (PR 451,
- * NEO-482); the per-user `/testing/reset` touches none of them.
+ * NEO-482); the per-user `/testing/reset` touches none of them, except that
+ * it clears the caller's own `ns:` gate row (NEO-628).
  *
  * Runbook: `docs/operations/neo214-set-builder-admin-scripts.md`. Take a
  * **Backup Now** first (NEO-190 §3) and run it with the app CLOSED — resetting

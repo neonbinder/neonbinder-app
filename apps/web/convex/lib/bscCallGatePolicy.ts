@@ -220,7 +220,7 @@ export function decideAcquire(
   const want = halfOpen ? 1 : clampAcquireCount(count);
   if ("unlimited" in tuning) {
     // No bucket: only a probe's lease is worth storing; a healthy grant
-    // writes nothing (8 shards share this one row).
+    // writes nothing (every caller of one key shares this row).
     const reportOutcome = halfOpen || s.streak > 0 || s.consecutiveFailures > 0;
     if (!halfOpen) {
       return { ok: true, granted: want, waitMs: 0, grantedAt: now, reportOutcome, probe: false, next: null };

@@ -23,7 +23,7 @@ import { internal } from "../_generated/api";
 import { isPlatformPaused } from "../marketplacePause";
 import { actionBscIdTokenSource, bscFetch, bscHeaders, isBscBreakerRefusal } from "../lib/bscHttp";
 import { BSC_PACED_SELLER } from "../lib/bscPacedCopy";
-// NEO-552 — the deployment-wide call gate every BSC call passes.
+// NEO-552 — the call gate (of the token owner's domain) every BSC call passes.
 import { bscCallDomainFor, bscCallGateFor } from "../bscCallGate";
 import {
   parseBscOrder,

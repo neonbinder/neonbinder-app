@@ -74,8 +74,8 @@ import {
 } from "../lib/marketplaceFetchFailure";
 import { bscFetch, bscHeaders, isBscBreakerRefusal, type BscCallGate, type BscGrant } from "../lib/bscHttp";
 import { bscPacedCatalogueMessage, pacedRetryAfterS } from "../lib/bscPacedCopy";
-// NEO-552 — every BSC call goes through `bscFetch` and the deployment-wide
-// call gate (breaker + token bucket); fake mode carries a Google ID token.
+// NEO-552 — every BSC call goes through `bscFetch` and the call gate of its
+// rate-limit domain (breaker + token bucket); fake mode carries a Google ID token.
 import { BSC_GATE_DEPLOYMENT_KEY } from "../lib/bscGateKey";
 import { bscCallDomainFor, bscCallGateFor, type BscCallDomain } from "../bscCallGate";
 import { nodeBscIdToken } from "../lib/bscFakeIdToken";
@@ -185,7 +185,7 @@ const BSC_TEAM_LOOKUP_CONCURRENCY = 10;
 // BSC's edge answers 429 (empty body, a few ms) and then blocks the IP for
 // 15 to 45 s (measured, NEO-482), and Convex deployments share egress IPs.
 // So a lookup:
-//   - asks the deployment-wide call gate (`bscCallGate`, NEO-552) once per
+//   - asks the call gate of its domain (`bscCallGate`, NEO-552) once per
 //     wave, for the wave's cards, and makes no call while it refuses (open,
 //     probing, throttled, or unreadable). A half-open gate grants one probe;
 //     the rest of the wave is carried into the next one, never dropped;

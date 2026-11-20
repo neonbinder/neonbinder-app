@@ -4773,12 +4773,14 @@ export default defineSchema({
   }).index("by_owner_and_run", ["ownerId", "runKey"]),
 
   /**
-   * NEO-552 — the deployment-wide BSC call gate: the breaker and token bucket
+   * NEO-552 — the BSC call gate: the breaker and token bucket
    * every BuySportsCards call passes through (`bscFetch`, `bscCallGate.ts`;
    * policy in `lib/bscCallGatePolicy.ts`). It replaced the PR 451 per-endpoint
    * 429 cooldown table, whose definition is gone.
    *
-   * One row per (platform, scope). No ids, no user data: counters and times.
+   * One row per rate-limit domain (platform + scope): `deployment` for real
+   * BSC, `ns:<namespace>` per test user on the fake. No ids, no user data:
+   * counters and times.
    * NEO-628: `scope` is the gate KEY (`lib/bscGateKey.ts`): `"deployment"`
    * (the only one against real BSC), or `ns:<fake namespace>` against the
    * fake, one per test user. A plain string, checked in code by one helper
