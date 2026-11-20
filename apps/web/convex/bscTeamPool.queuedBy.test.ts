@@ -294,3 +294,63 @@ describe("the lane asks in the queuing operator's namespace, behind their gate",
     expect(lane).toHaveLength(0);
   });
 });
+
+describe("adversarial: queuedBy survives the whole retry ladder, and a legacy item never gains one", () => {
+  test("a card that keeps failing keeps queuedBy on every pass until the give-up, and always asks in that namespace", async () => {
+    armFake();
+    const t = convexTest(schema, modules);
+    const [a] = await seedCards(t, 1);
+    await warmAdapter(t);
+    const seen = stubListing(503);
+    const lane = captureBscTeamLane();
+    await t.mutation(internal.bscTeamPool.enqueueBscTeamChecks, { cardChecklistIds: [a], queuedBy: USER_A });
+    const passes: Array<{ pass: number; queuedBy?: string }> = [];
+    let guard = 0;
+    while (lane.length > 0 && guard < 60) {
+      guard += 1;
+      passes.push({ pass: lane[0].item.pass, queuedBy: lane[0].item.queuedBy });
+      await runBscTeamLane(t, lane, 1);
+    }
+    expect(passes.length).toBeGreaterThan(1);
+    for (const p of passes) expect(p.queuedBy).toBe(USER_A);
+    expect(new Set(seen)).toEqual(new Set([NS_A]));
+  });
+
+  test("a legacy item (no queuedBy) that fails is re-enqueued with no queuedBy key, and asks under the deployment prefix", async () => {
+    armFake();
+    const t = convexTest(schema, modules);
+    const [a] = await seedCards(t, 1);
+    await warmAdapter(t);
+    const seen = stubListing(503);
+    const lane = captureBscTeamLane();
+    await t.mutation(internal.bscTeamPool.enqueueBscTeamChecks, { cardChecklistIds: [a] });
+    await runBscTeamLane(t, lane, 1);
+    expect(lane).toHaveLength(1);
+    expect(lane[0].item.pass).toBe(2);
+    expect("queuedBy" in lane[0].item).toBe(false);
+    expect(new Set(seen)).toEqual(new Set([PREFIX]));
+  });
+
+  test("user A's failing ladder and user B's good card never share a window: B is answered while A is retried", async () => {
+    armFake();
+    const t = convexTest(schema, modules);
+    const [a, b] = await seedCards(t, 2);
+    await warmAdapter(t);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) =>
+        new Headers(init.headers).get(FAKE_BSC_NS_HEADER) === NS_A
+          ? new Response("", { status: 503 })
+          : new Response(JSON.stringify({ teamName: "Reds" }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      ),
+    );
+    const lane = captureBscTeamLane();
+    await t.mutation(internal.bscTeamPool.enqueueBscTeamChecks, { cardChecklistIds: [a], queuedBy: USER_A });
+    await t.mutation(internal.bscTeamPool.enqueueBscTeamChecks, { cardChecklistIds: [b], queuedBy: USER_B });
+    await runBscTeamLane(t, lane, 20);
+    expect((await t.run(async (ctx) => ctx.db.get(b)))?.teamCheckDoneAt).toBeDefined();
+    const scopes = await t.run(async (ctx) => (await ctx.db.query("marketplaceCallGates").collect()).map((r) => r.scope));
+    expect(scopes).not.toContain(`ns:${NS_B}`);
+    expect(scopes).not.toContain("deployment");
+  });
+});
