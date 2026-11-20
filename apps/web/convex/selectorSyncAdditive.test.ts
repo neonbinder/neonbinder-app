@@ -1325,6 +1325,89 @@ describe("marketplace strings are validated before they become row names", () =>
     expect(rows[0].platformLabels?.bsc?.b0).toBeUndefined();
   });
 
+  test("array-shaped platformLabels store an accented id's label on a new slot (NEO-625)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const parentId = await insertParent(t);
+
+    await asAdmin.mutation(api.setReconciliation.storeReconciledOptions, {
+      level: "insert",
+      parentId,
+      coveredSides: ["bsc"],
+      reconciledItems: [
+        {
+          value: "Exposé",
+          platformData: { bsc: "exposé" },
+          platformLabels: { bsc: [{ id: "exposé", label: "Exposé" }] },
+          metadata: undefined,
+        },
+      ],
+    });
+
+    const rows = await rowsUnder(t, "insert", parentId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].platformData.bsc).toEqual({ b0: "exposé" });
+    expect(rows[0].platformLabels?.bsc?.b0).toBe("Exposé");
+  });
+
+  test("array-shaped platformLabels refresh the label on an existing slot (NEO-625)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const parentId = await insertParent(t);
+    const id = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "insert",
+        value: "Our Exposé",
+        platformData: { bsc: { b0: "exposé" } },
+        platformSlotSeq: { bsc: 1 },
+        parentId,
+        children: [],
+        lastUpdated: SENTINEL,
+      }),
+    );
+
+    await asAdmin.mutation(api.setReconciliation.storeReconciledOptions, {
+      level: "insert",
+      parentId,
+      coveredSides: ["bsc"],
+      reconciledItems: [
+        {
+          value: "Exposé",
+          platformData: { bsc: "exposé" },
+          platformLabels: { bsc: [{ id: "exposé", label: "Exposé" }] },
+          metadata: undefined,
+        },
+      ],
+    });
+
+    const after = await t.run(async (ctx) => ctx.db.get(id));
+    expect(after?.value).toBe("Our Exposé");
+    expect(after?.platformLabels?.bsc?.b0).toBe("Exposé");
+  });
+
+  test("an array label naming an id the item does not carry is ignored (NEO-625)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const parentId = await insertParent(t);
+
+    await asAdmin.mutation(api.setReconciliation.storeReconciledOptions, {
+      level: "insert",
+      parentId,
+      coveredSides: ["bsc"],
+      reconciledItems: [
+        {
+          value: "Chrome Update",
+          platformData: { bsc: "ok-1" },
+          platformLabels: { bsc: [{ id: "other", label: "Wrong" }] },
+          metadata: undefined,
+        },
+      ],
+    });
+
+    const rows = await rowsUnder(t, "insert", parentId);
+    expect(rows[0].platformLabels?.bsc?.b0).toBeUndefined();
+  });
+
   test("an inserted value is trimmed on the way in", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = admin(t);
