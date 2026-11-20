@@ -2085,6 +2085,116 @@ describe("TeamPicker — single mode (NEO-617)", () => {
       expect(document.activeElement).toBe(screen.getByLabelText("Add team"));
     });
 
+    it("a MULTI picker given onPicked renders no live region and never calls it", async () => {
+      const onPicked = vi.fn();
+      const onChange = vi.fn();
+      render(
+        <TeamPicker value={[]} onChange={onChange} sportId={SPORT_ID} onPicked={onPicked} />,
+      );
+      expect(screen.queryByRole("status")).toBeNull();
+
+      openPopover();
+      fireEvent.click(screen.getByLabelText("Add Boston Red Sox"));
+      await settle();
+
+      expect(onChange).toHaveBeenCalledWith([tid("t2")]);
+      expect(onPicked).not.toHaveBeenCalled();
+      expect(screen.queryByRole("status")).toBeNull();
+      // Multi mode stays open for a second pick.
+      expect(screen.getByRole("listbox")).toBeTruthy();
+    });
+
+    it("a team created in the dialog is announced only once its name arrives", async () => {
+      currentCandidates = [];
+      currentSelectedRows = [];
+      mockFindOrCreate.mockResolvedValue(tid("new-team-1"));
+      const { rerender } = render(<Harness />);
+      const region = screen.getByRole("status");
+
+      openPopover();
+      openNewTeamDialog("Savannah Bananas");
+      fireEvent.click(
+        screen.getByRole("button", { name: "Create team Savannah Bananas" }),
+      );
+      await waitFor(() => {
+        expect(document.activeElement).toBe(screen.getByRole("button", { name: "Next field" }));
+      });
+      await settle();
+      // Picked and focus moved, but no row has loaded: nothing to say yet.
+      expect(region.textContent).toBe("");
+
+      currentSelectedRows = [makeTeam("new-team-1", "Savannah Bananas")];
+      rerender(<Harness />);
+
+      expect(region.textContent).toBe("Team: Savannah Bananas selected");
+    });
+
+    it("the announcement is set after the focus move, not with it", async () => {
+      currentSelectedRows = [makeTeam("t2", "Boston Red Sox")];
+      const seen: string[] = [];
+      function Probe() {
+        const [value, setValue] = React.useState<Array<Id<"teams">>>([]);
+        return (
+          <TeamPicker
+            single
+            value={value}
+            onChange={setValue}
+            sportId={SPORT_ID}
+            onPicked={() => {
+              seen.push(screen.getByRole("status").textContent ?? "");
+            }}
+          />
+        );
+      }
+      render(<Probe />);
+
+      openPopover();
+      fireEvent.click(screen.getByLabelText("Add Boston Red Sox"));
+      await settle();
+
+      // Empty at the moment the focus hook ran; filled in by the next commit.
+      expect(seen).toEqual([""]);
+      expect(screen.getByRole("status").textContent).toBe("Team: Boston Red Sox selected");
+    });
+
+    it("the held team is not offered again: its name finds no option, and Enter opens New Team instead of re-picking it", async () => {
+      // Pinned as it is: a single picker filters the held team out of its
+      // results like a multi one does, so there is no way to "re-pick" it.
+      // Typing its name leaves only the create row, which says it is already
+      // on file.
+      currentSelectedRows = [makeTeam("t1", "New York Yankees")];
+      const onPicked = vi.fn();
+      const onChange = vi.fn();
+      render(
+        <TeamPicker
+          single
+          value={[tid("t1")]}
+          onChange={onChange}
+          sportId={SPORT_ID}
+          onPicked={onPicked}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Change team" }));
+      expect(screen.queryByLabelText("Add New York Yankees")).toBeNull();
+      expect(screen.getByLabelText("Add Boston Red Sox")).toBeTruthy();
+
+      const search = screen.getByLabelText("Search teams");
+      fireEvent.change(search, { target: { value: "New York Yankees" } });
+      expect(screen.queryByLabelText("Add New York Yankees")).toBeNull();
+      expect(screen.getByText("No matches.")).toBeTruthy();
+      expect(screen.getByLabelText("New team New York Yankees").textContent).toContain(
+        "Already here",
+      );
+
+      fireEvent.keyDown(search, { key: "Enter" });
+      await settle();
+
+      expect(screen.getByLabelText("New team name")).toBeTruthy();
+      expect(onChange).not.toHaveBeenCalled();
+      expect(onPicked).not.toHaveBeenCalled();
+    });
+
     it("a picker without the hook renders no live region", () => {
       render(<Harness withHook={false} />);
       expect(screen.queryByRole("status")).toBeNull();

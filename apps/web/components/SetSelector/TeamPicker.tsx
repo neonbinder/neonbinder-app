@@ -259,7 +259,11 @@ export default function TeamPicker({
    * name arrives instead of never.
    */
   const [announcedId, setAnnouncedId] = useState<Id<"teams"> | null>(null);
-  const [pickedTick, setPickedTick] = useState(0);
+  // The pick the effect below acts on; `n` makes a repeat pick of the same team
+  // a new value.
+  const [picked, setPicked] = useState<{ id: Id<"teams">; n: number } | null>(
+    null,
+  );
   // The latest callback without making it an effect dependency: callers pass
   // an inline arrow, which would otherwise re-fire the focus move every render.
   const onPickedRef = useRef(onPicked);
@@ -267,8 +271,14 @@ export default function TeamPicker({
     onPickedRef.current = onPicked;
   });
   useEffect(() => {
-    if (pickedTick > 0) onPickedRef.current?.();
-  }, [pickedTick]);
+    if (!picked) return;
+    onPickedRef.current?.();
+    // The announcement is set HERE, one commit after the focus move, not with
+    // the pick: VoiceOver drops a polite update that lands in the same commit
+    // as a focus change, and speaks one that arrives after it.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the point is a commit of its own, after the focus move
+    setAnnouncedId(picked.id);
+  }, [picked]);
   // Resolve currently-selected ids → display rows for the chip labels.
   // Convex deduplicates this between sibling pickers on the same page.
   const selectedRows = useQuery(api.teams.getManyByIds, { ids: value });
@@ -602,7 +612,6 @@ export default function TeamPicker({
       // then hand focus to the caller's next field, or back to the trigger
       // (now "Change team") when the caller has none.
       if (onPicked) {
-        setAnnouncedId(id);
         setPopoverOpen(false);
         setQuery("");
         // Run from an effect after the commit, NOT a timer. On the New Team
@@ -613,7 +622,7 @@ export default function TeamPicker({
         // the dialog's own focus-restore cleanup, which runs first). The blur
         // from the popover's removal is harmless: `handleRootBlur` only
         // closes, and never moves focus.
-        setPickedTick((t) => t + 1);
+        setPicked((p) => ({ id, n: (p?.n ?? 0) + 1 }));
       } else {
         closePopover();
       }

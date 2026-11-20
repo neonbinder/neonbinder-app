@@ -35,6 +35,11 @@ test(
     const results = page.getByRole("listbox", { name: "Team typeahead results" });
     const fromYear = page.getByLabel(/Stint from year/);
     const heldChips = page.getByRole("button", { name: /^Remove team / });
+    // NEO-617: focus moves to the start year after a pick, so the picker says
+    // which team was picked in a polite live region (screen-reader only: asserted
+    // by its text, never by visibility).
+    const pickedAnnouncement = (name: string) =>
+      page.getByRole("status").filter({ hasText: `Team: ${name} selected` });
 
     // A team nothing matches opens the New Team dialog on Enter. `team` is made
     // first so it exists to be PICKED later, then cleared with its ×.
@@ -48,9 +53,12 @@ test(
     await expectAccessible(page, { within: dialog, label: "New Team dialog" });
     await dialog.getByRole("button", { name: `Create team ${team}` }).click();
     await expect(page.getByRole("button", { name: `Remove team ${team}` })).toBeVisible();
+    await expect(fromYear).toBeFocused(); // the dialog's create is a pick too
+    await expect(pickedAnnouncement(team)).toHaveText(`Team: ${team} selected`);
     // NEO-617: clearing the one chip brings the "+ Add team" invitation back.
     await page.getByRole("button", { name: `Remove team ${team}` }).click();
     await expect(heldChips).toHaveCount(0);
+    await expect(pickedAnnouncement(team)).toHaveCount(0);
     await expect(addTeam).toBeVisible();
     await expect(addTeam).toBeFocused(); // the × left the page, focus did not drop to <body>
     await expect(changeTeam).toBeHidden();
@@ -69,6 +77,7 @@ test(
     await expect(results).toBeHidden(); // the create was the pick, so the popover closed
     // NEO-617: the team is chosen, so focus moves on to the start year.
     await expect(fromYear).toBeFocused();
+    await expect(pickedAnnouncement(replaced)).toHaveText(`Team: ${replaced} selected`);
     await expectAccessible(page, { label: "Player Management, stint team held" });
 
     // NEO-617: "Change team" reopens the same search, and a pick REPLACES the
@@ -77,9 +86,12 @@ test(
     await expect(search).toBeVisible();
     await expectAccessible(page, { label: "Player Management, Change team popover" });
     await search.fill(team);
-    await results.getByRole("option", { name: new RegExp(`^Add ${team}`) }).click();
+    await expect(results.getByRole("option", { name: new RegExp(`^Add ${team}`) })).toBeVisible();
+    await search.press("Enter"); // the keyboard pick: the one filtered match is highlighted
     await expect(results).toBeHidden();
     await expect(fromYear).toBeFocused();
+    await expect(pickedAnnouncement(team)).toHaveText(`Team: ${team} selected`);
+    await expect(pickedAnnouncement(replaced)).toHaveCount(0);
     await expect(heldChips).toHaveCount(1);
     await expect(page.getByRole("button", { name: `Remove team ${team}` })).toBeVisible();
     await expect(page.getByRole("button", { name: `Remove team ${replaced}` })).toBeHidden();
