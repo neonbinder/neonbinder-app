@@ -111,7 +111,7 @@ describe("teams.findManyByNameAndSport answers exactly what findByNameAndSport a
     return { sportId, redSox, oldJets, newJets, earlyBrowns, lateBrowns, pilots };
   }
   const single = (t: T, sportId: Sel, name: string, setYear?: number) =>
-    t.withIdentity(ADMIN).query(api.teams.findByNameAndSport, {
+    t.withIdentity(ADMIN).query(internal.teams.findByNameAndSport, {
       name,
       sportId,
       ...(setYear !== undefined ? { setYear } : {}),

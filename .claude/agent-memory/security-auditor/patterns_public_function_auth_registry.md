@@ -27,3 +27,11 @@ audit and recommend one assertion per new function (anonymous + signed-in
 non-admin), even when colocated tests already cover it.
 
 Related: [[convex-auth-boundary]].
+
+## Older admin mutations are often unpinned (seen NEO-602)
+
+ADMIN_GATED does not cover every `requireAdmin` public function: editors that predate
+the registry (e.g. `teams.saveTeamFields`) can be gated in code with no anon/non-admin
+rejection pin anywhere. On any diff that changes a public function's behaviour, even
+with the gate untouched, grep both registry files for `api.<module>.<fn>`; if absent,
+recommend the one-line entry in the same PR.

@@ -31,7 +31,14 @@ import { CopyButton } from "../primitives/CopyButton";
 // `hasExact` was written for.
 import { NearMatchPanel, type NearMatch } from "../entities/NearMatchPanel";
 import { TeamMatchSearch } from "../entities/TeamMatchSearch";
-import { teamOptionLabel } from "../../lib/teams/team-era";
+import TeamStepContext from "./TeamStepContext";
+import PlayerStepContext from "./PlayerStepContext";
+import {
+  aliasHolderSentence as sharedAliasHolderSentence,
+  eraOverlapReason,
+  teamEraProblem,
+  teamOptionLabel,
+} from "../../lib/teams/team-era";
 import { useStaleWhileLoading } from "@/src/hooks/useStaleWhileLoading";
 import EntityLinkSearch from "./EntityLinkSearch";
 import SportSwitch from "./SportSwitch";
@@ -302,6 +309,24 @@ const PLAYER_ADD_SET_SPORT_FIELD_ID = "entity-review-player-add-set-sport";
 // on the label copy.
 const LEAGUE_NAME_FIELD_ID = "entity-review-league-name";
 const LEAGUE_LEVEL_FIELD_ID = "entity-review-league-level";
+
+/** NEO-602 — the footer status line once the alias clash on a New Team step is gone. */
+const ALIAS_CLASH_CLEARED_LINE = "No clash with that name now.";
+
+/**
+ * NEO-602 — why a name the New Team step would create is refused, in the words
+ * `teams.assertNameNotAnotherTeamsAlias` throws: the holder's name and era,
+ * then whether the two teams' years overlap or one has none on file, then both
+ * ways out. Same `eraOverlapReason` as the server, so the pre-check and the
+ * refusal cannot drift. `draftYears` is the new team's era as typed.
+ */
+function aliasHolderSentence(
+  holder: { name: string; yearsActive?: { from: number; to?: number } },
+  draftYears: { from: number; to?: number } | undefined,
+): string {
+  const label = teamOptionLabel(holder.name, holder.yearsActive);
+  return sharedAliasHolderSentence(label, eraOverlapReason(draftYears, holder.yearsActive));
+}
 
 /**
  * NEO-236 — what the Location + Name pair shows for a team row before the
@@ -1706,23 +1731,39 @@ export default function EntityReviewWizard({
   );
   /**
    * NEO-307 — the teams that already answer to the New Team step's name as an
-   * ALIAS.
+   * ALIAS, and whose years overlap the team this step would create (NEO-602).
    *
-   * A team may never take a name another team in the sport holds as an alias,
-   * whatever the eras, so `recordDecision` refuses that create. Asked ahead of
-   * the click so the step can say so, disable "Add as New Team", and offer the
-   * holder as the link. Keyed on the COMPOSED name the step would create — the
-   * operator's edit when there is one — not the checklist string, because the
-   * Name field is what the operator changes to get into (or out of) the clash.
+   * A team may not take a name another team in the sport holds as an alias
+   * while their years overlap (a team with no years overlaps everything), so
+   * `recordDecision` refuses that create. Asked ahead of the click so the step
+   * can say so, disable "Add as New Team", and offer the holder as the link.
+   * Keyed on the COMPOSED name the step would create — the operator's edit when
+   * there is one — not the checklist string, because the Name field is what the
+   * operator changes to get into (or out of) the clash. The draft's years go
+   * with it: dating the new team clear of the holder is the other way out, and
+   * the warning has to drop the moment they do.
    */
-  const aliasCheckName =
+  const aliasCheckDraft =
     current && !reviewingDecided && current.kind === "team"
-      ? draftFullName(teamCreateByRow[current._id] ?? teamCreatePrefill(current)).trim()
-      : "";
+      ? (teamCreateByRow[current._id] ?? teamCreatePrefill(current))
+      : undefined;
+  const aliasCheckName = aliasCheckDraft ? draftFullName(aliasCheckDraft).trim() : "";
+  // The server refuses a malformed era (`requireTeamEra`), and this query is
+  // asked on every keystroke: "2", "20", "202" on the way to "2025" are not
+  // eras yet. Only a valid one is sent; until then the draft reads as undated,
+  // the strict side.
+  const aliasCheckYears =
+    aliasCheckDraft?.yearsActive && teamEraProblem(aliasCheckDraft.yearsActive) === null
+      ? aliasCheckDraft.yearsActive
+      : undefined;
   const nameAliasHoldersLive = useQuery(
     api.teams.nameHeldAsAliasBy,
     current && aliasCheckName
-      ? { sportId: current.sportId, name: aliasCheckName }
+      ? {
+          sportId: current.sportId,
+          name: aliasCheckName,
+          ...(aliasCheckYears ? { yearsActive: aliasCheckYears } : {}),
+        }
       : "skip",
   );
   /*
@@ -1738,6 +1779,49 @@ export default function EntityReviewWizard({
     aliasCheckName ? nameAliasHoldersLive : NO_ALIAS_HOLDERS,
     current?._id ?? "",
   );
+  /**
+   * NEO-602 — the alias clash that blocked "Add as New Team" has just cleared.
+   *
+   * The clash sentence sits in the footer's blocked line; when a year edit (or
+   * a rename) makes it disappear, the only change a screen-reader user would
+   * hear is silence, and a sighted one sees the primary come back to life
+   * unannounced. So the footer's always-mounted status line says so, once, for
+   * the row it happened on. Cleared by leaving the row or by the clash
+   * returning. `clashShowing` mirrors the condition under which
+   * `createBlocked` reaches the clash sentence (a usable name first).
+   */
+  const clashShowing =
+    current?.kind === "team" &&
+    !!aliasCheckDraft?.name.trim() &&
+    aliasCheckName.length <= MAX_TEAM_FULL_NAME_LENGTH &&
+    nameAliasHolders?.[0] !== undefined;
+  const nameUsable =
+    !!aliasCheckDraft?.name.trim() && aliasCheckName.length <= MAX_TEAM_FULL_NAME_LENGTH;
+  const clashRowId = current?._id ?? null;
+  const [clashSeen, setClashSeen] = useState<{
+    /** The row whose clash is showing now, if any. */
+    showingRowId: string | null;
+    /** The row whose clash has just gone. */
+    clearedRowId: string | null;
+  }>({ showingRowId: null, clearedRowId: null });
+  // Adjusted during render (React's own pattern for state derived from a
+  // transition), so the notice is in the same commit the clash leaves in.
+  const clashRowNow = clashShowing ? clashRowId : null;
+  if (clashRowNow !== clashSeen.showingRowId) {
+    setClashSeen(
+      clashRowNow !== null
+        ? { showingRowId: clashRowNow, clearedRowId: null }
+        : {
+            showingRowId: null,
+            clearedRowId:
+              clashSeen.showingRowId === clashRowId && nameUsable
+                ? clashSeen.showingRowId
+                : null,
+          },
+    );
+  }
+  const clashClearedRowId = clashSeen.clearedRowId;
+
   // Widened to a single array type on the way out. The two queries return
   // differently-branded ids, and a `Id<"players">[] | Id<"teams">[]`-shaped
   // union is not callable through `.find` — nor is it what NearMatchPanel
@@ -1745,6 +1829,19 @@ export default function EntityReviewWizard({
   const nearMatches: NearMatch[] | undefined =
     current?.kind === "player" ? playerNearMatches : teamNearMatches;
 
+  /**
+   * NEO-602 — a team step whose printed name reaches TWO OR MORE team rows we
+   * hold. Such a step is a choice between those rows (offered by
+   * `TeamStepContext`), not a new team, so the heading asks "Which team", the
+   * lone-exact-match promotion below stands down (the choices are the rows
+   * themselves) and the create action is demoted. The gate wrote the rows on
+   * the queue row; this reads them with the batch.
+   */
+  const teamCandidateCount =
+    current?.kind === "team" && !reviewingDecided
+      ? (current.teamContext?.candidateTeamIds.length ?? 0)
+      : 0;
+  const candidateStep = teamCandidateCount >= 2;
   // NEO-332 — above the early return with what reads it: the a11y focus
   // effects (S1 / S5) need `pickStep` and `sameNameCandidates`.
   const exactRows = (nearMatches ?? []).filter((m) => m.confidence === "exact");
@@ -3517,6 +3614,23 @@ export default function EntityReviewWizard({
   }, [presentedRowId]);
 
   /*
+   * NEO-602 — a step that is a CHOICE between team rows must not arrive with
+   * focus on the create action.
+   *
+   * The footer's primary is one element across steps, so an operator who was
+   * pressing Enter down a run of New Team steps arrives on a "Which team" step
+   * still on "Add as New Team", and one more Enter would mint the team the
+   * step exists to make deliberate. Only from the primary: focus anywhere else
+   * is the operator's own and stays put. The heading names the step.
+   */
+  useEffect(() => {
+    if (!candidateStep || !presentedRowId) return;
+    if (document.activeElement === primaryDecisionRef.current) {
+      stepHeadingRef.current?.focus();
+    }
+  }, [candidateStep, presentedRowId]);
+
+  /*
    * NEO-424 (a11y) — park focus once a Change's clear has landed.
    *
    * The row comes back live in the same render that drops it from the
@@ -4166,10 +4280,10 @@ export default function EntityReviewWizard({
       }
       // NEO-307 — the server refuses this create (`recordDecision`); saying
       // so here keeps "Add as New Team" from being the thing that finds out.
-      // The approved Team Management wording, verbatim.
+      // The server's wording (NEO-602), built by the same helper.
       const holder = nameAliasHolders?.[0];
       if (holder) {
-        return `${holder.name} already answers to this name as an alias — remove it there before a team can take the name.`;
+        return aliasHolderSentence(holder, aliasCheckYears);
       }
       return null;
     }
@@ -4369,7 +4483,8 @@ export default function EntityReviewWizard({
    * relabelled "Link to {name}" there however many exact rows `nearMatches`
    * returns. Pinned by the wizard's NEO-332 tests.
    */
-  const showExactHierarchy = sameNameCandidates.length === 0 && exactRows.length === 1;
+  const showExactHierarchy =
+    !candidateStep && sameNameCandidates.length === 0 && exactRows.length === 1;
   /**
    * NEO-463 — the fragment step: a one-word player name the server says is a
    * piece of a fuller one on file. Never on a pick step (a same-name row is
@@ -4728,7 +4843,11 @@ export default function EntityReviewWizard({
     // NEO-424 — and the suggestion step "Back to the suggestion" returns to.
     (pickStep || preselectShown)
       ? pickNotice.text
-      : footerStatus);
+      : // NEO-602 — news outranks the standing status, like the pick notice:
+        // the clash that blocked this step is gone.
+        !expired && current && clashClearedRowId === current._id && createBlocked === null
+        ? ALIAS_CLASH_CLEARED_LINE
+        : footerStatus);
 
   /**
    * NEO-482 — with no row on screen (the checklist step, a post-review step,
@@ -4868,6 +4987,8 @@ export default function EntityReviewWizard({
             pickStep ||
             // NEO-463 — the fuller names are the answer; one-name is the exception.
             fragmentStep ||
+            // NEO-602 — the rows we hold are the answer; a new team is the exception.
+            candidateStep ||
             (!showExactHierarchy && !preselectShown && hasCloseOnly)
               ? "secondary"
               : "primary"
@@ -5306,7 +5427,11 @@ export default function EntityReviewWizard({
                       {pickStep
                         ? `Which ${current.name} is this?`
                         : !reviewingDecided && current.kind === "team"
-                          ? `New Team: ${current.name}`
+                          ? // NEO-602 — several rows answer to this name: the
+                            // step is a choice among them, not a new team.
+                            candidateStep
+                            ? `Which team: ${current.name}`
+                            : `New Team: ${current.name}`
                           : !reviewingDecided && current.kind === "league"
                             ? `New League: ${current.name}`
                             : current.name}
@@ -5444,30 +5569,38 @@ export default function EntityReviewWizard({
                   )}
 
                   {pickStep && !linkingOpen && (
-                    <SameNamePlayerPanel
-                      candidates={sameNameCandidates}
-                      scanCapped={sameNameScanCapped}
-                      setSportValue={current.setSportValue}
-                      disabled={busy}
-                      onPick={(playerId) => {
-                        if (busy) return;
-                        const picked = sameNameCandidates.find(
-                          (c) => c.playerId === playerId,
-                        );
-                        if (picked) {
-                          setPickedSameNameByRow((prev) => ({
-                            ...prev,
-                            [current._id]: picked,
-                          }));
-                        }
-                        void handleLink(
-                          current._id,
-                          "player",
-                          playerId as Id<"players">,
-                          linkOptions,
-                        );
-                      }}
-                    />
+                    <>
+                      <SameNamePlayerPanel
+                        candidates={sameNameCandidates}
+                        scanCapped={sameNameScanCapped}
+                        setSportValue={current.setSportValue}
+                        disabled={busy}
+                        onPick={(playerId) => {
+                          if (busy) return;
+                          const picked = sameNameCandidates.find(
+                            (c) => c.playerId === playerId,
+                          );
+                          if (picked) {
+                            setPickedSameNameByRow((prev) => ({
+                              ...prev,
+                              [current._id]: picked,
+                            }));
+                          }
+                          void handleLink(
+                            current._id,
+                            "player",
+                            playerId as Id<"players">,
+                            linkOptions,
+                          );
+                        }}
+                      />
+                      {/* NEO-602 — the evidence the choice is made by: the cards
+                          that print this name (number, printed team) and each
+                          candidate's stints. Under the choices, as the team step
+                          puts its cards under its own. Keyed by row so each step
+                          starts fresh. */}
+                      <PlayerStepContext key={current._id} reviewRowId={current._id} />
+                    </>
                   )}
 
                   {/* NEO-212: the operator's escape hatch when the enrichment
@@ -5943,6 +6076,24 @@ export default function EntityReviewWizard({
 
                       Players (and leagues) keep the panel and the link search.
                     */}
+                    {/*
+                      NEO-602 — the cards that print this name, their players
+                      and the stints we know; and, when two or more rows answer
+                      to it, those rows as one-click links ABOVE the search and
+                      the New Team form, which stay below as the fallback. A pick
+                      goes down the SAME `handleLink` path, "Remember …" answer
+                      included. Keyed by row so each step starts fresh.
+                    */}
+                    {current.kind === "team" && !reviewingDecided && (
+                      <TeamStepContext
+                        key={current._id}
+                        reviewRowId={current._id}
+                        disabled={busy}
+                        onLink={(teamId) => {
+                          void handleLink(current._id, "team", teamId, linkOptions);
+                        }}
+                      />
+                    )}
                     {current.kind === "team" ? (
                       <TeamMatchSearch
                         key={current._id}
@@ -6099,7 +6250,7 @@ export default function EntityReviewWizard({
                           {/* One text node, so a direct-text matcher (the
                               E2E driver's) reads the whole sentence. */}
                           <p className="text-sm text-neon-pink-text">
-                            {`${nameAliasHolders[0].name} already answers to this name as an alias — remove it there before a team can take the name.`}
+                            {aliasHolderSentence(nameAliasHolders[0], aliasCheckYears)}
                           </p>
                           <div className="flex flex-wrap gap-2">
                             {nameAliasHolders
@@ -6109,6 +6260,12 @@ export default function EntityReviewWizard({
                                     showExactHierarchy &&
                                     exactMatch &&
                                     exactMatch._id === holder.id
+                                  ) &&
+                                  // NEO-602 — a row the step already offers as a
+                                  // choice (above) is not offered a second time.
+                                  !(
+                                    candidateStep &&
+                                    current.teamContext?.candidateTeamIds.includes(holder.id)
                                   ),
                               )
                               .map((holder) => (
@@ -7163,16 +7320,17 @@ export default function EntityReviewWizard({
                      it this inherits Radix's 16px body size, which is not the
                      `text-xs` line `min-h-6` reserves the footer's height
                      for. */
-                  className="flex min-w-0 flex-1 items-center gap-2 text-xs text-neon-pink-text max-sm:basis-full"
+                  className="flex min-h-8 min-w-0 flex-1 items-start gap-2 text-xs text-neon-pink-text max-sm:basis-full"
                 >
                   {/*
                     The id sits on the TEXT, not on this flex wrapper: the
                     create controls point at it with `aria-describedby`, and a
                     description should be the reason alone — not the reason
                     plus the label of the button beside it. The message
-                    truncates; the way out of it does not.
+                    wraps (it can run to two lines, a holder's name and years
+                    among them) and the way out of it keeps its size.
                   */}
-                  <span id={createBlockedId} className="min-w-0 truncate">
+                  <span id={createBlockedId} className="min-w-0 text-pretty wrap-anywhere">
                     {createBlocked}
                   </span>
                   {/* NEO-236 — the same route as the blocked chip's, for the

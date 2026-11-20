@@ -8,6 +8,7 @@ import { ConvexError } from "convex/values";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { userFacingMessage } from "../../lib/errors/user-facing-message";
+import { aliasHolderStatement, teamOptionLabel } from "../../lib/teams/team-era";
 import NeonButton from "../modules/NeonButton";
 import { parseAliases } from "./NewLeagueForm";
 import NewTeamForm, {
@@ -86,6 +87,49 @@ function teamEraRefusal(err: unknown): Array<{ years: string }> | null {
       ? [{ years: (era as { years: string }).years }]
       : [],
   );
+}
+
+/**
+ * NEO-602 — the teams a `TEAM_NAME_IS_ALIAS` refusal names, or null for any
+ * other error. Same convention and the same structural narrowing as
+ * `teamEraRefusal`: recognised by `code`, never by prose, and a malformed
+ * payload is "not this refusal" rather than a render crash.
+ *
+ * It is the sibling of the second-era question for a name that no team is
+ * CALLED but another team answers to as an alias. Each holder carries its full
+ * name and, when it has one, its era, so the dialog can say who answers to it.
+ */
+function aliasHolderRefusal(
+  err: unknown,
+): Array<{ name: string; yearsActive?: { from: number; to?: number } }> | null {
+  if (!(err instanceof ConvexError)) return null;
+  const data = err.data as { code?: unknown; holders?: unknown } | null;
+  if (!data || typeof data !== "object" || data.code !== "TEAM_NAME_IS_ALIAS") {
+    return null;
+  }
+  if (!Array.isArray(data.holders)) return null;
+  const holders = data.holders.flatMap((holder: unknown) => {
+    if (!holder || typeof holder !== "object") return [];
+    const { name, yearsActive } = holder as {
+      name?: unknown;
+      yearsActive?: unknown;
+    };
+    if (typeof name !== "string" || !name) return [];
+    const years = yearsActive as { from?: unknown; to?: unknown } | undefined;
+    if (years && typeof years === "object" && typeof years.from === "number") {
+      return [
+        {
+          name,
+          yearsActive:
+            typeof years.to === "number"
+              ? { from: years.from, to: years.to }
+              : { from: years.from },
+        },
+      ];
+    }
+    return [{ name }];
+  });
+  return holders.length > 0 ? holders : null;
 }
 
 export default function NewTeamDialog({
@@ -287,7 +331,27 @@ export default function NewTeamDialog({
        * also where it belongs: the server does not write UI strings.
        */
       const existing = teamEraRefusal(err);
-      if (existing) {
+      /*
+       * NEO-602 — a name that is another team's ALIAS, not a team's own name.
+       * Nothing "already exists" under it, so the same-name copy below would
+       * call the holder a first era of this team. Say who answers to the name
+       * instead (the picker's "Name · years" label, so the operator can go and
+       * open it). Still armed for a second press: the server only sends this
+       * when the holder's years do NOT overlap this team's — an overlapping
+       * holder is returned as the team, or refused, before it gets here — and
+       * that is the one case the rule lets the operator go ahead with.
+       */
+      const holders = existing ? null : aliasHolderRefusal(err);
+      if (holders) {
+        setConfirmNewEra(true);
+        setError(
+          `${holders
+            .map((holder) =>
+              aliasHolderStatement(teamOptionLabel(holder.name, holder.yearsActive)),
+            )
+            .join(" ")} This team's years don't overlap, so Create again to add it as its own team.`,
+        );
+      } else if (existing) {
         setConfirmNewEra(true);
         setError(
           `${fullName || draft.name.trim()} already exists for ${existing

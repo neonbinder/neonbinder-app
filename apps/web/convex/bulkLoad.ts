@@ -93,9 +93,13 @@
  *     the player editor (advisory there): an alias the loader would attach
  *     unattended is exactly the shared-string case the dataset already dropped
  *     175 of. This also covers security condition S1 — an alias equal to
- *     another row's PRIMARY name, in any era — so the loader does not call
+ *     another row's PRIMARY name — so the loader does not call
  *     `teams.assertAliasesNotPrimaryNames`; applying it here as well would
- *     turn a reported ambiguity into a thrown chunk. With a `decision` present the operator HAS looked, so the owned
+ *     turn a reported ambiguity into a thrown chunk. NEO-602: the loader
+ *     stays STRICT, in any era, on purpose. The editors now allow an alias
+ *     equal to another team's name when the two teams' years do not overlap,
+ *     but an unattended load has no operator to judge that, so it keeps
+ *     parking the pair as `ambiguous` rather than attaching it. With a `decision` present the operator HAS looked, so the owned
  *     aliases are skipped and reported as `aliasesSkipped` while the rest
  *     land — otherwise an `aliasOwnedBy` row would have no expressible answer
  *     and the run could never converge.

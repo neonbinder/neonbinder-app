@@ -46,10 +46,68 @@
  * team after it folds. `pickTeamForYear` is where that is decided, opt-in per
  * caller; the filters below stay strict, because between SEVERAL rows a closed
  * era is still no answer.
+ *
+ * ## …and who decides between several rows for a CARD (NEO-602)
+ *
+ * The set's year only knows what was true when the cards were printed; the
+ * card's PLAYERS know which franchise they are on. When a printed name reaches
+ * several rows, `pickCardTeam` lets a player's stint (overlapping the row's
+ * era) decide, the year only excludes the future, and the year decides alone
+ * only when no player has a stint on any row — except that a year pick reached
+ * through an alias is not trusted over another row's own primary name. A tie
+ * or a disagreement is a question for the operator, never the first row.
  */
+
+import { MIN_CAREER_YEAR, maxCareerYear } from "../players/career-years";
 
 /** A team's lifespan. `to` absent means "still going". */
 export type TeamEra = { from: number; to?: number };
+
+/**
+ * NEO-602 (second layer) — is this an era the arithmetic below can trust?
+ *
+ * Whole years, and `to` no earlier than `from`. The writers refuse anything
+ * else (`teamEraProblem`), but a row written before they did, by the loader,
+ * or by a path nobody audited could still hold NaN, Infinity, a fraction or an
+ * inverted span, and every comparison against NaN is false: a malformed era
+ * would read as "overlaps nothing" and let an alias through that the strict
+ * reading refuses. So a malformed era is treated as UNDATED, which every
+ * helper here reads as overlapping and never excludes (the module note: unknown
+ * is not absent). Fails safe.
+ *
+ * Range is not checked here (that is the writers' bound, `teamEraProblem`);
+ * an integer far outside it is still an era, just a strange one.
+ */
+export function isWellFormedEra(years: TeamEra | undefined): years is TeamEra {
+  if (!years || !Number.isInteger(years.from)) return false;
+  if (years.to === undefined) return true;
+  return Number.isInteger(years.to) && years.to >= years.from;
+}
+
+/**
+ * NEO-254 / NEO-602 — why a team era cannot be saved, in the operator's words,
+ * or `null` when it can: whole years between `MIN_CAREER_YEAR` and next year,
+ * ending no earlier than they start. The ONE rule behind every writer
+ * (`requireTeamEra` in `convex/lib/teamEra.ts`) and the review wizard's
+ * pre-check, the same bounds `leagues.validateLeagueYears` applies to a
+ * league's era.
+ */
+export function teamEraProblem(
+  era: { from: number; to?: number },
+  now: Date = new Date(),
+): string | null {
+  const maxYear = maxCareerYear(now);
+  if (!Number.isInteger(era.from) || era.from < MIN_CAREER_YEAR || era.from > maxYear) {
+    return `A team start year must be a whole year between ${MIN_CAREER_YEAR} and ${maxYear}.`;
+  }
+  if (era.to !== undefined) {
+    if (!Number.isInteger(era.to) || era.to < MIN_CAREER_YEAR || era.to > maxYear) {
+      return `A team end year must be a whole year between ${MIN_CAREER_YEAR} and ${maxYear}.`;
+    }
+    if (era.to < era.from) return "A team cannot stop playing before it starts.";
+  }
+  return null;
+}
 
 /** The minimum a row must expose for the era helpers. */
 export type TeamEraRow = { yearsActive?: TeamEra };
@@ -83,7 +141,7 @@ export function eraCoversYear(
   years: TeamEra | undefined,
   year: number,
 ): boolean {
-  if (!years) return true;
+  if (!isWellFormedEra(years)) return true;
   if (year < years.from) return false;
   return years.to === undefined || year <= years.to;
 }
@@ -106,7 +164,7 @@ export function erasOverlap(
   a: TeamEra | undefined,
   b: TeamEra | undefined,
 ): boolean {
-  if (!a || !b) return true;
+  if (!isWellFormedEra(a) || !isWellFormedEra(b)) return true;
   return a.from <= (b.to ?? Infinity) && b.from <= (a.to ?? Infinity);
 }
 
@@ -203,6 +261,226 @@ export function pickTeamForYear<T extends TeamEraRow>(
     return { row: lone, pastEra: true };
   }
   return null;
+}
+
+/**
+ * NEO-602 — one season of a player's career on a team, as the era rules read it.
+ *
+ * The shape of `players.teamYears[]`, with the team id as a plain string so
+ * this module stays free of Convex types. Either year may be absent: an
+ * undated stint is a fact we hold without its years.
+ */
+export type Stint = { teamId: string; fromYear?: number; toYear?: number };
+
+/**
+ * NEO-602 — does `stint` overlap `era`?
+ *
+ * A stint missing a year runs open on that side (a missing `toYear` is "still
+ * there", a missing `fromYear` is "from the start"), so an UNDATED stint
+ * overlaps everything and an undated ERA overlaps every stint. Unknown is not
+ * absent — the module note's rule, applied to the player side.
+ */
+export function stintOverlapsEra(stint: Stint, era: TeamEra | undefined): boolean {
+  if (!isWellFormedEra(era)) return true;
+  const from = stint.fromYear ?? -Infinity;
+  const to = stint.toYear ?? Infinity;
+  return from <= (era.to ?? Infinity) && era.from <= to;
+}
+
+/** What `pickCardTeam` concluded. */
+export type CardTeamPick<T> = {
+  row: T;
+  /**
+   * `"year"` — the set year (and the alias-vs-own-name guard) settled it, no
+   * player was needed. `"players"` — the cards' players' stints settled it.
+   */
+  via: "year" | "players";
+  /**
+   * Whether the set year, read on its own the way the resolver always has
+   * (`pickTeamForYear` with the card's past-era allowance), lands on this same
+   * row. A players' answer that DISAGREES with the year is the one a caller
+   * must show the operator rather than link silently.
+   */
+  agreesWithYear: boolean;
+};
+
+/** What `pickCardTeam` reads besides the rows. */
+export type CardTeamPickInput = {
+  /** The set's year; absent means nothing is narrowed by year. */
+  setYear: number | undefined;
+  /**
+   * The ids of the rows the printed name reached by an ALIAS only (the name is
+   * not their own primary name). The card name matched them through a side
+   * entry the operator or the loader wrote, not through what the team is
+   * called.
+   */
+  aliasOnlyIds: ReadonlySet<string>;
+  /**
+   * Per card printing the name, per player on that card, that player's stints.
+   * Absent (or empty) means the caller has no player evidence to offer.
+   */
+  cards?: ReadonlyArray<ReadonlyArray<ReadonlyArray<Stint>>>;
+};
+
+/**
+ * NEO-602 — which of a printed team name's rows a CARD means, or `null` when a
+ * human has to decide. The ONE rule behind the review gate, the commit prelude,
+ * the per-card BSC fill and the legacy backfill: callers hand it the rows and
+ * the evidence, and none of them restates it.
+ *
+ * ## Why the year alone is not enough
+ *
+ * "Oakland Athletics" is the PRIMARY name of the 1968–2024 Oakland row and an
+ * ALIAS of the 2025– Athletics row. A 2025 set's year covers only the second,
+ * so the year silently linked every card to the Athletics — including a Rickey
+ * Henderson card, a man who never played for them. The card's players know
+ * which franchise they are on; the set's year only knows what was true when
+ * the cards were printed.
+ *
+ * ## The rule (Jason, 2026-11-18: option A for the no-stint case)
+ *
+ * - **One row** → `pickTeamForYear` with the card's past-era allowance, as it
+ *   has always been. Nothing to choose between, so no player is asked.
+ * - **Several rows** →
+ *   1. A row whose era starts after the set year is never an answer: a card can
+ *      show a team's past, never its future.
+ *   2. A row is SUPPORTED when a player on a card has a stint on it that
+ *      overlaps the row's era (an undated stint counts).
+ *   3. If any row is supported, the players decide: a card whose players
+ *      have no stint on any candidate row ABSTAINS (a recent trade the stints
+ *      predate says nothing), and only the cards that name a row vote. Each
+ *      voting card must point at exactly one row, the same row on every voting
+ *      card. A tie or a disagreement is `null` — never the first candidate. A
+ *      player with stints on BOTH rows is a tie too; the year does not break
+ *      it (D6). An UNDATED stint counts as support for its own row, so a retro
+ *      card of a past player still finds its team.
+ *      A silent card may abstain only while the voters' row is also the row
+ *      the set year would pick. If the voters agree on a row the year would NOT
+ *      pick and ANY card is silent, the answer is `null`: one card's evidence
+ *      must not be applied to cards that say nothing, against the year
+ *      (CLAUDE.md invariant 8). When EVERY card votes, the voters' row stands
+ *      even against the year (a retro set: the Rickey Henderson case).
+ *   4. If no player supports any row, the set year picks, as before — EXCEPT
+ *      when the year's pick matched the name only by alias while another
+ *      eligible row holds the name as its OWN primary name: then `null`. An
+ *      alias is a side entry; the printed name is that other team's name.
+ *
+ * Pure and era/stint-only: it reads `yearsActive`, stints and the two id sets,
+ * never a name.
+ */
+export function pickCardTeam<T extends TeamEraRow & { _id: string }>(
+  rows: readonly T[],
+  input: CardTeamPickInput,
+): CardTeamPick<T> | null {
+  if (rows.length === 0) return null;
+  const { setYear, aliasOnlyIds, cards } = input;
+  const yearPick = pickTeamForYear(rows, setYear, { allowPastEra: true });
+  if (rows.length === 1) {
+    return yearPick ? { row: yearPick.row, via: "year", agreesWithYear: true } : null;
+  }
+
+  const year =
+    setYear !== undefined && Number.isInteger(setYear) ? setYear : undefined;
+  // 1. Never a team that did not exist yet.
+  const eligible = rows.filter((row) => {
+    const era = row.yearsActive;
+    return year === undefined || !isWellFormedEra(era) || era.from <= year;
+  });
+  if (eligible.length === 0) return null;
+
+  // 2. Which rows does each card's cast of players put a stint on?
+  const supportedPerCard: Set<string>[] = (cards ?? []).map((players) => {
+    const onCard = new Set<string>();
+    for (const stints of players) {
+      for (const stint of stints) {
+        const row = eligible.find((r) => r._id === stint.teamId);
+        if (row && stintOverlapsEra(stint, row.yearsActive)) onCard.add(row._id);
+      }
+    }
+    return onCard;
+  });
+
+  // 3. Any player evidence at all → the players decide. A card whose players
+  //    have no stint on any candidate row ABSTAINS (a recent trade the NB
+  //    stints predate says nothing about which franchise); only the cards that
+  //    name a row vote, and those must agree on exactly one.
+  if (supportedPerCard.some((onCard) => onCard.size > 0)) {
+    let answer: string | null = null;
+    let anySilent = false;
+    for (const onCard of supportedPerCard) {
+      if (onCard.size === 0) {
+        anySilent = true;
+        continue;
+      }
+      if (onCard.size !== 1) return null;
+      const [only] = onCard;
+      if (answer !== null && answer !== only) return null;
+      answer = only;
+    }
+    const row = eligible.find((r) => r._id === answer);
+    if (!row) return null;
+    const agreesWithYear = yearPick !== null && yearPick.row._id === row._id;
+    // Silent cards abstain only while the year backs the voters. Against the
+    // year, the cards that said nothing are the operator's to place.
+    if (anySilent && !agreesWithYear) return null;
+    return { row, via: "players", agreesWithYear };
+  }
+
+  // 4. No player says anything: the set year picks, with one guard.
+  if (!yearPick) return null;
+  if (
+    aliasOnlyIds.has(yearPick.row._id) &&
+    eligible.some((r) => r._id !== yearPick.row._id && !aliasOnlyIds.has(r._id))
+  ) {
+    return null;
+  }
+  return { row: yearPick.row, via: "year", agreesWithYear: true };
+}
+
+/**
+ * NEO-602 — the clause of an alias refusal that says WHY two teams are
+ * considered to clash, in the operator's words.
+ *
+ * `self` is the team being saved or created; `other` is the team it clashes
+ * with. Two dated, overlapping teams read "the two teams' years overlap";
+ * when a side has no years the clash is a "may", because an undated team is
+ * unknown rather than absent (the module note). Shared by the server's
+ * refusals and the review wizard's own copy so they cannot drift.
+ */
+export function eraOverlapReason(
+  self: TeamEra | undefined,
+  other: TeamEra | undefined,
+): string {
+  if (self && other) return "the two teams' years overlap";
+  if (!self && !other) return "neither team has years on file, so they may overlap";
+  if (!self) return "this team has no years on file, so they may overlap";
+  return "that team has no years on file, so they may overlap";
+}
+
+/**
+ * NEO-602 — the refusal for the REVERSE order of the alias rule: a team about
+ * to take a name that another team already answers to as an ALIAS.
+ *
+ * `holderLabel` is the holder named as a picker names a team
+ * (`teamOptionLabel`: "Athletics · 2025–present"), `reason` is the
+ * `eraOverlapReason` clause. ONE sentence, read by the server's refusals
+ * (`teams.assertNameNotAnotherTeamsAlias`) and by every client that previews
+ * or reports one (the review wizard, Team Management's save), so the wording
+ * cannot fork between them.
+ */
+export function aliasHolderSentence(holderLabel: string, reason: string): string {
+  return `${holderLabel} already answers to this name as an alias, and ${reason}. Remove it there, or give this team years that don't overlap.`;
+}
+
+/**
+ * NEO-602 — the same fact told where nothing is refused: the New Team dialog
+ * and form, for a name another team holds only as an ALIAS while its years do
+ * NOT overlap the draft's. That is allowed (the Athletics 2025– may wear
+ * "Oakland Athletics", the 1968–2024 team's own name), so it is a statement of
+ * who answers to the name, never "already exists" — nothing is named that.
+ */
+export function aliasHolderStatement(holderLabel: string): string {
+  return `${holderLabel} already answers to this name as an alias.`;
 }
 
 /**

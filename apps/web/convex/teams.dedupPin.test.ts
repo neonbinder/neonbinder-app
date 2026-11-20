@@ -128,7 +128,7 @@ describe("NEO-236 dedup pin: every identity path lands on the one split row", ()
 
     const row = await t
       .withIdentity(ADMIN)
-      .query(api.teams.findByNameAndSport, { name: FULL_NAME, sportId });
+      .query(internal.teams.findByNameAndSport, { name: FULL_NAME, sportId });
 
     expect(row?._id).toBe(teamId);
     expect(row?.name).toBe("Padres");

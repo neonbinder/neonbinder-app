@@ -16,6 +16,7 @@ import {
   parseWikidataUnavailable,
 } from "../lib/errors/wikidata-unavailable";
 import { getCurrentUserId, requireAdmin } from "./auth";
+import { playerContextValidator, teamContextValidator } from "./lib/entityReviewContext";
 import {
   buildExistingPlayerCandidates,
   // NEO-424 — the set-history candidates, by id and in any sport.
@@ -35,6 +36,7 @@ import { findSportForSelectorOption } from "./cardChecklist";
 // into the same `players.teamYears` column) and with the wizard's own year
 // fields. The three used to be separate literals and two of them disagreed.
 import { assertCareerStintYears, MIN_CAREER_YEAR } from "../lib/players/career-years";
+import { requireTeamEra } from "./lib/teamEra";
 // NEO-284 — the team-alias bounds live beside the table's one writer. The New
 // Team step's "Also known as" list is validated HERE, at decision time, so the
 // queue never holds an over-bound or self-referential list for the commit to
@@ -47,6 +49,19 @@ import {
   normalizeTeamName,
 } from "./teams";
 import { teamFullName } from "../lib/teams/team-name";
+// NEO-602 — the team step's candidate rows and stints, named and judged by the
+// same pure era rules the review gate used.
+import {
+  eraLabel,
+  pickCardTeam,
+  stintOverlapsEra,
+  teamOptionLabel,
+  type Stint,
+} from "../lib/teams/team-era";
+import { formatYearSpan } from "../lib/players/player-description";
+// NEO-602 — `playerStepContext` marks the stints on a team a card printed with
+// the same fold the gate's career-team rule compares by.
+import { normalizeEntityName } from "../lib/entities/normalize-name";
 // NEO-254 — the New League step collects everything League Management edits, so
 // it validates against the SAME bounds. Imported rather than restated: two
 // validators guarding one table must not be able to disagree about what it
@@ -529,36 +544,6 @@ function toTeamCreate(input: TeamCreateInput): TeamCreate | null {
 }
 
 /**
- * NEO-254 — whole years, in range, ending no earlier than they start.
- *
- * The same shape and the same bounds `leagues.validateLeagueYears` applies to
- * a league's era; a team's era answers the same question about the same kind
- * of thing, and two rules for one idea is one more thing to look up.
- */
-function requireTeamEra(era: { from: number; to?: number }): {
-  from: number;
-  to?: number;
-} {
-  const maxYear = new Date().getFullYear() + 1;
-  if (!Number.isInteger(era.from) || era.from < MIN_CAREER_YEAR || era.from > maxYear) {
-    throw new ConvexError(
-      `A team start year must be a whole year between ${MIN_CAREER_YEAR} and ${maxYear}.`,
-    );
-  }
-  if (era.to !== undefined) {
-    if (!Number.isInteger(era.to) || era.to < MIN_CAREER_YEAR || era.to > maxYear) {
-      throw new ConvexError(
-        `A team end year must be a whole year between ${MIN_CAREER_YEAR} and ${maxYear}.`,
-      );
-    }
-    if (era.to < era.from) {
-      throw new ConvexError("A team cannot stop playing before it starts.");
-    }
-  }
-  return { from: era.from, ...(era.to !== undefined ? { to: era.to } : {}) };
-}
-
-/**
  * NEO-236 — the league half of a team create decision, normalized.
  *
  * `leagueId` passes through untouched INCLUDING null, because null is an
@@ -748,6 +733,33 @@ const rowValidator = v.object({
   decision: v.optional(decisionValidator),
   // NEO-221 — see schema.ts. Read only by `sweepAbandonedBatches`.
   lastTouchedAt: v.optional(v.number()),
+  // NEO-602 — display context the review gate writes at insert. The stored
+  // row carries both, so `getInternal` (which hands the raw document to the
+  // pool's lookup work item) must declare them or every team row fails its
+  // returns validation. The public path never sees them: `toPublicRow`.
+  teamContext: v.optional(teamContextValidator),
+  playerContext: v.optional(playerContextValidator),
+});
+
+/**
+ * NEO-602 — one team step's context, as the gate hands it to `startBatch`. The
+ * same shape the row stores (`entityReviewQueue.teamContext`) plus the printed
+ * name it belongs to.
+ */
+const teamContextFactValidator = v.object({
+  name: v.string(),
+  ...teamContextValidator.fields,
+});
+
+/**
+ * NEO-602 — one same-name player step's context, as the gate hands it to
+ * `startBatch`: the cards that printed the name (number and printed team(s))
+ * plus the printed name it belongs to. The same shape the row stores
+ * (`entityReviewQueue.playerContext`).
+ */
+const playerContextFactValidator = v.object({
+  name: v.string(),
+  ...playerContextValidator.fields,
 });
 
 const publicRowValidator = v.object({
@@ -785,6 +797,13 @@ const publicRowValidator = v.object({
   // — and `toPublicRow` only removes `createdByUserId`, so omitting it here
   // would make `getBatch`'s return validator reject its own rows.
   lastTouchedAt: v.optional(v.number()),
+  /**
+   * NEO-602 — the rows a team step's name reached, when two or more. All the
+   * wizard needs from the row itself (the heading asks "Which team" instead of
+   * "New Team"); the cards and stints come from `teamStepContext`, on demand,
+   * so a batch of many team steps never reads every player's career.
+   */
+  teamContext: v.optional(v.object({ candidateTeamIds: v.array(v.id("teams")) })),
 });
 
 /**
@@ -828,12 +847,28 @@ function assertOwnsRow(
   }
 }
 
-function toPublicRow<T extends { createdByUserId: string }>(
+function toPublicRow<
+  T extends {
+    createdByUserId: string;
+    teamContext?: { candidateTeamIds: Array<Id<"teams">> };
+    playerContext?: unknown;
+  },
+>(
   row: T,
-): Omit<T, "createdByUserId"> {
+): Omit<T, "createdByUserId" | "teamContext" | "playerContext"> & {
+  teamContext?: { candidateTeamIds: Array<Id<"teams">> };
+} {
+  // NEO-602 — only the candidate rows travel with the batch (the heading
+  // reads them); the cards and stints are `teamStepContext`'s, on demand.
+  // NEO-602 — and `playerContext` never travels: `playerStepContext` reads it.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { createdByUserId: _omit, ...rest } = row;
-  return rest;
+  const { createdByUserId: _omit, teamContext, playerContext: _playerContext, ...rest } = row;
+  return {
+    ...rest,
+    ...(teamContext && teamContext.candidateTeamIds.length > 0
+      ? { teamContext: { candidateTeamIds: teamContext.candidateTeamIds } }
+      : {}),
+  };
 }
 
 /**
@@ -1318,6 +1353,24 @@ export const startBatch = internalMutation({
       sportValue: v.string(),
       reason: v.union(v.literal("priorYearProduct"), v.literal("onlyNamesake")),
     }))),
+    /**
+     * NEO-602 — what each TEAM step shows: the cards that printed the name,
+     * their players, and the rows the name reached. A fact the gate read from
+     * the cards (which are not committed yet, so nothing else can find them),
+     * written onto the team row as `teamContext` at insert. Display only.
+     * Matched to a row by the normalized team name, like every fact above, and
+     * carried by the continuation in `...args`.
+     */
+    teamContexts: v.optional(v.array(teamContextFactValidator)),
+    /**
+     * NEO-602 — what each same-name PLAYER step shows: the cards that printed
+     * the name, with the team printed on each. A fact the gate read from the
+     * cards (not committed yet, so nothing else can find them), written onto
+     * the player row as `playerContext` at insert. Display only. Matched to a
+     * row by the normalized player name, and carried by the continuation in
+     * `...args`.
+     */
+    playerContexts: v.optional(v.array(playerContextFactValidator)),
   },
   returns: v.string(),
   handler: async (ctx, args): Promise<string> => {
@@ -1442,6 +1495,38 @@ export const startBatch = internalMutation({
         historyPlayerIds: history.playerIds,
       });
     }
+    /** NEO-602 — each team step's context, by the row key it belongs to. */
+    const teamContextByKey = new Map<
+      string,
+      NonNullable<Doc<"entityReviewQueue">["teamContext"]>
+    >();
+    for (const fact of args.teamContexts ?? []) {
+      const key = keyFor("team", fact.name);
+      if (isBlankKey("team", key) || teamContextByKey.has(key)) continue;
+      teamContextByKey.set(key, {
+        candidateTeamIds: fact.candidateTeamIds,
+        cards: fact.cards,
+        moreCards: fact.moreCards,
+      });
+    }
+    const teamContextFor = (key: string) => {
+      const teamContext = teamContextByKey.get(key);
+      return teamContext ? { teamContext } : {};
+    };
+    /** NEO-602 — each same-name player step's context, by the row key it belongs to. */
+    const playerContextByKey = new Map<
+      string,
+      NonNullable<Doc<"entityReviewQueue">["playerContext"]>
+    >();
+    for (const fact of args.playerContexts ?? []) {
+      const key = keyFor("player", fact.name);
+      if (isBlankKey("player", key) || playerContextByKey.has(key)) continue;
+      playerContextByKey.set(key, { cards: fact.cards, moreCards: fact.moreCards });
+    }
+    const playerContextFor = (key: string) => {
+      const playerContext = playerContextByKey.get(key);
+      return playerContext ? { playerContext } : {};
+    };
     const preselectByKey = new Map<string, PreselectFact>();
     for (const preselect of args.preselects ?? []) {
       const key = keyFor("player", preselect.name);
@@ -1545,6 +1630,12 @@ export const startBatch = internalMutation({
           sportId: link.rowSportId,
           status: "ready",
           ...(enrichment ? { enrichment } : {}),
+          // NEO-602 — a Change turns a linked team back into a team step, which
+          // shows these cards and rows.
+          ...(link.kind === "team" ? teamContextFor(key) : {}),
+          // NEO-602 — and a Change on a linked player turns it back into a pick
+          // step, which shows the cards that printed the name.
+          ...(link.kind === "player" ? playerContextFor(key) : {}),
           decision:
             link.kind === "player"
               ? { action: "link", linkedPlayerId: link.playerId, autoLinked: link.origin }
@@ -1578,6 +1669,7 @@ export const startBatch = internalMutation({
           sportId: args.sportId,
           status: awaitsChoice ? "ready" : "pending",
           ...(enrichment ? { enrichment } : {}),
+          ...playerContextFor(key),
         });
         return { id, enqueue: !awaitsChoice };
       }
@@ -1588,6 +1680,7 @@ export const startBatch = internalMutation({
         sportId: args.sportId,
         status: "ready",
         enrichment: withPreselect(key, { existingCandidates: built.candidates }),
+        ...playerContextFor(key),
       });
       ops += 1;
       return { id, enqueue: false };
@@ -1884,6 +1977,8 @@ export const startBatch = internalMutation({
           sportId: args.sportId,
           status: awaitsChoice ? "ready" : "pending",
           ...(enrichment ? { enrichment } : {}),
+          ...(kind === "team" ? teamContextFor(key) : {}),
+          ...(kind === "player" ? playerContextFor(key) : {}),
         });
         if (!awaitsChoice) addedIds.push(addedId);
       }
@@ -1956,6 +2051,7 @@ export const startBatch = internalMutation({
         sportId: args.sportId,
         status: awaitsChoice ? "ready" : "pending",
         ...(enrichment ? { enrichment } : {}),
+        ...playerContextFor(key),
       });
       if (!awaitsChoice) ids.push(insertedId);
     }
@@ -1979,6 +2075,7 @@ export const startBatch = internalMutation({
           nameNormalized: normalizeTeamName(name),
           sportId: args.sportId,
           status: "pending",
+          ...teamContextFor(keyFor("team", name)),
         }),
       );
     }
@@ -3057,6 +3154,347 @@ export const getBatch = query({
 });
 
 /**
+ * NEO-602 — how many stints of one player the team step lists. A career is a
+ * handful of teams; the bound is for the pathological row, and the step says
+ * how many more there are rather than dropping them silently.
+ */
+const TEAM_STEP_MAX_STINTS_PER_PLAYER = 12;
+
+/**
+ * NEO-602 (security review) — the most stints `playerStepContext` READS per
+ * player. `players.teamYears` is the operator's own data, but the step reads a
+ * team row for each stint it scans, for up to `PLAYER_AMBIGUITY_SCAN_LIMIT`
+ * candidates, in a query the wizard subscribes to; a career with hundreds of
+ * stints must not turn one subscription into hundreds of reads. Oldest first,
+ * so a printed team in a stint past the bound is not seen: `hasPrintedTeam` is
+ * then false, which the step's sentences already say as "no stint on file with
+ * the printed team" (never a claim that the player did not play for it). A
+ * real career is well under this (a player has a dozen stints at the extreme).
+ */
+export const PLAYER_STEP_MAX_STINTS_SCANNED = 64;
+
+/**
+ * NEO-602 — what a TEAM review step shows beside its question: the existing
+ * team rows the printed name reached, and the cards that printed it with each
+ * player's known stints.
+ *
+ * Jason, 2026-11-19: "we need to show what player/card is triggering it
+ * because that is the only way a person knows the right team to link it to.
+ * … lets list the players stints that we know about." Read on demand for the
+ * step on screen, not folded into `getBatch`: a batch can hold many team steps
+ * and every player's career is a read the other steps never need.
+ *
+ * All of it is NB's own data: the cards' text is what the gate recorded on the
+ * row (`teamContext`), the stints are `players.teamYears`, and a stint's team
+ * is named by its NB row. `null` for a row with nothing to show (a league or
+ * player row, a staged career team, a row from before the field).
+ */
+export const teamStepContext = query({
+  args: { reviewRowId: v.id("entityReviewQueue") },
+  returns: v.union(
+    v.null(),
+    v.object({
+      /** Newest era first. Empty unless the name reached two or more rows. */
+      candidates: v.array(
+        v.object({
+          teamId: v.id("teams"),
+          fullName: v.string(),
+          /** "1954–present", or "" for an undated row. */
+          era: v.string(),
+          /** The row's league name, when it has one. */
+          league: v.optional(v.string()),
+        }),
+      ),
+      cards: v.array(
+        v.object({
+          number: v.optional(v.string()),
+          players: v.array(
+            v.object({
+              name: v.string(),
+              stints: v.array(
+                v.object({
+                  teamId: v.id("teams"),
+                  /** The team as a picker names it: era appended for a candidate row. */
+                  label: v.string(),
+                  /** "2019–2023", "since 2019", or "" when the years are not on file. */
+                  years: v.string(),
+                }),
+              ),
+              /** Stints beyond the bound, not listed. */
+              moreStints: v.number(),
+            }),
+          ),
+        }),
+      ),
+      moreCards: v.number(),
+      /**
+       * True only when some player on these cards has a stint on one of the
+       * candidate rows and the stints still do not settle which: a tie, or
+       * cards pointing at different rows.
+       */
+      playersDontSettle: v.boolean(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const callerId = await requireAdmin(ctx);
+    const row = await ctx.db.get(args.reviewRowId);
+    if (!row) return null;
+    assertOwnsRow(row, callerId);
+    const context = row.teamContext;
+    if (row.kind !== "team" || !context) return null;
+
+    const leagueNames = new Map<string, string | undefined>();
+    const leagueNameOf = async (leagueId: Id<"leagues"> | undefined) => {
+      if (!leagueId) return undefined;
+      if (!leagueNames.has(leagueId)) {
+        leagueNames.set(leagueId, (await ctx.db.get(leagueId))?.name);
+      }
+      return leagueNames.get(leagueId);
+    };
+
+    // The candidate rows still on file, newest era first. An undated row has
+    // no era to order by and goes last.
+    const candidateRows: Array<Doc<"teams">> = [];
+    for (const teamId of context.candidateTeamIds) {
+      const team = await ctx.db.get(teamId);
+      if (team) candidateRows.push(team);
+    }
+    candidateRows.sort(
+      (a, b) =>
+        (b.yearsActive?.from ?? Number.NEGATIVE_INFINITY) -
+        (a.yearsActive?.from ?? Number.NEGATIVE_INFINITY),
+    );
+    const candidateIds = new Set<string>(candidateRows.map((team) => team._id as string));
+    const candidates = [];
+    for (const team of candidateRows) {
+      const league = await leagueNameOf(team.leagueId);
+      candidates.push({
+        teamId: team._id,
+        fullName: teamFullName(team),
+        era: eraLabel(team.yearsActive),
+        ...(league ? { league } : {}),
+      });
+    }
+
+    const teamsById = new Map<string, Doc<"teams"> | null>();
+    const teamLabel = async (teamId: Id<"teams">): Promise<string> => {
+      if (!teamsById.has(teamId)) teamsById.set(teamId, await ctx.db.get(teamId));
+      const team = teamsById.get(teamId);
+      if (!team) return "A team no longer on file";
+      return candidateIds.has(teamId)
+        ? teamOptionLabel(teamFullName(team), team.yearsActive)
+        : teamFullName(team);
+    };
+    const playersById = new Map<string, Doc<"players"> | null>();
+    const evidence: Stint[][][] = [];
+    const cards = [];
+    for (const card of context.cards) {
+      const players = [];
+      const onCard: Stint[][] = [];
+      for (const printed of card.players) {
+        let player: Doc<"players"> | null = null;
+        if (printed.playerId) {
+          if (!playersById.has(printed.playerId)) {
+            playersById.set(printed.playerId, await ctx.db.get(printed.playerId));
+          }
+          player = playersById.get(printed.playerId) ?? null;
+        }
+        const stints = [...(player?.teamYears ?? [])].sort(
+          (a, b) =>
+            (a.fromYear ?? Number.POSITIVE_INFINITY) -
+            (b.fromYear ?? Number.POSITIVE_INFINITY),
+        );
+        onCard.push(
+          stints
+            .filter((stint) => candidateIds.has(stint.teamId as string))
+            .map((stint) => ({
+              teamId: stint.teamId as string,
+              ...(stint.fromYear !== undefined ? { fromYear: stint.fromYear } : {}),
+              ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
+            })),
+        );
+        const listed = [];
+        for (const stint of stints.slice(0, TEAM_STEP_MAX_STINTS_PER_PLAYER)) {
+          listed.push({
+            teamId: stint.teamId,
+            label: await teamLabel(stint.teamId),
+            years: stintYearsLabel(stint),
+          });
+        }
+        players.push({
+          name: printed.name,
+          stints: listed,
+          moreStints: Math.max(0, stints.length - listed.length),
+        });
+      }
+      evidence.push(onCard);
+      cards.push({ ...(card.number ? { number: card.number } : {}), players });
+    }
+
+    // Does any player have a stint on a candidate row, yet the stints do not
+    // settle it? Asked of the same rule the gate used, with the same year.
+    let playersDontSettle = false;
+    if (candidateRows.length >= 2) {
+      const supported = evidence.some((onCard) =>
+        onCard.some((stints) =>
+          stints.some((stint) =>
+            stintOverlapsEra(
+              stint,
+              candidateRows.find((team) => team._id === stint.teamId)?.yearsActive,
+            ),
+          ),
+        ),
+      );
+      if (supported) {
+        const setYear = await findSetYearForSelectorOption(ctx, row.selectorOptionId);
+        playersDontSettle =
+          pickCardTeam(
+            candidateRows.map((team) => ({ _id: team._id as string, yearsActive: team.yearsActive })),
+            { setYear, aliasOnlyIds: new Set<string>(), cards: evidence },
+          ) === null;
+      }
+    }
+
+    return { candidates, cards, moreCards: context.moreCards, playersDontSettle };
+  },
+});
+
+/**
+ * NEO-602 — what a same-name PLAYER pick step shows beside its candidates: the
+ * cards that printed the name (number and the team printed on each) and, for
+ * every candidate, the stints we hold, with the ones on a printed team marked.
+ *
+ * Jason, 2026-11-19: "I don't know how I would choose between the two active
+ * luis castillo. We should show the card number & team from the player on the
+ * screen." Read on demand for the step on screen, not folded into `getBatch`:
+ * a batch can hold many pick steps and every candidate's career is a read the
+ * other steps never need.
+ *
+ * All of it is NB's own data: the printed text is what the gate recorded on
+ * the row (`playerContext`), the candidates are the row's
+ * `enrichment.existingCandidates`, and the stints are `players.teamYears`.
+ * `onPrintedTeam` marks a stint whose team answers to a printed name by full
+ * name or nickname, in any year: the same reading the gate's career-team rule
+ * uses, so what this shows is what the gate asked. Display only; nothing
+ * decides from it. `null` for a row with nothing to show (a team or league
+ * row, a name that was not a same-name choice, a row from before the field).
+ */
+export const playerStepContext = query({
+  args: { reviewRowId: v.id("entityReviewQueue") },
+  returns: v.union(
+    v.null(),
+    v.object({
+      cards: v.array(
+        v.object({
+          number: v.optional(v.string()),
+          /** The team(s) as printed on the card; empty when it names none. */
+          teams: v.array(v.string()),
+        }),
+      ),
+      moreCards: v.number(),
+      /** In the order the pick step lists its candidates. */
+      players: v.array(
+        v.object({
+          playerId: v.id("players"),
+          name: v.string(),
+          birthYear: v.optional(v.number()),
+          /** Oldest first. */
+          stints: v.array(
+            v.object({
+              teamId: v.id("teams"),
+              label: v.string(),
+              /** "2019–2023", "since 2019", or "" when the years are not on file. */
+              years: v.string(),
+              /** The stint's team is one a card printed. */
+              onPrintedTeam: v.boolean(),
+            }),
+          ),
+          /** Stints beyond the bound, not listed. */
+          moreStints: v.number(),
+          /** Some stint, listed or not, is on a printed team. */
+          hasPrintedTeam: v.boolean(),
+        }),
+      ),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const callerId = await requireAdmin(ctx);
+    const row = await ctx.db.get(args.reviewRowId);
+    if (!row) return null;
+    assertOwnsRow(row, callerId);
+    const context = row.playerContext;
+    const candidates = row.enrichment?.existingCandidates ?? [];
+    if (row.kind !== "player" || !context || candidates.length < 2) return null;
+
+    const printed = new Set<string>();
+    for (const card of context.cards) {
+      for (const team of card.teams) {
+        const key = normalizeEntityName(team);
+        if (key) printed.add(key);
+      }
+    }
+
+    const teamsById = new Map<string, Doc<"teams"> | null>();
+    const teamOf = async (teamId: Id<"teams">) => {
+      if (!teamsById.has(teamId)) teamsById.set(teamId, await ctx.db.get(teamId));
+      return teamsById.get(teamId) ?? null;
+    };
+    const onPrinted = (team: Doc<"teams"> | null): boolean =>
+      team !== null &&
+      [normalizeEntityName(teamFullName(team)), normalizeEntityName(team.name)].some(
+        (key) => key.length > 0 && printed.has(key),
+      );
+
+    const players = [];
+    for (const candidate of candidates.slice(0, PLAYER_AMBIGUITY_SCAN_LIMIT)) {
+      const player = await ctx.db.get(candidate.playerId);
+      // A candidate gone since the gate read it is not offered, as the pick
+      // step itself drops it.
+      if (!player) continue;
+      const stints = [...(player.teamYears ?? [])].sort(
+        (a, b) =>
+          (a.fromYear ?? Number.POSITIVE_INFINITY) - (b.fromYear ?? Number.POSITIVE_INFINITY),
+      );
+      let hasPrintedTeam = false;
+      const listed = [];
+      // Only the first `PLAYER_STEP_MAX_STINTS_SCANNED` are read (see there):
+      // the rest are counted in `moreStints` and never looked up.
+      for (const [index, stint] of stints.slice(0, PLAYER_STEP_MAX_STINTS_SCANNED).entries()) {
+        const team = await teamOf(stint.teamId);
+        const onPrintedTeam = onPrinted(team);
+        if (onPrintedTeam) hasPrintedTeam = true;
+        if (index >= TEAM_STEP_MAX_STINTS_PER_PLAYER) continue;
+        listed.push({
+          teamId: stint.teamId,
+          label: team ? teamFullName(team) : "A team no longer on file",
+          years: stintYearsLabel(stint),
+          onPrintedTeam,
+        });
+      }
+      players.push({
+        playerId: player._id,
+        name: player.name,
+        ...(player.birthYear !== undefined ? { birthYear: player.birthYear } : {}),
+        stints: listed,
+        moreStints: Math.max(0, stints.length - listed.length),
+        hasPrintedTeam,
+      });
+    }
+
+    return { cards: context.cards, moreCards: context.moreCards, players };
+  },
+});
+
+/** "2019–2023", "2019" or "2019–present" for a dated stint; "" when its years are not on file. */
+function stintYearsLabel(stint: { fromYear?: number; toYear?: number }): string {
+  if (stint.fromYear !== undefined) {
+    return formatYearSpan({ fromYear: stint.fromYear, toYear: stint.toYear });
+  }
+  if (stint.toYear !== undefined) return `until ${stint.toYear}`;
+  return "";
+}
+
+/**
  * NEO-254 — validate and normalise the league record a New League step sends.
  *
  * Every bound comes from `convex/leagues.ts` rather than being restated here.
@@ -3378,24 +3816,29 @@ export const recordDecision = mutation({
        * step. Without it "Add as New Team" could record a create the commit
        * then silently drops: the commit will not create a team under a name
        * another team in the sport holds as an alias, and will not store an
-       * alias that is another team's own name (both whatever the eras). Same
-       * refusals, same wording, as Team Management and the New Team dialog.
+       * alias that is another team's own name, when the two teams' years
+       * overlap (NEO-602: a team with no years overlaps everything; disjoint
+       * eras are allowed, so the draft's `yearsActive` is passed through).
+       * Same refusals, same wording, as Team Management and the New Team
+       * dialog.
        *
        * Stricter than the commit in one place, deliberately: the commit ADOPTS
        * an alias holder whose era overlaps the answer, but the step refuses
-       * any alias holder, because "Add as New Team" that quietly becomes a
-       * link is not what the button says. The step shows the holder with a
-       * Link action instead (`teams.nameHeldAsAliasBy`).
+       * any overlapping alias holder, because "Add as New Team" that quietly
+       * becomes a link is not what the button says. The step shows the holder
+       * with a Link action instead (`teams.nameHeldAsAliasBy`).
        */
       if (create) {
         await assertNameNotAnotherTeamsAlias(ctx, {
           sportId: row.sportId,
           fullName: teamFullName(create),
+          ...(create.yearsActive ? { selfYears: create.yearsActive } : {}),
         });
         if (create.aliases?.length) {
           await assertAliasesNotPrimaryNames(ctx, {
             sportId: row.sportId,
             aliases: create.aliases,
+            ...(create.yearsActive ? { selfYears: create.yearsActive } : {}),
           });
         }
       }

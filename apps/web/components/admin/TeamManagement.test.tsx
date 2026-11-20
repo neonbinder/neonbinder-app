@@ -1806,6 +1806,23 @@ describe("TeamManagement — a name that is already taken", () => {
     ).toBeNull();
   });
 
+  it("NEO-602: a team that only answers to the name is named with its era, not called 'already called'", async () => {
+    // The server's reverse-alias refusal (no `NAME_TAKEN:`): the holder wears
+    // the name as an alias, nothing is called it.
+    const ALIAS_REFUSAL =
+      "Athletics · 2025–present already answers to this name as an alias, and the two teams' years overlap. Remove it there, or give this team years that don't overlap.";
+    mockSaveTeamFields.mockRejectedValue(new ConvexError(ALIAS_REFUSAL));
+    renderAt("/admin/teams?team=t-mariners");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(ALIAS_REFUSAL);
+    expect(alert.textContent).not.toContain("already called");
+    expect(
+      screen.queryByRole("button", { name: "Open the existing team" }),
+    ).toBeNull();
+  });
+
   it("marks both fields invalid and points them at the message", async () => {
     mockSaveTeamFields.mockRejectedValue(new ConvexError(TAKEN));
     renderAt("/admin/teams?team=t-mariners");

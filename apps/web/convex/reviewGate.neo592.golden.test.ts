@@ -20,7 +20,7 @@
 
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { normalizePlayerName } from "./players";
@@ -623,7 +623,7 @@ describe("the team batch past one slice of 50", () => {
     for (let i = 0; i < count; i++) {
       const row = await t
         .withIdentity(ADMIN)
-        .query(api.teams.findByNameAndSport, { name: teamNameAt(i), sportId, setYear: 2024 });
+        .query(internal.teams.findByNameAndSport, { name: teamNameAt(i), sportId, setYear: 2024 });
       out.push(row?._id ?? null);
     }
     return out;

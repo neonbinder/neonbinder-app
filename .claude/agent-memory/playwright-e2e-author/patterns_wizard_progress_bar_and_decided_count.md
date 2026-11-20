@@ -23,6 +23,11 @@ No exact count anywhere. Translating an old count assertion:
 - `expectStepLeft(x)` in a skip loop -> `readNameStep` (the skip's name) then
   `expectNameStepLeft(row)`; on post-name steps `readProgress().subtitle` then
   `expectPostNameStepLeft(subtitle)`.
+- `Step 1 of N` on a POST-name step the wizard opened onto (Career check,
+  nothing pressed) -> `expectWizardStep(<that subtitle>)`; there is no Decided
+  summary there to prove "nothing decided", so don't add a vacuous one.
+- A `Which team: X` step (NEO-602 two-era choice) wears the `New team`
+  subtitle, so `expectNothingDecided` covers it.
 - `Step y of y` on Save -> `expectWizardStep(STEP_SUBTITLE.save)` + valuenow "100".
 - Walker `Step 1 of 1` / `of 2` (sitting size) -> prove it by the walk: skip or
   answer each card, then `All clear` and no `Skip for now, card` left.
