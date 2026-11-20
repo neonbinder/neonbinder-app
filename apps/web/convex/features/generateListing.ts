@@ -135,8 +135,9 @@ export type ListingCardInputs = {
   /**
    * NEO-535 — the set's box text ("Set name in titles"): the WHOLE set
    * description (year, maker, set, insert, parallel) as the operator typed it.
-   * Used verbatim, nothing prepended, and only when the builder's own title is
-   * over the cap or lost a first name the box version keeps (see
+   * Used verbatim, nothing prepended, and only when the builder's own title
+   * is over the cap or still needs Tidy Up (a whole team, the number, SP,
+   * RELIC, a first name, RC or AUTO cut) and the box version fits (see
    * `assessListingTitle`). The chain reading (`titleChainFacts`) has already
    * appended the insert's and parallel's names when the value sits above them.
    */
@@ -1203,10 +1204,13 @@ function cutToFit(
  * `setShortName`) replaces the builder's description only when:
  *
  *   (a) the builder's title is still over the cap after every cut, or
- *   (b) the builder's title lost a first name and the box version, which
- *       fits, loses fewer (Jason, Q1).
+ *   (b) the builder's title needs Tidy Up (`tidyUp`: a Tidy Up cut is still
+ *       out after the refill, a first name included) and the box version
+ *       fits (NEO-618, Jason 2026-11-19; NEO-535 asked for a first name
+ *       saved, which was one Tidy Up cut among several).
  *
- * Never on a title that fits with full names. The rule lives here so the
+ * Never on a title that fits with nothing Tidy Up cut, and never when the
+ * box version does not fit while the builder's does. The rule lives here so the
  * pre-save Card titles step, the insert and Regenerate cannot disagree.
  * When the box version is over the cap too, it is the one returned: it is
  * the text the operator chose and will edit.
@@ -1216,9 +1220,9 @@ export function assessListingTitle(inputs: ListingCardInputs): ListingTitleAsses
   let chosen = builder;
   let boxUsed = false;
   const box = inputs.setShortName?.trim();
-  if (box && (!builder.fits || builder.firstNamesLost > 0)) {
+  if (box && (!builder.fits || builder.tidyUp)) {
     const boxed = cutToFit(inputs, boxDescriptionParts(box));
-    if (!builder.fits || (boxed.fits && boxed.firstNamesLost < builder.firstNamesLost)) {
+    if (!builder.fits || boxed.fits) {
       chosen = boxed;
       boxUsed = true;
     }
