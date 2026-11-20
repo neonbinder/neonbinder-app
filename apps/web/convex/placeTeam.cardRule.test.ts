@@ -259,6 +259,14 @@ describe("the review gate: a printed place reads the card's players, never the y
     expect([...(row.teamContext?.candidateTeamIds ?? [])].sort()).toEqual(
       [w.pilots, w.mariners].sort(),
     );
+    // The candidates are teams located at the place, none named it: the step's
+    // lead-in says so ("from Seattle"), and reads it back from the query.
+    expect(row.teamContext?.place).toBe(true);
+    const step = await t
+      .withIdentity(ADMIN)
+      .query(api.entityReviewQueue.teamStepContext, { reviewRowId: row._id });
+    expect(step?.fromPlace).toBe(true);
+    expect(step?.candidates).toHaveLength(2);
   });
 
   test("a player with no stint on either Seattle team says nothing: the operator is asked", async () => {
@@ -392,7 +400,8 @@ describe("the review gate: a printed place reads the card's players, never the y
       fullName: "Seattle Pilots",
     });
     const noPlayers = (await ask(true))[0];
-    expect(noPlayers).toMatchObject({ answer: null, ambiguous: true });
+    expect(noPlayers).toMatchObject({ answer: null, ambiguous: true, place: true });
+    expect(byPlayers.place).toBe(true);
     expect([...noPlayers.candidateTeamIds].sort()).toEqual([w.pilots, w.mariners].sort());
     expect((await ask(false, [[mincher]]))[0]).toEqual({
       answer: null,

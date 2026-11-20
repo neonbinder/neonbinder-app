@@ -262,6 +262,9 @@ import {
  */
 const MAX_RESOLVE_NAMES = 64;
 
+/** `teams.nearMatches` lists this many when asked for no more (the server's own default). */
+const TEAM_NEAR_MATCH_DEFAULT_LIMIT = 5;
+
 /**
  * Mirrors MAX_TEAM_FULL_NAME_LENGTH in convex/entityReviewQueue.ts (and
  * MAX_TEAM_NAME_LENGTH in convex/teams.ts). Applied to the COMPOSED name,
@@ -1738,7 +1741,17 @@ export default function EntityReviewWizard({
   const teamNearMatches = useQuery(
     api.teams.nearMatches,
     current && !reviewingDecided && current.kind === "team"
-      ? { name: current.name, sportId: current.sportId }
+      ? {
+          name: current.name,
+          sportId: current.sportId,
+          // The step lists every candidate row as a link, and the Link group
+          // counts its own matches ("6 possible matches"). Past the server's
+          // default of five the group asks for as many as the step lists, so
+          // the two counts agree.
+          ...((current.teamContext?.candidateTeamIds.length ?? 0) > TEAM_NEAR_MATCH_DEFAULT_LIMIT
+            ? { limit: current.teamContext?.candidateTeamIds.length }
+            : {}),
+        }
       : "skip",
   );
   /**
@@ -6084,6 +6097,7 @@ export default function EntityReviewWizard({
                         // and two children with one key is a React error.
                         key={`team-context-${current._id}`}
                         reviewRowId={current._id}
+                        printedName={current.name}
                         disabled={busy}
                         onLink={(teamId) => {
                           void handleLink(current._id, "team", teamId, linkOptions);

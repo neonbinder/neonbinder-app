@@ -37,6 +37,7 @@ import {
 // identity fields and `findTeamByFullName` the ONE lookup — see
 // convex/lib/teamRow.ts for why every writer in this file goes through them.
 import {
+  PLACE_TEAM_SEARCH_HITS,
   TEAM_ERA_SCAN_LIMIT,
   findCollidingTeams,
   findTeamsByAlias,
@@ -3002,7 +3003,12 @@ export const resolveNames = query({
 /** How many search-index rows feed the ranker, and how many rank out by default. */
 const NEAR_MATCH_SEARCH_CANDIDATES = 10;
 const NEAR_MATCH_DEFAULT_LIMIT = 5;
-const NEAR_MATCH_MAX_LIMIT = 25;
+/**
+ * The most a caller may ask for. At least a printed place's candidate count
+ * (`PLACE_TEAM_SEARCH_HITS`): the review step asks for as many near matches as
+ * it lists candidates, so the two counts agree.
+ */
+const NEAR_MATCH_MAX_LIMIT = Math.max(25, PLACE_TEAM_SEARCH_HITS);
 
 /**
  * NEO-212: the "did you mean?" prompt in front of creating a team.
@@ -3148,7 +3154,7 @@ export const nearMatches = query({
         .withSearchIndex("search_name", (q) =>
           q.search("nameNormalized", term).eq("sportId", args.sportId),
         )
-        .take(NEAR_MATCH_SEARCH_CANDIDATES);
+        .take(Math.max(NEAR_MATCH_SEARCH_CANDIDATES, limit));
     };
 
     let hits = await searchTeams(name);

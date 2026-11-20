@@ -193,6 +193,12 @@ describe("the gate carries the team step's context onto the queue row", () => {
       [s.now, s.old, s.aa].sort(),
     );
     expect(row.teamContext?.moreCards).toBe(0);
+    // Rows that answer to the printed name: not a place.
+    expect(row.teamContext?.place).toBeUndefined();
+    const step = await t
+      .withIdentity(ADMIN)
+      .query(api.entityReviewQueue.teamStepContext, { reviewRowId: row._id });
+    expect(step?.fromPlace).toBeUndefined();
     expect(row.teamContext?.cards).toEqual([
       { number: "7", players: [{ name: "Recent Oriole", playerId: recent }] },
       {

@@ -220,6 +220,75 @@ describe("EntityReviewWizard — a team name that reaches several rows (NEO-602)
     expect(await screen.findByText("We've got 3 teams by that name. Pick the one on these cards.")).toBeTruthy();
   });
 
+  it("a place's teams are led by 'from <place>', not 'by that name'", async () => {
+    const placeIds = ["t-ny-1", "t-ny-2", "t-ny-3", "t-ny-4", "t-ny-5", "t-ny-6"];
+    currentRows = [
+      makeRow({ name: "New York", teamContext: { candidateTeamIds: placeIds } }),
+    ];
+    contextAnswer = {
+      ...ORIOLES_CONTEXT,
+      fromPlace: true,
+      candidates: placeIds.map((teamId, i) => ({
+        teamId,
+        fullName: `New York Team ${i + 1}`,
+        era: "",
+      })),
+    };
+    render(wizard());
+
+    expect(
+      await screen.findByRole("list", {
+        name: "We've got 6 teams from New York. Pick the one on these cards.",
+      }),
+    ).toBeTruthy();
+    expect(screen.queryByText(/by that name/)).toBeNull();
+  });
+
+  it("the Link group counts as many matches as the step lists, past the server's default of five", async () => {
+    const placeIds = ["t-ny-1", "t-ny-2", "t-ny-3", "t-ny-4", "t-ny-5", "t-ny-6"];
+    currentRows = [
+      makeRow({ name: "New York", teamContext: { candidateTeamIds: placeIds } }),
+    ];
+    contextAnswer = {
+      ...ORIOLES_CONTEXT,
+      fromPlace: true,
+      candidates: placeIds.map((teamId, i) => ({
+        teamId,
+        fullName: `New York Team ${i + 1}`,
+        era: "",
+      })),
+    };
+    // The server honours the limit it is sent: it returns that many.
+    nearAnswer = placeIds.map((_id, i) => ({
+      _id,
+      name: `New York Team ${i + 1}`,
+      confidence: "close",
+      locationMatch: true,
+    }));
+    render(wizard());
+
+    const list = await screen.findByRole("list", { name: /^We've got [0-9]+ teams from New York/ });
+    const listed = within(list).getAllByRole("button").length;
+    expect(listed).toBe(6);
+    // The Link group's own live count, read as a screen reader does.
+    expect(screen.getByText(`${listed} possible matches`)).toBeTruthy();
+
+    const nearCalls = queryCalls.filter((c) => c.ref === "teams.nearMatches" && c.args !== "skip");
+    expect(nearCalls.length).toBeGreaterThan(0);
+    for (const call of nearCalls) expect(call.args).toMatchObject({ limit: 6 });
+  });
+
+  it("a name with five rows or fewer keeps the server's default limit", async () => {
+    currentRows = [orioleRow()];
+    contextAnswer = ORIOLES_CONTEXT;
+    render(wizard());
+    await screen.findByRole("list", { name: /^We've got [0-9]+ teams by that name/ });
+
+    const nearCalls = queryCalls.filter((c) => c.ref === "teams.nearMatches" && c.args !== "skip");
+    expect(nearCalls.length).toBeGreaterThan(0);
+    for (const call of nearCalls) expect(call.args).not.toHaveProperty("limit");
+  });
+
   it("clicking a row records the same link every team link path records, 'Remember …' ticked", async () => {
     const row = orioleRow();
     currentRows = [row];

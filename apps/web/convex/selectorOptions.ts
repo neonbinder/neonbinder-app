@@ -1834,6 +1834,12 @@ const gateTeamAnswerValidator = v.object({
    * facing what looks like a brand-new team.
    */
   candidateTeamIds: v.array(v.id("teams")),
+  /**
+   * NEO-591 — the candidates are the in-league teams located at a printed
+   * PLACE, not rows that answer to the text by name or alias. Only the step's
+   * wording reads it. Absent otherwise.
+   */
+  place: v.optional(v.literal(true)),
 });
 
 /** What `resolveGateTeamAnswer` returns; the validator above is its shape. */
@@ -1847,6 +1853,7 @@ type GateTeamAnswer = {
   } | null;
   ambiguous: boolean;
   candidateTeamIds: Array<Id<"teams">>;
+  place?: true;
 };
 
 /**
@@ -1874,7 +1881,8 @@ async function resolveGateTeamAnswer(
   const row = pick.teamId
     ? pick.candidates.find((candidate) => candidate._id === pick.teamId)
     : undefined;
-  if (!row || !pick.via) return { answer: null, ambiguous, candidateTeamIds };
+  const place = pick.fromPlace && candidateTeamIds.length > 0 ? { place: true as const } : {};
+  if (!row || !pick.via) return { answer: null, ambiguous, candidateTeamIds, ...place };
   return {
     answer: {
       teamId: row._id,
@@ -1885,6 +1893,7 @@ async function resolveGateTeamAnswer(
     },
     ambiguous: false,
     candidateTeamIds,
+    ...place,
   };
 }
 
@@ -2604,6 +2613,8 @@ async function resolveUnknownsAndStartBatch(
   const unresolvedTeams: Array<{ normalized: string; name: string }> = [];
   /** NEO-602 — the rows each printed team name reached, when there are two or more. */
   const candidateTeamIdsByNorm = new Map<string, Array<Id<"teams">>>();
+  /** NEO-591 — the names whose candidates are the teams located at a printed place. */
+  const placeNames = new Set<string>();
 
   /*
    * NEO-592 — the year-only answers came back above, in one batch with every
@@ -2665,9 +2676,10 @@ async function resolveUnknownsAndStartBatch(
         );
   ruleSlices.forEach((slice, g) => {
     slice.forEach((ask, k) => {
-      const { answer, ambiguous, candidateTeamIds } = ruleAnswers[g][k];
+      const { answer, ambiguous, candidateTeamIds, place } = ruleAnswers[g][k];
       if (candidateTeamIds.length > 0) {
         candidateTeamIdsByNorm.set(ask.normalized, candidateTeamIds);
+        if (place) placeNames.add(ask.normalized);
       }
       if (!answer) {
         // Several rows and no answer (a tie, disagreeing cards, an alias-only
@@ -2977,6 +2989,7 @@ async function resolveUnknownsAndStartBatch(
   const teamContexts: Array<{
     name: string;
     candidateTeamIds: Array<Id<"teams">>;
+    place?: true;
     cards: Array<{
       number?: string;
       players: Array<{ name: string; playerId?: Id<"players"> }>;
@@ -3001,6 +3014,7 @@ async function resolveUnknownsAndStartBatch(
     teamContexts.push({
       name,
       candidateTeamIds,
+      ...(placeNames.has(normalized) ? { place: true as const } : {}),
       cards,
       moreCards: entry ? Math.max(0, entry.total - cards.length) : 0,
     });

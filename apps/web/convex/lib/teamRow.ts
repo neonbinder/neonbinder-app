@@ -449,6 +449,12 @@ export type CardTeamResolution = TeamNameResolution & {
    *   reprint of the player's own team.
    */
   agreesWithYear: boolean;
+  /**
+   * NEO-591 — true when `candidates` are the in-league teams LOCATED at a
+   * printed place rather than the rows that answer to the text by name or
+   * alias. Absent otherwise. Display-only for the review step's wording.
+   */
+  fromPlace?: true;
 };
 
 /**
@@ -607,7 +613,8 @@ export async function resolveCardTeamName(
     ...(isPlace ? { playersMustDecide: true } : {}),
     ...(cards ? { cards } : {}),
   });
-  if (!pick) return { teamId: null, candidates, via: null, agreesWithYear: false };
+  const place = isPlace ? { fromPlace: true as const } : {};
+  if (!pick) return { teamId: null, candidates, via: null, agreesWithYear: false, ...place };
   if (pick.via === "year" && candidates.length === 1) {
     const only = pickTeamForYear(candidates, setYear, { allowPastEra: true });
     if (only?.pastEra) {
@@ -630,6 +637,7 @@ export async function resolveCardTeamName(
     candidates,
     via: pick.via,
     agreesWithYear: pick.agreesWithYear,
+    ...place,
   };
 }
 
