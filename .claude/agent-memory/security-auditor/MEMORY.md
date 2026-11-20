@@ -139,3 +139,4 @@
 - [Listing text trust path](patterns_listing_text_trust_path.md) — generator text reaches eBay unescaped; a new input from a non-admin/marketplace write = finding
 - [Patterns neo426 teamless sport default](patterns_neo426_teamless_sport_default.md) — re-sync stamp ignores unaccepted incoming team; un-confirm has no marker
 - [Neo574 client id override](patterns_neo574_client_id_override.md) — per-card id override + stint writer: validator shape that held; dedupe gap
+- [Convex client error origin](patterns_convex_client_error_origin.md) — classify by client [CONVEX X(] prefix, not Request ID; convexToJson errors embed args

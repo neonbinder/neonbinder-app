@@ -45,6 +45,10 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ANNOUNCE_AFTER_MS } from "../modules/WaitingOnMarketplace";
 
+// NEO-625: the module boundary; the helper has its own tests.
+const reportCaughtError = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/observability/report-caught-error", () => ({ reportCaughtError }));
+
 // ---------------------------------------------------------------------------
 // Module mocks — declared before the component import
 // ---------------------------------------------------------------------------
@@ -448,9 +452,8 @@ describe("BaseMappingForm — cancel-recovery fix (NEO-71-74)", () => {
       bscOptions: [{ value: "2024 Topps Chrome", platformValue: "topps-chrome" }],
       slOptions: [],
     });
-    mockSetPlatformData.mockRejectedValueOnce(
-      new Error("[Request ID: abc] Server Error: bscLabel"),
-    );
+    const refusal = new Error("[Request ID: abc] Server Error: bscLabel");
+    mockSetPlatformData.mockRejectedValueOnce(refusal);
 
     renderForm();
 
@@ -473,6 +476,12 @@ describe("BaseMappingForm — cancel-recovery fix (NEO-71-74)", () => {
     expect(screen.queryByText(/bscLabel/)).toBeNull();
     // Retry IS offered — the picks are recoverable by picking again.
     expect(screen.getByText("Retry")).toBeTruthy();
+    // NEO-625: reported once, so the refusal is not invisible.
+    expect(reportCaughtError).toHaveBeenCalledTimes(1);
+    expect(reportCaughtError).toHaveBeenCalledWith(refusal, {
+      feature: "base-mapping-form",
+      step: "write",
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -649,6 +658,8 @@ describe("BaseMappingForm — cancel-recovery fix (NEO-71-74)", () => {
     expect(screen.getByText("Select Base Set")).toBeTruthy();
     expect(mockFetchRawOptions).toHaveBeenCalledTimes(2);
     expect(onClose).not.toHaveBeenCalled();
+    // A stale-mapping refusal is an expected outcome with its own copy, not a failure.
+    expect(reportCaughtError).not.toHaveBeenCalled();
   });
 
   it("renders neither the URL nor the raw message of a failed fetch (NEO-211 F3)", async () => {
@@ -680,9 +691,8 @@ describe("BaseMappingForm — cancel-recovery fix (NEO-71-74)", () => {
   it("renders our own string, not the thrown text, when the action rejects", async () => {
     // The outer catch also covers the writePlatformData calls, so the thrown
     // value is a Convex server error that can carry marketplace detail.
-    mockFetchRawOptions.mockRejectedValueOnce(
-      new Error("[Request ID: xyz] GET https://api.sportlots.com/x?key=SECRET 500"),
-    );
+    const failure = new Error("[Request ID: xyz] GET https://api.sportlots.com/x?key=SECRET 500");
+    mockFetchRawOptions.mockRejectedValueOnce(failure);
 
     renderForm();
 
@@ -691,6 +701,11 @@ describe("BaseMappingForm — cancel-recovery fix (NEO-71-74)", () => {
     expect(panel.textContent).not.toContain("sportlots.com");
     expect(panel.textContent).not.toContain("SECRET");
     expect(panel.textContent).not.toContain("Request ID");
+    expect(reportCaughtError).toHaveBeenCalledTimes(1);
+    expect(reportCaughtError).toHaveBeenCalledWith(failure, {
+      feature: "base-mapping-form",
+      step: "fetch",
+    });
   });
 });
 

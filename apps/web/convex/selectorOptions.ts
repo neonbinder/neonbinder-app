@@ -556,9 +556,11 @@ export async function resolveCardSlots(
   const row = await ctx.db.get(selectorOptionId);
   if (!row) return () => ({});
 
+  // NEO-625: keyed by a marketplace id (external text), so no prototype:
+  // `__proto__` is an ordinary key and `constructor` reads back undefined.
   const slotById: Record<"bsc" | "sportlots", Record<string, string>> = {
-    bsc: {},
-    sportlots: {},
+    bsc: Object.create(null),
+    sportlots: Object.create(null),
   };
   for (const side of ["bsc", "sportlots"] as const) {
     for (const { slot, id } of slotEntries(row, side)) slotById[side][id] = slot;

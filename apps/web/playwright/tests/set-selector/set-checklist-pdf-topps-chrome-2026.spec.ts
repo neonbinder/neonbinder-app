@@ -24,7 +24,10 @@
 //   3. Insert, FIRST visit: BSC and the stored checklist are two sources, so
 //      the column's own first sync opens Reconcile Inserts (plan decision 1):
 //      FUTURE STARS rides on BSC's Future Stars, the token section is Pending
-//      and becomes its own set (renamed to the single-token name), Save.
+//      and becomes its own set (renamed to the single-token name); BSC's
+//      Exposé insert, whose BSC id is "exposé", is made its own set too
+//      (NEO-625: an accented marketplace id once failed the Save before it
+//      was sent); Save, and Exposé is a row of the Inserts column.
 //   4. The token set's fetch is checklist-only: no marketplace, so no Match
 //      Cards; it keeps the 3 cards and, every name being on the catalogue,
 //      commits them straight away (no wizard), with no marketplace link, the
@@ -42,7 +45,8 @@
 //
 // FIXTURE (SET-REGISTRY.md -> "Baseball -> 2026 -> Topps Chrome"): Baseball >
 // 2026 > All Brands > Topps Chrome (brand "Unknown"). SOLE WRITER of that set's
-// checklist and of its token rows; FRESH-ONLY (R7a): the Inserts column is
+// checklist and of its token rows, and of the Exposé Insert row it saves (NEO-625;
+// left in place, the run-start reset is its cleanup); FRESH-ONLY (R7a): the Inserts column is
 // synced and Future Stars linked by the first run, so a re-run fails at the
 // "Upload checklist" precondition by name: re-seed first. Never commits a card
 // of Future Stars (its commit would build the grouped parallels too).
@@ -73,6 +77,8 @@ const SET = "Topps Chrome";
 const NO_SECTIONS_FOUND =
   "No sections found. A set checklist needs a section heading (like FUTURE STARS) above its cards, or a set column.";
 const INSERT = "Future Stars";
+/** BSC's 2026 Topps Chrome insert whose marketplace id carries an accent ("exposé", NEO-625). */
+const EXPOSE = "Exposé";
 
 /** FUTURE STARS as BSC lists FS-1..FS-8 (identical to the PDF, plan decision 5). */
 const FUTURE_STARS = [
@@ -242,9 +248,22 @@ test(
       await tokenTitleBox.fill(token);
       await tokenTitleBox.press("Enter");
       await expect(reconcile.getByRole("textbox", { name: `NeonBinder set name for ${token}` })).toHaveValue(token);
+      // NEO-625: BSC's own Exposé insert, whose marketplace id is "exposé" (an accent in the
+      // id, not only in the name), made its own set from BSC's Pending list. Before the fix
+      // the Save sent each id's name keyed BY the id, the Convex client refused the
+      // non-ASCII key before anything left the browser, and the dialog stayed open with
+      // nothing saved. Exact name: substring matching would also take an "Exposé ..." twin.
+      const exposeOwnSet = reconcile.getByRole("button", { name: `Make its own set: ${EXPOSE}`, exact: true });
+      await expect(exposeOwnSet).toBeVisible();
+      await exposeOwnSet.click();
+      await expect(exposeOwnSet).toHaveCount(0);
+      await expect(reconcile.getByRole("textbox", { name: `NeonBinder set name for ${EXPOSE}`, exact: true })).toHaveValue(EXPOSE);
       await expectAccessible(page, { within: reconcile, label: "Reconcile Inserts with the checklist section made its own set" });
       await reconcile.getByRole("button", { name: /^Save [0-9]+ sets$/ }).click();
+      // The save went through: the dialog closes and the set is a row of the Inserts column.
       await expect(reconcile).toBeHidden();
+      await expect(columnHeading(page, "Inserts")).toBeVisible();
+      await expect(columnOption(page, "Inserts", EXPOSE)).toBeVisible();
 
       // ══ 4. THE TOKEN SET: a checklist-only fetch ══
       await expect(columnHeading(page, "Inserts")).toBeVisible();

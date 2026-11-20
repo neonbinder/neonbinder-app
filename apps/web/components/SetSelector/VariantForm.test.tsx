@@ -21,9 +21,13 @@
 
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
-import { beforeEach, describe, expect, it, vi, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { convexToJson } from "convex/values";
 import { ANNOUNCE_AFTER_MS } from "../modules/WaitingOnMarketplace";
 import { NO_MARKETPLACE_IDS_MESSAGE } from "../../convex/marketplaceResolvability";
+
+const reportCaughtError = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/observability/report-caught-error", () => ({ reportCaughtError }));
 
 vi.mock("../../convex/_generated/api", () => ({
   api: {
@@ -1651,6 +1655,87 @@ describe("VariantForm — waiting on BuySportsCards (PR 451)", () => {
       release(bscOnly());
     });
     expect(screen.queryByText("Waiting on BuySportsCards…")).toBeNull();
+  });
+});
+
+describe("VariantForm — marketplace ids on the wire and caught errors (NEO-625)", () => {
+  // BSC has an insert whose id is "exposé". The Convex client throws on a
+  // non-ASCII object key before the request leaves the browser, so the ids must
+  // travel as values.
+  const BSC_ACCENT = { value: "Exposé", platformValue: "exposé" };
+  const SL_ACCENT = { value: "Exposé", platformValue: "990011" };
+
+  function accentedBothSides() {
+    return {
+      success: true,
+      bscOptions: [BSC_ACCENT],
+      slOptions: [SL_ACCENT],
+      autoMatched: [
+        { displayName: "Exposé", bsc: BSC_ACCENT, sl: SL_ACCENT, confidence: 0.9 },
+      ],
+      unmatchedBsc: [],
+      unmatchedSl: [],
+      slCandidates: [],
+      errors: [],
+      message: "BSC: 1, SL: 1",
+    };
+  }
+
+  it("sends args the Convex client can serialise when a marketplace id is accented", async () => {
+    mockFetchRawOptions.mockResolvedValue(accentedBothSides());
+    await renderForm();
+
+    await act(async () => {
+      fireEvent.click(await screen.findByText(/Save 1 sets/));
+    });
+    await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
+
+    const args = mockStore.mock.calls[0][0];
+    // What the real client does to every mutation's args; throws on a
+    // non-ASCII object key, which is what production hit.
+    expect(() => convexToJson(args)).not.toThrow();
+    expect(args.reconciledItems[0].platformData.bsc).toEqual(["exposé"]);
+    // Id as a value, label beside it.
+    expect(args.reconciledItems[0].platformLabels.bsc).toEqual([
+      { id: "exposé", label: "Exposé" },
+    ]);
+  });
+
+  it("reports a failed reconcile save once and still shows the fixed copy", async () => {
+    mockFetchRawOptions.mockResolvedValue(accentedBothSides());
+    const failure = new Error(
+      "[CONVEX M(setReconciliation:storeReconciledOptions)] [Request ID: abc123] Server Error\n  Called by client",
+    );
+    mockStore.mockRejectedValueOnce(failure);
+    await renderForm();
+
+    await act(async () => {
+      fireEvent.click(await screen.findByText(/Save 1 sets/));
+    });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Couldn't save these sets. Nothing was changed");
+    expect(reportCaughtError).toHaveBeenCalledTimes(1);
+    expect(reportCaughtError).toHaveBeenCalledWith(failure, {
+      feature: "variant-form",
+      step: "reconcile-save",
+    });
+  });
+
+  it("reports a failed sync once and still shows the fixed copy", async () => {
+    const failure = new Error("fetch https://bsc.example/x?token=SECRET exploded");
+    mockFetchRawOptions.mockRejectedValue(failure);
+    await renderForm();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Sync failed");
+    expect(alert.textContent).toContain("Nothing was changed.");
+    expect(alert.textContent).not.toContain("SECRET");
+    expect(reportCaughtError).toHaveBeenCalledTimes(1);
+    expect(reportCaughtError).toHaveBeenCalledWith(failure, {
+      feature: "variant-form",
+      step: "sync",
+    });
   });
 });
 
