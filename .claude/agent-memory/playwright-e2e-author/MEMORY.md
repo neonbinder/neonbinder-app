@@ -94,3 +94,4 @@
 - [Planted break collides with a sibling plant](patterns_planted_break_collides_with_a_sibling_plant.md) — baseline red = sibling mid-plant; git diff HEAD first; restore by reversing, not cp
 - [red-run.mjs and client-wire.log](patterns_red_run_script_and_client_wire_log.md) — NEO-398: per red try triage, --attempt, artifact guards, untrusted output, listener fakes
 - [Injected orders ship up front](patterns_injected_orders_ship_up_front.md) — SHIPPED/FULFILLED keeps the Pick List clean; Convex error $-anchor trap; Switch by keyboard
+- [Insert vs parallel views; unchanged Regenerate](patterns_insert_vs_parallel_views_and_unchanged_regenerate.md) — Back to unpick a parallel; prove no-op Regenerate by live chips
