@@ -8,6 +8,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import StaticColumn from "../../prototypes/p1/StaticColumn";
+import type { DrillItem } from "../data/types";
+import { DrillOptions } from "./DrillOptions";
 import { SELECTED } from "../../prototypes/p1/ui";
 
 afterEach(cleanup);
@@ -53,5 +55,35 @@ describe("a drill row's print run", () => {
     const line = screen.getByText("1/1");
     expect(line.className).toContain("wrap-anywhere");
     expect(line.className).not.toMatch(/truncate|overflow-hidden|whitespace-nowrap/);
+  });
+});
+
+describe("a print run in a native set select", () => {
+  const row = (id: string, name: string, description?: string): DrillItem => ({
+    id,
+    level: "variant",
+    name,
+    hasChildren: false,
+    ...(description ? { description } : {}),
+  });
+  const renderSelect = (items: DrillItem[]) =>
+    render(
+      <select aria-label="Parallel">
+        <DrillOptions items={items} />
+      </select>,
+    );
+
+  it("reads after the name in the option's text", () => {
+    renderSelect([row("a", "1989 Pro Set Base Prismatic Red", "/5"), row("b", "Gold Refractor", "1/1")]);
+    expect(screen.getByRole("option", { name: "1989 Pro Set Base Prismatic Red /5", exact: true })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Gold Refractor 1/1", exact: true })).toBeTruthy();
+  });
+
+  it("a row with no run reads exactly as before, and keeps its value", () => {
+    renderSelect([row("a", "Silver Prizm"), row("b", "Gold Refractor", "/5")]);
+    const silver = screen.getByRole("option", { name: "Silver Prizm", exact: true }) as HTMLOptionElement;
+    expect(silver.textContent).toBe("Silver Prizm");
+    expect(silver.value).toBe("a");
+    expect((screen.getByRole("option", { name: "Gold Refractor /5" }) as HTMLOptionElement).value).toBe("b");
   });
 });
