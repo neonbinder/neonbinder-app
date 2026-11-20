@@ -134,3 +134,4 @@
 - [Listing text trust path](patterns_listing_text_trust_path.md) — generator text reaches eBay unescaped; a new input from a non-admin/marketplace write = finding
 - [Patterns neo426 teamless sport default](patterns_neo426_teamless_sport_default.md) — re-sync stamp ignores unaccepted incoming team; un-confirm has no marker
 - [Neo574 client id override](patterns_neo574_client_id_override.md) — per-card id override + stint writer: validator shape that held; dedupe gap
+- [Actions cache writer enumeration](patterns_actions_cache_writer_enumeration.md) — cache restored into secret jobs: list every main-scope writer (dispatch too); workflow_run checkout ref
