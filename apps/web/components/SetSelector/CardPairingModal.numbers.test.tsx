@@ -231,6 +231,13 @@ describe("the number picker", () => {
     // on the tile in dark mode (axe color-contrast).
     expect(button.className).toContain("text-ink-2");
     expect(button.className).not.toContain("text-ink-3");
+    // axe target-size (SC 2.5.8): a real 24px box. A pseudo-element hit area
+    // is not counted, and a negative margin (py-2 -my-2) lays this box over the
+    // row's "Edit name for" button above it and the pills below, which axe
+    // reads as those neighbours being under 24px.
+    expect(button.className).toContain("min-h-6");
+    expect(button.className).not.toContain("hit-area-24");
+    expect(button.className).not.toMatch(/(^|\s)-m[ytb]?-/);
 
     openPicker("#38a");
     expect(button.getAttribute("aria-expanded")).toBe("true");

@@ -4632,7 +4632,11 @@ export default function CardPairingModal({
                 return next;
               })
             }
-            className="py-2 -my-2 text-xs text-ink-2 underline decoration-dotted hover:text-neon-green-text focus-visible:text-neon-green-text focus-outline"
+            // A real 24px box, not py-2 -my-2: the negative margin pulled the
+            // button's box up over the row's "Edit name for" button above it
+            // and down over the pills below, and axe (SC 2.5.8 target-size)
+            // counts an overlapped neighbour as under 24px.
+            className="inline-flex min-h-6 items-center text-xs text-ink-2 underline decoration-dotted hover:text-neon-green-text focus-visible:text-neon-green-text focus-outline"
           >
             Change number
           </button>
