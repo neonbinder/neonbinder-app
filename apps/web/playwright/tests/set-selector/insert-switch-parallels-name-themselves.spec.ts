@@ -1,12 +1,14 @@
 // NEO-619 (Jason, 2026-11-19).
 //
 // R1 - ONE FEATURE: an insert's "Parallels name themselves" switch (the
-// insert's Attributes panel, eyebrow "Titles"). While it is on, a card on one
+// insert's Attributes panel, eyebrow "Titles"; the button reads
+// `Parallel titles skip “<insert>”`, curly quotes). While it is on, a card on one
 // of the insert's parallels (its sub-variants) is titled without the insert's
 // name; the insert's OWN cards still carry it. Titles are write-once: flipping
 // the switch rewrites nothing, and Regenerate reads it. Off brings the
 // insert's name back on the next Regenerate. Each press says so in the panel's
-// status toast.
+// status toast, and while it is on a line under the button (its accessible
+// description) shows the title a card on the first parallel would get.
 //
 // R2 - what makes it fail if the feature breaks:
 //   * Every title check opens the card's drawer and reads its "Card title"
@@ -16,6 +18,10 @@
 //   * The toggle's state is its `aria-pressed`, asserted on each press, and the
 //     toast's exact sentence proves the server took the write (it is raised
 //     only after the mutation resolves).
+//   * The sample line under the switch is the real title builder's output: on,
+//     it must name the parallel (positive first) and leave the insert out, and
+//     it must be the button's accessible description; off, it is gone while the
+//     button stays (the cell is latched for the row, so focus never drops).
 //   * The parallel card made before the press still names the insert until it
 //     is regenerated: a switch that silently rewrote stored titles fails there.
 //   * The insert's own card, regenerated with the switch on, still names the
@@ -65,8 +71,12 @@ import {
   setBuilderReady,
 } from "../../support/set-builder";
 
-const ON_TOAST = "Parallels name themselves · Regenerate a card to retitle it";
-const OFF_TOAST = "Parallels carry the insert's name again · Regenerate a card to retitle it";
+/** The switch's name and its toasts quote the insert in curly quotes (U+201C/U+201D). */
+const quoted = (name: string) => `\u201c${name}\u201d`;
+const onToast = (insert: string) =>
+  `Parallel titles skip ${quoted(insert)} · Regenerate each card to retitle it`;
+const offToast = (insert: string) =>
+  `Parallel titles carry ${quoted(insert)} again · Regenerate each card to retitle it`;
 
 test(
   "An insert's Parallels name themselves switch leaves the insert's name out of its parallels' titles, not its own cards', and Regenerate applies it either way (NEO-619)",
@@ -87,7 +97,13 @@ test(
     const regenerate = drawer.getByRole("button", { name: "Regenerate card title" });
     const doneEditing = page.getByRole("button", { name: "Done editing card" });
     const insertHeading = page.getByRole("heading", { name: `Attributes for ${INSERT} (Insert)`, exact: true });
-    const toggle = page.getByRole("button", { name: "Parallels name themselves", exact: true });
+    const toggle = page.getByRole("button", {
+      name: `Parallel titles skip ${quoted(INSERT)}`,
+      exact: true,
+    });
+    // The sample line under the switch: "<first parallel> cards read: <title>".
+    const SAMPLE_LEAD = `${PARALLEL} cards read: `;
+    const sample = page.getByText(new RegExp(`^${SAMPLE_LEAD}`));
     const toast = (text: string) => page.getByRole("status").filter({ hasText: text });
     const namesInsert = new RegExp(`\\b${INSERT}\\b`);
     const namesParallel = new RegExp(`\\b${PARALLEL}\\b`);
@@ -162,9 +178,15 @@ test(
     await backToInsert();
     await openAttributesPanel(page);
     await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await expect(sample).toHaveCount(0);
     await toggle.click();
-    await expect(toast(ON_TOAST)).toBeVisible();
+    await expect(toast(onToast(INSERT))).toBeVisible();
     await expect(toggle).toHaveAttribute("aria-pressed", "true");
+    // The sample title: the parallel's name in the title itself (positive
+    // first), the insert's left out, and read with the button it describes.
+    await expect(sample).toHaveText(new RegExp(`^${SAMPLE_LEAD}.*\\b${PARALLEL}\\b`));
+    await expect(sample).not.toHaveText(namesInsert);
+    await expect(toggle).toHaveAccessibleDescription(await sample.innerText());
     await expectAccessible(page, { label: "Insert attributes panel, Parallels name themselves on" });
 
     // ── STEP 5 (with the panel at hand): the insert's OWN card keeps the
@@ -205,9 +227,14 @@ test(
     await backToInsert();
     await openAttributesPanel(page);
     await expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await expect(sample).toHaveText(new RegExp(`^${SAMPLE_LEAD}`));
     await toggle.click();
-    await expect(toast(OFF_TOAST)).toBeVisible();
+    await expect(toast(offToast(INSERT))).toBeVisible();
+    // The cell stays, pressed off, and the sample line goes with the switch.
     await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await expect(sample).toHaveCount(0);
+    await expect(toggle).toHaveAccessibleDescription("");
+    await expectAccessible(page, { label: "Insert attributes panel, Parallels name themselves off" });
     await pickParallel();
     await withCard(OLD_PARALLEL_CARD, async () => {
       await expect(cardTitle).toHaveValue(namesParallel);
