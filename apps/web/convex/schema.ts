@@ -1,6 +1,7 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { rejectedSummaryValidator } from "./lib/extractRejections";
+import { playerContextValidator, teamContextValidator } from "./lib/entityReviewContext";
 
 /**
  * NEO-356 — the collector's saved theme preference, shared by the schema and
@@ -3713,17 +3714,7 @@ export default defineSchema({
      * field, on a league or player row, and on a team the batch staged for a
      * player's career. Additive and optional.
      */
-    teamContext: v.optional(v.object({
-      candidateTeamIds: v.array(v.id("teams")),
-      cards: v.array(v.object({
-        number: v.optional(v.string()),
-        players: v.array(v.object({
-          name: v.string(),
-          playerId: v.optional(v.id("players")),
-        })),
-      })),
-      moreCards: v.number(),
-    })),
+    teamContext: v.optional(teamContextValidator),
     /**
      * NEO-602, player-kind only — what the "Which {name} is this?" pick step
      * shows beside its candidates.
@@ -3740,13 +3731,7 @@ export default defineSchema({
      * before this field and on a name that was never a same-name choice.
      * Additive and optional.
      */
-    playerContext: v.optional(v.object({
-      cards: v.array(v.object({
-        number: v.optional(v.string()),
-        teams: v.array(v.string()),
-      })),
-      moreCards: v.number(),
-    })),
+    playerContext: v.optional(playerContextValidator),
   })
     .index("by_selector_option", ["selectorOptionId"])
     .index("by_selector_option_and_batch", ["selectorOptionId", "batchId"])

@@ -106,6 +106,7 @@ test(
     await expect(cards).toContainText("#34");
     await expect(cards).toContainText("#35");
     await expect(cards).toContainText("Jimmie Foxx");
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, past-era team step" });
 
     // UNTICK the remember-box FIRST. Proven by R2(d)'s decision line, which a
     // ticked box would extend with "· remembered as ...".

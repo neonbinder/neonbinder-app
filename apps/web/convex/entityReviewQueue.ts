@@ -16,6 +16,7 @@ import {
   parseWikidataUnavailable,
 } from "../lib/errors/wikidata-unavailable";
 import { getCurrentUserId, requireAdmin } from "./auth";
+import { playerContextValidator, teamContextValidator } from "./lib/entityReviewContext";
 import {
   buildExistingPlayerCandidates,
   // NEO-424 — the set-history candidates, by id and in any sport.
@@ -771,6 +772,12 @@ const rowValidator = v.object({
   decision: v.optional(decisionValidator),
   // NEO-221 — see schema.ts. Read only by `sweepAbandonedBatches`.
   lastTouchedAt: v.optional(v.number()),
+  // NEO-602 — display context the review gate writes at insert. The stored
+  // row carries both, so `getInternal` (which hands the raw document to the
+  // pool's lookup work item) must declare them or every team row fails its
+  // returns validation. The public path never sees them: `toPublicRow`.
+  teamContext: v.optional(teamContextValidator),
+  playerContext: v.optional(playerContextValidator),
 });
 
 /**
@@ -778,23 +785,9 @@ const rowValidator = v.object({
  * same shape the row stores (`entityReviewQueue.teamContext`) plus the printed
  * name it belongs to.
  */
-const teamContextValidator = v.object({
-  candidateTeamIds: v.array(v.id("teams")),
-  cards: v.array(
-    v.object({
-      number: v.optional(v.string()),
-      players: v.array(
-        v.object({ name: v.string(), playerId: v.optional(v.id("players")) }),
-      ),
-    }),
-  ),
-  moreCards: v.number(),
-});
 const teamContextFactValidator = v.object({
   name: v.string(),
-  candidateTeamIds: teamContextValidator.fields.candidateTeamIds,
-  cards: teamContextValidator.fields.cards,
-  moreCards: teamContextValidator.fields.moreCards,
+  ...teamContextValidator.fields,
 });
 
 /**
@@ -805,10 +798,7 @@ const teamContextFactValidator = v.object({
  */
 const playerContextFactValidator = v.object({
   name: v.string(),
-  cards: v.array(
-    v.object({ number: v.optional(v.string()), teams: v.array(v.string()) }),
-  ),
-  moreCards: v.number(),
+  ...playerContextValidator.fields,
 });
 
 const publicRowValidator = v.object({

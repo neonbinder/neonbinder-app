@@ -86,3 +86,5 @@
 - [Attributes panel header needs the open panel](patterns_attributes_panel_header_controls_need_the_open_panel.md) — NEO-569: shut = title+toggle only; open before Rename/Delete/breadcrumb/Set actions
 - [Team Management era/alias specs](patterns_team_management_era_alias_specs.md) — re-filter after reload (axe on 10k rows), row/status/alert handles, alias holder trips Create again
 - [Copy absence keys on the refusal clause](patterns_copy_absence_keys_on_the_refusal_clause.md) — NEO-602: toHaveCount(0) on a shared phrase trips on a new allowed-state statement
+- [Same-name team eras unprovable on a card](patterns_same_name_team_eras_unprovable_on_a_card.md) — NEO-602: chip/sub-line print no era; alias-held other era makes the drawer an era proof
+- [Stuck "still looking up": check returns validators](patterns_stuck_looking_up_check_returns_validators.md) — NEO-602: lookup threw ReturnsValidationError on new row fields; read Convex logs first

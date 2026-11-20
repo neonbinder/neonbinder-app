@@ -170,8 +170,10 @@ test(
     const known = wizard.getByRole("list", { name: "Teams we know for each player" });
     await expect(known).toContainText(`${NAME}, b. 1851`);
     // The catalogue's man has no birth year, so the list tells him from his namesake by his place
-    // in the pick step's order, the wording the Link buttons use when a row has nothing else.
-    await expect(known).toContainText(new RegExp(`${NAME}, option [12] of 2`));
+    // in the pick step's order, the wording the Link buttons use when a row has nothing else. The
+    // order is the server's (`sameNamePlayers`: the name index, ties by creation), and the catalogue's
+    // row is imported with the seed before this spec adds or adopts its namesake, so he is option 1.
+    await expect(known).toContainText(`${NAME}, option 1 of 2`);
     // The rival has no career on file (the fixture's claim); the catalogue's man has one stint,
     // on the club the card prints, and it is marked as that, as a qualifier after the team.
     await expect(known).toContainText("Nothing on file yet");
@@ -183,7 +185,7 @@ test(
       wizard
         .getByRole("status")
         .filter({
-          hasText: new RegExp(`^Only ${NAME} \\(option [12] of 2\\) has a stint on file with the printed team\\.$`),
+          hasText: new RegExp(`^Only ${NAME} \\(option 1 of 2\\) has a stint on file with the printed team\\.$`),
         }),
     ).toBeVisible();
     await expect(wizard.getByRole("button", { name: "Create new" })).toBeVisible();
