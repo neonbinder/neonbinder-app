@@ -7,7 +7,9 @@
 // long enough that every title has to leave something out (NEO-609: a whole team, the
 // number or a first name sends a card to the step), so the wizard opens its "Card
 // titles" step and its "Set name in titles" box, and the box and per-card edits are
-// proved there, then read back off the stored cards.
+// proved there, then read back off the stored cards. NEO-618: the box reaches every
+// title that left something out (a team or a number, not only a first name) whenever
+// the box version fits.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectAfterMarketplace } from "../../support/marketplace-wait";
 import {
@@ -79,9 +81,11 @@ async function expectBulkWalkDone(page: Page): Promise<void> {
 // (NEO-609, the Tidy Up line): all 110 are on the step, which draws the first 50 in
 // card order and counts the rest ("And 60 more, saved as generated."). The cards the
 // spec reads sit among those 50:
-//   #2  Rich Becker      loses the team and the number, keeps his full name: the box,
-//                        which steps in only for a lost first name or a title over 80,
-//                        leaves it alone
+//   #2  Rich Becker      loses the team and the number, keeps his full name; the box
+//                        (NEO-618: any Tidy Up cut, not only a first name) brings both
+//                        back, the team whole
+//   #6  Jim Thome        fits at exactly 80 and loses ONLY the team; the box brings it
+//                        back whole (NEO-618; before it, the box left this card alone)
 //   #8  Don Mattingly    loses the team and "Don" (hand-edited in the step)
 //   #12 Darren Daulton   loses the team and "Darren"; the box brings the name back and
 //                        the team fits as its nickname (NEO-606), the sport kept
@@ -98,6 +102,14 @@ const SHORT_BOX = "1996 Score Dugout Collection Artists Proofs";
 const DAULTON_BOXED = `${SHORT_BOX} Darren Daulton #12 Phillies Baseball`;
 /** #76 under the box (saved as generated, past the 50 drawn): it fits, the team by its nickname. */
 const HOLLANDSWORTH_BOXED = `${SHORT_BOX} Todd Hollandsworth #76 Dodgers`;
+/** #2 before the box: the full name kept, the team and the number left out (80 is the cap). */
+const BECKER_BUILT = `${LONG_DESCRIPTION} Rich Becker`;
+/** #2 under the box (NEO-618): the number and the whole team back; the sport does not fit (83). */
+const BECKER_BOXED = `${SHORT_BOX} Rich Becker #2 Minnesota Twins`;
+/** #6 before the box: it fits at exactly 80 with only its team left out. */
+const THOME_BUILT = `${LONG_DESCRIPTION} Jim Thome #6`;
+/** #6 under the box (NEO-618): the team back whole; the sport does not fit (83). */
+const THOME_BOXED = `${SHORT_BOX} Jim Thome #6 Cleveland Indians`;
 // What the operator types over #8's generated title: first past the cap, then their own.
 const OVER_TITLE = `${LONG_DESCRIPTION} Don Mattingly #8 New York Yankees`;
 const OWN_TITLE = "1996 Score Artists Proofs Don Mattingly #8 My Own Title";
@@ -137,6 +149,7 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   // The arithmetic the fixture rests on (a drift in these strings is a spec bug, caught here).
   expect(LONG_DESCRIPTION, "the description is 67 characters").toHaveLength(67);
   expect(SHORT_BOX, "the box text is 43 characters").toHaveLength(43);
+  expect([BECKER_BUILT.length, THOME_BUILT.length, BECKER_BOXED.length, THOME_BOXED.length]).toEqual([79, 80, 74, 74]);
 
   // ── P2. Fetch with the publisher's checklist uploaded first, BSC alone ──
   const facts = await usePublishersChecklist(page, CHECKLISTS.dugoutArtistsProofs1996Series1);
@@ -194,8 +207,11 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await expect(title(12)).toHaveAccessibleDescription(/Left out to fit: .*Darren/);
   await expect(title(12)).toHaveAccessibleDescription(/Left out to fit: .*Philadelphia Phillies/);
   // #2 kept its full name and gave up its team and number: a Tidy Up cut puts it here too.
-  await expect(title(2)).toHaveValue(`${LONG_DESCRIPTION} Rich Becker`);
+  await expect(title(2)).toHaveValue(BECKER_BUILT);
   await expect(title(2)).toHaveAccessibleDescription(/Left out to fit: Minnesota Twins, #2/);
+  // #6 fits at exactly 80 and gave up its team alone (nothing after it: no comma).
+  await expect(title(6)).toHaveValue(THOME_BUILT);
+  await expect(title(6)).toHaveAccessibleDescription(/Left out to fit: Cleveland Indians(?!,)/);
   // Every one of the 110 had to leave something out: 50 are drawn and the rest counted.
   const titles = wizard.getByRole("textbox", { name: /^Title for #/ });
   await expect(titles).toHaveCount(TITLE_ROWS_SHOWN);
@@ -215,7 +231,7 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await expect(title(12)).toHaveValue(`${LONG_DESCRIPTION} Daulton #12`);
   await expectAccessible(page, { within: wizard, label: "Card titles step, Set name in titles over 80 refused" });
 
-  // ── P5. Trim the box: only the titles that lost a first name or ran long change ──
+  // ── P5. Trim the box: every title that left something out takes it (NEO-618) ──
   await box.fill(SHORT_BOX);
   // Enter settles the box in place; its status is read at the settle. It counts every
   // title, the ones past the 50 drawn too: #76, over 80 after every cut, fits now.
@@ -228,9 +244,13 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   // the nickname, where it would not fit whole (NEO-606): nothing is reported left out.
   await expect(title(12)).toHaveValue(DAULTON_BOXED);
   await expect(title(12)).not.toHaveAccessibleDescription(/Left out to fit/);
-  // #2 fit with its full name, so the box leaves it alone: the same title, the same note.
-  await expect(title(2)).toHaveValue(`${LONG_DESCRIPTION} Rich Becker`);
-  await expect(title(2)).toHaveAccessibleDescription(/Left out to fit: Minnesota Twins, #2/);
+  // NEO-618: #2 fit with its full name and lost its team and number, and #6 fit and lost
+  // only its team. A Tidy Up cut is enough for the box when the box version fits: both
+  // open with the box text and get back everything they left out.
+  await expect(title(2)).toHaveValue(BECKER_BOXED);
+  await expect(title(2)).not.toHaveAccessibleDescription(/Left out to fit/);
+  await expect(title(6)).toHaveValue(THOME_BOXED);
+  await expect(title(6)).not.toHaveAccessibleDescription(/Left out to fit/);
   // The list itself never moved under the edit.
   await expect(titles).toHaveCount(TITLE_ROWS_SHOWN);
   await expectAccessible(page, { within: wizard, label: "Card titles step, every title fits (SportLots paused)" });
@@ -297,10 +317,14 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await openCard(8);
   await expect(cardTitle).toHaveValue(OWN_TITLE);
   await closeCard();
-  // #2: it fit with its whole name, so the box never touched it: the builder's own title, saved.
+  // #2 and #6 (NEO-618): they fit but left a team (and #2 its number) out, so the commit
+  // built them from the box too, as the step showed.
   await openCard(2);
-  await expect(cardTitle).toHaveValue(`${LONG_DESCRIPTION} Rich Becker`);
-  await expectAccessible(page, { label: "Card detail drawer, a title the box left alone (SportLots paused)" });
+  await expect(cardTitle).toHaveValue(BECKER_BOXED);
+  await expectAccessible(page, { label: "Card detail drawer, a fitting title the box rebuilt (SportLots paused)" });
+  await closeCard();
+  await openCard(6);
+  await expect(cardTitle).toHaveValue(THOME_BOXED);
   await closeCard();
   // #76, past the 50 drawn, was saved as generated: with the box, as the step counted it.
   await openCard(76);

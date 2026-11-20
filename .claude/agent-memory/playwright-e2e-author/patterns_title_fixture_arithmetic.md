@@ -44,6 +44,15 @@ year, maker, set, every level's own name, surnames, `/N`, the VARIATION (a
 71-character variation keeps a title over 80 after every cut). The refill puts
 cuts back most valuable first; the number tries "#" then bare.
 
+**When the box ("Set name in titles") applies (NEO-618):** to a title over 80
+after every cut (always), or to any Tidy Up title (a whole team, the number, SP,
+RELIC, a first name, RC or AUTO out) when the box version FITS. A title that fits
+with nothing Tidy Up cut ignores it. So under a short box, a fitting card that
+lost only its team changes too; fixtures written before NEO-618 that said "the
+box leaves a full-name card alone" are wrong now. In the wizard's Card titles
+step the box shows a PREFILL (the set's description) but its draft starts
+undefined: titles before the operator edits it are the builder's own.
+
 **Product moved under you:** rebundle gen.mjs after every product commit, and
 a Vite `page reload` in its log during a run voids that run (setup included).
 

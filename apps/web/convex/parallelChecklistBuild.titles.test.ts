@@ -392,3 +392,39 @@ describe("buildParallelChecklist — a split team gives up its location first (N
     expect(storedTitleFails(copy)).toBe(false);
   });
 });
+
+describe("buildParallelChecklist — Parallels name themselves (NEO-619)", () => {
+  test("a copy is born without the insert's name when the insert's switch is on", async () => {
+    const t = convexTest(schema, modules);
+    const { anime, parallel, albo } = await seed(t);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(anime, { metadata: { parallelsNameThemselves: true } });
+    });
+    await addCard(t, anime, { cardNumber: "1", cardName: "Al Bo", playerIds: [albo] });
+
+    const result = await build(t, parallel);
+    expect(result.copied).toBe(1);
+    const [copy] = await cardsOn(t, parallel);
+    expect(copy.listingTitle.startsWith(`2024 Topps Chrome ${PARALLEL}`)).toBe(true);
+    expect(copy.listingTitle).not.toContain("Anime");
+    expect(copy.listingTitle).toContain("Al Bo");
+    expect(copy.listingTitle.length).toBeLessThanOrEqual(LISTING_TITLE_MAX);
+  });
+
+  test("the insert's own card is left as it was", async () => {
+    const t = convexTest(schema, modules);
+    const { anime, parallel, albo } = await seed(t);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(anime, { metadata: { parallelsNameThemselves: true } });
+    });
+    const sourceId = await addCard(t, anime, {
+      cardNumber: "1",
+      cardName: "Al Bo",
+      playerIds: [albo],
+      listingTitle: "Kept as typed",
+    });
+    await build(t, parallel);
+    const source = await t.run(async (ctx) => ctx.db.get(sourceId));
+    expect(source?.listingTitle).toBe("Kept as typed");
+  });
+});

@@ -345,6 +345,21 @@ export const selectorOptionMetadataFields = {
    * Absent on every row the dialog never saved; no backfill.
    */
   listingShortNameSavedAt: v.optional(v.number()),
+  /**
+   * NEO-619 — on an INSERT-role row (an insert-level row under an Insert type):
+   * the parallels beneath it (its sub-variants) name themselves in a card's
+   * title, leaving the insert's name out ("2026 Pulse Aura Aeon Special Gold",
+   * not "... Aeon Special Purple Gold"). The insert's own cards still name the
+   * insert. One switch covers every parallel beneath it, later ones included.
+   *
+   * Writer: `setSelectorOptionParallelsNameThemselves` (the set attributes
+   * panel), the only door. Reader: `titleChainFacts`, which drops the insert's
+   * level and skips the insert's own `listingShortName` for a parallel leaf.
+   * An operator choice: never derived, never written by a sync. `true` or
+   * absent; off deletes the key. Existing titles are never rewritten when it
+   * flips (write-once titles); Regenerate reads the new value.
+   */
+  parallelsNameThemselves: v.optional(v.boolean()),
 };
 
 export const selectorOptionFields = {
