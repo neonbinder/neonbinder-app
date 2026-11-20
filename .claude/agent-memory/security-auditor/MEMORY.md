@@ -132,7 +132,7 @@
 - [Neo555 fake eBay cutover](patterns_neo555_fake_ebay_cutover.md) — two-gate resolver; request-keyed key names; merge-deploy removals; retired lane leaves creds
 - [Listing text trust path](patterns_listing_text_trust_path.md) — generator text reaches eBay unescaped; a new input from a non-admin/marketplace write = finding
 - [Neo591 retry adoption token](patterns_neo591_retry_adoption_token.md) — row-stored retry token: exclusion must match adoption predicate; pin internal userId writers
-- [Neo602 era-aware alias rule](patterns_neo602_era_aware_alias_rule.md) — era numbers are security inputs (NaN splits overlap vs covers); gate and prelude share one guard; check "silent only if" qualifiers
+- [Neo602 era-aware alias rule](patterns_neo602_era_aware_alias_rule.md) — era numbers are security inputs (NaN splits overlap vs covers); gate and prelude share one guard; check "silent only if" qualifiers; per-card overrides vs name-keyed evidence
 - [Review-queue read pattern](review-queue-read-pattern.md) — entityReviewQueue reads: requireAdmin then assertOwnsRow; pin + cross-admin test; team pick is per name; cardNumber unbounded
 - [Neo555 fake eBay cutover](patterns_neo555_fake_ebay_cutover.md) — two-gate resolver; request-keyed key names; merge-deploy removals; retired lane leaves creds
 - [Listing text trust path](patterns_listing_text_trust_path.md) — generator text reaches eBay unescaped; a new input from a non-admin/marketplace write = finding

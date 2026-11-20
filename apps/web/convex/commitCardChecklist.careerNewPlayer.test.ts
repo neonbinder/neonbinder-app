@@ -39,7 +39,12 @@ const ADMIN = {
 type T = ReturnType<typeof convexTest>;
 type Ids = { sportId: Id<"selectorOptions">; leafId: Id<"selectorOptions"> };
 
-async function seedSet(t: T, sportName = "Baseball", slots?: Record<string, string>): Promise<Ids> {
+async function seedSet(
+  t: T,
+  sportName = "Baseball",
+  slots?: Record<string, string>,
+  year = "1990",
+): Promise<Ids> {
   return t.run(async (ctx) => {
     const now = Date.now();
     const sportId = await ctx.db.insert("selectorOptions", {
@@ -52,7 +57,7 @@ async function seedSet(t: T, sportName = "Baseball", slots?: Record<string, stri
     });
     const yearId = await ctx.db.insert("selectorOptions", {
       level: "year",
-      value: "1990",
+      value: year,
       platformData: {},
       parentId: sportId,
       children: [],
@@ -108,6 +113,45 @@ function insertPlayer(
       lastUpdated: Date.now(),
     }),
   );
+}
+
+/**
+ * NEO-602 — "Oakland Athletics" is the Oakland row's own name (1968-2024) and,
+ * from 2025, an alias of the Athletics (own name "Athletics"). On a 2025 set
+ * the year alone points at the Athletics through an alias, which the card rule
+ * refuses while another row holds the name as its own; a player's career is
+ * what may settle it.
+ */
+const TWO_ERA_NAME = "Oakland Athletics";
+
+async function seedTwoEraTeams(t: T, sportId: Id<"selectorOptions">) {
+  const oakland = await t.run((ctx) =>
+    ctx.db.insert("teams", {
+      location: "Oakland",
+      name: "Athletics",
+      nameNormalized: normalizeTeamName(TWO_ERA_NAME),
+      sportId,
+      yearsActive: { from: 1968, to: 2024 },
+      lastUpdated: Date.now(),
+    }),
+  );
+  const athletics = await t.run(async (ctx) => {
+    const id = await ctx.db.insert("teams", {
+      name: "Athletics",
+      nameNormalized: normalizeTeamName("Athletics"),
+      sportId,
+      yearsActive: { from: 2025 },
+      aliases: [TWO_ERA_NAME],
+      lastUpdated: Date.now(),
+    });
+    await ctx.db.insert("teamAliases", {
+      teamId: id,
+      sportId,
+      aliasNormalized: normalizeTeamName(TWO_ERA_NAME),
+    });
+    return id;
+  });
+  return { oakland, athletics };
 }
 
 type CardOverrides = {
@@ -586,6 +630,115 @@ describe("commitCardChecklist — careerNewPlayers retry", () => {
     // settled on the namesake exactly as the same-operator retry above does.
     expect(two.playerIds).toEqual([theirs]);
     expect(two.playerIds).not.toEqual([namesake]);
+  });
+});
+
+describe("commitCardChecklist — careerNewPlayers and a two-era team name", () => {
+  const sets = async (t: T) => {
+    const ids = await seedSet(t, "Baseball", undefined, "2025");
+    const { oakland, athletics } = await seedTwoEraTeams(t, ids.sportId);
+    return { ids, oakland, athletics };
+  };
+
+  test("a retry reads the same team evidence as the first attempt: the row its own earlier attempt minted is not a namesake", async () => {
+    const t = convexTest(schema, modules);
+    const { ids, athletics } = await sets(t);
+    // The namesake's only stint is the Athletics', so on card 2 the player
+    // evidence agrees with the year and the name links - the first attempt's
+    // answer. Card 1 is the wrong Bob Allen, printed with no team.
+    await insertPlayer(t, ids.sportId, "Bob Allen", [{ teamId: athletics, fromYear: 2025 }]);
+    const np: NewPlayers = [{ ref: "np-one", name: "Bob Allen", stints: [] }];
+    const cards = () => [
+      makeCard({ cardNumber: "1", players: ["Bob Allen"], newPlayerByName: [{ name: "Bob Allen", ref: "np-one" }] }),
+      makeCard({ cardNumber: "2", players: ["Bob Allen"], teams: [TWO_ERA_NAME] }),
+    ];
+    const teamOf = async () =>
+      (await cardsOf(t, ids.leafId)).find((c) => c.cardNumber === "2")!.teamOnCardIds ?? [];
+
+    const first = await commit(t, ids, cards(), { careerNewPlayers: np });
+    expect(first.careerNewPlayers).toMatchObject({ created: 1, adopted: 0 });
+    expect(await teamOf()).toEqual([athletics]);
+
+    // The retry: the minted row now shares the name. It is excluded from the
+    // lookup (it is this commit's own answer), so card 2 still resolves to the
+    // namesake and the name links the same way. Weighed as a second namesake,
+    // the player would be "ambiguous", the evidence dropped, and the year alone
+    // (an alias-only pick) would leave the team unlinked.
+    const second = await commit(t, ids, cards(), { careerNewPlayers: np });
+    expect(second.careerNewPlayers).toMatchObject({ created: 0, adopted: 1 });
+    expect(await teamOf()).toEqual([athletics]);
+    expect(second.unreviewedNameCount).toBe(0);
+  });
+
+  test("a New player card gives no team evidence: his namesake's Athletics stint does not link the two-era name", async () => {
+    const t = convexTest(schema, modules);
+    const { ids, athletics } = await sets(t);
+    await insertPlayer(t, ids.sportId, "Bob Allen", [{ teamId: athletics, fromYear: 2025 }]);
+
+    const result = await commit(
+      t,
+      ids,
+      [
+        makeCard({
+          cardNumber: "1",
+          players: ["Bob Allen"],
+          teams: [TWO_ERA_NAME],
+          newPlayerByName: [{ name: "Bob Allen", ref: "np-one" }],
+        }),
+      ],
+      { careerNewPlayers: [{ ref: "np-one", name: "Bob Allen", stints: [] }] },
+    );
+
+    // The year alone points at the Athletics through an alias; with no player
+    // evidence that is not linked silently - it goes to the operator.
+    expect(result.unreviewedNameCount).toBe(1);
+    const [card] = await cardsOf(t, ids.leafId);
+    expect(card.teamOnCardIds ?? []).toEqual([]);
+    expect(card.pendingTeamNames).toEqual([TWO_ERA_NAME]);
+  });
+
+  test("and the other cards printing the name cannot decide it alone either", async () => {
+    const t = convexTest(schema, modules);
+    const { ids, athletics } = await sets(t);
+    await insertPlayer(t, ids.sportId, "Bob Allen", [{ teamId: athletics, fromYear: 2025 }]);
+    await insertPlayer(t, ids.sportId, "Jacob Wilson", [{ teamId: athletics, fromYear: 2025 }]);
+
+    const result = await commit(
+      t,
+      ids,
+      [
+        makeCard({
+          cardNumber: "1",
+          players: ["Bob Allen"],
+          teams: [TWO_ERA_NAME],
+          newPlayerByName: [{ name: "Bob Allen", ref: "np-one" }],
+        }),
+        makeCard({ cardNumber: "2", players: ["Jacob Wilson"], teams: [TWO_ERA_NAME] }),
+      ],
+      { careerNewPlayers: [{ ref: "np-one", name: "Bob Allen", stints: [] }] },
+    );
+
+    // Card 2 alone would link (his Athletics stint agrees with the year). The
+    // name is one answer for the whole set, and one of its cards is a new
+    // person nobody has a career for, so the name is left to the operator.
+    expect(result.unreviewedNameCount).toBe(1);
+    for (const card of await cardsOf(t, ids.leafId)) {
+      expect(card.teamOnCardIds ?? []).toEqual([]);
+      expect(card.pendingTeamNames).toEqual([TWO_ERA_NAME]);
+    }
+  });
+
+  test("control: the same name with an ordinary card (no New player) still links by the player's Athletics stint", async () => {
+    const t = convexTest(schema, modules);
+    const { ids, athletics } = await sets(t);
+    await insertPlayer(t, ids.sportId, "Jacob Wilson", [{ teamId: athletics, fromYear: 2025 }]);
+
+    const result = await commit(t, ids, [
+      makeCard({ cardNumber: "1", players: ["Jacob Wilson"], teams: [TWO_ERA_NAME] }),
+    ]);
+
+    expect(result.unreviewedNameCount).toBe(0);
+    expect((await cardsOf(t, ids.leafId))[0].teamOnCardIds).toEqual([athletics]);
   });
 });
 

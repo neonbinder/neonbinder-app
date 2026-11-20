@@ -108,6 +108,45 @@ function insertPlayer(
   );
 }
 
+/**
+ * NEO-602 — "Oakland Athletics" is the Oakland row's own name (1968-2024) and,
+ * from 2025, an alias of the Athletics (own name "Athletics"). On a 2025 set
+ * the year alone points at the Athletics through an alias, which the card rule
+ * refuses while another row holds the name as its own; a player's career is
+ * what may settle it.
+ */
+const TWO_ERA_NAME = "Oakland Athletics";
+
+async function seedTwoEraTeams(t: T, sportId: Id<"selectorOptions">) {
+  const oakland = await t.run((ctx) =>
+    ctx.db.insert("teams", {
+      location: "Oakland",
+      name: "Athletics",
+      nameNormalized: normalizeTeamName(TWO_ERA_NAME),
+      sportId,
+      yearsActive: { from: 1968, to: 2024 },
+      lastUpdated: Date.now(),
+    }),
+  );
+  const athletics = await t.run(async (ctx) => {
+    const id = await ctx.db.insert("teams", {
+      name: "Athletics",
+      nameNormalized: normalizeTeamName("Athletics"),
+      sportId,
+      yearsActive: { from: 2025 },
+      aliases: [TWO_ERA_NAME],
+      lastUpdated: Date.now(),
+    });
+    await ctx.db.insert("teamAliases", {
+      teamId: id,
+      sportId,
+      aliasNormalized: normalizeTeamName(TWO_ERA_NAME),
+    });
+    return id;
+  });
+  return { oakland, athletics };
+}
+
 type CardOverrides = {
   cardNumber?: string;
   players?: string[];
@@ -604,6 +643,69 @@ describe("commitCardChecklist — a card's playerIdByName", () => {
     const p = await insertPlayer(t, ids.sportId, "Bob Allen");
     const many = Array.from({ length: 40 }, (_, i) => ({ name: `Name ${i}`, playerId: p }));
     await expect(commit(t, ids, [makeCard({ playerIdByName: many })])).rejects.toThrow(/re-links/);
+  });
+});
+
+describe("commitCardChecklist — a card's playerIdByName and a two-era team name", () => {
+  test("the chosen player's career decides the era, not the career of the player the printed name ordinarily resolves to", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedSet(t, "Baseball", "2025");
+    const { oakland, athletics } = await seedTwoEraTeams(t, ids.sportId);
+    // The printed name resolves to a namesake whose career is Oakland's; the
+    // operator linked this card to Jacob Wilson, whose career is the Athletics'.
+    await insertPlayer(t, ids.sportId, "Bob Allen", [{ teamId: oakland, fromYear: 1979, toYear: 1984 }]);
+    const chosen = await insertPlayer(t, ids.sportId, "Jacob Wilson", [{ teamId: athletics, fromYear: 2025 }]);
+
+    const result = await commit(t, ids, [
+      makeCard({
+        cardNumber: "1",
+        players: ["Bob Allen"],
+        teams: [TWO_ERA_NAME],
+        playerIdByName: [{ name: "Bob Allen", playerId: chosen }],
+      }),
+    ]);
+
+    expect(result.unreviewedNameCount).toBe(0);
+    const [card] = await cardsOf(t, ids.leafId);
+    expect(card.playerIds).toEqual([chosen]);
+    expect(card.teamOnCardIds).toEqual([athletics]);
+  });
+
+  test("an ordinary card with the same name still reads the namesake's career (Oakland's, which the year does not back: not linked)", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedSet(t, "Baseball", "2025");
+    const { oakland } = await seedTwoEraTeams(t, ids.sportId);
+    await insertPlayer(t, ids.sportId, "Bob Allen", [{ teamId: oakland, fromYear: 1979, toYear: 1984 }]);
+
+    const result = await commit(t, ids, [
+      makeCard({ cardNumber: "1", players: ["Bob Allen"], teams: [TWO_ERA_NAME] }),
+    ]);
+
+    expect(result.unreviewedNameCount).toBe(1);
+    const [card] = await cardsOf(t, ids.leafId);
+    expect(card.teamOnCardIds ?? []).toEqual([]);
+  });
+
+  test("an override to a player deleted since is dropped from the evidence: the name's own resolution decides", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedSet(t, "Baseball", "2025");
+    const { athletics } = await seedTwoEraTeams(t, ids.sportId);
+    await insertPlayer(t, ids.sportId, "Bob Allen", [{ teamId: athletics, fromYear: 2025 }]);
+    const gone = await insertPlayer(t, ids.sportId, "Jacob Wilson");
+    await t.run((ctx) => ctx.db.delete(gone));
+
+    const result = await commit(t, ids, [
+      makeCard({
+        cardNumber: "1",
+        players: ["Bob Allen"],
+        teams: [TWO_ERA_NAME],
+        playerIdByName: [{ name: "Bob Allen", playerId: gone }],
+      }),
+    ]);
+
+    expect(result.unreviewedNameCount).toBe(0);
+    const [card] = await cardsOf(t, ids.leafId);
+    expect(card.teamOnCardIds).toEqual([athletics]);
   });
 });
 

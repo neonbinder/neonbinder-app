@@ -1421,6 +1421,14 @@ type CardPlayersByTeam = Map<
     cards: string[][];
     overflow: boolean;
     /**
+     * NEO-591 — parallel to `cards`: the players the OPERATOR chose for a
+     * printed name on that card (the career check's `playerIdByName`), so the
+     * card rule reads THAT player's career instead of the name's ordinary
+     * resolution. An empty list is the common case. Always the same length as
+     * `cards`; reset with it on overflow.
+     */
+    relinks: Array<Array<{ name: string; playerId: Id<"players"> }>>;
+    /**
      * NEO-602 — the same cards as the operator sees them on the team's review
      * step: number and players as printed, the first
      * `CARD_PLAYER_TEAM_MAX_CARDS` of them, and a count of every card that
@@ -1436,17 +1444,44 @@ type CardPlayersByTeam = Map<
   }
 >;
 
+/**
+ * `evidence` is what the career check changes about a card's players (NEO-591):
+ *
+ *  - `withheld` — the card carries a "New player named X" pick. The printed
+ *    name is a NEW person, and the name lookup would hand the card rule his
+ *    NAMESAKE's career, which says nothing about the card in hand (a 2026
+ *    "Oakland Athletics" would link by a namesake's 2025 Athletics stint). The
+ *    card therefore gives no evidence for any team it names, and the team's
+ *    entry is marked `overflow` like a name too common to sample, so the
+ *    OTHER cards printing that name cannot vote alone either: the name falls
+ *    back to the year with the rule's alias-only guard. Display bookkeeping
+ *    (`shown`, `total`) is untouched; the operator still sees the card.
+ *  - `relinks` — the operator re-linked a printed name to a specific player
+ *    (`playerIdByName`). That player's career IS evidence, so it travels with
+ *    the card for the rule to read in place of the name's resolution.
+ */
 function addCardPlayerNames(
   target: CardPlayersByTeam,
   teamName: string,
   playersOnCard: ReadonlyArray<string>,
   cardNumber?: string,
+  evidence?: {
+    withheld?: boolean;
+    relinks?: ReadonlyArray<{ name: string; playerId: Id<"players"> }>;
+  },
 ): void {
   const key = normalizeTeamName(teamName.trim());
   if (!key) return;
   let entry = target.get(key);
   if (!entry) {
-    entry = { cards: [], overflow: false, shown: [], total: 0, seen: new Set() };
+    entry = {
+      cards: [],
+      overflow: false,
+      relinks: [],
+      shown: [],
+      total: 0,
+      seen: new Set(),
+    };
     target.set(key, entry);
   }
   // The display list is the review gate's; the commit prelude passes no
@@ -1467,14 +1502,17 @@ function addCardPlayerNames(
   if (entry.overflow) return;
   const players = playersOnCard.map((p) => p.trim()).filter(Boolean);
   if (
+    evidence?.withheld ||
     entry.cards.length >= CARD_PLAYER_TEAM_MAX_CARDS ||
     players.length > CARD_PLAYER_TEAM_MAX_PLAYERS_PER_CARD
   ) {
     entry.overflow = true;
     entry.cards = [];
+    entry.relinks = [];
     return;
   }
   entry.cards.push(players);
+  entry.relinks.push(evidence?.relinks ? [...evidence.relinks] : []);
 }
 
 /**
@@ -18756,7 +18794,13 @@ export const resolveChecklistEntities = action({
       }
       for (const t of teamsOnCard) {
         additionalTeamNames.push(t);
-        addCardPlayerNames(cardPlayerNamesByTeam, t, c.players ?? [], c.cardNumber);
+        // NEO-591 — a card the career check answered "New player" gives the
+        // card rule no evidence (see `addCardPlayerNames`); the gate runs
+        // before that step, so this only matters to a caller that sends the
+        // answers early, and keeps the gate's rule the commit's rule.
+        addCardPlayerNames(cardPlayerNamesByTeam, t, c.players ?? [], c.cardNumber, {
+          withheld: (c.newPlayerByName?.length ?? 0) > 0,
+        });
       }
       // PR 451 (NEO-478) — an unsettled checklist disagreement: the card
       // carries the marketplace's side (resolved above), and the operator may
@@ -19408,6 +19452,17 @@ export const commitCardChecklistPrelude = internalMutation({
         v.object({
           teamNameNormalized: v.string(),
           cards: v.array(v.array(v.string())),
+          /**
+           * NEO-591 — parallel to `cards`: the players the operator chose for
+           * a printed name on that card (the career check's `playerIdByName`).
+           * That player's career is the evidence for the name on that card,
+           * not the name's ordinary resolution. Absent: no card was re-linked.
+           */
+          cardPlayerIds: v.optional(
+            v.array(
+              v.array(v.object({ name: v.string(), playerId: v.id("players") })),
+            ),
+          ),
         }),
       ),
     ),
@@ -19921,9 +19976,27 @@ export const commitCardChecklistPrelude = internalMutation({
      * to the year (the gate does the same: the operator answers the player
      * first). A "not a person" skip is left off the card.
      */
-    const playersByTeamKey = new Map<string, string[][]>(
+    const playersByTeamKey = new Map<
+      string,
+      { cards: string[][]; relinks: Array<Map<string, Id<"players">>> }
+    >(
       (args.teamPlayerNames ?? []).map(
-        (entry) => [entry.teamNameNormalized, entry.cards] as const,
+        (entry) =>
+          [
+            entry.teamNameNormalized,
+            {
+              cards: entry.cards,
+              // NEO-591 — one name -> chosen player map per card, aligned.
+              relinks: entry.cards.map(
+                (_, i) =>
+                  new Map(
+                    (entry.cardPlayerIds?.[i] ?? []).map(
+                      (e) => [e.name, e.playerId] as const,
+                    ),
+                  ),
+              ),
+            },
+          ] as const,
       ),
     );
     // NEO-591 — `sameNamePlayers`, minus a row this commit's own new-player
@@ -19949,7 +20022,15 @@ export const commitCardChecklistPrelude = internalMutation({
           );
     };
     const cardPlayerIdCache = new Map<string, Id<"players"> | null>();
-    const cardPlayerIdFor = async (playerName: string): Promise<Id<"players"> | null> => {
+    const cardPlayerIdFor = async (
+      playerName: string,
+      // NEO-591 — the player the operator chose for this name ON THIS CARD
+      // (`playerIdByName`). Not cached by name: it is this card's alone, and the
+      // chosen player's career is the evidence for the card, not whoever the
+      // printed name ordinarily resolves to.
+      chosenOnCard?: Id<"players">,
+    ): Promise<Id<"players"> | null> => {
+      if (chosenOnCard) return chosenOnCard;
       const key = normalizePlayerName(playerName);
       if (!key) return null;
       if (cardPlayerIdCache.has(key)) return cardPlayerIdCache.get(key)!;
@@ -19970,17 +20051,24 @@ export const commitCardChecklistPrelude = internalMutation({
     const resolveTeamSilently = async (name: string): Promise<Id<"teams"> | null> => {
       const pick = await resolveCardTeamName(ctx, args.sportId, name, setYear, {
         loadCardPlayerIds: async () => {
-          const cards = playersByTeamKey.get(normalizeTeamName(name.trim()));
-          if (!cards || cards.length === 0) return undefined;
+          const entry = playersByTeamKey.get(normalizeTeamName(name.trim()));
+          const cards = entry?.cards;
+          if (!entry || !cards || cards.length === 0) return undefined;
           const ids: Array<Array<Id<"players">>> = [];
-          for (const players of cards) {
+          for (const [cardIndex, players] of cards.entries()) {
             const onCard: Array<Id<"players">> = [];
             for (const player of players) {
               const key = normalizePlayerName(player);
-              if (!key || reviewByKey.get(`player:${key}`)?.decision?.action === "skip") {
+              const chosen = entry.relinks[cardIndex]?.get(player.trim());
+              // A chosen player beats everything, a "not a person" skip too:
+              // the operator linked this name to a person on this card.
+              if (
+                !chosen &&
+                (!key || reviewByKey.get(`player:${key}`)?.decision?.action === "skip")
+              ) {
                 continue;
               }
-              const id = await cardPlayerIdFor(player);
+              const id = await cardPlayerIdFor(player, chosen);
               if (!id) return undefined;
               if (!onCard.includes(id)) onCard.push(id);
             }
@@ -26122,9 +26210,23 @@ export const commitCardChecklist = action({
         playerNames.push(p.trim());
         addCardTeamNames(playerTeamNamesByPlayer, p, teamsOnCard);
       }
+      // NEO-591 — what the career check changed about this card's players, for
+      // the team era rule. A "New player named X" card is a NEW person, so the
+      // name's namesake must not lend the card his career: the card gives no
+      // evidence and its teams fall back to the year with the alias-only guard.
+      // An operator re-link (`playerIdByName`, kept only while the player
+      // still exists in this sport, as the card write keeps it) is a chosen
+      // player whose career IS evidence, so it travels with the card.
+      const withheld = (c.newPlayerByName?.length ?? 0) > 0;
+      const relinks = (c.playerIdByName ?? [])
+        .filter((e) => operatorPlayerNameById.has(e.playerId))
+        .map((e) => ({ name: e.name.trim(), playerId: e.playerId }));
       for (const t of teamsOnCard) {
         teamNames.push(t);
-        addCardPlayerNames(playersByTeamNorm, t, c.players ?? []);
+        addCardPlayerNames(playersByTeamNorm, t, c.players ?? [], undefined, {
+          withheld,
+          relinks,
+        });
       }
     }
 
@@ -26178,7 +26280,15 @@ export const commitCardChecklist = action({
       // NEO-602 — the players on each card naming a team, for the era rule.
       teamPlayerNames: Array.from(
         playersByTeamNorm,
-        ([teamNameNormalized, entry]) => ({ teamNameNormalized, cards: entry.cards }),
+        ([teamNameNormalized, entry]) => ({
+          teamNameNormalized,
+          cards: entry.cards,
+          // NEO-591 — only when a card was re-linked, so an ordinary commit's
+          // payload is the one it always was.
+          ...(entry.relinks.some((r) => r.length > 0)
+            ? { cardPlayerIds: entry.relinks }
+            : {}),
+        }),
       ).filter((entry) => entry.cards.length > 0),
       batchId: args.batchId,
       // NEO-335 — written by the page that opens the commit, read by all.

@@ -106,6 +106,11 @@ NEO-591 changed the defaults (measured on the alias spec, 2026-11):
   ("Link to <name>"): that player's row joins the group, checked; picking "New player named P"
   then drops it (count 0). No seeded alias exists on any NFL team, and only Football 2014 TL cards
   carry a marketplace team, so a live "two aliases agree" proof has no real fixture.
+- The staged "Stints to add for P" list sits INSIDE the line's list item, so
+  `careerList.getByRole("listitem")` counts lines + staged chips (an Add-default line reads 2).
+  Count lines with `.filter({ has: page.getByRole("radiogroup") })`. A spec written for the old
+  "Keep as is" default (main's NEO-602 silent-abstains spec) breaks on both counts: assert
+  "Add to career" checked plus the staged chip, then let the walker's sweep answer Keep.
 - A no-op `keepEveryCareerLine` left every spec green (nothing reads catalogue careers back), so
   the walkers now call `expectNoCareerLineAdds` (support/wizard.ts) right after the sweep: at
   least one checked "Keep as is", zero checked "Add to career". A planted no-op reds prospect,
