@@ -39,10 +39,8 @@
  * imports this file), and takes the parser's card and limit rules in `deps`.
  */
 
+import { MAX_BSC_PRINT_RUN } from "../../convex/lib/bscAttributeTokens";
 import type { PublishedChecklistRow } from "./parse-published-checklist";
-
-/** The most a single print-run cell may say; a bigger number is a bad cell. */
-export const FOIL_COLOUR_MAX_PRINT_RUN = 99_999;
 
 /** Said for a line whose subset cell is blank: the parallels hang off the subset. */
 export const NO_SUBSET_ON_LINE = "No subset on this line";
@@ -52,7 +50,7 @@ export const PRINT_RUN_WITHOUT_FOIL = "Print run with no foil on this line";
 /** Said for a print-run cell that is not a whole number in range. */
 export function badPrintRunReason(colour: string, cell: string): string {
   const shown = cell.length > 20 ? `${cell.slice(0, 20)}…` : cell;
-  return `Print run “${shown}” in the ${colour} column isn't a whole number from 1 to ${FOIL_COLOUR_MAX_PRINT_RUN.toLocaleString("en-US")}`;
+  return `Print run “${shown}” in the ${colour} column isn't a whole number from 1 to ${MAX_BSC_PRINT_RUN.toLocaleString("en-US")}`;
 }
 
 /** Said for a card that already has a different print run in the same parallel. */
@@ -155,9 +153,10 @@ function runShaped(cell: string): boolean {
 /** A print run: a whole number from 1 to the cap, or null. */
 function printRunOf(cell: string): number | null {
   const text = cell.trim();
-  if (!/^\d{1,6}$/.test(text)) return null;
+  // The server's own cap (`MAX_BSC_PRINT_RUN`): a bigger number is a bad cell.
+  if (!/^\d{1,7}$/.test(text)) return null;
   const n = Number(text);
-  return n >= 1 && n <= FOIL_COLOUR_MAX_PRINT_RUN ? n : null;
+  return n >= 1 && n <= MAX_BSC_PRINT_RUN ? n : null;
 }
 
 type Card = {

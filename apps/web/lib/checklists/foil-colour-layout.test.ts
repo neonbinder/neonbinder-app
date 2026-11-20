@@ -2,11 +2,11 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { MAX_BSC_PRINT_RUN } from "../../convex/lib/bscAttributeTokens";
 import { checklistSections } from "./checklist-sections";
 import {
   badPrintRunReason,
   foilColourHeader,
-  FOIL_COLOUR_MAX_PRINT_RUN,
   NO_SUBSET_ON_LINE,
   PARALLEL_NAME_TOO_LONG,
   PRINT_RUN_WITHOUT_FOIL,
@@ -370,7 +370,7 @@ describe("parallel names, order and print runs", () => {
     const parse = parsePublishedChecklist(
       csv([
         line("A", "P1", "1", "F", ["x", "3", ""]),
-        line("A", "P2", "2", "F", ["0", "100000", "2.5"]),
+        line("A", "P2", "2", "F", ["0", "1000001", "2.5"]),
         line("A", "P3", "3", "F", ["", "", "1"]),
         line("A", "P4", "4", "F", ["4", "5", "6"]),
         line("A", "P5", "5", "F", ["4", "5", "6"]),
@@ -382,12 +382,27 @@ describe("parallel names, order and print runs", () => {
     expect(parse.skipped.map((s) => s.reason)).toEqual([
       badPrintRunReason("RWB", "x"),
       badPrintRunReason("RWB", "0"),
-      badPrintRunReason("Silver", "100000"),
+      badPrintRunReason("Silver", "1000001"),
       badPrintRunReason("Gold", "2.5"),
     ]);
     expect(parse.skipped[0]).toMatchObject({ line: 2, text: expect.stringContaining("P1") });
     expect(parse.rows.filter((r) => r.subset === "A F Silver")).toHaveLength(4);
-    expect(FOIL_COLOUR_MAX_PRINT_RUN).toBe(99_999);
+    // The cap is the server's own, with a thousands separator in the words.
+    expect(MAX_BSC_PRINT_RUN).toBe(1_000_000);
+    expect(badPrintRunReason("Silver", "1000001")).toContain("from 1 to 1,000,000");
+  });
+
+  it("takes a print run of exactly the server's cap", () => {
+    const parse = parsePublishedChecklist(
+      csv([
+        line("A", "P1", "1", "F", [String(MAX_BSC_PRINT_RUN), "", ""]),
+        line("A", "P2", "2", "F", ["1", "", ""]),
+        line("A", "P3", "3", "F", ["2", "", ""]),
+      ]),
+      { mode: "set" },
+    );
+    expect(parse.rows.find((r) => r.subset === "A F RWB")?.printRun).toBe(MAX_BSC_PRINT_RUN);
+    expect(parse.skipped).toEqual([]);
   });
 
   it("skips a print run on a line that names no foil, and a name over the limit once", () => {
