@@ -140,6 +140,35 @@ describe("a smart binder's rule", () => {
     ).rejects.toThrow();
   });
 
+  test.each([
+    [
+      "player",
+      "players",
+      (s: S) => ({ test: { kind: "player" as const, playerIds: [s.fx.goodenId] } }),
+      (s: S) => s.fx.goodenId as Id<"players">,
+      "One of the rule's players isn't in Neon Binder anymore. Pick them again.",
+    ],
+    [
+      "team",
+      "teams",
+      (s: S) => ({ test: { kind: "team" as const, teamIds: [s.fx.metsId] } }),
+      (s: S) => s.fx.metsId as Id<"teams">,
+      "One of the rule's teams isn't in Neon Binder anymore. Pick it again.",
+    ],
+    [
+      "brand",
+      "selectorOptions",
+      (s: S) => ({ test: { kind: "brand" as const, brandIds: [s.fx.toppsId] } }),
+      (s: S) => s.fx.toppsId as Id<"selectorOptions">,
+      "One of the rule's brands isn't in Neon Binder anymore. Pick it again.",
+    ],
+  ])("refuses a rule that names a deleted %s, in the collector's words", async (_kind, _table, term, doomed, message) => {
+    const s = await setup();
+    const rule = { version: 1 as const, match: "all" as const, terms: [term(s)] };
+    await s.t.run(async (ctx) => ctx.db.delete(doomed(s) as never));
+    await expect(s.me.mutation(api.collectionContainers.create, { kind: "binder", name: "Gone", rule })).rejects.toThrow(message);
+  });
+
   test("matchingCards says which cards fit, for the Checklists filter and outside-the-rule marks", async () => {
     const s = await setup();
     const id = await smartBinder(s);

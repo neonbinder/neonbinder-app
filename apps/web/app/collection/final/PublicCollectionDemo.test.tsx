@@ -176,7 +176,9 @@ describe("the public collection demo", () => {
     back();
     expect(pageUrl()).toBe(DEMO_URL);
     expect(scope().value).toBe("all");
-  });
+    // Inherently heavy and synchronous: ~14 route changes, each re-rendering a whole
+    // tab (about 0.4 s warm). A loaded machine runs it 10x slower, so it gets the room.
+  }, 30_000);
 
   it("a scope pick is not a Back step: Back goes to the view before, not the unscoped one", () => {
     renderDemo();

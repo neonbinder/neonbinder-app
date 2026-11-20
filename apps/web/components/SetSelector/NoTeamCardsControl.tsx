@@ -162,7 +162,7 @@ export const NO_TEAM_WALK_TRUNCATED_TEXT =
   "Over 500 checklists here. This run covers only the first 500; mark the rest from their own set or insert.";
 /** The count cap (and no walk cap): the run still reaches every card. */
 export const NO_TEAM_COUNT_TRUNCATED_TEXT =
-  "NB stopped counting at 2,000 cards, so each count here is at least what it says. The run checks every card.";
+  "Neon Binder stopped counting at 2,000 cards, so each count here is at least what it says. The run checks every card.";
 /** Anything the server didn't word for a person. */
 export const NO_TEAM_SIDEWAYS_TEXT = "Something went sideways. Give it another go.";
 
@@ -191,7 +191,7 @@ export function keptReasonLines(view: Pick<NoTeamTargetsView, "kept" | "rowsWith
   if (k.listingNamesTeam > 0) {
     const n = k.listingNamesTeam;
     lines.push(
-      `${cards(n)} come${n === 1 ? "s" : ""} with a team name NB hasn't matched yet. Pick those yourself.`,
+      `${cards(n)} come${n === 1 ? "s" : ""} with a team name Neon Binder hasn't matched yet. Pick those yourself.`,
     );
   }
   if (k.awaitingLookup > 0) {

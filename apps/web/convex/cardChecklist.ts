@@ -35,7 +35,7 @@ import { internal } from "./_generated/api";
 import { requireAdmin } from "./auth";
 // NEO-236: these two paths LOOK UP a team and link it; neither may create one.
 // See `convex/lib/teamRow.ts` and the notes on each handler below.
-import { findTeamsByFullName, resolveTeamForSetYear } from "./lib/teamRow";
+import { findTeamsByFullName, resolveCardTeamName } from "./lib/teamRow";
 // NEO-591 — a listed place ("Oklahoma"): the teams whose LOCATION it is, as choices.
 import { nameTokens } from "./lib/entityNearMatch";
 import { teamLocationIs } from "./lib/placeTeam";
@@ -255,13 +255,21 @@ export const backfillTeamToOnCardIds = internalMutation({
       // memoised across the batch: it is a property of the set, and this loop
       // runs over hundreds of rows that share a handful of sets.
       const setYear = await setYearFor(row.selectorOptionId);
-      const { teamId: resolvedTeamId } = await resolveTeamForSetYear(
+      //
+      // NEO-602: and by the card's own PLAYERS when the name has several eras
+      // (`resolveCardTeamName`): a Rickey Henderson card printing "Oakland
+      // Athletics" is the 1968–2024 franchise's whatever year the set is. A
+      // card with no players, or a name with one row, resolves by the year
+      // alone exactly as before. The set year keeps its NEO-307 past-era
+      // allowance — a card can show a team's past. Unattended and with no
+      // review row to show, so the players' answer links even where the card
+      // year disagrees (`CardTeamResolution.agreesWithYear`); a null stays put.
+      const { teamId: resolvedTeamId } = await resolveCardTeamName(
         ctx,
         sportId,
         teamString,
         setYear,
-        // NEO-307: a SET year — a card can show a team's past.
-        { allowPastEra: true },
+        { cardPlayerIds: [row.playerIds ?? []] },
       );
 
       if (!resolvedTeamId) {
@@ -910,9 +918,18 @@ export const applyBscTeamResolution = internalMutation({
     // and BSC's string carries none of that. Read once: it is the set's year,
     // the same for every part.
     //
+    // NEO-602: each name is resolved against THIS card's players too
+    // (`resolveCardTeamName`) — "Oakland Athletics" on a Rickey Henderson card
+    // is the 1968–2024 franchise, not the 2025– Athletics whose alias it is.
+    //
+    // Unattended: the players' answer links even where the card year
+    // disagrees with it (`CardTeamResolution.agreesWithYear`); only a null
+    // (a tie, disagreeing evidence, an alias-only year pick) stays unmatched.
+    //
     // NEO-333: all or nothing. Every part must resolve to exactly one team
-    // (`resolveTeamForSetYear` returns null for "unknown" and for "several
-    // eras the year did not separate" alike) or NOTHING is linked. Jason,
+    // (`resolveCardTeamName` returns null for "unknown" and for "several
+    // eras the year and the players did not separate" alike) or NOTHING is
+    // linked. Jason,
     // 2026-10-10: "keep unmatched". A subset would be wrong in a way nobody
     // sees: the card would have a team, so it would leave the missing-team
     // lane, and the operator would never learn the second team was dropped.
@@ -935,14 +952,9 @@ export const applyBscTeamResolution = internalMutation({
       rawTeamName.length <= MAX_BSC_TEAM_NAME_LENGTH
     ) {
       const { teamId: wholeTeamId, candidates: wholeCandidates } =
-        await resolveTeamForSetYear(
-          ctx,
-          sportId,
-          rawTeamName,
-          setYear,
-          // NEO-307: a SET year — a card can show a team's past.
-          { allowPastEra: true },
-        );
+        await resolveCardTeamName(ctx, sportId, rawTeamName, setYear, {
+          cardPlayerIds: [row.playerIds ?? []],
+        });
       if (wholeTeamId) {
         await ctx.db.patch(row._id, {
           ...(await descriptionForTeams(ctx, row._id, [wholeTeamId])),
@@ -986,13 +998,12 @@ export const applyBscTeamResolution = internalMutation({
     const resolvedTeamIds: Id<"teams">[] = [];
     let allResolved = liveTeamNames.length > 0;
     for (const teamName of allResolved ? liveTeamNames : []) {
-      const { teamId } = await resolveTeamForSetYear(
+      const { teamId } = await resolveCardTeamName(
         ctx,
         sportId,
         teamName,
         setYear,
-        // NEO-307: a SET year — a card can show a team's past.
-        { allowPastEra: true },
+        { cardPlayerIds: [row.playerIds ?? []] },
       );
       if (!teamId) {
         allResolved = false;

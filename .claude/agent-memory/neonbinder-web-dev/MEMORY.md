@@ -270,6 +270,9 @@
 - [Numbers-differ fixtures need non-prefix pairs](reference_numbers_differ_fixtures_need_non_prefix_pairs.md) — "12" vs "OV-12" AGREE; ABSORB re-folds initialData so seed-only mutations stay green
 - [Number picker reuses ConflictRadioGroup](reference_number_picker_reuses_conflict_radio_group.md) — stable group name across a pick; hand-link picks wait in numberPicks; minted card needs shelf picker
 - [Pickers take a source/value list](reference_pickers_take_a_source_value_list.md) — name+number pickers: pick-options.ts, adapter per wire, typed = exact, namePicks answers the wizard
+- [Wizard extra query lives in a child component](reference_wizard_extra_query_lives_in_a_child_component.md) — new per-step read: child owns useQuery; getBatch stays slim; auto-linked rows carry context too
+- [Read-only diagnosis on a deployment](reference_read_only_diagnosis_on_a_deployment.md) — convex data caps 8192; internal fns run without identity; open-wizard cards live in checklistCandidates
+- [Lead-in names its list; cached status needs a tick](reference_lead_in_p_names_its_list_and_cached_status_needs_a_tick.md) — aria-labelledby on the lead-in p; delayed status fill from a remount
 - [Error state is neon pink on title fields](feedback_error_state_is_neon_pink_title_fields.md) — NEO-606: too-long counter/note/box pink via OVER_FIELD_CLASS; DESIGN.md updated; no wider sweep (Jason decides)
 - [Listing inputs field threads through validators](reference_listing_inputs_field_threads_through_validators.md) — new ListingCardInputs field: 2 returns validators, 5 build paths, shared team cache; fixtures by title length + tsx probe
 - [Error ink = neon-pink-text alias](reference_error_ink_is_neon_pink_text_alias.md) — notice-danger-ink inherits its TEXT_NEVER_ON bars; error in a dark tile goes on a bg-field well

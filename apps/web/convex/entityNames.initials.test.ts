@@ -160,7 +160,7 @@ describe("teams key joins initials (NEO-322)", () => {
 
     const found = await t
       .withIdentity(USER)
-      .query(api.teams.findByNameAndSport, { name: "Texas A&M", sportId });
+      .query(internal.teams.findByNameAndSport, { name: "Texas A&M", sportId });
     expect(found?.name).toBe("Texas A & M");
   });
 

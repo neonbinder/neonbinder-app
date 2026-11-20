@@ -58,6 +58,20 @@ describe("the demo dashboard agrees with the demo store", () => {
     }
   });
 
+  it("flags no sale line but an oversold one, and a title-only line is no problem", () => {
+    const orders = data.sales?.unshipped ?? [];
+    for (const line of orders.flatMap((s) => s.lines)) {
+      if (line.problem) expect(line.problem.kind).toBe("oversold");
+    }
+    const titleOnly = orders.filter((o) => o.lines.every((l) => !l.card));
+    expect(titleOnly.length).toBeGreaterThan(0);
+    for (const o of titleOnly) {
+      expect(o.firstCard).toBeNull();
+      expect(o.hasProblem).toBe(false);
+      expect(o.lines.every((l) => l.title)).toBe(true);
+    }
+  });
+
   it("holds back only cards in a box", () => {
     const held = data.syncStatus?.problems.flatMap((p) => p.cards) ?? [];
     expect(held.length).toBeGreaterThan(0);

@@ -50,7 +50,9 @@
 - [NEO-556 No Team adversarial patterns](reference_neo556_no_team_adversarial_patterns.md) — oracle cartesian, ?raw source pins, client-vs-server commit agreement
 - [NEO-591 Onyx PDF + Prospect tests](reference_neo591_onyx_pdf_prospect_test_patterns.md) — hand-built PDF pages via groupPageItems, resolver world fixture, hint-branch split, mutation driver
 - [Full-suite load vs testTimeout](patterns_full_suite_load_and_test_timeout.md) — components tests run 3-4x slower under the full suite; components project timeout 20s
+- [LiveLine effect lag](feedback_live_line_effect_lag.md) — wait on the role=status node itself, not the visible span; forced-lag proof recipe
 - [NEO-587 rAF status race sweep](reference_neo587_raf_status_race_sweep.md) — slow-rAF shim to find one-frame-late status races; useLiveWords joins words; vacuous negatives
 - [NEO-609 title levels tests](reference_neo609_title_levels_test_patterns.md) — atFullLength padding, refill hides city cuts, Proof parity fixture, tsx probe loop
 - [NEO-581 countSeq + busy window](reference_neo581_countseq_and_busy_window.md) — which door seq checks bite; busy-at-zero label window is unobservable
 - [NEO-592 gate parity patterns](reference_neo592_gate_parity_patterns.md) — origin/main differential via sibling copy, db probe, outside-in call counting, mutant runner
+- [NEO-482 call order tap + mutant module](reference_neo482_call_order_tap_and_mutant_module.md) — assert internal-mutation order by wrapping _handler; break-check via mutant copy in the modules glob

@@ -349,6 +349,29 @@ describe("resolveTeamIdentities — which NB team a name means", () => {
     expect(await identities(t, world, ["Houston Cougars"])).toEqual([null]);
   });
 
+  test("NEO-602: a name the year reaches only as an alias, while another team holds it as its own name, is null", async () => {
+    const t = convexTest(schema, modules);
+    // A 2026 set. The 1968-2024 Oakland franchise owns "Oakland Athletics";
+    // the 2025- Athletics carries it as an alias. The year alone would pick the
+    // Athletics (the mis-link NEO-602 fixed); the cards' players are not known
+    // at pairing time, so the name answers null and the operator is asked.
+    const world = await seedWorld(t);
+    await addTeam(t, world, {
+      name: "Athletics",
+      location: "Oakland",
+      level: "major",
+      yearsActive: { from: 1968, to: 2024 },
+    });
+    const athletics = await addTeam(t, world, {
+      name: "Athletics",
+      location: "Sacramento",
+      level: "major",
+      aliases: ["Oakland Athletics"],
+      yearsActive: { from: 2025 },
+    });
+    expect(await identities(t, world, ["Oakland Athletics", "Sacramento Athletics"])).toEqual([null, athletics]);
+  });
+
   test("a set with no sport above it answers null for every name", async () => {
     const t = convexTest(schema, modules);
     const world = await seedWorld(t);

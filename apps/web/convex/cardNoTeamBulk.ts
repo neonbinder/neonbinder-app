@@ -94,7 +94,7 @@ const CARD_LEVELS: ReadonlySet<string> = new Set(["variantType", "insert", "para
 const TEAM_LEVELS: ReadonlySet<string> = new Set(["setName", "variantType", "insert", "parallel"]);
 
 /** The row asked about is gone. */
-export const NO_TEAM_ROW_MISSING = "That part of the set isn't in NB anymore.";
+export const NO_TEAM_ROW_MISSING = "That part of the set isn't in Neon Binder anymore.";
 /** The row asked about is a sport, year or manufacturer. */
 export const NO_TEAM_WRONG_LEVEL = "No Team goes on a set, not on a sport, year or manufacturer.";
 /** The row asked about no longer says No Team. */

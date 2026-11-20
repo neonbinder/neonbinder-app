@@ -23,6 +23,7 @@ import { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
 import { effectiveSetLeagueIds } from "./lib/selectorLeagues";
 import {
   findTeamsByFullName,
+  resolveCardTeamName,
   resolveTeamForSetYear,
   TEAM_ERA_SCAN_LIMIT,
 } from "./lib/teamRow";
@@ -673,8 +674,9 @@ async function writeCandidatePage(
  * separator: real team names and aliases carry one ("Korea, South", "Scranton,
  * Wilkes-Barre RailRiders"). So when the raw string matches ANY existing team
  * row in the sport — by name or alias, through `resolveTeamForSetYear`, the
- * same resolution the review gate (`teams.findByNameAndSport`) and the commit
- * prelude use — the card carries that one string. Exactly one row: both later
+ * year-only reading of the card rule (`resolveCardTeamName`) that the review
+ * gate and the commit prelude apply with the cards' players — the card carries
+ * that one string. Exactly one row: both later
  * passes find it by that string. Several rows the year cannot separate: the
  * gate asks the operator which era, as it does for any name. Only when the
  * whole string matches NOTHING does the card carry the split parts; any part
@@ -1082,8 +1084,14 @@ async function teamRowsForPlace(
 /**
  * The one team these candidates mean for the set year, as the string the card
  * carries, or null. Exactly one row may survive the era pick, and the commit's
- * own lookup (`resolveTeamForSetYear` on that string) must land on the same
- * row, so the card cannot be written to another team than the one chosen.
+ * own lookup of that string must land on the same row, so the card cannot be
+ * written to another team than the one chosen.
+ *
+ * NEO-602: the commit's lookup is `resolveCardTeamName`, and a full name that
+ * reaches two eras ("Oakland Athletics" is one team's name and another's
+ * alias) is the cards' players' to settle, which this has no cards to ask. Read
+ * year-only with that rule's alias-vs-own-name guard, such a name answers null
+ * and the place stays parked for the operator.
  */
 async function settleOneTeam(
   ctx: QueryCtx | MutationCtx,
@@ -1094,7 +1102,7 @@ async function settleOneTeam(
   const picked = pickPlaceTeam(qualifying, setYear);
   if (!picked) return null;
   const name = teamFullName(picked);
-  const back = await resolveTeamForSetYear(ctx, sportId, name, setYear, { allowPastEra: true });
+  const back = await resolveCardTeamName(ctx, sportId, name, setYear);
   return back.teamId === picked._id ? name : null;
 }
 
@@ -1173,11 +1181,14 @@ export const MAX_TEAM_IDENTITY_TEXTS = 200;
  * NEO-591 — which NB team each name means, or null. For the checklist-versus-
  * marketplace team comparison: "Oakland Athletics" (BSC) and "Oakland A's"
  * (the checklist) are two aliases of one NB team, so they agree and the
- * operator is never asked. Goes through `resolveTeamForSetYear`, the one
- * resolution the card gate and the commit prelude use, with the same
- * `allowPastEra` a card's team takes (a SET year: a card can show a team's
- * past). A name that matches no team, or several the year cannot separate,
- * answers null and the disagreement stays the operator's (rules 7 and 8).
+ * operator is never asked. Goes through `resolveCardTeamName`, the card rule
+ * the gate and the commit prelude use (a SET year, a card can show a team's
+ * past), read year-only: the cards' players are not resolved yet at pairing
+ * time. NEO-602: a name that reaches two eras the year cannot separate, or
+ * that the year reaches only as an alias while another team holds it as its
+ * own name ("Oakland Athletics" in a 2025 set), answers null; so does a name
+ * that matches no team. The disagreement then stays the operator's (rules 7
+ * and 8), never settled by the year against the players.
  *
  * Internal: the actions that ask are admin-gated themselves.
  */
@@ -1199,9 +1210,7 @@ export const resolveTeamIdentities = internalQuery({
         out.push(null);
         continue;
       }
-      const { teamId } = await resolveTeamForSetYear(ctx, sportId, name, setYear, {
-        allowPastEra: true,
-      });
+      const { teamId } = await resolveCardTeamName(ctx, sportId, name, setYear);
       out.push(teamId ?? null);
     }
     return out;
