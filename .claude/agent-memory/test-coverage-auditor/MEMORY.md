@@ -29,3 +29,4 @@
 - [Empty state on isolated account](empty-state-belongs-on-the-isolated-account.md) — sales/history pile up on the main account; empty-state asserts go on new-profile
 - [Silent write proved by later write](unconfirmed-write-proved-by-a-later-confirming-write.md) — same-client mutations apply in order; needs mutation-only, failure alert absent, reload
 - [Stored count replaced by live count](host-stored-count-replaced-by-live-count-stales-old-spec.md) — old spec asserting the button survives the fix goes stale; race token untested
+- [Deleted test file, surviving function](deleted-test-file-carries-surviving-function-tests.md) — map each deleted file's describes to functions still exported and untested
