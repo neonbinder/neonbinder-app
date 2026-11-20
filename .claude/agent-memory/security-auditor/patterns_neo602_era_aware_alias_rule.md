@@ -44,4 +44,12 @@ On any merge that brings a per-card override and name-keyed evidence
 together, check the evidence builder honours the override (or marks that
 team name as no-evidence, e.g. the `overflow` path).
 
+**Rule 5: a broader text that "agrees" with a narrower data claim clears a
+conflict only if it also leaves the row unanswered.** A broader text (a place)
+that "agrees" with a narrower data claim (the marketplace team) may clear a
+conflict only if it also leaves the row unanswered. Check the `answered` and
+write path, not just the conflict.
+
+Related: [[patterns-neo284-team-aliases]]
+
 Related: [[patterns-neo284-team-aliases]], [[patterns-neo307-alias-reverse-order]].

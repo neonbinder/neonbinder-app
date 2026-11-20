@@ -22,6 +22,7 @@ import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
+import { resolveCardTeamName } from "./lib/teamRow";
 import { cancelScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
@@ -559,5 +560,165 @@ describe("the commit prelude: the same place, the same answers, never silently a
     const result = await commit(t, w, [makeCard({ players: ["Ichiro Suzuki"] })]);
 
     expect(result.unreviewedNameCount).toBe(1);
+  });
+});
+
+describe("the commit prelude: bounds on what it is handed and what it reads", () => {
+  /**
+   * `teamPlayerNames[].cardPlayerIds` pairs with `cards` by index. A list of
+   * another length cannot say which card is which, so it is no evidence at
+   * all (never a mis-attribution to the card at the same index).
+   */
+  async function preludeTeam(
+    t: T,
+    w: World,
+    cardPlayerIds: Array<Array<{ name: string; playerId: Id<"players"> }>>,
+  ) {
+    const result = await t.withIdentity(ADMIN).mutation(
+      internal.selectorOptions.commitCardChecklistPrelude,
+      {
+        selectorOptionId: w.leafId,
+        sportId: w.sportId,
+        playerNames: [],
+        teamNames: [PLACE],
+        teamPlayerNames: [
+          {
+            teamNameNormalized: normalizeTeamName(PLACE),
+            cards: [["Bob Allen"]],
+            cardPlayerIds,
+          },
+        ],
+      },
+    );
+    return result.teamIdByName.find((e) => e.name === PLACE)?.id;
+  }
+
+  async function bobWorld(t: T) {
+    const w = await seedWorld(t);
+    // The printed name resolves to the one Pilots man...
+    await player(t, w.sportId, "Bob Allen", PILOTS_STINT(w));
+    // ...and the operator chose another person for it on the card.
+    const chosen = await t.run((ctx) =>
+      ctx.db.insert("players", {
+        name: "Robert Allen",
+        nameNormalized: normalizePlayerName("Robert Allen"),
+        sportId: w.sportId,
+        teamYears: MARINERS_STINT(w),
+        lastUpdated: Date.now(),
+      }),
+    );
+    return { w, chosen };
+  }
+
+  test("a cardPlayerIds list as long as cards is read: the chosen player's Mariners career links", async () => {
+    const t = newT();
+    const { w, chosen } = await bobWorld(t);
+    expect(await preludeTeam(t, w, [[{ name: "Bob Allen", playerId: chosen }]])).toBe(w.mariners);
+  });
+
+  test("a cardPlayerIds list longer than cards is ignored: no re-link evidence, nothing mis-attributed", async () => {
+    const t = newT();
+    const { w, chosen } = await bobWorld(t);
+    // Index 0 would say Mariners if it were read; the extra entry makes the
+    // list unpairable, so the printed name's Pilots career is all there is,
+    // and a Pilots answer against the year is never linked silently.
+    expect(
+      await preludeTeam(t, w, [[{ name: "Bob Allen", playerId: chosen }], []]),
+    ).toBeUndefined();
+  });
+
+  test("a cardPlayerIds list shorter than cards is ignored the same way", async () => {
+    const t = newT();
+    const { w, chosen } = await bobWorld(t);
+    await player(t, w.sportId, "Ichiro Suzuki", MARINERS_STINT(w));
+    // Read, the one entry would turn card 1 Mariners and agree with card 2;
+    // ignored, card 1 is the Pilots man and the two cards split.
+    const result = await t.withIdentity(ADMIN).mutation(
+      internal.selectorOptions.commitCardChecklistPrelude,
+      {
+        selectorOptionId: w.leafId,
+        sportId: w.sportId,
+        playerNames: [],
+        teamNames: [PLACE],
+        teamPlayerNames: [
+          {
+            teamNameNormalized: normalizeTeamName(PLACE),
+            cards: [["Bob Allen"], ["Ichiro Suzuki"]],
+            cardPlayerIds: [[{ name: "Bob Allen", playerId: chosen }]],
+          },
+        ],
+      },
+    );
+    expect(result.teamIdByName.find((e) => e.name === PLACE)).toBeUndefined();
+  });
+
+  /**
+   * The place search is a bounded read per name. The prelude asks about a
+   * name in its create-decision branch and again in its resolve phase, handing
+   * the same `placeCache` each time, so the name searches once.
+   */
+  test("a name resolved twice with one placeCache searches the place once", async () => {
+    const t = newT();
+    const w = await seedWorld(t);
+    const searches = await t.run(async (ctx) => {
+      let count = 0;
+      const db = new Proxy(ctx.db, {
+        get(target, prop) {
+          if (prop !== "query") {
+            const value = Reflect.get(target, prop);
+            return typeof value === "function" ? value.bind(target) : value;
+          }
+          return (table: never) => {
+            const q = (target.query as (t: never) => object)(table);
+            return new Proxy(q, {
+              get(qt, p) {
+                if (p === "withSearchIndex") count += 1;
+                const value = Reflect.get(qt, p);
+                return typeof value === "function" ? value.bind(qt) : value;
+              },
+            });
+          };
+        },
+      });
+      const counted = { ...ctx, db } as typeof ctx;
+      const leagues = new Set<string>(
+        (await ctx.db.query("leagues").collect()).filter((l) => l.level === "major").map((l) => l._id),
+      );
+      const options = { placeLeagueIds: async () => leagues };
+
+      const cache = new Map();
+      const first = await resolveCardTeamName(counted, w.sportId, PLACE, 2001, {
+        ...options,
+        placeCache: cache,
+      });
+      const afterFirst = count;
+      const second = await resolveCardTeamName(counted, w.sportId, "  seattle ", 2001, {
+        ...options,
+        placeCache: cache,
+      });
+      const afterSecond = count;
+      // No cache: the search repeats (the control for the claim above).
+      await resolveCardTeamName(counted, w.sportId, PLACE, 2001, options);
+      const afterUncached = count;
+      // A cleared cache searches again (a team was written between).
+      cache.clear();
+      await resolveCardTeamName(counted, w.sportId, PLACE, 2001, { ...options, placeCache: cache });
+      return {
+        afterFirst,
+        afterSecond,
+        afterUncached,
+        afterCleared: count,
+        sameCandidates:
+          first.candidates.map((r) => r._id).join() === second.candidates.map((r) => r._id).join(),
+        candidateCount: first.candidates.length,
+      };
+    });
+
+    expect(searches.candidateCount).toBe(2);
+    expect(searches.sameCandidates).toBe(true);
+    expect(searches.afterFirst).toBeGreaterThanOrEqual(1);
+    expect(searches.afterSecond).toBe(searches.afterFirst);
+    expect(searches.afterUncached).toBeGreaterThan(searches.afterSecond);
+    expect(searches.afterCleared).toBeGreaterThan(searches.afterUncached);
   });
 });

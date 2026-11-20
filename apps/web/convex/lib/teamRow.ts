@@ -522,12 +522,29 @@ export async function resolveCardTeamName(
      * `resolveChecklistPlaceTeams`). Absent, the name is read as a name only.
      */
     placeLeagueIds?: () => Promise<ReadonlySet<string>>;
+    /**
+     * NEO-591 — the place search's answer per normalised name, owned by the
+     * caller. A caller that resolves the same name more than once in one
+     * transaction (the commit prelude's create decision, then its resolve
+     * phase) hands the SAME map each time, so a name searches at most once.
+     * One map belongs to one league set (`placeLeagueIds` is fixed for the
+     * call) and one sport, and the caller empties it when it writes a team,
+     * since a new row can change who is located at a place.
+     */
+    placeCache?: Map<string, Promise<Doc<"teams">[]>>;
   } = {},
 ): Promise<CardTeamResolution> {
   let candidates = await findTeamsByFullName(ctx, sportId, fullName);
   let isPlace = false;
   if (candidates.length === 0 && options.placeLeagueIds) {
-    const atPlace = await placeCandidates(ctx, sportId, fullName, options.placeLeagueIds);
+    const cache = options.placeCache;
+    const cacheKey = normalizeEntityName(fullName);
+    let search = cache?.get(cacheKey);
+    if (!search) {
+      search = placeCandidates(ctx, sportId, fullName, options.placeLeagueIds);
+      cache?.set(cacheKey, search);
+    }
+    const atPlace = await search;
     if (atPlace.length >= 2) {
       candidates = atPlace;
       isPlace = true;

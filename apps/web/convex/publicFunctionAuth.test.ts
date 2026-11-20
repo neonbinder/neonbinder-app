@@ -3422,6 +3422,8 @@ describe("PR 451 (NEO-487, NEO-478): the BSC wait, cooldown and team lane", () =
     // public twin would mint players or read the tables with no admin gate.
     ["players.ts", "createCareerNewPlayers", "internalMutation"],
     ["selectorOptions.ts", "validateCareerNewPlayers", "internalQuery"],
+    ["selectorOptions.ts", "commitCardChecklistPrelude", "internalMutation"],
+    ["selectorOptions.ts", "resolveGateTeamNames", "internalQuery"],
     ["checklistCandidates.ts", "resolveTeamIdentities", "internalQuery"],
     ["adapters/buysportscards.ts", "runBscTeamCheckItem", "internalAction"],
     ["adapters/buysportscards.ts", "processBscTeamEnrichmentQueue", "internalAction"],

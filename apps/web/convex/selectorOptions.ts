@@ -20077,10 +20077,16 @@ export const commitCardChecklistPrelude = internalMutation({
             {
               cards: entry.cards,
               // NEO-591 — one name -> chosen player map per card, aligned.
+              // `cardPlayerIds` pairs with `cards` by index, so a list of
+              // another length cannot say which card is which: it is ignored
+              // for this name (no re-link evidence), never mis-attributed.
               relinks: entry.cards.map(
                 (_, i) =>
                   new Map(
-                    (entry.cardPlayerIds?.[i] ?? []).map(
+                    (entry.cardPlayerIds?.length === entry.cards.length
+                      ? (entry.cardPlayerIds[i] ?? [])
+                      : []
+                    ).map(
                       (e) => [e.name, e.playerId] as const,
                     ),
                   ),
@@ -20145,9 +20151,14 @@ export const commitCardChecklistPrelude = internalMutation({
       (setLeagueIds ??= effectiveSetLeagueIds(ctx, args.selectorOptionId).then(
         (ids) => new Set<string>(ids),
       ));
+    // NEO-591 — one place search per name per call: the create-decision branch
+    // and the resolve phase both ask `resolveTeamSilently` about a name, and
+    // the search is a bounded read. Emptied when a team is written (below).
+    const placeCache = new Map<string, Promise<Doc<"teams">[]>>();
     const resolveTeamSilently = async (name: string): Promise<Id<"teams"> | null> => {
       const pick = await resolveCardTeamName(ctx, args.sportId, name, setYear, {
         placeLeagueIds,
+        placeCache,
         loadCardPlayerIds: async () => {
           const entry = playersByTeamKey.get(normalizeTeamName(name.trim()));
           const cards = entry?.cards;
@@ -20586,6 +20597,8 @@ export const commitCardChecklistPrelude = internalMutation({
         ...(aliases.length ? { aliases } : {}),
         lastUpdated: Date.now(),
       });
+      // A new row can be located at a place a name was already searched for.
+      placeCache.clear();
       // The index half of `teams.aliases`, through the ONE writer. Skipped
       // for an empty list: a fresh id has nothing to diff against, and the
       // read it would spend is one per created team inside a budgeted
