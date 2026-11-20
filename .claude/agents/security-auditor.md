@@ -6,6 +6,7 @@ effort: high
 memory: project
 color: green
 tools: Read, Grep, Glob, Bash
+disallowedTools: Edit, Write, NotebookEdit
 ---
 
 You are the security reviewer. Zero-trust by default: every public surface

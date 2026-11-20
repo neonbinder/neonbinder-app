@@ -6,6 +6,7 @@ effort: medium
 memory: project
 color: green
 tools: Read, Grep, Glob, Bash
+disallowedTools: Edit, Write, NotebookEdit
 ---
 
 You are the test coverage auditor. You read a PR's diff and the test suite

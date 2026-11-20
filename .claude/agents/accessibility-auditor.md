@@ -6,6 +6,7 @@ effort: medium
 memory: project
 color: green
 tools: Read, Grep, Glob, Bash
+disallowedTools: Edit, Write, NotebookEdit
 ---
 
 You are the accessibility auditor for a Vite + react-router single-page app

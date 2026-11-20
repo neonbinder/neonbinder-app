@@ -12,6 +12,7 @@ effort: high
 memory: project
 color: yellow
 tools: Read, Grep, Glob, Bash, ToolSearch, WebFetch, WebSearch, mcp__plugin_design_linear__get_issue, mcp__plugin_design_linear__list_issues, mcp__plugin_design_linear__list_comments, mcp__claude_ai_PostHog__exec
+disallowedTools: Edit, Write, NotebookEdit
 ---
 
 You plan features for NeonBinder. You are the reasoning step between a
