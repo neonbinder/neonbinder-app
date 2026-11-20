@@ -35,7 +35,7 @@
 // cold-path value (live marketplace round trips on unwarmed data).
 // "A SYNC THAT HALF-WORKED IS A FAILED SEED": after every sync the partial-
 // failure banners must be absent (expectNoSyncFailure).
-import { test, expect } from "../support/fixtures";
+import { test, expect, expectAccessible } from "../support/fixtures";
 import { loginToSportLots, openBscCredentials } from "../support/credentials";
 import {
   addCustomManufacturer,
@@ -61,7 +61,7 @@ import {
   reviewWizard,
   stepCounter,
 } from "../support/wizard";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 const SL_PAUSE_NOTICE = "SportLots is on pause: nothing from SportLots was asked for or changed.";
 
@@ -76,6 +76,35 @@ async function expectNoSyncFailure(page: Page) {
 }
 
 /**
+ * NEO-591, the bare-stem rule, on the one real case the suite holds: the file has row "300b"
+ * (Julio Rodriguez) and no row "300", and BSC lists both its base #300 and its #300b image
+ * variation. Only a BARE stem stands for "all versions", so row 300b pairs its own card by number
+ * and never also covers the base #300: that card is not under Matched (no "all versions" chip
+ * anywhere), it waits in "BSC only (1)", and the seed keeps it (D8: the one card asked of BSC
+ * live). Read before the Keep below. Desktop only: setup is one project (the mobile pass reruns
+ * this same setup on its own seed).
+ */
+async function expectBareStemOnly(pairing: Locator) {
+  const page = pairing.page();
+  const player = "Julio Rodriguez";
+  await expect(pairing.getByRole("heading", { name: "BSC only (1)", exact: true })).toBeVisible();
+  await expect(pairing.getByRole("radio", { name: `Select BSC card #300 ${player}`, exact: true })).toBeVisible();
+  const expand = pairing.getByRole("button", { name: /^Expand matched cards/ });
+  await expand.click();
+  await expect(pairing.getByRole("button", { name: /^Collapse matched cards/ })).toBeVisible();
+  // Row 300b is the variation's, by its own number.
+  await expect(
+    pairing.getByRole("button", {
+      name: new RegExp(`^Unlink card #300b ${player}( · .*)? from checklist row #300b ${player} · Seattle Mariners$`),
+    }),
+  ).toHaveCount(1);
+  // ...and the base card is in no pair (R2: rides on the BSC-only radio above).
+  await expect(pairing.getByRole("button", { name: new RegExp(`^Unlink card #300 `) })).toHaveCount(0);
+  await expect(pairing.getByText(/· all versions$/)).toHaveCount(0);
+  await expectAccessible(page, { within: pairing, label: "Match Cards, 2024 Topps Chrome Base: row 300b beside BSC's #300" });
+}
+
+/**
  * Fetch a variant's checklist and settle the card-pairing dialog: keep every
  * card only one marketplace has, then confirm. Waits are the caller's (the
  * Base and the insert checklists have different measured ceilings).
@@ -83,7 +112,7 @@ async function expectNoSyncFailure(page: Page) {
 async function fetchChecklist(
   page: Page,
   facts: ChecklistFacts,
-  { open, settle }: { open: number; settle: number },
+  { open, settle, inspect }: { open: number; settle: number; inspect?: (pairing: Locator) => Promise<void> },
 ) {
   const pairing = page.getByRole("dialog", { name: /^Match Cards/ });
   const wizard = reviewWizard(page);
@@ -101,6 +130,7 @@ async function fetchChecklist(
   // The result line is the proof the file, not BSC, supplied the teams (N read off the file). It
   // is on the page while the dialog is open; after Confirm only the saved line repeats it.
   await expectTeamsFromChecklist(page, facts);
+  if (inspect) await inspect(pairing);
   for (const side of ["BSC", "SportLots"]) {
     // Each side's unmatched section is headed "<side> only (<n>)"; a card the file leaves out (the
     // Base's #300) waits there and is discarded unless kept. The seed keeps every marketplace card.
@@ -345,7 +375,7 @@ test(
     // The captured checklist goes in before the Sync: the fetch then asks BSC for no card
     // the file answers (a seed with a card-listing call per card met BSC's 429).
     const facts = await usePublishersChecklist(page, CHECKLISTS.toppsChrome2024Base);
-    await fetchChecklist(page, facts, { open: 60_000, settle: 60_000 });
+    await fetchChecklist(page, facts, { open: 60_000, settle: 60_000, inspect: expectBareStemOnly });
 
     // First run: confirm every new player/team/league the checklist names.
     // NEO-335: the wizard's dialog name starts "Tidy up" ("Tidy up 2024 Topps

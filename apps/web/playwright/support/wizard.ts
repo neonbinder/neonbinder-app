@@ -274,7 +274,10 @@ export async function walkToAutographStep(page: Page): Promise<void> {
     await expect(next, "the wizard offers Next on its way to the Autographed cards step").toBeVisible();
     if (await group.isVisible()) break;
     const { x } = await readStep(page);
-    if (((await subtitle.textContent()) ?? "").trim() === CAREER_STEP_SUBTITLE) await keepEveryCareerLine(page);
+    if (((await subtitle.textContent()) ?? "").trim() === CAREER_STEP_SUBTITLE) {
+      await keepEveryCareerLine(page);
+      await expectNoCareerLineAdds(page);
+    }
     await next.click();
     await expectStepLeft(page, x);
   }
@@ -308,6 +311,21 @@ export function postNameSubtitle(page: Page): Locator {
   return reviewWizard(page)
     .getByText(new RegExp(`^(${CAREER_STEP_SUBTITLE}|Cards with no team|${AUTOGRAPH_STEP_SUBTITLE}|Card titles|Ready to save)$`))
     .first();
+}
+
+/**
+ * The Career check sweep's postcondition, read by the walkers that call `keepEveryCareerLine`
+ * rather than by the sweep itself: no line is left on "Add to career", which would write a stint
+ * to a catalogue player at Save. A sweep that silently did nothing fails here, in every spec that
+ * walks past the step. Positive first: a line answered "Keep as is" is on screen (R2).
+ */
+export async function expectNoCareerLineAdds(page: Page): Promise<void> {
+  const wizard = reviewWizard(page);
+  await expect(wizard.getByRole("radio", { name: "Keep as is", exact: true, checked: true }).first()).toBeVisible();
+  await expect(
+    wizard.getByRole("radio", { name: "Add to career", exact: true, checked: true }),
+    "no Career check line is left on Add to career (it would write a stint at Save)",
+  ).toHaveCount(0);
 }
 
 /**
@@ -359,6 +377,7 @@ export async function passCareerCheck(page: Page): Promise<void> {
   if (((await subtitle.textContent()) ?? "").trim() === CAREER_STEP_SUBTITLE) {
     const { x } = await readStep(page);
     await keepEveryCareerLine(page);
+    await expectNoCareerLineAdds(page);
     await nextStepButton(page).click();
     await expectStepLeft(page, x);
   }
@@ -388,7 +407,10 @@ export async function passCareerAndTeamsSteps(page: Page): Promise<void> {
     const text = ((await subtitle.textContent()) ?? "").trim();
     if (text !== CAREER_STEP_SUBTITLE && text !== "Cards with no team") return;
     const { x } = await readStep(page);
-    if (text === CAREER_STEP_SUBTITLE) await keepEveryCareerLine(page);
+    if (text === CAREER_STEP_SUBTITLE) {
+      await keepEveryCareerLine(page);
+      await expectNoCareerLineAdds(page);
+    }
     await nextStepButton(page).click();
     await expectStepLeft(page, x);
   }
@@ -968,7 +990,10 @@ export async function advanceToSave(page: Page): Promise<void> {
     if (await save.isVisible()) break;
     const { x } = await readStep(page);
     if (await autograph.isVisible()) await answerAutographStep(page);
-    else if (((await subtitle.textContent()) ?? "").trim() === CAREER_STEP_SUBTITLE) await keepEveryCareerLine(page);
+    else if (((await subtitle.textContent()) ?? "").trim() === CAREER_STEP_SUBTITLE) {
+      await keepEveryCareerLine(page);
+      await expectNoCareerLineAdds(page);
+    }
     await next.click();
     await expectStepLeft(page, x);
   }

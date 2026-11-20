@@ -54,7 +54,9 @@
 //         "editing"; its team and years load into the form; a changed edit nobody added holds
 //         Next), the end year becomes 1997 and + Add replaces it in place; a second spell for the
 //         same club is added (both read back in Players admin; the answers survive Back);
-//       #903 "Wrong player" -> "New player named P": the printed P is somebody NB has not got. A
+//       #903 "Wrong player": first an EXISTING player through the search (Todd Helton): the line
+//         is answered with him (his row joins "Which P on Florida Marlins?", checked); then
+//         "New player named P": the printed P is somebody NB has not got. A
 //         name box (a blank name holds Next) and the stints widget with the Marlins staged; at
 //         Confirm & Save a second player named P is created beside the namesake, #903 points at him,
 //         and Players admin shows him with Florida Marlins 1996-1996 while the original P's career
@@ -63,10 +65,12 @@
 //         "Fix card's team" -> the Marlins (he never played there, so the nested "Career for Todd
 //         Helton" prompt comes up, defaulting to add) answered "Keep as is". Both pickers open on
 //         choosing the answer, with focus in their search box.
-//   - Not shown live: "Wrong player" picking an EXISTING same-name candidate ("Which <name>?"). No
-//     catalogue player on these sets has a same-name twin (each name here matches one player,
-//     measured NEO-574), so Wright goes through the search. The candidates and their order
-//     (the ones covering the card's team first) are unit-covered in convex/careerCoverage.test.ts.
+//   - Not shown live: a same-name CANDIDATE row in "Which P on <team>?" (another player already on
+//     file under the printed name). P is minted, so the line's own P is the only one before the
+//     save, and no catalogue player on these sets has a same-name twin (measured NEO-574); the
+//     existing-player pick is shown through the search instead (#903 above, Wright's line below).
+//     The candidates and their order (the ones covering the card's team first) are unit-covered
+//     in convex/careerCoverage.test.ts.
 // This spec writes TWO per-worker players: P (its career editor's player) and, at the save, the
 // new player named P (SET-REGISTRY.md).
 // Fresh-only like the rest of the spec (committed cards are never checked again).
@@ -392,16 +396,27 @@ test(
     await expect(lineRockies.getByRole("radio", { name: "Add to career" })).toBeChecked();
     await expect(stagedRockies.getByRole("listitem")).toHaveCount(2);
 
-    // #903: "Wrong player" -> "New player named P". The printed P is somebody NB has not got: the
-    // group of P's namesakes (none other on file) always ends with that row. Picking it opens a name
-    // box (the printed name, editable, focused) and the stints widget, with the card's team staged.
+    // #903: "Wrong player". The group "Which P on Florida Marlins?" (P has two lines, so it names its
+    // line) lists P's namesakes on file (none: the line's own P is excluded) and always ends with
+    // "New player named P". The player search opens with the choice, focus in it.
     await lineMarlins.getByRole("radio", { name: /^Wrong player$/ }).click();
-    await expect(wizard.getByRole("textbox", { name: "Search existing players" })).toBeFocused();
-    // P has two lines, so the group names its line: "Which P on Florida Marlins?".
+    const search903 = wizard.getByRole("textbox", { name: "Search existing players" });
+    await expect(search903).toBeFocused();
     const whichP = itemOf(scaffold, MARLINS).getByRole("radiogroup", { name: `Which ${scaffold} on ${MARLINS}?`, exact: true });
     const newP = whichP.getByRole("radio", { name: `New player named ${scaffold}`, exact: true });
     await expect(whichP.getByRole("radio").last()).toHaveAccessibleName(`New player named ${scaffold}`);
+    // First an EXISTING player (Todd Helton, one of the club's catalogue players): the line is
+    // answered with him, his row joining the group checked, and the new-player row is not picked.
+    await search903.fill("Todd Helton");
+    await wizard.getByRole("option", { name: /^Link to Todd Helton\b/ }).click();
+    const heltonFor903 = whichP.getByRole("radio", { name: /^Todd Helton\b/ });
+    await expect(heltonFor903).toBeChecked();
+    await expect(newP).not.toBeChecked();
+    // Then the operator changes his mind: P is somebody NB has not got. Picking "New player named P"
+    // opens a name box (the printed name, editable, focused) and the stints widget, with the card's
+    // team staged; the searched pick lets go (its row leaves the group).
     await newP.click();
+    await expect(heltonFor903).toHaveCount(0);
     await expect(newP).toBeChecked();
     const newName = wizard.getByRole("textbox", { name: `New player’s name for ${scaffold} on ${MARLINS}`, exact: true });
     await expect(newName).toBeFocused();
@@ -445,6 +460,12 @@ test(
     await heltonFollowUp.getByRole("radio", { name: "Keep as is" }).click();
     await expect(heltonFollowUp.getByRole("radio", { name: "Keep as is" })).toBeChecked();
     await expect(heltonFollowUp.getByRole("radio", { name: "Add to career" })).not.toBeChecked();
+    // The sweep held: the four catalogue players' lines this spec does not answer stay "Keep as is"
+    // (with Helton's nested prompt, five Keeps), and the only "Add to career" left is #902's. A sweep
+    // that did nothing leaves those four on Add, and they would write the club to their careers.
+    await expect(wizard.getByRole("radio", { name: "Keep as is", exact: true, checked: true })).toHaveCount(5);
+    await expect(wizard.getByRole("radio", { name: "Add to career", exact: true, checked: true })).toHaveCount(1);
+    await expect(lineRockies.getByRole("radio", { name: "Add to career", exact: true })).toBeChecked();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, Career check answered" });
 
     const { x: careerStep } = await readStep(page);

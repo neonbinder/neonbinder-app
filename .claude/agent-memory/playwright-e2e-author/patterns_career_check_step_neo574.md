@@ -101,3 +101,12 @@ NEO-591 changed the defaults (measured on the alias spec, 2026-11):
   reference-seed table: `reset --except-reference-seed` keeps it, so the next run's checklist
   team resolves by alias and the team step never comes up; the per-worker player P survives it
   too ("That player already exists — opened it."). A rerun needs the full seed or another worker.
+- "Which P on Team?" lists P's namesakes EXCLUDING the line's own player, so with a minted P it
+  holds only "New player named P". An existing-player pick is reachable through the open search
+  ("Link to <name>"): that player's row joins the group, checked; picking "New player named P"
+  then drops it (count 0). No seeded alias exists on any NFL team, and only Football 2014 TL cards
+  carry a marketplace team, so a live "two aliases agree" proof has no real fixture.
+- A no-op `keepEveryCareerLine` left every spec green (nothing reads catalogue careers back), so
+  the walkers now call `expectNoCareerLineAdds` (support/wizard.ts) right after the sweep: at
+  least one checked "Keep as is", zero checked "Add to career". A planted no-op reds prospect,
+  team-leader and link-team at it. A sweep helper needs its postcondition read by its callers.
