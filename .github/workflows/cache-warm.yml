@@ -20,12 +20,13 @@ name: Cache Warm
 #   - weekly: a cache unused for 7 days is evicted, and a hit refreshes it;
 #   - workflow_dispatch: after a manual cache delete, or to prime a new image.
 #
-# SECURITY. The only writer of a main-scoped web-nm-* / pw-chromium-* cache is
-# this workflow (and a push to main running web-deps, which only Release does,
-# and that is a post-merge, reviewed commit). A pull request, fork or
-# Dependabot run can only write to its own refs/pull/<N>/merge scope, which
-# main, merge-queue and other-PR runs cannot restore, so a PR can poison only
-# its own later runs (code it already controls). The job has no secrets, no
+# SECURITY. The only writers of a main-scoped web-nm-* / pw-chromium-* cache
+# are this workflow and a manual dispatch of pr-pipeline.yml or e2e.yml on main
+# (release.yml does not use web-deps), all running main's own reviewed code. A
+# pull request, fork or Dependabot run can only write to its own
+# refs/pull/<N>/merge scope, which main, merge-queue and other-PR runs cannot
+# restore, so a PR can poison only its own later runs (code it already
+# controls). The job has no secrets, no
 # id-token and `contents: read`; the guard below refuses to run on anything but
 # main so a dispatch from a feature branch cannot write a branch-scoped copy.
 # Never add a secret to this job: it executes `npm ci` (install scripts) from

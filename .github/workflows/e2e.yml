@@ -376,6 +376,8 @@ jobs:
         working-directory: apps/web
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # NEO-491: no --with-deps (the action's Chromium install). That flag runs
       # apt, which made CI depend on Ubuntu mirror DNS (an outage failed every
@@ -1081,6 +1083,8 @@ jobs:
         working-directory: apps/web
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # NEO-389: plan from the run's fresh timings (see the `timings` job).
       # Every shard of both passes downloads the same file or none, so the
@@ -1354,6 +1358,8 @@ jobs:
         working-directory: apps/web
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/web-deps
 
@@ -1768,6 +1774,8 @@ jobs:
         working-directory: apps/web
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # NEO-389: plan from the run's fresh timings (see the `timings` job).
       # Every shard of both passes downloads the same file or none, so the
@@ -2036,6 +2044,8 @@ jobs:
           fi
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/web-deps
         with:
