@@ -2492,9 +2492,11 @@ jobs:
       run:
         working-directory: apps/web
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Upstream jobs
-        # Runs before (or without) checkout: apps/web, the default
-        # working directory, may not exist yet.
+        # After checkout (it runs a tested script from the repo), but still from
+        # the workspace root: apps/web is not the working directory here.
         working-directory: ${{ github.workspace }}
         env:
           R_SETUP: ${{ needs.setup.result }}
@@ -2506,26 +2508,12 @@ jobs:
           R_BREAKER_MOBILE: ${{ needs.breaker-mobile.result }}
         run: |
           echo "jobs: setup=$R_SETUP seed=$R_SEED shard-desktop=$R_SHARD_DESKTOP breaker-desktop=$R_BREAKER_DESKTOP seed-mobile=$R_SEED_MOBILE shard-mobile=$R_SHARD_MOBILE breaker-mobile=$R_BREAKER_MOBILE"
-          if [ "$R_SETUP" != "success" ] || [ "$R_SEED" != "success" ]; then
-            echo "::error::setup or a seed did not succeed (setup=$R_SETUP seed=$R_SEED seed-mobile=$R_SEED_MOBILE)"
-            # Record, don't exit: the reports still merge and publish so a red
-            # run is readable; the "Upstream verdict" step fails the gate.
-            echo "UPSTREAM_FAILED=1" >> "$GITHUB_ENV"
-          elif [ "$R_SEED_MOBILE" = "skipped" ] && { [ "$R_SHARD_DESKTOP" != "success" ] || [ "$R_BREAKER_DESKTOP" != "success" ]; }; then
-            # NEO-627 fail fast: seed-mobile only runs after a green desktop
-            # pass, so a skip here is not a fault of its own. Say so plainly and
-            # check only the desktop results below.
-            MSG="The mobile pass was skipped because the desktop pass was red (fail fast, NEO-627): shard-desktop=$R_SHARD_DESKTOP breaker-desktop=$R_BREAKER_DESKTOP. seed-mobile, shard-mobile and breaker-mobile did not run. Fix the desktop failures; the mobile pass runs once desktop is green."
-            echo "::error::$MSG"
-            echo "### Mobile pass skipped (fail fast)" >> "$GITHUB_STEP_SUMMARY"
-            echo "$MSG" >> "$GITHUB_STEP_SUMMARY"
-            echo "FAIL_FAST=1" >> "$GITHUB_ENV"
-          elif [ "$R_SEED_MOBILE" != "success" ]; then
-            echo "::error::setup or a seed did not succeed (setup=$R_SETUP seed=$R_SEED seed-mobile=$R_SEED_MOBILE)"
-            echo "UPSTREAM_FAILED=1" >> "$GITHUB_ENV"
-          fi
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+          # The three-way decision (upstream failed / fail fast / ok) lives in a
+          # tested script (NEO-627). It prints env lines (UPSTREAM_FAILED=1 or
+          # FAIL_FAST=1); its messages go to stderr and the step summary. Record,
+          # don't exit: the reports still merge and publish so a red run is
+          # readable; the "Shard jobs" step fails the gate.
+          bash .github/scripts/e2e-upstream-verdict.sh >> "$GITHUB_ENV"
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:

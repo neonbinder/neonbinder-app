@@ -83,11 +83,12 @@ jobs:
       scripts: ${{ steps.filter.outputs.scripts }}
       scanner: ${{ steps.filter.outputs.scanner }}
       deps_only: ${{ steps.deps.outputs.deps_only }}
-      # NEO-627 (see .github/scripts/e2e-scope.sh): "true" only when every
-      # changed path is on the inert allow-list (.claude, docs, root *.md, the
-      # fake-bsc recorder). Fail-closed like deps_only. Everything that builds a
+      # NEO-627: "true" only when e2e-scope.sh says every changed path is on the
+      # inert allow-list AND none of the web / browser / browser_preview /
+      # preprocess / scanner / scripts path filters matched (e2e-inert-final.sh,
+      # step `inert` below). Fail-closed like deps_only. Everything that builds a
       # preview or runs E2E skips on it, together.
-      e2e_inert: ${{ steps.scope.outputs.e2e_inert }}
+      e2e_inert: ${{ steps.inert.outputs.e2e_inert }}
       # NEO-546 (see .github/scripts/ci-mode.sh). `full` is "false" ONLY for a
       # pull_request run while the merge queue is verifiably live; every other
       # case, and every error, is "true". `pr`, `sha`, `head_sha` and
@@ -120,16 +121,21 @@ jobs:
       # Runs on pull_request and merge_group (the script is fail-closed on
       # anything else). The label and the PR number come from the live API and
       # from ci-mode's `pr` output, which also carries the PR number on a
-      # merge_group run. On merge_group the file list is the git diff between
-      # the group's base and head (PRs queued ahead included, on purpose).
+      # merge_group run; the label is read for the group's ONE PR, which assumes
+      # the merge queue's max_entries_to_merge is 1. pull_request: the compare
+      # API on the event's own base and head SHAs. merge_group: the git diff
+      # from the merge base of the head and the base branch (NOT the event's
+      # base_sha, which may be an earlier queue entry), so PRs queued ahead that
+      # are not yet on the base branch are included, on purpose.
       - name: Decide whether the change is inert (NEO-627)
         id: scope
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EVENT_NAME: ${{ github.event_name }}
           PR_NUMBER: ${{ steps.mode.outputs.pr }}
-          BASE_SHA: ${{ github.event.merge_group.base_sha }}
-          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          BASE_REF: ${{ github.event.merge_group.base_ref }}
         run: bash .github/scripts/e2e-scope.sh >> "$GITHUB_OUTPUT"
 
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -343,6 +349,25 @@ jobs:
 
           decide
           echo "deps_only=${verdict}" >> "$GITHUB_OUTPUT"
+
+      # NEO-627: a second, independent check on the inert verdict, made HERE so
+      # the skip itself never happens (and the gate never sees a refused skip).
+      # The script's e2e_inert is trusted only if the area path filters agree:
+      # none of web, browser, browser_preview, preprocess, scanner or scripts
+      # matched. (fake_bsc is deliberately left out: the fake's recorder, README
+      # and tests are fake-bsc paths that ARE inert.) This is the output the
+      # preview, wiring and E2E jobs read.
+      - name: Combine the inert verdict with the path filters (NEO-627)
+        id: inert
+        env:
+          SCOPE: ${{ steps.scope.outputs.e2e_inert }}
+          F_WEB: ${{ steps.filter.outputs.web }}
+          F_BROWSER: ${{ steps.filter.outputs.browser }}
+          F_BROWSER_PREVIEW: ${{ steps.filter.outputs.browser_preview }}
+          F_PREPROCESS: ${{ steps.filter.outputs.preprocess }}
+          F_SCANNER: ${{ steps.filter.outputs.scanner }}
+          F_SCRIPTS: ${{ steps.filter.outputs.scripts }}
+        run: bash .github/scripts/e2e-inert-final.sh >> "$GITHUB_OUTPUT"
 
   # Create the PR's Vercel preview (NEO-162).
   #
@@ -1428,6 +1453,7 @@ jobs:
       && needs.changes.outputs.pr != ''
       && needs.changes.outputs.preprocess == 'true'
       && needs.changes.outputs.deps_only != 'true'
+      && needs.changes.outputs.e2e_inert != 'true'
     runs-on: ubuntu-latest
     # The matrix itself is ~2 min, but this job may first have to wait out the
     # ~25 min preview image build (see the stale-revision guard below), so it
@@ -1914,6 +1940,11 @@ jobs:
           R_E2E: ${{ needs.e2e.result }}
           R_DEPS_ONLY: ${{ needs.changes.outputs.deps_only }}
           R_E2E_INERT: ${{ needs.changes.outputs.e2e_inert }}
+          R_CHANGED_WEB: ${{ needs.changes.outputs.web }}
+          R_CHANGED_BROWSER: ${{ needs.changes.outputs.browser }}
+          R_CHANGED_BROWSER_PREVIEW: ${{ needs.changes.outputs.browser_preview }}
+          R_CHANGED_SCANNER: ${{ needs.changes.outputs.scanner }}
+          R_CHANGED_SCRIPTS: ${{ needs.changes.outputs.scripts }}
           R_HYGIENE: ${{ needs.repo-hygiene.result }}
           R_CAPACITY_PARITY: ${{ needs.capacity-parity.result }}
         run: bash .github/scripts/ci-gate-verdict.sh

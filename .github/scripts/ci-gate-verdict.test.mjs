@@ -31,6 +31,11 @@ const GREEN = {
   R_E2E: "success",
   R_DEPS_ONLY: "false",
   R_E2E_INERT: "false",
+  R_CHANGED_WEB: "false",
+  R_CHANGED_BROWSER: "false",
+  R_CHANGED_BROWSER_PREVIEW: "false",
+  R_CHANGED_SCANNER: "false",
+  R_CHANGED_SCRIPTS: "false",
   R_HYGIENE: "success",
   R_CAPACITY_PARITY: "success",
 };
@@ -245,4 +250,40 @@ test("inert: preprocess changed still needs mask parity to succeed (unchanged ru
 
 test("inert: a cheap pull_request run still accepts the skip as before", () => {
   assert.equal(run({ ...CHEAP, R_E2E_INERT: "true" }).status, 0);
+});
+
+// --- NEO-627: defence in depth, the path filters must agree ----------------------
+
+const FILTER_VARS = ["R_CHANGED_WEB", "R_CHANGED_BROWSER", "R_CHANGED_BROWSER_PREVIEW", "R_CHANGED_SCANNER", "R_CHANGED_SCRIPTS"];
+
+test("inert skip is refused when any area path filter is true (pull_request and merge_group)", () => {
+  for (const k of FILTER_VARS) {
+    for (const ev of ["pull_request", "merge_group"]) {
+      const r = run({ ...INERT, EVENT_NAME: ev, [k]: "true" });
+      assert.equal(r.status, 1, `${k} ${ev}`);
+      assert.match(r.out, /e2e=skipped/);
+    }
+  }
+  // preprocess shares R_PREPROCESS_CHANGED with the mask-parity rule.
+  const r = run({ ...INERT, R_PREPROCESS_CHANGED: "true", R_MASK_PARITY: "success" });
+  assert.equal(r.status, 1, r.out);
+});
+
+test("inert skip is refused when a filter output is unset, empty or not exactly 'false'", () => {
+  for (const k of FILTER_VARS) {
+    for (const v of ["", "TRUE", "False", "skipped"]) {
+      assert.equal(run({ ...INERT, [k]: v }).status, 1, `${k}=${JSON.stringify(v)}`);
+    }
+    const { [k]: _omit, ...rest } = INERT; // eslint-disable-line no-unused-vars
+    const r = spawnSync("bash", [SCRIPT], { env: { PATH: process.env.PATH, ...rest }, encoding: "utf8" });
+    assert.equal(r.status, 1, `${k} unset`);
+  }
+});
+
+test("a true filter does not disturb a green, non-skipped e2e", () => {
+  assert.equal(run({ ...GREEN, R_CHANGED_WEB: "true" }).status, 0);
+});
+
+test("the deps_only skip does not depend on the path filters", () => {
+  assert.equal(run({ ...GREEN, R_E2E: "skipped", R_DEPS_ONLY: "true", R_CHANGED_WEB: "true" }).status, 0);
 });

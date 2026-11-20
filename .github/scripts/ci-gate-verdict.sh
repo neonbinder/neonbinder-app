@@ -24,7 +24,8 @@
 # R_WEB_UNIT, R_BROWSER_TEST, R_PREPROCESS_TEST, R_FAKE_BSC_TEST, R_SCRIPTS_TEST,
 # R_SCANNER_TEST, R_SCANNER_BUILD, R_CROP_MATRIX, R_MASK_PARITY,
 # R_PREPROCESS_CHANGED, R_WIRE, R_WIRE_PREPROCESS, R_WIRE_CAPACITY,
-# R_WEB_PREVIEW, R_E2E, R_DEPS_ONLY, R_E2E_INERT, R_HYGIENE, R_CAPACITY_PARITY.
+# R_WEB_PREVIEW, R_E2E, R_DEPS_ONLY, R_E2E_INERT, R_CHANGED_WEB, R_CHANGED_BROWSER,
+# R_CHANGED_BROWSER_PREVIEW, R_CHANGED_SCANNER, R_CHANGED_SCRIPTS, R_HYGIENE, R_CAPACITY_PARITY.
 set -uo pipefail
 
 EVENT_NAME="${EVENT_NAME:-}"
@@ -49,6 +50,11 @@ R_WEB_PREVIEW="${R_WEB_PREVIEW:-}"
 R_E2E="${R_E2E:-}"
 R_DEPS_ONLY="${R_DEPS_ONLY:-}"
 R_E2E_INERT="${R_E2E_INERT:-}"
+R_CHANGED_WEB="${R_CHANGED_WEB:-}"
+R_CHANGED_BROWSER="${R_CHANGED_BROWSER:-}"
+R_CHANGED_BROWSER_PREVIEW="${R_CHANGED_BROWSER_PREVIEW:-}"
+R_CHANGED_SCANNER="${R_CHANGED_SCANNER:-}"
+R_CHANGED_SCRIPTS="${R_CHANGED_SCRIPTS:-}"
 R_HYGIENE="${R_HYGIENE:-}"
 R_CAPACITY_PARITY="${R_CAPACITY_PARITY:-}"
 
@@ -91,13 +97,23 @@ else
   # dependency-manifest-only PR (NEO-87), or a change whose every path is inert
   # (NEO-627). Each check reads the same job output that gated the skip, so the
   # two can't disagree; anything else, including an unset value, is a fault.
+  # Defence in depth (NEO-627): even with e2e_inert=true, refuse the skip unless
+  # every area path filter that gates real work is exactly "false" (preprocess
+  # included). `changes` already folds this into e2e_inert; a disagreement here
+  # means a bug upstream, and the gate must not pass on it.
+  inert_agrees() {
+    local v
+    for v in "$R_CHANGED_WEB" "$R_CHANGED_BROWSER" "$R_CHANGED_BROWSER_PREVIEW" "$R_PREPROCESS_CHANGED" "$R_CHANGED_SCANNER" "$R_CHANGED_SCRIPTS"; do
+      [ "$v" = "false" ] || return 1
+    done
+  }
   if [ "$R_E2E" != "success" ]; then
     if [ "$R_DEPS_ONLY" = "true" ] && [ "$R_E2E" = "skipped" ]; then
       echo "e2e=skipped — dependency-manifest-only PR, matrix intentionally not run (NEO-87)."
-    elif [ "$R_E2E_INERT" = "true" ] && [ "$R_E2E" = "skipped" ]; then
+    elif [ "$R_E2E_INERT" = "true" ] && [ "$R_E2E" = "skipped" ] && inert_agrees; then
       echo "e2e=skipped — every changed path is inert (.claude, docs, root *.md, fake-bsc recorder, README and tests), E2E intentionally not run (NEO-627)."
     else
-      echo "::error::e2e=$R_E2E (must succeed; skip allowed only when deps_only=true or e2e_inert=true)"; fail=1
+      echo "::error::e2e=$R_E2E (must succeed; skip allowed only when deps_only=true, or e2e_inert=true with every area path filter false)"; fail=1
     fi
   fi
   # NEO-484: mask parity must SUCCEED whenever preprocess changed, deps-only
