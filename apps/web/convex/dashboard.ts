@@ -62,7 +62,7 @@ import { CatalogReader, setRefValidator, variantRefValidator, type SetRef, type 
 import { awaitingShipment } from "./listingSales";
 import { LISTING_PLATFORMS } from "./listingOutbox";
 import { ListingLabels, brandedSetLabel } from "./lib/listingLabels";
-import { listingPlatformValidator, listingProblemReasonValidator, saleItemProblemValidator } from "./schema";
+import { listingPlatformValidator, listingProblemReasonValidator, saleItemListedValidator } from "./schema";
 import { variantTypeKind } from "./variantRole";
 import { MAX_SORTED_LINES, type StoredRule } from "../lib/collection/binder-rule";
 
@@ -428,34 +428,45 @@ export function intakeRunSorted(tally: Pick<IntakeRunTally, "scans" | "done">): 
   return tally.scans > 0 && tally.done >= tally.scans;
 }
 
-type SaleItemFacts = Pick<Doc<"marketplaceSales">["items"][number], "cardId" | "quantity" | "problem" | "shortBy">;
+type SaleItemFacts = Pick<Doc<"marketplaceSales">["items"][number], "cardId" | "quantity" | "problem" | "shortBy" | "listed">;
 
 /**
  * One order's lines for Out the Door: at most `SALE_LINES`, in the order's
  * own order, with its card count over every line and whether a line past
- * the cut has a problem. A line NB could not tie to a card (no `cardId`, a
- * link mismatch, or one the poll called unmatched) carries no card and is
- * marked unmatched: never a guess.
+ * the cut is oversold. A line NB could not tie to a card (no `cardId`, a
+ * link mismatch, or one the poll called unmatched) carries no card and no
+ * problem: all that matters is that it sold (NEO-590, Jason, 2026-11-17: "the
+ * information that the card is not in NB can go away all together on the
+ * dashboard"). It keeps the sale's own words for the card (`listed`) so the
+ * screen can name it; they are shown, never matched or written. Only an
+ * oversold line is a problem here.
  */
 export function saleLinesOf(items: readonly SaleItemFacts[]): {
-  lines: Array<{ cardId?: Id<"cardChecklist">; quantity: number; problem?: SaleItemFacts["problem"]; shortBy?: number }>;
+  lines: Array<{
+    cardId?: Id<"cardChecklist">;
+    quantity: number;
+    problem?: "oversold";
+    shortBy?: number;
+    listed?: SaleItemFacts["listed"];
+  }>;
   cardCount: number;
-  problemPastCut: boolean;
+  oversoldPastCut: boolean;
 } {
   const lines = items.slice(0, SALE_LINES).map((item) => {
     const tied = item.cardId !== undefined && item.problem !== "linkMismatch" && item.problem !== "unmatched";
-    const problem = item.problem ?? (tied ? undefined : ("unmatched" as const));
+    const oversold = item.problem === "oversold";
     return {
       ...(tied ? { cardId: item.cardId } : {}),
       quantity: item.quantity,
-      ...(problem ? { problem } : {}),
-      ...(item.shortBy !== undefined ? { shortBy: item.shortBy } : {}),
+      ...(oversold ? { problem: "oversold" as const } : {}),
+      ...(oversold && item.shortBy !== undefined ? { shortBy: item.shortBy } : {}),
+      ...(item.listed ? { listed: item.listed } : {}),
     };
   });
   return {
     lines,
     cardCount: items.reduce((n, item) => n + item.quantity, 0),
-    problemPastCut: items.slice(SALE_LINES).some((item) => item.problem !== undefined || item.cardId === undefined),
+    oversoldPastCut: items.slice(SALE_LINES).some((item) => item.problem === "oversold"),
   };
 }
 
@@ -1120,9 +1131,16 @@ const saleLineValidator = v.object({
   /** Absent: NB could not tie the line to a card (never a guess). */
   cardId: v.optional(v.id("cardChecklist")),
   quantity: v.number(),
-  problem: v.optional(saleItemProblemValidator),
+  /** Only `oversold` is a problem on the dashboard; an untied line is just a sale. */
+  problem: v.optional(v.literal("oversold")),
   /** `oversold` only: how many sold that NB held no copy for. */
   shortBy: v.optional(v.number()),
+  /**
+   * NEO-590 — what the sale says the card is, as the poll stored it. Sent so
+   * a line with no `cardId` can be named (the screen's label, as the Pick
+   * List writes it). Shown, never matched to a card or written to NB.
+   */
+  listed: v.optional(saleItemListedValidator),
 });
 
 /**
@@ -1136,7 +1154,9 @@ const saleLineValidator = v.object({
  * to ship: `listingSales.awaitingShipment`, the platform's own status word,
  * since NB keeps no shipped state of its own. Bounded: the newest
  * `SALES_SCAN` orders, at most `SALES_SHOWN` returned, newest first, each
- * with at most `SALE_LINES` lines. `more`: more orders to ship than are
+ * with at most `SALE_LINES` lines (NEO-590: a line with no card carries the
+ * sale's own `listed` words so the screen can name it, and is never a
+ * problem; only oversold is). `more`: more orders to ship than are
  * returned, or the scan stopped before the oldest order.
  */
 export const sales = query({
@@ -1149,10 +1169,9 @@ export const sales = query({
         platform: listingPlatformValidator,
         orderNo: v.string(),
         orderDate: v.number(),
-        status: v.string(),
         lines: v.array(saleLineValidator),
         cardCount: v.number(),
-        problemPastCut: v.boolean(),
+        oversoldPastCut: v.boolean(),
       }),
     ),
     more: v.boolean(),
@@ -1173,7 +1192,6 @@ export const sales = query({
         platform: row.platform,
         orderNo: row.orderNo,
         orderDate: row.orderDate,
-        status: row.status,
         ...saleLinesOf(row.items),
       })),
       more: toShip.length > SALES_SHOWN || rows.length > SALES_SCAN,

@@ -15,8 +15,20 @@
  * the listing says enough (sport, year, set, number). Every rule reads a
  * row through one accessor, `rowFacts`, so a card and a listing sort,
  * group and filter alike; `row.card` still means "NB matched it".
+ *
+ * NEO-590: a sale with no card whose listing has only a title (every
+ * unmatched eBay line) is filed by that title: its leading year and set words
+ * (`parseListingTitle`) and, only when the title opens with a year, the sport
+ * of an NB player or team it names (the store asks the server,
+ * `ListedCard.titleSport`). A title that does not parse (clothing, a lot, a
+ * set, no year) files under Other even if it names an NB team or player
+ * ("Kansas City Chiefs Hoodie XL"). The title is parsed for Pick List order
+ * only, never matched to a card and never written to NB.
  */
 
+import type { Infer } from "convex/values";
+import { cardNumberToken, skipGraderPrefix } from "@/convex/lib/titleSport";
+import type { saleItemListedValidator } from "@/convex/schema";
 import { variantTypeKindFromTitle } from "@/convex/variantRole";
 import { setLabel } from "../data/labels";
 import type { Card, SetRef } from "../data/types";
@@ -191,11 +203,11 @@ function toRow(key: string, group: SaleLine[]): PickRow {
 
 /** What every rule reads of a row, whether NB matched it or only the listing says it. */
 export interface RowFacts {
-  /** NB's sport id; `sport:<word>` for a listing's sport NB has no row for. */
+  /** NB's sport id; `sport:<word>` for a listing's sport NB has no row for; `title:other` for a title row no sport was found for. */
   sportKey: string;
   sportName: string;
-  /** The year the set files under. */
-  year: number;
+  /** The year the set files under; null on a title row whose title opens with none. */
+  year: number | null;
   /** The set's own name, without the season. */
   setName: string;
   /** 0 for an NB set, 1 for a listing's own: NB's divider comes first when the names tie. */
@@ -214,7 +226,20 @@ export interface RowFacts {
   variantName: string | null;
   cardNumber: string;
   players: string;
+  /**
+   * NEO-590 — a row with no card and no place to file by, filed by its
+   * listing's title alone: `setName` is the title's set words, `setTitle` the
+   * one "Sales NB didn't list" divider of its sport. It draws its title
+   * across the columns, never as a card (`cardFacts`).
+   */
+  fromTitle?: true;
 }
+
+/** The sport key of the title rows no NB player or team placed. */
+export const TITLE_OTHER_SPORT = "title:other";
+
+/** The one divider a sport's title rows file behind, after its NB sets. */
+export const TITLE_SET_TITLE = "Sales Neon Binder didn't list";
 
 /**
  * The variant words a listing gives that are worth writing: its own word NB
@@ -244,7 +269,7 @@ function listedVariantPhrase(listed: ListedCard): string | null {
  * it. "2021 Score 1991 Throwback #TB2 · Justin Fields". Base is not written
  * (the chip says it); an empty answer means the listing said nothing a
  * seller could look for. With no such words, the listing's own title
- * (NEO-520), never parsed.
+ * (NEO-520), parsed for Pick List order only (`parseListingTitle`), never matched to a card.
  */
 export function listedTitle(listed: ListedCard): string {
   const season = listed.season?.trim();
@@ -255,6 +280,65 @@ export function listedTitle(listed: ListedCard): string {
     .join(" ");
   // NEO-520: a listing with no card words (an eBay line NB didn't list) is named by its own title, as sent.
   return [card, listed.players?.trim()].filter(Boolean).join(" · ") || (listed.title?.trim() ?? "");
+}
+
+/** A sale line's own words for its card, as the order poll stored them (`marketplaceSales.items[].listed`). */
+export type RawListed = Infer<typeof saleItemListedValidator>;
+
+/** NB's sport row a sale names: its name and SKU code. */
+export interface SportRow {
+  name: string;
+  code: string | null;
+}
+
+/** The NB sport a title's player or team names (NEO-590); null when none was found. */
+export type TitleSport = (SportRow & { id: string }) | null;
+
+/** A listing's words, trimmed; blank is absent. */
+export function words(text: string | undefined): string | undefined {
+  const t = text?.replace(/\s+/g, " ").trim();
+  return t ? t : undefined;
+}
+
+/**
+ * A sale's words for its card, resolved: NB's sport when the sale named one
+ * NB has (`sport` loaded), else the listing's sport word; the year as a
+ * number; the variant's divider only when its word IS one (Base, Insert,
+ * Parallel). A word NB does not file by ("Variation", "SP", "Promo") is kept
+ * as written (`variantWord`), never read as a role, and the listing's
+ * variant name is kept whatever the word. Undefined when the words say nothing.
+ * `titleSport` is the server's answer for the listing's title (NEO-590): null
+ * is "asked, no sport found", undefined "not asked".
+ */
+export function toListedCard(
+  raw: RawListed,
+  sport: SportRow | null | undefined,
+  titleSport?: TitleSport,
+): ListedCard | undefined {
+  const season = words(raw.year);
+  const year = season ? listedYear(season) : undefined;
+  const variant = words(raw.variant);
+  const variantName = words(raw.variantName);
+  const kind = variantTypeKindFromTitle(variant);
+  const sportName = sport?.name ?? words(raw.sport);
+  const out: ListedCard = {
+    ...(sport && raw.sportId ? { sportId: raw.sportId } : {}),
+    ...(sportName ? { sportName } : {}),
+    ...(sport?.code ? { sportCode: sport.code } : {}),
+    ...(year !== undefined ? { year } : {}),
+    ...(season ? { season } : {}),
+    ...(words(raw.setName) ? { setName: words(raw.setName) } : {}),
+    ...(words(raw.players) ? { players: words(raw.players) } : {}),
+    ...(words(raw.cardNo) ? { cardNumber: words(raw.cardNo) } : {}),
+    ...(kind ? { role: kind } : {}),
+    // A word NB does not file by ("Variation") is how the seller tells the copy from the base: kept as written.
+    ...(variant && !kind ? { variantWord: variant } : {}),
+    ...(variantName ? { variantName } : {}),
+    // NEO-520: the listing's own title (eBay). NEO-590: parsed for Pick List order only, never matched to a card.
+    ...(words(raw.title) ? { title: words(raw.title) } : {}),
+    ...(words(raw.title) && titleSport !== undefined ? { titleSport } : {}),
+  };
+  return Object.keys(out).length ? out : undefined;
 }
 
 /** One NB set on the list, with its sport's code (the divider colour). */
@@ -281,6 +365,55 @@ function fold(text: string): string {
 /** The years a listing's year may name: anything else is a misread, not a year. */
 const FIRST_YEAR = 1800;
 const LAST_YEAR = 2100;
+
+/** "2021" is 2021; a season files under its start: "2023-24" and "2023/2024" are 2023. */
+export function listedYear(season: string): number | undefined {
+  const m = /^(\d{4})(?:\s*[-–/]\s*(?:\d{2}|\d{4}))?$/.exec(season);
+  if (!m) return undefined;
+  const year = Number(m[1]);
+  return year >= FIRST_YEAR && year <= LAST_YEAR ? year : undefined;
+}
+
+/** What a listing's own title says of its place (NEO-590): never a card, only where to look. */
+export interface ParsedTitle {
+  /** The leading year or season's start ("2023-24" is 2023); null when the title does not open with one. */
+  year: number | null;
+  /** The token after a `#` when the title has one ("#BC-12" is "BC-12"); "" otherwise. */
+  cardNumber: string;
+  /** The words between the year and the `#`, or the rest of the title; not split further. */
+  setText: string;
+}
+
+/**
+ * A listing's title read for the Pick List's order: "2021 Panini Prizm #12
+ * Justin Herbert" is 2021, "Panini Prizm", "12". A title that opens with no
+ * year keeps its whole text as the set words (the row then files by sport
+ * alone). A graded slab's title leads with its grader and grade ("PSA 10
+ * 2018 Prizm Luka Doncic #280"): that one pair is skipped before the year is
+ * read, so the slab parses like the raw card; with no year after it the title
+ * still does not parse and keeps its whole text, grader included. Never a
+ * match: this only orders a row NB has no card for.
+ */
+export function parseListingTitle(title: string): ParsedTitle {
+  const text = title.replace(/\s+/g, " ").trim();
+  const lead = /^(\S+)(?:\s+(.*))?$/.exec(skipGraderPrefix(text));
+  const year = lead ? (listedYear(lead[1]) ?? null) : null;
+  const rest = year !== null && lead ? (lead[2] ?? "") : text;
+  const at = rest.indexOf("#");
+  if (at < 0) return { year, cardNumber: "", setText: rest.trim() };
+  const number = cardNumberToken(rest.slice(at))?.[1].replace(/[.,;:]+$/, "") ?? "";
+  return { year, cardNumber: number, setText: rest.slice(0, at).trim() };
+}
+
+/**
+ * Whether a listing's title parses (NEO-590): it opens with a year (after a
+ * slab's grader and grade, if any). Only such
+ * a title may be filed under a sport, so only such a title is worth asking the
+ * server about (`pickList.titleSports`); anything else files under Other.
+ */
+export function titleParses(title: string): boolean {
+  return parseListingTitle(title).year !== null;
+}
 
 interface ListedPlace {
   sportName: string;
@@ -376,6 +509,7 @@ function factsOf(row: PickRow): RowFacts | null {
   }
   const listed = row.listed;
   const place = listed ? listedPlace(listed) : null;
+  if (listed && !place) return titleFacts(listed);
   if (!listed || !place) return null;
   // Only the listing's own words: a role when its word is one, never a guess.
   const { word, name } = listedVariant(listed);
@@ -413,6 +547,47 @@ function factsOf(row: PickRow): RowFacts | null {
     sportCode: listed.sportCode ?? row.sportCode,
     ...card,
   };
+}
+
+/**
+ * NEO-590 — a card-less row whose listing says too little to file by but has
+ * a title: its year and set words from the title. Its sport is the NB player
+ * or team the title names (`titleSport`) only when the title parses (a leading
+ * year); an unparsed title ("Kansas City Chiefs Hoodie XL") files under Other
+ * whatever it names. Null with no title.
+ */
+function titleFacts(listed: ListedCard): RowFacts | null {
+  const title = listed.title?.trim();
+  if (!title) return null;
+  const parsed = parseListingTitle(title);
+  const sport = parsed.year !== null ? listed.titleSport : null;
+  const sportKey = sport ? sport.id : TITLE_OTHER_SPORT;
+  return {
+    sportKey,
+    sportName: sport ? sport.name : "Other",
+    year: parsed.year,
+    setName: parsed.setText,
+    setRank: 1,
+    setKey: `title:${sportKey}`,
+    setTitle: TITLE_SET_TITLE,
+    sportCode: sport ? sport.code : null,
+    role: null,
+    variantWord: null,
+    variantName: null,
+    cardNumber: parsed.cardNumber,
+    players: "",
+    fromTitle: true,
+  };
+}
+
+/**
+ * A row's facts as a card-shaped render needs them: null for a title row,
+ * which draws its listing's title across the columns, with its problem line
+ * and no card number, as it always has.
+ */
+export function cardFacts(row: PickRow): RowFacts | null {
+  const facts = rowFacts(row);
+  return facts && !facts.fromTitle ? facts : null;
 }
 
 /** What a row's variant tag says, and the divider colour it wears. */
@@ -496,6 +671,12 @@ function compareKeys(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
+/** Newest year first; a row with no year last. */
+function compareYears(a: number | null, b: number | null): number {
+  if (a === null || b === null) return Number(a === null) - Number(b === null);
+  return b - a;
+}
+
 /**
  * The default walking order (see the file comment). Each step compares one
  * fact of both rows, so the order is a plain lexicographic one: transitive
@@ -509,8 +690,12 @@ export function compareDefault(a: PickRow, b: PickRow): number {
     return naturalCompare(orderLabel(a.orders[0]), orderLabel(b.orders[0])) || naturalCompare(a.key, b.key);
   }
   return (
+    // Other (the title rows no sport was found for) walks last; then sport by name.
+    Number(fa.sportKey === TITLE_OTHER_SPORT) - Number(fb.sportKey === TITLE_OTHER_SPORT) ||
     naturalCompare(fa.sportName, fb.sportName) ||
-    fb.year - fa.year ||
+    // A sport's NB sets (and listings' own) come before the sales NB didn't list.
+    Number(Boolean(fa.fromTitle)) - Number(Boolean(fb.fromTitle)) ||
+    compareYears(fa.year, fb.year) ||
     naturalCompare(fa.setName, fb.setName) ||
     fa.setRank - fb.setRank ||
     compareKeys(fa.setKey, fb.setKey) ||
@@ -583,13 +768,14 @@ export function hasFilters(f: PickFilters): boolean {
 }
 
 /** The chip a row NB has no card for wears (and a search finds it by). */
-export const NOT_IN_NB = "Not in NB";
+export const NOT_IN_NB = "Not in Neon Binder";
 
 function haystack(row: PickRow): string {
   const facts = rowFacts(row);
   const parts = [row.listingTitle, row.condition, row.serial ?? "", ...row.orders.map(orderLabel)];
   if (facts) {
-    parts.push(`#${facts.cardNumber}`, facts.cardNumber, facts.players, facts.setTitle, facts.variantWord ?? "", facts.variantName ?? "", facts.sportName);
+    if (facts.cardNumber) parts.push(`#${facts.cardNumber}`);
+    parts.push(facts.cardNumber, facts.players, facts.setTitle, facts.variantWord ?? "", facts.variantName ?? "", facts.sportName);
   }
   if (!row.card) parts.push(NOT_IN_NB);
   if (row.grade) parts.push(row.grade.grader, row.grade.grade, row.grade.cert);

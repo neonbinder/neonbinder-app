@@ -833,9 +833,10 @@ export const saleItemFromValidator = v.object({
  * `title` (below).
  *
  * Kept on the SALE only. It is never written to an NB card, set, player or
- * team row, and nothing outside the Pick List's labels and walking order, and
+ * team row, and nothing outside the Pick List's labels and walking order,
  * (NEO-520) the Sales tab's `listed.title` label read through
- * `listingSync.publicSale`, reads it. `sportId` is NB's own sport row, resolved once when the line is stored
+ * `listingSync.publicSale`, and (NEO-590) the dashboard's Out the Door label
+ * for a line with no card (`dashboard.sales`), reads it. `sportId` is NB's own sport row, resolved once when the line is stored
  * from the platform's item-level sport id against the sport rows'
  * `platformData.bsc` slots (exactly one match, else absent); `sport` is the
  * platform's own word, a fallback label only. Every field is optional: the
@@ -854,11 +855,14 @@ export const saleItemListedValidator = v.object({
    * NEO-520 — eBay only: the order line's own title as the buyer saw it
    * (`lineItems[].title`), stored on every eBay line whose title was
    * readable, and shown only where NB holds no card for the line (a listing
-   * NB did not make): the Pick List, and the Sales tab via
-   * `listingSync.publicSale`. Bounded at the
+   * NB did not make): the Pick List, the Sales tab via
+   * `listingSync.publicSale`, and the dashboard's Out the Door
+   * (`dashboard.sales`, NEO-590). Bounded at the
    * sync boundary (`lib/ebayListing.ts`): trimmed, control characters
-   * refused, an over-long title dropped, never cut. Never parsed, matched or
-   * written to any NB row. BSC lines never carry it.
+   * refused, an over-long title dropped, never cut. Parsed for Pick List
+   * order only (NEO-590: its year, its set words and the sport of an NB
+   * player or team it names), never matched to a card or written to any NB
+   * row. BSC lines never carry it.
    */
   title: v.optional(v.string()),
 });

@@ -12,6 +12,8 @@ import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import { buildListingSku } from "./lib/listingSku";
+import { normalizePlayerName } from "./players";
+import { normalizeTeamName } from "./teams";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -228,5 +230,219 @@ describe("NEO-509: a Can't find it line's own words", () => {
     const { t, fx, me } = await setup();
     await expect(me.query(api.pickList.sports, { sportIds: Array.from({ length: 21 }, () => fx.sportId) })).rejects.toThrow(/at most 20/);
     await expect(t.query(api.pickList.sports, { sportIds: [] })).rejects.toThrow(/Not authenticated/);
+  });
+});
+
+describe("NEO-590: titleSports", () => {
+  async function world() {
+    const { t, me } = await setup();
+    const sport = (value: string, skuCode: string) =>
+      t.run(async (ctx) =>
+        ctx.db.insert("selectorOptions", {
+          level: "sport", value, platformData: {}, children: [], sportConfig: { skuCode, league: value.toUpperCase() }, lastUpdated: 0,
+        }),
+      );
+    const baseball = await sport("Pitching Baseball", "PB");
+    const football = await sport("Gridiron Football", "GF");
+    const hockey = await sport("Ice Hockey", "IH");
+    // `playerSports` is the authority for a player's extra sports; the row's `alsoSportIds`
+    // is a display copy (NEO-318), so the helper writes both as `syncPlayerSports` does.
+    const player = (name: string, sportId: Id<"selectorOptions">, alsoSportIds?: Id<"selectorOptions">[]) =>
+      t.run(async (ctx) => {
+        const nameNormalized = normalizePlayerName(name);
+        const id = await ctx.db.insert("players", { name, nameNormalized, sportId, ...(alsoSportIds ? { alsoSportIds } : {}), lastUpdated: 0 });
+        for (const also of alsoSportIds ?? []) await ctx.db.insert("playerSports", { playerId: id, sportId: also, nameNormalized });
+        return id;
+      });
+    const team = (name: string, sportId: Id<"selectorOptions">, location?: string) =>
+      t.run(async (ctx) =>
+        ctx.db.insert("teams", {
+          name, ...(location ? { location } : {}), nameNormalized: normalizeTeamName(location ? `${location} ${name}` : name), sportId, lastUpdated: 0,
+        }),
+      );
+    return { t, me, baseball, football, hockey, player, team };
+  }
+
+  test("a one-sport player named in full files the title under that sport", async () => {
+    const w = await world();
+    await w.player("Zorbo Quillfeather", w.baseball);
+    const out = await w.me.query(api.pickList.titleSports, { titles: ["2024 Topps Chrome #12 Zorbo Quillfeather RC"] });
+    expect(out).toEqual([{ id: w.baseball, name: "Pitching Baseball", code: "PB" }]);
+  });
+
+  test("a partial player name is not the player", async () => {
+    const w = await world();
+    await w.player("Zorbo Quillfeather", w.baseball);
+    const out = await w.me.query(api.pickList.titleSports, { titles: ["Quillfeather duck decoy", "Zorbo lot of 10"] });
+    expect(out).toEqual([null, null]);
+  });
+
+  test("players in two different sports decide nothing, and no team means null", async () => {
+    const w = await world();
+    await w.player("Zorbo Quillfeather", w.baseball);
+    await w.player("Wimble Snarfdagger", w.football);
+    const out = await w.me.query(api.pickList.titleSports, { titles: ["Zorbo Quillfeather Wimble Snarfdagger dual"] });
+    expect(out).toEqual([null]);
+  });
+
+  test("a player in two sports falls back to the team the title names", async () => {
+    const w = await world();
+    await w.player("Zorbo Quillfeather", w.baseball, [w.football]);
+    await w.team("Krakens", w.football, "Harbor");
+    const out = await w.me.query(api.pickList.titleSports, { titles: ["Zorbo Quillfeather Harbor Krakens card"] });
+    expect(out).toEqual([{ id: w.football, name: "Gridiron Football", code: "GF" }]);
+  });
+
+  test("a player's extra sports come from playerSports, not the alsoSportIds display copy", async () => {
+    const w = await world();
+    const id = await w.player("Zorbo Quillfeather", w.baseball);
+    await w.team("Krakens", w.football, "Harbor");
+    // A stale display copy naming football, with no playerSports row: the copy decides nothing.
+    await w.t.run(async (ctx) => ctx.db.patch(id, { alsoSportIds: [w.football] }));
+    const out = await w.me.query(api.pickList.titleSports, { titles: ["Zorbo Quillfeather Harbor Krakens card"] });
+    expect(out).toEqual([{ id: w.baseball, name: "Pitching Baseball", code: "PB" }]);
+  });
+
+  test("a team whose name carries an accent or punctuation is found by the plain words of a title", async () => {
+    const w = await world();
+    await w.team("Canadiens", w.hockey, "Montréal");
+    await w.team("Blues", w.hockey, "St. Louis");
+    const out = await w.me.query(api.pickList.titleSports, {
+      titles: ["Montreal Canadiens pennant", "Montréal Canadiens pennant", "St Louis Blues puck", "St. Louis Blues puck"],
+    });
+    const hit = { id: w.hockey, name: "Ice Hockey", code: "IH" };
+    expect(out).toEqual([hit, hit, hit, hit]);
+  });
+
+  test("a nickname shared by teams of two sports is null", async () => {
+    const w = await world();
+    await w.team("Krakens", w.baseball, "Harbor");
+    await w.team("Krakens", w.football, "Bay");
+    const out = await w.me.query(api.pickList.titleSports, { titles: ["Krakens pennant"] });
+    expect(out).toEqual([null]);
+  });
+
+  test("a shared nickname is settled by a player of one sport", async () => {
+    const w = await world();
+    await w.team("Krakens", w.baseball, "Harbor");
+    await w.team("Krakens", w.football, "Bay");
+    await w.player("Zorbo Quillfeather", w.football);
+    const out = await w.me.query(api.pickList.titleSports, { titles: ["Zorbo Quillfeather Krakens auto"] });
+    expect(out).toEqual([{ id: w.football, name: "Gridiron Football", code: "GF" }]);
+  });
+
+  test("a team named by its full name files under its sport", async () => {
+    const w = await world();
+    await w.team("Krakens", w.hockey, "Harbor");
+    const out = await w.me.query(api.pickList.titleSports, { titles: ["Harbor Krakens team set"] });
+    expect(out).toEqual([{ id: w.hockey, name: "Ice Hockey", code: "IH" }]);
+  });
+
+  test("answers line up with the titles, a repeated title answers alike, and a title with no words is null", async () => {
+    const w = await world();
+    await w.player("Zorbo Quillfeather", w.baseball);
+    const out = await w.me.query(api.pickList.titleSports, {
+      titles: ["Zorbo Quillfeather", "2024 #12", "Zorbo Quillfeather", "", "nobody here"],
+    });
+    const hit = { id: w.baseball, name: "Pitching Baseball", code: "PB" };
+    expect(out).toEqual([hit, null, hit, null, null]);
+  });
+
+  test("the most specific player wins: Acuña and Acuña Jr. in two sports file under the Jr.'s sport", async () => {
+    const w = await world();
+    await w.player("Ronald Acuña", w.hockey);
+    await w.player("Ronald Acuña Jr.", w.baseball);
+    const out = await w.me.query(api.pickList.titleSports, { titles: ["2018 Topps Update #US250 Ronald Acuña Jr. Braves"] });
+    expect(out).toEqual([{ id: w.baseball, name: "Pitching Baseball", code: "PB" }]);
+    // The shorter name alone still names its own sport.
+    const short = await w.me.query(api.pickList.titleSports, { titles: ["2018 Topps Update #US250 Ronald Acuña soccer"] });
+    expect(short).toEqual([{ id: w.hockey, name: "Ice Hockey", code: "IH" }]);
+  });
+
+  test("a full 'Location Name' team beats the same nickname in other sports; the bare nickname stays null", async () => {
+    const w = await world();
+    await w.team("Braves", w.baseball, "Atlanta");
+    await w.team("Braves", w.baseball, "FCL");
+    await w.team("Braves", w.football, "Boston");
+    await w.team("Yankees", w.baseball, "New York");
+    await w.team("Yankees", w.football, "New York Brooklyn");
+    const out = await w.me.query(api.pickList.titleSports, {
+      titles: ["#1 Atlanta Braves", "#1 Braves", "#1 New York Yankees", "#1 Yankees"],
+    });
+    const bb = { id: w.baseball, name: "Pitching Baseball", code: "PB" };
+    expect(out).toEqual([bb, null, bb, null]);
+  });
+
+  test("a full-name team in two sports is still null, and a player of one sport still outranks the team", async () => {
+    const w = await world();
+    await w.team("Krakens", w.baseball, "Harbor");
+    await w.team("Krakens", w.football, "Harbor");
+    await w.player("Zorbo Quillfeather", w.hockey);
+    const out = await w.me.query(api.pickList.titleSports, {
+      titles: ["#1 Harbor Krakens", "#1 Zorbo Quillfeather Harbor Krakens"],
+    });
+    expect(out).toEqual([null, { id: w.hockey, name: "Ice Hockey", code: "IH" }]);
+  });
+
+  test("crowding: many same-nickname rows ahead of the franchise do not cut it off the team read", async () => {
+    // convex-test returns search hits in insertion order, so the franchise sits behind 20 look-alikes:
+    // past the old take(8), inside the team window.
+    const w = await world();
+    for (let i = 0; i < 20; i += 1) await w.team("Braves", w.football, `Minor${i}`);
+    await w.team("Braves", w.baseball, "Atlanta");
+    const out = await w.me.query(api.pickList.titleSports, { titles: ["#1 Atlanta Braves"] });
+    expect(out).toEqual([{ id: w.baseball, name: "Pitching Baseball", code: "PB" }]);
+  });
+
+  test("take-8 boundary: with a card number, eight look-alikes of the set's words no longer cut the named player off", async () => {
+    // Only the words after the `#<token>` are searched, so the set's generic words ("Rookie Card")
+    // cannot fill the page with other players.
+    const w = await world();
+    for (let i = 0; i < 9; i += 1) await w.player(`Rookie Card Rookie Card Filler${i}`, w.football);
+    await w.player("Zorbo Quillfeather", w.baseball);
+    const out = await w.me.query(api.pickList.titleSports, { titles: ["2023 Rookie Card #12 Zorbo Quillfeather"] });
+    expect(out).toEqual([{ id: w.baseball, name: "Pitching Baseball", code: "PB" }]);
+  });
+
+  test("take-8 boundary, no # in the title: a named player outranked by eight look-alike hits is cut off and the title files under Other", async () => {
+    // Display order only (NEO-590): with no card number the whole title is searched, ranked by relevance, not by
+    // "named in full". Fillers repeating the title's generic words outrank the named player, so once they
+    // fill the page the player is never read and the row files under Other (null). Pinned, not endorsed.
+    const w = await world();
+    for (let i = 0; i < 8; i += 1) await w.player(`Rookie Card Rookie Card Filler${i}`, w.football);
+    await w.player("Zorbo Quillfeather", w.baseball);
+    const out = await w.me.query(api.pickList.titleSports, { titles: ["Zorbo Quillfeather Rookie Card"] });
+    expect(out).toEqual([null]);
+  });
+
+  test("take-8 boundary control: with seven look-alike hits beside it the named player still decides the sport", async () => {
+    const w = await world();
+    for (let i = 0; i < 7; i += 1) await w.player(`Rookie Card Rookie Card Filler${i}`, w.football);
+    await w.player("Zorbo Quillfeather", w.baseball);
+    const out = await w.me.query(api.pickList.titleSports, { titles: ["Zorbo Quillfeather Rookie Card"] });
+    expect(out).toEqual([{ id: w.baseball, name: "Pitching Baseball", code: "PB" }]);
+  });
+
+  test("a player whose sport row is gone files the title under Other without throwing", async () => {
+    const w = await world();
+    await w.player("Zorbo Quillfeather", w.baseball);
+    await w.t.run(async (ctx) => ctx.db.delete(w.baseball));
+    await expect(w.me.query(api.pickList.titleSports, { titles: ["Zorbo Quillfeather RC"] })).resolves.toEqual([null]);
+  });
+
+  test("a player whose sportId is a row that is not a sport files the title under Other", async () => {
+    const w = await world();
+    const notSport = await w.t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", { level: "year", value: "2024", platformData: {}, children: [], lastUpdated: 0 }),
+    );
+    await w.player("Zorbo Quillfeather", notSport);
+    await expect(w.me.query(api.pickList.titleSports, { titles: ["Zorbo Quillfeather RC"] })).resolves.toEqual([null]);
+  });
+
+  test("refuses more than its limit and an anonymous caller", async () => {
+    const w = await world();
+    await expect(w.me.query(api.pickList.titleSports, { titles: Array.from({ length: 21 }, (_, i) => `t${i}`) })).rejects.toThrow(/at most 20/);
+    await expect(w.t.query(api.pickList.titleSports, { titles: [] })).rejects.toThrow(/Not authenticated/);
+    await expect(w.me.query(api.pickList.titleSports, { titles: Array.from({ length: 20 }, (_, i) => `t${i}`) })).resolves.toHaveLength(20);
   });
 });

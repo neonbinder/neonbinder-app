@@ -231,7 +231,7 @@ function TeamColorsPicker({ draft, onChange }: { draft: ContainerLabel; onChange
         inputGeometryClassName="px-3 py-2 text-sm"
       />
       <p aria-live="polite" className="mt-1 text-xs text-ink-3 empty:hidden">
-        {picked && colors === null ? `NB doesn't have colors for the ${picked.name} yet. Pick them below.` : ""}
+        {picked && colors === null ? `Neon Binder doesn't have colors for the ${picked.name} yet. Pick them below.` : ""}
       </p>
     </div>
   );

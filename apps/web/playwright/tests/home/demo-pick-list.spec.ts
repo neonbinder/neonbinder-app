@@ -230,27 +230,27 @@ test(
     await expect(pulledToggle(table, BCP)).toHaveAccessibleName(`Pulled ${BCP}, BSC 88257`);
     // No Sales tab in the demo: a stray's order is plain text, not a link.
     await expect(pickRow(table, BCP).getByRole("link")).toHaveCount(0);
-    await expect(seen(pickRow(table, WITT).getByText("NB has no 2026 Topps Heritage checklist yet.", { exact: true }))).toBeVisible();
+    await expect(seen(pickRow(table, WITT).getByText("Neon Binder has no 2026 Topps Heritage checklist yet.", { exact: true }))).toBeVisible();
     await expect(seen(pickRow(table, BCP).getByText("#BCP-77 fits two cards in that set. Check the photo.", { exact: true }))).toBeVisible();
 
     // A sale NB could not tie to a card, described by its listing: filed inline under
     // its set (2024 Score, with the card that is tied), marked Not in NB, never under Can't find it.
     const score = pickGroup(table, "2024 Score");
     await expect(table.getByRole("rowheader", { name: "Football 2024 Score 2 cards", exact: true })).toBeVisible();
-    await expect(pulledToggle(score, NABERS)).toHaveAccessibleName("Pulled 2024 Score #302, Malik Nabers, not in NB, BSC 88240");
+    await expect(pulledToggle(score, NABERS)).toHaveAccessibleName("Pulled 2024 Score #302, Malik Nabers, not in Neon Binder, BSC 88240");
     await expect(pulledToggle(score, LATHAM)).toBeVisible();
-    await expect(seen(pickRow(score, NABERS).getByText("Not in NB", { exact: true }))).toBeVisible();
+    await expect(seen(pickRow(score, NABERS).getByText("Not in Neon Binder", { exact: true }))).toBeVisible();
     // The chip says why on hover (the demo has no Sales tab, so no order link to name).
-    await expect(seen(pickRow(score, NABERS).getByTitle("NB doesn't have this copy. Go by the listing.", { exact: true }))).toBeVisible();
+    await expect(seen(pickRow(score, NABERS).getByTitle("No copy here. Go by the listing.", { exact: true }))).toBeVisible();
     await expect(seen(pickRow(score, NABERS).getByText("Malik Nabers", { exact: true }))).toBeVisible();
     await expect(seen(pickRow(score, NABERS).getByText("#302", { exact: true }))).toBeVisible();
     // NEO-522: no "couldn't match" note on screen; the chip says where to look. The printed
     // sheet still carries it: the print block below asserts the note on Nabers' paper line.
-    await expect(pickRow(score, NABERS).getByText("NB couldn't match this line. Check the order's photo.")).toHaveCount(0);
+    await expect(pickRow(score, NABERS).getByText("Neon Binder couldn't match this line. Check the sales platform.")).toHaveCount(0);
     await expect(pulledToggle(pickGroup(table, "Can't find it"), NABERS)).toHaveCount(0);
-    await expect(seen(pickRow(score, LATHAM).getByText("Not in NB", { exact: true }))).toHaveCount(0);
+    await expect(seen(pickRow(score, LATHAM).getByText("Not in Neon Binder", { exact: true }))).toHaveCount(0);
     // Can't find it keeps no chip: its heading already says as much.
-    await expect(seen(pickRow(table, WITT).getByText("Not in NB", { exact: true }))).toHaveCount(0);
+    await expect(seen(pickRow(table, WITT).getByText("Not in Neon Binder", { exact: true }))).toHaveCount(0);
     // Base before Insert in the set: the described Base line leads.
     await expect(score.getByRole("button", { name: /^Pulled / }).first()).toHaveAccessibleName(/^Pulled 2024 Score #302, Malik Nabers/);
 
@@ -417,13 +417,13 @@ test(
     // The described line prints like a card, number and player in their columns, marked Unmatched.
     const nabers = sheetRow("Malik Nabers");
     await expect(nabers.getByRole("cell", { name: "#302", exact: true })).toBeVisible();
-    await expect(nabers.filter({ hasText: "Not in NB" })).toHaveCount(1);
+    await expect(nabers.filter({ hasText: "Not in Neon Binder" })).toHaveCount(1);
     // Its next step rides along on paper too (clipped on a phone's narrow sheet, so counted there).
-    await expect(nabers.getByText("NB couldn't match this line. Check the order's photo.")).toHaveCount(1);
+    await expect(nabers.getByText("Neon Binder couldn't match this line. Check the sales platform.")).toHaveCount(1);
     // A line NB could not match prints its title and why, under Can't find it.
     const witt = sheetRow("Bobby Witt Jr.");
     await expect(witt.getByRole("cell", { name: /^2026 Topps Heritage Clubhouse Collection Relic Bobby Witt Jr\./ })).toBeVisible();
-    const why = witt.getByRole("cell", { name: "NB has no 2026 Topps Heritage checklist yet.", exact: true });
+    const why = witt.getByRole("cell", { name: "Neon Binder has no 2026 Topps Heritage checklist yet.", exact: true });
     if (isMobile) {
       // Print emulation keeps the phone's 390px viewport (paper is wider), where the
       // sheet's flexible Card column has no room left: the words are in the sheet, clipped.
@@ -455,7 +455,7 @@ test(
     const stop = region.getByRole("heading", { level: 3 });
     await expect(stop).toHaveText("Box 1 of 5 · 2026 Baseball · 5 to pull");
     await expect(pick.boxTable("2026 Baseball")).toBeVisible();
-    await expect(region.getByText("Plus 3 sales NB couldn't place. They wait after the boxes.", { exact: true })).toBeVisible();
+    await expect(region.getByText("Plus 3 sales Neon Binder couldn't place. They wait after the boxes.", { exact: true })).toBeVisible();
     const previous = region.getByRole("button", { name: "Previous box", exact: true });
     const next = region.getByRole("button", { name: "Next box", exact: true });
     await expect(previous).toBeDisabled();
@@ -502,23 +502,23 @@ test(
     await expect(notInBox).toHaveText("Not in a box · 1 to pull");
     await expect(notInBox).toBeFocused();
     await expect(
-      region.getByText("NB has no copy of these, so no box to check. Go by each listing, set by set.", { exact: true }),
+      region.getByText("Neon Binder has no copy of these, so no box to check. Go by each listing, set by set.", { exact: true }),
     ).toBeVisible();
     await expect(pick.notInBoxTable).toBeVisible();
     await expect(pickGroup(pick.notInBoxTable, "2024 Score")).toBeVisible();
     await expect(pulledToggle(pick.notInBoxTable, NABERS)).toBeVisible();
-    await expect(seen(pickRow(pick.notInBoxTable, NABERS).getByText("Not in NB", { exact: true }))).toBeVisible();
+    await expect(seen(pickRow(pick.notInBoxTable, NABERS).getByText("Not in Neon Binder", { exact: true }))).toBeVisible();
     await expect(pulledToggle(pick.notInBoxTable, WITT)).toHaveCount(0);
     await expectAccessible(page, { label: "Pick List demo, By the Box, the Not in a box stop" });
 
     // All found pulls what is here (one left: no confirm) and moves on to the last stop.
     await region.getByRole("button", { name: "All found", exact: true }).click();
-    await expect(pick.notice("Pulled 1 not in NB.")).toBeVisible();
+    await expect(pick.notice("Pulled 1 not in Neon Binder.")).toBeVisible();
     await expect(pick.progress(3, TOTAL)).toBeVisible();
     // Named, not `stop`: while the walk steps over, the Not in a box set divider is a second level-3 heading.
     const lastStop = region.getByRole("heading", { level: 3, name: /^Last stop · / });
     await expect(lastStop).toHaveText("Last stop · Can't find it · 2 to pull");
-    await expect(region.getByText("These sales don't say enough to file. The order's photo is your best clue.", { exact: true })).toBeVisible();
+    await expect(region.getByText("These sales don't say enough to file. Check the sales platform.", { exact: true })).toBeVisible();
     await expect(pick.cantFindTable).toBeVisible();
     await expect(pulledToggle(pick.cantFindTable, WITT)).toBeVisible();
     await expect(pulledToggle(pick.cantFindTable, BCP)).toBeVisible();

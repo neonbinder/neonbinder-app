@@ -53,16 +53,11 @@
 - [Planted red for server-side behaviour](patterns_planted_red_for_server_side_behaviour.md) — no backend push: plant a wrong expectation, read the…
 - [Commit-path default player needs a nameless card](reference_commit_path_default_player_needs_a_nameless_card.md) — NEO-528: listed/ruled-out…
 - [selectOrCreate brand re-homes a year's sets](patterns_select_or_create_brand_rehomes_a_years_sets.md) — old-seed deployment: hand-made brand +…
-- [Fake BSC faults and the breaker job](patterns_fake_bsc_faults_and_the_breaker_job.md) — NEO-552: bscFake fixture, hop page, deployment-wide gate…
-- [Worktree deployment onto the fake BSC](patterns_worktree_deployment_onto_the_fake_bsc.md) — NEO-552: misses in levels; fetch-or-adopt + recorder
+- [Fake BSC faults and the breaker job](patterns_fake_bsc_faults_and_the_breaker_job.md) — NEO-552: bscFake fixture, hop page, deployment-wide gate, @bsc-breaker…
+- [Worktree deployment onto the fake BSC](patterns_worktree_deployment_onto_the_fake_bsc.md) — NEO-552: set browser URL to the tagged revision, reportMisses, misses arrive in levels
 - [Transient notice behind a seed redirect](patterns_transient_notice_behind_a_seed_redirect.md) — upload-then-redirect seed hides a window that closes mid-upload; line up confirm/heavy/first query
 - [Placeholder real-intake specs](patterns_placeholder_real_intake_specs.md) — NEO-529: drop on /print/placeholders, cap recovery via Recent runs, second-page tidy, ESM path, stale node_modules
 - [Sibling edits reload a local Vite run](patterns_sibling_edits_reload_a_local_vite_run.md) — one-off red on a step green on rerun: check Vite log for hmr/page reload at that time; eBay unmatched row names
-- [Failure PNG shows the finally end state](patterns_failure_screenshot_shows_the_finally_end_state.md) — self-cleaning specs: the screenshot is post-cleanup; read the blob error-context ARIA snapshot (NEO-481)
-- [Brand-unknown row fixtures + All Brands option names](patterns_brand_unknown_row_fixtures_and_all_brands_option_names.md) — "<set> <brand>" option names need a regex; assert Unknown listed before drilling to it; host collector fixtures on Hockey 1995
-- [First seller press may wait for the seller account](patterns_first_seller_press_may_wait_for_the_seller_account.md) — NEO-483: expectRunOrSellerWait + claim wait capped at SELLER_ACCOUNT_CAP_MS; both orders end in the same asserts
-- [Fake BSC faults and the breaker job](patterns_fake_bsc_faults_and_the_breaker_job.md) — NEO-552: bscFake fixture, hop page, deployment-wide gate, @bsc-breaker…
-- [Worktree deployment onto the fake BSC](patterns_worktree_deployment_onto_the_fake_bsc.md) — NEO-552: set browser URL to the tagged revision, reportMisses, misses arrive in levels
 - [eBay hold spec on a hand-made set](patterns_ebay_hold_spec_on_a_handmade_set.md) — NEO-535: over-80 title fixture, hold-only run shape, runOver80Flow, connectEbayAndFinishSetup
 - [Re-run a fresh-only spec w/o reseed](patterns_rerun_a_fresh_only_spec_without_a_reseed.md) — gcloud expired: restore spec + reset --except-reference-seed; push a break to prove stored-title asserts
 - [Parallel titles dialog specs](patterns_parallel_titles_dialog_specs.md) — NEO-535: builder-engineered names, box beats carry, sr-only duplicate status, Vite reload false red; NEO-581 partial fix + door unmounts at 0
@@ -92,11 +87,15 @@
 - [Copy absence keys on the refusal clause](patterns_copy_absence_keys_on_the_refusal_clause.md) — NEO-602: toHaveCount(0) on a shared phrase trips on a new allowed-state statement
 - [Same-name team eras unprovable on a card](patterns_same_name_team_eras_unprovable_on_a_card.md) — NEO-602: chip/sub-line print no era; alias-held other era makes the drawer an era proof
 - [Stuck "still looking up": check returns validators](patterns_stuck_looking_up_check_returns_validators.md) — NEO-602: lookup threw ReturnsValidationError on new row fields; read Convex logs first
+- [Pick List title bands; probe a query first](patterns_pick_list_title_bands_and_probing_a_query.md) — NEO-590: band by rowheader; absence regex; row order; year gate is client-side; --identity probe
+- [Seeding a review state for screenshots](patterns_seeding_a_review_state_for_screenshots.md) — scratchpad script over /testing hops; titleSports probe; colorScheme only under System
+- [Dashboard Out the Door handles](patterns_dashboard_out_the_door_handles.md) — region/article "eBay order #<no>" (hash, unlike Sales), count line, hidden lines, goto+goBack gates
 - [Over-cap field look + team city fixtures](patterns_over_cap_field_look_and_team_city_fixtures.md) — NEO-606: aria-invalid titles only, expectOverCapLook pink, city-cut fixture arithmetic, split catalogue teams
 - [Inline refusal alerts: where to prove them](patterns_inline_refusal_alerts_in_match_cards_and_titles_step.md) — rename vs roster (SL-only) vs titles-step box
 - [Admin group writes and the failure reset](patterns_admin_group_writes_and_the_failure_reset.md) — NEO-592: own set for group-wide admin close; reset local opt-in, order proof, no-retry tags
 - [Action idle between child calls](patterns_action_stall_between_child_calls.md) — group convex-logs by requestId; token→gate gap ~0.03 s healthy; 2-source fetch has no wait line pre-dialog
 - [Window vs rest exec medians; eBay policy timeouts](patterns_window_vs_rest_exec_medians.md) — loaded deployment vs slow code; getOptedInPrograms timeout lines
+- [Planted break collides with a sibling plant](patterns_planted_break_collides_with_a_sibling_plant.md) — baseline red = sibling mid-plant; git diff HEAD first; restore by reversing, not cp
 - [red-run.mjs and client-wire.log](patterns_red_run_script_and_client_wire_log.md) — NEO-398: per red try triage, --attempt, artifact guards, untrusted output, listener fakes
 - [Injected orders ship up front](patterns_injected_orders_ship_up_front.md) — SHIPPED/FULFILLED keeps the Pick List clean; Convex error $-anchor trap; Switch by keyboard
 - [Post-name Next held then gone](patterns_post_name_next_held_then_gone.md) — NEO-574 career step: wait for usable Next/Save/autograph, press disabled:false only
