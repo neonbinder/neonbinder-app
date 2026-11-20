@@ -232,7 +232,7 @@ const percent = (confidence: number) => `${Math.round(confidence * 100)}%`;
 async function expectLowderNames(lowder: Locator): Promise<void> {
   const group = lowder.getByRole("group", { name: "Name conflict on #SIG-RL", exact: true });
   await expect(
-    group.getByText("Potential names for this card — pick the right one before it is listed.", { exact: true }),
+    group.getByText(/^⚠ Potential names for this card — pick the right one before it is listed\.$/),
   ).toBeVisible();
   const names = group.getByRole("radiogroup", { name: "Name for #SIG-RL", exact: true });
   await expect(names.getByRole("radio")).toHaveCount(2);
@@ -327,7 +327,7 @@ test(
     await expect(thomas.getByText("Numbers differ", { exact: true })).toBeVisible();
     await expect(thomas.getByRole("group", { name: "Number conflict on #SIG-FT", exact: true })).toBeVisible();
     await expect(
-      thomas.getByText("Sources disagree on the number. We picked one; check the card back.", { exact: true }),
+      thomas.getByText(/^⚠ Sources disagree on the number\. We picked one; check the card back\.$/), // the ⚠ is aria-hidden, still in the text
     ).toBeVisible();
     const thomasNumber = thomas.getByRole("radiogroup", { name: "Number for #SIG-FT", exact: true });
     await expect(thomasNumber.getByRole("radio")).toHaveCount(2);

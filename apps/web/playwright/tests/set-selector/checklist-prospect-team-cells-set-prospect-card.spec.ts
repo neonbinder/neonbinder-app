@@ -1,16 +1,16 @@
 // NEO-591 (R1): a checklist team cell "Prospect" or "Prospect (X)" makes the card a Prospect
-// Card, and X is a team only when it names exactly one minor-league or college team; a team cell
-// printed as a PLACE settles only when exactly one team in the set's league is located there:
+// Card, and X is the card's printed TEAM, read like any other team cell (Jason, 2026-11-19); a
+// team cell printed as a PLACE settles only when exactly one team in the set's league is located
+// there:
 //   - "Prospect" alone: the card is No Team (a claim, never asked);
-//   - "Prospect (Oklahoma)": Oklahoma is the place of exactly one college team on file, the
-//     Oklahoma Sooners (NCAA), so the card carries that team;
-//   - "Prospect (Dallas Baptist)": no minor or college team on file answers to it, so the card
-//     is HELD (product invariant 8): the Teams step asks, shows X as "Listed as: Dallas Baptist",
-//     pre-fills nothing (not even the player's own big-league club) and offers only "No team"
-//     and "Leave for later". Its "Remember “X” as a name for this team" box is held (disabled,
-//     unticked) until ONE existing team is picked: the spec mints that team from the line's own
-//     "Other team…" field, ticks the box, saves, and reads the alias back on Team Management,
-//     then takes it out again (the alias would otherwise settle the next attempt's X);
+//   - "Prospect (Oklahoma Sooners)": X is a team the catalogue has, so the card links it without
+//     asking (no name step, no Teams-step line);
+//   - "Prospect (Dbp<token>)": X is a team NB has no row for, so it goes through the Names gate
+//     like any unknown team: a "New Team: Dbp<token>" step, answered Add as New Team, and the card
+//     saves on that team (there is no held line and no Remember box any more);
+//   - "Cincinnati Reds / Prospect (Oklahoma Sooners)": a mixed cell. The preview reads it as
+//     printed (before 1a4def6c it read "Prospect (Cincinnati Reds / Oklahoma Sooners)"), and the
+//     card carries both teams and is a Prospect Card;
 //   - "Seattle": the set's league is Major League Baseball and exactly one MLB team is located in
 //     Seattle, so the card commits with the Seattle Mariners and is never asked (no name step, no
 //     Teams-step line);
@@ -19,22 +19,27 @@
 //     place is not a name to remember). Skipped as not a team, the card is left on the Teams step
 //     with nothing pre-filled ("Leave for later") and saved teamless.
 // The leaf's checklist preview reads each claim as printed ("Prospect", "Prospect (X)", the
-// place), never "We'll look it up": none of these cards is looked up.
+// mixed cell, the place), never "We'll look it up": none of these cards is looked up.
 //
-// The fixture is a 5-row CSV (fixtures/checklists/prospect-team-cells.csv) of catalogue players
+// The fixture is the 5-row CSV fixtures/checklists/prospect-team-cells.csv of catalogue players
 // the seed already holds (2024 Topps Chrome Base names, each one player on file, so no player
-// step and no lookup), uploaded through the leaf's "Add the official checklist" and synced: a
-// checklist-only fetch (the set has no marketplace id; the checklist is the one source).
+// step and no lookup), uploaded EDITED in memory (the committed file is pinned by the parser's
+// golden snapshot): #2's X is the catalogue's full team name, #3's X is minted per attempt, and a
+// sixth row (#6, Matt McLain) carries the mixed cell. Uploaded through the leaf's "Add the official
+// checklist" and synced: a checklist-only fetch (the set has no marketplace id; the checklist is
+// the one source). Every Career check line the catalogue players raise is answered "Keep as is"
+// (`passCareerCheck`): their careers are not this spec's to write.
 //
 // FIXTURE (R7a, SET-REGISTRY.md prefix `psp`): ONE hand-made set per attempt, `psp<token>`, under
 // the REAL `Baseball` › 2024 › `Topps` (the team and player lookups read the set's sport and
 // league, so not a custom sport), `Insert` › `Base`. No marketplace id anywhere beneath it. The
-// five cards are COMMITTED, read back and DELETED at the end; one team is minted per attempt
-// (`Dbp<token>`, it stays, like every minted row) and its remembered alias is removed again; the
-// catalogue's players, the Oklahoma Sooners and the Seattle Mariners are only read. The set and
-// its rows stand (per attempt, read by no other spec).
+// six cards are COMMITTED, read back and DELETED at the end; one team is minted per attempt
+// (`Dbp<token>`, created by the wizard's New Team step; it stays, like every minted row); the
+// catalogue's players, the Oklahoma Sooners, the Cincinnati Reds and the Seattle Mariners are only
+// read. The set and its rows stand (per attempt, read by no other spec).
 //
 // Desktop and mobile: one spec, no branch (role and label locators; click() scrolls).
+import { readFileSync } from "node:fs";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import {
   columnOption,
@@ -45,7 +50,6 @@ import {
   syncChecklistButton,
 } from "../../support/set-builder";
 import { confirmDeleteCardButton, deleteCardButton, editCardButton } from "../../support/cards";
-import { expectTeamsLoaded, teamsCounter } from "../../support/players";
 import {
   matchCardsDialog,
   previewRowCount,
@@ -53,35 +57,55 @@ import {
   publishersChecklistChip,
   publishersChecklistDialog,
 } from "../../support/published-checklist";
-import { confirmSaveButton, nextStepButton, reviewWizard, stepCounter, tidyUpName } from "../../support/wizard";
-import type { Page } from "@playwright/test";
+import {
+  answerStepAsNew,
+  confirmSaveButton,
+  newStepHeading,
+  nextStepButton,
+  passCareerCheck,
+  reviewWizard,
+  stepCounter,
+  tidyUpName,
+} from "../../support/wizard";
 
 const FILE = new URL("../../fixtures/checklists/prospect-team-cells.csv", import.meta.url).pathname;
-/** The file's rows: number, player, and what its team cell says. */
-const BARE = { number: "1", player: "Gunnar Henderson", cell: "Prospect" };
-const RESOLVED = { number: "2", player: "Colt Keith", cell: "Prospect (Oklahoma)", team: "Oklahoma Sooners" };
-const HELD = { number: "3", player: "Bobby Witt Jr.", cell: "Prospect (Dallas Baptist)", listed: "Dallas Baptist" };
-const PLACE = { number: "4", player: "J.P. Crawford", cell: "Seattle", team: "Seattle Mariners" };
-const AMBIGUOUS = { number: "5", player: "Seiya Suzuki", cell: "Chicago" };
-const CARDS = [BARE, RESOLVED, HELD, PLACE, AMBIGUOUS];
-const ROWS = CARDS.length;
+/** The catalogue team a known X names (NCAA; the set's league is MLB, so only its full name links). */
+const SOONERS = "Oklahoma Sooners";
 
-/** The admin Team Management page, filtered to `query` (as checklist-wizard-link-team-saves-alias does). */
-async function openTeam(page: Page, query: string) {
-  await page.goto("/admin/teams");
-  await expectTeamsLoaded(page);
-  await page.getByRole("textbox", { name: "Filter teams" }).fill(query);
-  await expect(teamsCounter(page, "1 match")).toBeVisible();
-  await page.getByRole("button", { name: new RegExp(escapeRe(query)) }).click();
+/**
+ * The committed file with this attempt's edits: #2's X is the catalogue's full team name, #3's X
+ * is `minted`, and #6 (the mixed cell) is appended. Throws if the file no longer has the rows the
+ * edits name, so a changed fixture fails here by name.
+ */
+function editedChecklist(minted: string): string {
+  const lines = readFileSync(FILE, "utf8").trimEnd().split("\n");
+  const cell: Record<string, string> = { "2": `Prospect (${SOONERS})`, "3": `Prospect (${minted})` };
+  let edited = 0;
+  const out = lines.map((line) => {
+    const [number, player] = line.split(",");
+    if (!(number in cell)) return line;
+    edited++;
+    return `${number},${player},${cell[number]}`;
+  });
+  if (edited !== 2) throw new Error(`prospect-team-cells.csv: expected rows #2 and #3, edited ${edited}`);
+  return [...out, `6,Matt McLain,Cincinnati Reds / Prospect (${SOONERS})`].join("\n") + "\n";
 }
 
 test(
-  "Checklist Prospect and place team cells — every Prospect row is a Prospect Card; bare Prospect is No Team, Prospect (X) takes X's one college team, an unknown X is held and can be remembered once a team is picked, and a place settles only on its one team (NEO-591)",
+  "Checklist Prospect and place team cells — every Prospect row is a Prospect Card; bare Prospect is No Team, Prospect (X) takes X as the card's team (a known X links, an unknown X is a New Team step), a mixed cell reads as printed, and a place settles only on its one team (NEO-591)",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     const set = `psp${env.ATTEMPT_TOKEN}`;
-    /** The team picked for the held card, minted from the Teams step's own field. */
-    const picked = `Dbp${env.ATTEMPT_TOKEN}`;
+    /** The team an unknown X names: minted per attempt, so no catalogue row answers to it. */
+    const minted = `Dbp${env.ATTEMPT_TOKEN}`;
+    const BARE = { number: "1", player: "Gunnar Henderson", cell: "Prospect" };
+    const KNOWN = { number: "2", player: "Colt Keith", cell: `Prospect (${SOONERS})` };
+    const UNKNOWN = { number: "3", player: "Bobby Witt Jr.", cell: `Prospect (${minted})` };
+    const PLACE = { number: "4", player: "J.P. Crawford", cell: "Seattle", team: "Seattle Mariners" };
+    const AMBIGUOUS = { number: "5", player: "Seiya Suzuki", cell: "Chicago" };
+    const MIXED = { number: "6", player: "Matt McLain", cell: `Cincinnati Reds / Prospect (${SOONERS})` };
+    const CARDS = [BARE, KNOWN, UNKNOWN, PLACE, AMBIGUOUS, MIXED];
+    const ROWS = CARDS.length;
     const target = { sport: "Baseball", year: "2024", manufacturer: "Topps", set, variantType: "Insert", variant: "Base" };
     // A checklist row is one run of text: "#<number> <name> <team or No Team> ...". The list's own
     // text joins every row, so the match stops at the next row's "#" (as set-no-team-* do). The
@@ -100,84 +124,81 @@ test(
     await publishersChecklistButton(page).click();
     const dialog = publishersChecklistDialog(page);
     await expect(dialog).toBeVisible();
-    await dialog.getByLabel("Choose a file").setInputFiles(FILE);
+    await dialog
+      .getByLabel("Choose a file")
+      .setInputFiles({ name: "prospect-team-cells.csv", mimeType: "text/csv", buffer: Buffer.from(editedChecklist(minted)) });
     await expect(previewRowCount(dialog, ROWS)).toBeVisible();
     const previewRows = dialog.getByRole("table", { name: "Preview of the rows the sync will use" });
-    // Each row found by its own name (number, player, team cell), then its cells exactly.
+    // Each row found by its own name (number, player, team cell), then its cells exactly. The mixed
+    // cell reads as printed: the Prospect bracket holds only the team it held in the file.
     for (const card of CARDS) {
       const row = previewRows.getByRole("row", { name: `${card.number} ${card.player} ${card.cell}`, exact: true });
       await expect(row.getByRole("cell")).toHaveText([card.number, card.player, card.cell]);
     }
+    await expect(previewRows.getByText(`Prospect (Cincinnati Reds / ${SOONERS})`)).toHaveCount(0);
     await expect(previewRows.getByText("We'll look it up")).toHaveCount(0);
-    await expectAccessible(page, { within: dialog, label: "Official checklist preview with Prospect and place team cells" });
+    await expectAccessible(page, { within: dialog, label: "Official checklist preview with Prospect, mixed and place team cells" });
     await dialog.getByRole("button", { name: "Use this checklist" }).click();
     await expect(dialog).toBeHidden();
     await expect(publishersChecklistChip(page, ROWS)).toBeVisible();
 
-    // ── 2. Sync: one source, so no Match Cards. Three steps: Chicago, the teams, the save ──
+    // ── 2. Sync: one source, so no Match Cards. Two team names to decide: the minted X and Chicago ──
     await syncChecklistButton(page).click();
     const wizard = reviewWizard(page);
     await expect(wizard).toBeVisible();
     await expect(wizard).toHaveAccessibleName(tidyUpName({ year: target.year, set }));
     await expect(matchCardsDialog(page)).toHaveCount(0);
-    // Seattle settled before the wizard opened (no step of its own); Chicago did not.
-    await expect(stepCounter(page)).toHaveText("Step 1 of 3");
-    await expect(wizard.getByRole("heading", { level: 3, name: `New Team: ${AMBIGUOUS.cell}`, exact: true })).toBeVisible();
-    const linkTo = wizard.getByRole("group", { name: "Link to existing team" });
-    await expect(linkTo.getByRole("combobox", { name: "Search all teams" })).toHaveValue("");
-    // The box is held while the place lookup runs, then settles unticked: a place is no team's name.
-    const rememberPlace = linkTo.getByRole("checkbox", { name: `Remember “${AMBIGUOUS.cell}” as a name for this team`, exact: true });
-    await expect(rememberPlace).toBeEnabled();
-    await expect(rememberPlace).not.toBeChecked();
-    await expectAccessible(page, { within: wizard, label: "Tidy-up name step for a team printed as an ambiguous place" });
-    await wizard.getByRole("button", { name: `Skip ${AMBIGUOUS.cell} — not a team`, exact: true }).click();
+    await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+    // Seattle and the Sooners settled before the wizard opened (no step of their own); the minted X
+    // and Chicago did not. They come in the batch's order, so each is answered by its heading.
+    const unknownStep = wizard.getByRole("heading", { level: 3, name: `New Team: ${minted}`, exact: true });
+    const chicagoStep = wizard.getByRole("heading", { level: 3, name: `New Team: ${AMBIGUOUS.cell}`, exact: true });
+    const heading = newStepHeading(page);
+    let sawUnknown = false;
+    let sawChicago = false;
+    for (let i = 0; i < 2; i++) {
+      await expect(unknownStep.or(chicagoStep)).toBeVisible();
+      if (await unknownStep.isVisible()) {
+        // X is the card's team, asked like any team NB has no row for: the step opens with X as the
+        // new team's whole name. Created here, it is the card's team at the save.
+        await expect(wizard.getByRole("textbox", { name: "New team name" })).toHaveValue(minted);
+        await expectAccessible(page, { within: wizard, label: "Tidy-up name step for a Prospect (X) team NB does not have" });
+        await answerStepAsNew(page);
+        sawUnknown = true;
+        continue;
+      }
+      const linkTo = wizard.getByRole("group", { name: "Link to existing team" });
+      await expect(linkTo.getByRole("combobox", { name: "Search all teams" })).toHaveValue("");
+      // The box is held while the place lookup runs, then settles unticked: a place is no team's name.
+      const rememberPlace = linkTo.getByRole("checkbox", { name: `Remember “${AMBIGUOUS.cell}” as a name for this team`, exact: true });
+      await expect(rememberPlace).toBeEnabled();
+      await expect(rememberPlace).not.toBeChecked();
+      await expectAccessible(page, { within: wizard, label: "Tidy-up name step for a team printed as an ambiguous place" });
+      await wizard.getByRole("button", { name: `Skip ${AMBIGUOUS.cell} — not a team`, exact: true }).click();
+      await expect(chicagoStep).toBeHidden();
+      sawChicago = true;
+    }
+    expect(sawUnknown && sawChicago, "both the minted X and Chicago were asked as team names").toBe(true);
+    // No other team was asked (the Sooners, the Reds and Seattle settled): the names are done.
+    await expect(nextStepButton(page)).toBeVisible();
+    await expect(heading).toHaveCount(0);
 
+    // The catalogue players' Career check lines (the Sooners, the new team) are not this spec's to write.
+    await passCareerCheck(page);
     await expect(wizard.getByText("Cards with no team", { exact: true })).toBeVisible();
-    await expect(stepCounter(page)).toHaveText("Step 2 of 3");
-    // The held card and the Chicago card; the bare Prospect is answered No Team, and Oklahoma and
-    // Seattle have their teams.
+    // Only the Chicago card: the bare Prospect is answered No Team, and every other card has its team.
     const lines = wizard.getByRole("listitem");
-    await expect(lines).toHaveCount(2);
-    await expect(lines.filter({ hasText: PLACE.player })).toHaveCount(0);
-    const held = lines.filter({ hasText: `#${HELD.number} · ${HELD.player}` });
-    await expect(held.getByText(`Listed as: ${HELD.listed}`, { exact: true })).toBeVisible();
-    const choices = held.getByRole("radiogroup", { name: `Team for ${HELD.player}` });
-    // Nothing pre-filled: no team is offered (Dallas Baptist is no minor or college team on file,
-    // and his big-league club is never a prospect's choice), and the line stays "Leave for later".
-    await expect(choices.getByRole("radio")).toHaveCount(2);
-    await expect(choices.getByRole("radio", { name: `No team on this card — ${HELD.player}` })).not.toBeChecked();
-    await expect(choices.getByRole("radio", { name: `Leave for later — ${HELD.player}` })).toBeChecked();
-    // Remembering X as a team's name waits for exactly one existing team to be picked.
-    const remember = held.getByRole("checkbox", {
-      name: `Remember “${HELD.listed}” as a name for this team — ${HELD.player}`,
-      exact: true,
-    });
-    await expect(remember).not.toBeChecked();
-    await expect(remember).toBeDisabled();
-    // The Chicago card: a team is offered (his Cubs), none is picked.
+    await expect(lines).toHaveCount(1);
     const chicago = lines.filter({ hasText: `#${AMBIGUOUS.number} · ${AMBIGUOUS.player}` });
     const chicagoChoices = chicago.getByRole("radiogroup", { name: `Team for ${AMBIGUOUS.player}` });
+    // A team is offered (his Cubs), none is picked.
     await expect(chicagoChoices.getByRole("radio", { name: `Chicago Cubs — ${AMBIGUOUS.player}`, exact: true })).not.toBeChecked();
     await expect(chicagoChoices.getByRole("radio", { checked: true })).toHaveAccessibleName(`Leave for later — ${AMBIGUOUS.player}`);
-    await expect(chicago.getByRole("checkbox")).toHaveCount(0);
-    // Skipped as not a team, "Chicago" is the operator's ruling, so it is no longer listed.
+    // Skipped as not a team, "Chicago" is the operator's ruling, so it is no longer listed; and no
+    // line is a held prospect any more (there is no Remember box).
     await expect(chicago.getByText(/Listed as/)).toHaveCount(0);
-    await expectAccessible(page, { within: wizard, label: "Tidy-up teams step with a held Prospect (X) card" });
-
-    // The held card's team: one existing team, minted here through the line's own field.
-    await held.getByRole("button", { name: `Other team… — ${HELD.player}`, exact: true }).click();
-    await held.getByRole("combobox", { name: "Team name to find" }).fill(picked);
-    await page.getByRole("listbox", { name: "Team name to find suggestions" }).getByRole("option", { name: `+ New team “${picked}”…`, exact: true }).click();
-    const newTeam = page.getByRole("dialog", { name: `New team: ${picked}` });
-    await expect(newTeam.getByRole("textbox", { name: "New team name" })).toHaveValue(picked);
-    await newTeam.getByRole("button", { name: `Create team ${picked}`, exact: true }).click();
-    await expect(newTeam).toBeHidden();
-    await expect(choices.getByRole("radio", { name: `${picked} — ${HELD.player}`, exact: true })).toBeChecked();
-    await expect(remember).toBeEnabled();
-    await expect(remember).not.toBeChecked();
-    await expectAccessible(page, { within: wizard, label: "Tidy-up teams step, a held card's Remember box offered" });
-    await remember.check();
-    await expect(remember).toBeChecked();
+    await expect(wizard.getByRole("checkbox")).toHaveCount(0);
+    await expectAccessible(page, { within: wizard, label: "Tidy-up teams step, the ambiguous place's card" });
 
     // ── 3. Save ──
     await nextStepButton(page).click();
@@ -192,18 +213,18 @@ test(
       await expect(editCardButton(page, card.number)).toHaveAccessibleName(`Edit card ${card.number}, ${card.player}`);
     }
     await expect(rowSays(BARE.number, "No Team")).toBeVisible();
-    await expect(rowSays(RESOLVED.number, RESOLVED.team)).toBeVisible();
-    await expect(rowSays(HELD.number, picked)).toBeVisible();
+    await expect(rowSays(KNOWN.number, SOONERS)).toBeVisible();
+    await expect(rowSays(UNKNOWN.number, minted)).toBeVisible();
     await expect(rowSays(PLACE.number, PLACE.team)).toBeVisible();
-    // The held X is never written as a team, and Chicago was left: that card alone is badged.
-    await expect(rowSays(HELD.number, HELD.listed)).toHaveCount(0);
+    // Chicago was left: that card alone is badged.
     await expect(needsTeam(AMBIGUOUS.number, AMBIGUOUS.player)).toBeVisible();
-    for (const card of [BARE, RESOLVED, HELD, PLACE]) await expect(needsTeam(card.number, card.player)).toHaveCount(0);
+    for (const card of [BARE, KNOWN, UNKNOWN, PLACE, MIXED]) await expect(needsTeam(card.number, card.player)).toHaveCount(0);
 
-    const teamOn: Record<string, string | undefined> = {
-      [RESOLVED.number]: RESOLVED.team,
-      [HELD.number]: picked,
-      [PLACE.number]: PLACE.team,
+    const teamsOn: Record<string, string[]> = {
+      [KNOWN.number]: [SOONERS],
+      [UNKNOWN.number]: [minted],
+      [PLACE.number]: [PLACE.team],
+      [MIXED.number]: ["Cincinnati Reds", SOONERS],
     };
     for (const card of CARDS) {
       await editCardButton(page, card.number).click();
@@ -214,13 +235,13 @@ test(
         "aria-pressed",
         card === BARE ? "true" : "false",
       );
-      const team = teamOn[card.number];
-      if (team === undefined) {
-        await expect(drawer.getByRole("button", { name: /^Remove team / })).toHaveCount(0);
-      } else {
-        await expect(drawer.getByRole("button", { name: /^Remove team / })).toHaveAccessibleName(`Remove team ${team}`);
+      const teams = teamsOn[card.number] ?? [];
+      const chips = drawer.getByRole("button", { name: /^Remove team / });
+      await expect(chips).toHaveCount(teams.length);
+      for (const team of teams) {
+        await expect(drawer.getByRole("button", { name: `Remove team ${team}`, exact: true })).toBeVisible();
       }
-      // A Prospect row makes a Prospect Card; a place row does not.
+      // A Prospect row makes a Prospect Card (the mixed cell too); a place row does not.
       const prospect = card === PLACE || card === AMBIGUOUS ? "false" : "true";
       await drawer.getByRole("button", { name: "Show features editor" }).click();
       await expect(drawer.getByRole("button", { name: "Value for Prospect Card" })).toHaveAttribute("aria-pressed", prospect);
@@ -235,7 +256,7 @@ test(
     await expect(columnSelection(page, "Inserts", "Base")).toHaveCount(0);
     await page.goForward();
     await expect(columnSelection(page, "Inserts", "Base")).toBeVisible();
-    await expect(rowSays(RESOLVED.number, RESOLVED.team)).toBeVisible();
+    await expect(rowSays(KNOWN.number, SOONERS)).toBeVisible();
 
     // ── 5. Clean up the cards ──
     for (const card of CARDS) {
@@ -244,18 +265,5 @@ test(
       await expect(editCardButton(page, card.number)).toHaveCount(0);
     }
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
-
-    // ── 6. The remembered name: on the picked team, then taken out again ──
-    await openTeam(page, picked);
-    const aka = page.getByRole("textbox", { name: "Also known as" });
-    const currentAliases = page.getByRole("list", { name: "Current aliases" });
-    await expect(aka).toHaveValue(HELD.listed);
-    await expect(currentAliases.getByText(HELD.listed, { exact: true })).toBeVisible();
-    await aka.clear();
-    await expect(currentAliases).toBeHidden();
-    await page.getByRole("button", { name: "Save", exact: true }).click();
-    await expect(page.getByText(`Saved ${picked}`)).toBeVisible();
-    await openTeam(page, picked);
-    await expect(aka).toHaveValue("");
   },
 );

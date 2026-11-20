@@ -79,7 +79,7 @@
 ## From the NEO-552 consolidation
 - [Local run backend, Vite, previews](patterns_local_run_backend_and_vite.md) — function-spec check, one Vite per worktree, CI seed resets
 - [BSC budget rules and the SportLots helper](patterns_bsc_budget_rules_and_sportlots_helper.md) — rules 1-3, expectStepWithSportLots, TSV mis-match trap
-- [NEO-574 career check step](patterns_career_check_step_neo574.md) — handles, advanceToSave guard 5, prefill, both sides checked, 6b year-rule staging
+- [NEO-574 career check step](patterns_career_check_step_neo574.md) — handles, prefill, 6b staging; NEO-591 default Add + keepEveryCareerLine, line-scoped names
 - [Planted break in convex/ code](reference_planted_break_on_convex_code.md) — linked-worktree copy named like the ticket; script pushes it; frozen wrapper
 - [Console check from traces + Vite log](patterns_console_check_from_traces_and_vite_log.md) — --trace=on outside repo, scan JSONL; Vite 8 forwards client console; baseline = PostHog+Clerk warns
 - [Set League and card League specs](patterns_set_league_and_card_league_specs.md) — NEO-569 handles, born-with-MLB needs real sport, noLeague dashboard Report scoping
@@ -88,7 +88,7 @@
 - [Leaf Vivid: a real unlicensed set](patterns_leaf_vivid_real_unlicensed_set.md) — NEO-556: find a set via year-wide sync, Proof type, held cards, parallel copies
 - [Stale batch masks a lookup loss](patterns_dialog_seed_from_stale_batch_masks_a_lookup_loss.md) — Match Cards drops lookup outcomes of pending rows; local green, CI 35 on the lane
 - [Attributes panel header needs the open panel](patterns_attributes_panel_header_controls_need_the_open_panel.md) — NEO-569: shut = title+toggle only; open before Rename/Delete/breadcrumb/Set actions
-- [NEO-591 Prospect and Onyx specs](reference_neo591_prospect_and_onyx_specs.md) — held X + Remember box, place cells, Match Cards relink, Football TL = only team conflict
+- [NEO-591 Prospect and Onyx specs](reference_neo591_prospect_and_onyx_specs.md) — Prospect (X) = printed team, in-memory CSV edit, place cells, relink, Football TL conflict
 - [Checklist facts run the product matcher](patterns_checklist_facts_run_the_product_matcher.md) — import parser+matcher, ChecklistEdits, number-picker/one-%/stem/sibling handles
 - [Over-cap field look + team city fixtures](patterns_over_cap_field_look_and_team_city_fixtures.md) — NEO-606: aria-invalid titles only, expectOverCapLook pink, city-cut fixture arithmetic, split catalogue teams
 - [Inline refusal alerts: where to prove them](patterns_inline_refusal_alerts_in_match_cards_and_titles_step.md) — rename vs roster (SL-only) vs titles-step box
@@ -97,3 +97,5 @@
 - [Window vs rest exec medians; eBay policy timeouts](patterns_window_vs_rest_exec_medians.md) — loaded deployment vs slow code; getOptedInPrograms timeout lines
 - [red-run.mjs and client-wire.log](patterns_red_run_script_and_client_wire_log.md) — NEO-398: per red try triage, --attempt, artifact guards, untrusted output, listener fakes
 - [Injected orders ship up front](patterns_injected_orders_ship_up_front.md) — SHIPPED/FULFILLED keeps the Pick List clean; Convex error $-anchor trap; Switch by keyboard
+- [aria-hidden glyph breaks exact text](patterns_aria_hidden_glyph_breaks_exact_text.md) — Match Cards "⚠ " warnings; ^-anchored negatives vacuous; twin rows "row N of M" = column
+- [Template literal \b is backspace](patterns_template_literal_backslash_b.md) — new RegExp(`…\b`) never matches; write \\b; grep before a run

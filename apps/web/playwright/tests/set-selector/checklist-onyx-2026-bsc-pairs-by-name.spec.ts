@@ -9,9 +9,11 @@
 //   1. Open the set's Base (BSC only: the picker is cancelled, nothing mapped),
 //      add the official checklist from Onyx's own PDF and tick its "Base Cards"
 //      section (the PDF also holds Player and Dual Autographs): 56 rows.
-//   2. Sync. BSC plus the checklist are two sources, so Match Cards opens. Every
-//      card lines up: "Matched (56)", no "BSC only" and no "Checklist only"
-//      column (nothing to reconcile).
+//   2. Sync. BSC plus the checklist are two sources, so Match Cards opens. 55 of
+//      the 56 cards line up by name ("Matched (55)", one of them a near name with a
+//      name conflict). BSC calls Max Kilby "Dax Kilby" (#OV-MAKI): a different first
+//      letter is no near name, so that card waits in "BSC only (1)" and its row in
+//      "Checklist only (1)" for the operator (measured on the fake's recording).
 //   3. #OV-ANFI Andrew Fischer, as every row: the chip reads "Checklist: NNO",
 //      the pair shows 90% ONCE (names agree, numbers differ: the 0.9 factor),
 //      "Numbers differ" beside it, the warning "Sources disagree on the number.
@@ -35,6 +37,8 @@
 // WRITER of the set, and it writes nothing: the Base picker is cancelled, a leaf's
 // checklist lives in the page until it is used (never stored), and the fetch is
 // cancelled and discarded. So it is NOT fresh-only: a re-run starts where this one did.
+// Except after a red between the Sync and the Cancel: the fetch's batch stays open and the
+// next run resumes it (its rows show twice, "row N of 2"), so reseed after such a red.
 // The PDF is the committed one set-checklist-pdf-onyx-2026 reads on its hand-made set
 // (its 56 Base rows are pinned by lib/checklists/checklist-onyx-pdf.test.ts).
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
@@ -58,9 +62,11 @@ const BASE_ROWS = 56;
 /** The card under the lens: BSC's number, the player both sides name. */
 const CARD = { number: "OV-ANFI", player: "Andrew Fischer" } as const;
 const SCOPE = `#${CARD.number}`;
+/** The one card the sources name differently enough that no rule pairs it (measured on the fake's recording). */
+const KILBY = { number: "OV-MAKI", bsc: "Dax Kilby", checklist: "Max Kilby" } as const;
 /** Names agree, numbers differ: NUMBERS_DIFFER_FACTOR (lib/cards/pair-names-first.ts), as Match Cards prints it. */
 const NUMBERS_DIFFER = "90%";
-/** Match Cards' subtitle when every source lines up (NEO-496). */
+/** Match Cards' subtitle when every source lines up (NEO-496): NOT this set's, one card is left over. */
 const CHECKLIST_ALL_LINED_UP = "Every card lines up across your sources. Review and confirm — no cards are saved until you do.";
 
 test(
@@ -88,7 +94,7 @@ test(
     const chip = publishersChecklistChip(page, BASE_ROWS);
     await expect(chip).toBeVisible();
 
-    // ── 2. Sync: every card lines up, by name ──
+    // ── 2. Sync: the cards line up by name, but for one ──
     await syncChecklistButton(page).click();
     const matchCards = matchCardsDialog(page);
     // One BSC round trip: our 7 s plus the seconds the screen says it is waiting on BSC.
@@ -97,17 +103,21 @@ test(
       platform: "BuySportsCards",
       what: "Confirm unlocked after the Onyx fetch",
     });
-    await expect(matchCards.getByText(CHECKLIST_ALL_LINED_UP)).toBeVisible();
-    await expect(matchCards.getByText(`Matched (${BASE_ROWS})`)).toBeVisible();
-    // Nothing to reconcile, so no column is drawn (R2: rides on the positives above).
-    await expect(matchCards.getByRole("heading", { name: /^BSC only \(/ })).toHaveCount(0);
-    await expect(matchCards.getByRole("heading", { name: /^Checklist only \(/ })).toHaveCount(0);
-    // With nothing unmatched the Matched list opens expanded.
-    // NEO-591: a base pair whose BSC name differs from the PDF's would add ", N with a name conflict"
-    // and a name picker. No such pair is known (BSC's names for this set are not in the repo; Andrew
-    // Fischer reads the same on both), so none is asserted or invented here: the first live run reads
-    // this toggle's full name and pins it.
-    await expect(matchCards.getByRole("button", { name: /^Collapse matched cards/ })).toBeVisible();
+    // Measured on the fake's recording of Onyx Base (56 BSC cards, 56 Base rows): 55 pair by name.
+    // BSC lists Max Kilby as "Dax Kilby" (#OV-MAKI); a different first letter scores far below the
+    // near-name bar (PLAYER_NAME_AUTO_LINK), so that one card and its row wait for the operator, one
+    // in each column, and no number is used to force them together (rule 7: names first).
+    await expect(matchCards.getByText(CHECKLIST_ALL_LINED_UP)).toHaveCount(0);
+    await expect(matchCards.getByRole("heading", { name: "BSC only (1)", exact: true })).toBeVisible();
+    await expect(matchCards.getByRole("radio", { name: `Select BSC card #${KILBY.number} ${KILBY.bsc}`, exact: true })).toBeVisible();
+    await expect(matchCards.getByRole("heading", { name: "Checklist only (1)", exact: true })).toBeVisible();
+    await expect(matchCards.getByRole("radio", { name: new RegExp(`^Select NNO ${KILBY.checklist} · `) })).toHaveCount(1);
+    // One more pair is matched by a near name whose spellings differ: the toggle says so.
+    const matchedToggle = matchCards.getByRole("button", { name: `Expand matched cards, 1 with a name conflict`, exact: true });
+    await expect(matchedToggle).toContainText(`Matched (${BASE_ROWS - 1})`);
+    await matchedToggle.click();
+    await expect(matchCards.getByRole("button", { name: "Collapse matched cards, 1 with a name conflict", exact: true })).toBeVisible();
+    await expect(matchCards.getByRole("group", { name: /^Name conflict on / })).toHaveCount(1);
 
     // ── 3. #OV-ANFI: paired by name, numbers differ ──
     const fischer = matchCards
@@ -121,7 +131,7 @@ test(
     const note = fischer.getByText("Numbers differ", { exact: true });
     await expect(note).toBeVisible();
     await expect(
-      fischer.getByText("Sources disagree on the number. We picked one; check the card back.", { exact: true }),
+      fischer.getByText(/^⚠ Sources disagree on the number\. We picked one; check the card back\.$/), // the ⚠ is aria-hidden, still in the text
     ).toBeVisible();
     const numberFor = fischer.getByRole("radiogroup", { name: `Number for ${SCOPE}`, exact: true });
     const bscNumber = numberFor.getByRole("radio", { name: `${SCOPE} — use this number for ${SCOPE}`, exact: true });

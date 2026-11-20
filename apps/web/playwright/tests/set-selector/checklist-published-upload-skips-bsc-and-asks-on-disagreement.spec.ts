@@ -290,14 +290,19 @@ test(
     // wizard takes over, only the saved line repeats it.
     await expect(page.getByText("Teams from your checklist: 17 of 18 cards").first()).toBeVisible();
     // NEO-591: the tie is left for the operator. Card #6 waits in BSC's column, its two rows in the
-    // checklist's (the same line twice reads ", row N of 19" to tell them apart), and nothing pairs
+    // checklist's (the same line twice reads ", row N of M" to tell them apart: N and M count the
+    // rows left in the column, measured "row 1 of 2" / "row 2 of 2"), and nothing pairs
     // them: no Unlink on #6, no number picker for it.
     await expect(matchCards.getByRole("heading", { name: "BSC only (1)", exact: true })).toBeVisible();
     await expect(matchCards.getByRole("button", { name: `Keep #6 ${six.player} as BSC-only`, exact: true })).toBeVisible();
     await expect(matchCards.getByRole("heading", { name: "Checklist only (2)", exact: true })).toBeVisible();
     await expect(
-      matchCards.getByRole("radio", { name: new RegExp(`^Select #6 ${escapeRe(six.player)} · ${bogusTeam}, row [0-9]+ of ${rowCount}$`) }),
+      matchCards.getByRole("radio", { name: new RegExp(`^Select #6 ${escapeRe(six.player)} · ${bogusTeam}, row [0-9]+ of [0-9]+$`) }),
     ).toHaveCount(2);
+    // ...and the two names differ (each says its own place), so neither reads like the other.
+    await expect(
+      matchCards.getByRole("radio", { name: new RegExp(`^Select #6 ${escapeRe(six.player)} · ${bogusTeam}, row 1 of [0-9]+$`) }),
+    ).toHaveCount(1);
     await expect(matchCards.getByRole("button", { name: /^Unlink card #6 / })).toHaveCount(0);
     await expect(matchCards.getByRole("radiogroup", { name: "Number for #6", exact: true })).toHaveCount(0);
     // NEO-591: #2 and #4 pair by number while the names differ, so each Matched row offers ONE name
@@ -313,7 +318,7 @@ test(
     for (const [n, marketplace, checklist] of [["2", two.player, typoTwo], ["4", four.player, typoFour]] as const) {
       const group = matchCards.getByRole("group", { name: `Name conflict on #${n}`, exact: true });
       await expect(
-        group.getByText("Potential names for this card — pick the right one before it is listed.", { exact: true }),
+        group.getByText(/^⚠ Potential names for this card — pick the right one before it is listed\.$/),
       ).toBeVisible();
       const names = group.getByRole("radiogroup", { name: `Name for #${n}`, exact: true });
       await expect(names.getByRole("radio")).toHaveCount(2);

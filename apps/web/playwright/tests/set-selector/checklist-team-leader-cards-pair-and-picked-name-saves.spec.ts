@@ -60,13 +60,15 @@
 // #6a, a team-leader card whose BSC bulk answer already names its team, raises the
 // wizard's "Checklist says otherwise" step with the checklist's side "No team on the
 // card"; taking the checklist's side saves #6a with no team and no "no team on this
-// card yet" badge. NEO-591: the same file says "Prospect (Dallas Baptist)" on #38a (the
-// Chiefs' card); Dallas Baptist is no minor-league or college football team on file, so
-// the claim is HELD. Match Cards reads that row "· Prospect (Dallas Baptist)" and
-// names it in its Unlink control; unlinked and linked back, the claim is unchanged; the
-// wizard's disagreement on #38a shows Dallas Baptist on the checklist's side (not "No
-// team on the card"); keeping the marketplace's side saves #38a with its own team AND
-// as a Prospect Card (the claim rides with every outcome). This is the only registered
+// card yet" badge. NEO-591: the same file prints #38a (the Chiefs' card) as the MIXED cell
+// "Kansas City Chiefs / Prospect (Dallas Baptist)": the X of "Prospect (X)" is one of the
+// card's printed teams (Jason, 2026-11-19). Match Cards reads that row as printed, both
+// paired ("· Kansas City Chiefs / Prospect (Dallas Baptist)", in its Unlink control) and
+// unpaired on the checklist list after an Unlink (before 1a4def6c it read "Prospect (Kansas
+// City Chiefs / Dallas Baptist)"); linked back, the row is unchanged. The checklist names a
+// team BSC does not (Dallas Baptist), so the wizard asks "Checklist says otherwise" on #38a;
+// keeping the marketplace's side saves #38a with its own team AND as a Prospect Card (the
+// claim rides with every outcome). This is the only registered
 // set whose marketplace bulk answer carries a team, which is why both claims are
 // exercised here. Zero BSC calls: all 554 rows are answered by the file, and #6a and
 // #38a carry their teams from the bulk answer.
@@ -126,15 +128,18 @@ const WIZARD_OPENS = 60_000;
 const BATCH_GROWS = 60_000;
 
 /**
- * NEO-591: the Chiefs' team-leader card, its file cell changed to a prospect claim nobody on
- * file answers to (Dallas Baptist is no minor-league or college football team), so it is held.
+ * NEO-591: the Chiefs' team-leader card, its file cell changed to a MIXED cell: its own club and a
+ * "Prospect (X)" whose X (Dallas Baptist, no football team on file) is a second printed team.
  */
-const HELD_PROSPECT = {
+const PROSPECT = {
   number: "38a",
   card: "Kansas City Chiefs",
   team: "Kansas City Chiefs",
-  cell: "Prospect (Dallas Baptist)",
-  listed: "Dallas Baptist",
+  cell: "Kansas City Chiefs / Prospect (Dallas Baptist)",
+  /** How the cell read before 1a4def6c: every team inside the bracket. Never shown now. */
+  misread: "Prospect (Kansas City Chiefs / Dallas Baptist)",
+  /** The checklist's side of the wizard's "Checklist says otherwise" on #38a: both printed teams, joined by "and" (measured). */
+  checklistSide: "Kansas City Chiefs and Dallas Baptist",
 } as const;
 
 /**
@@ -188,12 +193,12 @@ test(
       // #6a, the Patriots' card, now says No Team (`noTeamOn`). BSC calls added: 0. All 554 rows
       // are answered, so no card is asked of BSC per card, and the card that disagrees already
       // carries its team from the bulk answer, so nothing is looked up for it either.
-      // NEO-591: #38a, the Chiefs' card, says "Prospect (Dallas Baptist)" (`HELD_PROSPECT`).
+      // NEO-591: #38a, the Chiefs' card, says "Kansas City Chiefs / Prospect (Dallas Baptist)" (`PROSPECT`).
       // Fresh-only like the rest of this spec (the flow commits the set; the unpaused path
       // below never runs in the same seed), every name skipped.
       await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
       const claimed = await usePublishersChecklist(page, CHECKLISTS.topps2014FootballBase, {
-        teamCells: { "6a": "No Team", [HELD_PROSPECT.number]: HELD_PROSPECT.cell },
+        teamCells: { "6a": "No Team", [PROSPECT.number]: PROSPECT.cell },
         renumber: STEM.renumber,
         drop: STEM.drop,
         split: SIBLING.split,
@@ -206,31 +211,34 @@ test(
         platform: "BuySportsCards",
         what: "Match Cards after the paused 2014 Topps Football fetch",
       });
-      // NEO-591: the held claim is on the row's line and in its Unlink control. Matched opens
+      // NEO-591: the mixed cell reads as printed on the row's line and in its Unlink control. Matched opens
       // collapsed whenever a column holds a card, expanded otherwise (STEP 5 below).
       const pausedExpand = pairing.getByRole("button", { name: /^Expand matched cards/ });
       const pausedCollapse = pairing.getByRole("button", { name: /^Collapse matched cards/ });
       await expect(pausedExpand.or(pausedCollapse)).toBeVisible();
       if (await pausedExpand.isVisible()) await pausedExpand.click();
-      const heldRow = `#${HELD_PROSPECT.number} ${HELD_PROSPECT.card} · ${HELD_PROSPECT.cell}`;
-      const unlinkHeld = pairing.getByRole("button", {
-        name: `Unlink card #${HELD_PROSPECT.number} ${HELD_PROSPECT.card} from checklist row ${heldRow}`,
+      const prospectRow = `#${PROSPECT.number} ${PROSPECT.card} · ${PROSPECT.cell}`;
+      const unlinkProspect = pairing.getByRole("button", {
+        name: `Unlink card #${PROSPECT.number} ${PROSPECT.card} from checklist row ${prospectRow}`,
         exact: true,
       });
-      await expect(unlinkHeld).toBeVisible();
-      await expectAccessible(page, { within: pairing, label: "Match Cards, a held Prospect (X) row on 2014 Topps Football" });
+      await expect(unlinkProspect).toBeVisible();
+      // Never every team inside the bracket (the pre-1a4def6c reading); paired with the positive above.
+      await expect(pairing.getByText(PROSPECT.misread)).toHaveCount(0);
+      await expectAccessible(page, { within: pairing, label: "Match Cards, a mixed Prospect (X) row on 2014 Topps Football" });
       // Unlink: the checklist row is back on its list, still carrying its claim; link it back.
-      await unlinkHeld.click();
-      await expect(unlinkHeld).toHaveCount(0);
-      await pairing.getByRole("textbox", { name: "Filter checklist rows" }).fill(`#${HELD_PROSPECT.number}`);
-      await expect(pairing.getByRole("radio", { name: `Select ${heldRow}`, exact: true })).toBeVisible();
-      await expectAccessible(page, { within: pairing, label: "Match Cards, the held Prospect (X) row unlinked onto the checklist list" });
-      await pairing.getByRole("radio", { name: `Select ${heldRow}`, exact: true }).click();
+      await unlinkProspect.click();
+      await expect(unlinkProspect).toHaveCount(0);
+      await pairing.getByRole("textbox", { name: "Filter checklist rows" }).fill(`#${PROSPECT.number}`);
+      await expect(pairing.getByRole("radio", { name: `Select ${prospectRow}`, exact: true })).toBeVisible();
+      await expect(pairing.getByText(PROSPECT.misread)).toHaveCount(0);
+      await expectAccessible(page, { within: pairing, label: "Match Cards, the mixed Prospect (X) row unlinked onto the checklist list" });
+      await pairing.getByRole("radio", { name: `Select ${prospectRow}`, exact: true }).click();
       await pairing
-        .getByRole("button", { name: `Link selected checklist row to #${HELD_PROSPECT.number} ${HELD_PROSPECT.card}`, exact: true })
+        .getByRole("button", { name: `Link selected checklist row to #${PROSPECT.number} ${PROSPECT.card}`, exact: true })
         .click();
-      await expect(unlinkHeld).toBeVisible();
-      await expect(pairing.getByRole("radio", { name: `Select ${heldRow}`, exact: true })).toHaveCount(0);
+      await expect(unlinkProspect).toBeVisible();
+      await expect(pairing.getByRole("radio", { name: `Select ${prospectRow}`, exact: true })).toHaveCount(0);
 
       // ── NEO-591 STEM LINK: one row "9" covers BSC's #9a and #9b ──
       // Both cards carry the row's chip, read "all versions", with no % (a shared row is by
@@ -239,7 +247,7 @@ test(
       await expect(stemChip).toHaveCount(2);
       const stemUnlink = (n: string) =>
         pairing.getByRole("button", {
-          name: new RegExp(`^Unlink card #${n} ${escapeRe(STEM.player)}( · .*)? from checklist row #9 ${escapeRe(STEM.player)}\b`),
+          name: new RegExp(`^Unlink card #${n} ${escapeRe(STEM.player)}( · .*)? from checklist row #9 ${escapeRe(STEM.player)}\\b`),
         });
       const stemRows = pairing
         .getByRole("listitem")
@@ -285,13 +293,13 @@ test(
       await expect(kyleChosen).toBeVisible();
       await expect(changeKyle).toHaveAttribute("aria-expanded", "false");
       await expect(kyle.getByRole("radio")).toHaveCount(0);
-      await expect(kyle.getByText(/^Sources disagree on the number/)).toHaveCount(0);
+      await expect(kyle.getByText(/Sources disagree on the number/)).toHaveCount(0);
       await expect(kyle.getByRole("group", { name: /^Number conflict on / })).toHaveCount(0);
       await changeKyle.click();
       await expect(changeKyle).toHaveAttribute("aria-expanded", "true");
       await expect(kyle.getByRole("group", { name: `Number choice on #${SIBLING.base}`, exact: true })).toBeVisible();
       await expect(kyleChosen).toBeHidden();
-      await expect(kyle.getByText(/^Sources disagree on the number/)).toHaveCount(0);
+      await expect(kyle.getByText(/Sources disagree on the number/)).toHaveCount(0);
       const kyleNumber = kyle.getByRole("radiogroup", { name: `Number for #${SIBLING.base}`, exact: true });
       // 95a is the checklist's alone (BSC printed 95), so its option says so; BSC's stays bare.
       await expect(
@@ -336,14 +344,15 @@ test(
       await expect(onSix).toBeVisible();
       await expect(pausedWizard.getByRole("radiogroup", { name: /^Disagreement on #/ })).toHaveCount(2);
       await expect(onSix.getByRole("definition")).toHaveText(["New England Patriots", "No team on the card"]);
-      // NEO-591: the held claim shows X on the checklist's side, never "No team on the card".
-      await expect(disagreementOn(page, HELD_PROSPECT.number).getByRole("definition")).toHaveText([
-        HELD_PROSPECT.team,
-        HELD_PROSPECT.listed,
+      // NEO-591: X is one of the checklist's teams, so #38a disagrees (BSC names the Chiefs alone):
+      // the checklist's side shows both printed teams, never "No team on the card".
+      await expect(disagreementOn(page, PROSPECT.number).getByRole("definition")).toHaveText([
+        PROSPECT.team,
+        PROSPECT.checklistSide,
       ]);
-      await expectAccessible(page, { within: pausedWizard, label: "Entity review wizard, a No Team claim and a held Prospect (X) against team-leader cards" });
+      await expectAccessible(page, { within: pausedWizard, label: "Entity review wizard, a No Team claim and a Prospect (X) team against team-leader cards" });
       await pickDisagreementSide(page, "6a", "Use the checklist's");
-      await pickDisagreementSide(page, HELD_PROSPECT.number, "Keep the marketplace's");
+      await pickDisagreementSide(page, PROSPECT.number, "Keep the marketplace's");
 
       // The names are not this part's claim: skip them all (repeating while a Wikidata career
       // history can still stage a row), then save.
@@ -385,16 +394,16 @@ test(
       await expect(sixDrawer).toBeHidden();
 
       // NEO-591: #38a kept the marketplace's team and is a Prospect Card all the same.
-      await pausedSearch.fill(HELD_PROSPECT.number);
+      await pausedSearch.fill(PROSPECT.number);
       await expect(page.getByText(/^1 of [0-9]+ cards$/)).toBeVisible();
-      const heldEdit = page.getByRole("button", { name: `Edit card ${HELD_PROSPECT.number}, ${HELD_PROSPECT.card}`, exact: true });
-      await heldEdit.click();
-      const heldDrawer = page.getByRole("dialog", { name: `Card #${HELD_PROSPECT.number}` });
-      await expect(heldDrawer.getByRole("button", { name: /^Remove team / })).toHaveAccessibleName(`Remove team ${HELD_PROSPECT.team}`);
-      await heldDrawer.getByRole("button", { name: "Show features editor" }).click();
-      await expect(heldDrawer.getByRole("button", { name: "Value for Prospect Card" })).toHaveAttribute("aria-pressed", "true");
-      await heldDrawer.getByRole("button", { name: "Done editing card" }).click();
-      await expect(heldDrawer).toBeHidden();
+      const prospectEdit = page.getByRole("button", { name: `Edit card ${PROSPECT.number}, ${PROSPECT.card}`, exact: true });
+      await prospectEdit.click();
+      const prospectDrawer = page.getByRole("dialog", { name: `Card #${PROSPECT.number}` });
+      await expect(prospectDrawer.getByRole("button", { name: /^Remove team / })).toHaveAccessibleName(`Remove team ${PROSPECT.team}`);
+      await prospectDrawer.getByRole("button", { name: "Show features editor" }).click();
+      await expect(prospectDrawer.getByRole("button", { name: "Value for Prospect Card" })).toHaveAttribute("aria-pressed", "true");
+      await prospectDrawer.getByRole("button", { name: "Done editing card" }).click();
+      await expect(prospectDrawer).toBeHidden();
 
       // NEO-591: the card took the row's lettered number, and 95b was saved as its variation,
       // named by the checklist's note ("95b" is a prefix match: #95b alone).

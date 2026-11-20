@@ -82,3 +82,22 @@ Measured on the first full run (NEO-574):
 - `container.getByRole("listitem").filter({ has: X })`: X is matched INSIDE each item, so build
   it from `page` (`page.getByRole("radiogroup", ...)`), not from the container-rooted helper
   (`careerLine` is rooted at the wizard and matches nothing inside a list item).
+
+NEO-591 changed the defaults (measured on the alias spec, 2026-11):
+- Every line OPENS on "Add to career" with the card's team staged (a past set stages the closed
+  "(YYYY–YYYY)", a current one "–present"), so an untouched line WRITES that stint at Save.
+  `keepEveryCareerLine(page)` (support/wizard.ts) answers "Keep as is" on every line; the
+  shared walkers (`passCareerCheck`, `passCareerAndTeamsSteps`, `advanceToSave`,
+  `walkToAutographStep`) call it, so a spec that answers some lines itself must do so AFTER
+  the sweep (sweep, then re-pick "Add to career": it restages the card's team).
+- A player with TWO lines gets line-scoped names on every control: "Stints to add for P on
+  Team", "Which P on Team?", "Career team name for P on Team". The new player's stints list is
+  "Stints to add for <newName> (P on Team)"; its name box "New player’s name for P on Team".
+- Chip Edit keeps the chip (aria-current="true", text "editing") and + Add replaces it in place;
+  a changed edit holds Next with "Add the stint you started, or clear it, to keep going.".
+- Players admin's filter is FUZZY ("10+ matches" for one name): find same-name rows by
+  `^<name> Baseball\b` and tell them apart by the row's team nod (longest tenure), not the counter.
+- The fixture club's "Remember" alias lives on a per-worker TEAM, and teams are a
+  reference-seed table: `reset --except-reference-seed` keeps it, so the next run's checklist
+  team resolves by alias and the team step never comes up; the per-worker player P survives it
+  too ("That player already exists — opened it."). A rerun needs the full seed or another worker.

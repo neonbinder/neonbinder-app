@@ -1,6 +1,6 @@
 ---
 name: reference_neo591_prospect_and_onyx_specs
-description: NEO-591 handles — Prospect Card, held "Prospect (X)" line and its Remember box, place team cells, preview rows, Match Cards unlink/relink, the only set with a team conflict, a named player step
+description: NEO-591 handles — Prospect Card, "Prospect (X)" = printed team (New Team step), in-memory edited upload, place team cells, preview rows, Match Cards unlink/relink, the only set with a team conflict
 metadata:
   type: reference
 ---
@@ -10,11 +10,14 @@ metadata:
   Card beside it IS a checkbox ("Value for Rookie Card").
 - **Card No Team in the drawer**: `button "No Team for this card"` with aria-pressed; a team
   shows as `button "Remove team <name>"`.
-- **Held "Prospect (X)" on the teams step**: one listitem, text `#<n> · <player>` and
-  `Listed as: <X>`; radiogroup `Team for <player>` with only `No team on this card — <player>`
-  and `Leave for later — <player>` (checked) when no minor/college team answers X. Count the
-  radios to prove no pre-fill and no big-league choice. Bare Prospect (No Team) and a settled X
-  never reach the step.
+- **"Prospect (X)" (final NEO-591 shape)**: X IS the card's printed team. No held line, no
+  Remember box: an unknown X is a Names-gate "New Team: X" step like any team; the card gets
+  Prospect Card. A mixed cell "Team / Prospect (X)" shows as printed in the preview and Match
+  Cards (never "Prospect (Team / X)"). Mint X per attempt (`Dbp<token>`) and create it on the
+  step: a fixed X would exist after the first run and never raise the step again.
+- **Edit a committed CSV in memory, never on disk**: `lib/checklists` golden snapshot pins every
+  fixture CSV, so read it, rewrite the rows (throw unless exactly the rows meant changed), and
+  `setInputFiles({ name, mimeType: "text/csv", buffer })`.
 - **Checklist row text** is spans with no spaces between name and team: `getByText` on
   "#1 Name No Team" fails. Match the team part only (`#<n>[^#]*<team>`) and read the player
   off `Edit card <n>, <player>`.
@@ -31,13 +34,9 @@ metadata:
   exactly one league team settles before the wizard (no step, no Teams line); an ambiguous one
   is a NAME step "New Team: <place>" whose Remember box settles enabled+unticked. Skipping it
   drops it from "Listed as" on the Teams step (skipped = the operator's ruling).
-- **Held line's Remember box** enables only once one existing team is picked: "Other team… —
-  <player>" → combobox "Team name to find" → option `+ New team “<minted>”…` → dialog
-  `New team: <minted>` → "Create team <minted>". Mint the team (an alias on a catalogue team
-  would settle the next attempt's X), read it on /admin/teams, then clear "Also known as" + Save.
 - **A team conflict needs a marketplace team in the BULK answer**: with a checklist no card is
-  looked up, so only Football 2014 Topps team-leader cards (BSC "<Team> TL") carry one. Held X
-  there shows X on the checklist side of "Disagreement on #N". `usePublishersChecklist`'s
+  looked up, so only Football 2014 Topps team-leader cards (BSC "<Team> TL") carry one. A mixed
+  "<Team> / Prospect (X)" cell there: the checklist side of "Disagreement on #N" reads "<Team> / X" (verify on a run). `usePublishersChecklist`'s
   `teamCells` rewrites cells of a captured file.
 - **Match Cards with a checklist**: Unlink names read `Unlink card #N <card> from checklist row
   #N <player> · <team cell>`; relink = radio `Select #N … · <cell>` then `Link selected

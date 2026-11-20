@@ -334,7 +334,7 @@ test(
       // asks below.
       const skenesName = skenes.getByRole("group", { name: "Name conflict on #FS-9", exact: true });
       await expect(
-        skenesName.getByText("Potential names for this card — pick the right one before it is listed.", { exact: true }),
+        skenesName.getByText(/^⚠ Potential names for this card — pick the right one before it is listed\.$/),
       ).toBeVisible();
       const skenesNames = skenesName.getByRole("radiogroup", { name: "Name for #FS-9", exact: true });
       await expect(skenesNames.getByRole("radio")).toHaveCount(2);
