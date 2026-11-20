@@ -95,28 +95,35 @@ test(
     // read the other way), so the step's heading is the positive gate and
     // carries the 20 s. Raising it further is a new decision for Jason, not a
     // tuning knob.
-    const step = wizard.getByRole("heading", { level: 3, name: `New Team: ${CLUB}` });
+    // NEO-602: the club is held in four eras, so the reopened step is a choice
+    // ("Which team"), not a new team: it shows the cards that print the name and
+    // offers every era as a one-click link, the search kept below as the fallback.
+    const step = wizard.getByRole("heading", { level: 3, name: `Which team: ${CLUB}` });
     await expect(step).toBeVisible({ timeout: 20_000 });
     await expect(wizard.getByRole("button", { name: /^Skip .* — not a team$/ })).toBeVisible();
+    // The cards behind the question (#34 and #35 print the club) and their player.
+    const cards = wizard.getByRole("list", { name: /^Printed on [0-9]+ cards?$/ });
+    await expect(cards).toContainText("#34");
+    await expect(cards).toContainText("#35");
+    await expect(cards).toContainText("Jimmie Foxx");
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, past-era team step" });
 
-    // UNTICK the remember-box FIRST, while the combobox is closed. Proven by
-    // R2(d)'s decision line, which a ticked box would extend with "· remembered as ...".
+    // UNTICK the remember-box FIRST. Proven by R2(d)'s decision line, which a
+    // ticked box would extend with "· remembered as ...".
     const remember = wizard.getByRole("checkbox", { name: `Remember “${CLUB}” as a name for this team` });
     await remember.uncheck();
     await expect(remember).not.toBeChecked();
 
-    // Empty and focused, the combobox lists the step's near matches (NEO-326):
-    // the catalogue's rows of this exact name first. Each option reads the full
-    // name, then "same name · <league> · <years>". Four rows of one name, none
-    // covering 2025 - R2(c). Picked by LABEL, never by position (NEO-331 ranks a
-    // typed search by the set's context).
-    await wizard.getByRole("combobox", { name: "Search all teams" }).click();
-    const era = (years: RegExp) => page.getByRole("option", { name: new RegExp(`same name . [A-Z]+ . ${years.source}`) });
+    // Every era of the catalogue's rows of this exact name is offered by its
+    // label, newest first - none covers 2025 - R2(c). Picked by LABEL, never by
+    // position.
+    const choices = wizard.getByRole("list", { name: /^We've got [0-9]+ teams by that name/ });
+    const era = (years: RegExp) => choices.getByRole("button", { name: new RegExp(`^Link to ${CLUB} . ${years.source}`) });
     await expect(era(/1871.1875/)).toBeVisible();
     await expect(era(/1876.1876/)).toBeVisible();
     await expect(era(/1882.1890/)).toBeVisible();
     await expect(era(/1901.1954/)).toBeVisible();
+    await expect(wizard.getByRole("combobox", { name: "Search all teams" })).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, past-era options offered" });
     await era(/1901.1954/).click();
 

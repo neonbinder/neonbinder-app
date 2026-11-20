@@ -133,6 +133,30 @@ export function nextStepButton(page: Page): Locator {
   return reviewWizard(page).getByRole("button", { name: "Next (Enter)", exact: true });
 }
 
+/**
+ * `nextStepButton`, usable: not aria-disabled. A post-name step can hold Next
+ * while it settles (NEO-574's career step says "Checking careers…") and then
+ * drop out with no gap, straight onto the next step or Save, so a press waits
+ * for THIS, never for a Next that is merely on screen (a held Next is clicked
+ * after it has gone). The autograph step holds it until a tile is picked.
+ */
+function usableNextButton(page: Page): Locator {
+  return reviewWizard(page).getByRole("button", { name: "Next (Enter)", exact: true, disabled: false });
+}
+
+/**
+ * Wait until the post-name walk holds still: a usable Next, the Save step's
+ * Confirm & Save, or the autograph tiles (whose Next stays held until a tile is
+ * picked). `first()`: a caller that answered the autograph step arrives with
+ * its tiles AND a usable Next up. Contract: 7 s; reads nothing.
+ */
+async function expectPostNameStepSettled(page: Page): Promise<void> {
+  await expect(
+    usableNextButton(page).or(confirmSaveButton(page)).or(autographChoices(page)).first(),
+    "the wizard shows a usable Next, the Save step or the autograph tiles",
+  ).toBeVisible();
+}
+
 /** The Save step's commit button. */
 export function confirmSaveButton(page: Page): Locator {
   return reviewWizard(page).getByRole("button", { name: /Confirm & Save/ });
@@ -266,10 +290,11 @@ export async function answerAutographStep(page: Page, choice: AutographChoice = 
  */
 export async function walkToAutographStep(page: Page): Promise<void> {
   const group = autographChoices(page);
-  const next = nextStepButton(page);
+  const next = usableNextButton(page);
   for (let i = 0; i < 3; i++) {
-    await expect(next, "the wizard offers Next on its way to the Autographed cards step").toBeVisible();
+    await expectPostNameStepSettled(page);
     if (await group.isVisible()) break;
+    await expect(next, "the wizard offers Next on its way to the Autographed cards step").toBeVisible();
     const { x } = await readStep(page);
     await next.click();
     await expectStepLeft(page, x);
@@ -321,9 +346,12 @@ export function postNameSubtitle(page: Page): Locator {
 export async function passCareerCheck(page: Page): Promise<void> {
   const subtitle = postNameSubtitle(page);
   await expect(subtitle, "a post-name step is up").toBeVisible();
+  // A career step still checking may yet drop out on its own: read the subtitle
+  // once the walk holds still.
+  await expectPostNameStepSettled(page);
   if (((await subtitle.textContent()) ?? "").trim() === CAREER_STEP_SUBTITLE) {
     const { x } = await readStep(page);
-    await nextStepButton(page).click();
+    await usableNextButton(page).click();
     await expectStepLeft(page, x);
   }
   await expect(subtitle, "the wizard is past its Career check").toBeVisible();
@@ -346,10 +374,11 @@ export async function passCareerAndTeamsSteps(page: Page): Promise<void> {
   const subtitle = postNameSubtitle(page);
   for (let i = 0; i < 3; i++) {
     await expect(subtitle, "a post-name step is up").toBeVisible();
+    await expectPostNameStepSettled(page);
     const text = ((await subtitle.textContent()) ?? "").trim();
     if (text !== CAREER_STEP_SUBTITLE && text !== "Cards with no team") return;
     const { x } = await readStep(page);
-    await nextStepButton(page).click();
+    await usableNextButton(page).click();
     await expectStepLeft(page, x);
   }
   await expect(subtitle).not.toHaveText(new RegExp(`^(${CAREER_STEP_SUBTITLE}|Cards with no team)$`));
@@ -909,6 +938,11 @@ export async function walkToPlayerRow(
  *   nothing pressed. The caller asserts its own "Save N cards?" and owns the
  *   commit.
  *
+ * - A step may hold Next aria-disabled while it settles (NEO-574's career step
+ *   says "Checking careers…") and then drop straight to Save; each turn waits
+ *   for a usable Next, the Save step or the autograph tiles, so that jump is a
+ *   normal exit, never a click on a Next that has gone.
+ *
  * All 7 s: Next is a client-side step change. The loop is a runaway guard of 5
  * (at most four screens sit between the names and Save: career, teams,
  * autograph, titles; NEO-574 added the career step, first of them, and a
@@ -916,14 +950,15 @@ export async function walkToPlayerRow(
  */
 export async function advanceToSave(page: Page): Promise<void> {
   const wizard = reviewWizard(page);
-  const next = nextStepButton(page);
+  const next = usableNextButton(page);
   const save = confirmSaveButton(page);
   const autograph = autographChoices(page);
   for (let i = 0; i < 5; i++) {
-    await expect(next.or(save)).toBeVisible();
+    await expectPostNameStepSettled(page);
     if (await save.isVisible()) break;
-    const { x } = await readStep(page);
     if (await autograph.isVisible()) await answerAutographStep(page);
+    await expect(next).toBeVisible();
+    const { x } = await readStep(page);
     await next.click();
     await expectStepLeft(page, x);
   }

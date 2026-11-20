@@ -49,7 +49,7 @@
 - [Published checklist upload fixtures](patterns_published_checklist_upload_fixtures.md) — NEO-478/482: NNO sets cannot upload, N-of-M arithmetic…
 - [Full local run on one account](patterns_full_local_run_on_one_account.md) — reds that are the single-account run: 12/hour cap, CI-only env…
 - [Cameo specs, sorted binder pages](patterns_cameo_specs_and_sorted_binder_pages.md) — NEO-528: catalogue-wide needs; exact rule summary; helpers
-- [Hand-made rows cannot reach the commit path](reference_hand_made_rows_cannot_reach_the_commit_path.md) — a no-ids fetch stops before reading a…
+- [Hand-made leaf reaches the gate only with a checklist](reference_hand_made_rows_cannot_reach_the_commit_path.md) — NEO-496 D10: pasted checklist = checklist-only solo fetch through the review gate and commit
 - [Planted red for server-side behaviour](patterns_planted_red_for_server_side_behaviour.md) — no backend push: plant a wrong expectation, read the…
 - [Commit-path default player needs a nameless card](reference_commit_path_default_player_needs_a_nameless_card.md) — NEO-528: listed/ruled-out…
 - [selectOrCreate brand re-homes a year's sets](patterns_select_or_create_brand_rehomes_a_years_sets.md) — old-seed deployment: hand-made brand +…
@@ -83,6 +83,10 @@
 - [Leaf Vivid: a real unlicensed set](patterns_leaf_vivid_real_unlicensed_set.md) — NEO-556: find a set via year-wide sync, Proof type, held cards, parallel copies
 - [Stale batch masks a lookup loss](patterns_dialog_seed_from_stale_batch_masks_a_lookup_loss.md) — Match Cards drops lookup outcomes of pending rows; local green, CI 35 on the lane
 - [Attributes panel header needs the open panel](patterns_attributes_panel_header_controls_need_the_open_panel.md) — NEO-569: shut = title+toggle only; open before Rename/Delete/breadcrumb/Set actions
+- [Team Management era/alias specs](patterns_team_management_era_alias_specs.md) — re-filter after reload (axe on 10k rows), row/status/alert handles, alias holder trips Create again
+- [Copy absence keys on the refusal clause](patterns_copy_absence_keys_on_the_refusal_clause.md) — NEO-602: toHaveCount(0) on a shared phrase trips on a new allowed-state statement
+- [Same-name team eras unprovable on a card](patterns_same_name_team_eras_unprovable_on_a_card.md) — NEO-602: chip/sub-line print no era; alias-held other era makes the drawer an era proof
+- [Stuck "still looking up": check returns validators](patterns_stuck_looking_up_check_returns_validators.md) — NEO-602: lookup threw ReturnsValidationError on new row fields; read Convex logs first
 - [Pick List title bands; probe a query first](patterns_pick_list_title_bands_and_probing_a_query.md) — NEO-590: band by rowheader; absence regex; row order; year gate is client-side; --identity probe
 - [Seeding a review state for screenshots](patterns_seeding_a_review_state_for_screenshots.md) — scratchpad script over /testing hops; titleSports probe; colorScheme only under System
 - [Dashboard Out the Door handles](patterns_dashboard_out_the_door_handles.md) — region/article "eBay order #<no>" (hash, unlike Sales), count line, hidden lines, goto+goBack gates
@@ -94,3 +98,5 @@
 - [Planted break collides with a sibling plant](patterns_planted_break_collides_with_a_sibling_plant.md) — baseline red = sibling mid-plant; git diff HEAD first; restore by reversing, not cp
 - [red-run.mjs and client-wire.log](patterns_red_run_script_and_client_wire_log.md) — NEO-398: per red try triage, --attempt, artifact guards, untrusted output, listener fakes
 - [Injected orders ship up front](patterns_injected_orders_ship_up_front.md) — SHIPPED/FULFILLED keeps the Pick List clean; Convex error $-anchor trap; Switch by keyboard
+- [Post-name Next held then gone](patterns_post_name_next_held_then_gone.md) — NEO-574 career step: wait for usable Next/Save/autograph, press disabled:false only
+- [Second variant needs a re-drill](patterns_second_variant_needs_a_redrill.md) — openVariant skips the create confirm while a checklist is open; use drillToCustom again

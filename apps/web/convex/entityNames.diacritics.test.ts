@@ -188,7 +188,7 @@ describe("teams.findByNameAndSport folds accents (NEO-253)", () => {
 
     const found = await t
       .withIdentity(USER)
-      .query(api.teams.findByNameAndSport, {
+      .query(internal.teams.findByNameAndSport, {
         name: "Montreal Expos",
         sportId,
       });
@@ -209,7 +209,7 @@ describe("teams.findByNameAndSport folds accents (NEO-253)", () => {
 
     const found = await t
       .withIdentity(USER)
-      .query(api.teams.findByNameAndSport, {
+      .query(internal.teams.findByNameAndSport, {
         name: "Montréal Expos",
         sportId,
       });
@@ -267,7 +267,7 @@ describe("the location-composed team key folds accents (NEO-236 + NEO-253)", () 
 
     const found = await t
       .withIdentity(USER)
-      .query(api.teams.findByNameAndSport, {
+      .query(internal.teams.findByNameAndSport, {
         name: "Montreal Expos",
         sportId,
       });
@@ -288,7 +288,7 @@ describe("the location-composed team key folds accents (NEO-236 + NEO-253)", () 
 
     const found = await t
       .withIdentity(USER)
-      .query(api.teams.findByNameAndSport, {
+      .query(internal.teams.findByNameAndSport, {
         name: "Montréal Expos",
         sportId,
       });

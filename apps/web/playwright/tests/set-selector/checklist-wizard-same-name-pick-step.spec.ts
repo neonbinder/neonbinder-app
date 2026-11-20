@@ -170,6 +170,35 @@ test(
     // names the club "Tigers"; a refresh that moves his stint fails here by name.
     await expect(linkCatalogue.getByText("Tigers 2026–present", { exact: true })).toBeVisible();
     await expect(linkCatalogue).toHaveAccessibleName(`Link to ${NAME}, On a roster that year, Tigers 2026 to present`);
+    // NEO-602: the step shows the card the name came off, so the operator can choose by
+    // it: the card's number and the team printed on it (RP03 says "Hanshin Tigers"), and
+    // under them each candidate with the stints on file. The cards are read from the cards the
+    // fetch observed, so a refresh cannot move them. Both lists are named by their visible
+    // lead-in ("Printed on N cards", "Teams we know for each player").
+    const printedCards = wizard.getByRole("list", { name: /^Printed on [0-9]+ cards?$/ });
+    await expect(printedCards).toContainText("#RP03");
+    await expect(printedCards).toContainText("Hanshin Tigers");
+    const known = wizard.getByRole("list", { name: "Teams we know for each player" });
+    await expect(known).toContainText(`${NAME}, b. 1851`);
+    // The catalogue's man has no birth year, so the list tells him from his namesake by his place
+    // in the pick step's order, the wording the Link buttons use when a row has nothing else. The
+    // order is the server's (`sameNamePlayers`: the name index, ties by creation), and the catalogue's
+    // row is imported with the seed before this spec adds or adopts its namesake, so he is option 1.
+    await expect(known).toContainText(`${NAME}, option 1 of 2`);
+    // The rival has no career on file (the fixture's claim); the catalogue's man has one stint,
+    // on the club the card prints, and it is marked as that, as a qualifier after the team.
+    await expect(known).toContainText("Nothing on file yet");
+    await expect(known).toContainText(/Hanshin Tigers \(printed team\)/);
+    // The status line says what that settles: exactly one of the two has a stint with the
+    // printed team, so it names him by his place in the list. The wizard's other live regions
+    // are filtered out by the sentence.
+    await expect(
+      wizard
+        .getByRole("status")
+        .filter({
+          hasText: new RegExp(`^Only ${NAME} \\(option 1 of 2\\) has a stint on file with the printed team\\.$`),
+        }),
+    ).toBeVisible();
     await expect(wizard.getByRole("button", { name: "Create new" })).toBeVisible();
     await expect(wizard.getByRole("button", { name: `Skip ${NAME} — not a person` })).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, same-name pick step" });

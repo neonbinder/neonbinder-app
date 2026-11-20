@@ -133,6 +133,7 @@ import type * as lib_easypostWebhookSignature from "../lib/easypostWebhookSignat
 import type * as lib_ebayEnv from "../lib/ebayEnv.js";
 import type * as lib_ebayListing from "../lib/ebayListing.js";
 import type * as lib_entityNearMatch from "../lib/entityNearMatch.js";
+import type * as lib_entityReviewContext from "../lib/entityReviewContext.js";
 import type * as lib_extractRejections from "../lib/extractRejections.js";
 import type * as lib_fakeMarketplace from "../lib/fakeMarketplace.js";
 import type * as lib_googleIdTokenVerify from "../lib/googleIdTokenVerify.js";
@@ -163,6 +164,7 @@ import type * as lib_searchQueryClamp from "../lib/searchQueryClamp.js";
 import type * as lib_selectorAncestry from "../lib/selectorAncestry.js";
 import type * as lib_selectorLeagues from "../lib/selectorLeagues.js";
 import type * as lib_selectorTeams from "../lib/selectorTeams.js";
+import type * as lib_teamEra from "../lib/teamEra.js";
 import type * as lib_teamFill from "../lib/teamFill.js";
 import type * as lib_teamRow from "../lib/teamRow.js";
 import type * as lib_testSeedMarks from "../lib/testSeedMarks.js";
@@ -371,6 +373,7 @@ declare const fullApi: ApiFromModules<{
   "lib/ebayEnv": typeof lib_ebayEnv;
   "lib/ebayListing": typeof lib_ebayListing;
   "lib/entityNearMatch": typeof lib_entityNearMatch;
+  "lib/entityReviewContext": typeof lib_entityReviewContext;
   "lib/extractRejections": typeof lib_extractRejections;
   "lib/fakeMarketplace": typeof lib_fakeMarketplace;
   "lib/googleIdTokenVerify": typeof lib_googleIdTokenVerify;
@@ -401,6 +404,7 @@ declare const fullApi: ApiFromModules<{
   "lib/selectorAncestry": typeof lib_selectorAncestry;
   "lib/selectorLeagues": typeof lib_selectorLeagues;
   "lib/selectorTeams": typeof lib_selectorTeams;
+  "lib/teamEra": typeof lib_teamEra;
   "lib/teamFill": typeof lib_teamFill;
   "lib/teamRow": typeof lib_teamRow;
   "lib/testSeedMarks": typeof lib_testSeedMarks;
