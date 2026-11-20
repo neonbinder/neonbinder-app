@@ -7,7 +7,9 @@
 //      checklist answers the other 28 cards and has no row for B-1, so B-1's team comes
 //      from its listing alone ("Arizona State Sun Devils", a team on file).
 //   3. B-1's person is new. The operator moves him to the teamless sport (Baseball left
-//      off his sports) and adds him; every other name is skipped.
+//      off his sports) and adds him; every other name is skipped. The Career check
+//      (NEO-574) then asks about B-20's catalogue player, whose career has no Sun Devils
+//      stint by 2026; it is left on "Keep as is" (writes nothing).
 //   4. Save says nothing about No Team: the default does not reach a card a listing gave
 //      a team (invariant 8: a data claim holds a default back).
 //   5. The committed card B-1 has its person and the listed team, reads no "No Team", is
@@ -38,11 +40,13 @@ import { ensureSportHasTeams, openSportAttributes, pressTeamlessToggle, teamless
 import {
   answerPlayerAsNew,
   awaitLookupsSettled,
+  CAREER_STEP_SUBTITLE,
   confirmSaveButton,
   discardResumedReviewBatch,
   expectNothingDecided,
   expectWizardStep,
   fetchChecklistToWizard,
+  passCareerCheck,
   personSkip,
   reviewWizard,
   skipEveryNameBut,
@@ -53,6 +57,12 @@ const TARGET = { year: "2026", manufacturer: "ONIT Athlete", set: "ONIT Athlete 
 const FETCH = { checklist: CHECKLISTS.onitArizonaState2026OneLive, firstFetch: true };
 /** The one card the uploaded file leaves to BSC. */
 const LIVE_CARD = "B-1";
+/**
+ * The one card whose person the catalogue already holds with a career that has no Sun
+ * Devils stint by 2026, so the Career check (NEO-574) asks about him. (B-9's person
+ * resolves to the catalogue too, with nothing to ask.)
+ */
+const CAREER_CARD = "B-20";
 /** The set's own sport, the one he would be born in. */
 const SET_SPORT = "Baseball";
 
@@ -92,6 +102,8 @@ test(
     expect(live, `the capture has a row for ${LIVE_CARD}`).toBeDefined();
     const person = live!.player;
     const team = live!.team;
+    const careerPerson = checklistRows(CHECKLISTS.onitArizonaState2026Full).find((row) => row.number === CAREER_CARD)?.player;
+    expect(careerPerson, `the capture has a row for ${CAREER_CARD}`).toBeDefined();
     written.sport = sport;
     written.sportFlagged = false;
 
@@ -140,6 +152,14 @@ test(
       await expect(alsoSetSport).not.toBeChecked();
       await answerPlayerAsNew(page);
     });
+
+    // ══ 3b. THE CAREER CHECK (NEO-574): not this spec's feature, passed writing nothing ══
+    // One line, B-20's catalogue person, on its default. The line names the team as NB holds
+    // it, so it is found by its person ("<person> on <team>").
+    await expectWizardStep(page, CAREER_STEP_SUBTITLE);
+    const careerLine = wizard.getByRole("radiogroup", { name: new RegExp(`^${escapeRe(careerPerson!)} on `) });
+    await expect(careerLine.getByRole("radio", { name: "Keep as is" })).toBeChecked();
+    await passCareerCheck(page);
 
     // ══ 4. SAVE: nothing about No Team; the listed team holds the default back ══
     await expectWizardStep(page, STEP_SUBTITLE.save);

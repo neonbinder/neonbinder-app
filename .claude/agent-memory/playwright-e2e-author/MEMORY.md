@@ -101,7 +101,7 @@
 - [Cross-sport player resurfaces on re-sync](pattern_cross_sport_player_resurfaces_on_resync.md) — a player created under another sport comes back as a "New player" row on re-sync (gate is set-sport-scoped); a teams-only re-sync spec must account for him
 - [Wizard progress bar and Decided count](patterns_wizard_progress_bar_and_decided_count.md) — NEO-467: no Step x of y; subtitle via progress bar, row skip going, Decided (N) for "exactly one"
 - [Survey fake-BSC recordings for a fixture](reference_survey_fake_bsc_recordings_for_a_fixture.md) — join results to card-listing teamName, check names per sport in the bundle
-- [Teamless sport spec, review batch cleanup](patterns_teamless_sport_spec_and_review_batch_cleanup.md) — NEO-426 handles; team rows first; re-paste + Sync resumes a batch; branch on Skip remaining (N)
+- [Teamless sport spec, review batch cleanup](patterns_teamless_sport_spec_and_review_batch_cleanup.md) — NEO-426 handles; team rows first; re-paste + Sync resumes a batch; Skip remaining (N); real-set career check
 - [Plant product breaks in a HEAD snapshot](patterns_plant_product_breaks_in_a_head_snapshot.md) — another Vite serves the worktree: plant/restore in the snapshot, cmp vs HEAD, own worker
 - [Planted break collides with a sibling plant](patterns_planted_break_collides_with_a_sibling_plant.md) — baseline red = sibling mid-plant; git diff HEAD first; restore by reversing, not cp
 - [red-run.mjs and client-wire.log](patterns_red_run_script_and_client_wire_log.md) — NEO-398: per red try triage, --attempt, artifact guards, untrusted output, listener fakes

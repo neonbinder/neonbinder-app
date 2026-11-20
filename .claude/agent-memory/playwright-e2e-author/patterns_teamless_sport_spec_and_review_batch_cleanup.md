@@ -48,6 +48,15 @@ rawTeamName, i.e. a recorded listing. Flag-off leg: `drillToCustom(page, { sport
 does goto + one pick (two history entries), so return to the leaf with
 `page.goto(leafUrl)`, not one goBack.
 
+**Real-set fixtures meet the Career check (NEO-574).** A real set's checklist name that
+resolves to ONE catalogue player (no staging, no skip row) is career-checked against the
+card's team: on the ONIT Arizona State set one such player has no Sun Devils stint, so a
+"Career check" step sits between the names and Save. Assert it by subtitle, find the line
+by its person (`radiogroup` name `^<person> on `: the team half is NB's full name, which the
+CSV does not spell), prove "Keep as is" checked, `passCareerCheck`. To learn which names
+were staged (for enrichment recording too), list the deployment's `entityReviewSkips`
+after a run: checklist names absent from it (and not added) resolved to the catalogue.
+
 **Branch on batch state, not on a race.** To know whether names remain after the row
 you are about to decide, read the footer's `Skip remaining names (N)` first (N counts
 every undecided row, the presented one included), then pin each shape; read back the
