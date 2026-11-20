@@ -12,6 +12,7 @@
  */
 import { ConvexError, v, type Infer } from "convex/values";
 import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
+import { MAX_BSC_PRINT_RUN } from "./bscAttributeTokens";
 import { rowHasNoNumber } from "../../lib/checklists/match-published-checklist";
 import { isNoClaimTeamText, isNoTeamText } from "../../lib/checklists/no-team";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../features/cardAttention";
@@ -46,6 +47,11 @@ export const publishedChecklistRowValidator = v.object({
   // client chooses rows by it; the fetch never reads it and drops it in
   // `checkPublishedChecklist`. Accepted so a row is sent as parsed.
   subset: v.optional(v.string()),
+  // NEO-616 — the print run the file printed for this card ("/5" is 5). The
+  // re-check keeps it only as an integer 1..MAX_BSC_PRINT_RUN and refuses the
+  // whole checklist for anything else; absent stays absent. Mirrors
+  // `publishedChecklistStoredRowValidator` (schema.ts), kept by hand.
+  printRun: v.optional(v.number()),
 });
 export const publishedChecklistValidator = v.object({
   rows: v.array(publishedChecklistRowValidator),
@@ -118,6 +124,17 @@ export function checkPublishedChecklist(
     if (row.subset !== undefined && row.subset.trim().length > MAX_PLAYER_NAME_LENGTH) {
       throw new ConvexError(`${where} has a set name over ${MAX_PLAYER_NAME_LENGTH} characters.`);
     }
+    // NEO-616 — a print run is a whole number a card can be numbered to; a
+    // zero, a fraction, NaN/Infinity or one past what a marketplace prints is
+    // a bad cell, never trimmed to fit.
+    if (
+      row.printRun !== undefined &&
+      !(Number.isInteger(row.printRun) && row.printRun >= 1 && row.printRun <= MAX_BSC_PRINT_RUN)
+    ) {
+      throw new ConvexError(
+        `${where} has a print run that is not a whole number from 1 to ${MAX_BSC_PRINT_RUN}.`,
+      );
+    }
     const clean = (names: string[], max: number, unit: string) => {
       if (names.length > MAX_PUBLISHED_ROW_NAMES) {
         throw new ConvexError(
@@ -152,6 +169,7 @@ export function checkPublishedChecklist(
       teams,
       ...(rowHasNoNumber({ number, noNumber: row.noNumber }) ? { noNumber: true } : {}),
       ...(noTeam ? { noTeam: true } : {}),
+      ...(row.printRun !== undefined ? { printRun: row.printRun } : {}),
     };
   });
   return { rows };

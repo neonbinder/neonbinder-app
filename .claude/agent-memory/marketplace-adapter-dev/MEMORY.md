@@ -100,3 +100,5 @@
 - [eBay read path: one clock](ebay-read-path-bounded-by-one-clock.md) — 3 s a try, one retry on timeout; timeout is never a missing policy
 - [Direct helper bypasses action stubs](reference_direct_helper_bypasses_credentials_action_stubs.md) — runAction -> plain helper skips vi.mock action stubs; add a twin stub, spy _handler for no-hop proof
 - [One fake host pin for both marketplaces](reference_one_fake_host_pin_shared_by_both_marketplaces.md) — share isFakeServiceHost/signForFake; fake switch keyed on request not config validity; strict echo guard
+- [Checklist matcher strips letter prefixes](reference_checklist_matcher_strips_letter_prefix_ties_need_digit_first_numbers.md) — "M-1" pairs card "1" by number; name-tie tests need digit-first numbers ("89M-1")
+- [pgrep wait loop matches itself](reference_pgrep_wait_loop_matches_itself.md) — `until ! pgrep -f tool` never ends under the harness; wait on a pid with kill -0

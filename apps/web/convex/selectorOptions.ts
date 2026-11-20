@@ -21385,6 +21385,9 @@ export const commitCardChecklistChunk = internalMutation({
     const bscTeamEnrichmentIds: Array<Id<"cardChecklist">> = [];
     const staleDecisionIds: Array<Id<"cardChecklist">> = [];
     let contentAppliedCount = 0;
+    // NEO-616 — an accepted field changed some card's print run, so the
+    // leaf's own shown run is recomputed once, after this chunk.
+    let printRunChanged = false;
     // NEO-246 — see the return validator. Accumulated across every
     // `boundPendingNames` call in this chunk, on both the update and the
     // insert branch.
@@ -21508,6 +21511,7 @@ export const commitCardChecklistChunk = internalMutation({
           contentPatch.playerLinks = card.playerLinks;
         }
         if (Object.keys(contentPatch).length > 0) contentAppliedCount++;
+        if ("printRun" in contentPatch) printRunChanged = true;
 
         // ── NEO-102: the operator's "no team" confirmation ─────────────────
         //
@@ -21946,6 +21950,13 @@ export const commitCardChecklistChunk = internalMutation({
     }
 
     await countLedger.flush(ctx);
+
+    // NEO-616 — after the card writes, in the same transaction's wake.
+    if (printRunChanged) {
+      await ctx.scheduler.runAfter(0, internal.variantPrintRun.refreshVariantPrintRun, {
+        selectorOptionId: args.selectorOptionId,
+      });
+    }
 
     return {
       storedIds,

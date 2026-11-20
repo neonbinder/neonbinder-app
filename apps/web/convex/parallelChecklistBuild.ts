@@ -136,6 +136,7 @@ import {
   teamDefaultOf,
 } from "./lib/selectorTeams";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
+import { printRunsFromChecklistRows } from "./lib/variantPrintRun";
 import {
   cardKey,
   linkCardsToSide,
@@ -2660,6 +2661,42 @@ export const buildParallelChecklist = action({
       };
     }
 
+    // NEO-616 — where SportLots states no run for a card, the parallel's OWN
+    // linked checklist rows may (a file such as a foil x colour layout prints
+    // one per card). Read only when some card lacks a SportLots run; a stored
+    // checklist too big to read, or a read that fails, leaves every run as it
+    // would have been without the checklist. SportLots wins where it has one.
+    let checklistRuns = new Map<Id<"cardChecklist">, number>();
+    const slRunOutcome = (id: Id<"cardChecklist">): number | undefined => {
+      const outcome = outcomes.sportlots?.get(id);
+      return outcome?.kind === "linked" ? outcome.card.printRun : undefined;
+    };
+    if (insertCards.cards.some((c) => slRunOutcome(c._id) === undefined)) {
+      try {
+        const stored = await ctx.runQuery(internal.publishedChecklists.rowsForLeaf, {
+          selectorOptionId: args.parallelId,
+        });
+        if (stored.kind === "rows" && stored.rows.length > 0) {
+          checklistRuns = printRunsFromChecklistRows(
+            insertCards.cards.map((c) => ({
+              id: c._id,
+              cardNumber: c.cardNumber,
+              players: c.namesOnCard,
+            })),
+            stored.rows,
+          );
+        }
+      } catch (err) {
+        console.warn(
+          JSON.stringify({
+            msg: "parallel_checklist_runs_unread",
+            parallelId: args.parallelId,
+            error: err instanceof Error ? err.name : "unknown",
+          }),
+        );
+      }
+    }
+
     type Copy = {
       sourceCardId: Id<"cardChecklist">;
       expect: { cardNumber: string; cardName: string; namesOnCard: string[] };
@@ -2723,9 +2760,14 @@ export const buildParallelChecklist = action({
         }),
         ...(bsc ? { bsc: { ref: bsc.ref, ...(bsc.setId ? { setId: bsc.setId } : {}) } } : {}),
         ...(sl ? { sportlots: { ref: sl.ref, ...(sl.setId ? { setId: sl.setId } : {}) } } : {}),
-        // M3 — the print run is the PARALLEL's, and only SportLots states it
-        // per card. NB has no parallel-level print run to fall back on.
-        ...(sl?.printRun !== undefined ? { printRun: sl.printRun } : {}),
+        // M3 — the print run is the PARALLEL's. SportLots states it per card
+        // and wins; failing that, the parallel's own linked checklist rows
+        // (NEO-616).
+        ...(sl?.printRun !== undefined
+          ? { printRun: sl.printRun }
+          : checklistRuns.has(card._id)
+            ? { printRun: checklistRuns.get(card._id) }
+            : {}),
         ...(card.variationOfCardId ? { variationOfCardId: card.variationOfCardId } : {}),
         sortOrder: card.sortOrder,
       });
@@ -2911,6 +2953,22 @@ export const buildParallelChecklist = action({
       missing + changedSources > 0
         ? classify(oldRefsBySide, landedRefs)
         : classified;
+
+    // NEO-616 — the parallel's own print run, from the cards it now holds.
+    // The build is already done: a failure here is logged, never the build's.
+    try {
+      await ctx.runMutation(internal.variantPrintRun.refreshVariantPrintRun, {
+        selectorOptionId: args.parallelId,
+      });
+    } catch (err) {
+      console.warn(
+        JSON.stringify({
+          msg: "parallel_print_run_refresh_failed",
+          parallelId: args.parallelId,
+          error: err instanceof Error ? err.name : "unknown",
+        }),
+      );
+    }
 
     const copied = newIdOf.size;
     const result: BuildParallelResult = {
