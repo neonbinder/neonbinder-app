@@ -1,8 +1,11 @@
 // ONE FEATURE (NEO-602, the Orioles fix): when a printed team name fits two
 // eras, a card whose player has NO stint on either abstains, so long as the
 // cards that do speak point at the era the set's year covers. The name links
-// silently: no review step for it, the cards save straight away, and every
-// card carries the current era.
+// silently: no team step and no "linked for you" decision for it, and every
+// card carries the current era. The wizard still opens, on NEO-574's Career
+// check alone, because the silent card's player has no career on file: that
+// step lists him on the CURRENT era (the team his card got), and left on "Keep
+// as is" it writes nothing.
 //
 // The Orioles shape, minted: `Bal<token> Ori<token>` (1954–present) is the
 // current era and holds the printed name as its own; `Mil<token> Bre<token>`
@@ -40,7 +43,15 @@ import { editCardButton } from "../../support/cards";
 import { usePastedChecklist } from "../../support/published-checklist";
 import { addPlayerByHand, expectPlayersLoaded } from "../../support/players";
 import { drillToCustom, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
-import { reviewWizard } from "../../support/wizard";
+import {
+  advanceToSave,
+  CAREER_STEP_SUBTITLE,
+  careerLine,
+  confirmSaveButton,
+  reviewWizard,
+  stepCounter,
+  tidyUpName,
+} from "../../support/wizard";
 
 test(
   "Entity review — a printed team name that fits two eras links silently to the year's era when the only players with stints played there, and a card whose player has none abstains",
@@ -130,21 +141,43 @@ test(
     await expect(setBuilderReady(page)).toBeVisible();
     await expect(empty).toBeVisible();
 
-    // ── PART 3: two cards print the name; nothing is asked, they save at once ──
+    // ── PART 3: two cards print the name; no team is asked, only the Career check opens ──
     const facts = await usePastedChecklist(page, `number,player,team\n1,${VOTER},${CURRENT}\n2,${SILENT},${CURRENT}`, 2);
     expect(facts.rows).toBe(2);
     await syncChecklistButton(page).click();
-    // Positive: a run with no question commits straight away, so "Saved 2
-    // cards." is on the page with no review in between (an asked name holds the
-    // save until the operator confirms it).
-    await expect(page.getByText(/^Saved 2 cards\./).first()).toBeVisible();
-    // Negative, read against the line above: no review opened, nothing was
-    // linked for the operator to look at.
-    await expect(reviewWizard(page)).toHaveCount(0);
+    const wizard = reviewWizard(page);
+    await expect(wizard).toBeVisible();
+    await expect(wizard).toHaveAccessibleName(tidyUpName({ year: "2025", set: SET }));
+    // Positive: the wizard opens straight on the Career check (nothing decided
+    // before it, so x is 1), and its one line is the silent card's player on the
+    // CURRENT era: the team the name linked to, by its own name.
+    await expect(wizard.getByRole("heading", { level: 3, name: `${CAREER_STEP_SUBTITLE} · 1 to look at` })).toBeVisible();
+    await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+    const line = careerLine(page, SILENT, CURRENT);
+    await expect(line).toBeVisible();
+    await expect(line.getByRole("radio", { name: "Keep as is" })).toBeChecked();
+    const lines = wizard.getByRole("list", { name: `${CAREER_STEP_SUBTITLE} · 1 to look at` });
+    await expect(lines.getByRole("listitem")).toHaveCount(1);
+    await expect(lines).toContainText("No career on file yet.");
+    await expect(lines).toContainText("Cards #2");
+    // Negatives, read against that step: the voter (his stint covers the team)
+    // and the past era are on no line, and the printed name was neither asked
+    // nor offered as a decision.
+    await expect(careerLine(page, VOTER, CURRENT)).toHaveCount(0);
+    await expect(careerLine(page, SILENT, PAST)).toHaveCount(0);
+    await expect(wizard.getByRole("heading", { level: 3, name: /^(Which team|New Team): / })).toHaveCount(0);
     await expect(page.getByText(/names? (was|were) linked for you/)).toHaveCount(0);
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, Career check after a silent two-era link" });
+
+    // Every line left on "Keep as is" (advanceToSave), then the save.
+    await advanceToSave(page);
+    await expect(wizard.getByText("Save 2 cards?", { exact: true })).toBeVisible();
+    await confirmSaveButton(page).click();
+    await expect(page.getByText(/^Saved 2 cards\./).first()).toBeVisible();
     await expect(editCardButton(page, "1")).toBeVisible();
     await expect(editCardButton(page, "2")).toBeVisible();
-    await expectAccessible(page, { label: "Set builder, two-era team name saved without a question" });
+    await expect(wizard).toBeHidden();
+    await expectAccessible(page, { label: "Set builder, two-era team name saved" });
 
     // ── PART 4: both cards carry the current era, the silent card included ──
     const drawer = page.getByRole("dialog");
