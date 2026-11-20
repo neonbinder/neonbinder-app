@@ -2,11 +2,16 @@
 
 Every set the Playwright suite touches is listed here. Two rules govern this file:
 
-1. **Adding a new REAL (marketplace-backed) set requires explicit owner approval,
-   every time.** A real set costs a 30–90s BSC/SL sync on first use. The
-   marketplaces carry essentially every set ever printed, so the constraint is
-   cost and determinism, not availability. Ask before adding one — do not add a
-   real set because it seemed convenient.
+1. **A real (marketplace-backed) set needs no owner approval when it is served
+   by the fake BSC (NEO-552): its reads are already recorded, or are recorded
+   with `fake-bsc.sh record` and nothing else.** Register it here (its row, its
+   claim and its sole writer) in the same commit, and keep this list current;
+   managing the registry is the whole requirement (Jason, 2026-11-20). Widening
+   an existing spec's claim on a set works the same way. **Owner approval is
+   still needed for anything beyond loading a set into the fake**: a write to a
+   real marketplace (`fake-bsc.sh capture`, eBay sandbox writes), a SportLots
+   set (shared account, no fake), or a change to the fake's code. Entries below
+   marked "approved by Jason" predate this rule.
 2. **Every custom set prefix must be registered below before use.** The registry
    exists so two flows never silently collide on the same name.
 
@@ -2310,7 +2315,7 @@ first). The checklist is a PDF built per attempt in Topps' layout
 | -- | -- |
 | the drill | Baseball > 2026 > **All Brands** > Sets `Topps Chrome` (since NEO-527 filed under the year's `Topps` brand, which the seed's year-wide 2026 Sets sync mints from the known-brands list, so the option reads "Topps Chrome Topps"; it sat under `Unknown` before. The set's name is its own exact text, so the picker's exact-text match still finds it). Its Variant Types sync from BSC on first use |
 | the file | BASE CARDS (5 rows, `1`-`5`), FUTURE STARS (9 rows against BSC's 10 cards `FS-1`..`FS-10`: `FS-1`..`FS-8` as BSC lists them, Paul Skenes misspelled "Paul Skenns" and printed `109`, Carson Benge's `FS-10` left out), `E2E <TOKEN>` (Colt Keith `1`, Gunnar Henderson `2`, Bobby Witt Jr. `NNO`, all on the catalogue), a title line and one filler page of lone "Rookie" words (both skipped, by reason) |
-| writes that stay | `Base` mapped to BSC's base (the picker preselects BASE CARDS); the Inserts reconcile saved (Future Stars, and whatever else BSC lists that is Ready); NEO-625: one more Insert row, `Exposé`, made its own set from BSC's Pending list and linked to BSC's `exposé` (its accented id is the point: the Save once failed on it). No card of it is fetched. The run-start reset is its cleanup. Claim widened by one row, NEO-625 (owner approval to be confirmed in the PR) |
+| writes that stay | `Base` mapped to BSC's base (the picker preselects BASE CARDS); the Inserts reconcile saved (Future Stars, and whatever else BSC lists that is Ready); NEO-625: one more Insert row, `Exposé`, made its own set from BSC's Pending list and linked to BSC's `exposé` (its accented id is the point: the Save once failed on it). No card of it is fetched. The run-start reset is its cleanup. Claim widened by one row, NEO-625 (approved by Jason 2026-11-20) |
 | writes it cleans | the token set (`<token>`, single token, R7) and its 3 cards, deleted at the end; the set's checklist, removed at the end |
 | never | a Future Stars card is never committed (its commit would build the grouped parallels): its fetch ends in the wizard, cancelled with nothing decided |
 | live SportLots | **unmeasured**: SportLots is paused everywhere the suite runs |
@@ -3649,6 +3654,8 @@ commit, and drill with `drillToCustom` (support/set-builder.ts):
       VARIANT: "Base"
 ```
 
-**Real set** — stop and ask the owner first. If approved: extend
+**Real set** — served by the fake BSC (recorded, or recorded for this spec with
+`fake-bsc.sh record`): no approval needed (rule 1); anything beyond loading it
+into the fake: ask the owner first. Then: extend
 `tests/setup.spec.ts`'s provisioning and its CANONICAL PRE-SYNCED DATA block, add a
 row to the real-set table above, and state the measured sync cost in the PR.
