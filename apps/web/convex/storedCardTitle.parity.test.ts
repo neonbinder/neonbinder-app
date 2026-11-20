@@ -263,6 +263,39 @@ describe("previewListingTitle and titleForStoredCard", () => {
 });
 
 /**
+ * NEO-619 — "Parallels name themselves" on the insert: Regenerate and the
+ * stored-card path read the one chain, so they agree with the switch on, and
+ * the parallel's card drops the insert's name while the insert's own keeps it.
+ */
+describe("parallels name themselves (NEO-619)", () => {
+  test("the preview and the stored title agree, and the parallel's card leaves the insert out", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await t.run(async (ctx) => {
+      const parallel = (await ctx.db.get(s.cards.underParallel))!;
+      const insertId = (await ctx.db.get(parallel.selectorOptionId))!.parentId!;
+      await ctx.db.patch(insertId, { metadata: { parallelsNameThemselves: true } });
+    });
+    const titles: Record<string, string> = {};
+    for (const key of ["underParallel", "underInsert"] as const) {
+      const cardId = s.cards[key];
+      const preview = await t
+        .withIdentity(ADMIN)
+        .query(api.selectorOptions.previewListingTitle, { cardId });
+      const stored = await t.run(async (ctx) => titleForStoredCard(ctx, (await ctx.db.get(cardId))!));
+      expect(preview.title, key).toBe(stored.title);
+      expect(preview.inputs, key).toEqual(stored.inputs);
+      titles[key] = preview.title;
+    }
+    expect(titles.underParallel).toBe("2024 Topps Chrome Gold Refractor Parallel Darryl Strawberry #FS-2 Baseball");
+    // The parallel keeps its "Parallel" type name: a top level says its type.
+    expect(titles.underParallel).not.toContain("Future Stars");
+    // The insert's own card still names the insert.
+    expect(titles.underInsert).toContain("Future Stars");
+  });
+});
+
+/**
  * NEO-527 — a set committed while it sat in the year's Unknown row, then
  * re-homed under its brand by `backfillKnownBrands`. The title the card
  * stored at commit is the title Regenerate offers after the move: the brand

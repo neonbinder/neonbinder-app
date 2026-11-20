@@ -81,6 +81,10 @@ vi.mock("../../convex/_generated/api", () => ({
       setSelectorOptionCardNumberPrefix: "setSelectorOptionCardNumberPrefix",
       // NEO-335
       setSelectorOptionListingShortName: "setSelectorOptionListingShortName",
+      // NEO-619 — the insert's switch, and the parallels beneath it
+      setSelectorOptionParallelsNameThemselves:
+        "setSelectorOptionParallelsNameThemselves",
+      getSelectorOptions: "getSelectorOptions",
       // NEO-277
       setSelectorOptionTeams: "setSelectorOptionTeams",
       getSelectorOptionTeamCascadePreview:
@@ -141,6 +145,11 @@ const mockRenameSelectorOption = vi.fn();
 const mockSetSelectorOptionCardNumberPrefix = vi.fn();
 /** NEO-335 */
 const mockSetSelectorOptionListingShortName = vi.fn();
+/** NEO-619 */
+const mockSetParallelsNameThemselves = vi.fn();
+/** NEO-619 — the parallels `getSelectorOptions` answers, and the args it was asked with. */
+let currentParallelRows: unknown = [];
+const parallelRowsArgs: unknown[] = [];
 /** NEO-237 */
 const mockSetSelectorOptionSetNamePrefix = vi.fn();
 const mockSetManufacturerSlViaAllBrands = vi.fn();
@@ -182,7 +191,11 @@ let currentPromotionEligibility: unknown = {
 };
 
 vi.mock("convex/react", () => ({
-  useQuery: (query: string) => {
+  useQuery: (query: string, args?: unknown) => {
+    if (query === "getSelectorOptions") {
+      parallelRowsArgs.push(args);
+      return args === "skip" ? undefined : currentParallelRows;
+    }
     if (query === "getSelectorOptionById") return currentRow;
     if (query === "getAncestorChain") return currentChain;
     if (query === "teams.getManyByIds") return currentTeamRows;
@@ -204,6 +217,8 @@ vi.mock("convex/react", () => ({
       return mockSetSelectorOptionCardNumberPrefix;
     if (mutation === "setSelectorOptionListingShortName")
       return mockSetSelectorOptionListingShortName;
+    if (mutation === "setSelectorOptionParallelsNameThemselves")
+      return mockSetParallelsNameThemselves;
     if (mutation === "setSelectorOptionTeams") return mockSetSelectorOptionTeams;
     if (mutation === "brandView.setSelectorOptionSetNamePrefix")
       return mockSetSelectorOptionSetNamePrefix;
@@ -2790,6 +2805,231 @@ describe("SetAttributesPanel — Brand row (NEO-237)", () => {
 // ---------------------------------------------------------------------------
 // NEO-277 — Team as a set-level attribute
 // ---------------------------------------------------------------------------
+
+/**
+ * NEO-619 — "Parallels name themselves": one switch on an insert-role row (an
+ * insert under an Insert type) that has parallels beneath it, or has the
+ * switch already on. The SportLots link toggle shares its cell
+ * (`PressedToggleCell`) and must render exactly as before.
+ */
+describe("SetAttributesPanel — Parallels name themselves (NEO-619)", () => {
+  const CELL = "Set feature Parallel titles";
+  const PARALLELS = [{ _id: "par-1", level: "parallel", value: "Zorbo Special Gold" }];
+
+  /** The chain of an insert under an Insert type, under a set. */
+  const insertChain = (typeTitle = "Inserts") => [
+    ...makeChain("Baseball"),
+    { _id: "type-id", value: typeTitle, level: "variantType" },
+  ];
+  const toggle = () => screen.getByRole("button", { name: "Parallels name themselves" });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    parallelRowsArgs.length = 0;
+    currentParallelRows = PARALLELS;
+    mockSetParallelsNameThemselves.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    currentParallelRows = [];
+    vi.restoreAllMocks();
+  });
+
+  it("is shown on an insert under an Insert type that has a parallel, off", () => {
+    currentRow = makeRow({ level: "insert", value: "Zorbo Special Purple" });
+    currentChain = insertChain();
+    renderPanel();
+    expect(screen.getByLabelText(CELL)).toBeTruthy();
+    expect(toggle().getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("asks for the parallels beneath the insert, and only then", () => {
+    currentRow = makeRow({ level: "insert", value: "Zorbo Special Purple" });
+    currentChain = insertChain();
+    renderPanel();
+    expect(parallelRowsArgs).toContainEqual({
+      level: "parallel",
+      parentId: SELECTOR_OPTION_ID,
+    });
+  });
+
+  it("is pressed when the switch is on", () => {
+    currentRow = makeRow({
+      level: "insert",
+      value: "Zorbo Special Purple",
+      metadata: { parallelsNameThemselves: true },
+    });
+    currentChain = insertChain();
+    renderPanel();
+    expect(toggle().getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("is shown when the switch is on and no parallel is left, so it can be turned off", () => {
+    currentParallelRows = [];
+    currentRow = makeRow({
+      level: "insert",
+      value: "Zorbo Special Purple",
+      metadata: { parallelsNameThemselves: true },
+    });
+    currentChain = insertChain();
+    renderPanel();
+    expect(screen.getByLabelText(CELL)).toBeTruthy();
+    expect(toggle().getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("is hidden on an insert with no parallels and the switch off", () => {
+    currentParallelRows = [];
+    currentRow = makeRow({ level: "insert", value: "Zorbo Special Purple" });
+    currentChain = insertChain();
+    renderPanel();
+    expect(screen.queryByLabelText(CELL)).toBeNull();
+  });
+
+  it("is hidden while the parallels are still loading and the switch is off", () => {
+    currentParallelRows = undefined;
+    currentRow = makeRow({ level: "insert", value: "Zorbo Special Purple" });
+    currentChain = insertChain();
+    renderPanel();
+    expect(screen.queryByLabelText(CELL)).toBeNull();
+  });
+
+  it.each(["Parallels", "Parallel", "Promo"])(
+    "is hidden on an insert-level row under a %s type, even with the flag stored",
+    (typeTitle) => {
+      currentRow = makeRow({
+        level: "insert",
+        value: "Zorbo Special Purple",
+        metadata: { parallelsNameThemselves: true },
+      });
+      currentChain = insertChain(typeTitle);
+      renderPanel();
+      expect(screen.queryByLabelText(CELL)).toBeNull();
+    },
+  );
+
+  it.each(["setName", "variantType", "parallel", "manufacturer", "year", "sport"])(
+    "is hidden on a %s row",
+    (level) => {
+      currentRow = makeRow({
+        level,
+        value: level === "variantType" ? "Inserts" : "Zorbo Special Purple",
+        metadata: { parallelsNameThemselves: true },
+      });
+      currentChain = insertChain();
+      renderPanel();
+      expect(screen.queryByLabelText(CELL)).toBeNull();
+    },
+  );
+
+  it("does not ask for parallels on a row that can never show the switch", () => {
+    currentRow = makeRow({ level: "setName" });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+    expect(parallelRowsArgs.length).toBeGreaterThan(0);
+    expect(parallelRowsArgs.every((a) => a === "skip")).toBe(true);
+  });
+
+  it("pressing it calls the mutation with the row's id and on:true", async () => {
+    currentRow = makeRow({ level: "insert", value: "Zorbo Special Purple" });
+    currentChain = insertChain();
+    renderPanel();
+    await act(async () => {
+      fireEvent.click(toggle());
+    });
+    expect(mockSetParallelsNameThemselves).toHaveBeenCalledTimes(1);
+    expect(mockSetParallelsNameThemselves).toHaveBeenCalledWith({
+      id: SELECTOR_OPTION_ID,
+      on: true,
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByText("Parallels name themselves · Regenerate a card to retitle it"),
+      ).toBeTruthy(),
+    );
+  });
+
+  it("pressing it while on calls the mutation with on:false and says so", async () => {
+    currentRow = makeRow({
+      level: "insert",
+      value: "Zorbo Special Purple",
+      metadata: { parallelsNameThemselves: true },
+    });
+    currentChain = insertChain();
+    renderPanel();
+    await act(async () => {
+      fireEvent.click(toggle());
+    });
+    expect(mockSetParallelsNameThemselves).toHaveBeenCalledWith({
+      id: SELECTOR_OPTION_ID,
+      on: false,
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          "Parallels carry the insert's name again · Regenerate a card to retitle it",
+        ),
+      ).toBeTruthy(),
+    );
+  });
+
+  it("a plain failure toasts a generic line, never the error's text", async () => {
+    mockSetParallelsNameThemselves.mockRejectedValue(
+      new Error("[CONVEX M(selectorOptions:x)] boom"),
+    );
+    currentRow = makeRow({ level: "insert", value: "Zorbo Special Purple" });
+    currentChain = insertChain();
+    renderPanel();
+    await act(async () => {
+      fireEvent.click(toggle());
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByText("Failed: Could not change how parallels are titled"),
+      ).toBeTruthy(),
+    );
+    expect(screen.queryByText(/boom/)).toBeNull();
+  });
+
+  it("a ConvexError's text is shown verbatim", async () => {
+    mockSetParallelsNameThemselves.mockRejectedValue(
+      new ConvexError("That row is gone. Refresh and try again."),
+    );
+    currentRow = makeRow({ level: "insert", value: "Zorbo Special Purple" });
+    currentChain = insertChain();
+    renderPanel();
+    await act(async () => {
+      fireEvent.click(toggle());
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByText("Failed: That row is gone. Refresh and try again."),
+      ).toBeTruthy(),
+    );
+  });
+
+  describe("the SportLots link toggle, now on the shared cell, renders as before", () => {
+    it("keeps its cell label, sentence, marker class and eyebrow; the new cell has no marker class", () => {
+      currentRow = makeRow({ level: "manufacturer", value: "Topps" });
+      currentChain = makeChain("Baseball");
+      renderPanel();
+      const cell = screen.getByLabelText("Set feature SportLots link");
+      expect(within(cell).getByText("SportLots")).toBeTruthy();
+      const button = within(cell).getByRole("button", {
+        name: "SportLots has no brand for this — match its sets by name",
+      });
+      expect(button.className).toMatch(/mb-field-\w+-btn-sl-via-all-brands/);
+      expect(button.getAttribute("aria-pressed")).toBe("false");
+    });
+
+    it("the parallels switch's button carries no field marker class", () => {
+      currentRow = makeRow({ level: "insert", value: "Zorbo Special Purple" });
+      currentChain = insertChain();
+      renderPanel();
+      expect(toggle().className).not.toContain("mb-field-");
+      expect(within(screen.getByLabelText(CELL)).getByText("Titles")).toBeTruthy();
+    });
+  });
+});
 
 describe("SetAttributesPanel — Team row (NEO-277)", () => {
   const BULLS = {

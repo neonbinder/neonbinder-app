@@ -1268,6 +1268,48 @@ describe("NEO-291: the card-prefix write is admin-gated, and the whole-metadata 
     });
   });
 
+  /**
+   * NEO-619 — "Parallels name themselves" has its own narrow mutation, gated
+   * like the short name above. The seeded row is a valid target (an insert
+   * under an Insert type), so the refusal is the admin gate, not the role check.
+   */
+  test("selectorOptions.setSelectorOptionParallelsNameThemselves refuses a signed-in non-admin and a signed-out caller", async () => {
+    const t = convexTest(schema, modules);
+    const insertId = await t.run(async (ctx) => {
+      const typeId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Inserts",
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      return ctx.db.insert("selectorOptions", {
+        level: "insert",
+        value: "Zorbo Special Purple",
+        parentId: typeId,
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+    });
+    const call = (tt: ReturnType<typeof convexTest>) =>
+      tt.mutation(api.selectorOptions.setSelectorOptionParallelsNameThemselves, {
+        id: insertId,
+        on: true,
+      });
+    await expect(call(t.withIdentity(SIGNED_IN))).rejects.toThrow();
+    await expect(call(t)).rejects.toThrow();
+    // Refused before any write: the row is exactly as seeded.
+    const row = await t.run(async (ctx) => ctx.db.get(insertId));
+    expect(row!.lastUpdated).toBe(1_700_000_000_000);
+    expect(row!.metadata).toBeUndefined();
+    // And it is the admin gate that refused them: an admin's call lands.
+    await call(t.withIdentity(ADMIN));
+    expect((await t.run(async (ctx) => ctx.db.get(insertId)))!.metadata).toEqual({
+      parallelsNameThemselves: true,
+    });
+  });
+
   test("the whole-metadata mutation stays deleted", () => {
     // `api` is a proxy that resolves any name, so the source is the proof.
     const src = readFileSync(join(__dirname, "selectorOptions.ts"), "utf8");

@@ -1132,6 +1132,38 @@ describe("NEO-335 — a refused short-name write persists nothing", () => {
     expect(row!.lastUpdated).toBe(1_700_000_000_000);
   });
 
+  test("NEO-619: setSelectorOptionParallelsNameThemselves refuses an anonymous caller and a non-admin without touching the row", async () => {
+    const t = convexTest(schema, modules);
+    const insertId = await t.run(async (ctx) => {
+      const typeId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Inserts",
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      return ctx.db.insert("selectorOptions", {
+        level: "insert",
+        value: "Zorbo Special Purple",
+        parentId: typeId,
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+    });
+    for (const tt of [t, t.withIdentity(MEMBER)]) {
+      await expect(
+        tt.mutation(api.selectorOptions.setSelectorOptionParallelsNameThemselves, {
+          id: insertId,
+          on: true,
+        }),
+      ).rejects.toThrow();
+    }
+    const row = await t.run(async (ctx) => ctx.db.get(insertId));
+    expect(row!.metadata).toBeUndefined();
+    expect(row!.lastUpdated).toBe(1_700_000_000_000);
+  });
+
   test("commitCardChecklist with a short name refuses a non-admin without writing the leaf or a card", async () => {
     const t = convexTest(schema, modules);
     const { sportId, leafId } = await seedSetChain(t);
