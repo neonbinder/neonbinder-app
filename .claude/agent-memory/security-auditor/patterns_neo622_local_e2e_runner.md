@@ -36,3 +36,4 @@ and edits repo files temporarily (`apps/web/playwright/tools/e2e-run.mjs`).
 
 **How to apply:** any wrapper with "never seeds shared dev / never prod" claims:
 enumerate every path that reaches the reset script, not just the flags.
+- **A status-diff backstop behind git's own numstat should report, never roll back**: its only realistic triggers are false positives (a parallel agent's edit between snapshots, or a failed `git status` parsed as an empty snapshot), so an unlink or `git restore` there destroys other sessions' work. Check the snapshot exit codes.

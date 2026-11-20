@@ -999,6 +999,15 @@ describe("NEO-622 security round", () => {
       expect(parsePorcelainZ("R  new.ts\0old.ts\0")).toEqual({ "new.ts": "R ", "old.ts": "R-" });
     });
 
+    it("a path named constructor or __proto__ is an ordinary entry, not an inherited property", () => {
+      const snap = parsePorcelainZ("?? constructor\0?? __proto__\0");
+      expect(Object.keys(snap)).toEqual(["constructor", "__proto__"]);
+      expect(snap.constructor).toBe("??");
+      expect(Object.getPrototypeOf(snap)).toBeNull();
+      expect(parsePorcelainZ(" M a.ts\0").constructor).toBeUndefined();
+      expect(strayChanges(parsePorcelainZ(""), snap, [])).toEqual(["constructor", "__proto__"]);
+    });
+
     it("plant --patch checks and applies a private copy, and refuses a mode change before running", async () => {
       const dir = localDir();
       ownTarget();
@@ -1408,6 +1417,121 @@ describe("NEO-622 command flows through the io seam", () => {
       const { status, meta } = finished(runDir);
       expect(status.exit).toBe(EXIT.restoreFailed);
       expect(meta.plant[0]).toMatch(/^PLANT RESTORE FAILED/);
+    });
+  });
+
+  describe("patch plants are report-only and restore only by manifest", () => {
+    const STRAY = "apps/web/lib/zz-stray.ts";
+    const UNTRACKED = "apps/web/lib/zz-untracked.ts";
+    const BROKEN = "export const v = BROKEN;\n";
+
+    /** A patch job: a real patch file on disk; git is stubbed by stubGit. */
+    function patchJob(local) {
+      const runDir = join(local, "runs", "20260101-000000-plant-e2e");
+      mkdirSync(runDir, { recursive: true });
+      const patch = join(local, "p.diff");
+      writeFileSync(patch, "stub patch\n");
+      const opts = { ...parseArgs(["plant", "--patch", "p.diff", "area/a"]).opts, expect: null };
+      const plant = { files: [REL], patch, patchSha256: sha256(readFileSync(patch)), expect: null };
+      writeFileSync(join(runDir, "job.json"), JSON.stringify({ kind: "plant", opts, specs: ["area/a"], plant }));
+      return runDir;
+    }
+    /** Stub git: status answers come from `statuses` in order; apply runs `onApply`; `onStatus` runs on every status call. */
+    function stubGit(root, { statuses, onApply = () => {}, onStatus = () => {} }) {
+      const calls = [];
+      let n = 0;
+      io.capture.mockImplementation((cmd, args) => {
+        if (cmd !== "git") return { code: 0, stdout: "", stderr: "" };
+        if (["status", "apply", "restore", "checkout", "clean", "rm", "reset"].includes(args[0])) calls.push(args[0]);
+        if (args[0] === "rev-parse") return { code: 0, stdout: `${root}\n`, stderr: "" };
+        if (args[0] === "status") {
+          onStatus();
+          return statuses[n++] ?? { code: 0, stdout: "", stderr: "" };
+        }
+        if (args[0] === "apply") {
+          onApply();
+          return { code: 0, stdout: "", stderr: "" };
+        }
+        if (["restore", "checkout", "clean", "rm", "reset"].includes(args[0])) throw new Error(`the backstop must not run git ${args[0]}`);
+        return { code: 0, stdout: "", stderr: "" };
+      });
+      return calls;
+    }
+    const ok = (stdout) => ({ code: 0, stdout, stderr: "" });
+    const failed = { code: 128, stdout: "", stderr: "fatal" };
+    const runLog = (runDir) => readFileSync(join(runDir, "run.log"), "utf8");
+
+    it("stray paths are listed and left untouched: bytes unchanged, untracked file still there, no unlink or restore", async () => {
+      const { root, local } = harness();
+      const runDir = patchJob(local);
+      writeFileSync(join(root, STRAY), "someone else's tracked edit\n");
+      writeFileSync(join(root, UNTRACKED), "someone else's new file\n");
+      const calls = stubGit(root, {
+        statuses: [ok(""), ok(` M ${STRAY}\0?? ${UNTRACKED}\0 M ${REL}\0`)],
+        onApply: () => writeFileSync(join(root, REL), BROKEN),
+      });
+      fakePlaywright({ specCode: 0 });
+      await main(["__runner", runDir]);
+      expect(readFileSync(join(root, STRAY), "utf8")).toBe("someone else's tracked edit\n");
+      expect(readFileSync(join(root, UNTRACKED), "utf8")).toBe("someone else's new file\n");
+      expect(calls).toEqual(["status", "apply", "status"]); // no restore, checkout, clean, rm or reset
+      expect(readFileSync(join(root, REL), "utf8")).toBe(ORIGINAL); // the manifest restore ran
+      expect(existsSync(manifestPath(local))).toBe(false);
+      const log = runLog(runDir);
+      expect(log).toContain(STRAY);
+      expect(log).toContain(UNTRACKED);
+      expect(log).toMatch(/left untouched/);
+      expect(finished(runDir).status.exit).toBeGreaterThan(0);
+    });
+
+    it("a failed git status before apply refuses without applying", async () => {
+      const { root, local } = harness();
+      const runDir = patchJob(local);
+      const calls = stubGit(root, { statuses: [failed] });
+      fakePlaywright({ specCode: 0 });
+      await main(["__runner", runDir]);
+      expect(calls).not.toContain("apply");
+      expect(readFileSync(join(root, REL), "utf8")).toBe(ORIGINAL);
+      expect(existsSync(manifestPath(local))).toBe(false);
+      expect(runLog(runDir)).toMatch(/git status failed before the patch/);
+      expect(finished(runDir).status.exit).toBeGreaterThan(0);
+    });
+
+    it("a failed git status after apply aborts and restores through the manifest", async () => {
+      const { root, local } = harness();
+      const runDir = patchJob(local);
+      const calls = stubGit(root, { statuses: [ok(""), failed], onApply: () => writeFileSync(join(root, REL), BROKEN) });
+      fakePlaywright({ specCode: 0 });
+      await main(["__runner", runDir]);
+      expect(calls).toEqual(["status", "apply", "status"]);
+      expect(readFileSync(join(root, REL), "utf8")).toBe(ORIGINAL);
+      expect(existsSync(manifestPath(local))).toBe(false);
+      expect(runLog(runDir)).toMatch(/git status failed after the patch/);
+      expect(finished(runDir).status.exit).toBeGreaterThan(0);
+    });
+
+    it("an abort before the apply step records nothing as planted: a parallel edit to a manifest file is listed and kept", async () => {
+      const { root, local } = harness();
+      const runDir = patchJob(local);
+      // The before-snapshot fails, and another session edits the manifest file in that window.
+      const calls = stubGit(root, { statuses: [failed], onStatus: () => writeFileSync(join(root, REL), "export const v = PARALLEL_AGENT_EDIT;\n") });
+      fakePlaywright({ specCode: 0 });
+      await main(["__runner", runDir]);
+      expect(calls).not.toContain("apply");
+      expect(readFileSync(join(root, REL), "utf8")).toBe("export const v = PARALLEL_AGENT_EDIT;\n");
+      expect(existsSync(manifestPath(local))).toBe(true); // kept: reported, not reset
+      const { status, meta } = finished(runDir);
+      expect(status.exit).toBe(EXIT.restoreFailed);
+      expect(meta.plant[0]).toMatch(/changed since the plant/);
+    });
+
+    it("an abort after the apply step was entered still restores the planted bytes", async () => {
+      const { root, local } = harness();
+      const runDir = plantJob(local);
+      fakePlaywright({ throws: true });
+      await main(["__runner", runDir]);
+      expect(readFileSync(join(root, REL), "utf8")).toBe(ORIGINAL);
+      expect(existsSync(manifestPath(local))).toBe(false);
     });
   });
 

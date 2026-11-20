@@ -653,7 +653,7 @@ export function plantRefusal({ shared, files }) {
 
 /** Entries of `git status --porcelain=v1 -z --untracked-files=all` as {path: "XY"}. */
 export function parsePorcelainZ(out) {
-  const entries = {};
+  const entries = Object.create(null); // a path named __proto__ or constructor is just a key
   const t = String(out).split("\0");
   for (let i = 0; i < t.length; i++) {
     const m = /^(.)(.) (.+)$/s.exec(t[i]);
@@ -1072,29 +1072,6 @@ export async function ensureVite(ctx) {
 
 // ---------------------------------------------------------------- runner
 
-/** Undo changes a patch made outside its manifest. Returns the paths it could not undo (dirty before, so unsafe to touch). */
-function rollbackStray(root, stray, before) {
-  const left = [];
-  for (const p of stray) {
-    if (p in before) {
-      left.push(p);
-      continue;
-    }
-    const r = io.capture("git", ["ls-files", "--error-unmatch", "--", p], { cwd: root, timeoutMs: 15_000 });
-    if (r.code !== 0) {
-      try {
-        unlinkSync(join(root, p));
-      } catch {
-        left.push(p);
-      }
-    } else {
-      const back = io.capture("git", ["restore", "--source=HEAD", "--staged", "--worktree", "--", p], { cwd: root, timeoutMs: 15_000 });
-      if (back.code !== 0) left.push(p);
-    }
-  }
-  return left;
-}
-
 async function resolvePaused(ctx) {
   const a = io.capture("npx", ["--no-install", "convex", "env", "get", "NEONBINDER_PAUSED_PLATFORMS"], { env: ctx.env });
   if (a.code === 0) return a.stdout.trim();
@@ -1244,6 +1221,7 @@ async function runner(runDir) {
   let ctx = null;
   let manifest = null;
   let plantRestore = null;
+  let applyEntered = false; // true once the plant may have written to disk
   try {
     if (!t.ok) {
       logger.line(`refused: ${t.reason}`);
@@ -1294,18 +1272,26 @@ async function runner(runDir) {
           job.plant.edits.map((e) => ({ ...e, file: safeRepoPath(root, e.file) })),
         );
         if (!res.ok) throw new Error(res.error);
+        applyEntered = true;
         for (const [r, text] of Object.entries(res.files)) writeFileSync(join(root, r), text);
       } else {
         // The copy made at start() is what was checked; apply that exact file, and watch git's own view of the tree.
         if (sha256(readFileSync(job.plant.patch)) !== job.plant.patchSha256) throw new Error("the patch copy changed since it was checked");
-        const porcelain = () => parsePorcelainZ(io.capture("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: root, timeoutMs: 60_000 }).stdout);
-        const before = porcelain();
+        // Report-only: a snapshot is only trusted when git status succeeded, and nothing here ever deletes or restores a path.
+        const snapshot = () => {
+          const r = io.capture("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: root, timeoutMs: 60_000 });
+          return r.code === 0 ? parsePorcelainZ(r.stdout) : null;
+        };
+        const before = snapshot();
+        if (!before) throw new Error("git status failed before the patch was applied; refusing to apply it");
+        applyEntered = true;
         const ap = io.capture("git", ["apply", job.plant.patch], { cwd: root, timeoutMs: 30_000 });
         if (ap.code !== 0) throw new Error("git apply failed");
-        const stray = strayChanges(before, porcelain(), rels);
+        const after = snapshot();
+        if (!after) throw new Error("git status failed after the patch was applied; cannot tell what it changed, so aborting (the declared files are being restored; check git status by hand)");
+        const stray = strayChanges(before, after, rels);
         if (stray.length) {
-          const left = rollbackStray(root, stray, before);
-          throw new Error(`the patch changed files outside what it declared (${stray.length}); ${left.length ? `could not undo: ${left.join(", ")}` : "undone"}`);
+          throw new Error(`the patch changed files outside what it declared, or another session edited the tree meanwhile (${stray.length}); aborting, the declared files are being restored and these are left untouched for you to review: ${stray.join(", ")}`);
         }
       }
       recordPlanted(manifest, root);
@@ -1350,7 +1336,8 @@ async function runner(runDir) {
   } finally {
     if (manifest) {
       // An apply that died half way never got its planted hashes: they are whatever is on disk right now.
-      if (!manifest.plantedAt) recordPlanted(manifest, repoRoot());
+      // Only when the apply step was entered; before that a changed file is someone else's edit and is left alone.
+      if (!manifest.plantedAt && applyEntered) recordPlanted(manifest, repoRoot());
       plantRestore = restoreFromManifest(manifest, repoRoot());
       if (plantRestore.ok) {
         if (plantRestore.convexTouched && ctx) {
