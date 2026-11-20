@@ -27,6 +27,7 @@ import {
   naturalCompare,
   orderLabel,
   NOT_IN_NB,
+  cardFacts,
   rowFacts,
   setSections,
   SORT_KEYS,
@@ -110,12 +111,12 @@ const COPY = {
   noMatch: "Nothing on the list matches these filters.",
   matches: (n: number) => (n === 1 ? "1 match." : `${n} match.`),
   cantFind: "Can't find it",
-  cantFindNote: "NB couldn't place these sales. Each listing's photo shows what sold.",
-  cantFindStopNote: "These sales don't say enough to file. The order's photo is your best clue.",
+  cantFindNote: "Neon Binder couldn't place these sales. Each listing's photo shows what sold.",
+  cantFindStopNote: "These sales don't say enough to file. Check the sales platform.",
   notInBox: "Not in a box",
-  notInBoxNote: "NB has no copy of these, so no box to check. Go by each listing, set by set.",
-  notInNbWhy: "NB doesn't have this copy. Go by the listing.",
-  notInNbWhyLinked: "NB doesn't have this copy. Go by the listing; the order link has the photo.",
+  notInBoxNote: "Neon Binder has no copy of these, so no box to check. Go by each listing, set by set.",
+  notInNbWhy: "No copy here. Go by the listing.",
+  notInNbWhyLinked: "No copy here. Go by the listing; the order link has the photo.",
   /** Read after a listing's own divider titled just like an NB set's. */
   unmatchedTwin: ", not matched to a set",
   truncated: "Your Pick List is too long to show at once, so it starts with your oldest orders. Pull these and the rest will show up.",
@@ -123,14 +124,14 @@ const COPY = {
   pullFailed: "That pull didn't save. Try it again.",
   putBackFailed: "That one didn't go back on the list. Try it again.",
   noBox: "Box not recorded",
-  noBoxNote: "These sold before NB kept track of boxes. Look wherever you keep the set.",
+  noBoxNote: "These sold before Neon Binder kept track of boxes. Look wherever you keep the set.",
   fresh: "Sold since you started",
   freshNote: "These came in mid-pull. Grab them on your way out.",
   boxesDone: "Every box is clear. Totally tubular.",
   lastStop: (n: number) =>
     n === 1
-      ? "Plus 1 sale NB couldn't place. It waits after the boxes."
-      : `Plus ${n} sales NB couldn't place. They wait after the boxes.`,
+      ? "Plus 1 sale Neon Binder couldn't place. It waits after the boxes."
+      : `Plus ${n} sales Neon Binder couldn't place. They wait after the boxes.`,
 };
 
 function filtersFrom(params: URLSearchParams): PickFilters {
@@ -306,7 +307,7 @@ function PickList({ store, onTitleDetail }: { store: PickListStore; onTitleDetai
             : scope.unrecorded
               ? `Pulled ${n} with no box noted.`
               : scope.notInBox
-                ? `Pulled ${n} not in NB.`
+                ? `Pulled ${n} not in Neon Binder.`
                 : `Pulled ${n} from ${scope.name}.`;
       mark(ids, true, message);
     }
@@ -653,7 +654,7 @@ function FilterBar({
       const facts = rowFacts(r);
       if (facts) {
         sports.set(facts.sportKey, { name: facts.sportName, nb: !facts.sportKey.startsWith("sport:") });
-        years.add(facts.year);
+        if (facts.year !== null) years.add(facts.year);
       }
       conditions.add(conditionOf(r));
     }
@@ -809,7 +810,7 @@ function FilterBar({
             Only numbered
           </Toggle>
           <Toggle pressed={Boolean(filters.notInNb)} onClick={() => setParam(PICK_PARAMS.notInNb, filters.notInNb ? null : "1")}>
-            Only not in NB
+            Only not in Neon Binder
           </Toggle>
           <Toggle pressed={groupByOrder} onClick={() => setParam(PICK_PARAMS.group, groupByOrder ? null : "order")}>
             Group by order
@@ -1015,9 +1016,9 @@ function BoxView({
       <PickTable
         caption={
           stop.cantFind
-            ? "Sales NB couldn't place"
+            ? "Sales Neon Binder couldn't place"
             : stop.notInBox
-              ? "Sales not in NB, by set"
+              ? "Sales not in Neon Binder, by set"
               : stop.unrecorded
                 ? "Cards with no box noted"
                 : `Cards to pull from ${stop.box.name}`
@@ -1043,8 +1044,8 @@ function BoxView({
  * card can sit twice in one list (two conditions, two slabs, a fresh sale
  * beside an old one, two slots in one box), and each of those is named.
  */
-/** How a toggle's name says a row is not in NB: "…, not in NB, BSC 1234". */
-const NOT_IN_NB_NAME = "not in NB";
+/** How a toggle's name says a row is not in Neon Binder: "…, not in Neon Binder, BSC 1234". */
+const NOT_IN_NB_NAME = "not in Neon Binder";
 
 function rowName(row: PickRow, options: { withOrder?: boolean; withSlot?: boolean; withTeam?: boolean } = {}): string {
   const c = row.card;
@@ -1318,13 +1319,24 @@ function PickTable({
 }
 
 /**
+ * NEO-590 — a sport's "Sales NB didn't list" group: a set-kind section whose
+ * rows are filed by their listing's title. Several bands share that title, so
+ * their headings carry the sport too.
+ */
+function isTitleSection(section: PickSection): boolean {
+  return section.kind === "set" && section.rows.some((r) => rowFacts(r)?.fromTitle);
+}
+
+/**
  * A group's count. NEO-520: a line NB didn't list is never called a card, so
  * an order holding one counts items; every other group counts cards. Both row
  * sizes read it from here.
  */
 function sectionCount(section: PickSection): string {
   const count = section.rows.reduce((n, r) => n + r.quantity, 0);
-  const items = section.kind === "order" && section.rows.some((r) => !r.card);
+  // NEO-520: a line NB didn't list is never called a card, in its order's group
+  // or in a sport's "Sales NB didn't list" group (NEO-590).
+  const items = (section.kind === "order" && section.rows.some((r) => !r.card)) || isTitleSection(section);
   return `${count} ${items ? (count === 1 ? "item" : "items") : count === 1 ? "card" : "cards"}`;
 }
 
@@ -1332,6 +1344,7 @@ function SectionHead({ section, columns, condensed }: { section: PickSection; co
   if (section.kind === "flat") return null;
   if (condensed) return <CondensedSectionHead section={section} columns={columns} />;
   const cards = sectionCount(section);
+  const titleBand = isTitleSection(section);
   // A heading element may not sit in a table header cell, so the title takes
   // the heading role: heading navigation still reaches every set and group.
   // `label` names a heading apart when its words alone would read like another's.
@@ -1349,10 +1362,27 @@ function SectionHead({ section, columns, condensed }: { section: PickSection; co
     line = SPORT_LINE[hue];
     body = (
       <div className="flex flex-wrap items-end gap-x-3 gap-y-1">
-        <span className={`nb-pick-band inline-flex items-center rounded-t-md px-3 py-1 text-sm font-bold ${SPORT_TAB[hue]}`}>
-          {section.sportName}
-        </span>
-        {heading(`pb-1 text-ink ${title}`, section.title, section.unmatchedTwin ? `${section.title}${COPY.unmatchedTwin}` : undefined)}
+        {titleBand ? (
+          // Bands share this title, so the heading's name leads with the sport ("Baseball Sales NB didn't list").
+          <span
+            role="heading"
+            aria-level={3}
+            aria-label={section.unmatchedTwin ? `${section.sportName} ${section.title}${COPY.unmatchedTwin}` : undefined}
+            className="flex flex-wrap items-end gap-x-3 gap-y-1"
+          >
+            <span className={`nb-pick-band inline-flex items-center rounded-t-md px-3 py-1 text-sm font-bold ${SPORT_TAB[hue]}`}>
+              {section.sportName}
+            </span>{" "}
+            <span className={`pb-1 text-ink ${title}`}>{section.title}</span>
+          </span>
+        ) : (
+          <>
+            <span className={`nb-pick-band inline-flex items-center rounded-t-md px-3 py-1 text-sm font-bold ${SPORT_TAB[hue]}`}>
+              {section.sportName}
+            </span>
+            {heading(`pb-1 text-ink ${title}`, section.title, section.unmatchedTwin ? `${section.title}${COPY.unmatchedTwin}` : undefined)}
+          </>
+        )}
         <span className="pb-1.5 text-sm text-ink-3">{cards}</span>
       </div>
     );
@@ -1407,10 +1437,11 @@ function VariantTag({ tag }: { tag: VariantTagModel }) {
   );
 }
 
-function SportChip({ code, name }: { code: string | null; name: string }) {
+/** `decorative`: the group's own band already names this sport, so a screen reader skips the repeat. */
+function SportChip({ code, name, decorative = false }: { code: string | null; name: string; decorative?: boolean }) {
   const hue = sportHue(code);
   return (
-    <span className={`nb-pick-band nb-pick-chip inline-flex shrink-0 items-center rounded px-1.5 text-xs font-bold leading-5 ${SPORT_TAB[hue]}`}>
+    <span aria-hidden={decorative || undefined} className={`nb-pick-band nb-pick-chip inline-flex shrink-0 items-center rounded px-1.5 text-xs font-bold leading-5 ${SPORT_TAB[hue]}`}>
       {name}
     </span>
   );
@@ -1421,7 +1452,8 @@ function Markers({ row, salesLink }: { row: PickRow; salesLink: boolean }) {
   // A sale filed with its set by the listing's words alone: NB has no card
   // for it, and the chip says so (the dashed edge echoes the "?" picture).
   // Can't find it never shows it: its heading already says as much.
-  const notInNb = !row.card && rowFacts(row) !== null;
+  // A row filed by its title alone is Can't find it's kin, not a listing with a place: no chip.
+  const notInNb = !row.card && cardFacts(row) !== null;
   if (!row.lastOnes && !row.short && !row.isNew && !noBox && !notInNb) return null;
   const why = salesLink ? COPY.notInNbWhyLinked : COPY.notInNbWhy;
   // NEO-522: they ride the name's line, after it, big enough to read beside it.
@@ -1485,7 +1517,9 @@ function Row({
 }) {
   const c = row.card;
   // A card's facts, or a listing's when it says enough to file by (NEO-509).
-  const facts = rowFacts(row);
+  // A row filed by its title alone (NEO-590) draws as it always has: the title across the columns.
+  const facts = cardFacts(row);
+  const titleFacts = facts ? null : rowFacts(row);
   const role = facts?.role ?? null;
   const tag = facts ? variantTag(facts) : null;
   const tab = tabbable ? 0 : -1;
@@ -1520,7 +1554,7 @@ function Row({
   const variant = tag ? <VariantTag tag={tag} /> : null;
 
   // The set (where no divider names it) and a numbered copy's serial. A sale NB
-  // has no card for wears the Not in NB chip, which says where to look: no note here.
+  // has no card for wears the Not in Neon Binder chip, which says where to look: no note here.
   // Which numbered copy to pull ("4/5"): read at the row's scale.
   const serial = row.serial ? (
     <span className="text-base font-bold leading-6 tabular-nums text-ink @min-[62rem]:text-xl @min-[62rem]:leading-7">{row.serial}</span>
@@ -1541,7 +1575,11 @@ function Row({
   // Nothing to file by: the listing's sport, when it names one (the box it might sit in),
   // and why NB could not file it, the one clue the row has. Wide, the sport keeps the Set
   // column and the reason rides under the listing's words, where it has room to read.
-  const listedSport = !facts && row.listed?.sportName ? <SportChip code={row.listed.sportCode ?? null} name={row.listed.sportName} /> : null;
+  const listedSport = titleFacts ? (
+    <SportChip code={titleFacts.sportCode} name={titleFacts.sportName} decorative={!showSet} />
+  ) : !facts && row.listed?.sportName ? (
+    <SportChip code={row.listed.sportCode ?? null} name={row.listed.sportName} />
+  ) : null;
   const problem = !facts && row.problem ? <span className="block text-base leading-6 text-notice-warn-ink">{row.problem}</span> : null;
 
   // Condition, or a slab's grade and cert.
@@ -1565,7 +1603,7 @@ function Row({
   );
 
   // Venue and number may wrap apart, never inside either. A stray's order
-  // opens that sale on the Sales tab: the order's photo is how to find it.
+  // opens that sale on the Sales tab: the sales platform is where to look.
   const orderText = (o: PickOrder) => (
     <>
       <span className="whitespace-nowrap">{o.venue}</span> <span className="whitespace-nowrap">{o.number}</span>
@@ -1707,6 +1745,7 @@ function Row({
 
 function CondensedSectionHead({ section, columns }: { section: PickSection; columns: number }) {
   const cards = sectionCount(section);
+  const titleBand = isTitleSection(section);
   // A heading element may not sit in a table header cell, so the title takes
   // the heading role: heading navigation still reaches every set and group.
   // `label` names a heading apart when its words alone would read like another's.
@@ -1722,10 +1761,26 @@ function CondensedSectionHead({ section, columns }: { section: PickSection; colu
     line = SPORT_LINE[hue];
     body = (
       <div className="flex flex-wrap items-end gap-x-3 gap-y-1">
-        <span className={`nb-pick-band inline-flex items-center rounded-t-md px-3 py-1 text-xs font-bold ${SPORT_TAB[hue]}`}>
-          {section.sportName}
-        </span>
-        {heading("pb-1 text-base font-bold text-ink", section.title, section.unmatchedTwin ? `${section.title}${COPY.unmatchedTwin}` : undefined)}
+        {titleBand ? (
+          <span
+            role="heading"
+            aria-level={3}
+            aria-label={section.unmatchedTwin ? `${section.sportName} ${section.title}${COPY.unmatchedTwin}` : undefined}
+            className="flex flex-wrap items-end gap-x-3 gap-y-1"
+          >
+            <span className={`nb-pick-band inline-flex items-center rounded-t-md px-3 py-1 text-xs font-bold ${SPORT_TAB[hue]}`}>
+              {section.sportName}
+            </span>{" "}
+            <span className="pb-1 text-base font-bold text-ink">{section.title}</span>
+          </span>
+        ) : (
+          <>
+            <span className={`nb-pick-band inline-flex items-center rounded-t-md px-3 py-1 text-xs font-bold ${SPORT_TAB[hue]}`}>
+              {section.sportName}
+            </span>
+            {heading("pb-1 text-base font-bold text-ink", section.title, section.unmatchedTwin ? `${section.title}${COPY.unmatchedTwin}` : undefined)}
+          </>
+        )}
         <span className="pb-1 text-xs text-ink-3">{cards}</span>
       </div>
     );
@@ -1773,25 +1828,35 @@ function VariantWordChip({ word }: { word: string }) {
   );
 }
 
-function CondensedMarkers({ row, salesLink }: { row: PickRow; salesLink: boolean }) {
-  const noBox = row.boxUnrecorded && !row.spot;
-  // A sale filed with its set by the listing's words alone: NB has no card
-  // for it, and the chip says so (the dashed edge echoes the "?" picture).
-  // Can't find it never shows it: its heading already says as much.
-  const notInNb = !row.card && rowFacts(row) !== null;
-  if (!row.lastOnes && !row.short && !row.isNew && !noBox && !notInNb) return null;
+/**
+ * A sale filed with its set by the listing's words alone: NB has no card for it, and the chip
+ * says so (the dashed edge echoes the "?" picture). It sits under the variant chip in the Set
+ * cell, where the row's place is read; the chip is the whole message, so the row carries no note.
+ * Can't find it never shows it: its heading already says as much. A row filed by its title
+ * alone is Can't find it's kin, not a listing with a place: no chip.
+ */
+function isNotInNb(row: PickRow): boolean {
+  return !row.card && cardFacts(row) !== null;
+}
+
+function NotInNbChip({ salesLink }: { salesLink: boolean }) {
   const why = salesLink ? COPY.notInNbWhyLinked : COPY.notInNbWhy;
   return (
+    <span
+      title={why}
+      className="nb-pick-chip rounded border border-dashed border-notice-warn-rule bg-notice-warn-bg px-1.5 text-xs font-semibold leading-5 text-notice-warn-ink"
+    >
+      <span>{NOT_IN_NB}</span>
+      <span className="sr-only">. {why}</span>
+    </span>
+  );
+}
+
+function CondensedMarkers({ row }: { row: PickRow }) {
+  const noBox = row.boxUnrecorded && !row.spot;
+  if (!row.lastOnes && !row.short && !row.isNew && !noBox) return null;
+  return (
     <span className="flex flex-wrap gap-1 whitespace-nowrap">
-      {notInNb && (
-        <span
-          title={why}
-          className="nb-pick-chip rounded border border-dashed border-notice-warn-rule bg-notice-warn-bg px-1.5 text-xs font-semibold leading-5 text-notice-warn-ink"
-        >
-          <span>{NOT_IN_NB}</span>
-          <span className="sr-only">. {why}</span>
-        </span>
-      )}
       {row.isNew && <span className="nb-pick-chip rounded bg-neon-blue px-1.5 text-xs font-bold leading-5 text-on-neon-blue">New</span>}
       {row.lastOnes && (
         <span className="nb-pick-chip rounded border border-notice-info-rule bg-notice-info-bg px-1.5 text-xs font-semibold leading-5 text-notice-info-ink">
@@ -1843,7 +1908,9 @@ function CondensedRow({
 }) {
   const c = row.card;
   // A card's facts, or a listing's when it says enough to file by (NEO-509).
-  const facts = rowFacts(row);
+  // A row filed by its title alone (NEO-590) draws as it always has: the title across the columns.
+  const facts = cardFacts(row);
+  const titleFacts = facts ? null : rowFacts(row);
   const role = facts?.role ?? null;
   const vWord = facts?.variantWord ?? null;
   const vName = facts?.variantName ?? null;
@@ -1888,24 +1955,27 @@ function CondensedRow({
     </span>
   ) : null;
 
-  // A sale NB has no card for keeps its next step (check the order's photo) under the variant.
-  const problem = !c && row.problem ? <span className="text-xs text-notice-warn-ink">{row.problem}</span> : null;
+  // A sale NB has no card for wears the Not in Neon Binder chip under the variant: the chip is
+  // the whole message, so no note repeats it (a row with no facts keeps its problem line below).
+  const notInNb = isNotInNb(row) ? <NotInNbChip salesLink={salesLink} /> : null;
   // Wide screens: the set cell's words on one line where it fits; the pieces wrap onto the next
   // line only when it does not. A chip, the serial and the number never break inside.
   const setLine = facts ? (
-    <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-      {showSet && showSport && <SportChip code={facts.sportCode} name={facts.sportName} />}
-      {showSet && <span className="text-ink">{facts.setTitle}</span>}
-      {role && <VariantChip role={role} />}
-      {vWord && <VariantWordChip word={vWord} />}
-      {vName && <span className="text-ink-2">{vName}</span>}
-      {row.serial && (
-        <span className="whitespace-nowrap text-ink-2">
-          {vName && "· "}
-          <span className="font-semibold tabular-nums text-ink">{row.serial}</span>
-        </span>
-      )}
-      {!c && row.problem && <span className="text-xs text-notice-warn-ink">{row.problem}</span>}
+    <span className="flex flex-col items-start gap-0.5">
+      <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+        {showSet && showSport && <SportChip code={facts.sportCode} name={facts.sportName} />}
+        {showSet && <span className="text-ink">{facts.setTitle}</span>}
+        {role && <VariantChip role={role} />}
+        {vWord && <VariantWordChip word={vWord} />}
+        {vName && <span className="text-ink-2">{vName}</span>}
+        {row.serial && (
+          <span className="whitespace-nowrap text-ink-2">
+            {vName && "· "}
+            <span className="font-semibold tabular-nums text-ink">{row.serial}</span>
+          </span>
+        )}
+      </span>
+      {notInNb}
     </span>
   ) : (
     <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
@@ -1914,7 +1984,7 @@ function CondensedRow({
     </span>
   );
   const setText = facts ? (
-    <span className="flex min-w-0 flex-col gap-1">
+    <span className="flex min-w-0 flex-col items-start gap-1">
       {showSet && (
         <span className="flex flex-wrap items-center gap-1.5">
           {showSport && <SportChip code={facts.sportCode} name={facts.sportName} />}
@@ -1922,12 +1992,16 @@ function CondensedRow({
         </span>
       )}
       {variantLine}
-      {problem}
+      {notInNb}
     </span>
   ) : (
     <span className="flex min-w-0 flex-col items-start gap-1">
       {/* The listing's sport, when it names one: the box it might sit in. */}
-      {row.listed?.sportName && <SportChip code={row.listed.sportCode ?? null} name={row.listed.sportName} />}
+      {titleFacts ? (
+        <SportChip code={titleFacts.sportCode} name={titleFacts.sportName} decorative={!showSet} />
+      ) : (
+        row.listed?.sportName && <SportChip code={row.listed.sportCode ?? null} name={row.listed.sportName} />
+      )}
       <span className="text-notice-warn-ink">{row.problem}</span>
     </span>
   );
@@ -1950,7 +2024,7 @@ function CondensedRow({
   );
 
   // Venue and number never break inside either. A stray's order
-  // opens that sale on the Sales tab: the order's photo is how to find it.
+  // opens that sale on the Sales tab: the sales platform is where to look.
   const orderText = (o: PickOrder) => (
     <>
       <span className="whitespace-nowrap">{o.venue}</span> <span className="whitespace-nowrap">{o.number}</span>
@@ -1983,13 +2057,14 @@ function CondensedRow({
 
   const who = c ? playerNames(c) : facts?.players || row.listingTitle;
   const team = c?.teams.map((t) => t.name).join(" / ");
-  // The player cell's whole line (wide screens): the name, the team after it, the marker chips.
+  // The player cell's whole line (wide screens): the name, the team after it, the marker chips
+  // (Not in Neon Binder is not one: it rides the Set cell, under the variant).
   // The team and the chips drop to the next line before the name breaks, and none breaks inside.
   const whoLine = (
     <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
       <span className={`wrap-anywhere ${facts ? "font-semibold text-ink" : "text-ink"}`}>{who}</span>
       {team && <span className="whitespace-nowrap text-xs text-ink-3">{team}</span>}
-      <CondensedMarkers row={row} salesLink={salesLink} />
+      <CondensedMarkers row={row} />
     </span>
   );
 
@@ -2071,7 +2146,7 @@ function CondensedRow({
             {condition}
             {orders}
           </span>
-          <CondensedMarkers row={row} salesLink={salesLink} />
+          <CondensedMarkers row={row} />
         </span>
       </td>
     </tr>

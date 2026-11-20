@@ -3,17 +3,16 @@ import { useConvex, useMutation, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
-import { variantTypeKindFromTitle } from "@/convex/variantRole";
 import { toCardWithPath } from "../data/convexStore";
 import type { Card, Condition } from "../data/types";
 import { EBAY_UNTITLED_SALE } from "../inventory/listing/copy";
 import { PageApiContext } from "../pageApi";
-import { listedTitle } from "./model";
+import { listedTitle, listedYear, titleParses, toListedCard, words, type RawListed, type SportRow, type TitleSport } from "./model";
 import { PickListStoreContext } from "./store";
 import type { ListedCard, PickBox, PickListData, PickListStore, PickPhoto, SaleLine } from "./types";
 
 // The title rule lives with the model, so the demo writes its titles the same way.
-export { listedTitle };
+export { listedTitle, listedYear, toListedCard };
 
 /**
  * NEO-500 — the signed-in seller's Pick List, on Convex. The same
@@ -47,7 +46,6 @@ export { listedTitle };
 
 type OpenAnswer = FunctionReturnType<typeof api.pickList.open>;
 type RawLine = OpenAnswer["lines"][number];
-type RawListed = NonNullable<RawLine["listed"]>;
 
 /** Card ids `pickList.cards` takes at once (the server's `MAX_CARDS_BY_ID`). */
 const CARDS_PER_CALL = 200;
@@ -57,6 +55,8 @@ const PHOTOS_PER_CALL = 100;
 const PULLS_PER_CALL = 200;
 /** Sport ids `pickList.sports` takes at once (the server's `MAX_SPORTS_BY_ID`). */
 const SPORTS_PER_CALL = 20;
+/** Titles `pickList.titleSports` takes at once (the server's `MAX_TITLE_SPORTS`). */
+const TITLES_PER_CALL = 20;
 
 const VENUE: Record<RawLine["platform"], string> = { bsc: "BSC", ebay: "eBay" };
 
@@ -112,64 +112,6 @@ interface Hydrated {
   sportCode: string | null;
 }
 
-/** NB's sport row a sale names: its name and SKU code. */
-interface SportRow {
-  name: string;
-  code: string | null;
-}
-
-/** A listing's words, trimmed; blank is absent. */
-function words(text: string | undefined): string | undefined {
-  const t = text?.replace(/\s+/g, " ").trim();
-  return t ? t : undefined;
-}
-
-/** The years a set files under; a listing's year outside them is a misread. */
-const FIRST_YEAR = 1800;
-const LAST_YEAR = 2100;
-
-/** "2021" is 2021; a season files under its start: "2023-24" and "2023/2024" are 2023. */
-export function listedYear(season: string): number | undefined {
-  const m = /^(\d{4})(?:\s*[-/]\s*(?:\d{2}|\d{4}))?$/.exec(season);
-  if (!m) return undefined;
-  const year = Number(m[1]);
-  return year >= FIRST_YEAR && year <= LAST_YEAR ? year : undefined;
-}
-
-/**
- * A sale's words for its card, resolved: NB's sport when the sale named one
- * NB has (`sport` loaded), else the listing's sport word; the year as a
- * number; the variant's divider only when its word IS one (Base, Insert,
- * Parallel). A word NB does not file by ("Variation", "SP", "Promo") is kept
- * as written (`variantWord`), never read as a role, and the listing's
- * variant name is kept whatever the word. Undefined when the words say nothing.
- */
-export function toListedCard(raw: RawListed, sport: SportRow | null | undefined): ListedCard | undefined {
-  const season = words(raw.year);
-  const year = season ? listedYear(season) : undefined;
-  const variant = words(raw.variant);
-  const variantName = words(raw.variantName);
-  const kind = variantTypeKindFromTitle(variant);
-  const sportName = sport?.name ?? words(raw.sport);
-  const out: ListedCard = {
-    ...(sport && raw.sportId ? { sportId: raw.sportId } : {}),
-    ...(sportName ? { sportName } : {}),
-    ...(sport?.code ? { sportCode: sport.code } : {}),
-    ...(year !== undefined ? { year } : {}),
-    ...(season ? { season } : {}),
-    ...(words(raw.setName) ? { setName: words(raw.setName) } : {}),
-    ...(words(raw.players) ? { players: words(raw.players) } : {}),
-    ...(words(raw.cardNo) ? { cardNumber: words(raw.cardNo) } : {}),
-    ...(kind ? { role: kind } : {}),
-    // A word NB does not file by ("Variation") is how the seller tells the copy from the base: kept as written.
-    ...(variant && !kind ? { variantWord: variant } : {}),
-    ...(variantName ? { variantName } : {}),
-    // NEO-520: the listing's own title (eBay), a label only; never parsed for a place.
-    ...(words(raw.title) ? { title: words(raw.title) } : {}),
-  };
-  return Object.keys(out).length ? out : undefined;
-}
-
 /**
  * One server line as the rows the UI draws. `card` is undefined while the
  * card is still loading (the line waits), null when it is gone.
@@ -201,14 +143,14 @@ export function toSaleLines(
     // NEO-520: an eBay line NB can't tie to a card is one NB didn't list (as `saleItemProblem` says it).
     const unmatchedProblem =
       raw.platform === "ebay"
-        ? "NB didn't list this one. Check the order's photo."
-        : "NB couldn't match this line. Check the order's photo.";
+        ? "Neon Binder didn't list this one. Check the sales platform."
+        : "Neon Binder couldn't match this line. Check the sales platform.";
     const problem =
       raw.cantFind === "linkMismatch"
-        ? "This listing's card doesn't match NB's card. Check the order's photo."
+        ? "This listing's card doesn't match Neon Binder's card. Check the sales platform."
         : raw.cantFind === "unmatched" || !raw.cardId
           ? unmatchedProblem
-          : "This card isn't in NB's catalog any more. Check the order's photo.";
+          : "This card isn't in Neon Binder's catalog any more. Check the sales platform.";
     const listed = options.listed && listedTitle(options.listed) ? options.listed : undefined;
     return [
       {
@@ -286,6 +228,12 @@ export function ConvexPickListProvider({ children }: { children: ReactNode }) {
   return <PickListStoreContext.Provider value={store}>{children}</PickListStoreContext.Provider>;
 }
 
+/** The title to ask `titleSports` about: one entry when it parses (NEO-590), none otherwise. */
+function askableTitle(raw: string | undefined): string[] {
+  const title = words(raw);
+  return title && titleParses(title) ? [title] : [];
+}
+
 function useConvexPickListStore(): PickListStore {
   const open = useQuery(api.pickList.open, {});
   const convex = useConvex();
@@ -295,9 +243,11 @@ function useConvexPickListStore(): PickListStore {
   const [cards, setCards] = useState<ReadonlyMap<string, Hydrated | null>>(() => new Map());
   const [photos, setPhotos] = useState<ReadonlyMap<string, PickPhoto | null>>(() => new Map());
   const [sports, setSports] = useState<ReadonlyMap<string, SportRow | null>>(() => new Map());
+  const [titleSports, setTitleSports] = useState<ReadonlyMap<string, TitleSport>>(() => new Map());
   const askedCards = useRef(new Set<string>());
   const askedPhotos = useRef(new Set<string>());
   const askedSports = useRef(new Set<string>());
+  const askedTitles = useRef(new Set<string>());
   /** Line ids in the first answer: anything after is New. */
   const [baseline, setBaseline] = useState<ReadonlySet<string> | null>(null);
   /** Lines the seller marked this session, as last seen, so they stay on screen once the server drops them. */
@@ -370,6 +320,33 @@ function useConvexPickListStore(): PickListStore {
     }
   }, [rawLines, convex]);
 
+  // The sport each unmatched line's title names, once per title (NEO-590): the
+  // order it files in, never a match. Only a title that parses (a leading year)
+  // is asked; any other files under Other without a call. A title that does
+  // not load files under Other too (never a wait, never a guess).
+  useEffect(() => {
+    const missing = [...new Set(rawLines.flatMap((l) => (l.cantFind ? askableTitle(l.listed?.title) : [])))].filter(
+      (title) => !askedTitles.current.has(title),
+    );
+    if (!missing.length) return;
+    for (const title of missing) askedTitles.current.add(title);
+    const settle = (batch: string[], answer: ReadonlyArray<{ id: string; name: string; code: string | null } | null> | null) =>
+      setTitleSports((prev) => {
+        const next = new Map(prev);
+        batch.forEach((title, i) => {
+          const hit = answer?.[i];
+          next.set(title, hit ? { id: hit.id, name: hit.name, code: hit.code } : null);
+        });
+        return next;
+      });
+    for (const batch of chunks(missing, TITLES_PER_CALL)) {
+      convex.query(api.pickList.titleSports, { titles: batch }).then(
+        (answer) => settle(batch, answer),
+        () => settle(batch, null),
+      );
+    }
+  }, [rawLines, convex]);
+
   // Photos of the sold copies, once each; a row draws the card until its photo lands.
   useEffect(() => {
     const missing = [...new Set(rawLines.flatMap((l) => l.from.map((f) => f.copyId as string)))].filter(
@@ -398,7 +375,11 @@ function useConvexPickListStore(): PickListStore {
   }, [rawLines, convex]);
 
   const allLoaded = rawLines.every(
-    (l) => (l.cantFind || !l.cardId || cards.has(l.cardId)) && (!l.listed?.sportId || sports.has(l.listed.sportId)),
+    (l) =>
+      (l.cantFind || !l.cardId || cards.has(l.cardId)) &&
+      (!l.listed?.sportId || sports.has(l.listed.sportId)) &&
+      // A title that is never asked (it does not parse) has no answer to wait for.
+      (!l.cantFind || !askableTitle(l.listed?.title).length || titleSports.has(askableTitle(l.listed?.title)[0])),
   );
   if (!loadedOnce && open && baseline && allLoaded) setLoadedOnce(true);
 
@@ -415,7 +396,8 @@ function useConvexPickListStore(): PickListStore {
     for (const raw of rawLines) {
       if (!raw.cantFind || !raw.listed) continue;
       const sportId = raw.listed.sportId as string | undefined;
-      listedOf.set(raw.id, toListedCard(raw.listed, sportId ? sports.get(sportId) : undefined));
+      const [title] = askableTitle(raw.listed.title);
+      listedOf.set(raw.id, toListedCard(raw.listed, sportId ? sports.get(sportId) : undefined, title ? titleSports.get(title) : undefined));
     }
     const lostCount = new Map<string, number>();
     for (const l of rawLines) if (l.cantFind) lostCount.set(titleKey(l), (lostCount.get(titleKey(l)) ?? 0) + 1);
@@ -436,7 +418,7 @@ function useConvexPickListStore(): PickListStore {
     }
     const boxes: PickBox[] = open.boxes.map((b) => ({ id: b.id, name: b.name, ...(b.unsorted ? { unsorted: true } : {}) }));
     return { lines, boxes, ...(open.truncated ? { truncated: true } : {}) };
-  }, [open, baseline, loadedOnce, allLoaded, rawLines, cards, photos, sports]);
+  }, [open, baseline, loadedOnce, allLoaded, rawLines, cards, photos, sports, titleSports]);
 
   // The page's ids are rows; a row is pulled when its line is.
   const pulled = useMemo<ReadonlySet<string>>(

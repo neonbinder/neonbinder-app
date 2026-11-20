@@ -26,7 +26,6 @@
  *   dates either: time is "days ago" (a whole number) or a relative label
  *   ("Today", "Tuesday").
  * - Sales are one row per order, oldest first. No buyer, no ship-by.
- *   `statusText` is the marketplace's own word, shown as it is.
  * - Sets on the board rank by FEWEST cards needed (base checklist).
  * - A smart binder carries a percent only when its rule names a checklist.
  * - One fake collector who has a bit of everything (sales, boxes, binders,
@@ -151,21 +150,23 @@ function binderOf(cardId: CardId): string | null {
 export { daysAgoLabel, isLate, MARKETPLACES, type Marketplace } from "./dash-labels";
 
 /**
- * What is wrong with one line of an order.
- * - unmatched: the marketplace sold a listing NB cannot tie to a card of
- *   yours. `listingTitle` is the marketplace's own listing text, shown only
- *   to say which line it is; it is never NB data. Absent when NB has none
- *   (the signed-in page: NB stores no listing title on an order).
- * - oversold: it sold more than your boxes hold.
+ * What is wrong with one line of an order: it sold more than your boxes hold.
+ * A line NB holds no card for is not a problem (NEO-590): all that matters
+ * is that it sold, so it is just named by `SaleLine.title`.
  */
-export type SaleProblem =
-  | { kind: "unmatched"; listingTitle?: string }
-  | { kind: "oversold"; sold: number; inBoxes: number };
+export type SaleProblem = { kind: "oversold"; sold: number; inBoxes: number };
 
 export interface SaleLine {
-  /** The card sold; null only on an unmatched line. */
+  /** The card sold; null when NB holds no card for the line. */
   card: DashCard | null;
   quantity: number;
+  /**
+   * The sale's own words for a line with no card (the eBay listing title, or
+   * the words a BuySportsCards line describes), as the Pick List writes them.
+   * Set only when `card` is null and the sale carried words. Shown, never
+   * tied to a card and never NB data.
+   */
+  title?: string;
   problem?: SaleProblem;
 }
 
@@ -178,15 +179,13 @@ export interface UnshippedSale {
   orderNumber: string;
   /** Whole days since it sold: 0 = today. Warn from 2 (`isLate`). */
   daysSinceSold: number;
-  /** The marketplace's own status word, verbatim. */
-  statusText: string;
-  /** In the order's own order. The demo's first line always has a card; a signed-in order's may not. */
+  /** In the order's own order. A line may have no card (it carries its `title` instead). */
   lines: SaleLine[];
   /** Sum of the lines' quantities (every line of the order, also any not listed in `lines`). */
   cardCount: number;
-  /** The order's first card: its thumbnail and player lead the row. Null when no line is tied to a card. */
+  /** The order's first card: its thumbnail and player lead the row. Null when no line has a card; the row then leads with the first line's title. */
   firstCard: DashCard | null;
-  /** True when any line has a problem. */
+  /** True when any line is oversold. */
   hasProblem: boolean;
 }
 
@@ -195,18 +194,15 @@ export interface SalesData {
   unshipped: UnshippedSale[];
 }
 
-function sale(id: string, marketplace: Marketplace, orderNumber: string, daysSinceSold: number, statusText: string, lines: SaleLine[]): UnshippedSale {
-  const first = lines[0]?.card;
-  if (!first) throw new Error(`dashboard fixture: sale ${id} must lead with a matched card`);
+function sale(id: string, marketplace: Marketplace, orderNumber: string, daysSinceSold: number, lines: SaleLine[]): UnshippedSale {
   return {
     id,
     marketplace,
     orderNumber,
     daysSinceSold,
-    statusText,
     lines,
     cardCount: lines.reduce((n, l) => n + l.quantity, 0),
-    firstCard: first,
+    firstCard: lines.find((l) => l.card)?.card ?? null,
     hasProblem: lines.some((l) => l.problem),
   };
 }
@@ -219,6 +215,8 @@ const THURMAN = pick(SET.score89, null, 211);
 const GRIFFEY = pick(SET.finest, null, 2);
 /** In the Show box with no price yet, so the sync holds it back. */
 const RIPKEN = pick(SET.finest, null, 5);
+/** In the Show box, priced, and held back by no sync: free for an eBay order to sell. */
+const SCORE_270 = pick(SET.score89, null, 270);
 
 /**
  * Built in any order; sorted oldest first below. Every line sells a card the
@@ -226,17 +224,26 @@ const RIPKEN = pick(SET.finest, null, 5);
  * line counts what the boxes really hold.
  */
 const UNSHIPPED_AS_BUILT: UnshippedSale[] = [
-  sale("sale-bsc-1", "bsc", "DEMO-1001", 3, "Ready to ship", [
+  sale("sale-bsc-1", "bsc", "DEMO-1001", 3, [
     { card: YZERMAN, quantity: 4, problem: { kind: "oversold", sold: 4, inBoxes: inBoxes(YZERMAN.id) } },
   ]),
-  sale("sale-ebay-1", "ebay", "12-34567-89012", 2, "Paid", [{ card: SKENES_AUTO, quantity: 1 }]),
-  sale("sale-bsc-3", "bsc", "DEMO-1002", 1, "Ready to ship", [
+  sale("sale-ebay-1", "ebay", "12-34567-89012", 2, [{ card: SKENES_AUTO, quantity: 1 }]),
+  sale("sale-bsc-3", "bsc", "DEMO-1002", 1, [
     { card: THURMAN, quantity: 1 },
     { card: GRIFFEY, quantity: 1 },
   ]),
-  sale("sale-bsc-2", "bsc", "DEMO-1003", 0, "Ready to ship", [
+  sale("sale-bsc-2", "bsc", "DEMO-1003", 0, [
     { card: SCORE_PROOF, quantity: 1 },
-    { card: null, quantity: 1, problem: { kind: "unmatched", listingTitle: "2024 Score #333 Rome Odunze RC" } },
+    { card: null, quantity: 1, title: "2024 Score #333 Rome Odunze RC" },
+  ]),
+  // Sold today, and the only line is a listing NB holds no card for: the row is its title.
+  sale("sale-ebay-2", "ebay", "12-34567-89099", 0, [{ card: null, quantity: 1, title: "2023 Topps Chrome #121 Gunnar Henderson RC Orioles" }]),
+  // An eBay order whose FIRST line is a listing NB holds no card for and that carried no title, then
+  // a card: the row still leads with the card, the count says items, and the opened list names the
+  // untitled line "An item with no title".
+  sale("sale-ebay-3", "ebay", "12-34567-89123", 1, [
+    { card: null, quantity: 1 },
+    { card: SCORE_270, quantity: 1 },
   ]),
 ];
 

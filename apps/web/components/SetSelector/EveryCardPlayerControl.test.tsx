@@ -913,14 +913,14 @@ describe("EveryCardPlayerControl", () => {
 
   it("a refused clear says why beside the buttons", async () => {
     clearAnswer = async () => {
-      throw new ConvexError("That part of the set isn't in NB anymore.");
+      throw new ConvexError("That part of the set isn't in Neon Binder anymore.");
     };
     subscribedDefaults = defaultsWith({ own: { player: { _id: pid("k"), name: "Ken Griffey Jr." }, cameos: [] } });
     renderControl();
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: A.stopPlayer("Ken Griffey Jr.") }));
     });
-    expect((await screen.findByRole("alert")).textContent).toBe("That part of the set isn't in NB anymore.");
+    expect((await screen.findByRole("alert")).textContent).toBe("That part of the set isn't in Neon Binder anymore.");
     expect(sectionStatus().textContent).toBe("");
   });
 
@@ -978,9 +978,9 @@ describe("EveryCardPlayerControl", () => {
     document.body.appendChild(outside);
     act(() => outside.focus());
     await act(async () => {
-      refuse(new ConvexError("That part of the set isn't in NB anymore."));
+      refuse(new ConvexError("That part of the set isn't in Neon Binder anymore."));
     });
-    expect((await screen.findByRole("alert")).textContent).toBe("That part of the set isn't in NB anymore.");
+    expect((await screen.findByRole("alert")).textContent).toBe("That part of the set isn't in Neon Binder anymore.");
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.activeElement).toBe(cameoButton());
     outside.remove();
