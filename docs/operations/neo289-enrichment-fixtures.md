@@ -362,6 +362,21 @@ already recorded) with no miss.
   were dropped. The third answered. `Kota Nishidate`, `Kosuke Kawachi` and
   `Shuya Yamada` were already recorded.
 
+**NEO-426 entry (2026-11-19): 2026 ONIT Athlete Arizona State Sun Devils Base.**
+The spec `sport-no-teams-listed-team-beats-the-default` commits this set and
+stages 27 of its 29 checklist names as new Baseball players (`Cole Carlon` and
+`Josh Butler` resolve to catalogue players and are never looked up). The staged
+list was read off a run's `entityReviewSkips` (26 skips) plus `Austin Musso`,
+the one name the spec adds; his first lookup is in Baseball, before he is moved
+to the worker's custom sport, which has no Wikidata mapping. All 27 were
+captured with §4b's `runCaptureLookups` (Baseball `sportConfig`, ten names a
+call): every one is a **no-match** after two empty searches
+(`wikidata_search_empty`, then `wikidata_search_empty_confirmed`) and a
+`wikidata_player_no_match` line. `Jaden Alba`'s first lookup timed out at 30 s
+and was dropped (`skippedTransport`); the retry answered. Merged per §4a step 5
+as the file's default sport (no `sportQid`); the step 4 proof read all 27 as
+hits.
+
 ## 4b. Other sports, explicit names, and no Wikidata from your machine (2026-10-30)
 
 **Entries for another sport.** The file's `sportQid` is the default sport of

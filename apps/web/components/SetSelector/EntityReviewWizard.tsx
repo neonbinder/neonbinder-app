@@ -137,21 +137,24 @@ import {
   reviewStepIndex,
   reviewStepKind,
   STEP_SUBTITLE,
-  stepNumber,
+  stepProgress,
   trackSteps,
   upcomingReviewStepKind,
   type AutographFormat,
   type PostReviewStep,
   type StepPosition,
-  type StepTracker,
+  type StepCount,
   type WizardStepKind,
 } from "./entity-review-steps";
 import {
+  autoNoTeamNote,
+  autoNoTeamPeople,
   storedPeople,
   type DefaultPlayerWire,
   type GroupChoice,
   type PreviewCardForTeams,
   type TeamAnswer,
+  type TeamlessFacts,
 } from "./teams-on-cards";
 import {
   countAutoLinked,
@@ -538,6 +541,7 @@ export default function EntityReviewWizard({
   cardsWithDefaultPlayer,
   skippedPlayerNames,
   skippedTeamNames,
+  teamlessPlayerNames,
   teamsOnly = false,
   titleContext,
   existingCardIndexes = NO_CARD_INDEXES,
@@ -639,11 +643,20 @@ export default function EntityReviewWizard({
    */
   skippedTeamNames?: readonly string[];
   /**
+   * NEO-426 — printed player names the fetch resolved to a known player whose
+   * HOME sport has no teams (`resolveChecklistEntities`' `teamlessPlayerNames`),
+   * raw. With the flagged sports (read here) and a linked or created player's
+   * own sport, it is what lets the teams step leave out a card every one of
+   * whose people plays a teamless sport: the commit saves it as "No team", and
+   * the Save step says how many. Absent on an older server.
+   */
+  teamlessPlayerNames?: readonly string[];
+  /**
    * NEO-335 — there are no names to review (the name is historical: it is
    * the "no names" entry). The wizard opens past the names, on whichever of
    * its teams step (cards that would save with no team) and, since Phase 2
    * D7, its titles step (new cards whose title needs a look) applies — teams
-   * then titles then Save, "Step 1 of 2" with one of them, "of 3" with both —
+   * then titles then Save —
    * and, since NEO-345, its autograph step (new AU cards on a leaf with no
    * autograph format), which sits between teams and titles —
    * and reads no batch:
@@ -1233,6 +1246,12 @@ export default function EntityReviewWizard({
     openedAllDecided?.batchId === batchId && openedAllDecided.value;
   /** NEO-424 (a11y) — that line; it describes the autofocused Confirm & Save. */
   const autoLinkedIntroId = useId();
+  /**
+   * NEO-426 (a11y) — the Save step's "N cards save with No team" sentence.
+   * Focus lands straight on Confirm & Save, so the button is DESCRIBED by it
+   * (never relabelled: its name is the E2E contract) while it is shown.
+   */
+  const autoNoTeamNoteId = useId();
 
   /**
    * NEO-335 — the operator's picks on the teams step, by line.
@@ -1296,8 +1315,8 @@ export default function EntityReviewWizard({
    * `resolvePostReviewStep`, so a step with nothing in it is passed over.
    */
   const [requestedPostStep, setRequestedPostStep] = useState<PostReviewStep | null>(null);
-  /** NEO-335 Phase 2 — "Step x of y"'s memory for this sitting. */
-  const [stepTracker, setStepTracker] = useState<StepTracker | null>(null);
+  /** NEO-335 Phase 2 — the step plan's memory for this sitting (NEO-467: it feeds the progress bar). */
+  const [stepTracker, setStepTracker] = useState<StepCount | null>(null);
   /**
    * NEO-335 Phase 2 — the teams step's answers as last reported, mirrored
    * here because the titles step is computed from them (the team is part of
@@ -1317,12 +1336,6 @@ export default function EntityReviewWizard({
    * operator was not shown.
    */
   const [titlesSeen, setTitlesSeen] = useState<ReadonlySet<number>>(() => new Set());
-  /** NEO-335 Phase 2 — the growth line, and the progress it was said at. */
-  const [growthNotice, setGrowthNotice] = useState<{
-    seq: number;
-    text: string;
-    progressKey: string;
-  } | null>(null);
 
   const confirmButtonRef = useRef<HTMLButtonElement>(null);
   /** NEO-335 Phase 2 — the scrolling body, reset to the top on each new screen. */
@@ -2044,12 +2057,36 @@ export default function EntityReviewWizard({
     }
     return [...ids].sort();
   }, [rows, titleContext, teamAnswersForTitles, careerGapLines, careerAnswers]);
+  /**
+   * NEO-426 — the sports flagged "No teams in this sport", for the teams
+   * step's default (a few dozen sport rows at most). Only with a teams step to
+   * feed; until it lands nothing is teamless, so every card is asked about,
+   * as before.
+   */
+  const teamlessSportIds = useQuery(
+    api.sportTeamless.listTeamlessSportIds,
+    isOpen && previewCards !== undefined && onTeamAnswersChange !== undefined ? {} : "skip",
+  );
+  const hasTeamlessSports = (teamlessSportIds?.length ?? 0) > 0;
+  /**
+   * NEO-426 — the sport rows' names, for the Save step's No Team note ("Pokemon
+   * has no teams"). The same list SportSwitch reads; asked only beside a
+   * flagged sport, since that is the only time a note names one.
+   */
+  const sportRows = useQuery(
+    api.selectorOptions.getSelectorOptions,
+    hasTeamlessSports ? { level: "sport" } : "skip",
+  );
   const linkedPlayerIds = useMemo(() => {
     const ids = new Set<Id<"players">>();
     for (const row of rows ?? []) {
       if (row.decision?.action !== "link") continue;
       if (row.decision.linkedPlayerId) ids.add(row.decision.linkedPlayerId);
     }
+    // NEO-426 — and the row's "Player on every card" (NEO-528), whose home
+    // sport the sport default reads for the cards that take them. Only beside
+    // a flagged sport: otherwise the read would be for nothing.
+    if (hasTeamlessSports && cardsWithDefaultPlayer) ids.add(cardsWithDefaultPlayer.playerId);
     // NEO-574 — the players the career check lists, by their own names, and
     // the ones it relinked a card to (the titles step names those).
     for (const line of careerGapLines) ids.add(line.playerId as Id<"players">);
@@ -2057,7 +2094,7 @@ export default function EntityReviewWizard({
       for (const r of edit?.playerIdByName ?? []) ids.add(r.playerId);
     }
     return [...ids].sort();
-  }, [rows, careerGapLines, careerFields]);
+  }, [rows, hasTeamlessSports, cardsWithDefaultPlayer, careerGapLines, careerFields]);
   const linkedTeams = useQuery(
     api.teams.getManyByIds,
     linkedTeamIds.length > 0 ? { ids: linkedTeamIds } : "skip",
@@ -2066,6 +2103,29 @@ export default function EntityReviewWizard({
     api.players.getManyByIds,
     linkedPlayerIds.length > 0 ? { ids: linkedPlayerIds } : "skip",
   );
+
+  /**
+   * NEO-426 — the teamless-sport default's facts, built once for the step
+   * model and the teams step alike. A linked player's home sport comes off
+   * the player rows already read for their names: no second read.
+   */
+  const teamlessFacts = useMemo<TeamlessFacts | undefined>(() => {
+    if (!hasTeamlessSports && !teamlessPlayerNames?.length) return undefined;
+    const playerSportIds = new Map<string, string>();
+    for (const p of linkedPlayers ?? []) playerSportIds.set(p._id, p.sportId);
+    return {
+      teamlessSportIds: teamlessSportIds ?? [],
+      playerSportIds,
+      teamlessPlayerNames: teamlessPlayerNames ?? [],
+      existingIndexes: existingCardIndexes,
+    };
+  }, [
+    hasTeamlessSports,
+    teamlessSportIds,
+    linkedPlayers,
+    teamlessPlayerNames,
+    existingCardIndexes,
+  ]);
 
   /** id → display name, for `describeDecision`'s "Linked to {name}". */
   const linkedNameById = useMemo(() => {
@@ -3635,7 +3695,7 @@ export default function EntityReviewWizard({
   const expired = hadRows && (rawRows?.length ?? 0) === 0 && !closing && !saving;
 
   // ------------------------------------------------------------------------
-  // NEO-335 Phase 2 — the step model: which screen is on, and "Step x of y".
+  // NEO-335 Phase 2 — the step model: which screen is on, and how far along.
   // Pure rules in `entity-review-steps.ts`; this is the wiring.
   // ------------------------------------------------------------------------
 
@@ -3646,8 +3706,15 @@ export default function EntityReviewWizard({
    * being decided (see `cardsForTeamsStep`), exact once they all are.
    */
   const storedNames = useMemo(
-    () => storedPeople(cardsWithNoPlayers, skippedPlayerNames, skippedTeamNames, cardsWithDefaultPlayer),
-    [cardsWithNoPlayers, skippedPlayerNames, skippedTeamNames, cardsWithDefaultPlayer],
+    () =>
+      storedPeople(
+        cardsWithNoPlayers,
+        skippedPlayerNames,
+        skippedTeamNames,
+        cardsWithDefaultPlayer,
+        teamlessFacts,
+      ),
+    [cardsWithNoPlayers, skippedPlayerNames, skippedTeamNames, cardsWithDefaultPlayer, teamlessFacts],
   );
   const teamsStepCards = useMemo(
     () =>
@@ -3656,6 +3723,62 @@ export default function EntityReviewWizard({
         : [],
     [teamsStepEnabled, previewCards, rows, settledForTeams, storedNames],
   );
+  /**
+   * NEO-426 — are the facts the teams step's membership reads all loaded?
+   * The flagged sports, and (only beside a flagged sport) the home sport of
+   * every linked player and the row's default player, which reloads each time
+   * a name is linked. Until then the step plan neither starts nor adds its
+   * teams step, so the bar is never measured against a half-loaded answer.
+   */
+  const teamsStepKnown =
+    !teamsStepEnabled ||
+    (teamlessSportIds !== undefined &&
+      (teamlessSportIds.length === 0 ||
+        linkedPlayerIds.length === 0 ||
+        linkedPlayers !== undefined));
+  /**
+   * NEO-426 — the cards the teamless-sport default saves with No Team
+   * without asking (`autoNoTeamIndexes`), and who is on them. Read on the Save
+   * step only, where every name is decided, so the count is exact; the commit
+   * stamps them.
+   */
+  const autoNoTeam = useMemo(
+    () =>
+      teamsStepEnabled && previewCards && rows
+        ? autoNoTeamPeople(
+            previewCards,
+            rows,
+            cardsWithSettledTeam && cardsWithSettledTeam.length > 0
+              ? new Set(cardsWithSettledTeam)
+              : undefined,
+            storedNames,
+          )
+        : undefined,
+    [teamsStepEnabled, previewCards, rows, cardsWithSettledTeam, storedNames],
+  );
+  const autoNoTeamCount = autoNoTeam?.cards ?? 0;
+  /**
+   * The Save step's sentence: who saves with No Team and which sport has no
+   * teams. The sport clause is said only when it can be said whole: every
+   * person's home sport known (a name that resolved before the sitting names
+   * only a flagged sport, so with exactly one flagged sport that is it) and
+   * every name loaded. Otherwise it is left out, never guessed.
+   */
+  const autoNoTeamText = useMemo(() => {
+    if (!autoNoTeam) return "";
+    const sportIds = new Set(autoNoTeam.sportIds);
+    let whole = !autoNoTeam.sportUnknown;
+    if (autoNoTeam.sportUnknown && teamlessSportIds?.length === 1) {
+      sportIds.add(teamlessSportIds[0]);
+      whole = true;
+    }
+    const nameById = new Map((sportRows ?? []).map((sport) => [String(sport._id), sport.value]));
+    const sportNames = [...sportIds]
+      .map((id) => nameById.get(id))
+      .filter((name): name is string => !!name?.trim());
+    const complete = whole && sportIds.size > 0 && sportNames.length === sportIds.size;
+    return autoNoTeamNote(autoNoTeam, complete ? sportNames.sort() : []);
+  }, [autoNoTeam, sportRows, teamlessSportIds]);
   /** The teams step reports up through here so the titles step can read it. */
   const handleTeamAnswers = useCallback(
     (answers: Array<TeamAnswer | undefined>) => {
@@ -3843,34 +3966,33 @@ export default function EntityReviewWizard({
   }, [titleCommitFields, onTitleAnswersChange]);
 
   /*
-   * The counter's memory, updated in render (React's "storing information
-   * from previous renders" pattern) so x, y and the growth line all describe
-   * THIS render. `trackSteps` returns the same object while nothing moved,
-   * so the update settles in one extra pass.
+   * The plan's memory, updated in render (React's "storing information from
+   * previous renders" pattern) so the bar describes THIS render.
+   * `trackSteps` returns the same object while nothing moved, so the update
+   * settles in one extra pass.
    */
-  const stepPosition: StepPosition = postStep
-    ? { kind: postStep }
-    : { kind: "review", index: reviewStepIndex(rows ?? [], current?._id ?? null) };
-  const trackedSteps: StepTracker | null =
-    isOpen && rows !== undefined && !expired
+  const trackedSteps: StepCount | null =
+    isOpen && rows !== undefined && !expired && (stepTracker !== null || teamsStepKnown)
       ? trackSteps(stepTracker, {
-          rows,
+          reviewRows: rows.length,
           checklistStep: postLive.checklist,
           careerStep: postLive.career,
           teamsStep: postLive.teams,
+          teamsStepKnown,
           autographStep: postLive.autograph,
           titlesStep: postLive.titles,
           onSave: postStep === "save",
-          // The growth line names only the steps still AHEAD of this one.
-          position: stepPosition,
         })
       : isOpen
         ? stepTracker
         : null;
   if (trackedSteps !== stepTracker) setStepTracker(trackedSteps);
 
-  const stepX = trackedSteps ? stepNumber(trackedSteps.count, stepPosition) : 0;
-  const stepY = expired ? 0 : (trackedSteps?.count.total ?? 0);
+  const stepPosition: StepPosition = postStep
+    ? { kind: postStep }
+    : { kind: "review", index: reviewStepIndex(rows ?? [], current?._id ?? null) };
+  const progress =
+    trackedSteps && !expired ? stepProgress(trackedSteps, stepPosition) : { done: 0, planned: 0 };
   const stepKind: WizardStepKind =
     postStep ??
     (current
@@ -3878,24 +4000,6 @@ export default function EntityReviewWizard({
           pick: pickStep || (reviewingDecided && isAmbiguousPlayerRow(current)),
         })
       : (upcomingReviewStepKind(rows ?? []) ?? "player"));
-
-  /*
-   * The growth line stays until the operator next MOVES — a decision made or
-   * undone, or a post-review step asked for — and then clears. Keyed on that
-   * progress rather than on x: the render that grows y is often the one in
-   * which the walk is still moving itself (a skip that adds the teams step
-   * lands while the skipped row is still pinned), and keying on x would wipe
-   * the line before anyone could read it.
-   */
-  const progressKey = `${decided}:${requestedPostStep ?? ""}`;
-  const latestGrowth = trackedSteps?.growth ?? null;
-  if (trackedSteps === null && growthNotice !== null) {
-    setGrowthNotice(null);
-  } else if (latestGrowth && latestGrowth.seq !== growthNotice?.seq) {
-    setGrowthNotice({ ...latestGrowth, progressKey });
-  }
-  const growthText =
-    growthNotice && growthNotice.progressKey === progressKey ? growthNotice.text : "";
 
   /**
    * Focus follows the step. Save focuses Confirm & Save as soon as it appears,
@@ -5188,19 +5292,18 @@ export default function EntityReviewWizard({
         <div className="bg-raised-deep border border-rule-strong rounded-lg shadow-xl shadow-offset w-full max-w-2xl h-[min(40rem,100%)] flex flex-col">
           {/*
             NEO-335 Phase 2 — the shared header: "Tidy up" plus the set's
-            year, name and variant (NEO-497, `title`), ONE
-            "Step x of y" over every screen to expect, the screen type below,
-            and the neon rail as the header's edge. It replaces "Confirm New
-            Players & Teams" and the "N of M reviewed · N still being looked
-            up" line (the footer still says what is being looked up).
+            year, name and variant (NEO-497, `title`), the screen type below,
+            and (NEO-467) the progress bar as the header's edge. It replaces
+            "Confirm New Players & Teams" and the "N of M reviewed · N still
+            being looked up" line (the footer still says what is being looked
+            up).
           */}
           <WizardChrome
             titleId="entity-review-wizard-title"
             title={title}
-            step={stepX}
-            total={stepY}
+            done={progress.done}
+            planned={progress.planned}
             subtitle={expired ? "" : STEP_SUBTITLE[stepKind]}
-            announcement={growthText}
           />
 
           {/*
@@ -5360,7 +5463,22 @@ export default function EntityReviewWizard({
                           value={current.sportId}
                           setSportId={current.setSportId}
                           disabled={busy}
-                          prefix={null}
+                          prefix={
+                            // NEO-426 (C3) — a mixed deployment: this set's sport
+                            // keeps teams but another sport does not. A new
+                            // person is born in the set's sport unless the
+                            // operator moves them, and a flagged sport does
+                            // nothing for a name born elsewhere, so here the
+                            // control says what it is for instead of hiding
+                            // behind the bare sport. The same control, the same
+                            // name for assistive tech; never pre-moved on a guess.
+                            current.kind === "player" &&
+                            !pickStep &&
+                            hasTeamlessSports &&
+                            !teamlessSportIds?.includes(current.setSportId)
+                              ? "Sport for this name:"
+                              : null
+                          }
                           onOpenChange={(open) =>
                             setSportChooserOpenFor(open ? current._id : null)
                           }
@@ -6602,6 +6720,15 @@ export default function EntityReviewWizard({
                     {autoLinkedIntro}
                   </p>
                 )}
+                {/* NEO-426 — the cards the teamless-sport default saves as
+                    "No Team" without a teams-step line. Said here because it
+                    is the one place they are not asked about; a team added
+                    later in the card editor sticks. */}
+                {autoNoTeamCount > 0 && (
+                  <p id={autoNoTeamNoteId} className="text-sm text-ink-3">
+                    {autoNoTeamText}
+                  </p>
+                )}
                 {commitError && (
                   /*
                     NEO-220 — a failed commit is recoverable, so say so and show
@@ -6735,6 +6862,7 @@ export default function EntityReviewWizard({
                   defaultPlayer={cardsWithDefaultPlayer}
                   skippedPlayerNames={skippedPlayerNames}
                   skippedTeamNames={skippedTeamNames}
+                  teamless={teamlessFacts}
                   disabled={saving}
                   showSetTeamHint={showSetTeamHint}
                 />
@@ -7060,7 +7188,15 @@ export default function EntityReviewWizard({
                       // NEO-424 (a11y) — autofocused on a batch that opened
                       // with every name linked for the operator, so it says
                       // why the dialog is up, as the teams step's Next does.
-                      aria-describedby={autoLinkedIntro ? autoLinkedIntroId : undefined}
+                      // NEO-426 — and by the "saves with No Team" note, when shown.
+                      aria-describedby={
+                        [
+                          autoLinkedIntro ? autoLinkedIntroId : null,
+                          autoNoTeamCount > 0 ? autoNoTeamNoteId : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" ") || undefined
+                      }
                       /*
                        * NEO-294 — `aria-disabled`, not native `disabled`.
                        *

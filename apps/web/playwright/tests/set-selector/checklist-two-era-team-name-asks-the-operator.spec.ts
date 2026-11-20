@@ -38,7 +38,7 @@ import { editCardButton } from "../../support/cards";
 import { usePastedChecklist } from "../../support/published-checklist";
 import { addPlayerByHand, expectPlayersLoaded } from "../../support/players";
 import { drillToCustom, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
-import { advanceToSave, confirmSaveButton, reviewWizard, stepCounter } from "../../support/wizard";
+import { advanceToSave, confirmSaveButton, expectNothingDecided, reviewWizard } from "../../support/wizard";
 import type { Page } from "@playwright/test";
 
 const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -69,7 +69,8 @@ async function syncAndExpectTheTeamAsked(
   // rows answer to the name, so it is a choice and not a new team.
   await expect(wizard.getByRole("heading", { level: 3, name: `Which team: ${team}` })).toBeVisible();
   await expect(wizard.getByRole("heading", { level: 3, name: /^New Team: / })).toHaveCount(0);
-  await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+  // Nothing decided before it (NEO-467: a name step, no "Decided (N)" history).
+  await expectNothingDecided(page);
   // Both existing teams, each by name and era, newest first.
   const candidates = wizard.getByRole("list", { name: /^We've got [0-9]+ teams by that name/ });
   const offered = candidates.getByRole("button");

@@ -21,7 +21,7 @@ import {
   confirmSaveButton,
   fetchOneMarketplaceSetChecklistToWizard,
   reviewWizard,
-  stepCounter,
+  expectNothingDecided,
 } from "../../support/wizard";
 
 test(
@@ -34,8 +34,8 @@ test(
     await fetchOneMarketplaceSetChecklistToWizard(page, env, { set: "Tulsa Oilers CHL", checklist: CHECKLISTS.tulsaOilers });
 
     const wizard = reviewWizard(page);
-    // Nothing decided: "Step 1 of N" (on a name step x is the decided count plus one).
-    await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+    // Nothing decided: a name step is up and there is no "Decided (N)" history (NEO-467).
+    await expectNothingDecided(page);
 
     // Skip every remaining name; the wizard leaves its name steps (the footer
     // shows "Next (Enter)" on a teams / titles step, else "Confirm & Save").

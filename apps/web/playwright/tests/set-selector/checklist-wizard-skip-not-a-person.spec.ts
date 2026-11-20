@@ -7,10 +7,13 @@ import {
   cancelAndDiscard,
   confirmSaveButton,
   fetchOneMarketplaceSetChecklistToWizard,
+  expectDecidedCount,
+  expectNameStepLeft,
+  expectNothingDecided,
   personSkip,
-  readStep,
+  readDecidedCount,
+  readNameStep,
   reviewWizard,
-  stepCounter,
   walkToPlayerRow,
 } from "../../support/wizard";
 
@@ -33,7 +36,8 @@ test(
     await fetchOneMarketplaceSetChecklistToWizard(page, env, { set: SET, checklist: CHECKLISTS.fortWorthFire });
     const wizard = reviewWizard(page);
     // Nothing else touches this set, so there is no sibling batch to resume.
-    await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+    // Nothing decided: a name step is up and there is no "Decided (N)" history (NEO-467).
+    await expectNothingDecided(page);
 
     // Reach a settled player row. Every step the walk answers is a SKIP, so
     // every decision in this batch is one, which the summary reads back below.
@@ -41,15 +45,19 @@ test(
     await expect(personSkip(page)).toBeVisible({ timeout: 30_000 });
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, player row" });
 
-    // One tap records exactly ONE decision: the header's "Step x of y" has
-    // x = decided + 1 on a name step, so x moves by exactly one. (x is wherever
-    // the walk left it; a control that rendered but wrote nothing leaves it
-    // where it was. Pin x, not y: y grows as staged steps arrive, and the
-    // anchored match keeps "Step 5" from answering for "Step 15".)
-    const { x: stepBefore } = await readStep(page);
+    // One tap records exactly ONE decision, on THIS row: the wizard leaves the
+    // row (its own "Skip <name> — not a person" goes) and the names' "Decided
+    // (N)" history grows by exactly one. A control that rendered but wrote
+    // nothing leaves the row up. NEO-467: the header has no step count (player
+    // rows share the "New player" subtitle), so the row's own control and the
+    // decision count are the proof. The walk drained the lookups, so nothing
+    // else moves the count.
+    const decidedBefore = await readDecidedCount(page);
+    const row = await readNameStep(page);
     await personSkip(page).click();
     // Our own mutation answering: a UX budget (R5).
-    await expect(stepCounter(page)).toHaveText(new RegExp(`^Step ${stepBefore + 1} of [0-9]+$`));
+    await expectNameStepLeft(page, row);
+    await expectDecidedCount(page, decidedBefore + 1);
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, name skipped" });
 
     // The footer skip decides every row that is left, lookups included.

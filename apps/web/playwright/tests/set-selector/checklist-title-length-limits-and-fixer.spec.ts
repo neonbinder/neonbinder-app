@@ -194,10 +194,15 @@ test(
     // ordinary insert (NEO-609), so its name stays in the title like any level's.
     const fixer = page.getByRole("dialog", { name: tidyUpName({ year: "2024", set }), exact: true });
     await expect(fixer).toBeVisible();
-    // The walker and the wizard share title and counter; its own Skip control
-    // says which this is, and the subtitle names the question.
+    // The walker and the wizard share title and header; its own Skip control
+    // says which this is, and the subtitle names the question (also the
+    // progress bar's value text since NEO-467). That this card is the sitting's
+    // only one is proved by Save going straight to All clear below.
     await expect(fixer.getByRole("button", { name: `Skip for now, card ${num}` })).toBeVisible();
-    await expect(fixer.getByText("Step 1 of 1", { exact: true })).toBeVisible();
+    await expect(fixer.getByRole("progressbar", { name: "Wizard progress" })).toHaveAttribute(
+      "aria-valuetext",
+      "Card titles",
+    );
     await expect(fixer.getByText("Card titles", { exact: true })).toBeVisible();
     await expect(fixer.getByText("variation text is over the 65-character limit")).toBeVisible();
     await expect(fixer.getByRole("textbox", { name: `Card title for #${num}` })).toHaveValue(generated);
@@ -263,9 +268,9 @@ test(
     await fixer.getByRole("button", { name: /Save \(Enter\)/ }).click();
 
     await expect(fixer.getByText(/All clear.*nothing on this checklist needs attention/)).toBeVisible();
-    // No "fixed" count any more (NEO-335 Phase 2): the counter holds y of y, and
-    // that the save WROTE is proved on the grid below, where the badge is gone.
-    await expect(fixer.getByText("Step 1 of 1", { exact: true })).toBeVisible();
+    // No "fixed" count any more (NEO-335 Phase 2): the walker has left the card,
+    // and that the save WROTE is proved on the grid below, where the badge is gone.
+    await expect(fixer.getByRole("button", { name: `Skip for now, card ${num}` })).toBeHidden();
     await expectAccessible(page, { within: fixer, label: "Attention walker, all clear" });
     await fixer.getByRole("button", { name: /Done \(Esc\)/ }).click();
     await expect(fixer).toBeHidden();

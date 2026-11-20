@@ -42,7 +42,7 @@ import {
   openDecidedList,
   openOneMarketplaceSetBase,
   reviewWizard,
-  stepCounter,
+  expectNothingDecided,
 } from "../../support/wizard";
 
 const TARGET = {
@@ -80,7 +80,7 @@ test(
 
     // The operator disagrees with the guess: Change reopens the step, nothing decided.
     await linked.getByRole("button", { name: `Change decision for ${CLUB}` }).click();
-    await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+    await expectNothingDecided(page);
 
     // ── PART 2: the operator's past-era link ──
     // The batch's one lookup (the team's enrichment) settles before the step is

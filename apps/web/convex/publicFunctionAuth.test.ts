@@ -3907,6 +3907,53 @@ describe("NEO-556: the No Team run is admin-gated", () => {
 });
 
 /**
+ * NEO-426 — the "No teams in this sport" switch and its list are operator
+ * tooling (`requireAdmin`). A refused call must not have flagged the sport.
+ * `playersWithTeamlessHomeSport` is internal (no client path).
+ */
+describe("NEO-426: the teamless-sport switch is admin-gated", () => {
+  const flagged = (t: ReturnType<typeof convexTest>, sportId: Id<"selectorOptions">) =>
+    t.run(async (ctx) => (await ctx.db.get(sportId))?.teamlessSport ?? null);
+  const ADMIN_GATED: Array<
+    [string, (t: ReturnType<typeof convexTest>, sportId: Id<"selectorOptions">) => Promise<unknown>]
+  > = [
+    [
+      "sportTeamless.setTeamlessSport",
+      (t, sportId) => t.mutation(api.sportTeamless.setTeamlessSport, { sportId, teamless: true }),
+    ],
+    ["sportTeamless.listTeamlessSportIds", (t) => t.query(api.sportTeamless.listTeamlessSportIds, {})],
+  ];
+
+  test.each(ADMIN_GATED)("%s rejects an anonymous caller and flags nothing", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await expect(call(t, sportId)).rejects.toThrow(/not authenticated/i);
+    expect(await flagged(t, sportId)).toBeNull();
+  });
+
+  test.each(ADMIN_GATED)("%s rejects a signed-in non-admin and flags nothing", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await expect(call(t.withIdentity({ subject: "member", role: "member" }) as never, sportId)).rejects.toThrow(
+      /admin access required/i,
+    );
+    expect(await flagged(t, sportId)).toBeNull();
+  });
+
+  test.each(ADMIN_GATED)("%s answers an admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await expect(call(t.withIdentity(ADMIN) as never, sportId)).resolves.toBeDefined();
+  });
+
+  test("playersWithTeamlessHomeSport is declared internalQuery, not query", () => {
+    const src = readFileSync(join(__dirname, "sportTeamless.ts"), "utf8");
+    expect(src).toContain("export const playersWithTeamlessHomeSport = internalQuery({");
+    expect(src).not.toContain("export const playersWithTeamlessHomeSport = query(");
+  });
+});
+
+/**
  * NEO-520 — `testing.seedMyTestEbayOrder`, the unmatched-eBay-sale spec's seed
  * hop, by the same two locks as `seedMyTestPickOrder`: an anonymous caller is
  * refused, and a deployment without `TESTING_RESET_SECRET` (every production

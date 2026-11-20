@@ -22,6 +22,10 @@ const SPORT_ID = "selopt-sport-baseball";
 
 vi.mock("../../convex/_generated/api", () => ({
   api: {
+    // NEO-426: the teams step's flagged-sports read.
+    sportTeamless: {
+      listTeamlessSportIds: "sportTeamless.listTeamlessSportIds",
+    },
     entityReviewQueue: {
       getBatch: "entityReviewQueue.getBatch",
       recordDecision: "entityReviewQueue.recordDecision",
@@ -47,6 +51,8 @@ vi.mock("../../convex/_generated/api", () => ({
       nameHeldAsAliasBy: "teams.nameHeldAsAliasBy",
     },
     leagues: { list: "leagues.list" },
+    // NEO-426: the row header's SportSwitch reads the sport list.
+    selectorOptions: { getSelectorOptions: "selectorOptions.getSelectorOptions" },
   },
 }));
 
@@ -102,6 +108,7 @@ vi.mock("convex/react", () => ({
     if (args === "skip") return undefined;
     if (ref === "entityReviewQueue.getBatch") return currentRows;
     if (ref === "entityReviewQueue.teamStepContext") return contextAnswer;
+    if (ref === "sportTeamless.listTeamlessSportIds") return [];
     if (ref === "players.nearMatches" || ref === "teams.nearMatches") return nearAnswer;
     if (ref === "leagues.list") return [];
     if (ref === "teams.nameHeldAsAliasBy") return holdersAnswer;

@@ -21,6 +21,10 @@ const SPORT_ID = "selopt-sport-baseball";
 
 vi.mock("../../convex/_generated/api", () => ({
   api: {
+    // NEO-426: the teams step's flagged-sports read.
+    sportTeamless: {
+      listTeamlessSportIds: "sportTeamless.listTeamlessSportIds",
+    },
     entityReviewQueue: {
       getBatch: "entityReviewQueue.getBatch",
       recordDecision: "entityReviewQueue.recordDecision",
@@ -94,6 +98,7 @@ vi.mock("convex/react", () => ({
     if (args === "skip") return undefined;
     if (ref === "entityReviewQueue.getBatch") return currentRows;
     if (ref === "entityReviewQueue.playerStepContext") return contextAnswer;
+    if (ref === "sportTeamless.listTeamlessSportIds") return [];
     if (ref === "players.nearMatches" || ref === "teams.nearMatches") return [];
     if (ref === "leagues.list") return [];
     return undefined;

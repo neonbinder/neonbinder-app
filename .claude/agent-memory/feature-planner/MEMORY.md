@@ -82,3 +82,6 @@
 - [Runner region sets the probe p50](runner-region-sets-the-probe-p50.md) — shard probe spread is the runner's region; compare load with server-side ping, loop:loop buckets, OCC
 - [Admin close settles a whole report group](admin-close-settles-a-whole-report-group.md) — group-wide admin writes cross workers; give each report-filing spec its own variant + platform
 - [Suite red rate is a long tail](suite-red-rate-is-a-long-tail.md) — 470 executions at zero retries: 0.3% per execution is 75% red; plan by family and policy; first red on a worker is the cause
+- [Teams-step membership is synchronous](teams-step-membership-is-synchronous.md) — decide "who is on the Cards with no team step" from rows + fetch-time preview facts, never evidence; the step counter never shrinks
+- [Preprocess route merge opens an E2E window](preprocess-route-merge-opens-an-e2e-window.md) — bare FastAPI 404 on dev preprocess until release.yml promotes dev; full rerun, never a timeout
+- [No Team defaults share one gate](no-team-defaults-share-one-gate.md) — new auto-"No team" rules feed noTeamCardVerdict in the commit chunk + BSC answer; sport rows cannot hold the set Team
