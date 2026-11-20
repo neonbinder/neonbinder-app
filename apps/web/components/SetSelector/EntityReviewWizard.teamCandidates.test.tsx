@@ -182,6 +182,24 @@ describe("EntityReviewWizard — a team name that reaches several rows (NEO-602)
     expect(screen.queryByRole("heading", { name: /^New Team/ })).toBeNull();
   });
 
+  it("renders the team step's context and search side by side without a duplicate React key", async () => {
+    // React reports two siblings sharing a key only through console.error; the
+    // DOM still renders both, so a text assertion alone passes with the bug in.
+    // `TeamStepContext` and `TeamMatchSearch` are siblings, each remounted per
+    // row, so their keys are prefixed rather than both being the row id.
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      currentRows = [orioleRow()];
+      contextAnswer = ORIOLES_CONTEXT;
+      render(wizard());
+      await screen.findByRole("list", { name: /^We've got [0-9]+ teams by that name/ });
+      expect(screen.getByRole("combobox", { name: "Search all teams" })).toBeTruthy();
+      expect(errors.mock.calls.some((call) => String(call[0]).includes("same key"))).toBe(false);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
   it("offers each row as a link, newest era first, with its era and league in the name", async () => {
     currentRows = [orioleRow()];
     contextAnswer = ORIOLES_CONTEXT;

@@ -4,9 +4,11 @@
  * wrapper `resolveChecklistTeamIdentities`.
  *
  * Onyx prints teams as places ("Seattle"). A place settles to a team only when
- * exactly one team in the set's league(s) has that location, the set year
- * picks it, and the commit's own lookup lands on the same row; everything else
- * is left as printed (rule 8: nothing picks the first candidate).
+ * exactly one team in the set's league(s), across ALL its eras, has that
+ * location and the commit's own lookup lands on the same row; everything else
+ * is left as printed (rule 8: nothing picks the first candidate, and the set
+ * year never chooses between a place's eras, Jason 2026-11-20; the card's
+ * players decide at the gate and the commit, else the operator).
  */
 
 import { convexTest } from "convex-test";
@@ -173,20 +175,38 @@ describe("resolveChecklistPlaceTeams — a team printed as a place", () => {
     expect(await resolvePlaces(t, world, ["Seattle", "Tampa Bay Rays"])).toEqual([null, null]);
   });
 
-  test("the set year picks among a place's eras; a lone past era is still the team", async () => {
+  test("several eras at one place are left as printed: the set year does not pick the Mariners over the Pilots", async () => {
     const t = convexTest(schema, modules);
     const world = await seedWorld(t, "2001");
     await inLeague(t, world, "major");
     await addTeam(t, world, { name: "Pilots", location: "Seattle", level: "major", yearsActive: { from: 1969, to: 1969 } });
     await addTeam(t, world, { name: "Mariners", location: "Seattle", level: "major", yearsActive: { from: 1977 } });
-    expect(await resolvePlaces(t, world, ["Seattle"])).toEqual(["Seattle Mariners"]);
+    expect(await resolvePlaces(t, world, ["Seattle"])).toEqual([null]);
+  });
 
-    // Only the past era exists: a card may show a team's past, so it still counts.
+  test("a lone place team of another era than the set's still settles: a card can show a team's past, never its future", async () => {
+    // Only the past era exists in the league: it is the one team at the place.
     const past = convexTest(schema, modules);
     const w2 = await seedWorld(past, "2001");
     await inLeague(past, w2, "major");
     await addTeam(past, w2, { name: "Pilots", location: "Seattle", level: "major", yearsActive: { from: 1969, to: 1969 } });
     expect(await resolvePlaces(past, w2, ["Seattle"])).toEqual(["Seattle Pilots"]);
+
+    // A lone team that had not begun by the set year settles nothing.
+    const future = convexTest(schema, modules);
+    const w3 = await seedWorld(future, "1960");
+    await inLeague(future, w3, "major");
+    await addTeam(future, w3, { name: "Mariners", location: "Seattle", level: "major", yearsActive: { from: 1977 } });
+    expect(await resolvePlaces(future, w3, ["Seattle"])).toEqual([null]);
+  });
+
+  test("an other-league team of another era does not make the place ambiguous", async () => {
+    const t = convexTest(schema, modules);
+    const world = await seedWorld(t, "2001");
+    await inLeague(t, world, "major");
+    await addTeam(t, world, { name: "Mariners", location: "Seattle", level: "major", yearsActive: { from: 1977 } });
+    await addTeam(t, world, { name: "Rainiers", location: "Seattle", level: "minor", yearsActive: { from: 1955, to: 1969 } });
+    expect(await resolvePlaces(t, world, ["Seattle"])).toEqual(["Seattle Mariners"]);
   });
 
   test("left as printed when the commit's own lookup on the team's full name would not land on it", async () => {

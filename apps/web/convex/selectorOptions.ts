@@ -359,6 +359,7 @@ import {
   CARD_PLAYER_TEAM_MAX_CARDS,
   CARD_PLAYER_TEAM_MAX_PLAYERS_PER_CARD,
 } from "./lib/teamRow";
+import { effectiveSetLeagueIds } from "./lib/selectorLeagues";
 import {
   // NEO-331: names resolve link-only; only a New League answer (which carries
   // its level) creates. The sport default is never applied here: an
@@ -1859,15 +1860,14 @@ async function resolveGateTeamAnswer(
     name: string;
     setYear?: number;
     cardPlayerIds?: Array<Array<Id<"players">>>;
+    /** NEO-591 — the set's leagues, for a printed PLACE; see `resolveCardTeamName`. */
+    placeLeagueIds?: () => Promise<ReadonlySet<string>>;
   },
 ): Promise<GateTeamAnswer> {
-  const pick = await resolveCardTeamName(
-    ctx,
-    args.sportId,
-    args.name,
-    args.setYear,
-    args.cardPlayerIds ? { cardPlayerIds: args.cardPlayerIds } : {},
-  );
+  const pick = await resolveCardTeamName(ctx, args.sportId, args.name, args.setYear, {
+    ...(args.cardPlayerIds ? { cardPlayerIds: args.cardPlayerIds } : {}),
+    ...(args.placeLeagueIds ? { placeLeagueIds: args.placeLeagueIds } : {}),
+  });
   const ambiguous = pick.candidates.length > 1;
   const candidateTeamIds =
     pick.candidates.length > 1 ? pick.candidates.map((candidate) => candidate._id) : [];
@@ -1921,6 +1921,14 @@ export const RESOLVE_GATE_TEAMS_MAX = 50;
 export const resolveGateTeamNames = internalQuery({
   args: {
     sportId: v.id("selectorOptions"),
+    /**
+     * NEO-591 — the set being gated. With it a printed PLACE ("Seattle", which
+     * no team answers to by name) may be read against the set's league(s): two
+     * or more in-league teams of any era there are the candidates and the
+     * cards' players decide, else the operator. Absent, a name is read as a
+     * name only. One id, validated; the leagues are read once per call, lazily.
+     */
+    selectorOptionId: v.optional(v.id("selectorOptions")),
     setYear: v.optional(v.number()),
     asks: v.array(
       v.object({
@@ -1959,9 +1967,18 @@ export const resolveGateTeamNames = internalQuery({
         });
       }
     }
+    let leagueIds: Promise<ReadonlySet<string>> | undefined;
+    const selectorOptionId = args.selectorOptionId;
+    const placeLeagueIds = selectorOptionId
+      ? () =>
+          (leagueIds ??= effectiveSetLeagueIds(ctx, selectorOptionId).then(
+            (ids) => new Set<string>(ids),
+          ))
+      : undefined;
     return await mapBounded(args.asks, (ask) =>
       resolveGateTeamAnswer(ctx, {
         sportId: args.sportId,
+        ...(placeLeagueIds ? { placeLeagueIds } : {}),
         name: ask.name,
         ...(args.setYear !== undefined ? { setYear: args.setYear } : {}),
         ...(ask.cardPlayerIds ? { cardPlayerIds: ask.cardPlayerIds } : {}),
@@ -2637,6 +2654,7 @@ async function resolveUnknownsAndStartBatch(
             (slice) =>
               gate.runQuery(internal.selectorOptions.resolveGateTeamNames, {
                 sportId: args.sportId,
+                selectorOptionId: args.selectorOptionId,
                 ...(setYear !== undefined ? { setYear } : {}),
                 asks: slice.map(({ name, cardPlayerIds }) =>
                   cardPlayerIds ? { name, cardPlayerIds } : { name },
@@ -20048,8 +20066,16 @@ export const commitCardChecklistPrelude = internalMutation({
       cardPlayerIdCache.set(key, found);
       return found;
     };
+    // NEO-591 — the set's leagues for a printed PLACE, read once and only when
+    // a name no team answers to is asked (the gate reads the same, per query).
+    let setLeagueIds: Promise<ReadonlySet<string>> | undefined;
+    const placeLeagueIds = () =>
+      (setLeagueIds ??= effectiveSetLeagueIds(ctx, args.selectorOptionId).then(
+        (ids) => new Set<string>(ids),
+      ));
     const resolveTeamSilently = async (name: string): Promise<Id<"teams"> | null> => {
       const pick = await resolveCardTeamName(ctx, args.sportId, name, setYear, {
+        placeLeagueIds,
         loadCardPlayerIds: async () => {
           const entry = playersByTeamKey.get(normalizeTeamName(name.trim()));
           const cards = entry?.cards;

@@ -23,12 +23,13 @@ import { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
 import { effectiveSetLeagueIds } from "./lib/selectorLeagues";
 import {
   findTeamsByFullName,
+  findTeamsByLocation,
+  PLACE_TEAM_SEARCH_HITS,
   resolveCardTeamName,
   resolveTeamForSetYear,
   TEAM_ERA_SCAN_LIMIT,
 } from "./lib/teamRow";
-import { nameTokens } from "./lib/entityNearMatch";
-import { pickPlaceTeam, teamLocationIs } from "./lib/placeTeam";
+import { pickPlaceTeam, placeTextOrNull } from "./lib/placeTeam";
 
 /**
  * NEO-591 — the longest number a candidate's `sourceNumbers` may carry per
@@ -1046,8 +1047,8 @@ export const resolveChecklistTeamTexts = internalQuery({
  * it answer null.
  */
 export const MAX_PLACE_TEXTS_PER_QUERY = 20;
-/** How many `search_name` hits one text reads. */
-export const PLACE_TEAM_SEARCH_HITS = 32;
+/** How many `search_name` hits one text reads (the location leg, `findTeamsByLocation`). */
+export { PLACE_TEAM_SEARCH_HITS };
 
 /**
  * The rows the sport holds under `x` as a full name (name or alias) plus the
@@ -1065,27 +1066,20 @@ async function teamRowsForPlace(
   x: string,
 ): Promise<{ byName: Doc<"teams">[]; byLocation: Doc<"teams">[]; saturated: boolean }> {
   const byName = await findTeamsByFullName(ctx, sportId, x);
-  let saturated = byName.length >= TEAM_ERA_SCAN_LIMIT;
-  const byLocation: Doc<"teams">[] = [];
-  const term = nameTokens(x).join(" ");
-  if (term) {
-    const hits = await ctx.db
-      .query("teams")
-      .withSearchIndex("search_name", (q) => q.search("nameNormalized", term).eq("sportId", sportId))
-      .take(PLACE_TEAM_SEARCH_HITS);
-    if (hits.length >= PLACE_TEAM_SEARCH_HITS) saturated = true;
-    for (const row of hits) {
-      if (teamLocationIs(row, x)) byLocation.push(row);
-    }
-  }
+  const location = await findTeamsByLocation(ctx, sportId, x);
+  const saturated = byName.length >= TEAM_ERA_SCAN_LIMIT || location.saturated;
+  const byLocation = location.rows;
   return { byName, byLocation, saturated };
 }
 
 /**
- * The one team these candidates mean for the set year, as the string the card
- * carries, or null. Exactly one row may survive the era pick, and the commit's
- * own lookup of that string must land on the same row, so the card cannot be
- * written to another team than the one chosen.
+ * The one team these candidates mean, as the string the card carries, or null.
+ * `qualifying` is EVERY in-league team at the place, whatever its era, and it
+ * must be exactly one (`pickPlaceTeam`): with several, the set year does not
+ * choose, the text stays as printed and the Names gate and the commit let the
+ * card's players decide (`resolveCardTeamName`'s place leg), else the operator.
+ * The commit's own lookup of that string must land on the same row, so the card
+ * cannot be written to another team than the one chosen.
  *
  * NEO-602: the commit's lookup is `resolveCardTeamName`, and a full name that
  * reaches two eras ("Oakland Athletics" is one team's name and another's
@@ -1113,12 +1107,21 @@ async function settleOneTeam(
  * those is a team's name, so every such card was parked and the operator was
  * asked about each one. When a plain team text names no team by name or alias,
  * this tries the location: the teams whose location IS the text, limited to
- * the set's league(s) (`effectiveSetLeagueIds`), picked for the set year, and
- * EXACTLY ONE may remain, and the commit's own lookup of its full name must
+ * the set's league(s) (`effectiveSetLeagueIds`), across ALL their eras, and
+ * EXACTLY ONE may exist, and the commit's own lookup of its full name must
  * land on that same row (`settleOneTeam`).
  *
- *  - "Seattle" in an MLB set is the Mariners (the Kraken and the Seahawks are
- *    in other leagues). "New York" in an MLB set is two teams: unchanged.
+ *  - "Seattle" in an MLB set with one in-league Seattle team is the Mariners
+ *    (the Kraken and the Seahawks are in other leagues). "New York" in an MLB
+ *    set is two teams: unchanged.
+ *  - Jason, 2026-11-20: several in-league teams of DIFFERENT ERAS at one place
+ *    (the 1969 Seattle Pilots beside the Mariners) are NOT settled by the set
+ *    year, which would link a retro Pilots card printed "Seattle" to the
+ *    Mariners without a word. The text is left as printed; the Names gate and
+ *    the commit decide per card from the players' stints, else the operator
+ *    (`resolveCardTeamName`, `placeLeagueIds`). At pairing it stands as the
+ *    checklist's printed text, so against a marketplace team it is a team
+ *    disagreement the operator settles.
  *  - A set with no league skips this entirely: no guessing across leagues.
  *  - A text some team already answers to by name or alias is left alone (the
  *    commit resolves it as it always did), as is a text with a comma (the
@@ -1148,13 +1151,8 @@ export const resolveChecklistPlaceTeams = internalQuery({
     const setYear = await findSetYearForSelectorOption(ctx, args.selectorOptionId);
     const out: Array<string | null> = [];
     for (const [i, raw] of args.texts.entries()) {
-      const x = raw.trim();
-      if (
-        i >= MAX_PLACE_TEXTS_PER_QUERY ||
-        !x ||
-        x.length > MAX_PLAYER_NAME_LENGTH ||
-        x.includes(",")
-      ) {
+      const x = i >= MAX_PLACE_TEXTS_PER_QUERY ? null : placeTextOrNull(raw);
+      if (!x) {
         out.push(null);
         continue;
       }

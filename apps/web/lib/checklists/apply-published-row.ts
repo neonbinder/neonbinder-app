@@ -35,8 +35,13 @@
  *
  *  - A plain team text no team answers to by name ("Seattle") may be a team's
  *    location. `resolvePlace` (the server's `resolveChecklistPlaceTeams`)
- *    answers the full name when exactly one team in the set's league(s) has
- *    that location. The card then carries that team as a checklist team, and
+ *    answers the full name when exactly one team in the set's league(s), of
+ *    any era, has that location. Several (the 1969 Seattle Pilots and the
+ *    Mariners) are never settled by the set year (Jason, 2026-11-20): the text
+ *    stays as printed, so against a marketplace team it is a team conflict the
+ *    operator settles, and at the Names gate and the commit the card's players
+ *    decide, else the operator. When one is settled, the card then carries that
+ *    team as a checklist team, and
  *    against a marketplace team it is the ordinary conflict or agreement: a
  *    card whose data names another team is never written over (rule 8).
  *
@@ -130,8 +135,9 @@ export function applyChecklistRow(
   resolveText: (text: string) => readonly string[] | null,
   /**
    * Collector review — asked once per plain team text (no comma): the full
-   * name of the ONE team in the set's league(s) whose location the text is
-   * ("Seattle" in an MLB set), else null and the text stays as printed. Absent
+   * name of the ONE team (of any era) in the set's league(s) whose location
+   * the text is ("Seattle" in an MLB set with one Seattle team), else null
+   * and the text stays as printed. Absent
    * answers null, so a caller that does not ask changes nothing.
    */
   resolvePlace?: (text: string) => string | null,

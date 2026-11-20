@@ -6080,7 +6080,9 @@ export default function EntityReviewWizard({
                     */}
                     {current.kind === "team" && !reviewingDecided && (
                       <TeamStepContext
-                        key={current._id}
+                        // Prefixed: it and TeamMatchSearch below are siblings,
+                        // and two children with one key is a React error.
+                        key={`team-context-${current._id}`}
                         reviewRowId={current._id}
                         disabled={busy}
                         onLink={(teamId) => {
@@ -6090,7 +6092,7 @@ export default function EntityReviewWizard({
                     )}
                     {current.kind === "team" ? (
                       <TeamMatchSearch
-                        key={current._id}
+                        key={`team-search-${current._id}`}
                         sportId={current.sportId}
                         // NEO-331: ranks the typed search by this set.
                         contextOptionId={selectorOptionId}
