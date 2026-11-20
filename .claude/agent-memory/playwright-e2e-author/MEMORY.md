@@ -111,6 +111,7 @@
 - [Planted break collides with a sibling plant](patterns_planted_break_collides_with_a_sibling_plant.md) — baseline red = sibling mid-plant; git diff HEAD first; restore by reversing, not cp
 - [red-run.mjs and client-wire.log](patterns_red_run_script_and_client_wire_log.md) — NEO-398: per red try triage, --attempt, artifact guards, untrusted output, listener fakes
 - [Injected orders ship up front](patterns_injected_orders_ship_up_front.md) — SHIPPED/FULFILLED keeps the Pick List clean; Convex error $-anchor trap; Switch by keyboard
+- [Both projects locally: worker swap vs reseed](patterns_both_projects_locally_worker_index_vs_reseed.md) — recorded-player specs take a new WORKER_INDEX; sole-writer set specs need agent-convex --seed
 - [Insert vs parallel views; unchanged Regenerate](patterns_insert_vs_parallel_views_and_unchanged_regenerate.md) — Back to unpick a parallel; prove no-op Regenerate by live chips
 - [Note under a toggle; eBay aspects unassertable](patterns_note_under_a_toggle_and_ebay_aspects.md) — toHaveAccessibleDescription links the note; no hop/UI reads eBay aspects
 - [Post-name Next held then gone](patterns_post_name_next_held_then_gone.md) — NEO-574 career step: wait for usable Next/Save/autograph, press disabled:false only

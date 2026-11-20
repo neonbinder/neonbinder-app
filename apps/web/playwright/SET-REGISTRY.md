@@ -3072,8 +3072,9 @@ whole thing; never assume which letter the worker half starts with.
 | `Gw` | `tests/set-selector/checklist-wizard-link-commits.spec.ts` | RETIRED by NEO-413: the Football player is now a real recorded name (`recordedNoMatchName`) |
 | `Gp` | `tests/set-selector/card-player-picker-cross-sport.spec.ts` | RETIRED by NEO-413 (real recorded Football name) |
 | `Gm` | `tests/admin/player-sports-multi-sport-membership.spec.ts` | RETIRED by NEO-413 (real recorded Football name) |
-| `PM` | `tests/admin/player-management-add-and-career-history.spec.ts` | the PLAYER this flow adds by hand; `PMT` below is the team it gives him. The two diverge at their THIRD character, so neither name is a prefix of the other and neither picker can be answered by the other's row |
-| `PMT` | `tests/admin/player-management-add-and-career-history.spec.ts` | |
+| `PM` | `tests/admin/player-management-add-and-career-history.spec.ts` | the PLAYER this flow adds by hand (now a recorded real name, NEO-413); `PMU` below is the team it gives him and `PMT` the one it replaces. They diverge at their THIRD character, so neither name is a prefix of the other and neither picker can be answered by the other's row |
+| `PMT` | `tests/admin/player-management-add-and-career-history.spec.ts` | the team held FIRST on the stint row and then swapped out through "Change team" (NEO-617); no stint is ever recorded at it |
+| `PMU` | `tests/admin/player-management-add-and-career-history.spec.ts` | the team both stints are at: created first, cleared with its ×, then PICKED over `PMT` from the "Change team" search (NEO-617). Diverges from `PMT` at its third character, so neither search finds the other's row |
 | `Pold`, `Pnew` | `tests/set-selector/card-description-follows-renames.spec.ts` | the PLAYER, before and after the rename (NEO-535), made in the worker's custom sport so no Wikidata lookup is made. Neither is a prefix of the other, so the collector's search for one never finds the other's text |
 | `SLP` | `tests/spine-label/player-team-colors-default-to-longest-tenure.spec.ts` | the PLAYER; `SLA`/`SLB` are his two teams. This is the one flow that types a strict PREFIX of a minted name — see the prefix note below |
 | `SLA`, `SLB` | `tests/spine-label/player-team-colors-default-to-longest-tenure.spec.ts` | coloured `#132448` / `#002d72` |
