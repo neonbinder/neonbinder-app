@@ -289,3 +289,4 @@
 - [Radio pill that opens a picker](radio-pill-that-opens-a-picker.md) — arrows pick only; click/Enter open; Escape returns to the opener
 - [playerLinks pin greps playerIds keys in logs](reference_playerlinks_pin_greps_playerids_keys_in_logs.md) — name log keys differently; mint-after-resolve + prelude excludePlayerCreationRefs; run full convex suite
 - [Row status region via portal](reference_row_status_region_via_portal.md) — one always-mounted role=status per row, panels createPortal text into it; dirty-after-load needs a baseline
+- [Two team resolvers after NEO-602](reference_merge_two_team_resolvers_pairing_stays_year_only.md) — card text -> resolveCardTeamName (year-only if no cards); stint/existence -> resolveTeamForSetYear
