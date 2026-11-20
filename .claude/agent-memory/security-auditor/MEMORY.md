@@ -245,3 +245,4 @@
 - [Cross-workflow preview wait](patterns_cross_workflow_preview_wait.md) — waiter gate ⊆ builder's merge_group scope; tag-exists wait = stale revision
 - [Neo555 fake eBay cutover](patterns_neo555_fake_ebay_cutover.md) — two-gate resolver; request-keyed key names; merge-deploy removals; retired lane leaves creds
 - [Listing text trust path](patterns_listing_text_trust_path.md) — generator text reaches eBay unescaped; a new input from a non-admin/marketplace write = finding
+- [Neo616 derived row field refresh](patterns_neo616_derived_row_field_refresh.md) — derived field via scheduled internal refresh: args grep, admin-gated doors, page re-arms; storedRowBytes parity

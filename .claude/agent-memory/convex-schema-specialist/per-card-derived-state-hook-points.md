@@ -31,3 +31,12 @@ concurrent chunks. Recount in place when the stored value is absent or would
 go negative. Never cache a set-level total on the set row (one hot row for
 every chunk). Pin "every mutation that inserts, deletes or moves a card also
 flushes". Related: [[transient-side-table-checklist]].
+
+**Value writers are hook points too** (NEO-616, 2026-11-19): a row-level
+value derived from a card FIELD (e.g. a variant's typical `printRun`) also
+drifts on field-only patches that never touch the count ledger: `updateCard`,
+the commit chunk's re-sync `applyFields` (the field is in `NB_CONTENT_FIELDS`),
+and the async BSC attribute enrichment (`cardChecklist.applyBscAttributeFill`
+patches `printRun` long after the commit). List those beside insert/delete/move
+before accepting "refresh at N call sites", or accept drift explicitly and make
+the backfill's `repair` mode the cure.

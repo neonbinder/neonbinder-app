@@ -82,3 +82,5 @@
 - [Runner region sets the probe p50](runner-region-sets-the-probe-p50.md) — shard probe spread is the runner's region; compare load with server-side ping, loop:loop buckets, OCC
 - [Admin close settles a whole report group](admin-close-settles-a-whole-report-group.md) — group-wide admin writes cross workers; give each report-filing spec its own variant + platform
 - [Suite red rate is a long tail](suite-red-rate-is-a-long-tail.md) — 470 executions at zero retries: 0.3% per execution is 75% red; plan by family and policy; first red on a worker is the cause
+- [Checklist parallels: Inserts then Group Parallels](checklist-parallels-reach-nb-through-inserts-and-group-parallels.md) — no parallel-level checklist door; prefix grouping misplaces "X Mini"; summary classify = unknown on initials numbers; no checklist print runs
+- [Parallel names literal; print run is a row attribute](parallel-names-stay-literal-print-run-is-a-row-attribute.md) — no name tidying, no "/N" in names; row run at >=90% card agreement (NEO-616)

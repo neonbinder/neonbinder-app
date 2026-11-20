@@ -19,3 +19,4 @@
 - [Derived value survival is order-dependent](derived-value-survival-is-order-dependent.md) — "keep while valid" without a picked flag = order decides; test A-then-B and B-then-A
 - [None-answer copy traps](none-answer-copy-traps.md) — "listed" = for sale; new-card overclaim; inherited state in quick-add; one-way toggles; visible control names
 - [Exploratory pass driving recipe](exploratory_pass_driving_recipe.md) — headless persistent-profile driver, reaching Card titles step, Back/blank-history trap
+- [Foil x colour checklist quirks](pro-set-foil-colour-checklist-quirks.md) — doubled names, mini numbers, Auto column, team blank on some rows
