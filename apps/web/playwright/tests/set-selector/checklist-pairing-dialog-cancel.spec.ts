@@ -160,6 +160,28 @@ test(
       dialog.getByRole("radio", { name: /— use these players for #FS-1$/ }).first(),
     ).toBeVisible();
 
+    // NEO-606: a roster name past 120 characters is refused in place. The typed roster stays,
+    // the field is invalid, and the refusal is an alert on its own field well (the error pink
+    // misses 4.5:1 on the row's tile); axe reads it in both modes while it shows. Escape drops
+    // the draft, and the roster field shows the card's players again.
+    // LIVE BRANCH ONLY: a roster disagreement needs BSC and SportLots on one row, so this has
+    // not run while SportLots is paused (written against CardPairingModal's names).
+    const roster = dialog.getByRole("textbox", { name: "Players for #FS-1 (separate names with |)", exact: true });
+    const rosterBefore = await roster.inputValue();
+    const overLongPlayer = `Paul ${"Skenes".repeat(20)}x`.slice(0, 121);
+    expect(overLongPlayer).toHaveLength(121);
+    await roster.fill(overLongPlayer);
+    await roster.press("Enter");
+    const rosterRefusal = dialog.getByRole("alert").filter({ hasText: "Player names are limited to" });
+    await expect(rosterRefusal).toHaveText("Player names are limited to 120 characters — shorten it to save.");
+    await expect(roster).toHaveValue(overLongPlayer);
+    await expect(roster).toHaveAttribute("aria-invalid", "true");
+    await expectAccessible(page, { within: dialog, label: "Match Cards dialog, a roster name over 120 refused" });
+    await roster.press("Escape");
+    await expect(rosterRefusal).toHaveCount(0);
+    await expect(roster).toHaveValue(rosterBefore);
+    await expect(dialog).toBeVisible();
+
     // …and no marketplace is named anywhere in the conflict UI: not the old
     // sentence, not a prefixed choice name or text, title or roster. These
     // negatives ride on the positives just above (R2).

@@ -28,7 +28,7 @@
 // would show on this account's dashboard to every spec that follows). The box's
 // name is a single token minted from `env.ATTEMPT_TOKEN`.
 import { pickList } from "../../support/pick-list";
-import { createBox, deleteBoxNamed, deleteOpenBox, drillToCollectorBase, inventoryTabs, ordinaryBaseRows, shortNameOf } from "../../support/collection";
+import { confirmRemoved, createBox, deleteBoxNamed, deleteOpenBox, drillToCollectorBase, inventoryTabs, ordinaryBaseRows, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import type { Page } from "@playwright/test";
 
@@ -79,6 +79,7 @@ test.afterEach(async ({ context }, testInfo) => {
         if (await remove.isVisible()) {
           await remove.click();
           await expect(none).toBeVisible();
+          await confirmRemoved(drawer, `Removed ${card.short}, Raw, Excellent`);
         }
         await drawer.getByRole("button", { name: "Close card detail" }).click();
         await expect(drawer).toBeHidden();
@@ -241,6 +242,8 @@ test(
     await again.getByRole("button", { name: `Details for ${card.short}`, exact: true }).click();
     await yourCopies.getByRole("button", { name: `Remove ${card.short}, Raw, Excellent`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+    // The server's answer, not the optimistic list: a copy left behind would ride into the worker's next spec.
+    await confirmRemoved(drawer, `Removed ${card.short}, Raw, Excellent`);
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
     await page.goto("/inventory?tab=boxes");

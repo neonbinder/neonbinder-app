@@ -50,6 +50,8 @@ import {
 import { readManyByIds } from "./lib/batchIdReads";
 // NEO-602 (S2): the one era check every team writer applies.
 import { requireTeamEra } from "./lib/teamEra";
+// NEO-592: bounded concurrency for independent reads inside one query.
+import { mapBounded } from "./lib/boundedConcurrency";
 // NEO-535 — a rename reaches the descriptions of the team's cards.
 import { refreshDescriptionsAfterRename } from "./cardDescriptionFanOut";
 import {
@@ -150,6 +152,37 @@ const teamDocValidator = v.object({
 });
 
 /**
+ * NEO-592 — the one derivation of "which team does this card name mean" as a
+ * DOCUMENT, shared by `findByNameAndSport` (one name) and
+ * `findManyByNameAndSport` (the review gate's batch).
+ *
+ * NEO-602 — through `resolveCardTeamName`, the shared card rule, year-only here
+ * (no players): the set year (with the card's past-era allowance, NEO-307:
+ * `setYear` is the SET's year) and the alias-vs-own-name guard. Where the
+ * players are known (the review gate), the gate asks `resolveGateTeamNames`
+ * (selectorOptions.ts) or `resolveTeamByCardPlayers` instead.
+ *
+ * The candidate rows are already in hand, so the winning row is returned from
+ * there instead of being read a second time. The `db.get` fallback only
+ * answers a row that somehow is not among its own candidates, which the rule
+ * cannot produce.
+ *
+ * NEO-236: `name` is a FULL name — a marketplace payload, a Wikidata label, or
+ * an operator's typed string. NEO-254: it resolves to at most ONE of that
+ * name's eras; `null` where it used to return `.first()` is the point.
+ */
+async function resolveTeamDocForSetYear(
+  ctx: QueryCtx,
+  sportId: Id<"selectorOptions">,
+  name: string,
+  setYear: number | undefined,
+): Promise<Doc<"teams"> | null> {
+  const { teamId, candidates } = await resolveCardTeamName(ctx, sportId, name, setYear);
+  if (!teamId) return null;
+  return candidates.find((row) => row._id === teamId) ?? (await ctx.db.get(teamId));
+}
+
+/**
  * NEO-602 — internal since the review gate and the commit prelude stopped
  * calling it (both go through `resolveCardTeamName`, which also reads the
  * cards' players). Kept as the year-only reading of the card rule, for the
@@ -173,28 +206,45 @@ export const findByNameAndSport = internalQuery({
   },
   returns: v.union(teamDocValidator, v.null()),
   handler: async (ctx, args) => {
-    // NEO-236: `name` here is a FULL name — a marketplace payload, a Wikidata
-    // label, or an operator's typed string. It resolves to a split row because
-    // the dedup key is derived from the composed full name; see
-    // convex/lib/teamRow.ts.
-    //
-    // NEO-254: and to at most ONE of that name's eras. `null` where it used to
-    // return `.first()` is the point of the change — an ambiguous name is not
-    // an answer, and handing back an arbitrary era is what pointed 1985 cards
-    // at a 2011 franchise.
-    //
-    // NEO-602: the thin year-only wrapper over `resolveCardTeamName` — the set
-    // year (with the card's past-era allowance, NEO-307: `setYear` here is the
-    // SET's year) and the alias-vs-own-name guard, but no players. Where the
-    // players are known (the review gate), the gate asks
-    // `resolveTeamByCardPlayers` or `resolveCardTeamName` itself.
-    const { teamId } = await resolveCardTeamName(
-      ctx,
-      args.sportId,
-      args.name,
-      args.setYear,
+    return await resolveTeamDocForSetYear(ctx, args.sportId, args.name, args.setYear);
+  },
+});
+
+/** NEO-592 — names one `findManyByNameAndSport` call answers, at most. */
+export const FIND_MANY_TEAMS_BY_NAME_MAX = 50;
+
+/**
+ * NEO-592 — `findByNameAndSport` for up to 50 names in ONE query, so the
+ * review gate pays one action-to-query hop for its team names instead of one
+ * per name (a 2024 set prints ~30 of them).
+ *
+ * The sport and the set year are the batch's. The answer is ALIGNED with
+ * `names`: element i is exactly what `findByNameAndSport` returns for
+ * `{ name: names[i], sportId, setYear }`, through the same helper, so a batch
+ * can never answer a name differently from the single call. Names are resolved
+ * concurrently (`mapBounded`) and share nothing. More than 50 is refused, never
+ * truncated: a silently short answer would read as "no such team" for the tail.
+ *
+ * Internal: the gate is its only caller, and it has already checked the
+ * operator (the single-name query is internal too, NEO-602).
+ */
+export const findManyByNameAndSport = internalQuery({
+  args: {
+    sportId: v.id("selectorOptions"),
+    setYear: v.optional(v.number()),
+    names: v.array(v.string()),
+  },
+  returns: v.array(v.union(teamDocValidator, v.null())),
+  handler: async (ctx, args): Promise<Array<Doc<"teams"> | null>> => {
+    if (args.names.length > FIND_MANY_TEAMS_BY_NAME_MAX) {
+      throw new ConvexError({
+        code: "too_many_names",
+        message: `findManyByNameAndSport answers at most ${FIND_MANY_TEAMS_BY_NAME_MAX} names per call; got ${args.names.length}.`,
+      });
+    }
+    return await mapBounded(args.names, (name) =>
+      resolveTeamDocForSetYear(ctx, args.sportId, name, args.setYear),
     );
-    return teamId ? await ctx.db.get(teamId) : null;
   },
 });
 
@@ -1350,16 +1400,20 @@ export const resolveTeamByCardPlayers = internalQuery({
     setYear: v.optional(v.number()),
     cardPlayerIds: v.array(v.array(v.id("players"))),
   },
-  returns: v.union(v.id("teams"), v.null()),
-  handler: async (ctx, args): Promise<Id<"teams"> | null> => {
-    const { teamId, via } = await resolveCardTeamName(
+  // NEO-592 — the row itself, so the gate does not read it back in a second hop.
+  returns: v.union(teamDocValidator, v.null()),
+  handler: async (ctx, args): Promise<Doc<"teams"> | null> => {
+    const { teamId, via, candidates } = await resolveCardTeamName(
       ctx,
       args.sportId,
       args.name,
       args.setYear,
       { cardPlayerIds: args.cardPlayerIds },
     );
-    return via === "players" ? teamId : null;
+    // Only an answer the PLAYERS made: the year's own is not a career-team link.
+    if (via !== "players" || !teamId) return null;
+    // The answer is one of `candidates`, so its row is already in hand.
+    return candidates.find((row) => row._id === teamId) ?? null;
   },
 });
 

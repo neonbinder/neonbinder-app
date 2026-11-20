@@ -35,7 +35,7 @@ import { findSportForSelectorOption } from "./cardChecklist";
 // NEO-254: ONE floor, shared with `players.savePlayerFields` (the other route
 // into the same `players.teamYears` column) and with the wizard's own year
 // fields. The three used to be separate literals and two of them disagreed.
-import { MIN_CAREER_YEAR } from "../lib/players/career-years";
+import { assertCareerStintYears, MIN_CAREER_YEAR } from "../lib/players/career-years";
 import { requireTeamEra } from "./lib/teamEra";
 // NEO-284 — the team-alias bounds live beside the table's one writer. The New
 // Team step's "Also known as" list is validated HERE, at decision time, so the
@@ -424,45 +424,6 @@ function assertCareerTeamNameLength(name: string): void {
   throw new ConvexError(
     `A team name is ${trimmed.length} characters; the limit is ${MAX_TEAM_FULL_NAME_LENGTH}.`,
   );
-}
-
-/**
- * The loose bounds a career stint's years have to sit inside, in the one place
- * both writers can reach.
- *
- * NEO-248 put a SECOND route into the same numbers — `stageCareerTeamRows` now
- * carries the operator's years so the wizard can rebuild the chip after the
- * team's own step, and years that reach `entityReviewQueue.source` must be
- * exactly as well-formed as the ones that reach `decision.manualCareerTeams`,
- * because the same pair ends up in `players.teamYears` either way. Two copies
- * of the rule is how one of them drifts.
- *
- * `forName` reproduces `recordDecision`'s existing message verbatim — those
- * strings are asserted — and is omitted by the staging path, where the caller
- * is answering for one entry at a time and the name adds nothing.
- */
-function assertCareerStintYears(
-  fromYear: number,
-  toYear: number | undefined,
-  maxYear: number,
-  forName?: string,
-): void {
-  const suffix = forName === undefined ? "" : ` for "${forName}"`;
-  if (
-    !Number.isInteger(fromYear) ||
-    fromYear < MIN_CAREER_YEAR ||
-    fromYear > maxYear
-  ) {
-    throw new Error(
-      `Invalid career-team fromYear ${fromYear}${suffix} (expected an integer in ${MIN_CAREER_YEAR}–${maxYear})`,
-    );
-  }
-  if (toYear === undefined) return;
-  if (!Number.isInteger(toYear) || toYear > maxYear || toYear < fromYear) {
-    throw new Error(
-      `Invalid career-team toYear ${toYear}${suffix} (expected an integer between fromYear ${fromYear} and ${maxYear})`,
-    );
-  }
 }
 
 /**

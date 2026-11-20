@@ -115,8 +115,9 @@ const CAMEO = "Johnny Bench";
 const RULED_OUT = [
   // The committed titles (NEO-528 + NEO-535): no player, so the stored cameo
   // stands where the player would; #18's team is "No Team", which a title omits.
-  { number: "10", printed: "1975 World Champions", title: `${SET_TITLE} ${CAMEO} #10 Cincinnati Reds Baseball` },
-  { number: "18", printed: "Former Teammates", title: `${SET_TITLE} ${CAMEO} #18 Baseball` },
+  // NEO-609: the Base checklist's own name is in the title while it fits.
+  { number: "10", printed: "1975 World Champions", title: `${SET_TITLE} Base ${CAMEO} #10 Cincinnati Reds Baseball` },
+  { number: "18", printed: "Former Teammates", title: `${SET_TITLE} Base ${CAMEO} #18 Baseball` },
 ] as const;
 /** The card whose listing names Pete Rose (and his father): it keeps its own Pete Rose. */
 const OWN = "4";
@@ -262,6 +263,8 @@ test(
     await expect(playerChip(own, PLAYER)).toBeVisible();
     await expect(anyPlayerChip(own)).toHaveCount(1);
     await expect(cameoChip(own, CAMEO)).toBeVisible();
+    // NEO-609: 84 characters with "Base", the first word cut: 79 without it,
+    // and nothing else goes.
     await expect(cardTitle(own)).toHaveValue(
       `${SET_TITLE} ${PLAYER} & ${CAMEO} #${OWN} Cincinnati Reds Baseball`,
     );

@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { Fragment, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { useSearchParams } from "react-router";
 import { ArrowDownIcon, ArrowUpIcon, CheckIcon, ChevronDownIcon, ChevronUpDownIcon, PrinterIcon } from "@heroicons/react/20/solid";
 import { Input } from "@/components/primitives/Input";
@@ -1189,8 +1189,9 @@ function PickTable({
   // The Set column holds a reading width only where its cells name the set (or
   // a stray's problem): under a set divider they hold just a numbered copy's serial.
   const setInCells = sections.some((s) => s.kind !== "set" && s.rows.length > 0);
-  // Condensed has no Variant column: the variant rides in the Set column.
-  const columns = (condensed ? 8 : 9) + (showQty ? 1 : 0) + (showSlot ? 1 : 0);
+  // Condensed has no Variant column: the variant rides in the Set column. Its headings span the
+  // wide screen's columns exactly (NEO-598), so Condensed leaves out the phone's Card column.
+  const columns = (condensed ? 7 : 9) + (showQty ? 1 : 0) + (showSlot ? 1 : 0);
 
   return (
     <>
@@ -1209,10 +1210,10 @@ function PickTable({
         <caption className="sr-only">{caption}</caption>
         <thead className="text-xs text-ink-2">
           <tr>
-            <th scope="col" className={`${headCell} ${condensed ? "w-12" : "w-10"} px-1`}>
+            <th scope="col" className={`${headCell} ${condensed ? "w-12 md:w-11" : "w-10"} px-1`}>
               <span className="sr-only">Pulled</span>
             </th>
-            <th scope="col" className={`${headCell} nb-pick-pic w-14 px-1`}>
+            <th scope="col" className={`${headCell} nb-pick-pic px-1 ${condensed ? "w-10" : "w-14"}`}>
               <span className="sr-only">Picture</span>
             </th>
             {showSlot && (
@@ -1220,18 +1221,18 @@ function PickTable({
                 Slot
               </th>
             )}
-            {showQty && sortHead("qty", "w-14")}
+            {showQty && sortHead("qty", condensed ? "w-14 md:w-1" : "w-14")}
             {/* The walk already runs Base, then each insert and parallel by name: the variant does not sort apart. */}
             {!condensed && (
               <th scope="col" className={`${headCell} max-md:hidden`}>
                 Variant
               </th>
             )}
-            {sortHead("number", "w-16")}
+            {sortHead("number", condensed ? "md:w-1" : "w-16")}
             {sortHead("player", condensed ? "" : "@min-[62rem]:w-[30%]")}
-            {sortHead("set", setInCells ? (condensed ? "min-w-48" : "@min-[62rem]:min-w-36") : "", "detail")}
-            {sortHead("condition", condensed ? "w-28" : "")}
-            {sortHead("order", "w-28")}
+            {sortHead("set", setInCells && !condensed ? "@min-[62rem]:min-w-36" : "", "detail")}
+            {sortHead("condition", condensed ? "md:w-1" : "")}
+            {sortHead("order", condensed ? "md:w-1" : "w-28")}
             <th scope="col" className={`${headCell} md:hidden`}>
               Card
             </th>
@@ -1757,7 +1758,7 @@ function CondensedSectionHead({ section, columns }: { section: PickSection; colu
 
 function VariantChip({ role }: { role: VariantRole }) {
   return (
-    <span className={`nb-pick-band nb-pick-chip inline-flex shrink-0 items-center rounded border px-1.5 text-xs font-semibold leading-5 ${VARIANT_CHIP[role]}`}>
+    <span className={`nb-pick-band nb-pick-chip inline-flex shrink-0 items-center whitespace-nowrap rounded border px-1.5 text-xs font-semibold leading-5 ${VARIANT_CHIP[role]}`}>
       {VARIANT_ROLE_LABEL[role]}
     </span>
   );
@@ -1766,7 +1767,7 @@ function VariantChip({ role }: { role: VariantRole }) {
 /** A listing's own variant word NB does not file by: plain, no divider colour, since NB never guesses its role. */
 function VariantWordChip({ word }: { word: string }) {
   return (
-    <span className="nb-pick-chip inline-flex shrink-0 items-center rounded border border-rule-strong px-1.5 text-xs font-semibold leading-5 text-ink">
+    <span className="nb-pick-chip inline-flex shrink-0 items-center whitespace-nowrap rounded border border-rule-strong px-1.5 text-xs font-semibold leading-5 text-ink">
       {word}
     </span>
   );
@@ -1847,7 +1848,13 @@ function CondensedRow({
   const vWord = facts?.variantWord ?? null;
   const vName = facts?.variantName ?? null;
   const tab = tabbable ? 0 : -1;
-  const cell = "border-b border-rule px-2 py-2 align-middle";
+  // NEO-598: the cells are dense (the 24px controls set a wide row's height), and the columns
+  // size to their content, so on a wide screen a row is one line. Text wraps only where a line
+  // truly cannot fit; the atomic pieces (number, chips, serial, grade and cert, an order's venue
+  // and number, the team) stay whole. Nothing is ever clipped. The 24px toggle and the ~17x24
+  // thumb meet WCAG 2.5.8 only through its spacing exception: tightening this padding, or moving
+  // the thumb nearer the toggle, breaks it.
+  const cell = "border-b border-rule px-2 align-middle max-md:py-2 md:py-0.5";
 
   const onRowClick = (e: MouseEvent<HTMLTableRowElement>) => {
     if ((e.target as Element).closest("button, a, input, select")) return;
@@ -1858,7 +1865,7 @@ function CondensedRow({
   // One copy needs no count; two or more get the loud yellow chip.
   const qty =
     row.quantity > 1 ? (
-      <span className="nb-pick-chip inline-flex min-w-8 items-center justify-center rounded-md bg-neon-yellow px-1.5 text-base font-black leading-7 text-on-neon-yellow tabular-nums">
+      <span className="nb-pick-chip inline-flex min-w-8 items-center justify-center rounded-md bg-neon-yellow px-1.5 text-base font-black leading-7 text-on-neon-yellow tabular-nums md:min-w-6 md:text-sm md:leading-5">
         ×{row.quantity}
         <span className="sr-only"> copies</span>
       </span>
@@ -1883,6 +1890,29 @@ function CondensedRow({
 
   // A sale NB has no card for keeps its next step (check the order's photo) under the variant.
   const problem = !c && row.problem ? <span className="text-xs text-notice-warn-ink">{row.problem}</span> : null;
+  // Wide screens: the set cell's words on one line where it fits; the pieces wrap onto the next
+  // line only when it does not. A chip, the serial and the number never break inside.
+  const setLine = facts ? (
+    <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+      {showSet && showSport && <SportChip code={facts.sportCode} name={facts.sportName} />}
+      {showSet && <span className="text-ink">{facts.setTitle}</span>}
+      {role && <VariantChip role={role} />}
+      {vWord && <VariantWordChip word={vWord} />}
+      {vName && <span className="text-ink-2">{vName}</span>}
+      {row.serial && (
+        <span className="whitespace-nowrap text-ink-2">
+          {vName && "· "}
+          <span className="font-semibold tabular-nums text-ink">{row.serial}</span>
+        </span>
+      )}
+      {!c && row.problem && <span className="text-xs text-notice-warn-ink">{row.problem}</span>}
+    </span>
+  ) : (
+    <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+      {row.listed?.sportName && <SportChip code={row.listed.sportCode ?? null} name={row.listed.sportName} />}
+      <span className="text-notice-warn-ink">{row.problem}</span>
+    </span>
+  );
   const setText = facts ? (
     <span className="flex min-w-0 flex-col gap-1">
       {showSet && (
@@ -1903,14 +1933,15 @@ function CondensedRow({
   );
 
   // Condition, or a slab's grade and cert.
+  // Stacked on a phone; inline on a wide screen, where the grade leads and the cert follows it, never apart.
   const condition = (
-    <span className="flex flex-col">
+    <span className="max-md:flex max-md:flex-col md:block md:whitespace-nowrap">
       {row.grade ? (
         <>
           <span className="font-semibold text-ink">
             {row.grade.grader} {row.grade.grade}
           </span>
-          <span className="text-xs text-ink-3 tabular-nums">Cert {row.grade.cert}</span>
+          <span className="text-xs text-ink-3 tabular-nums md:ml-1.5">Cert {row.grade.cert}</span>
         </>
       ) : (
         <span className="text-ink-2">{row.condition}</span>
@@ -1918,19 +1949,21 @@ function CondensedRow({
     </span>
   );
 
-  // Venue and number may wrap apart, never inside either. A stray's order
+  // Venue and number never break inside either. A stray's order
   // opens that sale on the Sales tab: the order's photo is how to find it.
   const orderText = (o: PickOrder) => (
     <>
       <span className="whitespace-nowrap">{o.venue}</span> <span className="whitespace-nowrap">{o.number}</span>
     </>
   );
+  // Stacked on a phone; on a wide screen up to two orders join with a comma on one line, more wrap between orders only.
   const orders = (
-    <span className="flex flex-col">
-      {row.orders.map((o) =>
-        !c && salesLink ? (
+    <span className={`max-md:flex max-md:flex-col md:block ${row.orders.length <= 2 ? "md:whitespace-nowrap" : ""}`}>
+      {row.orders.map((o, i) => (
+        <Fragment key={o.id}>
+          {i > 0 && <span className="max-md:hidden">, </span>}
+          {!c && salesLink ? (
           <ParamLink
-            key={o.id}
             search={{ tab: "sales", [SALE_PARAM]: o.id }}
             tabIndex={tab}
             className="rounded-sm text-neon-blue-text underline underline-offset-2 tabular-nums focus-outline"
@@ -1939,16 +1972,26 @@ function CondensedRow({
             <span className="sr-only"> on your Sales tab</span>
           </ParamLink>
         ) : (
-          <span key={o.id} className="text-ink-2 tabular-nums">
+          <span className="text-ink-2 tabular-nums">
             {orderText(o)}
           </span>
-        ),
-      )}
+        )}
+        </Fragment>
+      ))}
     </span>
   );
 
   const who = c ? playerNames(c) : facts?.players || row.listingTitle;
   const team = c?.teams.map((t) => t.name).join(" / ");
+  // The player cell's whole line (wide screens): the name, the team after it, the marker chips.
+  // The team and the chips drop to the next line before the name breaks, and none breaks inside.
+  const whoLine = (
+    <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+      <span className={`wrap-anywhere ${facts ? "font-semibold text-ink" : "text-ink"}`}>{who}</span>
+      {team && <span className="whitespace-nowrap text-xs text-ink-3">{team}</span>}
+      <CondensedMarkers row={row} salesLink={salesLink} />
+    </span>
+  );
 
   return (
     <tr
@@ -1970,14 +2013,14 @@ function CondensedRow({
           aria-label={`Pulled ${name}`}
           tabIndex={tab}
           onClick={onToggle}
-          className={`grid size-11 place-items-center rounded-md border-2 focus-outline ${
+          className={`relative grid size-6 place-items-center rounded border-2 focus-outline after:absolute max-md:after:-inset-3 md:after:-inset-x-2.5 md:after:-inset-y-1 ${
             pulled ? "border-neon-green bg-neon-green text-on-neon-green" : "border-control text-transparent hover:border-ink-3"
           }`}
         >
-          <CheckIcon aria-hidden="true" className="size-6" />
+          <CheckIcon aria-hidden="true" className="size-4" />
         </button>
       </td>
-      <td className={`${cell} nb-pick-pic w-14 px-1`}>
+      <td className={`${cell} nb-pick-pic w-10 px-1`}>
         {c ? (
           <button
             type="button"
@@ -1988,10 +2031,10 @@ function CondensedRow({
               onThumb();
             }}
             aria-label={`Bigger picture of ${name}`}
-            className="nb-pick-thumb block w-10 rounded-sm focus-outline"
+            className="nb-pick-thumb relative block w-[1.07rem] rounded-sm focus-outline after:absolute max-md:after:-inset-x-3 max-md:after:-inset-y-2 md:after:-inset-x-1 md:after:-inset-y-0.5"
           >
             {row.photo ? (
-              <img src={row.photo.thumbUrl} alt="" loading="lazy" className="block aspect-[5/7] w-10 rounded-sm bg-rule object-contain" />
+              <img src={row.photo.thumbUrl} alt="" loading="lazy" className="block aspect-[5/7] w-full rounded-sm bg-rule object-contain" />
             ) : (
               <CardFace model={c} size="fill" serial={row.serial} />
             )}
@@ -1999,7 +2042,7 @@ function CondensedRow({
         ) : (
           <span
             aria-hidden="true"
-            className="grid h-14 w-10 place-items-center rounded-sm border border-dashed border-notice-warn-rule text-lg font-bold text-notice-warn-ink"
+            className="grid h-6 w-[1.07rem] place-items-center rounded-sm border border-dashed border-notice-warn-rule text-xs font-bold text-notice-warn-ink"
           >
             ?
           </span>
@@ -2010,15 +2053,9 @@ function CondensedRow({
       {facts && <td className={`${cell} whitespace-nowrap font-bold text-ink tabular-nums max-md:hidden`}>#{facts.cardNumber}</td>}
       {/* Nothing to file by: the listing's own words take the number's column too. */}
       <td colSpan={facts ? undefined : 2} className={`${cell} max-md:hidden`}>
-        <span className="flex flex-col">
-          <span className={facts ? "whitespace-nowrap font-semibold text-ink" : "text-ink wrap-anywhere"}>{who}</span>
-          {team && <span className="text-xs text-ink-3">{team}</span>}
-          <span className="mt-1 empty:hidden">
-            <CondensedMarkers row={row} salesLink={salesLink} />
-          </span>
-        </span>
+        {whoLine}
       </td>
-      <td className={`${cell} max-md:hidden`}>{setText}</td>
+      <td className={`${cell} max-md:hidden`}>{setLine}</td>
       <td className={`${cell} max-md:hidden`}>{condition}</td>
       <td className={`${cell} max-md:hidden`}>{orders}</td>
       {/* A phone has no room for columns: one cell says it all. */}

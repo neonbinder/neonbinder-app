@@ -8,17 +8,16 @@
 //                       us), and Sync status queues the card again with no Sync
 //                       pressed.
 //                       Needs no publish, so the active spec can go green now.
-//   through "listed"    steps 1-6: the second Sync lists it ("1 listed"). Needs
-//                       a publish that works (NEO-453: the sandbox refuses every
-//                       publish), so its spec is parked.
+//   through "listed"    steps 1-6: the second Sync lists it ("1 listed").
 // The assertions of every step are in the steps themselves; the specs add none.
 //
 // The flow (NEO-535, R1): an eBay listing whose title is over 80 characters is never
 // chopped. NeonBinder holds the card back whole, says why, and lists it on the
 // next sync once the title has been shortened in the set builder (an admin's
 // fix: the collector is told it's on our end, never sent there). The flow, as
-// the user lives it, on eBay's SANDBOX (the deployment's eBay wiring is the
-// sandbox's; step 1 refuses to go on if it is not):
+// the user lives it, on the stand-in eBay (NEO-555: every test deployment's eBay
+// is the fake, one seller per test user; step 1 refuses to go on unless the page
+// says so):
 //   0. Not wired / paused: a deployment with no eBay wiring FAILS this spec
 //      loudly, naming the setup it lacks (never a skip, GUIDE hard rule 1). A
 //      deployment with eBay paused takes the paused branch (the connect hop
@@ -37,10 +36,11 @@
 //      TYPED one.
 //   2. Stock it. A box of their own (every other box set to in-person BEFORE
 //      eBay connects, so the connection lists nothing else), eBay connected
-//      through the seed hop (eBay's consent screen is a third party's page that
-//      no spec can drive) and its setup finished (ships-from, a pick in each of
-//      the policy groups), a common price, one copy of the card in the box and
-//      a photo on it (eBay listings need one).
+//      through the seed hop and its setup finished (`connectEbayAndFinishSetup`:
+//      the seller's own shipping policies seeded on the fake, ships-from, a pick in
+//      each of the policy groups; profile/ebay-connect-and-setup proves the
+//      consent screen and each setup step in full), a common price, one copy of
+//      the card in the box and a photo on it (eBay listings need one).
 //   3. Sync. The checklist's Sync is pressed and Sync status, followed to rest,
 //      reads the set "0 listed, 1 skipped" with ONE card held back, and the
 //      reason it names is the title's: "Its title is over the 80-character limit
@@ -76,30 +76,22 @@
 // Waits. Every step gets the standard 7 s budget (GUIDE hard rule 3), the eBay
 // calls included, exactly as the sibling eBay listing spec does: reading the
 // seller's policies, "Set me up", saving a pick or the ships-from address, the
-// Sync steps and the disconnect's takedown. The longer waits are the seed hop's
-// one full page load (`LAUNCH_GATE`) and the signed-off "Go live" ceiling at its
-// call. A step that needs longer is a finding to report, never a number to raise.
+// Sync steps (going live too: NEO-555 voided the sandbox-measured "Go live"
+// ceiling, the fake answers at once) and the disconnect's takedown. The longer
+// waits are the hops' full page loads (`LAUNCH_GATE`). A step that needs longer
+// is a finding to report, never a number to raise.
 //
-// KNOWN BLOCKER (NEO-453): eBay's sandbox refuses every publish for any seller
-// on our keyset (400 / 25002), which is why the sibling
-// `inventory-ebay-sandbox-listing-2024-topps-chrome-future-stars` spec is
-// parked in `project-scope.mjs`. Steps 1-4 do not publish and prove the hold and
-// the re-queue; step 5 ("1 listed") needs a publish that works. This spec
-// asserts the correct end state and goes red there until the sandbox publishes;
-// it is not weakened to pass.
-//
-// Sandbox seller precondition (also in SET-REGISTRY.md, "2024 Topps Chrome ›
-// Insert › Future Stars — the marketplace-seller listing fixture"): the sandbox
-// seller must already hold the shipping policies "NB Free Shipping" and "NB
-// Tracked (USPS Ground Advantage)". NeonBinder makes no shipping policy.
+// The fake seller (NEO-555). The worker's own main fake eBay seller, which
+// holds the shipping policies "NB Free Shipping" and "NB Tracked (USPS Ground
+// Advantage)" because the spec seeds them (`ebayFake.holdShippingPolicy`, a held
+// name is already done). NeonBinder makes no shipping policy.
 //
 // R7/R7a. This spec writes NO real set. Its set is a per-attempt hand-made one
 // (`ebt<token>`, padded to a fixed length, prefix proposed for SET-REGISTRY.md)
-// under the real Baseball > 2024 > Topps; it carries no marketplace ids. It is
-// a sole writer of the eBay sandbox seller account's listings (the registry's
-// seller-account row), so it runs only in the seller job, one PR at a time. Its
-// NB writes are the signed-in user's own rows: the eBay connection and setup, a
-// minted box, one copy with a photo, the common price. It adds a minted team (no
+// under the real Baseball > 2024 > Topps; it carries no marketplace ids. Its
+// eBay writes land on the worker's own fake seller (one per test user, so it
+// runs in any shard). Its NB writes are the signed-in user's own rows: the eBay
+// connection and setup, a minted box, one copy with a photo, the common price. It adds a minted team (no
 // delete-team affordance exists; the token keeps it unique) that links the
 // seed's existing Major League Baseball row and writes nothing to leagues, links
 // the catalogue's George Brett, deletes nothing of the catalogue, and leaves the
@@ -138,7 +130,8 @@ import {
   walkForCleanup,
   type CollectorSet,
 } from "../../support/collection";
-import { expectEbayHookedUp, removeEbayConnection, saveEbayConnection } from "../../support/credentials";
+import { connectEbayAndFinishSetup, EBAY_TEST_MODE_LINE, expectEbayHookedUp, removeEbayConnection, saveEbayConnection } from "../../support/credentials";
+import type { EbayFake } from "../../support/ebayFake";
 import type { FlowEnv } from "../../support/env";
 import { test, expect, expectAccessible, LAUNCH_GATE, type SignIn } from "../../support/fixtures";
 import { drillToCustom, escapeRe } from "../../support/set-builder";
@@ -158,27 +151,12 @@ const NUM = "C1";
 const SET_LEN = 21;
 
 /** The words the screens say (inventory/listing/copy.ts, the eBay Profile page). The spec reads them as a user does; it imports no app copy. */
-const SANDBOX_LINE = "Test mode: this NeonBinder talks to eBay's sandbox, so nothing lists for real.";
 const PAUSED_LINE = "eBay is on a break. Your changes wait here and go up when it's back.";
 const HELD_SENTENCE =
   "Its title is over the 80-character limit for listings, and we won't chop it. Once we shorten it on our end, it goes up on the next sync.";
-const NOT_CONNECTED_MISSING_SETUP =
-  "eBay did not connect after the seed hop. Either DEV_EBAY_REFRESH_TOKEN (a sandbox seller's refresh token) " +
-  "is unset on this deployment, or eBay is paused here (NEONBINDER_PAUSED_PLATFORMS) while this runner's " +
-  "PAUSED_PLATFORMS does not name ebay. This spec never skips for missing setup.";
 
-/** The sandbox seller's own shipping policies the spec picks (NeonBinder makes none, NEO-423). */
-const TRACKED_POLICY = "NB Tracked (USPS Ground Advantage)";
-const FREE_POLICY = "NB Free Shipping";
-const mustHoldPolicy = (name: string, slot: string) =>
-  `the eBay sandbox seller must already hold the shipping policy "${name}" (offered under ${slot}). ` +
-  "NeonBinder no longer makes shipping policies (NEO-423), so add it on the sandbox seller's eBay account by hand " +
-  "(see the sibling eBay listing spec's header and SET-REGISTRY.md)";
-
-/** At or above eBay's $0.99 floor and under $20: the flat NB Free Shipping slot the sandbox can publish against (see the sibling spec). */
+/** At or above eBay's $0.99 floor and under $20: the Cards under $20 slot (NB Free Shipping). */
 const COMMON_PRICE = "1.00";
-/** A US address, the page's own example ZIP. */
-const SHIPS_FROM = { zip: "53703", city: "Madison", state: "WI" };
 
 /** The seed's hand-made front photo, committed for the intake specs (about 1000 px wide; eBay wants at least 500). */
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "fixtures", "intake");
@@ -207,6 +185,7 @@ interface Args {
   signIn: SignIn;
   env: FlowEnv;
   isMobile: boolean;
+  ebayFake: EbayFake;
 }
 
 // Pass or fail, the account ends with eBay NOT connected. On a failure the
@@ -247,7 +226,7 @@ interface Args {
 }
 
 /** Drives the flow through `through` and tidies up (the copy and its photo, the price, the box, eBay). */
-export async function runOver80Flow({ page, signIn, env, isMobile }: Args, through: Stage): Promise<void> {
+export async function runOver80Flow({ page, signIn, env, isMobile, ebayFake }: Args, through: Stage): Promise<void> {
     // The hook's record of how far this run got starts empty.
     written.connected = false;
     written.disconnected = false;
@@ -286,14 +265,12 @@ export async function runOver80Flow({ page, signIn, env, isMobile }: Args, throu
     const boxSpine = (cards: number) =>
       boxes.getByRole("button", { name: `${boxName}, box, ${cardsWord(cards)} for sale`, exact: true });
     const connectedLine = page.getByText(/^Rockin' on eBay as .+ since .+\.$/);
-    const checklistSteps = page.getByRole("status").filter({ hasText: /to go\. Nothing lists on eBay until they're done\.$/ });
-    const allSet = page.getByRole("heading", { level: 3, name: "You're all set", exact: true });
     const drawer = page.getByRole("dialog", { name: /^Card #/ });
     const cardTitle = drawer.getByRole("textbox", { name: "Card title", exact: true });
     const overCap = drawer.getByRole("alert").filter({ hasText: /over the 80-character limit/ });
     const doneEditing = page.getByRole("button", { name: "Done editing card" });
 
-    // --- 1a. Profile -> Credentials -> eBay, before anything: wired, sandbox, not connected -----------
+    // --- 1a. Profile -> Credentials -> eBay, before anything: wired, the stand-in, not connected -----------
     await signIn("/profile/ebay");
     await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({ timeout: LAUNCH_GATE });
     // Fails loudly, naming the setup, when this deployment has no eBay wiring.
@@ -311,10 +288,10 @@ export async function runOver80Flow({ page, signIn, env, isMobile }: Args, throu
       return;
     }
 
-    // The safety assert: this deployment talks to eBay's sandbox, never the real thing.
+    // The safety assert: this deployment talks to the stand-in eBay, never the real thing.
     await expect(
-      page.getByText(SANDBOX_LINE, { exact: true }),
-      "the eBay listing spec lists real cards; it runs only on a deployment wired to eBay's SANDBOX (EBAY_ENVIRONMENT=sandbox)",
+      page.getByText(EBAY_TEST_MODE_LINE, { exact: true }),
+      "the eBay listing specs list cards; they run only on a deployment wired to the fake eBay (EBAY_ENVIRONMENT=fake)",
     ).toBeVisible();
     await expect(connectedLine).toBeHidden();
 
@@ -376,57 +353,11 @@ export async function runOver80Flow({ page, signIn, env, isMobile }: Args, throu
     await expect(boxSpine(0)).toBeVisible();
     await putOtherBoxesInPerson(page, boxName);
 
-    // --- 2b. Connect (the seed hop makes the connection eBay's consent screen would) and finish the setup ---
-    // Starts listing as a collector's own Connect does (`listing=on`). Recorded
-    // BEFORE the hop: the hop may connect and still fail on the way back.
+    // --- 2b. Connect (the seed hop) and finish the setup ----------------------------------------------
+    // Starts listing as a collector's own Connect does. Recorded BEFORE the
+    // hop: the hop may connect and still fail on the way back.
     written.connected = true;
-    await saveEbayConnection(page, { listing: true, gate: LAUNCH_GATE });
-    await expect(connectedLine, NOT_CONNECTED_MISSING_SETUP).toBeVisible();
-    await expect(page.getByText(SANDBOX_LINE, { exact: true })).toBeVisible();
-    await expect(checklistSteps).toHaveText("5 to go. Nothing lists on eBay until they're done.");
-
-    // The seller's policies are read from eBay when the page opens (a live round
-    // trip). The read has finished when the first of the seller's own policies for
-    // Cards under $20 is on screen; "Set me up" renders in the same paint.
-    const underTwenty = page.getByRole("radiogroup", { name: "Cards under $20", exact: true });
-    const twentyPlus = page.getByRole("radiogroup", { name: "$20 and up", exact: true });
-    const setMeUp = page.getByRole("button", { name: "Set me up", exact: true });
-    await expect(underTwenty.getByRole("radio").first(), mustHoldPolicy(FREE_POLICY, "Cards under $20")).toBeVisible();
-    const setMeUpOffered = await setMeUp.isVisible();
-    // Ships from: Enter in the last field saves, and makes the seller's inventory location on eBay (a live round trip).
-    await page.getByRole("textbox", { name: "ZIP code", exact: true }).fill(SHIPS_FROM.zip);
-    await page.getByRole("textbox", { name: "City", exact: true }).fill(SHIPS_FROM.city);
-    await page.getByRole("textbox", { name: "State", exact: true }).fill(SHIPS_FROM.state);
-    await page.keyboard.press("Enter");
-    await expect(said("Saved. Your cards ship from here.")).toBeVisible();
-    await expect(checklistSteps).toHaveText("4 to go. Nothing lists on eBay until they're done.");
-    if (setMeUpOffered) {
-      // Offered only where the seller's account has no payment or returns policy: it makes
-      // NeonBinder's standard ones (never a shipping policy). The answer is the success line.
-      await setMeUp.click();
-      await expect(said(/^(Made \d+ on your eBay account|You already had everything)/)).toBeVisible();
-    } else {
-      await expect(setMeUp).toBeHidden();
-    }
-    // The seller's own flat NB Free Shipping for the price this spec lists at, NB Tracked for $20 and up.
-    const underTwentyFree = underTwenty.getByRole("radio", { name: FREE_POLICY, exact: true });
-    await expect(underTwentyFree, mustHoldPolicy(FREE_POLICY, "Cards under $20")).toBeVisible();
-    await underTwentyFree.click();
-    await expect(underTwentyFree).toBeChecked();
-    const tracked = twentyPlus.getByRole("radio", { name: TRACKED_POLICY, exact: true });
-    await expect(tracked, mustHoldPolicy(TRACKED_POLICY, "$20 and up")).toBeVisible();
-    await tracked.click();
-    await expect(tracked).toBeChecked();
-    // Payment and Returns: the first of the seller's own policies, where "Set me up" has not already picked one.
-    for (const group of ["Payment", "Returns"]) {
-      const radios = page.getByRole("radiogroup", { name: group, exact: true }).getByRole("radio");
-      await expect(radios.first()).toBeVisible();
-      await radios.first().click();
-      await expect(page.getByRole("radiogroup", { name: group, exact: true }).getByRole("radio", { checked: true })).toHaveCount(1);
-    }
-    // The last pick finishes the setup: the checklist folds to "You're all set".
-    await expect(allSet).toBeVisible();
-    await expect(checklistSteps).toBeHidden();
+    await connectEbayAndFinishSetup(page, ebayFake, { gate: LAUNCH_GATE });
 
     // --- 2c. Stock the box: a price, one copy of the card, a photo on it ---------------------------------
     // A full page load, so the launch gate applies.
@@ -547,7 +478,7 @@ export async function runOver80Flow({ page, signIn, env, isMobile }: Args, throu
     // The held-back line is still the last result until a run takes the card again.
     await expect(row.getByText("1 held back:", { exact: true })).toBeVisible();
 
-    // --- 5. The next sync lists it (the parked proof: it needs a publish that works, NEO-453) -------
+    // --- 5. The next sync lists it -----------------------------------------------------------------
     let reopened: Locator | undefined;
     if (through === "requeued") {
       // The queued state is the end of the active proof: a card waiting for the next sync, no Sync pressed.
@@ -566,12 +497,8 @@ export async function runOver80Flow({ page, signIn, env, isMobile }: Args, throu
       await expect(page).toHaveURL(/[?&]tab=sync/);
       const listing = syncRun(platform, SET_LABEL, EBAY);
       const listedLine = row.getByText(/^1 listed(, 1 updated)?$/);
-      // Going live is the one step with a longer budget, a ceiling Jason signed off on
-      // 2026-11-03 (GUIDE hard rule 3, the sibling eBay listing spec): one eBay publishOffer
-      // call, as long as the slowest call. Measured on the sandbox: 5.1, 9.0, 9.1 and 10.9 s
-      // in CI, 6.1 s on dev; our own work in the step is well under a second. Void it if the
-      // step gains any work of ours.
-      await followRunToRest(platform, listing, queueSettled(platform, SET_LABEL), { "Go live": 15_000 });
+      // Every step at the standard budget, going live included (NEO-555: the fake answers at once).
+      await followRunToRest(platform, listing, queueSettled(platform, SET_LABEL));
       await expect(listedLine).toBeVisible();
       await expect(row.getByText(/^Synced /)).toBeVisible();
       // The card is no longer held back for anything: the row names no held-back card at all.
@@ -611,7 +538,7 @@ export async function runOver80Flow({ page, signIn, env, isMobile }: Args, throu
       await expect(editForm).toBeHidden();
       await yourCopies.getByRole("button", { name: new RegExp(`^Remove ${escapeRe(short)}, Raw, `) }).click();
       await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
-      await confirmRemoved(cardDrawer);
+      await confirmRemoved(cardDrawer, `Removed ${short}, Raw, `);
       await cardDrawer.getByRole("button", { name: "Close card detail" }).click();
       await expect(cardDrawer).toBeHidden();
       await expect(quantityField(tidyChecklist.getByRole("list", { name: `Quantities in ${boxName}` }), short, boxName)).toHaveValue("0");

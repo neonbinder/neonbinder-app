@@ -1,6 +1,7 @@
 # NeonBinder Web Dev — Agent Memory Index
 
 - [Disambiguate duplicate aria labels by rewording](disambiguate-duplicate-aria-labels-by-rewording.md) — When two instances of the same picker/component can be on screen at once, give the second instance labels that share NO substring with the first — never a suffixed var…
+- [Bulk-load op budget counts calls](reference_bulkload_op_budget_counts_calls_not_rows_or_stints.md) — roster leg: ~5 ops plain row, ~11 for a 3-alias create; budget tests need alias creates
 - [E2e viewport is the ux constraint](e2e-viewport-is-the-ux-constraint.md) — Admin screens are judged at the CI E2E viewport (1024x629); put status/feedback next to the control that produced it, because role="status" hides sighted-user gaps
 - [External ids must be verified live](external-ids-must-be-verified-live.md) — Wikidata/ESPN QIDs and other external identifiers shipped as constants must be checked against the live source before merge — four sportConfig hallOfFameQid values wer…
 - [Linking uis are drag and drop](feedback-linking-uis-are-drag-and-drop.md) — Any "these two lists describe the same things" pairing/linking UI must be drag-and-drop, and must say so on screen — Jason's operator feedback on NEO-189 / PR #205
@@ -256,7 +257,23 @@
 - [Stacked branch merge after parent squash](reference_stacked_branch_merge_after_parent_squash.md) — merge base predates the parent: clean hunks duplicate code; re-merge with merge-tree base
 - [New listing problem reason: hand lists](reference_new_listing_problem_reason_has_hand_lists.md) — SYNC_HELD_REASONS, REPORTABLE_SYNC_REASONS judgement, test Reason union, spec copy literals
 - [ListingCardInputs field needs every returns validator](reference_listing_inputs_field_needs_every_returns_validator.md) — typecheck green, runtime "extra field"; add to previewListingTitle + parallelCopyTitles validators
+- [Convex new-module gotchas](convex-new-module-gotchas.md) — api.d.ts hand-registration, playerIds pin, lib/*Facts for cycles, pdfjs env failure
+- [Symlinked node_modules can lag the lockfile](reference_symlinked_node_modules_can_lag_the_lockfile.md) — build/one lib test red on a missing package you never touched = stale shared install, not your diff
+- [Wizard step status rides the footer live region](reference_wizard_step_status_rides_the_footer_live_region.md) — a step that mounts/unmounts cannot own a role=status; compute words in the wizard, step renders only Retry
+- [Host-stored count goes stale](host-stored-count-goes-stale-ask-the-door.md) — door reports live counts (onCounts + recount + countOnMount); no subscription for big parents
 - [Attributes panel collapsed tests need a non-set level](reference_attributes_panel_collapsed_tests_need_non_set_level.md) — a setName row opens itself; collapsed tests use insert/parallel or click Hide first
 - [Wizard extra query lives in a child component](reference_wizard_extra_query_lives_in_a_child_component.md) — new per-step read: child owns useQuery; getBatch stays slim; auto-linked rows carry context too
 - [Read-only diagnosis on a deployment](reference_read_only_diagnosis_on_a_deployment.md) — convex data caps 8192; internal fns run without identity; open-wizard cards live in checklistCandidates
 - [Lead-in names its list; cached status needs a tick](reference_lead_in_p_names_its_list_and_cached_status_needs_a_tick.md) — aria-labelledby on the lead-in p; delayed status fill from a remount
+- [Error state is neon pink on title fields](feedback_error_state_is_neon_pink_title_fields.md) — NEO-606: too-long counter/note/box pink via OVER_FIELD_CLASS; DESIGN.md updated; no wider sweep (Jason decides)
+- [Listing inputs field threads through validators](reference_listing_inputs_field_threads_through_validators.md) — new ListingCardInputs field: 2 returns validators, 5 build paths, shared team cache; fixtures by title length + tsx probe
+- [Error ink = neon-pink-text alias](reference_error_ink_is_neon_pink_text_alias.md) — notice-danger-ink inherits its TEXT_NEVER_ON bars; error in a dark tile goes on a bg-field well
+- [Title chain facts travel by key](reference_title_chain_facts_travel_by_key.md) — pickTitleChainFacts replaces hand-passed lines; tidyUp (not coreFits) says the builder worked
+- [Dense one-line rows: wrap atomic pieces, never clip](reference_fixed_table_layout_counts_a_hidden_column_in_a_colspan.md) — nowrap atoms, w-1 short cols, no-clip assertion; table-fixed colSpan phantom col
+- [Repeating a set-building spec needs a full reseed](reference_repeating_a_set_building_spec_needs_a_full_reseed.md) — partial reset breaks setup; each repeat = agent-convex --seed + setup + bootstrap
+- [Review gate is hops times latency](reference_review_gate_is_hops_times_latency.md) — mapBounded in a query, settleAll in the action, prelude query, review_gate_timing line
+- [Bound R2 calls yourself](reference_bound_r2_calls_yourself_aws4fetch_retries_ten_times.md) — aws4fetch retries 5xx x10 past any signal; sign + fetch with an AbortController timer
+- [One-shot status read races the live-words frame](reference_one_shot_status_read_races_the_live_words_frame.md) — NoticeLine text lands a rAF later; waitFor it; notice timers clear only their own id
+- [Restore setTimeout spy before real timers](reference_restore_spy_before_real_timers.md) — spy restored after useRealTimers hangs the afterAll hook 10 s with green tests; monotonic ref ids for notices
+- [Bounded-fetch test: timer arms before the stub](reference_bounded_fetch_test_timer_arms_before_the_stub_is_reached.md) — sign() is async; stub sees an aborted signal; wait on stalled-body count; wrap setTimeout for drain tests
+- [Testing hop status lines are an API](reference_testing_hop_status_lines_are_an_api.md) — /testing/*-fake status lines feed DONE/FAILED regexes in playwright/support; new op = FAILED-matching refusals, report the DONE prefix

@@ -63,6 +63,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { teamFullName } from "../../lib/teams/team-name";
 import { normalizeEntityName } from "./entityNearMatch";
+import { stintCountsForYear } from "./careerCoverage";
 import {
   erasOverlap,
   pickCardTeam,
@@ -493,8 +494,14 @@ export async function resolveCardTeamName(
         let stints = stintsByPlayer.get(k);
         if (!stints) {
           const player = await ctx.db.get(playerId);
+          // NEO-574 — same rule as `narrowTeamRowsByCardPlayers`: a stint
+          // that begins after the set's year cannot say which era a card shows.
           stints = (player?.teamYears ?? [])
-            .filter((stint) => candidateIds.has(stint.teamId as string))
+            .filter(
+              (stint) =>
+                candidateIds.has(stint.teamId as string) &&
+                (setYear === undefined || stintCountsForYear(stint, setYear)),
+            )
             .map(toStint);
           stintsByPlayer.set(k, stints);
         }
@@ -563,6 +570,11 @@ export const CARD_PLAYER_TEAM_MAX_PLAYERS_PER_CARD = 4;
  * says: a card can show a team's past, never its future (`pickTeamForYear`).
  * With no `setYear` nothing is excluded.
  *
+ * NEO-574 — and a player's stint counts only when it is undated or began in
+ * or before `setYear` (`stintCountsForYear`, the same rule rule 6b of the
+ * player narrowing uses): a stint that starts after the card was printed
+ * cannot say which era the card shows.
+ *
  * Reads only player documents, each once, and never a team: the candidate
  * rows are passed in. Returns null without reading when the bounds above are
  * passed or there are fewer than two candidates (one row is
@@ -608,7 +620,13 @@ export async function narrowTeamRowsByCardPlayers(
       let stints = stintsByPlayer.get(key);
       if (!stints) {
         const player = await ctx.db.get(playerId);
-        stints = (player?.teamYears ?? []).map(toStint);
+        // NEO-574 — a stint counts only when undated or begun by the set's
+        // year (the shared coverage rule): a stint that starts after the
+        // card was printed says nothing about which era the card shows.
+        // With no set year there is nothing to compare, so all count.
+        stints = (player?.teamYears ?? [])
+          .filter((stint) => year === undefined || stintCountsForYear(stint, year))
+          .map(toStint);
         stintsByPlayer.set(key, stints);
       }
       for (const stint of stints) {

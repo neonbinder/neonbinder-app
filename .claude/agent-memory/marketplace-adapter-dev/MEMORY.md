@@ -94,4 +94,9 @@
 - [Cloud Run: load before listen](reference_cloud_run_load_before_listen.md) — throttled CPU starves post-listen boot work; load first, budget optional loads; spy Server.prototype.listen
 - [New listing problem reason touch list](reference_new_listing_problem_reason_touch_list.md) — ~8 lists; tsc catches only types.ts + copy.ts; REPORTABLE and seed SYNC_HELD_REASONS fail silently
 - [Stdio EPIPE is a late 'error' event](reference_stdio_epipe_error_is_a_late_event.md) — closed pipe/tty kills Node via nextTick 'error'; release scoped listeners on setImmediate; spy emit
+- [Capture diff paths are what the fake invents](reference_capture_diff_paths_are_what_the_fake_invents.md) — shape_drift paths = fake-only fields; stored shapes unreadable; CAPTURE_OPTIONAL; name variants by kind not id
+- [Capture optional paths: parent-only](reference_capture_optional_parent_only.md) — fake-bsc prefix exemption hides read fields under a present object; use parentOnly + list children
 - [Cloud Run socket destroy restarts the instance](reference_cloud_run_socket_destroy_restarts_instance.md) — fake faults end in 503, never socket.destroy(); hangCapMs injectable
+- [eBay read path: one clock](ebay-read-path-bounded-by-one-clock.md) — 3 s a try, one retry on timeout; timeout is never a missing policy
+- [Direct helper bypasses action stubs](reference_direct_helper_bypasses_credentials_action_stubs.md) — runAction -> plain helper skips vi.mock action stubs; add a twin stub, spy _handler for no-hop proof
+- [One fake host pin for both marketplaces](reference_one_fake_host_pin_shared_by_both_marketplaces.md) — share isFakeServiceHost/signForFake; fake switch keyed on request not config validity; strict echo guard

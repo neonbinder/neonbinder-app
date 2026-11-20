@@ -331,7 +331,15 @@ describe("GET /health bscTarget", () => {
   it("reports real by default, with the contract version", async () => {
     const { CONTRACT_VERSION } = require("../dist/contract-version");
     const body = await health({ ENVIRONMENT: "prod" });
-    assert.deepEqual(body, { status: "ok", environment: "prod", contractVersion: CONTRACT_VERSION, bscTarget: "real" });
+    // NEO-555 added ebayFake and ebayTarget (additive; no contract bump).
+    assert.deepEqual(body, {
+      status: "ok",
+      environment: "prod",
+      contractVersion: CONTRACT_VERSION,
+      bscTarget: "real",
+      ebayFake: false,
+      ebayTarget: null,
+    });
   });
 
   it("reports fake when pointed at the fake, without the URL", async () => {

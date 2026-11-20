@@ -165,16 +165,17 @@ describe("commitCardChecklist — the 'Card titles' answers (NEO-335)", () => {
   });
 
   test("no box and a description over the cap: the over-cap title is written whole, flagged by its length only", async () => {
-    // NEO-535 STOP: description words are never cut. No first name was lost
-    // and no box was used, so `listingTitleTruncated` is not written; the
-    // walker raises `titleOverLimit` from the length instead.
+    // NEO-535 STOP: description words are never cut. No box was used, but the
+    // card number it had to cut (row 13) is a Tidy Up cut (NEO-609), so the
+    // row is born `listingTitleTruncated` too; the attention walker still
+    // raises the one `titleOverLimit` from the length (over the cap wins).
     const t = convexTest(schema, modules);
     const ids = await seedTree(t, { box: null });
     await commit(t, ids, [card({ cardNumber: "1" })]);
     const row = (await rowsByNumber(t, ids.leafId)).get("1")!;
     expect(row.listingTitle).toBe(`2026 Topps ${LONG_SET_NAME}`);
     expect(row.listingTitle!.length).toBeGreaterThan(LISTING_TITLE_MAX);
-    expect(row.listingTitleTruncated).toBeUndefined();
+    expect(row.listingTitleTruncated).toBe(true);
     await settle(t);
   });
 

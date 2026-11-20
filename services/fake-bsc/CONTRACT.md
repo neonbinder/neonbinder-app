@@ -98,12 +98,16 @@ first, then in code.
   username is not this deployment's own fake account is refused
   (`fake_bsc_namespace_clash`); re-seeding the user repairs it.
 - **Cleanup.** After both E2E passes, `e2e.yml` (the `e2e` job, `if: always()`)
-  runs the internal action `credentials:deleteFakeBscSessionsFromCli` with the
-  preview deploy key. It deletes, through `DELETE /credentials/:key`, the fake
-  key of every user on the deployment, only keys with this deployment's own
-  `buysportscards-credentials-fake-<convexSlug>-` prefix, clears their BSC
-  flag, and reports counts. Outside fake mode it deletes nothing. A failure
-  only warns; the TTL removes what is left.
+  runs the internal action `credentials:deleteFakeSessionsFromCli` (NEO-555;
+  it was `deleteFakeBscSessionsFromCli`) with the preview deploy key. It
+  deletes, through `DELETE /credentials/:key`, the fake key of every user on
+  the deployment, for each marketplace that is in fake mode, only keys with
+  this deployment's own `buysportscards-credentials-fake-<convexSlug>-` or
+  `ebay-credentials-fake-<convexSlug>-` prefix, clears their flag for that
+  site, and reports counts per site: `{fake: true, bsc?: {users, deleted,
+  failed, truncated}, ebay?: {...}}` (`{fake: false}` outside fake mode, where
+  it deletes nothing). A site not in fake mode is skipped, never deleted
+  under its bare key. A failure only warns; the TTL removes what is left.
 
 ## Recorded vs synthesised
 
@@ -252,7 +256,7 @@ Request bodies are limited to what NB's BSC traffic needs: 2 MB for
 
 ## Recorder (`services/fake-bsc/recorder/`)
 
-- Jason runs it. Credentials come from Bitwarden at run time and are never
+- The account owner runs it. Credentials come from Bitwarden at run time and are never
   written anywhere. Tokens stay in process memory.
 - Sign-in uses `bscPasswordSignIn()` from `services/browser`.
 - To-do list: `GET /__fake/misses?prefix=` as the loader SA. Only the three
@@ -304,10 +308,10 @@ Request bodies are limited to what NB's BSC traffic needs: 2 MB for
   answers 409 `catalogue full` ("Storage layout", entry cap).
 - `--watch --prefix` long-polls the miss list during a local E2E run.
 
-### Write capture (Jason, 2026-11-14)
+### Write capture (decision of 2026-11-14)
 
 Seller writes get no real test before prod. Instead, whenever a PR adds or
-changes a BSC write (listing PUT, photo upload, any new write), Jason performs
+changes a BSC write (listing PUT, photo upload, any new write), the account owner performs
 that write once locally against real BSC and the recorder captures it:
 `recorder capture-write`. It sends exactly one write request (a listing PUT
 is built as NB builds it, from one seller-profile read and two seller-sheet
@@ -390,7 +394,7 @@ As built (`apps/web/convex/bscCallGate.ts`, policy in
 `convex/lib/bscCallGatePolicy.ts`, one `marketplaceCallGates` row):
 
 - Bucket: 60 a minute, burst 10 against BuySportsCards. **None against the
-  fake** (Jason): no wait and no `throttled` refusal, ever, and a healthy
+  fake**: no wait and no `throttled` refusal, ever, and a healthy
   grant writes nothing; only the breaker below applies. A wave (the
   fetch-time team lookup) acquires once per wave of up to 10; every other
   call acquires one. Against BuySportsCards a wait over 15 s is refused
@@ -639,10 +643,12 @@ host itself. It never bundles or copies the browser source.
 - `/__fake/health` needs the ID token and caller key like the rest (Cloud Run's
   default TCP startup probe needs no route). It answers `{ok, loading,
   instanceId, revision, manifestVersion, allowlistVersion, recordings, writeCaptures:
-  {missing: [<write endpoint>, ...]}}`. `missing` lists the write endpoints
-  (`PUT seller/bulk-upload`, the photo-upload POST) that have no stored
-  capture; the boot also logs `write_captures_missing`. The E2E seed fails on
-  a non-empty list (see "Convex internal action for CI"). While `loading` is
+  {missing: [<write endpoint>, ...]}}`. `missing` lists the required write
+  endpoints that have no stored capture: BSC's two (`PUT seller/bulk-upload`,
+  the photo-upload POST) and the eBay writes in `EBAY_REQUIRED_CAPTURES`
+  ("Write and read captures (eBay)"), each by its capture name; the boot also
+  logs `write_captures_missing`. The E2E seed fails on a non-empty list (see
+  "Convex internal action for CI"). While `loading` is
   true the captures are not in yet, so health answers `writeCaptures:
   {loading: true}` with no `missing` field: a cold start never names an
   endpoint as missing, and a reader that ignores `loading` finds no list and
@@ -784,7 +790,7 @@ CI calls it with the preview deploy key so no admin key is on the runner.
 
 `fakeBsc:writeCaptureStatus` (internal action, no args) reads the fake's
 `/__fake/health` (caller auth only) and returns `{ok: true, skipped, missing:
-[<write endpoint>]}` (`skipped: true` outside fake mode), or `{ok: false,
+[<required write endpoint>]}` (`skipped: true` outside fake mode), or `{ok: false,
 status?, error}`, which includes a health answer with no `writeCaptures` field
 (an older fake: never read as "none missing"). While the health answer
 says `loading: true` (or `writeCaptures.loading: true`), the action asks
@@ -811,9 +817,9 @@ PR. Until recordings exist every probe and E2E BSC call answers 501.
 The same service also fakes eBay. **It never contacts eBay.** It lives in
 `src/ebay/`, shares the fake's auth, store, faults, misses, request key,
 shapes, drift and write captures, and holds its seller state in memory per
-namespace beside the BSC state. Nothing in Convex or the browser service
-points at it yet (that is the cutover, PR B); until then it only answers its
-own tests, the drift job and the recorder.
+namespace beside the BSC state. Every test deployment's Convex and the dev
+browser service point at it (the cutover, PR B): see "PR B: how Convex and the
+browser service use it" at the end of this section.
 
 ### Paths, one per real eBay host
 
@@ -956,7 +962,8 @@ extracted from eBay's OpenAPI contracts). Every error answer is eBay's
 - **Location.** `GET location/:key` is 404 (errorId 25804) until created;
   `POST location/:key` creates (204) or, when the key exists, 400 errorId
   25803 (what the sandbox answers, not the contract's 409);
-  `update_location_details` (204), `enable` (200 `{}`).
+  `update_location_details` (204), `enable` (200 with NO body, as the sandbox
+  answered it; the contract types an empty object).
 - **Inventory items.** `bulk_create_or_replace_inventory_item` takes 1-25
   requests and answers `{responses: [{statusCode, sku, locale}]}` per entry:
   200 when every entry passed, 207 when some did, 400 (body still carrying
@@ -980,7 +987,7 @@ extracted from eBay's OpenAPI contracts). Every error answer is eBay's
   offer's three policies exist on the seller (fulfillment missing: 25007;
   payment or return missing: 25002) and its location exists and is enabled
   (else 25002). `POST offer/:offerId/withdraw` ends the listing (200
-  `{listingId, warnings: []}`); an offer that is not live answers 404 errorId
+  `{listingId}`, no `warnings`: production's answer); an offer that is not live answers 404 errorId
   25713, which NB reads as already ended (UNVERIFIED). `bulk_update_price_quantity`
   (1-25) answers one response per offer (`{statusCode, sku, offerId}`) and
   updates the item's and offers' quantity and price.
@@ -1052,12 +1059,131 @@ them.
 `POST /__fake/write-captures {endpoint, status, shape}` (admin) also takes
 the eBay endpoint names in `src/ebay/captures.ts` (`EBAY_CAPTURE_ENDPOINTS`):
 `"<METHOD> <template>"`, plus a variant after ` #` where one endpoint has two
-answers worth keeping (`... /publish #25002`, the sandbox's refusal;
+answers worth keeping (`... /publish #refused`, the sandbox's refusal, which
+was HTTP 400 errorId 25007 on the first run, not 25002, so the name carries no
+id;
 `.../opt_in #409`; `.../oauth2/token #refresh_token` and `#client_credentials`).
 Reads are captured the same way (status and shape, never a value). The fake
-checks each against its own synthesis like the BSC captures. **No eBay
-endpoint is on the required list** (`writeCaptures.missing` and Convex's
-`writeCaptureStatus` read only the BSC two); that is PR B.
+checks each against its own synthesis like the BSC captures (every path the
+fake sends must be in the capture with an overlapping type; the capture may
+hold more). A few paths are exempt when the capture lacks them, because eBay
+sends them only for some objects and a capture sees one: identity `status`,
+return-policy `categoryTypes[].default`, an offer's `listing` (published offers
+only), and on the first inventory item `conditionDescriptors`,
+`packageWeightAndSize.packageType` and the `product.aspects` names
+(`isOptionalCapturePath` in `src/ebay/captures.ts`). If the capture has one of
+them its types are still compared. **The eBay
+writes the recorder stores are on the required list** (NEO-555 PR B1):
+`/__fake/health` `writeCaptures.missing` names each one that has no stored
+capture, after BSC's two, and Convex's `writeCaptureStatus` and the E2E seed
+read the list unchanged. `EBAY_REQUIRED_CAPTURES` in `src/ebay/captures.ts`:
+
+```
+Both runs:      POST .../bulk_create_or_replace_inventory_item
+                POST .../bulk_create_offer
+                DELETE .../inventory_item/:sku
+Sandbox only:   POST .../location/:merchantLocationKey
+                POST .../location/:merchantLocationKey/update_location_details
+                POST .../location/:merchantLocationKey/enable
+                PUT  .../offer/:offerId
+                POST .../offer/:offerId/publish #refused      (the sandbox's refusal)
+Production only (`ebay-capture --prod`, manual, the account owner only):
+                POST .../commerce/media/v1_beta/image/create_image_from_file
+                GET  .../commerce/media/v1_beta/image/:imageId
+                POST .../offer/:offerId/publish               (the real listing)
+                POST .../bulk_update_price_quantity
+                POST .../offer/:offerId/withdraw
+```
+
+(The full names carry the `ebay/api` or `ebay/apim` prefix.) Thirteen names, so
+the list is at most fifteen with BSC's two, under Convex's cap of twenty
+(`MAX_MISSING_CAPTURES`). Not required: reads and the token endpoint, and the
+writes the sandbox stores only when eBay accepts them
+(`EBAY_CONDITIONAL_WRITE_CAPTURES`: the opt-in in either answer, 200 or 409
+by account state, and the payment and return policy creates, which the first
+sandbox capture did not store). A unit test runs both captures against stubs and fails when a
+required name is not stored by either run, or when a stored write is neither
+required nor conditional, so a renamed capture goes red. A name may carry a
+` #variant` after the path; Convex's `narrowMissingCaptures` reads it.
+
+### PR B: how Convex and the browser service use it (NEO-555)
+
+PR B1 taught the browser service the fake key; PR B2 points Convex at the fake.
+They deploy from one commit on separate schedules, so every cross-check below
+fails closed.
+
+- **Switch.** `EBAY_ENVIRONMENT=fake` on a Convex deployment (valid ONLY beside
+  `TESTING_RESET_SECRET` and a fake BSC target, i.e. `NEONBINDER_BSC_API_BASE`
+  naming the fake and `NEONBINDER_FAKE_BSC_KEY` set; the host pin is the one
+  `lib/fakeMarketplace.ts` holds for BSC and eBay alike). Anything else is
+  "not configured", logged (`ebay_fake_misconfigured`: platform and reason
+  only), and **never falls back to the sandbox or production**: Connect is
+  refused and the drain and the order poll skip eBay. `EBAY_CLIENT_ID` and
+  `EBAY_RU_NAME` are ignored in fake mode; the fake's public constants are
+  used. `apiBase` is `<fake origin>/ebay/api`, `mediaBase` is `<fake
+  origin>/ebay/apim`, picture upload is on, links use the production hosts.
+  `fakeBsc:ebayTarget` answers `{mode: "fake" | "sandbox" | "production" |
+  "unconfigured"}` for CI.
+- **Consent.** `ebayAuthorizeUrl` answers the relative
+  `/testing/fake-ebay/authorize?<same params>` with the same bare-nonce state
+  (no return origin is folded in). The testing page asks `fakeBsc.ebayConsent`
+  for a code and hands it to the usual `completeConnect`.
+- **Keys.** `credKey("ebay")` is `ebay-credentials-fake-<convexSlug>-<userId>`
+  in fake mode (a request that asked for the fake never uses the bare key,
+  even when the setup is unusable) and the bare key everywhere else.
+- **Guard 1 (health).** In fake mode Convex sends no eBay credential call
+  (`/oauth/ebay/*`, or any `/credentials/*` call naming an eBay key) unless
+  the browser service's cached `/health` says `ebayFake: true`; a revision
+  without the field is refused too, logged `fake_ebay_browser_not_fake`.
+- **Guard 2 (the connect echo; B1 security audit, mandatory).** The connect
+  answer's `environment` is compared strictly with this deployment's own
+  (`credentials.expectedConnectEnvironment`): `"fake"` is expected in fake
+  mode and ONLY there. A sandbox or production deployment (a bare key)
+  discards a `"fake"` echo as `environmentMismatch`, and a fake deployment
+  discards anything but `"fake"`; the stored session is deleted and nothing
+  is recorded either way.
+- **Calls.** The default-runtime seller client (`adapters/ebaySeller.ts`) sends
+  every request in fake mode with the caller key, the ID token in
+  `X-Serverless-Authorization` and the bare copy in `x-nb-fake-id-token`
+  (`lib/fakeMarketplace.ts`, `signForFake`, token from `internal.fakeBsc.idToken`,
+  cached per audience), `redirect: "error"`. A call that cannot be signed
+  sends nothing and is a `network` failure. eBay paths have no call gate and
+  no `x-nb-fake-ns` header (the user token names the namespace).
+- **Test controls** (`apps/web/convex/fakeBsc.ts`, internal, every `ns` under
+  this deployment's own prefix, all no-ops unless the deployment is on the
+  fake eBay; `seller` is `"main"` (default) or `"alt"`):
+
+  ```ts
+  internal.fakeBsc.ebayConsent({ ns, seller? })   // POST /__fake/ebay/consent -> { code }; THROWS (fixed message) when it cannot give one
+  internal.fakeBsc.ebaySeller({ ns, seller?, optedIn?, fulfillmentPolicies? })
+                                                  // POST /__fake/ebay/seller -> { ok, skipped, fulfillmentPolicyIds, optedIn } | { ok: false, status?, error, detail? }
+  internal.fakeBsc.ebayOrders({ ns, seller?, order })
+                                                  // POST /__fake/ebay/orders -> { ok, skipped, orderIds } | { ok: false, ... }
+  internal.fakeBsc.ebayTarget({})                 // -> { mode }
+  ```
+
+  The wrappers a spec calls (`testing.addMyEbayOrder` / `addMyBscOrder`) take a
+  line/item `{listedCardNumber, quantity, priceCents?}` in place of ids: the
+  server resolves the printed number against the CALLER'S OWN live listings on
+  that platform (eBay: a `live` link with a listing id; BSC: what the push
+  would list, per card and BSC condition), exactly one, and sends the real
+  SKU/listing id or BSC card id. Zero or several matches are refused with a
+  fixed message. Lines with ids or a title pass through unchanged.
+
+  Policies and orders are bounded on the Convex side as the fake bounds them,
+  so a bad seed never leaves. `detail` is the fake's own validation reason
+  (never a key or token).
+- **Faults.** `setFaults` takes the two eBay kinds (`ebayError {status,
+  errorIds}`, `unauthorized`, templates starting `ebay/` only) and a template
+  ending `/*` as a prefix (never a bare `*`, a mid-path star, `//` or `..`).
+  One list per namespace for both marketplaces. eBay has no call gate, so the
+  `@bsc-breaker` rule does not apply to `ebay/` templates.
+- **Gone.** `testingSellerCleanup` (NEO-445/453), `deleteInventoryItem` and
+  `getInventorySkusPage` are deleted: with every deployment on the fake there
+  is no shared seller account to clear. The end-of-run session cleanup is
+  `credentials:deleteFakeSessionsFromCli` (see "Cleanup", above).
+- **Not changed.** The prod deploy gate and the daily drift still read
+  production eBay, read-only (browser `/probe/ebay`).
 
 ### Drift: `POST /__fake/drift-compare {marketplace: "ebay", ...}` (admin)
 
@@ -1168,7 +1294,7 @@ access token per run, plus one app token where row 16 needs it.
   captured). Dry run unless `--yes`.
 - **`ebay-capture --prod --fake <url> --client-id <id> --cert-secret <name>
   --session-secret <name> --project <id> [--picture <file>] [--yes]`**
-  (Jason only): see "Production capture".
+  (manual, the account owner only): see "Production capture".
 - **`ebay-undo (--sandbox [--creds-file <path>] | --prod <the four
   credential flags>) --sku NBCAPTURE-... [--yes]`**: withdraws the SKU's
   live offer and deletes the item, then checks. Refuses any SKU outside its
@@ -1176,22 +1302,22 @@ access token per run, plus one app token where row 16 needs it.
 
 #### Production capture (`ebay-capture --prod`)
 
-One real listing on Jason's production account, to capture the writes the
-sandbox cannot (publish, price update, withdraw, media). Credentials: his NB
-production session's refresh token and the production Cert ID, read with his
-own gcloud (`gcloud secrets versions access` run by the recorder, stdout kept
+One real listing on the account owner's production account, to capture the writes the
+sandbox cannot (publish, price update, withdraw, media). Credentials: the owner's NB
+production session's refresh token and the production Cert ID, read with the
+owner's own gcloud (`gcloud secrets versions access` run by the recorder, stdout kept
 in memory; secret names and project come from flags the private wrapper
 passes), plus the production client id. Refresh grant only.
 
 - SKU fixed to `NBCAPTURE-PRD-<yyyymmdd>` (UTC); any other value is refused.
 - Pre-checks, before anything is written: `GET inventory_item/<sku>` is 404,
-  `GET offer?sku=` has none, his payment, return and fulfillment policies and
-  his `neonbinder-main` location exist (read only; nothing is created and
+  `GET offer?sku=` has none, the owner's payment, return and fulfillment policies and
+  the owner's `neonbinder-main` location exist (read only; nothing is created and
   there is no opt-in). Any other answer to the item or offer read (a 401, a
   5xx) is a refusal naming the status, with nothing written.
 - Default is a dry run that prints exactly the **7 requests that change the
   account**: (1) image upload, (2) bulk item (one, qty 1), (3) bulk offer
-  (one, $999.99, his first payment, return and fulfillment policies), (4)
+  (one, $999.99, the owner's first payment, return and fulfillment policies), (4)
   publish, (5) bulk price update (price only, to $999.98), (6) withdraw, (7)
   DELETE inventory item. Reads (the pre-checks, `GET image`, the final
   verification) are listed on one line, unnumbered. Writes only with `--yes`

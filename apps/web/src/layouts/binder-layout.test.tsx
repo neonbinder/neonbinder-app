@@ -1,7 +1,8 @@
 /**
- * NEO-522 — the binder frame's width: a spacious Pick List (signed in, or the
- * demo's at /demo/inventory) takes the wide page; a condensed one, and every
- * other page, keeps the 6xl column.
+ * NEO-522, NEO-598 — the binder frame's width: the Pick List (signed in, or the
+ * demo's at /demo/inventory) takes the wide page whatever its row size, so
+ * Condensed fits as much text on a line as Spacious; every other page keeps
+ * the 6xl column.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
@@ -37,16 +38,17 @@ afterEach(() => {
 });
 
 describe("BinderLayout's width", () => {
-  it.each(["/inventory?tab=pick", "/demo/inventory?tab=pick"])("opens %s to the wide page while Spacious", (url) => {
+  it.each(["/inventory?tab=pick", "/demo/inventory?tab=pick"])("opens %s to the wide page", (url) => {
     const frame = renderAt(url);
     expect(frame().className).toContain("max-w-[1600px]");
     expect(frame().className).not.toContain("max-w-6xl");
   });
 
-  it("keeps the 6xl column for a condensed Pick List, and widens again on Spacious", () => {
+  it("keeps the wide page for a condensed Pick List, as for a spacious one", () => {
     const frame = renderAt("/demo/inventory?tab=pick");
     act(() => setPickDensity("condensed"));
-    expect(frame().className).toContain("max-w-6xl");
+    expect(frame().className).toContain("max-w-[1600px]");
+    expect(frame().className).not.toContain("max-w-6xl");
     act(() => setPickDensity("spacious"));
     expect(frame().className).toContain("max-w-[1600px]");
   });

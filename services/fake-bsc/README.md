@@ -172,14 +172,22 @@ Prerequisites:
 1. `services/browser` built (`npm ci && npm run build` there): the recorder
    signs in with its `bscPasswordSignIn` and real-endpoint helpers, loaded from
    `services/browser/dist` at run time (`--browser-dist <dir>` overrides).
-2. ADC impersonating the loader service account (the recorder mints its
-   Google ID token from ADC, asking for the email claim the fake checks):
-   `gcloud auth application-default login --impersonate-service-account=<loader SA email>`.
-   **This replaces your existing ADC** (one ADC file per machine), so other
-   tools on your machine act as the loader SA until you switch back. When you
-   are done, restore your usual ADC by running the login you normally use
-   again, e.g. `gcloud auth application-default login` (or with your usual
-   `--impersonate-service-account=<the SA you normally impersonate>`).
+2. A Google ID token for the fake's audience that carries the loader service
+   account's email claim (the fake checks it). Preferred: put the token in a
+   file (mode 600, outside every checkout) and set `FAKE_BSC_ID_TOKEN_FILE` to
+   its path. The recorder re-reads and trims the file on every request, so a
+   long `--watch` session picks up a refreshed token; a missing or empty file
+   is an error, never a silent fall back to ADC. Whatever mints the token (for
+   example `gcloud auth print-identity-token --impersonate-service-account=…
+   --audiences=<fake origin> --include-email`) runs on your normal gcloud
+   login, so no application-default login is needed. With the variable unset
+   the recorder mints the token from ADC impersonating the loader service
+   account, as before.
+   Optionally set `FAKE_BSC_EXPECTED_HOST` to the fake's exact host name: the
+   recorder then refuses any other `--fake` host (a localhost fake is still
+   allowed), on top of its built-in check that the host is the fake's own
+   Cloud Run service. The caller and admin key variables must not contain
+   whitespace or control characters.
 3. The fake's two keys in this command's environment only, read from Secret
    Manager at run time. Never write them to a file.
 
@@ -359,8 +367,8 @@ compares the prod eBay probe (`services/browser`) instead: see CONTRACT.md
 
 The fake's two recorded eBay reads (shipping services, item aspects) and the
 eBay capture shapes come from these commands. Each one dry-runs unless given
-`--yes`. Uploads need `FAKE_BSC_CALLER_KEY`, `FAKE_BSC_ADMIN_KEY` and an ADC
-identity that can mint the loader SA's ID token, the same as `record`.
+`--yes`. Uploads need `FAKE_BSC_CALLER_KEY`, `FAKE_BSC_ADMIN_KEY` and the same
+ID token source as `record` (`FAKE_BSC_ID_TOKEN_FILE`, or ADC if unset).
 
 ```bash
 # sandbox: credentials from a mode-600 JSON file outside any checkout

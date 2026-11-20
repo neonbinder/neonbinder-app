@@ -1,7 +1,6 @@
 // First: the demo's sample sets and cards (1989 Score, Reggie White), before anything reads the catalog.
 import "@/app/collection/final/data/sample";
 import { useSearchParams } from "react-router";
-import { usePickDensity } from "@/src/hooks/usePickDensity";
 import { DemoCollectionProvider, PUBLIC_STORAGE_KEY } from "./data/demoStore";
 import FinalCollectionPage from "./FinalCollectionPage";
 
@@ -34,11 +33,11 @@ export default function PublicCollectionDemo({
    */
   shell?: boolean;
 }) {
-  // Add cards (NEO-369) is a lane per pipeline stage, and a spacious Pick List
-  // (NEO-522) is read from across the room: both take the full width.
+  // Add cards (NEO-369) is a lane per pipeline stage, and the Pick List (NEO-522)
+  // is read from across the room and fits a line of text per row (NEO-598, in
+  // Condensed too): both take the full width.
   const [params] = useSearchParams();
-  const [density] = usePickDensity();
-  const wide = params.get("tab") === "add" || (params.get("tab") === "pick" && density === "spacious");
+  const wide = params.get("tab") === "add" || params.get("tab") === "pick";
   if (shell) {
     return (
       <DemoCollectionProvider storageKey={PUBLIC_STORAGE_KEY}>

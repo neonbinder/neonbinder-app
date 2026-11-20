@@ -15,12 +15,13 @@ import {
 } from "./observability";
 import type { CredentialTestProperties } from "./observability";
 import { isPlatformPaused } from "./marketplacePause";
-import { ebayConfig, ebayConfigured } from "./lib/ebayEnv";
+import { ebayConfig, ebayConfigured, fakeEbayRequested } from "./lib/ebayEnv";
 import { withdrawOffer, type EbaySellerSession } from "./adapters/ebaySeller";
 import {
   fakeBscCredentialKeyFor,
   fakeBscCredentialKeyPrefixFor,
   fakeBscMode,
+  fakeBscPrefixFor,
   fakeBscUsernameFor,
 } from "./testing";
 import {
@@ -230,6 +231,7 @@ export class BrowserServiceOutdatedError extends Error {
 function credentialFailureMessage(error: unknown, site: string): string {
   if (error instanceof BrowserServiceOutdatedError) return error.userMessage;
   if (error instanceof FakeBscBrowserNotFakeError) return error.userMessage;
+  if (error instanceof FakeEbayBrowserNotFakeError) return error.userMessage;
   return `Could not reach ${siteDisplayName(site)} to verify your credentials. Nothing was saved — please try again.`;
 }
 
@@ -237,9 +239,17 @@ function credentialFailureMessage(error: unknown, site: string): string {
  * The last `/health` answer: its contract version and (NEO-552) which
  * BuySportsCards the service talks to. `bscTarget` is null when the service
  * did not say (a revision predating the field) or said something unknown.
+ * `ebayFake` (NEO-555) is true only when the service said exactly `true`: it
+ * would honour a fake eBay key. A revision predating the field, or any other
+ * value, is null (neither answer).
  */
-let cachedContract: { url: string; version: number; bscTarget: "real" | "fake" | null; checkedAt: number } | null =
-  null;
+let cachedContract: {
+  url: string;
+  version: number;
+  bscTarget: "real" | "fake" | null;
+  ebayFake: boolean | null;
+  checkedAt: number;
+} | null = null;
 
 /** Reset the cached contract probe. Exported for tests. */
 export function __resetContractCache() {
@@ -293,7 +303,11 @@ async function assertBrowserContract(headers: Record<string, string>): Promise<v
       `Browser service health check failed (${response.status}) — refusing to send a request whose shape it may not support.`,
     );
   }
-  const body = (await response.json().catch(() => ({}))) as { contractVersion?: unknown; bscTarget?: unknown };
+  const body = (await response.json().catch(() => ({}))) as {
+    contractVersion?: unknown;
+    bscTarget?: unknown;
+    ebayFake?: unknown;
+  };
 
   // A service predating NEO-143 does not report the field at all. Treat that as
   // version 0 — it is exactly the "old service" case this guard exists for, and
@@ -302,7 +316,8 @@ async function assertBrowserContract(headers: Record<string, string>): Promise<v
   // NEO-552: read by `assertBrowserTalksToFakeBsc`. A missing or unknown value
   // is neither answer, so a fake deployment refuses it.
   const bscTarget = body.bscTarget === "real" || body.bscTarget === "fake" ? body.bscTarget : null;
-  cachedContract = { url, version, bscTarget, checkedAt: now };
+  const ebayFake = typeof body.ebayFake === "boolean" ? body.ebayFake : null;
+  cachedContract = { url, version, bscTarget, ebayFake, checkedAt: now };
 
   if (version < REQUIRED_CONTRACT_VERSION) {
     throw new BrowserServiceOutdatedError(version, REQUIRED_CONTRACT_VERSION);
@@ -367,6 +382,62 @@ function assertBrowserTalksToFakeBsc(path: string, body: unknown, operation: str
 }
 
 /**
+ * NEO-555 — thrown when a deployment wired to the fake eBay is about to send
+ * an eBay credential call (`/oauth/ebay/*`, or any `/credentials/*` call
+ * naming an eBay key) to a browser service that does not say it would honour a
+ * fake eBay key (`/health` `ebayFake: true`). A revision that does not know
+ * the fake key form would read it as a bare key or refuse it; either way the
+ * request is never sent.
+ */
+export class FakeEbayBrowserNotFakeError extends Error {
+  readonly userMessage =
+    "This test deployment's eBay connection is not set up for the test eBay. Nothing was changed.";
+
+  constructor(readonly reported: boolean | null) {
+    super(
+      `This deployment uses the fake eBay but the browser service reports ebayFake=${reported === null ? "missing" : String(reported)}. ` +
+        `Refusing to send an eBay credential call.`,
+    );
+    this.name = "FakeEbayBrowserNotFakeError";
+  }
+}
+
+const EBAY_KEY_MARK = "ebay-credentials-";
+
+/** Whether a browser-service request names an eBay credential (its route, path or body). */
+function namesEbayCredential(path: string, body: unknown): boolean {
+  if (path.split(/[?#]/)[0].startsWith("/oauth/ebay/")) return true;
+  if (path.includes(EBAY_KEY_MARK)) return true;
+  return typeof body === "string" && body.includes(EBAY_KEY_MARK);
+}
+
+/**
+ * NEO-555 — the env-mismatch guard for eBay, the counterpart of
+ * `assertBrowserTalksToFakeBsc`. Outside fake mode (`EBAY_ENVIRONMENT` is not
+ * `fake`), or for a request that names no eBay credential, it does nothing.
+ * In fake mode it refuses unless the cached `/health` answer for this browser
+ * URL says `ebayFake: true`. Reads the probe `browserAuthHeaders` has just
+ * made or trusted, so it adds no call. Logs `fake_ebay_browser_not_fake` with
+ * the route and what the service reported, never a key.
+ */
+function assertBrowserTalksToFakeEbay(path: string, body: unknown, operation: string): void {
+  if (!fakeEbayRequested() || !namesEbayCredential(path, body)) return;
+  const url = browserUrl();
+  const reported = cachedContract && cachedContract.url === url ? cachedContract.ebayFake : null;
+  if (reported === true) return;
+  console.error(
+    JSON.stringify({
+      msg: "fake_ebay_browser_not_fake",
+      platform: "ebay",
+      operation,
+      route: browserRouteOf(path),
+      reported: reported === null ? "missing" : String(reported),
+    }),
+  );
+  throw new FakeEbayBrowserNotFakeError(reported);
+}
+
+/**
  * Auth headers for a browser-service call, gated on the contract check.
  *
  * Every outbound call funnels through here — including `loginWithRetry`, which
@@ -396,6 +467,8 @@ export async function browserFetch(
   // browser service that is not on the fake. Before the try: a refusal is
   // not a timeout.
   assertBrowserTalksToFakeBsc(path, init.body, "browserFetch");
+  // NEO-555: likewise for eBay.
+  assertBrowserTalksToFakeEbay(path, init.body, "browserFetch");
   const startedAt = Date.now();
   try {
     return await fetch(`${browserUrl()}${path}`, {
@@ -434,7 +507,28 @@ export function credKey(site: string, userId: string) {
   if (site === "buysportscards" && fakeBscMode()) {
     return fakeBscCredentialKeyFor(userId, process.env.CONVEX_CLOUD_URL);
   }
+  // NEO-555: the same for eBay on a deployment that asked for the fake eBay
+  // (`EBAY_ENVIRONMENT=fake`, usable or not: an unusable one is refused, it
+  // never falls back to a bare key). The browser service reads the form.
+  if (site === "ebay" && fakeEbayRequested()) {
+    return fakeEbayCredentialKeyFor(userId, process.env.CONVEX_CLOUD_URL);
+  }
   return `${site}-credentials-${userId}`;
+}
+
+/** Every browser-service key this deployment's fake eBay sessions are stored under starts with this. Throws without a usable `CONVEX_CLOUD_URL`. */
+export function fakeEbayCredentialKeyPrefixFor(cloudUrl: string | undefined): string {
+  return `ebay-credentials-fake-${fakeBscPrefixFor(cloudUrl)}`;
+}
+
+/**
+ * NEO-555 — a test user's fake eBay session key,
+ * `ebay-credentials-fake-<convexSlug>-<clerkUserId>`: the BSC key's twin
+ * (`fakeBscCredentialKeyFor`), for the same reason. The browser service gives
+ * it the fake config and the 72 h expiry, and refuses it in production.
+ */
+export function fakeEbayCredentialKeyFor(userId: string, cloudUrl: string | undefined): string {
+  return `${fakeEbayCredentialKeyPrefixFor(cloudUrl)}${userId}`;
 }
 
 function validateInputLength(value: string, fieldName: string) {
@@ -736,146 +830,140 @@ export const storeTestCredentials = internalAction({
   },
 });
 
-/**
- * NEO-445 — the other half of the testing seed's store, for a sign-in that
- * belongs to no collector (`testingSellerCleanup`): deletes the stored session
- * (`DELETE /credentials/<key>`; a 404 is already gone) and clears the saved
- * sign-in, under the credential lock. Internal, and fails closed where the
- * testing flag is unset (production).
- */
-export const removeTestCredentials = internalAction({
-  args: { userId: v.string(), site: v.union(v.literal("buysportscards"), v.literal("ebay")) },
-  returns: v.object({ ok: v.boolean() }),
-  handler: async (ctx, args): Promise<{ ok: boolean }> => {
-    if (!process.env.TESTING_RESET_SECRET) {
-      throw new Error("Test credential seeding is not enabled on this deployment");
-    }
-    return await withCredentialLock<{ ok: boolean }>(
-      ctx,
-      args.userId,
-      args.site,
-      "delete",
-      async () => {
-        try {
-          const response = await browserFetch(`/credentials/${credKey(args.site, args.userId)}`, {
-            method: "DELETE",
-            headers: await browserAuthHeaders(),
-          });
-          if (!response.ok && response.status !== 404) return { ok: false };
-        } catch {
-          return { ok: false };
-        }
-        await ctx.runMutation(internal.userProfile.removeSiteCredentialStatus, { userId: args.userId, site: args.site });
-        return { ok: true };
-      },
-      { ok: false },
-    );
-  },
+/** What one site's end-of-run cleanup did. Counts only: no id or key. */
+type FakeSessionCleanup = { users: number; deleted: number; failed: number; truncated: boolean };
+
+const fakeSessionCleanupValidator = v.object({
+  users: v.number(),
+  deleted: v.number(),
+  failed: v.number(),
+  truncated: v.boolean(),
 });
 
 /**
- * NEO-552 — the end-of-run cleanup of this deployment's fake BSC sessions.
- * Each one is a Secret Manager secret (`buysportscards-credentials-fake-<slug>-<userId>`,
- * see `credKey`), and Secret Manager bills per active version, so the E2E
- * workflow calls this after both passes (`e2e.yml`, the `e2e` job) rather than
- * leaving one secret per test user per preview. The browser service's 72 h
- * TTL on fake keys is the backstop for a run that never gets here.
+ * Deletes one site's fake session for every user in `userIds`, through the
+ * browser service's `DELETE /credentials/:key` (a missing secret is already
+ * gone), and clears the user's flag for that site, under the credential lock.
+ * The WHOLE key must be this deployment's fake prefix for the site plus a plain
+ * id: a user id carrying `/`, `.` or `%` could otherwise walk the DELETE path
+ * onto another key (`a/../../credentials/<other>`). A non-match sends nothing
+ * and counts as failed. The key is URL-encoded into the path.
+ */
+async function deleteFakeSessionsForSite(
+  ctx: Pick<ActionCtx, "runMutation" | "runQuery">,
+  site: "buysportscards" | "ebay",
+  prefix: string,
+  userIds: string[],
+  truncated: boolean,
+): Promise<FakeSessionCleanup> {
+  const ownKey = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[A-Za-z0-9_]+$`);
+  let deleted = 0;
+  let failed = 0;
+  for (const userId of userIds) {
+    const key = credKey(site, userId);
+    if (!ownKey.test(key)) {
+      failed++;
+      continue;
+    }
+    const ok = await withCredentialLock<boolean>(
+      ctx,
+      userId,
+      site,
+      "delete",
+      async () => {
+        try {
+          const response = await browserFetch(`/credentials/${encodeURIComponent(key)}`, {
+            method: "DELETE",
+            headers: await browserAuthHeaders(),
+          });
+          await response.body?.cancel().catch(() => undefined);
+          if (!response.ok && response.status !== 404) return false;
+        } catch {
+          return false;
+        }
+        await ctx.runMutation(internal.userProfile.removeSiteCredentialStatus, { userId, site });
+        return true;
+      },
+      false,
+    );
+    if (ok) deleted++;
+    else failed++;
+  }
+  return { users: userIds.length, deleted, failed, truncated };
+}
+
+/**
+ * NEO-552 / NEO-555 — the end-of-run cleanup of this deployment's fake
+ * sessions, BuySportsCards and (since NEO-555) eBay. Each one is a Secret
+ * Manager secret (`buysportscards-credentials-fake-<slug>-<userId>`,
+ * `ebay-credentials-fake-<slug>-<userId>`; see `credKey`), and Secret Manager
+ * bills per active version, so the E2E workflow calls this after both passes
+ * (`e2e.yml`, the `e2e` job) rather than leaving one secret per test user per
+ * preview per site. The browser service's 72 h TTL on fake keys is the
+ * backstop for a run that never gets here.
  *
  * For every user on this deployment (`testing.fakeBscCleanupUserIds`) it
- * deletes that user's fake key through the browser service's existing
- * `DELETE /credentials/:key` (a missing secret is already gone) and clears
- * the user's BSC flag, under the credential lock. A key that is not exactly
- * this deployment's own fake prefix plus a plain id (`[A-Za-z0-9_]+`) is never
- * sent, and the key is URL-encoded into the path. Outside fake mode
- * (production, or a deployment on the real BSC) it deletes nothing and says
- * so: a bare key there is a real session.
+ * deletes that user's fake key for each site that is in fake mode (BSC:
+ * `fakeBscMode`; eBay: `EBAY_ENVIRONMENT=fake`). A site NOT in fake mode is
+ * skipped: a bare key there is a real session. Outside fake mode altogether
+ * (production, or a deployment on the real marketplaces) it deletes nothing
+ * and says `{fake: false}`.
+ *
+ * Answer: `{fake: true, bsc?: {users, deleted, failed, truncated}, ebay?: {...}}`,
+ * one object per site that was in fake mode (`e2e.yml` reads them with jq).
  *
  * Internal: reached only by `convex run` with the deployment's deploy key, like
  * the other CLI testing helpers. Reports counts, never ids or keys, and never
  * throws for a failed delete (the workflow only warns).
  */
-export const deleteFakeBscSessionsFromCli = internalAction({
+export const deleteFakeSessionsFromCli = internalAction({
   args: {},
   returns: v.union(
     v.object({ fake: v.literal(false) }),
     v.object({
       fake: v.literal(true),
-      users: v.number(),
-      deleted: v.number(),
-      failed: v.number(),
-      truncated: v.boolean(),
+      bsc: v.optional(fakeSessionCleanupValidator),
+      ebay: v.optional(fakeSessionCleanupValidator),
     }),
   ),
   handler: async (
     ctx,
-  ): Promise<
-    { fake: false } | { fake: true; users: number; deleted: number; failed: number; truncated: boolean }
-  > => {
-    if (!process.env.TESTING_RESET_SECRET || !fakeBscMode()) {
-      console.log(JSON.stringify({ msg: "fake_bsc_session_cleanup", platform: "buysportscards", outcome: "not_fake" }));
+  ): Promise<{ fake: false } | { fake: true; bsc?: FakeSessionCleanup; ebay?: FakeSessionCleanup }> => {
+    const bscFake = fakeBscMode();
+    const ebayFake = fakeEbayRequested();
+    if (!process.env.TESTING_RESET_SECRET || (!bscFake && !ebayFake)) {
+      console.log(JSON.stringify({ msg: "fake_session_cleanup", outcome: "not_fake" }));
       return { fake: false };
     }
     const startedAt = Date.now();
-    // Throws without CONVEX_CLOUD_URL: with no slug there is no prefix that
+    // Throw without CONVEX_CLOUD_URL: with no slug there is no prefix that
     // is provably this deployment's, so nothing is deleted.
-    const prefix = fakeBscCredentialKeyPrefixFor(process.env.CONVEX_CLOUD_URL);
+    const bscPrefix = bscFake ? fakeBscCredentialKeyPrefixFor(process.env.CONVEX_CLOUD_URL) : null;
+    const ebayPrefix = ebayFake ? fakeEbayCredentialKeyPrefixFor(process.env.CONVEX_CLOUD_URL) : null;
     const { userIds, truncated } = (await ctx.runQuery(internal.testing.fakeBscCleanupUserIds, {})) as {
       userIds: string[];
       truncated: boolean;
     };
-    // The WHOLE key must be this deployment's prefix plus a plain id: a user
-    // id carrying `/`, `.` or `%` could otherwise walk the DELETE path onto
-    // another key (`a/../../credentials/<other>`). A non-match sends nothing.
-    const ownKey = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[A-Za-z0-9_]+$`);
-    let deleted = 0;
-    let failed = 0;
-    for (const userId of userIds) {
-      const key = credKey("buysportscards", userId);
-      if (!ownKey.test(key)) {
-        failed++;
-        continue;
-      }
-      const ok = await withCredentialLock<boolean>(
-        ctx,
-        userId,
-        "buysportscards",
-        "delete",
-        async () => {
-          try {
-            const response = await browserFetch(`/credentials/${encodeURIComponent(key)}`, {
-              method: "DELETE",
-              headers: await browserAuthHeaders(),
-            });
-            await response.body?.cancel().catch(() => undefined);
-            if (!response.ok && response.status !== 404) return false;
-          } catch {
-            return false;
-          }
-          await ctx.runMutation(internal.userProfile.removeSiteCredentialStatus, {
-            userId,
-            site: "buysportscards",
-          });
-          return true;
-        },
-        false,
+    const out: { fake: true; bsc?: FakeSessionCleanup; ebay?: FakeSessionCleanup } = { fake: true };
+    if (bscPrefix !== null) out.bsc = await deleteFakeSessionsForSite(ctx, "buysportscards", bscPrefix, userIds, truncated);
+    if (ebayPrefix !== null) out.ebay = await deleteFakeSessionsForSite(ctx, "ebay", ebayPrefix, userIds, truncated);
+    for (const [platform, result] of [
+      ["buysportscards", out.bsc],
+      ["ebay", out.ebay],
+    ] as const) {
+      if (!result) continue;
+      console.log(
+        JSON.stringify({
+          msg: "fake_session_cleanup",
+          platform,
+          operation: "deleteFakeSessions",
+          outcome: result.failed === 0 ? "ok" : "partial",
+          ...result,
+          elapsedMs: Date.now() - startedAt,
+        }),
       );
-      if (ok) deleted++;
-      else failed++;
     }
-    console.log(
-      JSON.stringify({
-        msg: "fake_bsc_session_cleanup",
-        platform: "buysportscards",
-        operation: "deleteFakeBscSessions",
-        outcome: failed === 0 ? "ok" : "partial",
-        users: userIds.length,
-        deleted,
-        failed,
-        truncated,
-        elapsedMs: Date.now() - startedAt,
-      }),
-    );
-    return { fake: true, users: userIds.length, deleted, failed, truncated };
+    return out;
   },
 });
 
@@ -1188,13 +1276,28 @@ export const getSiteToken = internalAction({
     v.null(),
   ),
   handler: async (ctx, args): Promise<{ token: string; expiresAt?: number } | null> => {
-    const userId = await getCurrentUserId(ctx);
-    if (!userId) {
-      throw new Error("Not authenticated");
-    }
-    return await siteTokenFor(ctx, userId, args.site);
+    return await siteTokenForCurrentUser(ctx, args.site);
   },
 });
+
+/**
+ * The body of `getSiteToken` as a plain function, for a caller that is
+ * already an action and would otherwise spend two action hops (and the
+ * scheduler's wait between them) to reach it. The identity is the one on
+ * `ctx.auth`, exactly what `ctx.runAction(getSiteToken)` propagates; no
+ * identity throws "Not authenticated", exactly as the action does. The token
+ * goes back to the caller and nowhere else: this logs nothing.
+ */
+export async function siteTokenForCurrentUser(
+  ctx: ActionCtx,
+  site: string,
+): Promise<{ token: string; expiresAt?: number } | null> {
+  const userId = await getCurrentUserId(ctx);
+  if (!userId) {
+    throw new Error("Not authenticated");
+  }
+  return await siteTokenFor(ctx, userId, site);
+}
 
 /**
  * NEO-370 — the user an identity-less entry acts for. `explicitUserId` is the
@@ -2392,6 +2495,19 @@ async function discardEbaySession(ctx: Pick<ActionCtx, "runMutation">, userId: s
 }
 
 /**
+ * NEO-555 — the `environment` a connect answer must carry to be kept. The
+ * deployment's own environment, compared strictly: `"fake"` is expected ONLY
+ * when this deployment is in fake mode (`config.environment === "fake"`, which
+ * `ebayConfig()` grants only beside a test deployment and a fake BSC target),
+ * and a deployment on the sandbox or production never accepts a `"fake"`
+ * echo. That is what stops a bare key's session being kept on the strength of
+ * a fake answer (B1 security audit).
+ */
+export function expectedConnectEnvironment(config: { environment: "sandbox" | "production" | "fake" }): string {
+  return config.environment;
+}
+
+/**
  * Exchanges a consent `code` (or, sandbox testing deployments only, a
  * refresh token minted out of band) for a stored eBay session, then records
  * the connection: the seller's immutable eBay user id
@@ -2481,9 +2597,10 @@ export const connectEbay = internalAction({
           await discardEbaySession(ctx, args.userId, "no_user_id");
           return { ok: false, error: "unavailable" };
         }
-        if (body?.environment !== config.environment) {
-          // A session from the other eBay (sandbox vs production) than the
-          // one this deployment lists on: its ids mean nothing here.
+        if (body?.environment !== expectedConnectEnvironment(config)) {
+          // A session from the other eBay (sandbox vs production vs the
+          // fake) than the one this deployment lists on: its ids mean
+          // nothing here.
           logEbayCredentialCall("connect", startedAt, "environment_mismatch", response.status);
           await discardEbaySession(ctx, args.userId, "environment_mismatch");
           return { ok: false, error: "environmentMismatch" };

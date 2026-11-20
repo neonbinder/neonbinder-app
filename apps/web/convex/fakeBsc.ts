@@ -17,6 +17,7 @@
 import { v } from "convex/values";
 import { internalAction } from "./_generated/server";
 import { BscConfigError, fakeBscControlFetch, resolveBscTarget } from "./lib/bscHttp";
+import { ebayTargetMode, type EbayTargetMode } from "./lib/ebayEnv";
 import {
   fakeBscFaultRuleValidator,
   fakeBscOrderValidator,
@@ -205,7 +206,11 @@ export const resetPrefix = internalAction({
   },
 });
 
-/** Installs fault rules on one namespace (replaces the old stall switch). */
+/**
+ * Installs fault rules on one namespace (replaces the old stall switch). One
+ * list per namespace for both marketplaces (a post replaces it); eBay rules
+ * (`ebay/...` templates, kinds `ebayError` and `unauthorized`) ride in it.
+ */
 export const setFaults = internalAction({
   args: { ns: v.string(), rules: v.array(fakeBscFaultRuleValidator) },
   returns: controlResult,
@@ -214,7 +219,17 @@ export const setFaults = internalAction({
     if (!isOwnNamespace(ns)) return notFormed("namespace");
     if (args.rules.length > 50) return notFormed("rules");
     for (const rule of args.rules) {
-      if (!/^[A-Za-z0-9/:_.-]{1,128}$/.test(rule.match.pathTemplate)) return notFormed("rules");
+      // NEO-555: eBay templates are longer than BSC's, and may end in `/*` (a prefix).
+      // Never a bare `*`, a mid-path star or a `//` or `..` segment.
+      const template = rule.match.pathTemplate;
+      if (!/^[A-Za-z0-9/:_.-]{1,200}(?:\/\*)?$/.test(template) || template.includes("//") || template.includes("..")) {
+        return notFormed("rules");
+      }
+      if (rule.kind === "ebayError" || rule.kind === "unauthorized") {
+        if (!template.startsWith("ebay/")) return notFormed("rules");
+      } else if (rule.status !== undefined || rule.errorIds !== undefined) {
+        return notFormed("rules");
+      }
       if (rule.match.cardId !== undefined && !/^[A-Za-z0-9_-]{1,64}$/.test(rule.match.cardId)) {
         return notFormed("rules");
       }
@@ -327,7 +342,10 @@ export function healthIsLoading(body: unknown): boolean {
   return typeof wc === "object" && wc !== null && (wc as { loading?: unknown }).loading === true;
 }
 
-/** The most write endpoints a health answer may list; a longer list is unreadable, never cut short. */
+/**
+ * The most write endpoints a health answer may list; a longer list is unreadable, never cut short.
+ * BSC's two plus the eBay writes the fake requires come to fifteen (NEO-555).
+ */
 const MAX_MISSING_CAPTURES = 20;
 
 /**
@@ -342,8 +360,9 @@ export function narrowMissingCaptures(body: unknown): string[] | null {
   const wc = typeof body === "object" && body !== null ? (body as { writeCaptures?: unknown }).writeCaptures : undefined;
   const missing = typeof wc === "object" && wc !== null ? (wc as { missing?: unknown }).missing : undefined;
   if (!Array.isArray(missing) || missing.length > MAX_MISSING_CAPTURES) return null;
+  // An eBay capture may carry a variant after its path (`... /publish #refused`).
   const named = missing.filter(
-    (m): m is string => typeof m === "string" && /^[A-Z]{3,7} [A-Za-z0-9/_.:-]{1,128}$/.test(m),
+    (m): m is string => typeof m === "string" && /^[A-Z]{3,7} [A-Za-z0-9/_.:-]{1,128}( #[a-z0-9_]{1,32})?$/.test(m),
   );
   // One unreadable entry makes the whole list unreadable: dropping it could
   // turn a real "missing" into "none missing".
@@ -368,7 +387,7 @@ export const HEALTH_LOADING_PAUSES_MS: readonly number[] = [1_000, 2_000, 4_000,
 const HEALTH_LOADING_BUDGET_MS = HEALTH_LOADING_PAUSES_MS.reduce((a, b) => a + b, 0);
 
 /**
- * Which BSC write endpoints the fake has no real capture for
+ * Which required write endpoints (BSC's two and the eBay writes) the fake has no real capture for
  * (`/__fake/health` `writeCaptures.missing`; CONTRACT.md, "Write capture"). CI runs
  * it with the preview deploy key before seeding (`npx convex run
  * fakeBsc:writeCaptureStatus`) and fails when `missing` is not empty. Skipped
@@ -425,3 +444,277 @@ function logHealthLoading(read: number, elapsedMs: number, gaveUp: boolean): voi
     }),
   );
 }
+
+// ── The fake eBay's test controls (NEO-555) ─────────────────────────────────
+//
+// Run-scoped like the BSC controls above (CONTRACT.md, "Consent and seller
+// seeding"): `ns` must sit under this deployment's own prefix. Unlike them,
+// they act only when THIS deployment is on the fake eBay (`EBAY_ENVIRONMENT=fake`
+// and a usable fake target; `ebayTargetMode() === "fake"`): beside a sandbox
+// or production eBay they send nothing. A caller seeds the namespace of a test
+// user (`testing.fakeBscNamespaceFor`), the same one the user's BSC hops use.
+
+/** Which seller of the namespace: `main` is the default, `alt` the second eBay account for the same NB user. */
+export const fakeEbaySellerValidator = v.union(v.literal("main"), v.literal("alt"));
+export type FakeEbaySeller = "main" | "alt";
+
+/** One shipping service of a seeded fulfillment policy (the fake's own bounds). */
+export const fakeEbayServiceValidator = v.object({
+  code: v.string(),
+  costCents: v.optional(v.number()),
+  freeShipping: v.optional(v.boolean()),
+  carrier: v.optional(v.string()),
+});
+
+/** One fulfillment policy the seller starts with: NB never creates shipping policies (NEO-423). */
+export const fakeEbayFulfillmentPolicyValidator = v.object({
+  name: v.string(),
+  costType: v.optional(v.union(v.literal("FLAT_RATE"), v.literal("CALCULATED"))),
+  services: v.array(fakeEbayServiceValidator),
+});
+export type FakeEbayFulfillmentPolicy = (typeof fakeEbayFulfillmentPolicyValidator)["type"];
+
+/** One order a spec injects into the seller's order history, in NB's own terms; the fake renders eBay's wire shape. */
+export const fakeEbayOrderValidator = v.object({
+  orderId: v.optional(v.string()),
+  paymentStatus: v.optional(
+    v.union(
+      v.literal("PAID"),
+      v.literal("PARTIALLY_REFUNDED"),
+      v.literal("FULLY_REFUNDED"),
+      v.literal("PENDING"),
+      v.literal("FAILED"),
+    ),
+  ),
+  cancelled: v.optional(v.boolean()),
+  fulfillmentStatus: v.optional(
+    v.union(v.literal("NOT_STARTED"), v.literal("IN_PROGRESS"), v.literal("FULFILLED")),
+  ),
+  creationDateMs: v.optional(v.number()),
+  lines: v.array(
+    v.object({
+      sku: v.optional(v.string()),
+      title: v.optional(v.string()),
+      quantity: v.number(),
+      priceCents: v.optional(v.number()),
+      listingId: v.optional(v.string()),
+    }),
+  ),
+});
+export type FakeEbayOrder = (typeof fakeEbayOrderValidator)["type"];
+
+const EBAY_SERVICE_CODE = /^[A-Za-z0-9_]{1,64}$/;
+const EBAY_ORDER_ID = /^[0-9A-Za-z-]{1,64}$/;
+const isWhole = (n: unknown, min: number, max: number): boolean =>
+  typeof n === "number" && Number.isInteger(n) && n >= min && n <= max;
+
+/** The first reason a fulfillment-policy seed would be refused, or null. Mirrors the fake's own bounds so a bad seed never leaves. */
+export function fulfillmentPoliciesRefusal(policies: FakeEbayFulfillmentPolicy[]): string | null {
+  if (policies.length < 1 || policies.length > 10) return "fulfillmentPolicies must hold 1-10";
+  for (const p of policies) {
+    if (p.name.length < 1 || p.name.length > 64 || /[\u0000-\u001f\u007f]/.test(p.name)) return "policy name";
+    if (p.services.length < 1 || p.services.length > 5) return "services must hold 1-5";
+    for (const sv of p.services) {
+      if (!EBAY_SERVICE_CODE.test(sv.code)) return "service code";
+      if (sv.costCents !== undefined && !isWhole(sv.costCents, 0, 100_000)) return "service costCents";
+      if (sv.carrier !== undefined && !EBAY_SERVICE_CODE.test(sv.carrier)) return "service carrier";
+    }
+  }
+  return null;
+}
+
+/** The first reason an injected order would be refused, or null. */
+export function ebayOrderRefusal(order: FakeEbayOrder): string | null {
+  if (order.orderId !== undefined && !EBAY_ORDER_ID.test(order.orderId)) return "orderId";
+  if (order.creationDateMs !== undefined && !(Number.isFinite(order.creationDateMs) && order.creationDateMs > 0 && order.creationDateMs < 8.64e15)) {
+    return "creationDateMs";
+  }
+  if (order.lines.length < 1 || order.lines.length > 50) return "lines must hold 1-50 lines";
+  for (const l of order.lines) {
+    if (l.sku !== undefined && (l.sku.length < 1 || l.sku.length > 50)) return "line sku";
+    if (l.title !== undefined && (l.title.length < 1 || l.title.length > 80 || /[\u0000-\u001f\u007f]/.test(l.title))) return "line title";
+    if (!isWhole(l.quantity, 1, 1_000)) return "line quantity";
+    if (l.priceCents !== undefined && !isWhole(l.priceCents, 0, 10_000_000)) return "line priceCents";
+    if (l.listingId !== undefined && !/^\d{1,40}$/.test(l.listingId)) return "line listingId";
+  }
+  return null;
+}
+
+/** Fixed, secret-free reasons an eBay control did not run. */
+type EbayControlFailure = { ok: false; status?: number; error: string; detail?: string };
+
+/** The fake's own error text for a refused control: a short validation reason, never a secret. */
+async function refusalDetail(res: Response): Promise<string | undefined> {
+  const body: unknown = await res.json().catch(() => null);
+  const text = typeof body === "object" && body !== null ? (body as { error?: unknown }).error : undefined;
+  return typeof text === "string" ? text.slice(0, 200).replace(/[\u0000-\u001f\u007f]/g, " ") : undefined;
+}
+
+/**
+ * POSTs `body` to `__fake/ebay/<route>`. `skipped` outside fake mode and when
+ * this deployment is not on the fake eBay; otherwise the fake's JSON answer.
+ */
+async function ebayControl(
+  route: "consent" | "seller" | "orders",
+  body: unknown,
+): Promise<{ kind: "skipped" } | { kind: "answer"; body: unknown } | ({ kind: "failed" } & EbayControlFailure)> {
+  if (ebayTargetMode() !== "fake") return { kind: "skipped" };
+  const payload = JSON.stringify(body);
+  let res: Response | null;
+  try {
+    res = await controlFetch(`__fake/ebay/${route}`, `ebay/${route}`, () => ({
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: payload,
+    }));
+  } catch (error) {
+    return { kind: "failed", ok: false, error: error instanceof Error ? error.name : "unknown" };
+  }
+  if (res === null) return { kind: "skipped" };
+  if (!res.ok) {
+    const detail = await refusalDetail(res);
+    return { kind: "failed", ok: false, status: res.status, error: "http", ...(detail !== undefined ? { detail } : {}) };
+  }
+  return { kind: "answer", body: await res.json().catch(() => null) };
+}
+
+const ebayControlFailure = v.object({
+  ok: v.literal(false),
+  status: v.optional(v.number()),
+  error: v.string(),
+  detail: v.optional(v.string()),
+});
+
+/**
+ * A single-use authorization code for the namespace's seller (the fake's
+ * `POST /__fake/ebay/consent`), which the ordinary code grant
+ * (`credentials.connectEbay {code}`) exchanges: it replaces eBay's consent
+ * page in fake mode. Throws, with a fixed message, when it cannot give one:
+ * a namespace that is not this deployment's, a deployment not on the fake
+ * eBay, or a fake that refused. Never returns a code from anywhere else.
+ */
+export const ebayConsent = internalAction({
+  args: { ns: v.string(), seller: v.optional(fakeEbaySellerValidator) },
+  returns: v.object({ code: v.string() }),
+  handler: async (_ctx, args): Promise<{ code: string }> => {
+    if (!isOwnNamespace(args.ns)) throw new Error("fake eBay consent refused: namespace");
+    const out = await ebayControl("consent", { ns: args.ns, ...(args.seller !== undefined ? { seller: args.seller } : {}) });
+    if (out.kind === "skipped") throw new Error("fake eBay consent unavailable: this deployment is not on the fake eBay");
+    if (out.kind === "failed") throw new Error(`fake eBay consent failed: ${out.status ?? out.error}`);
+    const code = typeof out.body === "object" && out.body !== null ? (out.body as { code?: unknown }).code : undefined;
+    // The code is opaque, but bounded: the connect action refuses one over 4096 characters.
+    if (typeof code !== "string" || code.length === 0 || code.length > 4096) {
+      throw new Error("fake eBay consent failed: unreadable answer");
+    }
+    return { code };
+  },
+});
+
+const ebaySellerResult = v.union(
+  v.object({
+    ok: v.literal(true),
+    skipped: v.boolean(),
+    fulfillmentPolicyIds: v.array(v.string()),
+    optedIn: v.union(v.boolean(), v.null()),
+  }),
+  ebayControlFailure,
+);
+type EbaySellerResult =
+  | { ok: true; skipped: boolean; fulfillmentPolicyIds: string[]; optedIn: boolean | null }
+  | EbayControlFailure;
+
+/**
+ * Seeds the seller's account (the fake's `POST /__fake/ebay/seller`): the
+ * Selling Policy Management opt-in, and shipping policies, which NB never
+ * creates. Seeding policies opts the seller in unless `optedIn: false`.
+ * Skipped outside the fake eBay. `fulfillmentPolicyIds` are the policies'
+ * ids in the order given.
+ */
+export const ebaySeller = internalAction({
+  args: {
+    ns: v.string(),
+    seller: v.optional(fakeEbaySellerValidator),
+    optedIn: v.optional(v.boolean()),
+    fulfillmentPolicies: v.optional(v.array(fakeEbayFulfillmentPolicyValidator)),
+  },
+  returns: ebaySellerResult,
+  handler: async (_ctx, args): Promise<EbaySellerResult> => {
+    if (!isOwnNamespace(args.ns)) return { ok: false, error: "namespace refused" };
+    if (args.fulfillmentPolicies !== undefined) {
+      const refusal = fulfillmentPoliciesRefusal(args.fulfillmentPolicies);
+      if (refusal !== null) return { ok: false, error: "fulfillmentPolicies refused", detail: refusal };
+    }
+    const out = await ebayControl("seller", {
+      ns: args.ns,
+      ...(args.seller !== undefined ? { seller: args.seller } : {}),
+      ...(args.optedIn !== undefined ? { optedIn: args.optedIn } : {}),
+      ...(args.fulfillmentPolicies !== undefined ? { fulfillmentPolicies: args.fulfillmentPolicies } : {}),
+    });
+    if (out.kind === "skipped") return { ok: true, skipped: true, fulfillmentPolicyIds: [], optedIn: null };
+    if (out.kind === "failed") {
+      const { kind: _kind, ...failure } = out;
+      return failure;
+    }
+    const b = typeof out.body === "object" && out.body !== null ? (out.body as Record<string, unknown>) : {};
+    const ids = Array.isArray(b.fulfillmentPolicyIds)
+      ? b.fulfillmentPolicyIds.filter((id): id is string => typeof id === "string").slice(0, 10)
+      : [];
+    return {
+      ok: true,
+      skipped: false,
+      fulfillmentPolicyIds: ids,
+      optedIn: typeof b.optedIn === "boolean" ? b.optedIn : null,
+    };
+  },
+});
+
+const ebayOrdersResult = v.union(
+  v.object({ ok: v.literal(true), skipped: v.boolean(), orderIds: v.array(v.string()) }),
+  ebayControlFailure,
+);
+type EbayOrdersResult = { ok: true; skipped: boolean; orderIds: string[] } | EbayControlFailure;
+
+/**
+ * Injects one order into the seller's order history (the fake's `POST
+ * /__fake/ebay/orders`), in NB's terms (`fakeEbayOrderValidator`). A new PAID
+ * order sells down its SKUs' offers, as eBay does; a known `orderId` replaces
+ * its order (so a cancel or refund can follow a sale). Skipped outside the
+ * fake eBay.
+ */
+export const ebayOrders = internalAction({
+  args: { ns: v.string(), seller: v.optional(fakeEbaySellerValidator), order: fakeEbayOrderValidator },
+  returns: ebayOrdersResult,
+  handler: async (_ctx, args): Promise<EbayOrdersResult> => {
+    if (!isOwnNamespace(args.ns)) return { ok: false, error: "namespace refused" };
+    const refusal = ebayOrderRefusal(args.order);
+    if (refusal !== null) return { ok: false, error: "order refused", detail: refusal };
+    const out = await ebayControl("orders", {
+      ns: args.ns,
+      ...(args.seller !== undefined ? { seller: args.seller } : {}),
+      order: args.order,
+    });
+    if (out.kind === "skipped") return { ok: true, skipped: true, orderIds: [] };
+    if (out.kind === "failed") {
+      const { kind: _kind, ...failure } = out;
+      return failure;
+    }
+    const b = typeof out.body === "object" && out.body !== null ? (out.body as Record<string, unknown>) : {};
+    const ids = Array.isArray(b.orderIds) ? b.orderIds.filter((id): id is string => typeof id === "string").slice(0, 20) : [];
+    return { ok: true, skipped: false, orderIds: ids };
+  },
+});
+
+/**
+ * Which eBay this deployment's calls reach: `fake`, `sandbox`, `production`,
+ * or `unconfigured` (nothing is sent). For CI and wrapper checks
+ * (`npx convex run fakeBsc:ebayTarget`): a preview that does not say `fake`
+ * would not talk to the fake eBay. Reads this deployment's own environment
+ * only; sends nothing.
+ */
+export const ebayTarget = internalAction({
+  args: {},
+  returns: v.object({
+    mode: v.union(v.literal("fake"), v.literal("sandbox"), v.literal("production"), v.literal("unconfigured")),
+  }),
+  handler: async (): Promise<{ mode: EbayTargetMode }> => ({ mode: ebayTargetMode() }),
+});

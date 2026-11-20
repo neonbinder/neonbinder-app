@@ -19,8 +19,23 @@
  * eBay's free-text `error_description`.
  */
 
+import { BscEndpoints, FAKE_BSC_KEY_ENV, bscTarget, resolveBscEndpoints } from "../bsc-endpoints";
+
 /** eBay's two environments. Anything else in EBAY_ENVIRONMENT is "not configured". */
 export type EbayEnvironment = "sandbox" | "production";
+
+/**
+ * NEO-555: where a FAKE eBay session's calls go. Built only by the route's
+ * per-key resolver (routes/ebay-oauth.ts `resolveEbayConfigForKey`), which
+ * refuses to build one in prod or without a valid fake URL. `hosts` replace
+ * EBAY_HOSTS for this config; `callerHeaders` adds the fake's caller key and
+ * ID token to every call (fakeBscCallerHeaders). Never read from a request.
+ */
+export interface EbayFakeTarget {
+  hosts: { api: string; apiz: string };
+  /** SECURITY: the result carries credentials. Never log it. */
+  callerHeaders: () => Promise<Record<string, string>>;
+}
 
 export interface EbayOAuthConfig {
   environment: EbayEnvironment;
@@ -28,6 +43,8 @@ export interface EbayOAuthConfig {
   clientSecret: string;
   /** eBay's RuName: the value eBay wants as `redirect_uri` on the code grant. */
   ruName: string;
+  /** Set only for a fake-key session. Absent = the process's real eBay environment. */
+  fake?: EbayFakeTarget;
 }
 
 /**
@@ -43,6 +60,62 @@ export const EBAY_HOSTS: Record<EbayEnvironment, { api: string; apiz: string }> 
   production: { api: "https://api.ebay.com", apiz: "https://apiz.ebay.com" },
   sandbox: { api: "https://api.sandbox.ebay.com", apiz: "https://apiz.sandbox.ebay.com" },
 };
+
+/** Why the fake eBay cannot be used by this process. A closed set; logged, never returned. */
+export type FakeEbayRefusal =
+  | "fake_key_in_prod"
+  | "fake_key_no_fake_url"
+  | "fake_key_bad_fake_url"
+  | "fake_key_no_caller_key";
+
+/**
+ * NEO-555: may this process talk to the fake eBay? The one place that decides,
+ * for both the per-key route config and /health's `ebayFake`.
+ *
+ * Yes only when the process is NOT prod, has a fake URL that bsc-endpoints
+ * accepts (the fake's own Cloud Run host, or loopback), and has the fake
+ * caller key. The prod test comes first and stands alone: a prod process is
+ * refused for that reason before any URL is read.
+ */
+export function resolveFakeEbayTarget(
+  env: Record<string, string | undefined>,
+): { ok: true; origin: string; endpoints: BscEndpoints } | { ok: false; reason: FakeEbayRefusal } {
+  if ((env.ENVIRONMENT ?? "").trim() === "prod") return { ok: false, reason: "fake_key_in_prod" };
+  if (bscTarget(env) !== "fake") return { ok: false, reason: "fake_key_no_fake_url" };
+  let endpoints: BscEndpoints;
+  try {
+    endpoints = resolveBscEndpoints(env);
+  } catch {
+    return { ok: false, reason: "fake_key_bad_fake_url" };
+  }
+  if (endpoints.target !== "fake" || !endpoints.fakeOrigin) {
+    return { ok: false, reason: "fake_key_bad_fake_url" };
+  }
+  if ((env[FAKE_BSC_KEY_ENV] ?? "").trim().length === 0) {
+    return { ok: false, reason: "fake_key_no_caller_key" };
+  }
+  return { ok: true, origin: endpoints.fakeOrigin, endpoints };
+}
+
+/** The api/apiz hosts a config's calls go to: the fake's, else its environment's. */
+function hostsFor(config: EbayOAuthConfig): { api: string; apiz: string } {
+  return config.fake ? config.fake.hosts : EBAY_HOSTS[config.environment];
+}
+
+/**
+ * The fake's caller headers for a fake config; {} otherwise. A failure to
+ * build them (caller key unset, ID token not mintable) is a configuration
+ * fault of ours, so it is `client`, with the cause dropped: the underlying
+ * error can name an audience.
+ */
+async function callerHeadersFor(config: EbayOAuthConfig): Promise<Record<string, string>> {
+  if (!config.fake) return {};
+  try {
+    return await config.fake.callerHeaders();
+  } catch {
+    throw new EbayOAuthError("client");
+  }
+}
 
 export const TOKEN_PATH = "/identity/v1/oauth2/token";
 const IDENTITY_USER_PATH = "/commerce/identity/v1/user/";
@@ -253,11 +326,13 @@ async function tokenGrant(
   deps: EbayOAuthDeps,
 ): Promise<EbayTokenResult> {
   const now = (deps.now ?? Date.now)();
+  const caller = await callerHeadersFor(config);
   const res = await ebayFetch(
-    `${EBAY_HOSTS[config.environment].api}${TOKEN_PATH}`,
+    `${hostsFor(config).api}${TOKEN_PATH}`,
     {
       method: "POST",
       headers: {
+        ...caller,
         "Content-Type": "application/x-www-form-urlencoded",
         Authorization: basicAuth(config),
         Accept: "application/json",
@@ -391,11 +466,12 @@ export async function fetchEbayIdentity(
   accessToken: string,
   deps: EbayOAuthDeps = {},
 ): Promise<EbayIdentity> {
+  const caller = await callerHeadersFor(config);
   const res = await ebayFetch(
-    `${EBAY_HOSTS[config.environment].apiz}${IDENTITY_USER_PATH}`,
+    `${hostsFor(config).apiz}${IDENTITY_USER_PATH}`,
     {
       method: "GET",
-      headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+      headers: { ...caller, Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
     },
     deps,
   );
