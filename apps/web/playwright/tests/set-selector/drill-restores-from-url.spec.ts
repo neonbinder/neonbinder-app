@@ -44,7 +44,13 @@ test(
     // Leave for another admin page and type there.
     await page.getByRole("navigation", { name: "Admin sections" }).getByRole("link", { name: "Teams" }).click();
     await expect(page.getByRole("heading", { name: "Team Management" })).toBeVisible();
-    await expectAccessible(page, { label: "Team Management" });
+    // NEO-628 (GUIDE "Accessibility checks", one whole-page check per state): the Team
+    // Management page is owned by admin/team-management-filter; here only the section
+    // tabs this spec leaves through are checked.
+    await expectAccessible(page, {
+      within: page.getByRole("navigation", { name: "Admin sections" }),
+      label: "Admin sections on Team Management",
+    });
     const filter = page.getByRole("textbox", { name: "Filter teams" });
     await filter.fill("zz");
     await expect(filter).toHaveValue("zz");

@@ -237,7 +237,9 @@ test(
     await expect(fieldB).toHaveValue("0");
     await expect(fieldB).toHaveAttribute("aria-invalid", "true");
     await scrollToTop(page); // Axe reads from the top of the page (see above).
-    await expectAccessible(page, { label: "Inventory Checklists, a count refused over 999" });
+    // NEO-628: the page and its status line were checked whole while adding to a box
+    // (above); the refusal changes only B's row (its error line and aria-invalid field).
+    await expectAccessible(page, { within: rowOf(b), label: "Inventory Checklists, a count refused over 999" });
 
     await tabs.getByRole("link", { name: "My Boxes", exact: true }).click();
     await expect(unsorted(unsortedBase)).toBeVisible();

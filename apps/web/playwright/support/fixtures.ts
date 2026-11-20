@@ -15,16 +15,13 @@
  *
  *   bscFake — the worker's fake BuySportsCards account (NEO-552, ./bscFake.ts):
  *            `setFaults` / `addOrder` / `pollNow` / `clear`. Teardown clears the
- *            rules, both sites' (and the deployment's BSC call gate when a rule
+ *            rules, both sites' (and the worker's own BSC call gate when a rule
  *            could have opened it).
  *   ebayFake — the worker's fake eBay seller (NEO-555, ./ebayFake.ts):
  *            `holdShippingPolicy` / `addOrder` / `pollNow` / `setFaults`. Its
  *            faults share `bscFake`'s list (one per worker) and its teardown.
  *
  * Harness fixtures no spec names (NEO-592):
- *   noRetryOnSharedAccounts — automatic. Refuses a retry of a `@bsc-breaker`
- *            spec (GUIDE hard rule 5): each such file says
- *            `test.describe.configure({ retries: 0 })`; this catches one that forgot.
  *   resetAfterFailure — automatic. After a test on `e2e` or `e2e-mobile` ends
  *            red, resets the worker's main account by the bootstrap's own route
  *            (./worker-reset.ts) before the worker's next test or retry. Bounded;
@@ -47,7 +44,6 @@
  *   });
  */
 import { test as base, expect, type Browser, type BrowserContext, type Page, type TestInfo } from "@playwright/test";
-import { BREAKER_TAG } from "../project-scope.mjs";
 import { checkAccessibility, type AccessibleOptions } from "./a11y";
 import { BscFake } from "./bscFake";
 import { EbayFake } from "./ebayFake";
@@ -84,9 +80,6 @@ export function signInUrl(redirect: string, worker: string, account?: string): s
  */
 const FAILURE_RESET_ON = process.env.PW_FAILURE_RESET ? process.env.PW_FAILURE_RESET === "1" : !!process.env.CI;
 
-/** The tags whose specs never retry (hard rule 5): the deployment-wide BSC call gate. */
-const NO_RETRY_TAGS: ReadonlySet<string> = new Set([BREAKER_TAG]);
-
 /** The reset's teardown: the page sent to about:blank, then its context closed (one UX budget each). */
 const RESET_STEP_MS = 7_000;
 const RESET_TEARDOWN_MS = 2 * RESET_STEP_MS;
@@ -100,7 +93,6 @@ export const test = base.extend<{
   ebayFake: EbayFake;
   captureConsole: boolean;
   consoleOnFailure: void;
-  noRetryOnSharedAccounts: void;
   resetAfterFailure: void;
   wireLog: void;
 }>({
@@ -144,13 +136,13 @@ export const test = base.extend<{
     });
   },
   // NEO-552: faults and orders on the worker's own fake BuySportsCards account
-  // (./bscFake.ts). Teardown clears the rules (and the deployment's BSC call
+  // (./bscFake.ts). Teardown clears the rules (and the worker's own BSC call
   // gate when a rule could have opened it), red or green, so a rule never
   // outlives its test. Depends on `context` only, so it tears down while the
   // context is still open and can use a page of its own. A test that never
   // calls it costs nothing: teardown sends nothing when nothing was set.
-  bscFake: async ({ context }, use, testInfo) => {
-    const fake = new BscFake(context, testInfo.tags, LAUNCH_GATE);
+  bscFake: async ({ context }, use) => {
+    const fake = new BscFake(context, LAUNCH_GATE);
     await use(fake);
     await fake.teardown();
   },
@@ -162,25 +154,6 @@ export const test = base.extend<{
   ebayFake: async ({ context, bscFake }, use) => {
     await use(new EbayFake(context, bscFake, LAUNCH_GATE));
   },
-  // NEO-592, GUIDE hard rule 5: a `@bsc-breaker` spec opens the deployment-wide BSC
-  // call gate, which the failure reset does not undo, so it never retries. (NEO-555
-  // retired the other no-retry tag with the shared eBay sandbox seller: eBay is the
-  // fake, one seller per test user.) Each such file says
-  // `test.describe.configure({ retries: 0 })`; this refuses the retry of one that
-  // forgot, before its body writes anything. Registered before `resetAfterFailure`,
-  // so a refused retry is not followed by a second reset.
-  noRetryOnSharedAccounts: [
-    async ({}, use, testInfo) => {
-      const tag = testInfo.tags.find((t) => NO_RETRY_TAGS.has(t));
-      if (tag && testInfo.retry > 0) {
-        throw new Error(
-          `A ${tag} spec never retries (GUIDE hard rule 5): add \`test.describe.configure({ retries: 0 })\` to ${testInfo.file.split("/playwright/").pop()}.`,
-        );
-      }
-      await use();
-    },
-    { auto: true },
-  ],
   // NEO-592 (Jason, 2026-11-18): after a red test the worker's account is reset by
   // the bootstrap's own route, so the worker's next test, or the CI retry, starts
   // clean instead of inheriting the red spec's half-done writes (a copy left on a

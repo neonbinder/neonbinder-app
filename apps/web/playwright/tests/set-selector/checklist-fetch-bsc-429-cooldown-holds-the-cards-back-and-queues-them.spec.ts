@@ -11,11 +11,12 @@
 // account (support/bscFake.ts), then the rule is spent and the fake answers as recorded.
 // The lookup asks BSC in waves of 10 at once (BSC_TEAM_LOOKUP_CONCURRENCY,
 // convex/adapters/buysportscards.ts), so the first wave is the 10 the rule covers. The
-// product honours the Retry-After, opens its call gate and sends nothing more. That gate is
-// DEPLOYMENT-WIDE (convex/bscCallGate.ts), which is why this spec carries `@bsc-breaker`:
-// CI runs it alone, after every shard, and the `bscFake` fixture clears the rules and the
-// gate when the test ends, red or green. It replaces the real-BSC 429 branches the live
-// suite could only hit by luck.
+// product honours the Retry-After, opens its call gate and sends nothing more. Against the
+// fake that gate is this worker's own (one per test user, keyed on its fake namespace,
+// convex/bscCallGate.ts; NEO-628), so the spec runs in an ordinary shard beside the others
+// and stops no other worker's BSC calls. The `bscFake` fixture clears the rules and this
+// worker's gate when the test ends, red or green. It replaces the real-BSC 429 branches the
+// live suite could only hit by luck.
 //
 // WHY THE RULE IS NOT UNLIMITED (audit, NEO-552). An unlimited 429 would answer an extra
 // ask with another 429, and the count below would read 32 either way. With the rule spent
@@ -48,7 +49,9 @@
 // Jason on 2026-11-14, R7a): SOLE WRITER of that set
 // (BSC only, 32 numbered cards, reached through the All Brands view); FRESH-ONLY (it
 // commits the checklist), so a re-run on the same seed fails at "No cards in this
-// checklist yet." by name. Every name is skipped: no player and no team is minted.
+// checklist yet." by name, and so does CI's retry of a red that came after the commit:
+// read the FIRST attempt's error (GUIDE Gotchas, "Fresh-only specs"). Every name is
+// skipped: no player and no team is minted.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { BSC_PATH, bscFault } from "../../support/bscFake";
 import { editCardButton } from "../../support/cards";
@@ -64,13 +67,9 @@ const WAVE = 10;
 /** Long enough that the window outlasts the spec: the lane must not get a turn before the assert. */
 const RETRY_AFTER_S = 90;
 
-// GUIDE hard rule 5: a breaker spec never retries. Its fault opens the deployment-wide
-// BSC call gate, which the failure reset does not close.
-test.describe.configure({ retries: 0 });
-
 test(
   "Checklist fetch — a BSC 429 on the team lookup opens the cooldown: the fetch lands at once, no team is guessed, and every card waits in the background queue (NEO-552)",
-  { tag: ["@set-selector", "@bsc-breaker"] },
+  { tag: ["@set-selector"] },
   async ({ page, signIn, env, bscFake }) => {
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });

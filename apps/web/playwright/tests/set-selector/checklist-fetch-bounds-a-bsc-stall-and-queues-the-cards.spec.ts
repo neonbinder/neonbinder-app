@@ -15,12 +15,13 @@
 //
 //   STALL_IDS: 96f9a87adeb7d02c275e117ef10d569c,9dba15716322d30fc94e4bd96034e4bf,adf14c41cda48abecf2b69b0faa399ae
 //
-// Six timeouts in a row are a run of failures to Convex's DEPLOYMENT-WIDE BSC call
-// gate (convex/bscCallGate.ts: five open it), which would stop every shard's
-// BuySportsCards calls for its window. That is why this spec carries `@bsc-breaker`:
-// CI runs it alone, after every shard, and the `bscFake` fixture clears the rules and
-// the gate when the test ends, red or green. No deployment setting is needed any
-// more; a spec that cannot place its rules fails at that step, by name.
+// Six timeouts in a row are a run of failures to Convex's BSC call gate
+// (convex/bscCallGate.ts: five open it). Against the fake that gate is this worker's
+// own (one per test user, keyed on its fake namespace; NEO-628), so it stops only this
+// worker's BuySportsCards calls, and the spec runs in an ordinary shard beside the
+// others. The `bscFake` fixture clears the rules and this worker's gate when the test
+// ends, red or green. No deployment setting is needed; a spec that cannot place its
+// rules fails at that step, by name.
 //
 // THE PUBLISHER'S CHECKLIST (Jason, 2026-11-10: prefer prebuilt checklists over
 // live calls, keeping a small live read as the coverage; since NEO-552 the reason is
@@ -33,8 +34,13 @@
 //
 
 // WHAT IT PROVES, IN ORDER:
-//   1. The screen says "Waiting on BuySportsCards..." after the Sync click (asserted,
-//      axe runs while it shows) and the line is gone once the fetch is handed on. The fetch
+//   1. The screen says the fetch is held up after the Sync click, in one of two places
+//      (NEO-624): the page's "Waiting on BuySportsCards..." line, which mounts after 1.5 s
+//      of waiting and stands down while Match Cards is open, or, when Match Cards opens
+//      first (seen on the phone project), the dialog's own "teams are still resolving in
+//      the background (N of 26 done)" with at least the three stalled cards outstanding.
+//      Either is asserted, axe runs on the one that shows, and a `bsc-wait` annotation
+//      says which ran. The page line is gone once the fetch is handed on. The fetch
 //      lands within 7 s of our own time plus any seconds that line is up
 //      (`expectAfterMarketplace`); with the checklist uploaded it lands in Match Cards
 //      (NEO-496), where the five BSC-only cards are kept and confirmed. The
@@ -66,12 +72,19 @@
 // one of the registered spares, needs Jason's approval to take): SOLE WRITER of
 // that set (BSC only, 26 cards, reached through the All Brands view); FRESH-ONLY (it commits the
 // checklist), so a re-run on the same seed fails at "No cards in this checklist
-// yet." by name. Every name is skipped: no player and no team is minted.
+// yet." by name, and so does CI's retry of a red that came after the commit: read the
+// FIRST attempt's error (GUIDE Gotchas, "Fresh-only specs"). Every name is skipped: no
+// player and no team is minted.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { BSC_PATH, bscFault } from "../../support/bscFake";
 import { editCardButton } from "../../support/cards";
 import { bscLookupOutcome, waitingOn } from "../../support/marketplace-wait";
-import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist } from "../../support/published-checklist";
+import {
+  CHECKLISTS,
+  confirmChecklistMatchCards,
+  matchCardsDialog,
+  usePublishersChecklist,
+} from "../../support/published-checklist";
 import { setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 import {
   advanceToSave,
@@ -88,13 +101,9 @@ const STALL_IDS = ["96f9a87adeb7d02c275e117ef10d569c", "9dba15716322d30fc94e4bd9
 /** How many of them the fake swallows. */
 const STALLED = STALL_IDS.length;
 
-// GUIDE hard rule 5: a breaker spec never retries. Its fault opens the deployment-wide
-// BSC call gate, which the failure reset does not close.
-test.describe.configure({ retries: 0 });
-
 test(
   "Checklist fetch — a BSC stall on some cards ends within one wave: the fetch lands and the unanswered cards wait in the background queue, not in the operator's count (NEO-487)",
-  { tag: ["@set-selector", "@bsc-breaker"] },
+  { tag: ["@set-selector"] },
   async ({ page, signIn, env, bscFake }) => {
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
@@ -107,11 +116,27 @@ test(
     // The fake never answers the three stalled cards (its rules last 10 minutes at most, and teardown drops them).
     await bscFake.setFaults(STALL_IDS.map((cardId) => bscFault.hangs(BSC_PATH.cardListing, { cardId, ttlS: 600 })));
     await syncChecklistButton(page).click();
-    // The three hung cards hold the screen for about ten seconds (a 5 s timeout, a pause, one retry), so
-    // the product's own wait line is on screen for certain: this is the live proof of the wait copy.
-    // The line mounts after 1.5 s of waiting, within the 7 s budget.
-    await expect(waitingOn(page, "BuySportsCards")).toBeVisible();
-    await expectAccessible(page, { label: "Checklist fetch waiting on BuySportsCards during a stall" });
+    // The three hung cards hold the fetch for about ten seconds (a 5 s timeout, a pause, one retry).
+    // NEO-624: the screen says so in one of two places. The page's wait line mounts after 1.5 s of
+    // waiting and stands down while Match Cards is open; with the checklist uploaded, Match Cards can
+    // open mid-stream (the phone run did), and then the dialog's own sentence carries the wait, its
+    // count short of the set by at least the three hung cards. Either is the hang holding, within 7 s.
+    const waitLine = waitingOn(page, "BuySportsCards");
+    const matchCards = matchCardsDialog(page);
+    const STILL_RESOLVING = new RegExp(`^Pair away — teams are still resolving in the background \\(([0-9]+) of ${CARDS} done\\)\\.`);
+    // The sentence is shown and also said by a status beside it: any one of the two.
+    const stillResolving = matchCards.getByText(STILL_RESOLVING).first();
+    await expect(waitLine.or(stillResolving).first()).toBeVisible();
+    if (await waitLine.isVisible()) {
+      test.info().annotations.push({ type: "bsc-wait", description: "the page's Waiting on BuySportsCards line" });
+      await expectAccessible(page, { label: "Checklist fetch waiting on BuySportsCards during a stall" });
+    } else {
+      await expect(stillResolving).toBeVisible();
+      const done = Number(STILL_RESOLVING.exec((await stillResolving.textContent()) ?? "")?.[1]);
+      expect(done, "Match Cards counts the stalled cards as still resolving").toBeLessThanOrEqual(CARDS - STALLED);
+      test.info().annotations.push({ type: "bsc-wait", description: `Match Cards, ${done} of ${CARDS} done` });
+      await expectAccessible(page, { within: matchCards, label: "Match Cards while the stalled cards still resolve" });
+    }
     // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards opens.
     // The helper waits on it with `expectAfterMarketplace` (7 s of ours plus BSC's), proves the
     // teams line, keeps the five BSC cards the file leaves out and confirms: all 26 go on.

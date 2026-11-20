@@ -97,15 +97,13 @@ Reference specs that show the patterns below:
    queue. One worker per shard, each owning one test account
    (`TEST_EMAIL_<WORKER_INDEX>`); tests must not depend on order. After any red
    spec the harness resets that account (see "The failure reset").
-   **`@bsc-breaker` specs never retry.** A breaker spec's retry opens the
-   deployment-wide BSC call gate again, which the failure reset does not undo.
-   (NEO-555 retired the other no-retry tag, the shared-seller one, with the
-   shared eBay sandbox seller: eBay is the fake now, one seller per test user,
-   so its listing specs retry like any other.) Each such file says
-   `test.describe.configure({ retries: 0 })` (it beats the config and
-   `--retries`): `shard-plan.mjs` refuses to plan while a tagged file lacks
-   it, and the `noRetryOnSharedAccounts` fixture still refuses the retry of a
-   tagged spec that slipped past, before its body runs.
+   **Every spec retries alike; there is no no-retry tag.** NEO-555 retired the
+   shared-seller tag with the shared eBay sandbox seller, and NEO-628 retired
+   `@bsc-breaker`: the BSC call gate is per test user against the fake, so a spec
+   that opens it (a 429, 503, hang or reset) closes only its own worker's gate,
+   runs in an ordinary shard and retries like any other. A fresh-only spec's
+   retry after its commit fails by name at its "nothing exists yet"
+   precondition; read the first attempt's error (Gotchas, "Fresh-only specs").
 6. **Public repo.** No secrets, account ids, internal URLs or deployment
    slugs in any file, comment, log line or artifact. Never `git add -A`,
    never `git stash` in a shared worktree.
@@ -649,11 +647,17 @@ It works because test accounts are on System, so the app follows the OS.
 - **A spec that saves an explicit theme restores System BEFORE calling
   `expectAccessible`**, and one that flips the demo switch calls it before
   touching the switch. `profile/theme-setting` calls it once, on System.
-- **Cost.** One call is now two axe runs plus two scheme flips: measured
-  about +0.75 s on a light marketing page (0.4-1.3 s each), more where the
-  DOM is large (set builder, wizard). A pinned page adds the 7 s probe. Add
-  the call where a new screen or state appears, not as a habit after every
-  step.
+- **Cost.** One call is two axe runs plus two scheme flips, and it grows with
+  the DOM. Measured (NEO-628, desktop, own deployment): a light marketing page
+  about 0.75 s (0.4-1.3 s); a full Base checklist (300 rows) about 16-23 s,
+  whole page or scoped to the checklist's region alike (it is most of the
+  page); Team Management's 2,000-row window about 80-95 s before
+  `resultTypes` and about 60 s after. axe's rule checks are a small share of
+  that (about 4 s of a 30-50 s run on the 2,000 rows, colour contrast the
+  largest); the rest is axe describing every node it read. A pinned page adds
+  the 7 s probe. Add the call where a new screen or state appears, not as a
+  habit after every step, and never on a long list when a shorter one shows
+  the same markup.
 
 ```ts
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
@@ -685,10 +689,20 @@ await expectAccessible(page, { within: dialog, label: "New Team dialog" });
   that only drive through intermediate states (the `drillTo*` cascade,
   `walkToPlayerRow`, login warm-ups, form fillers) never call it: the spec
   checks the state it stops on.
-- **Whole page by default.** `within` takes a Locator (role, label or text,
-  like any other locator; it must resolve to exactly one element) for a
-  region whose page the spec already checked. `label` names what the user
-  sees; it defaults to the URL path.
+- **Whole page by default, once per state.** `within` takes a Locator (role,
+  label or text, like any other locator; it must resolve to exactly one
+  element) for a region whose page the spec already checked. `label` names
+  what the user sees; it defaults to the URL path. **The owner rule
+  (NEO-628):** one whole-page check per screen state, per project, across the
+  suite, in the spec that owns that state. A later state of the same page is
+  checked `within` the region that changed (a search region's results, the
+  one row a count changed). A spec that reaches a state another spec already
+  checks whole scopes its call to what it drives, or drops it, with a comment
+  naming the owner (`admin/team-management-filter` owns Team Management,
+  checked on one league's list that still overflows its scroller;
+  `admin/players-list-at-catalogue-scale` owns the unfiltered Players page).
+  Scope only to a region the product already names: never add a name or a
+  role for a test.
 - **Violations are product bugs.** Fix them in the product (contrast, names,
   roles, landmarks), never in the spec. There is no option to disable a rule,
   and `EXCLUDED_REGIONS` in `support/a11y.ts` holds only UI that is not
@@ -814,7 +828,7 @@ this before diagnosing anything that touches BSC:
   password (`fake-bsc-password`; `wrong-password` is its rejected-credentials
   answer, which `credentials-lifecycle` uses). The scripted reset
   (`e2e-baseline.sh reset`) and `resetMyTestState` clear the accounts, and the
-  call gate, with the rest of the state. They keep the fake's catalogue misses
+  call gates (`resetMyTestState`: the user's own), with the rest of the state. They keep the fake's catalogue misses
   (the recorder's to-do list): a miss leaves only once its recording is
   uploaded, so a reset between runs never loses one.
 - **The saved BSC sign-in is per deployment too.** The browser service stores
@@ -839,7 +853,7 @@ this before diagnosing anything that touches BSC:
   seller without it. A new seller holds no shipping policy, NB never makes one, so a
   spec gives it one with `ebayFake.holdShippingPolicy`. Orders exist only when a spec
   injects them; `ebayFake.pollNow` runs the sales poll at once. Faults on `ebay/`
-  templates never touch the BSC call gate, so they need no breaker tag.
+  templates never touch the BSC call gate.
 - **A spec makes BSC misbehave through `support/bscFake.ts`, and only there.**
   The `bscFake` fixture's `setFaults([...])` puts rules on the worker's own
   account (`bscFault.slow`, `.tooManyRequests`, `.unavailable`, `.hangs`,
@@ -849,31 +863,32 @@ this before diagnosing anything that touches BSC:
   `/testing/bsc-fake` hop (`api.testing.setMyBscFaults` / `addMyBscOrder` /
   `clearMyBscFaults` / `clearBscCallGate`), on a second page, so the spec's own
   page never moves. **Teardown is automatic**: the fixture clears the rules, and
-  the call gate when a rule could have opened it, whether the test passed or
-  failed. Orders are not cleared (the fake has no per-order delete); a spec that
+  the worker's own call gate when a rule could have opened it (`clear=all`
+  clears that test user's gate only), whether the test passed or failed. Orders are not cleared (the fake has no per-order delete); a spec that
   injects one must be the only user of the cards it names. Never write a spec
   that waits for BSC to be slow, and never add a deployment switch for a fault.
-- **Convex has ONE BSC call gate per deployment** (`convex/bscCallGate.ts`: a
-  breaker, plus a token bucket that is not applied against the fake, so there is no rate cap). A 429 opens it at once (honouring `Retry-After`);
-  five consecutive 5xx or timeouts open it too (no fault drops the connection: a
-  `reset` answers 503 at once, and a `hang` the caller outwaits ends in a 503 at
-  its 2-minute cap); while it is open every caller on the deployment is refused
-  without a request. So a fault of
-  kind `429`, `503`, `hang` or `reset` stops every shard's BSC calls. **Such a
-  spec carries `@bsc-breaker` and is listed in `BREAKER_SPECS`
-  (`project-scope.mjs`)**: no shard plans it; e2e.yml's `breaker-desktop` /
-  `breaker-mobile` jobs run it alone, after every shard of its
-  pass, and the gate still needs it green on both projects. `setFaults` throws
-  in a spec without the tag, and `shard-plan.mjs` refuses to plan if the tag and
-  the list disagree. A `delay` is allowed anywhere while it is shorter than the
-  caller's own timeout (a card-listing call gives up at 5 s, the seller profile
-  read at 20 s, the seller sheet at 90 s); a delay that outlasts the timeout is a
-  failure to the gate and belongs in a breaker spec. The two breaker specs today:
+- **Convex keeps one BSC call gate per test user against the fake, and one per
+  deployment against real BSC** (`convex/bscCallGate.ts`, NEO-628: the gate key is
+  the rate-limit domain the call lands in; real BSC limits by egress IP, the fake
+  keeps faults per namespace). Each gate is a breaker, plus a token bucket that is
+  not applied against the fake, so there is no rate cap. A 429 opens it at once
+  (honouring `Retry-After`); five consecutive 5xx or timeouts open it too (no fault
+  drops the connection: a `reset` answers 503 at once, and a `hang` the caller
+  outwaits ends in a 503 at its 2-minute cap); while it is open that gate's callers
+  are refused without a request. Against the fake a fault of kind `429`, `503`,
+  `hang` or `reset` therefore stops only the worker that set it, so any spec may
+  set one: there is no breaker tag, list or job, and such a spec runs in an ordinary
+  shard on both projects and retries like any other (hard rule 5). A spec that still
+  needs BSC after its own fault opened the gate clears it first (`bscFake.clear()`).
+  A `delay` shorter than the caller's own timeout (a card-listing call gives up at
+  5 s, the seller profile read at 20 s, the seller sheet at 90 s) is an answer; one
+  that outlasts it counts as a failure to the gate, like a `hang`. The two specs
+  that open it on purpose:
   `checklist-fetch-bsc-429-cooldown-holds-the-cards-back-and-queues-them` (the
   cooldown a 429 opens) and `checklist-fetch-bounds-a-bsc-stall-and-queues-the-cards`
   (three hung cards, whose six timeouts open the gate).
 - **A cooldown, as a spec meets it.** A 429 on a card's listing opens a
-  deployment-wide window as long as the longer of our backoff (15 s doubling to
+  window on that gate (the worker's own against the fake) as long as the longer of our backoff (15 s doubling to
   120 s) and the `Retry-After` (honoured up to 10 minutes). While it is open a
   fetch stops asking BSC per card at once: the cards it still owed are marked
   failed, held back from any guess and queued for the background lane, and the
@@ -882,7 +897,7 @@ this before diagnosing anything that touches BSC:
   cooldown holds no call, so a fetch that meets one finishes at once without it.
   The older specs' `bscLookupOutcome` / `.or()` branches for a real 429 stay (they
   now always take the "answered" side) and **no new ones are added**: the
-  cooldown is proved by the breaker spec above.
+  cooldown is proved by the 429 spec above.
 - **The seller's wait is still a product state.** NeonBinder reads the seller
   account in the background and holds a run until it lands (see "The seller
   account" below). The fake answers the profile at once, so a seller spec that
@@ -892,8 +907,11 @@ this before diagnosing anything that touches BSC:
   specs do. The wait is made likelier, not guaranteed (the background read is armed
   30 s after the save and those specs press minutes later): both orders stay legal and
   end in the same hard asserts. The wait copy itself ("Waiting on BuySportsCards"
-  while a call is outstanding) is proved deterministically by the stall spec, whose
-  hung lookups hold the screen for about ten seconds.
+  while a call is outstanding) is proved by the stall spec, whose hung lookups hold
+  the fetch for about ten seconds. When Match Cards opens before the line's 1.5 s
+  (NEO-624, seen on the phone project) the dialog's "still resolving (N of M done)"
+  sentence carries the wait instead and the page line stands down; the spec accepts
+  either and its `bsc-wait` annotation says which ran.
 
 **A listing-on BSC seed is one store (NEO-483).** `/testing/seed-credentials?sites=buysportscards&listing=on`
 (`saveBscSignIn(page, { listing: true })`) saves the sign-in once and returns:
@@ -951,7 +969,7 @@ How a spec handles it, all in `support/collection.ts`:
   box, by which time the account is normally stored.
 
 **The reset clears BSC's state.** `e2e-baseline.sh reset` also empties the BSC call
-gate, the "Waiting on BuySportsCards" wait rows, the background team lane and every
+gates, the "Waiting on BuySportsCards" wait rows, the background team lane and every
 fake BSC account the deployment owns (listings, photos, orders, faults), and a lane
 item queued before the reset ends without asking BSC. A re-seed therefore starts
 with BSC open and the lane empty.
@@ -1012,8 +1030,9 @@ the card it is about:
   specs' `.or()` over "answered" and "cooldown" (`bscLookupOutcome`, a `bsc-lookup`
   annotation) stay as they are and now take the answered side; do not add new ones.
   The cooldown itself (the product holds the guess back and asks the operator,
-  invariant 8) is proved on purpose by the `@bsc-breaker` spec that injects the 429
-  (see "BuySportsCards is the fake"). Never a flat wait, and a wait on the screen's
+  invariant 8) is proved on purpose by the spec that injects the 429
+  (`checklist-fetch-bsc-429-cooldown-holds-the-cards-back-and-queues-them`; see
+  "BuySportsCards is the fake"). Never a flat wait, and a wait on the screen's
   own wait line stays the measured time plus 7 s (`expectAfterMarketplace`).
 - **A card the recordings do not hold is a recorder run, not a spec change** (see
   "Unrecorded request"). A fixture file that leaves a card out on purpose adds that
@@ -1299,8 +1318,9 @@ raise a budget: run them, then run the spec.
 A worker with no `TEST_EMAIL_<n>` falls back to `TEST_EMAIL`, so a different
 worker number does not give you a different user. The eBay and BSC listing specs
 run on your own deployment like any other (NEO-552, NEO-555: both marketplaces are
-the fake, one seller per test user), and so do the `@bsc-breaker` specs; a breaker spec moves the deployment-wide BSC
-call gate, so run it alone and let its teardown clear it.
+the fake, one seller per test user), and so do the BSC fault specs (the 429 and stall
+specs): the call gate they open is the worker's own against the fake, and their teardown
+clears it.
 
 A change to `services/browser` or `services/preprocess`, or a red your deployment
 cannot reproduce, runs against **the PR preview** after the first push instead:
@@ -1333,7 +1353,7 @@ timeboxed check and then push; CI validates.
 PR in two passes, each on a freshly seeded preview:
 
 ```
-setup -> seed -> shard-desktop x8 -> breaker-desktop -> seed-mobile -> shard-mobile x8 -> breaker-mobile -> e2e (gate) -> report
+setup -> seed -> shard-desktop x8 -> seed-mobile -> shard-mobile x8 -> e2e (gate) -> report
 ```
 
 `seed` is the scripted reset plus the `setup` project (worker 0); the desktop
@@ -1369,24 +1389,20 @@ the shared-seller tag and its spec list are gone. A spec that writes to a
 marketplace seller account that IS shared (SportLots has one real test seller) is not
 written: raise it with the coordinator first.
 
-**BSC breaker specs (NEO-552).** A spec that makes the fake BSC answer 429, 5xx or
-nothing opens Convex's deployment-wide BSC call gate for every shard (see
-"BuySportsCards is the fake"). Those specs are in `BREAKER_SPECS`, carry
-`@bsc-breaker`, are planned in no shard (`shard-plan.mjs --breaker` prints them) and
-run in `breaker-desktop` / `breaker-mobile`: one job per pass, as worker 8, started
-only after every shard of the pass has finished (a red among them does
-not stop it), so nothing else is calling BSC while the gate is open. Each spec clears
-the gate itself (the `bscFake` fixture's teardown); the pass's reset clears it too.
-The `e2e` gate still needs each green on both projects. Artifacts:
-`pw-report-breaker-<pass>-a<attempt>`, `convex-logs-breaker-<pass>-a<attempt>`. A new
-spec that injects such a fault joins the list AND takes the tag (`setFaults` throws
-otherwise). Locally run them alone, on your own deployment.
+**BSC fault specs run in the shards (NEO-628).** Until NEO-628 a spec that made the
+fake BSC answer 429, 5xx or nothing opened Convex's one deployment-wide BSC call gate
+for every shard, so those specs carried `@bsc-breaker`, were planned in no shard and
+ran alone in `breaker-desktop` / `breaker-mobile` jobs after the shards, never
+retried. The gate is per test user against the fake now (see "BuySportsCards is the
+fake"), so they are planned like any other spec, retry like any other, and the tag,
+`BREAKER_SPECS`, `shard-plan.mjs --breaker` (a usage error now) and the breaker jobs
+are gone.
 
 **Reading a red run.**
 1. Find which spec failed in the "Playwright E2E" check or the sticky comment.
 2. Download the artifacts: `pw-report-desktop-<n>-a<attempt>` or
    `pw-report-mobile-<n>-a<attempt>` (the shard's screenshots and report),
-   `pw-report-breaker-desktop-a<attempt>` / `pw-report-breaker-mobile-a<attempt>` (the BSC breaker specs), `pw-report-seed-a<attempt>` / `pw-report-seed-mobile-a<attempt>` (a pass's seed), and `pw-merged`
+   `pw-report-seed-a<attempt>` / `pw-report-seed-mobile-a<attempt>` (a pass's seed), and `pw-merged`
    (both passes' merged report and results). Every per-job artifact carries
    the attempt it came from, so a rerun no longer overwrites an earlier red
    attempt's evidence (`pw-merged` is unsuffixed and is replaced by the
@@ -1465,8 +1481,8 @@ public. Traces are only on locally (`retain-on-failure`).
 - [ ] A spec that fetches a real set uploads its publisher checklist first; a
       card it leaves live is named at the call site, and its team cell is never
       blank (`No Team` when the card has none). A spec that makes BSC misbehave does
-      it through `bscFake` only, and a 429, 503, hang or reset puts the spec in
-      `BREAKER_SPECS` with `@bsc-breaker`. eBay misbehaves through `ebayFake` only. New requests it makes of the catalogue
+      it through `bscFake` only (any fault kind, from any spec: the gate it opens is
+      the worker's own). eBay misbehaves through `ebayFake` only. New requests it makes of the catalogue
       come with their recorder run.
 - [ ] If the spec drives a shared helper you changed, a deliberate throw in
       the helper turns the covering specs red.

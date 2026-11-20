@@ -125,8 +125,10 @@ test-fixtures, test-parallel and test-sharding. Read the installed
    first push"), and the PR's Convex preview only when it cannot reproduce a
    red (GUIDE "Running"). BuySportsCards (NEO-552) and eBay (NEO-555) are fakes with
    one seller per test user, so their specs (listing and sales included) run on your
-   own deployment like any other; there is no shared-seller tag or queue. Specs that
-   make BSC 429, 503, hang or reset are `@bsc-breaker` (GUIDE, "BuySportsCards is the fake"). Never run the seed's reset on shared
+   own deployment like any other; there is no shared-seller tag or queue. A spec
+   that makes BSC 429, 503, hang or reset opens only its own worker's BSC call
+   gate (one per test user against the fake, NEO-628), so it needs no tag and runs
+   in the ordinary shards (GUIDE, "BuySportsCards is the fake"). Never run the seed's reset on shared
    dev unasked. Never run the
    full suite locally unless the coordinator says the harness itself changed.
 4. **Diagnose a red run** from its screenshot and `error-context.md` first.

@@ -54,7 +54,6 @@
 - [Planted red for server-side behaviour](patterns_planted_red_for_server_side_behaviour.md) — no backend push: plant a wrong expectation, read the…
 - [Commit-path default player needs a nameless card](reference_commit_path_default_player_needs_a_nameless_card.md) — NEO-528: listed/ruled-out…
 - [selectOrCreate brand re-homes a year's sets](patterns_select_or_create_brand_rehomes_a_years_sets.md) — old-seed deployment: hand-made brand +…
-- [Fake BSC faults and the breaker job](patterns_fake_bsc_faults_and_the_breaker_job.md) — NEO-552: bscFake fixture, hop page, deployment-wide gate, @bsc-breaker…
 - [Worktree deployment onto the fake BSC](patterns_worktree_deployment_onto_the_fake_bsc.md) — NEO-552: set browser URL to the tagged revision, reportMisses, misses arrive in levels
 - [Transient notice behind a seed redirect](patterns_transient_notice_behind_a_seed_redirect.md) — upload-then-redirect seed hides a window that closes mid-upload; line up confirm/heavy/first query
 - [Placeholder real-intake specs](patterns_placeholder_real_intake_specs.md) — NEO-529: drop on /print/placeholders, cap recovery via Recent runs, second-page tidy, ESM path, stale node_modules
@@ -62,7 +61,7 @@
 - [Failure PNG vs finally and afterEach](patterns_failure_screenshot_shows_the_finally_end_state.md) — PNG is taken after a body finally, before afterEach (PW 1.63)
 - [Brand-unknown row fixtures + All Brands option names](patterns_brand_unknown_row_fixtures_and_all_brands_option_names.md) — "<set> <brand>" option names need a regex; assert Unknown listed before drilling to it; host collector fixtures on Hockey 1995
 - [First seller press may wait for the seller account](patterns_first_seller_press_may_wait_for_the_seller_account.md) — NEO-483: expectRunOrSellerWait + claim wait capped at SELLER_ACCOUNT_CAP_MS; both orders end in the same asserts
-- [Fake BSC faults and the breaker job](patterns_fake_bsc_faults_and_the_breaker_job.md) — NEO-552: bscFake fixture, hop page, deployment-wide gate, @bsc-breaker…
+- [Fake BSC faults and the call gate](patterns_fake_bsc_faults_and_the_call_gate.md) — bscFake fixture, hop page; gate per test user on the fake (NEO-628), no breaker tag/job
 - [Worktree deployment onto the fake BSC](patterns_worktree_deployment_onto_the_fake_bsc.md) — NEO-552: set browser URL to the tagged revision, reportMisses, misses arrive in levels
 - [eBay hold spec on a hand-made set](patterns_ebay_hold_spec_on_a_handmade_set.md) — NEO-535: over-80 title fixture, hold-only run shape, tagged seller spec vs shard-plan
 - [eBay hold spec on a hand-made set](patterns_ebay_hold_spec_on_a_handmade_set.md) — NEO-535: over-80 title fixture, hold-only run shape, runOver80Flow, connectEbayAndFinishSetup
@@ -115,3 +114,6 @@
 - [Note under a toggle; eBay aspects unassertable](patterns_note_under_a_toggle_and_ebay_aspects.md) — toHaveAccessibleDescription links the note; no hop/UI reads eBay aspects
 - [Post-name Next held then gone](patterns_post_name_next_held_then_gone.md) — NEO-574 career step: wait for usable Next/Save/autograph, press disabled:false only
 - [Second variant needs a re-drill](patterns_second_variant_needs_a_redrill.md) — openVariant skips the create confirm while a checklist is open; use drillToCustom again
+- [Axe cost, options() and resultTypes](patterns_axe_cost_options_and_result_types.md) — options() replaces withTags; rules ~10% of a big call; owner rule, scope later states
+- [Prove a list overflows its scroller](patterns_prove_a_list_overflows_its_scroller.md) — last row scrolled in view, first row not in viewport; no CSS, no evaluate
+- [Stall proof: wait line or Match Cards sentence](patterns_stall_wait_line_or_match_cards_sentence.md) — NEO-624: page line idles while Match Cards streams; accept either, annotate

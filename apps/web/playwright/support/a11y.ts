@@ -203,7 +203,15 @@ async function runAxe(page: Page, opts: AccessibleOptions): Promise<AxeResults> 
       await watchForMotion(page);
       await settle(page);
       await watchForMotion(page);
-      let builder = new AxeBuilder({ page }).withTags([...WCAG_TAGS]);
+      // NEO-628: axe's own rule checks are a small share of a big page's call (about 4 s of
+      // a 2,000-row list's 30-50 s, measured with `performanceTimer`); the rest is building
+      // a unique selector for every node of every result. `resultTypes` does that only for
+      // violations and incomplete: passes and inapplicable keep one node per rule, which
+      // nothing reads (the attachment counts passing RULES, the same number either way).
+      // Measured on that list, 80-89 s a call fell to 59-63 s, with the attachment
+      // byte-identical. `options()` REPLACES AxeBuilder's option object, so it comes before
+      // `withTags`, which adds `runOnly` to it; the other order silently runs every rule.
+      let builder = new AxeBuilder({ page }).options({ resultTypes: ["violations", "incomplete"] }).withTags([...WCAG_TAGS]);
       for (const { selector } of EXCLUDED_REGIONS) builder = builder.exclude(selector);
       if (token) builder = builder.include(`[${SCOPE_ATTR}="${token}"]`);
       const results = await builder.analyze();
