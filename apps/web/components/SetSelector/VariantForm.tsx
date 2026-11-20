@@ -30,6 +30,7 @@ import {
   type UnlinkedEntry,
 } from "./selector-sync-feedback";
 import { storeReconciledUntilDone } from "./store-reconciled-until-done";
+import { reportCaughtError } from "@/lib/observability/report-caught-error";
 import StoreHoldNotices from "./StoreHoldNotices";
 import type { HeldElsewhereEntry } from "../../convex/selectorSyncStore";
 import HeldElsewhereNote, {
@@ -545,12 +546,15 @@ export default function VariantForm({
           onDone?.();
         }
       }
-    } catch {
+    } catch (error) {
       // NEO-211 F3: the thrown text here is a Convex/adapter error that can
       // carry a marketplace URL, a response body or a credential hint, and this
       // catch also covers the single-platform store call. Our own fixed string;
       // the detail stays in the Convex logs. Keeps the SYNC_FAILED_PREFIX lead
       // so the isError branch still renders Retry + Cancel.
+      // NEO-625: the fixed string left nothing in any log. Sentry gets the
+      // error's name, function and request id (server) or scrubbed message (client).
+      reportCaughtError(error, { feature: "variant-form", step: "sync" });
       setMessage(`${SYNC_FAILED_PREFIX}. Nothing was changed.`);
     } finally {
       setLoading(false);
@@ -617,11 +621,14 @@ export default function VariantForm({
         // the modal's output.
         ...(returnedIds ? { returnedIds } : {}),
       });
-    } catch {
+    } catch (error) {
       // Our own fixed string: the thrown text is a Convex server error that can
       // carry marketplace/response detail, and it must not reach the DOM.
       // Deliberately does NOT close the dialog — the operator's whole
       // reconciliation is in there and closing would discard it.
+      // NEO-625: reported, so a save that fails before it leaves the browser
+      // (the Convex client refusing an argument) is no longer invisible.
+      reportCaughtError(error, { feature: "variant-form", step: "reconcile-save" });
       setSaveError(
         "Couldn't save these sets. Nothing was changed — press Save to try again, or Cancel to close.",
       );
