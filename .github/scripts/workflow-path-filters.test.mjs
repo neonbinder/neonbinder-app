@@ -231,7 +231,7 @@ test("e2e.yml points the desktop seed at the fake eBay and both seeds assert it"
 // NEO-628: seed-mobile starts right after the desktop seed and waits for the
 // desktop pass by polling, so a revert to a `needs` edge, a dropped wait or a
 // miscounted pattern turns red here instead of in a wiped preview.
-test("seed-mobile starts early and waits for the desktop shards and breaker by name", () => {
+test("seed-mobile starts early and waits for the desktop shards by name", () => {
   const text = read("e2e.yml").join("\n");
   const a = text.indexOf("\n  seed-mobile:\n");
   const job = text.slice(a, text.indexOf("\n  shard-mobile:\n"));
@@ -239,20 +239,20 @@ test("seed-mobile starts early and waits for the desktop shards and breaker by n
   assert.match(job, /\n {6}actions: read\n/);
   assert.match(job, /wait-for-jobs\.sh/);
   assert.match(job, /--pattern '\^shard-desktop \\\(' --count 8/);
-  assert.match(job, /--pattern '\^BSC breaker specs \\\(desktop\\\)\$' --count 1/);
+  assert.doesNotMatch(job, /--pattern '(?!\^shard-desktop)/, "the shards are the only awaited jobs");
   assert.ok(job.indexOf("wait-for-jobs.sh") < job.indexOf("e2e-seed-reset.sh"), "wait precedes the reset");
   assert.ok(job.indexOf("wait-for-jobs.sh") < job.indexOf("Enrichment fixture coverage (desktop shards drained)"), "wait precedes the drained-coverage read");
   assert.doesNotMatch(job, /convex-env-retry\.sh" env (set|remove)/, "no env writes in seed-mobile");
   assert.match(job, /fakeBsc:ebayTarget/);
   // The jobs it waits for are named exactly so, and are never skipped when it runs.
   assert.match(text, /\n {2}shard-desktop:\n/);
-  assert.match(text, /\n {4}name: BSC breaker specs \(desktop\)\n/);
-  assert.match(text, /\n {2}breaker-desktop:[\s\S]*?\n {4}if: \$\{\{ !cancelled\(\) && needs\.setup\.result == 'success' && needs\.seed\.result == 'success' \}\}\n/);
+  assert.match(text, /\n {2}shard-desktop:[\s\S]*?\n {4}if: \$\{\{ !cancelled\(\) && needs\.setup\.result == 'success' && needs\.seed\.result == 'success' \}\}\n/);
+  assert.doesNotMatch(text, /\n {2}[a-z-]*brea[k]er[a-z-]*:\n/, "no carve-out job (the BSC gate is per user)");
 });
 
 test("the e2e gate depends on no seller job", () => {
-  const gate = read("e2e.yml").find((l) => /^ {4}needs: \[setup, seed, shard-desktop, breaker-desktop, seed-mobile, shard-mobile, breaker-mobile\]$/.test(l));
-  assert.ok(gate, "the gate needs list is the shard + breaker jobs only");
+  const gate = read("e2e.yml").find((l) => /^ {4}needs: \[setup, seed, shard-desktop, seed-mobile, shard-mobile\]$/.test(l));
+  assert.ok(gate, "the gate needs list is the shard and seed jobs only");
 });
 
 test("the dev and preview browser deploys carry no sandbox eBay config", () => {

@@ -14,8 +14,8 @@ const SCRIPT = join(REPO_ROOT, ".github", "scripts", "wait-for-jobs.sh");
 const shard = (i, status, conclusion = null, prefix = "E2E / ") => ({
   name: `${prefix}shard-desktop (${i}, ${i - 1})`, status, conclusion,
 });
-const breaker = (status, conclusion = null) => ({
-  name: "E2E / BSC breaker specs (desktop)", status, conclusion,
+const extra = (status, conclusion = null) => ({
+  name: "E2E / Extra job (desktop)", status, conclusion,
 });
 const eight = (doneCount, conclusions = [], prefix) =>
   Array.from({ length: 8 }, (_, k) =>
@@ -51,7 +51,7 @@ function run(responses, extra = [], { attempt = "2" } = {}) {
     "bash",
     [SCRIPT, "--repo", "o/r", "--run-id", "99", "--attempt", attempt, "--interval", "0.05",
       "--pattern", "^shard-desktop \\(", "--count", "8",
-      "--pattern", "^BSC breaker specs \\(desktop\\)$", "--count", "1", ...extra],
+      "--pattern", "^Extra job \\(desktop\\)$", "--count", "1", ...extra],
     { env: { ...process.env, PATH: `${dir}:${process.env.PATH}` }, encoding: "utf8" },
   );
   const calls = existsSync(join(dir, "calls.log")) ? readFileSync(join(dir, "calls.log"), "utf8").trim().split("\n") : [];
@@ -59,7 +59,7 @@ function run(responses, extra = [], { attempt = "2" } = {}) {
 }
 
 test("7 of 8 shards done keeps waiting, then passes once the 8th completes", () => {
-  const r = run({ 2: [[...eight(7), breaker("completed", "success")], [...eight(8), breaker("completed", "success")]] },
+  const r = run({ 2: [[...eight(7), extra("completed", "success")], [...eight(8), extra("completed", "success")]] },
     ["--timeout-min", "1"]);
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.equal(r.calls.length, 2, "polled exactly twice");
@@ -68,21 +68,21 @@ test("7 of 8 shards done keeps waiting, then passes once the 8th completes", () 
 
 test("all done with mixed conclusions passes and prints each conclusion", () => {
   const r = run({ 2: [[...eight(8, ["success", "failure", "cancelled", "skipped", "success", "failure", "success", "success"]),
-    breaker("completed", "failure")]] }, ["--timeout-min", "1"]);
+    extra("completed", "failure")]] }, ["--timeout-min", "1"]);
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.match(r.stdout, /shard-desktop \(2, 1\): failure/);
   assert.match(r.stdout, /shard-desktop \(3, 2\): cancelled/);
-  assert.match(r.stdout, /BSC breaker specs \(desktop\): failure/);
+  assert.match(r.stdout, /Extra job \(desktop\): failure/);
 });
 
 test("the E2E / prefix is optional (standalone workflow_dispatch run)", () => {
-  const jobs = [...eight(8, [], ""), { name: "BSC breaker specs (desktop)", status: "completed", conclusion: "success" }];
+  const jobs = [...eight(8, [], ""), { name: "Extra job (desktop)", status: "completed", conclusion: "success" }];
   const r = run({ 2: [jobs] }, ["--timeout-min", "1"]);
   assert.equal(r.status, 0, r.stdout + r.stderr);
 });
 
 test("an API error followed by success is retried", () => {
-  const ok = [...eight(8), breaker("completed", "success")];
+  const ok = [...eight(8), extra("completed", "success")];
   const r = run({ 2: ["ERR", "ERR", ok] }, ["--timeout-min", "1"]);
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.equal(r.calls.length, 3);
@@ -96,27 +96,27 @@ test("an API error alone is never treated as done", () => {
 });
 
 test("jobs from another attempt are ignored", () => {
-  const allDone = [...eight(8), breaker("completed", "success")];
-  const r = run({ 1: [allDone], 2: [[...eight(7), breaker("completed", "success")]] }, ["--timeout-min", "0.02"]);
+  const allDone = [...eight(8), extra("completed", "success")];
+  const r = run({ 1: [allDone], 2: [[...eight(7), extra("completed", "success")]] }, ["--timeout-min", "0.02"]);
   assert.equal(r.status, 1, "attempt 2 is incomplete, attempt 1's finished jobs must not count");
   assert.ok(r.calls.every((c) => c.includes("/attempts/2/jobs")), r.calls.join("\n"));
 });
 
-test("a missing breaker job (not created yet) keeps waiting", () => {
+test("a second awaited job (not created yet) keeps waiting", () => {
   const r = run({ 2: [eight(8)] }, ["--timeout-min", "0.02"]);
   assert.equal(r.status, 1);
-  assert.match(r.stdout, /BSC breaker specs.* 0\/1 done \(0 created\)/);
+  assert.match(r.stdout, /Extra job.* 0\/1 done \(0 created\)/);
 });
 
 test("timeout exits non-zero and says Re-run failed jobs is not supported", () => {
-  const r = run({ 2: [[...eight(7), breaker("in_progress")]] }, ["--timeout-min", "0.02"]);
+  const r = run({ 2: [[...eight(7), extra("in_progress")]] }, ["--timeout-min", "0.02"]);
   assert.equal(r.status, 1);
   assert.match(r.stdout, /::error::Timed out after 0\.02 min/);
   assert.match(r.stdout, /Re-run failed jobs.* not supported for E2E/);
 });
 
 test("more matches than the count is an error", () => {
-  const r = run({ 2: [[...eight(8), shard(9, "completed", "success"), breaker("completed", "success")]] }, ["--timeout-min", "1"]);
+  const r = run({ 2: [[...eight(8), shard(9, "completed", "success"), extra("completed", "success")]] }, ["--timeout-min", "1"]);
   assert.equal(r.status, 1);
   assert.match(r.stdout, /matched 9 jobs.*expected exactly 8/);
 });

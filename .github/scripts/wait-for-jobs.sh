@@ -3,9 +3,8 @@
 # Wait until named jobs of THIS workflow run attempt have finished (NEO-628).
 #
 # seed-mobile (e2e.yml) starts while the desktop pass is still running, does
-# its read-only prep, then calls this to hold until every desktop shard and
-# breaker-desktop has COMPLETED, whatever their result, before its reset wipes
-# the shared preview. It replaces the `needs:` edge that used to do the same.
+# its read-only prep, then calls this to hold until every desktop shard has
+# COMPLETED, whatever its result, before its reset wipes the shared preview. It replaces the `needs:` edge that used to do the same.
 #
 # Usage:
 #   wait-for-jobs.sh [--repo OWNER/REPO] [--run-id ID] [--attempt N]
