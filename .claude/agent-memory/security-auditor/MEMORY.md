@@ -134,3 +134,4 @@
 - [Listing text trust path](patterns_listing_text_trust_path.md) — generator text reaches eBay unescaped; a new input from a non-admin/marketplace write = finding
 - [Patterns neo426 teamless sport default](patterns_neo426_teamless_sport_default.md) — re-sync stamp ignores unaccepted incoming team; un-confirm has no marker
 - [Neo574 client id override](patterns_neo574_client_id_override.md) — per-card id override + stint writer: validator shape that held; dedupe gap
+- [Neo622 local e2e runner](patterns_neo622_local_e2e_runner.md) — derived re-seed bypasses flag-keyed guard; regex patch list != git apply; APFS case

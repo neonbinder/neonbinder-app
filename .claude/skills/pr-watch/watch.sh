@@ -8,7 +8,7 @@
 # reliable terminal report). Set PR_WATCH_VERBOSE=1 to print every tick.
 #
 # State: Monitor kills a watch at its timeout_ms (max 30 min), so the start time
-# and last printed key persist in ${TMPDIR}/pr-watch/<repo>-<PR>-<mode>, keyed by
+# and last printed key persist in ${TMPDIR}/pr-watch-<uid>/<repo>-<PR>-<mode>, keyed by
 # the head SHA (PR mode) or the latest enqueue time (queue mode). A re-arm of the
 # same command resumes from it silently, with MAX_MIN still counted from the real
 # start. A new SHA / enqueue, or a state file older than PR_WATCH_RESUME_SEC,
@@ -92,7 +92,15 @@ elapsed_min() { echo $(( ( $(date +%s) - START ) / 60 )); }
 VERBOSE="${PR_WATCH_VERBOSE:-0}"
 RESUME_SEC="${PR_WATCH_RESUME_SEC:-3600}"
 LINE=""; KEY=""; LAST_KEY=""; FIRST_FAIL=""; CUR_ID=""; STATE_FILE=""
-state_dir="${TMPDIR:-/tmp}"; state_dir="${state_dir%/}/pr-watch"
+state_dir="${TMPDIR:-/tmp}"; state_dir="${state_dir%/}/pr-watch-$(id -u)"
+
+# The state directory is ours alone: private mode, owned by us, not a symlink.
+# Anything else (a pre-planted dir or link in a shared /tmp) means no resume state at all.
+state_dir_ok() {
+  [ ! -L "$state_dir" ] || return 1
+  [ -d "$state_dir" ] || mkdir -m 700 "$state_dir" 2>/dev/null || return 1
+  [ -d "$state_dir" ] && [ ! -L "$state_dir" ] && [ -O "$state_dir" ]
+}
 
 # Called each tick with the watch's identity (head SHA, or latest enqueue time).
 state_sync() {
@@ -105,9 +113,16 @@ state_sync() {
   fi
   if [ -z "$CUR_ID" ]; then
     CUR_ID="$id"
-    if [ -r "$STATE_FILE" ]; then
+    if state_dir_ok && [ -r "$STATE_FILE" ] && [ ! -L "$STATE_FILE" ]; then
       { IFS= read -r f_id; IFS= read -r f_start; IFS= read -r f_tick; IFS= read -r f_key; IFS= read -r f_ff; } < "$STATE_FILE" 2>/dev/null
       case "$f_start$f_tick" in *[!0-9]*) f_start=""; f_tick="";; esac
+      if [ -n "$f_start" ]; then
+        # A state file cannot claim a start in the future or one older than the watch could be.
+        local now_s lo
+        now_s=$(date +%s); lo=$(( now_s - MAX_MIN * 60 - RESUME_SEC ))
+        [ "$f_start" -gt "$now_s" ] && f_start="$now_s"
+        [ "$f_start" -lt "$lo" ] && f_start="$lo"
+      fi
       if [ "$f_id" = "$id" ] && [ -n "$f_start" ] && [ -n "$f_tick" ] && [ $(( $(date +%s) - f_tick )) -le "$RESUME_SEC" ]; then
         START="$f_start"; LAST_KEY="$f_key"; FIRST_FAIL="$f_ff"
       fi
@@ -122,12 +137,17 @@ state_sync() {
 
 save_state() {
   [ -n "$STATE_FILE" ] && [ -n "$CUR_ID" ] || return 0
-  mkdir -p "$state_dir" 2>/dev/null || return 0
-  printf '%s\n%s\n%s\n%s\n%s\n' "$CUR_ID" "$START" "$(date +%s)" "$LAST_KEY" "$FIRST_FAIL" > "$STATE_FILE.tmp" 2>/dev/null \
-    && mv "$STATE_FILE.tmp" "$STATE_FILE" 2>/dev/null
+  state_dir_ok || return 0
+  local tmp
+  tmp=$(mktemp "$state_dir/.state.XXXXXX" 2>/dev/null) || return 0
+  if printf '%s\n%s\n%s\n%s\n%s\n' "$CUR_ID" "$START" "$(date +%s)" "$LAST_KEY" "$FIRST_FAIL" > "$tmp" 2>/dev/null; then
+    mv "$tmp" "$STATE_FILE" 2>/dev/null || rm -f "$tmp"
+  else
+    rm -f "$tmp"
+  fi
   return 0
 }
-clear_state() { [ -n "$STATE_FILE" ] && rm -f "$STATE_FILE" "$STATE_FILE.tmp" 2>/dev/null; return 0; }
+clear_state() { [ -n "$STATE_FILE" ] && state_dir_ok && rm -f "$STATE_FILE" 2>/dev/null; return 0; }
 
 # Print the tick's line only when its key changed (or VERBOSE), then persist.
 emit() {

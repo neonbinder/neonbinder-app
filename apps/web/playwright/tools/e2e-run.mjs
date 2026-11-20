@@ -26,11 +26,10 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
-  closeSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
-  openSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -81,6 +80,8 @@ opts: --project desktop|mobile|both (default desktop)  --fresh  --setup  --push
       --worker N (default 8)  --grep <re>  --slice <s> (0 = wait to the end)
       --port N (override 3<ticket>)  --allow-shared-dev
 --edit f.json is [{"file","find","replace"}] (file relative to apps/web; each find must match once).
+A plant may touch apps/web/ only (no .env*, node_modules, playwright/tools, symlinks); --patch may not copy
+files or change modes; status and digest never restore a leftover plant.
 
 Exit: 0 pass; 1 Playwright failures; 2 guard/setup refusal; 3 lock held; 75 still running
       (call \`wait\`). plant: 0 red and restored; 1 stayed green (or red for another reason) and
@@ -132,7 +133,7 @@ export function parseArgs(argv) {
         opts[a.slice(2)] = v;
       } else if (a === "--grep" || a === "--edit" || a === "--patch" || a === "--expect") {
         opts[a.slice(2)] = need(a, i++);
-      } else if (a.startsWith("--")) throw new Error(`unknown option ${a}`);
+      } else if (a.startsWith("-")) throw new Error(`unknown option ${a} (a spec substring cannot start with "-")`);
       else if (cmd === null && cmds.has(a)) cmd = a;
       else rest.push(a);
     }
@@ -184,6 +185,7 @@ export function resolveTarget({
   ci = false,
   processEnv = {},
   envLocalText = null,
+  envText = null,
   mainEnvLocalText = null,
   dirName = "",
   allowSharedDev = false,
@@ -194,16 +196,25 @@ export function resolveTarget({
   if (ci) return { ok: false, reason: "CI is set: this tool is for laptops and agents; CI runs the suite itself" };
   if (envLocalText == null) return { ok: false, reason: ".env.local is missing in apps/web (create the worktree's own deployment first, see the root CLAUDE.md)" };
   const vars = parseEnvFile(envLocalText);
+  // The Convex CLI also loads apps/web/.env: a key or token there picks the target too.
+  const dotEnv = envText == null ? {} : parseEnvFile(envText);
   for (const k of ["CONVEX_DEPLOY_KEY", "CONVEX_DEPLOYMENT_TOKEN"]) {
     if (processEnv[k]) return { ok: false, reason: `${k} is set in the environment: a key or token, not .env.local, would pick the target` };
     if (vars[k]) return { ok: false, reason: `.env.local holds ${k}: remove it (a key or token, not .env.local, would pick the target)` };
+    if (dotEnv[k]) return { ok: false, reason: `.env holds ${k}: remove it (a key or token, not .env.local, would pick the target)` };
   }
   const dep = vars.CONVEX_DEPLOYMENT ?? "";
   if (!dep.startsWith("dev:")) return { ok: false, reason: ".env.local does not name a dev deployment (CONVEX_DEPLOYMENT must be dev:*)" };
   const name = dep.slice(4);
   if (!/^[a-z0-9-]+$/.test(name)) return { ok: false, reason: ".env.local's deployment name is not in the expected form" };
+  // Both client URLs must be in .env.local and name exactly this deployment: Vite and Playwright
+  // would otherwise talk to whatever the shell or a lookalike host says.
   const url = vars.VITE_CONVEX_URL;
-  if (url && !url.includes(`${name}.convex.cloud`)) return { ok: false, reason: "VITE_CONVEX_URL in .env.local names a different deployment than CONVEX_DEPLOYMENT" };
+  if (!url) return { ok: false, reason: "VITE_CONVEX_URL is missing from .env.local" };
+  if (!new RegExp(`^https://${name}\\.convex\\.cloud/?$`).test(url)) return { ok: false, reason: "VITE_CONVEX_URL in .env.local names a different deployment than CONVEX_DEPLOYMENT" };
+  const siteUrl = vars.VITE_CONVEX_SITE_URL;
+  if (!siteUrl) return { ok: false, reason: "VITE_CONVEX_SITE_URL is missing from .env.local" };
+  if (!new RegExp(`^https://${name}\\.convex\\.site/?$`).test(siteUrl)) return { ok: false, reason: "VITE_CONVEX_SITE_URL in .env.local names a different deployment than CONVEX_DEPLOYMENT" };
   const mainName = mainEnvLocalText == null ? null : (/^dev:([a-z0-9-]+)/.exec(parseEnvFile(mainEnvLocalText).CONVEX_DEPLOYMENT ?? "")?.[1] ?? null);
   const shared = mainName === null || mainName === name;
   if (shared && !allowSharedDev) {
@@ -218,7 +229,8 @@ export function resolveTarget({
   if (shared && destructive) return { ok: false, reason: "seed and --fresh reset the deployment, and this one is shared dev: never" };
   const port = vitePort(dirName, portOverride);
   if (!port) return { ok: false, reason: `no Vite port: worktree directory "${dirName}" has no neo-<number> prefix (pass --port)` };
-  const env = { ...processEnv, ...vars };
+  const inherited = Object.fromEntries(Object.entries(processEnv).filter(([k]) => !/^(?:VITE_)?CONVEX_/.test(k)));
+  const env = { ...inherited, ...vars };
   for (const k of SERVER_STRINGS) delete env[k];
   delete env.CI;
   if (nvmBin) env.PATH = `${nvmBin}${":"}${processEnv.PATH ?? ""}`;
@@ -255,6 +267,28 @@ export function phasePlan({ state = null, worker = 8, project = "desktop", fresh
     block(true, true, PROJECTS.mobile, "-m");
   } else block(fresh, setup, PROJECTS[project], "");
   return phases;
+}
+
+/**
+ * The whole phase plan of a job, the plant's re-seed decision included. The target guard must
+ * judge THIS plan: a seed anywhere in it resets the deployment, however it came to be there.
+ * @returns {{fresh: boolean, note: string|null, phases: ReturnType<typeof phasePlan>, destructive: boolean}}
+ */
+export function planJob({ kind, opts, specs = [], state = null }) {
+  if (kind === "seed") {
+    const phases = [{ kind: "seed", label: "seed" }, { kind: "setup", pw: "setup", label: "setup" }, { kind: "bootstrap", pw: "bootstrap", label: "bootstrap" }];
+    return { fresh: true, note: null, phases, destructive: true };
+  }
+  let fresh = Boolean(opts.fresh);
+  let note = null;
+  if (kind === "plant") {
+    const pws = opts.project === "both" ? [PROJECTS.desktop, PROJECTS.mobile] : [PROJECTS[opts.project]];
+    const rs = plantReseed({ prior: state?.ran ?? [], specs, pws, expect: opts.expect, fresh });
+    fresh = rs.fresh;
+    note = rs.note;
+  }
+  const phases = phasePlan({ state, worker: opts.worker, project: opts.project, fresh, setup: opts.setup });
+  return { fresh, note, phases, destructive: phases.some((p) => p.kind === "seed") };
 }
 
 /** The earlier run on this seed (if any) of a spec in a project. `prior` is state.ran. */
@@ -500,7 +534,7 @@ export function buildDigest({ meta, phases, readText = () => null, literals = []
       if (arrow) out.push(`  ${arrow}`);
       out.push(...err.lines);
       const names = locatorNames(t.error);
-      const snapLines = ctx.pageSnapshot ?? ctx.elementYaml;
+      const snapLines = (ctx.pageSnapshot ?? ctx.elementYaml)?.map(maskSecretLine) ?? null;
       const win = snapLines && snapMax > 0 ? snapshotWindow(snapLines, names, snapMax) : null;
       if (win) {
         out.push(`  snapshot near ${win.matched ? `"${win.matched}"` : "top"} (lines ${win.from}-${win.to} of ${win.total}):`);
@@ -563,23 +597,124 @@ export function applyEdits(files, edits) {
   return { ok: true, files: out };
 }
 
-/** Repo-relative paths a unified diff touches (b/ side; renames count both). */
-export function patchFiles(diff) {
-  const set = new Set();
-  for (const l of String(diff).split("\n")) {
-    const m = /^(?:\+\+\+|---) (?:[ab]\/)?(\S.*?)(?:\t.*)?$/.exec(l) ?? /^rename (?:from|to) (.+)$/.exec(l);
-    if (m && m[1] !== "/dev/null") set.add(m[1]);
+/**
+ * What a patch touches, from git's own parse (`git apply --numstat -z` and
+ * `--summary` on the patch copy), not from its headers: copies, renames,
+ * `z/`-prefixed -p1 paths, empty-file deletes and mode-only changes all count.
+ * Renames list both sides. Copies, mode changes and symlink/submodule modes are refused.
+ * @returns {{files: string[], refusal: string | null}}
+ */
+export function patchPlan(numstatZ, summary) {
+  const files = new Set();
+  const tokens = String(numstatZ).split("\0");
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (!t) continue;
+    const m = /^(?:\d+|-)\t(?:\d+|-)\t(.*)$/s.exec(t);
+    if (!m) continue;
+    if (m[1] === "") {
+      // rename/copy in -z form: "<a>\t<d>\t\0<old>\0<new>\0"
+      if (tokens[i + 1]) files.add(tokens[i + 1]);
+      if (tokens[i + 2]) files.add(tokens[i + 2]);
+      i += 2;
+    } else files.add(m[1]);
   }
-  return [...set];
+  let refusal = null;
+  for (const raw of String(summary).split("\n")) {
+    const l = raw.trim();
+    if (!l) continue;
+    if (/^copy /.test(l)) refusal = "the patch copies a file; a plant may only edit, add, delete or rename";
+    else if (/^mode change /.test(l)) refusal = "the patch changes a file mode; a plant may not";
+    else if (/^(?:create|delete) mode 1[26]0000 /.test(l)) refusal = "the patch creates or deletes a symlink or submodule";
+    else if (/^rename /.test(l) && /"/.test(l)) refusal = "the patch names a path that git has to quote; rename it";
+    const cd = /^(?:create|delete) mode \d+ (.+)$/.exec(l);
+    if (cd) files.add(cd[1]);
+    // `rename a/{f => f2} (100%)` (git's brace form) or `rename a => b (100%)`; numstat names only the new side.
+    const br = /^(?:rename|copy) (.*)\{(.*) => (.*)\}(.*) \(\d+%\)$/.exec(l);
+    const pl = /^(?:rename|copy) (.+) => (.+) \(\d+%\)$/.exec(l);
+    const squash = (x) => x.replace(/\/{2,}/g, "/");
+    if (br) {
+      files.add(squash(br[1] + br[2] + br[4]));
+      files.add(squash(br[1] + br[3] + br[4]));
+    } else if (pl) {
+      files.add(pl[1]);
+      files.add(pl[2]);
+    }
+  }
+  for (const f of files) if (f.startsWith('"') || f.includes("\n")) refusal ??= "the patch names a path that git has to quote; rename it";
+  return { files: [...files], refusal };
 }
 
-/** A user-supplied file path made repo-relative; throws for anything outside the repo or off limits. */
+/** Why a plant touching these files may not run on this target, or null. */
+export function plantRefusal({ shared, files }) {
+  if (shared && convexTouched(files)) return "this target is shared dev: a plant in convex/ would push broken functions to every session";
+  return null;
+}
+
+/** Entries of `git status --porcelain=v1 -z --untracked-files=all` as {path: "XY"}. */
+export function parsePorcelainZ(out) {
+  const entries = {};
+  const t = String(out).split("\0");
+  for (let i = 0; i < t.length; i++) {
+    const m = /^(.)(.) (.+)$/s.exec(t[i]);
+    if (!m) continue;
+    entries[m[3]] = m[1] + m[2];
+    if (m[1] === "R" || m[1] === "C") {
+      entries[t[i + 1]] = "R-";
+      i++;
+    }
+  }
+  return entries;
+}
+
+/** Paths whose status differs between two snapshots and that are not in the manifest. */
+export function strayChanges(before, after, manifestPaths) {
+  const ok = new Set(manifestPaths);
+  const out = [];
+  for (const p of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (!ok.has(p) && before[p] !== after[p]) out.push(p);
+  }
+  return out;
+}
+
+const DENIED_UNDER_WEB = [/(^|\/)\.env/i, /(^|\/)\.e2e-local(\/|$)/i, /(^|\/)node_modules(\/|$)/i, /(^|\/)\.git(\/|$)/i, /(^|\/)\.claude(\/|$)/i, /^playwright\/tools(\/|$)/i];
+
+/**
+ * A user-supplied file path made repo-relative; throws for anything off limits.
+ * An allow-list: only apps/web/ (matched case-insensitively, since APFS is), minus env files,
+ * .e2e-local, node_modules and the tool itself; and no symlink on the way to the file.
+ */
 export function safeRepoPath(repoRoot, p, base = APP_DIR) {
+  const fail = () => new Error(`refusing to plant in ${p}`);
   const stripped = p.replace(/^(\.\/)?apps\/web\//, "");
   const abs = p.startsWith("apps/") || p.startsWith("./apps/") ? resolve(repoRoot, p) : resolve(base, stripped);
   const rel = relative(repoRoot, abs).replaceAll("\\", "/");
-  if (!rel || rel.startsWith("..") || /(^|\/)(\.git|node_modules|\.e2e-local|\.claude)(\/|$)/.test(rel) || /(^|\/)\.env/.test(rel)) {
-    throw new Error(`refusing to plant in ${p}`);
+  if (!rel || rel.startsWith("..") || rel.includes("\0")) throw fail();
+  if (!rel.toLowerCase().startsWith("apps/web/")) throw fail();
+  const underWeb = rel.slice("apps/web/".length);
+  if (DENIED_UNDER_WEB.some((re) => re.test(underWeb))) throw fail();
+  // No symlink on the path, and the deepest existing parent really is inside the repo.
+  let cur = repoRoot;
+  let realParent = null;
+  for (const seg of rel.split("/")) {
+    const next = join(cur, seg);
+    let st = null;
+    try {
+      st = lstatSync(next);
+    } catch {
+      break;
+    }
+    if (st.isSymbolicLink()) throw fail();
+    cur = next;
+    realParent = cur;
+  }
+  try {
+    const root = realpathSync(repoRoot);
+    const real = realpathSync(realParent ?? repoRoot);
+    if (real !== root && !real.startsWith(`${root}${sep}`)) throw fail();
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith("refusing")) throw err;
+    throw fail();
   }
   return rel;
 }
@@ -596,23 +731,47 @@ export function buildManifest(repoRoot, relPaths, extra = {}, fsApi = { existsSy
   };
 }
 
+/** Record what each file is right after the plant went in, so a restore can tell the plant from a later edit. */
+export function recordPlanted(manifest, repoRoot, fsApi = { existsSync, readFileSync }) {
+  for (const f of manifest.files ?? []) {
+    const abs = join(repoRoot, f.path);
+    f.planted = fsApi.existsSync(abs) ? { exists: true, sha256: sha256(fsApi.readFileSync(abs)) } : { exists: false, sha256: null };
+  }
+  manifest.plantedAt = new Date().toISOString();
+  return manifest;
+}
+
 /**
- * Put every manifest file back byte for byte and verify by hash.
- * @returns {{ok: boolean, problems: string[], restored: string[], convexTouched: boolean}}
+ * Put every manifest file back byte for byte and verify by hash. A file is only
+ * overwritten while it still holds exactly what the plant wrote; one already back
+ * at its original is left alone; anything else was edited since and is listed, not touched.
+ * @returns {{ok: boolean, problems: string[], restored: string[], edited: string[], convexTouched: boolean}}
  */
 export function restoreFromManifest(manifest, repoRoot, fsApi = { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync }) {
   const problems = [];
   const restored = [];
+  const edited = [];
   for (const f of manifest.files ?? []) {
     try {
       const abs = join(repoRoot, safeRepoPath(repoRoot, f.path, repoRoot));
+      const exists = fsApi.existsSync(abs);
+      const current = exists ? sha256(fsApi.readFileSync(abs)) : null;
+      if (current === (f.existed ? f.sha256 : null)) {
+        restored.push(f.path);
+        continue;
+      }
+      if (!f.planted || current !== f.planted.sha256) {
+        edited.push(f.path);
+        problems.push(`${f.path}: changed since the plant (not by it); left as is`);
+        continue;
+      }
       if (f.existed) {
         fsApi.mkdirSync(dirname(abs), { recursive: true });
         fsApi.writeFileSync(abs, Buffer.from(f.bytes, "base64"));
         if (sha256(fsApi.readFileSync(abs)) !== f.sha256) problems.push(`${f.path}: hash differs after restore`);
         else restored.push(f.path);
       } else {
-        if (fsApi.existsSync(abs)) fsApi.unlinkSync(abs);
+        fsApi.unlinkSync(abs);
         if (fsApi.existsSync(abs)) problems.push(`${f.path}: still exists after restore`);
         else restored.push(f.path);
       }
@@ -620,7 +779,15 @@ export function restoreFromManifest(manifest, repoRoot, fsApi = { existsSync, re
       problems.push(`${f.path}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  return { ok: problems.length === 0, problems, restored, convexTouched: convexTouched((manifest.files ?? []).map((f) => f.path)) };
+  return { ok: problems.length === 0, problems, restored, edited, convexTouched: convexTouched((manifest.files ?? []).map((f) => f.path)) };
+}
+
+/** Mask the value of a snapshot textbox whose accessible name says it holds a secret. */
+export function maskSecretLine(line) {
+  const m = /^(\s*-\s*textbox\s+"((?:[^"\\]|\\.)*)")(.*)$/s.exec(line);
+  if (!m || !/password|secret|token|key|code/i.test(m[2])) return line;
+  const i = m[3].indexOf(":");
+  return i < 0 ? line : `${m[1]}${m[3].slice(0, i + 1)} [masked]`;
 }
 
 // ---------------------------------------------------------------- io (stubbable)
@@ -677,12 +844,20 @@ export const io = {
     const line = r.stdout.split("\n").find((l) => l.startsWith("n"));
     return line ? line.slice(1) : null;
   },
-  startDetached(cmd, args, { cwd, env, logFile }) {
-    const fd = openSync(logFile, "a");
-    const child = spawn(cmd, args, { cwd, env, detached: true, stdio: ["ignore", fd, fd] });
+  /** Vite, detached, its output piped through this tool's redacting filter into `logFile` (never raw). */
+  startViteLogged({ port, cwd, env, logFile, literals }) {
+    const child = spawn(
+      "sh",
+      ["-c", 'npx --no-install vite --port "$1" --strictPort 2>&1 | "$2" "$3" __logfilter "$4"', "sh", String(port), process.execPath, SELF, logFile],
+      { cwd, env: { ...env, E2E_RUN_LITERALS: JSON.stringify(literals) }, detached: true, stdio: "ignore" },
+    );
     child.unref();
-    closeSync(fd);
     return child.pid;
+  },
+  readTarget: (opts, destructive) => readTargetInputs(opts, destructive),
+  commandLine(pid) {
+    const r = io.capture("ps", ["-p", String(pid), "-o", "command="], { timeoutMs: 15_000 });
+    return r.code === 0 ? r.stdout.trim() : "";
   },
   isAlive(pid) {
     try {
@@ -712,6 +887,7 @@ const currentFile = () => join(localDir(), "current");
 const plantDir = () => join(localDir(), "plant");
 const manifestFile = () => join(plantDir(), "manifest.json");
 const stampFile = () => join(localDir(), "push-stamp.json");
+const patchCopyFile = () => join(plantDir(), "patch.diff");
 
 function readJson(file, fallback = null) {
   try {
@@ -750,6 +926,12 @@ function readTargetInputs(opts, destructive = false) {
   } catch {
     envLocal = null;
   }
+  let dotEnv = null;
+  try {
+    dotEnv = readFileSync(join(APP_DIR, ".env"), "utf8");
+  } catch {
+    dotEnv = null;
+  }
   const nvm = (() => {
     try {
       const v = readFileSync(join(APP_DIR, ".nvmrc"), "utf8").trim().replace(/^v/, "");
@@ -763,6 +945,7 @@ function readTargetInputs(opts, destructive = false) {
     ci: Boolean(process.env.CI),
     processEnv: process.env,
     envLocalText: envLocal,
+    envText: dotEnv,
     mainEnvLocalText: mainText,
     dirName: basename(root),
     allowSharedDev: Boolean(opts.allowSharedDev),
@@ -782,6 +965,26 @@ function makeLogger(file, literals) {
       }
     },
   };
+}
+
+/** `e2e-run.mjs __logfilter <file>`: copy stdin to the file line by line through the redactor. */
+async function logFilter(file) {
+  let literals = [];
+  try {
+    literals = JSON.parse(process.env.E2E_RUN_LITERALS ?? "[]");
+  } catch {
+    literals = [];
+  }
+  const logger = makeLogger(file, literals);
+  let buf = "";
+  process.stdin.setEncoding("utf8");
+  for await (const chunk of process.stdin) {
+    buf += chunk;
+    const parts = buf.split("\n");
+    buf = parts.pop() ?? "";
+    for (const l of parts) logger.line(l);
+  }
+  if (buf) logger.line(buf);
 }
 
 function convexFingerprint() {
@@ -837,7 +1040,7 @@ function releaseLock(pid = process.pid) {
 
 // ---------------------------------------------------------------- vite
 
-async function ensureVite(ctx) {
+export async function ensureVite(ctx) {
   const { port, env } = ctx;
   const pid = io.listenerPid(port);
   if (pid) {
@@ -852,10 +1055,12 @@ async function ensureVite(ctx) {
     return;
   }
   mkdirSync(localDir(), { recursive: true });
-  io.startDetached("npx", ["--no-install", "vite", "--port", String(port), "--strictPort"], {
+  io.startViteLogged({
+    port,
     cwd: APP_DIR,
     env: { ...env, VITE_DEV_DISABLE_HTTPS: "1" },
     logFile: join(localDir(), `vite-${port}.log`),
+    literals: ctx.deployment ? [ctx.deployment] : [],
   });
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
@@ -867,6 +1072,29 @@ async function ensureVite(ctx) {
 
 // ---------------------------------------------------------------- runner
 
+/** Undo changes a patch made outside its manifest. Returns the paths it could not undo (dirty before, so unsafe to touch). */
+function rollbackStray(root, stray, before) {
+  const left = [];
+  for (const p of stray) {
+    if (p in before) {
+      left.push(p);
+      continue;
+    }
+    const r = io.capture("git", ["ls-files", "--error-unmatch", "--", p], { cwd: root, timeoutMs: 15_000 });
+    if (r.code !== 0) {
+      try {
+        unlinkSync(join(root, p));
+      } catch {
+        left.push(p);
+      }
+    } else {
+      const back = io.capture("git", ["restore", "--source=HEAD", "--staged", "--worktree", "--", p], { cwd: root, timeoutMs: 15_000 });
+      if (back.code !== 0) left.push(p);
+    }
+  }
+  return left;
+}
+
 async function resolvePaused(ctx) {
   const a = io.capture("npx", ["--no-install", "convex", "env", "get", "NEONBINDER_PAUSED_PLATFORMS"], { env: ctx.env });
   if (a.code === 0) return a.stdout.trim();
@@ -875,7 +1103,13 @@ async function resolvePaused(ctx) {
   throw new Error("could not read NEONBINDER_PAUSED_PLATFORMS (neither the deployment nor the repo variable answered)");
 }
 
-async function doSeed(ctx) {
+export async function doSeed(ctx) {
+  // The last line of defence: whatever planned this run, never reset a shared deployment.
+  const guard = io.readTarget(ctx.opts ?? {}, true);
+  if (!guard.ok || guard.shared || guard.deployment !== ctx.deployment) {
+    ctx.logger.line(`seed refused: ${guard.ok ? (guard.shared ? "this deployment is shared dev" : "the target changed since the run started") : guard.reason}`);
+    return EXIT.refused;
+  }
   const uri = io.capture("gh", ["variable", "get", "NEONBINDER_REFERENCE_SEED_URI"], { env: ctx.env, timeoutMs: 30_000 });
   const paused = io.capture("gh", ["variable", "get", "NEONBINDER_PAUSED_PLATFORMS"], { env: ctx.env, timeoutMs: 30_000 });
   if (uri.code !== 0 || paused.code !== 0 || !uri.stdout.trim()) {
@@ -912,7 +1146,7 @@ async function doSeed(ctx) {
 }
 
 async function pushConvex(opts, ctx) {
-  const t = readTargetInputs(opts);
+  const t = io.readTarget(opts, false);
   if (!t.ok) {
     ctx.logger.line(`push refused: ${t.reason}`);
     return EXIT.refused;
@@ -951,7 +1185,7 @@ async function runPhases(phases, ctx) {
       const args = ["--no-install", "playwright", "test", `--project=${phase.pw}`, "--retries=0", "--reporter=list,json", `--output=${join(ctx.runDir, "results", phase.label)}`];
       if (phase.kind === "spec") {
         args.push("--no-deps");
-        if (ctx.opts.grep) args.push("--grep", ctx.opts.grep);
+        if (ctx.opts.grep) args.push(`--grep=${ctx.opts.grep}`);
         args.push(...ctx.specs);
       }
       code = await io.runLogged("npx", args, {
@@ -999,7 +1233,8 @@ async function runner(runDir) {
       }
     });
   }
-  const t = readTargetInputs(job.opts, job.kind === "seed" || job.opts.fresh);
+  const plan = planJob({ kind: job.kind, opts: job.opts, specs: job.specs, state: loadState() });
+  const t = io.readTarget(job.opts, plan.destructive);
   const logger = makeLogger(join(runDir, "run.log"), t.ok ? [t.deployment] : []);
   let exit = EXIT.fail;
   let metaPlant = null;
@@ -1033,24 +1268,22 @@ async function runner(runDir) {
     const state = loadState();
     prior = (state?.ran ?? []).slice();
     if (job.kind === "seed") {
-      const r = await runPhases([{ kind: "seed", label: "seed" }, { kind: "setup", pw: "setup", label: "setup" }, { kind: "bootstrap", pw: "bootstrap", label: "bootstrap" }], ctx);
+      const r = await runPhases(plan.phases, ctx);
       exit = r.exit;
       phasesDone = r.done;
       return;
     }
     await ensureVite(ctx);
-    const pwList = job.opts.project === "both" ? [PROJECTS.desktop, PROJECTS.mobile] : [PROJECTS[job.opts.project]];
-    let fresh = job.opts.fresh;
     if (job.kind === "plant") {
-      const rs = plantReseed({ prior, specs: job.specs, pws: pwList, expect: job.plant.expect, fresh });
-      fresh = rs.fresh;
-      if (rs.note) {
-        plantNotes.push(rs.note);
-        logger.line(rs.note);
+      if (plan.note) {
+        plantNotes.push(plan.note);
+        logger.line(plan.note);
       }
       ctx.planting = true;
       const root = repoRoot();
-      const rels = job.plant.files;
+      const rels = job.plant.files.map((f) => safeRepoPath(root, f, root));
+      const refusal = plantRefusal({ shared: t.shared, files: rels });
+      if (refusal) throw new Error(refusal);
       manifest = buildManifest(root, rels, { startedAt: io.now().toISOString(), pid: process.pid });
       mkdirSync(plantDir(), { recursive: true });
       writeJson(manifestFile(), manifest);
@@ -1063,9 +1296,20 @@ async function runner(runDir) {
         if (!res.ok) throw new Error(res.error);
         for (const [r, text] of Object.entries(res.files)) writeFileSync(join(root, r), text);
       } else {
+        // The copy made at start() is what was checked; apply that exact file, and watch git's own view of the tree.
+        if (sha256(readFileSync(job.plant.patch)) !== job.plant.patchSha256) throw new Error("the patch copy changed since it was checked");
+        const porcelain = () => parsePorcelainZ(io.capture("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: root, timeoutMs: 60_000 }).stdout);
+        const before = porcelain();
         const ap = io.capture("git", ["apply", job.plant.patch], { cwd: root, timeoutMs: 30_000 });
         if (ap.code !== 0) throw new Error("git apply failed");
+        const stray = strayChanges(before, porcelain(), rels);
+        if (stray.length) {
+          const left = rollbackStray(root, stray, before);
+          throw new Error(`the patch changed files outside what it declared (${stray.length}); ${left.length ? `could not undo: ${left.join(", ")}` : "undone"}`);
+        }
       }
+      recordPlanted(manifest, root);
+      writeJson(manifestFile(), manifest);
       logger.line(`plant: applied to ${rels.length} file(s)`);
       if (convexTouched(rels)) {
         const pc = await pushConvex(job.opts, ctx);
@@ -1078,8 +1322,7 @@ async function runner(runDir) {
         return;
       }
     }
-    const phases = phasePlan({ state, worker: ctx.worker, project: job.opts.project, fresh, setup: job.opts.setup });
-    const r = await runPhases(phases, ctx);
+    const r = await runPhases(plan.phases, ctx);
     exit = r.exit;
     phasesDone = r.done;
     // A seed phase in this run emptied the record of what ran on the seed.
@@ -1106,21 +1349,25 @@ async function runner(runDir) {
     exit = exit === EXIT.fail || exit === 0 ? EXIT.refused : exit;
   } finally {
     if (manifest) {
+      // An apply that died half way never got its planted hashes: they are whatever is on disk right now.
+      if (!manifest.plantedAt) recordPlanted(manifest, repoRoot());
       plantRestore = restoreFromManifest(manifest, repoRoot());
       if (plantRestore.ok) {
         if (plantRestore.convexTouched && ctx) {
           const pc = await pushConvex(job.opts, ctx).catch(() => 1);
           if (pc !== 0) logger.line("plant: restored the files but the follow-up push of convex/ failed: run `e2e-run run --push` before trusting the deployment");
         }
-        try {
-          unlinkSync(manifestFile());
-        } catch {
-          /* gone */
+        for (const f of [manifestFile(), patchCopyFile()]) {
+          try {
+            unlinkSync(f);
+          } catch {
+            /* gone */
+          }
         }
         logger.line("plant: restored and verified");
       } else {
         exit = EXIT.restoreFailed;
-        metaPlant = [`PLANT RESTORE FAILED: ${plantRestore.problems.join("; ")}`, "  fix by hand from .e2e-local/plant/manifest.json before anything else; do NOT commit"];
+        metaPlant = [`PLANT RESTORE FAILED: ${plantRestore.problems.join("; ")}`, "  fix by hand from .e2e-local/plant/manifest.json before anything else (a file listed as changed since the plant was left as you edited it); do NOT commit"];
         logger.line(metaPlant[0]);
       }
     }
@@ -1227,17 +1474,24 @@ async function recoverPlant(opts) {
   console.log("restoring a leftover plant from a killed run...");
   const r = restoreFromManifest(manifest, repoRoot());
   if (!r.ok) {
-    console.log(`PLANT RESTORE FAILED: ${r.problems.join("; ")}\nfix by hand from .e2e-local/plant/manifest.json; do NOT commit`);
+    console.log(`PLANT RESTORE FAILED: ${r.problems.join("; ")}\nfix by hand from .e2e-local/plant/manifest.json (files listed as changed since the plant were left as you edited them); do NOT commit`);
     return EXIT.restoreFailed;
   }
   unlinkSync(manifestFile());
+  try {
+    unlinkSync(patchCopyFile());
+  } catch {
+    /* none */
+  }
   console.log(`restored ${r.restored.length} file(s), verified by hash.${r.convexTouched ? " convex/ was touched: run with --push to re-push." : ""}`);
   return null;
 }
 
 async function start(kind, parsed) {
   const { opts, specs } = parsed;
-  const t = readTargetInputs(opts, kind === "seed" || opts.fresh);
+  // Judge the whole plan, the plant's re-seed and the mobile pass of --project both included.
+  const plan = planJob({ kind, opts, specs, state: loadState() });
+  const t = io.readTarget(opts, plan.destructive);
   if (!t.ok) {
     console.log(`refused: ${t.reason}`);
     return EXIT.refused;
@@ -1254,16 +1508,29 @@ async function start(kind, parsed) {
         if (!dry.ok) throw new Error(dry.error);
         plant = { files: rels, edits, expect: opts.expect };
       } else {
-        const patch = resolve(opts.patch);
-        const diff = readFileSync(patch, "utf8");
-        const rels = patchFiles(diff).map((p) => safeRepoPath(root, p, root));
+        // One private copy of the patch: checked, listed and applied from the same bytes.
+        const bytes = readFileSync(resolve(opts.patch));
+        mkdirSync(plantDir(), { recursive: true });
+        writeFileSync(patchCopyFile(), bytes, { mode: 0o600 });
+        const copy = patchCopyFile();
+        const num = io.capture("git", ["apply", "--numstat", "-z", copy], { cwd: root, timeoutMs: 30_000 });
+        const sum = io.capture("git", ["apply", "--summary", copy], { cwd: root, timeoutMs: 30_000 });
+        if (num.code !== 0 || sum.code !== 0) throw new Error("git could not read the patch");
+        const pp = patchPlan(num.stdout, sum.stdout);
+        if (pp.refusal) throw new Error(pp.refusal);
+        const rels = [...new Set(pp.files.map((p) => safeRepoPath(root, p, root)))];
         if (rels.length === 0) throw new Error("the patch touches no files");
-        const chk = io.capture("git", ["apply", "--check", patch], { cwd: root, timeoutMs: 30_000 });
+        const chk = io.capture("git", ["apply", "--check", copy], { cwd: root, timeoutMs: 30_000 });
         if (chk.code !== 0) throw new Error("git apply --check failed");
-        plant = { files: rels, patch, expect: opts.expect };
+        plant = { files: rels, patch: copy, patchSha256: sha256(bytes), expect: opts.expect };
       }
     } catch (err) {
       console.log(`refused: ${cleanText(err instanceof Error ? err.message : String(err))}`);
+      return EXIT.refused;
+    }
+    const refusal = plantRefusal({ shared: t.shared, files: plant.files });
+    if (refusal) {
+      console.log(`refused: ${refusal}`);
       return EXIT.refused;
     }
     if (existsSync(manifestFile())) {
@@ -1271,11 +1538,7 @@ async function start(kind, parsed) {
       return EXIT.refused;
     }
   }
-  if (kind === "plant") {
-    const pws = opts.project === "both" ? [PROJECTS.desktop, PROJECTS.mobile] : [PROJECTS[opts.project]];
-    const rs = plantReseed({ prior: loadState()?.ran ?? [], specs, pws, expect: opts.expect, fresh: opts.fresh });
-    if (rs.note) console.log(rs.note);
-  }
+  if (kind === "plant" && plan.note) console.log(plan.note);
   const lock = acquireLock();
   if (!lock.ok) {
     console.log("lock held: another e2e-run is in progress in this worktree. Use `wait` or `stop`.");
@@ -1304,8 +1567,8 @@ async function status() {
   const stampJ = readJson(stampFile());
   lines.push(convexLine(stampJ, stampJ ? convexFingerprint() : ""));
   const m = readJson(manifestFile());
-  lines.push(m ? `PLANT PENDING: ${m.files?.length ?? 0} file(s) broken on purpose${m.pid && io.isAlive(m.pid) ? " (plant running)" : " (leftover: restored at the start of this command)"}` : "plant: none pending");
-  const t = readTargetInputs({});
+  lines.push(m ? `PLANT PENDING: ${m.files?.length ?? 0} file(s) broken on purpose${m.pid && io.isAlive(m.pid) ? " (plant running)" : " (leftover from a killed run: any run, plant or seed restores it; status never touches files)"}` : "plant: none pending");
+  const t = io.readTarget({}, false);
   if (t.ok) lines.push(`vite :${t.port}: ${io.listenerPid(t.port) ? "listening" : "not running"}; target: own dev deployment ✓${t.shared ? " (shared dev, allowed)" : ""}`);
   else lines.push(`target: refused (${t.reason})`);
   console.log(lines.join("\n"));
@@ -1318,6 +1581,14 @@ async function stop() {
     console.log("nothing running");
     return 0;
   }
+  // Only ever signal our own runner: the lock file is plain text and a pid is reused.
+  const run = latestRun();
+  const st = run && readJson(join(run, "status.json"));
+  const cmd = io.commandLine(pid);
+  if (!st || st.pid !== pid || !cmd.includes("e2e-run.mjs") || !cmd.includes("__runner")) {
+    console.log("refused: the lock names a process that is not this tool's runner; not signalling it (remove .e2e-local/run.lock if it is stale)");
+    return EXIT.refused;
+  }
   process.kill(pid, "SIGTERM");
   for (let i = 0; i < 60 && io.isAlive(pid); i++) await io.sleep(500);
   console.log(io.isAlive(pid) ? "runner is still shutting down (restoring files, if a plant); run `status`" : "stopped");
@@ -1325,7 +1596,7 @@ async function stop() {
 }
 
 async function stopVite(opts) {
-  const t = readTargetInputs(opts);
+  const t = io.readTarget(opts, false);
   if (!t.ok) {
     console.log(`refused: ${t.reason}`);
     return EXIT.refused;
@@ -1347,6 +1618,7 @@ async function stopVite(opts) {
 
 export async function main(argv = process.argv.slice(2)) {
   if (argv[0] === "__runner") return runner(argv[1]).then(() => 0);
+  if (argv[0] === "__logfilter") return logFilter(argv[1]).then(() => 0);
   const parsed = parseArgs(argv);
   if (parsed.error) {
     console.log(`${cleanText(parsed.error)}\n\n${HELP}`);
@@ -1360,8 +1632,11 @@ export async function main(argv = process.argv.slice(2)) {
     console.log("refused: CI is set");
     return EXIT.refused;
   }
-  const rec = await recoverPlant(parsed.opts);
-  if (rec !== null) return rec;
+  // Only a command that is about to run something restores a leftover plant; status, digest, wait, stop never touch files.
+  if (["run", "plant", "seed"].includes(parsed.cmd)) {
+    const rec = await recoverPlant(parsed.opts);
+    if (rec !== null) return rec;
+  }
   switch (parsed.cmd) {
     case "run":
     case "plant":

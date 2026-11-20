@@ -1320,8 +1320,13 @@ node playwright/tools/e2e-run.mjs status | digest [last|<runDir>] | stop | stop-
   testing"). `--edit` takes `[{ "file", "find", "replace" }]`, each `find`
   matching exactly once; `--patch` a unified diff. The touched files are backed
   up with their hashes, the specs run, and the files are restored byte-exact
-  (and Convex re-pushed when `convex/` was touched) even on interrupt; any later
-  invocation restores a leftover plant first.
+  (and Convex re-pushed when `convex/` was touched) even on interrupt; a later
+  `run`, `plant` or `seed` restores a leftover plant first (`status`, `digest`,
+  `wait` and `stop` never touch files). A file is put back only while it still
+  holds what the plant wrote; one you edited since is left alone and listed. A
+  plant may only touch `apps/web/` (not `.env*`, `node_modules`,
+  `playwright/tools`, or a symlink), `--patch` may not copy a file, change a
+  mode or touch a symlink, and a plant in `convex/` is refused on shared dev.
 
 The rest of this section is what the tool does, by hand, and how CI runs.
 

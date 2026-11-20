@@ -1,6 +1,6 @@
 ---
 name: patterns-e2e-run-tool-in-practice
-description: How playwright/tools/e2e-run.mjs behaves in a live agent run (NEO-622 step V) — 180 s Bash auto-background vs the 230 s slice, plant auto re-seed, digest path quirks
+description: How playwright/tools/e2e-run.mjs behaves in a live agent run (NEO-622 step V) — 180 s Bash auto-background vs the slice, plant auto re-seed, digest path quirks
 metadata:
   type: feedback
 ---
@@ -9,7 +9,7 @@ Live behaviour of `e2e-run.mjs` seen on its first validation (2026-11-20). Check
 the tool's current code before relying on any line here; some may be fixed.
 
 - **The Bash tool moves a command to the background at ~180 s** whatever
-  `timeout` you pass, so `wait` with its default 230 s slice gets backgrounded.
+  `timeout` you pass, so `wait` with a slice over 180 s gets backgrounded (the default slice is 170 s now, which stays in the foreground).
   That is harmless: you get a task notification with the digest when the run
   ends. Do not start a second `wait` while the backgrounded one runs. Passing
   `--slice 170` keeps `wait` in the foreground.

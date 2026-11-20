@@ -6,7 +6,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 export PR_WATCH_GH="$HERE/fake-gh.sh" PR_WATCH_INTERVAL=0 PR_WATCH_REPO=acme/widgets
 TMPDIR=$(mktemp -d); export TMPDIR
-STATE="$TMPDIR/pr-watch/acme_widgets-42-pr"
+STATE="$TMPDIR/pr-watch-$(id -u)/acme_widgets-42-pr"
 fails=0
 
 # roll SHA name:status:conclusion ...  -> a `gh pr view` payload
@@ -21,7 +21,7 @@ SEED_RUN='E2E / seed:IN_PROGRESS:'; SEED_OK='E2E / seed:COMPLETED:SUCCESS'
 GATE_RUN='CI Gate:IN_PROGRESS:'; GATE_OK='CI Gate:COMPLETED:SUCCESS'
 SH1='E2E / shard-desktop (1, 8):COMPLETED:SUCCESS'; SH2='E2E / shard-desktop (2, 8):COMPLETED:SUCCESS'; SH3='E2E / shard-desktop (3, 8):IN_PROGRESS:'
 
-fresh() { FIX=$(mktemp -d); export FIX; rm -rf "$TMPDIR/pr-watch"; }
+fresh() { FIX=$(mktemp -d); export FIX; rm -rf "$TMPDIR/pr-watch-$(id -u)"; }
 check() { # name ok
   if [ "$2" = 0 ]; then echo "ok   $1"; else echo "FAIL $1"; printf "%s\n" "${out//$'\n'/$'\n     '}"; fails=$((fails+1)); fi
 }
@@ -74,7 +74,7 @@ runpr
 # 5. re-arm keeps MAX_MIN counted from the original start.
 fresh
 roll aaa "$VERCEL" "$GATE_RUN" > "$FIX/pr.json"
-mkdir -p "$TMPDIR/pr-watch"
+mkdir -p "$TMPDIR/pr-watch-$(id -u)"
 printf 'aaa\n%s\n%s\nRUNNING|registered=yes|seed=—|seed-mobile=—|e2e=—|failed=no\n\n' "$(( $(date +%s) - 6000 ))" "$(date +%s)" > "$STATE"   # started 100 min ago
 runpr
 [ "$rc" = 2 ] && [ "$(lines '^\[t+')" = 0 ] && echo "$out" | grep -q '^DONE TIMEOUT.*90m'; r=$?; check "resume keeps the original start (MAX_MIN)" "$r"
@@ -82,7 +82,7 @@ runpr
 # 6. a new head SHA starts fresh and prints its first tick, even with a state file.
 fresh
 roll bbb "$VERCEL" "$GATE_RUN" > "$FIX/pr.json.1"; roll bbb "$VERCEL" "$GATE_OK" > "$FIX/pr.json.2"
-mkdir -p "$TMPDIR/pr-watch"
+mkdir -p "$TMPDIR/pr-watch-$(id -u)"
 printf 'aaa\n%s\n%s\nanything\n\n' "$(( $(date +%s) - 6000 ))" "$(date +%s)" > "$STATE"
 runpr
 [ "$rc" = 0 ] && [ "$(lines '^\[t+')" = 1 ] && [ "$(lines 'RUNNING')" = 1 ]; r=$?; check "new SHA is a fresh watch (prints, clock reset)" "$r"
@@ -90,11 +90,35 @@ runpr
 # 7. a stale state file (older than the resume window) is not resumed.
 fresh
 roll aaa "$VERCEL" "$GATE_RUN" > "$FIX/pr.json.1"; roll aaa "$VERCEL" "$GATE_OK" > "$FIX/pr.json.2"
-mkdir -p "$TMPDIR/pr-watch"
+mkdir -p "$TMPDIR/pr-watch-$(id -u)"
 KEYLINE="RUNNING|registered=yes|seed=—|seed-mobile=—|e2e=—|failed=no"
 printf 'aaa\n%s\n%s\n%s\n\n' "$(date +%s)" "$(( $(date +%s) - 7200 ))" "$KEYLINE" > "$STATE"
 runpr
 [ "$(lines '^\[t+')" = 1 ]; r=$?; check "stale state is not resumed" "$r"
+
+# 7b. a forged start in the future is clamped to now, so MAX_MIN still bites.
+fresh
+roll aaa "$VERCEL" "$GATE_RUN" > "$FIX/pr.json.1"; roll aaa "$VERCEL" "$GATE_OK" > "$FIX/pr.json.2"
+mkdir -p "$TMPDIR/pr-watch-$(id -u)"
+printf 'aaa\n%s\n%s\n%s\n\n' "$(( $(date +%s) + 86400 ))" "$(date +%s)" "$KEYLINE" > "$STATE"
+out=$(PR_WATCH_MAX_MIN=0 bash "$HERE/../watch.sh" 42 2>&1); rc=$?
+[ "$rc" = 2 ] && echo "$out" | grep -q '^DONE TIMEOUT'; r=$?; check "a future start in the state file is clamped" "$r"
+
+# 7c. a symlinked state dir is never followed: nothing is read from or written through it.
+fresh
+mkdir -p "$FIX/elsewhere"
+ln -s "$FIX/elsewhere" "$TMPDIR/pr-watch-$(id -u)"
+roll aaa "$VERCEL" "$GATE_RUN" > "$FIX/pr.json.1"; roll aaa "$VERCEL" "$GATE_OK" > "$FIX/pr.json.2"
+runpr
+[ "$rc" = 0 ] && [ -z "$(ls -A "$FIX/elsewhere")" ]; r=$?; check "a symlinked state dir is refused" "$r"
+rm -f "$TMPDIR/pr-watch-$(id -u)"
+
+# 7d. the state dir is private (0700) and no temp file is left behind.
+fresh
+roll aaa "$VERCEL" "$GATE_RUN" > "$FIX/pr.json.1"; roll aaa "$VERCEL" "$GATE_RUN" > "$FIX/pr.json.2"; roll aaa "$VERCEL" "$GATE_OK" > "$FIX/pr.json.3"
+out=$(PR_WATCH_MAX_MIN=0 bash "$HERE/../watch.sh" 42 2>&1); rc=$?
+mode=$(stat -f %Lp "$TMPDIR/pr-watch-$(id -u)" 2>/dev/null || stat -c %a "$TMPDIR/pr-watch-$(id -u)")
+[ "$mode" = 700 ] && [ -z "$(ls -A "$TMPDIR/pr-watch-$(id -u)")" ]; r=$?; check "state dir is 0700 and temp files are cleaned up" "$r"
 
 # 8. a repeated poll error prints once.
 fresh

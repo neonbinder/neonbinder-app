@@ -2,7 +2,8 @@
 // effects; its spawn/lsof/git seams sit behind `io`. These tests cover the pure parts:
 // argument parsing, the target guard (what it refuses), the port rule, phase planning,
 // the digest (size cap, no deployment name), exactly-once edits, and byte-exact restore.
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -14,6 +15,8 @@ import {
   applyEdits,
   buildDigest,
   buildManifest,
+  doSeed,
+  ensureVite,
   cleanText,
   collectTests,
   convexLine,
@@ -21,21 +24,27 @@ import {
   io,
   locatorNames,
   main,
+  maskSecretLine,
   needsPhases,
   parseArgs,
   parseEnvFile,
   parseErrorContext,
-  patchFiles,
+  parsePorcelainZ,
+  patchPlan,
   phasePlan,
+  planJob,
   plantReseed,
+  plantRefusal,
   plantVerdict,
   ranOnSeed,
+  recordPlanted,
   resolveTarget,
   restoreFromManifest,
   safeRepoPath,
   seedLine,
   sha256,
   snapshotWindow,
+  strayChanges,
   vitePort,
 } from "../playwright/tools/e2e-run.mjs";
 
@@ -44,7 +53,7 @@ import {
 const DEP = "happy-otter-123";
 const OTHER = "shared-dev-456";
 const envLocal = (over = {}) =>
-  Object.entries({ CONVEX_DEPLOYMENT: `dev:${DEP}`, VITE_CONVEX_URL: `https://${DEP}.convex.cloud`, ...over })
+  Object.entries({ CONVEX_DEPLOYMENT: `dev:${DEP}`, VITE_CONVEX_URL: `https://${DEP}.convex.cloud`, VITE_CONVEX_SITE_URL: `https://${DEP}.convex.site`, ...over })
     .filter(([, v]) => v !== null)
     .map(([k, v]) => `${k}=${v}`)
     .join("\n");
@@ -560,11 +569,6 @@ describe("plant: exactly-once edits", () => {
     expect(r.files["a.ts"]).toBe("$& $1");
   });
 
-  it("patchFiles lists the files a diff touches, renames and all, not /dev/null", () => {
-    const diff = ["--- a/x/one.ts", "+++ b/x/one.ts", "--- /dev/null", "+++ b/x/new.ts", "rename from old.ts", "rename to moved.ts"].join("\n");
-    expect(patchFiles(diff).sort()).toEqual(["moved.ts", "old.ts", "x/new.ts", "x/one.ts"]);
-  });
-
   it("convexTouched sees apps/web/convex and convex paths only", () => {
     expect(convexTouched(["apps/web/convex/foo.ts"])).toBe(true);
     expect(convexTouched(["convex/foo.ts"])).toBe(true);
@@ -634,6 +638,7 @@ describe("manifest and restore", () => {
     put(root, "apps/web/a.bin", binary);
     const m = buildManifest(root, ["apps/web/a.bin"]);
     writeFileSync(join(root, "apps/web/a.bin"), "planted break");
+    recordPlanted(m, root);
     const r = restoreFromManifest(m, root);
     expect(r).toMatchObject({ ok: true, problems: [], restored: ["apps/web/a.bin"], convexTouched: false });
     expect(readFileSync(join(root, "apps/web/a.bin")).equals(binary)).toBe(true);
@@ -643,6 +648,7 @@ describe("manifest and restore", () => {
     const root = tmp();
     const m = buildManifest(root, ["apps/web/created.ts"]);
     put(root, "apps/web/created.ts", "planted");
+    recordPlanted(m, root);
     const r = restoreFromManifest(m, root);
     expect(r.ok).toBe(true);
     expect(existsSync(join(root, "apps/web/created.ts"))).toBe(false);
@@ -653,6 +659,7 @@ describe("manifest and restore", () => {
     put(root, "apps/web/deep/dir/a.ts", "keep me");
     const m = buildManifest(root, ["apps/web/deep/dir/a.ts"]);
     rmSync(join(root, "apps/web/deep"), { recursive: true });
+    recordPlanted(m, root);
     expect(restoreFromManifest(m, root).ok).toBe(true);
     expect(readFileSync(join(root, "apps/web/deep/dir/a.ts"), "utf8")).toBe("keep me");
   });
@@ -668,6 +675,8 @@ describe("manifest and restore", () => {
     writeFileSync(join(root, "apps/web/convex/f.ts"), "broken");
     writeFileSync(join(root, "apps/web/spec.ts"), "broken");
     put(root, "apps/web/made.ts", "broken");
+    recordPlanted(m, root);
+    writeFileSync(manifestPath, JSON.stringify(m));
     const r = restoreFromManifest(JSON.parse(readFileSync(manifestPath, "utf8")), root);
     expect(r.ok).toBe(true);
     expect(r.convexTouched).toBe(true);
@@ -691,6 +700,7 @@ describe("manifest and restore", () => {
     const m = buildManifest(root, ["apps/web/a.ts"]);
     m.files.unshift({ path: "apps/web/.env.local", existed: true, sha256: sha256(Buffer.from("s")), bytes: Buffer.from("s").toString("base64") });
     writeFileSync(join(root, "apps/web/a.ts"), "broken");
+    recordPlanted(m, root);
     const r = restoreFromManifest(m, root);
     expect(r.ok).toBe(false);
     expect(r.problems[0]).toMatch(/\.env\.local: refusing/);
@@ -703,6 +713,7 @@ describe("manifest and restore", () => {
     put(root, "apps/web/a.ts", "x");
     const m = buildManifest(root, ["apps/web/a.ts"]);
     const lying = { ...m, files: [{ ...m.files[0], sha256: sha256(Buffer.from("other")) }] };
+    recordPlanted(lying, root);
     const r = restoreFromManifest(lying, root);
     expect(r.ok).toBe(false);
     expect(r.problems[0]).toMatch(/hash differs/);
@@ -711,7 +722,8 @@ describe("manifest and restore", () => {
   it("reports a file that is still there after the unlink", () => {
     const root = tmp();
     const m = buildManifest(root, ["apps/web/created.ts"]);
-    const fsApi = { existsSync: () => true, readFileSync, writeFileSync, unlinkSync: () => {}, mkdirSync };
+    m.files[0].planted = { exists: true, sha256: sha256(Buffer.from("p")) };
+    const fsApi = { existsSync: () => true, readFileSync: () => Buffer.from("p"), writeFileSync, unlinkSync: () => {}, mkdirSync };
     const r = restoreFromManifest(m, root, fsApi);
     expect(r.ok).toBe(false);
     expect(r.problems[0]).toMatch(/still exists/);
@@ -720,7 +732,7 @@ describe("manifest and restore", () => {
 
 describe("io seam", () => {
   it("exposes the stubbable side effects", () => {
-    for (const k of ["now", "sleep", "capture", "runLogged", "listenerPid", "processCwd", "startDetached", "isAlive", "httpUp"]) {
+    for (const k of ["now", "sleep", "capture", "runLogged", "listenerPid", "processCwd", "startViteLogged", "readTarget", "commandLine", "isAlive", "httpUp"]) {
       expect(typeof io[k], k).toBe("function");
     }
   });
@@ -836,5 +848,422 @@ describe("NEO-622 live-run fixes", () => {
     expect(HELP).toMatch(/wait up to 170 s/);
     expect(HELP).not.toMatch(/230/);
     expect(parseArgs(["x"]).opts.slice).toBe(170);
+  });
+});
+
+// ---------------------------------------------------------------- NEO-622 security round
+
+describe("NEO-622 security round", () => {
+  const dirs = [];
+  const tmp = () => {
+    const d = mkdtempSync(join(tmpdir(), "e2e-sec-"));
+    dirs.push(d);
+    return d;
+  };
+  const prevLocal = process.env.E2E_RUN_LOCAL_DIR;
+  const prevCi = process.env.CI;
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+    if (prevLocal === undefined) delete process.env.E2E_RUN_LOCAL_DIR;
+    else process.env.E2E_RUN_LOCAL_DIR = prevLocal;
+    if (prevCi === undefined) delete process.env.CI;
+    else process.env.CI = prevCi;
+    vi.restoreAllMocks();
+  });
+  const localDir = () => {
+    const d = join(tmp(), ".e2e-local");
+    mkdirSync(d, { recursive: true });
+    process.env.E2E_RUN_LOCAL_DIR = d;
+    delete process.env.CI;
+    return d;
+  };
+  const out = () => {
+    const lines = [];
+    vi.spyOn(console, "log").mockImplementation((...a) => lines.push(a.join(" ")));
+    return lines;
+  };
+  // A readTarget that behaves like the real guard with the main checkout on the same deployment.
+  const sharedTarget = () => vi.spyOn(io, "readTarget").mockImplementation((opts, destructive) => target({ allowSharedDev: opts.allowSharedDev, mainEnvLocalText: mainEnv(DEP), destructive }));
+  const ownTarget = () => vi.spyOn(io, "readTarget").mockImplementation((opts, destructive) => target({ allowSharedDev: opts.allowSharedDev, destructive }));
+
+  // ---- B1: nothing resets shared dev, however the seed got into the plan
+  describe("B1 destructive judged on the whole plan", () => {
+    it("planJob: project both plans a seed (the mobile pass), even without --fresh", () => {
+      const state = { seededAt: "2026-01-01T00:00:00Z", workers: { 8: { setup: "2026-01-01T00:01:00Z", bootstrap: "2026-01-01T00:02:00Z" } }, ran: [] };
+      const plan = planJob({ kind: "run", opts: { project: "both", worker: 8, fresh: false, setup: false }, specs: ["x"], state });
+      expect(plan.destructive).toBe(true);
+      expect(planJob({ kind: "run", opts: { project: "desktop", worker: 8, fresh: false, setup: false }, specs: ["x"], state }).destructive).toBe(false);
+    });
+
+    it("planJob: a plant of a spec that already ran on this seed re-seeds, so it is destructive", () => {
+      const state = { seededAt: "2026-01-01T00:00:00Z", workers: {}, ran: [{ project: "e2e", args: ["x"], files: [], status: "passed" }] };
+      const opts = { project: "desktop", worker: 8, fresh: false, setup: false, expect: null };
+      expect(planJob({ kind: "plant", opts, specs: ["x"], state }).destructive).toBe(true);
+      expect(planJob({ kind: "plant", opts: { ...opts, expect: "boom" }, specs: ["x"], state }).destructive).toBe(false);
+    });
+
+    it("run --project both --allow-shared-dev refuses on a shared target", async () => {
+      localDir();
+      const lines = out();
+      const guard = sharedTarget();
+      expect(await main(["run", "--project", "both", "--allow-shared-dev", "x"])).toBe(EXIT.refused);
+      expect(guard.mock.calls[0][1]).toBe(true);
+      expect(lines.join("\n")).toMatch(/refused: .*never/);
+    });
+
+    it("a plant re-seed on a shared target refuses", async () => {
+      const dir = localDir();
+      writeFileSync(join(dir, "seed-state.json"), JSON.stringify({ seededAt: "2026-01-01T00:00:00Z", workers: {}, ran: [{ project: "e2e", args: ["x"], files: [], status: "passed" }] }));
+      const lines = out();
+      const guard = sharedTarget();
+      expect(await main(["plant", "--edit", "nope.json", "--allow-shared-dev", "x"])).toBe(EXIT.refused);
+      expect(guard.mock.calls[0][1]).toBe(true);
+      expect(lines.join("\n")).toMatch(/refused: .*never/);
+    });
+
+    it("doSeed re-checks and refuses a shared target without running anything", async () => {
+      const guard = sharedTarget();
+      const capture = vi.spyOn(io, "capture");
+      const run = vi.spyOn(io, "runLogged");
+      const logged = [];
+      const code = await doSeed({ opts: { allowSharedDev: true }, deployment: DEP, env: {}, logger: { line: (l) => logged.push(l) } });
+      expect(code).toBe(EXIT.refused);
+      expect(guard).toHaveBeenCalledWith({ allowSharedDev: true }, true);
+      expect(capture).not.toHaveBeenCalled();
+      expect(run).not.toHaveBeenCalled();
+      expect(logged.join("\n")).toMatch(/seed refused/);
+    });
+  });
+
+  // ---- S1: patch plants
+  describe("S1 patch plants", () => {
+    const git = (cwd, ...args) => spawnSync("git", args, { cwd, encoding: "utf8" });
+    const repoWith = () => {
+      const d = tmp();
+      git(d, "init", "-q");
+      mkdirSync(join(d, "a"));
+      writeFileSync(join(d, "a/f"), "hi\n");
+      writeFileSync(join(d, "a/empty"), "");
+      writeFileSync(join(d, "a/g"), "x\n");
+      git(d, "add", "-A");
+      git(d, "-c", "user.email=a@b.c", "-c", "user.name=n", "commit", "-qm", "i");
+      return d;
+    };
+    const plan = (d, patch) => {
+      writeFileSync(join(d, "p.diff"), patch);
+      const num = git(d, "apply", "--numstat", "-z", "p.diff").stdout;
+      const sum = git(d, "apply", "--summary", "p.diff").stdout;
+      return patchPlan(num, sum);
+    };
+
+    it("lists a rename's source and an empty file's delete, which the headers parse missed", () => {
+      const d = repoWith();
+      git(d, "mv", "a/f", "a/f2");
+      git(d, "rm", "-q", "a/empty");
+      const diff = git(d, "diff", "-M", "--cached").stdout;
+      const r = plan(d, diff);
+      expect(r.refusal).toBeNull();
+      expect(r.files.sort()).toEqual(["a/empty", "a/f", "a/f2"]);
+    });
+
+    it("lists z/-prefixed -p1 paths as git resolves them", () => {
+      const r = patchPlan("1\t1\ta/one.ts\0", "");
+      expect(r.files).toEqual(["a/one.ts"]);
+    });
+
+    it("refuses a copy and a mode-only change", () => {
+      const d = repoWith();
+      writeFileSync(join(d, "a/gcopy"), "x\n");
+      git(d, "add", "-N", "a/gcopy");
+      chmodSyncSafe(join(d, "a/g"));
+      const diff = git(d, "diff", "-M", "-C", "--find-copies-harder", "HEAD").stdout;
+      const r = plan(d, diff);
+      expect(r.refusal).toMatch(/copies a file|file mode/);
+    });
+
+    it("refuses a symlink creation", () => {
+      expect(patchPlan("1\t0\tlink\0", " create mode 120000 link\n").refusal).toMatch(/symlink/);
+    });
+
+    it("the backstop sees a file the patch changed outside the manifest, and ignores the manifest's own", () => {
+      const before = parsePorcelainZ(" M apps/web/a.ts\0");
+      const after = parsePorcelainZ(" M apps/web/a.ts\0 M apps/web/b.ts\0?? apps/web/new.ts\0");
+      expect(strayChanges(before, after, ["apps/web/b.ts"])).toEqual(["apps/web/new.ts"]);
+      expect(strayChanges(before, after, [])).toEqual(["apps/web/b.ts", "apps/web/new.ts"]);
+      expect(parsePorcelainZ("R  new.ts\0old.ts\0")).toEqual({ "new.ts": "R ", "old.ts": "R-" });
+    });
+
+    it("plant --patch checks and applies a private copy, and refuses a mode change before running", async () => {
+      const dir = localDir();
+      ownTarget();
+      const lines = out();
+      const patch = join(tmp(), "mode.diff");
+      writeFileSync(patch, "diff --git a/apps/web/zz-nonexistent.sh b/apps/web/zz-nonexistent.sh\nold mode 100644\nnew mode 100755\n");
+      expect(await main(["plant", "--patch", patch, "--expect", "boom", "x"])).toBe(EXIT.refused);
+      expect(lines.join("\n")).toMatch(/file mode/);
+      expect(readFileSync(join(dir, "plant/patch.diff"), "utf8")).toBe(readFileSync(patch, "utf8"));
+    });
+  });
+  function chmodSyncSafe(file) {
+    spawnSync("chmod", ["755", file]);
+  }
+
+  // ---- S2: allow-list
+  describe("S2 safeRepoPath is an allow-list", () => {
+    const root = join(APP_DIR, "..", "..");
+    it.each([
+      ["apps/web/.ENV.local"],
+      ["apps/web/.Env"],
+      [".ENV.local"],
+      ["apps/web/.Claude/settings.json"],
+      ["apps/web/NODE_MODULES/x.js"],
+      ["apps/web/.E2E-Local/state.json"],
+      ["../../.github/workflows/x.yml"],
+      ["apps/web/playwright/tools/e2e-run.mjs"],
+      ["apps/web/Playwright/Tools/e2e-run.mjs"],
+    ])("refuses %s", (p) => {
+      expect(() => safeRepoPath(root, p)).toThrow(/refusing to plant/);
+    });
+
+    it("refuses a path through a symlink, and a symlinked file", () => {
+      const r = tmp();
+      const outside = tmp();
+      mkdirSync(join(r, "apps/web"), { recursive: true });
+      writeFileSync(join(outside, "secret.ts"), "s");
+      symlinkSync(outside, join(r, "apps/web/linkdir"));
+      symlinkSync(join(outside, "secret.ts"), join(r, "apps/web/linkfile.ts"));
+      writeFileSync(join(r, "apps/web/ok.ts"), "x");
+      expect(() => safeRepoPath(r, "apps/web/linkdir/secret.ts", r)).toThrow(/refusing/);
+      expect(() => safeRepoPath(r, "apps/web/linkfile.ts", r)).toThrow(/refusing/);
+      expect(safeRepoPath(r, "apps/web/ok.ts", r)).toBe("apps/web/ok.ts");
+      expect(safeRepoPath(r, "apps/web/not-yet/made.ts", r)).toBe("apps/web/not-yet/made.ts");
+    });
+  });
+
+  // ---- S3: restore never overwrites a later edit
+  describe("S3 restore keeps edits made since the plant", () => {
+    const put = (root, rel, data) => {
+      mkdirSync(dirname(join(root, rel)), { recursive: true });
+      writeFileSync(join(root, rel), data);
+    };
+    it("restores a file that still holds the planted bytes", () => {
+      const r = tmp();
+      put(r, "apps/web/a.ts", "orig");
+      const m = buildManifest(r, ["apps/web/a.ts"]);
+      put(r, "apps/web/a.ts", "planted");
+      recordPlanted(m, r);
+      expect(restoreFromManifest(m, r)).toMatchObject({ ok: true, edited: [] });
+      expect(readFileSync(join(r, "apps/web/a.ts"), "utf8")).toBe("orig");
+    });
+
+    it("refuses, lists and leaves a file edited after the plant", () => {
+      const r = tmp();
+      put(r, "apps/web/a.ts", "orig");
+      put(r, "apps/web/b.ts", "orig-b");
+      const m = buildManifest(r, ["apps/web/a.ts", "apps/web/b.ts"]);
+      put(r, "apps/web/a.ts", "planted");
+      put(r, "apps/web/b.ts", "planted-b");
+      recordPlanted(m, r);
+      put(r, "apps/web/a.ts", "my own edit, later");
+      const res = restoreFromManifest(m, r);
+      expect(res.ok).toBe(false);
+      expect(res.edited).toEqual(["apps/web/a.ts"]);
+      expect(res.problems[0]).toMatch(/apps\/web\/a\.ts: changed since the plant/);
+      expect(readFileSync(join(r, "apps/web/a.ts"), "utf8")).toBe("my own edit, later");
+      expect(readFileSync(join(r, "apps/web/b.ts"), "utf8")).toBe("orig-b");
+    });
+
+    it("a file already back at its original needs nothing", () => {
+      const r = tmp();
+      put(r, "apps/web/a.ts", "orig");
+      const m = buildManifest(r, ["apps/web/a.ts"]);
+      put(r, "apps/web/a.ts", "planted");
+      recordPlanted(m, r);
+      put(r, "apps/web/a.ts", "orig");
+      expect(restoreFromManifest(m, r)).toMatchObject({ ok: true, restored: ["apps/web/a.ts"] });
+    });
+
+    it("a manifest with no planted record never overwrites a changed file", () => {
+      const r = tmp();
+      put(r, "apps/web/a.ts", "orig");
+      const m = buildManifest(r, ["apps/web/a.ts"]);
+      put(r, "apps/web/a.ts", "something else");
+      expect(restoreFromManifest(m, r).ok).toBe(false);
+      expect(readFileSync(join(r, "apps/web/a.ts"), "utf8")).toBe("something else");
+    });
+
+    it("status and digest do not restore a pending plant; run does", async () => {
+      const dir = localDir();
+      const manifest = join(dir, "plant/manifest.json");
+      mkdirSync(dirname(manifest), { recursive: true });
+      writeFileSync(manifest, JSON.stringify({ pid: 99999999, files: [{ path: "apps/web/zz-nonexistent-e2e-run.ts", existed: false, sha256: null, bytes: null }] }));
+      ownTarget();
+      const lines = out();
+      expect(await main(["status"])).toBe(0);
+      expect(await main(["digest"])).toBe(EXIT.refused);
+      expect(existsSync(manifest)).toBe(true);
+      expect(lines.join("\n")).toMatch(/PLANT PENDING/);
+      expect(lines.join("\n")).not.toMatch(/restoring a leftover/);
+      await main(["run", "-x"]); // refused at parse time, before recovery
+      expect(existsSync(manifest)).toBe(true);
+      vi.spyOn(io, "readTarget").mockReturnValue({ ok: false, reason: "stubbed: never start a run in a test" });
+      await main(["run", "some-spec"]);
+      expect(lines.join("\n")).toMatch(/restoring a leftover/);
+      expect(existsSync(manifest)).toBe(false);
+    });
+  });
+
+  // ---- S4 / S5: the target is pinned
+  describe("S4 both client URLs pinned, shell values stripped", () => {
+    it.each([
+      ["VITE_CONVEX_URL missing", { VITE_CONVEX_URL: null }, /VITE_CONVEX_URL is missing/],
+      ["a lookalike prefix host", { VITE_CONVEX_URL: `https://x${DEP}.convex.cloud` }, /VITE_CONVEX_URL/],
+      ["a lookalike suffix host", { VITE_CONVEX_URL: `https://${DEP}.convex.cloud.evil.example` }, /VITE_CONVEX_URL/],
+      ["a path after the host", { VITE_CONVEX_URL: `https://${DEP}.convex.cloud/x` }, /VITE_CONVEX_URL/],
+      ["VITE_CONVEX_SITE_URL missing", { VITE_CONVEX_SITE_URL: null }, /VITE_CONVEX_SITE_URL is missing/],
+      ["the site URL of another deployment", { VITE_CONVEX_SITE_URL: `https://${OTHER}.convex.site` }, /VITE_CONVEX_SITE_URL/],
+      ["a lookalike site host", { VITE_CONVEX_SITE_URL: `https://x${DEP}.convex.site` }, /VITE_CONVEX_SITE_URL/],
+    ])("refuses %s", (_n, over, re) => {
+      const r = target({ envLocalText: envLocal(over) });
+      expect(r.ok).toBe(false);
+      expect(r.reason).toMatch(re);
+    });
+
+    it("accepts the exact URLs, with or without a trailing slash", () => {
+      expect(target({ envLocalText: envLocal({ VITE_CONVEX_URL: `https://${DEP}.convex.cloud/`, VITE_CONVEX_SITE_URL: `https://${DEP}.convex.site/` }) }).ok).toBe(true);
+    });
+
+    it("does not inherit VITE_CONVEX_* or CONVEX_* from the shell", () => {
+      const r = target({ processEnv: { PATH: "/usr/bin", VITE_CONVEX_URL: "https://evil.convex.cloud", VITE_CONVEX_SITE_URL: "https://evil.convex.site", CONVEX_URL: "x", CONVEX_AGENT_MODE: "y" } });
+      expect(r.ok).toBe(true);
+      expect(r.env.VITE_CONVEX_URL).toBe(`https://${DEP}.convex.cloud`);
+      expect(r.env.VITE_CONVEX_SITE_URL).toBe(`https://${DEP}.convex.site`);
+      expect(r.env.CONVEX_URL).toBeUndefined();
+      expect(r.env.CONVEX_AGENT_MODE).toBeUndefined();
+      expect(r.env.PATH).toBe("/usr/bin");
+    });
+  });
+
+  describe("S5 apps/web/.env and shared-dev convex plants", () => {
+    it("refuses a deploy key or token in apps/web/.env", () => {
+      for (const k of ["CONVEX_DEPLOY_KEY", "CONVEX_DEPLOYMENT_TOKEN"]) {
+        const r = target({ envText: `${k}=prod:secret|abc\n` });
+        expect(r.ok).toBe(false);
+        expect(r.reason).toMatch(/\.env holds/);
+        expect(r.reason).not.toContain("secret");
+      }
+      expect(target({ envText: "SOMETHING=else\n" }).ok).toBe(true);
+    });
+
+    it("refuses a convex/ plant on a shared target only", () => {
+      expect(plantRefusal({ shared: true, files: ["apps/web/convex/a.ts"] })).toMatch(/shared dev/);
+      expect(plantRefusal({ shared: true, files: ["apps/web/playwright/x.spec.ts"] })).toBeNull();
+      expect(plantRefusal({ shared: false, files: ["apps/web/convex/a.ts"] })).toBeNull();
+    });
+  });
+
+  // ---- N1..N4
+  describe("N1 secret textboxes are masked in the digest", () => {
+    it("masks the value after the colon on a secret-named textbox only", () => {
+      expect(maskSecretLine('- textbox "Password" [ref=e12]: hunter2Secret')).toBe('- textbox "Password" [ref=e12]: [masked]');
+      expect(maskSecretLine('    - textbox "API key" [active] [ref=e3]: abc123')).toBe('    - textbox "API key" [active] [ref=e3]: [masked]');
+      expect(maskSecretLine('- textbox "Verification code": 123456')).toBe('- textbox "Verification code": [masked]');
+      expect(maskSecretLine('- textbox "Email": a-name')).toBe('- textbox "Email": a-name');
+      expect(maskSecretLine('- textbox "Password" [ref=e1]')).toBe('- textbox "Password" [ref=e1]');
+    });
+
+    it("the digest never carries the typed value", () => {
+      const md = '# Page snapshot\n\n```yaml\n- heading "Sign in" [ref=e1]\n- textbox "Password" [ref=e12]: hunter2Secret\n- button "Save" [ref=e13]\n```\n';
+      const test = { title: "t", file: "a/s.spec.ts", projectName: "e2e", status: "unexpected", results: [{ duration: 1, error: { message: "Error: boom\nLocator: getByRole('button', { name: 'Save' })" }, attachments: [{ name: "error-context", path: "/runs/r1/results/x/error-context.md" }] }] };
+      const report = { suites: [{ title: "s.spec.ts", file: "s.spec.ts", specs: [{ title: "t", file: "a/s.spec.ts", tests: [{ projectName: "e2e", status: test.status, results: test.results }] }] }] };
+      const text = buildDigest({
+        meta: { runId: "r", exit: 1, startedAt: "2026-01-01T10:00:00Z", finishedAt: "2026-01-01T10:01:00Z", project: "desktop", worker: 8, port: 3622, paused: "" },
+        phases: [{ label: "e2e", pw: "e2e", report }],
+        readText: () => md,
+        literals: [DEP],
+        relRoot: "/",
+        runDir: "/runs/r1",
+      });
+      expect(text).toContain('textbox "Password"');
+      expect(text).toContain("[masked]");
+      expect(text).not.toContain("hunter2Secret");
+    });
+  });
+
+  describe("N2 the Vite log goes through the redactor", () => {
+    it("ensureVite starts Vite through the logging filter with the deployment masked", async () => {
+      localDir();
+      vi.spyOn(io, "listenerPid").mockReturnValueOnce(null).mockReturnValue(4242);
+      vi.spyOn(io, "httpUp").mockResolvedValue(true);
+      vi.spyOn(io, "sleep").mockResolvedValue(undefined);
+      const start = vi.spyOn(io, "startViteLogged").mockReturnValue(1);
+      await ensureVite({ port: 3622, env: { A: "b" }, deployment: DEP });
+      expect(start).toHaveBeenCalledTimes(1);
+      expect(start.mock.calls[0][0]).toMatchObject({ port: 3622, literals: [DEP] });
+      expect(start.mock.calls[0][0].logFile).toMatch(/vite-3622\.log$/);
+    });
+
+    it("the filter writes a masked log: deployment host, bearer token and the literal", () => {
+      const file = join(tmp(), "vite.log");
+      const input = `ready\nconnected to https://${DEP}.convex.cloud\nAuthorization: Bearer abcdef0123456789\nname ${DEP} here\n`;
+      const r = spawnSync(process.execPath, [join(APP_DIR, "playwright/tools/e2e-run.mjs"), "__logfilter", file], { input, env: { ...process.env, E2E_RUN_LITERALS: JSON.stringify([DEP]) }, encoding: "utf8" });
+      expect(r.status).toBe(0);
+      const log = readFileSync(file, "utf8");
+      expect(log).toContain("ready");
+      expect(log).not.toContain(DEP);
+      expect(log).not.toContain("abcdef0123456789");
+    });
+  });
+
+  describe("N3 spec arguments cannot become Playwright options", () => {
+    it("refuses a spec starting with a dash", () => {
+      expect(parseArgs(["run", "-c", "other.config.ts"]).error).toMatch(/unknown option -c/);
+      expect(parseArgs(["run", "-x", "spec"]).error).toMatch(/cannot start with "-"/);
+      expect(parseArgs(["plant", "--edit", "f.json", "-g", "spec"]).error).toMatch(/unknown option -g/);
+      expect(parseArgs(["-h"]).cmd).toBe("help");
+    });
+  });
+
+  describe("N4 stop only signals our own runner", () => {
+    const setup = (cmd) => {
+      const dir = localDir();
+      const run = join(dir, "runs", "20260101-000000-desktop");
+      mkdirSync(run, { recursive: true });
+      writeFileSync(join(dir, "run.lock"), "4242");
+      writeFileSync(join(dir, "current"), "20260101-000000-desktop");
+      writeFileSync(join(run, "status.json"), JSON.stringify({ state: "running", pid: 4242 }));
+      let alive = true;
+      vi.spyOn(io, "isAlive").mockImplementation(() => alive);
+      vi.spyOn(io, "sleep").mockResolvedValue(undefined);
+      vi.spyOn(io, "commandLine").mockReturnValue(cmd);
+      return vi.spyOn(process, "kill").mockImplementation(() => {
+        alive = false;
+        return true;
+      });
+    };
+
+    it("does not signal a pid that is not the runner", async () => {
+      const kill = setup("/bin/sleep 1000");
+      const lines = out();
+      expect(await main(["stop"])).toBe(EXIT.refused);
+      expect(kill).not.toHaveBeenCalled();
+      expect(lines.join("\n")).toMatch(/not this tool's runner/);
+    });
+
+    it("does not signal when status.json names another pid", async () => {
+      const kill = setup("node /x/playwright/tools/e2e-run.mjs __runner /x/run");
+      const dir = process.env.E2E_RUN_LOCAL_DIR;
+      writeFileSync(join(dir, "runs/20260101-000000-desktop/status.json"), JSON.stringify({ state: "running", pid: 1 }));
+      out();
+      expect(await main(["stop"])).toBe(EXIT.refused);
+      expect(kill).not.toHaveBeenCalled();
+    });
+
+    it("signals the runner it recognises", async () => {
+      const kill = setup("node /x/playwright/tools/e2e-run.mjs __runner /x/run");
+      out();
+      expect(await main(["stop"])).toBe(0);
+      expect(kill).toHaveBeenCalledWith(4242, "SIGTERM");
+    });
   });
 });
