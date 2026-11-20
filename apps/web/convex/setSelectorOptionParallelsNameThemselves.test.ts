@@ -145,7 +145,7 @@ describe("setSelectorOptionParallelsNameThemselves", () => {
     async (typeTitle) => {
       const t = convexTest(schema, modules);
       const id = await insertUnder(t, typeTitle);
-      await expect(setOn(t, id, true)).rejects.toThrow(/Parallels name themselves on an insert/);
+      await expect(setOn(t, id, true)).rejects.toThrow(/Only an insert's parallels can skip its name\./);
       const row = await getRow(t, id);
       expect(row?.metadata).toBeUndefined();
       expect(row?.lastUpdated).toBe(SENTINEL);
@@ -155,7 +155,7 @@ describe("setSelectorOptionParallelsNameThemselves", () => {
   test("an insert-level row with no parent is refused", async () => {
     const t = convexTest(schema, modules);
     const id = await insertRow(t, { level: "insert" });
-    await expect(setOn(t, id, true)).rejects.toThrow(/on an insert/);
+    await expect(setOn(t, id, true)).rejects.toThrow(/Only an insert's parallels can skip its name\./);
     expect((await getRow(t, id))?.metadata).toBeUndefined();
   });
 
@@ -165,7 +165,7 @@ describe("setSelectorOptionParallelsNameThemselves", () => {
       const t = convexTest(schema, modules);
       const typeId = await insertRow(t, { level: "variantType", value: "Inserts" });
       const id = await insertRow(t, { level, parentId: typeId });
-      await expect(setOn(t, id, true)).rejects.toThrow(/on an insert/);
+      await expect(setOn(t, id, true)).rejects.toThrow(/Only an insert's parallels can skip its name\./);
       expect((await getRow(t, id))?.metadata).toBeUndefined();
     },
   );

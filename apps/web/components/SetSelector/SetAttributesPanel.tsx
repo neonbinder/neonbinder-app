@@ -34,7 +34,11 @@ import CardPrefixRow from "./CardPrefixRow";
 import RenameEntityControl, { type RenameEntityHandle } from "./RenameEntityControl";
 import { derivedVariantFlags, variantTypeKind } from "../../convex/variantRole";
 import { titleChainFacts } from "../../convex/listingShortName";
-import { setDescriptionForTitles } from "../../convex/features/listingInputs";
+import {
+  assessNewCardListing,
+  setDescriptionForTitles,
+  type ListingSetContext,
+} from "../../convex/features/listingInputs";
 import MoveSetToBrandControl from "./MoveSetToBrandControl";
 import MakeParallelControl, { type ReshapeStep } from "./MakeParallelControl";
 import MakeInsertControl from "./MakeInsertControl";
@@ -351,6 +355,13 @@ export default function SetAttributesPanel({
       ? { level: "parallel", parentId: row._id }
       : "skip",
   );
+  // NEO-619 (a11y 2.4.3) — the row the switch was last shown for. Once shown,
+  // the cell stays mounted until the selected row changes: pressing it off
+  // with no parallel left, or the last parallel going, must not unmount the
+  // button that holds focus (focus would fall to the page). Keyed by id, so a
+  // different row starts unlatched with no reset step.
+  const [parallelsSwitchLatchedFor, setParallelsSwitchLatchedFor] =
+    useState<Id<"selectorOptions"> | null>(null);
 
   // The row's level decides the default (NEO-496: open at the set level). The
   // row may still be loading on the first render; the effect below settles
@@ -561,9 +572,22 @@ export default function SetAttributesPanel({
   // already on stays reachable with none left, so it can always be turned off:
   // a later parallel would otherwise inherit a switch nobody can see.
   const parallelsNameThemselvesOn = row.metadata?.parallelsNameThemselves === true;
-  const showParallelsNameThemselves =
+  const parallelsSwitchWanted =
     isInsertRoleRow &&
     (parallelsNameThemselvesOn || (parallelRowsBeneath?.length ?? 0) >= 1);
+  if (parallelsSwitchWanted && parallelsSwitchLatchedFor !== selectorOptionId) {
+    setParallelsSwitchLatchedFor(selectorOptionId);
+  }
+  const showParallelsNameThemselves =
+    isInsertRoleRow &&
+    (parallelsSwitchWanted || parallelsSwitchLatchedFor === selectorOptionId);
+  // The title a card on the first parallel beneath would be born with, the
+  // switch applied: shown only while the switch is on (it describes that state).
+  const firstParallelBeneath = parallelRowsBeneath?.[0];
+  const parallelsSampleTitle =
+    parallelsNameThemselvesOn && firstParallelBeneath
+      ? parallelSampleTitleFor(row, chain, features, firstParallelBeneath)
+      : undefined;
   const titlesDescription = showShortNameRow
     ? setNameInTitlesFor(row, chain, features)
     : undefined;
@@ -880,12 +904,13 @@ export default function SetAttributesPanel({
    * not do: it leaves existing titles alone, and Regenerate reads it.
    */
   const handleToggleParallelsNameThemselves = async (on: boolean) => {
+    const insertName = row.value;
     try {
       await setParallelsNameThemselves({ id: selectorOptionId, on });
       showToast(
         on
-          ? "Parallels name themselves · Regenerate a card to retitle it"
-          : "Parallels carry the insert's name again · Regenerate a card to retitle it",
+          ? `Parallel titles skip “${insertName}” · Regenerate each card to retitle it`
+          : `Parallel titles carry “${insertName}” again · Regenerate each card to retitle it`,
       );
     } catch (e) {
       showFailedToast(
@@ -1380,9 +1405,14 @@ export default function SetAttributesPanel({
                 key={`parallels-name-themselves-${selectorOptionId}`}
                 eyebrow="Titles"
                 cellLabel="Set feature Parallel titles"
-                text={PARALLELS_NAME_THEMSELVES_TEXT}
+                text={parallelTitlesSkipText(row.value)}
                 on={parallelsNameThemselvesOn}
                 disabledReason={null}
+                note={
+                  parallelsSampleTitle !== undefined && firstParallelBeneath
+                    ? `${firstParallelBeneath.value} cards read: ${parallelsSampleTitle}`
+                    : undefined
+                }
                 onToggle={handleToggleParallelsNameThemselves}
               />
             )}
@@ -1440,16 +1470,7 @@ const SHORT_NAME_FEATURE: ExpectedFeature = {
  */
 function setNameInTitlesFor(
   row: { _id: string; level: string; value: string },
-  chain: ReadonlyArray<{
-    _id: string;
-    level: string;
-    value: string;
-    metadata?: {
-      listingShortName?: string;
-      parallelsNameThemselves?: boolean;
-      isBrandUnknown?: boolean;
-    } | null;
-  }>,
+  chain: ReadonlyArray<TitleChainRowDoc>,
   features: Record<string, string>,
 ): string | undefined {
   // The row's own value is what the field shows; the placeholder is what the
@@ -1460,9 +1481,33 @@ function setNameInTitlesFor(
     ...above.map(asChainRow),
   ]);
   if (facts.listingShortName) return facts.listingShortName;
+  const description = setDescriptionForTitles(
+    titleSetContextFor(chain, features, facts),
+  );
+  return description || undefined;
+}
+
+/** A selectorOptions row as the title helpers here read it. */
+type TitleChainRowDoc = {
+  _id: string;
+  level: string;
+  value: string;
+  metadata?: {
+    listingShortName?: string;
+    parallelsNameThemselves?: boolean;
+    isBrandUnknown?: boolean;
+  } | null;
+};
+
+/** The builder's set context for a chain (root first) and the facts read off it. */
+function titleSetContextFor(
+  chain: ReadonlyArray<TitleChainRowDoc>,
+  features: Record<string, string>,
+  facts: ReturnType<typeof titleChainFacts>,
+): ListingSetContext {
   const at = (level: string) => chain.find((c) => c.level === level);
   const manufacturer = at("manufacturer");
-  const description = setDescriptionForTitles({
+  return {
     sportValue: at("sport")?.value ?? "",
     setNameValue: at("setName")?.value,
     ...(manufacturer?.metadata?.isBrandUnknown ? { manufacturerBrandUnknown: true } : {}),
@@ -1472,8 +1517,37 @@ function setNameInTitlesFor(
       ...features,
     },
     ...facts,
-  });
-  return description || undefined;
+  };
+}
+
+/** Stands in for the player's name in the sample title. */
+const SAMPLE_TITLE_PLAYER = "<Player>";
+
+/**
+ * NEO-619 — the title the builder would write for a card on `parallel` (the
+ * first parallel under the insert `row`), with the insert's "Parallels name
+ * themselves" read off `row` as every title path reads it. It is the real
+ * builder (`assessNewCardListing`: the insert, Regenerate and the parallel
+ * build run the same function) fed the real chain facts (`titleChainFacts`),
+ * with a placeholder player and no card number, since no real card is read.
+ * `chain` is root first and ends at (or passes through) `row`.
+ */
+function parallelSampleTitleFor(
+  row: TitleChainRowDoc,
+  chain: ReadonlyArray<TitleChainRowDoc>,
+  features: Record<string, string>,
+  parallel: TitleChainRowDoc & { features?: Record<string, string> | null },
+): string {
+  const above = chain.filter((c) => c._id !== row._id).reverse();
+  const facts = titleChainFacts([
+    asChainRow(parallel),
+    asChainRow(row),
+    ...above.map(asChainRow),
+  ]);
+  const set = titleSetContextFor(chain, { ...features, ...(parallel.features ?? {}) }, facts);
+  return assessNewCardListing({ cardNumber: "" }, set, {
+    playerNames: [SAMPLE_TITLE_PLAYER],
+  }).assessment.title;
 }
 
 function asChainRow(row: {
@@ -1774,8 +1848,13 @@ function SlViaAllBrandsToggle({
   );
 }
 
-/** NEO-619 — the "Parallels name themselves" switch's visible sentence. */
-export const PARALLELS_NAME_THEMSELVES_TEXT = "Parallels name themselves";
+/**
+ * NEO-619 — the insert switch's visible sentence, naming the insert it
+ * speaks for (the row's own value, in the curly quotes NB copy uses).
+ */
+export function parallelTitlesSkipText(insertName: string): string {
+  return `Parallel titles skip “${insertName}”`;
+}
 
 /**
  * The Attributes grid's pressed-toggle cell: an eyebrow over one pressed
@@ -1794,6 +1873,7 @@ function PressedToggleCell({
   text,
   on,
   disabledReason,
+  note,
   onToggle,
 }: {
   eyebrow: string;
@@ -1806,10 +1886,16 @@ function PressedToggleCell({
   on: boolean;
   /** Non-null: shown, unpressable, with this line under it. */
   disabledReason: string | null;
+  /**
+   * A line that says what the pressed state comes to, under the button and
+   * read with it. Passed only while it describes something; wraps, never clips.
+   */
+  note?: string;
   onToggle: (next: boolean) => Promise<unknown>;
 }) {
   const fieldClass = useFieldTestClass();
   const reasonId = useId();
+  const noteId = useId();
   const [busy, setBusy] = useState(false);
   const unavailable = busy || disabledReason !== null;
 
@@ -1842,7 +1928,11 @@ function PressedToggleCell({
         } ${unavailable ? "opacity-60 cursor-not-allowed hover:border-control" : ""}`}
         aria-pressed={on}
         aria-disabled={unavailable || undefined}
-        aria-describedby={disabledReason ? reasonId : undefined}
+        aria-describedby={
+          [disabledReason ? reasonId : null, note ? noteId : null]
+            .filter(Boolean)
+            .join(" ") || undefined
+        }
         onClick={() => void toggle()}
         onKeyDown={(e) => activateOnEnter(e, () => void toggle(), unavailable)}
       >
@@ -1852,8 +1942,13 @@ function PressedToggleCell({
             on ? "border-neon-green-text bg-neon-green" : "border-control"
           }`}
         />
-        <span>{text}</span>
+        <span className="wrap-anywhere">{text}</span>
       </button>
+      {note && (
+        <span id={noteId} className="text-[11px] text-ink-2 wrap-anywhere">
+          {note}
+        </span>
+      )}
       {disabledReason && (
         // Next to the control it describes, not only in a tooltip: a
         // disabled control that keeps its reason on hover asks a keyboard

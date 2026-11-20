@@ -2821,7 +2821,8 @@ describe("SetAttributesPanel — Parallels name themselves (NEO-619)", () => {
     ...makeChain("Baseball"),
     { _id: "type-id", value: typeTitle, level: "variantType" },
   ];
-  const toggle = () => screen.getByRole("button", { name: "Parallels name themselves" });
+  const SKIP = "Parallel titles skip \u201cZorbo Special Purple\u201d";
+  const toggle = () => screen.getByRole("button", { name: SKIP });
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -2943,7 +2944,9 @@ describe("SetAttributesPanel — Parallels name themselves (NEO-619)", () => {
     });
     await waitFor(() =>
       expect(
-        screen.getByText("Parallels name themselves · Regenerate a card to retitle it"),
+        screen.getByText(
+          "Parallel titles skip \u201cZorbo Special Purple\u201d \u00b7 Regenerate each card to retitle it",
+        ),
       ).toBeTruthy(),
     );
   });
@@ -2966,7 +2969,7 @@ describe("SetAttributesPanel — Parallels name themselves (NEO-619)", () => {
     await waitFor(() =>
       expect(
         screen.getByText(
-          "Parallels carry the insert's name again · Regenerate a card to retitle it",
+          "Parallel titles carry \u201cZorbo Special Purple\u201d again \u00b7 Regenerate each card to retitle it",
         ),
       ).toBeTruthy(),
     );
@@ -3005,6 +3008,135 @@ describe("SetAttributesPanel — Parallels name themselves (NEO-619)", () => {
         screen.getByText("Failed: That row is gone. Refresh and try again."),
       ).toBeTruthy(),
     );
+  });
+
+  describe("the cell stays mounted once shown (a11y 2.4.3)", () => {
+    const rowOn = () =>
+      makeRow({
+        level: "insert",
+        value: "Zorbo Special Purple",
+        metadata: { parallelsNameThemselves: true },
+      });
+    const rowOff = () => makeRow({ level: "insert", value: "Zorbo Special Purple" });
+    const fresh = () => (
+      <SetAttributesPanel
+        selectorOptionId={SELECTOR_OPTION_ID}
+        defaultCollapsed={false}
+      />
+    );
+
+    it("switching off with no parallel left keeps the cell, and focus stays on the button", async () => {
+      currentParallelRows = [];
+      currentRow = rowOn();
+      currentChain = insertChain();
+      const view = renderPanel();
+      toggle().focus();
+      expect(document.activeElement).toBe(toggle());
+      await act(async () => {
+        fireEvent.click(toggle());
+      });
+      // The server's write lands: the flag is gone, and no parallel is left.
+      currentRow = rowOff();
+      view.rerender(fresh());
+      expect(screen.getByLabelText(CELL)).toBeTruthy();
+      expect(toggle().getAttribute("aria-pressed")).toBe("false");
+      expect(document.activeElement).toBe(toggle());
+    });
+
+    it("the last parallel going keeps the cell shown, off", () => {
+      currentRow = rowOff();
+      currentChain = insertChain();
+      const view = renderPanel();
+      expect(screen.getByLabelText(CELL)).toBeTruthy();
+      toggle().focus();
+      currentParallelRows = [];
+      view.rerender(fresh());
+      expect(screen.getByLabelText(CELL)).toBeTruthy();
+      expect(document.activeElement).toBe(toggle());
+    });
+
+    it("a row that never showed it stays without it", () => {
+      currentParallelRows = [];
+      currentRow = rowOff();
+      currentChain = insertChain();
+      const view = renderPanel();
+      view.rerender(fresh());
+      expect(screen.queryByLabelText(CELL)).toBeNull();
+    });
+
+    it("is unlatched when the selected row changes", () => {
+      currentRow = rowOff();
+      currentChain = insertChain();
+      const view = renderPanel();
+      expect(screen.getByLabelText(CELL)).toBeTruthy();
+      // Another insert, with no parallel and the switch off.
+      currentParallelRows = [];
+      currentRow = { ...rowOff(), _id: "another-insert-id" };
+      view.rerender(
+        <SetAttributesPanel
+          selectorOptionId={"another-insert-id" as never}
+          defaultCollapsed={false}
+        />,
+      );
+      expect(screen.queryByLabelText(CELL)).toBeNull();
+    });
+  });
+
+  describe("the sample title under the switch", () => {
+    const SAMPLE = /cards read:/;
+    // The set row is named as the hobby names it: the title says the year and
+    // maker once, ahead of it.
+    const chromeChain = () =>
+      insertChain().map((c) =>
+        c.level === "setName" ? { ...c, value: "Chrome" } : c,
+      );
+    const insertOn = (extra: Record<string, unknown> = {}) =>
+      makeRow({
+        level: "insert",
+        value: "Zorbo Special Purple",
+        metadata: { parallelsNameThemselves: true, ...extra },
+      });
+
+    it("is hidden while the switch is off", () => {
+      currentRow = makeRow({ level: "insert", value: "Zorbo Special Purple" });
+      currentChain = chromeChain();
+      renderPanel();
+      expect(screen.queryByText(SAMPLE)).toBeNull();
+    });
+
+    it("reads the title a card on the first parallel gets, the insert's name left out", () => {
+      currentParallelRows = [{ _id: "par-1", level: "parallel", value: "Gold" }];
+      currentRow = insertOn();
+      currentChain = chromeChain();
+      renderPanel();
+      const note = screen.getByText(SAMPLE);
+      expect(note.textContent).toBe(
+        "Gold cards read: 2024 Topps Chrome Gold Parallel <Player> Baseball",
+      );
+      expect(note.textContent).not.toContain("Zorbo");
+      // Read with the button it describes.
+      expect(toggle().getAttribute("aria-describedby")).toBe(note.id);
+    });
+
+    it("uses the first parallel beneath", () => {
+      currentParallelRows = [
+        { _id: "par-1", level: "parallel", value: "Gold" },
+        { _id: "par-2", level: "parallel", value: "Aqua" },
+      ];
+      currentRow = insertOn();
+      currentChain = chromeChain();
+      renderPanel();
+      expect(screen.getByText(/^Gold cards read:/)).toBeTruthy();
+      expect(screen.queryByText(/Aqua cards read:/)).toBeNull();
+    });
+
+    it("is hidden with the switch on and no parallel to read", () => {
+      currentParallelRows = [];
+      currentRow = insertOn();
+      currentChain = chromeChain();
+      renderPanel();
+      expect(screen.queryByText(SAMPLE)).toBeNull();
+    });
   });
 
   describe("the SportLots link toggle, now on the shared cell, renders as before", () => {

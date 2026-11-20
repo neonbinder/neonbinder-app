@@ -8280,7 +8280,7 @@ export const setSelectorOptionParallelsNameThemselves = mutation({
       row.level !== "insert" ||
       derivedVariantFlags(row.level, parent)?.isInsert !== true
     ) {
-      throw new ConvexError("Parallels name themselves on an insert.");
+      throw new ConvexError("Only an insert's parallels can skip its name.");
     }
     const next = { ...(row.metadata ?? {}) };
     if (args.on) next.parallelsNameThemselves = true;
