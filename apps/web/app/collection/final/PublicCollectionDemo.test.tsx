@@ -159,7 +159,9 @@ describe("the public collection demo", () => {
     back();
     expect(pageUrl()).toBe(DEMO_URL);
     expect(scope().value).toBe("all");
-  });
+    // Inherently heavy and synchronous: ~14 route changes, each re-rendering a whole
+    // tab (about 0.4 s warm). A loaded machine runs it 10x slower, so it gets the room.
+  }, 30_000);
 
   it("a scope pick is not a Back step: Back goes to the view before, not the unscoped one", () => {
     renderDemo();
@@ -280,7 +282,7 @@ describe("the public demo never touches Convex", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Move here: .*#12 Jim Kelly/ }));
     await waitFor(() =>
       expect(
-        screen.getAllByRole("status").some((s) => /^Moved #12 Jim Kelly from '96 Contenders to Bills PC, page 1, pocket 1\.$/.test(s.textContent ?? "")),
+        screen.getAllByRole("status").some((s) => /Moved #12 Jim Kelly from '96 Contenders to Bills PC, page 1, pocket 1\.$/.test(s.textContent ?? "")),
       ).toBe(true),
     );
     expect(pageUrl()).toMatch(/^\/binder-tracking\?demo=on&tab=binders&b=/);

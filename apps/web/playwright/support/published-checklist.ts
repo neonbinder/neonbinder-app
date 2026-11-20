@@ -383,6 +383,25 @@ function csvWithNoTeamOn(name: ChecklistName, number: string): string {
 }
 
 /**
+ * A captured file with `extra` rows appended: rows the publisher lists that the
+ * marketplace has no card for (NEO-574: a spec's own player on cards only the
+ * checklist names, kept in Match Cards). Throws when an extra row's number is
+ * already in the file, so it can only ever ADD checklist-only rows.
+ */
+function csvWithExtraRows(name: ChecklistName, extra: readonly ChecklistRow[]): string {
+  const lines = readFileSync(`${DIRECTORY}${name}.csv`, "utf8").split("\n").filter((l) => l.trim() !== "");
+  const header = cells(lines[0]);
+  const taken = new Set(checklistRows(name).map((r) => r.number));
+  const out = [...lines];
+  for (const row of extra) {
+    if (taken.has(row.number)) throw new Error(`${name}.csv already has a row numbered "${row.number}": an extra row must be checklist-only.`);
+    taken.add(row.number);
+    out.push(header.map((column) => csvCell(row[column as keyof ChecklistRow] ?? "")).join(","));
+  }
+  return `${out.join("\n")}\n`;
+}
+
+/**
  * Upload a captured checklist and use it. Contract: ENTRY a checklist section
  * with "Add the official checklist" on screen (the set's Base or variant is
  * open). EXIT the dialog is closed and the chip "Official checklist: N rows"
@@ -394,13 +413,24 @@ function csvWithNoTeamOn(name: ChecklistName, number: string): string {
  * file's: the row is answered either way, but a card the marketplace already gives a
  * team is a disagreement the operator settles, which the fetch does not count as
  * answered by the checklist (the caller subtracts it from `matched`).
+ *
+ * `extraRows` (NEO-574) uploads the file with those rows appended. Each must carry
+ * a number the marketplace does not list for the set (and the file does not hold):
+ * a checklist-only row, so the facts' `rows` grow by them and `matched` does not
+ * (a checklist-only row is not a card until it is kept in Match Cards). Once kept
+ * and saved, each is a card its checklist row gives a team, so the line the save
+ * lands with counts them: N there is `matched` plus the kept rows (measured NEO-574).
  */
 export async function usePublishersChecklist(
   page: Page,
   name: ChecklistName,
-  options: { noTeamOn?: string } = {},
+  options: { noTeamOn?: string; extraRows?: readonly ChecklistRow[] } = {},
 ): Promise<ChecklistFacts> {
-  const facts = checklistFacts(name);
+  if (options.noTeamOn !== undefined && options.extraRows !== undefined) {
+    throw new Error("usePublishersChecklist: noTeamOn and extraRows are one change each; a spec needing both builds its own file.");
+  }
+  const captured = checklistFacts(name);
+  const facts = { ...captured, rows: captured.rows + (options.extraRows?.length ?? 0) };
   // A second visit to the same open checklist (a discarded review fetched again)
   // may still hold the file the first visit used: the chip is then the proof.
   const chip = publishersChecklistChip(page, facts.rows);
@@ -410,8 +440,13 @@ export async function usePublishersChecklist(
   const dialog = publishersChecklistDialog(page);
   await expect(dialog).toBeVisible();
   const file = dialog.getByLabel("Choose a file");
-  if (options.noTeamOn === undefined) await file.setInputFiles(facts.path);
-  else await file.setInputFiles({ name: `${name}.csv`, mimeType: "text/csv", buffer: Buffer.from(csvWithNoTeamOn(name, options.noTeamOn)) });
+  if (options.noTeamOn !== undefined) {
+    await file.setInputFiles({ name: `${name}.csv`, mimeType: "text/csv", buffer: Buffer.from(csvWithNoTeamOn(name, options.noTeamOn)) });
+  } else if (options.extraRows !== undefined) {
+    await file.setInputFiles({ name: `${name}.csv`, mimeType: "text/csv", buffer: Buffer.from(csvWithExtraRows(name, options.extraRows)) });
+  } else {
+    await file.setInputFiles(facts.path);
+  }
   await expect(previewRowCount(dialog, facts.rows)).toBeVisible();
   await dialog.getByRole("button", { name: "Use this checklist" }).click();
   await expect(dialog).toBeHidden();
@@ -479,7 +514,9 @@ export function matchCardsDialog(page: Page): Locator {
  * This is the operator who wants every card the marketplace listed and nothing
  * the checklist alone adds: it keeps every marketplace single ("Keep all
  * BSC-only cards", and SportLots' when that column holds any), keeps no
- * checklist-only row, and confirms. A spec whose feature IS Match Cards drives
+ * checklist-only row, and confirms. With `keepChecklistOnly: n` (NEO-574) it
+ * also keeps the checklist's own rows: the column must read "Checklist only
+ * (n)" first, and every one of them is kept ("Keep all checklist-only cards"). A spec whose feature IS Match Cards drives
  * the dialog itself; this is for the specs that only pass through it.
  *
  * The fetch is a live BSC round trip, and Confirm unlocks only once this run's
@@ -496,7 +533,7 @@ export function matchCardsDialog(page: Page): Locator {
  */
 export async function confirmChecklistMatchCards(
   page: Page,
-  { facts, what }: { facts?: ChecklistFacts; what: string },
+  { facts, what, keepChecklistOnly }: { facts?: ChecklistFacts; what: string; keepChecklistOnly?: number },
 ): Promise<void> {
   const dialog = matchCardsDialog(page);
   await expectAfterMarketplace(page, dialog, { platform: "BuySportsCards", what: `Match Cards after ${what}` });
@@ -511,6 +548,11 @@ export async function confirmChecklistMatchCards(
       await dialog.getByRole("button", { name: `Keep all ${side}-only cards` }).click();
       await expect(dialog.getByRole("heading", { name: `${side} only (0)` })).toBeVisible();
     }
+  }
+  if (keepChecklistOnly !== undefined) {
+    await expect(dialog.getByRole("heading", { name: `Checklist only (${keepChecklistOnly})` })).toBeVisible();
+    await dialog.getByRole("button", { name: "Keep all checklist-only cards" }).click();
+    await expect(dialog.getByRole("heading", { name: "Checklist only (0)" })).toBeVisible();
   }
   await confirm.click();
   await expect(dialog).toBeHidden();

@@ -171,7 +171,7 @@ describe("the Sales tab", () => {
     const orders = screen.getByRole("list", { name: "Orders, newest first" });
     const order = within(orders).getByRole("article", { name: "BuySportsCards order 100245" });
     expect(order.textContent).toContain("Ready to ship");
-    expect(order.textContent).toContain("6 items, $12.50, you keep $10.50");
+    expect(order.textContent).toContain("6 cards, $12.50, you keep $10.50");
     const lines = within(order).getAllByRole("listitem").map((li) => li.textContent);
     expect(lines[0]).toBe("2× 1985 Topps #620 Dwight Gooden (Near mint)$5.00 each");
     expect(lines[1]).toContain("1× A BuySportsCards card we can't match (Excellent)$2.50 each");
@@ -325,10 +325,11 @@ describe("the Sales tab", () => {
       expect(orderOf("eBay order 27-11111-22222").textContent).toContain("2 cards");
     });
 
-    it("a BuySportsCards line with no card says items in the header but keeps its own name and problem words", () => {
+    it("a BuySportsCards line with no card still says cards in the header (its lines are always cards) and keeps its own name and problem words", () => {
       setup({ sales: [sale({ id: "b1", orderNo: "77", items: [{ condition: "excellent", quantity: 1, priceCents: 250, applied: false, problem: "unmatched" }] })] });
       const order = orderOf("BuySportsCards order 77");
-      expect(order.textContent).toContain("1 item");
+      expect(order.textContent).toContain("1 card");
+      expect(order.textContent).not.toMatch(/\bitems?\b/);
       expect(order.textContent).toContain("A BuySportsCards card we can't match");
       expect(order.textContent).toContain("We couldn't match this to a card in NeonBinder");
     });

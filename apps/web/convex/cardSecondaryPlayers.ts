@@ -426,7 +426,7 @@ export const setSecondaryPlayers = mutation({
       throw new ConvexError(TOO_MANY_SECONDARY_PLAYERS);
     }
     const card = await ctx.db.get(args.cardId);
-    if (!card) throw new ConvexError("That card isn't in NB anymore.");
+    if (!card) throw new ConvexError("That card isn't in Neon Binder anymore.");
     const result = await setCardSecondaryPlayers(ctx, card, args.playerIds);
     // Ids and counts only.
     console.log(

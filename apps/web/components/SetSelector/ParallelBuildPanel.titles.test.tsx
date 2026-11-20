@@ -145,7 +145,6 @@ describe("the Fix card titles door on the ticker", () => {
   test("shows once the run has finished with titles to fix, and opens on its own once", async () => {
     render(<ParallelBuildPanel run={run()} onStop={() => {}} />);
     expect(screen.getByRole("button", { name: "Fix 3 card titles" })).toBeTruthy();
-    await waitFor(() => expect(mockQuery).toHaveBeenCalled());
     // The door opened by itself: it read the cards (a call without
     // `wantCards: 0`) of exactly the parallels with titles to fix.
     await waitFor(() =>
@@ -157,6 +156,9 @@ describe("the Fix card titles door on the ticker", () => {
         ),
       ).toEqual(new Set([A, C])),
     );
+    // Wait for the whole load so no query is still in flight when the next
+    // test resets the mock.
+    await screen.findByText("Every title fits now. Nothing to fix.", { selector: "span" });
   });
 
   test("is not there while the run is live", async () => {
@@ -187,13 +189,17 @@ describe("the door's lines go through the ticker's one live line (a11y)", () => 
     const { container } = render(
       <ParallelBuildPanel run={run({ announcement: "Built 3 parallels." })} onStop={() => {}} />,
     );
-    // Self-opens, finds nothing left to fix, says so.
+    // Self-opens, finds nothing left to fix, says so. The live node's text is
+    // written by an effect after the visible line renders, so wait on the live
+    // node itself (a screen reader hears it a tick after the eye sees it).
     await waitFor(() =>
-      expect(screen.getByText("Every title fits now. Nothing to fix.")).toBeTruthy(),
+      expect(container.querySelector('[role="status"]')!.textContent).toBe(
+        "Every title fits now. Nothing to fix.",
+      ),
     );
     const live = container.querySelectorAll('[role="status"]');
     expect(live).toHaveLength(1);
-    expect(live[0].textContent).toBe("Every title fits now. Nothing to fix.");
+    expect(screen.getByText("Every title fits now. Nothing to fix.", { selector: "span" })).toBeTruthy();
     // The visible line is plain text, outside any live region.
     // It stays after the door has gone, so a sighted operator sees why.
     const shown = screen.getByText("Every title fits now. Nothing to fix.", { selector: "span" });
@@ -216,7 +222,9 @@ describe("the door's lines go through the ticker's one live line (a11y)", () => 
         onStop={() => {}}
       />,
     );
-    expect(container.querySelector('[role="status"]')!.textContent).toBe("Building 3 parallels.");
+    await waitFor(() =>
+      expect(container.querySelector('[role="status"]')!.textContent).toBe("Building 3 parallels."),
+    );
   });
 });
 
@@ -321,9 +329,11 @@ describe("NEO-581 — the button follows the cards", () => {
     await waitFor(() => expect(doorButton(/card titles?$/)).toBeNull());
     expect(clause()).toBeNull();
     // One live line, saying the save; the door's text stays for the eye.
-    const live = container.querySelectorAll('[role="status"]');
-    expect(live).toHaveLength(1);
-    expect(live[0].textContent).toBe("Saved 2 titles.");
+    // The live node is written by an effect a tick after the visible line.
+    await waitFor(() =>
+      expect(container.querySelector('[role="status"]')!.textContent).toBe("Saved 2 titles."),
+    );
+    expect(container.querySelectorAll('[role="status"]')).toHaveLength(1);
     expect(screen.getByText("Saved 2 titles.", { selector: "span" })).toBeTruthy();
     // Focus was on the door; it is parked on the panel, not dropped.
     expect(document.activeElement).not.toBe(document.body);

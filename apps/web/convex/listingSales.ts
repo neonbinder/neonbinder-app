@@ -834,7 +834,7 @@ export const recordOrder = internalMutation({
 
 /** The BSC era of a card, from NB's own year row above its variant. */
 export async function eraOfVariant(
-  ctx: Pick<MutationCtx, "db">,
+  ctx: Pick<QueryCtx, "db">,
   variantId: Id<"selectorOptions">,
   cache: Map<string, BscEra | null>,
 ): Promise<BscEra | null> {
@@ -1408,7 +1408,7 @@ async function pollOwnerSteps(
  *   as `platformCardId`, an empty condition, the SKU as sent (if any) and not
  *   graded. The apply refuses it as "unmatched" and lowers nothing.
  * - Every line carries eBay's title (`listed.title`) when it was readable: a
- *   label only, never parsed or matched.
+ *   label, parsed for Pick List order only (NEO-590), never matched to a card.
  *
  * Null when the order has no readable line, or when it holds no NB line and
  * was placed before `opts.otherOrdersFrom` (the floor: `ebayOrdersFloor`;
@@ -1545,12 +1545,86 @@ async function pollEbaySteps(
   return await finish(complete ? newest : undefined, note);
 }
 
-/** One owner's poll (scheduled by `pollAll`). */
+/** How long a poll may hold its owner's lease before another may replace it (a poll that died). */
+export const POLL_LEASE_MS = 10 * 60 * 1000;
+
+/**
+ * NEO-555 — takes the owner's poll lease: true when this caller may poll (no
+ * lease held, or the held one ran out), false when another poll is running.
+ * An owner with no listing-state row has nothing to poll, so the claim is
+ * true and the poll itself finds nothing. The cron and the testing "poll
+ * now" both go through it (`pollOwnerGuarded`), so the cursor and
+ * `finishPoll` writes of two polls never interleave.
+ */
+export const claimPoll = internalMutation({
+  args: { ownerId: v.string(), platform: listingPlatformValidator, token: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const state = await ctx.db
+      .query("marketplaceListingStates")
+      .withIndex("by_owner_platform", (q) => q.eq("ownerId", args.ownerId).eq("platform", args.platform))
+      .unique();
+    if (!state) return true;
+    const now = Date.now();
+    if (state.pollLeaseToken !== undefined && (state.pollLeaseExpiresAt ?? 0) > now) return false;
+    await ctx.db.patch(state._id, { pollLeaseToken: args.token, pollLeaseExpiresAt: now + POLL_LEASE_MS });
+    return true;
+  },
+});
+
+/** Gives the lease back; a no-op unless this token still holds it. */
+export const releasePoll = internalMutation({
+  args: { ownerId: v.string(), platform: listingPlatformValidator, token: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const state = await ctx.db
+      .query("marketplaceListingStates")
+      .withIndex("by_owner_platform", (q) => q.eq("ownerId", args.ownerId).eq("platform", args.platform))
+      .unique();
+    if (state && state.pollLeaseToken === args.token) {
+      await ctx.db.patch(state._id, { pollLeaseToken: undefined, pollLeaseExpiresAt: undefined });
+    }
+    return null;
+  },
+});
+
+/**
+ * One owner's poll under the owner's poll lease. Returns the report, or null
+ * when another poll still holds the lease after `waitMs` (default: no wait).
+ * The lease is released whatever the poll does.
+ */
+export async function pollOwnerGuarded(
+  ctx: PollCtx,
+  args: { ownerId: string; platform: Platform },
+  opts: { waitMs?: number; stepMs?: number; pause?: (ms: number) => Promise<void> } = {},
+): Promise<PollReport | null> {
+  const token = crypto.randomUUID();
+  const pause = opts.pause ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const stepMs = opts.stepMs ?? 500;
+  let waited = 0;
+  while (!(await ctx.runMutation(internal.listingSales.claimPoll, { ...args, token }))) {
+    if (waited >= (opts.waitMs ?? 0)) return null;
+    await pause(stepMs);
+    waited += stepMs;
+  }
+  try {
+    return await pollOwnerImpl(ctx, args);
+  } finally {
+    await ctx.runMutation(internal.listingSales.releasePoll, { ...args, token });
+  }
+}
+
+/** One owner's poll (scheduled by `pollAll`). A poll already running for the owner is not doubled: this tick skips it. */
 export const pollOwner = internalAction({
   args: { ownerId: v.string(), platform: listingPlatformValidator },
   returns: v.null(),
   handler: async (ctx, args) => {
-    await pollOwnerImpl(ctx, args);
+    const report = await pollOwnerGuarded(ctx, args);
+    if (report === null) {
+      console.log(
+        JSON.stringify({ msg: "listing_sales_poll", platform: args.platform, operation: "pollOwner", outcome: "already_running" }),
+      );
+    }
     return null;
   },
 });

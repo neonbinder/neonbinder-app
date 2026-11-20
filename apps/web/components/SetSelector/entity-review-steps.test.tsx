@@ -176,6 +176,8 @@ describe("subtitles", () => {
       player: "New player",
       pick: "Which player is this?",
       checklist: "Checklist disagreements",
+      // NEO-574 — placeholder, awaiting Jason's wording.
+      career: "Career check",
       teams: "Cards with no team",
       // NEO-345 — placeholder, awaiting Jason's wording.
       autograph: "Autographed cards",
@@ -440,5 +442,108 @@ describe("autograph step — the walk", () => {
   it("an unanswered step that is not live holds nothing back", () => {
     const none = { teams: false, autograph: false, titles: true };
     expect(resolvePostReviewStep("save", none, "autograph")).toBe("save");
+  });
+});
+
+describe("career step (NEO-574) — counting and position", () => {
+  const withCareer = (reviewRows: number, teamsStep: boolean, titlesStep: boolean) => ({
+    reviewRows,
+    teamsStep,
+    careerStep: true,
+    titlesStep,
+  });
+
+  it("is one more step, first after the names", () => {
+    expect(plannedTotal(withCareer(0, false, false))).toBe(2);
+    const count = initialStepCount({ ...withCareer(2, true, true), autographStep: true });
+    expect(count.total).toBe(7);
+    expect(stepNumber(count, { kind: "review", index: 1 })).toBe(2);
+    expect(stepNumber(count, { kind: "career" })).toBe(3);
+    expect(stepNumber(count, { kind: "teams" })).toBe(4);
+    expect(stepNumber(count, { kind: "autograph" })).toBe(5);
+    expect(stepNumber(count, { kind: "titles" })).toBe(6);
+    expect(stepNumber(count, { kind: "save" })).toBe(7);
+  });
+
+  it("alone it is step 1, then Save", () => {
+    const count = initialStepCount(withCareer(0, false, false));
+    expect(stepNumber(count, { kind: "career" })).toBe(1);
+    expect(stepNumber(count, { kind: "save" })).toBe(2);
+  });
+
+  it("the bar reads the steps behind the career check out of the plan", () => {
+    const count = initialStepCount({ ...withCareer(2, true, true), autographStep: true });
+    expect(stepProgress(count, { kind: "career" })).toEqual({ done: 2, planned: 7 });
+    expect(stepProgress(count, { kind: "teams" })).toEqual({ done: 3, planned: 7 });
+  });
+
+  it("an absent flag is no step, so older callers count as before", () => {
+    expect(plannedTotal(plan(3, true, true))).toBe(6);
+    expect(initialStepCount(plan(3)).careerStep).toBeUndefined();
+  });
+
+  it("is a high-water mark like the others", () => {
+    const first = initialStepCount(withCareer(1, false, false));
+    const next = advanceStepCount(first, plan(1), false);
+    expect(next).toBe(first);
+    expect(next.careerStep).toBe(true);
+  });
+
+  it("grows the plan by one when it turns up mid-sitting", () => {
+    const first = trackSteps(null, { reviewRows: 1, teamsStep: false, titlesStep: false, onSave: false });
+    const grown = trackSteps(first, {
+      reviewRows: 1,
+      careerStep: true,
+      teamsStep: false,
+      titlesStep: false,
+      onSave: false,
+    });
+    expect(grown.total).toBe(first.total + 1);
+    expect(grown.careerStep).toBe(true);
+    // The step it grew by is held once it is counted, even if the input drops it.
+    const held = trackSteps(grown, {
+      reviewRows: 1,
+      careerStep: false,
+      teamsStep: false,
+      titlesStep: false,
+      onSave: false,
+    });
+    expect(held).toBe(grown);
+  });
+
+  it("adds nothing once on Save", () => {
+    const first = initialStepCount(plan(0), true);
+    const count = advanceStepCount(first, withCareer(0, false, false), true);
+    expect(count.total).toBe(first.total);
+    expect(count.careerStep).toBeUndefined();
+  });
+});
+
+describe("career step (NEO-574) — the walk", () => {
+  const all = { career: true, teams: true, autograph: true, titles: true };
+
+  it("is the first step after the names", () => {
+    expect(resolvePostReviewStep(null, all)).toBe("career");
+  });
+
+  it("is passed over when it has nothing in it", () => {
+    expect(resolvePostReviewStep(null, { teams: true, titles: false })).toBe("teams");
+    expect(resolvePostReviewStep("career", { career: false, teams: false, titles: false })).toBe("save");
+  });
+
+  it("Next walks career → teams → autograph → titles → save", () => {
+    expect(nextPostReviewStep("career", all)).toBe("teams");
+    expect(nextPostReviewStep("career", { career: true, teams: false, titles: false })).toBe("save");
+  });
+
+  it("Back from teams returns to career, and from career leaves for the names", () => {
+    expect(previousPostReviewStep("teams", all)).toBe("career");
+    expect(previousPostReviewStep("career", all)).toBeNull();
+    expect(previousPostReviewStep("save", { career: true, teams: false, titles: false })).toBe("career");
+  });
+
+  it("an unanswered autograph step still holds back what follows it, not career", () => {
+    expect(resolvePostReviewStep(null, all, "autograph")).toBe("career");
+    expect(resolvePostReviewStep("titles", all, "autograph")).toBe("autograph");
   });
 });

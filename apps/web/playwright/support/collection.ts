@@ -81,7 +81,7 @@ export const TOPPS_CHROME_2024: CollectorSet = {
 
 /**
  * The seed's 2024 Topps Chrome › Insert › Future Stars (20 cards), the
- * marketplace-seller listing specs' fixture (NEO-475; SET-REGISTRY.md). Its
+ * BuySportsCards and eBay listing specs' fixture (NEO-475; SET-REGISTRY.md). Its
  * checklist and Sync status both name it "2024 Topps Chrome Future Stars": an
  * insert reads as part of the set's name.
  */
@@ -894,6 +894,39 @@ export async function followRunToRest(
   }
   await expect(settled).toBeVisible();
   await expect(idle).toBeVisible();
+}
+
+/**
+ * NEO-555: press a checklist's Sync and say which of its two toasts answered.
+ * A press has three outcomes: it sends what is queued, it is a full read that
+ * sends nothing (the poll sent it first), or, inside a minute of the set's last
+ * press with nothing left queued (the poll's drain took the queued rows), it
+ * is turned away with "<title> is already in the works. Give it a minute, then
+ * Sync again." (`syncToast`, SyncButton.tsx) and runs nothing. The first two
+ * toast "Syncing <title> now."; the spec reads the run behind either. On
+ * "throttled" the caller must prove HARD that the poll's run did the press's
+ * work (its step done, the set's count line), never fall back to "nothing sent".
+ * "See what's syncing" shows only while a run is under way, so a throttled
+ * press goes to Sync status by the tab.
+ */
+export async function pressSync(page: Page, sync: Locator, title: string): Promise<"ran" | "throttled"> {
+  const said = (text: string) => page.getByRole("status").filter({ hasText: text });
+  const ran = said(`Syncing ${title} now. Watch it on Sync status.`);
+  const throttled = said(`${title} is already in the works. Give it a minute, then Sync again.`);
+  await sync.click();
+  // Classified by whichever toast appeared first, never by a later look: a toast
+  // that auto-dismisses between the wait and a second read would flip the answer.
+  // One 7 s budget for both (GUIDE hard rule 3); the loser's wait is dropped.
+  const appeared = (toast: Locator, outcome: "ran" | "throttled") =>
+    toast
+      .first()
+      .waitFor({ state: "visible", timeout: 7_000 })
+      .then(() => outcome);
+  const outcome = await Promise.any([appeared(ran, "ran"), appeared(throttled, "throttled")]).catch(() => null);
+  if (outcome) return outcome;
+  // Neither toast within the budget: fail on the web-first assertion, whose message names both.
+  await expect(ran.or(throttled).first()).toBeVisible({ timeout: 1 });
+  throw new Error("Sync's toast arrived only after the 7 s budget");
 }
 
 /**

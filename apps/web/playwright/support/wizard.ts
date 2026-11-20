@@ -35,7 +35,7 @@ import { expect, type Locator, type Page } from "@playwright/test";
 import { expectAccessible } from "./fixtures";
 import type { FlowEnv } from "./env";
 import { expectAfterMarketplace, expectStepWithSportLots } from "./marketplace-wait";
-import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist, type ChecklistName } from "./published-checklist";
+import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist, type ChecklistName, type ChecklistRow } from "./published-checklist";
 import {
   columnHeading,
   columnOption,
@@ -125,6 +125,7 @@ export const STEP_SUBTITLE = {
   player: "New player",
   pick: "Which player is this?",
   checklist: "Checklist disagreements",
+  career: "Career check",
   teams: "Cards with no team",
   autograph: "Autographed cards",
   titles: "Card titles",
@@ -133,6 +134,7 @@ export const STEP_SUBTITLE = {
 
 /** The steps after the names, in the order the wizard walks them. */
 const POST_NAME_ORDER: readonly string[] = [
+  STEP_SUBTITLE.career,
   STEP_SUBTITLE.teams,
   STEP_SUBTITLE.autograph,
   STEP_SUBTITLE.titles,
@@ -435,7 +437,7 @@ export async function answerAutographStep(page: Page, choice: AutographChoice = 
  * Contract: ENTRY every name is decided (the names-done footer is up). EXIT
  * the step is showing. A wizard that never offers the step fails here, by
  * name: the caller is the spec whose FEATURE is that step. A runaway guard of
- * 3 (only the teams step can sit before it).
+ * 3 (only the career and teams steps can sit before it).
  */
 export async function walkToAutographStep(page: Page): Promise<void> {
   const group = autographChoices(page);
@@ -448,6 +450,77 @@ export async function walkToAutographStep(page: Page): Promise<void> {
     await expectPostNameStepLeft(page, subtitle);
   }
   await expect(group, "the wizard reached its Autographed cards step").toBeVisible();
+}
+
+/**
+ * NEO-574: the "Career check" step's subtitle (`STEP_SUBTITLE.career`). The
+ * step's own heading reads the same, so a bare `getByText` of it resolves to
+ * two elements on that step; scope or take `.first()`, or read the progress bar
+ * (`expectWizardStep`, `readProgress`), which names it once.
+ */
+export const CAREER_STEP_SUBTITLE = STEP_SUBTITLE.career;
+
+/**
+ * NEO-574: one line of the "Career check" step, a radio group named
+ * "<player> on <team>" (`careerLineLabel`), holding "Keep as is", "Add
+ * to career", "Wrong player" and "Fix card’s team". Contract: a locator,
+ * nothing waited for; exact, so "Ann on Reds" never answers for "Ann on Reds II".
+ */
+export function careerLine(page: Page, player: string, team: string): Locator {
+  return reviewWizard(page).getByRole("radiogroup", { name: `${player} on ${team}`, exact: true });
+}
+
+/** Any post-name step's subtitle, optionally without the ones in `except`. */
+function postNameSubtitles(except: readonly string[] = []): RegExp {
+  return new RegExp(`^(${POST_NAME_ORDER.filter((t) => !except.includes(t)).map(escapeRe).join("|")})$`);
+}
+
+/**
+ * NEO-574: press Next past the "Career check" step when it comes (every line
+ * left on "Keep as is", which writes nothing), and stop on the step after it.
+ * For a spec that asserts what the LATER steps hold (the teams step's lines,
+ * or that there is no teams step) and whose fixture's known players may or may
+ * not have the card's team on file: the branch waits for a settled post-name
+ * step first (the progress bar names one), and ends on a positive assert of a
+ * step that is not the career check, so a negative assert after it is about a
+ * live step (R2).
+ *
+ * Contract: ENTRY every name is decided. EXIT a post-name step other than the
+ * career check is up (the progress bar's subtitle names it).
+ */
+export async function passCareerCheck(page: Page): Promise<void> {
+  await expectWizardStep(page, postNameSubtitles());
+  const { subtitle } = await readProgress(page);
+  if (subtitle === CAREER_STEP_SUBTITLE) {
+    await nextStepButton(page).click();
+    await expectPostNameStepLeft(page, subtitle);
+  }
+  await expectWizardStep(page, postNameSubtitles([CAREER_STEP_SUBTITLE]));
+}
+
+/**
+ * Press Next past the "Career check" (NEO-574) and "Cards with no team" steps
+ * when they come, leaving every line on its default ("Keep as is", "Leave for
+ * later"), and stop on the first step after them (autograph, titles or Save).
+ * For a spec whose feature is a LATER step (the titles step) and which reads
+ * where it is from the subtitle; a spec that only needs Save calls
+ * `advanceToSave`.
+ *
+ * Contract: ENTRY every name is decided (the names-done footer is up). EXIT the
+ * subtitle is neither "Career check" nor "Cards with no team"; each press is
+ * proved to have moved the wizard on (`expectPostNameStepLeft`). A runaway
+ * guard of 3 (two such steps).
+ */
+export async function passCareerAndTeamsSteps(page: Page): Promise<void> {
+  const skipped: readonly string[] = [CAREER_STEP_SUBTITLE, STEP_SUBTITLE.teams];
+  for (let i = 0; i < 3; i++) {
+    await expectWizardStep(page, postNameSubtitles());
+    const { subtitle } = await readProgress(page);
+    if (!skipped.includes(subtitle)) return;
+    await nextStepButton(page).click();
+    await expectPostNameStepLeft(page, subtitle);
+  }
+  await expectWizardStep(page, postNameSubtitles(skipped));
 }
 
 /**
@@ -552,6 +625,12 @@ export interface OneMarketplaceSet {
    * BSC for every card itself.
    */
   checklist?: ChecklistName;
+  /**
+   * NEO-574: rows appended to `checklist` that the marketplace has no card for
+   * (`usePublishersChecklist`'s `extraRows`). Match Cards then KEEPS them all, so
+   * they reach the wizard as cards the checklist alone names.
+   */
+  extraRows?: readonly ChecklistRow[];
 }
 
 /**
@@ -649,14 +728,21 @@ export async function fetchOneMarketplaceSetChecklistToWizard(
   // re-sync raises no review). A local re-run against an already-committed
   // preview fails here, by name, which is correct: re-seed first.
   await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
-  const facts = target.checklist === undefined ? undefined : await usePublishersChecklist(page, target.checklist);
+  const facts =
+    target.checklist === undefined
+      ? undefined
+      : await usePublishersChecklist(page, target.checklist, target.extraRows ? { extraRows: target.extraRows } : {});
   await syncChecklistButton(page).click();
 
   if (facts !== undefined) {
     // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards opens.
     // One live BSC round trip, waited on inside with `expectAfterMarketplace` (NEO-487). The
     // picker above already proved exactly one marketplace is attached.
-    await confirmChecklistMatchCards(page, { facts, what: `the fetch of ${target.set}` });
+    await confirmChecklistMatchCards(page, {
+      facts,
+      what: `the fetch of ${target.set}`,
+      keepChecklistOnly: target.extraRows?.length,
+    });
   } else {
     // One live BSC round trip, waited on with `expectAfterMarketplace` (NEO-487).
     // `soloKeptMessage` prints only on the NEO-255
@@ -1049,18 +1135,20 @@ export async function walkToPlayerRow(
 
 /**
  * util-wizard-advance-to-save.yaml (NEO-335): from "every name decided" walk
- * the teams / autograph / titles steps to the Save step, and answer nothing
- * on them that the product does not REQUIRE.
+ * the career / teams / autograph / titles steps to the Save step, and answer
+ * nothing on them that the product does not REQUIRE.
  *
  * Contract:
  * - ENTRY the wizard is open and every name is decided: its footer shows
  *   "Next (Enter)" or "Confirm & Save". (Waited for here, 7 s.)
  * - Presses Next until the Save step is up; each press is proved to have MOVED
  *   the wizard to a LATER post-name step (`expectPostNameStepLeft`, read off
- *   the progress bar's subtitle), so a Next that does nothing fails by name. Next leaves every line on its default (a pre-filled
- *   team, else "Leave for later"; every title kept) - the same answers the old
- *   final step's Confirm & Save saved. A spec whose FEATURE is the teams or
- *   titles step drives that step itself and does not call this.
+ *   the progress bar's subtitle), so a Next that does nothing fails by name.
+ *   Next leaves every line on its default (a pre-filled
+ *   team, else "Leave for later"; every title kept; NEO-574: every "Career
+ *   check" line on "Keep as is", which writes nothing) - the same answers the old
+ *   final step's Confirm & Save saved. A spec whose FEATURE is the career,
+ *   teams or titles step drives that step itself and does not call this.
  * - NEO-345: the "Autographed cards" step (new AU cards on a part with no
  *   autograph format) is the one step whose answer is REQUIRED - its Next is
  *   aria-disabled until a tile is picked - so this picks "On card" there
@@ -1072,15 +1160,17 @@ export async function walkToPlayerRow(
  *   nothing pressed. The caller asserts its own "Save N cards?" and owns the
  *   commit.
  *
- * All 7 s: Next is a client-side step change. The loop is a runaway guard of 4
- * (at most three screens sit between the names and Save).
+ * All 7 s: Next is a client-side step change. The loop is a runaway guard of 5
+ * (at most four screens sit between the names and Save: career, teams,
+ * autograph, titles; NEO-574 added the career step, first of them, and a
+ * gap-only re-sync now opens the wizard straight onto it).
  */
 export async function advanceToSave(page: Page): Promise<void> {
   const wizard = reviewWizard(page);
   const next = nextStepButton(page);
   const save = confirmSaveButton(page);
   const autograph = autographChoices(page);
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 5; i++) {
     await expect(next.or(save)).toBeVisible();
     if (await save.isVisible()) break;
     const { subtitle } = await readProgress(page);

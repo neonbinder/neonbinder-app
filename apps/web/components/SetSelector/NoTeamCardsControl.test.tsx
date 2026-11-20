@@ -163,7 +163,7 @@ describe("No Team run — words", () => {
       "1 card is already No Team.",
       "2 cards have a team, and keep it.",
       "1 card has a team name waiting for review. Link it under Attention on its checklist.",
-      "3 cards come with a team name NB hasn't matched yet. Pick those yourself.",
+      "3 cards come with a team name Neon Binder hasn't matched yet. Pick those yourself.",
       "1 card is still waiting on a team check. Each gets No Team if the check finds none.",
       "2 cards never got an answer from the team check. Pick those yourself under Attention on their checklist.",
       "1 checklist under this one has a team of its own and is left out.",
@@ -403,7 +403,7 @@ describe("NoTeamCardsControl", () => {
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getByText("Mark 5 cards No Team?")).toBeTruthy();
     const reasons = within(dialog).getByRole("group", { name: "Cards left as they are" });
-    expect(within(reasons).getByText(/2 cards come with a team name NB hasn't matched yet/)).toBeTruthy();
+    expect(within(reasons).getByText(/2 cards come with a team name Neon Binder hasn't matched yet/)).toBeTruthy();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog")).toBeNull();

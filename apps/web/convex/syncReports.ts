@@ -210,7 +210,7 @@ export const report = mutation({
     if (syncOutcome(record, Date.now()).failed) {
       refuse(
         SYNC_REPORT_ERRORS.invalid,
-        "That set's last sync didn't finish, and NB tries it again on its own. If cards are still held back after that, report it then.",
+        "That set's last sync didn't finish, and Neon Binder tries it again on its own. If cards are still held back after that, report it then.",
       );
     }
     const { cards, heldBack } = reportableProblems(record.problems);

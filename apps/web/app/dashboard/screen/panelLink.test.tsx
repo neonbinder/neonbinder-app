@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, configure, fireEvent, getConfig, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import { getDashboard, type DashboardData } from "../fake-data";
@@ -121,6 +121,17 @@ function renderDashboard(entry: string, data: DashboardData = getDashboard(), be
 const pageUrl = () => screen.getByRole("status", { name: "Page URL" }).textContent ?? "";
 /** Lets the panel's lazy code and its focus moves land. */
 const settle = () => act(() => new Promise<void>((r) => setTimeout(r, 40)));
+
+// The panel's code is lazy (CardPanelHost, then the demo store). The first test
+// to open it used to pay that fetch inside findByRole's 1 s budget, which a
+// loaded machine overruns: warm both once, in a hook with room, and give the
+// file's async waits the 5 s of a test instead of the 1 s of a lookup.
+const DEFAULT_ASYNC_TIMEOUT = getConfig().asyncUtilTimeout;
+beforeAll(async () => {
+  configure({ asyncUtilTimeout: 5000 });
+  await Promise.all([import("./CardPanelHost"), import("@/app/collection/final/data/demoStore")]);
+}, 60_000);
+afterAll(() => configure({ asyncUtilTimeout: DEFAULT_ASYNC_TIMEOUT }));
 
 beforeEach(() => {
   window.localStorage.clear();
@@ -292,7 +303,9 @@ describe("↑ ↓ step through the run of cards the panel was opened from", () =
     }
     expect(button("Previous card").getAttribute("aria-disabled")).toBe("true");
     expect(button("Next card").getAttribute("aria-disabled")).toBeNull();
-  });
+    // Steps the drawer through every card of the batch and back, one render each:
+    // heavy by nature, so a scoped 30 s rather than the 5 s default on a loaded runner.
+  }, 30_000);
 
   it("a shared link carries no list: the panel holds just its card", async () => {
     const data = renderDashboard("/demo");

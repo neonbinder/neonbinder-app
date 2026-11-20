@@ -11,6 +11,11 @@
  *                                       New player / "Which player is this?",
  *                                       staged career New Team/League steps
  *                                       included — they are rows too)
+ *             + 1 career step          (NEO-574: a card's team that its
+ *                                       player's career does not show, FIRST
+ *                                       after the names: it can change a
+ *                                       card's player or team, which the
+ *                                       steps below read)
  *             + 1 teams step           (if any card would save teamless)
  *             + 1 autograph step       (NEO-345: a NEW card carries AU and the
  *                                       leaf has no autograph format yet)
@@ -53,6 +58,7 @@ export type WizardStepKind =
   | "player"
   | "pick"
   | "checklist"
+  | "career"
   | "teams"
   | "autograph"
   | "titles"
@@ -68,6 +74,7 @@ export const STEP_SUBTITLE: Readonly<Record<WizardStepKind, string>> = {
   player: "New player",
   pick: "Which player is this?",
   checklist: "Checklist disagreements",
+  career: "Career check",
   teams: "Cards with no team",
   autograph: "Autographed cards",
   titles: "Card titles",
@@ -84,7 +91,13 @@ export const STEP_SUBTITLE: Readonly<Record<WizardStepKind, string>> = {
  * from the walk instead of being asked about (`orphanedReviewRowIds`). The
  * wizard puts it on screen itself until it is settled.
  */
-export type PostReviewStep = "checklist" | "teams" | "autograph" | "titles" | "save";
+export type PostReviewStep =
+  | "checklist"
+  | "career"
+  | "teams"
+  | "autograph"
+  | "titles"
+  | "save";
 
 /** Which post-review steps have anything in them right now. */
 export type PostReviewLive = {
@@ -93,6 +106,12 @@ export type PostReviewLive = {
    * by the post-review helpers: the checklist step comes before the names.
    */
   checklist?: boolean;
+  /**
+   * NEO-574 — absent reads as false (a host with no career check). First of
+   * the steps after the names: its answers can re-team or relink a card, and
+   * every step below reads the cards as they are after it.
+   */
+  career?: boolean;
   teams: boolean;
   /** NEO-345 — absent reads as false (a host with no autograph step). */
   autograph?: boolean;
@@ -100,6 +119,7 @@ export type PostReviewLive = {
 };
 
 const POST_REVIEW_ORDER: readonly PostReviewStep[] = [
+  "career",
   "teams",
   "autograph",
   "titles",
@@ -179,6 +199,8 @@ export interface StepPlanInput {
   reviewRows: number;
   /** NEO-478 — does any card disagree with the published checklist? Absent = no. */
   checklistStep?: boolean;
+  /** NEO-574 — is any card's team missing from its player's career? Absent = no. */
+  careerStep?: boolean;
   /** Would any card save teamless? See `cardsForTeamsStep`. */
   teamsStep: boolean;
   /** NEO-345 — does the autograph format question apply? Absent = no. */
@@ -196,6 +218,8 @@ export interface StepCount {
    * count with no checklist step is exactly the shape it was before.
    */
   checklistStep?: boolean;
+  /** NEO-574 — the career step, once counted. Present only when true. */
+  careerStep?: boolean;
   teamsStep: boolean;
   /** NEO-345 — the autograph step, once counted. */
   autographStep: boolean;
@@ -209,6 +233,7 @@ export function plannedTotal(input: StepPlanInput): number {
   return (
     Math.max(0, input.reviewRows) +
     (input.checklistStep ? 1 : 0) +
+    (input.careerStep ? 1 : 0) +
     (input.teamsStep ? 1 : 0) +
     (input.autographStep ? 1 : 0) +
     (input.titlesStep ? 1 : 0) +
@@ -223,6 +248,7 @@ export function initialStepCount(input: StepPlanInput, onSave = false): StepCoun
     total: plannedTotal({ ...input, reviewRows }),
     reviewRows,
     ...(input.checklistStep ? { checklistStep: true } : {}),
+    ...(input.careerStep ? { careerStep: true } : {}),
     teamsStep: input.teamsStep,
     autographStep: input.autographStep === true,
     titlesStep: input.titlesStep,
@@ -246,12 +272,14 @@ export function advanceStepCount(
   // Off Save (again): a thaw, then whatever turned up meanwhile counts.
   const reviewRows = Math.max(prev.reviewRows, input.reviewRows);
   const checklistStep = prev.checklistStep === true || input.checklistStep === true;
+  const careerStep = prev.careerStep === true || input.careerStep === true;
   const teamsStep = prev.teamsStep || input.teamsStep;
   const autographStep = prev.autographStep || input.autographStep === true;
   const titlesStep = prev.titlesStep || input.titlesStep;
   if (
     reviewRows === prev.reviewRows &&
     checklistStep === (prev.checklistStep === true) &&
+    careerStep === (prev.careerStep === true) &&
     teamsStep === prev.teamsStep &&
     autographStep === prev.autographStep &&
     titlesStep === prev.titlesStep
@@ -259,9 +287,17 @@ export function advanceStepCount(
     return prev.frozen ? { ...prev, frozen: false } : prev;
   }
   return {
-    total: plannedTotal({ reviewRows, checklistStep, teamsStep, autographStep, titlesStep }),
+    total: plannedTotal({
+      reviewRows,
+      checklistStep,
+      careerStep,
+      teamsStep,
+      autographStep,
+      titlesStep,
+    }),
     reviewRows,
     ...(checklistStep ? { checklistStep: true } : {}),
+    ...(careerStep ? { careerStep: true } : {}),
     teamsStep,
     autographStep,
     titlesStep,
@@ -273,6 +309,7 @@ export function advanceStepCount(
 function postReviewSteps(count: StepCount): number {
   return (
     1 +
+    (count.careerStep ? 1 : 0) +
     (count.teamsStep ? 1 : 0) +
     (count.autographStep ? 1 : 0) +
     (count.titlesStep ? 1 : 0)
@@ -295,6 +332,16 @@ export function stepNumber(count: StepCount, position: StepPosition): number {
     case "teams":
       return (
         count.total - 1 - (count.titlesStep ? 1 : 0) - (count.autographStep ? 1 : 0)
+      );
+    case "career":
+      // NEO-574 — first of the steps after the names, so counted back from
+      // the end like its siblings.
+      return (
+        count.total -
+        1 -
+        (count.titlesStep ? 1 : 0) -
+        (count.autographStep ? 1 : 0) -
+        (count.teamsStep ? 1 : 0)
       );
     case "checklist":
       // NEO-478 — the first step of the sitting.
@@ -470,6 +517,8 @@ export interface TrackStepsInput {
   reviewRows: number;
   /** NEO-478 — absent reads as false. */
   checklistStep?: boolean;
+  /** NEO-574 — absent reads as false. */
+  careerStep?: boolean;
   teamsStep: boolean;
   /**
    * NEO-426 — false while a fact the teams step's membership reads is still
@@ -494,6 +543,7 @@ export function trackSteps(prev: StepCount | null, input: TrackStepsInput): Step
   const plan: StepPlanInput = {
     reviewRows: input.reviewRows,
     checklistStep: input.checklistStep === true,
+    careerStep: input.careerStep === true,
     // Unknown: hold what was counted (nothing yet, on a first count).
     teamsStep: known ? input.teamsStep : (prev?.teamsStep ?? false),
     autographStep: input.autographStep === true,

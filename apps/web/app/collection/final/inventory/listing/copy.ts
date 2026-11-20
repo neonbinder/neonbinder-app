@@ -205,6 +205,9 @@ export const UNMATCHED_CARD = unmatchedCard("bsc");
 /** NEO-520 — what both the Sales tab and the Pick List call an eBay line with no title and no card words. */
 export const EBAY_UNTITLED_SALE = "A sale with no title";
 
+/** NEO-590 — the same, for one line inside an opened order: a line is an item of the sale, not a sale. */
+export const EBAY_UNTITLED_ITEM = "An item with no title";
+
 /**
  * NEO-520 — a sold line with no NB card and no title to show. On eBay the
  * line may be anything the seller listed outside NeonBinder, so it is never

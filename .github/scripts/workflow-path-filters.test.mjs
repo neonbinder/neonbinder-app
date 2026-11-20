@@ -189,3 +189,56 @@ test("fake-bsc paths gate browser tests but not the browser preview", () => {
 test("scripts filter includes the workflow files", () => {
   assert.ok(nonEmpty(pipelineFilters.scripts, "pipeline scripts").includes(".github/workflows/**"));
 });
+
+// NEO-555 (B2): the seller jobs and their queue are retired, and the fake eBay
+// wiring is in place. These pins keep a revert or a half-removal red.
+test("the marketplace-seller jobs, queue and spec list are fully retired", async () => {
+  const { readdirSync, existsSync } = await import("node:fs");
+  const dir = join(REPO_ROOT, ".github");
+  assert.ok(!existsSync(join(dir, "scripts", "seller-queue.sh")));
+  assert.ok(!existsSync(join(dir, "scripts", "seller-queue.test.mjs")));
+  const files = [];
+  const walk = (d) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (p !== fileURLToPath(import.meta.url)) files.push(p);
+    }
+  };
+  walk(dir);
+  for (const f of files) {
+    const text = readFileSync(f, "utf8");
+    assert.doesNotMatch(text, /seller-queue|SELLER_SPECS|R_SELLER|seller-(desktop|mobile)|marketplace-seller|testingSellerCleanup|shard-plan\.mjs --seller/, f);
+  }
+});
+
+test("e2e.yml points both seeds at the fake eBay and asserts it", () => {
+  const text = read("e2e.yml").join("\n");
+  const count = (re) => (text.match(re) || []).length;
+  assert.equal(count(/- name: Point the Convex preview at the fake eBay/g), 2);
+  assert.equal(count(/env set EBAY_ENVIRONMENT fake /g), 2);
+  assert.equal(count(/env remove "\$name"/g), 2);
+  for (const n of ["DEV_EBAY_REFRESH_TOKEN", "EBAY_CLIENT_ID", "EBAY_RU_NAME"]) assert.equal(count(new RegExp(`for name in [^\\n]*${n}`, "g")), 2, n);
+  assert.equal(count(/fakeBsc:ebayTarget '\{\}'/g), 2);
+  assert.equal(count(/credentials:deleteFakeSessionsFromCli/g), 1);
+  assert.doesNotMatch(text, /deleteFakeBscSessionsFromCli/);
+  // The eBay env is written after the BSC base it depends on.
+  assert.ok(text.indexOf("env set EBAY_ENVIRONMENT") > text.indexOf("env set NEONBINDER_BSC_API_BASE"));
+});
+
+test("the e2e gate depends on no seller job", () => {
+  const gate = read("e2e.yml").find((l) => /^ {4}needs: \[setup, seed, shard-desktop, breaker-desktop, seed-mobile, shard-mobile, breaker-mobile\]$/.test(l));
+  assert.ok(gate, "the gate needs list is the shard + breaker jobs only");
+});
+
+test("the dev and preview browser deploys carry no sandbox eBay config", () => {
+  const preview = read("browser.yml").join("\n");
+  const deploy = read("browser-deploy.yml").join("\n");
+  assert.doesNotMatch(preview, /EBAY_CLIENT_ID_SANDBOX|EBAY_RU_NAME_SANDBOX|EBAY_ENVIRONMENT=sandbox|Preflight eBay config/);
+  const devLane = deploy.split("\n  ")[0] && deploy.slice(0, deploy.indexOf("EBAY_CLIENT_ID_PRODUCTION"));
+  assert.doesNotMatch(devLane, /EBAY_CLIENT_ID_SANDBOX|EBAY_RU_NAME_SANDBOX|EBAY_ENVIRONMENT=sandbox/);
+  assert.match(preview, /--remove-env-vars=EBAY_CLIENT_ID,EBAY_RU_NAME,EBAY_ENVIRONMENT --remove-secrets=EBAY_CLIENT_SECRET/);
+  assert.match(deploy, /--remove-env-vars=PREVIEW_SHA,EBAY_CLIENT_ID,EBAY_RU_NAME,EBAY_ENVIRONMENT --remove-secrets=EBAY_CLIENT_SECRET/);
+  // The prod lane keeps its production eBay config.
+  assert.match(deploy, /EBAY_ENVIRONMENT=production/);
+});

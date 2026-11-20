@@ -382,8 +382,9 @@ test(
     // Every Future Stars player is already known from Base: no NAMES review.
     // NEO-335: one wizard shape is legitimate here, NO NAMES and past-the-names
     // steps only: a card that would save with no team (a SportLots-only card
-    // never carries one) or a new card whose title gets trimmed opens the
-    // review straight onto "Cards with no team" / "Card titles", its first step.
+    // never carries one), a new card whose title gets trimmed or (NEO-574) a
+    // new card whose team its player's career does not show opens the review
+    // straight onto "Career check" / "Cards with no team" / "Card titles", its first step.
     // fetchChecklist waited for the wizard or the "Saved" banner, so which one
     // is up is settled and read once. The seed answers nothing on those steps.
     if (await wizard.isVisible()) {
@@ -395,9 +396,9 @@ test(
       ).toBeHidden();
       // A names review fails here, by name: nothing is undecided.
       await expect(wizard.getByRole("button", { name: /Skip remaining names|Add remaining players as new/ })).toHaveCount(0);
-      await expect(wizard.getByText(/^(Cards with no team|Card titles)$/)).toBeVisible();
-      // NEO-467: the header's progress bar names that first step.
-      await expectWizardStep(page, /^(Cards with no team|Card titles)$/);
+      // NEO-574: a new card whose team its known player's career does not show for 2024
+      // opens the "Career check" first. NEO-467: the header's progress bar names that first step.
+      await expectWizardStep(page, /^(Career check|Cards with no team|Card titles)$/);
       await advanceToSave(page);
       // The Save step, for all 20; the strict count below then pins the save.
       await expect(wizard.getByRole("heading", { name: "Save 20 cards?" })).toBeVisible();

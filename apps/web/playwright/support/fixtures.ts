@@ -14,12 +14,16 @@
  *            asserts the destination's heading (the launch gate).
  *
  *   bscFake — the worker's fake BuySportsCards account (NEO-552, ./bscFake.ts):
- *            `setFaults` / `addOrder` / `clear`. Teardown clears the rules (and
- *            the deployment's BSC call gate when a rule could have opened it).
+ *            `setFaults` / `addOrder` / `pollNow` / `clear`. Teardown clears the
+ *            rules, both sites' (and the deployment's BSC call gate when a rule
+ *            could have opened it).
+ *   ebayFake — the worker's fake eBay seller (NEO-555, ./ebayFake.ts):
+ *            `holdShippingPolicy` / `addOrder` / `pollNow` / `setFaults`. Its
+ *            faults share `bscFake`'s list (one per worker) and its teardown.
  *
  * Harness fixtures no spec names (NEO-592):
- *   noRetryOnSharedAccounts — automatic. Refuses a retry of a `@marketplace-seller`
- *            or `@bsc-breaker` spec (GUIDE hard rule 5): each such file says
+ *   noRetryOnSharedAccounts — automatic. Refuses a retry of a `@bsc-breaker`
+ *            spec (GUIDE hard rule 5): each such file says
  *            `test.describe.configure({ retries: 0 })`; this catches one that forgot.
  *   resetAfterFailure — automatic. After a test on `e2e` or `e2e-mobile` ends
  *            red, resets the worker's main account by the bootstrap's own route
@@ -29,6 +33,10 @@
  *   captureConsole — an option, off by default: `test.use({ captureConsole: true })`
  *            keeps the page's console lines and attaches them, scrubbed
  *            (./redact.mjs), to a red result as `console`.
+ *   wireLog — automatic (NEO-398, ./wire-log.ts). A red result carries
+ *            `client-wire.log`: the context's page errors, console errors and
+ *            warnings, navigations and Convex frames (type, request id and
+ *            function path only), scrubbed by ./redact.mjs.
  *
  * Plus `expectAccessible(page, { within?, label? })`, the axe check (below),
  * and Playwright's own `isMobile` fixture for the rare genuine layout branch.
@@ -39,11 +47,13 @@
  *   });
  */
 import { test as base, expect, type Browser, type BrowserContext, type Page, type TestInfo } from "@playwright/test";
-import { BREAKER_TAG, SELLER_TAG } from "../project-scope.mjs";
+import { BREAKER_TAG } from "../project-scope.mjs";
 import { checkAccessibility, type AccessibleOptions } from "./a11y";
 import { BscFake } from "./bscFake";
+import { EbayFake } from "./ebayFake";
 import { makeEnv, type FlowEnv } from "./env";
-import { redact } from "./redact.mjs";
+import { redact, redactLiterals } from "./redact.mjs";
+import { attachWireOnFailure, recordWire, runLiterals } from "./wire-log";
 import { expectWorkerReset, WORKER_RESET_CAP_MS, WORKER_RESET_LAUNCH_MS, WORKER_RESET_REDIRECT } from "./worker-reset";
 
 export type SignIn = (
@@ -74,8 +84,8 @@ export function signInUrl(redirect: string, worker: string, account?: string): s
  */
 const FAILURE_RESET_ON = process.env.PW_FAILURE_RESET ? process.env.PW_FAILURE_RESET === "1" : !!process.env.CI;
 
-/** The tags whose specs never retry (hard rule 5): shared seller accounts, the BSC call gate. */
-const NO_RETRY_TAGS: ReadonlySet<string> = new Set([SELLER_TAG, BREAKER_TAG]);
+/** The tags whose specs never retry (hard rule 5): the deployment-wide BSC call gate. */
+const NO_RETRY_TAGS: ReadonlySet<string> = new Set([BREAKER_TAG]);
 
 /** The reset's teardown: the page sent to about:blank, then its context closed (one UX budget each). */
 const RESET_STEP_MS = 7_000;
@@ -87,11 +97,22 @@ export const test = base.extend<{
   env: FlowEnv;
   signIn: SignIn;
   bscFake: BscFake;
+  ebayFake: EbayFake;
   captureConsole: boolean;
   consoleOnFailure: void;
   noRetryOnSharedAccounts: void;
   resetAfterFailure: void;
+  wireLog: void;
 }>({
+  // The client's side of a failure: attached as client-wire.log (./wire-log.ts, NEO-398).
+  wireLog: [
+    async ({ context }, use, testInfo) => {
+      const lines = recordWire(context);
+      await use();
+      await attachWireOnFailure(testInfo, lines);
+    },
+    { auto: true },
+  ],
   env: async ({}, use, testInfo) => {
     // The project feeds the d/m marker in every minted name, and the retry the
     // attempt number (./env.ts).
@@ -133,12 +154,21 @@ export const test = base.extend<{
     await use(fake);
     await fake.teardown();
   },
-  // NEO-592, GUIDE hard rule 5: a `@marketplace-seller` spec writes to a seller account
-  // every PR shares (eBay sandbox, SportLots) and a `@bsc-breaker` spec opens the
-  // deployment-wide BSC call gate; neither is undone by the failure reset, so neither
-  // retries. Each such file says `test.describe.configure({ retries: 0 })`; this refuses
-  // the retry of one that forgot, before its body writes anything. Registered before
-  // `resetAfterFailure`, so a refused retry is not followed by a second reset.
+  // NEO-555: the worker's own fake eBay seller (./ebayFake.ts). Its fault rules
+  // live on `bscFake`'s list (the fake keeps one per worker for both sites), so
+  // `bscFake`'s teardown drops them; this fixture has no teardown of its own.
+  // Seller state (policies, listings, orders) stays on the fake until the
+  // pass's reset: see ./ebayFake.ts.
+  ebayFake: async ({ context, bscFake }, use) => {
+    await use(new EbayFake(context, bscFake, LAUNCH_GATE));
+  },
+  // NEO-592, GUIDE hard rule 5: a `@bsc-breaker` spec opens the deployment-wide BSC
+  // call gate, which the failure reset does not undo, so it never retries. (NEO-555
+  // retired the other no-retry tag with the shared eBay sandbox seller: eBay is the
+  // fake, one seller per test user.) Each such file says
+  // `test.describe.configure({ retries: 0 })`; this refuses the retry of one that
+  // forgot, before its body writes anything. Registered before `resetAfterFailure`,
+  // so a refused retry is not followed by a second reset.
   noRetryOnSharedAccounts: [
     async ({}, use, testInfo) => {
       const tag = testInfo.tags.find((t) => NO_RETRY_TAGS.has(t));
@@ -201,7 +231,9 @@ export const test = base.extend<{
       if (testInfo.status === testInfo.expectedStatus || lines.length === 0) return;
       // Scrubbed line by line: a Clerk call carries the testing token in its query,
       // a signed storage address its signature (./redact.mjs). Never raw.
-      const body = lines.map((line) => redact(line).slice(0, CONSOLE_LINE_CHARS)).join("\n");
+      // The run's bare deployment name first (./wire-log.ts runLiterals, NEO-398).
+      const literals = runLiterals();
+      const body = lines.map((line) => redact(redactLiterals(line, literals)).slice(0, CONSOLE_LINE_CHARS)).join("\n");
       await testInfo.attach("console", { body, contentType: "text/plain" });
     },
     { auto: true },

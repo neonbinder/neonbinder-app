@@ -257,6 +257,9 @@
 - [Stacked branch merge after parent squash](reference_stacked_branch_merge_after_parent_squash.md) — merge base predates the parent: clean hunks duplicate code; re-merge with merge-tree base
 - [New listing problem reason: hand lists](reference_new_listing_problem_reason_has_hand_lists.md) — SYNC_HELD_REASONS, REPORTABLE_SYNC_REASONS judgement, test Reason union, spec copy literals
 - [ListingCardInputs field needs every returns validator](reference_listing_inputs_field_needs_every_returns_validator.md) — typecheck green, runtime "extra field"; add to previewListingTitle + parallelCopyTitles validators
+- [Convex new-module gotchas](convex-new-module-gotchas.md) — api.d.ts hand-registration, playerIds pin, lib/*Facts for cycles, pdfjs env failure
+- [Symlinked node_modules can lag the lockfile](reference_symlinked_node_modules_can_lag_the_lockfile.md) — build/one lib test red on a missing package you never touched = stale shared install, not your diff
+- [Wizard step status rides the footer live region](reference_wizard_step_status_rides_the_footer_live_region.md) — a step that mounts/unmounts cannot own a role=status; compute words in the wizard, step renders only Retry
 - [Host-stored count goes stale](host-stored-count-goes-stale-ask-the-door.md) — door reports live counts (onCounts + recount + countOnMount); no subscription for big parents
 - [Attributes panel collapsed tests need a non-set level](reference_attributes_panel_collapsed_tests_need_non_set_level.md) — a setName row opens itself; collapsed tests use insert/parallel or click Hide first
 - [Error state is neon pink on title fields](feedback_error_state_is_neon_pink_title_fields.md) — NEO-606: too-long counter/note/box pink via OVER_FIELD_CLASS; DESIGN.md updated; no wider sweep (Jason decides)
@@ -273,3 +276,5 @@
 - [Source pins trip on stamp/playerIds spellings](reference_source_pins_trip_on_stamp_and_playerids_spellings.md) — noTeamDefault.pin + playerLinksPin reject new `teamNoneConfirmedAt:` / `playerIds:` spellings; shorthand, early return
 - [Client teamless default mirrors server](client-teamless-default-mirrors-server-conservatively.md) — client may ASK about a card the server stamps, never skip one it would not; gate on every server data-claim
 - [convex-test typed harness](convex-test-typed-harness-alias.md) — makeT factory alias, not bare ReturnType<typeof convexTest>
+- [Testing hop status lines are an API](reference_testing_hop_status_lines_are_an_api.md) — /testing/*-fake status lines feed DONE/FAILED regexes in playwright/support; new op = FAILED-matching refusals, report the DONE prefix
+- [Wizard plan waits on teamless-sport mock](reference_wizard_plan_waits_on_teamless_sport_mock.md) — test useQuery mock must answer listTeamlessSportIds or the bar stays 0; how to port a new step onto trackSteps
