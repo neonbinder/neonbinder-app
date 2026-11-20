@@ -188,12 +188,15 @@ describe("the door's lines go through the ticker's one live line (a11y)", () => 
       <ParallelBuildPanel run={run({ announcement: "Built 3 parallels." })} onStop={() => {}} />,
     );
     // Self-opens, finds nothing left to fix, says so.
+    // Wait on the live line itself: its text is written by an effect after
+    // the commit that shows the visible span, so the span alone is too early.
     await waitFor(() =>
-      expect(screen.getByText("Every title fits now. Nothing to fix.")).toBeTruthy(),
+      expect(container.querySelector('[role="status"]')?.textContent).toBe(
+        "Every title fits now. Nothing to fix.",
+      ),
     );
     const live = container.querySelectorAll('[role="status"]');
     expect(live).toHaveLength(1);
-    expect(live[0].textContent).toBe("Every title fits now. Nothing to fix.");
     // The visible line is plain text, outside any live region.
     // It stays after the door has gone, so a sighted operator sees why.
     const shown = screen.getByText("Every title fits now. Nothing to fix.", { selector: "span" });
@@ -216,7 +219,9 @@ describe("the door's lines go through the ticker's one live line (a11y)", () => 
         onStop={() => {}}
       />,
     );
-    expect(container.querySelector('[role="status"]')!.textContent).toBe("Building 3 parallels.");
+    await waitFor(() =>
+      expect(container.querySelector('[role="status"]')?.textContent).toBe("Building 3 parallels."),
+    );
   });
 });
 
@@ -320,10 +325,13 @@ describe("NEO-581 — the button follows the cards", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     await waitFor(() => expect(doorButton(/card titles?$/)).toBeNull());
     expect(clause()).toBeNull();
-    // One live line, saying the save; the door's text stays for the eye.
+    // One live line, saying the save; the door's text stays for the eye. Its
+    // text is written by an effect after the commit, so wait on the text.
+    await waitFor(() =>
+      expect(container.querySelector('[role="status"]')?.textContent).toBe("Saved 2 titles."),
+    );
     const live = container.querySelectorAll('[role="status"]');
     expect(live).toHaveLength(1);
-    expect(live[0].textContent).toBe("Saved 2 titles.");
     expect(screen.getByText("Saved 2 titles.", { selector: "span" })).toBeTruthy();
     // Focus was on the door; it is parked on the panel, not dropped.
     expect(document.activeElement).not.toBe(document.body);
