@@ -910,6 +910,25 @@ describe("commitCardChecklist — re-sync of existing rows, same rule (NEO-335)"
     );
   });
 
+  test("NEO-628: the lane is handed the committing operator's subject, which the commit takes from its verified identity", async () => {
+    const t = convexTest(schema, modules);
+    const { rowId } = await firstSync(t);
+    const queued = await t.run(async (ctx) =>
+      (
+        ctx as unknown as {
+          db: { system: { query: (n: string) => { collect: () => Promise<Array<{ name: string; args: unknown[] }>> } } };
+        }
+      ).db.system.query("_scheduled_functions").collect(),
+    );
+    const entries = queued
+      .filter((r) => r.name.includes("enqueueBscTeamChecks"))
+      .map((r) => r.args[0] as { cardChecklistIds?: string[]; queuedBy?: string })
+      .filter((a) => (a.cardChecklistIds ?? []).includes(rowId));
+    expect(entries.length).toBeGreaterThan(0);
+    for (const entry of entries) expect(entry.queuedBy).toBe(ADMIN_IDENTITY.subject);
+    await settle(t);
+  });
+
   test("a FAILED re-sync still queues the existing teamless row", async () => {
     const t = convexTest(schema, modules);
     const { sportId, leafId, rowId } = await firstSync(t);

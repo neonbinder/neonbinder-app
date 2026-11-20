@@ -1,6 +1,7 @@
 /**
- * NEO-552 — the deployment-wide BSC call gate (`bscCallGate.ts`): the token
- * bucket and the breaker in one `marketplaceCallGates` row, driven through
+ * NEO-552 — the BSC call gate (`bscCallGate.ts`): the token
+ * bucket and the breaker in one `marketplaceCallGates` row per key (NEO-628:
+ * `"deployment"` against real BSC, `ns:<namespace>` against the fake), driven through
  * the real internal functions (convex-test) on a fake clock. The pure ladder
  * maths is pinned in lib/bscCallGateLadder.test.ts; this file pins what the
  * stored gate does with it.
@@ -9,7 +10,7 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
-import { bscCallGateFor, bscGateClock } from "./bscCallGate";
+import { bscCallDomainFor, bscCallGateFor, bscGateClock } from "./bscCallGate";
 import {
   FAILURE_BASE_MS,
   FAILURE_RUN_IDLE_RESET_MS,
@@ -52,6 +53,25 @@ async function open429(t: T): Promise<number> {
   if (!g.ok) throw new Error("expected a grant");
   await record(t, g.grantedAt, "rateLimited");
   return (await row(t)).openUntil;
+}
+
+const bound = (t: T, key = "deployment") =>
+  bscCallGateFor(
+    {
+      // convex-test's typed signatures are narrower than ActionCtx's.
+      runMutation: ((ref: unknown, args: unknown) =>
+        (t.mutation as (r: unknown, a: unknown) => Promise<unknown>)(ref, args)) as never,
+      runQuery: ((ref: unknown, args: unknown) =>
+        (t.query as (r: unknown, a: unknown) => Promise<unknown>)(ref, args)) as never,
+    },
+    key,
+  );
+
+/** Opens a 429 window (streak 1, 15 s) on `key`. */
+async function open429Key(t: T, key: string): Promise<void> {
+  const g = await t.mutation(internal.bscCallGate.acquire, { key, count: 1 });
+  if (!g.ok) throw new Error("expected a grant");
+  await t.mutation(internal.bscCallGate.recordOutcome, { key, grantedAt: g.grantedAt, outcome: "rateLimited" });
 }
 
 beforeEach(() => {
@@ -284,14 +304,6 @@ describe("the breaker", () => {
 });
 
 describe("bscCallGateFor + bscFetch", () => {
-  const bound = (t: T) =>
-    bscCallGateFor({
-      // convex-test's typed signatures are narrower than ActionCtx's.
-      runMutation: ((ref: unknown, args: unknown) =>
-        (t.mutation as (r: unknown, a: unknown) => Promise<unknown>)(ref, args)) as never,
-      runQuery: ((ref: unknown, args: unknown) =>
-        (t.query as (r: unknown, a: unknown) => Promise<unknown>)(ref, args)) as never,
-    });
   const opts = (t: T) => ({
     idToken: async () => "unused",
     pathTemplate: "marketplace/card/:id/card-listing",
@@ -399,14 +411,17 @@ describe("bscCallGateFor + bscFetch", () => {
   test("a binding whose gate cannot be asked fails closed", async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
-    const gate = bscCallGateFor({
-      runMutation: (async () => {
-        throw new Error("down");
-      }) as never,
-      runQuery: (async () => {
-        throw new Error("down");
-      }) as never,
-    });
+    const gate = bscCallGateFor(
+      {
+        runMutation: (async () => {
+          throw new Error("down");
+        }) as never,
+        runQuery: (async () => {
+          throw new Error("down");
+        }) as never,
+      },
+      "deployment",
+    );
     const res = await bscFetch("a", {}, { idToken: async () => "x", pathTemplate: "a", gate, env: {} });
     expect(res.status).toBe(503);
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -415,20 +430,51 @@ describe("bscCallGateFor + bscFetch", () => {
 });
 
 describe("clearForTesting", () => {
+  const KEY = "ns:happy-otter-123-aaaabbbbcccc";
+  const OTHER = "ns:happy-otter-123-ddddeeeeffff";
+  const armFake = () => {
+    vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://neonbinder-fake-bsc-0000-uc.a.run.app");
+    vi.stubEnv("NEONBINDER_FAKE_BSC_KEY", "k");
+    vi.stubEnv("TESTING_RESET_SECRET", "armed");
+  };
+
   test("refuses on a deployment without TESTING_RESET_SECRET", async () => {
-    vi.stubEnv("TESTING_RESET_SECRET", "");
+    armFake();
     const t = convexTest(schema, modules);
-    await acquire(t, 1);
-    await expect(t.mutation(internal.bscCallGate.clearForTesting, {})).rejects.toThrow(/test deployment/);
+    await t.mutation(internal.bscCallGate.acquire, { key: KEY, count: 1 });
+    await t.mutation(internal.bscCallGate.recordOutcome, { key: KEY, grantedAt: NOW, outcome: "failure" });
+    vi.stubEnv("TESTING_RESET_SECRET", "");
+    await expect(t.mutation(internal.bscCallGate.clearForTesting, { key: KEY })).rejects.toThrow(/test deployment/);
     expect(await rows(t)).toHaveLength(1);
   });
 
-  test("clears the gate on a test deployment", async () => {
-    vi.stubEnv("TESTING_RESET_SECRET", "armed");
+  test("deletes exactly the one row it is given, and nothing else", async () => {
+    armFake();
+    const t = convexTest(schema, modules);
+    await open429(t); // the deployment's own row too
+    await open429Key(t, KEY);
+    await open429Key(t, OTHER);
+    expect((await rows(t)).map((r) => r.scope).sort()).toEqual(["deployment", KEY, OTHER].sort());
+
+    expect(await t.mutation(internal.bscCallGate.clearForTesting, { key: KEY })).toEqual({ deleted: 1 });
+
+    expect((await rows(t)).map((r) => r.scope).sort()).toEqual(["deployment", OTHER].sort());
+    // Clearing a key with no row is a no-op that deletes nothing.
+    expect(await t.mutation(internal.bscCallGate.clearForTesting, { key: KEY })).toEqual({ deleted: 0 });
+    expect(await rows(t)).toHaveLength(2);
+  });
+
+  test("refuses the deployment's key, and a key that is not a gate key", async () => {
+    armFake();
     const t = convexTest(schema, modules);
     await open429(t);
-    expect(await t.mutation(internal.bscCallGate.clearForTesting, {})).toEqual({ deleted: 1 });
-    expect(await rows(t)).toHaveLength(0);
+    await expect(t.mutation(internal.bscCallGate.clearForTesting, { key: "deployment" })).rejects.toThrow(
+      /not cleared one key at a time/,
+    );
+    await expect(t.mutation(internal.bscCallGate.clearForTesting, { key: "ns:UPPER" })).rejects.toThrow(
+      /Unreadable BSC gate key/,
+    );
+    expect(await rows(t)).toHaveLength(1);
   });
 });
 
@@ -440,7 +486,7 @@ describe("gate log lines carry a fixed field set (no ids, no payloads)", () => {
       .mock.calls.map((c) => JSON.parse(String(c[0])) as Record<string, unknown>)
       .filter((line) => line.msg === msg);
 
-  test("bsc_gate_opened is exactly {msg, platform, operation, cause, streak, ms}", async () => {
+  test("bsc_gate_opened is exactly {msg, platform, operation, keyKind, cause, streak, ms}", async () => {
     const t = convexTest(schema, modules);
     const g = await acquire(t, 1);
     if (!g.ok) throw new Error("grant");
@@ -452,6 +498,7 @@ describe("gate log lines carry a fixed field set (no ids, no payloads)", () => {
       msg: "bsc_gate_opened",
       platform: "bsc",
       operation: "recordOutcome",
+      keyKind: "deployment",
       cause: "429",
       streak: 1,
       ms: 60_000,
@@ -471,14 +518,17 @@ describe("gate log lines carry a fixed field set (no ids, no payloads)", () => {
   });
 
   test("bsc_gate_unavailable carries the error name only, never its message", async () => {
-    const gate = bscCallGateFor({
-      runMutation: (async () => {
-        throw new RangeError("secret detail: row 123 for user abc");
-      }) as never,
-      runQuery: (async () => {
-        throw new Error("down");
-      }) as never,
-    });
+    const gate = bscCallGateFor(
+      {
+        runMutation: (async () => {
+          throw new RangeError("secret detail: row 123 for user abc");
+        }) as never,
+        runQuery: (async () => {
+          throw new Error("down");
+        }) as never,
+      },
+      "deployment",
+    );
     await gate.acquire(1);
     await gate.blockedUntil();
 
@@ -488,5 +538,205 @@ describe("gate log lines carry a fixed field set (no ids, no payloads)", () => {
       { msg: "bsc_gate_unavailable", platform: "bsc", operation: "state", error: "Error" },
     ]);
     expect(JSON.stringify(lines)).not.toContain("secret detail");
+  });
+});
+
+// ── NEO-628: the key is the rate-limit domain ───────────────────────────────
+
+describe("gate keys (NEO-628)", () => {
+  const A = "ns:happy-otter-123-aaaabbbbcccc";
+  const B = "ns:happy-otter-123-ddddeeeeffff";
+  const armFake = () => {
+    vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://neonbinder-fake-bsc-0000-uc.a.run.app");
+    vi.stubEnv("NEONBINDER_FAKE_BSC_KEY", "k");
+    vi.stubEnv("TESTING_RESET_SECRET", "armed");
+    vi.stubEnv("CONVEX_CLOUD_URL", "https://happy-otter-123.convex.cloud");
+  };
+  const acquireKey = (t: T, key: string, count = 1) =>
+    t.mutation(internal.bscCallGate.acquire, { key, count });
+  const stateOf = (t: T, key: string) => t.query(internal.bscCallGate.state, { key });
+  const rowsOf = async (t: T, key: string) =>
+    (await rows(t)).filter((r) => r.scope === key);
+
+  test("a 429 on key A leaves key B granting, and A's own gate refuses", async () => {
+    armFake();
+    const t = convexTest(schema, modules);
+    await open429Key(t, A);
+
+    expect(await acquireKey(t, A)).toMatchObject({ ok: false, reason: "open" });
+    expect(await acquireKey(t, B)).toMatchObject({ ok: true, granted: 1 });
+    expect((await stateOf(t, A)).blockedUntil).not.toBeNull();
+    expect(await stateOf(t, B)).toEqual({ blockedUntil: null });
+    // And the deployment's own key is untouched.
+    expect(await acquire(t, 1)).toMatchObject({ ok: true });
+  });
+
+  test("five failures on A do not count toward B", async () => {
+    armFake();
+    const t = convexTest(schema, modules);
+    // Four on A, then four on B: eight in all, but never five on one key.
+    for (let i = 0; i < 4; i += 1) {
+      const g = await acquireKey(t, A);
+      if (!g.ok) throw new Error("grant");
+      await t.mutation(internal.bscCallGate.recordOutcome, { key: A, grantedAt: g.grantedAt, outcome: "failure" });
+    }
+    for (let i = 0; i < 4; i += 1) {
+      const g = await acquireKey(t, B);
+      if (!g.ok) throw new Error("grant");
+      await t.mutation(internal.bscCallGate.recordOutcome, { key: B, grantedAt: g.grantedAt, outcome: "failure" });
+    }
+    expect(await stateOf(t, A)).toEqual({ blockedUntil: null });
+    expect(await stateOf(t, B)).toEqual({ blockedUntil: null });
+    expect((await rowsOf(t, A))[0].consecutiveFailures).toBe(4);
+    expect((await rowsOf(t, B))[0].consecutiveFailures).toBe(4);
+
+    // The fifth on A opens A and only A.
+    const g = await acquireKey(t, A);
+    if (!g.ok) throw new Error("grant");
+    await t.mutation(internal.bscCallGate.recordOutcome, { key: A, grantedAt: g.grantedAt, outcome: "failure" });
+    expect((await stateOf(t, A)).blockedUntil).not.toBeNull();
+    expect(await stateOf(t, B)).toEqual({ blockedUntil: null });
+  });
+
+  test("each key keeps its own bucket, its own 429 ladder (Retry-After) and its own probe", async () => {
+    armFake();
+    const t = convexTest(schema, modules);
+    const g = await acquireKey(t, A);
+    if (!g.ok) throw new Error("grant");
+    await t.mutation(internal.bscCallGate.recordOutcome, {
+      key: A,
+      grantedAt: g.grantedAt,
+      outcome: "rateLimited",
+      retryAfterMs: 90_000,
+    });
+    const a = (await rowsOf(t, A))[0];
+    expect(a.openUntil).toBe(NOW + 90_000);
+    advance(90_000);
+    expect(await acquireKey(t, A, 10)).toMatchObject({ ok: true, granted: 1, probe: true });
+    expect(await acquireKey(t, A)).toMatchObject({ ok: false, reason: "probing" });
+    // B has never opened: no probe, no streak.
+    expect(await acquireKey(t, B, 10)).toMatchObject({ ok: true, probe: false });
+  });
+
+  test("in real mode user A's 429 refuses user B: both are the one deployment key", async () => {
+    const t = convexTest(schema, modules);
+    const a = bscCallDomainFor("user_aaaabbbbcccc", {});
+    const b = bscCallDomainFor("user_ddddeeeeffff", {});
+    expect(a).toEqual({ gateKey: "deployment" });
+    expect(b).toEqual({ gateKey: "deployment" });
+
+    const gateA = bound(t, a.gateKey);
+    const gateB = bound(t, b.gateKey);
+    const g = await gateA.acquire(1);
+    if (!g.ok) throw new Error("grant");
+    await gateA.record(g.grant, "rateLimited");
+
+    expect(await gateB.acquire(1)).toMatchObject({ ok: false, reason: "open" });
+    expect((await rows(t)).map((r) => r.scope)).toEqual(["deployment"]);
+  });
+
+  test("on the fake, a user's gate is theirs: A's 429 through bscFetch leaves B's call sent", async () => {
+    armFake();
+    const t = convexTest(schema, modules);
+    const env = {
+      NEONBINDER_BSC_API_BASE: "https://neonbinder-fake-bsc-0000-uc.a.run.app",
+      NEONBINDER_FAKE_BSC_KEY: "k",
+      TESTING_RESET_SECRET: "armed",
+      CONVEX_CLOUD_URL: "https://happy-otter-123.convex.cloud",
+    };
+    const da = bscCallDomainFor("user_a", env);
+    const db = bscCallDomainFor("user_b", env);
+    expect(da.gateKey).toMatch(/^ns:happy-otter-123-[0-9a-f]{12}$/);
+    expect(da.gateKey).toBe(`ns:${da.fakeNs}`);
+    expect(db.gateKey).not.toBe(da.gateKey);
+    const sent: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        const ns = new Headers(init.headers).get("x-nb-fake-ns") ?? "";
+        sent.push(ns);
+        return ns === da.fakeNs
+          ? new Response("", { status: 429, headers: { "retry-after": "60" } })
+          : new Response("{}", { status: 200 });
+      }),
+    );
+    const call = (d: { gateKey: string; fakeNs?: string }) =>
+      bscFetch(
+        "marketplace/card/1/card-listing",
+        {},
+        {
+          idToken: async () => "tok",
+          pathTemplate: "marketplace/card/:id/card-listing",
+          gate: bound(t, d.gateKey),
+          ...(d.fakeNs ? { fakeNs: d.fakeNs } : {}),
+          env,
+        },
+      );
+
+    expect((await call(da)).status).toBe(429);
+    const refused = await call(da);
+    expect(refused.headers.get("x-nb-bsc-breaker")).toBe("open");
+    expect((await call(db)).status).toBe(200);
+    // The sent calls carry the namespace the gate was keyed on.
+    expect(sent).toEqual([da.fakeNs, db.fakeNs]);
+  });
+
+  test("a per-namespace key is refused outside the fake, and a malformed key everywhere (fail closed)", async () => {
+    const t = convexTest(schema, modules);
+    // Real mode: an ns: key is never honoured.
+    await expect(acquireKey(t, A)).rejects.toThrow(/needs the fake BSC/);
+    await expect(t.query(internal.bscCallGate.state, { key: A })).rejects.toThrow(/needs the fake BSC/);
+    armFake();
+    for (const bad of ["", "other", "ns:", "ns:UPPER", "ns:a b", `ns:${"a".repeat(101)}`, "NS:abc", "deployment ", "ns:-abc"]) {
+      await expect(acquireKey(t, bad)).rejects.toThrow(/Unreadable BSC gate key/);
+    }
+    expect(await rows(t)).toHaveLength(0);
+  });
+
+  test("a gate bound to an unusable key fails closed through bscFetch (503, nothing sent)", async () => {
+    const t = convexTest(schema, modules);
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await bscFetch(
+      "a",
+      {},
+      { idToken: async () => "x", pathTemplate: "a", gate: bound(t, "ns:real-mode-refuses-this"), env: {} },
+    );
+    expect(res.status).toBe(503);
+    expect(res.headers.get("x-nb-bsc-breaker")).toBe("gate_unavailable");
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(await rows(t)).toHaveLength(0);
+  });
+
+  test("an acquire from before the key existed (no key) is the deployment's gate", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.bscCallGate.acquire, { count: 1 });
+    await t.mutation(internal.bscCallGate.recordOutcome, { grantedAt: NOW, outcome: "failure" });
+    expect((await rows(t)).map((r) => r.scope)).toEqual(["deployment"]);
+  });
+
+  test("bsc_gate_opened logs the key kind and never the namespace", async () => {
+    armFake();
+    const t = convexTest(schema, modules);
+    await open429Key(t, A);
+    const warned = vi.mocked(console.warn).mock.calls.map((c) => String(c[0]));
+    const opened = warned.filter((l) => l.includes("bsc_gate_opened"));
+    expect(opened).toHaveLength(1);
+    expect(JSON.parse(opened[0])).toMatchObject({ keyKind: "ns" });
+    expect(opened[0]).not.toContain("happy-otter");
+    expect(opened[0]).not.toContain("aaaabbbbcccc");
+  });
+
+  test("the global reset drains every row, whatever its scope", async () => {
+    armFake();
+    const t = convexTest(schema, modules);
+    await open429(t);
+    await open429Key(t, A);
+    await open429Key(t, B);
+    expect(await rows(t)).toHaveLength(3);
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    const done = await t.mutation(internal.selectorOptions.resetMarketplaceCallGatesBatch, {});
+    expect(done).toEqual({ deleted: 3, hasMore: false });
+    expect(await rows(t)).toHaveLength(0);
   });
 });

@@ -22940,6 +22940,10 @@ export const commitCardChecklistFinalize = internalMutation({
     skippedTeamNames: v.array(v.string()),
     reviewRowIds: v.array(v.id("entityReviewQueue")),
     bscTeamEnrichmentIds: v.array(v.id("cardChecklist")),
+    // NEO-628 — the operator committing (the action's verified Clerk subject),
+    // passed to the team lane so a card is asked in THEIR fake namespace and
+    // behind THEIR BSC call gate. Never read here with getCurrentUserId.
+    queuedBy: v.optional(v.string()),
     setNameAncestorId: v.optional(v.id("selectorOptions")),
     cardCount: v.number(),
     // NEO-294 — absent starts the walk at the head of the first phase;
@@ -23403,7 +23407,10 @@ export const commitCardChecklistFinalize = internalMutation({
       await ctx.scheduler.runAfter(
         0,
         internal.bscTeamPool.enqueueBscTeamChecks,
-        { cardChecklistIds: args.bscTeamEnrichmentIds },
+        {
+          cardChecklistIds: args.bscTeamEnrichmentIds,
+          ...(args.queuedBy !== undefined ? { queuedBy: args.queuedBy } : {}),
+        },
       );
     }
 
@@ -26130,6 +26137,7 @@ export const commitCardChecklist = action({
       skippedTeamNames: prelude.skippedTeamNames,
       reviewRowIds: args.batchId ? prelude.reviewRowIds : [],
       bscTeamEnrichmentIds,
+      queuedBy: operatorUserId,
       setNameAncestorId: prelude.setNameAncestorId,
       cardCount: args.cards.length,
     };

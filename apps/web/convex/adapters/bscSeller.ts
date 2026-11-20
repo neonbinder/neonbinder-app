@@ -24,7 +24,7 @@ import { isPlatformPaused } from "../marketplacePause";
 import { actionBscIdTokenSource, bscFetch, bscHeaders, isBscBreakerRefusal } from "../lib/bscHttp";
 import { BSC_PACED_SELLER } from "../lib/bscPacedCopy";
 // NEO-552 — the deployment-wide call gate every BSC call passes.
-import { bscCallGateFor } from "../bscCallGate";
+import { bscCallDomainFor, bscCallGateFor } from "../bscCallGate";
 import {
   parseBscOrder,
   parseBscOrderHistoryPage,
@@ -430,7 +430,10 @@ async function send(
           // in a Node action (cached per isolate).
           idToken: actionBscIdTokenSource(() => ctx.runAction(internal.fakeBsc.idToken, {})),
           pathTemplate: opts.pathTemplate,
-          gate: bscCallGateFor(ctx),
+          // NEO-628: the token owner's domain. The request carries the
+          // owner's token, so the fake reads its namespace from that; the
+          // gate is keyed on the same owner (`"deployment"` against real BSC).
+          gate: bscCallGateFor(ctx, bscCallDomainFor(session.ownerId).gateKey),
         },
       );
       rec.respond(call, res);

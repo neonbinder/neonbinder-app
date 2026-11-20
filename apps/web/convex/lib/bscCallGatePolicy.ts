@@ -1,9 +1,11 @@
 /**
- * NEO-552 — the BSC call gate's policy: the deployment-wide breaker and token
- * bucket every BuySportsCards call passes through (`bscFetch`, CONTRACT.md
- * "BSC call breaker"). Pure: no Convex imports, no clock of its own, no I/O.
- * `convex/bscCallGate.ts` stores the state (`marketplaceCallGates`, one row)
- * and runs these functions inside its mutations; `lib/bscHttp.ts` classifies
+ * NEO-552 — the BSC call gate's policy: the breaker and token bucket every
+ * BuySportsCards call passes through (`bscFetch`, CONTRACT.md "BSC call
+ * breaker"). Pure: no Convex imports, no clock of its own, no I/O.
+ * `convex/bscCallGate.ts` stores the state (`marketplaceCallGates`, one row per
+ * gate KEY: NEO-628, one `"deployment"` key against real BSC, one `ns:` key
+ * per fake namespace; this policy is the same for every key and knows none of
+ * them) and runs these functions inside its mutations; `lib/bscHttp.ts` classifies
  * each answer with `classifyBscAnswer` / `classifyBscThrow`.
  *
  * Why (NEO-482, NEO-487, the CI lockout): BSC's edge answers 429 and then

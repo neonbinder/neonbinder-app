@@ -385,13 +385,30 @@ whether the row is down. A photo upload has no API undo
 ## BSC call breaker (`bscFetch`)
 
 Every BSC API call from Convex goes through `bscFetch`. It checks one
-deployment-wide breaker before each call. It opens the breaker on any 429
-(honouring `Retry-After`) or on a run of 5xx or timeouts on any endpoint, and
-enforces a per-deployment token bucket against BuySportsCards (none against
-the fake). A 429 is never retried.
+breaker before each call: the gate of the **key** the call lands in (NEO-628,
+below). It opens the breaker on any 429 (honouring `Retry-After`) or on a run
+of 5xx or timeouts on any endpoint, and enforces a token bucket against
+BuySportsCards (none against the fake). A 429 is never retried.
 
 As built (`apps/web/convex/bscCallGate.ts`, policy in
-`convex/lib/bscCallGatePolicy.ts`, one `marketplaceCallGates` row):
+`convex/lib/bscCallGatePolicy.ts`, one `marketplaceCallGates` row per key):
+
+- **Gate key = the rate-limit domain** (`convex/lib/bscGateKey.ts`). Against
+  **real BuySportsCards** there is one key, `"deployment"`: its 429s come from
+  BSC's load balancer on a public, token-less endpoint, so the limit is by
+  egress IP and every user on a deployment shares it. Against **the fake**
+  there is one key per fake namespace, `ns:<namespace>` (one per test user,
+  `^ns:[a-z0-9][a-z0-9-]{0,99}$`), so a 429 or a run of failures injected into
+  one user's namespace closes only that user's gate and the `@bsc-breaker`
+  specs can run in the normal shard pool. A call with no namespace of its own
+  (a deployment prefix `<convexSlug>-`, or a deployment that cannot form one)
+  is `"deployment"` on the fake too. The key is checked by one helper
+  (`gateScopeFor`) on every row read and insert, which fails closed: an `ns:`
+  key is accepted only when the deployment is on the fake. Each key keeps the
+  behaviour below unchanged. **One value feeds both the key and the
+  `x-nb-fake-ns` header** (`bscCallDomainFor`): token-bearing calls use the
+  token owner's namespace, so a call is never keyed on one namespace and sent
+  as another.
 
 - Bucket: 60 a minute, burst 10 against BuySportsCards. **None against the
   fake**: no wait and no `throttled` refusal, ever, and a healthy
@@ -420,9 +437,22 @@ As built (`apps/web/convex/bscCallGate.ts`, policy in
   `x-nb-bsc-breaker: open|probing|throttled`, or 503 with
   `x-nb-bsc-breaker: gate_unavailable` when the gate itself cannot be read
   (fail closed).
-- `bscCallGate:clearForTesting` (internal, refused without
-  `TESTING_RESET_SECRET`) clears the row, for the breaker fault specs'
-  teardown. The Set Builder reset clears it first.
+- `bscCallGate:clearForTesting({key})` (internal, refused without
+  `TESTING_RESET_SECRET`) deletes exactly the one `ns:` row it is given, for
+  the breaker fault specs' teardown, and refuses `"deployment"`.
+  `testing:clearBscCallGate` clears the caller's own `ns:` key (derived from
+  the verified Clerk subject; there is no key argument), and
+  `testing:resetMyTestState` clears it with the caller's namespace. The Set
+  Builder reset still drains every row, whatever its scope, first.
+- **The background team lane** (`bscTeamPool`, one slot, no caller identity)
+  carries the Clerk subject of the operator who queued each card (`queuedBy`,
+  set by the server's enqueue callers, kept across re-enqueue) and asks in
+  that user's namespace behind that user's key. A blocked `ns:` key defers the
+  card at once (the one slot is every shard's); only the `"deployment"` key is
+  waited out in the slot (`BSC_TEAM_WAIT_IN_SLOT_MAX_MS`). An item with no
+  `queuedBy` (queued before NEO-628) keeps the prefix and `"deployment"`.
+- `bsc_gate_opened` logs the key kind (`deployment` or `ns`), never the
+  namespace.
 
 ## Module seams inside the fake (agreed between builders)
 
@@ -506,8 +536,10 @@ Convex (`bscFetch`, fake mode only, never in real mode) sends `x-nb-fake-ns`
 on a request with no BSC token: the caller's namespace
 (`fakeBscNamespaceFor`) when the action runs as a signed-in user (a fetch-time
 team lookup), else the deployment prefix `<convexSlug>-`
-(`fakeBscPrefixFor`), for the background team lane, which has no user. Both
-match `^[a-z0-9][a-z0-9-]{0,99}$`. **Server side (done):** a value ending in
+(`fakeBscPrefixFor`), for a call with no user. The background team lane
+carries the queuing operator (`queuedBy`, NEO-628) and uses THEIR namespace;
+only an item with none falls back to the prefix. The BSC call gate is keyed on
+the same value (`bscCallDomainFor`). Both match `^[a-z0-9][a-z0-9-]{0,99}$`. **Server side (done):** a value ending in
 `-` is a prefix, not a namespace: its faults are the card-scoped rules of
 every namespace under that prefix (rules without a `cardId` never apply), and
 its misses are recorded under the prefix. A miss read includes a prefix's list

@@ -1183,6 +1183,13 @@ export const enqueueBscTeamBackfill = internalMutation({
      */
     mode: v.optional(v.union(v.literal("unchecked"), v.literal("reask"))),
     /**
+     * NEO-628 — the Clerk subject the cards are queued for, an operator-run
+     * backfill's own choice (it has no caller identity). On the fake the cards
+     * are asked in that user's namespace and behind that user's BSC call gate;
+     * absent (the usual run) is the deployment's own domain.
+     */
+    queuedBy: v.optional(v.string()),
+    /**
      * NEO-345 — write and schedule nothing; report what this page holds.
      * Run it first: the counts say how many live BSC requests an armed run
      * of either mode would spend. Defaults to FALSE in "unchecked" mode (its
@@ -1326,7 +1333,10 @@ export const enqueueBscTeamBackfill = internalMutation({
       await ctx.scheduler.runAfter(
         0,
         internal.bscTeamPool.enqueueBscTeamChecks,
-        { cardChecklistIds: candidateIds },
+        {
+          cardChecklistIds: candidateIds,
+          ...(args.queuedBy !== undefined ? { queuedBy: args.queuedBy } : {}),
+        },
       );
     }
 

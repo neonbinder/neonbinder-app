@@ -549,7 +549,8 @@ describe("buildParallelChecklist — the happy path", () => {
       const one = copies.find((c) => c.cardNumber === "1")!;
       const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
       expect(scheduled.map((s) => s.name)).toEqual(["bscTeamPool:enqueueBscTeamChecks"]);
-      expect(scheduled[0].args).toEqual([{ cardChecklistIds: [one._id] }]);
+      // NEO-628: queued for the operator who built (the action's verified subject).
+      expect(scheduled[0].args).toEqual([{ cardChecklistIds: [one._id], queuedBy: ADMIN.subject }]);
       // It reached the lane. (Filtered: another test's late job can land in
       // the same spy, and convex-test ids repeat across instances.)
       expect(lane.some((l) => l.item.cardChecklistId === one._id)).toBe(true);
