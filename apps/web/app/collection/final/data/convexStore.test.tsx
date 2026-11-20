@@ -169,7 +169,7 @@ vi.mock("convex/react", async () => {
 
 const wrapper = ({ children }: { children: ReactNode }) => <ConvexCollectionProvider>{children}</ConvexCollectionProvider>;
 
-const { toVariantRef, toCopy, toRawDetails, fromRawDetails, toDrillItem, foldsInto, toContainer, toWant, applyBoxQuantity, applyBoxSteps, isPlainRow, patchInventory } = __test;
+const { toVariantRef, toCopy, toRawDetails, fromRawDetails, toDrillItem, toSummaryVariant, foldsInto, toContainer, toWant, applyBoxQuantity, applyBoxSteps, isPlainRow, patchInventory } = __test;
 
 const node = (id: string, name: string) => ({ _id: id, name }) as never;
 
@@ -362,6 +362,33 @@ describe("the drill", () => {
     );
     expect(d).toEqual({ id: "set9", level: "set", name: "Starline", hasChildren: true, brandId: "unk" });
     expect(toDrillItem("brand", item({ level: "manufacturer", name: "Topps", kind: null, childCount: 4 })).brandId).toBeUndefined();
+  });
+});
+
+describe("NEO-616: a row's print run", () => {
+  const row = (over: object) =>
+    ({ _id: "x", level: "insert", name: "Gold Refractor", kind: "parallel", childCount: 0, cardCount: 10, baseCardCount: 10, ...over }) as never;
+
+  it("rides the drill's one extra line as /N", () => {
+    expect(toDrillItem("variant", row({ printRun: 5 })).description).toBe("/5");
+    expect(toDrillItem("variant", row({ printRun: 50 })).description).toBe("/50");
+  });
+
+  it("a one-of-one reads 1/1, as everywhere else", () => {
+    expect(toDrillItem("variant", row({ printRun: 1 })).description).toBe("1/1");
+  });
+
+  it("absent stays absent: no description key, no second field", () => {
+    const d = toDrillItem("variant", row({}));
+    expect("description" in d).toBe(false);
+    expect(Object.keys(d)).not.toContain("printRun");
+  });
+
+  it("the set summary's variant carries it, else null", () => {
+    const variant = (over: object) =>
+      ({ ...(row(over) as object), variantType: { _id: "vt", name: "Parallels" }, insert: null, parentId: "vt" }) as never;
+    expect(toSummaryVariant(variant({ printRun: 5 }), 0).printRun).toBe(5);
+    expect(toSummaryVariant(variant({}), 0).printRun).toBeNull();
   });
 });
 

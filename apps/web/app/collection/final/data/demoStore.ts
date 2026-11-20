@@ -83,7 +83,7 @@ import {
   type DemoContainer,
   type DemoCopy,
 } from "../store";
-import { compareCards, setLabel } from "./labels";
+import { compareCards, printRunLabel, setLabel } from "./labels";
 import {
   bySlot,
   CollectionStoreContext,
@@ -496,9 +496,8 @@ function drillItem(level: DrillLevel, item: ColumnItem, extra: Partial<DrillItem
 
 /** "/50", "1/1", or nothing: a parallel's print run, the one line the drill keeps. */
 function printRunOf(set: FixtureSet, type: VariantType, name: string): string | undefined {
-  const run = set.variants.find((v) => v.path.type === type && v.path.name === name)?.printRun ?? null;
-  if (run === null) return undefined;
-  return run === 1 ? "1/1" : `/${run}`;
+  const printRun = set.variants.find((v) => v.path.type === type && v.path.name === name)?.printRun ?? null;
+  return printRunLabel({ printRun }) ?? undefined;
 }
 
 /** The prototype's set rows want a completion; the drill shows none of it. */

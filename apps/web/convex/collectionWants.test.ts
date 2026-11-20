@@ -195,8 +195,14 @@ describe("a deleted card takes its wants with it", () => {
       for (const ownerId of ownerIds) await ctx.db.insert("collectionWants", { ownerId, cardId, lastUpdated: 0 });
     });
   }
+  // The want sweep's own continuations. A card delete also schedules the row's
+  // print-run refresh (NEO-616), which is not what these tests count.
   const scheduled = (s: S) =>
-    s.t.run(async (ctx) => (await ctx.db.system.query("_scheduled_functions").collect()).map((f) => f.name));
+    s.t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect())
+        .map((f) => f.name)
+        .filter((name) => !name.includes("refreshVariantPrintRun")),
+    );
 
   test("an admin card delete removes wants and moves each owner's Want List count; never refuses", async () => {
     const s = await setup();

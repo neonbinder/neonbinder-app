@@ -528,6 +528,39 @@ describe("a set", () => {
   });
 });
 
+describe("NEO-616: a row's print run", () => {
+  test("drill and setSummary carry a stored run, and a row without one has no key", async () => {
+    const { t, as, fx } = await setup();
+    await t.run((ctx) => ctx.db.patch(fx.goldId, { printRun: 5 }));
+    const column = await as.query(api.collectionCatalog.drill, {
+      level: "insert",
+      parentId: fx.parallelsTypeId,
+    });
+    const gold = column.items.find((i) => i.name === "Gold Refractor")!;
+    expect(gold.printRun).toBe(5);
+    const summary = await as.query(api.collectionCatalog.setSummary, { setId: fx.setId });
+    expect(summary!.variants.find((r) => r.name === "Gold Refractor")!.printRun).toBe(5);
+    // Every other row: the key is absent, not undefined or null.
+    const others = [
+      ...(await as.query(api.collectionCatalog.drill, { parentId: fx.setId })).items,
+      ...(await as.query(api.collectionCatalog.drill, { level: "insert", parentId: fx.insertsTypeId })).items,
+      ...summary!.variants.filter((r) => r.name !== "Gold Refractor"),
+    ];
+    expect(others.length).toBeGreaterThan(0);
+    for (const row of others) expect("printRun" in row).toBe(false);
+  });
+
+  test("a stored run that is not a number is not sent", async () => {
+    const { t, as, fx } = await setup();
+    await t.run((ctx) => ctx.db.patch(fx.goldId, { printRun: undefined }));
+    const column = await as.query(api.collectionCatalog.drill, {
+      level: "insert",
+      parentId: fx.parallelsTypeId,
+    });
+    expect("printRun" in column.items[0]).toBe(false);
+  });
+});
+
 describe("cards", () => {
   test("variantCards returns the checklist in sortOrder, hydrated", async () => {
     const { as, fx } = await setup();

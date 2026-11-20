@@ -207,6 +207,8 @@ export default function StaticColumn({
   const renderOption = (item: ColumnItem) => {
     const isSelected = selectedId === item.id;
     const isHighlighted = highlighted === item.id;
+    // The extra line ("/5") is read as the option's description, not as part of its name.
+    const descriptionId = item.description ? `${optionDomId(item.id)}-description` : undefined;
     return (
       <button
         key={item.id}
@@ -214,6 +216,7 @@ export default function StaticColumn({
         type="button"
         role="option"
         aria-selected={isSelected}
+        aria-describedby={descriptionId}
         tabIndex={-1}
         onClick={() => select(item.id)}
         onKeyDown={(e) => activateOnEnter(e, () => select(item.id))}
@@ -222,7 +225,11 @@ export default function StaticColumn({
         }${isHighlighted ? ` ${HIGHLIGHT_STROKE}` : ""}`}
       >
         <span className="block font-semibold">{item.name}</span>
-        {item.description && <span className={`block ${DESCRIPTION_TONE}`}>{item.description}</span>}
+        {item.description && (
+          <span id={descriptionId} aria-hidden="true" className={`block wrap-anywhere ${DESCRIPTION_TONE}`}>
+            {item.description}
+          </span>
+        )}
       </button>
     );
   };
