@@ -37,19 +37,20 @@ worktree needs its own Convex deployment, made by your workspace's own script.
 
 ```bash
 node playwright/tools/e2e-run.mjs run <spec-substring>...   # (npm run e2e:run -- ... also works)
-node playwright/tools/e2e-run.mjs wait                      # after exit 75; Bash timeout 240000
+node playwright/tools/e2e-run.mjs wait                      # after exit 75; Bash timeout 200000
 node playwright/tools/e2e-run.mjs plant --edit break.json --expect '<regex>' <spec>
 node playwright/tools/e2e-run.mjs status | digest [last|<runDir>] | stop | stop-vite | seed
 ```
 
 - **What `run` does:** loads `.env.local` (refuses anything but your own `dev:` deployment, a deploy key, or CI), starts Vite on port `3` + ticket number if none is up, reads `PAUSED_PLATFORMS` from the deployment, runs `setup` and `bootstrap` if they have not passed since the last seed, then the specs with `--no-deps --retries=0` as worker 8, and prints a digest (<8,000 chars) with each failure's line, error and ARIA-snapshot window.
-- **Exit codes:** 0 pass · 1 Playwright failures · 2 refused (reason printed) · 3 another run holds the lock · 75 still running: call `wait` (it waits 230 s a slice) until it ends.
+- **Exit codes:** 0 pass · 1 Playwright failures · 2 refused (reason printed) · 3 another run holds the lock · 75 still running: call `wait` (it waits 170 s a slice; the Bash tool backgrounds a command at about 180 s, so use Bash timeout 200000) until it ends.
 - **Options:** `--project desktop|mobile|both` (default desktop) · `--worker N` (8) · `--port N` (override the `3` + ticket port) · `--grep <re>` · `--slice <s>` (0 = wait to the end) · `--push` (push `convex/` changes; the only sanctioned `convex dev --once`) · `--allow-shared-dev` (cloud threads; `seed`/`--fresh` still refuse there).
-- **`--fresh`** re-seeds first (reset + reference import + paused flag). Use it when a fresh-only spec already ran on this seed (the digest says "if fresh-only, this red is expected: rerun with --fresh") or the data is in doubt.
+- **Paths:** `--edit`/`--patch` file paths are relative to `apps/web`.
+- **`--fresh`** re-seeds first (reset + reference import + paused flag). Use it when a fresh-only spec already ran on this seed (the digest says "if fresh-only, this red is expected: rerun with --fresh"; that note appears only beside a red) or the data is in doubt.
 - **`--setup`** forces `setup` + `bootstrap` again: a cold fake BSC, a pulled change to saved sign-ins, a worker you have not bootstrapped.
 - **`--project both`** runs desktop, re-seeds, then mobile: every spec must pass on both before hand-back.
-- **`plant`** proves a spec can fail: `--edit` takes `[{ "file", "find", "replace" }]` (each `find` matches exactly once) or `--patch f.diff`; the tool backs the files up, runs, restores byte-exact (and re-pushes Convex if touched). Exit 0 RED (as planted when `--expect` matched) · 1 STAYED GREEN (the spec does not prove it), or RED but `--expect` did not match (failed for another reason), or a setup/bootstrap phase failed before the spec ran · 4 restore failed: stop and report. A leftover plant is restored by the next invocation.
-- **Artifacts:** `apps/web/.e2e-local/runs/<stamp>-<project>/` (run.log, json, `results/` with screenshot, `error-context.md`, trace). Read the screenshot and `error-context.md` before any theory. Never copy traces, headers or tokens anywhere.
+- **`plant`** proves a spec can fail: `--edit` takes `[{ "file", "find", "replace" }]` (each `find` matches exactly once) or `--patch f.diff`; the tool backs the files up, runs, restores byte-exact (and re-pushes Convex if touched). Exit 0 RED (as planted when `--expect` matched) · 1 STAYED GREEN (the spec does not prove it), or RED but `--expect` did not match (failed for another reason), or a setup/bootstrap phase failed before the spec ran · 4 restore failed: stop and report. A leftover plant is restored by the next invocation. **When to plant:** a new or changed spec, or a shared helper. Prefer `--expect '<regex>'`: it is matched against the failed tests' error text (ANSI stripped), proves the spec went red for the planted reason, and skips the ~3.5 min re-seed a spec that already ran on this seed would otherwise get (without `--expect` the tool re-seeds first and says so). The header reads `PLANT RED as planted`, `PLANT STAYED GREEN` or `PLANT RED (--expect not matched)`, and a planted red is not recorded as a real run.
+- **Artifacts:** `apps/web/.e2e-local/runs/<stamp>-<project>/` (run.log, json, `results/` with screenshot, `error-context.md`, trace; the digest prints one path line each, relative to the repo root). Read the screenshot and `error-context.md` before any theory. Never copy traces, headers or tokens anywhere.
 
 ## Support helpers (top 10; import `test`/`expect` from `support/fixtures`)
 

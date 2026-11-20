@@ -4,7 +4,7 @@
 // Vite / seed / setup / bootstrap / playwright recipe in GUIDE.md "Running".
 //
 //   node playwright/tools/e2e-run.mjs [run] [opts] <spec-substring>...
-//   node playwright/tools/e2e-run.mjs wait [--slice 230]
+//   node playwright/tools/e2e-run.mjs wait [--slice 170]
 //   node playwright/tools/e2e-run.mjs plant (--edit f.json | --patch f.diff) [--expect <regex>] [opts] <spec>...
 //   node playwright/tools/e2e-run.mjs seed
 //   node playwright/tools/e2e-run.mjs status | digest [last|<runDir>] | stop | stop-vite
@@ -49,7 +49,7 @@ const SERVER_STRINGS = ["CONVEX_DEPLOYMENT", "CONVEX_DEPLOY_KEY", "CONVEX_DEPLOY
 export const DIGEST_LIMIT = 8000;
 const LINE_MAX = 200;
 const KEEP_RUNS = 10;
-const DEFAULT_SLICE = 230;
+const DEFAULT_SLICE = 170;
 const PROJECTS = { desktop: "e2e", mobile: "e2e-mobile" };
 
 export const EXIT = { pass: 0, fail: 1, refused: 2, locked: 3, restoreFailed: 4, running: 75 };
@@ -61,12 +61,17 @@ export function cleanText(text, literals = []) {
   return redactLiterals(redact(stripAnsi(String(text))), literals).replace(CONTROL, "");
 }
 
+/** A path inside the run directory: literals masked, but not redact.mjs, which turns Playwright's long test-dir name into a token marker. */
+function rawPathText(text, literals = []) {
+  return redactLiterals(stripAnsi(String(text)), literals).replace(CONTROL, "");
+}
+
 const clip = (s, n = LINE_MAX) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 export const HELP = `e2e-run: run local E2E specs on this worktree's own Convex dev deployment, print a digest.
 
-  e2e-run.mjs [run] [opts] <spec-substring>...   start a run, wait up to 230 s
-  e2e-run.mjs wait [--slice 230]                  wait on the current run; digest on finish
+  e2e-run.mjs [run] [opts] <spec-substring>...   start a run, wait up to 170 s
+  e2e-run.mjs wait [--slice 170]                  wait on the current run; digest on finish
   e2e-run.mjs plant (--edit f.json | --patch f.diff) [--expect <regex>] [opts] <spec>...
                                                   break the product on purpose, prove the spec goes red, restore
   e2e-run.mjs seed                                reset + reference import + setup + bootstrap
@@ -411,6 +416,30 @@ export function convexLine(stamp, fingerprint) {
   return stamp.fingerprint === fingerprint ? `convex/: pushed ${clock(stamp.at)}, unchanged since` : `convex/: CHANGED since the push at ${clock(stamp.at)} (rerun with --push)`;
 }
 
+/** The header verdict of a plant run, from its first result line; null for a plain run. */
+export function plantVerdict(plant) {
+  const first = Array.isArray(plant) ? plant[0] : null;
+  if (!first) return null;
+  if (first.startsWith("PLANT RED as planted")) return "PLANT RED as planted";
+  if (first.startsWith("PLANT STAYED GREEN")) return "PLANT STAYED GREEN";
+  if (first.startsWith("PLANT RESTORE FAILED")) return "PLANT RESTORE FAILED";
+  if (first.startsWith("PLANT: RED, but --expect")) return "PLANT RED (--expect not matched)";
+  if (first.startsWith("PLANT: RED")) return "PLANT RED (reason unchecked)";
+  return "PLANT ERROR";
+}
+
+/**
+ * Whether a plant re-seeds first, and the one-line note saying so.
+ * With --expect a spec that already ran on this seed is not re-seeded: a
+ * precondition red would not match the expected error anyway.
+ */
+export function plantReseed({ prior, specs, pws, expect, fresh }) {
+  const ran = pws.some((pw) => ranOnSeed(prior, specs, null, pw));
+  if (fresh || !ran) return { fresh: !!fresh, note: null };
+  if (expect) return { fresh: false, note: "note: this spec already ran on this seed; not re-seeding because --expect is given (a precondition red will not match it)" };
+  return { fresh: true, note: "note: this spec already ran on this seed; re-seeding first (about 3.5 min, resets the deployment). Pass --expect to skip the re-seed" };
+}
+
 /**
  * The digest text, under DIGEST_LIMIT characters.
  * @param {object} p
@@ -423,6 +452,7 @@ export function convexLine(stamp, fingerprint) {
  */
 export function buildDigest({ meta, phases, readText = () => null, literals = [], relRoot = APP_DIR, runDir }) {
   const rel = (p) => relative(relRoot, p) || p;
+  const inRun = (p) => String(p).startsWith(`${runDir}${sep}`);
   const tests = [];
   for (const ph of phases) for (const t of collectTests(ph.report)) tests.push({ ...t, label: ph.label });
   const failed = tests.filter((t) => t.status === "failed");
@@ -430,13 +460,14 @@ export function buildDigest({ meta, phases, readText = () => null, literals = []
 
   const render = ({ detailed, snapMax, passLines }) => {
     const out = [];
-    const verdict = meta.exit === 0 ? "PASS" : meta.exit === 1 ? "FAIL" : "ERROR";
+    const verdict = plantVerdict(meta.plant) ?? (meta.exit === 0 ? "PASS" : meta.exit === 1 ? "FAIL" : "ERROR");
     const elapsed = meta.finishedAt && meta.startedAt ? dur(new Date(meta.finishedAt) - new Date(meta.startedAt)) : "?";
     out.push(
       `E2E ${meta.runId}  ${verdict} (exit ${meta.exit})  ${elapsed}  ${meta.project} · worker ${meta.worker} · :${meta.port} · own dev deployment ✓` + (meta.paused != null ? ` · PAUSED_PLATFORMS=${meta.paused}` : ""),
     );
     out.push(`${meta.seedLine ?? ""}   ${meta.convexLine ?? ""}`.trim());
     if (meta.plant) out.push(...meta.plant);
+    for (const n of meta.notes ?? []) out.push(n);
     let shown = 0;
     for (const t of tests) {
       const bad = t.status === "failed" || t.status === "flaky";
@@ -477,11 +508,15 @@ export function buildDigest({ meta, phases, readText = () => null, literals = []
       }
       const prior = ranOnSeed(meta.prior, [], t.file, t.project || t.label);
       if (prior) out.push(`  note: ${prior.status === "failed" ? "failed" : "ran"} on this seed at ${clock(prior.at)}; if fresh-only, this red is expected: rerun with --fresh`);
-      const parts = [att("screenshot") && `screenshot ${rel(att("screenshot").path)}`, att("trace") && `trace ${rel(att("trace").path)}`, ctxAtt && `error-context ${rel(ctxAtt.path)}`].filter(Boolean);
-      if (parts.length) out.push(`  ${parts.join(" · ")}`);
+      for (const name of ["screenshot", "trace", "error-context"]) {
+        const a = att(name);
+        if (a) out.push(inRun(a.path) ? { raw: `  ${name} ${rel(a.path)}` } : `  ${name} ${rel(a.path)}`);
+      }
     });
-    out.push(`full log: ${rel(join(runDir, "run.log"))} · json: ${rel(join(runDir, `${phases.find((p) => p.report)?.label ?? "e2e"}.json`))}`);
-    return out.map((l) => clip(cleanText(l, literals))).join("\n");
+    const specPhases = phases.filter((p) => p.report && (p.kind ? p.kind === "spec" : p.pw !== "setup" && p.pw !== "bootstrap"));
+    const jsons = (specPhases.length ? specPhases : [{ label: "e2e" }]).map((p) => rel(join(runDir, `${p.label}.json`)));
+    out.push(`full log: ${rel(join(runDir, "run.log"))} · json: ${jsons.join(" + ")}`);
+    return out.map((l) => (typeof l === "string" ? clip(cleanText(l, literals)) : clip(rawPathText(l.raw, literals), 400))).join("\n");
   };
 
   let p = { detailed: 5, snapMax: 40, passLines: 12 };
@@ -669,7 +704,7 @@ export const io = {
 
 // ---------------------------------------------------------------- paths and state
 
-const localDir = () => join(APP_DIR, ".e2e-local");
+const localDir = () => process.env.E2E_RUN_LOCAL_DIR || join(APP_DIR, ".e2e-local"); // the env override is a seam for tests
 const runsDir = () => join(localDir(), "runs");
 const stateFile = () => join(localDir(), "seed-state.json");
 const lockFile = () => join(localDir(), "run.lock");
@@ -768,9 +803,18 @@ function convexFingerprint() {
 
 // ---------------------------------------------------------------- lock
 
+/** The pid in the lock file; 0 when the directory or the file does not exist yet (a fresh worktree). */
+function readLockPid() {
+  try {
+    return Number(readFileSync(lockFile(), "utf8").trim()) || 0;
+  } catch {
+    return 0;
+  }
+}
+
 function acquireLock() {
   mkdirSync(localDir(), { recursive: true });
-  const existing = Number(readFileSync(lockFile(), { flag: "a+", encoding: "utf8" }).trim());
+  const existing = readLockPid();
   if (existing && io.isAlive(existing)) return { ok: false, pid: existing };
   try {
     unlinkSync(lockFile());
@@ -782,7 +826,7 @@ function acquireLock() {
 }
 const setLockPid = (pid) => writeFileSync(lockFile(), String(pid));
 function releaseLock(pid = process.pid) {
-  if (Number(readFileSync(lockFile(), { flag: "a+", encoding: "utf8" }).trim()) === pid) {
+  if (readLockPid() === pid) {
     try {
       unlinkSync(lockFile());
     } catch {
@@ -884,7 +928,8 @@ function stateAfterPhase(phase, ctx, code, report) {
   const at = io.now().toISOString();
   if (phase.kind === "setup" && code === 0) w.setup = at;
   if (phase.kind === "bootstrap" && code === 0) w.bootstrap = at;
-  if (phase.kind === "spec") {
+  // A planted red is the product broken on purpose, not a real run of the spec.
+  if (phase.kind === "spec" && !(ctx.planting && code !== 0)) {
     state.ran = [...(state.ran ?? []), { project: phase.pw, args: ctx.specs, files: [...new Set(collectTests(report).map((t) => t.file))], at, status: code === 0 ? "passed" : "failed" }];
   }
   saveState(state);
@@ -958,6 +1003,7 @@ async function runner(runDir) {
   const logger = makeLogger(join(runDir, "run.log"), t.ok ? [t.deployment] : []);
   let exit = EXIT.fail;
   let metaPlant = null;
+  const plantNotes = [];
   let prior = [];
   let phasesDone = [];
   let ctx = null;
@@ -996,7 +1042,13 @@ async function runner(runDir) {
     const pwList = job.opts.project === "both" ? [PROJECTS.desktop, PROJECTS.mobile] : [PROJECTS[job.opts.project]];
     let fresh = job.opts.fresh;
     if (job.kind === "plant") {
-      if (pwList.some((pw) => ranOnSeed(prior, job.specs, null, pw))) fresh = true;
+      const rs = plantReseed({ prior, specs: job.specs, pws: pwList, expect: job.plant.expect, fresh });
+      fresh = rs.fresh;
+      if (rs.note) {
+        plantNotes.push(rs.note);
+        logger.line(rs.note);
+      }
+      ctx.planting = true;
       const root = repoRoot();
       const rels = job.plant.files;
       manifest = buildManifest(root, rels, { startedAt: io.now().toISOString(), pid: process.pid });
@@ -1030,6 +1082,8 @@ async function runner(runDir) {
     const r = await runPhases(phases, ctx);
     exit = r.exit;
     phasesDone = r.done;
+    // A seed phase in this run emptied the record of what ran on the seed.
+    if (phasesDone.some((d) => d.kind === "seed" && d.exit === 0)) prior = [];
     if (job.kind === "plant") {
       const failedTests = phasesDone.flatMap((d) => (d.kind === "spec" ? collectTests(readJson(join(runDir, `${d.label}.json`))) : [])).filter((x) => x.status === "failed");
       const setupBroke = phasesDone.some((d) => d.kind !== "spec" && d.exit !== 0);
@@ -1087,6 +1141,7 @@ async function runner(runDir) {
       seedLine: seedLine(state, job.opts.worker),
       convexLine: t.ok ? convexLine(readJson(stampFile()), convexFingerprint()) : "",
       plant: metaPlant,
+      notes: plantNotes,
       literals: t.ok ? [t.deployment] : [],
       refused: !t.ok ? t.reason : null,
     };
@@ -1121,7 +1176,7 @@ function digestFor(runDir) {
   })();
   const phases = (meta.phases ?? [])
     .filter((p) => p.kind !== "seed")
-    .map((p) => ({ label: p.label, pw: p.pw, report: readJson(join(runDir, `${p.label}.json`)), logTail: log }));
+    .map((p) => ({ label: p.label, pw: p.pw, kind: p.kind, report: readJson(join(runDir, `${p.label}.json`)), logTail: log }));
   const seeds = (meta.phases ?? []).filter((p) => p.kind === "seed" && p.exit !== 0);
   const text = buildDigest({ meta, phases, runDir, literals: meta.literals ?? [], relRoot: resolve(APP_DIR, "../.."), readText: (p) => (existsSync(p) ? readFileSync(p, "utf8") : null) });
   return seeds.length ? `${text}\nseed failed: see run.log` : text;
@@ -1216,6 +1271,11 @@ async function start(kind, parsed) {
       return EXIT.refused;
     }
   }
+  if (kind === "plant") {
+    const pws = opts.project === "both" ? [PROJECTS.desktop, PROJECTS.mobile] : [PROJECTS[opts.project]];
+    const rs = plantReseed({ prior: loadState()?.ran ?? [], specs, pws, expect: opts.expect, fresh: opts.fresh });
+    if (rs.note) console.log(rs.note);
+  }
   const lock = acquireLock();
   if (!lock.ok) {
     console.log("lock held: another e2e-run is in progress in this worktree. Use `wait` or `stop`.");
@@ -1234,7 +1294,7 @@ async function start(kind, parsed) {
 
 async function status() {
   const lines = [];
-  const pid = Number(readFileSync(lockFile(), { flag: "a+", encoding: "utf8" }).trim());
+  const pid = readLockPid();
   lines.push(pid && io.isAlive(pid) ? `lock: held by a live runner (pid ${pid})` : "lock: free");
   const run = latestRun();
   const st = run && readJson(join(run, "status.json"));
@@ -1253,7 +1313,7 @@ async function status() {
 }
 
 async function stop() {
-  const pid = Number(readFileSync(lockFile(), { flag: "a+", encoding: "utf8" }).trim());
+  const pid = readLockPid();
   if (!pid || !io.isAlive(pid)) {
     console.log("nothing running");
     return 0;

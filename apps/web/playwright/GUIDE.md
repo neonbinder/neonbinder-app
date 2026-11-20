@@ -1282,8 +1282,8 @@ that is not `dev:`, the main checkout's deployment, a deploy key or token in the
 environment or `.env.local`, or `CI` set). One run at a time per worktree (a lock).
 
 ```bash
-node playwright/tools/e2e-run.mjs run [opts] <spec-substring>...  # waits up to 230 s
-node playwright/tools/e2e-run.mjs wait [--slice 230]               # on exit 75: keep waiting
+node playwright/tools/e2e-run.mjs run [opts] <spec-substring>...  # waits up to 170 s
+node playwright/tools/e2e-run.mjs wait [--slice 170]               # on exit 75: keep waiting (Bash timeout 200000)
 node playwright/tools/e2e-run.mjs plant (--edit f.json | --patch f.diff) [--expect <regex>] [opts] <spec>...
 node playwright/tools/e2e-run.mjs seed                             # reset + reference import + setup + bootstrap
 node playwright/tools/e2e-run.mjs status | digest [last|<runDir>] | stop | stop-vite
@@ -1300,8 +1300,10 @@ node playwright/tools/e2e-run.mjs status | digest [last|<runDir>] | stop | stop-
   passes in `.e2e-local/seed-state.json` and runs those two first whenever they
   have not passed since the seed (the fake BSC cold start, below); `--setup`
   forces them. `--fresh` re-seeds first (the root `CLAUDE.md` step-3 recipe);
-  a spec that already ran on this seed gets a note in its failure block, since
-  a fresh-only spec's second run is red by design. `--project both` runs
+  a spec that already ran on this seed gets a note beside its red (only a red),
+  since a fresh-only spec's second run is red by design. The Bash tool
+  backgrounds a command at about 180 s, so the default slice is 170 s: call
+  `wait` with a Bash timeout of 200000. `--project both` runs
   desktop, re-seeds, then mobile ("Desktop and mobile"). `--push` pushes
   `convex/` and is the only way an agent pushes code to the deployment.
 - **Environment.** Vite on port `3` + the ticket number of the worktree's

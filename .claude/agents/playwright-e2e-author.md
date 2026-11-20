@@ -122,7 +122,8 @@ GUIDE.
    on your own Convex deployment before the first push"); the PR's Convex
    preview only when it cannot reproduce a red. No hand-built runners,
    `nohup`, or sleep/until loops. On exit 75 the run is still going: call
-   `wait` with a Bash timeout of 240000. One run at a time per worktree, at
+   `wait` with a Bash timeout of 200000 (the Bash tool backgrounds a command
+   at about 180 s, so a slice is 170 s). One run at a time per worktree, at
    most two specs per assignment (hand extras back unstarted). BSC
    (NEO-552) and eBay (NEO-555) are fakes with one seller per test user, so
    their specs run on your own deployment; specs that make BSC 429, 503,

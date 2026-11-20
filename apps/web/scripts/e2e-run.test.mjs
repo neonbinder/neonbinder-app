@@ -5,7 +5,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   APP_DIR,
   DIGEST_LIMIT,
@@ -20,12 +20,15 @@ import {
   convexTouched,
   io,
   locatorNames,
+  main,
   needsPhases,
   parseArgs,
   parseEnvFile,
   parseErrorContext,
   patchFiles,
   phasePlan,
+  plantReseed,
+  plantVerdict,
   ranOnSeed,
   resolveTarget,
   restoreFromManifest,
@@ -720,5 +723,118 @@ describe("io seam", () => {
     for (const k of ["now", "sleep", "capture", "runLogged", "listenerPid", "processCwd", "startDetached", "isAlive", "httpUp"]) {
       expect(typeof io[k], k).toBe("function");
     }
+  });
+});
+
+describe("NEO-622 live-run fixes", () => {
+  const prevLocal = process.env.E2E_RUN_LOCAL_DIR;
+  const prevCi = process.env.CI;
+  afterEach(() => {
+    if (prevLocal === undefined) delete process.env.E2E_RUN_LOCAL_DIR;
+    else process.env.E2E_RUN_LOCAL_DIR = prevLocal;
+    if (prevCi === undefined) delete process.env.CI;
+    else process.env.CI = prevCi;
+    vi.restoreAllMocks();
+  });
+
+  it("status and stop on a fresh worktree (no .e2e-local) say no run, not ENOENT", async () => {
+    process.env.E2E_RUN_LOCAL_DIR = join(mkdtempSync(join(tmpdir(), "e2e-fresh-")), "missing", ".e2e-local");
+    delete process.env.CI;
+    const out = [];
+    vi.spyOn(console, "log").mockImplementation((...a) => out.push(a.join(" ")));
+    expect(await main(["status"])).toBe(0);
+    expect(out.join("\n")).toMatch(/lock: free/);
+    expect(await main(["stop"])).toBe(0);
+    expect(out.join("\n")).toMatch(/nothing running/);
+  });
+
+  const mk = (n) => ({
+    title: `t${n}`,
+    file: `area/spec-${n}.spec.ts`,
+    projectName: "e2e",
+    status: "unexpected",
+    results: [{ duration: 1, error: { message: "Error: boom" }, attachments: [{ name: "error-context", path: "/runs/r1/results/x/error-context.md" }] }],
+  });
+  const rep = (tests) => ({ suites: [{ title: "x.spec.ts", file: "x.spec.ts", specs: tests.map((t) => ({ title: t.title, file: t.file, tests: [{ projectName: t.projectName, status: t.status, results: t.results }] })) }] });
+  const m0 = { runId: "20260101-plant-e2e", exit: 0, startedAt: "2026-01-01T10:00:00Z", finishedAt: "2026-01-01T10:05:00Z", project: "desktop", worker: 8, port: 3622, paused: "", seedLine: "seed: x", convexLine: "convex/: y" };
+  const digest = (meta, over = {}) =>
+    buildDigest({ meta: { ...m0, ...meta }, phases: [{ label: "e2e", pw: "e2e", report: rep([mk(1)]) }], literals: [DEP], relRoot: "/", runDir: "/runs/r1", ...over });
+
+  it("a planted red's header names the plant verdict, not PASS (exit 0)", () => {
+    expect(digest({ plant: ["PLANT RED as planted (matched --expect)"] }).split("\n")[0]).toMatch(/PLANT RED as planted \(exit 0\)/);
+    expect(digest({ plant: ["PLANT RED as planted (matched --expect)"] }).split("\n")[0]).not.toMatch(/PASS/);
+    expect(digest({ exit: 1, plant: ["PLANT STAYED GREEN: the spec does not prove this"] }).split("\n")[0]).toMatch(/PLANT STAYED GREEN \(exit 1\)/);
+    expect(digest({ exit: 1, plant: ["PLANT: RED, but --expect did not match: x"] }).split("\n")[0]).toMatch(/PLANT RED \(--expect not matched\)/);
+    expect(plantVerdict(null)).toBeNull();
+  });
+
+  it("a plain run's header is unchanged", () => {
+    expect(digest({ exit: 1 }).split("\n")[0]).toMatch(/FAIL \(exit 1\)/);
+  });
+
+  it("no fresh-only note when the seed was redone after the earlier run (prior emptied)", () => {
+    expect(digest({ exit: 1, prior: [] })).not.toMatch(/ran on this seed/);
+  });
+
+  it("the json: line names the spec phase, not setup.json", () => {
+    const text = digest(
+      { exit: 1 },
+      {
+        phases: [
+          { label: "setup", pw: "setup", kind: "setup", report: { suites: [] } },
+          { label: "e2e", pw: "e2e", kind: "spec", report: rep([mk(1)]) },
+        ],
+      },
+    );
+    expect(text).toMatch(/json: runs\/r1\/e2e\.json/);
+    expect(text).not.toMatch(/setup\.json/);
+  });
+
+  it("prints one usable line per attachment, long test-dir names intact", () => {
+    const dir = "/runs/r1/results/e2e/area-spec-a-very-long-test-title-with-hashes-0123456789abcdef0123456789abcdef-e2e";
+    const t = mk(1);
+    t.results[0].attachments = [
+      { name: "screenshot", path: `${dir}/test-failed-1.png` },
+      { name: "trace", path: `${dir}/trace.zip` },
+      { name: "error-context", path: `${dir}/error-context.md` },
+    ];
+    const text = buildDigest({ meta: { ...m0, exit: 1 }, phases: [{ label: "e2e", pw: "e2e", kind: "spec", report: rep([t]) }], literals: [DEP], relRoot: "/", runDir: "/runs/r1" });
+    const lines = text.split("\n");
+    for (const [name, file] of [["screenshot", "test-failed-1.png"], ["trace", "trace.zip"], ["error-context", "error-context.md"]]) {
+      expect(lines).toContain(`  ${name} ${dir.slice(1)}/${file}`);
+    }
+    expect(text).not.toMatch(/long token removed/);
+  });
+
+  it("still masks the deployment name inside a run-directory path", () => {
+    const t = mk(1);
+    t.results[0].attachments = [{ name: "screenshot", path: `/runs/r1/results/${DEP}/shot.png` }];
+    const text = buildDigest({ meta: { ...m0, exit: 1 }, phases: [{ label: "e2e", pw: "e2e", kind: "spec", report: rep([t]) }], literals: [DEP], relRoot: "/", runDir: "/runs/r1" });
+    expect(text).not.toContain(DEP);
+    expect(text).toContain("<redacted>");
+  });
+
+  const prior = [{ project: "e2e", args: ["area/a"], files: ["area/a.spec.ts"], status: "passed", at: "2026-01-01T10:01:00Z" }];
+
+  it("plant with --expect does not force a re-seed for a spec that already ran, and says so", () => {
+    const r = plantReseed({ prior, specs: ["area/a"], pws: ["e2e"], expect: "boom", fresh: false });
+    expect(r.fresh).toBe(false);
+    expect(r.note).toMatch(/not re-seeding/);
+  });
+
+  it("plant without --expect keeps the forced re-seed and announces it", () => {
+    const r = plantReseed({ prior, specs: ["area/a"], pws: ["e2e"], expect: undefined, fresh: false });
+    expect(r.fresh).toBe(true);
+    expect(r.note).toMatch(/re-seeding first/);
+  });
+
+  it("plant of a spec that has not run on this seed adds no note", () => {
+    expect(plantReseed({ prior: [], specs: ["area/a"], pws: ["e2e"], expect: undefined, fresh: false })).toEqual({ fresh: false, note: null });
+  });
+
+  it("the default slice is 170 s in --help and parseArgs", () => {
+    expect(HELP).toMatch(/wait up to 170 s/);
+    expect(HELP).not.toMatch(/230/);
+    expect(parseArgs(["x"]).opts.slice).toBe(170);
   });
 });
