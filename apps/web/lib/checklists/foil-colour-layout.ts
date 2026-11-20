@@ -58,6 +58,11 @@ export function printRunClashReason(existing: number, parallel: string): string 
   return `Already has a print run of ${existing} in ${parallel}`;
 }
 
+/** Said for a card whose foil rows name different teams: it is kept with no team. */
+export function foilRowsDisagreeReason(claims: readonly string[]): string {
+  return `Foil rows name different teams (${claims.join(", ")}); pick the team when building`;
+}
+
 /** Said for a foil × colour whose name is over the name limit. */
 export const PARALLEL_NAME_TOO_LONG = "The section name is too long";
 
@@ -164,6 +169,11 @@ type Card = {
   line: number;
   text: string;
   at: FoilColourLineAt;
+  /**
+   * What the card's foil rows say about its team, one entry per distinct
+   * claim (a city, or "No Team"), in the order met. A blank city is no claim.
+   */
+  claims: Map<string, { text: string; teams: string[]; noTeam: boolean }>;
 };
 
 type Parallel = {
@@ -244,12 +254,24 @@ export function readFoilColourLayout(
     const cardKey = `${number}\u0000${players.join("\u0001")}${players.length === 0 ? `\u0002${teams.join("\u0001")}` : ""}`;
     let card = subset.cards.get(cardKey);
     if (!card) {
-      card = { row: { ...read.row, subset: subset.name }, line: record.line, text: record.text, at: record.at };
+      card = {
+        row: { ...read.row, subset: subset.name },
+        line: record.line,
+        text: record.text,
+        at: record.at,
+        claims: new Map(),
+      };
       subset.cards.set(cardKey, card);
-    } else if (card.row.teams.length === 0 && !card.row.noTeam) {
-      // An earlier foil row left the city blank; this one names it.
-      if (read.row.noTeam) card.row.noTeam = true;
-      else if (teams.length > 0) card.row.teams = teams;
+    }
+    if (read.row.noTeam || teams.length > 0) {
+      const claimKey = read.row.noTeam ? "\u0000no team" : teams.map(fold).join("\u0001");
+      if (!card.claims.has(claimKey)) {
+        card.claims.set(claimKey, {
+          text: read.row.noTeam ? "No Team" : teams.join(" / "),
+          teams,
+          noTeam: read.row.noTeam === true,
+        });
+      }
     }
 
     if (leaf) continue;
@@ -295,6 +317,24 @@ export function readFoilColourLayout(
   const rows: FoilColourRead["rows"] = [];
   for (const subset of subsets.values()) {
     for (const card of subset.cards.values()) {
+      // The foil rows' word on the team: a blank city is no claim, one claim
+      // is the card's (a later foil row fills an earlier blank), and rows
+      // that disagree make no claim at all. The card is never dropped and
+      // never given one of the cities (wrapper rule 8).
+      if (card.claims.size === 1) {
+        const [claim] = card.claims.values();
+        card.row.teams = claim.teams;
+        if (claim.noTeam) card.row.noTeam = true;
+      } else if (card.claims.size > 1) {
+        card.row.teams = [];
+        delete card.row.noTeam;
+        skipped.push({
+          line: card.line,
+          text: card.text,
+          reason: foilRowsDisagreeReason([...card.claims.values()].map((c) => c.text)),
+          at: card.at,
+        });
+      }
       rows.push({ row: card.row, line: card.line, text: card.text, at: card.at });
     }
   }
@@ -313,5 +353,7 @@ export function readFoilColourLayout(
       });
     }
   }
+  // Line order, as the parser's other skips are (a disagreement is found last).
+  skipped.sort((a, b) => a.line - b.line);
   return { skipped, rows };
 }

@@ -6,6 +6,7 @@ import { MAX_BSC_PRINT_RUN } from "../../convex/lib/bscAttributeTokens";
 import { checklistSections } from "./checklist-sections";
 import {
   badPrintRunReason,
+  foilRowsDisagreeReason,
   foilColourHeader,
   NO_SUBSET_ON_LINE,
   PARALLEL_NAME_TOO_LONG,
@@ -237,6 +238,65 @@ describe("cards and teams", () => {
     expect(la.teams).toEqual(["Los Angeles N"]);
     expect(blank.teams).toEqual([]);
     expect(blank.noTeam).toBeUndefined();
+  });
+
+  it("fills a blank city from the card's other foil rows (the 89A-CH2 shape)", () => {
+    const parse = parsePublishedChecklist(
+      csv([
+        line("1989 Pro Set Auto", "Chris Hoiles", "89A-CH2", "Prismatic", ["1", "", ""], ""),
+        line("1989 Pro Set Auto", "Chris Hoiles", "89A-CH2", "Lazer", ["1", "", ""], "Atlanta"),
+        line("1989 Pro Set Auto", "Chris Hoiles", "89A-CH2", "Super Prismatic Gold", ["", "1", ""], "Atlanta"),
+      ]),
+      { mode: "set" },
+    );
+    expect(parse.skipped).toEqual([]);
+    const card = parse.rows.filter((r) => r.number === "89A-CH2");
+    expect(card.map((r) => [r.subset, r.teams])).toEqual([
+      ["1989 Pro Set Auto", ["Atlanta"]],
+      ["1989 Pro Set Auto Prismatic RWB", ["Atlanta"]],
+      ["1989 Pro Set Auto Lazer RWB", ["Atlanta"]],
+      ["1989 Pro Set Auto Super Prismatic Gold Silver", ["Atlanta"]],
+    ]);
+  });
+
+  it("makes no team claim when a card's foil rows name different cities, and says so", () => {
+    const parse = parsePublishedChecklist(
+      csv([
+        line("Base", "Aaron Watson", "1", "Prismatic", ["5", "", ""], "Atlanta"),
+        line("Base", "Adam Serwinowski", "2", "Prismatic", ["5", "", ""], "Oakland"),
+        line("Base", "Aaron Watson", "1", "Lazer", ["5", "", ""], "Boston"),
+        line("Base", "Aaron Watson", "1", "Gold", ["5", "", ""], "atlanta"),
+        line("Base", "Aaron Watson", "1", "Other", ["5", "", ""], "Cleveland"),
+      ]),
+      { mode: "set" },
+    );
+    const watson = parse.rows.filter((r) => r.number === "1");
+    // Kept in the card subset and in every parallel, with no team and no No Team.
+    expect(watson).toHaveLength(5);
+    expect(watson.every((r) => r.teams.length === 0 && r.noTeam === undefined)).toBe(true);
+    expect(parse.rows.find((r) => r.number === "2")?.teams).toEqual(["Oakland"]);
+    expect(parse.skipped).toEqual([
+      {
+        line: 2,
+        text: expect.stringContaining("Atlanta"),
+        reason: foilRowsDisagreeReason(["Atlanta", "Boston", "Cleveland"]),
+      },
+    ]);
+    expect(parse.skipped[0].reason).toBe(
+      "Foil rows name different teams (Atlanta, Boston, Cleveland); pick the team when building",
+    );
+  });
+
+  it("treats No Team against a city as a disagreement too", () => {
+    const parse = parsePublishedChecklist(
+      csv([
+        line("Base", "Aaron Watson", "1", "Prismatic", ["5", "", ""], "No Team"),
+        line("Base", "Aaron Watson", "1", "Lazer", ["5", "", ""], "Atlanta"),
+      ]),
+      { mode: "leaf" },
+    );
+    expect(parse.rows).toEqual([{ number: "1", players: ["Aaron Watson"], teams: [], subset: "Base" }]);
+    expect(parse.skipped.map((s) => s.reason)).toEqual([foilRowsDisagreeReason(["No Team", "Atlanta"])]);
   });
 
   it("takes a city a later foil row names when the first row left it blank", () => {
