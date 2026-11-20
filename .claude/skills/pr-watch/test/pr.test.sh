@@ -22,9 +22,6 @@ GATE_RUN='CI Gate:IN_PROGRESS:'; GATE_OK='CI Gate:COMPLETED:SUCCESS'
 SH1='E2E / shard-desktop (1, 8):COMPLETED:SUCCESS'; SH2='E2E / shard-desktop (2, 8):COMPLETED:SUCCESS'; SH3='E2E / shard-desktop (3, 8):IN_PROGRESS:'
 
 fresh() { FIX=$(mktemp -d); export FIX; rm -rf "$TMPDIR/pr-watch-$(id -u)"; }
-xfail() { # name ok  -- a known bug: failing is expected and reported, passing means remove the marker
-  if [ "$2" != 0 ]; then echo "xfail $1 (KNOWN BUG, see report)"; else echo "FAIL $1 (now passes: drop the xfail marker)"; fails=$((fails+1)); fi
-}
 check() { # name ok
   if [ "$2" = 0 ]; then echo "ok   $1"; else echo "FAIL $1"; printf "%s\n" "${out//$'\n'/$'\n     '}"; fails=$((fails+1)); fi
 }
@@ -123,7 +120,7 @@ rm -f "$TMPDIR/pr-watch-$(id -u)"
 fresh
 roll aaa "$VERCEL" "$GATE_RUN" > "$FIX/pr.json.1"; roll aaa "$VERCEL" "$GATE_RUN" > "$FIX/pr.json.2"; roll aaa "$VERCEL" "$GATE_OK" > "$FIX/pr.json.3"
 out=$(PR_WATCH_MAX_MIN=0 bash "$HERE/../watch.sh" 42 2>&1); rc=$?
-mode=$(stat -f %Lp "$TMPDIR/pr-watch-$(id -u)" 2>/dev/null || stat -c %a "$TMPDIR/pr-watch-$(id -u)")
+mode=$(stat -c %a "$TMPDIR/pr-watch-$(id -u)" 2>/dev/null || stat -f %Lp "$TMPDIR/pr-watch-$(id -u)")
 [ "$mode" = 700 ] && [ -z "$(ls -A "$TMPDIR/pr-watch-$(id -u)")" ]; r=$?; check "state dir is 0700 and temp files are cleaned up" "$r"
 
 # 8. a repeated poll error prints once.
