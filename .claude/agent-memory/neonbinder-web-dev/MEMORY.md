@@ -283,3 +283,4 @@
 - [Extra line in an option stays out of its name](reference_extra_line_in_option_stays_out_of_its_name.md) — aria-hidden span + aria-describedby on role=option; t.run turns undefined into null; drain runAfter(0) jobs
 - [Latch a conditionally shown control by row id](reference_latch_a_conditionally_shown_control_by_row_id.md) — id-keyed latch keeps a gated control (and focus) mounted; sample titles via the real builder
 - [Wizard plan waits on teamless-sport mock](reference_wizard_plan_waits_on_teamless_sport_mock.md) — test useQuery mock must answer listTeamlessSportIds or the bar stays 0; how to port a new step onto trackSteps
+- [Display trim of a name is keyed on a name](reference_display_trim_of_a_name_is_keyed_on_a_name.md) — drop the Base variant type by its kind, never trim joined text (NEO-616)

@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { variantTypeKindFromTitle } from "../../convex/variantRole";
 
 /**
  * NEO-335 — the header every "tidy up" screen wears: the entity review
@@ -6,8 +7,9 @@ import { useState, type ReactNode } from "react";
  *
  * Jason, 2026-10-10: one title, each screen type its own subtitle. NEO-497:
  * the title names the set it is tidying ("Tidy up 2024 Topps Chrome",
- * `tidyUpTitleFromChain`) instead of "this set". A trailing "Base" is dropped
- * (Jason, 2026-11-11): the Base checklist reads as the set itself.
+ * `tidyUpTitleFromChain`) instead of "this set". A Base variant type leaves
+ * the variant out (Jason, 2026-11-11): the Base checklist reads as the set
+ * itself. NEO-616: only that row does; a name is never trimmed.
  * NEO-467 (Jason, 2026-11-07): no "Step x of y" and no "2 more steps" line.
  * The bar under the title is the only progress there is, and it only has to
  * be reasonably accurate.
@@ -73,28 +75,17 @@ function startsWithToken(text: string, token: string): boolean {
 }
 
 /**
- * `text` without its last word when that word is `token` as a whole word,
- * case-folded: "Topps Chrome Base" and "Topps Chrome base" lose it; "Topps
- * Baseball" and "Base Set Gold" come back unchanged. `text` arrives trimmed.
- */
-function withoutTrailingToken(text: string, token: string): string {
-  const lastSpace = text.search(/\s\S*$/);
-  const lastWord = text.slice(lastSpace + 1);
-  if (lastWord.toLowerCase() !== token.toLowerCase()) return text;
-  return lastSpace < 0 ? "" : text.slice(0, lastSpace).trimEnd();
-}
-
-/**
  * NEO-497 — "Tidy up 2026 Donruss Unleashed Blue Ice": the year, the set and
  * the variant the checklist belongs to, so the operator always knows which
  * set the dialog is tidying. Each part is skipped when it is missing or
  * blank, and with none known (the chain still loading) the title stays
  * `WIZARD_TITLE`. A set whose own name already opens with the year ("2024
- * Topps Chrome") does not get the year twice. When the joined name ends in
- * the whole word "Base" (case-folded) that word is dropped (Jason,
- * 2026-11-11): the Base checklist reads "Tidy up 2026 Donruss Unleashed",
- * and a name that was only "Base" falls back to `WIZARD_TITLE`. Display only:
- * nothing reads this string back, and no behaviour keys on it.
+ * Topps Chrome") does not get the year twice. Every name is taken exactly as
+ * it is: nothing here trims a word from a set, insert or parallel name
+ * (NEO-616: "1989 Pro Set Base" keeps its "Base"). The Base checklist's own
+ * title ("Tidy up 2026 Donruss Unleashed") comes from the caller leaving
+ * `variant` out (`tidyUpTitleFromChain`). Display only: nothing reads this
+ * string back, and no behaviour keys on it.
  */
 export function tidyUpTitle({
   year,
@@ -109,7 +100,7 @@ export function tidyUpTitle({
   const setText = setName?.trim() ?? "";
   const parts = [startsWithToken(setText, yearText) ? "" : yearText, setText, variant?.trim() ?? ""]
     .filter((part) => part !== "");
-  const name = withoutTrailingToken(parts.join(" "), "Base");
+  const name = parts.join(" ");
   return name !== "" ? `Tidy up ${name}` : WIZARD_TITLE;
 }
 
@@ -117,14 +108,20 @@ export function tidyUpTitle({
 const VARIANT_LEVELS: ReadonlySet<string> = new Set(["variantType", "insert", "parallel"]);
 
 /**
- * The variant words for a leaf. A `parallel`-level row only ever sits under
- * an `insert`-level row (NEO-334: sub-variants live under Insert types; a
- * parallel of base is itself an `insert`-level row under the "Parallel"
- * type), and on its own "Gold" does not say WHICH insert's Gold. So a
- * parallel leaf is named after its insert first ("Future Stars Gold"),
- * unless its own name already opens with the insert's ("Unleashed Blue Ice"
- * under "Unleashed"). The `variantType` row ("Insert", "Parallel") is never
- * part of the name.
+ * The variant words for a leaf.
+ *
+ * A `variantType` leaf that is the set's Base (`variantTypeKindFromTitle`,
+ * the NEO-334 reading of that row's own title: "Base" or "Bases") has none:
+ * the Base checklist reads as the set itself. That is the only name left
+ * out. An insert or parallel that happens to be called "Base", or ends in
+ * it, is its own name and stays whole (NEO-616).
+ *
+ * A `parallel`-level row only ever sits under an `insert`-level row
+ * (NEO-334: sub-variants live under Insert types; a parallel of base is
+ * itself an `insert`-level row under the "Parallel" type), and on its own
+ * "Gold" does not say WHICH insert's Gold. So a parallel leaf is named after
+ * its insert first ("Future Stars Gold"), unless its own name already opens
+ * with the insert's ("Unleashed Blue Ice" under "Unleashed").
  */
 function variantTitle(
   chain: ReadonlyArray<{ level: string; value: string }>,
@@ -132,6 +129,9 @@ function variantTitle(
   const leaf = chain.at(-1);
   if (!leaf || !VARIANT_LEVELS.has(leaf.level)) return undefined;
   const leafText = leaf.value.trim();
+  if (leaf.level === "variantType" && variantTypeKindFromTitle(leafText) === "base") {
+    return undefined;
+  }
   if (leaf.level !== "parallel") return leafText;
   let insertText = "";
   for (let i = chain.length - 2; i >= 0; i--) {
