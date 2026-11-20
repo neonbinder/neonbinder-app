@@ -1,7 +1,8 @@
 // NEO-591 (R1): a checklist team cell "Prospect" or "Prospect (X)" makes the card a Prospect
 // Card, and X is the card's printed TEAM, read like any other team cell (Jason, 2026-11-19); a
-// team cell printed as a PLACE settles only when exactly one team in the set's league is located
-// there:
+// team cell printed as a PLACE settles only when exactly one team in the set's league, in any era,
+// is located there; with several, the card's players' stints decide, else the operator is asked
+// (never the set year; Jason, 2026-11-20):
 //   - "Prospect" alone: the card is No Team (a claim, never asked);
 //   - "Prospect (Oklahoma Sooners)": X is a team the catalogue has, so the card links it without
 //     asking (no name step, no Teams-step line);
@@ -11,21 +12,29 @@
 //   - "Cincinnati Reds / Prospect (Oklahoma Sooners)": a mixed cell. The preview reads it as
 //     printed (before 1a4def6c it read "Prospect (Cincinnati Reds / Oklahoma Sooners)"), and the
 //     card carries both teams and is a Prospect Card;
-//   - "Seattle": the set's league is Major League Baseball and exactly one MLB team is located in
-//     Seattle, so the card commits with the Seattle Mariners and is never asked (no name step, no
-//     Teams-step line);
-//   - "Chicago": two MLB teams are located there, so nothing settles it. It is asked as a team
-//     name ("New Team: Chicago"), nothing linked, and its "Remember" box settles UNTICKED (a bare
-//     place is not a name to remember). Skipped as not a team, the card is left on the Teams step
-//     with nothing pre-filled ("Leave for later") and saved teamless.
+//   - "Seattle": the set's league is Major League Baseball, and the catalogue holds two MLB teams
+//     located in Seattle (the 1969 Pilots and the Mariners). The card's player has a Mariners
+//     stint, which is also the team the set year covers, so the card commits with the Seattle
+//     Mariners and is never asked (no name step, no decided "linked for you" row, no Teams-step
+//     line);
+//   - "New York": several MLB teams are located there and the card's player (Seiya Suzuki, a Cub)
+//     has a stint on none of them, so nothing settles it. It is asked as a pick among the place's
+//     MLB teams of every era ("Which team: New York": the Mets and the Yankees, which the set year
+//     would not choose between, and past eras such as the Giants), nothing linked, and its
+//     "Remember" box settles UNTICKED (a bare place is not a name to remember). Skipped as not a
+//     team, the card is left on the Teams step with nothing pre-filled ("Leave for later") and
+//     saved teamless. (Until 2026-11-20 this row printed
+//     "Chicago"; since the players decide among a place's teams, his Cubs stint links "Chicago"
+//     to the Cubs, so the row now prints a place he never played for.)
 // The leaf's checklist preview reads each claim as printed ("Prospect", "Prospect (X)", the
 // mixed cell, the place), never "We'll look it up": none of these cards is looked up.
 //
 // The fixture is the 5-row CSV fixtures/checklists/prospect-team-cells.csv of catalogue players
 // the seed already holds (2024 Topps Chrome Base names, each one player on file, so no player
 // step and no lookup), uploaded EDITED in memory (the committed file is pinned by the parser's
-// golden snapshot): #2's X is the catalogue's full team name, #3's X is minted per attempt, and a
-// sixth row (#6, Matt McLain) carries the mixed cell. Uploaded through the leaf's "Add the official
+// golden snapshot): #2's X is the catalogue's full team name, #3's X is minted per attempt, #5's
+// place is New York (the file's "Chicago" is one his stints settle), and a sixth row (#6, Matt
+// McLain) carries the mixed cell. Uploaded through the leaf's "Add the official
 // checklist" and synced: a checklist-only fetch (the set has no marketplace id; the checklist is
 // the one source). Every Career check line the catalogue players raise is answered "Keep as is"
 // (`passCareerCheck`): their careers are not this spec's to write.
@@ -35,8 +44,8 @@
 // league, so not a custom sport), `Insert` › `Base`. No marketplace id anywhere beneath it. The
 // six cards are COMMITTED, read back and DELETED at the end; one team is minted per attempt
 // (`Dbp<token>`, created by the wizard's New Team step; it stays, like every minted row); the
-// catalogue's players, the Oklahoma Sooners, the Cincinnati Reds and the Seattle Mariners are only
-// read. The set and its rows stand (per attempt, read by no other spec).
+// catalogue's players, the Oklahoma Sooners, the Cincinnati Reds, the Seattle Mariners and the
+// Chicago Cubs are only read. The set and its rows stand (per attempt, read by no other spec).
 //
 // Desktop and mobile: one spec, no branch (role and label locators; click() scrolls).
 import { readFileSync } from "node:fs";
@@ -74,12 +83,12 @@ const SOONERS = "Oklahoma Sooners";
 
 /**
  * The committed file with this attempt's edits: #2's X is the catalogue's full team name, #3's X
- * is `minted`, and #6 (the mixed cell) is appended. Throws if the file no longer has the rows the
- * edits name, so a changed fixture fails here by name.
+ * is `minted`, #5's place is one its player never played in, and #6 (the mixed cell) is appended.
+ * Throws if the file no longer has the rows the edits name, so a changed fixture fails here by name.
  */
 function editedChecklist(minted: string): string {
   const lines = readFileSync(FILE, "utf8").trimEnd().split("\n");
-  const cell: Record<string, string> = { "2": `Prospect (${SOONERS})`, "3": `Prospect (${minted})` };
+  const cell: Record<string, string> = { "2": `Prospect (${SOONERS})`, "3": `Prospect (${minted})`, "5": "New York" };
   let edited = 0;
   const out = lines.map((line) => {
     const [number, player] = line.split(",");
@@ -87,12 +96,12 @@ function editedChecklist(minted: string): string {
     edited++;
     return `${number},${player},${cell[number]}`;
   });
-  if (edited !== 2) throw new Error(`prospect-team-cells.csv: expected rows #2 and #3, edited ${edited}`);
+  if (edited !== 3) throw new Error(`prospect-team-cells.csv: expected rows #2, #3 and #5, edited ${edited}`);
   return [...out, `6,Matt McLain,Cincinnati Reds / Prospect (${SOONERS})`].join("\n") + "\n";
 }
 
 test(
-  "Checklist Prospect and place team cells — every Prospect row is a Prospect Card; bare Prospect is No Team, Prospect (X) takes X as the card's team (a known X links, an unknown X is a New Team step), a mixed cell reads as printed, and a place settles only on its one team (NEO-591)",
+  "Checklist Prospect and place team cells — every Prospect row is a Prospect Card; bare Prospect is No Team, Prospect (X) takes X as the card's team (a known X links, an unknown X is a New Team step), a mixed cell reads as printed, and a place settles only on its one team or the card's player (NEO-591)",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     const set = `psp${env.ATTEMPT_TOKEN}`;
@@ -102,7 +111,7 @@ test(
     const KNOWN = { number: "2", player: "Colt Keith", cell: `Prospect (${SOONERS})` };
     const UNKNOWN = { number: "3", player: "Bobby Witt Jr.", cell: `Prospect (${minted})` };
     const PLACE = { number: "4", player: "J.P. Crawford", cell: "Seattle", team: "Seattle Mariners" };
-    const AMBIGUOUS = { number: "5", player: "Seiya Suzuki", cell: "Chicago" };
+    const AMBIGUOUS = { number: "5", player: "Seiya Suzuki", cell: "New York" };
     const MIXED = { number: "6", player: "Matt McLain", cell: `Cincinnati Reds / Prospect (${SOONERS})` };
     const CARDS = [BARE, KNOWN, UNKNOWN, PLACE, AMBIGUOUS, MIXED];
     const ROWS = CARDS.length;
@@ -142,22 +151,24 @@ test(
     await expect(dialog).toBeHidden();
     await expect(publishersChecklistChip(page, ROWS)).toBeVisible();
 
-    // ── 2. Sync: one source, so no Match Cards. Two team names to decide: the minted X and Chicago ──
+    // ── 2. Sync: one source, so no Match Cards. Two team names to decide: the minted X and New York ──
     await syncChecklistButton(page).click();
     const wizard = reviewWizard(page);
     await expect(wizard).toBeVisible();
     await expect(wizard).toHaveAccessibleName(tidyUpName({ year: target.year, set }));
     await expect(matchCardsDialog(page)).toHaveCount(0);
     await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
-    // Seattle and the Sooners settled before the wizard opened (no step of their own); the minted X
-    // and Chicago did not. They come in the batch's order, so each is answered by its heading.
+    await expect(page.getByText(/names? (was|were) linked for you/)).toHaveCount(0);
+    // Seattle and the Sooners settled before the wizard opened (no step of their own, and nothing
+    // decided for the operator to look over, so the wizard opens on Step 1); the minted X and New
+    // York did not. They come in the batch's order, so each is answered by its heading.
     const unknownStep = wizard.getByRole("heading", { level: 3, name: `New Team: ${minted}`, exact: true });
-    const chicagoStep = wizard.getByRole("heading", { level: 3, name: `New Team: ${AMBIGUOUS.cell}`, exact: true });
+    const placeStep = wizard.getByRole("heading", { level: 3, name: `Which team: ${AMBIGUOUS.cell}`, exact: true });
     const heading = newStepHeading(page);
     let sawUnknown = false;
-    let sawChicago = false;
+    let sawPlace = false;
     for (let i = 0; i < 2; i++) {
-      await expect(unknownStep.or(chicagoStep)).toBeVisible();
+      await expect(unknownStep.or(placeStep)).toBeVisible();
       if (await unknownStep.isVisible()) {
         // X is the card's team, asked like any team NB has no row for: the step opens with X as the
         // new team's whole name. Created here, it is the card's team at the save.
@@ -167,6 +178,12 @@ test(
         sawUnknown = true;
         continue;
       }
+      // The place's in-league teams of every era are offered and none is chosen: the two the set
+      // year covers (the year never decides between them) and a past era.
+      const placeTeams = wizard.getByRole("list", { name: /^We've got [0-9]+ teams by that name\. Pick the one on these cards\.$/ });
+      for (const team of ["New York Mets · 1962–present", "New York Yankees · 1913–present", "New York Giants · 1885–1957"]) {
+        await expect(placeTeams.getByRole("button", { name: `Link to ${team} · Major League Baseball`, exact: true })).toBeVisible();
+      }
       const linkTo = wizard.getByRole("group", { name: "Link to existing team" });
       await expect(linkTo.getByRole("combobox", { name: "Search all teams" })).toHaveValue("");
       // The box is held while the place lookup runs, then settles unticked: a place is no team's name.
@@ -175,28 +192,29 @@ test(
       await expect(rememberPlace).not.toBeChecked();
       await expectAccessible(page, { within: wizard, label: "Tidy-up name step for a team printed as an ambiguous place" });
       await wizard.getByRole("button", { name: `Skip ${AMBIGUOUS.cell} — not a team`, exact: true }).click();
-      await expect(chicagoStep).toBeHidden();
-      sawChicago = true;
+      await expect(placeStep).toBeHidden();
+      sawPlace = true;
     }
-    expect(sawUnknown && sawChicago, "both the minted X and Chicago were asked as team names").toBe(true);
+    expect(sawUnknown && sawPlace, "both the minted X and New York were asked as team names").toBe(true);
     // No other team was asked (the Sooners, the Reds and Seattle settled): the names are done.
     await expect(nextStepButton(page)).toBeVisible();
     await expect(heading).toHaveCount(0);
+    await expect(wizard.getByRole("heading", { level: 3, name: /^Which team: / })).toHaveCount(0);
 
     // The catalogue players' Career check lines (the Sooners, the new team) are not this spec's to write.
     await passCareerCheck(page);
     await expect(wizard.getByText("Cards with no team", { exact: true })).toBeVisible();
-    // Only the Chicago card: the bare Prospect is answered No Team, and every other card has its team.
+    // Only the New York card: the bare Prospect is answered No Team, and every other card has its team.
     const lines = wizard.getByRole("listitem");
     await expect(lines).toHaveCount(1);
-    const chicago = lines.filter({ hasText: `#${AMBIGUOUS.number} · ${AMBIGUOUS.player}` });
-    const chicagoChoices = chicago.getByRole("radiogroup", { name: `Team for ${AMBIGUOUS.player}` });
+    const placeLine = lines.filter({ hasText: `#${AMBIGUOUS.number} · ${AMBIGUOUS.player}` });
+    const placeChoices = placeLine.getByRole("radiogroup", { name: `Team for ${AMBIGUOUS.player}` });
     // A team is offered (his Cubs), none is picked.
-    await expect(chicagoChoices.getByRole("radio", { name: `Chicago Cubs — ${AMBIGUOUS.player}`, exact: true })).not.toBeChecked();
-    await expect(chicagoChoices.getByRole("radio", { checked: true })).toHaveAccessibleName(`Leave for later — ${AMBIGUOUS.player}`);
-    // Skipped as not a team, "Chicago" is the operator's ruling, so it is no longer listed; and no
+    await expect(placeChoices.getByRole("radio", { name: `Chicago Cubs — ${AMBIGUOUS.player}`, exact: true })).not.toBeChecked();
+    await expect(placeChoices.getByRole("radio", { checked: true })).toHaveAccessibleName(`Leave for later — ${AMBIGUOUS.player}`);
+    // Skipped as not a team, "New York" is the operator's ruling, so it is no longer listed; and no
     // line is a held prospect any more (there is no Remember box).
-    await expect(chicago.getByText(/Listed as/)).toHaveCount(0);
+    await expect(placeLine.getByText(/Listed as/)).toHaveCount(0);
     await expect(wizard.getByRole("checkbox")).toHaveCount(0);
     await expectAccessible(page, { within: wizard, label: "Tidy-up teams step, the ambiguous place's card" });
 
@@ -205,7 +223,7 @@ test(
     await expect(wizard.getByRole("heading", { name: `Save ${ROWS} cards?` })).toBeVisible();
     await confirmSaveButton(page).click();
     await expect(wizard).toBeHidden();
-    // The count includes checklist-named teams the operator still settles (Chicago, saved teamless), as it counts unresolved checklist teams: intended.
+    // The count includes checklist-named teams the operator still settles (New York, saved teamless), as it counts unresolved checklist teams: intended.
     await expect(page.getByText(`Saved ${ROWS} cards. Teams from your checklist: ${ROWS} of ${ROWS} cards.`)).toBeVisible();
 
     // ── 4. Read back: the rows, then each card's drawer ──
@@ -216,7 +234,7 @@ test(
     await expect(rowSays(KNOWN.number, SOONERS)).toBeVisible();
     await expect(rowSays(UNKNOWN.number, minted)).toBeVisible();
     await expect(rowSays(PLACE.number, PLACE.team)).toBeVisible();
-    // Chicago was left: that card alone is badged.
+    // New York was left: that card alone is badged.
     await expect(needsTeam(AMBIGUOUS.number, AMBIGUOUS.player)).toBeVisible();
     for (const card of [BARE, KNOWN, UNKNOWN, PLACE, MIXED]) await expect(needsTeam(card.number, card.player)).toHaveCount(0);
 

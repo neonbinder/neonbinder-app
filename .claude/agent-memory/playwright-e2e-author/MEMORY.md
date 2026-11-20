@@ -84,7 +84,7 @@
 - [Leaf Vivid: a real unlicensed set](patterns_leaf_vivid_real_unlicensed_set.md) — NEO-556: find a set via year-wide sync, Proof type, held cards, parallel copies
 - [Stale batch masks a lookup loss](patterns_dialog_seed_from_stale_batch_masks_a_lookup_loss.md) — Match Cards drops lookup outcomes of pending rows; local green, CI 35 on the lane
 - [Attributes panel header needs the open panel](patterns_attributes_panel_header_controls_need_the_open_panel.md) — NEO-569: shut = title+toggle only; open before Rename/Delete/breadcrumb/Set actions
-- [NEO-591 Prospect and Onyx specs](reference_neo591_prospect_and_onyx_specs.md) — Prospect (X) = printed team, in-memory CSV edit, place cells, relink, Football TL conflict
+- [NEO-591 Prospect and Onyx specs](reference_neo591_prospect_and_onyx_specs.md) — Prospect (X) = printed team, in-memory CSV edit, place cells (players decide, "Which team:"), relink, TL conflict
 - [Checklist facts run the product matcher](patterns_checklist_facts_run_the_product_matcher.md) — import parser+matcher, ChecklistEdits, number-picker/one-%/stem/sibling handles
 - [Team Management era/alias specs](patterns_team_management_era_alias_specs.md) — re-filter after reload (axe on 10k rows), row/status/alert handles, alias holder trips Create again
 - [Copy absence keys on the refusal clause](patterns_copy_absence_keys_on_the_refusal_clause.md) — NEO-602: toHaveCount(0) on a shared phrase trips on a new allowed-state statement

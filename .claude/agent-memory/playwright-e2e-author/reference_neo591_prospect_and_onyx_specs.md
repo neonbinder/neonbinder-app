@@ -31,9 +31,17 @@ metadata:
 - **Leaf preview cells** print the claim as written ("Prospect (Oklahoma)", "Seattle"); mixed
   parts join with " / ". Rows are named "<n> <player> <cell>": `getByRole("row", { name, exact })`.
 - **Place team cells** (set needs a league; a hand-made Baseball set gets MLB): a place with
-  exactly one league team settles before the wizard (no step, no Teams line); an ambiguous one
-  is a NAME step "New Team: <place>" whose Remember box settles enabled+unticked. Skipping it
-  drops it from "Listed as" on the Teams step (skipped = the operator's ruling).
+  exactly ONE in-league team in ANY era settles before the wizard. The reference catalogue holds
+  past eras, so most big MLB places have several (Seattle = Mariners + 1969 Pilots, Chicago five,
+  New York six): then the card's players' stints decide (a stint on the year's team = silent; on
+  a team the year would not pick = a decided "N name(s) linked for you" row and the wizard opens
+  on Step 2), else a candidate step `heading "Which team: <place>"` listing every era as
+  `button "Link to <team> · <from>–<to|present> · Major League Baseball"` (list named "We've got
+  N teams by that name. Pick the one on these cards."), Remember box enabled+unticked. A fixture
+  for "operator asked" needs a player with no stint at that place (Seiya Suzuki + New York).
+  Skipping it drops it from "Listed as" on the Teams step (skipped = the operator's ruling).
+- **Checking the catalogue's teams**: `npx convex data teams --limit 8000` is the CLI's ceiling
+  (8192 refused); dump `--order asc` and the default desc and union them by `_id`.
 - **A team conflict needs a marketplace team in the BULK answer**: with a checklist no card is
   looked up, so only Football 2014 Topps team-leader cards (BSC "<Team> TL") carry one. A mixed
   "<Team> / Prospect (X)" cell there: the checklist side of "Disagreement on #N" reads "<Team> / X" (verify on a run). `usePublishersChecklist`'s
