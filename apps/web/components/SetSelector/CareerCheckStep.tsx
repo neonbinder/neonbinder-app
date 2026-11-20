@@ -807,8 +807,12 @@ function StintsPanel({
               const editingId = `${editingBaseId}-${idx}`;
               return (
                 <li key={key}>
+                  {/* Edit and × are real 24px boxes (SC 2.5.8, min-h-6), not
+                      pseudo-element hit areas: a text-sized target 8px from a
+                      neighbour fails the spacing exception. The chip stays
+                      compact because the 24px is inside its own border. */}
                   <span
-                    className={`inline-flex items-center gap-2 rounded-full border bg-raised px-2 py-0.5 text-xs text-ink-2 ${
+                    className={`inline-flex items-center gap-2 rounded-full border bg-raised pl-2 pr-1 text-xs text-ink-2 ${
                       isEditing ? "border-neon-blue-text" : "border-rule-strong"
                     }`}
                   >
@@ -839,7 +843,7 @@ function StintsPanel({
                           ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
                         });
                       }}
-                      className="hit-area-24 rounded text-left hover:text-ink focus-outline"
+                      className="inline-flex min-h-6 items-center rounded text-left hover:text-ink focus-outline"
                     >
                       {stintChipText(stint)}
                     </button>
@@ -865,7 +869,7 @@ function StintsPanel({
                         }
                         onChange(stints.filter((_, i) => i !== idx));
                       }}
-                      className="hit-area-24 text-ink-3 hover:text-ink focus-outline rounded"
+                      className="inline-flex min-h-6 min-w-6 items-center justify-center rounded-full text-ink-3 hover:text-ink focus-outline"
                     >
                       ×
                     </button>

@@ -4632,7 +4632,7 @@ export default function CardPairingModal({
                 return next;
               })
             }
-            className="py-2 -my-2 text-xs text-ink-3 underline decoration-dotted hover:text-neon-green-text focus-visible:text-neon-green-text focus-outline"
+            className="py-2 -my-2 text-xs text-ink-2 underline decoration-dotted hover:text-neon-green-text focus-visible:text-neon-green-text focus-outline"
           >
             Change number
           </button>

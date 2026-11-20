@@ -635,6 +635,50 @@ describe("matchPublishedChecklist: variations (the stem)", () => {
     expect(r.unusedRowIndices).toEqual([0, 1]);
   });
 
+  // 2024 Topps Chrome Base: the checklist file lists Julio Rodriguez only as
+  // 300b; BSC has base #300 and the 300b variation. Base #300 once took the
+  // 300b row as "all versions", so the card read "#300b Julio Rodriguez" next
+  // to the real 300b and a parallel build lost #300 from Base.
+  describe("Topps Chrome #300: a lettered row is one version, never 'all versions'", () => {
+    const julio = ["Julio Rodriguez"];
+    const mariners = ["Seattle Mariners"];
+
+    test("rows: 300b only. 300b pairs 300b; base #300 stays unmatched, no stem link", () => {
+      const r = matchPublishedChecklist(
+        [card("300", julio, mariners), card("300b", julio, mariners)],
+        [row("300b", julio, mariners)],
+      );
+      expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via])).toEqual([[1, 0, "number"]]);
+      expect(r.matches.some((m) => m.via === "stem")).toBe(false);
+      expect(r.unmatchedCardIndices).toEqual([0]);
+      expect(r.tiedCardIndices).toEqual([]);
+      expect(r.siblingRows).toEqual([]);
+    });
+
+    test("rows: 300 and 300b. Each card takes its own row", () => {
+      const r = matchPublishedChecklist(
+        [card("300", julio, mariners), card("300b", julio, mariners)],
+        [row("300b", julio, mariners), row("300", julio, mariners)],
+      );
+      expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via])).toEqual([
+        [0, 1, "number"],
+        [1, 0, "number"],
+      ]);
+      expect(r.unmatchedCardIndices).toEqual([]);
+      expect(r.unusedRowIndices).toEqual([]);
+    });
+
+    test("one card 300b against rows 300 / 300b: the base row is never made a variation of 300b", () => {
+      const r = matchPublishedChecklist(
+        [card("300b", julio, mariners)],
+        [row("300", julio, mariners), row("300b", julio, mariners)],
+      );
+      expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via])).toEqual([[0, 1, "number"]]);
+      expect(r.siblingRows).toEqual([]);
+      expect(r.unusedRowIndices).toEqual([0]);
+    });
+  });
+
   test("a different player on the same stem is never stem-linked", () => {
     const r = matchPublishedChecklist(
       [card("52b", ["Mickey Mantle"]), card("52c", ["Mickey Mantle"])],

@@ -500,6 +500,51 @@ describe("pairNamesFirst: the stem step", () => {
     ]);
   });
 
+  // 2024 Topps Chrome #300: BSC lists base 300 and variation 300b, the
+  // checklist lists only 300b. The lettered row is ONE version: it pairs with
+  // 300b by number and never stands for the base card.
+  test("a lettered row is not 'all versions': cards 300 / 300b against row 300b pair only 300b", () => {
+    const julio = (n: string) => item(n, "Julio Rodriguez");
+    const r = pairNamesFirst([julio("300"), julio("300b")], [julio("300b")], { stemSiblingSide: "right" });
+    expect(brief(r)).toEqual([[1, 0, "name", true]]);
+    expect(r.stemLinks).toEqual([]);
+    expect(r.stemSiblings).toEqual([]);
+    expect(r.tiedLeft).toEqual([]);
+    expect(r.tiedRight).toEqual([]);
+    // Without the siblings option too (BSC against SportLots).
+    const plain = pairNamesFirst([julio("300"), julio("300b")], [julio("300b")]);
+    expect(brief(plain)).toEqual([[1, 0, "name", true]]);
+    expect(plain.stemLinks).toEqual([]);
+  });
+
+  test("with both 300 and 300b rows each card takes its own row", () => {
+    const julio = (n: string) => item(n, "Julio Rodriguez");
+    const r = pairNamesFirst([julio("300"), julio("300b")], [julio("300b"), julio("300")], { stemSiblingSide: "right" });
+    expect(brief(r)).toEqual([
+      [0, 1, "name", true],
+      [1, 0, "name", true],
+    ]);
+    expect(r.stemLinks).toEqual([]);
+    expect(r.stemSiblings).toEqual([]);
+  });
+
+  test("mirror: card 300b with rows 300 / 300b never makes the base row a variation of 300b", () => {
+    const julio = (n: string) => item(n, "Julio Rodriguez");
+    const r = pairNamesFirst([julio("300b")], [julio("300"), julio("300b")], { stemSiblingSide: "right" });
+    expect(brief(r)).toEqual([[0, 1, "name", true]]);
+    expect(r.stemSiblings).toEqual([]);
+    expect(r.stemLinks).toEqual([]);
+  });
+
+  test("a lettered lone item with no exact partner stays out of the stem step", () => {
+    // Row 38b against cards 38 / 38c: neither is 38b, so nothing stands for anything.
+    const smith = (n: string) => item(n, "Will Smith");
+    const r = pairNamesFirst([smith("38"), smith("38c")], [smith("38b")], { stemSiblingSide: "right" });
+    expect(r.stemLinks).toEqual([]);
+    expect(r.stemSiblings).toEqual([]);
+    expect(r.pairs).toEqual([]);
+  });
+
   test("a number with no leading digits is its own stem, so letters never link", () => {
     const r = pairNamesFirst(
       [item("OV-A", "Will Smith"), item("OV-B", "Will Smith")],

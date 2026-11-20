@@ -27,7 +27,10 @@
  *     Between the group's number passes and its 1:1 remainder sits the
  *     **stem step** (variations, Jason 2026-11-18): when one item on a side
  *     carries a stem ("38") that two or more items on the other side carry
- *     ("38", "38b", "38c"), the one item stands for all of them. See
+ *     ("38", "38b", "38c"), the one item stands for all of them. Only a BARE
+ *     stem stands for others: a lettered item ("300b") is one version, so it
+ *     pairs by its own number and never takes the base card (2024 Topps
+ *     Chrome #300). See
  *     `stemLinks` and `stemSiblings` on the result.
  *  2. **T2, numbers on the leftovers**: only for items whose roster has no
  *     counterpart on the other side (or that name no one), never for a tied
@@ -188,6 +191,8 @@ type Info = {
   stripped: string;
   /** The shared variation stem, upper-cased; null for a no-number item. */
   stem: string | null;
+  /** The number IS its stem ("300", not "300b"): the only kind that stands for others. */
+  bare: boolean;
 };
 
 function describe(
@@ -199,14 +204,17 @@ function describe(
   return indices.map((index) => {
     const item = items[index];
     const none = isNoNumber(item.number);
+    const exact = none ? "" : exactChecklistNumber(item.number);
+    const stem = none ? null : cardNumberStem(exact).toUpperCase();
     return {
       index,
       key: rosterKey(item.names.map(dropTrailingMarkers)),
       none,
-      exact: none ? "" : exactChecklistNumber(item.number),
+      exact,
       folded: none ? "" : normalizeChecklistNumber(item.number),
       stripped: none ? "" : strippedCardNumber(item.number, prefix, letters),
-      stem: none ? null : cardNumberStem(exactChecklistNumber(item.number)).toUpperCase(),
+      stem,
+      bare: stem !== null && exact.toUpperCase() === stem,
     };
   });
 }
@@ -350,6 +358,12 @@ function pairKind<T extends NamesFirstItem>(
       if (!oneSide) continue;
       const one = oneSide === "left" ? lS[0] : rS[0];
       const many = oneSide === "left" ? rS : lS;
+      // Only the bare stem stands for its versions. A lettered item ("300b")
+      // is one version itself: the card numbered 300 is its own card, never
+      // one of "all versions" of 300b (2024 Topps Chrome: base #300 took the
+      // 300b row). Letters on a lone item mean it is paired by its own
+      // number, or left for the operator.
+      if (!one.bare) continue;
       // The several must be different numbers ("38", "38b"): the same number
       // twice is a repeated number, a tie, not a variation.
       if (new Set(many.map((m) => m.folded)).size !== many.length) continue;

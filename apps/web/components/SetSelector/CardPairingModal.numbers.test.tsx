@@ -227,6 +227,10 @@ describe("the number picker", () => {
     const button = screen.getByRole("button", { name: "Change number for #38a" });
     expect(button.textContent).toBe("Change number");
     expect(button.getAttribute("aria-expanded")).toBe("false");
+    // Small secondary text on a Matched row tile is ink-2: ink-3 misses 4.5:1
+    // on the tile in dark mode (axe color-contrast).
+    expect(button.className).toContain("text-ink-2");
+    expect(button.className).not.toContain("text-ink-3");
 
     openPicker("#38a");
     expect(button.getAttribute("aria-expanded")).toBe("true");

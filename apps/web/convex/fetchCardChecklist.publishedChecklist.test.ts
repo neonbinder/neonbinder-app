@@ -35,6 +35,8 @@ type BscCard = {
   teams?: string[];
   players?: string[];
   platformRef?: string;
+  isVariation?: boolean;
+  cardVariation?: string;
 };
 
 const mockState = vi.hoisted(() => ({
@@ -1152,6 +1154,41 @@ describe("fetchCardChecklist with a publisher checklist: a No Team row paired by
     expect(aa?.teams ?? []).toEqual([]);
     expect(result.checklistTeams).toEqual({ matched: 1, total: 2 });
     expect(result.checklistMatch).toMatchObject({ needsOperator: false, byPlayerName: 1 });
+  });
+});
+
+describe("a lettered checklist row is one version, never 'all versions' (2024 Topps Chrome #300)", () => {
+  // The checklist file lists Julio Rodriguez only as 300b; BSC has base #300
+  // and the 300b variation. Base #300 once took the 300b row through a stem
+  // link and read "#300b Julio Rodriguez" beside the real 300b.
+  const julio = ["Julio Rodriguez"];
+  const cards = () => [
+    bsc("300", { players: julio }),
+    bsc("300b", { players: julio, isVariation: true, cardVariation: "Image Variation" }),
+  ];
+
+  test("row 300b only: 300b pairs 300b, base #300 has no checklist link and stays 300", async () => {
+    mockState.bscCards = cards();
+    const { t } = await run({
+      rows: [{ number: "300b", players: julio, teams: ["Seattle Mariners"] }],
+    });
+    const found = await candidates(t);
+    expect([...found.keys()].sort()).toEqual(["300", "300b"]);
+    expect(found.get("300b")?.checklistLink).toMatchObject({ via: "number", row: { number: "300b" } });
+    expect(found.get("300")?.checklistLink).toBeUndefined();
+  });
+
+  test("rows 300 and 300b: each card takes its own row", async () => {
+    mockState.bscCards = cards();
+    const { t } = await run({
+      rows: [
+        { number: "300", players: julio, teams: ["Seattle Mariners"] },
+        { number: "300b", players: julio, teams: ["Seattle Mariners"] },
+      ],
+    });
+    const found = await candidates(t);
+    expect(found.get("300")?.checklistLink).toMatchObject({ via: "number", row: { number: "300" } });
+    expect(found.get("300b")?.checklistLink).toMatchObject({ via: "number", row: { number: "300b" } });
   });
 });
 

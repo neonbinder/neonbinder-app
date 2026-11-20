@@ -1730,6 +1730,17 @@ describe("focus after × (NEO-591)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add stint for Fernando Tatis Jr." }));
   };
 
+  // axe target-size (SC 2.5.8): Edit and × sit side by side in one chip, so each
+  // is a real 24px box, not a pseudo-element hit area (which axe does not count).
+  it("draws Edit and × as real 24px boxes", () => {
+    render(<Harness />);
+    for (const button of [edit(PADRES), remove(PADRES)]) {
+      expect(button.className).toContain("min-h-6");
+      expect(button.className).not.toContain("hit-area-24");
+    }
+    expect(remove(PADRES).className).toContain("min-w-6");
+  });
+
   it("goes to the next chip's Edit when × held focus", () => {
     render(<Harness />);
     stageReds();
