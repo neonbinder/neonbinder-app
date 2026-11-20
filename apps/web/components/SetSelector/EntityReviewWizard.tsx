@@ -2222,8 +2222,11 @@ export default function EntityReviewWizard({
       playerSportIds,
       teamlessPlayerNames: teamlessPlayerNames ?? [],
       existingIndexes: existingCardIndexes,
+      // NEO-591 — a player the career check creates is born in the set's sport.
+      ...(sportId !== undefined ? { setSportId: sportId } : {}),
     };
   }, [
+    sportId,
     hasTeamlessSports,
     teamlessSportIds,
     linkedPlayers,

@@ -115,7 +115,8 @@ export { MAX_CARD_TEAMS };
  *  - the card re-syncs a stored row (the client cannot see that row's lookup
  *    bookkeeping, which the server's verdict reads);
  *  - a person is not known to be teamless: mixed card, a sport not loaded yet,
- *    a name still waiting on review;
+ *    a name still waiting on review (a "New player named X" from the career
+ *    check is known: the commit mints him in the set's sport);
  *  - the card has nobody on it (nothing says what sport it is);
  *  - a data claim stands (invariant 8): the listing names a team the operator
  *    has not ruled out, or a BSC card's team lookup has not ended with no
@@ -547,10 +548,20 @@ export interface StoredPeople {
    * wizard cannot see, so they are asked about as before.
    */
   existingPositions?: ReadonlySet<number>;
+  /**
+   * NEO-426 / NEO-591 — the SET's sport id. A player the career check creates
+   * ("New player named X") is born in it: the commit mints him under the sport
+   * it walks from the set row (`createCareerNewPlayers`), then reads his home
+   * sport for the default like any other player's. So he is teamless exactly
+   * when this sport is flagged. Absent (the host cannot say) = not teamless.
+   */
+  setSportId?: string;
 }
 
 /** NEO-426 — the host's wire shapes for the teamless-sport default (see `StoredPeople`). */
 export interface TeamlessFacts {
+  /** NEO-591 — the set's sport id, see `StoredPeople.setSportId`. */
+  setSportId?: string;
   teamlessSportIds?: readonly string[];
   /** Linked or default player id → home sport id. */
   playerSportIds?: ReadonlyMap<string, string>;
@@ -620,6 +631,7 @@ export function storedPeople(
     ...(playerSports ? { playerSportIds: playerSports } : {}),
     ...(teamlessNames.size > 0 ? { teamlessPlayerNames: teamlessNames } : {}),
     ...(existing ? { existingPositions: existing } : {}),
+    ...(hasTeamless && teamless?.setSportId ? { setSportId: teamless.setSportId } : {}),
   };
 }
 
@@ -660,6 +672,8 @@ interface NamesView {
   playerSportIds: ReadonlyMap<string, string>;
   teamlessPlayerNames: ReadonlySet<string>;
   existingPositions: ReadonlySet<number>;
+  /** The set's sport id, where the host said it (a career-created player's home sport). */
+  setSportId?: string;
 }
 
 const NOBODY: ReadonlySet<never> = new Set<never>();
@@ -689,6 +703,7 @@ function namesView(
     playerSportIds: people?.playerSportIds ?? NO_SPORTS,
     teamlessPlayerNames: people?.teamlessPlayerNames ?? NOBODY,
     existingPositions: people?.existingPositions ?? NOBODY,
+    ...(people?.setSportId !== undefined ? { setSportId: people.setSportId } : {}),
   };
 }
 
@@ -746,7 +761,8 @@ type CardPlayer = (
    * NEO-426 — this person's HOME sport is flagged teamless, as far as the
    * host's facts say: a created player by his row's sport, a linked or
    * default one by his stored sport, one resolved before the sitting by the
-   * fetch's `teamlessPlayerNames`. Unknown = false.
+   * fetch's `teamlessPlayerNames`, a career-created one by the set's sport.
+   * Unknown = false.
    */
   teamless: boolean;
   /**
@@ -786,9 +802,18 @@ function cardPlayers(card: PreviewCardForTeams, index: number, view: NamesView):
     // printed name, still on the first player) is not evidence for it.
     const fresh = card.newPlayerByName?.find((r) => norm(r.name) === key);
     if (fresh) {
-      // NEO-426: a person the commit has yet to create has no home sport the
-      // host can read, and unknown is never teamless: the card is asked.
-      out.push({ kind: "new", key: `new:${fresh.ref}`, display, teamless: false });
+      // NEO-426 / NEO-591: the commit mints this person under the SET's sport
+      // (`createCareerNewPlayers`, the sport walked from the set row), so his
+      // home sport is the set's: teamless exactly when that sport is flagged,
+      // the same read the commit makes of his stored row. A host that cannot
+      // say the set's sport leaves it unknown, and unknown is never teamless.
+      out.push({
+        kind: "new",
+        key: `new:${fresh.ref}`,
+        display,
+        teamless: sportIsTeamless(view.setSportId, view),
+        ...sportFact(view.setSportId),
+      });
       continue;
     }
     const relinked = card.playerIdByName?.find((r) => norm(r.name) === key);
