@@ -1421,6 +1421,116 @@ describe("marketplace strings are validated before they become row names", () =>
     const rows = await rowsUnder(t, "setName", parentId);
     expect(rows[0].value).toBe("Topps");
   });
+
+  test.each(["__proto__", "constructor"])(
+    "array-shaped platformLabels with the id %s store its label and do not throw (NEO-625)",
+    async (hazardId) => {
+      const t = convexTest(schema, modules);
+      const asAdmin = admin(t);
+      const parentId = await insertParent(t);
+
+      await asAdmin.mutation(api.setReconciliation.storeReconciledOptions, {
+        level: "insert",
+        parentId,
+        coveredSides: ["bsc"],
+        reconciledItems: [
+          {
+            value: "Hazard",
+            platformData: { bsc: hazardId },
+            platformLabels: { bsc: [{ id: hazardId, label: "Hazard Label" }] },
+            metadata: undefined,
+          },
+        ],
+      });
+
+      const rows = await rowsUnder(t, "insert", parentId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].platformData.bsc).toEqual({ b0: hazardId });
+      expect(rows[0].platformLabels?.bsc?.b0).toBe("Hazard Label");
+    },
+  );
+
+  test("an array on bsc and a record on sportlots each store their own label (NEO-625)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const parentId = await insertParent(t);
+
+    await asAdmin.mutation(api.setReconciliation.storeReconciledOptions, {
+      level: "insert",
+      parentId,
+      coveredSides: ["bsc", "sportlots"],
+      reconciledItems: [
+        {
+          value: "Mixed",
+          platformData: { bsc: "b-1", sportlots: "s-1" },
+          platformLabels: {
+            bsc: [{ id: "b-1", label: "BSC Mixed" }],
+            sportlots: { "s-1": "SL Mixed" },
+          },
+          metadata: undefined,
+        },
+      ],
+    });
+
+    const rows = await rowsUnder(t, "insert", parentId);
+    expect(rows[0].platformLabels?.bsc?.b0).toBe("BSC Mixed");
+    expect(rows[0].platformLabels?.sportlots?.s0).toBe("SL Mixed");
+  });
+
+  test("a record on bsc and an array on sportlots each store their own label (NEO-625)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const parentId = await insertParent(t);
+
+    await asAdmin.mutation(api.setReconciliation.storeReconciledOptions, {
+      level: "insert",
+      parentId,
+      coveredSides: ["bsc", "sportlots"],
+      reconciledItems: [
+        {
+          value: "Mixed",
+          platformData: { bsc: "b-1", sportlots: "s-1" },
+          platformLabels: {
+            bsc: { "b-1": "BSC Mixed" },
+            sportlots: [{ id: "s-1", label: "SL Mixed" }],
+          },
+          metadata: undefined,
+        },
+      ],
+    });
+
+    const rows = await rowsUnder(t, "insert", parentId);
+    expect(rows[0].platformLabels?.bsc?.b0).toBe("BSC Mixed");
+    expect(rows[0].platformLabels?.sportlots?.s0).toBe("SL Mixed");
+  });
+
+  test("a duplicate id in an array keeps the last label (NEO-625)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const parentId = await insertParent(t);
+
+    await asAdmin.mutation(api.setReconciliation.storeReconciledOptions, {
+      level: "insert",
+      parentId,
+      coveredSides: ["bsc"],
+      reconciledItems: [
+        {
+          value: "Dup",
+          platformData: { bsc: "d-1" },
+          platformLabels: {
+            bsc: [
+              { id: "d-1", label: "First" },
+              { id: "d-1", label: "Last" },
+            ],
+          },
+          metadata: undefined,
+        },
+      ],
+    });
+
+    const rows = await rowsUnder(t, "insert", parentId);
+    expect(rows[0].platformLabels?.bsc?.b0).toBe("Last");
+  });
 });
 
 // ===========================================================================
