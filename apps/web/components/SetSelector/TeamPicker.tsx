@@ -188,6 +188,7 @@ export default function TeamPicker({
   contextOptionId,
   noTeam,
   single = false,
+  onPicked,
 }: {
   value: Array<Id<"teams">>;
   onChange: (next: Array<Id<"teams">>) => void;
@@ -236,9 +237,38 @@ export default function TeamPicker({
    * (multi-team card behaviour).
    */
   single?: boolean;
+  /**
+   * NEO-617 — where focus goes after a pick, for a `single` picker whose next
+   * question is elsewhere (the stint row: the team is chosen, now the years).
+   * When set, a pick (click, Enter, or the New Team dialog's create) closes the
+   * popover and calls this INSTEAD of returning focus to the trigger; the
+   * caller moves focus (by a ref, not an id). Because focus then lands away
+   * from the picker, a polite live region announces "Team: X selected" — the
+   * trigger's description would only be read if focus returned to it. Ignored
+   * in multi mode (the popover stays open there) and never called for clearing
+   * a chip with its ×, which keeps focus on the trigger.
+   */
+  onPicked?: () => void;
 }) {
   const noTeamOn = noTeam?.value === true;
   const chipIdBase = useId();
+  /**
+   * NEO-617 — the team last picked while `onPicked` moved focus away. Its name
+   * is read at render, once `getManyByIds` has it, so a team just created in
+   * the New Team dialog (id known, row not yet loaded) is announced when its
+   * name arrives instead of never.
+   */
+  const [announcedId, setAnnouncedId] = useState<Id<"teams"> | null>(null);
+  const [pickedTick, setPickedTick] = useState(0);
+  // The latest callback without making it an effect dependency: callers pass
+  // an inline arrow, which would otherwise re-fire the focus move every render.
+  const onPickedRef = useRef(onPicked);
+  useEffect(() => {
+    onPickedRef.current = onPicked;
+  });
+  useEffect(() => {
+    if (pickedTick > 0) onPickedRef.current?.();
+  }, [pickedTick]);
   // Resolve currently-selected ids → display rows for the chip labels.
   // Convex deduplicates this between sibling pickers on the same page.
   const selectedRows = useQuery(api.teams.getManyByIds, { ids: value });
@@ -568,9 +598,25 @@ export default function TeamPicker({
     setQuery("");
     setHighlightIdx(0);
     if (single) {
-      // NEO-617: one team per field, so the pick is the whole answer. Close
-      // and hand focus back to the trigger (now "Change team").
-      closePopover();
+      // NEO-617: one team per field, so the pick is the whole answer. Close,
+      // then hand focus to the caller's next field, or back to the trigger
+      // (now "Change team") when the caller has none.
+      if (onPicked) {
+        setAnnouncedId(id);
+        setPopoverOpen(false);
+        setQuery("");
+        // Run from an effect after the commit, NOT a timer. On the New Team
+        // path this runs from an async handler: a timer can fire before React
+        // has committed the dialog's removal, while it is still holding the
+        // rest of the page inert, and a focus() there silently does nothing.
+        // The effect runs after the popover and the dialog are gone (and after
+        // the dialog's own focus-restore cleanup, which runs first). The blur
+        // from the popover's removal is harmless: `handleRootBlur` only
+        // closes, and never moves focus.
+        setPickedTick((t) => t + 1);
+      } else {
+        closePopover();
+      }
       return;
     }
     // Stay open so the user can pick a second team on a dual-team
@@ -636,6 +682,10 @@ export default function TeamPicker({
   // "Change team" after a pick, and the name alone would never say which team
   // is now held. The accessible name stays put (the E2E keys on it).
   const chipTextId = (id: Id<"teams">) => `${chipIdBase}-${id}`;
+  const announcedName =
+    onPicked && announcedId && value.includes(announcedId)
+      ? labelById.get(announcedId as unknown as string)
+      : undefined;
   const triggerDescribedBy =
     [ariaDescribedBy, changing ? chipTextId(value[0]) : undefined]
       .filter((token): token is string => !!token)
@@ -651,6 +701,13 @@ export default function TeamPicker({
       aria-label={labels.root}
       onBlur={handleRootBlur}
     >
+      {onPicked && single && (
+        // Always mounted (a live region must exist before its text changes);
+        // empty until a pick, and again once that team is cleared.
+        <span role="status" aria-live="polite" className="sr-only">
+          {announcedName ? `Team: ${announcedName} selected` : ""}
+        </span>
+      )}
       {value.map((id) => (
         <span
           key={id}

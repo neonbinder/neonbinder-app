@@ -1978,6 +1978,119 @@ describe("TeamPicker — single mode (NEO-617)", () => {
     expect(screen.getByLabelText("Add team").hasAttribute("aria-describedby")).toBe(false);
   });
 
+  describe("onPicked moves focus to the caller's next field", () => {
+    const settle = () =>
+      act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+    function Harness({ withHook = true }: { withHook?: boolean }) {
+      const [value, setValue] = React.useState<Array<Id<"teams">>>([]);
+      const nextRef = React.useRef<HTMLButtonElement>(null);
+      return (
+        <div>
+          <TeamPicker
+            single
+            value={value}
+            onChange={setValue}
+            sportId={SPORT_ID}
+            onPicked={withHook ? () => nextRef.current?.focus() : undefined}
+          />
+          <button type="button" ref={nextRef}>
+            Next field
+          </button>
+        </div>
+      );
+    }
+
+    it("a click on an option lands focus on the caller's target, not the trigger", async () => {
+      render(<Harness />);
+
+      openPopover();
+      fireEvent.click(screen.getByLabelText("Add Boston Red Sox"));
+      await settle();
+
+      expect(screen.queryByRole("listbox")).toBeNull();
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Next field" }));
+    });
+
+    it("Enter on the highlighted row lands focus there too", async () => {
+      render(<Harness />);
+
+      openPopover();
+      fireEvent.keyDown(screen.getByLabelText("Search teams"), { key: "Enter" });
+      await settle();
+
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Next field" }));
+    });
+
+    it("the New Team dialog's create does too, and the dialog's own close timer does not take it back", async () => {
+      currentCandidates = [];
+      currentSelectedRows = [makeTeam("new-team-1", "Savannah Bananas")];
+      mockFindOrCreate.mockResolvedValue(tid("new-team-1"));
+      render(<Harness />);
+
+      openPopover();
+      openNewTeamDialog("Savannah Bananas");
+      fireEvent.click(
+        screen.getByRole("button", { name: "Create team Savannah Bananas" }),
+      );
+      await waitFor(() => {
+        expect(document.activeElement).toBe(screen.getByRole("button", { name: "Next field" }));
+      });
+      await settle();
+
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Next field" }));
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+
+    it("without the hook, focus still returns to the trigger", async () => {
+      render(<Harness withHook={false} />);
+
+      openPopover();
+      fireEvent.click(screen.getByLabelText("Add Boston Red Sox"));
+      await settle();
+
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Change team" }));
+    });
+
+    it("announces the pick in a polite live region, and not before one", async () => {
+      currentSelectedRows = [makeTeam("t2", "Boston Red Sox")];
+      render(<Harness />);
+      const region = screen.getByRole("status");
+      expect(region.getAttribute("aria-live")).toBe("polite");
+      expect(region.textContent).toBe("");
+
+      openPopover();
+      fireEvent.click(screen.getByLabelText("Add Boston Red Sox"));
+      await settle();
+
+      expect(region.textContent).toBe("Team: Boston Red Sox selected");
+
+      fireEvent.click(screen.getByLabelText("Remove team Boston Red Sox"));
+      expect(region.textContent).toBe("");
+    });
+
+    it("clearing with the × still returns focus to the trigger, hook or not", async () => {
+      currentSelectedRows = [makeTeam("t2", "Boston Red Sox")];
+      render(<Harness />);
+      openPopover();
+      fireEvent.click(screen.getByLabelText("Add Boston Red Sox"));
+      await settle();
+
+      fireEvent.click(screen.getByLabelText("Remove team Boston Red Sox"));
+      await settle();
+
+      expect(document.activeElement).toBe(screen.getByLabelText("Add team"));
+    });
+
+    it("a picker without the hook renders no live region", () => {
+      render(<Harness withHook={false} />);
+      expect(screen.queryByRole("status")).toBeNull();
+    });
+  });
+
   it("an empty single picker reads exactly like a multi one", () => {
     currentSelectedRows = [];
     renderPicker({ single: true, value: [] });

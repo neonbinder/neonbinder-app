@@ -33,6 +33,7 @@ test(
     const changeTeam = page.getByRole("button", { name: "Change team" });
     const search = page.getByRole("textbox", { name: "Search teams" });
     const results = page.getByRole("listbox", { name: "Team typeahead results" });
+    const fromYear = page.getByLabel(/Stint from year/);
     const heldChips = page.getByRole("button", { name: /^Remove team / });
 
     // A team nothing matches opens the New Team dialog on Enter. `team` is made
@@ -66,24 +67,26 @@ test(
     await expect(changeTeam).toBeVisible();
     await expect(addTeam).toBeHidden();
     await expect(results).toBeHidden(); // the create was the pick, so the popover closed
+    // NEO-617: the team is chosen, so focus moves on to the start year.
+    await expect(fromYear).toBeFocused();
     await expectAccessible(page, { label: "Player Management, stint team held" });
 
     // NEO-617: "Change team" reopens the same search, and a pick REPLACES the
-    // held team, closes the popover and hands focus back to the trigger.
+    // held team, closes the popover and moves focus on to the start year.
     await changeTeam.click();
     await expect(search).toBeVisible();
     await expectAccessible(page, { label: "Player Management, Change team popover" });
     await search.fill(team);
     await results.getByRole("option", { name: new RegExp(`^Add ${team}`) }).click();
     await expect(results).toBeHidden();
-    await expect(changeTeam).toBeFocused();
+    await expect(fromYear).toBeFocused();
     await expect(heldChips).toHaveCount(1);
     await expect(page.getByRole("button", { name: `Remove team ${team}` })).toBeVisible();
     await expect(page.getByRole("button", { name: `Remove team ${replaced}` })).toBeHidden();
     await expect(changeTeam).toBeVisible();
 
     // Stint 1, the LATER one, added first so the ordering assert means something.
-    await page.getByLabel(/Stint from year/).fill("2010");
+    await fromYear.fill("2010");
     await page.getByLabel(/Stint to year/).fill("2012");
     await page.getByRole("button", { name: "Add stint" }).click();
     const later = page.getByRole("link", { name: new RegExp(`${team} · 2010–2012`) });
@@ -96,9 +99,9 @@ test(
     await search.fill(team);
     await results.getByRole("option", { name: new RegExp(`^Add ${team}`) }).click();
     await expect(results).toBeHidden(); // NEO-617: the pick closes the popover
+    await expect(fromYear).toBeFocused();
 
     const toYear = page.getByLabel(/Stint to year/);
-    const fromYear = page.getByLabel(/Stint from year/);
     await toYear.fill("2005");
     await toYear.press("Enter");
     // Enter is "Add stint": the end year is recorded, the picked team is consumed,
