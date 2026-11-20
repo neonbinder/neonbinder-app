@@ -790,8 +790,8 @@ export interface EbayOrderLine {
   unitPriceCents: number;
   /**
    * NEO-520 — the line's own title as eBay sent it (`lineItems[].title`),
-   * bounded by `ebayLineTitle`; null when absent or unreadable. A label only:
-   * never parsed, matched or written to an NB row.
+   * bounded by `ebayLineTitle`; null when absent or unreadable. Parsed only
+   * to order the Pick List (NEO-590); never matched or written to an NB row.
    */
   title: string | null;
 }

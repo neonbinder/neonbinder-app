@@ -111,7 +111,7 @@ vi.mock("./TeamPicker", () => ({
  */
 vi.mock("./PlayerPicker", () => ({ default: () => null }));
 
-import CardAttentionWalker, { walkDoneLine, walkStep } from "./CardAttentionWalker";
+import CardAttentionWalker, { walkDoneLine, walkProgress } from "./CardAttentionWalker";
 import { LISTING_TITLE_MAX } from "../../convex/features/listingLimits";
 import { deriveCardAttention, needsAttention } from "./card-attention";
 import {
@@ -165,11 +165,11 @@ const chip = (name: string, from: string) =>
   screen.getByRole("button", { name: `${name} · ${from} played here` }) as HTMLButtonElement;
 
 /**
- * NEO-335 Phase 2 — the chrome's "Step x of y", the walker's one counter. Read
- * from the header so the done line (also `role="status"`) never answers for it.
+ * NEO-467 — the chrome's progress bar, the walker's only progress. Its value is
+ * the rounded percent of the cards the sitting has seen that are behind us.
  */
-const counter = () =>
-  document.querySelector("header [role='status']")?.textContent ?? null;
+const bar = () => screen.getByRole("progressbar", { name: "Wizard progress" });
+const percent = () => Number(bar().getAttribute("aria-valuenow"));
 const rail = () => document.querySelector<HTMLElement>("[data-rail-fill]")!;
 
 const saveButton = () =>
@@ -356,7 +356,7 @@ describe("CardAttentionWalker — presentation", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("shows the card, its players, and the wizard chrome: title, Step x of y, and the question's type", () => {
+  it("shows the card, its players, and the wizard chrome: title, progress bar, and the question's type", () => {
     playerRows = [
       { _id: "p1", name: "Tarik Skubal" },
       { _id: "p2", name: "Garrett Crochet" },
@@ -372,10 +372,11 @@ describe("CardAttentionWalker — presentation", () => {
     expect(screen.getByText(/Tarik Skubal · Garrett Crochet/)).toBeTruthy();
     // No title from the parent: the generic one (NEO-497 names the set below).
     expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("Tidy up this set");
-    expect(counter()).toBe("Step 1 of 2");
+    expect(percent()).toBe(0);
+    expect(bar().getAttribute("aria-valuetext")).toBe("Cards with no team");
     expect(screen.getByText("Cards with no team")).toBeTruthy();
-    // No per-kind count anywhere: the counter is the only number.
-    expect(document.body.textContent).not.toMatch(/need attention|fixed/);
+    // No per-kind count and no step counter anywhere: the bar is the only progress.
+    expect(document.body.textContent).not.toMatch(/need attention|fixed|Step \d+ of \d+/);
   });
 
   it("is named by the parent's title, the set it tidies (NEO-497)", () => {
@@ -385,7 +386,7 @@ describe("CardAttentionWalker — presentation", () => {
       screen.getByRole("dialog", { name: "Tidy up 2024 Topps Chrome" }),
     ).toBeTruthy();
     expect(screen.queryByText("Tidy up this set")).toBeNull();
-    expect(counter()).toBe("Step 1 of 1");
+    expect(percent()).toBe(0);
   });
 
   it("never renders a marketplace ref, in text or in an attribute", () => {
@@ -407,8 +408,10 @@ describe("CardAttentionWalker — presentation", () => {
     renderWalker([{ ...needsTeamRow(), teamNoneConfirmedAt: 5 }]);
     expect(screen.getByText(/All clear/)).toBeTruthy();
     expect(screen.getByRole("button", { name: /Done/ })).toBeTruthy();
-    // Nothing walked, so there is no count to give: the counter is empty.
-    expect(counter()).toBe("");
+    // Nothing walked, so there is no plan to measure: the bar is empty and has
+    // no subtitle to read out.
+    expect(percent()).toBe(0);
+    expect(bar().hasAttribute("aria-valuetext")).toBe(false);
   });
 
   it("preselects the suggested teams and says whose career each came from", () => {
@@ -528,7 +531,7 @@ describe("CardAttentionWalker — dialog geometry (NEO-271)", () => {
     const [header, body, footer] = rowsOf(dialog);
 
     const heading = screen.getByRole("heading", { level: 2 });
-    const progress = screen.getByText("Step 1 of 2");
+    const progress = bar();
     const skip = screen.getByRole("button", { name: /^Skip for now, card / });
     const close = screen.getByRole("button", { name: /Close/ });
 
@@ -556,16 +559,17 @@ describe("CardAttentionWalker — dialog geometry (NEO-271)", () => {
   });
 
   it("leaves the live region and the focus trap exactly as they were", () => {
-    // The resize touched the panel's classes only. `role="status"` with no
-    // `aria-live` override is the documented pattern for this line (it never
-    // switches to `role="alert"`), and Tab still cycles inside the dialog —
+    // The resize touched the panel's classes only. The header has no live
+    // region (NEO-467) and the dialog stays labelled by its title, and Tab
+    // still cycles inside the dialog —
     // pinned here alongside the geometry so a future sizing change cannot
     // quietly restructure the chrome that carries either.
     renderWalker([needsTeamRow()]);
     const dialog = screen.getByRole("dialog");
-    const progress = screen.getByText("Step 1 of 1");
-    expect(progress.getAttribute("role")).toBe("status");
+    const progress = bar();
     expect(progress.getAttribute("aria-live")).toBeNull();
+    // No live region in the header: the bar does not announce itself.
+    expect(dialog.querySelector("header [aria-live]")).toBeNull();
     expect(dialog.getAttribute("aria-modal")).toBe("true");
     expect(dialog.getAttribute("aria-labelledby")).toBe("card-attention-walker-title");
 
@@ -609,7 +613,7 @@ describe("CardAttentionWalker — fixing a card", () => {
         teamOnCardIds: ["team-tigers", "team-sox"],
       }),
     );
-    await waitFor(() => expect(counter()).toBe("Step 2 of 2"));
+    await waitFor(() => expect(percent()).toBe(50));
 
     // The write lands in the database, the row stops satisfying the rule, and
     // THAT is what advances the walker — nothing calls "next".
@@ -627,8 +631,8 @@ describe("CardAttentionWalker — fixing a card", () => {
     expect(screen.getByRole("heading", { level: 3 }).textContent).toBe(
       "#2 NL Leaders ERA LL",
     );
-    // The answered card left the list; y holds.
-    expect(counter()).toBe("Step 2 of 2");
+    // The answered card left the list; the plan holds.
+    expect(percent()).toBe(50);
   });
 
   it("toggling a chip off keeps it out of the write", async () => {
@@ -771,7 +775,7 @@ describe("CardAttentionWalker — fixing a card", () => {
         "#2 NL Leaders ERA LL",
       ),
     );
-    expect(counter()).toBe("Step 2 of 2");
+    expect(percent()).toBe(50);
   });
 
   it("does NOT count a REFUSED confirmation as walked, and says why", async () => {
@@ -785,11 +789,11 @@ describe("CardAttentionWalker — fixing a card", () => {
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("has teams now");
-    // Still on the same card, still step 1: nothing was walked.
+    // Still on the same card, the bar still empty: nothing was walked.
     expect(screen.getByRole("heading", { level: 3 }).textContent).toBe(
       "#1 American League Leaders ERA LL",
     );
-    expect(counter()).toBe("Step 1 of 1");
+    expect(percent()).toBe(0);
   });
 
   it("advances the moment the write lands, without waiting for the subscription", async () => {
@@ -897,7 +901,7 @@ describe("CardAttentionWalker — deferring", () => {
     expect(mockConfirmCardNoTeam).not.toHaveBeenCalled();
     // Skipping is not a write — the card keeps its badge in the grid and comes
     // back next time — but in THIS sitting it has been walked.
-    expect(counter()).toBe("Step 2 of 2");
+    expect(percent()).toBe(50);
   });
 
   it("Escape closes and defers the rest", () => {
@@ -943,8 +947,9 @@ describe("CardAttentionWalker — deferring", () => {
     );
 
     expect(screen.getByRole("heading", { level: 3 }).textContent).toBe("#5 On Screen");
-    // The new card joins the sitting: y grows, x stays on the card being read.
-    expect(counter()).toBe("Step 1 of 2");
+    // The new card joins the sitting: the plan grows, the bar stays empty on
+    // the card being read.
+    expect(percent()).toBe(0);
   });
 
   it("falls through to the all-clear step when the last card is fixed elsewhere, and does not strand focus on <body>", async () => {
@@ -1086,22 +1091,22 @@ describe("CardAttentionWalker — walk order (NEO-335)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// NEO-335 Phase 2 (D9) — the wizard chrome: one counter, a subtitle per kind
+// NEO-335 Phase 2 (D9), NEO-467 — the wizard chrome: one bar, a subtitle per kind
 // ---------------------------------------------------------------------------
 
-describe("walkStep (NEO-335 Phase 2)", () => {
-  it("x is the walked count plus one; y is every card the sitting has seen", () => {
-    expect(walkStep(4, 4, true)).toEqual({ step: 1, total: 4 });
-    expect(walkStep(4, 1, true)).toEqual({ step: 4, total: 4 });
+describe("walkProgress (NEO-467)", () => {
+  it("done is the walked count; planned is every card the sitting has seen", () => {
+    expect(walkProgress(4, 4)).toEqual({ done: 0, planned: 4 });
+    expect(walkProgress(4, 1)).toEqual({ done: 3, planned: 4 });
   });
 
-  it("reads y of y once nothing is left, and 0 of 0 for a walk that never had a card", () => {
-    expect(walkStep(4, 0, false)).toEqual({ step: 4, total: 4 });
-    expect(walkStep(0, 0, false)).toEqual({ step: 0, total: 0 });
+  it("is full once nothing is left, and 0 of 0 for a walk that never had a card", () => {
+    expect(walkProgress(4, 0)).toEqual({ done: 4, planned: 4 });
+    expect(walkProgress(0, 0)).toEqual({ done: 0, planned: 0 });
   });
 
-  it("never lets x pass y, nor y fall below what is left", () => {
-    expect(walkStep(2, 3, true)).toEqual({ step: 1, total: 3 });
+  it("never lets done pass planned, nor planned fall below what is left", () => {
+    expect(walkProgress(2, 3)).toEqual({ done: 0, planned: 3 });
   });
 });
 
@@ -1137,7 +1142,7 @@ describe("attentionWalkSubtitle (NEO-335 Phase 2)", () => {
   });
 });
 
-describe("CardAttentionWalker — Step x of y and the subtitle (NEO-335 Phase 2)", () => {
+describe("CardAttentionWalker — the progress bar and the subtitle (NEO-335 Phase 2, NEO-467)", () => {
   const row = (id: string, cardNumber: string, extra: Partial<CardChecklistRow> = {}) =>
     needsTeamRow({
       _id: id as unknown as Id<"cardChecklist">,
@@ -1169,54 +1174,54 @@ describe("CardAttentionWalker — Step x of y and the subtitle (NEO-335 Phase 2)
       />,
     );
 
-  it("one counter across every card in the walk, with each group's subtitle, in Phase 1's order", () => {
+  it("one bar across every card in the walk, with each group's subtitle, in Phase 1's order", () => {
     renderWalker([titleRow, teamRow10, nameRow, teamRow3]);
 
-    expect(counter()).toBe("Step 1 of 4");
+    expect(percent()).toBe(0);
     expect(subtitleOf("Cards with no team")).toBeTruthy();
     skip();
-    expect(counter()).toBe("Step 2 of 4");
+    expect(percent()).toBe(25);
     expect(subtitleOf("Cards with no team")).toBeTruthy();
     skip();
-    expect(counter()).toBe("Step 3 of 4");
+    expect(percent()).toBe(50);
     expect(subtitleOf("Names not yet linked")).toBeTruthy();
     expect(subtitleOf("Cards with no team")).toBeNull();
     skip();
-    expect(counter()).toBe("Step 4 of 4");
+    expect(percent()).toBe(75);
     expect(subtitleOf("Card titles")).toBeTruthy();
     skip();
 
-    // Done: the counter stays full, and no group's subtitle is left behind.
+    // Done: the bar is full, and no group's subtitle is left behind.
     expect(screen.getByText(/All clear/)).toBeTruthy();
-    expect(counter()).toBe("Step 4 of 4");
+    expect(percent()).toBe(100);
     for (const s of ["Cards with no team", "Names not yet linked", "Card titles"]) {
       expect(subtitleOf(s)).toBeNull();
     }
   });
 
-  it("y never shrinks: a card resolved somewhere else still counts as walked", () => {
+  it("the plan never shrinks: a card resolved somewhere else still counts as walked", () => {
     const a = row("card-a", "1");
     const b = row("card-b", "2");
     const c = row("card-c", "3");
     const { rerender, onClose } = renderWalker([a, b, c]);
-    expect(counter()).toBe("Step 1 of 3");
+    expect(percent()).toBe(0);
 
     // Another tab (or a lookup landing) answers #2, which is not on screen.
     rerenderWith(rerender, onClose, [a, { ...b, teamNoneConfirmedAt: 9 }, c]);
     expect(screen.getByRole("heading", { level: 3 }).textContent).toBe("#1 Card 1");
-    expect(counter()).toBe("Step 2 of 3");
+    expect(percent()).toBe(33);
 
-    // …and the rest go the same way. y still holds at the end.
+    // …and the rest go the same way. The plan still holds at the end.
     rerenderWith(rerender, onClose, [
       { ...a, teamNoneConfirmedAt: 9 },
       { ...b, teamNoneConfirmedAt: 9 },
       { ...c, teamNoneConfirmedAt: 9 },
     ]);
     expect(screen.getByText(/All clear/)).toBeTruthy();
-    expect(counter()).toBe("Step 3 of 3");
+    expect(percent()).toBe(100);
   });
 
-  it("y holds as answered cards leave the live rows, and a card flagged mid-sitting grows it", async () => {
+  it("the plan holds as answered cards leave the live rows, and a card flagged mid-sitting grows it, without moving the bar back", async () => {
     suggestionsByCard["card-a"] = [
       { teamId: "team-tigers", name: "Detroit Tigers", source: "career", playerName: "Tarik Skubal" },
     ];
@@ -1225,44 +1230,45 @@ describe("CardAttentionWalker — Step x of y and the subtitle (NEO-335 Phase 2)
     const { rerender, onClose } = renderWalker([a, b]);
 
     fireEvent.click(saveButton());
-    await waitFor(() => expect(counter()).toBe("Step 2 of 2"));
+    await waitFor(() => expect(percent()).toBe(50));
 
     // The write reaches the subscription: #1 is no longer flagged at all.
     const answeredA = { ...a, teamOnCardIds: ["team-tigers"] as unknown as Array<Id<"teams">> };
     rerenderWith(rerender, onClose, [answeredA, b]);
-    expect(counter()).toBe("Step 2 of 2");
+    expect(percent()).toBe(50);
 
     // A failed lookup flags another card while #2 is on screen.
     rerenderWith(rerender, onClose, [answeredA, b, row("card-c", "3")]);
     expect(screen.getByRole("heading", { level: 3 }).textContent).toBe("#2 Card 2");
-    expect(counter()).toBe("Step 2 of 3");
+    // One of three is 33%, but the bar holds the 50% it had reached.
+    expect(percent()).toBe(50);
   });
 
-  it("the rail moves forward with a transition that reduced motion switches off, and never animates back", () => {
+  it("the bar moves forward with a transition that reduced motion switches off, and never animates back", () => {
     const a = row("card-a", "1");
     const b = row("card-b", "2");
     const { rerender, onClose } = renderWalker([a, b]);
-    expect(rail().style.width).toBe("50.000%");
+    expect(rail().style.width).toBe("0.000%");
 
     skip();
-    expect(rail().style.width).toBe("100.000%");
+    expect(rail().style.width).toBe("50.000%");
     expect(rail().getAttribute("data-rail-forward")).toBe("true");
     // The only motion in the walker, and `prefers-reduced-motion` turns it off.
     expect(rail().className).toContain("motion-reduce:transition-none");
 
-    // y grows under the operator: the fill drops, and does so without a
-    // transition — a bar sliding backwards reads as lost work.
+    // The plan grows under the operator (1 of 3 is a third): the fill stays
+    // where it was rather than sliding backwards, which reads as lost work.
     rerenderWith(rerender, onClose, [a, b, row("card-c", "3")]);
-    expect(counter()).toBe("Step 2 of 3");
-    expect(rail().getAttribute("data-rail-forward")).toBe("false");
-    expect(rail().className).toContain("transition-none");
-    expect(rail().className).not.toContain("transition-[width]");
+    expect(rail().style.width).toBe("50.000%");
+    expect(percent()).toBe(50);
   });
 
-  it("the rail is hidden from assistive tech; the counter is what is read", () => {
+  it("is one labelled progressbar read by its subtitle, with no step counter text", () => {
     renderWalker([row("card-a", "1")]);
-    expect(rail().closest("[aria-hidden='true']")).toBeTruthy();
-    expect(screen.getByText("Step 1 of 1").getAttribute("role")).toBe("status");
+    expect(rail().closest("[aria-hidden='true']")).toBeNull();
+    expect(bar().contains(rail())).toBe(true);
+    expect(bar().getAttribute("aria-valuetext")).toBe("Cards with no team");
+    expect(screen.queryByText(/Step \d+ of \d+/)).toBeNull();
   });
 });
 

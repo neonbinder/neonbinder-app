@@ -84,6 +84,55 @@ describe("assessStoredTitleCards", () => {
     expect(drawn.inputs.setShortName).toBe(BOX);
   });
 
+  // NEO-618 — a card that fits but lost its team (a Tidy Up cut, not a first
+  // name) takes the box the operator types, in the dialog as in the build.
+  describe("NEO-618 the box on a card that only lost its team", () => {
+    const chromamax = (): StoredTitleCard["inputs"] => ({
+      cardNumber: "CM-CD",
+      playerNames: ["Chase Dollander"],
+      teamNames: ["Colorado Rockies"],
+      year: "2026",
+      manufacturer: "Pulse",
+      setName: "Aura",
+      insertName: "Chromamax",
+      parallelName: "Special Purple Light Blue",
+      parallelIsRole: true,
+      sport: "Baseball",
+    });
+    const teamless = (): StoredTitleCard => ({
+      cardId: "card-cm" as unknown as Id<"cardChecklist">,
+      cardNumber: "CM-CD",
+      cardName: "Chase Dollander",
+      title: assessListingTitle(chromamax()).title,
+      inputs: chromamax(),
+    });
+
+    test("the stored title is the builder's, team out", () => {
+      const [shown] = assessStoredTitleCards([teamless()]);
+      expect(shown.title).toBe(
+        "2026 Pulse Aura Chromamax Special Purple Light Blue Chase Dollander #CM-CD",
+      );
+    });
+
+    test("a box draft redraws it, the team still out at that length", () => {
+      const [shown] = assessStoredTitleCards(
+        [teamless()],
+        "2026 Pulse Aura Chromamax Special Light Blue",
+      );
+      expect(shown.title).toBe(
+        "2026 Pulse Aura Chromamax Special Light Blue Chase Dollander #CM-CD Baseball",
+      );
+      expect(shown.inputs.setShortName).toBe("2026 Pulse Aura Chromamax Special Light Blue");
+    });
+
+    test("a shorter box draft brings the team back", () => {
+      const [shown] = assessStoredTitleCards([teamless()], "2026 Aura Chromamax Light Blue");
+      expect(shown.title).toBe(
+        "2026 Aura Chromamax Light Blue Chase Dollander #CM-CD Colorado Rockies Baseball",
+      );
+    });
+  });
+
   test("groups hold still while the box is edited: the key is read from the stored title", () => {
     const [plain] = assessStoredTitleCards([stored("3")]);
     const [boxed] = assessStoredTitleCards([stored("3")], BOX);

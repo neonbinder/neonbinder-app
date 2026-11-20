@@ -202,6 +202,5 @@ export function orphanedReviewRowIds(
   return dropped;
 }
 
-/** The step's subtitle and growth-line words. */
+/** The step's subtitle. */
 export const CHECKLIST_STEP_SUBTITLE = "Checklist says otherwise";
-export const CHECKLIST_GROWTH_REASON = "checklist disagreements";

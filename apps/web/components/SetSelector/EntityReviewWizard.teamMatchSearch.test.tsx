@@ -37,6 +37,15 @@ const SPORT_ID = "selopt-sport-baseball";
 
 vi.mock("../../convex/_generated/api", () => ({
   api: {
+    // NEO-426: the teams step's flagged-sports read.
+    sportTeamless: {
+      listTeamlessSportIds: "sportTeamless.listTeamlessSportIds",
+    },
+    // NEO-426: the sport names the Save step's No Team note reads (skipped
+    // here: nothing is flagged, but the ref is built before the skip).
+    selectorOptions: {
+      getSelectorOptions: "selectorOptions.getSelectorOptions",
+    },
     entityReviewQueue: {
       getBatch: "entityReviewQueue.getBatch",
       recordDecision: "entityReviewQueue.recordDecision",
@@ -110,6 +119,7 @@ vi.mock("convex/react", () => ({
     queryCalls.push({ ref, args });
     if (args === "skip") return undefined;
     if (ref === "entityReviewQueue.getBatch") return currentRows;
+    if (ref === "sportTeamless.listTeamlessSportIds") return [];
     if (ref === "players.nearMatches" || ref === "teams.nearMatches")
       return currentNearMatches;
     if (ref === "leagues.list") return [MLB];

@@ -368,9 +368,95 @@ describe("NEO-509: the sports a sale names", () => {
     await mountWith([lostLine(1, { title: "  Vintage   binder lot " }, { platform: "ebay", orderNo: "27-1" })]);
     const [only] = store!.data!.lines;
     expect(only.listingTitle).toBe("Vintage binder lot");
+    // It does not parse (no leading year), so titleSports was never asked: no answer, not a null one.
     expect(only.listed).toEqual({ title: "Vintage binder lot" });
     expect(only.order.venue).toBe("eBay");
-    expect(only.problem).toBe("NB didn't list this one. Check the order's photo.");
+    expect(only.problem).toBe("Neon Binder didn't list this one. Check the sales platform.");
+  });
+
+  const titleCalls = () =>
+    query.mock.calls.filter(([, args]) => (args as { titles?: string[] }).titles).map(([, args]) => (args as { titles: string[] }).titles);
+  const ebayTitled = (n: number, title: string) => lostLine(n, { title }, { platform: "ebay", orderNo: "27-1" });
+
+  it("NEO-590: holds the list until titleSports has answered, then files the line under the sport it names", async () => {
+    let land!: (answer: unknown) => void;
+    query.mockImplementation((_fn: unknown, args: { titles?: string[] }) =>
+      args.titles ? new Promise((resolve) => (land = resolve)) : Promise.resolve([]),
+    );
+    await mountWith([ebayTitled(1, "2023 Prizm #4 Some Player")]);
+    expect(titleCalls()).toEqual([["2023 Prizm #4 Some Player"]]);
+    expect(store?.data).toBeUndefined();
+    await act(async () => land([{ id: "sp-fb", name: "Football", code: "FB" }]));
+    expect(store?.data?.lines[0].listed?.titleSport).toEqual({ id: "sp-fb", name: "Football", code: "FB" });
+  });
+
+  it("NEO-590: a titleSports call that fails settles the line to Other and does not hold the list", async () => {
+    query.mockImplementation((_fn: unknown, args: { titles?: string[] }) =>
+      args.titles ? Promise.reject(new Error("offline")) : Promise.resolve([]),
+    );
+    await mountWith([ebayTitled(1, "2021 Vintage binder lot")]);
+    expect(titleCalls()).toEqual([["2021 Vintage binder lot"]]);
+    expect(store?.data?.lines).toHaveLength(1);
+    expect(store!.data!.lines[0].listed?.titleSport).toBeNull();
+  });
+
+  it("NEO-590: a title no sport was found for (null answer) is null, not unasked", async () => {
+    query.mockImplementation((_fn: unknown, args: { titles?: string[] }) =>
+      Promise.resolve(args.titles ? args.titles.map(() => null) : []),
+    );
+    await mountWith([ebayTitled(1, "2021 Mystery lot")]);
+    expect(store!.data!.lines[0].listed).toEqual({ title: "2021 Mystery lot", titleSport: null });
+  });
+
+  it("NEO-590: a title that does not parse (no leading year) is never sent to titleSports, and the list still finishes loading", async () => {
+    let land!: (answer: unknown) => void;
+    query.mockImplementation((_fn: unknown, args: { titles?: string[] }) =>
+      args.titles ? new Promise((resolve) => (land = resolve)) : Promise.resolve([]),
+    );
+    await mountWith([
+      ebayTitled(1, "Kansas City Chiefs Hoodie XL"),
+      ebayTitled(2, "Vintage binder lot"),
+      ebayTitled(3, "Topps Chrome #205 Some Player"),
+      ebayTitled(4, "2023 Prizm #4 Some Player"),
+    ]);
+    // Only the year-led title is asked, and the list waits for that one answer alone.
+    expect(titleCalls()).toEqual([["2023 Prizm #4 Some Player"]]);
+    expect(store?.data).toBeUndefined();
+    await act(async () => land([{ id: "sp-fb", name: "Football", code: "FB" }]));
+    const lines = store!.data!.lines;
+    expect(lines).toHaveLength(4);
+    expect(lines.map((l) => l.listed?.titleSport)).toEqual([undefined, undefined, undefined, { id: "sp-fb", name: "Football", code: "FB" }]);
+  });
+
+  it("NEO-590: a graded slab's title (grader and grade, then a year) is asked about; a slab with no year is not", async () => {
+    query.mockImplementation((_fn: unknown, args: { titles?: string[] }) =>
+      Promise.resolve(args.titles ? args.titles.map(() => null) : []),
+    );
+    await mountWith([ebayTitled(1, "PSA 10 2018 Prizm #280 Luka Doncic"), ebayTitled(2, "PSA 10 Kansas City Chiefs Hoodie XL")]);
+    expect(titleCalls()).toEqual([["PSA 10 2018 Prizm #280 Luka Doncic"]]);
+  });
+
+  it("NEO-590: a list of only unparseable titles asks nothing and loads at once", async () => {
+    await mountWith([ebayTitled(1, "Kansas City Chiefs Hoodie XL"), ebayTitled(2, "Lot of 50 mixed cards")]);
+    expect(titleCalls()).toEqual([]);
+    expect(store?.data?.lines).toHaveLength(2);
+  });
+
+  it("NEO-590: asks 21 distinct titles in a call of 20 and a call of 1, a repeated title once, and none for a line without a title", async () => {
+    await mountWith([
+      ...Array.from({ length: 21 }, (_, n) => ebayTitled(n, `2021 Lot ${n}`)),
+      ebayTitled(30, "2021 Lot 0"),
+      lostLine(31, { year: "2021", setName: "Score" }),
+    ]);
+    const calls = titleCalls();
+    expect(calls.map((c) => c.length)).toEqual([20, 1]);
+    expect(new Set(calls.flat()).size).toBe(21);
+    expect(store?.data?.lines).toHaveLength(23);
+  });
+
+  it("NEO-590: a matched line's title is never asked about", async () => {
+    await mount();
+    expect(titleCalls()).toEqual([]);
   });
 
   it("NEO-520: an eBay line with no title and no card words reads as the Sales tab does, never a card or a match", async () => {
@@ -384,7 +470,7 @@ describe("NEO-509: the sports a sale names", () => {
     expect(alone.listingTitle).toBe(unmatchedSale("ebay"));
     expect([first.listingTitle, second.listingTitle]).toEqual(["A sale with no title (1 of 2)", "A sale with no title (2 of 2)"]);
     for (const line of [first, second, alone]) {
-      expect(line.problem).toBe("NB didn't list this one. Check the order's photo.");
+      expect(line.problem).toBe("Neon Binder didn't list this one. Check the sales platform.");
       expect(`${line.listingTitle} ${line.problem}`).not.toMatch(/\bcard\b|match/i);
     }
   });
@@ -394,7 +480,7 @@ describe("NEO-509: the sports a sale names", () => {
     const [only] = store!.data!.lines;
     expect(only.order.venue).toBe("BSC");
     expect(only.listingTitle).toBe("Unmatched sale");
-    expect(only.problem).toBe("NB couldn't match this line. Check the order's photo.");
+    expect(only.problem).toBe("Neon Binder couldn't match this line. Check the sales platform.");
   });
 
   it("NEO-520: lines of one order with the same title are numbered like any other twins", async () => {

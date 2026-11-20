@@ -13,7 +13,7 @@
  * card (`listed`, as the poll stored them), so the seller can look for it.
  * Sale data for the Pick List only: nothing here writes it to NB's rows.
  *
- * Five functions, split so a pull re-runs as little as possible:
+ * Six functions, split so a pull re-runs as little as possible:
  *   - `open` (subscribed): the lines and the boxes they name. Bounded: at
  *     most `OPEN_SALES_READ + RECENT_SALES_READ` sale docs plus one read per
  *     distinct box. Every poll and every `setPulled` re-runs it, so it reads
@@ -23,6 +23,11 @@
  *   - `soldPhotos`: the photos of the copies the lines came from.
  *   - `sports`: the NB sport rows the lines' `listed.sportId` name (name and
  *     SKU code), hydrated once by the client like `cards`.
+ *   - `titleSports` (NEO-590): the NB sport of the player or team a "Can't
+ *     find it" line's listing title names, hydrated once like `sports`. The
+ *     page asks only about a title that opens with a year; the rest file
+ *     under Other without a call. It only orders the list; it matches no
+ *     card and writes nothing.
  *   - `setPulled`: marks lines pulled or not, and recomputes the order's
  *     stored `pullOpen`.
  *
@@ -39,6 +44,18 @@ import { copyPhotosValidator, ownerPhotoUrlsByCopyId } from "./copyPhotos";
 import { MAX_CARDS_BY_ID } from "./collectionCatalog";
 import { CatalogReader, catalogCardWithPathValidator } from "./lib/catalogView";
 import { parseListingSku } from "./lib/listingSku";
+import {
+  TITLE_SEARCH_TAKE,
+  TITLE_TEAM_SEARCH_TAKE,
+  decideTitleSport,
+  namedPlayers,
+  namedTeams,
+  titleNameText,
+  titleSearchTerm,
+  titleTeamSearchTerm,
+  titleWords,
+} from "./lib/titleSport";
+import { additionalSportIds } from "./players";
 import { lineOnPickList, orderOnPickList, pullOpenOf, saleIdOfLine, saleLineKeys } from "./lib/pickLines";
 import { collectionCopyConditionValidator, listingPlatformValidator, saleItemListedValidator } from "./schema";
 
@@ -65,6 +82,8 @@ export const MAX_SOLD_PHOTOS = 100;
 export const MAX_SET_PULLED = 200;
 /** Sport ids one `sports` call may ask about. */
 export const MAX_SPORTS_BY_ID = 20;
+/** Titles one `titleSports` call may ask about. */
+export const MAX_TITLE_SPORTS = 20;
 
 // ───────────────────────────────────────────────────────────────────────────
 // Validators
@@ -347,6 +366,89 @@ export const sports = query({
       out.push(row && row.level === "sport" ? { id: row._id, name: row.value, code: row.sportConfig?.skuCode ?? null } : null);
     }
     return out;
+  },
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// titleSports
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * NEO-590 — the NB sport a listing's title names, aligned with `titles`: the
+ * sport of the NB player (else team) the title says by its whole name, when
+ * exactly one sport is named; null otherwise (the row files under Other).
+ * The page asks only about titles that parse (they open with a year, after a
+ * slab's grader and grade); a title that does not (clothing, a lot) is never
+ * sent and files under Other. That is a page rule, not a bound: this query
+ * answers any title, up to `MAX_TITLE_SPORTS` of them, so the client gate is
+ * not what limits its cost.
+ * Catalog data only, so any signed-in caller may read it. Per distinct title:
+ * one `players` name search (`take(TITLE_SEARCH_TAKE)`) and one `teams` name
+ * search (`take(TITLE_TEAM_SEARCH_TAKE)`), one `playerSports` read per player
+ * the title names (the most specific ones: `namedPlayers`), and a point read
+ * per distinct sport, at most `MAX_TITLE_SPORTS` titles. The most specific
+ * match wins: a full "Location Name" team beats nickname-only teams.
+ * Display order only: nothing here matches a card or writes NB data.
+ */
+export const titleSports = query({
+  args: { titles: v.array(v.string()) },
+  returns: v.array(v.union(pickSportValidator, v.null())),
+  handler: async (ctx, args) => {
+    await requireSignedIn(ctx);
+    if (args.titles.length > MAX_TITLE_SPORTS) {
+      refuse(COLLECTION_ERRORS.limit, `Ask for at most ${MAX_TITLE_SPORTS} titles at once.`);
+    }
+    const sportRows = new Map<string, typeof pickSportValidator.type | null>();
+    const sportOf = async (raw: string) => {
+      if (!sportRows.has(raw)) {
+        const id = ctx.db.normalizeId("selectorOptions", raw);
+        const row = id ? await ctx.db.get(id) : null;
+        sportRows.set(
+          raw,
+          row && row.level === "sport" ? { id: row._id, name: row.value, code: row.sportConfig?.skuCode ?? null } : null,
+        );
+      }
+      return sportRows.get(raw) ?? null;
+    };
+
+    const answers = new Map<string, typeof pickSportValidator.type | null>();
+    for (const title of new Set(args.titles)) {
+      // Players and teams are searched by the words after the card number (the
+      // named player and team sit at the end); the set's words stay out of the
+      // search. Whole-name verification below still reads the full title.
+      const nameText = titleNameText(title);
+      const term = titleSearchTerm(nameText);
+      if (!term) {
+        answers.set(title, null);
+        continue;
+      }
+      const words = titleWords(title);
+      const players = await ctx.db
+        .query("players")
+        .withSearchIndex("search_name", (q) => q.search("name", term))
+        .take(TITLE_SEARCH_TAKE);
+      // `teams.nameNormalized` is accent-folded and punctuation-free, so the teams
+      // are searched by the title's normalised words, not its raw text.
+      const teamTerm = titleTeamSearchTerm(nameText);
+      const teams = teamTerm
+        ? await ctx.db
+            .query("teams")
+            .withSearchIndex("search_name", (q) => q.search("nameNormalized", teamTerm))
+            .take(TITLE_TEAM_SEARCH_TAKE)
+        : [];
+      // `playerSports` is the authority for a player's extra sports (the player row's
+      // "also" list is only a display copy): one indexed read per player the title really names.
+      const named = namedPlayers(players, words);
+      const playerSportLists: string[][] = await Promise.all(
+        named.map(async (p) => [p.sportId as string, ...(await additionalSportIds(ctx, p._id)).map((id) => id as string)]),
+      );
+      const sportId = decideTitleSport(
+        playerSportLists,
+        namedTeams(teams, words).map((t) => [t.sportId as string]),
+      );
+      answers.set(title, sportId ? await sportOf(sportId) : null);
+    }
+    return args.titles.map((title) => answers.get(title) ?? null);
   },
 });
 

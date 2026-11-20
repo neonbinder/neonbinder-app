@@ -32,9 +32,14 @@ import { FeatureValueControl } from "./FeatureValueControl";
 import { AUTOGRAPH_CHOICE_LABEL, AUTOGRAPH_FORMATS } from "./entity-review-steps";
 import CardPrefixRow from "./CardPrefixRow";
 import RenameEntityControl, { type RenameEntityHandle } from "./RenameEntityControl";
-import { variantTypeKind } from "../../convex/variantRole";
+import { derivedVariantFlags, variantTypeKind } from "../../convex/variantRole";
+import { isTeamlessSport } from "../../convex/lib/teamlessSport";
 import { titleChainFacts } from "../../convex/listingShortName";
-import { setDescriptionForTitles } from "../../convex/features/listingInputs";
+import {
+  assessNewCardListing,
+  setDescriptionForTitles,
+  type ListingSetContext,
+} from "../../convex/features/listingInputs";
 import MoveSetToBrandControl from "./MoveSetToBrandControl";
 import MakeParallelControl, { type ReshapeStep } from "./MakeParallelControl";
 import MakeInsertControl from "./MakeInsertControl";
@@ -329,6 +334,37 @@ export default function SetAttributesPanel({
   const setManufacturerSlViaAllBrands = useMutation(
     api.brandView.setManufacturerSlViaAllBrands,
   );
+  const setParallelsNameThemselves = useMutation(
+    api.selectorOptions.setSelectorOptionParallelsNameThemselves,
+  );
+  // NEO-619 — "Parallels name themselves" belongs to an insert-role row (an
+  // insert under an Insert type, read through `derivedVariantFlags`: the
+  // variant type's KIND, never its name) and only means something once a
+  // parallel hangs beneath it. The parallels are read with the SAME reference
+  // and args (key order included) the set builder's Sub-Variants column
+  // subscribes to (`components/modules/SetSelector.tsx`), so the Convex client
+  // holds one subscription for both; skipped on every other row.
+  const isInsertRoleRow =
+    row?.level === "insert" &&
+    derivedVariantFlags(
+      "insert",
+      chain?.find((c) => c.level === "variantType"),
+    )?.isInsert === true;
+  const parallelRowsBeneath = useQuery(
+    api.selectorOptions.getSelectorOptions,
+    isInsertRoleRow && row
+      ? { level: "parallel", parentId: row._id }
+      : "skip",
+  );
+  // NEO-619 (a11y 2.4.3) — the row the switch was last shown for. Once shown,
+  // the cell stays mounted until the selected row changes: pressing it off
+  // with no parallel left, or the last parallel going, must not unmount the
+  // button that holds focus (focus would fall to the page). Keyed by id, so a
+  // different row starts unlatched with no reset step.
+  const [parallelsSwitchLatchedFor, setParallelsSwitchLatchedFor] =
+    useState<Id<"selectorOptions"> | null>(null);
+  // NEO-426 — the sport row's "No teams in this sport" toggle.
+  const setTeamlessSport = useMutation(api.sportTeamless.setTeamlessSport);
 
   // The row's level decides the default (NEO-496: open at the set level). The
   // row may still be loading on the first render; the effect below settles
@@ -535,6 +571,26 @@ export default function SetAttributesPanel({
   // this row's cards get without one, for the field's placeholder.
   const showShortNameRow = showsShortNameRow(leafLevel, row.value);
   const listingShortName = row.metadata?.listingShortName;
+  // NEO-619 — shown on an insert-role row with a parallel beneath it. A switch
+  // already on stays reachable with none left, so it can always be turned off:
+  // a later parallel would otherwise inherit a switch nobody can see.
+  const parallelsNameThemselvesOn = row.metadata?.parallelsNameThemselves === true;
+  const parallelsSwitchWanted =
+    isInsertRoleRow &&
+    (parallelsNameThemselvesOn || (parallelRowsBeneath?.length ?? 0) >= 1);
+  if (parallelsSwitchWanted && parallelsSwitchLatchedFor !== selectorOptionId) {
+    setParallelsSwitchLatchedFor(selectorOptionId);
+  }
+  const showParallelsNameThemselves =
+    isInsertRoleRow &&
+    (parallelsSwitchWanted || parallelsSwitchLatchedFor === selectorOptionId);
+  // The title a card on the first parallel beneath would be born with, the
+  // switch applied: shown only while the switch is on (it describes that state).
+  const firstParallelBeneath = parallelRowsBeneath?.[0];
+  const parallelsSampleTitle =
+    parallelsNameThemselvesOn && firstParallelBeneath
+      ? parallelSampleTitleFor(row, chain, features, firstParallelBeneath)
+      : undefined;
   const titlesDescription = showShortNameRow
     ? setNameInTitlesFor(row, chain, features)
     : undefined;
@@ -825,6 +881,29 @@ export default function SetAttributesPanel({
   };
 
   /**
+   * NEO-426 — the sport row's "No teams in this sport" toggle. The toast
+   * waits for the server, like the SportLots link's: the flag changes how
+   * every later save of this sport's cards defaults, so the toast should mean
+   * it happened. Cards already saved keep whatever team (or No team) they
+   * carry.
+   */
+  const handleToggleTeamlessSport = async (teamless: boolean) => {
+    try {
+      await setTeamlessSport({ sportId: selectorOptionId, teamless });
+      // Names the sport the operator just flagged; "this sport's people"
+      // covers a row whose name has not loaded yet.
+      const people = row.value.trim() ? `${row.value.trim()} people` : "this sport's people";
+      showToast(
+        teamless
+          ? `Marked — new cards of ${people} save with ${NO_TEAM_TEXT}`
+          : `Cleared — new cards of ${people} ask for a team again`,
+      );
+    } catch (e) {
+      showFailedToast(userFacingMessage(e, `Could not save ${SPORT_NO_TEAMS_TEXT}`));
+    }
+  };
+
+  /**
    * NEO-237 — the via-All-Brands toggle's write. The toast waits for the
    * server like the Brand row's does: this one writes (or retires) a
    * marketplace slot, and the confirmation should mean it happened.
@@ -841,6 +920,27 @@ export default function SetAttributesPanel({
       showFailedToast(
         slViaAllBrandsRefusal(e) ??
           userFacingMessage(e, "Could not change the SportLots link"),
+      );
+    }
+  };
+
+  /**
+   * NEO-619 — the "Parallels name themselves" switch's write. The toast waits
+   * for the server like every row's (NEO-412) and says what the switch does
+   * not do: it leaves existing titles alone, and Regenerate reads it.
+   */
+  const handleToggleParallelsNameThemselves = async (on: boolean) => {
+    const insertName = row.value;
+    try {
+      await setParallelsNameThemselves({ id: selectorOptionId, on });
+      showToast(
+        on
+          ? `Parallel titles skip “${insertName}” · Regenerate each card to retitle it`
+          : `Parallel titles carry “${insertName}” again · Regenerate each card to retitle it`,
+      );
+    } catch (e) {
+      showFailedToast(
+        userFacingMessage(e, "Could not change how parallels are titled"),
       );
     }
   };
@@ -1280,6 +1380,18 @@ export default function SetAttributesPanel({
           )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {/* NEO-426: the one attribute a SPORT row carries here — whether
+                its players have teams at all. Off by default; on, a new card
+                whose every player calls this sport home saves with No team
+                unless something names one. Never a block: a picked team still
+                wins. */}
+            {leafLevel === "sport" && (
+              <SportNoTeamsToggle
+                key={`sport-no-teams-${selectorOptionId}`}
+                on={isTeamlessSport(row)}
+                onToggle={handleToggleTeamlessSport}
+              />
+            )}
             {/* NEO-237: first cell on a brand row, for the same reason the
                 card prefix is first on a variant row — it is the one fact
                 here that decides which SETS are this brand's. */}
@@ -1322,6 +1434,24 @@ export default function SetAttributesPanel({
                 value={listingShortName}
                 inherited={titlesDescription}
                 onSave={handleSaveListingShortName}
+              />
+            )}
+            {/* NEO-619: an insert's one switch for every parallel beneath it,
+                beside the "Set name in titles" it changes the reading of. */}
+            {showParallelsNameThemselves && (
+              <PressedToggleCell
+                key={`parallels-name-themselves-${selectorOptionId}`}
+                eyebrow="Titles"
+                cellLabel="Set feature Parallel titles"
+                text={parallelTitlesSkipText(row.value)}
+                on={parallelsNameThemselvesOn}
+                disabledReason={null}
+                note={
+                  parallelsSampleTitle !== undefined && firstParallelBeneath
+                    ? `${firstParallelBeneath.value} cards read: ${parallelsSampleTitle}`
+                    : undefined
+                }
+                onToggle={handleToggleParallelsNameThemselves}
               />
             )}
             {/* NEO-345: at the levels cards hang from — how this leaf's
@@ -1378,12 +1508,7 @@ const SHORT_NAME_FEATURE: ExpectedFeature = {
  */
 function setNameInTitlesFor(
   row: { _id: string; level: string; value: string },
-  chain: ReadonlyArray<{
-    _id: string;
-    level: string;
-    value: string;
-    metadata?: { listingShortName?: string; isBrandUnknown?: boolean } | null;
-  }>,
+  chain: ReadonlyArray<TitleChainRowDoc>,
   features: Record<string, string>,
 ): string | undefined {
   // The row's own value is what the field shows; the placeholder is what the
@@ -1394,9 +1519,33 @@ function setNameInTitlesFor(
     ...above.map(asChainRow),
   ]);
   if (facts.listingShortName) return facts.listingShortName;
+  const description = setDescriptionForTitles(
+    titleSetContextFor(chain, features, facts),
+  );
+  return description || undefined;
+}
+
+/** A selectorOptions row as the title helpers here read it. */
+type TitleChainRowDoc = {
+  _id: string;
+  level: string;
+  value: string;
+  metadata?: {
+    listingShortName?: string;
+    parallelsNameThemselves?: boolean;
+    isBrandUnknown?: boolean;
+  } | null;
+};
+
+/** The builder's set context for a chain (root first) and the facts read off it. */
+function titleSetContextFor(
+  chain: ReadonlyArray<TitleChainRowDoc>,
+  features: Record<string, string>,
+  facts: ReturnType<typeof titleChainFacts>,
+): ListingSetContext {
   const at = (level: string) => chain.find((c) => c.level === level);
   const manufacturer = at("manufacturer");
-  const description = setDescriptionForTitles({
+  return {
     sportValue: at("sport")?.value ?? "",
     setNameValue: at("setName")?.value,
     ...(manufacturer?.metadata?.isBrandUnknown ? { manufacturerBrandUnknown: true } : {}),
@@ -1406,19 +1555,57 @@ function setNameInTitlesFor(
       ...features,
     },
     ...facts,
-  });
-  return description || undefined;
+  };
+}
+
+/** Stands in for the player's name in the sample title. */
+const SAMPLE_TITLE_PLAYER = "<Player>";
+
+/**
+ * NEO-619 — the title the builder would write for a card on `parallel` (the
+ * first parallel under the insert `row`), with the insert's "Parallels name
+ * themselves" read off `row` as every title path reads it. It is the real
+ * builder (`assessNewCardListing`: the insert, Regenerate and the parallel
+ * build run the same function) fed the real chain facts (`titleChainFacts`),
+ * with a placeholder player and no card number, since no real card is read.
+ * `chain` is root first and ends at (or passes through) `row`.
+ */
+function parallelSampleTitleFor(
+  row: TitleChainRowDoc,
+  chain: ReadonlyArray<TitleChainRowDoc>,
+  features: Record<string, string>,
+  parallel: TitleChainRowDoc & { features?: Record<string, string> | null },
+): string {
+  const above = chain.filter((c) => c._id !== row._id).reverse();
+  const facts = titleChainFacts([
+    asChainRow(parallel),
+    asChainRow(row),
+    ...above.map(asChainRow),
+  ]);
+  const set = titleSetContextFor(chain, { ...features, ...(parallel.features ?? {}) }, facts);
+  return assessNewCardListing({ cardNumber: "" }, set, {
+    playerNames: [SAMPLE_TITLE_PLAYER],
+  }).assessment.title;
 }
 
 function asChainRow(row: {
   level: string;
   value: string;
-  metadata?: { listingShortName?: string } | null;
+  metadata?: { listingShortName?: string; parallelsNameThemselves?: boolean } | null;
 }) {
+  const listingShortName = row.metadata?.listingShortName;
+  const parallelsNameThemselves = row.metadata?.parallelsNameThemselves;
   return {
     level: row.level,
     value: row.value,
-    ...(row.metadata?.listingShortName ? { metadata: { listingShortName: row.metadata.listingShortName } } : {}),
+    ...(listingShortName || parallelsNameThemselves
+      ? {
+          metadata: {
+            ...(listingShortName ? { listingShortName } : {}),
+            ...(parallelsNameThemselves ? { parallelsNameThemselves } : {}),
+          },
+        }
+      : {}),
   };
 }
 
@@ -1686,8 +1873,67 @@ function SlViaAllBrandsToggle({
   disabledReason: string | null;
   onToggle: (enabled: boolean) => Promise<unknown>;
 }) {
+  return (
+    <PressedToggleCell
+      eyebrow="SportLots"
+      cellLabel="Set feature SportLots link"
+      fieldKey="btn-sl-via-all-brands"
+      text={SL_VIA_ALL_BRANDS_TOGGLE_TEXT}
+      on={on}
+      disabledReason={disabledReason}
+      onToggle={onToggle}
+    />
+  );
+}
+
+/**
+ * NEO-619 — the insert switch's visible sentence, naming the insert it
+ * speaks for (the row's own value, in the curly quotes NB copy uses).
+ */
+export function parallelTitlesSkipText(insertName: string): string {
+  return `Parallel titles skip “${insertName}”`;
+}
+
+/**
+ * The Attributes grid's pressed-toggle cell: an eyebrow over one pressed
+ * button, the cell chrome its neighbours wear. The via-All-Brands link
+ * (NEO-237) and the insert's "Parallels name themselves" (NEO-619) are both
+ * this cell, so the two cannot drift apart.
+ *
+ * `aria-pressed` carries the state; a busy write or a `disabledReason` makes
+ * it `aria-disabled` (never native `disabled`, so a keyboard user can reach it
+ * and hear why), and the reason is printed under it.
+ */
+function PressedToggleCell({
+  eyebrow,
+  cellLabel,
+  fieldKey,
+  text,
+  on,
+  disabledReason,
+  note,
+  onToggle,
+}: {
+  eyebrow: string;
+  /** The cell's own `aria-label` (`Set feature …`). */
+  cellLabel: string;
+  /** Legacy marker-class key for the button; omit it for a new control. */
+  fieldKey?: string;
+  /** The pressed button's visible sentence, and so its accessible name. */
+  text: string;
+  on: boolean;
+  /** Non-null: shown, unpressable, with this line under it. */
+  disabledReason: string | null;
+  /**
+   * A line that says what the pressed state comes to, under the button and
+   * read with it. Passed only while it describes something; wraps, never clips.
+   */
+  note?: string;
+  onToggle: (next: boolean) => Promise<unknown>;
+}) {
   const fieldClass = useFieldTestClass();
   const reasonId = useId();
+  const noteId = useId();
   const [busy, setBusy] = useState(false);
   const unavailable = busy || disabledReason !== null;
 
@@ -1704,14 +1950,14 @@ function SlViaAllBrandsToggle({
   return (
     <div
       className="flex flex-col gap-1 p-2 rounded border text-xs border-rule-strong bg-raised-deep/30"
-      aria-label="Set feature SportLots link"
+      aria-label={cellLabel}
     >
       <span className="text-[10px] uppercase tracking-wide text-ink-3">
-        SportLots
+        {eyebrow}
       </span>
       <button
         type="button"
-        className={`${fieldClass("btn-sl-via-all-brands")} w-full text-left flex items-start gap-2 p-2 rounded-md border text-xs transition-colors focus-outline ${
+        className={`${fieldKey ? `${fieldClass(fieldKey)} ` : ""}w-full text-left flex items-start gap-2 p-2 rounded-md border text-xs transition-colors focus-outline ${
           on
             ? "border-neon-green-text bg-neon-green/10 text-ink"
             : // gray-500: the 3:1 boundary tone on this panel's dark surface
@@ -1720,7 +1966,11 @@ function SlViaAllBrandsToggle({
         } ${unavailable ? "opacity-60 cursor-not-allowed hover:border-control" : ""}`}
         aria-pressed={on}
         aria-disabled={unavailable || undefined}
-        aria-describedby={disabledReason ? reasonId : undefined}
+        aria-describedby={
+          [disabledReason ? reasonId : null, note ? noteId : null]
+            .filter(Boolean)
+            .join(" ") || undefined
+        }
         onClick={() => void toggle()}
         onKeyDown={(e) => activateOnEnter(e, () => void toggle(), unavailable)}
       >
@@ -1730,8 +1980,13 @@ function SlViaAllBrandsToggle({
             on ? "border-neon-green-text bg-neon-green" : "border-control"
           }`}
         />
-        <span>{SL_VIA_ALL_BRANDS_TOGGLE_TEXT}</span>
+        <span className="wrap-anywhere">{text}</span>
       </button>
+      {note && (
+        <span id={noteId} className="text-[11px] text-ink-2 wrap-anywhere">
+          {note}
+        </span>
+      )}
       {disabledReason && (
         // Next to the control it describes, not only in a tooltip: a
         // disabled control that keeps its reason on hover asks a keyboard
@@ -1740,6 +1995,80 @@ function SlViaAllBrandsToggle({
           {disabledReason}
         </span>
       )}
+    </div>
+  );
+}
+
+/** NEO-426 — the control's visible words. */
+export const SPORT_NO_TEAMS_TEXT = "No teams in this sport";
+/**
+ * NEO-426 — its cell's name: the `Set feature …` label every Attributes cell
+ * wears. Distinct from "Set feature Team" (the team default's cell).
+ */
+export const SPORT_NO_TEAMS_LABEL = `Set feature ${SPORT_NO_TEAMS_TEXT}`;
+
+/**
+ * NEO-426 — "No teams in this sport", a pressed toggle in a sport row's
+ * Attributes grid, in the same face as `SlViaAllBrandsToggle` (a box that
+ * fills when on, `aria-pressed`, the column's other yes/no decisions). Label
+ * only: the words say what it does, and nothing sits under it.
+ *
+ * The flag is NB's own fact about the sport row (read through
+ * `isTeamlessSport`, never the sport's name). It moves a default and nothing
+ * else: the wizard stops asking about new cards whose every player calls this
+ * sport home, and the commit files them as No team. A team the operator
+ * picks, now or later, is kept.
+ *
+ * While the write is in flight it stays in the tab order (`aria-disabled`,
+ * never native `disabled`) and the box shows the value that was asked for, so
+ * it never flickers back and forth.
+ */
+function SportNoTeamsToggle({
+  on,
+  onToggle,
+}: {
+  on: boolean;
+  onToggle: (teamless: boolean) => Promise<unknown>;
+}) {
+  const fieldClass = useFieldTestClass();
+  const [pending, setPending] = useState<boolean | null>(null);
+  const shown = pending ?? on;
+
+  const toggle = async () => {
+    if (pending !== null) return;
+    setPending(!on);
+    try {
+      await onToggle(!on);
+    } finally {
+      setPending(null);
+    }
+  };
+
+  return (
+    <div
+      className="flex flex-col p-2 rounded border text-xs border-rule-strong bg-raised-deep/30"
+      aria-label={SPORT_NO_TEAMS_LABEL}
+    >
+      <button
+        type="button"
+        className={`${fieldClass("btn-sport-no-teams")} w-full text-left flex items-start gap-2 p-2 rounded-md border text-xs transition-colors focus-outline ${
+          shown
+            ? "border-neon-green-text bg-neon-green/10 text-ink"
+            : "border-control text-ink-2 hover:border-neon-green-text"
+        } ${pending !== null ? "opacity-60 cursor-not-allowed hover:border-control" : ""}`}
+        aria-pressed={shown}
+        aria-disabled={pending !== null || undefined}
+        onClick={() => void toggle()}
+        onKeyDown={(e) => activateOnEnter(e, () => void toggle(), pending !== null)}
+      >
+        <span
+          aria-hidden="true"
+          className={`mt-0.5 h-3.5 w-3.5 shrink-0 rounded-sm border ${
+            shown ? "border-neon-green-text bg-neon-green" : "border-control"
+          }`}
+        />
+        <span>{SPORT_NO_TEAMS_TEXT}</span>
+      </button>
     </div>
   );
 }

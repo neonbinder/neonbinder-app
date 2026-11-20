@@ -355,13 +355,13 @@ export const DEMO_PICK_LINES: readonly SaleLine[] = [
   line(null, null, O5, {
     listingTitle: listedTitle(NABERS_LISTED),
     listed: NABERS_LISTED,
-    problem: "NB couldn't match this line. Check the order's photo.",
+    problem: "Neon Binder couldn't match this line. Check the sales platform.",
   }),
 
   // Can't find it: NB could not tie these to one card.
   line(null, null, O3, {
     listingTitle: "2026 Topps Heritage Clubhouse Collection Relic Bobby Witt Jr. #CCR-BW",
-    problem: "NB has no 2026 Topps Heritage checklist yet.",
+    problem: "Neon Binder has no 2026 Topps Heritage checklist yet.",
   }),
   line(null, null, O7, {
     listingTitle: "2025 Bowman Chrome Prospects #BCP-77 Auto",

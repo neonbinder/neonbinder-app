@@ -4,6 +4,8 @@ import {
   carriedTitleRest,
   storedTitleFails,
 } from "./carriedTitle";
+import { listingInputsForCard } from "./listingInputs";
+import { titleChainFacts, type TitleChainRow } from "../listingShortName";
 import {
   assessListingTitle,
   titleDescription,
@@ -235,6 +237,35 @@ describe("assessParallelCopyTitle", () => {
     expect(outcome.failing).toBe(false);
   });
 
+  test("NEO-618 step 2: a Tidy Up source that fits still heads the carried rest with the box when the box-headed title fits", () => {
+    // A box long enough that its own builder title still gives up the Angels.
+    const box = "Anime Kanji Gold Refractor Sapphire Orange Wave";
+    const inputs = parallel("Kanji Gold Refractor", 50, { setShortName: box });
+    expect(assessListingTitle({ ...inputs, setShortName: undefined })).toMatchObject({ fits: true, tidyUp: true });
+    expect(assessListingTitle(inputs)).toMatchObject({ fits: true, tidyUp: true, shortNameUsed: true });
+    // The builder's own description would also fit with the rest.
+    expect(`${titleDescription(inputs)} Trout Halos /50`.length).toBeLessThanOrEqual(80);
+    const outcome = assessParallelCopyTitle(inputs, "Trout Halos");
+    expect(outcome.title).toBe(`${box} Trout Halos /50`);
+    expect(outcome).toMatchObject({ carried: true, fits: true, tidyUp: false, failing: false });
+  });
+
+  test("NEO-618 step 2: a box-headed title over 80 leaves the builder's description heading the rest", () => {
+    const box = "Anime Kanji Gold Refractor Sapphire Orange Wave Padparadscha Superfractor Edition";
+    const inputs = parallel("Kanji Gold Refractor", 50, { setShortName: box });
+    expect(assessListingTitle({ ...inputs, setShortName: undefined })).toMatchObject({ fits: true, tidyUp: true });
+    expect(`${box} Trout Halos /50`.length).toBeGreaterThan(80);
+    const outcome = assessParallelCopyTitle(inputs, "Trout Halos");
+    expect(outcome.title).toBe("2024 Topps Chrome Anime Kanji Gold Refractor Trout Halos /50");
+    expect(outcome.carried).toBe(true);
+    expect(outcome.failing).toBe(false);
+  });
+
+  test("NEO-618 step 2: a blank box leaves the builder's description heading the rest", () => {
+    const outcome = assessParallelCopyTitle(parallel("Kanji Gold Refractor", 50, { setShortName: "   " }), "Trout Halos");
+    expect(outcome.title).toBe("2024 Topps Chrome Anime Kanji Gold Refractor Trout Halos /50");
+  });
+
   test("step 2 re-heads with the box text when the description runs long", () => {
     // A box the builder will not take: its own title loses Mike as well.
     const box = "Anime Kanji Orange Wave Refractor Sapphire Padparadscha Superfractor";
@@ -323,5 +354,69 @@ describe("storedTitleFails", () => {
     expect(storedTitleFails({ listingTitle: "short", listingTitleTruncated: true })).toBe(true);
     expect(storedTitleFails({ listingTitle: "short", listingTitleTruncated: false })).toBe(false);
     expect(storedTitleFails({})).toBe(false);
+  });
+});
+
+/**
+ * NEO-619 — "Parallels name themselves": the insert card's hand edit is
+ * re-headed onto a switched parallel with the parallel's own description, so
+ * the insert's name does not travel with it. Invented words throughout.
+ */
+describe("NEO-619: a hand edit re-headed onto a parallel that names itself", () => {
+  const row = (level: string, value: string, metadata?: TitleChainRow["metadata"]): TitleChainRow => ({
+    level,
+    value,
+    ...(metadata ? { metadata } : {}),
+  });
+  const inputsFor = (chain: TitleChainRow[], printRun?: number) =>
+    listingInputsForCard(
+      { cardNumber: "7", ...(printRun ? { printRun } : {}) },
+      {
+        sportValue: "Baseball",
+        setNameValue: "Pulse",
+        inheritedFeatures: { manufacturer: "Leaf", season: "2026" },
+        ...titleChainFacts(chain),
+      },
+      { playerNames: ["Bartholomew Carlon"], teamNames: ["Long Island Sea Wolves"] },
+    );
+  const insertChain = (on: boolean) => [
+    row("insert", "Zorbo Special Purple", on ? { parallelsNameThemselves: true } : undefined),
+    row("variantType", "Inserts"),
+    row("setName", "Pulse"),
+  ];
+  const goldChain = (on: boolean) => [row("parallel", "Zorbo Special Gold"), ...insertChain(on)];
+
+  // The operator's hand edit on the insert card: the description, then their words.
+  const handEdit = (source: ListingCardInputs) => `${titleDescription(source)} Carlon Wolves`;
+
+  test("the Purple is dropped and the rest is kept", () => {
+    const source = inputsFor(insertChain(true));
+    const carried = carriedTitleRest({
+      sourceTitle: handEdit(source),
+      sourceFlagged: false,
+      sourceInputs: source,
+    });
+    expect(carried).toBe("Carlon Wolves");
+
+    const target = inputsFor(goldChain(true), 25);
+    // The fixture is what it claims: the builder needs Tidy Up, so step 2 runs.
+    expect(assessListingTitle(target).tidyUp).toBe(true);
+    const outcome = assessParallelCopyTitle(target, carried);
+    expect(outcome.carried).toBe(true);
+    expect(outcome.title).toContain("Zorbo Special Gold");
+    expect(outcome.title).not.toContain("Purple");
+    expect(outcome.title.endsWith(" Carlon Wolves /25")).toBe(true);
+  });
+
+  test("switch off: the same re-heading keeps the insert's name in the description", () => {
+    const source = inputsFor(insertChain(false));
+    const carried = carriedTitleRest({
+      sourceTitle: handEdit(source),
+      sourceFlagged: false,
+      sourceInputs: source,
+    });
+    const outcome = assessParallelCopyTitle(inputsFor(goldChain(false), 25), carried);
+    expect(outcome.carried).toBe(true);
+    expect(outcome.title).toContain("Purple");
   });
 });

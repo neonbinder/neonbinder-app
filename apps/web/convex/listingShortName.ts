@@ -8,6 +8,9 @@
  * call `normalizeListingShortName`, so they cannot apply two rules (the
  * NEO-291 finding `cardNumberPrefix.ts` exists for).
  *
+ * NEO-619 — the chain reading also honours the insert's "Parallels name
+ * themselves" switch, so the four walks below agree on it for free.
+ *
  * Four walks read a chain for a new card's title — the commit prelude,
  * `findAncestorLabels` (hand-added cards and Regenerate), `titleSetFacts` (the
  * pre-save Card titles step) and the parallel build — and all four hand the
@@ -77,6 +80,8 @@ export type TitleChainRow = {
   value: string;
   metadata?: {
     listingShortName?: string;
+    /** NEO-619 — read off the chain's insert-role row (see `titleChainFacts`). */
+    parallelsNameThemselves?: boolean;
   };
 };
 
@@ -119,6 +124,8 @@ export type TitleChainFacts = {
    * nearest self-or-ancestor value, up to the setName row, with the insert's
    * name appended when the value sits above the insert row and the parallel
    * leaf's name appended when it sits above the leaf (see `titleChainFacts`).
+   * NEO-619 — with "Parallels name themselves" on, a parallel leaf skips the
+   * insert row's own box and appends only the parallel's name.
    */
   listingShortName?: string;
   /**
@@ -128,6 +135,9 @@ export type TitleChainFacts = {
    * of its own); a card sitting directly on a variant type that is not Base
    * is {the type's value} (Base included: the title says it and cuts it first).
    * Omitted when the chain has no level.
+   * NEO-619 — a parallel leaf under an insert-role row with "Parallels name
+   * themselves" on leaves that insert OUT: the parallel is the top level,
+   * keeps its "Parallel" type name, and is said whole.
    * Unlike `insertNameValue` / `parallelLeafValue` (kept: the eBay aspects
    * read them), no NB role gates it: a "Proof" type's rows name their cards.
    */
@@ -179,6 +189,21 @@ export function pickTitleChainFacts(source: TitleChainFacts): TitleChainFacts {
  *
  * The variant type is read off the chain itself — every caller walks up to
  * the setName row, so it is already in hand and costs no read.
+ *
+ * NEO-619 — "Parallels name themselves" (`metadata.parallelsNameThemselves`
+ * on the insert-role row). For a PARALLEL leaf beneath such an insert:
+ *  - the insert's level is left out of `titleLevels`, so the parallel is the
+ *    top level, keeps its "Parallel" type name and is said whole (no
+ *    `parallelAfterInsert` trimming: there is no insert above it to share
+ *    words with);
+ *  - the insert row's own `listingShortName` is skipped when finding the
+ *    nearest box, so the next box up applies with only the parallel's name
+ *    appended; a box on the parallel row itself still wins verbatim;
+ *  - `insertNameValue` / `insertIsRole` are unchanged: the eBay Insert Set
+ *    aspect is dropped by its reader (`ebayCardFacts`), which asks the same
+ *    `parallelsNameThemselvesApplies`.
+ * The insert's own cards (leaf = the insert row or a card on it) are not
+ * touched. Roles only: the insert role is read from the variant type's kind.
  */
 export function titleChainFacts(
   leafFirst: ReadonlyArray<TitleChainRow | null | undefined>,
@@ -191,6 +216,10 @@ export function titleChainFacts(
   }
   const variantType = chain.find((row) => row.level === "variantType");
 
+  // NEO-619 — "Parallels name themselves": a parallel leaf under an insert-role
+  // row carrying the switch leaves that insert out of its title (below).
+  const parallelsNameThemselves = parallelsNameThemselvesApplies(chain);
+
   const facts: TitleChainFacts = {};
   let insertIndex: number | undefined;
   let shortIndex: number | undefined;
@@ -202,7 +231,11 @@ export function titleChainFacts(
     if (row.level === "parallel") {
       levels.push({ index, name: row.value, typeName: SUB_VARIANT_TYPE_NAME });
     } else if (row.level === "insert") {
-      levels.push({ index, name: row.value, ...(typeName ? { typeName } : {}) });
+      // NEO-619 — the switch drops the insert's level from the title: the
+      // parallel becomes the top level and says its own name.
+      if (!parallelsNameThemselves) {
+        levels.push({ index, name: row.value, ...(typeName ? { typeName } : {}) });
+      }
     } else if (row.level === "variantType" && index === 0) {
       // A card sitting directly on a variant type. Base included (NEO-609, Q1:
       // the title says "Base" and cuts it first): flagged by the type's KIND.
@@ -223,7 +256,13 @@ export function titleChainFacts(
         facts.insertIsRole = true;
       }
     }
-    const value = row.metadata?.listingShortName?.trim();
+    // NEO-619 — with the switch on, the insert's own box is not the parallel's
+    // box (it names the insert, which the parallel no longer says): the next
+    // box up applies, with only the parallel's name appended.
+    const value =
+      parallelsNameThemselves && row.level === "insert"
+        ? undefined
+        : row.metadata?.listingShortName?.trim();
     if (value && short === undefined) {
       short = value;
       shortIndex = index;
@@ -262,6 +301,39 @@ export function titleChainFacts(
     }));
   }
   return facts;
+}
+
+/**
+ * NEO-619 — does "Parallels name themselves" apply to this chain (LEAF
+ * FIRST, as `titleChainFacts` takes it)? The leaf is a parallel-level row (a
+ * sub-variant), and the chain's insert row is an insert-role row (its variant
+ * type's KIND is Insert, `derivedVariantFlags`, never its name) with the
+ * switch on. A chain whose leaf is the insert itself, a card on the insert, or
+ * an insert-level row under a Parallel type is not touched: the insert's own
+ * cards still name the insert.
+ *
+ * Exported so every reader of the switch asks this one question:
+ * `titleChainFacts` (the title) and `ebayCardFacts` (the Insert Set aspect,
+ * dropped when it applies) cannot disagree. Rows past the first `setName` row
+ * are ignored, as in `titleChainFacts`.
+ */
+export function parallelsNameThemselvesApplies(
+  leafFirst: ReadonlyArray<TitleChainRow | null | undefined>,
+): boolean {
+  const chain: TitleChainRow[] = [];
+  for (const row of leafFirst) {
+    if (!row) break;
+    chain.push(row);
+    if (row.level === "setName") break;
+  }
+  if (chain[0]?.level !== "parallel") return false;
+  const insertRow = chain.find((row) => row.level === "insert");
+  if (!insertRow) return false;
+  const variantType = chain.find((row) => row.level === "variantType");
+  return (
+    derivedVariantFlags("insert", variantType)?.isInsert === true &&
+    insertRow.metadata?.parallelsNameThemselves === true
+  );
 }
 
 /**

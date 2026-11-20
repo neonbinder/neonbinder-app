@@ -83,9 +83,9 @@ import {
   autographChoice,
   autographChoices,
   confirmSaveButton,
-  expectStepLeft,
+  expectPostNameStepLeft,
+  expectWizardStep,
   personSkip,
-  readStep,
   reviewWizard,
   walkToAutographStep,
 } from "../../support/wizard";
@@ -229,6 +229,7 @@ test(
 
     await walkToAutographStep(page);
     await expect(wizard.getByText(AUTOGRAPH_STEP_SUBTITLE, { exact: true })).toBeVisible();
+    await expectWizardStep(page, AUTOGRAPH_STEP_SUBTITLE);
     const onCard = autographChoice(page, "On card");
     const sticker = autographChoice(page, "Sticker");
     await expect(autographChoices(page)).toBeVisible();
@@ -256,12 +257,12 @@ test(
     await expect(next).toBeDisabled();
     await expectAccessible(page, { within: wizard, label: "Autographed cards step, Next pressed with nothing picked" });
 
-    // "On card": the pick releases Next, and Next moves the counter on.
+    // "On card": the pick releases Next, and Next moves the wizard on to a later
+    // step (Card titles or Save), read off the progress bar (NEO-467).
     await answerAutographStep(page, "On card");
     await expect(next).toBeEnabled();
-    const { x } = await readStep(page);
     await next.click();
-    await expectStepLeft(page, x);
+    await expectPostNameStepLeft(page, AUTOGRAPH_STEP_SUBTITLE);
     await expect(autographChoices(page)).toBeHidden();
     // Titles (when a title needs a look) and Save: the answer travels with the commit.
     await advanceToSave(page);

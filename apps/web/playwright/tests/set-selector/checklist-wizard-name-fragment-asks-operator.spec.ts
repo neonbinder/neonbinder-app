@@ -32,13 +32,15 @@ import { addPlayerByHand, expectPlayersLoaded, playersCounter, PLAYERS_MATCHES }
 import { customSport, drillToCustom, setBuilderReady } from "../../support/set-builder";
 import {
   cancelAndDiscard,
-  expectStepLeft,
+  expectDecidedCount,
+  expectNameStepLeft,
+  expectNothingDecided,
   fetchOneMarketplaceSetChecklistToWizard,
   personSkip,
   readBackDecision,
-  readStep,
+  readDecidedCount,
+  readNameStep,
   reviewWizard,
-  stepCounter,
   walkToPlayerRow,
 } from "../../support/wizard";
 import { escapeRe } from "../../support/cards";
@@ -66,7 +68,8 @@ test(
     // ── SETUP: the set's live fetch, the wizard open with nothing decided ──
     await fetchOneMarketplaceSetChecklistToWizard(page, env, { set: SET, checklist: CHECKLISTS.fortWorthFire });
     const wizard = reviewWizard(page);
-    await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+    // Nothing decided: a name step is up and there is no "Decided (N)" history (NEO-467).
+    await expectNothingDecided(page);
 
     // ── STEP 1: walk to the one-word card. Every other name is a SKIP (decided
     // and thrown away with the batch). R2: if the name is not staged, this
@@ -75,9 +78,9 @@ test(
     for (let i = 0; i < 20; i++) {
       await walkToPlayerRow(page);
       if (await scorchSkip.isVisible()) break;
-      const { x } = await readStep(page);
+      const row = await readNameStep(page);
       await personSkip(page).click();
-      await expectStepLeft(page, x);
+      await expectNameStepLeft(page, row);
     }
     await expect(scorchSkip, `${ONE_WORD} is not staged on ${SET}: re-measure the set`).toBeVisible();
 
@@ -106,18 +109,25 @@ test(
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, one-word name that is part of a fuller name" });
 
     // ── STEP 4: link the fuller player; one decision, and the read-back says who ──
-    const { x: step } = await readStep(page);
+    // NEO-467: no step count, so "one decision" is the wizard leaving this row
+    // and the names' "Decided (N)" history growing by exactly one.
+    const decidedBefore = await readDecidedCount(page);
+    const scorchRow = `Skip ${ONE_WORD} — not a person`;
     await linkFuller.click();
-    await expect(stepCounter(page)).toHaveText(new RegExp(`^Step ${step + 1} of [0-9]+$`));
+    await expectNameStepLeft(page, scorchRow);
+    await expectDecidedCount(page, decidedBefore + 1);
     const decided = await readBackDecision(page, `Linked to ${fuller}`);
 
     // ── STEP 5: change it; the question is back and the one-name answer is
     // recorded ──
     await decided.getByRole("button", { name: "Change decision" }).click();
     await expect(question).toBeVisible();
-    await expect(stepCounter(page)).toHaveText(new RegExp(`^Step ${step} of [0-9]+$`));
+    // The link was taken back: this row is up again and undecided.
+    await expect(scorchSkip).toBeVisible();
+    await expectDecidedCount(page, decidedBefore);
     await oneName.click();
-    await expect(stepCounter(page)).toHaveText(new RegExp(`^Step ${step + 1} of [0-9]+$`));
+    await expectNameStepLeft(page, scorchRow);
+    await expectDecidedCount(page, decidedBefore + 1);
     await readBackDecision(page, "Added as new");
 
     // ── STEP 6: leave without writing anything ──

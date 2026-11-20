@@ -604,8 +604,9 @@ async function writeCandidatePage(
  * separator: real team names and aliases carry one ("Korea, South", "Scranton,
  * Wilkes-Barre RailRiders"). So when the raw string matches ANY existing team
  * row in the sport — by name or alias, through `resolveTeamForSetYear`, the
- * same resolution the review gate (`teams.findByNameAndSport`) and the commit
- * prelude use — the card carries that one string. Exactly one row: both later
+ * year-only reading of the card rule (`resolveCardTeamName`) that the review
+ * gate and the commit prelude apply with the cards' players — the card carries
+ * that one string. Exactly one row: both later
  * passes find it by that string. Several rows the year cannot separate: the
  * gate asks the operator which era, as it does for any name. Only when the
  * whole string matches NOTHING does the card carry the split parts; any part

@@ -1098,14 +1098,31 @@ describe("NEO-535 — the box (\"Set name in titles\") replaces the whole descri
     expect(a.coreFits).toBe(false);
   });
 
-  test("never on a title that fits with full names, even when a real token is left out", () => {
+  test("NEO-618: a title that fits but left a real token out (the team) is built from the box when the box fits", () => {
     const a = assessListingTitle(dropsTeamOnly);
-    expect(a.shortNameUsed).toBeUndefined();
-    // NEO-609: a whole team cut (row 12) is a Tidy Up cut, so the card is on
-    // the Card titles step even though it fits and the box was not needed.
-    expect(a.tidyUp).toBe(true);
+    // NEO-609: a whole team cut (row 12) is a Tidy Up cut; NEO-618: so the
+    // box applies, here with room for the team the builder had to drop.
+    expect(a.shortNameUsed).toBe(true);
+    expect(a.title).toBe("Topps RDPA Elly De La Cruz #RD-12 AUTO RC Cincinnati Reds Rookie");
+    expect(a.tidyUp).toBe(false);
+    // Built from the box: still born flagged, so the card is on the Card titles step.
     expect(a.coreFits).toBe(false);
-    expect(a.title).toContain("Rookie Debut Patch Autographs");
+  });
+
+  test("a title that fits with nothing Tidy Up cut ignores the box", () => {
+    const fits: ListingCardInputs = {
+      cardNumber: "5",
+      year: "1996",
+      manufacturer: "Score",
+      setName: "Score",
+      playerNames: ["Ken Griffey Jr."],
+      setShortName: "Score 96",
+    };
+    const a = assessListingTitle(fits);
+    expect(a.shortNameUsed).toBeUndefined();
+    expect(a.tidyUp).toBe(false);
+    expect(a.coreFits).toBe(true);
+    expect(a.title).toBe("1996 Score Ken Griffey Jr. #5");
   });
 
   test("nothing is prepended to the box: not the year, not the maker", () => {

@@ -11,6 +11,7 @@ import {
   MAX_LISTING_SHORT_NAME_LENGTH,
   normalizeListingShortName,
   parallelAfterInsert,
+  parallelsNameThemselvesApplies,
   roughlySays,
   titleChainFacts,
   type TitleChainRow,
@@ -364,5 +365,153 @@ describe("parallelAfterInsert (NEO-535: the insert's words said once)", () => {
     ]);
     expect(facts.insertIsRole).toBeUndefined();
     expect(facts.listingShortName).toBe("Bowman Anime Red Refractors");
+  });
+});
+
+/**
+ * NEO-619 — "Parallels name themselves" on an insert-role row. Invented words
+ * throughout: "Zorbo Special Purple" is the insert, "Zorbo Special Gold" a
+ * parallel of it. The reader of the switch is `titleChainFacts`; the eBay
+ * reader asks `parallelsNameThemselvesApplies` (pinned in listingDrainEbay).
+ */
+describe("NEO-619: parallels name themselves", () => {
+  const INSERT = "Zorbo Special Purple";
+  const GOLD = "Zorbo Special Gold";
+  const ON = { parallelsNameThemselves: true } as const;
+
+  /** Gold under the insert, under an Insert type, under the set. */
+  const goldChain = (
+    insertMeta?: TitleChainRow["metadata"],
+    opts: { goldMeta?: TitleChainRow["metadata"]; setMeta?: TitleChainRow["metadata"]; type?: string } = {},
+  ) => [
+    row("parallel", GOLD, opts.goldMeta),
+    row("insert", INSERT, insertMeta),
+    row("variantType", opts.type ?? "Inserts"),
+    row("setName", "Pulse", opts.setMeta),
+  ];
+
+  test("switch off: both levels are named, the previous behaviour", () => {
+    const facts = titleChainFacts(goldChain());
+    expect(facts.titleLevels).toEqual([
+      { name: INSERT, typeName: "Inserts" },
+      { name: GOLD, typeName: "Parallel" },
+    ]);
+    expect(parallelsNameThemselvesApplies(goldChain())).toBe(false);
+    // An explicit false is off too.
+    expect(
+      titleChainFacts(goldChain({ parallelsNameThemselves: false })).titleLevels,
+    ).toHaveLength(2);
+  });
+
+  test("switch on: a parallel leaf is the only level, typed Parallel and said whole", () => {
+    const chain = goldChain(ON);
+    expect(parallelsNameThemselvesApplies(chain)).toBe(true);
+    expect(titleChainFacts(chain).titleLevels).toEqual([{ name: GOLD, typeName: "Parallel" }]);
+  });
+
+  test("switch on: insertNameValue, insertIsRole and parallelLeafValue are unchanged", () => {
+    const on = titleChainFacts(goldChain(ON));
+    const off = titleChainFacts(goldChain());
+    expect(on.insertNameValue).toBe(INSERT);
+    expect(on.insertIsRole).toBe(true);
+    expect(on.parallelLeafValue).toBe(GOLD);
+    expect(on.insertNameValue).toBe(off.insertNameValue);
+    expect(on.insertIsRole).toBe(off.insertIsRole);
+    expect(on.parallelLeafValue).toBe(off.parallelLeafValue);
+  });
+
+  test("switch on: the insert's own leaf (and a card on it) still names the insert", () => {
+    const chain = [
+      row("insert", INSERT, ON),
+      row("variantType", "Inserts"),
+      row("setName", "Pulse"),
+    ];
+    expect(parallelsNameThemselvesApplies(chain)).toBe(false);
+    expect(titleChainFacts(chain)).toEqual({
+      insertNameValue: INSERT,
+      insertIsRole: true,
+      titleLevels: [{ name: INSERT, typeName: "Inserts" }],
+    });
+  });
+
+  test("switch on: the insert row's own box is skipped, the set's box gets the parallel's name appended whole", () => {
+    const facts = titleChainFacts(
+      goldChain(
+        { ...ON, listingShortName: "Purple Box" },
+        { setMeta: { listingShortName: "Pulse Box" } },
+      ),
+    );
+    expect(facts.listingShortName).toBe("Pulse Box Zorbo Special Gold");
+    expect(facts.listingShortName).not.toContain("Purple");
+  });
+
+  test("switch off: the insert row's box applies, with the parallel's name trimmed to its own words", () => {
+    const facts = titleChainFacts(
+      goldChain(
+        { listingShortName: "Purple Box" },
+        { setMeta: { listingShortName: "Pulse Box" } },
+      ),
+    );
+    expect(facts.listingShortName).toMatch(/^Purple Box /);
+  });
+
+  test("switch on, no box above: no short name at all", () => {
+    expect(
+      titleChainFacts(goldChain({ ...ON, listingShortName: "Purple Box" })).listingShortName,
+    ).toBeUndefined();
+  });
+
+  test("switch on: a box on the parallel row wins verbatim", () => {
+    const facts = titleChainFacts(
+      goldChain(
+        { ...ON, listingShortName: "Purple Box" },
+        { goldMeta: { listingShortName: "Gold Box" }, setMeta: { listingShortName: "Pulse Box" } },
+      ),
+    );
+    expect(facts.listingShortName).toBe("Gold Box");
+  });
+
+  test("the flag on an insert-level row under a Parallel-kind type does nothing", () => {
+    const chain = [
+      row("parallel", GOLD),
+      row("insert", INSERT, ON),
+      row("variantType", "Parallels"),
+      row("setName", "Pulse"),
+    ];
+    expect(parallelsNameThemselvesApplies(chain)).toBe(false);
+    expect(titleChainFacts(chain).titleLevels).toEqual([
+      { name: INSERT, typeName: "Parallels" },
+      { name: GOLD, typeName: "Parallel" },
+    ]);
+  });
+
+  test("the flag on an insert-level row under a type with no kind does nothing", () => {
+    const chain = goldChain(ON, { type: "Promo" });
+    expect(parallelsNameThemselvesApplies(chain)).toBe(false);
+    expect(titleChainFacts(chain).titleLevels).toEqual([
+      { name: INSERT, typeName: "Promo" },
+      { name: GOLD, typeName: "Parallel" },
+    ]);
+  });
+
+  test("the flag on a parallel-level row does nothing", () => {
+    const chain = goldChain(undefined, { goldMeta: ON });
+    expect(parallelsNameThemselvesApplies(chain)).toBe(false);
+    expect(titleChainFacts(chain).titleLevels).toEqual([
+      { name: INSERT, typeName: "Inserts" },
+      { name: GOLD, typeName: "Parallel" },
+    ]);
+  });
+
+  test("rows past the setName row are ignored, and a broken chain never applies", () => {
+    const stray = [
+      row("parallel", GOLD),
+      row("variantType", "Inserts"),
+      row("setName", "Pulse"),
+      row("insert", INSERT, ON),
+    ];
+    expect(parallelsNameThemselvesApplies(stray)).toBe(false);
+    expect(parallelsNameThemselvesApplies([row("parallel", GOLD), null, row("insert", INSERT, ON)])).toBe(false);
+    expect(parallelsNameThemselvesApplies([])).toBe(false);
   });
 });

@@ -1,6 +1,7 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { rejectedSummaryValidator } from "./lib/extractRejections";
+import { playerContextValidator, teamContextValidator } from "./lib/entityReviewContext";
 
 /**
  * NEO-356 — the collector's saved theme preference, shared by the schema and
@@ -344,6 +345,21 @@ export const selectorOptionMetadataFields = {
    * Absent on every row the dialog never saved; no backfill.
    */
   listingShortNameSavedAt: v.optional(v.number()),
+  /**
+   * NEO-619 — on an INSERT-role row (an insert-level row under an Insert type):
+   * the parallels beneath it (its sub-variants) name themselves in a card's
+   * title, leaving the insert's name out ("2026 Pulse Aura Aeon Special Gold",
+   * not "... Aeon Special Purple Gold"). The insert's own cards still name the
+   * insert. One switch covers every parallel beneath it, later ones included.
+   *
+   * Writer: `setSelectorOptionParallelsNameThemselves` (the set attributes
+   * panel), the only door. Reader: `titleChainFacts`, which drops the insert's
+   * level and skips the insert's own `listingShortName` for a parallel leaf.
+   * An operator choice: never derived, never written by a sync. `true` or
+   * absent; off deletes the key. Existing titles are never rewritten when it
+   * flips (write-once titles); Regenerate reads the new value.
+   */
+  parallelsNameThemselves: v.optional(v.boolean()),
 };
 
 export const selectorOptionFields = {
@@ -638,6 +654,34 @@ export const selectorOptionFields = {
     v.object({ setAt: v.number(), setByUserId: v.string() }),
   ),
   /**
+   * NEO-426 — this SPORT has no teams (Non Sport, Golf, Tennis): a card whose
+   * every player's HOME sport (`players.sportId`; extra `playerSports` never
+   * count) carries this stamp saves as "No team" by default, with nothing to
+   * answer in the wizard's Teams step.
+   *
+   * Meaningful on `level: "sport"` rows only, and set only there
+   * (`sportTeamless.setTeamlessSport` refuses any other level). Same shape as
+   * `noTeamDefault`, for the same reason: `setAt` / `setByUserId` are
+   * server-stamped (the time and `requireAdmin`'s subject), because a
+   * background path (`applyBscTeamResolution`) stamps the card on the
+   * operator's behalf and needs someone to credit.
+   *
+   * A DEFAULT, never a block: one more reason to stamp, decided by
+   * `noTeamCardVerdict` on the card as it is born (so a listing that names a
+   * team, a pending team name, or a lookup still owed holds it back — product
+   * invariant 8). Nothing refuses, strips or hides a team because of it; a
+   * team from any source wins. Read only through `convex/lib/teamlessSport.ts`,
+   * never by the sport's display name (invariant 4).
+   *
+   * ABSENT means "this sport has teams"; switching it off removes the field
+   * (a stored `false` would be a second way to say the same thing). Touches
+   * no existing card. NB data only: no adapter or sync reads or writes it. No
+   * index (sports are a handful of rows under `by_level`); no backfill.
+   */
+  teamlessSport: v.optional(
+    v.object({ setAt: v.number(), setByUserId: v.string() }),
+  ),
+  /**
    * NEO-528 round 3 — "Player on every card": the player every NEW card
    * beneath this row is born with, when it arrives with no player of its own
    * (no resolved player and no name waiting for review).
@@ -832,9 +876,10 @@ export const saleItemFromValidator = v.object({
  * `title` (below).
  *
  * Kept on the SALE only. It is never written to an NB card, set, player or
- * team row, and nothing outside the Pick List's labels and walking order, and
+ * team row, and nothing outside the Pick List's labels and walking order,
  * (NEO-520) the Sales tab's `listed.title` label read through
- * `listingSync.publicSale`, reads it. `sportId` is NB's own sport row, resolved once when the line is stored
+ * `listingSync.publicSale`, and (NEO-590) the dashboard's Out the Door label
+ * for a line with no card (`dashboard.sales`), reads it. `sportId` is NB's own sport row, resolved once when the line is stored
  * from the platform's item-level sport id against the sport rows'
  * `platformData.bsc` slots (exactly one match, else absent); `sport` is the
  * platform's own word, a fallback label only. Every field is optional: the
@@ -853,11 +898,14 @@ export const saleItemListedValidator = v.object({
    * NEO-520 — eBay only: the order line's own title as the buyer saw it
    * (`lineItems[].title`), stored on every eBay line whose title was
    * readable, and shown only where NB holds no card for the line (a listing
-   * NB did not make): the Pick List, and the Sales tab via
-   * `listingSync.publicSale`. Bounded at the
+   * NB did not make): the Pick List, the Sales tab via
+   * `listingSync.publicSale`, and the dashboard's Out the Door
+   * (`dashboard.sales`, NEO-590). Bounded at the
    * sync boundary (`lib/ebayListing.ts`): trimmed, control characters
-   * refused, an over-long title dropped, never cut. Never parsed, matched or
-   * written to any NB row. BSC lines never carry it.
+   * refused, an over-long title dropped, never cut. Parsed for Pick List
+   * order only (NEO-590: its year, its set words and the sport of an NB
+   * player or team it names), never matched to a card or written to any NB
+   * row. BSC lines never carry it.
    */
   title: v.optional(v.string()),
 });
@@ -3695,6 +3743,47 @@ export default defineSchema({
     // keyed on creation would delete the session out from under them. This
     // field is the "still alive" signal — see `sweepAbandonedBatches`.
     lastTouchedAt: v.optional(v.number()),
+    /**
+     * NEO-602, team-kind only — what the New Team / Which team step shows the
+     * operator about the name it asks about.
+     *
+     * Jason, 2026-11-19: "On that New Team screen we need to show what
+     * player/card is triggering it because that is the only way a person knows
+     * the right team to link it to." A multi-row name used to look like a
+     * brand-new team. The review gate holds the cards (they are not committed
+     * yet, so nothing else can find them) and writes, once at insert:
+     *
+     *  - `candidateTeamIds` — the team rows the printed name reached when there
+     *    are two or more (empty otherwise). The step offers each as a one-click
+     *    link; the heading stops saying "New Team".
+     *  - `cards` — the first cards that printed the name (number and players as
+     *    printed; a player's NB id when the gate resolved him, so the step can
+     *    read his stints), bounded by the gate's own 16-card / 4-player bounds.
+     *  - `moreCards` — how many further cards printed it, for "+N more".
+     *
+     * Display only: nothing decides from it, no decision reads it, and a stale
+     * id is dropped by the reader. Absent on every row written before this
+     * field, on a league or player row, and on a team the batch staged for a
+     * player's career. Additive and optional.
+     */
+    teamContext: v.optional(teamContextValidator),
+    /**
+     * NEO-602, player-kind only — what the "Which {name} is this?" pick step
+     * shows beside its candidates.
+     *
+     * Jason, 2026-11-19: "I don't know how I would choose between the two
+     * active luis castillo. We should show the card number & team from the
+     * player on the screen." The cards are not committed while the wizard is
+     * open, so the review gate writes, once at insert, the first cards that
+     * print the name: the number and the team(s) as printed. The candidates'
+     * own stints are read on demand (`playerStepContext`), from the rows in
+     * `enrichment.existingCandidates`.
+     *
+     * Display only: nothing decides from it. Absent on every row written
+     * before this field and on a name that was never a same-name choice.
+     * Additive and optional.
+     */
+    playerContext: v.optional(playerContextValidator),
   })
     .index("by_selector_option", ["selectorOptionId"])
     .index("by_selector_option_and_batch", ["selectorOptionId", "batchId"])

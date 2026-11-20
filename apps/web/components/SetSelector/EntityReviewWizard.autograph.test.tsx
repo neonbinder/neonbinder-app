@@ -25,6 +25,8 @@ vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
     if (args === "skip") return undefined;
     if (ref === "entityReviewQueue.getBatch") return currentRows;
+    // NEO-426 — no sport flagged: the teams step is exactly what it was.
+    if (ref === "sportTeamless.listTeamlessSportIds") return [];
     return undefined;
   },
   useQueries: (queries: Record<string, { args: { players: unknown[] } }>) => {
@@ -94,11 +96,10 @@ function wizard(props: Record<string, unknown> = {}, cards: Card[] = TEAMED) {
   );
 }
 
-const counter = () =>
-  screen
-    .getAllByRole("status")
-    .map((el) => el.textContent ?? "")
-    .find((t) => /^Step \d+ of \d+$/.test(t)) ?? "";
+const bar = () => screen.getByRole("progressbar", { name: "Wizard progress" });
+/** The step the operator is on, as the progress bar reads it. */
+const onStep = () => bar().getAttribute("aria-valuetext") ?? "";
+const percent = () => Number(bar().getAttribute("aria-valuenow"));
 const next = () => screen.getByRole("button", { name: NEXT_NAME });
 const choice = (label: string) => screen.getByRole("radio", { name: label });
 const ON_CARD = AUTOGRAPH_CHOICE_LABEL["On Card"];
@@ -109,9 +110,10 @@ beforeEach(() => {
 });
 
 describe("when the step is asked", () => {
-  it("opens on it for a new AU card on a leaf with no format: Step 1 of 2", () => {
+  it("opens on it for a new AU card on a leaf with no format", () => {
     render(wizard({ onAutographFormatChange: vi.fn() }));
-    expect(counter()).toBe("Step 1 of 2");
+    expect(onStep()).toBe(SUBTITLE);
+    expect(percent()).toBe(0);
     expect(screen.getByText(SUBTITLE)).toBeTruthy();
     expect(screen.getByRole("radiogroup", { name: autographStepQuestion(1) })).toBeTruthy();
   });
@@ -125,7 +127,8 @@ describe("when the step is asked", () => {
   it("is not asked when the leaf already has a format", () => {
     render(wizard({ onAutographFormatChange: vi.fn(), hasAutographFormat: true }));
     expect(screen.queryByText(SUBTITLE)).toBeNull();
-    expect(counter()).toBe("Step 1 of 1");
+    expect(onStep()).toBe("Ready to save");
+    expect(percent()).toBe(100);
   });
 
   it("is not asked about a card that re-syncs a stored row", () => {
@@ -154,7 +157,7 @@ describe("the answer is required", () => {
     expect((button as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(button);
     fireEvent.keyDown(button, { key: "Enter" });
-    expect(counter()).toBe("Step 1 of 2");
+    expect(onStep()).toBe(SUBTITLE);
     expect(screen.getByText(SUBTITLE)).toBeTruthy();
     expect(screen.queryByText("Save 2 cards?")).toBeNull();
     // Nothing to send yet.
@@ -168,7 +171,7 @@ describe("the answer is required", () => {
     expect(next().getAttribute("aria-disabled")).toBeNull();
     expect(onAutographFormatChange).toHaveBeenLastCalledWith("Sticker/Label");
     fireEvent.click(next());
-    expect(counter()).toBe("Step 2 of 2");
+    expect(onStep()).toBe("Ready to save");
     expect(screen.getByText("Save 2 cards?")).toBeTruthy();
   });
 
@@ -179,7 +182,7 @@ describe("the answer is required", () => {
       fireEvent.keyDown(choice(ON_CARD), { key: "Enter" });
     });
     expect(onAutographFormatChange).toHaveBeenLastCalledWith("On Card");
-    expect(counter()).toBe("Step 2 of 2");
+    expect(onStep()).toBe("Ready to save");
     expect(screen.getByText("Save 2 cards?")).toBeTruthy();
   });
 
@@ -250,21 +253,25 @@ describe("its place in the walk", () => {
     render(
       wizard({ onAutographFormatChange: vi.fn(), titleContext: LONG_TITLES }, cards),
     );
-    expect(counter()).toBe("Step 1 of 4");
+    expect(onStep()).toBe("Cards with no team");
+    expect(percent()).toBe(0);
     expect(screen.getByText("Cards with no team")).toBeTruthy();
     fireEvent.click(next());
-    expect(counter()).toBe("Step 2 of 4");
+    expect(onStep()).toBe(SUBTITLE);
+    expect(percent()).toBe(25);
     expect(screen.getByText(SUBTITLE)).toBeTruthy();
     fireEvent.click(choice(ON_CARD));
     fireEvent.click(next());
-    expect(counter()).toBe("Step 3 of 4");
+    expect(onStep()).toBe("Card titles");
+    expect(percent()).toBe(50);
     expect(screen.getByText("Card titles")).toBeTruthy();
     fireEvent.click(next());
-    expect(counter()).toBe("Step 4 of 4");
+    expect(onStep()).toBe("Ready to save");
+    expect(percent()).toBe(100);
     fireEvent.click(screen.getByRole("button", { name: "Back to previous step" }));
     fireEvent.click(screen.getByRole("button", { name: "Back to previous step" }));
     expect(screen.getByText(SUBTITLE)).toBeTruthy();
-    expect(counter()).toBe("Step 2 of 4");
+    expect(onStep()).toBe(SUBTITLE);
   });
 
   it("names nothing on its screen but the cards' question (no decided-names list)", () => {

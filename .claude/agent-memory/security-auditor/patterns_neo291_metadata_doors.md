@@ -37,3 +37,14 @@ that tsc does not catch).
 **How to apply:** any ticket that retires a client-authored field: grep the
 shared validator's arg uses, check every remaining write path for the field
 shares one normalizer, and require the registry entry in the same PR.
+
+**Reaffirmed NEO-619 (2026-11-19), the clean shape to compare against:** a
+new operator switch on `selectorOptions.metadata` (`parallelsNameThemselves`)
+got its own single-key public mutation: `requireAdmin` BEFORE `ctx.db.get`
+(so the ConvexError "row is gone" / "wrong row" texts are not an existence
+oracle for non-admins), role checked through `derivedVariantFlags` on the
+parent (kind, never a name), spread-merge of existing metadata, off deletes
+the key, empty object dropped, both registry tests added with a
+"refused before any write" assertion plus an admin-lands control. Grep
+confirmed the shared `metadataValidator` is used only in a `returns`
+(`getAncestorChain`), never in `args`, so the mutation is the only door.

@@ -204,7 +204,7 @@ describe("setSecondaryPlayers (one card)", () => {
         cardId: gone,
         playerIds: playerIds.slice(1),
       }),
-    ).rejects.toThrow(/isn't in NB anymore/);
+    ).rejects.toThrow(/isn't in Neon Binder anymore/);
   });
 
   test("is admin-only", async () => {

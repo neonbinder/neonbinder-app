@@ -26,6 +26,8 @@ metadata:
   any time after setup); (2) setup is fresh-only and the per-user reset keeps selectorOptions, so a setup that got
   past Manufacturers leaves a custom Topps and the next run reds on "No manufacturers available" - re-run the
   per-worktree script with `--seed` between rounds (the script sets the fake env again itself), then bootstrap;
+  Outside a record loop the same red just means "already seeded": a reused worktree deployment whose
+  Manufacturers list is full needs only bootstrap, then the spec (no `--seed`, no second setup);
   (3) one setup round unlocks one recording level (sports, years, manufacturers' sets, variant types, base
   results, base card-listing, insert filters, insert results, parallel filters...), about 7 min with the re-seed.
 - Fake-mode BSC sessions are keyed per deployment AND user (a stale shared-login session gave

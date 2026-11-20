@@ -47,6 +47,8 @@ vi.mock("convex/react", () => ({
       batchReads += 1;
       return currentRows;
     }
+    // NEO-426 — no sport flagged: the teams step is exactly what it was.
+    if (ref === "sportTeamless.listTeamlessSportIds") return [];
     return undefined;
   },
   useQueries: (queries: Record<string, { query: string; args: SuggestionArgs }>) => {
@@ -74,12 +76,9 @@ import EntityReviewWizard from "./EntityReviewWizard";
 const CONFIRM_SAVE_NAME = "Confirm & Save (Enter) — commit this review";
 const NEXT_NAME = "Next (Enter)";
 const TEAMS_INTRO = "Pick a team for each card, or leave it for later.";
-/** The header's one counter. */
-const counter = () =>
-  screen
-    .getAllByRole("status")
-    .map((el) => el.textContent ?? "")
-    .find((t) => /^Step \d+ of \d+$/.test(t));
+const bar = () => screen.getByRole("progressbar", { name: "Wizard progress" });
+/** The step the operator is on, as the header's progress bar reads it. */
+const onStep = () => bar().getAttribute("aria-valuetext") ?? "";
 const CANCEL_NAME = "Cancel (Esc) — leave without committing";
 const REDS = "team_reds" as Id<"teams">;
 const YANKEES = "team_yankees" as Id<"teams">;
@@ -156,7 +155,7 @@ describe("TeamsOnCardsSection on the wizard's teams step", () => {
     ]);
     expect(screen.getByText("Save 1 card?")).toBeTruthy();
     // Two names + Save — no teams step was ever counted.
-    expect(counter()).toBe("Step 3 of 3");
+    expect(onStep()).toBe("Ready to save");
     expect(screen.getByText("Ready to save")).toBeTruthy();
     expect(screen.queryByText(TEAMS_INTRO)).toBeNull();
     expect(screen.queryByText(/no team yet/)).toBeNull();
@@ -181,7 +180,7 @@ describe("TeamsOnCardsSection on the wizard's teams step", () => {
       { cardNumber: "3", cardName: "Team", players: ["Pete Rose"], teams: ["Reds"] },
     ]);
     // Two names, the teams step, Save.
-    expect(counter()).toBe("Step 3 of 4");
+    expect(onStep()).toBe("Cards with no team");
     expect(screen.getByText("Cards with no team")).toBeTruthy();
     const intro = screen.getByText(TEAMS_INTRO);
     const group = screen.getByRole("radiogroup", { name: "Team for Rookie Guy" });
@@ -196,7 +195,7 @@ describe("TeamsOnCardsSection on the wizard's teams step", () => {
     // Nothing answered — every line left for later — and Save is still one
     // press away.
     fireEvent.click(next);
-    expect(counter()).toBe("Step 4 of 4");
+    expect(onStep()).toBe("Ready to save");
     expect(screen.getByText("Save 3 cards?")).toBeTruthy();
     expect(screen.getByText("Ready to save")).toBeTruthy();
     // The lines are hidden on Save, not unmounted (they keep reporting).
@@ -368,7 +367,7 @@ describe("TeamsOnCardsSection on the wizard's teams step", () => {
     expect(screen.getByText("Save 1 card?")).toBeTruthy();
     // Back from Save is the teams step, answer intact.
     fireEvent.click(screen.getByRole("button", { name: "Back to previous step" }));
-    expect(counter()).toBe("Step 3 of 4");
+    expect(onStep()).toBe("Cards with no team");
     expect(
       screen
         .getByRole("radio", { name: "No team on this card — Cards with no players (1)" })
@@ -437,7 +436,7 @@ describe("TeamsOnCardsSection on the wizard's teams step", () => {
       />,
     );
     expect(screen.getByText("Save 1 card?")).toBeTruthy();
-    expect(counter()).toBe("Step 3 of 3");
+    expect(onStep()).toBe("Ready to save");
     expect(screen.queryByText(/no team yet/)).toBeNull();
     expect(screen.queryAllByRole("radiogroup")).toEqual([]);
   });
@@ -445,7 +444,7 @@ describe("TeamsOnCardsSection on the wizard's teams step", () => {
 
 /**
  * NEO-335 — no names to review, but cards that would save with no team: the
- * wizard opens straight onto its teams step ("Step 1 of 2", then Save) and
+ * wizard opens straight onto its teams step (then Save) and
  * reads no batch.
  */
 describe("EntityReviewWizard teams-only", () => {
@@ -474,7 +473,7 @@ describe("EntityReviewWizard teams-only", () => {
     return { onConfirm, onCancel, onTeamAnswersChange };
   }
 
-  it("opens on the teams step as Step 1 of 2, reads no batch, and says nothing about names", () => {
+  it("opens on the teams step, reads no batch, and says nothing about names", () => {
     serverAnswer = () => ({
       playerId: "p",
       answer: { tier: "sameNode", teams: [{ teamId: REDS, name: "Cincinnati Reds" }] },
@@ -486,7 +485,7 @@ describe("EntityReviewWizard teams-only", () => {
     ]);
     expect(batchReads).toBe(0);
     expect(screen.getByRole("dialog", { name: "Tidy up this set" })).toBeTruthy();
-    expect(counter()).toBe("Step 1 of 2");
+    expect(onStep()).toBe("Cards with no team");
     expect(screen.getByText("Cards with no team")).toBeTruthy();
     expect(screen.getByText(TEAMS_INTRO)).toBeTruthy();
     expect(screen.getByRole("radiogroup", { name: "Team for Johnny Bench" })).toBeTruthy();
@@ -499,7 +498,7 @@ describe("EntityReviewWizard teams-only", () => {
     const next = screen.getByRole("button", { name: NEXT_NAME });
     expect(document.activeElement).toBe(next);
     fireEvent.click(next);
-    expect(counter()).toBe("Step 2 of 2");
+    expect(onStep()).toBe("Ready to save");
     expect(screen.getByText("Save 2 cards?")).toBeTruthy();
     expect(screen.getByText("Ready to save")).toBeTruthy();
     // The answer outlives the move to Save.
@@ -542,7 +541,7 @@ describe("EntityReviewWizard teams-only", () => {
         skippedPlayerNames: ["Team Photo"],
       },
     );
-    expect(counter()).toBe("Step 1 of 2");
+    expect(onStep()).toBe("Cards with no team");
     const later = screen.getByRole("radio", {
       name: "Leave for later — Cards with no players (3)",
     });
@@ -579,7 +578,7 @@ describe("EntityReviewWizard teams-only", () => {
         skippedTeamNames: ["Roanoke Express"],
       },
     );
-    expect(counter()).toBe("Step 1 of 2");
+    expect(onStep()).toBe("Cards with no team");
     expect(
       screen.getByRole("radio", { name: "Leave for later — Cards with no players (3)" }),
     ).toBeTruthy();
