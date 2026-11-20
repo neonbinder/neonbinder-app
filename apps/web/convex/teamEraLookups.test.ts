@@ -72,7 +72,7 @@ describe("NEO-254: findByNameAndSport needs the year the caller already has", ()
     await seedBothJets(t, sportId);
 
     expect(
-      await t.withIdentity(ADMIN_IDENTITY).query(api.teams.findByNameAndSport, {
+      await t.withIdentity(ADMIN_IDENTITY).query(internal.teams.findByNameAndSport, {
         name: "Winnipeg Jets",
         sportId,
       }),
@@ -92,7 +92,7 @@ describe("NEO-254: findByNameAndSport needs the year the caller already has", ()
 
     expect(
       (
-        await asAdmin.query(api.teams.findByNameAndSport, {
+        await asAdmin.query(internal.teams.findByNameAndSport, {
           name: "Winnipeg Jets",
           sportId,
           setYear: 1985,
@@ -101,7 +101,7 @@ describe("NEO-254: findByNameAndSport needs the year the caller already has", ()
     ).toBe(original);
     expect(
       (
-        await asAdmin.query(api.teams.findByNameAndSport, {
+        await asAdmin.query(internal.teams.findByNameAndSport, {
           name: "Winnipeg Jets",
           sportId,
           setYear: 2015,
@@ -118,7 +118,7 @@ describe("NEO-254: findByNameAndSport needs the year the caller already has", ()
     await seedBothJets(t, sportId);
 
     expect(
-      await t.withIdentity(ADMIN_IDENTITY).query(api.teams.findByNameAndSport, {
+      await t.withIdentity(ADMIN_IDENTITY).query(internal.teams.findByNameAndSport, {
         name: "Winnipeg Jets",
         sportId,
         setYear: 1999,
@@ -289,7 +289,7 @@ describe("NEO-307: a card can show a team's past, never its future", () => {
 
     expect(
       (
-        await t.withIdentity(ADMIN_IDENTITY).query(api.teams.findByNameAndSport, {
+        await t.withIdentity(ADMIN_IDENTITY).query(internal.teams.findByNameAndSport, {
           name: "Brooklyn Dodgers",
           sportId,
           setYear: 2026,
@@ -306,7 +306,7 @@ describe("NEO-307: a card can show a team's past, never its future", () => {
     await seedTeam(t, sportId, { location: "Winnipeg", name: "Jets", from: 2011 });
 
     expect(
-      await t.withIdentity(ADMIN_IDENTITY).query(api.teams.findByNameAndSport, {
+      await t.withIdentity(ADMIN_IDENTITY).query(internal.teams.findByNameAndSport, {
         name: "Winnipeg Jets",
         sportId,
         setYear: 1985,
@@ -322,7 +322,7 @@ describe("NEO-307: a card can show a team's past, never its future", () => {
     await seedBothJets(t, sportId);
 
     expect(
-      await t.withIdentity(ADMIN_IDENTITY).query(api.teams.findByNameAndSport, {
+      await t.withIdentity(ADMIN_IDENTITY).query(internal.teams.findByNameAndSport, {
         name: "Winnipeg Jets",
         sportId,
         setYear: 1999,
@@ -339,7 +339,7 @@ describe("NEO-307: a card can show a team's past, never its future", () => {
     await seedTeam(t, sportId, { location: "Washington", name: "Senators", from: 1961, to: 1971 });
 
     expect(
-      await t.withIdentity(ADMIN_IDENTITY).query(api.teams.findByNameAndSport, {
+      await t.withIdentity(ADMIN_IDENTITY).query(internal.teams.findByNameAndSport, {
         name: "Washington Senators",
         sportId,
         setYear: 2026,
@@ -359,7 +359,7 @@ describe("NEO-307: a card can show a team's past, never its future", () => {
 
     expect(
       (
-        await t.withIdentity(ADMIN_IDENTITY).query(api.teams.findByNameAndSport, {
+        await t.withIdentity(ADMIN_IDENTITY).query(internal.teams.findByNameAndSport, {
           name: "Winnipeg Jets",
           sportId,
           setYear: 2015,

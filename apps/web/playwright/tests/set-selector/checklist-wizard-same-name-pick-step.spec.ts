@@ -29,9 +29,10 @@
 // the Base picker's first SportLots candidate, the Match Cards pairing) are
 // UNMEASURED until SportLots returns, and the first live run must check them. Re-runs are
 // idempotent (an existing b. 1851 row is adopted). The decided count is read
-// relative to K, the walk's skips, and only the counter's x is asserted (on a
-// name step x is the decided count plus one; y grows while lookups land).
-// NEO-335: the header's one counter is "Step x of y" (it was "N of M reviewed").
+// relative to K, the walk's skips, off the names' "Decided (N)" history: since
+// NEO-467 the header carries a progress bar ("Wizard progress"), not a step
+// count, so "this row is still undecided" is also read off the row's own
+// controls and "this row was decided" off its skip going away.
 // NEO-490: STEP 6-8 add the career-team rule (6b), with NEO-574's year rule on it: a stint
 // counts for the card's club only if it is undated or starts in or before the card's year. The
 // catalogue's Shuya Yamada played for the club the card names (RP03 says "Hanshin Tigers"), but
@@ -48,7 +49,21 @@
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectPlayersLoaded, emptyListAndPickSport, PLAYERS_MATCHES, playersCounter } from "../../support/players";
 import { CHECKLISTS } from "../../support/published-checklist";
-import { cancelAndDiscard, fetchChecklistToWizard, openDecidedList, readStep, reviewWizard, stepCounter, walkToPlayerRow } from "../../support/wizard";
+import {
+  cancelAndDiscard,
+  decidedSummary,
+  expectDecidedCount,
+  expectNameStepLeft,
+  expectNothingDecided,
+  expectWizardStep,
+  fetchChecklistToWizard,
+  openDecidedList,
+  readDecidedCount,
+  reviewWizard,
+  STEP_SUBTITLE,
+  walkToPlayerRow,
+  wizardProgress,
+} from "../../support/wizard";
 import type { Page } from "@playwright/test";
 
 const SET = "BBM Rookie Edition Premium";
@@ -121,11 +136,13 @@ test(
     await expect(playersCounter(page, PLAYERS_MATCHES)).toBeVisible();
     await expect(page.getByText(/b\. 1851/).first()).toBeVisible();
 
-    // ── SETUP: this set's live fetch, the wizard open at "Step 1" (nothing decided) ──
+    // ── SETUP: this set's live fetch, the wizard open with nothing decided ──
     await fetchChecklistToWizard(page, env, TARGET, { checklist: CHECKLISTS.bbmRookieEditionPremium });
     const wizard = reviewWizard(page);
-    await expect(stepCounter(page)).toBeVisible();
-    if (!/^Step 1 of /.test((await stepCounter(page).textContent()) ?? "")) {
+    // Settled into one state (the header is up), then branch on it: a resumed
+    // batch shows its "Decided (k)" history from the first decision on.
+    await expect(wizardProgress(page)).toBeVisible();
+    if (await decidedSummary(page).isVisible()) {
       // A red attempt left its review batch on this set and the fetch resumed
       // it: throw it away and fetch again so this run starts clean.
       await page.getByRole("button", { name: "Cancel (Esc)" }).click();
@@ -134,7 +151,7 @@ test(
       await expect(page.getByText("Fetch cancelled — no cards saved.")).toBeVisible({ timeout: 30_000 });
       await fetchChecklistToWizard(page, env, TARGET, { checklist: CHECKLISTS.bbmRookieEditionPremium });
     }
-    await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+    await expectNothingDecided(page);
 
     // ── STEP 1: the pick step. The same-name row arrives READY (no lookup of its
     // own), so the wizard never offers "Add as New Player" for it. Every other
@@ -157,10 +174,13 @@ test(
     const linkCatalogue = wizard.getByRole("button", { name: new RegExp(`^Link to ${NAME}, (?!born ).+`) });
     await walkToPlayerRow(page);
     await expect(question).toBeVisible();
-    // x is the decided count plus one on a name step; only x is ever pinned.
-    const { x: step } = await readStep(page);
-    // NEO-335: the pick step is its own screen type in the header.
+    // K: the walk's skips. This row's own skip is up exactly while it is undecided.
+    const decidedK = await readDecidedCount(page);
+    const rowSkip = wizard.getByRole("button", { name: `Skip ${NAME} — not a person`, exact: true });
+    // NEO-335: the pick step is its own screen type in the header (NEO-467: also
+    // the progress bar's value text).
     await expect(wizard.getByText("Which player is this?", { exact: true })).toBeVisible();
+    await expectWizardStep(page, STEP_SUBTITLE.pick);
     await expect(wizard.getByText("We've got 2 on file under that name. Pick the one on this card.")).toBeVisible();
     await expect(link1851).toBeVisible();
     await expect(linkCatalogue).toBeVisible();
@@ -170,8 +190,37 @@ test(
     // names the club "Tigers"; a refresh that moves his stint fails here by name.
     await expect(linkCatalogue.getByText("Tigers 2026–present", { exact: true })).toBeVisible();
     await expect(linkCatalogue).toHaveAccessibleName(`Link to ${NAME}, On a roster that year, Tigers 2026 to present`);
+    // NEO-602: the step shows the card the name came off, so the operator can choose by
+    // it: the card's number and the team printed on it (RP03 says "Hanshin Tigers"), and
+    // under them each candidate with the stints on file. The cards are read from the cards the
+    // fetch observed, so a refresh cannot move them. Both lists are named by their visible
+    // lead-in ("Printed on N cards", "Teams we know for each player").
+    const printedCards = wizard.getByRole("list", { name: /^Printed on [0-9]+ cards?$/ });
+    await expect(printedCards).toContainText("#RP03");
+    await expect(printedCards).toContainText("Hanshin Tigers");
+    const known = wizard.getByRole("list", { name: "Teams we know for each player" });
+    await expect(known).toContainText(`${NAME}, b. 1851`);
+    // The catalogue's man has no birth year, so the list tells him from his namesake by his place
+    // in the pick step's order, the wording the Link buttons use when a row has nothing else. The
+    // order is the server's (`sameNamePlayers`: the name index, ties by creation), and the catalogue's
+    // row is imported with the seed before this spec adds or adopts its namesake, so he is option 1.
+    await expect(known).toContainText(`${NAME}, option 1 of 2`);
+    // The rival has no career on file (the fixture's claim); the catalogue's man has one stint,
+    // on the club the card prints, and it is marked as that, as a qualifier after the team.
+    await expect(known).toContainText("Nothing on file yet");
+    await expect(known).toContainText(/Hanshin Tigers \(printed team\)/);
+    // The status line says what that settles: exactly one of the two has a stint with the
+    // printed team, so it names him by his place in the list. The wizard's other live regions
+    // are filtered out by the sentence.
+    await expect(
+      wizard
+        .getByRole("status")
+        .filter({
+          hasText: new RegExp(`^Only ${NAME} \\(option 1 of 2\\) has a stint on file with the printed team\\.$`),
+        }),
+    ).toBeVisible();
     await expect(wizard.getByRole("button", { name: "Create new" })).toBeVisible();
-    await expect(wizard.getByRole("button", { name: `Skip ${NAME} — not a person` })).toBeVisible();
+    await expect(rowSkip).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, same-name pick step" });
 
     // ── STEP 2: Create new opens the New Player step, without the list ──
@@ -191,13 +240,19 @@ test(
     await expect(link1851).toBeVisible();
     await expect(linkCatalogue).toBeVisible();
     await expect(wizard.getByText("Back at the list. 2 on file.")).toBeVisible();
-    // Nothing was recorded: x has not moved (Create new started this row's own lookup).
-    await expect(stepCounter(page)).toHaveText(new RegExp(`^Step ${step} of [0-9]+$`));
+    // Nothing was recorded (Create new started this row's own lookup; it decided
+    // nothing): the wizard is still on THIS row's pick step, and the decided
+    // count is still K.
+    await expect(rowSkip).toBeVisible();
+    await expectWizardStep(page, STEP_SUBTITLE.pick);
+    await expectDecidedCount(page, decidedK);
 
     // ── STEP 4: take one, and the read-back says which ──
     await link1851.click();
-    // Exactly one decision: the link.
-    await expect(stepCounter(page)).toHaveText(new RegExp(`^Step ${step + 1} of [0-9]+$`));
+    // Exactly one decision, on this row: the wizard has left it, and the
+    // decided count is K + 1.
+    await expectNameStepLeft(page, `Skip ${NAME} — not a person`);
+    await expectDecidedCount(page, decidedK + 1);
     await expect(question).toBeHidden();
     // The read-back names WHICH man. Not the Decided list (it folds past five and
     // the walk's skips usually put it there): the link moved the walk on, and the

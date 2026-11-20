@@ -19,7 +19,8 @@ vi.mock("../../convex/_generated/api", () => {
 });
 
 vi.mock("convex/react", () => ({
-  useQuery: () => undefined,
+  // NEO-426 — no sport flagged: the teams step is exactly what it was.
+  useQuery: (ref: string) => (ref === "sportTeamless.listTeamlessSportIds" ? [] : undefined),
   useQueries: (queries: Record<string, { args: { players?: unknown[]; names?: unknown[] } }>) => {
     const out: Record<string, unknown> = {};
     for (const key of Object.keys(queries)) out[key] = undefined;
@@ -51,16 +52,12 @@ vi.mock("./card-titles", async (importOriginal) => {
 import EntityReviewWizard from "./EntityReviewWizard";
 
 const NEXT_NAME = "Next (Enter)";
-const counter = () =>
-  screen
-    .getAllByRole("status")
-    .map((el) => el.textContent ?? "")
-    .find((t) => /^Step \d+ of \d+$/.test(t)) ?? "";
-const growthRegion = () =>
-  document.querySelector("header")!.querySelector('[aria-live="polite"]')!;
+const bar = () => screen.getByRole("progressbar", { name: "Wizard progress" });
+/** The step the operator is on, as the progress bar reads it. */
+const onStep = () => bar().getAttribute("aria-valuetext") ?? "";
 
 describe("the titles step follows the team answers", () => {
-  it("appears on a team answer, is announced, and is passed over once the answer goes", () => {
+  it("appears on a team answer, and is passed over once the answer goes", () => {
     render(
       <EntityReviewWizard
         isOpen
@@ -76,19 +73,22 @@ describe("the titles step follows the team answers", () => {
       />,
     );
     // Teams, then Save — no titles step yet.
-    expect(counter()).toBe("Step 1 of 2");
+    expect(onStep()).toBe("Cards with no team");
 
     fireEvent.click(screen.getByRole("radio", { name: "No team on this card — Cards with no players (1)" }));
     expect(seenTeamAnswers.at(-1)).toEqual([{ teamNone: true }]);
-    expect(counter()).toBe("Step 1 of 3");
-    expect(growthRegion().textContent).toBe("1 more step: card titles");
-
-    // The answer goes back to "later": the step has nothing in it, y keeps
-    // its promise, and Next passes the empty step over to Save.
-    fireEvent.click(screen.getByRole("radio", { name: "Leave for later — Cards with no players (1)" }));
-    expect(counter()).toBe("Step 1 of 3");
+    expect(onStep()).toBe("Cards with no team");
+    // The titles step is in the plan now: Next goes there.
     fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
-    expect(counter()).toBe("Step 3 of 3");
+    expect(onStep()).toBe("Card titles");
+
+    // The answer goes back to "later": the step has nothing in it, and Next
+    // passes the empty step over to Save.
+    fireEvent.click(screen.getByRole("button", { name: "Back to previous step" }));
+    expect(onStep()).toBe("Cards with no team");
+    fireEvent.click(screen.getByRole("radio", { name: "Leave for later — Cards with no players (1)" }));
+    fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
+    expect(onStep()).toBe("Ready to save");
     expect(screen.getByText("Save 1 card?")).toBeTruthy();
     expect(screen.queryByText("Card titles")).toBeNull();
   });

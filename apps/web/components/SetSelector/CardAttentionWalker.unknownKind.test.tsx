@@ -84,7 +84,9 @@ describe("CardAttentionWalker — a kind with no registered fixer", () => {
     expect(screen.getByText(/no fixer for it/)).toBeTruthy();
     // Counted in the walk like any other card, under a subtitle that names no
     // kind this bundle does not know.
-    expect(screen.getByRole("status").textContent).toBe("Step 1 of 1");
+    expect(
+      screen.getByRole("progressbar", { name: "Wizard progress" }).getAttribute("aria-valuetext"),
+    ).toBe("Needs a look");
     expect(screen.getByText("Needs a look")).toBeTruthy();
     // Nothing that could write the wrong thing.
     expect(screen.queryByRole("button", { name: /Save & Next/ })).toBeNull();

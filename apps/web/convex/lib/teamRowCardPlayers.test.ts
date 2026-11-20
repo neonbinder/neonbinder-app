@@ -3,8 +3,8 @@
  * players.
  *
  * `narrowTeamRowsByCardPlayers` is the pure-ish rule (reads player documents
- * only); `teams.resolveTeamByCardPlayers` is the internal query the review
- * gate calls for names `resolveTeamForSetYear` could not settle. Fixtures are
+ * only); `selectorOptions.resolveGateTeamNames` is the internal query the
+ * review gate asks for its printed team names. Fixtures are
  * raw `t.run` inserts: a sport, one team name with two eras (and a third,
  * modern one for the future-era cases), and players whose `teamYears` point at
  * the eras.
@@ -15,11 +15,12 @@ import { describe, expect, test } from "vitest";
 import schema from "../schema";
 import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
-import { normalizeTeamName } from "../teams";
+import { MAX_TEAM_NAME_LENGTH, normalizeTeamName } from "../teams";
 import {
   CARD_PLAYER_TEAM_MAX_CARDS,
   CARD_PLAYER_TEAM_MAX_PLAYERS_PER_CARD,
   narrowTeamRowsByCardPlayers,
+  resolveCardTeamName,
 } from "./teamRow";
 
 const modules = (import.meta as unknown as {
@@ -59,14 +60,45 @@ async function insertPlayer(
   name: string,
   teams: Id<"teams">[],
 ): Promise<Id<"players">> {
+  // NEO-602: a stint only supports a row whose era it overlaps, so each stint
+  // is dated INSIDE its team's era (its first two seasons). A team with no era
+  // gets an undated stint.
+  return t.run(async (ctx) => {
+    const teamYears = [];
+    for (const teamId of teams) {
+      const from = (await ctx.db.get(teamId))?.yearsActive?.from;
+      teamYears.push(
+        from === undefined ? { teamId } : { teamId, fromYear: from, toYear: from + 1 },
+      );
+    }
+    return ctx.db.insert("players", {
+      name,
+      nameNormalized: name.toLowerCase().split(" ").reverse().join(" "),
+      sportId,
+      ...(teamYears.length > 0 ? { teamYears } : {}),
+      lastUpdated: Date.now(),
+    });
+  });
+}
+
+/**
+ * NEO-574 — the year rule is about WHEN a stint began, so this fixture dates
+ * stints by position, not by era: the first team's from 1930, the second's
+ * from 1931 (`insertPlayer` above dates each inside its own team's era, which
+ * NEO-602 needs and which would put every stint at or before a 1930 card).
+ */
+async function insertPlayerStintsByPosition(
+  t: T,
+  sportId: Id<"selectorOptions">,
+  name: string,
+  teams: Id<"teams">[],
+): Promise<Id<"players">> {
   return t.run((ctx) =>
     ctx.db.insert("players", {
       name,
       nameNormalized: name.toLowerCase().split(" ").reverse().join(" "),
       sportId,
-      ...(teams.length > 0
-        ? { teamYears: teams.map((teamId, i) => ({ teamId, fromYear: 1930 + i, toYear: 1931 + i })) }
-        : {}),
+      teamYears: teams.map((teamId, i) => ({ teamId, fromYear: 1930 + i, toYear: 1931 + i })),
       lastUpdated: Date.now(),
     }),
   );
@@ -178,13 +210,51 @@ describe("NEO-490: narrowTeamRowsByCardPlayers", () => {
     expect(await narrow(t, [w.early, w.modern], [[onlyModern]], 1950)).toBeNull();
   });
 
+  test("a stint dated outside the row's era does not support it (NEO-602)", async () => {
+    const t = convexTest(schema, modules);
+    const w = await seed(t);
+    const outside = await t.run((ctx) =>
+      ctx.db.insert("players", {
+        name: "Satchel Paige",
+        nameNormalized: "paige satchel",
+        sportId: w.sportId,
+        teamYears: [{ teamId: w.early, fromYear: 1970, toYear: 1975 }],
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    expect(await narrow(t, [w.early, w.late], [[outside]], undefined)).toBeNull();
+  });
+
+  test("an undated stint supports the row it names (NEO-602)", async () => {
+    const t = convexTest(schema, modules);
+    const w = await seed(t);
+    const undated = await t.run((ctx) =>
+      ctx.db.insert("players", {
+        name: "Satchel Paige",
+        nameNormalized: "paige satchel",
+        sportId: w.sportId,
+        teamYears: [{ teamId: w.late }],
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    expect(await narrow(t, [w.early, w.late], [[undated]], undefined)).toBe(w.late);
+  });
+
   test("NEO-574: a stint beginning after the set year does not count (the shared coverage rule)", async () => {
     const t = convexTest(schema, modules);
     const w = await seed(t);
-    // `insertPlayer` starts the first team's stint in 1930 and the second's
-    // in 1931.
-    const both = await insertPlayer(t, w.sportId, "Satchel Paige", [w.early, w.late]);
-    const startsLate = await insertPlayer(t, w.sportId, "Other Player", [w.late, w.early]);
+    // `insertPlayerStintsByPosition` starts the first team's stint in 1930 and
+    // the second's in 1931.
+    const both = await insertPlayerStintsByPosition(t, w.sportId, "Satchel Paige", [
+      w.early,
+      w.late,
+    ]);
+    const startsLate = await insertPlayerStintsByPosition(t, w.sportId, "Other Player", [
+      w.late,
+      w.early,
+    ]);
 
     // A 1930 card: both eras are in range for the early row, the stint on it
     // began that year and counts; the late stint (1931) does not, so the
@@ -196,8 +266,12 @@ describe("NEO-490: narrowTeamRowsByCardPlayers", () => {
     // card (his other stint is on a row that does not exist yet in 1930).
     expect(await narrow(t, [w.early, w.late], [[startsLate]], 1930)).toBeNull();
     expect(await narrow(t, [w.early, w.late], [[startsLate]], 1931)).toBe(w.early);
-    // With no year every stint counts: the first player is ambiguous again.
-    expect(await narrow(t, [w.early, w.late], [[both]], undefined)).toBeNull();
+    // With no year every stint counts: a player with a stint in each era is
+    // ambiguous again. (NEO-602: `insertPlayer` dates each stint inside its
+    // own team's era; `both` above dates the late one in 1931, outside the
+    // 1961-65 row, which would not support it whatever the year rule said.)
+    const inBothEras = await insertPlayer(t, w.sportId, "Era Hopper", [w.early, w.late]);
+    expect(await narrow(t, [w.early, w.late], [[inBothEras]], undefined)).toBeNull();
   });
 
   test("fewer than two candidates is resolveTeamForSetYear's to answer", async () => {
@@ -248,24 +322,30 @@ describe("NEO-490: narrowTeamRowsByCardPlayers", () => {
   });
 });
 
-describe("NEO-490: teams.resolveTeamByCardPlayers", () => {
+describe("NEO-490 / NEO-602: selectorOptions.resolveGateTeamNames, the players' answer", () => {
   type ResolveArgs = {
     sportId: Id<"selectorOptions">;
     name?: string;
     setYear?: number;
     cardPlayerIds: Id<"players">[][];
   };
-  // NEO-592 — the query answers with the team ROW (the gate no longer reads it
-  // back in a second hop); `resolve` reduces it to the id the cases below
-  // assert on, and `resolveRow` keeps the row for the case that pins its shape.
-  const resolveRow = (t: T, args: ResolveArgs) =>
-    t.query(internal.teams.resolveTeamByCardPlayers, {
+  // The gate's batch query answers per ask with the row's id, HOW the rule got
+  // there (`via`) and whether the players' row is the year's own
+  // (`agreesWithYear`). `resolveAnswer` keeps the whole answer; `resolve`
+  // reduces it to the id of an answer the PLAYERS made, which is what a visible
+  // career-team link needs: a year's answer, or none, is null.
+  const resolveAnswer = async (t: T, args: ResolveArgs) => {
+    const [answer] = await t.query(internal.selectorOptions.resolveGateTeamNames, {
       sportId: args.sportId,
-      name: args.name ?? "St. Louis Browns",
       ...(args.setYear !== undefined ? { setYear: args.setYear } : {}),
-      cardPlayerIds: args.cardPlayerIds,
+      asks: [{ name: args.name ?? "St. Louis Browns", cardPlayerIds: args.cardPlayerIds }],
     });
-  const resolve = async (t: T, args: ResolveArgs) => (await resolveRow(t, args))?._id ?? null;
+    return answer;
+  };
+  const resolve = async (t: T, args: ResolveArgs) => {
+    const { answer } = await resolveAnswer(t, args);
+    return answer?.via === "players" ? answer.teamId : null;
+  };
 
   test("returns the era the card's player played for when the name has several and no year", async () => {
     const t = convexTest(schema, modules);
@@ -273,23 +353,76 @@ describe("NEO-490: teams.resolveTeamByCardPlayers", () => {
     const paige = await insertPlayer(t, w.sportId, "Satchel Paige", [w.early]);
 
     expect(await resolve(t, { sportId: w.sportId, cardPlayerIds: [[paige]] })).toBe(w.early);
-    // NEO-592 — and what comes back is the row itself, not just its id.
-    const row = await resolveRow(t, { sportId: w.sportId, cardPlayerIds: [[paige]] });
-    expect(row).toMatchObject({ _id: w.early, name: "Browns", location: "St. Louis" });
+    // And what comes back names the row (id, sport and full name).
+    const { answer } = await resolveAnswer(t, { sportId: w.sportId, cardPlayerIds: [[paige]] });
+    expect(answer).toMatchObject({
+      teamId: w.early,
+      rowSportId: w.sportId,
+      fullName: "St. Louis Browns",
+      via: "players",
+    });
   });
 
-  test("returns null when the set year already settles the name", async () => {
-    // 1930 sits only inside the 1902-1953 era, so resolveTeamForSetYear
-    // decides. The player points at that SAME era, so without the early return
-    // this rule would hand it back too, labelled as a career-team link the
-    // players never made.
+  test("returns the row the players chose even when the set year lands on the same row", async () => {
+    // 1930 sits only inside the 1902-1953 era, so the year alone would pick it
+    // too. The player points at that SAME era: the players' row comes back,
+    // flagged `agreesWithYear` so the caller links it silently.
     const t = convexTest(schema, modules);
     const w = await seed(t);
     const paige = await insertPlayer(t, w.sportId, "Satchel Paige", [w.early]);
 
+    const { answer } = await resolveAnswer(t, {
+      sportId: w.sportId,
+      setYear: 1930,
+      cardPlayerIds: [[paige]],
+    });
+    expect(answer).toMatchObject({ teamId: w.early, via: "players", agreesWithYear: true });
+  });
+
+  test("the set year's answer is not the players' when no player has a stint on a row", async () => {
+    // The year's answer is not a career-team link the players made, so it comes
+    // back as `via: "year"` and the caller does not label it as one.
+    const t = convexTest(schema, modules);
+    const w = await seed(t);
+    const blank = await insertPlayer(t, w.sportId, "Satchel Paige", []);
+
+    const { answer } = await resolveAnswer(t, {
+      sportId: w.sportId,
+      setYear: 1930,
+      cardPlayerIds: [[blank]],
+    });
+    expect(answer).toMatchObject({ teamId: w.early, via: "year", agreesWithYear: true });
     expect(
-      await resolve(t, { sportId: w.sportId, setYear: 1930, cardPlayerIds: [[paige]] }),
+      await resolve(t, { sportId: w.sportId, setYear: 1930, cardPlayerIds: [[blank]] }),
     ).toBeNull();
+  });
+
+  test("returns the players' row when it differs from the year's (the visible-row case)", async () => {
+    // A 1990 card: the year covers neither era; only the late (1961-65) player
+    // evidence names a row. Players decide, so the answer is theirs.
+    const t = convexTest(schema, modules);
+    const w = await seed(t);
+    const late = await insertPlayer(t, w.sportId, "Other Player", [w.late]);
+
+    expect(
+      await resolve(t, { sportId: w.sportId, setYear: 1990, cardPlayerIds: [[late]] }),
+    ).toBe(w.late);
+  });
+
+  test("a stint dated outside every row's era is no evidence", async () => {
+    const t = convexTest(schema, modules);
+    const w = await seed(t);
+    const outside = await t.run((ctx) =>
+      ctx.db.insert("players", {
+        name: "Satchel Paige",
+        nameNormalized: "paige satchel",
+        sportId: w.sportId,
+        teamYears: [{ teamId: w.early, fromYear: 1970, toYear: 1975 }],
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    expect(await resolve(t, { sportId: w.sportId, cardPlayerIds: [[outside]] })).toBeNull();
   });
 
   test("returns null when the players disagree", async () => {
@@ -298,6 +431,8 @@ describe("NEO-490: teams.resolveTeamByCardPlayers", () => {
     const a = await insertPlayer(t, w.sportId, "Satchel Paige", [w.early]);
     const b = await insertPlayer(t, w.sportId, "Other Player", [w.late]);
 
+    const answer = await resolveAnswer(t, { sportId: w.sportId, cardPlayerIds: [[a], [b]] });
+    expect(answer.answer).toBeNull();
     expect(await resolve(t, { sportId: w.sportId, cardPlayerIds: [[a], [b]] })).toBeNull();
   });
 
@@ -307,8 +442,8 @@ describe("NEO-490: teams.resolveTeamByCardPlayers", () => {
     const paige = await insertPlayer(t, w.sportId, "Satchel Paige", [w.early]);
 
     expect(
-      await resolve(t, { sportId: w.sportId, name: "Nowhere Nobodies", cardPlayerIds: [[paige]] }),
-    ).toBeNull();
+      await resolveAnswer(t, { sportId: w.sportId, name: "Nowhere Nobodies", cardPlayerIds: [[paige]] }),
+    ).toEqual({ answer: null, ambiguous: false, candidateTeamIds: [] });
   });
 
   test("never inserts a team", async () => {
@@ -320,6 +455,115 @@ describe("NEO-490: teams.resolveTeamByCardPlayers", () => {
     await resolve(t, { sportId: w.sportId, cardPlayerIds: [[paige]] });
 
     expect(await t.run((ctx) => ctx.db.query("teams").collect())).toHaveLength(before.length);
+  });
+
+  test("refuses, never truncates, an ask past the card rule's bounds or a name no team can have", async () => {
+    const t = convexTest(schema, modules);
+    const w = await seed(t);
+    const paige = await insertPlayer(t, w.sportId, "Satchel Paige", [w.early]);
+    const ask = (asks: Array<{ name: string; cardPlayerIds?: Id<"players">[][] }>) =>
+      t.query(internal.selectorOptions.resolveGateTeamNames, { sportId: w.sportId, asks });
+    const name = "St. Louis Browns";
+
+    // At the bounds: answered.
+    const atCards = Array.from({ length: CARD_PLAYER_TEAM_MAX_CARDS }, () => [paige]);
+    const atPlayers = [Array.from({ length: CARD_PLAYER_TEAM_MAX_PLAYERS_PER_CARD }, () => paige)];
+    expect(await ask([{ name, cardPlayerIds: atCards }])).toHaveLength(1);
+    expect(await ask([{ name, cardPlayerIds: atPlayers }])).toHaveLength(1);
+    expect(await ask([{ name: "x".repeat(MAX_TEAM_NAME_LENGTH) }])).toHaveLength(1);
+
+    // One past: refused, even when it is only the second ask that breaches.
+    const pastCards = Array.from({ length: CARD_PLAYER_TEAM_MAX_CARDS + 1 }, () => [paige]);
+    const pastPlayers = [Array.from({ length: CARD_PLAYER_TEAM_MAX_PLAYERS_PER_CARD + 1 }, () => paige)];
+    await expect(ask([{ name }, { name, cardPlayerIds: pastCards }])).rejects.toMatchObject({
+      data: { code: "too_many_cards" },
+    });
+    await expect(ask([{ name, cardPlayerIds: pastPlayers }])).rejects.toMatchObject({
+      data: { code: "too_many_players" },
+    });
+    await expect(ask([{ name: "x".repeat(MAX_TEAM_NAME_LENGTH + 1) }])).rejects.toMatchObject({
+      data: { code: "name_too_long" },
+    });
+  });
+});
+
+describe("NEO-602 (S1): resolveCardTeamName's lazy player loader", () => {
+  test("is called once for a name that reaches several rows, and its players decide", async () => {
+    const t = convexTest(schema, modules);
+    const w = await seed(t);
+    const late = await insertPlayer(t, w.sportId, "Other Player", [w.late]);
+    let calls = 0;
+
+    const pick = await t.run((ctx) =>
+      resolveCardTeamName(ctx, w.sportId, "St. Louis Browns", 1990, {
+        loadCardPlayerIds: async () => {
+          calls++;
+          return [[late]];
+        },
+      }),
+    );
+
+    expect(calls).toBe(1);
+    expect(pick.teamId).toBe(w.late);
+    expect(pick.via).toBe("players");
+    expect(pick.agreesWithYear).toBe(false);
+  });
+
+  test("is never called for a one-row name or an unknown one", async () => {
+    const t = convexTest(schema, modules);
+    const w = await seed(t);
+    let calls = 0;
+    const loader = async () => {
+      calls++;
+      return undefined;
+    };
+    await t.run(async (ctx) => {
+      await ctx.db.insert("teams", {
+        name: "Padres",
+        location: "San Diego",
+        nameNormalized: normalizeTeamName("San Diego Padres"),
+        sportId: w.sportId,
+        lastUpdated: Date.now(),
+      });
+    });
+
+    const one = await t.run((ctx) =>
+      resolveCardTeamName(ctx, w.sportId, "San Diego Padres", 2000, { loadCardPlayerIds: loader }),
+    );
+    const none = await t.run((ctx) =>
+      resolveCardTeamName(ctx, w.sportId, "Nowhere Nobodies", 2000, { loadCardPlayerIds: loader }),
+    );
+
+    expect(one.teamId).not.toBeNull();
+    expect(none.teamId).toBeNull();
+    expect(calls).toBe(0);
+  });
+
+  test("a loader that finds no evidence leaves the year to decide, and an explicit cardPlayerIds wins over the loader", async () => {
+    const t = convexTest(schema, modules);
+    const w = await seed(t);
+    const late = await insertPlayer(t, w.sportId, "Other Player", [w.late]);
+    let calls = 0;
+
+    const noEvidence = await t.run((ctx) =>
+      resolveCardTeamName(ctx, w.sportId, "St. Louis Browns", 1930, {
+        loadCardPlayerIds: async () => undefined,
+      }),
+    );
+    expect(noEvidence.teamId).toBe(w.early);
+    expect(noEvidence.via).toBe("year");
+
+    const explicit = await t.run((ctx) =>
+      resolveCardTeamName(ctx, w.sportId, "St. Louis Browns", 1990, {
+        cardPlayerIds: [[late]],
+        loadCardPlayerIds: async () => {
+          calls++;
+          return [[]];
+        },
+      }),
+    );
+    expect(explicit.teamId).toBe(w.late);
+    expect(calls).toBe(0);
   });
 });
 

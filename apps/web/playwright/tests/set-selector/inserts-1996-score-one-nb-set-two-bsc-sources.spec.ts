@@ -33,12 +33,17 @@ import {
   confirmSaveButton,
   LOOKUPS,
   newStepHeading,
+  expectDecidedCount,
+  expectNameStepLeft,
+  expectPostNameStepLeft,
+  expectWizardStep,
   nextStepButton,
   passCareerAndTeamsSteps,
-  readStep,
+  readNameStep,
   reviewWizard,
-  stepCounter,
+  STEP_SUBTITLE,
   tidyUpName,
+  wizardProgress,
 } from "../../support/wizard";
 import { expectNoOverCapLook, expectOverCapLook } from "../../support/theme";
 import type { Page } from "@playwright/test";
@@ -273,10 +278,12 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await expect(title(12)).toHaveValue(DAULTON_BOXED);
 
   // ── P7. Save: the Save step is a later step, and Enter on it commits ──
-  const { x: titlesStep } = await readStep(page);
+  await expectWizardStep(page, STEP_SUBTITLE.titles);
   await next.click();
   await expect(wizard.getByText("Ready to save", { exact: true })).toBeVisible();
-  expect((await readStep(page)).x, "the Save step is a later step than Card titles").toBeGreaterThan(titlesStep);
+  // NEO-467: the Save step is a later step than Card titles, the end of the bar.
+  await expectPostNameStepLeft(page, STEP_SUBTITLE.titles);
+  await expect(wizardProgress(page), "the Save step fills the progress bar").toHaveAttribute("aria-valuenow", "100");
   await expect(wizard.getByText(new RegExp(`Save ${SERIES_1_CARDS} cards?\\?`))).toBeVisible();
   await expect(confirmSave).toBeVisible();
   await confirmSave.press("Enter");
@@ -460,6 +467,9 @@ test(
     const anyAddAsNew = wizard.getByRole("button", { name: /^Add as New (Player|Team|League)( anyway)?$/ });
     await expect(anyAddAsNew.first()).toBeVisible({ timeout: 30_000 });
     const firstKind = (await anyAddAsNew.first().textContent()) ?? "";
+    // The presented row, by its own skip ("Skip <name> — not a ..."): NEO-467's
+    // header has no step count, so the row's own control says it was decided.
+    const firstRow = await readNameStep(page);
     if (/League/.test(firstKind)) {
       await wizard.getByRole("radio", { name: "Other", exact: true }).click();
     }
@@ -472,9 +482,11 @@ test(
         .first()
         .click({ timeout: 30_000 });
     }
-    // NEO-335: ONE decision reads "Step 2 of …" (on a name step x is the decided
-    // count plus one): the same claim, as strict, as the old "1 of N reviewed".
-    await expect(stepCounter(page)).toHaveText(/^Step 2 of [0-9]+$/);
+    // ONE decision: the wizard left that row, and the names' history reads
+    // "Decided (1)" (NEO-467 took the "Step 2 of …" count away; the same claim,
+    // as strict, as the old "1 of N reviewed").
+    await expectNameStepLeft(page, firstRow);
+    await expectDecidedCount(page, 1);
     await wizard.getByRole("button", { name: "Cancel (Esc)" }).click();
     await expect(page.getByText(/Discard 1 decision/)).toBeVisible();
     await expect(page.getByText(/The same names come back the next time you sync this set/)).toBeVisible();
@@ -484,7 +496,10 @@ test(
     });
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
     await expect(wizard).toBeVisible();
-    await expect(stepCounter(page)).toHaveText(/^Step 2 of [0-9]+$/);
+    // Backing out of the discard kept the decision: still one decided, and the
+    // wizard did not return to that row.
+    await expectDecidedCount(page, 1);
+    await expect(wizard.getByRole("button", { name: firstRow, exact: true })).toBeHidden();
 
     await wizard.getByRole("button", { name: /Add remaining players as new/ }).click();
     // Deciding a team step in the middle of the walk would race the bulk's own writes
@@ -535,10 +550,12 @@ test(
     await expect(wizard.getByText("Every title fits now.")).toBeVisible();
     await expect(shortName).toHaveValue(short);
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, Card titles step" });
-    const { x: titlesStep } = await readStep(page);
+    await expectWizardStep(page, STEP_SUBTITLE.titles);
     await next.click();
     await expect(wizard.getByText("Ready to save", { exact: true })).toBeVisible();
-    expect((await readStep(page)).x, "the Save step is a later step than Card titles").toBeGreaterThan(titlesStep);
+    // NEO-467: the Save step is a later step than Card titles, the end of the bar.
+    await expectPostNameStepLeft(page, STEP_SUBTITLE.titles);
+    await expect(wizardProgress(page), "the Save step fills the progress bar").toHaveAttribute("aria-valuenow", "100");
     // Focus follows the Save step, and the label says "(Enter)": Enter committing IS the feature.
     await expect(confirmSave).toBeVisible();
     await confirmSave.press("Enter");
@@ -590,10 +607,12 @@ test(
       // The precondition, by name: no names to decide, and a post-name step is
       // the sitting's first.
       await expect(wizard.getByRole("button", { name: /Skip remaining names/ })).toBeHidden();
-      // NEO-574: "Career check" too (its subtitle and heading read the same, so `.first()`:
-      // any one of these subtitles is the post-name step being up).
-      await expect(wizard.getByText(/^(Career check|Cards with no team|Card titles)$/).first()).toBeVisible();
-      await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+      // NEO-467: the sitting's first step, read off the progress bar's value text.
+      // NEO-574: "Career check" too (any one of these is the post-name step being up).
+      await expectWizardStep(
+        page,
+        new RegExp(`^(${STEP_SUBTITLE.career}|${STEP_SUBTITLE.teams}|${STEP_SUBTITLE.titles})$`),
+      );
       // Teams are not this spec's business: Next leaves every line on its default.
       await advanceToSave(page);
       await expect(wizard.getByText(/Save [0-9]+ cards?\?/)).toBeVisible();

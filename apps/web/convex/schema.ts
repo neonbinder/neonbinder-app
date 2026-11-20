@@ -1,6 +1,7 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { rejectedSummaryValidator } from "./lib/extractRejections";
+import { playerContextValidator, teamContextValidator } from "./lib/entityReviewContext";
 
 /**
  * NEO-356 — the collector's saved theme preference, shared by the schema and
@@ -650,6 +651,34 @@ export const selectorOptionFields = {
    * is unchanged. No index, no backfill: absent is what every row said.
    */
   noTeamDefault: v.optional(
+    v.object({ setAt: v.number(), setByUserId: v.string() }),
+  ),
+  /**
+   * NEO-426 — this SPORT has no teams (Non Sport, Golf, Tennis): a card whose
+   * every player's HOME sport (`players.sportId`; extra `playerSports` never
+   * count) carries this stamp saves as "No team" by default, with nothing to
+   * answer in the wizard's Teams step.
+   *
+   * Meaningful on `level: "sport"` rows only, and set only there
+   * (`sportTeamless.setTeamlessSport` refuses any other level). Same shape as
+   * `noTeamDefault`, for the same reason: `setAt` / `setByUserId` are
+   * server-stamped (the time and `requireAdmin`'s subject), because a
+   * background path (`applyBscTeamResolution`) stamps the card on the
+   * operator's behalf and needs someone to credit.
+   *
+   * A DEFAULT, never a block: one more reason to stamp, decided by
+   * `noTeamCardVerdict` on the card as it is born (so a listing that names a
+   * team, a pending team name, or a lookup still owed holds it back — product
+   * invariant 8). Nothing refuses, strips or hides a team because of it; a
+   * team from any source wins. Read only through `convex/lib/teamlessSport.ts`,
+   * never by the sport's display name (invariant 4).
+   *
+   * ABSENT means "this sport has teams"; switching it off removes the field
+   * (a stored `false` would be a second way to say the same thing). Touches
+   * no existing card. NB data only: no adapter or sync reads or writes it. No
+   * index (sports are a handful of rows under `by_level`); no backfill.
+   */
+  teamlessSport: v.optional(
     v.object({ setAt: v.number(), setByUserId: v.string() }),
   ),
   /**
@@ -3714,6 +3743,47 @@ export default defineSchema({
     // keyed on creation would delete the session out from under them. This
     // field is the "still alive" signal — see `sweepAbandonedBatches`.
     lastTouchedAt: v.optional(v.number()),
+    /**
+     * NEO-602, team-kind only — what the New Team / Which team step shows the
+     * operator about the name it asks about.
+     *
+     * Jason, 2026-11-19: "On that New Team screen we need to show what
+     * player/card is triggering it because that is the only way a person knows
+     * the right team to link it to." A multi-row name used to look like a
+     * brand-new team. The review gate holds the cards (they are not committed
+     * yet, so nothing else can find them) and writes, once at insert:
+     *
+     *  - `candidateTeamIds` — the team rows the printed name reached when there
+     *    are two or more (empty otherwise). The step offers each as a one-click
+     *    link; the heading stops saying "New Team".
+     *  - `cards` — the first cards that printed the name (number and players as
+     *    printed; a player's NB id when the gate resolved him, so the step can
+     *    read his stints), bounded by the gate's own 16-card / 4-player bounds.
+     *  - `moreCards` — how many further cards printed it, for "+N more".
+     *
+     * Display only: nothing decides from it, no decision reads it, and a stale
+     * id is dropped by the reader. Absent on every row written before this
+     * field, on a league or player row, and on a team the batch staged for a
+     * player's career. Additive and optional.
+     */
+    teamContext: v.optional(teamContextValidator),
+    /**
+     * NEO-602, player-kind only — what the "Which {name} is this?" pick step
+     * shows beside its candidates.
+     *
+     * Jason, 2026-11-19: "I don't know how I would choose between the two
+     * active luis castillo. We should show the card number & team from the
+     * player on the screen." The cards are not committed while the wizard is
+     * open, so the review gate writes, once at insert, the first cards that
+     * print the name: the number and the team(s) as printed. The candidates'
+     * own stints are read on demand (`playerStepContext`), from the rows in
+     * `enrichment.existingCandidates`.
+     *
+     * Display only: nothing decides from it. Absent on every row written
+     * before this field and on a name that was never a same-name choice.
+     * Additive and optional.
+     */
+    playerContext: v.optional(playerContextValidator),
   })
     .index("by_selector_option", ["selectorOptionId"])
     .index("by_selector_option_and_batch", ["selectorOptionId", "batchId"])

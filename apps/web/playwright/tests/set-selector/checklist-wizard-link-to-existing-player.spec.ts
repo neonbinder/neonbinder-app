@@ -1,7 +1,7 @@
 // Origin: .maestro/flows/set-selector/checklist-wizard-link-to-existing-player.yaml (Maestro suite retired in NEO-341; see git history)
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
-import { cancelAndDiscard, discardResumedReviewBatch, fetchChecklistToWizard, readBackDecision, reviewWizard, stepCounter, walkToPlayerRow } from "../../support/wizard";
+import { cancelAndDiscard, discardResumedReviewBatch, fetchChecklistToWizard, expectNothingDecided, readBackDecision, reviewWizard, walkToPlayerRow } from "../../support/wizard";
 
 test(
   "Entity review — Link to Existing resolves an unknown name onto a player we already have instead of minting a duplicate",
@@ -12,8 +12,8 @@ test(
 
     await fetchChecklistToWizard(page, env);
     await discardResumedReviewBatch(page, env);
-    // Nothing decided: on a name step x is the decided count plus one (NEO-335).
-    await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+    // Nothing decided: a name step is up and there is no "Decided (N)" history (NEO-467).
+    await expectNothingDecided(page);
 
     // Past the team steps, to the first player row that is a truly UNKNOWN
     // name: `readyToCreate` also walks past a same-name pick step (NEO-475: on

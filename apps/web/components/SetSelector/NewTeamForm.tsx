@@ -3,7 +3,11 @@ import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { splitTeamName, teamFullName } from "../../lib/teams/team-name";
-import { eraLabel } from "../../lib/teams/team-era";
+import {
+  aliasHolderStatement,
+  eraLabel,
+  erasOverlap,
+} from "../../lib/teams/team-era";
 import {
   entityNameQueryReadings,
   normalizeOrderedEntityName,
@@ -342,6 +346,12 @@ export default function NewTeamForm({
    * over the wizard's own step), which is exactly the case `useId` exists for.
    */
   const aliasHelpId = useId();
+  // The two hints under the era boxes, pointed at by the Team name box (SC
+  // 1.3.1 / 3.3.1): a screen-reader user types the name and the hint appears
+  // below, out of their reading position, so the field names it as its
+  // description while it is shown. `useId` for the reason `aliasHelpId` gives.
+  const aliasHolderHintId = useId();
+  const sameNameHintId = useId();
 
   const pick = (patch: Partial<NewTeamDraft>) => {
     if (disabled) return;
@@ -720,13 +730,43 @@ export default function NewTeamForm({
       ? { name: draftFullName(draft), sportId }
       : "skip",
   );
+  // NEO-602 — a row that only ANSWERS to the name (an alias) is not an era of
+  // it: nothing is called this. Told apart so the hint below can say which.
   const sameNameEras = useMemo(
     () =>
-      (existingEras ?? []).map(
-        (row) => eraLabel(row.yearsActive) || "no years yet",
-      ),
+      (existingEras ?? [])
+        .filter((row) => !row.viaAlias)
+        .map((row) => eraLabel(row.yearsActive) || "no years yet"),
     [existingEras],
   );
+  const aliasHolderRows = useMemo(
+    () => (existingEras ?? []).filter((row) => row.viaAlias),
+    [existingEras],
+  );
+  // `label` is already "Name · years", composed by the server.
+  const aliasHolders = useMemo(
+    () => aliasHolderRows.map((row) => row.label),
+    [aliasHolderRows],
+  );
+  // The advice clause ("give this one years that don't overlap") is only
+  // useful while the draft could still clash with a holder: its years overlap
+  // a holder's, or one side is undated (`erasOverlap` counts a missing or
+  // malformed era as overlapping). Once the draft's years are already clear of
+  // every holder the statement stands alone.
+  const aliasHolderNeedsAdvice = aliasHolderRows.some((row) =>
+    erasOverlap(draft.yearsActive, row.yearsActive),
+  );
+  // Linked from the Team name box only while shown, merged with the host's own
+  // reason. No live region: the description is read when the field is
+  // focused, and a polling announcement per keystroke would talk over typing.
+  const nameDescribedBy =
+    [
+      describedBy,
+      aliasHolders.length > 0 ? aliasHolderHintId : undefined,
+      sameNameEras.length > 0 ? sameNameHintId : undefined,
+    ]
+      .filter(Boolean)
+      .join(" ") || undefined;
 
   return (
     <div className="space-y-2">
@@ -766,7 +806,7 @@ export default function NewTeamForm({
             value={draft.name}
             placeholder="Padres"
             aria-label="New team name"
-            aria-describedby={describedBy || undefined}
+            aria-describedby={nameDescribedBy}
             disabled={disabled}
             onChange={(e) => onChange({ name: e.target.value })}
             onKeyDown={onFieldKeyDown}
@@ -834,13 +874,24 @@ export default function NewTeamForm({
         </FieldLabel>
       </div>
 
+      {aliasHolders.length > 0 && (
+        /* NEO-602 — the same statement, for a name no team is called but one
+           answers to as an alias. A statement, not a block: the operator may
+           still add a team of this name when its years don't overlap. */
+        <p id={aliasHolderHintId} className="text-xs text-ink-3">
+          {aliasHolders.map((label) => aliasHolderStatement(label)).join(" ")}
+          {aliasHolderNeedsAdvice &&
+            " Give this one years that don't overlap if it is a different team."}
+        </p>
+      )}
+
       {sameNameEras.length > 0 && (
         /* The hint the ticket asks for, and it is a statement rather than a
            warning: a second era is a legitimate thing to create — the Winnipeg
            Jets did it — so this names what is already there and lets the
            operator decide, instead of blocking with a colour that says
            "mistake". `neon-yellow` would claim to know; gray states. */
-        <p className="text-xs text-ink-3">
+        <p id={sameNameHintId} className="text-xs text-ink-3">
           {draftFullName(draft)} already exists for{" "}
           <span className="font-mono tabular-nums">
             {sameNameEras.join(", ")}

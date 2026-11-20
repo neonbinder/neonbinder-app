@@ -24,3 +24,8 @@ text). Keep the draft confirmation as the "save resolved" gate only. When a valu
 is COMPOSED from two fields, also read each half separately (row short name,
 Location field via `toHaveValue`): two halves glued into one column compose to
 the same full string.
+
+A BSC-only Base under a SportLots pause reads unmapped, so `page.reload()` on its
+address reopens the "Select Base Set" picker over the card list (a red at the next
+card assert, the picker in the screenshot). Read such a set back by drilling again
+(`drillToBaseVariant` cancels the picker), then reach the card through "Search cards".

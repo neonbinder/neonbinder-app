@@ -53,3 +53,4 @@
 - [NeonButton secondary as radio choices](neonbutton-secondary-radio-states.md) — blue outline/filled contrast, aria-disabled needs a call-site guard, hover looks selected
 - [No Team toggle and ledger NEO-556](no-team-toggle-and-ledger-neo556.md) — toggle beside Add team, offer/ledger control: held-up parts and recurring gaps
 - [Park on unmount needs had-focus NEO-581](park-on-unmount-needs-had-focus-neo581.md) — body-only guard also fires on reload/silent recount; gate on the control having held focus
+- [Step counter high-water vs vanishing step NEO-426](step-counter-high-water-vs-vanishing-step-neo426.md) — trackSteps never shrinks; async-fact step drop-outs leave a phantom step; Save sentence needs describedby on Confirm

@@ -71,6 +71,7 @@ let currentEras: Array<{
   location?: string;
   yearsActive?: { from: number; to?: number };
   label: string;
+  viaAlias?: boolean;
 }> = [];
 let queryCalls: Array<{ ref: string; args: unknown }>;
 
@@ -1477,6 +1478,201 @@ describe("NewTeamForm — active years", () => {
     expect(screen.getByText("1972–1996")).toBeTruthy();
     // Nothing is disabled by it — the operator can still create.
     expect(screen.getByLabelText("New team name")).toBeTruthy();
+  });
+
+  it("NEO-602: a team that only answers to the name is said to, not called an existing era", () => {
+    currentEras = [
+      {
+        _id: "t1",
+        name: "Athletics",
+        yearsActive: { from: 2025 },
+        label: "Athletics · 2025–present",
+        viaAlias: true,
+      },
+    ];
+    renderForm({ initial: { ...EMPTY, name: "Oakland Athletics" } });
+
+    expect(
+      screen.getByText(
+        /Athletics · 2025–present already answers to this name as an alias\./,
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/already exists for/)).toBeNull();
+  });
+
+  it("NEO-602: a real same-name row beside an alias holder still gets the era hint", () => {
+    currentEras = [
+      {
+        _id: "t1",
+        name: "Athletics",
+        yearsActive: { from: 2025 },
+        label: "Athletics · 2025–present",
+        viaAlias: true,
+      },
+      {
+        _id: "t2",
+        name: "Oakland Athletics",
+        yearsActive: { from: 1968, to: 2024 },
+        label: "Oakland Athletics · 1968–2024",
+      },
+    ];
+    renderForm({ initial: { ...EMPTY, name: "Oakland Athletics" } });
+
+    expect(screen.getByText(/Oakland Athletics already exists for/)).toBeTruthy();
+    expect(screen.getByText("1968–2024")).toBeTruthy();
+    expect(screen.queryByText("2025–present")).toBeNull();
+    expect(screen.getByText(/Athletics · 2025–present already answers/)).toBeTruthy();
+  });
+
+  describe("NEO-602: the alias-holder advice clause follows the draft's years", () => {
+    const ADVICE = "Give this one years that don't overlap if it is a different team.";
+    const holder = {
+      _id: "t1",
+      name: "Athletics",
+      yearsActive: { from: 1990, to: 1996 },
+      label: "Athletics · 1990–1996",
+      viaAlias: true,
+    };
+
+    it("says only who holds the name when the draft's years already clear the holder's", () => {
+      currentEras = [holder];
+      renderForm({
+        initial: { ...EMPTY, name: "Oakland Athletics", yearsActive: { from: 1997 } },
+      });
+
+      expect(
+        screen.getByText("Athletics · 1990–1996 already answers to this name as an alias."),
+      ).toBeTruthy();
+      expect(screen.queryByText(new RegExp(ADVICE))).toBeNull();
+    });
+
+    it("adds the advice when the draft's years overlap the holder's", () => {
+      currentEras = [holder];
+      renderForm({
+        initial: {
+          ...EMPTY,
+          name: "Oakland Athletics",
+          yearsActive: { from: 1995, to: 2000 },
+        },
+      });
+
+      expect(
+        screen.getByText(
+          `Athletics · 1990–1996 already answers to this name as an alias. ${ADVICE}`,
+        ),
+      ).toBeTruthy();
+    });
+
+    it("adds the advice while the draft is undated, and drops it once typed years clear the holder", () => {
+      currentEras = [holder];
+      renderForm({ initial: { ...EMPTY, name: "Oakland Athletics" } });
+      expect(screen.getByText(new RegExp(ADVICE))).toBeTruthy();
+
+      fireEvent.change(screen.getByLabelText("New team active from (optional)"), {
+        target: { value: "1997" },
+      });
+      expect(screen.queryByText(new RegExp(ADVICE))).toBeNull();
+      expect(screen.getByText(/already answers to this name as an alias\./)).toBeTruthy();
+    });
+
+    it("counts an undated holder, or a malformed draft era, as undated", () => {
+      currentEras = [{ ...holder, yearsActive: undefined, label: "Athletics" }];
+      const { unmount } = renderForm({
+        initial: { ...EMPTY, name: "Oakland Athletics", yearsActive: { from: 1997 } },
+      });
+      expect(screen.getByText(new RegExp(ADVICE))).toBeTruthy();
+      unmount();
+
+      currentEras = [holder];
+      renderForm({
+        initial: {
+          ...EMPTY,
+          name: "Oakland Athletics",
+          yearsActive: { from: 2005, to: 1997 },
+        },
+      });
+      expect(screen.getByText(new RegExp(ADVICE))).toBeTruthy();
+    });
+  });
+
+  describe("NEO-602: the Team name box points at the hints it is shown beside", () => {
+    const nameBox = () => screen.getByLabelText("New team name");
+    const ids = () =>
+      (nameBox().getAttribute("aria-describedby") ?? "").split(" ").filter(Boolean);
+
+    it("links the alias-holder hint, and only while it is shown", () => {
+      currentEras = [
+        {
+          _id: "t1",
+          name: "Athletics",
+          yearsActive: { from: 2025 },
+          label: "Athletics · 2025–present",
+          viaAlias: true,
+        },
+      ];
+      renderForm({ initial: { ...EMPTY, name: "Oakland Athletics" } });
+
+      const linked = ids();
+      expect(linked).toHaveLength(1);
+      expect(document.getElementById(linked[0]!)?.textContent).toMatch(
+        /Athletics · 2025–present already answers to this name as an alias\./,
+      );
+    });
+
+    it("links the already-exists hint", () => {
+      currentEras = [
+        {
+          _id: "t1",
+          name: "Jets",
+          location: "Winnipeg",
+          yearsActive: { from: 1972, to: 1996 },
+          label: "Winnipeg Jets · 1972–1996",
+        },
+      ];
+      renderForm({ initial: { ...EMPTY, location: "Winnipeg", name: "Jets" } });
+
+      const linked = ids();
+      expect(linked).toHaveLength(1);
+      expect(document.getElementById(linked[0]!)?.textContent).toMatch(
+        /Winnipeg Jets already exists for/,
+      );
+    });
+
+    it("links both hints, merged after the host's own reason, with distinct ids", () => {
+      currentEras = [
+        {
+          _id: "t1",
+          name: "Athletics",
+          yearsActive: { from: 2025 },
+          label: "Athletics · 2025–present",
+          viaAlias: true,
+        },
+        {
+          _id: "t2",
+          name: "Oakland Athletics",
+          yearsActive: { from: 1968, to: 2024 },
+          label: "Oakland Athletics · 1968–2024",
+        },
+      ];
+      renderForm({
+        describedBy: "why-blocked",
+        initial: { ...EMPTY, name: "Oakland Athletics" },
+      });
+
+      const linked = ids();
+      expect(linked).toHaveLength(3);
+      expect(linked[0]).toBe("why-blocked");
+      expect(new Set(linked).size).toBe(3);
+      expect(document.getElementById(linked[1]!)?.textContent).toMatch(/already answers/);
+      expect(document.getElementById(linked[2]!)?.textContent).toMatch(/already exists for/);
+    });
+
+    it("carries no aria-describedby at all when nothing is shown, and no live region appears", () => {
+      currentEras = [];
+      renderForm({ initial: { ...EMPTY, name: "Jets" } });
+      expect(nameBox().hasAttribute("aria-describedby")).toBe(false);
+      expect(document.querySelector('[aria-live], [role="status"]')).toBeNull();
+    });
   });
 
   it("names an undated rival as such rather than leaving a gap", () => {

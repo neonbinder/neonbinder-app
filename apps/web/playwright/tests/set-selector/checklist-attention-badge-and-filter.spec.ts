@@ -3,8 +3,9 @@
 // by the checklist header's amber "N need you" pill ("1 needs you" for one). The
 // pill replaced the filter chip, the "Fix them one at a time" link and Fill
 // teams; what the filter proved (WHICH rows are flagged) is now proved by the
-// walker the pill opens: it opens on the lowest-numbered flagged card and its
-// counter is the queue's length. Card 3 is born linked to a team AND a player
+// walker the pill opens: it opens on the lowest-numbered flagged card, closing it
+// mid-walk leaves that card counted, and skipping that card ends the walk
+// (NEO-467: no count to read). Card 3 is born linked to a team AND a player
 // (quick-add pickers) and is neither badged nor counted; the player is read back
 // from its drawer, the quick-add create path's only E2E proof since NEO-335
 // retired set-fill-teams-from-teammate-card.
@@ -171,19 +172,36 @@ test(
     await expect(rows).toHaveCount(3);
 
     // WHICH card: the pill opens the walker on the flagged set and only that. It
-    // opens on the lowest-numbered flagged card, #701, and the counter's y is the
-    // queue's length, so a walker that also held #702 (answered) or #703 (born
-    // linked) reads "Step 1 of 2" / "of 3". The Skip button is the walker's one
-    // card-specific handle (the wizard shares its title). Nothing is answered.
+    // opens on the lowest-numbered flagged card, #701, and skipping it ends the
+    // walk at All clear, so a walker that also held #702 (answered) or #703
+    // (born linked) would present that card instead (NEO-467: the header has no
+    // count to read the queue's length off). The Skip button is the walker's one
+    // card-specific handle (the wizard shares its title). Nothing is answered: a
+    // skip defers for this sitting and writes nothing.
     await pill("1 needs you").click();
     const walker = page.getByRole("dialog", { name: TIDY_UP_NAME });
     await expect(walker).toBeVisible();
-    await expect(walker.getByRole("button", { name: `Skip for now, card ${n701}` })).toBeVisible();
-    await expect(walker.getByText("Step 1 of 1", { exact: true })).toBeVisible();
+    const skip701 = walker.getByRole("button", { name: `Skip for now, card ${n701}` });
+    await expect(skip701).toBeVisible();
     await expectAccessible(page, { within: walker, label: "Attention walker opened from the need-you pill" });
+    // Closed MID-WALK, #701 still presented and unanswered: closing defers, so the
+    // pill still counts it and its badge stays.
     await walker.getByRole("button", { name: "Close (Esc)" }).click();
     await expect(walker).toBeHidden();
-    // Closing deferred: #701 is still the one flagged card.
+    await expect(pill("1 needs you")).toBeVisible();
+    await expect(badge(n701)).toBeVisible();
+    // Opened again, the walker presents #701 again; skipping it is the end of the walk.
+    await pill("1 needs you").click();
+    await expect(walker).toBeVisible();
+    await expect(skip701).toBeVisible();
+    await skip701.click();
+    // "All clear" opens the done line either way (a team lookup still running
+    // on another card adds "for now"; it is not a card to walk).
+    await expect(walker.getByText(/^All clear/)).toBeVisible();
+    await expect(walker.getByRole("button", { name: /^Skip for now, card / })).toHaveCount(0);
+    await walker.getByRole("button", { name: "Done (Esc)" }).click();
+    await expect(walker).toBeHidden();
+    // Skipping and closing deferred: #701 is still the one flagged card.
     await expect(pill("1 needs you")).toBeVisible();
     await expect(badge(n701)).toBeVisible();
   },
