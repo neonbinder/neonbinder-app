@@ -56,3 +56,4 @@
 - [NEO-426 teamless sport tests](reference_neo426_teamless_sport_test_patterns.md) — chunk-direct commit tests, undefined->null in t.run, module-registry probe, break results
 - [NEO-426 client teamless tests](reference_neo426_client_teamless_test_patterns.md) — private rule via partition, unresolved-team trap, parity sweep, zsh array trap
 - [NEO-482 call order tap + mutant module](reference_neo482_call_order_tap_and_mutant_module.md) — assert internal-mutation order by wrapping _handler; break-check via mutant copy in the modules glob
+- [vi.mock concurrent-import race](reference_vi_mock_concurrent_import_race.md) — async credentials mock raced under --shard; adapter got real module; fix = top-level warm-up import
