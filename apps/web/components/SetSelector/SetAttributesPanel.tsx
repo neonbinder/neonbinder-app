@@ -32,7 +32,7 @@ import { FeatureValueControl } from "./FeatureValueControl";
 import { AUTOGRAPH_CHOICE_LABEL, AUTOGRAPH_FORMATS } from "./entity-review-steps";
 import CardPrefixRow from "./CardPrefixRow";
 import RenameEntityControl, { type RenameEntityHandle } from "./RenameEntityControl";
-import { variantTypeKind } from "../../convex/variantRole";
+import { derivedVariantFlags, variantTypeKind } from "../../convex/variantRole";
 import { titleChainFacts } from "../../convex/listingShortName";
 import { setDescriptionForTitles } from "../../convex/features/listingInputs";
 import MoveSetToBrandControl from "./MoveSetToBrandControl";
@@ -329,6 +329,28 @@ export default function SetAttributesPanel({
   const setManufacturerSlViaAllBrands = useMutation(
     api.brandView.setManufacturerSlViaAllBrands,
   );
+  const setParallelsNameThemselves = useMutation(
+    api.selectorOptions.setSelectorOptionParallelsNameThemselves,
+  );
+  // NEO-619 — "Parallels name themselves" belongs to an insert-role row (an
+  // insert under an Insert type, read through `derivedVariantFlags`: the
+  // variant type's KIND, never its name) and only means something once a
+  // parallel hangs beneath it. The parallels are read with the SAME reference
+  // and args (key order included) the set builder's Sub-Variants column
+  // subscribes to (`components/modules/SetSelector.tsx`), so the Convex client
+  // holds one subscription for both; skipped on every other row.
+  const isInsertRoleRow =
+    row?.level === "insert" &&
+    derivedVariantFlags(
+      "insert",
+      chain?.find((c) => c.level === "variantType"),
+    )?.isInsert === true;
+  const parallelRowsBeneath = useQuery(
+    api.selectorOptions.getSelectorOptions,
+    isInsertRoleRow && row
+      ? { level: "parallel", parentId: row._id }
+      : "skip",
+  );
 
   // The row's level decides the default (NEO-496: open at the set level). The
   // row may still be loading on the first render; the effect below settles
@@ -535,6 +557,13 @@ export default function SetAttributesPanel({
   // this row's cards get without one, for the field's placeholder.
   const showShortNameRow = showsShortNameRow(leafLevel, row.value);
   const listingShortName = row.metadata?.listingShortName;
+  // NEO-619 — shown on an insert-role row with a parallel beneath it. A switch
+  // already on stays reachable with none left, so it can always be turned off:
+  // a later parallel would otherwise inherit a switch nobody can see.
+  const parallelsNameThemselvesOn = row.metadata?.parallelsNameThemselves === true;
+  const showParallelsNameThemselves =
+    isInsertRoleRow &&
+    (parallelsNameThemselvesOn || (parallelRowsBeneath?.length ?? 0) >= 1);
   const titlesDescription = showShortNameRow
     ? setNameInTitlesFor(row, chain, features)
     : undefined;
@@ -841,6 +870,26 @@ export default function SetAttributesPanel({
       showFailedToast(
         slViaAllBrandsRefusal(e) ??
           userFacingMessage(e, "Could not change the SportLots link"),
+      );
+    }
+  };
+
+  /**
+   * NEO-619 — the "Parallels name themselves" switch's write. The toast waits
+   * for the server like every row's (NEO-412) and says what the switch does
+   * not do: it leaves existing titles alone, and Regenerate reads it.
+   */
+  const handleToggleParallelsNameThemselves = async (on: boolean) => {
+    try {
+      await setParallelsNameThemselves({ id: selectorOptionId, on });
+      showToast(
+        on
+          ? "Parallels name themselves · Regenerate a card to retitle it"
+          : "Parallels carry the insert's name again · Regenerate a card to retitle it",
+      );
+    } catch (e) {
+      showFailedToast(
+        userFacingMessage(e, "Could not change how parallels are titled"),
       );
     }
   };
@@ -1324,6 +1373,19 @@ export default function SetAttributesPanel({
                 onSave={handleSaveListingShortName}
               />
             )}
+            {/* NEO-619: an insert's one switch for every parallel beneath it,
+                beside the "Set name in titles" it changes the reading of. */}
+            {showParallelsNameThemselves && (
+              <PressedToggleCell
+                key={`parallels-name-themselves-${selectorOptionId}`}
+                eyebrow="Titles"
+                cellLabel="Set feature Parallel titles"
+                text={PARALLELS_NAME_THEMSELVES_TEXT}
+                on={parallelsNameThemselvesOn}
+                disabledReason={null}
+                onToggle={handleToggleParallelsNameThemselves}
+              />
+            )}
             {/* NEO-345: at the levels cards hang from — how this leaf's
                 autographs are signed. Its AU cards take it. */}
             {showCardPrefixRow && (
@@ -1382,7 +1444,11 @@ function setNameInTitlesFor(
     _id: string;
     level: string;
     value: string;
-    metadata?: { listingShortName?: string; isBrandUnknown?: boolean } | null;
+    metadata?: {
+      listingShortName?: string;
+      parallelsNameThemselves?: boolean;
+      isBrandUnknown?: boolean;
+    } | null;
   }>,
   features: Record<string, string>,
 ): string | undefined {
@@ -1413,12 +1479,21 @@ function setNameInTitlesFor(
 function asChainRow(row: {
   level: string;
   value: string;
-  metadata?: { listingShortName?: string } | null;
+  metadata?: { listingShortName?: string; parallelsNameThemselves?: boolean } | null;
 }) {
+  const listingShortName = row.metadata?.listingShortName;
+  const parallelsNameThemselves = row.metadata?.parallelsNameThemselves;
   return {
     level: row.level,
     value: row.value,
-    ...(row.metadata?.listingShortName ? { metadata: { listingShortName: row.metadata.listingShortName } } : {}),
+    ...(listingShortName || parallelsNameThemselves
+      ? {
+          metadata: {
+            ...(listingShortName ? { listingShortName } : {}),
+            ...(parallelsNameThemselves ? { parallelsNameThemselves } : {}),
+          },
+        }
+      : {}),
   };
 }
 
@@ -1686,6 +1761,53 @@ function SlViaAllBrandsToggle({
   disabledReason: string | null;
   onToggle: (enabled: boolean) => Promise<unknown>;
 }) {
+  return (
+    <PressedToggleCell
+      eyebrow="SportLots"
+      cellLabel="Set feature SportLots link"
+      fieldKey="btn-sl-via-all-brands"
+      text={SL_VIA_ALL_BRANDS_TOGGLE_TEXT}
+      on={on}
+      disabledReason={disabledReason}
+      onToggle={onToggle}
+    />
+  );
+}
+
+/** NEO-619 — the "Parallels name themselves" switch's visible sentence. */
+export const PARALLELS_NAME_THEMSELVES_TEXT = "Parallels name themselves";
+
+/**
+ * The Attributes grid's pressed-toggle cell: an eyebrow over one pressed
+ * button, the cell chrome its neighbours wear. The via-All-Brands link
+ * (NEO-237) and the insert's "Parallels name themselves" (NEO-619) are both
+ * this cell, so the two cannot drift apart.
+ *
+ * `aria-pressed` carries the state; a busy write or a `disabledReason` makes
+ * it `aria-disabled` (never native `disabled`, so a keyboard user can reach it
+ * and hear why), and the reason is printed under it.
+ */
+function PressedToggleCell({
+  eyebrow,
+  cellLabel,
+  fieldKey,
+  text,
+  on,
+  disabledReason,
+  onToggle,
+}: {
+  eyebrow: string;
+  /** The cell's own `aria-label` (`Set feature …`). */
+  cellLabel: string;
+  /** Legacy marker-class key for the button; omit it for a new control. */
+  fieldKey?: string;
+  /** The pressed button's visible sentence, and so its accessible name. */
+  text: string;
+  on: boolean;
+  /** Non-null: shown, unpressable, with this line under it. */
+  disabledReason: string | null;
+  onToggle: (next: boolean) => Promise<unknown>;
+}) {
   const fieldClass = useFieldTestClass();
   const reasonId = useId();
   const [busy, setBusy] = useState(false);
@@ -1704,14 +1826,14 @@ function SlViaAllBrandsToggle({
   return (
     <div
       className="flex flex-col gap-1 p-2 rounded border text-xs border-rule-strong bg-raised-deep/30"
-      aria-label="Set feature SportLots link"
+      aria-label={cellLabel}
     >
       <span className="text-[10px] uppercase tracking-wide text-ink-3">
-        SportLots
+        {eyebrow}
       </span>
       <button
         type="button"
-        className={`${fieldClass("btn-sl-via-all-brands")} w-full text-left flex items-start gap-2 p-2 rounded-md border text-xs transition-colors focus-outline ${
+        className={`${fieldKey ? `${fieldClass(fieldKey)} ` : ""}w-full text-left flex items-start gap-2 p-2 rounded-md border text-xs transition-colors focus-outline ${
           on
             ? "border-neon-green-text bg-neon-green/10 text-ink"
             : // gray-500: the 3:1 boundary tone on this panel's dark surface
@@ -1730,7 +1852,7 @@ function SlViaAllBrandsToggle({
             on ? "border-neon-green-text bg-neon-green" : "border-control"
           }`}
         />
-        <span>{SL_VIA_ALL_BRANDS_TOGGLE_TEXT}</span>
+        <span>{text}</span>
       </button>
       {disabledReason && (
         // Next to the control it describes, not only in a tooltip: a

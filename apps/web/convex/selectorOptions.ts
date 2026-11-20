@@ -8249,6 +8249,50 @@ export const setSelectorOptionListingShortName = mutation({
   },
 });
 
+/**
+ * NEO-619 — turn "Parallels name themselves" on or off for an insert: the
+ * parallels beneath it (its sub-variants) leave the insert's name out of their
+ * card titles and use their own, and the insert's own cards still name the
+ * insert (`titleChainFacts` reads the switch; see `metadata.
+ * parallelsNameThemselves` in schema.ts).
+ *
+ * Same shape as `setSelectorOptionListingShortName` above: one key, nothing
+ * else in `metadata` touched; on stores `true`, off DELETES the key, and an
+ * emptied metadata object is dropped. Refused on anything but an insert-level
+ * row under an Insert type (the row's role is its variant type's KIND, read
+ * through `derivedVariantFlags`), the only row that has parallels beneath it.
+ * Existing titles are not rewritten (write-once): Regenerate reads the switch.
+ */
+export const setSelectorOptionParallelsNameThemselves = mutation({
+  args: {
+    id: v.id("selectorOptions"),
+    on: v.boolean(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const row = await ctx.db.get(args.id);
+    if (!row) {
+      throw new ConvexError("That row is gone. Refresh and try again.");
+    }
+    const parent = row.parentId ? await ctx.db.get(row.parentId) : null;
+    if (
+      row.level !== "insert" ||
+      derivedVariantFlags(row.level, parent)?.isInsert !== true
+    ) {
+      throw new ConvexError("Parallels name themselves on an insert.");
+    }
+    const next = { ...(row.metadata ?? {}) };
+    if (args.on) next.parallelsNameThemselves = true;
+    else delete next.parallelsNameThemselves;
+    await ctx.db.patch(args.id, {
+      metadata: Object.keys(next).length > 0 ? next : undefined,
+      lastUpdated: Date.now(),
+    });
+    return null;
+  },
+});
+
 // ===========================================================================
 // NEO-277 — Team as a set-level attribute
 // ===========================================================================
