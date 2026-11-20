@@ -1475,7 +1475,7 @@ describe("CareerTeamEntry — loading a stint to edit (NEO-591)", () => {
   const load = (token: number, rest: Partial<NonNullable<Parameters<typeof CareerTeamEntry>[0]["load"]>> = {}) => ({
     token,
     name: "San Diego Padres",
-    teamId: PADRES._id,
+    teamId: PADRES._id as unknown as Id<"teams">,
     fromYear: 2019,
     toYear: 2021,
     ...rest,

@@ -692,7 +692,6 @@ describe("NEO-591 — a Prospect (X) card's team is an ordinary Teams-step line"
             players: ["Cord Rager"],
             teams: ["Dallas Baptist"],
             teamLookup: "checklist",
-            isProspect: true,
           },
         ]}
         rows={[{ _id: "r1", kind: "team", name: "Dallas Baptist", decision: null }]}

@@ -495,7 +495,12 @@ describe("careerCommitFields", () => {
     });
 
     it("adds nothing while the re-check is unread, failed or covered", () => {
-      for (const coverage of [undefined, {}, { "p-tatis-sr|t-padres": true }]) {
+      const unreadFailedOrCovered: Array<Readonly<Record<string, boolean>> | undefined> = [
+        undefined,
+        {},
+        { "p-tatis-sr|t-padres": true },
+      ];
+      for (const coverage of unreadFailedOrCovered) {
         const out = careerCommitFields({ ...base, answers: playerPick, coverage });
         expect(out?.stints).toEqual([]);
       }

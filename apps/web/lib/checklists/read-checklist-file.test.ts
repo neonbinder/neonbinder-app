@@ -99,7 +99,7 @@ describe("readChecklistFile", () => {
     const readPdf = vi.fn(async () => ({
       ok: true as const,
       pages: 1,
-      lines: [{ page: 1, line: 1, cells: ["1", "A"], xs: [53, 132.6] }],
+      lines: [{ page: 1, line: 1, cells: ["1", "A"], xs: [53, 132.6], items: [] }],
     }));
     const out = await readChecklistFile(fileOf("t.pdf", text("%PDF-1.4\n")), { readPdf });
     expect(out).toEqual({

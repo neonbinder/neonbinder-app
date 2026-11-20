@@ -385,7 +385,7 @@ describe("a lookup that threw (unchanged)", () => {
     // The long-standing line, kept verbatim: a thrown lookup is still a caught
     // lookup failure. What it no longer covers is the write.
     const prefixed = errorSpy.mock.calls.filter(
-      (call) => typeof call[0] === "string" && call[0].startsWith("[entity-review-lookup]"),
+      (call: unknown[]) => typeof call[0] === "string" && call[0].startsWith("[entity-review-lookup]"),
     );
     expect(prefixed).toHaveLength(1);
     expect(linesFor(errorSpy, "entity_review_lookup_write_failed")).toEqual([]);

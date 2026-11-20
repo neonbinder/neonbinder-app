@@ -644,11 +644,11 @@ describe("PublishedChecklistDialog — spreadsheets and PDFs (NEO-496)", () => {
       ok: true as const,
       pages: 2,
       lines: [
-        { page: 1, line: 1, cells: ["FUTURE STARS"], xs: [50] },
-        { page: 1, line: 2, cells: ["FS-1", "Jackson Holliday", "Baltimore Orioles"], xs: [50, 120, 300] },
-        { page: 2, line: 3, cells: ["Rookie"], xs: [50] },
-        { page: 2, line: 4, cells: ["RADIATING ROOKIES"], xs: [50] },
-        { page: 2, line: 5, cells: ["RR-1", "Roman Anthony", "Boston Red Sox"], xs: [50, 120, 300] },
+        { page: 1, line: 1, cells: ["FUTURE STARS"], xs: [50], items: [] },
+        { page: 1, line: 2, cells: ["FS-1", "Jackson Holliday", "Baltimore Orioles"], xs: [50, 120, 300], items: [] },
+        { page: 2, line: 3, cells: ["Rookie"], xs: [50], items: [] },
+        { page: 2, line: 4, cells: ["RADIATING ROOKIES"], xs: [50], items: [] },
+        { page: 2, line: 5, cells: ["RR-1", "Roman Anthony", "Boston Red Sox"], xs: [50, 120, 300], items: [] },
       ],
     }));
     const { onUse } = open({ readers: { readPdf } });

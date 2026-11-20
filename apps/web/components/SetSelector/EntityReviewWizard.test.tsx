@@ -7918,7 +7918,7 @@ describe("EntityReviewWizard — the New League step keeps its footer pinned", (
       target: { value: "NHL proper" },
     });
 
-    currentRows = currentRows.map((r) =>
+    currentRows = (currentRows as Array<{ _id: unknown }>).map((r) =>
       r._id === league._id
         ? {
             ...r,

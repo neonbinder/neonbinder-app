@@ -1552,7 +1552,7 @@ describe("a team printed as a place (collector review)", () => {
     expect(teamNameRequests(cards, rows)).toEqual([{ key: "seattle", name: "Seattle", location: true }]);
     // ... and what the server finds there is a choice, never the pre-fill.
     const groups = build(cards, rows, {}, 2025, {
-      teamNameEvidence: { seattle: [{ teamId: MARINERS, name: "Seattle Mariners", level: "major" }] },
+      teamNameEvidence: { seattle: [{ teamId: MARINERS, name: "Seattle Mariners" }] },
     });
     expect(groups[0].listedNames).toEqual(["Seattle"]);
     expect(labels(groups[0])).toContain("Seattle Mariners");
@@ -1610,7 +1610,6 @@ describe("a Prospect (X) card, X is the printed team (NEO-591)", () => {
     players: ["Cord Rager"],
     teams: ["Dallas Baptist"],
     teamLookup: "checklist",
-    isProspect: true,
   });
 
   test("a team created in the New Team step resolves at commit, so the card is not asked on the Teams step", () => {
