@@ -50,10 +50,11 @@ test(
     // Open the walker from the pill: it pins the first flagged row, #801.
     await pill("2 need you").click();
     // NEO-497: the walker is named for the checklist it tidies, the year and
-    // set, never "this set". The checklist is the "Base" row under Insert, and
-    // a Base checklist's title leaves "Base" out.
+    // set, never "this set". The checklist is the "Base" row under Insert, an
+    // insert-level row, so its own name stays in the title (NEO-616); only the
+    // Base variant type leaves the variant out.
     const walker = page.getByRole("dialog", {
-      name: tidyUpName({ year: target.year, set: target.set }),
+      name: tidyUpName({ year: target.year, set: target.set, variant: "Base", insertRow: true }),
       exact: true,
     });
     await expect(walker).toBeVisible();

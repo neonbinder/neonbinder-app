@@ -492,15 +492,19 @@ Idioms:
 - **The entity-review wizard ("Tidy up <set>", NEO-335, NEO-497).** The
   dialog is named for the checklist it tidies: `Tidy up <year> <set>
   <variant>`, e.g. `Tidy up 2024 Topps Chrome Refractor` (the year row, the
-  SET row, never the manufacturer, and the checklist's own row). A Base
-  checklist's title leaves "Base" out: `Tidy up 2024 Topps Chrome`. It reads `Tidy
+  SET row, never the manufacturer, and the checklist's own row). Only the
+  Base variant type's checklist leaves the variant out: `Tidy up 2024 Topps
+  Chrome`. Every other row keeps its name whole, an insert-level row called
+  "Base" (Insert > Base) included: `Tidy up 2024 Topps Base` (NEO-616). It reads `Tidy
   up this set` only while those names load. The post-save attention walker
   wears the same title. Find either by `TIDY_UP_NAME` (`/^Tidy up /`, via
   `reviewWizard` or `getByRole("dialog", { name: TIDY_UP_NAME })`), never by
   the old literal: an absence check on `Tidy up this set` would pass forever.
   Assert the full name with `tidyUpName({ year, set, variant })` where the
-  spec knows its fixture, leaving `variant` out for a Base checklist (the
-  helper throws on "Base"); both fetch-to-wizard helpers already do. It was
+  spec knows its fixture, leaving `variant` out for the Base variant type.
+  The helper throws on a `variant` of "Base" or "Bases" unless the spec
+  passes `insertRow: true` for an insert row of that name; both
+  fetch-to-wizard helpers already assert the Base type's name. It was
   "Tidy up this set" until NEO-497 and "Confirm New Players & Teams" before
   NEO-335. The title holds the set's names, so while it is open a loose
   `getByText(<set name>)` also matches it: scope to the row or use `exact`. The old

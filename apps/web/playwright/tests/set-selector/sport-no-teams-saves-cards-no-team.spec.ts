@@ -227,7 +227,8 @@ test(
     // ══ 3. THE WIZARD: the new player, then straight to Save ══
     const wizard = reviewWizard(page);
     await expect(wizard).toBeVisible();
-    await expect(wizard).toHaveAccessibleName(tidyUpName({ year: YEAR, set: SET }));
+    // Insert > Base: an insert row's own name stays in the title (NEO-616).
+    await expect(wizard).toHaveAccessibleName(tidyUpName({ year: YEAR, set: SET, variant: "Base", insertRow: true }));
     await awaitLookupsSettled(page);
     await expectNothingDecided(page);
     // Card 3's team comes first (the batch presents teams before players): created, so

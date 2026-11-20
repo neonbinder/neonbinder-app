@@ -60,7 +60,7 @@ export const LOOKUPS = 180_000;
 /**
  * NEO-497 — the name every tidy-up dialog (the pre-save wizard and the
  * post-save attention walker) starts with. The title goes on to name the set
- * it tidies, "Tidy up 2024 Topps Chrome" for its Base checklist (`tidyUpName`),
+ * it tidies, "Tidy up 2024 Topps Chrome" for its Base variant type (`tidyUpName`),
  * and reads "Tidy up this set" only while the set's names are still loading.
  * Find the dialog or its heading by this; assert the full name with
  * `tidyUpName`.
@@ -76,15 +76,34 @@ export const TIDY_UP_NAME = /^Tidy up /;
  * name already starts with it), so the caller passes that whole text; this
  * helper does not re-derive the rule, so it cannot agree with a broken one.
  *
- * A Base checklist's title does not say "Base" (Jason, 2026-11-11): leave
- * `variant` out for it ("Tidy up 2024 Topps Chrome"). Passing "Base" throws,
- * so an expectation cannot quietly bring the word back; the helper never
- * strips it itself.
+ * The checklist of a set's Base variant type (the `variantType` row whose
+ * title is "Base" or "Bases", NEO-334) does not name it (Jason, 2026-11-11):
+ * leave `variant` out for it ("Tidy up 2024 Topps Chrome"). Any other row
+ * keeps its name whole, including an insert-level row that is itself called
+ * "Base", such as Insert > Base: "Tidy up 2024 Topps Base" (NEO-616). The
+ * helper cannot see which row the spec drilled to, so a `variant` that reads
+ * as a Base type ("Base"/"Bases", case-folded) throws unless the caller says
+ * it is such an insert row with `insertRow: true`. A Base type's expectation
+ * so cannot quietly bring the word back, and the helper never strips a word
+ * itself.
  */
-export function tidyUpName({ year, set, variant }: { year: string; set: string; variant?: string }): string {
-  if (variant?.trim().toLowerCase() === "base") {
+export function tidyUpName({
+  year,
+  set,
+  variant,
+  insertRow = false,
+}: {
+  year: string;
+  set: string;
+  variant?: string;
+  /** The checklist row is an insert-level row (under Insert or Parallel), not a variant type. */
+  insertRow?: boolean;
+}): string {
+  const word = variant?.trim().replace(/\s+/g, " ").toLowerCase();
+  if (!insertRow && (word === "base" || word === "bases")) {
     throw new Error(
-      'tidyUpName: a Base checklist\'s title does not say "Base" (NEO-497); leave `variant` out for it',
+      'tidyUpName: a Base variant type\'s checklist title leaves the variant out (NEO-497); leave `variant` out for it, ' +
+        "or pass `insertRow: true` for an insert row named Base (NEO-616)",
     );
   }
   return variant === undefined ? `Tidy up ${year} ${set}` : `Tidy up ${year} ${set} ${variant}`;
@@ -626,8 +645,8 @@ export async function fetchChecklistToWizard(
   // 1.3 s at most on the #487 merge-group run (GUIDE), so the standard 7 s.
   await expectStepWithSportLots(page, reviewWizard(page), env, { liveMs: FETCH, what: "the tidy-up dialog opening", statusLine: false });
   // NEO-497: the dialog names the checklist it is tidying, read off the NB rows
-  // this drill picked (the year and the set; a Base checklist's title leaves
-  // "Base" out).
+  // this drill picked (the year and the set; `drillToBaseVariant` opened the
+  // Base variant type, whose checklist title leaves the variant out).
   await expect(reviewWizard(page)).toHaveAccessibleName(
     tidyUpName({
       year: drilled.year ?? DRILL_DEFAULTS.year,
@@ -739,7 +758,7 @@ export async function openOneMarketplaceSetBase(
  *
  * Contract: ENTRY the set is registered one-marketplace and never fetched.
  * EXIT the tidy-up dialog is open, named for the set ("Tidy up 1995 <set>"
- * by default, NEO-497; a Base checklist's title leaves "Base" out), and
+ * by default, NEO-497; the Base variant type's title leaves the variant out), and
  * axe-clean. NEO-335: a
  * one-sided fetch with unknown names (every current caller) opens on a name
  * step; one whose only open question is teams or titles opens the same dialog

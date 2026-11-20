@@ -147,7 +147,8 @@ test(
     await syncChecklistButton(page).click();
     const wizard = reviewWizard(page);
     await expect(wizard).toBeVisible();
-    await expect(wizard).toHaveAccessibleName(tidyUpName({ year: "2025", set: SET }));
+    // Insert > Base: an insert row's own name stays in the title (NEO-616).
+    await expect(wizard).toHaveAccessibleName(tidyUpName({ year: "2025", set: SET, variant: "Base", insertRow: true }));
     // Positive: the wizard opens straight on the Career check (nothing pressed
     // yet, and the progress bar names it: NEO-467, no step count), and its one
     // line is the silent card's player on the CURRENT era: the team the name

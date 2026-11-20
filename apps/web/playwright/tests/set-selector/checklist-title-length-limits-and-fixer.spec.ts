@@ -188,11 +188,14 @@ test(
 
     // ── Walk it to a fix: opened by hand from the pill (the walker never opens itself) ──
     await pill.click();
-    // NEO-497: named for the checklist it tidies (year and set; the checklist is
-    // the Base row under Insert, and the walker's name drops a trailing "Base").
-    // The listing title does not: under an Insert type a row called Base is an
-    // ordinary insert (NEO-609), so its name stays in the title like any level's.
-    const fixer = page.getByRole("dialog", { name: tidyUpName({ year: "2024", set }), exact: true });
+    // NEO-497: named for the checklist it tidies (year, set and the checklist's
+    // own row). Under an Insert type a row called Base is an ordinary insert
+    // (NEO-609), so its name stays in the walker's name (NEO-616) as it does in
+    // the listing title; only the Base variant type leaves the variant out.
+    const fixer = page.getByRole("dialog", {
+      name: tidyUpName({ year: "2024", set, variant: "Base", insertRow: true }),
+      exact: true,
+    });
     await expect(fixer).toBeVisible();
     // The walker and the wizard share title and header; its own Skip control
     // says which this is, and the subtitle names the question (also the
