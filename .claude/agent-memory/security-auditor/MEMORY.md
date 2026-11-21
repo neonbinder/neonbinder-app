@@ -128,12 +128,19 @@
 - [Neo556 copied-down decision stamp](patterns_neo556_copied_down_decision_stamp.md) — server-minted {setAt,setByUserId} copied down + reused for background stamps; cursor {i,t,c,r}; one bool two caps
 - [Merge guard survival; bscTeamPool enqueue](patterns_merge_resolution_guard_survival_and_bsc_lane_enqueue.md) — comm -23 line-survival check for merges; one-slot lane enqueue is bounded if admin/internal + row re-read
 - [Cross-workflow preview wait](patterns_cross_workflow_preview_wait.md) — waiter gate ⊆ builder's merge_group scope; tag-exists wait = stale revision
-- [Neo602 era-aware alias rule](patterns_neo602_era_aware_alias_rule.md) — era numbers are security inputs (NaN splits overlap vs covers); gate and prelude share one guard; check "silent only if" qualifiers
+- [Neo591 prospect claims + PDF runs](patterns_neo591_prospect_claims_and_pdf_runs.md) — joined text breaks per-name cap; saturated take() is no "exactly one"; runs past parser cap
+- [Neo591 names-first pairing](patterns_neo591_names_first_pairing.md) — minted/swapped numbers reach commit number tiers; stem parent re-guessed at commit
+- [Neo555 fake eBay cutover](patterns_neo555_fake_ebay_cutover.md) — two-gate resolver; request-keyed key names; merge-deploy removals; retired lane leaves creds
+- [Listing text trust path](patterns_listing_text_trust_path.md) — generator text reaches eBay unescaped; a new input from a non-admin/marketplace write = finding
+- [Neo591 retry adoption token](patterns_neo591_retry_adoption_token.md) — row-stored retry token: exclusion must match adoption predicate; pin internal userId writers
+- [Neo602 era-aware alias rule](patterns_neo602_era_aware_alias_rule.md) — era numbers are security inputs; gate/prelude share one guard; per-card overrides; a place may clear a conflict only if the row stays unanswered
 - [Review-queue read pattern](review-queue-read-pattern.md) — entityReviewQueue reads: requireAdmin then assertOwnsRow; pin + cross-admin test; team pick is per name; cardNumber unbounded
 - [Neo555 fake eBay cutover](patterns_neo555_fake_ebay_cutover.md) — two-gate resolver; request-keyed key names; merge-deploy removals; retired lane leaves creds
 - [Listing text trust path](patterns_listing_text_trust_path.md) — generator text reaches eBay unescaped; a new input from a non-admin/marketplace write = finding
 - [Patterns neo426 teamless sport default](patterns_neo426_teamless_sport_default.md) — re-sync stamp ignores unaccepted incoming team; un-confirm has no marker
 - [Neo574 client id override](patterns_neo574_client_id_override.md) — per-card id override + stint writer: validator shape that held; dedupe gap
+- [Actions cache writer enumeration](patterns_actions_cache_writer_enumeration.md) — cache restored into secret jobs: list every main-scope writer (dispatch too); workflow_run checkout ref
+- [Filter identity where minted](patterns_filter_identity_where_minted.md) — identity filtered at the last scheduled hop persists in earlier hops' _scheduled_functions args
 - [Neo622 local e2e runner](patterns_neo622_local_e2e_runner.md) — derived re-seed bypasses flag-keyed guard; regex patch list != git apply; APFS case
 - [Convex client error origin](patterns_convex_client_error_origin.md) — classify by client [CONVEX X(] prefix, not Request ID; convexToJson errors embed args
 - [Neo627 inert path skip](patterns_neo627_inert_path_skip.md) — file names in GITHUB_OUTPUT inject keys; merge_group base_sha stacking; fail-fast gate

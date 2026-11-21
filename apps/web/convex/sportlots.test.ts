@@ -33,14 +33,23 @@
  */
 
 import { convexTest } from "convex-test";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import { SL_SELECTOR_BUDGET } from "./adapters/selectorBudgets";
 import { Id } from "./_generated/dataModel";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
 }).glob("./**/*.*s");
+
+// The empty-result recovery loop settles for a real SL_SELECTOR_BUDGET.emptyRetryBackoffMs
+// before each re-POST. Run exactly that pause at once; every other timer is untouched.
+const realSetTimeout = globalThis.setTimeout; // captured once, before any spy
+function skipSelectorSettleBackoff() {
+  return vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: (...args: unknown[]) => void, ms?: number, ...rest: unknown[]) =>
+    realSetTimeout(handler, ms === SL_SELECTOR_BUDGET.emptyRetryBackoffMs ? 0 : ms, ...rest)) as typeof setTimeout);
+}
 
 const ADMIN_IDENTITY = {
   subject: "admin_user_sl_001",
@@ -78,6 +87,15 @@ vi.mock("./credentials", async (importOriginal) => {
   };
 });
 
+// Warm the mocked module once, before any test runs. The adapters import
+// "./credentials" and convex-test's function loader imports it too, and when
+// those two first imports overlap (a BSC and a SportLots side fetched together)
+// vitest builds the async factory twice, and one importer can fall through to
+// the REAL module, so the adapter reads a real token and the sync ends in
+// "error". Vitest's own mocker says this does not work for concurrent imports.
+// Awaiting it here caches the mocked module before anything can race.
+await import("./credentials");
+
 /** Records every POST body so tests can assert on the `selset` form field. */
 function makeListcardsFetch(opts: {
   html: string;
@@ -96,8 +114,13 @@ function extractSelset(body: string): string | undefined {
   return new URLSearchParams(body).get("selset") ?? undefined;
 }
 
+beforeEach(() => {
+  skipSelectorSettleBackoff();
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("fetchSportLotsChecklist setRadioId resolution (NEO-91)", () => {

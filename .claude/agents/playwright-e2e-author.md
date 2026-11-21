@@ -127,8 +127,10 @@ GUIDE.
    at about 180 s, so a slice is 170 s). One run at a time per worktree, at
    most two specs per assignment (hand extras back unstarted). BSC
    (NEO-552) and eBay (NEO-555) are fakes with one seller per test user, so
-   their specs run on your own deployment; specs that make BSC 429, 503,
-   hang or reset are `@bsc-breaker` (GUIDE, "BuySportsCards is the fake").
+   their specs run on your own deployment. A spec that makes BSC 429, 503,
+   hang or reset opens only its own worker's BSC call gate (one per test
+   user against the fake, NEO-628), so it needs no tag and runs in the
+   ordinary shards (GUIDE, "BuySportsCards is the fake").
    Never run the seed's reset on shared dev unasked, and never the full
    suite locally unless the coordinator says the harness itself changed.
 4. **Diagnose a red run** from the digest (screenshot, `error-context.md`)

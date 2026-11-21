@@ -348,7 +348,11 @@ async function sparqlAttempt(url: string): Promise<SparqlAttemptOutcome> {
  */
 let emptySearchReaskBackoffMs = WIKIDATA_RETRY_BACKOFF_MS;
 
-/** Test seam only. Pass `undefined` to restore the production pause. */
+/**
+ * Test seam only. Pass `undefined` to restore the production pause. It also
+ * governs the transport-failure retry pause in `runSparql`, which uses the same
+ * `WIKIDATA_RETRY_BACKOFF_MS` in production.
+ */
 export function __setEmptySearchReaskBackoffForTests(ms: number | undefined): void {
   emptySearchReaskBackoffMs = ms ?? WIKIDATA_RETRY_BACKOFF_MS;
 }
@@ -412,7 +416,7 @@ async function runSparqlWithMeta(
       // Structured, and deliberately WITHOUT the query: the existing lines
       // never carry it, and a query embeds operator-typed names.
       console.warn(JSON.stringify({ msg: "wikidata_sparql_retry", reason: outcome.reason }));
-      await sleep(WIKIDATA_RETRY_BACKOFF_MS);
+      await sleep(emptySearchReaskBackoffMs);
       continue;
     }
     if (trace) {

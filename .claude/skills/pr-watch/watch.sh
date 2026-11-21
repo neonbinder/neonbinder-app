@@ -157,8 +157,8 @@ emit() {
 
 # ── one poll: prints a status line, sets VERDICT + FAILED_NAMES globals ──────
 VERDICT="RUNNING"; FAILED_NAMES=""; FAIL_NOTE=""
-# NEO-627: a desktop job (shard or the BSC breaker) in the E2E workflow.
-DESKTOP_RE='(^|/ )(shard-desktop \(|BSC breaker specs \(desktop\))'
+# NEO-627: a desktop shard in the E2E workflow.
+DESKTOP_RE='(^|/ )shard-desktop \('
 tick() {
   local data state rollup total failed completed pending r_total r_done seed seedm gate pw
   data=$($GH pr view "$PR" --json state,headRefOid,statusCheckRollup 2>/dev/null) || {
@@ -195,10 +195,11 @@ tick() {
   if [ "$e2e_caller" = "SKIPPED" ] && [ "$req" = "SUCCESS" ] && case "$(named "^E2E / ")" in ""|"—") true ;; *) false ;; esac; then
     gate="⊘ skipped by design (inert paths NEO-627, deps-only or cheap PR run)"
   fi
-  # NEO-627 fail fast: seed-mobile skipped after a red desktop pass. There are no
+  # NEO-627 fail fast: the mobile shards were skipped after a red desktop pass
+  # (seed-mobile itself ends green without resetting, NEO-628). There are no
   # mobile results; read the desktop failure.
   FAIL_NOTE=""
-  if [ "$seedm_raw" = "SKIPPED" ] && [ "${failed:-0}" -gt 0 ] &&
+  if [ "$(named "(^|/ )shard-mobile")" = "SKIPPED" ] && [ "${failed:-0}" -gt 0 ] &&
      [ "$(echo "$rollup" | jq --arg re "$DESKTOP_RE" '[.[]|select((.name|test($re)) and (.c=="FAILURE" or .c=="CANCELLED" or .c=="TIMED_OUT" or .c=="STARTUP_FAILURE"))]|length')" -gt 0 ]; then
     FAIL_NOTE=" · mobile skipped: desktop red (fail fast), there are no mobile results"
   fi
@@ -256,7 +257,7 @@ failing_jobs() {
     [.[] | .workflowName as $w | .jobs[]? | {w:$w, n:.name, u:.url, c:((.conclusion // "")|ascii_upcase)}] as $j
     | ([$j[]|select(.c=="FAILURE" or .c=="TIMED_OUT" or .c=="STARTUP_FAILURE")]) as $hard
     | (if ($hard|length)>0 then $hard else [$j[]|select(.c=="CANCELLED")] end)
-    | sort_by(if (.n|test("(^|/ )(shard-desktop \\(|BSC breaker specs \\(desktop\\))")) then 0 else 1 end)
+    | sort_by(if (.n|test("(^|/ )shard-desktop \\(")) then 0 else 1 end)
     | .[:5] | map("\(.w) / \(.n): \(.u)") | join("; ")'
 }
 
@@ -319,11 +320,11 @@ tick_queue() {
       *) e2e_note="E2E skipped, CI Gate decides" ;;
     esac
   fi
-  # NEO-627 fail fast: seed-mobile skipped while a desktop job failed. There are
-  # no mobile results or artifacts; the desktop failure is the cause.
+  # NEO-627 fail fast: the mobile shards skipped while a desktop shard failed.
+  # There are no mobile results or artifacts; the desktop failure is the cause.
   if echo "$group" | jq -e '[.[].jobs[]?] as $j
-        | (any($j[]; (.name|test("(^|/ )seed-mobile$")) and ((.conclusion//"")|ascii_downcase)=="skipped"))
-          and (any($j[]; (.name|test("(^|/ )(shard-desktop \\(|BSC breaker specs \\(desktop\\))"))
+        | (any($j[]; (.name|test("(^|/ )shard-mobile")) and ((.conclusion//"")|ascii_downcase)=="skipped"))
+          and (any($j[]; (.name|test("(^|/ )shard-desktop \\("))
                 and ((.conclusion//"")|ascii_downcase|test("^(failure|timed_out|startup_failure|cancelled)$"))))' >/dev/null 2>&1; then
     ff_note="mobile skipped: desktop red (fail fast), there are no mobile results; read the desktop artifacts"
   fi

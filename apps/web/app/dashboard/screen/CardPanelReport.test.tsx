@@ -6,12 +6,12 @@
  * collector fixes (a price, a photo), and never where there is no crew (the
  * logged-out demo).
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import { getDashboard } from "../fake-data";
-import DashboardScreen from "./DashboardScreen";
+import CardPanelHost from "./CardPanelHost";
 import { CrewProvider, type Crew, type CrewDeskData } from "./crew";
 
 vi.mock("@clerk/clerk-react", () => ({ useAuth: () => ({ isLoaded: true, isSignedIn: false }) }));
@@ -36,7 +36,8 @@ function open(held: string, crew: Crew | null) {
   const data = getDashboard();
   const card = data.syncStatus!.problems[0].cards[0].card;
   const entry = `/demo?detail=${encodeURIComponent(card.id)}&side=inventory&held=${held}`;
-  const screenEl = <DashboardScreen data={data} />;
+  // Only the panel host: the report lives in the panel, not the dashboard under it.
+  const screenEl = <CardPanelHost />;
   render(
     <Theme>
       <MemoryRouter initialEntries={[entry]}>
@@ -49,15 +50,19 @@ function open(held: string, crew: Crew | null) {
   return card;
 }
 
-/** Lets the panel's lazy code and its focus moves land. */
-const settle = () => act(() => new Promise<void>((r) => setTimeout(r, 40)));
+// The panel's code and the demo store it mounts load lazily on first open; open one once here
+// so that load is not charged to whichever test runs first.
+beforeAll(async () => {
+  open("ebay.noPrice", null);
+  await screen.findByRole("dialog");
+  cleanup();
+});
 
 describe("Report in the card panel (NEO-569)", () => {
   it("a card held back for want of a league says so and offers the crew's Report, about its set", async () => {
     const crew = crewOf();
     const card = open("ebay.noLeague", crew);
-    const panel = await screen.findByRole("dialog", {}, { timeout: 5000 });
-    await settle();
+    const panel = await screen.findByRole("dialog");
     expect(
       within(panel).getByText(
         "Held back from eBay: listings there need a league, and this card doesn't have one yet. Report it and our crew sets it.",
@@ -82,24 +87,21 @@ describe("Report in the card panel (NEO-569)", () => {
 
   it("once reported, the panel says so instead", async () => {
     open("ebay.noLeague", crewOf({ isReported: () => true }));
-    const panel = await screen.findByRole("dialog", {}, { timeout: 5000 });
-    await settle();
+    const panel = await screen.findByRole("dialog");
     expect(within(panel).getByText(/Reported\. Our crew.s on it\./)).toBeTruthy();
     expect(within(panel).queryByRole("button", { name: /^Report to our crew/ })).toBeNull();
   });
 
   it("a reason the collector fixes offers no Report", async () => {
     open("ebay.noPrice", crewOf());
-    const panel = await screen.findByRole("dialog", {}, { timeout: 5000 });
-    await settle();
+    const panel = await screen.findByRole("dialog");
     expect(within(panel).getByText(/^Held back from eBay: no price yet\./)).toBeTruthy();
     expect(within(panel).queryByRole("button", { name: /^Report to our crew/ })).toBeNull();
   });
 
   it("with no crew (the logged-out demo) there is no Report", async () => {
     open("ebay.noLeague", null);
-    const panel = await screen.findByRole("dialog", {}, { timeout: 5000 });
-    await settle();
+    const panel = await screen.findByRole("dialog");
     expect(
       within(panel).getByText(
         "Held back from eBay: listings there need a league, and this card doesn't have one yet. Report it from Sync status on your dashboard and our crew sets it.",

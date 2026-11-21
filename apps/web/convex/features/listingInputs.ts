@@ -152,6 +152,8 @@ export type ListingCardFacts = {
   cardNumber: string;
   isRookie?: boolean;
   isRelic?: boolean;
+  /** NEO-591 — folded into `features.isProspect`; never read by the title. */
+  isProspect?: boolean;
   /** Observed only: folded into `features.autographed`. */
   autographType?: string;
   cardVariation?: string;
@@ -191,6 +193,7 @@ export function mergeCardFeatures(
     ...deriveCardObservedFeatures({
       isRookie: card.isRookie,
       isRelic: card.isRelic,
+      isProspect: card.isProspect,
       autographType: card.autographType,
       cardVariation: card.cardVariation,
       attributes: card.attributes,

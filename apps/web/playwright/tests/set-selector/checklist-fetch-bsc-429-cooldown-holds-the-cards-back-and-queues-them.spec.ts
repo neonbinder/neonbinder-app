@@ -11,11 +11,12 @@
 // account (support/bscFake.ts), then the rule is spent and the fake answers as recorded.
 // The lookup asks BSC in waves of 10 at once (BSC_TEAM_LOOKUP_CONCURRENCY,
 // convex/adapters/buysportscards.ts), so the first wave is the 10 the rule covers. The
-// product honours the Retry-After, opens its call gate and sends nothing more. That gate is
-// DEPLOYMENT-WIDE (convex/bscCallGate.ts), which is why this spec carries `@bsc-breaker`:
-// CI runs it alone, after every shard, and the `bscFake` fixture clears the rules and the
-// gate when the test ends, red or green. It replaces the real-BSC 429 branches the live
-// suite could only hit by luck.
+// product honours the Retry-After, opens its call gate and sends nothing more. Against the
+// fake that gate is this worker's own (one per test user, keyed on its fake namespace,
+// convex/bscCallGate.ts; NEO-628), so the spec runs in an ordinary shard beside the others
+// and stops no other worker's BSC calls. The `bscFake` fixture clears the rules and this
+// worker's gate when the test ends, red or green. It replaces the real-BSC 429 branches the
+// live suite could only hit by luck.
 //
 // WHY THE RULE IS NOT UNLIMITED (audit, NEO-552). An unlimited 429 would answer an extra
 // ask with another 429, and the count below would read 32 either way. With the rule spent
@@ -32,9 +33,17 @@
 // checklist file would skip.
 //
 // WHAT IT PROVES, IN ORDER:
+//   0. The page's own "Waiting on BuySportsCards" line (CardChecklist's sync wait line)
+//      shows while a BSC call is held: the spec holds the fetch's one catalogue read
+//      (`bscFault.slow` on the results read, HOLD_MS, far under the read's 30 s timeout).
+//      This is the suite's deterministic proof of the PAGE line (NEO-628 audit): the set
+//      is BSC-only with no checklist, so the fetch is one-source and Match Cards never
+//      opens, and nothing else can stand the line down. (The stall spec's fetch is
+//      two-source, so its line is the one inside Match Cards.)
 //   1. The fetch's "Kept all N cards from BSC" line lands within 7 s of our own time
-//      (`expectAfterMarketplace`), and once it has, no "Waiting on BuySportsCards" line
-//      is up: a cooldown does not hold a call, it ends the lookup.
+//      (`expectAfterMarketplace`, which credits the held read), and once it has, no
+//      "Waiting on BuySportsCards" line is up: a cooldown does not hold a call, it ends
+//      the lookup.
 //   2. Every name is skipped, so the wizard reaches "Cards with no team" (every card
 //      is listed there: not one has a BSC pre-fill to confirm).
 //   3. After the save the checklist's status line names ALL of the set's cards as
@@ -48,9 +57,12 @@
 // Jason on 2026-11-14, R7a): SOLE WRITER of that set
 // (BSC only, 32 numbered cards, reached through the All Brands view); FRESH-ONLY (it
 // commits the checklist), so a re-run on the same seed fails at "No cards in this
-// checklist yet." by name. Every name is skipped: no player and no team is minted.
+// checklist yet." by name, and so does CI's retry of a red that came after the commit:
+// read the FIRST attempt's error (GUIDE Gotchas, "Fresh-only specs"). Every name is
+// skipped: no player and no team is minted.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { BSC_PATH, bscFault } from "../../support/bscFake";
+import { matchCardsDialog } from "../../support/published-checklist";
 import { editCardButton } from "../../support/cards";
 import { expectAfterMarketplace, waitingOn } from "../../support/marketplace-wait";
 import { setBuilderReady, syncChecklistButton } from "../../support/set-builder";
@@ -63,14 +75,16 @@ const CARDS = 32;
 const WAVE = 10;
 /** Long enough that the window outlasts the spec: the lane must not get a turn before the assert. */
 const RETRY_AFTER_S = 90;
-
-// GUIDE hard rule 5: a breaker spec never retries. Its fault opens the deployment-wide
-// BSC call gate, which the failure reset does not close.
-test.describe.configure({ retries: 0 });
+/**
+ * How long the fake holds the fetch's catalogue read: the line mounts 1.5 s into a wait, and it
+ * must outlast a whole-page axe check (light and dark) taken while it shows. Under the read's own 30 s timeout
+ * (BSC_CHECKLIST_FETCH_TIMEOUT_MS), so it is an answer, never a failure to the gate.
+ */
+const HOLD_MS = 15_000;
 
 test(
   "Checklist fetch — a BSC 429 on the team lookup opens the cooldown: the fetch lands at once, no team is guessed, and every card waits in the background queue (NEO-552)",
-  { tag: ["@set-selector", "@bsc-breaker"] },
+  { tag: ["@set-selector"] },
   async ({ page, signIn, env, bscFake }) => {
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
@@ -78,9 +92,20 @@ test(
     // The precondition for a FIRST fetch (fresh-only): a re-run fails here, by name.
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
 
+    // ── 0. The catalogue read is held: the page's own wait line says so ──
     // ── 1. BSC pushes back on every team lookup; the fetch meets the cooldown ──
-    await bscFake.setFaults([bscFault.tooManyRequests(BSC_PATH.cardListing, { retryAfterS: RETRY_AFTER_S, times: WAVE, ttlS: 600 })]);
+    await bscFake.setFaults([
+      bscFault.slow(BSC_PATH.results, HOLD_MS, { times: 1, ttlS: 600 }),
+      bscFault.tooManyRequests(BSC_PATH.cardListing, { retryAfterS: RETRY_AFTER_S, times: WAVE, ttlS: 600 }),
+    ]);
     await syncChecklistButton(page).click();
+    // One source, so no Match Cards: the line is the page's (it mounts 1.5 s into the held read).
+    await expect(waitingOn(page, "BuySportsCards")).toBeVisible();
+    await expect(matchCardsDialog(page)).toHaveCount(0);
+    // The owner of the whole-page check with the page's wait line up (the stall spec checks its dialog).
+    await expectAccessible(page, { label: "Checklist fetch waiting on BuySportsCards (the page's line)" });
+    // The read was still held when both passes finished, so they read the state named above.
+    await expect(waitingOn(page, "BuySportsCards"), "the held read ended before axe finished: raise HOLD_MS").toBeVisible();
     await expectAfterMarketplace(page, page.getByText(new RegExp(`Kept all ${CARDS} cards from BSC`)), {
       platform: "BuySportsCards",
       what: "the fetch's kept-cards line",

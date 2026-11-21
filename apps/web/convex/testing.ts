@@ -35,6 +35,8 @@ import {
 import { api, internal } from "./_generated/api";
 import { v } from "convex/values";
 import { getCurrentUserId } from "./auth";
+import { bscGateKey, BSC_GATE_DEPLOYMENT_KEY } from "./lib/bscGateKey";
+import { convexSlugOf, fakeBscNamespaceFor, fakeBscPrefixFor, fakeBscUserTag } from "./lib/fakeBscNamespace";
 import { CLERK_USER_ID_RE, placeholderJobPrefix } from "./lib/placeholderObjects";
 // NEO-287 — the operator switch. A paused marketplace is seeded as `skipped`,
 // before any read of its stored credentials.
@@ -114,53 +116,11 @@ export function fakeBscMode(env: Record<string, string | undefined> = process.en
   return resolveBscTarget(env).mode !== "real";
 }
 
-/**
- * The Convex deployment's slug from `CONVEX_CLOUD_URL`
- * (`https://<slug>.convex.cloud`), or null when it is missing or not the
- * shape a Convex slug has. Lowercase letters, digits and hyphens only, so it
- * is safe inside an email local part.
- */
-export function convexSlugOf(cloudUrl: string | undefined): string | null {
-  if (!cloudUrl) return null;
-  const slug = /^https:\/\/([a-z0-9-]+)\.convex\.cloud\/?$/.exec(cloudUrl)?.[1];
-  return slug ?? null;
-}
-
-/**
- * A stable, short tag for one test user: the first 12 hex digits of the
- * FNV-1a 64-bit hash of their Clerk subject. Stable across runs and
- * deployments (the same worker account always has the same tag), and it keeps
- * the Clerk id itself off the fake. Synchronous and runtime-free, so a
- * mutation and an action derive the same value.
- */
-export function fakeBscUserTag(userId: string): string {
-  let hash = 0xcbf29ce484222325n;
-  for (const byte of new TextEncoder().encode(userId)) {
-    hash ^= BigInt(byte);
-    hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
-  }
-  return hash.toString(16).padStart(16, "0").slice(0, 12);
-}
-
-/**
- * Every namespace this deployment owns on the fake starts with this:
- * `<convexSlug>-`. The trailing hyphen keeps one slug from matching another
- * that merely starts with it.
- */
-export function fakeBscPrefixFor(cloudUrl: string | undefined): string {
-  const slug = convexSlugOf(cloudUrl);
-  if (!slug) {
-    // Fail closed: a namespace with no deployment in it could collide with
-    // another deployment's, and a reset by an empty prefix would clear them all.
-    throw new Error("Fake BuySportsCards needs this deployment's CONVEX_CLOUD_URL");
-  }
-  return `${slug}-`;
-}
-
-/** The test user's namespace on the fake: `<convexSlug>-<userTag>`. */
-export function fakeBscNamespaceFor(userId: string, cloudUrl: string | undefined): string {
-  return `${fakeBscPrefixFor(cloudUrl)}${fakeBscUserTag(userId)}`;
-}
+// NEO-628: the namespace derivation lives in `lib/fakeBscNamespace.ts` (the BSC
+// call gate keys on it too, and `bscSeller` -> `bscCallGate` must not import
+// this module: `testing` reaches the listing drainer, which reaches `bscSeller`).
+// Re-exported here, where its callers and tests have always imported it from.
+export { convexSlugOf, fakeBscNamespaceFor, fakeBscPrefixFor, fakeBscUserTag };
 
 /** The test user's fake BSC sign-in, `nb+<namespace>@fake.invalid`. */
 export function fakeBscUsernameFor(userId: string, cloudUrl: string | undefined): string {
@@ -278,6 +238,16 @@ export const resetMyTestState = action({
     const counts: ResetCounts = await ctx.runMutation(internal.testing.resetMyTestStateRows, { userId });
     const ns = fakeBscNamespaceOf(userId);
     if (ns) {
+      // NEO-628: the caller's own BSC call gate goes with their namespace (a
+      // breaker spec's window or failure run must not outlive its reset). Only
+      // this user's row: the key is derived from the verified subject.
+      // A no-op unless the deployment is really on the fake: no `ns:` row can
+      // exist elsewhere (a misconfigured fake must not fail every reset over a
+      // row that cannot be there).
+      const key = bscGateKey({ mode: "fake", fakeNs: ns });
+      if (key !== BSC_GATE_DEPLOYMENT_KEY && resolveBscTarget(process.env).mode === "fake") {
+        await ctx.runMutation(internal.bscCallGate.clearForTesting, { key });
+      }
       const done: FakeBscControlResult = await ctx.runAction(internal.fakeBsc.resetNamespace, { ns });
       requireFakeBscDone(done, "clear your test account");
     }
@@ -903,20 +873,26 @@ export const clearMyBscFaults = action({
 });
 
 /**
- * Clear this deployment's BSC call gate (`bscCallGate`: the breaker and its
- * failure run), so a spec that opened it, with a 429 or a run of 5xx or
- * timeouts, leaves it closed. The gate is DEPLOYMENT-WIDE, not per user: it is
- * the one control here that reaches past the caller, which is why only specs
- * tagged `@bsc-breaker` (run alone, after every shard) may move it. Same locks
- * as the other controls: a testing deployment, a signed-in caller, the fake.
+ * Clear the CALLER'S BSC call gate (`bscCallGate`: the breaker and its failure
+ * run), so a spec that opened it, with a 429 or a run of 5xx or timeouts,
+ * leaves it closed. NEO-628: on the fake the gate is per namespace, one per
+ * test user, so this clears the row of the caller's own `ns:` key and nothing
+ * else: a breaker spec in one shard cannot close or open another shard's gate.
+ * `deleted` is 1 when the caller's gate had a row, else 0. Same locks as the
+ * other controls: a testing deployment, a signed-in caller, the fake (no key
+ * argument exists to spoof; the key is derived from the verified subject).
  */
 export const clearBscCallGate = action({
   args: {},
   returns: v.object({ deleted: v.number() }),
   // Annotated: without it the action's type loops back through `internal` (TS7022).
   handler: async (ctx): Promise<{ deleted: number }> => {
-    await callerFakeBscNamespace(ctx);
-    const cleared: { deleted: number } = await ctx.runMutation(internal.bscCallGate.clearForTesting, {});
+    const ns = await callerFakeBscNamespace(ctx);
+    const key = bscGateKey({ mode: "fake", fakeNs: ns });
+    // A namespace always forms an `ns:` key; the guard keeps a malformed one
+    // from ever asking to clear the deployment's own gate.
+    if (key === BSC_GATE_DEPLOYMENT_KEY) return { deleted: 0 };
+    const cleared: { deleted: number } = await ctx.runMutation(internal.bscCallGate.clearForTesting, { key });
     return cleared;
   },
 });

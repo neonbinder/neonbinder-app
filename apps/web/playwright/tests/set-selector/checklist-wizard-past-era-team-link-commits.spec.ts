@@ -111,6 +111,11 @@ test(
     // UNTICK the remember-box FIRST. Proven by R2(d)'s decision line, which a
     // ticked box would extend with "· remembered as ...".
     const remember = wizard.getByRole("checkbox", { name: `Remember “${CLUB}” as a name for this team` });
+    // NEO-591: the box is held (disabled, unticked) while the step's place lookup runs, then
+    // settles ticked (the club's name is no place). Untick the SETTLED box: `uncheck()` on the held
+    // one would return at once (already unticked) and the default would tick it again afterwards.
+    await expect(remember).toBeEnabled();
+    await expect(remember).toBeChecked();
     await remember.uncheck();
     await expect(remember).not.toBeChecked();
 

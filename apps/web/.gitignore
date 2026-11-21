@@ -74,3 +74,4 @@ ds-bundle/
 # live in a private bucket and are never committed.
 /scripts/reference-seed/**/*.zip
 /scripts/reference-seed/**/*.jsonl
+.vitest/

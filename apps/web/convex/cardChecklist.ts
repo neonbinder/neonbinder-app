@@ -36,6 +36,9 @@ import { requireAdmin } from "./auth";
 // NEO-236: these two paths LOOK UP a team and link it; neither may create one.
 // See `convex/lib/teamRow.ts` and the notes on each handler below.
 import { findTeamsByFullName, resolveCardTeamName } from "./lib/teamRow";
+// NEO-591 — a listed place ("Oklahoma"): the teams whose LOCATION it is, as choices.
+import { nameTokens } from "./lib/entityNearMatch";
+import { teamLocationIs } from "./lib/placeTeam";
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { teamFullName } from "../lib/teams/team-name";
 // NEO-335: the wizard's pre-save team suggestions (`teamSuggestionsForPreview`).
@@ -81,6 +84,7 @@ import { variantTypeKind } from "./variantRole";
 import { noTeamCardVerdict, stampNoTeam, teamDefaultOf } from "./lib/selectorTeams";
 // NEO-426 — a teamless sport is one more reason to stamp "No team".
 import { createSportNoTeamReader } from "./sportTeamless";
+import { queuedByField } from "./lib/bscGateKey";
 
 /**
  * Walk up the parent chain from a cardChecklist's selectorOption to
@@ -1183,6 +1187,13 @@ export const enqueueBscTeamBackfill = internalMutation({
      */
     mode: v.optional(v.union(v.literal("unchecked"), v.literal("reask"))),
     /**
+     * NEO-628 — the Clerk subject the cards are queued for, an operator-run
+     * backfill's own choice (it has no caller identity). On the fake the cards
+     * are asked in that user's namespace and behind that user's BSC call gate;
+     * absent (the usual run) is the deployment's own domain.
+     */
+    queuedBy: v.optional(v.string()),
+    /**
      * NEO-345 — write and schedule nothing; report what this page holds.
      * Run it first: the counts say how many live BSC requests an armed run
      * of either mode would spend. Defaults to FALSE in "unchecked" mode (its
@@ -1326,7 +1337,10 @@ export const enqueueBscTeamBackfill = internalMutation({
       await ctx.scheduler.runAfter(
         0,
         internal.bscTeamPool.enqueueBscTeamChecks,
-        { cardChecklistIds: candidateIds },
+        {
+          cardChecklistIds: candidateIds,
+          ...queuedByField(args.queuedBy),
+        },
       );
     }
 
@@ -1674,6 +1688,15 @@ const TEAM_SUGGESTION_SET_CHILD_SCAN = 64;
 export const TEAM_SUGGESTION_MAX_TEAM_NAMES = 32;
 
 /**
+ * NEO-591 — how many of one call's names get the location leg (`locationNames`
+ * below), and how many `search_name` hits each reads. Each is one search plus
+ * a handful of reads, so they are bounded apart from the 32 names: a name past
+ * the first few simply gets its full-name matches alone.
+ */
+export const TEAM_SUGGESTION_MAX_LOCATION_NAMES = 8;
+const TEAM_SUGGESTION_LOCATION_HITS = 16;
+
+/**
  * How many distinct career teams of one player are read to rank and
  * sport-check them. A stint whose team is past this is kept unverified (rank
  * "other"): dropping it could turn a two-team window into a false single
@@ -1771,6 +1794,12 @@ type PlayerSuggestionResult = {
  * existing team (so it can be ranked). Nothing is created and nothing is
  * picked here.
  *
+ * NEO-591: `locationNames` — a subset of `teamNames` that is ALSO read the
+ * location way: the sport's teams whose location is the name ("Oklahoma", the
+ * place of the Oklahoma Sooners, a name no row holds whole) join that name's
+ * rows, as choices. It is asked for every name a listing printed, since a
+ * checklist may print a team as its place.
+ *
  * Suggestions only: nothing here writes, and nothing reads a marketplace
  * value or name — every key is an NB id, or the Base variant type read from
  * its title (`variantTypeKind`, NEO-334: a variant type's title is its kind).
@@ -1789,6 +1818,8 @@ export const teamSuggestionsForPreview = query({
     ),
     /** Team names to resolve to existing NB teams. See "teamNames" above. */
     teamNames: v.optional(v.array(v.string())),
+    /** NEO-591 — names in `teamNames` that also get the location leg. */
+    locationNames: v.optional(v.array(v.string())),
   },
   returns: v.object({
     /** The year the career tiers compared against, so the browser's own
@@ -1828,6 +1859,14 @@ export const teamSuggestionsForPreview = query({
     if (teamNameArgs.length > TEAM_SUGGESTION_MAX_TEAM_NAMES) {
       throw new ConvexError(
         `Too many team names to look up at once (${teamNameArgs.length}; max ${TEAM_SUGGESTION_MAX_TEAM_NAMES}).`,
+      );
+    }
+    // Security audit N1 — `locationNames` is a subset of `teamNames`, so it
+    // takes the same count bound. (Its entries are bounded by length below,
+    // before they are normalized.)
+    if ((args.locationNames ?? []).length > TEAM_SUGGESTION_MAX_TEAM_NAMES) {
+      throw new ConvexError(
+        `Too many place names to look up at once (${(args.locationNames ?? []).length}; max ${TEAM_SUGGESTION_MAX_TEAM_NAMES}).`,
       );
     }
     // NEO-335 security audit — the read budget. Each cap above is sized for a
@@ -1944,12 +1983,10 @@ export const teamSuggestionsForPreview = query({
         if (!team || team.sportId !== sportId) {
           teamCache.set(teamId, null);
         } else {
+          const level = team.leagueId ? await leagueLevel(team.leagueId) : null;
           const rank = setPreference
             ? teamPreferenceRank(
-                {
-                  leagueId: team.leagueId ?? null,
-                  leagueLevel: team.leagueId ? await leagueLevel(team.leagueId) : null,
-                },
+                { leagueId: team.leagueId ?? null, leagueLevel: level },
                 setPreference,
               )
             : UNRANKED;
@@ -2081,6 +2118,16 @@ export const teamSuggestionsForPreview = query({
     // league first".
     const teamNames: Array<{ teams: Array<SuggestedTeam> }> = [];
     const byName = new Map<string, Array<SuggestedTeam>>();
+    const locationKeys = new Set(
+      (args.locationNames ?? [])
+        .map((n) => n.trim())
+        // Skipped BEFORE normalizing: an over-long entry is never matched
+        // (`teamNames` skips the same names), so it must not cost the work.
+        .filter((n) => n.length > 0 && n.length <= TEAM_SUGGESTION_MAX_NAME_LENGTH)
+        .map((n) => normalizeEntityName(n))
+        .filter(Boolean),
+    );
+    let locationLegs = 0;
     for (const raw of teamNameArgs) {
       const trimmed = raw.trim();
       if (!sportId || !trimmed || trimmed.length > TEAM_SUGGESTION_MAX_NAME_LENGTH) {
@@ -2095,9 +2142,28 @@ export const teamSuggestionsForPreview = query({
       }
       const rows = await findTeamsByFullName(ctx, sportId, trimmed);
       const coveringId = pickTeamForYear(rows, setYear, { allowPastEra: true })?.row._id;
+      // NEO-591 — the location leg, for a name the caller asked it for: the
+      // rows whose location IS the name. Only ever more choices.
+      //
+      // Security audit S2: unlike the fetch-time resolvers, this read decides
+      // nothing, it only lists. A window that came back full (16 hits) can cut
+      // a choice off the list, never settle a card on a guess, so it is
+      // deliberately not turned into a hold here.
+      let located: Array<Doc<"teams">> = [];
+      const term = nameTokens(trimmed).join(" ");
+      if (term && locationKeys.has(key) && locationLegs < TEAM_SUGGESTION_MAX_LOCATION_NAMES) {
+        locationLegs++;
+        const hits = await ctx.db
+          .query("teams")
+          .withSearchIndex("search_name", (q) => q.search("nameNormalized", term).eq("sportId", sportId))
+          .take(TEAM_SUGGESTION_LOCATION_HITS);
+        located = hits.filter(
+          (row) => teamLocationIs(row, trimmed) && !rows.some((r) => r._id === row._id),
+        );
+      }
       const resolved: Array<{ team: SuggestedTeam; rank: TeamPreferenceRank; covers: boolean }> =
         [];
-      for (const row of rows) {
+      for (const row of [...rows, ...located]) {
         const read = await readTeamRow(row, row._id);
         if (read) resolved.push({ ...read, covers: row._id === coveringId });
       }

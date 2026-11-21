@@ -148,6 +148,8 @@ jobs:
               # shared redactor corpus and CLI.
               - '.github/scripts/redact-corpus.json'
               - '.github/scripts/redact-cli.mjs'
+              # NEO-628: the install every web job (lint, typecheck, unit) runs.
+              - '.github/actions/web-deps/**'
             browser:
               - 'services/browser/**'
               # NEO-552: browser's bsc-fake-identity-contract test loads these two
@@ -1200,12 +1202,11 @@ jobs:
       HUSKY: 0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: apps/web/.nvmrc
-          cache: npm
-          cache-dependency-path: apps/web/package-lock.json
-      - run: npm ci
+          persist-credentials: false
+      - uses: ./.github/actions/web-deps
+        with:
+          browser: "false"
       - run: npm run lint
 
   web-typecheck:
@@ -1223,12 +1224,11 @@ jobs:
       HUSKY: 0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: apps/web/.nvmrc
-          cache: npm
-          cache-dependency-path: apps/web/package-lock.json
-      - run: npm ci
+          persist-credentials: false
+      - uses: ./.github/actions/web-deps
+        with:
+          browser: "false"
       # `tsc -p convex/tsconfig.json` — the same config `npx convex deploy`
       # typechecks against, so a red here is a red the Vercel build would hit
       # later (and silently paper over via vercel.json's `|| npm run build`
@@ -1241,10 +1241,57 @@ jobs:
       # to compare, and E2E runs against that build.
       - run: npm run check:entry-order
 
-  web-unit:
-    name: Unit & component tests (vitest, apps/web)
+  # NEO-628: the suite is ~730 s of test-file time (largest file ~35 s, so no
+  # file caps a shard), run as 3 shards instead of one 4-core job. Each shard
+  # writes a blob report; `web-unit` merges them back into the one JSON that
+  # scripts/verify-test-completeness.mjs reads, so the NEO-164 "no file dropped"
+  # check still sees the WHOLE suite. Not isolate:false, not the threads pool
+  # and not --changed: those trade correctness or coverage for speed.
+  web-unit-shard:
+    name: Unit shard ${{ matrix.shard }}/3 (vitest, apps/web)
     needs: changes
     if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    defaults:
+      run:
+        working-directory: apps/web
+    env:
+      HUSKY: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/web-deps
+        with:
+          browser: "false"
+      # `default` keeps the failure output in this job's log; the blob is what
+      # web-unit merges.
+      - run: npx vitest run --shard=${{ matrix.shard }}/3 --reporter=default --reporter=blob
+      - name: Upload the blob report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vitest-blob-${{ matrix.shard }}-a${{ github.run_attempt }}
+          path: apps/web/.vitest/blob/
+          # .vitest is a dot-directory; upload-artifact skips hidden paths by default.
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  # Keeps its name and result: ci-gate reads it as R_WEB_UNIT. Runs after the
+  # shards whatever their result (always()) and fails unless every one passed,
+  # then merges the blobs and runs the completeness verifier on the merged JSON.
+  web-unit:
+    name: Unit & component tests (vitest, apps/web)
+    needs: [changes, web-unit-shard]
+    if: ${{ always() && needs.changes.outputs.web == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -1255,14 +1302,39 @@ jobs:
     env:
       HUSKY: 0
     steps:
+      - name: Every shard must have passed
+        working-directory: ${{ github.workspace }}
+        env:
+          SHARDS: ${{ needs.web-unit-shard.result }}
+        run: |
+          if [ "$SHARDS" != "success" ]; then
+            echo "::error::The unit shards finished '${SHARDS}', not success. See the 'Unit shard' jobs for the failing tests."
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: apps/web/.nvmrc
-          cache: npm
-          cache-dependency-path: apps/web/package-lock.json
-      - run: npm ci
-      - run: npm run test:unit
+          persist-credentials: false
+      - uses: ./.github/actions/web-deps
+        with:
+          browser: "false"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: vitest-blob-*-a${{ github.run_attempt }}
+          merge-multiple: true
+          path: apps/web/.vitest/blob
+      # Exactly 3 blobs or the merge would silently cover a partial suite (the
+      # verifier would still catch the missing files; this names the cause).
+      - name: Count the blob reports
+        run: |
+          n=$(find .vitest/blob -name 'blob-*.json' | wc -l | tr -d ' ')
+          if [ "$n" != "3" ]; then
+            echo "::error::Expected 3 vitest blob reports, found ${n}."
+            exit 1
+          fi
+      - name: Merge the shard reports
+        run: npx vitest --merge-reports --reporter=default --reporter=json --outputFile=.vitest-results.json
+      - name: Verify test completeness (NEO-164)
+        run: node scripts/verify-test-completeness.mjs
 
   # Mirror of browser.yml `test` (kept in sync intentionally — see note above).
   browser-test:
@@ -1415,6 +1487,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: apps/web/.nvmrc
@@ -1905,7 +1979,7 @@ jobs:
 
   ci-gate:
     name: CI Gate
-    needs: [changes, web-preview, web-lint, web-typecheck, web-unit, browser-test, preprocess-test, fake-bsc-test, scripts-test, scanner-test, scanner-build, preprocess-crop-matrix, preprocess-mask-parity, wire-browser-url, wire-preprocess-url, wire-preprocess-capacity, e2e, repo-hygiene, capacity-parity]
+    needs: [changes, web-preview, web-lint, web-typecheck, web-unit-shard, web-unit, browser-test, preprocess-test, fake-bsc-test, scripts-test, scanner-test, scanner-build, preprocess-crop-matrix, preprocess-mask-parity, wire-browser-url, wire-preprocess-url, wire-preprocess-capacity, e2e, repo-hygiene, capacity-parity]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 3
