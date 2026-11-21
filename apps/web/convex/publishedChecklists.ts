@@ -610,6 +610,21 @@ export const linksForSet = internalQuery({
 });
 
 /**
+ * NEO-591 — a row stored while a "Prospect (X)" cell's X was held apart
+ * (`prospectTeams`) reads as it does now: X is one of the row's teams. Only a
+ * row written by that earlier build carries the field; nothing writes it.
+ */
+function foldLegacyProspectTeams(
+  row: Infer<typeof publishedChecklistStoredRowValidator>,
+): Infer<typeof publishedChecklistStoredRowValidator> {
+  const { prospectTeams, ...rest } = row;
+  if (!prospectTeams || prospectTeams.length === 0) return rest;
+  const have = new Set(rest.teams.map((t) => t.trim().toLowerCase()));
+  const extra = prospectTeams.filter((t) => !have.has(t.trim().toLowerCase()));
+  return { ...rest, teams: [...rest.teams, ...extra] };
+}
+
+/**
  * D9 — the rows a leaf's fetch uses: only its OWN linked sections in the
  * set's ready checklist (no parent fallback), in file order. `none` when the
  * leaf has no set, the set no ready checklist, or no link resolves;
@@ -652,7 +667,7 @@ export const rowsForLeaf = internalQuery({
           intact = false;
           break;
         }
-        sectionRows.push(...chunk.rows);
+        sectionRows.push(...chunk.rows.map(foldLegacyProspectTeams));
       }
       if (!intact || sectionRows.length !== section.rowCount) {
         console.warn(

@@ -24,6 +24,18 @@ vi.mock("@/app/collection/final/data/convexStore", () => ({
   ConvexCollectionProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
 
+// The page's job is which data it hands the screen; the screen has its own tests.
+// A stand-in that shows the greeting, and New Listings only when the data has some,
+// keeps these about the page and off a whole dashboard's render.
+vi.mock("./screen/DashboardScreen", () => ({
+  default: ({ data }: { data: DashboardData }) => (
+    <>
+      <h1>Welcome back, slugger.</h1>
+      {data.newListings.length > 0 ? <h2>New Listings</h2> : null}
+    </>
+  ),
+}));
+
 const { default: DashboardPage } = await import("./page");
 
 function draw() {
@@ -53,6 +65,7 @@ describe("the signed-in dashboard while its reads settle", () => {
     current = getDashboard();
     const { rerender } = draw();
     expect(greeting()).not.toBeNull();
+    expect(screen.queryByRole("heading", { level: 2, name: "New Listings" })).not.toBeNull();
 
     current = undefined;
     rerender(
@@ -69,6 +82,7 @@ describe("the signed-in dashboard while its reads settle", () => {
         <DashboardPage />
       </MemoryRouter>,
     );
+    expect(greeting()).not.toBeNull();
     expect(screen.queryByRole("heading", { level: 2, name: "New Listings" })).toBeNull();
   });
 });

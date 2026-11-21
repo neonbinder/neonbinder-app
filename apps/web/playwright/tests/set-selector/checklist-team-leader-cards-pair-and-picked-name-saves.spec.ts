@@ -28,6 +28,11 @@
 // checklist committed and fails at STEP 3's empty-checklist assert, by name.
 // Mints nothing: every review-wizard name is skipped.
 //
+// RE-DERIVE ON THE FIRST LIVE RUN (SportLots paused): the measurement below
+// predates names-first pairing (NEO-591), which changes how a checklist row
+// meets a card and so may change every count it quotes. Treat each as the last
+// live reading, not a fact; re-measure and rewrite them the day the live branch
+// first runs again.
 // MEASURED on PR #335 run 38501127928 (Football 2014 Topps Base, live): the
 // dialog opens on "Matched (554)" with 8 name conflicts and 7 player
 // conflicts, "BSC only (0)" and "SportLots only (2)": #28 Vernon David ·
@@ -55,9 +60,39 @@
 // #6a, a team-leader card whose BSC bulk answer already names its team, raises the
 // wizard's "Checklist says otherwise" step with the checklist's side "No team on the
 // card"; taking the checklist's side saves #6a with no team and no "no team on this
-// card yet" badge. This is the only registered set whose marketplace bulk answer
-// carries a team, which is why the claim is exercised here. Zero BSC calls: all 554
-// rows are answered by the file, and #6a carries its team from the bulk answer.
+// card yet" badge. NEO-591: the same file prints #38a (the Chiefs' card) as the MIXED cell
+// "Kansas City Chiefs / Prospect (Dallas Baptist)": the X of "Prospect (X)" is one of the
+// card's printed teams (Jason, 2026-11-19). Match Cards reads that row as printed, both
+// paired ("· Kansas City Chiefs / Prospect (Dallas Baptist)", in its Unlink control) and
+// unpaired on the checklist list after an Unlink (before 1a4def6c it read "Prospect (Kansas
+// City Chiefs / Dallas Baptist)"); linked back, the row is unchanged. The checklist names a
+// team BSC does not (Dallas Baptist), so the wizard asks "Checklist says otherwise" on #38a;
+// keeping the marketplace's side saves #38a with its own team AND as a Prospect Card (the
+// claim rides with every outcome). This is the only registered
+// set whose marketplace bulk answer carries a team, which is why both claims are
+// exercised here. Zero BSC calls: all 554 rows are answered by the file, and #6a and
+// #38a carry their teams from the bulk answer.
+// NEO-591 (variations), the same paused upload, two more edits to the file:
+//   STEM LINK: Julius Thomas is #9a and #9b on BSC (the same player twice). The file
+//     prints him once, as "9" (`STEM`: 9a renumbered, 9b dropped), so the one row
+//     covers both cards: each reads "Checklist: #9 · all versions" with no %. Unlink
+//     on #9b drops that card's link alone: #9a keeps the row, #9b moves to Keeping
+//     (it is BSC's alone), focus lands on its title there, and the status region
+//     says "Unlinked from #9b. Row #9 still covers #9a. Moved to Keeping."
+//   SIBLING CREATION: Kyle Long is #95 on BSC, one card. The file prints him twice
+//     (`SIBLING`), as 95a and as 95b "(Photo Variation)". The card pairs 95a (letters
+//     over digits: it is offered as #95a, #95 a pick away, no "Numbers differ"), and
+//     95b, a variation BSC does not list, arrives pre-kept in Keeping as the row
+//     "#95b Kyle Long · Photo Variation" (a checklist row); confirmed, it is saved
+//     as a variation of #95a named "Photo Variation" (its list sub-line and drawer).
+//     The numbers agree (95 is 95a), so the number is a quiet choice: "Number #95a"
+//     and "Change number for #95a", opened to "Number choice on #95a".
+//   Letters minted for a SportLots-only variation (no checklist row) are proved by
+//   unit tests only while SportLots is paused (convex/fetchCardChecklist.namesFirst.test.ts).
+//   The shapes are the capture's own (fixtures/checklists/2014-football-topps-base.csv,
+//   BSC's per-card answers): 9a/9b one player, 95 one card, Kyle Long and Julius
+//   Thomas on no other row; `usePublishersChecklist` throws if an edited number is
+//   not on exactly one row.
 // Exactly one of the two branches commits the set in a given seed.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { escapeRe } from "../../support/cards";
@@ -67,7 +102,14 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../../support/set-builder";
-import { CHECKLISTS, confirmChecklistMatchCards, expectTeamsFromChecklist, usePublishersChecklist } from "../../support/published-checklist";
+import { expectAfterMarketplace } from "../../support/marketplace-wait";
+import {
+  CHECKLISTS,
+  confirmChecklistMatchCards,
+  expectTeamsFromChecklist,
+  matchCardsDialog,
+  usePublishersChecklist,
+} from "../../support/published-checklist";
 import {
   advanceToSave,
   confirmSaveButton,
@@ -84,6 +126,39 @@ const CHECKLIST_FETCH = 120_000;
 const WIZARD_OPENS = 60_000;
 /** The bulk skip while the batch can still grow (checklist-one-marketplace-match-cards-keeps-every-card's ceiling). */
 const BATCH_GROWS = 60_000;
+
+/**
+ * NEO-591: the Chiefs' team-leader card, its file cell changed to a MIXED cell: its own club and a
+ * "Prospect (X)" whose X (Dallas Baptist, no football team on file) is a second printed team.
+ */
+const PROSPECT = {
+  number: "38a",
+  card: "Kansas City Chiefs",
+  team: "Kansas City Chiefs",
+  cell: "Kansas City Chiefs / Prospect (Dallas Baptist)",
+  /** How the cell read before 1a4def6c: every team inside the bracket. Never shown now. */
+  misread: "Prospect (Kansas City Chiefs / Dallas Baptist)",
+  /** The checklist's side of the wizard's "Checklist says otherwise" on #38a: both printed teams, joined by "and" (measured). */
+  checklistSide: "Kansas City Chiefs and Dallas Baptist",
+} as const;
+
+/**
+ * NEO-591: one player BSC lists twice (#9a, #9b) that the file prints once, as "9":
+ * both cards share the row by its stem.
+ */
+const STEM = { renumber: { "9a": "9" }, drop: ["9b"], player: "Julius Thomas" } as const;
+/**
+ * NEO-591: one card BSC lists once (#95) that the file prints twice, the second a
+ * variation: the card pairs 95a and 95b is created as its variation.
+ */
+const SIBLING = {
+  card: "95",
+  player: "Kyle Long",
+  split: { "95": [{ number: "95a" }, { number: "95b", note: "(Photo Variation)" }] },
+  base: "95a",
+  variation: "95b",
+  variationName: "Photo Variation",
+} as const;
 
 /** A row's name with its `#<number> ` prefix and any ` · <variation>` tail dropped. */
 function nameFromLabel(label: string): string {
@@ -118,17 +193,144 @@ test(
       // #6a, the Patriots' card, now says No Team (`noTeamOn`). BSC calls added: 0. All 554 rows
       // are answered, so no card is asked of BSC per card, and the card that disagrees already
       // carries its team from the bulk answer, so nothing is looked up for it either.
+      // NEO-591: #38a, the Chiefs' card, says "Kansas City Chiefs / Prospect (Dallas Baptist)" (`PROSPECT`).
       // Fresh-only like the rest of this spec (the flow commits the set; the unpaused path
       // below never runs in the same seed), every name skipped.
       await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
-      const claimed = await usePublishersChecklist(page, CHECKLISTS.topps2014FootballBase, { noTeamOn: "6a" });
+      const claimed = await usePublishersChecklist(page, CHECKLISTS.topps2014FootballBase, {
+        teamCells: { "6a": "No Team", [PROSPECT.number]: PROSPECT.cell },
+        renumber: STEM.renumber,
+        drop: STEM.drop,
+        split: SIBLING.split,
+      });
       await syncChecklistButton(page).click();
       // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards opens
-      // here too. The helper waits on it (7 s of ours plus BSC's), proves the teams line while it is
-      // open (one less than the file answers: #6a's disagreement is the operator's to settle, so the
-      // checklist has not answered it yet), keeps any BSC-only card and confirms.
+      // here too. Its wait is the helper's own (7 s of ours plus BSC's, `expectAfterMarketplace`).
+      const pairing = matchCardsDialog(page);
+      await expectAfterMarketplace(page, pairing.getByRole("button", { name: "Confirm card matches", disabled: false }), {
+        platform: "BuySportsCards",
+        what: "Match Cards after the paused 2014 Topps Football fetch",
+      });
+      // NEO-591: the mixed cell reads as printed on the row's line and in its Unlink control. Matched opens
+      // collapsed whenever a column holds a card, expanded otherwise (STEP 5 below).
+      const pausedExpand = pairing.getByRole("button", { name: /^Expand matched cards/ });
+      const pausedCollapse = pairing.getByRole("button", { name: /^Collapse matched cards/ });
+      await expect(pausedExpand.or(pausedCollapse)).toBeVisible();
+      if (await pausedExpand.isVisible()) await pausedExpand.click();
+      const prospectRow = `#${PROSPECT.number} ${PROSPECT.card} · ${PROSPECT.cell}`;
+      const unlinkProspect = pairing.getByRole("button", {
+        name: `Unlink card #${PROSPECT.number} ${PROSPECT.card} from checklist row ${prospectRow}`,
+        exact: true,
+      });
+      await expect(unlinkProspect).toBeVisible();
+      // Never every team inside the bracket (the pre-1a4def6c reading); paired with the positive above.
+      await expect(pairing.getByText(PROSPECT.misread)).toHaveCount(0);
+      await expectAccessible(page, { within: pairing, label: "Match Cards, a mixed Prospect (X) row on 2014 Topps Football" });
+      // Unlink: the checklist row is back on its list, still carrying its claim; link it back.
+      await unlinkProspect.click();
+      await expect(unlinkProspect).toHaveCount(0);
+      await pairing.getByRole("textbox", { name: "Filter checklist rows" }).fill(`#${PROSPECT.number}`);
+      await expect(pairing.getByRole("radio", { name: `Select ${prospectRow}`, exact: true })).toBeVisible();
+      await expect(pairing.getByText(PROSPECT.misread)).toHaveCount(0);
+      await expectAccessible(page, { within: pairing, label: "Match Cards, the mixed Prospect (X) row unlinked onto the checklist list" });
+      await pairing.getByRole("radio", { name: `Select ${prospectRow}`, exact: true }).click();
+      await pairing
+        .getByRole("button", { name: `Link selected checklist row to #${PROSPECT.number} ${PROSPECT.card}`, exact: true })
+        .click();
+      await expect(unlinkProspect).toBeVisible();
+      await expect(pairing.getByRole("radio", { name: `Select ${prospectRow}`, exact: true })).toHaveCount(0);
+
+      // ── NEO-591 STEM LINK: one row "9" covers BSC's #9a and #9b ──
+      // Both cards carry the row's chip, read "all versions", with no % (a shared row is by
+      // design, not a near match) and no number picker (a stem is no disagreement).
+      const stemChip = pairing.getByText(`Checklist: #9 · all versions`, { exact: true });
+      await expect(stemChip).toHaveCount(2);
+      const stemUnlink = (n: string) =>
+        pairing.getByRole("button", {
+          name: new RegExp(`^Unlink card #${n} ${escapeRe(STEM.player)}( · .*)? from checklist row #9 ${escapeRe(STEM.player)}\\b`),
+        });
+      const stemRows = pairing
+        .getByRole("listitem")
+        .filter({ has: page.getByRole("button", { name: new RegExp(`^Edit name for #9[ab] ${escapeRe(STEM.player)}`) }) });
+      await expect(stemRows).toHaveCount(2);
+      await expect(stemRows.getByText(/%$/)).toHaveCount(0);
+      await expect(stemRows.getByRole("radiogroup", { name: /^Number for / })).toHaveCount(0);
+      await expect(stemRows.getByText("Numbers differ", { exact: true })).toHaveCount(0);
+      await expect(stemUnlink("9a")).toBeVisible();
+      await expect(stemUnlink("9b")).toBeVisible();
+      await expectAccessible(page, { within: pairing, label: "Match Cards, one checklist row shared by #9a and #9b (stem link)" });
+      // Unlink #9b alone: #9a keeps the row (no row returns to the list), #9b is BSC's alone now
+      // and moves to Keeping, focus follows it to its title there, and the status region says what
+      // happened.
+      await stemUnlink("9b").click();
+      await expect(stemUnlink("9b")).toHaveCount(0);
+      await expect(stemUnlink("9a")).toBeVisible();
+      await expect(stemChip).toHaveCount(1);
+      await expect(pairing.getByRole("radio", { name: /^Select #9 / })).toHaveCount(0);
+      await expect(
+        pairing.getByRole("status").filter({ hasText: /^Unlinked from #9b\./ }),
+      ).toHaveText("Unlinked from #9b. Row #9 still covers #9a. Moved to Keeping.");
+      await expect(
+        pairing.getByRole("button", { name: new RegExp(`^Edit name for #9b ${escapeRe(STEM.player)}( · .*)?$`) }),
+      ).toBeFocused();
+      await expect(
+        pairing.getByRole("button", { name: new RegExp(`^Remove #9b ${escapeRe(STEM.player)}( · .*)? from save list$`) }),
+      ).toBeVisible();
+      await expectAccessible(page, { within: pairing, label: "Match Cards, #9b unlinked from the shared row #9" });
+
+      // ── NEO-591 SIBLING CREATION: BSC's one #95 against the file's 95a and 95b ──
+      // The card paired 95a: offered as #95a (letters over digits) with no "Numbers differ" (95 and
+      // 95a are the same card), so the number is a quiet choice, not a conflict: "Number #95a" and a
+      // "Change number" control, no warning, no radios until it is opened.
+      const kyle = pairing
+        .getByRole("listitem")
+        .filter({ has: page.getByRole("button", { name: `Edit name for #${SIBLING.base} ${SIBLING.player}`, exact: true }) });
+      await expect(kyle.getByText(`Checklist: #${SIBLING.base}`, { exact: true })).toBeVisible();
+      await expect(kyle.getByText("Numbers differ", { exact: true })).toHaveCount(0);
+      await expect(kyle.getByText(/%$/)).toHaveCount(0);
+      const kyleChosen = kyle.getByText(`Number #${SIBLING.base}`, { exact: true });
+      const changeKyle = kyle.getByRole("button", { name: `Change number for #${SIBLING.base}`, exact: true });
+      await expect(kyleChosen).toBeVisible();
+      await expect(changeKyle).toHaveAttribute("aria-expanded", "false");
+      await expect(kyle.getByRole("radio")).toHaveCount(0);
+      await expect(kyle.getByText(/Sources disagree on the number/)).toHaveCount(0);
+      await expect(kyle.getByRole("group", { name: /^Number conflict on / })).toHaveCount(0);
+      await changeKyle.click();
+      await expect(changeKyle).toHaveAttribute("aria-expanded", "true");
+      await expect(kyle.getByRole("group", { name: `Number choice on #${SIBLING.base}`, exact: true })).toBeVisible();
+      await expect(kyleChosen).toBeHidden();
+      await expect(kyle.getByText(/Sources disagree on the number/)).toHaveCount(0);
+      const kyleNumber = kyle.getByRole("radiogroup", { name: `Number for #${SIBLING.base}`, exact: true });
+      // 95a is the checklist's alone (BSC printed 95), so its option says so; BSC's stays bare.
+      await expect(
+        kyleNumber.getByRole("radio", {
+          name: `#${SIBLING.base} · your checklist — use this number for #${SIBLING.base}`,
+          exact: true,
+        }),
+      ).toBeChecked();
+      await expect(
+        kyleNumber.getByRole("radio", { name: `#${SIBLING.card} — use this number for #${SIBLING.base}`, exact: true }),
+      ).not.toBeChecked();
+      // 95b has no card of its own: it was made a variation card and opens kept, on the Keeping shelf,
+      // drawn like a Matched row: its title names the variation, tagged as a checklist row, with Remove.
+      const sibling = pairing.getByRole("listitem").filter({
+        has: page.getByRole("button", {
+          name: `Edit name for checklist row #${SIBLING.variation} ${SIBLING.player} · ${SIBLING.variationName}`,
+          exact: true,
+        }),
+      });
+      await expect(sibling.getByText("Checklist row", { exact: true })).toBeVisible();
+      await expect(
+        sibling.getByRole("button", {
+          name: new RegExp(`^Remove checklist row #${SIBLING.variation} ${escapeRe(SIBLING.player)}( · .*)? from save list$`),
+        }),
+      ).toBeVisible();
+      await expect(pairing.getByRole("radio", { name: new RegExp(`^Select #${SIBLING.variation} `) })).toHaveCount(0);
+      await expectAccessible(page, { within: pairing, label: "Match Cards, #95 paired to 95a with 95b pre-kept as its variation" });
+      // The helper proves the teams line (two less than the file answers: #6a's and #38a's
+      // disagreements are the operator's to settle), keeps any BSC-only card and confirms.
       await confirmChecklistMatchCards(page, {
-        facts: { ...claimed, matched: claimed.matched - 1 },
+        facts: { ...claimed, matched: claimed.matched - 2 },
         what: "the paused 2014 Topps Football fetch",
       });
       const pausedWizard = reviewWizard(page);
@@ -140,10 +342,17 @@ test(
       await expectChecklistDisagreementFirst(page);
       const onSix = disagreementOn(page, "6a");
       await expect(onSix).toBeVisible();
-      await expect(pausedWizard.getByRole("radiogroup", { name: /^Disagreement on #/ })).toHaveCount(1);
+      await expect(pausedWizard.getByRole("radiogroup", { name: /^Disagreement on #/ })).toHaveCount(2);
       await expect(onSix.getByRole("definition")).toHaveText(["New England Patriots", "No team on the card"]);
-      await expectAccessible(page, { within: pausedWizard, label: "Entity review wizard, a No Team claim against a team-leader card" });
+      // NEO-591: X is one of the checklist's teams, so #38a disagrees (BSC names the Chiefs alone):
+      // the checklist's side shows both printed teams, never "No team on the card".
+      await expect(disagreementOn(page, PROSPECT.number).getByRole("definition")).toHaveText([
+        PROSPECT.team,
+        PROSPECT.checklistSide,
+      ]);
+      await expectAccessible(page, { within: pausedWizard, label: "Entity review wizard, a No Team claim and a Prospect (X) team against team-leader cards" });
       await pickDisagreementSide(page, "6a", "Use the checklist's");
+      await pickDisagreementSide(page, PROSPECT.number, "Keep the marketplace's");
 
       // The names are not this part's claim: skip them all (repeating while a Wikidata career
       // history can still stage a row), then save.
@@ -183,9 +392,43 @@ test(
       await expect(sixDrawer.getByRole("button", { name: /^Remove team / })).toHaveCount(0);
       await sixDrawer.getByRole("button", { name: "Done editing card" }).click();
       await expect(sixDrawer).toBeHidden();
+
+      // NEO-591: #38a kept the marketplace's team and is a Prospect Card all the same.
+      await pausedSearch.fill(PROSPECT.number);
+      await expect(page.getByText(/^1 of [0-9]+ cards$/)).toBeVisible();
+      const prospectEdit = page.getByRole("button", { name: `Edit card ${PROSPECT.number}, ${PROSPECT.card}`, exact: true });
+      await prospectEdit.click();
+      const prospectDrawer = page.getByRole("dialog", { name: `Card #${PROSPECT.number}` });
+      await expect(prospectDrawer.getByRole("button", { name: /^Remove team / })).toHaveAccessibleName(`Remove team ${PROSPECT.team}`);
+      await prospectDrawer.getByRole("button", { name: "Show features editor" }).click();
+      await expect(prospectDrawer.getByRole("button", { name: "Value for Prospect Card" })).toHaveAttribute("aria-pressed", "true");
+      await prospectDrawer.getByRole("button", { name: "Done editing card" }).click();
+      await expect(prospectDrawer).toBeHidden();
+
+      // NEO-591: the card took the row's lettered number, and 95b was saved as its variation,
+      // named by the checklist's note ("95b" is a prefix match: #95b alone).
+      await pausedSearch.fill(SIBLING.base);
+      await expect(page.getByText(/^1 of [0-9]+ cards$/)).toBeVisible();
+      await expect(page.getByRole("button", { name: `Edit card ${SIBLING.base}, ${SIBLING.player}`, exact: true })).toBeVisible();
+      await pausedSearch.fill(SIBLING.variation);
+      await expect(page.getByText(/^1 of [0-9]+ cards$/)).toBeVisible();
+      await expect(
+        page.getByText(new RegExp(`^Variation of #${SIBLING.base}( · .*)? · ${SIBLING.variationName}$`)),
+      ).toBeVisible();
+      await page.getByRole("button", { name: `Edit card ${SIBLING.variation}, ${SIBLING.player}`, exact: true }).click();
+      const siblingDrawer = page.getByRole("dialog", { name: `Card #${SIBLING.variation}` });
+      await expect(siblingDrawer.getByRole("textbox", { name: "Card variation", exact: true })).toHaveValue(SIBLING.variationName);
+      // A linked parent reads as the card itself, with Clear beside it (no number box to type in).
+      await expect(siblingDrawer.getByText(`#${SIBLING.base} ${SIBLING.player}`, { exact: true })).toBeVisible();
+      await expect(siblingDrawer.getByRole("button", { name: "Clear variation parent", exact: true })).toBeVisible();
+      await siblingDrawer.getByRole("button", { name: "Done editing card" }).click();
+      await expect(siblingDrawer).toBeHidden();
       return;
     }
 
+    // LIVE BRANCH. RE-DERIVE ON THE FIRST LIVE RUN (SportLots paused): written and measured
+    // before names-first pairing (NEO-591). The counts, the "every BSC card matched" shape and
+    // the Matched list's open state below are the last live reading; re-measure each.
     // ── STEP 3: fetch. The empty checklist makes everything below THIS fetch's.
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
     // NEO-478/482: BSC's side comes from its own per-card answers, captured as the
@@ -212,6 +455,11 @@ test(
     // disagreements (#72, #247, #257, #405 by the catalogues), not this
     // spec's business, so 4 of slack absorbs catalogue drift while a
     // regression on more than 4 of the 32 team-leader cards still fails.
+    // NEO-591: the name count now also holds a card whose name differs from its
+    // checklist row's. The checklist here is BSC's own capture, and the product
+    // matcher pairs all 554 of its rows to the capture's cards with the same name
+    // on both sides (checked with `checklistMatch` and the modal's name key), so
+    // the checklist adds nothing to the bound.
     const upTo12 = "([0-9]|1[0-2])";
     await expect(
       dialog.getByRole("button", {
@@ -224,8 +472,9 @@ test(
 
     // ── STEP 5 (a): #6a, a team-leader card, is matched under the bare team
     // name with no decision on it. Matched opens collapsed whenever a column
-    // holds a card (BSC's "b" photo variations have no partner) and expanded
-    // otherwise: wait for one state, then open it.
+    // holds a card and expanded otherwise (which, live, is to re-derive: names
+    // first may now pair what used to wait in a column): wait for one state,
+    // then open it.
     const expandMatched = dialog.getByRole("button", { name: /^Expand matched cards/ });
     const collapseMatched = dialog.getByRole("button", { name: /^Collapse matched cards/ });
     await expect(expandMatched.or(collapseMatched)).toBeVisible();
@@ -235,14 +484,20 @@ test(
     // match refuses "New England Patriots TL". `#6a?`: BSC's number is "6a"
     // (the parent of a "6b" photo variation) unless NB normalises it.
     await expect(dialog.getByRole("button", { name: /^Unlink #6a? New England Patriots$/ })).toBeVisible();
-    // No decision on it, title or roster (rides on the positive above, R2).
+    // No decision on it, title or roster (rides on the positive above, R2). NEO-591: nor from the
+    // checklist: the capture's row 6a pairs card 6a by number and names "New England Patriots" too.
     await expect(dialog.getByRole("group", { name: /^Name conflict on #6a?( .*)?$/ })).toHaveCount(0);
     await expect(dialog.getByRole("group", { name: /^Players conflict on #6a?( .*)?$/ })).toHaveCount(0);
 
     // ── STEP 6 (b): a conflict on #442, shown bare. Matched is still open
-    // from STEP 5. The measured shape (R2): every BSC card matched, so BSC
+    // from STEP 5. The measured shape (R2; re-derive on the first live run,
+    // SportLots paused): every BSC card matched, so BSC
     // only is empty and #442 sits in the Matched list. Unlink it (the button
     // carries its label, `Unlink #442 <name>`); its BSC half lands in BSC only.
+    // RE-DERIVE ON THE FIRST LIVE RUN: with the checklist uploaded, #442's pair carries its row,
+    // and a split pair's BSC half that holds a checklist link is KEPT (it goes to Keeping, not
+    // BSC only; CardPairingModal's UNLINK), so this step's counts and the BSC-column read below
+    // are the pre-checklist reading.
     const bscOnly = (n: number) => dialog.getByRole("heading", { name: `BSC only (${n})`, exact: true });
     await expect(bscOnly(0)).toBeVisible();
     await dialog.getByRole("button", { name: /^Unlink #442 / }).click();
@@ -289,6 +544,9 @@ test(
       nameGroup.getByText("Potential names for this card — pick the right one before it is listed."),
     ).toBeVisible();
     await expect(dialog.getByRole("radiogroup", { name: "Name for #442", exact: true })).toBeVisible();
+    // NEO-591: two pills, whether or not #442 still holds its checklist row: the capture's row names
+    // #442 as BSC does, and a name a marketplace also said is one bare pill, never "· your checklist".
+    await expect(dialog.getByRole("radiogroup", { name: "Name for #442", exact: true }).getByRole("radio")).toHaveCount(2);
     const pill = (value: string) =>
       dialog.getByRole("radio", { name: `${value} — use this name for #442`, exact: true });
     const bscPill = pill(bscName);

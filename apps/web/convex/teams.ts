@@ -37,6 +37,7 @@ import {
 // identity fields and `findTeamByFullName` the ONE lookup — see
 // convex/lib/teamRow.ts for why every writer in this file goes through them.
 import {
+  PLACE_TEAM_SEARCH_HITS,
   TEAM_ERA_SCAN_LIMIT,
   findCollidingTeams,
   findTeamsByAlias,
@@ -46,6 +47,7 @@ import {
   resolveTeamForSetYear,
   teamRowFields,
 } from "./lib/teamRow";
+import { teamLocationIs } from "./lib/placeTeam";
 // NEO-296: the bound on the batch id -> row read, with the op arithmetic.
 import { readManyByIds } from "./lib/batchIdReads";
 // NEO-602 (S2): the one era check every team writer applies.
@@ -3001,7 +3003,12 @@ export const resolveNames = query({
 /** How many search-index rows feed the ranker, and how many rank out by default. */
 const NEAR_MATCH_SEARCH_CANDIDATES = 10;
 const NEAR_MATCH_DEFAULT_LIMIT = 5;
-const NEAR_MATCH_MAX_LIMIT = 25;
+/**
+ * The most a caller may ask for. At least a printed place's candidate count
+ * (`PLACE_TEAM_SEARCH_HITS`): the review step asks for as many near matches as
+ * it lists candidates, so the two counts agree.
+ */
+const NEAR_MATCH_MAX_LIMIT = Math.max(25, PLACE_TEAM_SEARCH_HITS);
 
 /**
  * NEO-212: the "did you mean?" prompt in front of creating a team.
@@ -3057,6 +3064,14 @@ export const nearMatches = query({
        * stays `Link to {name}`.
        */
       matchedAlias: v.optional(v.string()),
+      /**
+       * Collector review — the team's LOCATION is the typed string ("Seattle"
+       * for the Mariners): the string is a place, not a name for this team.
+       * The review wizard reads it to leave "Remember … as a name for this
+       * team" unticked, so a place is not saved as an alias that would later
+       * claim every set where the same word means another team.
+       */
+      locationMatch: v.optional(v.literal(true)),
     }),
   ),
   handler: async (ctx, args) => {
@@ -3093,6 +3108,7 @@ export const nearMatches = query({
         name: string;
         yearsActive?: { from: number; to?: number };
         matchedAlias?: string;
+        locationMatch?: true;
       }
     >();
     const normalized = normalizeTeamName(name);
@@ -3122,6 +3138,7 @@ export const nearMatches = query({
           ? { yearsActive: exact.yearsActive }
           : {}),
         ...(matchedAlias ? { matchedAlias } : {}),
+        ...(teamLocationIs(exact, name) ? { locationMatch: true as const } : {}),
       });
     }
 
@@ -3137,7 +3154,7 @@ export const nearMatches = query({
         .withSearchIndex("search_name", (q) =>
           q.search("nameNormalized", term).eq("sportId", args.sportId),
         )
-        .take(NEAR_MATCH_SEARCH_CANDIDATES);
+        .take(Math.max(NEAR_MATCH_SEARCH_CANDIDATES, limit));
     };
 
     let hits = await searchTeams(name);
@@ -3156,6 +3173,7 @@ export const nearMatches = query({
         _id: hit._id,
         name: teamFullName(hit),
         ...(hit.yearsActive !== undefined ? { yearsActive: hit.yearsActive } : {}),
+        ...(teamLocationIs(hit, name) ? { locationMatch: true as const } : {}),
       });
     }
 
@@ -3187,6 +3205,7 @@ export const nearMatches = query({
         ...(rows[index].matchedAlias
           ? { matchedAlias: rows[index].matchedAlias }
           : {}),
+        ...(rows[index].locationMatch ? { locationMatch: true as const } : {}),
       }));
   },
 });

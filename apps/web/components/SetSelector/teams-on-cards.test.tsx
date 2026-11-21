@@ -28,6 +28,9 @@ import {
   sameTeamAnswers,
   storedPeople,
   teamIdKey,
+  nameRequestSlices,
+  TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST,
+  TEAMS_SECTION_NAMES_PER_REQUEST,
   teamNameRequests,
   toggleTeam,
   teamAnswersByCard,
@@ -644,8 +647,9 @@ describe("invariant 8 — a listing's team name holds the guess back", () => {
   test("the NB teams the listed name resolves to are offered FIRST, unselected", () => {
     const rows = [unruledTeam("Durham Bulls")];
     const cards = [card("1", ["Johnny Bench"], ["Durham Bulls"])];
+    // Every listed name also asks for the teams LOCATED there (collector review).
     expect(teamNameRequests(cards, rows)).toEqual([
-      { key: "bulls durham", name: "Durham Bulls" },
+      { key: "bulls durham", name: "Durham Bulls", location: true },
     ]);
     const BULLS = "team_bulls" as Id<"teams">;
     const groups = build(
@@ -828,6 +832,31 @@ describe("created players — the window and the set's league (C2, C2b, C8)", ()
     expect(named[0].suggestion).toBeNull();
     const failed = build([{ ...card("1", ["Johnny Bench"]), teamLookup: "failed" }], [], evidence);
     expect(failed[0].suggestion).toBeNull();
+  });
+
+  test("invariant 8: a listing's team the card carries no string for is shown as Listed as and never pre-filled over (NEO-591)", () => {
+    const evidence = { "name:bench johnny": {
+      answer: { tier: "oneTeamCareerInLeague", teams: [serverTeam(REDS, "Cincinnati Reds")] },
+      candidates: [],
+    } };
+    const listed = { ...card("1", ["Johnny Bench"]), teamLookup: "answered" as const, rawTeamName: "Reds / Padres" };
+    const groups = build([listed], [], evidence);
+    expect(groups[0].suggestion).toBeNull();
+    expect(groups[0].listedNames).toEqual(["Reds / Padres"]);
+    // The would-be pre-fill is one more choice, not an answer.
+    expect(labels(groups[0])).toContain("Cincinnati Reds");
+    expect(teamNameRequests([listed], []).map((r) => r.name)).toEqual(["Reds / Padres"]);
+    // The same card with no raw value is pre-filled as before.
+    const quiet = build([{ ...card("1", ["Johnny Bench"]), teamLookup: "answered" }], [], evidence);
+    expect(suggested(quiet[0])).toEqual(["Cincinnati Reds"]);
+    // A raw value the operator ruled "not a team" is no claim.
+    const ruledOut = build(
+      [listed],
+      [row({ kind: "team", name: "Reds / Padres", decision: { action: "skip" } })],
+      evidence,
+    );
+    expect(ruledOut[0].listedNames).toEqual([]);
+    expect(suggested(ruledOut[0])).toEqual(["Cincinnati Reds"]);
   });
 
   test("C8: a prospect's major-league org (existing team, ranked by the server) beats his affiliates", () => {
@@ -1440,6 +1469,19 @@ describe("NEO-556 setDefaultSettlesNewRow", () => {
     expect(setDefaultSettlesNewRow(card, "none")).toBe(false);
   });
 
+  test("invariant 8: a set team never settles a card whose data names a team the commit did not give it", () => {
+    // A listing value kept only as the "Listed as:" hint.
+    expect(
+      setDefaultSettlesNewRow({ ...card, ...bsc, teamLookup: "answered", rawTeamName: "Padres / Cubs" }, "teams"),
+    ).toBe(false);
+    // A card that prints its own team string has one (or a name awaiting review).
+    expect(
+      setDefaultSettlesNewRow({ ...card, ...bsc, teams: ["Padres"], rawTeamName: "Padres" }, "teams"),
+    ).toBe(true);
+    // Blank claims are no claim.
+    expect(setDefaultSettlesNewRow({ ...card, ...bsc, rawTeamName: " " }, "teams")).toBe(true);
+  });
+
   test("No Team settles a card with nothing to look up", () => {
     expect(setDefaultSettlesNewRow(card, "noTeam")).toBe(true);
   });
@@ -1497,5 +1539,158 @@ describe("NEO-528 — defaultPlayerPositions: which preview cards the set's play
       entry(13, [" "]), // new, blank-only
     ];
     expect(defaultPlayerPositions(kept, stored)).toEqual([2, 3]);
+  });
+});
+
+describe("a team printed as a place (collector review)", () => {
+  test("Seattle Mariners is a chip beside 'Listed as: Seattle', unselected", () => {
+    const MARINERS = "team_mariners" as Id<"teams">;
+    const cards = [card("1", ["Julio Rodriguez"], ["Seattle"])];
+    // "Seattle" names no team, so the review parked it: a row nobody has ruled on.
+    const rows = [row({ kind: "team", name: "Seattle", decision: null })];
+    // The listing's place asks for the teams located there ...
+    expect(teamNameRequests(cards, rows)).toEqual([{ key: "seattle", name: "Seattle", location: true }]);
+    // ... and what the server finds there is a choice, never the pre-fill.
+    const groups = build(cards, rows, {}, 2025, {
+      teamNameEvidence: { seattle: [{ teamId: MARINERS, name: "Seattle Mariners" }] },
+    });
+    expect(groups[0].listedNames).toEqual(["Seattle"]);
+    expect(labels(groups[0])).toContain("Seattle Mariners");
+    expect(groups[0].suggestion).toBeNull();
+  });
+
+  test("a career team of a created player is not a listed name, so it asks for no location", () => {
+    const rows = [
+      row({
+        kind: "player",
+        name: "Chris Potter",
+        decision: { action: "create" },
+        enrichment: { careerTeams: [{ name: "Roanoke Express", fromYear: 1994, toYear: 1996 }] },
+      }),
+    ];
+    expect(teamNameRequests([card("NNO", ["Chris Potter"])], rows)).toEqual([
+      { key: "express roanoke", name: "Roanoke Express" },
+    ]);
+  });
+});
+
+describe("nameRequestSlices — a call never asks for more places than the server will read", () => {
+  const places = (n: number, from = 0) =>
+    Array.from({ length: n }, (_, i) => ({ key: `p${from + i}`, name: `Place ${from + i}`, location: true as const }));
+  const plain = (n: number) => Array.from({ length: n }, (_, i) => ({ key: `n${i}`, name: `Name ${i}` }));
+
+  test("closes a call at the location cap, so the 9th place is asked in the next call", () => {
+    const slices = nameRequestSlices(places(TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST + 1));
+    expect(slices.map((s) => s.length)).toEqual([TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST, 1]);
+  });
+
+  test("names without a place fill a call to the name cap and never close it early", () => {
+    const slices = nameRequestSlices([...places(TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST), ...plain(40)]);
+    expect(slices.map((s) => s.length)).toEqual([TEAMS_SECTION_NAMES_PER_REQUEST, 16]);
+    for (const slice of slices) {
+      expect(slice.filter((r) => r.location).length).toBeLessThanOrEqual(TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST);
+    }
+  });
+
+  test("keeps first-seen order and every request exactly once; nothing is an empty call", () => {
+    const all = [...places(5), ...plain(3), ...places(11, 5)];
+    const slices = nameRequestSlices(all);
+    expect(slices.flat()).toEqual(all);
+    expect(slices.every((s) => s.length > 0)).toBe(true);
+    expect(nameRequestSlices([])).toEqual([]);
+  });
+});
+
+describe("a Prospect (X) card, X is the printed team (NEO-591)", () => {
+  // The checklist row said "Prospect (Dallas Baptist)": the card prints that
+  // team, like any plain team cell, and the Names step asks about it.
+  const prospect = (): PreviewCardForTeams => ({
+    cardNumber: "NNO",
+    cardName: "Cord Rager",
+    players: ["Cord Rager"],
+    teams: ["Dallas Baptist"],
+    teamLookup: "checklist",
+  });
+
+  test("a team created in the New Team step resolves at commit, so the card is not asked on the Teams step", () => {
+    const rows = [
+      row({
+        kind: "team",
+        name: "Dallas Baptist",
+        decision: { action: "create", create: { location: "Dallas", name: "Baptist" } },
+      }),
+    ];
+    expect(build([prospect()], rows, {}, 2026)).toEqual([]);
+  });
+
+  test("a team linked to an existing one resolves the same way", () => {
+    const rows = [
+      row({ kind: "team", name: "Dallas Baptist", decision: { action: "link", linkedTeamId: REDS } }),
+    ];
+    expect(build([prospect()], rows, {}, 2026)).toEqual([]);
+  });
+
+  test("a team the operator ruled 'not a team' leaves the card to the Teams step, with no pre-fill and no Remember box", () => {
+    const rows = [row({ kind: "team", name: "Dallas Baptist", decision: { action: "skip" } })];
+    const groups = build([prospect()], rows, {}, 2026);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].suggestion).toBeNull();
+    expect(groups[0]).not.toHaveProperty("heldX");
+    expect(groups[0]).not.toHaveProperty("prospectHeld");
+  });
+});
+
+describe("a name the career step pointed at another person (NEO-574 / NEO-591)", () => {
+  const OTHER = "player_other" as Id<"players">;
+  const relinked = (cardNumber: string): PreviewCardForTeams => ({
+    ...card(cardNumber, ["Luis Rodriguez"]),
+    playerIdByName: [{ name: "Luis Rodriguez", playerId: OTHER }],
+  });
+  const fresh = (cardNumber: string, ref = "np-one"): PreviewCardForTeams => ({
+    ...card(cardNumber, ["Luis Rodriguez"]),
+    newPlayerByName: [{ name: "Luis Rodriguez", ref }],
+  });
+
+  test("a relinked card is asked about its new player by id, not the printed name's", () => {
+    const cards = [relinked("1"), card("2", ["Luis Rodriguez"])];
+    expect(evidenceRequests(cards, [])).toEqual([
+      { key: `id:${OTHER}`, playerId: OTHER },
+      { key: "name:luis rodriguez", name: "Luis Rodriguez" },
+    ]);
+    // Two people, two lines, though both cards print one name.
+    expect(build(cards, [], {})).toHaveLength(2);
+  });
+
+  test("a namesake's sibling card is not 'same player in this set' evidence for the relinked one", () => {
+    // Card 2 prints the same name, has a team, and sits on the first player.
+    const cards = [relinked("1"), card("2", ["Luis Rodriguez"], ["Reds"])];
+    const groups = build(cards, [], { [`id:${OTHER}`]: unsure([YANKEES, "New York Yankees"]) });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].suggestion).toBeNull();
+    expect(labels(groups[0])).toEqual(["New York Yankees"]);
+  });
+
+  test("a new player is asked nothing and has no career to suggest from", () => {
+    const cards = [fresh("1")];
+    expect(evidenceRequests(cards, [])).toEqual([]);
+    const groups = build(cards, [], {});
+    expect(groups).toHaveLength(1);
+    expect(groups[0].players).toEqual(["Luis Rodriguez"]);
+    expect(groups[0].loading).toBe(false);
+    expect(groups[0].suggestion).toBeNull();
+    expect(defaultChoice(groups[0])).toEqual({ kind: "later" });
+  });
+
+  test("a new player's sibling card with a team is not evidence for it; two cards of one ref share a line", () => {
+    const cards = [fresh("1"), fresh("2"), card("3", ["Luis Rodriguez"], ["Reds"])];
+    const groups = build(cards, [], {});
+    expect(groups).toHaveLength(1);
+    expect(groups[0].cards.map((c) => c.cardNumber)).toEqual(["1", "2"]);
+    expect(groups[0].suggestion).toBeNull();
+  });
+
+  test("two different new players with one printed name are two lines", () => {
+    const groups = build([fresh("1", "np-a"), fresh("2", "np-b")], [], {});
+    expect(groups).toHaveLength(2);
   });
 });

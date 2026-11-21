@@ -1505,6 +1505,7 @@ export const startBatch = internalMutation({
       if (isBlankKey("team", key) || teamContextByKey.has(key)) continue;
       teamContextByKey.set(key, {
         candidateTeamIds: fact.candidateTeamIds,
+        ...(fact.place ? { place: true as const } : {}),
         cards: fact.cards,
         moreCards: fact.moreCards,
       });
@@ -3205,6 +3206,11 @@ export const teamStepContext = query({
           league: v.optional(v.string()),
         }),
       ),
+      /**
+       * The candidates are the teams located at the printed place, not teams
+       * that answer to it by name (NEO-591). Absent otherwise.
+       */
+      fromPlace: v.optional(v.literal(true)),
       cards: v.array(
         v.object({
           number: v.optional(v.string()),
@@ -3355,7 +3361,13 @@ export const teamStepContext = query({
       }
     }
 
-    return { candidates, cards, moreCards: context.moreCards, playersDontSettle };
+    return {
+      candidates,
+      ...(context.place ? { fromPlace: true as const } : {}),
+      cards,
+      moreCards: context.moreCards,
+      playersDontSettle,
+    };
   },
 });
 

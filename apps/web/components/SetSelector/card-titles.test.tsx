@@ -141,6 +141,30 @@ describe("names — a data claim, never a guess", () => {
     expect(row.title).toContain("Ohtani");
   });
 
+  test("NEO-591: a name given to a NEW player is titled by the name as typed", () => {
+    const fresh = card("1", {
+      players: ["Shohei Ohtani"],
+      newPlayerByName: [{ name: "shohei  ohtani", ref: "np-one" }],
+    });
+    const names = { newPlayerNameByRef: new Map([["np-one", "Dwight Gooden"]]) };
+    const [row] = rowsOf(buildTitleGroups([fresh], context(), undefined, { names }).titleGroups);
+    expect(row.title).toContain("Gooden");
+    expect(row.title).not.toContain("Ohtani");
+  });
+
+  test("NEO-591: another card's ref is not this card's player", () => {
+    const fresh = card("1", {
+      players: ["Shohei Ohtani"],
+      newPlayerByName: [{ name: "Shohei Ohtani", ref: "np-one" }],
+    });
+    const plain = card("2", { players: ["Shohei Ohtani"] });
+    const names = { newPlayerNameByRef: new Map([["np-one", "Dwight Gooden"]]) };
+    const rows = rowsOf(buildTitleGroups([fresh, plain], context(), undefined, { names }).titleGroups);
+    const byNumber = (n: string) => rows.find((r) => r.cardNumber === n)!;
+    expect(byNumber("1").title).toContain("Gooden");
+    expect(byNumber("2").title).not.toContain("Gooden");
+  });
+
   test("a printed name that did not resolve and has no wizard answer is not on the card", () => {
     const [row] = rowsOf(
       buildTitleGroups([card("1", { players: ["Unknown Rookie"] })], OVER).titleGroups,

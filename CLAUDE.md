@@ -68,13 +68,26 @@ whether they do or don't."
    only when the ids that side needs are present; otherwise that side is
    skipped, never guessed by name. `isCustom` is being retired
    (NEO-239).
-7. **Card number is the strongest key, but it is not guaranteed unique.**
-   Within a set a card number is almost always unique (Jason, 2026-10-08:
-   "probably 99.99%"), far more often than a player, who frequently has
-   several cards in one set. Rank the number above the player when
-   matching, but never key logic on a card number without an
-   exactly-one-match guard. A number/player disagreement is a likely
-   misread to surface as a conflict, never one to settle silently.
+7. **Match on names first; numbers confirm.** Sources number the same
+   cards differently (BSC "OV-ANFI" against a checklist's NNO; letters on
+   one side, digits on the other), so the name is the key and the number
+   is a confirmation.
+   - A name pairs only on an exactly-one match on each side. A player with
+     several cards in the set is not unique by name: the number (or the
+     operator) decides among that player's cards, and a tie stays
+     unmatched.
+   - Names agree, numbers differ or are missing on one side: matched, at a
+     lower confidence, with a note that the numbers didn't match. Never a
+     silent overwrite of either side.
+   - The NB card's number, when the sources differ, prefers letters, then
+     digits, then NNO (a number with letters is the more specific print).
+     An NB card that already exists is never renumbered by a sync.
+   - Two different plain-digit numbers never pair automatically; numbers of
+     different kinds (letters, digits, NNO) pair at lower confidence. A bare
+     number and the same number with "a" agree. The operator can pick
+     either source's number.
+   - Never key logic on a card number without an exactly-one-match guard;
+     within a set a number is almost always unique, not always.
 
 Marketplace refs may be read only inside the sync/adapter boundary, to
 route a marketplace's own update to the row linked to it.

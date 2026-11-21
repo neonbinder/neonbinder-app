@@ -18,6 +18,7 @@ import {
 } from "@testing-library/react";
 import CardPairingModal, {
   PAIRING_STREAM_DONE_ANNOUNCEMENT,
+  pairLinkedAnnouncement,
   pairingStreamLateAnnouncement,
   pairingStreamProgressAnnouncement,
   pairingStreamingSentence,
@@ -172,8 +173,9 @@ describe("CardPairingModal", () => {
     await waitFor(() => expect(onConfirm).toHaveBeenCalled());
     const cards = onConfirm.mock.calls[0][0].cards;
     expect(cards).toHaveLength(1);
-    // NB card number follows BSC, the side that splits the series.
-    expect(cards[0].cardNumber).toBe("1");
+    // NEO-591: the NB card number is the more specific of the two (letters
+    // over digits), not BSC's by default: "A1" names the same print as "1".
+    expect(cards[0].cardNumber).toBe("A1");
     expect(cards[0].platformData.bsc?.ref).toBe("bsc-1");
     expect(cards[0].platformData.sportlots?.ref).toBe("#A1 Ken Griffey Jr.");
   });
@@ -772,7 +774,13 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
       screen
         .getAllByRole("radio")
         .map((r) => r.textContent?.replace(/^✓ /, "")),
-    ).toEqual(["Mike Yastrzemski", "Mike Yastrzemski|Carl Yastrzemski"]);
+    ).toEqual([
+      "Mike Yastrzemski",
+      "Mike Yastrzemski|Carl Yastrzemski",
+      // NEO-591: and the two numbers the marketplaces printed.
+      "#227c",
+      "#227",
+    ]);
   });
 
   test("neither name is pre-resolved as correct — BSC is marked as the current default, SportLots is one click away", () => {
@@ -913,6 +921,35 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
     expect(screen.getByLabelText("Expand matched cards")).toBeTruthy();
   });
 
+  test("a clean link says where the pair went, since Matched stays folded (NEO-591)", () => {
+    renderModal({
+      unmatchedBsc: [yastrzemskiBsc, bscCard("5", "Roberto Osuna")],
+      unmatchedSl: [yastrzemskiSl, slCard("5", "Roberto Osuna")],
+    });
+    const announcer = () =>
+      screen.getAllByRole("status").find((el) => !el.id) as HTMLElement;
+    expect(announcer().textContent).toBe("");
+
+    linkByLabel("#5 Roberto Osuna", "#5 Roberto Osuna");
+
+    expect(announcer().textContent).toBe(
+      pairLinkedAnnouncement("#5 Roberto Osuna", "#5 Roberto Osuna"),
+    );
+    expect(pairLinkedAnnouncement("#5 Roberto Osuna", "#5 Roberto Osuna")).toBe(
+      "Linked #5 Roberto Osuna to #5 Roberto Osuna. Moved to Matched.",
+    );
+  });
+
+  test("a link with a conflict does not also announce the move: the conflict has focus", () => {
+    renderModal({
+      unmatchedBsc: [yastrzemskiBsc],
+      unmatchedSl: [yastrzemskiSl],
+    });
+    linkYastrzemski();
+    const announcer = screen.getAllByRole("status").find((el) => !el.id) as HTMLElement;
+    expect(announcer.textContent).toBe("");
+  });
+
   test("the collapsed header still reports the conflict count, in text and to assistive tech", () => {
     renderModal({
       unmatchedBsc: [yastrzemskiBsc, bscCard("5", "Roberto Osuna")],
@@ -958,7 +995,9 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
     ).toBeTruthy();
     expect(
       screen.getByLabelText(
-        /^Link selected BSC card to #227c Mike Yastrzemski\|Carl Yastrzemski ·/,
+        // NEO-591: SportLots' half gets the number it printed (227) back,
+        // not the merged card's (227c).
+        /^Link selected BSC card to #227 Mike Yastrzemski\|Carl Yastrzemski ·/,
       ),
     ).toBeTruthy();
   });
@@ -973,7 +1012,7 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
 
     linkByLabel(
       "#227c Mike Yastrzemski · SSSP",
-      "#227c Mike Yastrzemski|Carl Yastrzemski · SSSP",
+      "#227 Mike Yastrzemski|Carl Yastrzemski · SSSP",
     );
 
     expect(screen.getByRole("group", { name: "Name conflict on #227c" })).toBeTruthy();

@@ -1,6 +1,6 @@
 ---
 name: pairing-conflict-pills-are-bare-values
-description: NEO-344 — Match Cards conflict choices show only the value (`<value> — use this name|these players for <scope>`), so a spec tells the sides apart by reading each half's value off the unmatched COLUMNS before it links; how to assert bare, checked and "no marketplace named"
+description: NEO-344/NEO-591 — Match Cards conflict choices (marketplace vs checklist too, `· your checklist`) show only the value (`<value> — use this name|these players for <scope>`), so a spec tells the sides apart by reading each half's value off the unmatched COLUMNS before it links; how to assert bare, checked and "no marketplace named"
 metadata:
   type: reference
 ---
@@ -15,6 +15,22 @@ one. The typed option is bare too (no `Custom: `). Warnings (inside the group):
 `Potential names for this card — pick the right one before it is listed.` /
 `Potential players for this card — pick the right ones before it is listed.`
 BSC's value stays preselected (Jason). Select by VALUE, never by index.
+
+**NEO-591: one name picker for every name difference.** A marketplace card
+against its checklist row (server pair, near-name pair, hand link) gets the
+same group/radiogroup/warning. One pill per distinct name, marketplaces first;
+the checklist's pill reads `<Name> · your checklist` (accessible name
+`<Name> · your checklist — use this name for <scope>`) only when no marketplace
+said that name (a shared name is one bare pill, so the count stays 2). The
+Matched toggle's `, N with a name conflict` counts these rows. Preselect is the
+card's own name; an UNTOUCHED preselect answers nothing, so the wizard still
+opens on "Checklist says otherwise" (a spec that wants the wizard step must not
+click a pill). The modal's difference test is `nameKey` (card name vs the row's
+players joined " / "), stricter than the server's `playersAgree` (which drops
+trailing SP/RC markers and accepts surnames): a pair the server calls agreeing
+can still show pills. Before pinning `0` or `N with a name conflict`, compute it:
+`checklistMatch(...)` from support plus `nameKey` from `lib/cards/card-name`
+over the raw capture players.
 
 **Which value is whose:** read it BEFORE the link, from the unmatched columns,
 which still say which side a card is on. The `Select BSC card <label>` and

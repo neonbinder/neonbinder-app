@@ -29,6 +29,17 @@
 
 import type * as Pdfjs from "pdfjs-dist";
 import type { TextItem } from "pdfjs-dist/types/src/display/api";
+import {
+  PDF_MAX_LINE_ITEMS,
+  cellGap,
+  cleanPdfText,
+  joinRuns,
+  lineSize,
+  roundPt,
+  type PdfTextRun,
+} from "./pdf-text-runs";
+
+export { cellGap };
 
 /** The largest PDF read, in bytes. */
 export const PDF_MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -50,10 +61,17 @@ export const PDF_MAX_PAGE_ITEMS = 50_000;
 export const PDF_READ_TIMEOUT_MS = 60_000;
 
 /**
- * One line of a page: its cells left to right and the x (pt) each starts at.
- * `line` counts from 1 across the document.
+ * One line of a page: its cells left to right and the x (pt) each starts at,
+ * and (NEO-591) the text runs the cells were merged from, so a column the
+ * cell merge hid can still be found. `line` counts from 1 across the document.
  */
-export type PdfLine = { page: number; line: number; cells: string[]; xs: number[] };
+export type PdfLine = {
+  page: number;
+  line: number;
+  cells: string[];
+  xs: number[];
+  items: PdfTextRun[];
+};
 
 /** Why a PDF could not be read. The dialog words each one. */
 export type PdfRefusal = "too-big" | "too-many-pages" | "password" | "malformed";
@@ -69,25 +87,15 @@ export type PdfTextItem = {
   transform: readonly number[];
   width: number;
   height: number;
+  /** pdf.js's font id for the run. */
+  fontName?: string;
 };
 
 /**
- * The narrowest gap that starts a new cell, in points, for a line whose
- * font is `fontSize` high: never under 12 pt, and twice the font size for a
- * large font. A word space is about a quarter of the font size.
+ * One grouped line: its cells left to right, the x (pt) each cell starts at,
+ * and the text runs it was built from (left to right, blank runs left out).
  */
-export function cellGap(fontSize: number): number {
-  return Math.max(12, fontSize * 2);
-}
-
-/** Control characters become spaces; runs of whitespace become one space. */
-function cleanText(text: string): string {
-  // eslint-disable-next-line no-control-regex
-  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim();
-}
-
-/** One grouped line: its cells left to right, and the x (pt) each cell starts at. */
-export type PdfPageLine = { cells: string[]; xs: number[] };
+export type PdfPageLine = { cells: string[]; xs: number[]; items: PdfTextRun[] };
 
 /**
  * Group one page's text items into lines of cells. Pure: the unit tests feed
@@ -95,7 +103,7 @@ export type PdfPageLine = { cells: string[]; xs: number[] };
  * `PDF_MAX_PAGE_ITEMS` items are read.
  */
 export function groupPageItems(items: readonly PdfTextItem[]): PdfPageLine[] {
-  type Placed = { x: number; end: number; y: number; size: number; text: string };
+  type Placed = { x: number; end: number; y: number; size: number; text: string; font?: string };
   const placed: Placed[] = [];
   for (const item of items.length > PDF_MAX_PAGE_ITEMS ? items.slice(0, PDF_MAX_PAGE_ITEMS) : items) {
     if (typeof item.str !== "string" || item.str.trim() === "") continue;
@@ -104,7 +112,14 @@ export function groupPageItems(items: readonly PdfTextItem[]): PdfPageLine[] {
     // A rotated item (sideways text, a stamp) is not a checklist line.
     if (Math.abs(b) > 0.01 * Math.abs(a || 1)) continue;
     const size = Math.abs(item.height) || Math.abs(d) || Math.abs(a) || 10;
-    placed.push({ x, end: x + Math.max(0, item.width), y, size, text: item.str });
+    placed.push({
+      x,
+      end: x + Math.max(0, item.width),
+      y,
+      size,
+      text: item.str,
+      ...(typeof item.fontName === "string" ? { font: item.fontName } : {}),
+    });
   }
   // Top to bottom, then left to right.
   placed.sort((p, q) => q.y - p.y || p.x - q.x);
@@ -123,34 +138,42 @@ export function groupPageItems(items: readonly PdfTextItem[]): PdfPageLine[] {
   const out: PdfPageLine[] = [];
   for (const line of lines) {
     line.sort((p, q) => p.x - q.x);
-    // A loop, not Math.max(...line): a spread of a huge line overflows the stack.
-    let size = 0;
-    for (const p of line) if (p.size > size) size = p.size;
+    const size = lineSize(line);
     const gap = cellGap(size);
     const cells: string[] = [];
     const xs: number[] = [];
-    let cell = "";
-    let cellX = 0;
+    let run: Placed[] = [];
     let lastEnd = -Infinity;
     const close = () => {
-      const text = cleanText(cell);
+      const text = joinRuns(run, size);
       if (text !== "") {
         cells.push(text);
-        xs.push(Math.round(cellX * 10) / 10);
+        xs.push(roundPt(run[0].x));
       }
-      cell = "";
+      run = [];
     };
     for (const item of line) {
-      if (cell !== "" && item.x - lastEnd >= gap) close();
-      if (cell === "") cellX = item.x;
-      // pdf.js often splits a word into runs that touch; a space only where
-      // the runs are apart and neither side brings one.
-      const apart = cell !== "" && item.x - lastEnd > size * 0.15;
-      cell += apart && !/\s$/.test(cell) && !/^\s/.test(item.text) ? ` ${item.text}` : item.text;
+      if (run.length > 0 && item.x - lastEnd >= gap) close();
+      run.push(item);
       lastEnd = Math.max(lastEnd, item.end);
     }
     close();
-    if (cells.length > 0) out.push({ cells, xs });
+    if (cells.length > 0) {
+      // A line of more runs than the parser will read keeps none: the cells
+      // stand alone, and the page's memory stays bounded.
+      const items: PdfTextRun[] = [];
+      for (const p of line.length > PDF_MAX_LINE_ITEMS ? [] : line) {
+        if (cleanPdfText(p.text) === "") continue;
+        items.push({
+          text: p.text,
+          x: roundPt(p.x),
+          end: roundPt(p.end),
+          size: roundPt(p.size),
+          ...(p.font !== undefined ? { font: p.font } : {}),
+        });
+      }
+      out.push({ cells, xs, items });
+    }
   }
   return out;
 }
@@ -230,9 +253,9 @@ export async function readPdfLines(
         const content = await (await doc.getPage(page)).getTextContent();
         if (stopped) return { ok: false, reason: "malformed" };
         const items = content.items.filter((item): item is TextItem => "str" in item);
-        for (const { cells, xs } of groupPageItems(items)) {
+        for (const { cells, xs, items: runs } of groupPageItems(items)) {
           if (lines.length >= PDF_MAX_LINES) break;
-          lines.push({ page, line: lines.length + 1, cells, xs });
+          lines.push({ page, line: lines.length + 1, cells, xs, items: runs });
         }
         // A page past the item cap was grouped only in part: nothing after it
         // is read, and the read says where it stopped.

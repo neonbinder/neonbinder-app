@@ -1332,7 +1332,16 @@ export const listingSyncProgressValidator = v.object({
 /**
  * NEO-496 — one stored row of a publisher checklist (`publishedChecklistChunks`).
  * The server re-check (`convex/lib/publishedChecklistCheck.ts`) is the only
- * thing that builds one: `noNumber` / `noTeam` are only ever stored as `true`.
+ * thing that builds one: `noNumber` / `noTeam` / `prospect` are only ever
+ * stored as `true`.
+ *
+ * NEO-591 — `prospect`: the team cell said "Prospect" / "Prospect (X)", so the
+ * card is born with the Prospect Card attribute. The X of "Prospect (X)" is
+ * the card's printed team (Jason, 2026-11-19) and is stored in `teams` like any
+ * other. `prospectTeams` is DEPRECATED: an earlier build stored the X here, out
+ * of `teams`. Nothing writes it now; the fetch folds it into `teams` on read
+ * (`foldLegacyProspectTeams`). Kept optional so a row stored by that build
+ * still passes the schema; remove it once no deployment holds one.
  */
 export const publishedChecklistStoredRowValidator = v.object({
   number: v.string(),
@@ -1340,6 +1349,23 @@ export const publishedChecklistStoredRowValidator = v.object({
   teams: v.array(v.string()),
   noNumber: v.optional(v.boolean()),
   noTeam: v.optional(v.boolean()),
+  prospect: v.optional(v.boolean()),
+  /** DEPRECATED (NEO-591): never written; see the note above. */
+  prospectTeams: v.optional(v.array(v.string())),
+  // NEO-591 — which of `teams` sat INSIDE the Prospect parens when only some
+  // did ("Cincinnati Reds / Prospect (Frisco)": ["Frisco"]; `[]` for a
+  // "Prospect" beside plain teams). Display only, so the row reads as printed:
+  // `teams` and `prospect` keep their meaning and nothing reads this back as
+  // data. Set by `checkPublishedChecklist` only for such a mixed row, always a
+  // subset of `teams` (so at most a card's team cap, each within the name cap);
+  // a row without it (an all-prospect cell, or stored before the field) reads
+  // every team as inside. Not the DEPRECATED `prospectTeams` above.
+  prospectClaimedTeams: v.optional(v.array(v.string())),
+  // NEO-591 (variations) — the checklist's own note for a variation row
+  // ("photo variation"), at most `MAX_VARIATION_NAME` characters with no
+  // control characters (`checkPublishedChecklist`). Becomes the variation
+  // name of a card created from the row.
+  variationName: v.optional(v.string()),
 });
 /** NEO-496 — a publisher checklist's life: uploading → ready → retired, or uploading → retired. */
 export const publishedChecklistStatusValidator = v.union(
@@ -1368,9 +1394,19 @@ export const checklistConflictSidesValidator = v.object({
   marketplace: v.array(v.string()),
   checklist: v.array(v.string()),
 });
+/**
+ * The teams side of a conflict. `prospectClaim` is DEPRECATED (NEO-591): an
+ * earlier build marked a "Prospect (X)" checklist side with it. Nothing writes
+ * or reads it now; kept optional so a stored conflict still passes the schema.
+ */
+export const checklistTeamConflictSidesValidator = v.object({
+  marketplace: v.array(v.string()),
+  checklist: v.array(v.string()),
+  prospectClaim: v.optional(v.literal(true)),
+});
 export const checklistConflictValidator = v.object({
   players: v.optional(checklistConflictSidesValidator),
-  teams: v.optional(checklistConflictSidesValidator),
+  teams: v.optional(checklistTeamConflictSidesValidator),
 });
 
 /**
@@ -1378,6 +1414,11 @@ export const checklistConflictValidator = v.object({
  * server, in the shape Match Cards lists a row (`ChecklistLinkRow`) plus the
  * name the row has as a card of its own (`checklistOnlyCard`). `teams` are
  * resolved like a checklist-only card's; `noTeam` is the row's "No Team".
+ *
+ * NEO-591 — `prospect` is the row's Prospect claim; its X is in `teams`, so
+ * `teams` and `prospect` rebuild the row exactly and an unlinked row that is
+ * linked again still carries its claim. `prospectTeams` is DEPRECATED: an
+ * earlier build held the X there; nothing writes it now.
  */
 export const checklistPairedRowValidator = v.object({
   number: v.string(),
@@ -1385,6 +1426,19 @@ export const checklistPairedRowValidator = v.object({
   teams: v.array(v.string()),
   noNumber: v.optional(v.literal(true)),
   noTeam: v.optional(v.literal(true)),
+  prospect: v.optional(v.literal(true)),
+  /** DEPRECATED (NEO-591): never written. */
+  prospectTeams: v.optional(v.array(v.string())),
+  // Collector review — the row's team cell AS PRINTED ("Seattle", "Prospect
+  // (Oklahoma)"), for display only: Match Cards reads it on the row and in its
+  // Unlink label. Present only when it differs from `teams` joined (a settled
+  // Prospect (X) or a team printed as a place); nothing reads it back as data.
+  claim: v.optional(v.string()),
+  // NEO-591 (variations) — the checklist's own note for a variation row
+  // ("Photo variation"), so an Unlink or a relink puts back the same
+  // checklist-only variation card, name included. Bounded when the row is
+  // stored (`MAX_VARIATION_NAME`).
+  variationName: v.optional(v.string()),
   cardName: v.string(),
 });
 
@@ -1408,6 +1462,26 @@ export const checklistPairRevertValidator = v.object({
   teamsFromRow: v.boolean(),
   teams: v.optional(v.array(v.string())),
   teamLookup: v.optional(v.literal("failed")),
+  // NEO-591 (names first, numbers confirm) — the card's own number before the
+  // row was applied. Present only when the pair changed it (the row's number
+  // outranks the marketplace's, `preferCardNumber`), so Unlink puts it back.
+  cardNumber: v.optional(v.string()),
+});
+
+/**
+ * NEO-591 — the numbers each source printed for a card the sources paired by
+ * NAME while their numbers differ ("OV-ANFI" on BuySportsCards, "NNO" on the
+ * publisher checklist). Names pair a card; a number only confirms, so a pair
+ * whose numbers differ is kept and shown with all of them. The card itself
+ * carries one number (`preferCardNumber`: letters over digits over none).
+ * Absent on every pair whose numbers agree. A key is present only when that
+ * source is in the pair. Each value is held to `MAX_SOURCE_NUMBER_LENGTH`
+ * (checklistCandidates.ts) when written.
+ */
+export const sourceNumbersValidator = v.object({
+  bsc: v.optional(v.string()),
+  sportlots: v.optional(v.string()),
+  checklist: v.optional(v.string()),
 });
 
 /**
@@ -2599,6 +2673,15 @@ export default defineSchema({
       wikidataId: v.optional(v.string()), // e.g. "Q123456"
     })),
     createdByUserId: v.optional(v.string()),
+    /**
+     * NEO-591: the client-minted token of the career check's "New player named
+     * X" answer that created this row (`players.createCareerNewPlayers`). Its
+     * one job is retry safety: a Confirm retried from the same wizard state
+     * carries the same ref, so the commit ADOPTS the row it already made
+     * instead of minting a second. Never read anywhere else, never shown, and
+     * `toPublicPlayer` strips it. Absent on every other player.
+     */
+    creationRef: v.optional(v.string()),
     lastUpdated: v.number(),
   })
     .index("by_name_normalized", ["nameNormalized"])
@@ -3935,6 +4018,21 @@ export default defineSchema({
     attributes: v.optional(v.array(v.string())),
     isRookie: v.optional(v.boolean()),
     isRelic: v.optional(v.boolean()),
+    // NEO-591 — the publisher checklist's team cell said "Prospect" /
+    // "Prospect (X)": the card is born with the Prospect Card attribute
+    // (`features.isProspect`). Follows `isRookie`'s route to NEW cards only.
+    isProspect: v.optional(v.boolean()),
+    // NEO-591 — a checklist-only row's team cell AS PRINTED ("Cincinnati Reds /
+    // Prospect (Frisco)"), for display only: Match Cards prints it on the row.
+    // Present only when the printed cell differs from `teams` read as one
+    // Prospect claim (a mixed Prospect row); nothing reads it back as data.
+    teamCell: v.optional(v.string()),
+    // DEPRECATED (NEO-591): an earlier build held the X of a "Prospect (X)"
+    // cell here, apart from `teams`. Nothing writes or reads either field now
+    // (the X is one of `teams`); kept optional so a stored candidate row still
+    // passes the schema.
+    prospectTeam: v.optional(v.string()),
+    prospectTeams: v.optional(v.array(v.string())),
     printRun: v.optional(v.number()),
     autographType: v.optional(v.string()),
     cardVariation: v.optional(v.string()),
@@ -3985,6 +4083,25 @@ export default defineSchema({
       // (`platformData: {}`). Widening only: no existing row changes.
       v.literal("checklistOnly"),
     ),
+    // NEO-591 — see `sourceNumbersValidator`.
+    sourceNumbers: v.optional(sourceNumbersValidator),
+    // NEO-591 (variations) — a checklist-only candidate the server created for
+    // a row that is a variation of a paired card (card "38" took row "38a";
+    // row "38b" becomes its own card). The operator is presumed to want it, so
+    // the client seeds it as Keeping. Optional; absent on every other row.
+    preKept: v.optional(v.literal(true)),
+    // NEO-591 — the number was DERIVED by the sync (minted for a SportLots-only
+    // variation, or swapped in by `preferCardNumber`), so it is not a number a
+    // marketplace printed for this card. The commit never matches a stored
+    // row by slot+number or by number alone for such a card (it matches by its
+    // own ref or inserts), so a derived "38b" cannot land on a stored "38b".
+    // A forged flag only narrows matching.
+    numberMinted: v.optional(v.literal(true)),
+    // NEO-591 (variations) — an opaque NB-side token shared by a card that took a
+    // checklist row and the variation cards made from that row's siblings, so
+    // the commit links them without searching by number. Never a marketplace
+    // value; held to 32 characters by the commit.
+    variationGroup: v.optional(v.string()),
     // NEO-496 — how a card paired with a publisher-checklist row, for Match
     // Cards' badge. Optional; absent on every existing row.
     checklistLink: v.optional(
@@ -3996,10 +4113,20 @@ export default defineSchema({
           v.literal("player"),
           v.literal("playerName"),
           v.literal("playerFuzzy"),
+          // NEO-591 — one row standing for several cards that share its
+          // number's stem (row "38" for cards 38, 38b, 38c).
+          v.literal("stem"),
         ),
+        // NEO-591 — the row's index in the rows the fetch was given, set when
+        // more than one card holds the same row, so Match Cards can tell which
+        // links share it (an Unlink re-lists the row only on the last holder).
+        rowKey: v.optional(v.number()),
         // playerFuzzy only, 0.92..1.
         confidence: v.optional(v.number()),
-        // A name pair with a numbered row: the row's number as printed.
+        // NEO-591 — the row's number as printed ("NNO" for a no-number row),
+        // set when it is not the number the card was fetched with. The card
+        // itself carries the more specific of the two (`preferCardNumber`;
+        // `revert.cardNumber` holds the one it replaced).
         checklistNumber: v.optional(v.string()),
         // NEO-496 — the row the server paired, and the card as it was before
         // the row was applied, so Match Cards can undo a wrong pair. Shapes:

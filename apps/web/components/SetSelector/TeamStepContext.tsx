@@ -47,9 +47,14 @@ export type TeamStepCandidate = {
   league?: string;
 };
 
-/** The line under the heading when two or more rows answer to the name. */
-export function candidatesIntro(count: number): string {
-  return `We've got ${count} teams by that name. Pick the one on these cards.`;
+/**
+ * The line under the heading when two or more rows are the choices. A name
+ * (or an alias) says "by that name"; a PLACE (`placeName` given: the candidates
+ * are the teams located there, none of them named it) says "from New York".
+ */
+export function candidatesIntro(count: number, placeName?: string): string {
+  const where = placeName?.trim() ? `from ${placeName.trim()}` : "by that name";
+  return `We've got ${count} teams ${where}. Pick the one on these cards.`;
 }
 
 /** Shown only when the players' stints exist and still do not settle it. */
@@ -133,10 +138,13 @@ export function moreCardsLabel(more: number): string {
 
 export default function TeamStepContext({
   reviewRowId,
+  printedName,
   disabled,
   onLink,
 }: {
   reviewRowId: Id<"entityReviewQueue">;
+  /** The team text as the checklist printed it; named in the lead-in for a place. */
+  printedName: string;
   /** True while another decision is in flight. See the wizard's `busy`. */
   disabled?: boolean;
   /** The wizard's one team-link path, "Remember …" answer included. */
@@ -153,7 +161,11 @@ export default function TeamStepContext({
   const total = cards.length + moreCards;
   const hasCandidates = candidates.length >= 2;
   const linkLabels = candidateLinkLabels(hasCandidates ? candidates : []);
-  const intro = useAnnouncedText(hasCandidates ? candidatesIntro(candidates.length) : "");
+  const intro = useAnnouncedText(
+    hasCandidates
+      ? candidatesIntro(candidates.length, context?.fromPlace ? printedName : undefined)
+      : "",
+  );
   const introId = useId();
   const cardsHeadingId = useId();
 

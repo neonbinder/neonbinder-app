@@ -2,20 +2,28 @@
  * NEO-490 — the operator's own checklist links, answered the way the fetch
  * answers its own.
  *
- * When a publisher checklist pairs no card by number and the counts differ
- * (or an equal-count name pass leaves cards and rows over), `fetchCardChecklist`
- * applies nothing it cannot prove and hands the leftovers to the Match Cards
- * dialog (`checklistMatch.needsOperator`). The operator links a checklist row
- * to a card there; on Confirm the dialog sends those links here and merges
- * the answers into the cards it confirms.
+ * When a publisher checklist leaves a card or a row unpaired (a tie that
+ * names and numbers could not settle, rule 8: `checklistMatch.needsOperator`),
+ * `fetchCardChecklist` applies nothing it cannot prove and hands the leftovers
+ * to the Match Cards dialog. The operator links a checklist row to a card
+ * there; on Confirm the dialog sends those links here and merges the answers
+ * into the cards it confirms.
  *
  * Each answer is exactly what step 3c would have given the same card and row:
  * the same pure `applyChecklistRow`, the same comma-text resolution
  * (`resolveChecklistCommaTexts`, through
  * `checklistCandidates.resolveChecklistTeamTexts`). So a row the operator
  * linked fills players, answers the team (`teamLookup: "checklist"`), or
- * surfaces a disagreement (`checklistConflict`) by the same rules, and the
- * card's number is never touched.
+ * surfaces a disagreement (`checklistConflict`) by the same rules.
+ *
+ * NEO-591 — the card's NUMBER. This action returns no number: it never reads
+ * one off the card and never writes one. Names pair a card and a number only
+ * confirms (product rule 7), so a linked card and row whose numbers differ
+ * are still a pair; the dialog, which holds both numbers, sets the card's
+ * with `preferCardNumber(card, row.number)` (letters over digits over none,
+ * the card's own on a tie) and remembers the one it replaced for Unlink, the
+ * same choice step 3c makes for the pairs the fetch made. The link is a
+ * new card's number only: an NB card that already exists is never renumbered.
  *
  * Writes nothing: the rows are never stored, and the cards live in the
  * client until the commit. Admin-only, like every entry point onto the set
@@ -37,15 +45,22 @@ import {
   checkPublishedChecklist,
   publishedChecklistRowValidator,
   resolveChecklistCommaTexts,
+  resolveChecklistPlaceSets,
+  resolveChecklistPlaceTexts,
+  resolveChecklistTeamIdentities,
 } from "./selectorOptions";
 
 /**
  * One answer per pair, in pair order, ready to spread onto the card:
  *  - `players` — the row's players, only when the card has none;
  *  - `teams` + `teamLookup: "checklist"` — only when the row answers the
- *    team (it names one, it resolves, and the card names no different one);
+ *    team (it names one, it resolves, and the card names no different one;
+ *    a printed place that is one of the card's team's places adds no claim,
+ *    so the card keeps its team);
  *  - `checklistConflict` — only when the card and the row disagree, the
- *    checklist side resolved as the card would carry it.
+ *    checklist side resolved as the card would carry it;
+ *  - NEO-591: `isProspect` — the row says Prospect (its X, if any, is a
+ *    team like any other and rides in `teams`).
  * An empty object means the row changes nothing on that card (a row naming
  * no team, a refused team text, players and teams that agree).
  */
@@ -54,6 +69,7 @@ const pairAnswerValidator = v.object({
   teams: v.optional(v.array(v.string())),
   teamLookup: v.optional(v.literal("checklist")),
   checklistConflict: v.optional(checklistConflictValidator),
+  isProspect: v.optional(v.literal(true)),
 });
 
 /** A card's names as the operator sees them, checked to a card's caps. */
@@ -144,10 +160,37 @@ export const applyPublishedChecklistPairs = action({
       args.selectorOptionId,
       rows.flatMap((r) => r.teams),
     );
+    const resolvePlace = await resolveChecklistPlaceTexts(
+      ctx,
+      args.selectorOptionId,
+      rows.flatMap((r) => r.teams),
+    );
+    const resolveTeamId = await resolveChecklistTeamIdentities(
+      ctx,
+      args.selectorOptionId,
+      cards.map((card, i) => ({ card, row: rows[i] })),
+      resolveText,
+      resolvePlace,
+    );
+    // NEO-591 (Jason 2026-11-20) — a place left as printed agrees with a
+    // marketplace team that is one of the place's teams, as in the fetch.
+    const resolvePlaceTeamIds = await resolveChecklistPlaceSets(
+      ctx,
+      args.selectorOptionId,
+      cards.map((card, i) => ({ card, row: rows[i] })),
+      resolvePlace,
+    );
     let answered = 0;
     let conflicts = 0;
     const answers = cards.map((card, i) => {
-      const applied = applyChecklistRow(card, rows[i], resolveText);
+      const applied = applyChecklistRow(
+        card,
+        rows[i],
+        resolveText,
+        resolvePlace,
+        resolveTeamId,
+        resolvePlaceTeamIds,
+      );
       if (applied.answered) answered++;
       if (applied.conflict) conflicts++;
       return {
@@ -156,6 +199,7 @@ export const applyPublishedChecklistPairs = action({
           ? { teams: applied.teams, teamLookup: "checklist" as const }
           : {}),
         ...(applied.conflict ? { checklistConflict: applied.conflict } : {}),
+        ...(applied.isProspect ? { isProspect: true as const } : {}),
       };
     });
     // Counts and timing only — never a name.

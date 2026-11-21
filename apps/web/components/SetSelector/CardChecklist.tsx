@@ -207,6 +207,8 @@ type FetchPreview = {
     attributes?: string[];
     isRookie?: boolean;
     isRelic?: boolean;
+    /** NEO-591 — the checklist's Prospect claim; see `PairingCard.isProspect`. */
+    isProspect?: boolean;
     printRun?: number;
     autographType?: string;
     cardVariation?: string;
@@ -961,6 +963,9 @@ export default function CardChecklist({
             teams: p.row.teams,
             ...(p.row.noNumber ? { noNumber: true } : {}),
             ...(p.row.noTeam ? { noTeam: true } : {}),
+            // NEO-591: a Prospect row is a claim about the card; the server
+            // reads it the way it does for its own pairs.
+            ...(p.row.prospect ? { prospect: true } : {}),
           },
         })),
       },
@@ -971,6 +976,7 @@ export default function CardChecklist({
       ...(a.teamLookup ? { teamLookup: a.teamLookup } : {}),
       ...(a.checklistConflict ? { checklistConflict: a.checklistConflict } : {}),
       ...(a.players ? { fillPlayers: a.players } : {}),
+      ...(a.isProspect ? { isProspect: true as const } : {}),
     }));
   };
   /**
@@ -2508,6 +2514,11 @@ export default function CardChecklist({
         // the operator said yes to one.
         ...(preview.careerFields?.stints.length
           ? { careerStints: preview.careerFields.stints }
+          : {}),
+        // NEO-591: and the players the career check creates (each card that
+        // points at one carries `newPlayerByName`, put on it above).
+        ...(preview.careerFields?.newPlayers?.length
+          ? { careerNewPlayers: preview.careerFields.newPlayers }
           : {}),
       });
       // NEO-195: the candidates have been promoted into cardChecklist, so the
