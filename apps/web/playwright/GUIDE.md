@@ -1430,9 +1430,16 @@ setup -> seed -> shard-desktop x8 -> seed-mobile -> shard-mobile x8 -> e2e (gate
 ```
 
 `seed` is the scripted reset plus the `setup` project (worker 0); the desktop
-shards run `--project=e2e`. `seed-mobile` needs every desktop shard (the reset
-wipes the shared preview), runs even when desktop has reds, and repeats the
-same Convex env steps, reset and `setup` project; the mobile shards run
+shards run `--project=e2e`. `seed-mobile` starts right after `seed` (NEO-628), installs
+and downloads the reference bundle while the desktop pass runs, then waits (a
+poll of the run's jobs API) until all 8 desktop shards have completed, because
+its reset wipes the shared preview. The wait also reads their conclusions: only
+if every one is `success` does it go on to repeat the reset and `setup` project
+(the Convex env switches `seed` set are not rewritten). If desktop is red it
+ends successfully without touching the preview and the mobile shards are
+skipped (fail fast, NEO-627: a red run may have no mobile results at all; the
+`e2e` gate still runs and says so, `report` still publishes the desktop
+results). It is a job condition, never a run cancel. The mobile shards run
 `--project=e2e-mobile`. Each shard gets an explicit file list from
 `node playwright/shard-plan.mjs 8 <i> --project <e2e|e2e-mobile>`
 (longest-processing-time-first over that project's entry in `timings.json`,
@@ -1476,7 +1483,10 @@ are gone.
 2. Download the artifacts: `pw-report-desktop-<n>-a<attempt>` or
    `pw-report-mobile-<n>-a<attempt>` (the shard's screenshots and report),
    `pw-report-seed-a<attempt>` / `pw-report-seed-mobile-a<attempt>` (a pass's seed), and `pw-merged`
-   (both passes' merged report and results). Every per-job artifact carries
+   (both passes' merged report and results). After a red desktop pass there are
+   no `*-mobile-*` artifacts by design (the mobile pass was skipped, NEO-627);
+   read the desktop ones. A PR whose every changed path is inert skips E2E
+   entirely and has none. Every per-job artifact carries
    the attempt it came from, so a rerun no longer overwrites an earlier red
    attempt's evidence (`pw-merged` is unsuffixed and is replaced by the
    latest attempt, so download it before any rerun). `gh run download <run-id> -n pw-report-desktop-1-a1`

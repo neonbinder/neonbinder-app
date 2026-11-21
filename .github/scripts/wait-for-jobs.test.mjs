@@ -47,15 +47,17 @@ cat "$f"
 
 function run(responses, extra = [], { attempt = "2" } = {}) {
   const dir = makeGh(responses);
+  const out = join(dir, "github_output");
   const r = spawnSync(
     "bash",
     [SCRIPT, "--repo", "o/r", "--run-id", "99", "--attempt", attempt, "--interval", "0.05",
       "--pattern", "^shard-desktop \\(", "--count", "8",
       "--pattern", "^Extra job \\(desktop\\)$", "--count", "1", ...extra],
-    { env: { ...process.env, PATH: `${dir}:${process.env.PATH}` }, encoding: "utf8" },
+    { env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, GITHUB_OUTPUT: out }, encoding: "utf8" },
   );
+  const output = existsSync(out) ? readFileSync(out, "utf8").trim() : "";
   const calls = existsSync(join(dir, "calls.log")) ? readFileSync(join(dir, "calls.log"), "utf8").trim().split("\n") : [];
-  return { ...r, calls };
+  return { ...r, calls, output };
 }
 
 test("7 of 8 shards done keeps waiting, then passes once the 8th completes", () => {
@@ -125,4 +127,23 @@ test("usage errors exit 2", () => {
   assert.equal(spawnSync("bash", [SCRIPT, "--repo", "o/r"], { encoding: "utf8" }).status, 2);
   assert.equal(spawnSync("bash", [SCRIPT, "--repo", "o/r", "--run-id", "1", "--attempt", "1", "--pattern", "x"], { encoding: "utf8" }).status, 2);
   assert.equal(spawnSync("bash", [SCRIPT, "--bogus"], { encoding: "utf8" }).status, 2);
+});
+
+test("all_success=true only when every awaited job concluded success (NEO-627)", () => {
+  const r = run({ 2: [[...eight(8), extra("completed", "success")]] }, ["--timeout-min", "1"]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(r.output, "all_success=true");
+});
+
+test("all_success=false on any non-success conclusion, fail closed (NEO-627)", () => {
+  for (const bad of ["failure", "cancelled", "skipped", "timed_out", null]) {
+    const concl = Array(8).fill("success"); concl[3] = bad;
+    const jobs = eight(8, concl).map((j, k) => (k === 3 ? { ...j, conclusion: bad } : j));
+    const r = run({ 2: [[...jobs, extra("completed", "success")]] }, ["--timeout-min", "1"]);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(r.output, "all_success=false", String(bad));
+  }
+  // a failing second pattern counts too
+  const r = run({ 2: [[...eight(8), extra("completed", "failure")]] }, ["--timeout-min", "1"]);
+  assert.equal(r.output, "all_success=false");
 });

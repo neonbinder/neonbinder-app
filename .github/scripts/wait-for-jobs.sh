@@ -29,6 +29,12 @@
 #     (interval doubling, capped at 60 s), never treated as done;
 #   - --timeout-min elapsed: error, exit 1.
 #
+# NEO-627: when all jobs are done and GITHUB_OUTPUT is set, it also writes
+# `all_success=true` if EVERY awaited job has conclusion exactly `success`,
+# else `all_success=false` (cancelled, failure, skipped, null: anything
+# unknown is red, fail closed). seed-mobile uses it to skip the reset and the
+# mobile pass after a red desktop pass.
+#
 # Exit: 0 all done, 1 error or timeout, 2 usage error.
 
 set -euo pipefail
@@ -107,6 +113,13 @@ while true; do
       for i in "${!patterns[@]}"; do
         jq -r --arg p "${patterns[$i]}" '.[] | select((.name | sub("^E2E / "; "")) | test($p)) | "  \(.name): \(.conclusion)"' <<<"$jobs_json"
       done
+      all_success=true
+      for i in "${!patterns[@]}"; do
+        bad=$(jq --arg p "${patterns[$i]}" '[.[] | select((.name | sub("^E2E / "; "")) | test($p)) | select(.conclusion != "success")] | length' <<<"$jobs_json")
+        [[ "$bad" == "0" ]] || all_success=false
+      done
+      echo "all_success=${all_success}"
+      if [[ -n "${GITHUB_OUTPUT:-}" ]]; then echo "all_success=${all_success}" >> "$GITHUB_OUTPUT"; fi
       rm -f "${TMPDIR:-/tmp}/wait-for-jobs.$$.err"
       exit 0
     fi

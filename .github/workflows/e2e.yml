@@ -89,13 +89,25 @@ permissions:
 #                  reference-seed bundle and checks the fake-eBay target while
 #                  the desktop pass runs, then waits (wait-for-jobs.sh, polling
 #                  this run's jobs API) until all 8 desktop shards have
-#                  COMPLETED, whatever their result: the
-#                  reset wipes the shared preview, so it may only run after
-#                  every desktop job is over. Runs even when desktop has reds
-#                  (`!cancelled()` as long as setup + seed succeeded) so one
-#                  run still collects the mobile results. It does not rewrite
-#                  the Convex env switches `seed` already set (nothing changes
-#                  them mid-run); it does the scripted reset and the `setup`
+#                  COMPLETED, whatever their result: the reset wipes the shared
+#                  preview, so it may only run after every desktop job is over.
+#                  The same wait step reads the shards' conclusions from that
+#                  API response (`desktop_green`, true only if all 8 are
+#                  `success`; anything unknown counts as red).
+#                  FAIL FAST (NEO-627): if desktop is not green, every step
+#                  that touches the preview (log capture, coverage read, reset,
+#                  `setup` project) is skipped, the job ends successfully with
+#                  output desktop_green=false, and shard-mobile (which needs
+#                  that output to be 'true') is skipped. That saves the ~22 min
+#                  mobile pass that could not make the run green anyway; the
+#                  `e2e` gate (always()) still runs and fails with "mobile
+#                  skipped: desktop red", and `report` still publishes the
+#                  desktop results. A step condition, never a run cancel (a
+#                  cancelled run is what the merge queue reads as a failure to
+#                  eject, and it would also kill the gate and report). No
+#                  override. When desktop is green it does not rewrite the
+#                  Convex env switches `seed` already set (nothing changes them
+#                  mid-run); it does the scripted reset and the `setup`
 #                  project as `seed` does. Needs `actions: read` (the caller
 #                  grants it); the wait step has a 55 min ceiling.
 #   shard-mobile → 8 x ubuntu-latest, `--project=e2e-mobile`, planned on the
@@ -104,12 +116,18 @@ permissions:
 #                  reset.
 #   e2e          → the single ruleset-gated verdict (job id and name are
 #                  load-bearing: pr-pipeline.yml's `e2e` job and ci-gate read
-#                  it). Merges every pass's report and is green iff all five
-#                  upstream jobs succeeded AND every spec planned for a
+#                  it). Merges every pass's report and is green iff every
+#                  upstream job succeeded AND every spec planned for a
 #                  project produced a passing result on it, and both seeds
-#                  passed.
+#                  passed. When desktop was red and the mobile pass was
+#                  skipped (fail fast), it fails with one plain message saying
+#                  so and checks only the desktop results.
 #   report       → merged JUnit as ONE "Playwright E2E" check, per-test timing
-#                  table in the step summary, sticky PR comment.
+#                  table in the step summary, sticky PR comment. When
+#                  no mobile reset happened (seed-mobile skipped, or it ended
+#                  without resetting because desktop was red) it also reads the DESKTOP pass's
+#                  fixture coverage (no reset ran, so the rows are still
+#                  there), the read seed-mobile normally does before its reset.
 #
 # Passes are strictly sequential inside a PR (the needs chain above for the
 # shards, the wait inside seed-mobile for the reset): reset wipes the preview
@@ -137,7 +155,7 @@ permissions:
 # reach the browser. Artifact names:
 # pw-report-seed-a<attempt>, pw-report-desktop-<i>-a<attempt>,
 # pw-report-seed-mobile-a<attempt>, pw-report-mobile-<i>-a<attempt>,
-# # pw-merged (unsuffixed; the report job keeps each name's latest attempt)
+# pw-merged (unsuffixed; the report job keeps each name's latest attempt)
 # (+ convex-logs-*-a<attempt> on the first shard of each pass and each seed).
 
 jobs:
@@ -1317,7 +1335,9 @@ jobs:
     # The second pass's seed: the same Convex env switches, scripted reset and
     # `setup` project as `seed` (see its comments), run again so every spec
     # starts the mobile pass on a fresh baseline. Independent of the desktop
-    # verdict so a red desktop pass still yields mobile results.
+    # verdict until the wait is over; after it, a red desktop pass skips the
+    # reset and the mobile pass (fail fast, NEO-627, see the header and the
+    # "Desktop pass result" step).
     #
     # NEO-628: starts as soon as `seed` is done, NOT after the desktop shards.
     # Its install, bundle download and read-only checks run while the desktop
@@ -1332,7 +1352,7 @@ jobs:
     # desktop pass or the reset changes them, and only the read-only
     # fakeBsc:ebayTarget check is repeated.
     #
-    # `needs` lists only setup and seed, so the `if:` is unchanged. The wait
+    # `needs` lists only setup and seed. The wait
     # matches jobs by name (`E2E / shard-desktop (i, w)`): renaming the job,
     # or giving it an `if:` that skips it when this one runs, breaks the count
     # and the wait fails closed at its timeout. The shard condition is the same
@@ -1346,6 +1366,10 @@ jobs:
       # NEO-330: wall-clock ms when this pass's seed began; the report job uses
       # it as the `since` boundary for the mobile shards' coverage call.
       seed_since_ms: ${{ steps.seed_start.outputs.since_ms }}
+      # NEO-627 fail fast: 'true' only when the wait step saw all 8 desktop
+      # shards conclude `success`. Empty or anything else means no reset ran;
+      # shard-mobile, the gate and report all read it.
+      desktop_green: ${{ steps.wait.outputs.all_success }}
     # NEO-330: id-token:write for the WIF read of the reference-seed bundle
     # (see the `seed` job). Job-level replaces the workflow-level block.
     permissions:
@@ -1449,7 +1473,15 @@ jobs:
       # created yet, more is an error, and an API failure never counts as done.
       # Any result counts as done, so a red desktop pass still gets its mobile
       # results. The ceiling covers the longest desktop pass seen plus margin.
+      #
+      # NEO-627: the same poll reads the shards' conclusions. wait-for-jobs.sh
+      # writes all_success=true to $GITHUB_OUTPUT only when EVERY awaited job
+      # concluded `success` (anything else, including a missing conclusion,
+      # is false). Every step below this one touches the preview, so each is
+      # conditioned on it: a red desktop pass ends this job successfully here
+      # with no reset, and shard-mobile is skipped (fail fast).
       - name: Wait for the desktop pass to finish (desktop shards)
+        id: wait
         timeout-minutes: 55
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1459,6 +1491,7 @@ jobs:
             --pattern '^shard-desktop \(' --count 8
 
       - name: Start Convex log capture (seed-mobile)
+        if: steps.wait.outputs.all_success == 'true'
         working-directory: apps/web
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
@@ -1483,6 +1516,7 @@ jobs:
       # The desktop pass's lookups, read BEFORE the reset below wipes them.
       # `since` is the desktop seed's start (seed job output). Non-failing.
       - name: Enrichment fixture coverage (desktop shards drained)
+        if: steps.wait.outputs.all_success == 'true'
         working-directory: apps/web
         continue-on-error: true
         env:
@@ -1507,6 +1541,7 @@ jobs:
       # explicitly beats the backend's first-year-row inference.
       - name: Record seed start time
         id: seed_start
+        if: steps.wait.outputs.all_success == 'true'
         run: |
           since_ms=$(date +%s%3N)
           echo "NB_SEED_SINCE_MS=${since_ms}" >> "$GITHUB_ENV"
@@ -1522,6 +1557,7 @@ jobs:
       # stall while reads stay fast points at the commit path; everything
       # slowing together points at the deployment. Best-effort: never fails.
       - name: Start Convex latency probe (mobile seed)
+        if: steps.wait.outputs.all_success == 'true'
         working-directory: apps/web
         env:
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
@@ -1541,6 +1577,7 @@ jobs:
 
       - name: Scripted reset + reference catalogue for the mobile pass (e2e-seed-reset.sh)
         id: seed_reset
+        if: steps.wait.outputs.all_success == 'true'
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
@@ -1635,6 +1672,7 @@ jobs:
           retention-days: 14
 
       - name: Seed global baseline for the mobile pass (setup project, worker 0)
+        if: steps.wait.outputs.all_success == 'true'
         env:
           CI: "true"
           APP_URL: http://localhost:3000
@@ -1652,6 +1690,7 @@ jobs:
           echo "- Setup project wall-clock: $(( $(date +%s) - setup_start ))s" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Enrichment fixture coverage
+        if: steps.wait.outputs.all_success == 'true'
         working-directory: apps/web
         continue-on-error: true
         env:
@@ -1748,10 +1787,13 @@ jobs:
     # `fail-fast: false` lets every other shard finish and report; the `e2e`
     # gate below reads the merged results for the verdict.
     needs: [setup, seed-mobile, timings]
-    # Explicit condition: the default success() also looks at seed-mobile's
-    # own needs, so a red desktop shard would skip the whole mobile pass even
-    # though seed-mobile ran and passed. Mobile results are collected anyway.
-    if: ${{ !cancelled() && needs.setup.result == 'success' && needs.seed-mobile.result == 'success' }}
+    # FAIL FAST (NEO-627): runs only when seed-mobile succeeded AND reported
+    # desktop_green == 'true' (it waited for the desktop pass and found every
+    # shard `success`, then reset). When desktop is red seed-mobile still ends
+    # successfully but without a reset and with the output false, so this
+    # job is skipped. Explicit condition because the default success() would
+    # also look at seed-mobile's own needs.
+    if: ${{ !cancelled() && needs.setup.result == 'success' && needs.seed-mobile.result == 'success' && needs.seed-mobile.outputs.desktop_green == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -2024,28 +2066,29 @@ jobs:
       run:
         working-directory: apps/web
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Upstream jobs
-        # Runs before (or without) checkout: apps/web, the default
-        # working directory, may not exist yet.
+        # After checkout (it runs a tested script from the repo), but still from
+        # the workspace root: apps/web is not the working directory here.
         working-directory: ${{ github.workspace }}
         env:
           R_SETUP: ${{ needs.setup.result }}
           R_SEED: ${{ needs.seed.result }}
           R_SHARD_DESKTOP: ${{ needs.shard-desktop.result }}
           R_SEED_MOBILE: ${{ needs.seed-mobile.result }}
+          R_DESKTOP_GREEN: ${{ needs.seed-mobile.outputs.desktop_green }}
           R_SHARD_MOBILE: ${{ needs.shard-mobile.result }}
         run: |
-          echo "jobs: setup=$R_SETUP seed=$R_SEED shard-desktop=$R_SHARD_DESKTOP seed-mobile=$R_SEED_MOBILE shard-mobile=$R_SHARD_MOBILE"
-          if [ "$R_SETUP" != "success" ] || [ "$R_SEED" != "success" ] || [ "$R_SEED_MOBILE" != "success" ]; then
-            echo "::error::setup or a seed did not succeed (setup=$R_SETUP seed=$R_SEED seed-mobile=$R_SEED_MOBILE)"
-            # Record, don't exit: the reports still merge and publish so a red
-            # run is readable; the "Upstream verdict" step fails the gate.
-            echo "UPSTREAM_FAILED=1" >> "$GITHUB_ENV"
-          fi
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
+          echo "jobs: setup=$R_SETUP seed=$R_SEED shard-desktop=$R_SHARD_DESKTOP seed-mobile=$R_SEED_MOBILE desktop-green=$R_DESKTOP_GREEN shard-mobile=$R_SHARD_MOBILE"
+          # The three-way decision (upstream failed / fail fast / ok) lives in a
+          # tested script (NEO-627). It prints env lines (UPSTREAM_FAILED=1 or
+          # FAIL_FAST=1); its messages go to stderr and the step summary. Record,
+          # don't exit: the reports still merge and publish so a red run is
+          # readable; the "Shard jobs" step fails the gate.
+          bash .github/scripts/e2e-upstream-verdict.sh >> "$GITHUB_ENV"
 
       - uses: ./.github/actions/web-deps
         with:
@@ -2120,7 +2163,7 @@ jobs:
             fi
           done < projects.txt
           python3 - pw-merged/results.json projects.txt <<'PY'
-          import json, sys
+          import json, os, sys
 
           data = json.load(open(sys.argv[1]))
           projects = [l.strip() for l in open(sys.argv[2]) if l.strip()]
@@ -2128,6 +2171,14 @@ jobs:
           if "e2e" not in projects or "e2e-mobile" not in projects:
               print(f"::error::shard-plan.mjs --projects must name e2e and e2e-mobile, got {projects}")
               sys.exit(1)
+          # NEO-627 fail fast: the "Upstream jobs" step sets FAIL_FAST when the
+          # mobile pass was skipped because desktop was red. The run is red
+          # either way; judge only the desktop pass, so the log lists the real
+          # desktop failures instead of every mobile spec as "produced no result".
+          fail_fast = os.environ.get("FAIL_FAST") == "1"
+          if fail_fast:
+              print("Mobile pass skipped (fail fast): checking the desktop pass only.")
+          checked = [p for p in projects if not (fail_fast and p == "e2e-mobile")]
 
           rows = []  # (project, file, title, verdict)
           def walk(suite, file=""):
@@ -2157,20 +2208,21 @@ jobs:
           # One seed per pass: the desktop pass and the mobile pass each ran
           # the `setup` project once, so two passing results are required.
           seed_ok = [r for r in rows if r[0] == "setup" and r[3] == "ok"]
-          if len(seed_ok) < 2:
-              errors.append(f"expected a passing `setup` (seed) result for EACH pass (desktop + mobile), found {len(seed_ok)}")
+          seeds_needed = 1 if fail_fast else 2
+          if len(seed_ok) < seeds_needed:
+              errors.append(f"expected a passing `setup` (seed) result for EACH pass that ran ({seeds_needed}), found {len(seed_ok)}")
 
           # Bad results are errors above, so "a result on every project" plus
           # "no bad result" is "a passing result on every project".
           missing = []
-          for proj in projects:
+          for proj in checked:
               seen = {r[1] for r in rows if r[0] == proj}
               for m in sorted(planned_by[proj] - seen):
                   missing.append((proj, m))
                   errors.append(f"planned spec produced no result on [{proj}]: {m}")
 
-          counts = " · ".join(f"{p} tests reported={sum(1 for r in rows if r[0] == p)}" for p in projects)
-          planned_n = " · ".join(f"{p} planned={len(planned_by[p])}" for p in projects)
+          counts = " · ".join(f"{p} tests reported={sum(1 for r in rows if r[0] == p)}" for p in checked)
+          planned_n = " · ".join(f"{p} planned={len(planned_by[p])}" for p in checked)
           print(f"{planned_n} · {counts} · missing={len(missing)}")
           if errors:
               for line in errors[:200]:
@@ -2178,7 +2230,7 @@ jobs:
               if len(errors) > 200:
                   print(f"::error::... and {len(errors) - 200} more")
               sys.exit(1)
-          print(f"All planned specs ran and passed on {', '.join(projects)}.")
+          print(f"All planned specs ran and passed on {', '.join(checked)}.")
           PY
 
       # Last on purpose: a red verdict above already fails the job, and this
@@ -2195,6 +2247,11 @@ jobs:
         run: |
           if [ "${UPSTREAM_FAILED:-0}" = "1" ]; then
             echo "::error::Upstream verdict: setup or a seed did not succeed (see the Upstream jobs step)"
+            exit 1
+          fi
+          if [ "${FAIL_FAST:-0}" = "1" ]; then
+            # NEO-627: the mobile jobs were skipped on purpose; only desktop counts.
+            echo "::error::Fail fast: the desktop pass was red (shard-desktop=$R_SHARD_DESKTOP), so the mobile pass was skipped."
             exit 1
           fi
           if [ "$R_SHARD_DESKTOP" != "success" ] || [ "$R_SHARD_MOBILE" != "success" ]; then
@@ -2257,7 +2314,7 @@ jobs:
   report:
     # Publish even when the gate is red. Informational only: the `e2e` job is
     # the verdict, so this check publishes results without double-failing.
-    needs: [setup, seed-mobile, e2e]
+    needs: [setup, seed, seed-mobile, e2e]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -2270,13 +2327,44 @@ jobs:
         with:
           persist-credentials: false
 
+      # NEO-627: when no mobile reset happened (fail fast: the desktop pass was
+      # red, so seed-mobile ended without resetting, desktop_green != 'true', or
+      # was skipped), the desktop pass's lookups were not read before a reset, because
+      # no reset ran, so they are still on the preview. Read them here with the
+      # desktop seed's `since`. Same call, label and non-failing contract as the
+      # one in seed-mobile. Needs the desktop seed to have succeeded (its
+      # `since` output); otherwise there is nothing meaningful to read.
+      - name: Enrichment fixture coverage (desktop shards drained, mobile skipped)
+        if: needs.seed.result == 'success' && (needs.seed-mobile.result == 'skipped' || (needs.seed-mobile.result == 'success' && needs.seed-mobile.outputs.desktop_green != 'true'))
+        working-directory: apps/web
+        continue-on-error: true
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+          COVERAGE_LABEL: "after the desktop shards drained"
+          COVERAGE_SINCE_MS: "${{ needs.seed.outputs.seed_since_ms }}"
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_NAME:-}" ]; then
+            echo "::warning::No Convex preview name from setup — skipping enrichment fixture coverage (${COVERAGE_LABEL})."
+            exit 0
+          fi
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY is not set — skipping enrichment fixture coverage (${COVERAGE_LABEL})."
+            exit 0
+          fi
+          "$GITHUB_WORKSPACE/.github/scripts/enrichment-fixture-coverage.sh"
+
       # NEO-330: the seed-time calls never see what the specs look up. Run it
       # once more after the mobile shards have finished, with the mobile seed's
       # `since` (the reset before it wiped the desktop pass's rows; the desktop
       # pass is read in seed-mobile before that reset). Non-failing; skipped
       # with a note when the deploy key or deployment name is missing (e.g. a
-      # Dependabot run, or setup did not produce a name).
+      # Dependabot run, or setup did not produce a name). Not run when
+      # no mobile reset happened (NEO-627 fail fast): there is no mobile pass to
+      # read, and the step above reads the desktop pass instead.
       - name: Enrichment fixture coverage (mobile shards drained)
+        if: needs.seed-mobile.result != 'skipped' && !(needs.seed-mobile.result == 'success' && needs.seed-mobile.outputs.desktop_green != 'true')
         working-directory: apps/web
         continue-on-error: true
         env:
