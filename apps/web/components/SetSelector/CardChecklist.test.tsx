@@ -420,6 +420,30 @@ const mockResolveEntities = vi.fn();
 const mockCommitChecklist = vi.fn();
 const mockDiffChecklist = vi.fn();
 const mockDiscardCandidates = vi.fn();
+/**
+ * NEO-638 — a Sync that ended without its rows leaves a component's bounded
+ * stream wait polling (up to 30 s on a real timer) after its test is over, and
+ * the next test's clock step makes that stale wait time out and call
+ * `discardCandidates` on the SHARED mock, which broke the next test's
+ * "not called" check whenever the poll landed inside it (load-dependent). The
+ * mutation a component receives is therefore tied to the test it was rendered
+ * in: a call from an earlier test's component is dropped, so only the
+ * component under test can reach the mock.
+ */
+let testEpoch = 0;
+beforeEach(() => {
+  testEpoch += 1;
+  // Tests that set the skipped-names list in their body must not hand it to
+  // whichever describe a shuffle runs next (the NEO-321 group never sets it).
+  state.skippedNames = [];
+});
+const discardCandidatesForThisTest = () => {
+  const renderedIn = testEpoch;
+  return (...args: unknown[]) =>
+    renderedIn === testEpoch
+      ? (mockDiscardCandidates as (...a: unknown[]) => unknown)(...args)
+      : Promise.resolve();
+};
 // NEO-312 — the parallel-build runner's two calls. Both default to a
 // no-parallels / never-called shape in every describe block that does not
 // reset them, so every pre-existing test in this file is unaffected: a plain
@@ -519,7 +543,7 @@ vi.mock("convex/react", () => ({
     return undefined;
   },
   useMutation: (ref: string) => {
-    if (ref === "discardCandidates") return mockDiscardCandidates;
+    if (ref === "discardCandidates") return discardCandidatesForThisTest();
     if (ref === "addCustomCard") return mockAddCustomCard;
     if (ref === "teams.findOrCreate") return mockFindOrCreateTeam;
     if (ref === "players.findOrCreate") return mockFindOrCreatePlayer;
@@ -994,12 +1018,16 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
     // teams-only first; confirming it unanswered commits the card teamless,
     // exactly as this path committed it before.
     it("when a team misses the wait, unlocks Confirm with the notice and commits that card with no team", async () => {
+      // The clock is faked BEFORE the Sync starts: the bounded stream wait
+      // reads Date.now() once and then polls on a 50 ms setTimeout, so a clock
+      // swapped in mid-wait leaves a real timer pending that, under load, wakes
+      // after the fake 31 s step and the wait ends on the wrong clock (NEO-638).
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
       const { rerender } = renderChecklist();
       fireEvent.click(screen.getByLabelText("Sync card checklist"));
       await streamCandidates(rerender, halfResolved);
-      expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+      expect(screen.getByText(/Match Cards/)).toBeTruthy();
 
-      vi.useFakeTimers();
       try {
         await act(async () => {
           resolveFetch(fetchDone);
@@ -1052,12 +1080,16 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
     it("with a team fence the subscription never reaches, still ends the wait with the notice (NEO-330 × NEO-333)", async () => {
       // The fence is the readiness signal, but it does not lift the bound: a
       // fence the stream never reaches ends like any other late team.
+      // The clock is faked BEFORE the Sync starts: the bounded stream wait
+      // reads Date.now() once and then polls on a 50 ms setTimeout, so a clock
+      // swapped in mid-wait leaves a real timer pending that, under load, wakes
+      // after the fake 31 s step and the wait ends on the wrong clock (NEO-638).
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
       const { rerender } = renderChecklist();
       fireEvent.click(screen.getByLabelText("Sync card checklist"));
       await streamCandidates(rerender, halfResolved);
-      expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+      expect(screen.getByText(/Match Cards/)).toBeTruthy();
 
-      vi.useFakeTimers();
       try {
         await act(async () => {
           resolveFetch({
@@ -1088,12 +1120,16 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
     });
 
     it("drops the notice if the late teams all land before Confirm", async () => {
+      // The clock is faked BEFORE the Sync starts: the bounded stream wait
+      // reads Date.now() once and then polls on a 50 ms setTimeout, so a clock
+      // swapped in mid-wait leaves a real timer pending that, under load, wakes
+      // after the fake 31 s step and the wait ends on the wrong clock (NEO-638).
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
       const { rerender } = renderChecklist();
       fireEvent.click(screen.getByLabelText("Sync card checklist"));
       await streamCandidates(rerender, halfResolved);
-      expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+      expect(screen.getByText(/Match Cards/)).toBeTruthy();
 
-      vi.useFakeTimers();
       try {
         await act(async () => {
           resolveFetch(fetchDone);
@@ -1126,12 +1162,16 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
 
     it("still saves nothing when the ROWS never arrive", async () => {
       // A short batch is a partial checklist, not a late team.
+      // The clock is faked BEFORE the Sync starts: the bounded stream wait
+      // reads Date.now() once and then polls on a 50 ms setTimeout, so a clock
+      // swapped in mid-wait leaves a real timer pending that, under load, wakes
+      // after the fake 31 s step and the wait ends on the wrong clock (NEO-638).
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
       const { rerender } = renderChecklist();
       fireEvent.click(screen.getByLabelText("Sync card checklist"));
       await streamCandidates(rerender, halfResolved);
-      expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+      expect(screen.getByText(/Match Cards/)).toBeTruthy();
 
-      vi.useFakeTimers();
       try {
         await act(async () => {
           resolveFetch({ ...fetchDone, candidateCount: 3 });
@@ -7478,15 +7518,30 @@ describe("CardChecklist — the Sync wait line (NEO-487)", () => {
 
   afterEach(() => {
     state.marketplaceWait = undefined;
+    vi.useRealTimers();
   });
+
+  /**
+   * The line speaks after a 1.5 s client gate (setTimeout), so the clock is
+   * faked and stepped past it rather than slept through (NEO-638). Only the
+   * timers and Date the gate reads are faked; promises and microtasks are real.
+   */
+  const fakeGate = () =>
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+  const passGate = () =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(ANNOUNCE_AFTER_MS + 100);
+    });
 
   it("a one-marketplace Sync shows the wait line on the page, with no dialog around it", async () => {
     state.ancestorChain = soloSlChain();
     state.liveCandidates = null;
+    fakeGate();
     renderChecklist();
     fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    await passGate();
 
-    const line = await screen.findByText(WAIT, {}, { timeout: 3000 });
+    const line = screen.getByText(WAIT);
     expect(screen.getAllByText(WAIT)).toHaveLength(1);
     expect(screen.queryByText(/Match Cards/)).toBeNull();
     expect(line.closest('[role="dialog"]')).toBeNull();
@@ -7497,11 +7552,13 @@ describe("CardChecklist — the Sync wait line (NEO-487)", () => {
   it("a two-marketplace Sync shows the line once, inside Match Cards, and not on the page behind it", async () => {
     state.ancestorChain = twoSidedChain();
     state.liveCandidates = { ready: 1, total: 1, cards: [streamedCandidate] };
+    fakeGate();
     renderChecklist();
     fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    await passGate();
 
-    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
-    const line = await screen.findByText(WAIT, {}, { timeout: 3000 });
+    expect(screen.getByText(/Match Cards/)).toBeTruthy();
+    const line = screen.getByText(WAIT);
     expect(screen.getAllByText(WAIT)).toHaveLength(1);
     expect(line.closest('[role="dialog"]')).not.toBeNull();
   });
@@ -7511,10 +7568,12 @@ describe("CardChecklist — the Sync wait line (NEO-487)", () => {
     // No rows have streamed in yet: the review phase is set, the dialog is not
     // mounted, and the BuySportsCards call is the thing being waited on.
     state.liveCandidates = null;
+    fakeGate();
     const { rerender } = renderChecklist();
     fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    await passGate();
 
-    const pageLine = await screen.findByText(WAIT, {}, { timeout: 3000 });
+    const pageLine = screen.getByText(WAIT);
     expect(screen.getAllByText(WAIT)).toHaveLength(1);
     expect(screen.queryByText(/Match Cards/)).toBeNull();
     expect(pageLine.closest('[role="dialog"]')).toBeNull();
@@ -7522,10 +7581,11 @@ describe("CardChecklist — the Sync wait line (NEO-487)", () => {
     // The first rows arrive and Match Cards mounts: the page's line stands down
     // in the same render, the dialog's own takes over after its 1.5 s gate.
     await streamCandidates(rerender, { ready: 1, total: 1, cards: [streamedCandidate] });
-    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+    expect(screen.getByText(/Match Cards/)).toBeTruthy();
     expect(screen.queryByText(WAIT)).toBeNull();
 
-    const dialogLine = await screen.findByText(WAIT, {}, { timeout: 3000 });
+    await passGate();
+    const dialogLine = screen.getByText(WAIT);
     expect(screen.getAllByText(WAIT)).toHaveLength(1);
     expect(dialogLine.closest('[role="dialog"]')).not.toBeNull();
   });
