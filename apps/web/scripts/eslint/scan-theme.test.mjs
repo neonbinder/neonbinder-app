@@ -4,8 +4,11 @@
  * below, the prefiltered answer equals the full scan's, and the ones that
  * hold a violation really are flagged.
  */
+import fs from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { mayHoldViolation, scanSource } from "./scan-theme.mjs";
+import { WEB_ROOT } from "./no-raw-palette.mjs";
+import { lintedFiles, mayHoldViolation, scanSource } from "./scan-theme.mjs";
 
 const FLAGGED = {
   "a className string": `export const a = <div className="bg-gray-900" />;`,
@@ -66,5 +69,13 @@ describe("scan-theme prefilter", () => {
 
   it("a file with no palette text is skipped", () => {
     expect(mayHoldViolation(`const a = "bg-surface text-ink-2";`)).toBe(false);
+  });
+
+  it("on the real tree, no file the prefilter skips holds a finding", () => {
+    const missed = lintedFiles().filter((rel) => {
+      const text = fs.readFileSync(path.join(WEB_ROOT, rel), "utf8");
+      return !mayHoldViolation(text) && scanSource(rel, text).length > 0;
+    });
+    expect(missed).toEqual([]);
   });
 });

@@ -437,12 +437,20 @@ beforeEach(() => {
   // whichever describe a shuffle runs next (the NEO-321 group never sets it).
   state.skippedNames = [];
 });
+// One function per test, like production's stable mutation reference: a
+// component re-rendering inside a test sees the same identity every time.
+const discardByEpoch = new Map<number, (...args: unknown[]) => unknown>();
 const discardCandidatesForThisTest = () => {
   const renderedIn = testEpoch;
-  return (...args: unknown[]) =>
-    renderedIn === testEpoch
-      ? (mockDiscardCandidates as (...a: unknown[]) => unknown)(...args)
-      : Promise.resolve();
+  let fn = discardByEpoch.get(renderedIn);
+  if (!fn) {
+    fn = (...args: unknown[]) =>
+      renderedIn === testEpoch
+        ? (mockDiscardCandidates as (...a: unknown[]) => unknown)(...args)
+        : Promise.resolve();
+    discardByEpoch.set(renderedIn, fn);
+  }
+  return fn;
 };
 // NEO-312 — the parallel-build runner's two calls. Both default to a
 // no-parallels / never-called shape in every describe block that does not
@@ -7539,7 +7547,14 @@ describe("CardChecklist — the Sync wait line (NEO-487)", () => {
     fakeGate();
     renderChecklist();
     fireEvent.click(screen.getByLabelText("Sync card checklist"));
-    await passGate();
+    // One millisecond short of the gate the line is not yet on screen.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ANNOUNCE_AFTER_MS - 1);
+    });
+    expect(screen.queryByText(WAIT)).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
 
     const line = screen.getByText(WAIT);
     expect(screen.getAllByText(WAIT)).toHaveLength(1);
