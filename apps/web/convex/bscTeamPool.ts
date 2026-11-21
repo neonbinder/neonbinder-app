@@ -36,7 +36,7 @@ import { internalMutation, type MutationCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { markBscTeamCheckGivenUpImpl } from "./bscTeamCheck";
 import { assertResetArmed } from "./resetArming";
-import { resolveBscTarget } from "./lib/bscHttp";
+import { queuedByForLane } from "./lib/bscGateKey";
 
 /** One BSC call at a time, deployment wide. */
 export const BSC_TEAM_POOL_MAX_PARALLELISM = 1;
@@ -157,7 +157,7 @@ export const enqueueBscTeamChecks = internalMutation({
     // is used, on the fake. Real BSC has one gate, so a Clerk subject would be
     // stored in the pool's args and completion context for nothing. Every
     // re-enqueue spreads the item, so what is stored here is all there is.
-    const queuedBy = resolveBscTarget(process.env).mode === "fake" ? args.queuedBy : undefined;
+    const queuedBy = queuedByForLane(args.queuedBy);
     const firstQueuedAt = args.firstQueuedAt ?? Date.now();
     const pass = Math.min(Math.max(1, Math.floor(args.pass ?? 1)), BSC_TEAM_CHECK_MAX_PASSES);
     const chunk = args.cardChecklistIds.slice(from, from + BSC_TEAM_ENQUEUE_CHUNK_SIZE);
