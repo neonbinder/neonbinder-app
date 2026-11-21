@@ -4811,3 +4811,65 @@ describe("CardPairingModal — mouse drag activation", () => {
     expect(rowFor(LABEL).className).toContain("opacity-40");
   });
 });
+
+/**
+ * NEO-640 (rule 7) — a BSC/SportLots pair made by NAME whose numbers differ is
+ * shown in Matched at a lower %, with a note naming both numbers. The note is
+ * the dialog's alone: Unlink takes it off both halves, and nothing carrying it
+ * reaches the strict commit validators.
+ */
+describe("CardPairingModal — numbers didn't match (NEO-640)", () => {
+  const namePair = (): { card: PairingCard; confidence: number } => ({
+    card: { ...pairedCard("38", "Griffey"), pairedNumber: "250" },
+    confidence: 0.85,
+  });
+
+  test("a name pair with differing numbers shows both numbers and the lower %", () => {
+    renderModal({ autoMatched: [namePair()] });
+
+    expect(screen.getByText("Numbers didn't match: BSC 38, SportLots 250")).toBeTruthy();
+    expect(screen.getByText("85%")).toBeTruthy();
+  });
+
+  test("a pair with no pairedNumber shows no note", () => {
+    renderModal({ autoMatched: [{ card: pairedCard("38", "Griffey"), confidence: 0.85 }] });
+
+    expect(screen.queryByText(/Numbers didn't match/)).toBeNull();
+  });
+
+  test("Unlink removes the note from both halves", () => {
+    renderModal({ autoMatched: [namePair()] });
+
+    fireEvent.click(screen.getByLabelText("Unlink #38 Griffey"));
+
+    expect(screen.queryByText(/Numbers didn't match/)).toBeNull();
+    // Both halves are back in their own columns, so neither can carry it.
+    expect(screen.getByLabelText(/^Select BSC card #38 Griffey/)).toBeTruthy();
+    expect(screen.getByLabelText("Keep #38 Griffey as SportLots-only")).toBeTruthy();
+  });
+
+  test("Confirm hands on a card with no pairedNumber", async () => {
+    const { onConfirm } = renderModal({ autoMatched: [namePair()] });
+
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
+    const cards = onConfirm.mock.calls[0][0].cards;
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).not.toHaveProperty("pairedNumber");
+  });
+
+  test("Unlink then keeping both halves saves cards with no pairedNumber either", async () => {
+    const { onConfirm } = renderModal({ autoMatched: [namePair()] });
+
+    fireEvent.click(screen.getByLabelText("Unlink #38 Griffey"));
+    fireEvent.click(screen.getByLabelText("Keep all BSC-only cards"));
+    fireEvent.click(screen.getByLabelText("Keep all SportLots-only cards"));
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
+    const cards = onConfirm.mock.calls[0][0].cards;
+    expect(cards).toHaveLength(2);
+    for (const card of cards) expect(card).not.toHaveProperty("pairedNumber");
+  });
+});
