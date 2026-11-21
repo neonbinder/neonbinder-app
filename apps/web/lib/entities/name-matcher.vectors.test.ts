@@ -22,9 +22,9 @@ import { pairNamesFirst } from "../cards/pair-names-first";
 import { playerNamesMatch, ladderPlayerName } from "../../convex/lib/pairing/names";
 import { computeMatches } from "../../convex/setReconciliation";
 
-const ZWSP = "​";
-const SHY = "­";
-const REPLACEMENT = "�";
+const ZWSP = "\u200B";
+const SHY = "\u00AD";
+const REPLACEMENT = "\uFFFD";
 
 /** Every matcher's verdict on "are these two the same name?". */
 const verdicts = (a: string, b: string): Record<string, boolean> => ({
@@ -49,8 +49,18 @@ const MUST_MATCH: Array<[string, string, string]> = [
   ["zero-width space inside a word", `Mi${ZWSP}ke Trout`, "Mike Trout"],
   ["soft hyphen inside a word", `Mi${SHY}ke Trout`, "Mike Trout"],
   ["backslash before an apostrophe", "O\\'Neal", "O'Neal"],
-  ["decomposed accent against composed", "José Ramirez", "José Ramírez"],
+  ["decomposed accent against composed", "Jose\u0301 Ramirez", "José Ramírez"],
   ["case", "MIKE TROUT", "mike trout"],
+  ["left-to-right mark inside a word", "Mi\u200Eke Trout", "Mike Trout"],
+  ["bidi isolate around a name", "\u2066Mike Trout\u2069", "Mike Trout"],
+  ["Mongolian vowel separator and U+061C", "Mi\u180Eke Tr\u061Cout", "Mike Trout"],
+  ["variation selector", "Mike\uFE0F Trout", "Mike Trout"],
+  ["acute stand-in for the accent", "Jos\u00B4e Ram\u00B4irez", "José Ramírez"],
+  ["diaeresis and cedilla stand-ins", "Mu\u00A8ller Fran\u00B8cois", "Müller François"],
+  ["grave accent stand-in", "Jos`e Ram`irez", "José Ramírez"],
+  ["full-width letters", "\uFF2Dike Trout", "Mike Trout"],
+  ["ligature", "\uFB01nn Wolfhard", "Finn Wolfhard"],
+  ["a control character is a space", "Mike\u0000Trout", "Mike Trout"],
 ];
 
 const MUST_STAY_APART: Array<[string, string, string]> = [
@@ -60,6 +70,8 @@ const MUST_STAY_APART: Array<[string, string, string]> = [
   ["Ø is not O", "Søren Kierkegaard", "Soren Kierkegaard"],
   ["ß is not ss", "Strauß", "Strauss"],
   ["a question mark is not a letter", "R?os", "Rios"],
+  ["a caret is a separator, not junk", "Ri^os", "Rios"],
+  ["a slash is a separator, not junk", "Ri/os", "Rios"],
 ];
 
 describe("one name matcher: names that must match", () => {

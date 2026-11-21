@@ -239,9 +239,58 @@ describe("foldNameText — NEO-643 junk characters", () => {
     }
   });
 
-  test("leaves a control character for the separator step", () => {
-    expect(foldNameText("A\tB")).toBe("a\tb");
+  test("a control character is a space, exactly as stripNameJunk makes it", () => {
+    // NEO-643 audit: the fold used to leave a control character for the
+    // separator step further down, so a caller using the fold alone saw the
+    // raw character while the stored text (stripNameJunk) had a space.
+    expect(foldNameText("A\tB")).toBe("a b");
+    expect(foldNameText("A\u0000B\u009FC\u007FD")).toBe("a b c d");
     expect(normalizeEntityName("Ruth\tBabe")).toBe("babe ruth");
+    expect(normalizeEntityName("Ruth\u0000Babe")).toBe("babe ruth");
+  });
+
+  test("every Unicode format character is deleted, inside a word", () => {
+    const formats = [
+      "\u00AD", "\u061C", "\u180E", "\u200B", "\u200C", "\u200D", "\u200E", "\u200F",
+      "\u202A", "\u202B", "\u202C", "\u202D", "\u202E", "\u2060", "\u2066", "\u2067",
+      "\u2068", "\u2069", "\uFEFF",
+    ];
+    for (const f of formats) {
+      expect(foldNameText(`Ri${f}os`), `U+${f.codePointAt(0)!.toString(16)}`).toBe("rios");
+      expect(normalizeEntityName(`Wilmer Ri${f}os`)).toBe("rios wilmer");
+    }
+  });
+
+  test("the variation selectors and the spacing accent marks are deleted", () => {
+    const marks = [
+      "\uFE00", "\uFE0F", "\u00B4", "\u00A8", "\u00B8", "\u02DC", "\u02C6", "`",
+      "\u02D8", "\u02D9", "\u02DA", "\u02DB", "\u02DD",
+    ];
+    for (const m of marks) {
+      expect(foldNameText(`Ri${m}os`), `U+${m.codePointAt(0)!.toString(16)}`).toBe("rios");
+      expect(normalizeEntityName(`Wilmer Ri${m}os`)).toBe("rios wilmer");
+    }
+    // A stand-in accent in front of the letter, as the sources write it.
+    expect(normalizeEntityName("Jos\u00B4e Ram\u00A8irez")).toBe(normalizeEntityName("Jose Ramirez"));
+  });
+
+  test("^ ~ / | and U+FFFD are not junk: they stay separators", () => {
+    for (const c of ["^", "~", "/", "|", "\uFFFD"]) {
+      expect(normalizeEntityName(`Ri${c}os`), c).toBe("os ri");
+    }
+  });
+
+  test("a compatibility letter folds onto its plain letters (NFKD)", () => {
+    expect(foldNameText("\uFF2Dike")).toBe("mike");
+    expect(normalizeEntityName("\uFF2Dike Trout")).toBe(normalizeEntityName("Mike Trout"));
+    expect(foldNameText("\uFB01nn")).toBe("finn");
+    expect(normalizeEntityName("Fe\uFB01n")).toBe(normalizeEntityName("Fefin"));
+    expect(normalizeEntityName("\uFF2A\uFF4F\u0073\u00E9")).toBe(normalizeEntityName("Jose"));
+  });
+
+  test("a trademark sign stays a separator, NFKD does not spell it TM", () => {
+    expect(normalizeEntityName("Topps\u2122 Chrome")).toBe(normalizeEntityName("Topps Chrome"));
+    expect(foldNameText("Chrome\u2120")).toBe("chrome ");
   });
 });
 
@@ -289,6 +338,11 @@ describe("normalizeEntityName — NEO-643 one matcher for BSC's backslash", () =
       "Jr.", "St.", "Louis", " ", "  ", "\t", "\n", "\u0000", "\u007F", "\u009F",
       "\u00A0", "-", "'", "’", "e\u0301", "é", "Å", "\u212B", "한글", "12", "&",
       "Montréal", "B\\eisbol",
+      // NEO-643 audit: the widened junk class and compatibility letters.
+      "\u061C", "\u180E", "\u200E", "\u200F", "\u202A", "\u202E", "\u2066", "\u2069",
+      "\uFE0F", "\u00B4", "\u00A8", "\u00B8", "\u02DC", "\u02C6", "`", "\u02D8", "\u02DD",
+      "\uFF2Dike", "\uFB01", "\u2122", "\u00BD", "\u2460", "\u00AA", "^", "~", "/", "|",
+      "Jos\u00B4e", "R\u00A8ios",
     ];
     // Deterministic LCG, so a failure names the same input on every run.
     let seed = 643;

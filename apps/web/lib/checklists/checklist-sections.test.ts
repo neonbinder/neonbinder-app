@@ -144,7 +144,7 @@ describe("checklistSections", () => {
     const out = checklistSections(
       parseOf(
         [
-          ...rowsIn("Bomb\u200eSquad", 2),
+          ...rowsIn("Bomb\u200bSquad", 2),
           ...rowsIn("Future Stars", 1, 3),
           ...rowsIn("Helix\u202e", 1, 4),
           ...rowsIn("Base", 1, 5),
@@ -155,18 +155,10 @@ describe("checklistSections", () => {
     expect(out.sections.map((s) => s.name)).toEqual(["Base"]);
     expect(out.rowCount).toBe(1);
     expect(out.skippedSections).toEqual([
-      { name: "Bomb\u200eSquad", rowCount: 2, reason: HIDDEN_CHARS_IN_NAME },
+      { name: "Bomb\u200bSquad", rowCount: 2, reason: HIDDEN_CHARS_IN_NAME },
       { name: "Future Stars", rowCount: 1, reason: HIDDEN_CHARS_IN_GROUP },
       { name: "Helix\u202e", rowCount: 1, reason: HIDDEN_CHARS_IN_NAME },
     ]);
-  });
-
-  it("NEO-643: a zero-width space or a stray backslash inside a section name is cleansed, not refused", () => {
-    const out = checklistSections(
-      parseOf([...rowsIn("Bomb\u200bSquad", 2), ...rowsIn("Wilmer R\\ios Stars", 1, 3)]),
-    );
-    expect(out.sections.map((s) => s.name)).toEqual(["BombSquad", "Wilmer Rios Stars"]);
-    expect(out.skippedSections).toEqual([]);
   });
 
   it("says what to do about hidden characters, in so many words", () => {

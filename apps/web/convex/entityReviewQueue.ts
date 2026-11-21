@@ -89,7 +89,7 @@ import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 // rather than restated so `startBatch`'s op budget is tied to the real limits:
 // if either grows, the arithmetic in ENTITY_REVIEW_START_OPS grows with it
 // instead of quietly under-charging.
-import { PLAYER_AMBIGUITY_SCAN_LIMIT } from "../lib/players/name-limits";
+import { MAX_PLAYER_NAME_LENGTH, PLAYER_AMBIGUITY_SCAN_LIMIT } from "../lib/players/name-limits";
 import { PLAYER_DESCRIPTION_MAX_TEAMS } from "../lib/players/player-description";
 
 /**
@@ -1228,6 +1228,35 @@ function awaitsOperatorBeforeLookup(
 export const ENTITY_REVIEW_START_OPS = 800;
 
 /**
+ * NEO-643 — the caller (`selectorOptions`) refuses a player or team name longer
+ * than `MAX_PLAYER_NAME_LENGTH` (`assertCardBatchWithinLimits`) BEFORE the names
+ * reach `startBatch`, but it checks the RAW text, and cleansing composes to NFC,
+ * which can lengthen a string (U+0958 composes to two characters). So the same
+ * bound is applied again to what is actually about to be stored. Refused by
+ * length and position, never by echoing the name.
+ */
+function assertStartBatchNamesWithinLimit(args: {
+  playerNames: string[];
+  teamNames: string[];
+  playersWithNoExistingMatch?: string[];
+}): void {
+  const lists: Array<[string, string[]]> = [
+    ["player", args.playerNames],
+    ["team", args.teamNames],
+    ["no-existing-match player", args.playersWithNoExistingMatch ?? []],
+  ];
+  for (const [kind, names] of lists) {
+    names.forEach((name, index) => {
+      if (name.length > MAX_PLAYER_NAME_LENGTH) {
+        throw new Error(
+          `startBatch: the ${kind} name at index ${index} is ${name.length} characters once cleansed; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+        );
+      }
+    });
+  }
+}
+
+/**
  * NEO-643 — `startBatch`'s args with every NAME in them cleansed
  * (`cleanseExternalName`): the incoming player and team lists, the caller's
  * "no existing match" set, the names the facts are about, and the names and
@@ -1443,6 +1472,7 @@ export const startBatch = internalMutation({
     // characters). The continuation re-enters with these cleansed args, and
     // cleansing is idempotent, so a chain never re-cleans into a different name.
     const args = cleanseStartBatchNames(incomingArgs);
+    assertStartBatchNamesWithinLimit(args);
     /**
      * NEO-294 — system operations this transaction has spent. See
      * ENTITY_REVIEW_START_OPS for what each write and each name lookup costs

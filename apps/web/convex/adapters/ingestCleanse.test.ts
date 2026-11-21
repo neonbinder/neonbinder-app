@@ -103,14 +103,14 @@ describe("BSC selector labels", () => {
     const requests: Array<{ url: string; body: string }> = [];
     // The second slug carries junk on purpose: a slug is a key BSC reads back,
     // so it must come out exactly as it went in.
-    const junkSlug = "liga\\mexicana­-stickers";
+    const junkSlug = "liga\\mexicana\u00AD-stickers";
     vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
       requests.push({ url: String(url), body: String(init?.body ?? "") });
       return jsonResponse({
         aggregations: {
           setName: [
             { label: "2026 Panini Liga Mexicana de B\\eisbol Stickers", slug: "2026-panini-liga-mexicana-de-beisbol-stickers", count: 4 },
-            { label: "Zero​width­Set", slug: junkSlug, count: 2 },
+            { label: "Zero\u200Bwidth\u00ADSet", slug: junkSlug, count: 2 },
             { label: "\\", slug: "only-junk-label", count: 1 },
           ],
         },
@@ -141,7 +141,7 @@ describe("BSC selector labels", () => {
 
 describe("BSC checklist rows", () => {
   test("a player field with the backslash comes out cleansed; the card id is untouched", async () => {
-    const cardId = "bsc\\id­-1";
+    const cardId = "bsc\\id\u00AD-1";
     vi.stubGlobal("fetch", (async () =>
       jsonResponse([
         {
@@ -236,7 +236,7 @@ describe("SportLots", () => {
 
   test("a selector label is cleansed; the option id is the same", async () => {
     vi.stubGlobal("fetch", (async () =>
-      new Response(slOptionsHtml([["BB", "Base\\ball"], ["9\\1", "Hoc­key"]]), {
+      new Response(slOptionsHtml([["BB", "Base\\ball"], ["9\\1", "Hoc\u00ADkey"]]), {
         status: 200,
         headers: { "Content-Type": "text/html" },
       })) as unknown as typeof fetch);
@@ -321,7 +321,7 @@ describe("ESPN", () => {
     stubTeams([
       {
         id: "1\\9",
-        displayName: "Washington Na​tionals",
+        displayName: "Washington Na\u200Btionals",
         location: "Wash\\ington",
         color: "0d2340",
         alternateColor: "ba122b",
@@ -345,6 +345,31 @@ describe("ESPN", () => {
     ]);
     const hit = await fetchEspnTeamInfo({ path: "hockey/nhl", leagueName: "NHL" }, "Montreal  Canadiens");
     expect(hit).toMatchObject({ espnId: "19", location: "Montréal", league: "NHL" });
+  });
+
+  test("a name that folds to nothing finds no team", async () => {
+    stubTeams([{ id: "19", displayName: "Montréal Canadiens", location: "Montréal" }]);
+    for (const name of ["", "   ", "\\", "\u200B\u00AD", "...", "' \\ ."]) {
+      expect(await fetchEspnTeamInfo({ path: "hockey/nhl", leagueName: "NHL" }, name), JSON.stringify(name)).toBeNull();
+    }
+  });
+
+  test("two teams under one folded name find none (never the first in list order)", async () => {
+    stubTeams([
+      { id: "19", displayName: "Montréal Canadiens", location: "Montréal" },
+      { id: "20", displayName: "Montreal  CANADIENS", location: "Montreal" },
+      { id: "21", displayName: "Boston Bruins", location: "Boston" },
+    ]);
+    expect(await fetchEspnTeamInfo({ path: "hockey/nhl", leagueName: "NHL" }, "Montreal Canadiens")).toBeNull();
+    // A name only one team carries still resolves.
+    expect(await fetchEspnTeamInfo({ path: "hockey/nhl", leagueName: "NHL" }, "Boston Bruins")).toMatchObject({
+      espnId: "21",
+    });
+  });
+
+  test("no team under the folded name finds none", async () => {
+    stubTeams([{ id: "19", displayName: "Montréal Canadiens", location: "Montréal" }]);
+    expect(await fetchEspnTeamInfo({ path: "hockey/nhl", leagueName: "NHL" }, "Toronto Maple Leafs")).toBeNull();
   });
 });
 

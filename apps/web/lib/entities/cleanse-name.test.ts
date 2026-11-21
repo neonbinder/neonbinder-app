@@ -5,15 +5,42 @@
  */
 
 import { describe, expect, test } from "vitest";
+import * as cleanseModule from "./cleanse-name";
 import { cleanseExternalName, stripNameJunk } from "./cleanse-name";
 
 describe("stripNameJunk", () => {
   test("deletes the backslash, soft hyphen and zero-width characters", () => {
     expect(stripNameJunk("Wilmer R\\ios")).toBe("Wilmer Rios");
-    expect(stripNameJunk("Wil­mer")).toBe("Wilmer");
-    for (const zw of ["​", "‌", "‍", "⁠", "﻿"]) {
+    expect(stripNameJunk("Wil\u00ADmer")).toBe("Wilmer");
+    for (const zw of ["\u200B", "\u200C", "\u200D", "\u2060", "\uFEFF"]) {
       expect(stripNameJunk(`Ri${zw}os`)).toBe("Rios");
     }
+  });
+
+  test("deletes every Unicode format character", () => {
+    const formats = [
+      "\u00AD", "\u061C", "\u180E", "\u200B", "\u200C", "\u200D", "\u200E", "\u200F",
+      "\u202A", "\u202B", "\u202C", "\u202D", "\u202E", "\u2060", "\u2066", "\u2067",
+      "\u2068", "\u2069", "\uFEFF",
+    ];
+    for (const f of formats) expect(stripNameJunk(`Ri${f}os`), f.codePointAt(0)!.toString(16)).toBe("Rios");
+  });
+
+  test("deletes the variation selectors and the spacing accent marks", () => {
+    const marks = [
+      "\uFE00", "\uFE0F", "\u00B4", "\u00A8", "\u00B8", "\u02DC", "\u02C6", "`",
+      "\u02D8", "\u02D9", "\u02DA", "\u02DB", "\u02DD",
+    ];
+    for (const m of marks) expect(stripNameJunk(`Ri${m}os`), m.codePointAt(0)!.toString(16)).toBe("Rios");
+  });
+
+  test("leaves ^ ~ / | and U+FFFD alone", () => {
+    for (const c of ["^", "~", "/", "|", "\uFFFD"]) expect(stripNameJunk(`Ri${c}os`)).toBe(`Ri${c}os`);
+  });
+
+  test("exports no regex, so no caller can carry lastIndex between calls", () => {
+    for (const value of Object.values(cleanseModule)) expect(value).not.toBeInstanceOf(RegExp);
+    expect(Object.keys(cleanseModule).sort()).toEqual(["cleanseExternalName", "stripNameJunk"]);
   });
 
   test("turns a control character into a space and does not trim", () => {
@@ -40,8 +67,8 @@ describe("cleanseExternalName", () => {
   });
 
   test("composes accents to NFC and keeps case", () => {
-    expect(cleanseExternalName("Rí́os")).toBe("Rí́os".normalize("NFC"));
-    expect(cleanseExternalName("Rémy")).toBe("Rémy");
+    expect(cleanseExternalName("Rí\u0301os")).toBe("Rí\u0301os".normalize("NFC"));
+    expect(cleanseExternalName("Re\u0301my")).toBe("Rémy");
     expect(cleanseExternalName("O'NEAL")).toBe("O'NEAL");
   });
 
@@ -52,6 +79,6 @@ describe("cleanseExternalName", () => {
   });
 
   test("an all-junk name comes back empty", () => {
-    expect(cleanseExternalName(" \\ ​ ")).toBe("");
+    expect(cleanseExternalName(" \\ \u200B ")).toBe("");
   });
 });

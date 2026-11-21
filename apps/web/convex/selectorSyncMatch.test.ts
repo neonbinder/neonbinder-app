@@ -236,6 +236,94 @@ describe("planSelectorSync tiers", () => {
   });
 });
 
+describe("planSelectorSync name tier — NEO-643, stored rows are not backfilled", () => {
+  // Incoming labels are cleansed at ingest; a row stored before that still
+  // carries its junk. The tier compares both sides cleansed, so the second
+  // marketplace id attaches instead of a twin being minted.
+  test("selectorValueKey itself is unchanged: it is a stored key", () => {
+    expect(selectorValueKey("B\\eisbol")).not.toBe(selectorValueKey("Beisbol"));
+    expect(selectorValueKey("Re\u0301my")).not.toBe(selectorValueKey("R\u00E9my"));
+    expect(selectorValueKey("Topps  Chrome")).not.toBe(selectorValueKey("Topps Chrome"));
+  });
+
+  test.each([
+    ["a stored backslash", "B\\eisbol", "Beisbol"],
+    ["a stored decomposed accent", "Re\u0301my", "R\u00E9my"],
+    ["a stored double space", "Topps  Chrome", "Topps Chrome"],
+    ["a stored zero-width space", "Top\u200Bps", "Topps"],
+    ["a stored soft hyphen, cased differently", "Top\u00ADps", "TOPPS"],
+  ])("%s still name-matches the cleansed incoming label and attaches the id", (_why, stored, incoming) => {
+    const a = row("a", stored);
+    const plan = planSelectorSync({
+      existing: [a],
+      items: [item(incoming, { bsc: "bsc-1" })],
+    });
+    expect(plan.outcomes[0]).toEqual({ kind: "matched", existingId: "a", tier: 2 });
+  });
+
+  test("the match is additive: a row linked on the other side takes the new id", () => {
+    const a = row("a", "B\\eisbol", { platformData: { sportlots: { s0: "77" } } });
+    const plan = planSelectorSync({
+      existing: [a],
+      items: [item("Beisbol", { bsc: "bsc-1" })],
+    });
+    expect(plan.outcomes[0]).toEqual({ kind: "matched", existingId: "a", tier: 2 });
+  });
+
+  test("exactly-one guard, existing side: two stored rows that fold together are withheld", () => {
+    const plan = planSelectorSync({
+      existing: [row("a", "B\\eisbol"), row("b", "Beisbol")],
+      items: [item("Beisbol", { bsc: "bsc-1" })],
+    });
+    expect(plan.outcomes[0].kind).toBe("withheld");
+  });
+
+  test("exactly-one guard, incoming side: two labels that fold to one stored row are withheld", () => {
+    const plan = planSelectorSync({
+      existing: [row("a", "B\\eisbol")],
+      items: [item("Beisbol", { bsc: "bsc-1" }), item("BEISBOL", { bsc: "bsc-2" })],
+    });
+    expect(plan.outcomes.map((o) => o.kind)).toEqual(["withheld", "withheld"]);
+  });
+
+  test("a different name is still a different name", () => {
+    const plan = planSelectorSync({
+      existing: [row("a", "B\\eisbol")],
+      items: [item("Beisball", { bsc: "bsc-1" })],
+    });
+    expect(plan.outcomes[0].kind).toBe("insert");
+  });
+
+  test("a row linked to a different live id is still withheld, not re-linked", () => {
+    const a = row("a", "B\\eisbol", { platformData: { bsc: { b0: "live-id" } } });
+    const plan = planSelectorSync({
+      existing: [a],
+      items: [item("Beisbol", { bsc: "other-id" })],
+      // upstream still lists the id the row holds, so it is live
+      returnedIds: { bsc: ["live-id", "other-id"] },
+    });
+    expect(plan.outcomes[0].kind).toBe("withheld");
+  });
+
+  test("the word rule (variant types) sees both sides cleansed too", () => {
+    const sameWord = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+    const plan = planSelectorSync({
+      existing: [row("a", "Insert\u200B")],
+      items: [item("Insert", { bsc: "bsc-1" })],
+      sameName: sameWord,
+    });
+    expect(plan.outcomes[0]).toEqual({ kind: "matched", existingId: "a", tier: 2 });
+  });
+
+  test("an id-less checklist line still sees a stored namesake through the cleanse", () => {
+    const plan = planSelectorSync({
+      existing: [row("a", "B\\eisbol")],
+      items: [{ value: "Beisbol", ids: {}, identityOnly: true, checklistOnly: true }],
+    });
+    expect(plan.outcomes[0].kind).toBe("withheld");
+  });
+});
+
 describe("planSelectorSync — ambiguity edge cases (NEO-211 adversarial pass)", () => {
   test("a marketplace id wins the match even when two siblings already share its NAME", () => {
     // Sibling name collisions only matter to TIER 2. An id is identity — once

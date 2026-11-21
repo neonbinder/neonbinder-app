@@ -1056,9 +1056,13 @@ async function fetchSetNames(
   // A real brand id got its own list from SportLots and is never narrowed —
   // and keeps today's case-sensitive `labelContext` strip, so no NEO-211
   // rename suggestion churns on a re-sync of rows named before this.
+  // NEO-643: the prefix is cleansed like the labels it is compared with
+  // (`rawLabel` below), so both sides of `matchesBrandPrefix` are the same
+  // text and a prefix with junk, a double space or decomposed accents still
+  // narrows to the same radio ids. cleanseExternalName also trims.
   const narrowTo =
     brandScope && isSlAllBrandsBrandId(scope.fields.brd)
-      ? brandScope.setNamePrefix.trim()
+      ? cleanseExternalName(brandScope.setNamePrefix)
       : undefined;
   if (narrowTo === "") {
     // A brand linked via All Brands with an EMPTY prefix would receive every

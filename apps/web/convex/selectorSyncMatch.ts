@@ -59,6 +59,7 @@ import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
 import { sportConfigDefaultsFor } from "./sportConfig";
 // NEO-334 — one word, one variant type: the rename door's sibling guard reads
 // the same singular/plural rule the custom-add door does.
+import { cleanseExternalName } from "../lib/entities/cleanse-name";
 import { sameTitleWord, sameWordSiblingMessage } from "./variantRole";
 
 export type { PlatformSide } from "./platformSlots";
@@ -126,6 +127,20 @@ export function valuesDeepEqual(a: unknown, b: unknown): boolean {
  */
 export function selectorValueKey(value: string): string {
   return value.toLowerCase().trim();
+}
+
+/**
+ * NEO-643 — the name tier's comparison key: the value as an incoming label is
+ * now stored (`cleanseExternalName`), lower-cased. Incoming labels are
+ * cleansed at ingest and stored rows are NOT backfilled, so a stored
+ * "B\eisbol", a decomposed accent or a double space would never equal its
+ * cleansed upstream label under `selectorValueKey` alone, and sync would mint
+ * a twin instead of attaching the second marketplace id. The tier compares
+ * both sides through this, and ONLY the tier: `selectorValueKey` itself, the
+ * sibling-clash check and `declinedUpstreamLabels` (stored keys) are unchanged.
+ */
+function nameTierKey(value: string): string {
+  return cleanseExternalName(value).toLowerCase();
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -941,7 +956,7 @@ export function planSelectorSync<TId extends string>(args: {
   };
   for (const row of existing) {
     byRowId.set(row._id, row);
-    const key = selectorValueKey(row.value);
+    const key = nameTierKey(row.value);
     const bucket = byKey.get(key);
     if (bucket) bucket.push(row);
     else byKey.set(key, [row]);
@@ -1128,7 +1143,11 @@ export function planSelectorSync<TId extends string>(args: {
   // behind it. Counted over the items that reach this pass carrying an id (an
   // id-less item is withheld below whatever the count says when a namesake
   // exists), excluding operator-promoted `identityOnly` lines.
-  const sameNameRule = args.sameName;
+  // NEO-643: the rule sees both sides cleansed, like the keyed index below.
+  const sameNameRuleArg = args.sameName;
+  const sameNameRule = sameNameRuleArg
+    ? (a: string, b: string) => sameNameRuleArg(cleanseExternalName(a), cleanseExternalName(b))
+    : undefined;
   const incomingByKey = new Map<string, number>();
   /** NEO-334 — the id-carrying items counted above, for the `sameName` scan. */
   const countedValues: string[] = [];
@@ -1150,12 +1169,12 @@ export function planSelectorSync<TId extends string>(args: {
   const reachingByKey = new Map<string, number>();
   for (let i = 0; i < items.length; i++) {
     if (outcomes[i]) continue;
-    const reachingKey = selectorValueKey(items[i].value);
+    const reachingKey = nameTierKey(items[i].value);
     reachingByKey.set(reachingKey, (reachingByKey.get(reachingKey) ?? 0) + 1);
     if (items[i].identityOnly) continue;
     allValues.push(items[i].value);
     if (!PLATFORM_SIDES.some((s) => items[i].ids[s])) continue;
-    const key = selectorValueKey(items[i].value);
+    const key = nameTierKey(items[i].value);
     incomingByKey.set(key, (incomingByKey.get(key) ?? 0) + 1);
     countedValues.push(items[i].value);
   }
@@ -1163,17 +1182,17 @@ export function planSelectorSync<TId extends string>(args: {
   const namesakesOf = (value: string): Array<MatchableRow<TId>> =>
     sameNameRule
       ? existing.filter((row) => sameNameRule(row.value, value))
-      : (byKey.get(selectorValueKey(value)) ?? []);
+      : (byKey.get(nameTierKey(value)) ?? []);
   /** Incoming items, counted above, that carry this name (or its word). */
   const incomingNamed = (value: string): number =>
     sameNameRule
       ? countedValues.filter((other) => sameNameRule(other, value)).length
-      : (incomingByKey.get(selectorValueKey(value)) ?? 0);
+      : (incomingByKey.get(nameTierKey(value)) ?? 0);
   /** NEO-334 — the no-namesake twin count: id-less items too, under the rule. */
   const incomingNamedAny = (value: string): number =>
     sameNameRule
       ? allValues.filter((other) => sameNameRule(other, value)).length
-      : (incomingByKey.get(selectorValueKey(value)) ?? 0);
+      : (incomingByKey.get(nameTierKey(value)) ?? 0);
   for (let i = 0; i < items.length; i++) {
     if (outcomes[i]) continue;
     const item = items[i];
@@ -1195,12 +1214,12 @@ export function planSelectorSync<TId extends string>(args: {
           // NEO-496 — a checklist section made its own set: inserted unless
           // its name is already a sibling's or another line's. Exact name
           // only (the store's own fold), as the insert would collide on it.
-          const namesakes = byKey.get(selectorValueKey(item.value)) ?? [];
+          const namesakes = byKey.get(nameTierKey(item.value)) ?? [];
           if (namesakes.length > 0) {
             withheld = "id-less checklist line names an existing row";
             sibling = { reason: "nameTakenBySibling", rowIds: namesakes.map((r) => r._id) };
             ambiguities.push({ item: item.value, reason: withheld });
-          } else if ((reachingByKey.get(selectorValueKey(item.value)) ?? 0) > 1) {
+          } else if ((reachingByKey.get(nameTierKey(item.value)) ?? 0) > 1) {
             withheld = "id-less checklist line shares its name with another line";
             sibling = { reason: "nameSharedInBatch", rowIds: [] };
             ambiguities.push({ item: item.value, reason: withheld });

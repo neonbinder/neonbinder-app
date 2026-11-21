@@ -73,9 +73,11 @@
  *
  * ### The NEO-643 exception: junk characters, no backfill
  *
- * NEO-643 added `foldNameText`, which DELETES the backslash, the soft hyphen
- * and the zero-width characters before anything else (BSC writes "Wilmer R\ios"
- * for Ríos). The key changes only for a name that contains one of those
+ * NEO-643 added `foldNameText`, which DELETES the junk class (the backslash,
+ * every Unicode format character, the spacing accent marks; see `NAME_JUNK` in
+ * `cleanse-name.ts`) before anything else (BSC writes "Wilmer R\ios" for Ríos),
+ * and folds with NFKD, so a full-width or ligature letter keys as its plain
+ * letters. The key changes only for a name that contains one of those
  * characters; every other name keys exactly as before. The owner ruled out a
  * backfill, so the usual re-key pass is not run for this change. The affected
  * rows are found with the read-only dry run (`rekeyEntityNames:run '{}'`) and
@@ -92,9 +94,9 @@
  * reverse. The narrow, reversible fold is the whole of the change.
  */
 
-import { NAME_JUNK } from "./cleanse-name";
+import { stripNameJunk } from "./cleanse-name";
 
-/** Combining marks left behind by NFD — the accents themselves. */
+/** Combining marks left behind by NFKD — the accents themselves. */
 const COMBINING_MARKS = /[\u0300-\u036f]/g;
 
 /**
@@ -111,25 +113,37 @@ const DROPPED_PUNCTUATION = /[.,'"`’]/g;
 const NON_KEY_CHARS = /[^a-z0-9\s-]/g;
 
 /**
- * NEO-643 — the one fold every name comparison starts from: delete the junk
- * characters (`NAME_JUNK`: backslash, soft hyphen, zero-width), decompose to
- * NFD, drop the combining marks, lowercase.
+ * Trademark signs. NFKD would spell them out ("™" becomes "TM"), gluing the
+ * letters onto the word before; they have always been a separator here, so
+ * they are turned into a space before the compatibility decomposition.
+ */
+const TRADEMARK_SIGNS = /[\u2120\u2122]/g;
+
+/**
+ * NEO-643 — the one fold every name comparison starts from: `stripNameJunk`
+ * (the junk class is DELETED, each control character becomes a space),
+ * decompose to NFKD, drop the combining marks, lowercase.
+ *
+ * NFKD, not NFD, so a compatibility letter folds onto its plain letters: the
+ * full-width "\uFF2Dike" is "mike" and the "\uFB01" ligature is "fi". The stored
+ * text (`cleanseExternalName`) stays NFC; only the key folds this far.
  *
  * The junk is DELETED, not turned into a separator, because it sits inside a
  * word: BSC's "Wilmer R\ios" must land on "wilmer rios", the same text as
- * "Wilmer Ríos". That also means "Smith\Jones" keys as "smithjones". A control
- * character is not junk here; it still becomes a separator further down the
- * chain. U+FFFD, "?", "Ø", "ß" and the non-Latin scripts are untouched: a
- * transliteration table would merge different people, and a replacement
- * character is a lost letter we cannot name.
+ * "Wilmer R\u00EDos". That also means "Smith\Jones" keys as "smithjones". See
+ * `NAME_JUNK` in `cleanse-name.ts` for the class. U+FFFD, "?", "\u00D8", "\u00DF"
+ * and the non-Latin scripts are untouched: a transliteration table would merge
+ * different people, and a replacement character is a lost letter we cannot
+ * name.
  *
- * Pure ASCII without a backslash is unchanged apart from case (NFD is the
- * identity on ASCII), which keeps every existing unaccented key.
+ * Pure ASCII without a backslash, a backtick or a control character is
+ * unchanged apart from case (NFKD is the identity on ASCII), which keeps every
+ * existing unaccented key.
  */
 export function foldNameText(raw: string): string {
-  return raw
-    .replace(NAME_JUNK, "")
-    .normalize("NFD")
+  return stripNameJunk(raw)
+    .replace(TRADEMARK_SIGNS, " ")
+    .normalize("NFKD")
     .replace(COMBINING_MARKS, "")
     .toLowerCase();
 }

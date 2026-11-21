@@ -95,7 +95,7 @@ describe("parsePublishedChecklist — the published line format", () => {
   });
 
   it("reads CRLF and a leading BOM", () => {
-    const out = parsePublishedChecklist("﻿1 A Player - Team A\r\n2 B Player - Team B");
+    const out = parsePublishedChecklist("\uFEFF1 A Player - Team A\r\n2 B Player - Team B");
     expect(out.rows.map((r) => r.number)).toEqual(["1", "2"]);
   });
 });

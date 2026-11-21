@@ -17,7 +17,7 @@ const ctx = {
 } as unknown as ActionCtx;
 
 const WIRE = {
-  players: ["Wilmer R\\ios", "\\", "Jos­e Ram\\irez"],
+  players: ["Wilmer R\\ios", "\\", "Jos\u00ADe Ram\\irez"],
   player: "Wilmer R\\ios",
   team: "Le\\on",
   card_number: "A\\B-12",

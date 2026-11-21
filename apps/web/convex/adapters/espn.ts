@@ -173,12 +173,12 @@ export async function fetchEspnTeamList(
 }
 
 /**
- * Look up a team's current location + colors on ESPN by exact (case-insensitive)
+ * Look up a team's current location + colors on ESPN by exact (folded)
  * display-name match within its sport's current team list. Returns null when
- * the sport isn't mapped, the fetch fails, or no team in the league's
- * current roster matches — all no-throw, matching the rest of this
- * codebase's adapter conventions (a miss here just means "fall back to
- * Wikidata", not an error).
+ * the sport isn't mapped, the fetch fails, the name folds to nothing, or no
+ * team (or more than one) in the league's current roster matches. All
+ * no-throw, matching the rest of this codebase's adapter conventions (a miss
+ * here just means "fall back to Wikidata", not an error).
  *
  * `teamName` is the COMPOSED FULL name ("San Diego Padres"): ESPN's
  * `displayName` is a full name, and NEO-236 split ours into `location` +
@@ -197,9 +197,16 @@ export async function fetchEspnTeamInfo(
   const teams = await fetchEspnTeamList(league);
   if (!teams) return null;
 
+  // NEO-643: a name that folds to nothing ("\\", punctuation only) names no
+  // team, and the lookup needs EXACTLY ONE franchise under the folded name:
+  // with two (a fold that merges "St. Louis" and "St Louis" entries, say) the
+  // first-in-list-order would be a coin flip, so none is returned and the
+  // caller falls back to Wikidata like any other miss.
   const target = normalize(teamName);
-  const match = teams.find((t) => t.displayName && normalize(t.displayName) === target);
-  if (!match) return null;
+  if (target === "") return null;
+  const matches = teams.filter((t) => t.displayName && normalize(t.displayName) === target);
+  if (matches.length !== 1) return null;
+  const match = matches[0];
 
   return {
     espnId: match.id,

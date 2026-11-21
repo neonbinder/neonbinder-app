@@ -1497,7 +1497,7 @@ export function parsePublishedChecklist(
   if (text.length > PUBLISHED_CHECKLIST_MAX_TEXT) {
     return { rows: [], skipped: [], format: "lines", tooBig: true };
   }
-  const lines = text.replace(/^﻿/, "").split(/\r\n|\r|\n/);
+  const lines = text.replace(/^\uFEFF/, "").split(/\r\n|\r|\n/);
   const firstIndex = lines.findIndex((l) => l.trim() !== "");
   const out = new ParseCollector(mode);
   if (firstIndex === -1) return { rows: [], skipped: [], format: "lines" };
@@ -1817,9 +1817,13 @@ export const COLUMN_HEADINGS_AGAIN = "Column headings again";
 /** Said for a section line that names no player. */
 const NO_PLAYER_ON_LINE = "No player on this line";
 
-/** A heading's name as stored: trademarks gone, then cleansed (NEO-643). */
+/**
+ * A heading's name as stored: trademarks gone, spacing collapsed. A heading
+ * becomes a section name, a stored link key, so it is not cleansed (NEO-643,
+ * no backfill).
+ */
 function cleanHeadingName(text: string): string {
-  return cleanseExternalName(dropTrademarks(text));
+  return dropTrademarks(text).replace(/\s+/g, " ").trim();
 }
 
 /**

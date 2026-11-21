@@ -427,6 +427,35 @@ describe("startBatch cleanses incoming names (NEO-643)", () => {
 
     await drainScheduled(t);
   });
+
+  test("a name that NFC lengthens past the bound is refused, by length and not by echo", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSport(t);
+    // 100 characters raw, 200 once composed: U+0958 composes to two characters.
+    const long = "\u0958".repeat(100);
+    expect(long.length).toBeLessThanOrEqual(120);
+    for (const lists of [{ playerNames: [long], teamNames: [] }, { playerNames: [], teamNames: [long] }]) {
+      const attempt = t.mutation(internal.entityReviewQueue.startBatch, {
+        selectorOptionId,
+        createdByUserId: USER.subject,
+        sportId: selectorOptionId,
+        ...lists,
+      });
+      await expect(attempt).rejects.toThrow(/once cleansed; the limit is 120/);
+      await expect(attempt).rejects.not.toThrow(/\u0958/);
+    }
+    // At the bound exactly is fine.
+    const ok = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: USER.subject,
+      sportId: selectorOptionId,
+      playerNames: ["A".repeat(120)],
+      teamNames: [],
+    });
+    expect(typeof ok).toBe("string");
+
+    await drainScheduled(t);
+  });
 });
 
 describe("the entityReviewSkips key agrees across accents (NEO-253)", () => {

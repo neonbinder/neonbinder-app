@@ -985,8 +985,9 @@ describe("a publisher checklist: variations (stem)", () => {
     const rows = new Map((await stored(t)).map((r) => [r.cardNumber, r]));
     expect(rows.get("38b")?.cardVariation).toBe("Photo variation");
 
-    // Bidirectional and line-separator format characters go too (the parser's
-    // own set): each becomes a space, then the whitespace folds.
+    // Bidirectional format characters go too: deleted inside the word (NEO-643,
+    // cleanseExternalName), while the line and paragraph separators stay
+    // spaces and the whitespace folds.
     await asAdmin.action(api.selectorOptions.fetchCardChecklist, {
       selectorOptionId: leafId,
       publishedChecklist: {
@@ -1002,7 +1003,7 @@ describe("a publisher checklist: variations (stem)", () => {
       },
     });
     const bidi = new Map((await stored(t)).map((r) => [r.cardNumber, r]));
-    expect(bidi.get("38b")?.cardVariation).toBe("Photo variation two");
+    expect(bidi.get("38b")?.cardVariation).toBe("Photovariation two");
 
     // Zero-width and BOM characters too (U+061C, U+200B-200D, U+FEFF).
     await asAdmin.action(api.selectorOptions.fetchCardChecklist, {
@@ -1020,7 +1021,7 @@ describe("a publisher checklist: variations (stem)", () => {
       },
     });
     const zeroWidth = new Map((await stored(t)).map((r) => [r.cardNumber, r]));
-    expect(zeroWidth.get("38b")?.cardVariation).toBe("Photo variation three");
+    expect(zeroWidth.get("38b")?.cardVariation).toBe("Photovariation three");
 
     await expect(
       asAdmin.action(api.selectorOptions.fetchCardChecklist, {

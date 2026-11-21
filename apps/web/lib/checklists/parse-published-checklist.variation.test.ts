@@ -113,7 +113,9 @@ describe("variationNameOf: bounds", () => {
       "Judge (Photo\u202e Varia\u200ftion\u2066 x\u2069\u2028two\u2029 \u200e\u202a\u202b\u202c\u202d)",
     )!;
     expect(/[\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/.test(name)).toBe(false);
-    expect(name).toBe("Photo Varia tion x two");
+    // NEO-643: the bidi marks are format characters, deleted inside a word
+    // (cleanseExternalName), not spaced; the separators U+2028/2029 still are.
+    expect(name).toBe("Photo Variation x two");
   });
 
   it("strips U+061C, the zero-width characters and the byte-order mark too", () => {

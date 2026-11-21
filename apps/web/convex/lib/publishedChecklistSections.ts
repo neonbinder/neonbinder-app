@@ -98,10 +98,6 @@ const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
  * differently from what it holds ("Trojan Source"). A section, group or file
  * name carrying one is refused here and skipped by the client's grouping
  * (`hasHiddenNameChars`), so the two always agree.
- *
- * NEO-643: the client cleanses a name first (`cleanseExternalName` deletes
- * U+200B–U+200D), so those three no longer reach this check from the app; the
- * server keeps refusing them from any other caller.
  */
 const HIDDEN_FORMAT_CHARS = /[\u200b-\u200f\u202a-\u202e\u2066-\u2069]/;
 
