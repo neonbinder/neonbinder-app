@@ -466,8 +466,9 @@ export const matchedKeptMessage = (
   /** NEO-287 — attached sides this run did not ask because they are paused. */
   pausedAttached: readonly SyncSide[] = [],
 ): string =>
-  `Kept all ${count} ${count === 1 ? "card" : "cards"}. ` +
-  `Every card matched across ${joinSourceNames(sources)}.` +
+  (count === 1
+    ? `Kept the 1 card. It matched across ${joinSourceNames(sources)}.`
+    : `Kept all ${count} cards. Every card matched across ${joinSourceNames(sources)}.`) +
   (pausedAttached.length > 0 ? ` ${pausedSyncMessage(pausedAttached)}` : "");
 
 /**
