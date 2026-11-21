@@ -29,18 +29,24 @@ import type { PairingCard } from "./CardPairingModal";
 /**
  * NEO-496 — a card as Match Cards hands it on: the wire-only fields the dialog
  * reads (`checklistLink`, the server's checklist pairing; `checklistRowId`, a
- * checklist-only row's candidate id) taken off, because entity resolution and
+ * checklist-only row's candidate id; NEO-640 `pairedNumber`, the number note) taken off, because entity resolution and
  * the commit validate cards strictly and refuse a field they do not know. A
  * card carrying neither is returned by reference. Used by the dialog's
  * Confirm and by the one-source auto-keep path, so both hand on the same card.
  */
 export function committable<C extends PairingCard>(card: C): C {
-  if (card.checklistLink === undefined && card.checklistRowId === undefined) {
+  if (
+    card.checklistLink === undefined &&
+    card.checklistRowId === undefined &&
+    card.pairedNumber === undefined
+  ) {
     return card;
   }
   const out: C = { ...card };
   delete out.checklistLink;
   delete out.checklistRowId;
+  // NEO-640: the "numbers didn't match" note is the dialog's alone.
+  delete out.pairedNumber;
   return out;
 }
 

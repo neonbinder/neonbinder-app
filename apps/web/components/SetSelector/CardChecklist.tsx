@@ -102,6 +102,7 @@ import {
   candidateToPairingCard,
   candidatesToPairingCards,
 } from "./pairing-cards";
+import { matchCardsNeeded, type FetchSource } from "./match-cards-needed";
 import ParallelBuildPanel, {
   ParallelBuildButton,
   ParallelBuildPlaceholder,
@@ -415,9 +416,6 @@ export const entityConfirmationMessage = (
  * the commit; the marketplace is named with the same `SIDE_LABEL` vocabulary
  * the rest of this UI uses ("BSC", "SportLots").
  */
-/** NEO-496 — a source a card fetch draws from (`fetchCardChecklist`'s `sources`). */
-type FetchSource = "bsc" | "sportlots" | "checklist";
-
 export const soloKeptMessage = (
   /** NEO-496 — "checklist": the run's one source was a publisher checklist. */
   side: SyncSide | "checklist",
@@ -439,8 +437,47 @@ export const soloKeptMessage = (
       : `Nothing to match, no other marketplace attached.`);
 
 /**
- * NEO-255 — the fetch is streaming and no dialog is going to open, so this
- * line is the only thing on screen that says the sync is alive.
+ * NEO-640 — a source as the operator's sentences name it: a marketplace by its
+ * short `SIDE_LABEL` name, the publisher's checklist as "your checklist".
+ */
+const sourceName = (source: FetchSource): string =>
+  source === "checklist" ? "your checklist" : SIDE_LABEL[source];
+
+/** "BSC and your checklist"; "BSC, SportLots and your checklist". */
+const joinSourceNames = (sources: readonly FetchSource[]): string => {
+  const names = sources.map(sourceName);
+  return names.length <= 1
+    ? (names[0] ?? "")
+    : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+};
+
+/**
+ * NEO-640 — what a sync says when it fetched from two or more sources and
+ * every card lined up on its own, so Match Cards was skipped.
+ *
+ * The sibling of `soloKeptMessage`, and for the same reason: a step the
+ * operator knows about did not happen, so the line says why. The count is what
+ * was handed to the commit. "Back to Match Cards" in the wizard that follows
+ * reopens the dialog that was skipped.
+ */
+export const matchedKeptMessage = (
+  sources: readonly FetchSource[],
+  count: number,
+  /** NEO-287 — attached sides this run did not ask because they are paused. */
+  pausedAttached: readonly SyncSide[] = [],
+): string =>
+  `Kept all ${count} ${count === 1 ? "card" : "cards"}. ` +
+  `Every card matched across ${joinSourceNames(sources)}.` +
+  (pausedAttached.length > 0 ? ` ${pausedSyncMessage(pausedAttached)}` : "");
+
+/**
+ * NEO-255 — the fetch is streaming and no dialog is open, so this line is the
+ * only thing on screen that says the sync is alive.
+ *
+ * NEO-640: every run starts here now, a two-source one included; Match Cards
+ * opens only if a card turns out to need the operator. With two or more
+ * `sources` the line names them all; with one (or none) it reads exactly as it
+ * did for a single marketplace.
  *
  * `total` is written in one transaction and `ready` climbs as team enrichment
  * lands, which is the same pair the pairing dialog's own streaming line
@@ -450,8 +487,14 @@ export const soloKeptMessage = (
 export const soloProgressMessage = (
   side: SyncSide | null,
   progress: { ready: number; total: number } | undefined,
+  sources?: readonly FetchSource[],
 ): string => {
-  const from = side ? ` from ${SIDE_LABEL[side]}` : "";
+  const from =
+    sources && sources.length > 1
+      ? ` from ${joinSourceNames(sources)}`
+      : side
+        ? ` from ${SIDE_LABEL[side]}`
+        : "";
   const counts =
     progress && progress.total > 0
       ? ` ${progress.ready} of ${progress.total} cards ready.`
@@ -1306,9 +1349,54 @@ export default function CardChecklist({
    * no name to put in the sentence and the fetch is about to come back with
    * nothing anyway.
    */
-  const [soloFetch, setSoloFetch] = useState<{ side: SyncSide | null } | null>(
-    null,
-  );
+  const [soloFetch, setSoloFetch] = useState<{
+    side: SyncSide | null;
+    /**
+     * NEO-640 — the sources of a run that draws on two or more, null for a
+     * one-source run. Names them on the progress line, and is what the early
+     * open (below) judges the streamed rows against.
+     */
+    sources: FetchSource[] | null;
+    /** NEO-640 — the batch on screen before Sync; a row of THIS run's batch is one that differs. */
+    previousBatchId: string | undefined;
+  } | null>(null);
+  /**
+   * NEO-640 — `pairingPhase`, readable from inside `handleSync`'s async
+   * closure (same reason as `liveCandidatesRef`): the run asks whether the
+   * early open already put the dialog on screen before it decides to skip it.
+   */
+  const pairingPhaseRef = useRef(pairingPhase);
+  useEffect(() => {
+    pairingPhaseRef.current = pairingPhase;
+  }, [pairingPhase]);
+  /**
+   * NEO-640 — open Match Cards the moment a visible row of this run's batch
+   * needs the operator.
+   *
+   * Every multi-source run starts on the progress line, with no dialog. The
+   * dialog is opened by this check or by the settled batch in `handleSync`,
+   * never by the press of Sync. It is a render-phase set (the previous-render
+   * pattern, like `setPublishedChecklist` below), not an effect: an effect
+   * would paint one frame of the progress line over the rows that already
+   * decided the question.
+   *
+   * It can fire at most once per run and never has to be taken back: a row's
+   * bucket, links, conflicts and confidence are written once at insert, and
+   * `resolveCandidateTeams` patches teams only, so "this row needs the
+   * operator" does not turn false when more rows or teams arrive. A batch not
+   * yet this run's (`previousBatchId`) is somebody else's rows and is ignored.
+   */
+  if (
+    soloFetch?.sources &&
+    pairingPhase === "closed" &&
+    liveCandidates &&
+    liveCandidates.batchId !== undefined &&
+    liveCandidates.batchId !== soloFetch.previousBatchId &&
+    matchCardsNeeded(liveCandidates.cards, soloFetch.sources)
+  ) {
+    setPairingPhase("review");
+    setSoloFetch(null);
+  }
   /**
    * NEO-487 — this run's key for `marketplaceWaits`, minted per Sync press
    * and passed to the fetch, so "Waiting on BuySportsCards…" can show while
@@ -1837,12 +1925,17 @@ export default function CardChecklist({
     // no session is opened and `streamedPairing` stays null — the dialog never
     // mounts, not even during the fetch. The inline progress line below the
     // Sync button takes its place.
-    if (expectSolo) {
-      setSoloFetch({ side: expectedSides[0] ?? null });
-    } else {
-      setSoloFetch(null);
-      setPairingPhase("review");
-    }
+    //
+    // NEO-640: and so does a run with two or more sources. Match Cards opens
+    // only if a card needs the operator — as soon as one does (the render-phase
+    // check on `soloFetch.sources`), or when the settled batch says so below.
+    // The session starts closed so that check can fire.
+    setPairingPhase("closed");
+    setSoloFetch({
+      side: expectedSides[0] ?? null,
+      sources: expectSolo ? null : expectedSources,
+      previousBatchId,
+    });
     // A new fetch is a new pairing session: remount the modal rather than
     // reconciling the old one (see `pairingInstance`), and drop any commit
     // failure the previous run left behind, which the wizard would otherwise
@@ -1868,6 +1961,11 @@ export default function CardChecklist({
       // Cancelled while the fetch was still running: leave the operator's own
       // message standing and drop the result on the floor.
       if (abandoned()) return;
+      // NEO-640: the fetch is over the moment its promise resolves. The wait
+      // for the subscription below is not "fetching", and a Match Cards that
+      // opens after it (or is reopened from the wizard) must not read as
+      // streaming — that would hold its Confirm shut for the whole commit.
+      setFetchInFlight(false);
       checklistTeamsRef.current = result.success && result.checklistTeams
         ? checklistTeamsLine(result.checklistTeams.matched, result.checklistTeams.total)
         : null;
@@ -1943,9 +2041,21 @@ export default function CardChecklist({
         expectedSides.every((side, i) => side === serverSides[i]);
       // NEO-496: one SOURCE, not one marketplace: a checklist alone (no
       // marketplace ids) is kept whole the same way, and a marketplace plus a
-      // checklist is two and goes to the dialog. The marketplace sides must
-      // still agree with the client's guess, as before.
-      if (expectSolo && agreed && serverSources.length === 1) {
+      // checklist is two. The marketplace sides must still agree with the
+      // client's guess, as before.
+      //
+      // NEO-640: two or more sources take the same road. They wait for the
+      // batch, then ask `matchCardsNeeded` whether any card needs the
+      // operator; if none does the dialog is skipped and the commit runs on
+      // the cards as they are. A run that guessed two sources must get two
+      // back (a checklist the client counted that the server did not is a
+      // disagreement, so the dialog); a run that guessed one and got two (the
+      // set's stored checklist, learned only from the fetch) takes this road
+      // too, by the same decision.
+      const sameSources =
+        expectedSources.length === serverSources.length &&
+        expectedSources.every((s) => serverSources.includes(s));
+      if (agreed && serverSources.length >= 1 && (expectSolo || sameSources)) {
         const streamed = await awaitStreamedBatch(
           fence,
           previousBatchId,
@@ -1967,36 +2077,38 @@ export default function CardChecklist({
         /**
          * NEO-255 (security review) — the batch says otherwise. Hand it over.
          *
-         * The auto-keep path is only safe while every row is a SINGLE: it
-         * commits with `conflictsByIndex: {}` and `candidatesToPairingCards`
-         * drops the two disagreement fields, which is the same lift the dialog
-         * performs — and is only a lift, rather than a LOSS, when there is no
-         * pair for a disagreement to sit on.
-         *
-         * One attached side ought to guarantee that, and since NEO-256 it
-         * does: `fetchSportLotsChecklist` no longer falls back to a name-keyed
-         * DB lookup for the SportLots set id, so with no SL slot attached the
-         * SportLots side is skipped and a chain that reports `["bsc"]` comes
-         * back BSC-only. This guard stays anyway, as defense in depth. If any
-         * future path does return paired rows here, they carry a real
-         * cross-marketplace disagreement, and committing it silently would
+         * The auto-keep path commits cards the operator never sees, so it is
+         * only safe while nothing in the batch needs them: for one source,
+         * while every row is a SINGLE with no disagreement (a pair would carry
+         * a real cross-marketplace question, and committing it silently would
          * throw away the operator's only chance to answer "which of these two
          * names is this card" — the answer would then look like settled NB
-         * data on every later re-sync.
+         * data on every later re-sync); for several, `matchCardsNeeded`
+         * (NEO-640). The batch itself gets the last word, checked on the LIVE
+         * rows rather than on `attachedSides`: a guard that trusted
+         * attachment would fail exactly when attachment did not describe what
+         * came back.
          *
-         * So the batch itself gets the last word: anything paired, or carrying
-         * either conflict, goes to the dialog exactly as a two-sided run does.
-         * Checked on the LIVE rows rather than on `attachedSides`, because a
-         * guard that trusted attachment would fail exactly when attachment
-         * did not describe what came back.
+         * Also handed over when the early open already put the dialog on
+         * screen: the operator may be mid-pairing in it, and a skip must not
+         * commit under them.
          */
-        const needsOperator = live.cards.some(
-          (c) => c.bucket === "matched" || c.nameConflict || c.playersConflict,
-        );
-        if (needsOperator) {
+        if (
+          matchCardsNeeded(live.cards, serverSources) ||
+          pairingPhaseRef.current !== "closed"
+        ) {
           setSoloFetch(null);
-          setPairingPhase("review");
-          setSyncMessage(withTeamsLine(result.message));
+          // Functional, so a dialog the operator has already confirmed out of
+          // (parked) is not pulled back to the front.
+          setPairingPhase((phase) => (phase === "closed" ? "review" : phase));
+          if (streamed.teamsLate) {
+            // The wait has ended; unlock Confirm on what the dialog holds
+            // rather than behind a lock nothing will lift (see `settleTarget`).
+            setSettleTarget((t) => (t ? { ...t, gaveUp: true } : t));
+            setSyncMessage(`${withTeamsLine(result.message)} ${TEAMS_LATE_NOTICE}`);
+          } else {
+            setSyncMessage(withTeamsLine(result.message));
+          }
           return;
         }
         const cards = candidatesToPairingCards(live.cards);
@@ -2006,30 +2118,37 @@ export default function CardChecklist({
         // line is the only place the operator (and the E2E flow) learns how
         // many cards the fetch kept, and the wizard opens within a second.
         soloKeptRef.current = withTeamsLine(
-          soloKeptMessage(
-            serverSides[0] ?? "checklist",
-            cards.length,
-            pausedAttached,
-          ),
+          serverSources.length === 1
+            ? soloKeptMessage(
+                serverSides[0] ?? "checklist",
+                cards.length,
+                pausedAttached,
+              )
+            : matchedKeptMessage(serverSources, cards.length, pausedAttached),
         );
         setSyncMessage(
           [soloKeptRef.current, teamsLateRef.current ? TEAMS_LATE_NOTICE : null]
             .filter(Boolean)
             .join(" "),
         );
-        // Exactly what Confirm hands back for a screen where every row is a
-        // kept single: the cards, and no conflicts — a single has no second
-        // marketplace to disagree with.
+        // NEO-640: park the skipped session before the commit, so the wizard
+        // has a Match Cards to go BACK to: parking mounts the dialog (closed,
+        // never shown) with every pairing as it stands, and "Back to Match
+        // Cards" opens it. A one-source run has no session — nothing to go
+        // back to — and is left as it was.
+        if (serverSources.length > 1) setPairingPhase("parked");
+        // Exactly what Confirm hands back for a screen where nothing needed
+        // the operator: the cards, and no conflicts (a single has no second
+        // marketplace to disagree with; the predicate admitted no pair that
+        // carries one).
         await handlePairingConfirm({ cards, conflictsByIndex: {} });
         return;
       }
-      if (expectSolo) {
-        // The disagreement case. No session was opened, so open one now: the
-        // operator gets the dialog they would have had if the client had
-        // guessed right.
-        setSoloFetch(null);
-        setPairingPhase("review");
-      }
+      // The disagreement case. No session was opened, so open one now: the
+      // operator gets the dialog they would have had if the client had
+      // guessed right. Functional, as above: an early open may have done it.
+      setSoloFetch(null);
+      setPairingPhase((phase) => (phase === "closed" ? "review" : phase));
       /*
        * NEO-333 + NEO-330 / NEO-341 — the dialog's Confirm is NOT unlocked by
        * this promise. The action can resolve before the subscription carries
@@ -2102,7 +2221,10 @@ export default function CardChecklist({
         // a11y: a run with no dialog took focus off the Sync button when it
         // disabled it, and has nothing to hand focus back with. The effect
         // that acts on this stands down if any surface DID open.
-        if (expectSolo) restoreSyncFocusRef.current = true;
+        //
+        // NEO-640: every run starts on the progress line now, so every run
+        // arms it, not only the one-source ones.
+        restoreSyncFocusRef.current = true;
       }
     }
   };
@@ -4001,6 +4123,7 @@ export default function CardChecklist({
                 liveCandidates
                   ? { ready: liveCandidates.ready, total: liveCandidates.total }
                   : undefined,
+                soloFetch.sources ?? undefined,
               )}
             </span>
             {/* Reworded rather than suffixed, so Maestro's regex `id:` find

@@ -52,6 +52,9 @@ import { isEditableTarget } from "../../lib/dom/is-editable-target";
 import { MAX_CARD_PLAYERS } from "./card-attention";
 import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
 import type { ChecklistConflict, TeamLookupOutcome } from "./checklist-conflict";
+// NEO-640: one definition of "full confidence" with the predicate that decides
+// whether this dialog opens at all.
+import { isFullConfidence } from "./match-cards-needed";
 // NEO-490 — the publisher's checklist as a third source: the name pairing the
 // server uses (so a suggestion here is the server's own rule), the merge of
 // the server's per-link answers, and the dialog's one-line row text.
@@ -243,6 +246,13 @@ export type PairingCard = {
    * new one. Stripped at Confirm.
    */
   checklistRowId?: string;
+  /**
+   * NEO-640 — WIRE-ONLY: SportLots' number on a pair made by NAME whose
+   * numbers differ (`checklistCandidates.pairedNumber`; the card's own
+   * `cardNumber` is BSC's). Drives the Matched row's "numbers didn't match"
+   * note (rule 7). Stripped at Confirm (`committable`).
+   */
+  pairedNumber?: string;
 };
 
 /**
@@ -1761,6 +1771,10 @@ function baseReducer(state: State, action: Action): State {
         unmatched: "bsc",
       };
       if (slBase && slSide.players === undefined) delete slSide.players;
+      // NEO-640: the "numbers didn't match" note describes the PAIR; neither
+      // half it splits into is one.
+      delete bscSide.pairedNumber;
+      delete slSide.pairedNumber;
       // NEO-490: a checklist link on the pair stays on the half it is keyed
       // by — the pair's `candidateKey`, which is its BSC ref — and that half
       // is KEPT, because a linked card is always saved. The SportLots half
@@ -2475,6 +2489,15 @@ export function checklistColumnHeading(open: number): string {
 export const CHECKLIST_ALL_FOUND = "Every checklist row found its card.";
 
 /**
+ * NEO-640 (rule 7) — the note on a Matched row whose BSC and SportLots halves
+ * were paired by NAME while their numbers differ. Names both numbers; the
+ * lower % beside it says how sure the pairing is. DRAFT copy for sign-off.
+ */
+export function numbersDidntMatchNote(bscNumber: string, sportLotsNumber: string): string {
+  return `Numbers didn't match: BSC ${bscNumber}, SportLots ${sportLotsNumber}`;
+}
+
+/**
  * NEO-496 — the server's checklist pairing, as a card's chip: "On checklist"
  * for a number match, "Checklist: #FS-3" when the card paired by name and the
  * row prints another number (the card keeps its own; this is not a
@@ -2488,7 +2511,7 @@ export function serverChecklistChipText(link: NonNullable<PairingCard["checklist
   return {
     label: number ? `Checklist: #${number}` : "On checklist",
     percent:
-      link.confidence !== undefined && link.confidence < 1
+      link.confidence !== undefined && !isFullConfidence(link.confidence)
         ? `${Math.round(link.confidence * 100)}%`
         : null,
   };
@@ -4206,9 +4229,21 @@ export default function CardPairingModal({
                               {label(m.card)}
                             </button>
                           )}
-                          {m.confidence > 0 && m.confidence < 1 && (
+                          {m.confidence > 0 && !isFullConfidence(m.confidence) && (
                             <span className="text-xs text-notice-warn-ink shrink-0">
                               {Math.round(m.confidence * 100)}%
+                            </span>
+                          )}
+                          {m.card.pairedNumber && (
+                            // NEO-640 (rule 7): the pair was made by NAME and
+                            // the marketplaces number the card differently.
+                            // Wraps with the row (no `shrink-0`): it names two
+                            // numbers and must never be clipped.
+                            <span className="text-xs text-notice-warn-ink">
+                              {numbersDidntMatchNote(
+                                m.card.cardNumber,
+                                m.card.pairedNumber,
+                              )}
                             </span>
                           )}
                           {checklistChip(m.card)}
