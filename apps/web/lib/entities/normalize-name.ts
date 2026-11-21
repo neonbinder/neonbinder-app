@@ -71,6 +71,17 @@
  * creates a sibling rather than finding it. The fix for a stale key is always
  * the re-key pass — never a softening of this function to accept both shapes.
  *
+ * ### The NEO-643 exception: junk characters, no backfill
+ *
+ * NEO-643 added `foldNameText`, which DELETES the backslash, the soft hyphen
+ * and the zero-width characters before anything else (BSC writes "Wilmer R\ios"
+ * for Ríos). The key changes only for a name that contains one of those
+ * characters; every other name keys exactly as before. The owner ruled out a
+ * backfill, so the usual re-key pass is not run for this change. The affected
+ * rows are found with the read-only dry run (`rekeyEntityNames:run '{}'`) and
+ * fixed by hand, renaming each with the inline edit. The rule above still
+ * stands for any other change to this chain.
+ *
  * ## What is deliberately NOT normalised here
  *
  * A letter with no canonical decomposition survives the fold and is then
@@ -80,6 +91,8 @@
  * different people — the failure this module exists to prevent, running in
  * reverse. The narrow, reversible fold is the whole of the change.
  */
+
+import { NAME_JUNK } from "./cleanse-name";
 
 /** Combining marks left behind by NFD — the accents themselves. */
 const COMBINING_MARKS = /[\u0300-\u036f]/g;
@@ -98,21 +111,36 @@ const DROPPED_PUNCTUATION = /[.,'"`’]/g;
 const NON_KEY_CHARS = /[^a-z0-9\s-]/g;
 
 /**
- * Strip diacritics without touching anything else.
+ * NEO-643 — the one fold every name comparison starts from: delete the junk
+ * characters (`NAME_JUNK`: backslash, soft hyphen, zero-width), decompose to
+ * NFD, drop the combining marks, lowercase.
  *
- * Decompose to NFD so "é" becomes "e" + U+0301, then drop the combining marks.
- * Exported because `lib/cards/card-name.ts` does the same thing for the pairing
- * modal's disagreement check and the two must not drift — that function was the
- * one place in the codebase that already folded, which is exactly how the
- * divergence NEO-253 fixes stayed invisible for so long.
+ * The junk is DELETED, not turned into a separator, because it sits inside a
+ * word: BSC's "Wilmer R\ios" must land on "wilmer rios", the same text as
+ * "Wilmer Ríos". That also means "Smith\Jones" keys as "smithjones". A control
+ * character is not junk here; it still becomes a separator further down the
+ * chain. U+FFFD, "?", "Ø", "ß" and the non-Latin scripts are untouched: a
+ * transliteration table would merge different people, and a replacement
+ * character is a lost letter we cannot name.
  *
- * Pure ASCII is unchanged (NFD is the identity on ASCII), which is what lets
- * this be inserted ahead of the old chain without altering any existing
- * unaccented key.
+ * Pure ASCII without a backslash is unchanged apart from case (NFD is the
+ * identity on ASCII), which keeps every existing unaccented key.
  */
-export function foldDiacritics(raw: string): string {
-  return raw.normalize("NFD").replace(COMBINING_MARKS, "");
+export function foldNameText(raw: string): string {
+  return raw
+    .replace(NAME_JUNK, "")
+    .normalize("NFD")
+    .replace(COMBINING_MARKS, "")
+    .toLowerCase();
 }
+
+/**
+ * Kept so existing importers (`lib/cards/card-name.ts`, `card-search.ts`,
+ * `name-search.ts`, `convex/adapters/teamColorCodes.ts`) keep working. It is
+ * `foldNameText` under its old name, so it now also lowercases and deletes
+ * junk; every one of those callers lowercased the result anyway.
+ */
+export const foldDiacritics = foldNameText;
 
 /** One token that is a single letter — an initial once periods are gone. */
 const SINGLE_LETTER = /^[a-z]$/;
@@ -162,8 +190,7 @@ export function entityNameTokens(raw: string): string[] {
 
 /** Fold, lowercase, strip and split — every step of the chain before the join. */
 function unjoinedTokens(raw: string): string[] {
-  return foldDiacritics(raw)
-    .toLowerCase()
+  return foldNameText(raw)
     .replace(DROPPED_PUNCTUATION, "")
     .replace(NON_KEY_CHARS, " ")
     .split(/\s+/)

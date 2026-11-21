@@ -15,25 +15,31 @@
  */
 
 import { describe, expect, test } from "vitest";
+import { cleanseExternalName } from "./cleanse-name";
 import {
   entityNameTokens,
   foldDiacritics,
+  foldNameText,
   normalizeEntityName,
   normalizeOrderedEntityName,
 } from "./normalize-name";
 
 describe("foldDiacritics", () => {
-  test("strips combining marks and nothing else", () => {
-    expect(foldDiacritics("José Ramírez")).toBe("Jose Ramirez");
-    expect(foldDiacritics("Montréal Expos")).toBe("Montreal Expos");
-    // Case, spacing and punctuation are somebody else's job.
-    expect(foldDiacritics("  St. Ástor's  ")).toBe("  St. Astor's  ");
+  test("is foldNameText under its old name", () => {
+    expect(foldDiacritics).toBe(foldNameText);
   });
 
-  test("is the identity on ASCII", () => {
+  test("strips combining marks and lowercases, nothing else", () => {
+    expect(foldDiacritics("José Ramírez")).toBe("jose ramirez");
+    expect(foldDiacritics("Montréal Expos")).toBe("montreal expos");
+    // Spacing and punctuation are somebody else's job.
+    expect(foldDiacritics("  St. Ástor's  ")).toBe("  st. astor's  ");
+  });
+
+  test("is the identity on lowercase ASCII", () => {
     // The property that lets the fold be inserted ahead of the old chain
     // without changing a single existing unaccented key.
-    for (const s of ["Mike Trout", "O'Neal, Shaquille", "Wilkes-Barre", "..."]) {
+    for (const s of ["mike trout", "o'neal, shaquille", "wilkes-barre", "..."]) {
       expect(foldDiacritics(s)).toBe(s);
     }
   });
@@ -47,10 +53,10 @@ describe("foldDiacritics", () => {
     // for the same reason but in different scripts' worth of Unicode, and a
     // future "let us just add a small transliteration table" would plausibly
     // catch one and miss the others.
-    expect(foldDiacritics("Bjørn Nielsen")).toBe("Bjørn Nielsen");
-    expect(foldDiacritics("Weiß")).toBe("Weiß");
-    expect(foldDiacritics("Ægir Hansen")).toBe("Ægir Hansen");
-    expect(foldDiacritics("Łukasz Nowak")).toBe("Łukasz Nowak");
+    expect(foldDiacritics("Bjørn Nielsen")).toBe("bjørn nielsen");
+    expect(foldDiacritics("Weiß")).toBe("weiß");
+    expect(foldDiacritics("Ægir Hansen")).toBe("ægir hansen");
+    expect(foldDiacritics("Łukasz Nowak")).toBe("łukasz nowak");
   });
 });
 
@@ -221,5 +227,85 @@ describe("normalizeEntityName — a stored key is not a name", () => {
     expect(once).toBe("doe j k");
     expect(normalizeEntityName(once)).toBe("doe jk");
     expect(normalizeEntityName(once)).not.toBe(once);
+  });
+});
+
+describe("foldNameText — NEO-643 junk characters", () => {
+  test("deletes the backslash, soft hyphen and zero-width characters", () => {
+    expect(foldNameText("Wilmer R\\ios")).toBe("wilmer rios");
+    expect(foldNameText("Wil\u00ADmer")).toBe("wilmer");
+    for (const zw of ["\u200B", "\u200C", "\u200D", "\u2060", "\uFEFF"]) {
+      expect(foldNameText(`Ri${zw}os`)).toBe("rios");
+    }
+  });
+
+  test("leaves a control character for the separator step", () => {
+    expect(foldNameText("A\tB")).toBe("a\tb");
+    expect(normalizeEntityName("Ruth\tBabe")).toBe("babe ruth");
+  });
+});
+
+describe("normalizeEntityName — NEO-643 one matcher for BSC's backslash", () => {
+  test("Wilmer R\\ios, Wilmer Ríos and Wilmer Rios are one key", () => {
+    const key = normalizeEntityName("Wilmer Rios");
+    expect(key).toBe("rios wilmer");
+    expect(normalizeEntityName("Wilmer R\\ios")).toBe(key);
+    expect(normalizeEntityName("Wilmer Ríos")).toBe(key);
+  });
+
+  test("a zero-width character inside a name does not split it", () => {
+    expect(normalizeEntityName("Wil\u200Bmer R\u200Dios")).toBe("rios wilmer");
+    expect(normalizeEntityName("Ri\u00ADos\uFEFF")).toBe("rios");
+  });
+
+  test("O\\'Neal and O'Neal are one key", () => {
+    expect(normalizeEntityName("O\\'Neal")).toBe(normalizeEntityName("O'Neal"));
+    expect(normalizeEntityName("O\\'Neal")).toBe("oneal");
+  });
+
+  test("a replacement character stays apart from the letter it lost", () => {
+    expect(normalizeEntityName("R\uFFFDos")).not.toBe(normalizeEntityName("Rios"));
+    expect(normalizeEntityName("R?os")).not.toBe(normalizeEntityName("Rios"));
+  });
+
+  test("initial order still matters", () => {
+    expect(normalizeEntityName("A. J. Smith")).not.toBe(normalizeEntityName("J. A. Smith"));
+  });
+
+  test("Ø and ß are unchanged by the junk step", () => {
+    expect(normalizeEntityName("Bjørn")).toBe(normalizeEntityName("Bj\u00F8rn"));
+    expect(normalizeEntityName("Bjørn")).not.toBe(normalizeEntityName("Bjorn"));
+    expect(normalizeEntityName("Weiß")).not.toBe(normalizeEntityName("Weiss"));
+  });
+
+  test("pinned: a mid-word backslash is deleted, not a separator", () => {
+    expect(normalizeEntityName("Smith\\Jones")).toBe("smithjones");
+  });
+
+  test("cleansing a name never changes its key (generated corpus)", () => {
+    const pieces = [
+      "Wilmer", "R\\ios", "Ríos", "O\\'Neal", "Smith", "\\", "\u00AD", "\u200B",
+      "\u200C", "\u200D", "\u2060", "\uFEFF", "\uFFFD", "?", "Ø", "ß", "A.", "J.",
+      "Jr.", "St.", "Louis", " ", "  ", "\t", "\n", "\u0000", "\u007F", "\u009F",
+      "\u00A0", "-", "'", "’", "e\u0301", "é", "Å", "\u212B", "한글", "12", "&",
+      "Montréal", "B\\eisbol",
+    ];
+    // Deterministic LCG, so a failure names the same input on every run.
+    let seed = 643;
+    const next = () => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return seed;
+    };
+    for (let i = 0; i < 2000; i++) {
+      const n = 1 + (next() % 6);
+      let x = "";
+      for (let j = 0; j < n; j++) x += pieces[next() % pieces.length];
+      expect(normalizeEntityName(cleanseExternalName(x)), JSON.stringify(x)).toBe(
+        normalizeEntityName(x),
+      );
+      expect(normalizeOrderedEntityName(cleanseExternalName(x)), JSON.stringify(x)).toBe(
+        normalizeOrderedEntityName(x),
+      );
+    }
   });
 });
