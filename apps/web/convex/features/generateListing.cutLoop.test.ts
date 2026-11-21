@@ -785,15 +785,21 @@ describe("NEO-535 the box (Set name in titles)", () => {
     expect(a.coreFits).toBe(true);
   });
 
-  test("(b) not used when the box version does not fit either", () => {
+  // NEO-637 — a title that shows the "Left out to fit" line takes the box
+  // whatever the boxed version comes to (NEO-618 kept the builder's title when
+  // the boxed one did not fit).
+  test("(b) a title that left something out takes the box even when the box version does not fit", () => {
+    const builder = assessListingTitle(rosario);
+    expect(builder.dropped.length).toBeGreaterThan(0);
     const a = assessListingTitle({
       ...rosario,
       setShortName: "2026 Leaf Metal 1991 Gold Prospects Autographs Prismatic Silver Edition",
     });
-    expect(a.shortNameUsed).toBeUndefined();
+    expect(a.shortNameUsed).toBe(true);
     expect(a.title).toBe(
-      "2026 Leaf Metal 1991 Gold Prospects Autographs Prismatic Silver Rosario /5",
+      "2026 Leaf Metal 1991 Gold Prospects Autographs Prismatic Silver Edition Rosario /5",
     );
+    expect(a.fits).toBe(false);
   });
 
   // NEO-618 — the Tidy Up cuts other than a first name (a whole team, the
@@ -846,12 +852,13 @@ describe("NEO-535 the box (Set name in titles)", () => {
       expect(a.coreFits).toBe(false);
     });
 
-    test("a Tidy Up builder keeps its own title when the box version does not fit", () => {
+    test("a builder title that left the team out takes the box even when the box version does not fit (NEO-637)", () => {
       const long = "2026 Pulse Aura Chromamax Special Purple Light Blue Extra Words Past The Cap Edition";
       expect(long.length).toBeGreaterThan(80);
       const a = assessListingTitle({ ...chromamax, setShortName: long });
-      expect(a.shortNameUsed).toBeUndefined();
-      expect(a.title).toBe(assessListingTitle(chromamax).title);
+      expect(a.shortNameUsed).toBe(true);
+      expect(a.title.startsWith(`${long} `)).toBe(true);
+      expect(a.fits).toBe(false);
     });
 
     test("a missing number is Tidy Up too", () => {
@@ -1244,7 +1251,7 @@ describe("NEO-535 + NEO-528 cameos in the cut loop", () => {
     expect(a.firstNameLost).toBe(false);
   });
 
-  test("(b) the box is still not used when it loses the same first name: the cameo goes first on both", () => {
+  test("(b) the builder title left the cameo out, so the box is used (NEO-637), and it loses the same names", () => {
     const a = assessListingTitle({
       ...leafMetal,
       cardNumber: "91A-AR1",
@@ -1252,9 +1259,9 @@ describe("NEO-535 + NEO-528 cameos in the cut loop", () => {
       cameoNames: [cameo],
       setShortName: "2026 Leaf Metal 1991 Gold Prospects Autographs Prismatic Silver Edition",
     });
-    expect(a.shortNameUsed).toBeUndefined();
+    expect(a.shortNameUsed).toBe(true);
     expect(a.title).toBe(
-      "2026 Leaf Metal 1991 Gold Prospects Autographs Prismatic Silver Rosario /5",
+      "2026 Leaf Metal 1991 Gold Prospects Autographs Prismatic Silver Edition Rosario /5",
     );
     expect(a.dropped).toEqual([cameo, "#91A-AR1", "Alejandro"]);
   });
@@ -1372,9 +1379,9 @@ describe("NEO-535 + NEO-528 leftOutOfTitle lists a dropped cameo", () => {
 });
 
 /**
- * NEO-618 — the box gate, branch by branch. The box (`setShortName`) replaces
- * the builder's description when the builder's title is over 80 (whatever the
- * box version comes to), or needs Tidy Up and the box version fits.
+ * NEO-618 / NEO-637 — the box gate, branch by branch. The box (`setShortName`)
+ * replaces the builder's description when the builder's title is over 80, or
+ * leaves something out ("Left out to fit"), whatever the box version comes to.
  */
 describe("NEO-618 the box gate", () => {
   const NY = { location: "New York", name: "Yankees" };
@@ -1455,10 +1462,57 @@ describe("NEO-618 the box gate", () => {
     expect(a.shortNameUsed).toBe(true);
   });
 
-  test("the box version at 81 is not; the Tidy Up builder keeps its title", () => {
+  test("the box version at 81 is used too (NEO-637): the builder title left the team out", () => {
     const a = assessListingTitle({ ...teamTidy, setShortName: boxOf(74) });
+    expect(a.shortNameUsed).toBe(true);
+    expect(a.fits).toBe(false);
+    expect(a.title).toBe(`${boxOf(74)} Ichiro`);
+  });
+});
+
+/**
+ * NEO-637 (Jason, 2026-11-21) — the box follows exactly the rule the Card
+ * titles dialog's yellow "Left out to fit" line follows: a title the line
+ * would sit under takes the box, a title with no line is left as it is.
+ */
+describe("NEO-637 the box follows the Left out to fit line", () => {
+  const ichiro = { year: "2001", cardNumber: "7", playerNames: ["Ichiro"] };
+  /** Over the cap by exactly the room a cameo takes: only the cameo goes (row 7, not Tidy Up). */
+  const cameoOnly = atFullLength(
+    { ...ichiro, cameoNames: ["Ken Griffey Jr.", "Zed Smith"], sport: "Baseball" },
+    80 + 3 + "Zed Smith".length,
+  );
+
+  test("the fixture is what it claims: a cameo is left out, and that is not Tidy Up", () => {
+    const a = assessListingTitle(cameoOnly);
+    expect(a.dropped).toEqual(["Zed Smith"]);
+    expect(a.tidyUp).toBe(false);
     expect(a.shortNameUsed).toBeUndefined();
-    expect(a.title).toBe(assessListingTitle(teamTidy).title);
-    expect(a.tidyUp).toBe(true);
+  });
+
+  test("a loss that is not Tidy Up still takes the box, since the line shows", () => {
+    const a = assessListingTitle({ ...cameoOnly, setShortName: "Box Set" });
+    expect(a.shortNameUsed).toBe(true);
+    expect(a.title.startsWith("Box Set ")).toBe(true);
+    // Built from the box, so the card is born flagged for the Card titles step.
+    expect(a.coreFits).toBe(false);
+  });
+
+  test("the title's own line decides: leftOutOfTitle empty means the box is not used", () => {
+    const fits = { ...ichiro, sport: "Baseball" };
+    const builder = assessListingTitle(fits);
+    expect(leftOutOfTitle(fits, builder.title)).toEqual([]);
+    const a = assessListingTitle({ ...fits, setShortName: "Box Set" });
+    expect(a).toEqual(builder);
+  });
+
+  test("an over-cap title with nothing left to cut still takes the box (the description alone is too long)", () => {
+    const card = { ...ichiro, cardNumber: "", setName: `S${"x".repeat(89)}` };
+    const builder = assessListingTitle(card);
+    expect(builder.fits).toBe(false);
+    expect(builder.dropped).toEqual([]);
+    const a = assessListingTitle({ ...card, setShortName: "Box Set" });
+    expect(a.shortNameUsed).toBe(true);
+    expect(a.fits).toBe(true);
   });
 });

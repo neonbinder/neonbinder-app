@@ -19,8 +19,10 @@ import { ASPECT_VALUE_MAX, LISTING_TITLE_MAX } from "../../convex/features/listi
 import {
   buildTitleGroups,
   cardsNeedingTitleReview,
+  retitleDraftsForSetName,
   setNameInTitlesPrefill,
   shortNameFieldApplies,
+  swapSetNameInTitle,
   teamIdNamesFromRefs,
   titleAnswersForCommit,
   titleDraftState,
@@ -699,5 +701,159 @@ describe("a split team in the preview (NEO-606)", () => {
     );
     expect(row.title).toBe(`${BOX} Shohei Ohtani #1 Baseball`);
     expect(row.leftOut).toEqual(["New York Yankees"]);
+  });
+});
+
+describe("NEO-637 — the box and a title the operator edited", () => {
+  const OLD = `2026 Topps ${FIRST_NAME_SET}`;
+  const NEW = "2026 Topps Chrome Sapphire";
+  const cards: PreviewCardForTitles[] = [
+    { cardNumber: "1", cardName: "Card 1", players: ["Shohei Ohtani"] },
+    { cardNumber: "2", cardName: "Card 2", players: ["Shohei Ohtani"] },
+  ];
+  const ctx = context();
+  const groups = (answers: Array<{ listingTitle?: string } | undefined>) =>
+    buildTitleGroups(cards, ctx, undefined, { answers }).titleGroups;
+
+  describe("swapSetNameInTitle", () => {
+    test("swaps the first whole-word run, any case, and keeps every other word", () => {
+      expect(swapSetNameInTitle("My 2026 topps Chrome RC Ohtani #1", "2026 Topps Chrome", "Score")).toBe(
+        "My Score RC Ohtani #1",
+      );
+    });
+
+    test("is undefined when the old text is not there, or only inside another word", () => {
+      expect(swapSetNameInTitle("My Ohtani title #1", OLD, NEW)).toBeUndefined();
+      expect(swapSetNameInTitle("Scorecard Ohtani", "Score", "Box")).toBeUndefined();
+      expect(swapSetNameInTitle("anything", "  ", NEW)).toBeUndefined();
+    });
+
+    test("start, middle and end of the title", () => {
+      expect(swapSetNameInTitle("Old Set Ohtani #1", "Old Set", "New")).toBe("New Ohtani #1");
+      expect(swapSetNameInTitle("My Old Set Ohtani #1", "Old Set", "New")).toBe("My New Ohtani #1");
+      expect(swapSetNameInTitle("Ohtani #1 Old Set", "Old Set", "New")).toBe("Ohtani #1 New");
+    });
+
+    test("a name ending in punctuation, and non-letter edges around the run", () => {
+      expect(swapSetNameInTitle("Topps Co. Ohtani", "Topps Co.", "Topps")).toBe("Topps Ohtani");
+      expect(swapSetNameInTitle("(Old Set) Ohtani", "Old Set", "New")).toBe("(New) Ohtani");
+      expect(swapSetNameInTitle("Old Set, Ohtani", "Old Set", "New")).toBe("New, Ohtani");
+      // A name that itself ends in a non-letter needs no word edge after it.
+      expect(swapSetNameInTitle("Old Set!Ohtani", "Old Set!", "New")).toBe("NewOhtani");
+    });
+
+    test("leading space in the edit does not hide the opening run", () => {
+      expect(swapSetNameInTitle("  Old Set Ohtani Old Set", "Old Set", "New")).toBe("  New Ohtani Old Set");
+    });
+
+    test("the run at the start wins over a later copy; two copies with none at the start are a guess, so not found", () => {
+      expect(swapSetNameInTitle("Old Set Ohtani Old Set", "Old Set", "New")).toBe("New Ohtani Old Set");
+      expect(swapSetNameInTitle("Ohtani Old Set #1 Old Set", "Old Set", "New")).toBeUndefined();
+    });
+
+    test("a copy inside a longer word does not count towards the repeat", () => {
+      expect(swapSetNameInTitle("Ohtani Old Set #1 Old Setter", "Old Set", "New")).toBe("Ohtani New #1 Old Setter");
+    });
+
+    test("a swap can make the title longer than 80: it is returned as it is, never cut", () => {
+      const long = "N".repeat(79);
+      const swapped = swapSetNameInTitle("Old Ohtani #1", "Old", long);
+      expect(swapped).toBe(`${long} Ohtani #1`);
+      expect(swapped!.length).toBeGreaterThan(LISTING_TITLE_MAX);
+    });
+
+    test("a pasted line break in the new text is one space", () => {
+      expect(swapSetNameInTitle("Old Ohtani", "Old", "New\nSet")).toBe("New Set Ohtani");
+    });
+  });
+
+  describe("retitleDraftsForSetName", () => {
+    test("a hand edit whose row shows the line: the set name is swapped, the rest kept", () => {
+      const edit = `${OLD} Ohtani my own #1 words`;
+      const next = retitleDraftsForSetName([{ listingTitle: edit }], groups([{ listingTitle: edit }]), OLD, NEW);
+      expect(next[0]).toEqual({ listingTitle: `${NEW} Ohtani my own #1 words` });
+    });
+
+    test("a hand edit whose row shows the line but lost the old set name: the edit is dropped (rebuilt)", () => {
+      const edit = "My Ohtani title #1";
+      const next = retitleDraftsForSetName([{ listingTitle: edit }], groups([{ listingTitle: edit }]), OLD, NEW);
+      expect(next[0]).toBeUndefined();
+    });
+
+    test("an edit that lost the box text in effect but carries the builder's description is swapped from that", () => {
+      // The box was edited to "Prior Box" earlier; this title was written
+      // before that, so it still opens with the builder's own description.
+      const edit = `${OLD} Ohtani my own #1 words`;
+      const next = retitleDraftsForSetName([{ listingTitle: edit }], groups([{ listingTitle: edit }]), "Prior Box", NEW);
+      expect(next[0]).toEqual({ listingTitle: `${NEW} Ohtani my own #1 words` });
+    });
+
+    test("the box text in effect wins over the builder's description when both are in the edit", () => {
+      const edit = `Prior Box Ohtani ${OLD} #1`;
+      const next = retitleDraftsForSetName([{ listingTitle: edit }], groups([{ listingTitle: edit }]), "Prior Box", NEW);
+      expect(next[0]).toEqual({ listingTitle: `${NEW} Ohtani ${OLD} #1` });
+    });
+
+    test("dropping the edit keeps the rest of the answer (the variation)", () => {
+      const edit = "My Ohtani title #1";
+      const answers = [{ listingTitle: edit, cardVariation: "Blue" }];
+      const next = retitleDraftsForSetName(answers, groups(answers), OLD, NEW);
+      expect(next[0]).toEqual({ cardVariation: "Blue" });
+    });
+
+    test("a hand edit whose row shows no line is left exactly as typed", () => {
+      const edit = `${OLD} Shohei Ohtani #1 Baseball`;
+      const answers = [{ listingTitle: edit }];
+      const [row] = groups(answers).flatMap((g) => g.cards);
+      expect(row.leftOut).toEqual([]);
+      expect(retitleDraftsForSetName(answers, groups(answers), OLD, NEW)).toEqual(answers);
+    });
+
+    test("a blank draft, or one that is just the generated title, is no hand edit", () => {
+      const generated = groups([])[0].cards[1].title;
+      const answers = [{ listingTitle: "   " }, { listingTitle: generated }];
+      expect(retitleDraftsForSetName(answers, groups(answers), OLD, NEW)).toEqual(answers);
+    });
+
+    test("a line shared by the group alone (the row's own is empty) counts as showing the line", () => {
+      const answers = [
+        { listingTitle: `${OLD} Ohtani my own #1` },
+        { listingTitle: `${OLD} Ohtani my own #2` },
+      ];
+      const [group] = groups(answers);
+      expect(group.leftOut.length).toBeGreaterThan(0);
+      expect(group.cards.every((c) => c.leftOut.length === 0)).toBe(true);
+      expect(retitleDraftsForSetName(answers, groups(answers), OLD, NEW)).toEqual([
+        { listingTitle: `${NEW} Ohtani my own #1` },
+        { listingTitle: `${NEW} Ohtani my own #2` },
+      ]);
+    });
+
+    test("an edit with the old text twice and none at the start falls to the builder's description, then rebuilds", () => {
+      const twice = `Ohtani Prior Box #1 Prior Box`;
+      expect(
+        retitleDraftsForSetName([{ listingTitle: twice }], groups([{ listingTitle: twice }]), "Prior Box", NEW)[0],
+      ).toBeUndefined();
+      const withDescription = `Ohtani ${OLD} #1 Prior Box Prior Box`;
+      expect(
+        retitleDraftsForSetName([{ listingTitle: withDescription }], groups([{ listingTitle: withDescription }]), "Prior Box", NEW)[0],
+      ).toEqual({ listingTitle: `Ohtani ${NEW} #1 Prior Box Prior Box` });
+    });
+
+    test("lineRows decides which rows count as showing the line, whatever the lists say now", () => {
+      const edit = `${OLD} Ohtani my own #1 words`;
+      const answers = [{ listingTitle: edit }];
+      // The lists say the line shows, but this edit began with it not showing.
+      expect(retitleDraftsForSetName(answers, groups(answers), OLD, NEW, new Set())).toEqual(answers);
+      // And the other way round: it showed at the start of the edit.
+      expect(retitleDraftsForSetName(answers, groups(answers), OLD, NEW, new Set([0]))[0]).toEqual({
+        listingTitle: `${NEW} Ohtani my own #1 words`,
+      });
+    });
+
+    test("an unchanged set name changes nothing", () => {
+      const answers = [{ listingTitle: `${OLD} Ohtani my own #1` }];
+      expect(retitleDraftsForSetName(answers, groups(answers), OLD, OLD)).toEqual(answers);
+    });
   });
 });
