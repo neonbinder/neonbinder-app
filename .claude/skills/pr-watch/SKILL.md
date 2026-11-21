@@ -183,6 +183,15 @@ access is involved. The `e2e` gate is the source of truth for green/red: it
 fails when any spec fails or when any planned spec produced no result, so a dead
 shard cannot pass.
 
+Two skips are by design (NEO-627) and are not missing, pending or red. A PR whose
+every changed path is inert (docs, `.claude/`, root `*.md`, fake-BSC recorder
+and tests) skips E2E: the caller job `E2E` is skipped, no `E2E / ...` job runs,
+and the line reads `e2e ⊘ skipped by design (inert paths NEO-627, ...)`;
+`--queue` adds `E2E skipped (inert paths, NEO-627): CI Gate decides`. `CI Gate`
+decides green. After a red desktop pass `seed-mobile` is skipped (fail fast): the
+verdict is red with the desktop job listed first and `mobile skipped: desktop
+red (fail fast)`; there are no mobile results or artifacts to look for.
+
 ## Tests
 `bash .claude/skills/pr-watch/test/queue.test.sh` drives `watch.sh --queue`
 against a fake `gh` (merged, ejected with reason and failing job, timeout

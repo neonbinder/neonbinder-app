@@ -26,6 +26,14 @@ run on `gh-readonly-queue/main/pr-<N>-*`), runs the full preview stack and E2E
 there, and merges on green. A PR push runs only the cheap checks, so nothing here
 waits for a turn.
 
+Two behaviours shape the wait (NEO-627). A PR whose every changed path is inert
+(docs, `.claude/`, root `*.md`, fake-BSC recorder and tests) skips E2E and the
+preview stack, so it finishes on the cheap checks in about 3 minutes;
+`pr-watch --queue` reads that as `E2E skipped (inert paths, NEO-627)`, and CI Gate
+decides. E2E also fails fast: a red desktop pass skips the mobile pass, so an
+ejection with a desktop red has no mobile results and triage reads the desktop
+artifacts only.
+
 **Bar for enqueueing is today's bar for joining**: every audit's findings applied,
 unit tests, typecheck, lint and build green, the covering E2E specs green locally on
 desktop and mobile, and, for a UI change, Jason's verdict given on the local build.
@@ -67,7 +75,8 @@ enqueue.
    checks out.
 5. **`DONE EJECTED`** (GitHub removed it itself) → same rules as any red:
    - save the run's artifacts first (the red-run triage steps), into the
-     session scratchpad;
+     session scratchpad (after a desktop red there are no mobile artifacts,
+     NEO-627; do not look for them);
    - triage as in the turn flow: a Sonnet agent finds candidate `ci-fail`
      tickets, the session matches the error signature;
    - **every re-enqueue repeats the pre-enqueue checklist first**: step 0

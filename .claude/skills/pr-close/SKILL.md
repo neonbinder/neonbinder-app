@@ -55,6 +55,9 @@ gate run if an earlier one failed.
   ```
   It must print `success`. Anything else (empty, `failure`, `skipped`) → stop;
   tell the user to re-run PR Pipeline on it or push. No exceptions.
+  An inert-only PR (docs, `.claude/`, root `*.md`; NEO-627) skips E2E on its own
+  pushes, so it merges through the merge queue (3q), or in this flow with the
+  `run-e2e` label so a real `E2E / e2e` result exists.
 - Any check not green → stop. Tell the user to fix it or run `/pr-watch <PR>` first;
   do not merge a red PR.
 - `mergeable != MERGEABLE` → stop, report the conflict.

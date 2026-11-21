@@ -1406,7 +1406,9 @@ setup -> seed -> shard-desktop x8 -> breaker-desktop -> seed-mobile -> shard-mob
 
 `seed` is the scripted reset plus the `setup` project (worker 0); the desktop
 shards run `--project=e2e`. `seed-mobile` needs every desktop shard (the reset
-wipes the shared preview), runs even when desktop has reds, and repeats the
+wipes the shared preview) and the desktop BSC breaker, and runs only when both
+succeeded (fail fast, NEO-627: a red desktop skips the whole mobile pass, so a
+red run may have no mobile results at all), and repeats the
 same Convex env steps, reset and `setup` project; the mobile shards run
 `--project=e2e-mobile`. Each shard gets an explicit file list from
 `node playwright/shard-plan.mjs 8 <i> --project <e2e|e2e-mobile>`
@@ -1455,7 +1457,10 @@ otherwise). Locally run them alone, on your own deployment.
 2. Download the artifacts: `pw-report-desktop-<n>-a<attempt>` or
    `pw-report-mobile-<n>-a<attempt>` (the shard's screenshots and report),
    `pw-report-breaker-desktop-a<attempt>` / `pw-report-breaker-mobile-a<attempt>` (the BSC breaker specs), `pw-report-seed-a<attempt>` / `pw-report-seed-mobile-a<attempt>` (a pass's seed), and `pw-merged`
-   (both passes' merged report and results). Every per-job artifact carries
+   (both passes' merged report and results). After a red desktop pass there are
+   no `*-mobile-*` artifacts by design (the mobile pass was skipped, NEO-627);
+   read the desktop ones. A PR whose every changed path is inert skips E2E
+   entirely and has none. Every per-job artifact carries
    the attempt it came from, so a rerun no longer overwrites an earlier red
    attempt's evidence (`pw-merged` is unsuffixed and is replaced by the
    latest attempt, so download it before any rerun). `gh run download <run-id> -n pw-report-desktop-1-a1`

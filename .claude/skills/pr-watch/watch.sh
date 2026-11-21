@@ -156,7 +156,9 @@ emit() {
 }
 
 # ── one poll: prints a status line, sets VERDICT + FAILED_NAMES globals ──────
-VERDICT="RUNNING"; FAILED_NAMES=""
+VERDICT="RUNNING"; FAILED_NAMES=""; FAIL_NOTE=""
+# NEO-627: a desktop job (shard or the BSC breaker) in the E2E workflow.
+DESKTOP_RE='(^|/ )(shard-desktop \(|BSC breaker specs \(desktop\))'
 tick() {
   local data state rollup total failed completed pending r_total r_done seed seedm gate pw
   data=$($GH pr view "$PR" --json state,headRefOid,statusCheckRollup 2>/dev/null) || {
@@ -183,13 +185,30 @@ tick() {
 
   symbol() { case "$1" in SUCCESS) echo ✓;; FAILURE|CANCELLED|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED) echo ✗;; NEUTRAL|SKIPPED) echo ⊘;; COMPLETED) echo ✓;; "") echo —;; *) echo ▶;; esac; }
   named() { echo "$rollup" | jq -r --arg re "$1" 'first(.[]|select(.name|test($re;"i"))) | (if (.c|length)>0 then .c else .s end) // "—"' 2>/dev/null; }
-  seed=$(symbol "$(named "(^|/ )seed$")"); seedm=$(symbol "$(named "(^|/ )seed-mobile$")"); gate=$(symbol "$(named "(^|/ )e2e$")"); pw=$(symbol "$(named "^Playwright E2E$")")
+  local seedm_raw gate_raw e2e_caller
+  seedm_raw=$(named "(^|/ )seed-mobile$"); gate_raw=$(named "(^|/ )e2e$"); e2e_caller=$(named "^E2E$")
+  seed=$(symbol "$(named "(^|/ )seed$")"); seedm=$(symbol "$seedm_raw"); gate=$(symbol "$gate_raw"); pw=$(symbol "$(named "^Playwright E2E$")")
+  # NEO-627: E2E skipped on purpose. The caller job "E2E" is SKIPPED and no gate
+  # job ever ran: a change whose every path is inert (e2e-scope.sh), a
+  # dependency-only PR, or a cheap PR run while the merge queue is live. CI Gate
+  # decides green; this is not missing, pending or red.
+  if [ "$e2e_caller" = "SKIPPED" ] && case "$(named "^E2E / ")" in ""|"—") true ;; *) false ;; esac; then
+    gate="⊘ skipped by design (inert paths NEO-627, deps-only or cheap PR run)"
+  fi
+  # NEO-627 fail fast: seed-mobile skipped after a red desktop pass. There are no
+  # mobile results; read the desktop failure.
+  FAIL_NOTE=""
+  if [ "$seedm_raw" = "SKIPPED" ] && [ "${failed:-0}" -gt 0 ] &&
+     [ "$(echo "$rollup" | jq --arg re "$DESKTOP_RE" '[.[]|select((.name|test($re)) and (.c=="FAILURE" or .c=="CANCELLED" or .c=="TIMED_OUT" or .c=="STARTUP_FAILURE"))]|length')" -gt 0 ]; then
+    FAIL_NOTE=" · mobile skipped: desktop red (fail fast), there are no mobile results"
+  fi
 
   # ── verdict (GitHub is the source of truth) ──
   if [ "$state" = "MERGED" ] || [ "$state" = "CLOSED" ]; then VERDICT="$state"
   elif [ "${failed:-0}" -gt 0 ]; then
     VERDICT="FAILED"
-    FAILED_NAMES=$(echo "$rollup" | jq -r '[.[]|select(.c=="FAILURE" or .c=="CANCELLED" or .c=="TIMED_OUT" or .c=="STARTUP_FAILURE" or .c=="ACTION_REQUIRED")|.name]|join(", ")')
+    # Desktop jobs first: they are the root cause when the mobile pass was skipped.
+    FAILED_NAMES=$(echo "$rollup" | jq -r --arg re "$DESKTOP_RE" '[.[]|select(.c=="FAILURE" or .c=="CANCELLED" or .c=="TIMED_OUT" or .c=="STARTUP_FAILURE" or .c=="ACTION_REQUIRED")] | sort_by(if (.name|test($re)) then 0 else 1 end) | map(.name) | join(", ")')
   elif [ "${total:-0}" -gt 0 ] && [ "${pending:-0}" -eq 0 ] && [ -n "$req" ] &&
        { [ "$req" = "SUCCESS" ] || [ "$req" = "SKIPPED" ] || [ "$req" = "NEUTRAL" ]; }; then
     VERDICT="GREEN"
@@ -237,6 +256,7 @@ failing_jobs() {
     [.[] | .workflowName as $w | .jobs[]? | {w:$w, n:.name, u:.url, c:((.conclusion // "")|ascii_upcase)}] as $j
     | ([$j[]|select(.c=="FAILURE" or .c=="TIMED_OUT" or .c=="STARTUP_FAILURE")]) as $hard
     | (if ($hard|length)>0 then $hard else [$j[]|select(.c=="CANCELLED")] end)
+    | sort_by(if (.n|test("(^|/ )(shard-desktop \\(|BSC breaker specs \\(desktop\\))")) then 0 else 1 end)
     | .[:5] | map("\(.w) / \(.n): \(.u)") | join("; ")'
 }
 
@@ -287,6 +307,26 @@ tick_queue() {
   shards_d=$(echo "$group" | jq '[.[].jobs[]?|select((.name|test("(^|/ )shard-(desktop|mobile) \\(")) and .status=="completed")]|length')
   gate=$(echo "$group" | jq -r --arg n "$REQUIRED_CHECK" 'first(.[].jobs[]?|select(.name==$n))|(if (.conclusion//"")!="" then .conclusion else .status end)//"—"')
   local fj; fj=$(failing_jobs "$group")
+  # NEO-627: E2E skipped on purpose (inert paths): the caller job "E2E" is
+  # skipped. Only "by design" once CI Gate succeeded; a skip with a failed
+  # upstream job (web-preview...) is that job's red, not this.
+  local e2e_skipped e2e_note="" ff_note=""
+  e2e_skipped=$(echo "$group" | jq -r 'any(.[].jobs[]?; .name=="E2E" and ((.conclusion//"")|ascii_downcase)=="skipped")')
+  if [ "$e2e_skipped" = "true" ]; then
+    case "$gate" in
+      success) e2e_note="E2E skipped (inert paths, NEO-627): CI Gate decides" ;;
+      failure|cancelled|timed_out) e2e_note="" ;;
+      *) e2e_note="E2E skipped, CI Gate decides" ;;
+    esac
+  fi
+  # NEO-627 fail fast: seed-mobile skipped while a desktop job failed. There are
+  # no mobile results or artifacts; the desktop failure is the cause.
+  if echo "$group" | jq -e '[.[].jobs[]?] as $j
+        | (any($j[]; (.name|test("(^|/ )seed-mobile$")) and ((.conclusion//"")|ascii_downcase)=="skipped"))
+          and (any($j[]; (.name|test("(^|/ )(shard-desktop \\(|BSC breaker specs \\(desktop\\))"))
+                and ((.conclusion//"")|ascii_downcase|test("^(failure|timed_out|startup_failure|cancelled)$"))))' >/dev/null 2>&1; then
+    ff_note="mobile skipped: desktop red (fail fast), there are no mobile results; read the desktop artifacts"
+  fi
   # First failing job seen, sticky for the attempt (job order is not stable).
   if [ -z "$FIRST_FAIL" ]; then
     FIRST_FAIL=$(echo "$group" | jq -r '[.[]|.workflowName as $w|.jobs[]?|select((.conclusion//"")|test("^(failure|timed_out|startup_failure)$";"i"))|"\($w) / \(.name)"]|first // ""')
@@ -322,6 +362,7 @@ tick_queue() {
       VERDICT="EJECTED"
       DETAIL="dequeued, reason: $rem_reason${rem_actor:+ (actor $rem_actor)}"
       [ -n "$fj" ] && DETAIL="$DETAIL; failing job(s): $fj"
+      [ -n "$ff_note" ] && DETAIL="$DETAIL; $ff_note"
       [ -z "$fj" ] && [ -n "$failed_runs" ] && DETAIL="$DETAIL; failing run(s): $failed_runs"
       [ -z "$fj" ] && [ -z "$failed_runs" ] && DETAIL="$DETAIL; no failing job found (timeout, conflict or cancelled before it ran): check gh run list --event merge_group"
     fi
@@ -340,13 +381,15 @@ tick_queue() {
   else phase="${DETAIL}"; fi
   LINE=$(printf '[t+%sm] %s — %s' "$(elapsed_min)" "$VERDICT" "$phase")
   [ -n "$FIRST_FAIL" ] && LINE="$LINE · first failure: $FIRST_FAIL"
+  [ -n "$e2e_note" ] && [ -n "$mq_state" ] && LINE="$LINE · $e2e_note"
+  [ -n "$ff_note" ] && [ -n "$mq_state" ] && LINE="$LINE · $ff_note"
   # Coarse key: phase, at the head of the queue, the gate job's state and the
   # first failing job. Job/shard counts and the active-run count are not in it.
   local kphase="not-queued" khead="no"
   if [ -n "$mq_state" ] && [ "$nruns" -eq 0 ]; then kphase="queued-waiting"
   elif [ -n "$mq_state" ]; then kphase="group-running"; fi
   [ "$mq_pos" = "1" ] && khead="yes"
-  KEY="$VERDICT|$kphase|head=$khead|gate=$gate|firstfail=$FIRST_FAIL"
+  KEY="$VERDICT|$kphase|head=$khead|gate=$gate|firstfail=$FIRST_FAIL|e2eskip=$e2e_skipped|ff=${ff_note:+1}"
 }
 
 queue_main() {
@@ -378,7 +421,7 @@ while true; do
   tick
   case "$VERDICT" in
     GREEN)  clear_state; echo "DONE GREEN — all checks passed (watched $(elapsed_min)m). PR #$PR is mergeable."; exit 0 ;;
-    FAILED) clear_state; echo "DONE FAILED — failing check(s): ${FAILED_NAMES:-unknown} (watched $(elapsed_min)m). PR #$PR."; exit 1 ;;
+    FAILED) clear_state; echo "DONE FAILED — failing check(s): ${FAILED_NAMES:-unknown}${FAIL_NOTE} (watched $(elapsed_min)m). PR #$PR."; exit 1 ;;
     MERGED|CLOSED) clear_state; echo "DONE $VERDICT — PR #$PR is $VERDICT (watched $(elapsed_min)m)."; exit 0 ;;
   esac
   emit
