@@ -1484,3 +1484,23 @@ describe("CardAttentionWalker — NEO-331 the set context reaches the team picke
     ).toBe("");
   });
 });
+
+describe("CardAttentionWalker — NEO-639 (decision A) the set's No Team reaches the team fixer", () => {
+  it("under the set's own No Team the fixer preselects nothing", () => {
+    suggestionsByCard = {
+      "card-1": [{ teamId: "team-reds", name: "Cincinnati Reds", source: "career", playerName: "Johnny Bench" }],
+    };
+    renderWalker([needsTeamRow()], { setNoTeam: true });
+    expect(chip("Cincinnati Reds", "Johnny Bench").getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByTestId("picker-value").textContent).toBe("");
+  });
+
+  it("without it, the same card's one set-year team is preselected", () => {
+    suggestionsByCard = {
+      "card-1": [{ teamId: "team-reds", name: "Cincinnati Reds", source: "career", playerName: "Johnny Bench" }],
+    };
+    renderWalker([needsTeamRow()]);
+    expect(chip("Cincinnati Reds", "Johnny Bench").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("picker-value").textContent).toBe("team-reds");
+  });
+});

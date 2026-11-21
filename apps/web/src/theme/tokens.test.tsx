@@ -293,6 +293,27 @@ describe("the danger notice is neon pink, never red or salmon (NEO-606)", () => 
   }
 });
 
+describe("a checked team chip's quiet text (NEO-639)", () => {
+  // The Teams step's checked team chip paints `bg-neon-green/10` over the
+  // `raised` sheet. A chip outside the pre-fill carries its players' years in
+  // `text-ink-3`, and it keeps them when the operator ticks it (the label is
+  // decided by the default, not the tick), so ink-3 has to read on the CHECKED
+  // ground too. Measured at the time: 4.65:1 dark, 6.90:1 light.
+  const px = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  const over = (fg: string, alpha: number, bg: string) =>
+    `#${px(fg)
+      .map((c, i) => Math.round(alpha * c + (1 - alpha) * px(bg)[i]).toString(16).padStart(2, "0"))
+      .join("")}`;
+
+  for (const mode of ["dark", "light"] as const) {
+    it(`${mode}: ink-3 reads 4.5:1 on neon-green/10 over raised`, () => {
+      const ground = over(tokenHex("neon-green", mode), 0.1, tokenHex("raised", mode));
+      const ratio = contrastRatio(tokenHex("ink-3", mode), ground);
+      expect({ mode, ground, ok: ratio >= 4.5, ratio }).toEqual({ mode, ground, ok: true, ratio });
+    });
+  }
+});
+
 describe("adversarial: every text and ink role, both modes", () => {
   const roles = (re: RegExp) => (Object.keys(TOKENS.dark) as TokenRole[]).filter((r) => re.test(r));
   const TEXT = roles(/(-text|^ink(-[23])?|^notice-.*-ink)$/) as TextRole[];

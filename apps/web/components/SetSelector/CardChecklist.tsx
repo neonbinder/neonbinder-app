@@ -4438,6 +4438,9 @@ export default function CardChecklist({
           cards={cards}
           sportId={ancestorSportId}
           contextOptionId={variantId}
+          // NEO-639 (decision A): under the set's own "No Team" the team
+          // fixer offers careers and preselects none, like the Teams step.
+          setNoTeam={setTeamDefaultKind(variantRow) === "noTeam"}
           // a11y: the durable restore target, because the control that opened
           // this may not survive the sitting — the pill unmounts at
           // `attentionCount === 0`, which is exactly the state the walker is

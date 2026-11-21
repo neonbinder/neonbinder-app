@@ -464,6 +464,11 @@ const state: {
    * Undefined (no wait) unless a test sets it.
    */
   marketplaceWait?: unknown;
+  /**
+   * NEO-639: what the walker's team fixer is suggested, for every card.
+   * Undefined serves `[]`, the "no career history" shape.
+   */
+  teamSuggestions?: unknown[];
 } = {
   cards: [],
   variantRow: { value: "Test Set" },
@@ -487,7 +492,7 @@ vi.mock("convex/react", () => ({
     if (ref === "getPausedPlatforms") return state.paused;
     // NEO-102: the walker's fixer reads suggestions per card; [] keeps it
     // resolved-but-empty, which is the "no career history" shape.
-    if (ref === "cardChecklist.suggestedTeamsForCard") return [];
+    if (ref === "cardChecklist.suggestedTeamsForCard") return state.teamSuggestions ?? [];
     if (ref === "teams.getManyByIds") return state.teams;
     // NEO-331: the picker's candidate pool arrives ranked, as `{ team, tier }`.
     if (ref === "teams.pickerCandidates") {
@@ -4076,6 +4081,45 @@ describe("CardChecklist — NEO-102 attention count and walker (NEO-335: one 'N 
     for (const args of pickerArgs) {
       expect(args).toMatchObject({ contextOptionId: VARIANT_ID });
     }
+  });
+
+  describe("NEO-639 (decision A): the set's own No Team reaches the walker's team fixer", () => {
+    const REDS = [
+      {
+        teamId: "team-reds",
+        name: "Cincinnati Reds",
+        label: "Cincinnati Reds",
+        source: "career",
+        playerName: "Johnny Bench",
+        inSetYear: true,
+      },
+    ];
+    afterEach(() => {
+      state.teamSuggestions = undefined;
+    });
+
+    it("under a No Team set, the card's one set-year team is offered, not preselected", async () => {
+      state.variantRow = { value: "Test Set", noTeamDefault: { setAt: 1, setByUserId: "u" } };
+      state.teamSuggestions = REDS;
+      renderChecklist();
+      fireEvent.click(needsYou());
+      const dialog = await screen.findByRole("dialog");
+      const reds = within(dialog).getByRole("button", {
+        name: "Cincinnati Reds · Johnny Bench played here",
+      });
+      expect(reds.getAttribute("aria-pressed")).toBe("false");
+    });
+
+    it("under a set with no team default, the same team is preselected", async () => {
+      state.teamSuggestions = REDS;
+      renderChecklist();
+      fireEvent.click(needsYou());
+      const dialog = await screen.findByRole("dialog");
+      const reds = within(dialog).getByRole("button", {
+        name: "Cincinnati Reds · Johnny Bench played here",
+      });
+      expect(reds.getAttribute("aria-pressed")).toBe("true");
+    });
   });
 
   it("does not open the walker on its own", () => {
