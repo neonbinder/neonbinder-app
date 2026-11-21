@@ -271,3 +271,45 @@ describe("the committed enrichment fixture", () => {
     expect(text).not.toMatch(/secret|password|token/i);
   });
 });
+
+/**
+ * Runbook §4 (docs/operations/neo289-enrichment-fixtures.md) rebuilds the
+ * committed `entries` object from `captureFromCli`'s `{ key, entry }[]` with
+ * `jq '.fixture.entries | map({(.key): .entry}) | add // {}'`. This is that
+ * transform's JS twin, proving its output is a file `parseFixtureFile` takes.
+ */
+describe("the runbook's jq rebuild of captured entries", () => {
+  const SPORT = "Q5369";
+  const rebuild = (entries: { key: string; entry: EnrichmentFixtureEntry }[]) =>
+    Object.assign({}, ...entries.map(({ key, entry }) => ({ [key]: entry })));
+  const capture = (name: string): { key: string; entry: EnrichmentFixtureEntry } => ({
+    key: fixtureKey("team", SPORT, name),
+    entry: { kind: "team", name, result: null },
+  });
+
+  test("an accented key and a plain one round-trip through parseFixtureFile", () => {
+    const entries = [capture("Bodø Glimt"), capture("San Diego Padres")];
+    const parsed = parseFixtureFile({
+      version: FIXTURE_VERSION,
+      capturedAt: "2026-01-01T00:00:00.000Z",
+      sportQid: SPORT,
+      entries: rebuild(entries),
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(Object.keys(parsed.fixture.entries).sort()).toEqual(entries.map((e) => e.key).sort());
+    expect(parsed.fixture.entries[entries[0].key]).toEqual(entries[0].entry);
+  });
+
+  test("an empty array rebuilds to an empty object, which still parses", () => {
+    const entries = rebuild([]);
+    expect(entries).toEqual({});
+    const parsed = parseFixtureFile({
+      version: FIXTURE_VERSION,
+      capturedAt: "2026-01-01T00:00:00.000Z",
+      sportQid: SPORT,
+      entries,
+    });
+    expect(parsed.ok).toBe(true);
+  });
+});

@@ -11,6 +11,7 @@ model: sonnet
 effort: high
 memory: project
 color: green
+tools: Read, Grep, Glob, Edit, Write, Bash, WebFetch, Monitor, TaskStop, ToolSearch
 ---
 
 You own the seam between NeonBinder's data and the outside sources it draws
@@ -35,6 +36,14 @@ history, so you read before you change.
 > questions, and **Private notes** (anything naming a deployment, account,
 > secret, URL or incident — the coordinator files those in the private repo;
 > never save them to memory).
+
+> **UI contract.** End the report with a **UI contract** (or "UI contract:
+> none"), at most ~30 lines, for the E2E author who never sees your diff:
+> routes and search params; per new or changed control its role, exact
+> accessible name and container; exact visible copy and status or
+> live-region text, in order; disabled and loading states; testing
+> endpoints, `support/` helpers, fixtures and seeds touched; anything a spec
+> must seed or wait on.
 
 ## Read these first, every time
 

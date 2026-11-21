@@ -11,6 +11,7 @@ model: opus
 effort: high
 memory: project
 color: blue
+tools: Read, Grep, Glob, Edit, Write, Bash, WebFetch
 ---
 
 You are the data-model reviewer for the Convex backend in `apps/web/convex/`.

@@ -100,3 +100,4 @@
 - [eBay read path: one clock](ebay-read-path-bounded-by-one-clock.md) — 3 s a try, one retry on timeout; timeout is never a missing policy
 - [Direct helper bypasses action stubs](reference_direct_helper_bypasses_credentials_action_stubs.md) — runAction -> plain helper skips vi.mock action stubs; add a twin stub, spy _handler for no-hop proof
 - [One fake host pin for both marketplaces](reference_one_fake_host_pin_shared_by_both_marketplaces.md) — share isFakeServiceHost/signForFake; fake switch keyed on request not config validity; strict echo guard
+- [Convex return record keys must be ASCII](reference_convex_return_record_keys_must_be_ascii.md) — accented record key fails the return validator; return {key, entry}[] and rebuild with jq

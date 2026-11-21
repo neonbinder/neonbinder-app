@@ -3,6 +3,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 export PR_WATCH_GH="$HERE/fake-gh.sh" PR_WATCH_INTERVAL=0 PR_WATCH_REPO=acme/widgets
+TMPDIR=$(mktemp -d); export TMPDIR  # watch.sh keeps its resume state under TMPDIR
 fails=0
 
 pr() { # state mqEntryJson nodesJson

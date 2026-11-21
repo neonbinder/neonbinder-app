@@ -185,9 +185,11 @@ describe("ParallelTitlesDoor — opening on its own", () => {
   test("a self-opened dialog never lands focus in a field", async () => {
     render(<ParallelTitlesDoor parallels={PARALLELS} label={LABEL} autoOpenKey="run-5" />);
     await waitFor(() => expect(dialog()).not.toBeNull());
-    const active = document.activeElement as HTMLElement;
-    expect(active.tagName).not.toBe("TEXTAREA");
-    expect(dialog()!.contains(active)).toBe(true);
+    // The dialog mounts before its focus move: that lands in a passive
+    // effect, which can flush after the commit waitFor saw (NEO-622). Wait on
+    // the real observable, then check where it landed.
+    await waitFor(() => expect(dialog()!.contains(document.activeElement)).toBe(true));
+    expect((document.activeElement as HTMLElement).tagName).not.toBe("TEXTAREA");
   });
 });
 
