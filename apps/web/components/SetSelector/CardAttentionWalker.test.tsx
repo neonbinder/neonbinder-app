@@ -172,6 +172,19 @@ const bar = () => screen.getByRole("progressbar", { name: "Wizard progress" });
 const percent = () => Number(bar().getAttribute("aria-valuenow"));
 const rail = () => document.querySelector<HTMLElement>("[data-rail-fill]")!;
 
+/**
+ * Nine players on one card, each with ONE set-year team: nine preselects, one
+ * past the cap. NEO-639 (decision B) — one player with nine set-year teams is
+ * a tie and preselects nothing, so the cap is proven with nine answers.
+ */
+const nineLeaders = (): Suggestion[] =>
+  Array.from({ length: 9 }, (_, i) => ({
+    teamId: `team-${i + 1}`,
+    name: `Team ${i + 1}`,
+    source: "career" as const,
+    playerName: `Player ${i + 1}`,
+  }));
+
 const saveButton = () =>
   screen.getByRole("button", { name: /Save & Next/ }) as HTMLButtonElement;
 
@@ -735,15 +748,10 @@ describe("CardAttentionWalker — fixing a card", () => {
   });
 
   it("a blocked chip at the cap is described by the cap notice, for a screen-reader user landing on it directly", () => {
-    suggestionsByCard["card-1"] = Array.from({ length: 9 }, (_, i) => ({
-      teamId: `team-${i + 1}`,
-      name: `Team ${i + 1}`,
-      source: "career" as const,
-      playerName: "Someone",
-    }));
+    suggestionsByCard["card-1"] = nineLeaders();
     renderWalker([needsTeamRow()]);
 
-    const ninth = chip("Team 9", "Someone");
+    const ninth = chip("Team 9", "Player 9");
     expect(ninth.getAttribute("aria-describedby")).toBe("attention-team-cap");
     const cap = document.getElementById("attention-team-cap");
     expect(cap).toBeTruthy();
@@ -751,7 +759,7 @@ describe("CardAttentionWalker — fixing a card", () => {
 
     // A chip that IS chosen is never "blocked" even at the cap — removing one
     // of the eight is always legal, so it carries no such description.
-    const first = chip("Team 1", "Someone");
+    const first = chip("Team 1", "Player 1");
     expect(first.getAttribute("aria-describedby")).toBeNull();
   });
 
@@ -852,12 +860,7 @@ describe("CardAttentionWalker — fixing a card", () => {
   });
 
   it("caps the write at 8 teams and says so", () => {
-    suggestionsByCard["card-1"] = Array.from({ length: 9 }, (_, i) => ({
-      teamId: `team-${i + 1}`,
-      name: `Team ${i + 1}`,
-      source: "career" as const,
-      playerName: "Someone",
-    }));
+    suggestionsByCard["card-1"] = nineLeaders();
     renderWalker([needsTeamRow()]);
 
     // Preselection itself respects the cap.
@@ -869,7 +872,7 @@ describe("CardAttentionWalker — fixing a card", () => {
     expect(screen.getByTestId("picker-value").textContent?.split(",")).toHaveLength(8);
 
     // The unchosen chip stays reachable so the notice explaining why is too.
-    const ninth = chip("Team 9", "Someone");
+    const ninth = chip("Team 9", "Player 9");
     expect(ninth.getAttribute("aria-disabled")).toBe("true");
     fireEvent.click(ninth);
     expect(screen.getByTestId("picker-value").textContent?.split(",")).toHaveLength(8);

@@ -272,6 +272,50 @@ describe("MissingTeamFixer — what is preselected, and where focus lands (NEO-3
     expect(mockUpdateCard).not.toHaveBeenCalled();
   });
 
+  it("NEO-639: a player with two set-year teams is a tie — neither is preselected, and the heading says so", async () => {
+    suggestions = [
+      suggestion({ teamId: "team-reds", name: "Cincinnati Reds", playerName: "Traded Guy" }),
+      suggestion({ teamId: "team-mets", name: "New York Mets", playerName: "Traded Guy" }),
+    ];
+    renderFixer();
+
+    expect(chips()).toHaveLength(2);
+    expect(pressed()).toHaveLength(0);
+    expect(screen.getByTestId("picker-value").textContent).toBe("");
+    expect(saveButton().getAttribute("aria-disabled")).toBe("true");
+    expect(
+      screen.getByText(
+        "From the career — more than one team that season, so pick the one on the card.",
+      ),
+    ).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(chips()[0]));
+  });
+
+  it("NEO-639: the tie is per player — a co-player's one set-year team is still preselected", () => {
+    suggestions = [
+      suggestion({ teamId: "team-reds", name: "Cincinnati Reds", playerName: "Traded Guy" }),
+      suggestion({ teamId: "team-mets", name: "New York Mets", playerName: "Traded Guy" }),
+      suggestion({ teamId: "team-cubs", name: "Chicago Cubs", playerName: "Stayed Put" }),
+    ];
+    renderFixer();
+
+    expect(pressed().map((b) => b.getAttribute("aria-label"))).toEqual([
+      "Chicago Cubs · Stayed Put played here",
+    ]);
+    expect(screen.getByTestId("picker-value").textContent).toBe("team-cubs");
+  });
+
+  it("NEO-639: the same team sent twice for one player is one team, not a tie", () => {
+    suggestions = [
+      suggestion({ teamId: "team-reds", name: "Cincinnati Reds", playerName: "Johnny Bench" }),
+      suggestion({ teamId: "team-reds", name: "Cincinnati Reds", playerName: "Johnny Bench" }),
+    ];
+    renderFixer();
+
+    expect(screen.getByTestId("picker-value").textContent).toBe("team-reds");
+    expect(screen.getByText("Suggested from career history — Enter accepts these.")).toBeTruthy();
+  });
+
   it("with no chips at all, focus goes to the picker", async () => {
     suggestions = [];
     renderFixer();
@@ -472,6 +516,17 @@ describe("MissingTeamFixer — heading copy (NEO-330)", () => {
     // A set with no year: nothing to name.
     expect(careerHeading(false, false)).toBe(
       "No year on this set — here’s the whole career. Pick the one on the card.",
+    );
+    // NEO-639 — a set-year tie has its own line; the listing's disagreement
+    // and a career fallback still speak first.
+    expect(careerHeading(true, false, undefined, true)).toBe(
+      "From the career — more than one team that season, so pick the one on the card.",
+    );
+    expect(careerHeading(true, true, undefined, true)).toBe(
+      "From the career — the listing names a different team, so pick the one on the card.",
+    );
+    expect(careerHeading(false, false, 2025, true)).toBe(
+      "No 2025 team on file — here’s the whole career. Pick the one on the card.",
     );
   });
 

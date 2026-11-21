@@ -121,11 +121,13 @@ function Harness({
   rows = [],
   showSetTeamHint,
   hidden,
+  setNoTeam,
 }: {
   hidden?: boolean;
   cards: PreviewCardForTeams[];
   rows?: Parameters<typeof TeamsOnCardsSection>[0]["rows"];
   showSetTeamHint?: boolean;
+  setNoTeam?: boolean;
 }) {
   const [choices, setChoices] = useState<Record<string, GroupChoice>>({});
   return (
@@ -142,6 +144,7 @@ function Harness({
       onChoose={(key, choice) => setChoices((prev) => ({ ...prev, [key]: choice }))}
       onAnswersChange={(next) => answers.push(next)}
       showSetTeamHint={showSetTeamHint}
+      setNoTeam={setNoTeam}
     />
     </div>
     </div>
@@ -677,5 +680,78 @@ describe("collector review — playerless cards and the livery", () => {
     for (const radio of [reds, pale]) {
       expect(radio.querySelector("[style*='background']")).toBeNull();
     }
+  });
+});
+
+describe("NEO-639 — a chip outside the pre-fill says the player's years with the team", () => {
+  /** Reds pre-filled (preferred in the window), the Yankees offered beside it. */
+  const benchEvidence = () => ({
+    answer: { tier: "preferredInWindow", teams: [{ teamId: REDS, name: "Cincinnati Reds", rank: 0 }] },
+    candidates: [{ teamId: YANKEES, name: "New York Yankees", rank: 2 }],
+    stints: [
+      { teamId: REDS, fromYear: 1967, toYear: 1983 },
+      { teamId: YANKEES, fromYear: 1984, toYear: 1985 },
+    ],
+  });
+
+  it("names an unselected chip `${label} · ${years} — ${owner}`, and its visible text starts the same", () => {
+    playerAnswer = benchEvidence;
+    render(<Harness cards={[card("1", ["Johnny Bench"])]} />);
+    const group = screen.getByRole("radiogroup", { name: "Team for Johnny Bench" });
+    expect(within(group).getAllByRole("radio").map((r) => r.getAttribute("aria-label"))).toEqual([
+      "Cincinnati Reds — Johnny Bench",
+      "New York Yankees · 1984–1985 — Johnny Bench",
+      "No team on this card — Johnny Bench",
+      "Leave for later — Johnny Bench",
+    ]);
+    const yankees = within(group).getByRole("radio", {
+      name: "New York Yankees · 1984–1985 — Johnny Bench",
+    });
+    // WCAG 2.5.3: what a voice user reads off the chip starts its name.
+    expect(yankees.textContent).toContain("New York Yankees · 1984–1985");
+    // The livery name stays its own span, so the years never take its colour.
+    expect(within(yankees).getByText("New York Yankees").textContent).toBe("New York Yankees");
+    const reds = within(group).getByRole("radio", { name: "Cincinnati Reds — Johnny Bench" });
+    expect(reds.textContent).not.toMatch(/\d{4}/);
+  });
+
+  it("a toggle never changes a chip's label: the years follow the default, not the pick", () => {
+    playerAnswer = benchEvidence;
+    render(<Harness cards={[card("1", ["Johnny Bench"])]} />);
+    const yankeesName = "New York Yankees · 1984–1985 — Johnny Bench";
+    fireEvent.click(screen.getByRole("radio", { name: yankeesName }));
+    expect(screen.getByRole("radio", { name: yankeesName }).getAttribute("aria-checked")).toBe(
+      "true",
+    );
+    expect(last()).toEqual([{ teamIds: [YANKEES] }]);
+    // The pre-filled chip, now unpicked, still has no years.
+    const reds = screen.getByRole("radio", { name: "Cincinnati Reds — Johnny Bench" });
+    expect(reds.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(reds);
+    expect(screen.getByRole("radio", { name: yankeesName }).getAttribute("aria-checked")).toBe(
+      "false",
+    );
+    expect(last()).toEqual([{ teamIds: [REDS] }]);
+  });
+
+  it("a card whose team lookup failed is pre-filled like any other", () => {
+    playerAnswer = benchEvidence;
+    render(<Harness cards={[{ ...card("1", ["Johnny Bench"]), teamLookup: "failed" }]} />);
+    expect(
+      screen.getByRole("radio", { name: "Cincinnati Reds — Johnny Bench" }).getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(last()).toEqual([{ teamIds: [REDS] }]);
+  });
+
+  it("under the set's own No Team nothing is pre-filled, and every team chip says its years", () => {
+    playerAnswer = benchEvidence;
+    render(<Harness cards={[card("1", ["Johnny Bench"])]} setNoTeam />);
+    const group = screen.getByRole("radiogroup", { name: "Team for Johnny Bench" });
+    expect(
+      within(group).getByRole("radio", { name: "Leave for later — Johnny Bench" }).getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(within(group).getByRole("radio", { name: "Cincinnati Reds · 1967–1983 — Johnny Bench" })).toBeTruthy();
+    expect(within(group).getByRole("radio", { name: "New York Yankees · 1984–1985 — Johnny Bench" })).toBeTruthy();
+    expect(last()).toEqual([undefined]);
   });
 });

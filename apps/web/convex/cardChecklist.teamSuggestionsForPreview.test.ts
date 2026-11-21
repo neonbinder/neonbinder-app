@@ -21,6 +21,7 @@ import { normalizePlayerName } from "./players";
 import { normalizeLeagueName } from "./leagues";
 import {
   TEAM_SUGGESTION_MAX_PLAYERS,
+  TEAM_SUGGESTION_MAX_STINTS,
   TEAM_SUGGESTION_MAX_TEAM_NAMES,
 } from "./cardChecklist";
 import {
@@ -890,6 +891,122 @@ describe("teamSuggestionsForPreview — teamNames (choices, never a pick)", () =
     expect(result.teamNames[2].teams).toEqual([]);
     expect(result.teamNames[3].teams).toEqual([
       { teamId: s.rays, name: "Tampa Bay Rays", rank: 0 },
+    ]);
+  });
+});
+
+describe("teamSuggestionsForPreview — stints, the years a chip prints (NEO-639)", () => {
+  test("dated stints only, in the row's order, never another sport's team; an open stint has no toYear", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const bench = await player(t, s.sportId, "Johnny Bench", [
+      { teamId: s.yankees, fromYear: 1984 },
+      { teamId: s.jets, fromYear: 1990, toYear: 1991 },
+      { teamId: s.phillies },
+      { teamId: s.reds, fromYear: 1967, toYear: 1983 },
+    ]);
+
+    const result = await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+      selectorOptionId: s.insertId,
+      players: [{ playerId: bench }],
+    });
+    expect(result.players[0].stints).toEqual([
+      { teamId: s.yankees, fromYear: 1984 },
+      { teamId: s.reds, fromYear: 1967, toYear: 1983 },
+    ]);
+    expect("toYear" in result.players[0].stints![0]).toBe(false);
+  });
+
+  test("omitted, not empty, when the player has no dated stint, and for a name that found no one", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const undatedOnly = await player(t, s.sportId, "Undated Guy", [{ teamId: s.reds }]);
+    const otherSportOnly = await player(t, s.sportId, "Two Sport Guy", [
+      { teamId: s.jets, fromYear: 1990, toYear: 1991 },
+    ]);
+
+    const result = await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+      selectorOptionId: s.insertId,
+      players: [{ playerId: undatedOnly }, { playerId: otherSportOnly }, { name: "Nobody We Hold" }],
+    });
+    expect(result.players).toHaveLength(3);
+    for (const entry of result.players) expect("stints" in entry).toBe(false);
+  });
+
+  test(`capped at TEAM_SUGGESTION_MAX_STINTS (${TEAM_SUGGESTION_MAX_STINTS}), keeping the first in the row's order`, async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const teamYears = Array.from({ length: TEAM_SUGGESTION_MAX_STINTS + 5 }, (_, i) => ({
+      teamId: i % 2 === 0 ? s.reds : s.phillies,
+      fromYear: 1900 + i,
+      toYear: 1900 + i,
+    }));
+    const journeyman = await player(t, s.sportId, "Journey Man", teamYears);
+
+    const result = await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+      selectorOptionId: s.insertId,
+      players: [{ playerId: journeyman }],
+    });
+    expect(result.players[0].stints).toEqual(teamYears.slice(0, TEAM_SUGGESTION_MAX_STINTS));
+  });
+
+  test("a team past the career read cap is never sent unchecked: another sport's team there stays out", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    // Thirty of this sport's teams first — past the server's career read cap
+    // (24), under the stint cap — then another sport's team, never read as
+    // part of the career.
+    const clubs = await t.run(async (ctx) => {
+      const ids: Array<Id<"teams">> = [];
+      for (let i = 0; i < 30; i++) {
+        ids.push(
+          await ctx.db.insert("teams", {
+            name: `Club ${i}`,
+            nameNormalized: normalizeTeamName(`Club ${i}`),
+            sportId: s.sportId,
+            lastUpdated: Date.now(),
+          }),
+        );
+      }
+      return ids;
+    });
+    const teamYears = [
+      ...clubs.map((teamId, i) => ({ teamId, fromYear: 1900 + i, toYear: 1900 + i })),
+      { teamId: s.jets, fromYear: 1950, toYear: 1951 },
+    ];
+    const wanderer = await player(t, s.sportId, "Wander Er", teamYears);
+
+    const result = await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+      selectorOptionId: s.insertId,
+      players: [{ playerId: wanderer }],
+    });
+    const sent = (result.players[0].stints ?? []).map((st) => st.teamId);
+    expect(sent.length).toBeGreaterThan(0);
+    expect(sent).not.toContain(s.jets);
+    for (const teamId of sent) expect(clubs).toContain(teamId);
+  });
+
+  test("each player carries his own stints, in input order", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const rose = await player(t, s.sportId, "Pete Rose", [
+      { teamId: s.reds, fromYear: 1963, toYear: 1978 },
+      { teamId: s.phillies, fromYear: 1979, toYear: 1983 },
+    ]);
+    const bench = await player(t, s.sportId, "Johnny Bench", [
+      { teamId: s.reds, fromYear: 1967, toYear: 1983 },
+    ]);
+
+    const result = await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+      selectorOptionId: s.insertId,
+      players: [{ playerId: bench }, { playerId: rose }],
+    });
+    expect(result.players.map((p) => p.stints)).toEqual([
+      [{ teamId: s.reds, fromYear: 1967, toYear: 1983 }],
+      [
+        { teamId: s.reds, fromYear: 1963, toYear: 1978 },
+        { teamId: s.phillies, fromYear: 1979, toYear: 1983 },
+      ],
     ]);
   });
 });

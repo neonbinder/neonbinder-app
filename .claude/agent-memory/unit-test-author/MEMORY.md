@@ -60,3 +60,4 @@
 - [NEO-628 gate key adversarial](reference_neo628_gate_key_adversarial_patterns.md) — fake acquire writes no row, source-scan control, test.fails known gaps
 - [NEO-628 guard test patterns](reference_neo628_guard_test_patterns.md) — stub AxeBuilder replace semantics, yaml job-section pins, ?raw scan with control, Sync wait-line stand-down
 - [Slow component test profile recipe](reference_slow_demo_test_profile_recipe.md) — load-only timeouts are CPU-bound; in-test inspector profile, split tests, no real sleeps
+- [NEO-639 chip years + failed lookup tests](reference_neo639_chip_years_and_failed_lookup_tests.md) — reaching an unselected chip, cap vs per-player tie, stints read-cap guard

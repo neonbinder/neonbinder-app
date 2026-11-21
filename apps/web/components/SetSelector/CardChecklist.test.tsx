@@ -200,7 +200,10 @@ vi.mock("./EntityReviewWizard", () => ({
     careerContext,
     title,
     teamlessPlayerNames,
+    setNoTeam,
   }: {
+    // NEO-639 (decision A) — the node's own default is "No Team".
+    setNoTeam?: boolean;
     // NEO-574 — the career step, reduced to the parent's half: the context it
     // is handed, and the answer channel.
     onCareerChange?: (fields: unknown) => void;
@@ -278,6 +281,7 @@ vi.mock("./EntityReviewWizard", () => ({
       {cardsWithSettledTeam && (
         <p>{`Settled-team positions: [${cardsWithSettledTeam.join(",")}]`}</p>
       )}
+      {setNoTeam !== undefined && <p>{`Set No Team: ${setNoTeam ? "yes" : "no"}`}</p>}
       {cardsWithNoPlayers && (
         <p>{`No-player positions: [${cardsWithNoPlayers.join(",")}]`}</p>
       )}
@@ -2453,6 +2457,42 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       expect(mockCommitChecklist).not.toHaveBeenCalled();
       // Only the new row is settled by the set's team; the existing one is asked.
       expect(screen.getByText("Settled-team positions: [1]")).toBeTruthy();
+    });
+
+    it("NEO-639: under a No Team node, a re-synced EXISTING teamless row is asked about, and the wizard is told the set says No Team", async () => {
+      state.variantRow = { value: "Test Set", noTeamDefault: { setAt: 1, setByUserId: "u" } };
+      state.cards = [
+        settledCard({ _id: "row-1", cardNumber: "1", teamOnCardIds: undefined }),
+      ];
+      mockDiffChecklist.mockResolvedValue({
+        ...emptyDiff,
+        cards: [
+          { index: 0, cardNumber: "1", cardName: "Solo One", bucket: "identical", existingId: "row-1", fields: [] },
+          { index: 1, cardNumber: "2", cardName: "Solo Two", bucket: "new", fields: [] },
+        ],
+      });
+      const { rerender } = renderChecklist();
+      await syncTeamless(rerender);
+      expect(await screen.findByText("Wizard opened teams-only")).toBeTruthy();
+      expect(screen.getByText("Set No Team: yes")).toBeTruthy();
+    });
+
+    it("NEO-639: a set-level TEAM is not a No Team: the wizard is told so", async () => {
+      state.variantRow = { value: "Test Set", teamIds: ["team-set"] };
+      state.cards = [
+        settledCard({ _id: "row-1", cardNumber: "1", teamOnCardIds: undefined }),
+      ];
+      mockDiffChecklist.mockResolvedValue({
+        ...emptyDiff,
+        cards: [
+          { index: 0, cardNumber: "1", cardName: "Solo One", bucket: "identical", existingId: "row-1", fields: [] },
+          { index: 1, cardNumber: "2", cardName: "Solo Two", bucket: "new", fields: [] },
+        ],
+      });
+      const { rerender } = renderChecklist();
+      await syncTeamless(rerender);
+      expect(await screen.findByText("Wizard opened teams-only")).toBeTruthy();
+      expect(screen.getByText("Set No Team: no")).toBeTruthy();
     });
 
     /**
