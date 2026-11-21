@@ -304,3 +304,29 @@ describe("inheritableFeatures (NEO-345)", () => {
     expect(inheritableFeatures(undefined)).toEqual({});
   });
 });
+
+// NEO-591: the publisher checklist's "Prospect" / "Prospect (X)" is born as
+// the existing Prospect Card attribute, by isRookie's route, with no typed
+// column and no marketplace token behind it.
+describe("deriveCardObservedFeatures — isProspect (NEO-591)", () => {
+  test("a prospect card is observed as the Prospect Card attribute", () => {
+    expect(deriveCardObservedFeatures({ isProspect: true })).toEqual({ isProspect: "true" });
+  });
+
+  test("sits beside the other observed facts without disturbing them", () => {
+    expect(
+      deriveCardObservedFeatures({ isProspect: true, isRookie: true, cardVariation: "Gold" }),
+    ).toEqual({ isProspect: "true", isRookie: "true", parallelName: "Gold" });
+  });
+
+  test("false or absent observes nothing (never writes \"false\")", () => {
+    expect(deriveCardObservedFeatures({ isProspect: false })).toEqual({});
+    expect(deriveCardObservedFeatures({})).toEqual({});
+  });
+
+  test("no attribute token or marketplace wording makes a card a prospect", () => {
+    expect(deriveCardObservedFeatures({ attributes: ["PROSPECT", "Prospect", "RC"] })).toEqual({
+      isRookie: "true",
+    });
+  });
+});

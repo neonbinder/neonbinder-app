@@ -602,6 +602,30 @@ describe("teams.nearMatches offers every era, labelled", () => {
       { from: 2011 },
     ]);
   });
+
+  test("a caller that lists more than five rows can ask for all of them (the review step's count matches its list)", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSportWithSet(t, "1985");
+    await t.run(async (ctx) => {
+      for (let era = 0; era < 7; era += 1) {
+        await ctx.db.insert("teams", {
+          name: "Jets",
+          location: "Winnipeg",
+          nameNormalized: normalizeTeamName(JETS),
+          sportId,
+          yearsActive: { from: 1900 + era * 10, to: 1905 + era * 10 },
+          lastUpdated: 1,
+        });
+      }
+    });
+    const asAdmin = t.withIdentity(ADMIN);
+
+    // The default is five; asking for seven returns all seven.
+    expect(await asAdmin.query(api.teams.nearMatches, { name: JETS, sportId })).toHaveLength(5);
+    expect(
+      await asAdmin.query(api.teams.nearMatches, { name: JETS, sportId, limit: 7 }),
+    ).toHaveLength(7);
+  });
 });
 
 // ---------------------------------------------------------------------------

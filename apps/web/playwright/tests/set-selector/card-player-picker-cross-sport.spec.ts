@@ -28,7 +28,8 @@ test(
 
     await signIn("/admin/players");
     await expect(page.getByText(/^[\d,]+ players?$/)).toBeVisible({ timeout: LAUNCH_GATE });
-    await expectAccessible(page, { label: "Players admin page" });
+    // No axe here (NEO-628): the unfiltered Players page on arrival is owned by
+    // admin/players-list-at-catalogue-scale, which checks the identical state.
 
     // A football player, made by hand.
     await addPlayerByHand(page, PLAYER, "Football");

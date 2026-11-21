@@ -14,6 +14,10 @@ import { ConvexError, v, type Infer } from "convex/values";
 import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
 import { rowHasNoNumber } from "../../lib/checklists/match-published-checklist";
 import { isNoClaimTeamText, isNoTeamText } from "../../lib/checklists/no-team";
+import { readProspectCell } from "../../lib/checklists/prospect";
+import { mixedProspectClaim } from "../../lib/checklists/prospect-team-text";
+import { MAX_VARIATION_NAME } from "../../lib/checklists/parse-published-checklist";
+import { normalizeEntityName } from "../../lib/entities/normalize-name";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../features/cardAttention";
 import type { publishedChecklistStoredRowValidator } from "../schema";
 
@@ -42,6 +46,19 @@ export const publishedChecklistRowValidator = v.object({
   // string that is exactly "No Team", so a row sent either way reads the
   // same, and refuses a row that says No Team and names a team.
   noTeam: v.optional(v.boolean()),
+  // NEO-591 — the team cell said "Prospect" / "Prospect (X)": the card is a
+  // prospect, and X is its printed team (already in `teams`). The re-check
+  // below also reads a prospect cell from a lone team string, so a row sent
+  // either way reads the same.
+  prospect: v.optional(v.boolean()),
+  // NEO-591 — which of `teams` sat inside the Prospect parens (display only; see
+  // `publishedChecklistStoredRowValidator`). The re-check keeps it only on a
+  // Prospect row, only as a strict subset of `teams`, and within the team caps.
+  prospectClaimedTeams: v.optional(v.array(v.string())),
+  // NEO-591 (variations) — the checklist's note for a variation row ("photo
+  // variation"). Control characters are stripped and a name over
+  // `MAX_VARIATION_NAME` is refused by the re-check below.
+  variationName: v.optional(v.string()),
   // The parser's subset label (a file's "set" / "insert" column). The
   // client chooses rows by it; the fetch never reads it and drops it in
   // `checkPublishedChecklist`. Accepted so a row is sent as parsed.
@@ -86,6 +103,16 @@ const PUBLISHED_CHECKLIST_NUMBER_CHARS = /^[#A-Za-z0-9. -]*$/;
  * the parser's own list) as the row's only team is dropped, the same as a
  * blank cell, so a caller cannot plant a team named "None". Beside another
  * team it is kept as sent, exactly as the parser keeps it.
+ *
+ * NEO-591: a row is a Prospect row (`prospect: true`) when the client flagged
+ * it or any of its team strings is a whole prospect cell (`readProspectCell`,
+ * read string by string; the other strings stay teams). Each X is the card's
+ * printed team: it joins `teams` after the others, deduped, within a card's
+ * team cap. A bare Prospect (no X, no other team) is a No Team row
+ * (`noTeam: true`); a No Team row that names an X contradicts itself and
+ * refuses the whole checklist. `prospectClaimedTeams` (display only) is kept
+ * only on a Prospect row, only when some but not all of `teams` were inside
+ * the parens, and never names a team the row does not (`mixedProspectClaim`).
  */
 export function checkPublishedChecklist(
   published: PublishedChecklist | undefined,
@@ -118,6 +145,19 @@ export function checkPublishedChecklist(
     if (row.subset !== undefined && row.subset.trim().length > MAX_PLAYER_NAME_LENGTH) {
       throw new ConvexError(`${where} has a set name over ${MAX_PLAYER_NAME_LENGTH} characters.`);
     }
+    // NEO-591 — the variation note: control, bidi and zero-width format
+    // characters out (a name never carries one; the set is the parser's own:
+    // U+061C, U+200B-200F, U+2028/2029, U+202A-202E, U+2066-2069, U+FEFF), whitespace
+    // folded, its own bound (not a player's).
+    const variationName = (row.variationName ?? "")
+      .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (variationName.length > MAX_VARIATION_NAME) {
+      throw new ConvexError(
+        `${where} has a variation name over ${MAX_VARIATION_NAME} characters.`,
+      );
+    }
     const clean = (names: string[], max: number, unit: string) => {
       if (names.length > MAX_PUBLISHED_ROW_NAMES) {
         throw new ConvexError(
@@ -140,9 +180,47 @@ export function checkPublishedChecklist(
     // A no-claim word is dropped only as the whole cell (one string), as the
     // parser reads it; beside a team it is left as it is, like the client.
     const cleaned = clean(row.teams, MAX_CARD_TEAMS, "team");
-    const named = cleaned.length === 1 && isNoClaimTeamText(cleaned[0]) ? [] : cleaned;
-    const teams = named.filter((t) => !isNoTeamText(t));
-    const noTeam = row.noTeam === true || teams.length < named.length;
+    // NEO-591 — each team string is read on its own: a string that is a whole
+    // prospect cell (`readProspectCell`) is the claim, any other stays a team,
+    // so ["Mets", "Prospect (Oklahoma)"] reads as the parser reads a cell
+    // "Mets / Prospect (Oklahoma)": Mets and Oklahoma. The parser's own row
+    // carries the claim as a flag and leaves no such string.
+    const prospectCells = cleaned.map((team) => readProspectCell(team));
+    const cellTeams = cleaned.filter((_, i) => prospectCells[i] === null);
+    const claimedX = prospectCells
+      .flatMap((cell) => (cell?.team ? [cell.team] : []))
+      .filter((x) => !isNoClaimTeamText(x) && !isNoTeamText(x));
+    const prospect = row.prospect === true || prospectCells.some((cell) => cell !== null);
+    const named = cellTeams.length === 1 && isNoClaimTeamText(cellTeams[0]) ? [] : cellTeams;
+    const plainTeams = named.filter((t) => !isNoTeamText(t));
+    // Each X joins the other teams, deduped as a card's teams are (the same
+    // folded key), in sent order.
+    const seen = new Set(plainTeams.map((t) => normalizeEntityName(t)));
+    const teams = [...plainTeams];
+    for (const x of claimedX) {
+      const key = normalizeEntityName(x);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      teams.push(x);
+    }
+    if (teams.length > MAX_CARD_TEAMS) {
+      throw new ConvexError(
+        `${where} names ${teams.length} teams; the limit is ${MAX_CARD_TEAMS}.`,
+      );
+    }
+    // Display only: the teams inside the Prospect parens, when only some were.
+    // The X of each prospect cell sent as a string, plus the list the client
+    // sent (held to the same caps as teams), narrowed to `teams` by
+    // `mixedProspectClaim`; a row that is not a Prospect row keeps none.
+    const sentClaimed = clean(row.prospectClaimedTeams ?? [], MAX_CARD_TEAMS, "prospect team");
+    // A row that says nothing about it (the client sent no list and no cell
+    // string was a prospect cell) keeps none: every team was inside.
+    const claimKnown = row.prospectClaimedTeams !== undefined || prospectCells.some((cell) => cell !== null);
+    const prospectClaimedTeams =
+      prospect && claimKnown ? mixedProspectClaim(teams, [...claimedX, ...sentClaimed]) : undefined;
+    // A bare "Prospect" is the No Team claim, unless the row names a team.
+    const bareProspect = prospect && teams.length === 0;
+    const noTeam = row.noTeam === true || plainTeams.length < named.length || bareProspect;
     if (noTeam && teams.length > 0) {
       throw new ConvexError(`${where} says No Team and names a team.`);
     }
@@ -152,6 +230,9 @@ export function checkPublishedChecklist(
       teams,
       ...(rowHasNoNumber({ number, noNumber: row.noNumber }) ? { noNumber: true } : {}),
       ...(noTeam ? { noTeam: true } : {}),
+      ...(prospect ? { prospect: true } : {}),
+      ...(prospectClaimedTeams ? { prospectClaimedTeams } : {}),
+      ...(variationName ? { variationName } : {}),
     };
   });
   return { rows };

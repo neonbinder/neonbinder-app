@@ -250,3 +250,44 @@ describe("countPairingEdits", () => {
     ).toBe(2);
   });
 });
+
+/**
+ * NEO-591 (variations) — cards NB created arrive already in Keeping. That is
+ * not the operator's work; taking one out is, and it leaves no trace but the
+ * key's absence from the shelves.
+ */
+describe("countPairingEdits with pre-kept cards", () => {
+  test("a pre-kept card left in Keeping counts for nothing", () => {
+    expect(
+      countPairingEdits(
+        state({ keptBsc: [{ ref: "v1" }], preKeptKeys: new Set(["v1"]) }),
+        keyOf,
+      ),
+    ).toBe(0);
+  });
+
+  test("taking a pre-kept card out counts as one", () => {
+    expect(
+      countPairingEdits(state({ preKeptKeys: new Set(["v1"]) }), keyOf),
+    ).toBe(1);
+  });
+
+  test("a card the operator kept is one, beside a pre-kept one left alone", () => {
+    expect(
+      countPairingEdits(
+        state({
+          keptBsc: [{ ref: "v1" }],
+          keptSl: [{ ref: "own" }],
+          preKeptKeys: new Set(["v1"]),
+        }),
+        keyOf,
+      ),
+    ).toBe(1);
+  });
+
+  test("with no pre-kept keys every kept card counts, as before", () => {
+    expect(
+      countPairingEdits(state({ keptBsc: [{ ref: "a" }, { ref: "b" }] }), keyOf),
+    ).toBe(2);
+  });
+});

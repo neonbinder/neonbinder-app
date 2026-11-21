@@ -89,6 +89,47 @@ describe("the seller client's calls", () => {
     expect(r.ok ? "" : r.failure.message).toBe(BSC_SELLER_COPY.tooBig);
   });
 
+  test("NEO-628: the gate is keyed on the token owner's domain: the one deployment key on real BSC", async () => {
+    vi.stubGlobal("fetch", (async () => new Response("{}", { status: 200 })) as typeof fetch);
+    const gate = openBscGate();
+    await readBscOrder({ runAction: vi.fn(), ...gate.ctx } as never, session(), "o-1");
+    const keys = gate.ctx.runMutation.mock.calls.map((c) => (c[1] as { key?: string }).key);
+    expect(keys.length).toBeGreaterThan(0);
+    for (const key of keys) expect(key).toBe("deployment");
+    for (const c of gate.ctx.runQuery.mock.calls) {
+      expect((c as unknown as [unknown, { key?: string }])[1]?.key ?? "deployment").toBe("deployment");
+    }
+  });
+
+  test("NEO-628: on the fake the gate is keyed on the owner's namespace, and two owners get two keys", async () => {
+    const origin = "https://neonbinder-fake-bsc-0000-uc.a.run.app";
+    vi.stubEnv("NEONBINDER_BSC_API_BASE", origin);
+    vi.stubEnv("NEONBINDER_FAKE_BSC_KEY", "k");
+    vi.stubEnv("TESTING_RESET_SECRET", "armed");
+    vi.stubEnv("CONVEX_CLOUD_URL", "https://happy-otter-123.convex.cloud");
+    try {
+      vi.stubGlobal("fetch", (async () => new Response("{}", { status: 200 })) as typeof fetch);
+      const mint = vi.fn(async () => ({ audience: origin, token: "id-token", expiresAt: Date.now() + 3_600_000 }));
+      const keyFor = async (ownerId: string) => {
+        const gate = openBscGate();
+        await readBscOrder(
+          { runAction: mint, ...gate.ctx } as never,
+          { ownerId, token: "tok", reauthAttempted: false, dead: false },
+          "o-1",
+        );
+        return new Set(gate.ctx.runMutation.mock.calls.map((c) => (c[1] as { key?: string }).key));
+      };
+      const a = await keyFor("user_2aaaaAAAAA");
+      const b = await keyFor("user_2bbbbBBBBB");
+      expect(a.size).toBe(1);
+      expect([...a][0]).toMatch(/^ns:happy-otter-123-[0-9a-f]{12}$/);
+      expect([...b][0]).toMatch(/^ns:happy-otter-123-[0-9a-f]{12}$/);
+      expect([...a][0]).not.toBe([...b][0]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   test("a redirect BSC answers with is a network failure, not a followed request", async () => {
     vi.stubGlobal("fetch", (async () => {
       throw new TypeError("fetch failed: unexpected redirect");

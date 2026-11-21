@@ -249,17 +249,17 @@ runpr
 [ "$rc" = 0 ] && echo "$out" | grep -q 'skipped by design (inert paths NEO-627' && echo "$out" | tail -1 | grep -q '^DONE GREEN'; r=$?
 check "E2E skipped by design reads as skipped, CI Gate decides green" "$r"
 
-# NEO-627 fail fast: desktop red, seed-mobile skipped. DONE FAILED lists the desktop
+# NEO-627 fail fast (NEO-628: seed-mobile ends green without resetting): desktop red, shard-mobile skipped. DONE FAILED lists the desktop
 # job first and says mobile was skipped.
 fresh
-roll aaa "$VERCEL" 'E2E / e2e:COMPLETED:FAILURE' 'E2E / seed-mobile:COMPLETED:SKIPPED' 'E2E / shard-desktop (3, 8):COMPLETED:FAILURE' > "$FIX/pr.json.1"
+roll aaa "$VERCEL" 'E2E / e2e:COMPLETED:FAILURE' 'E2E / seed-mobile:COMPLETED:SUCCESS' 'E2E / shard-mobile:COMPLETED:SKIPPED' 'E2E / shard-desktop (3, 8):COMPLETED:FAILURE' > "$FIX/pr.json.1"
 runpr
 [ "$rc" = 1 ] && echo "$out" | grep -q '^DONE FAILED.*failing check(s): E2E / shard-desktop (3, 8), E2E / e2e · mobile skipped: desktop red (fail fast)'; r=$?
 check "desktop red with mobile skipped: desktop first, fail-fast note" "$r"
 
-# A skipped seed-mobile with no desktop failure gets no fail-fast note.
+# Mobile shards that ran (and failed) with no desktop failure get no fail-fast note.
 fresh
-roll aaa "$VERCEL" 'E2E / seed-mobile:COMPLETED:SKIPPED' 'E2E / shard-mobile (1, 8):COMPLETED:FAILURE' > "$FIX/pr.json.1"
+roll aaa "$VERCEL" 'E2E / seed-mobile:COMPLETED:SUCCESS' 'E2E / shard-mobile (1, 8):COMPLETED:FAILURE' > "$FIX/pr.json.1"
 runpr
 if echo "$out" | grep -q 'fail fast'; then r=1; else r=0; fi; check "no fail-fast note without a desktop red" "$r"
 
@@ -271,21 +271,21 @@ runpr
 if echo "$out" | grep -q 'skipped by design'; then r=1; else r=0; fi; check "skipped caller with E2E child jobs is not 'skipped by design'" "$r"
 
 fresh
-roll aaa "$VERCEL" 'E2E / e2e:COMPLETED:FAILURE' 'E2E / seed-mobile:COMPLETED:SKIPPED' 'E2E / shard-desktop (2, 8):COMPLETED:FAILURE' 'E2E / shard-mobile (1, 8):COMPLETED:FAILURE' > "$FIX/pr.json.1"
+roll aaa "$VERCEL" 'E2E / e2e:COMPLETED:FAILURE' 'E2E / seed-mobile:COMPLETED:SUCCESS' 'E2E / shard-desktop (2, 8):COMPLETED:FAILURE' 'E2E / shard-mobile:COMPLETED:SKIPPED' > "$FIX/pr.json.1"
 runpr
 [ "$rc" = 1 ] && echo "$out" | grep -q 'failing check(s): E2E / shard-desktop (2, 8), .*mobile skipped: desktop red (fail fast)'; r=$?
-check "desktop and non-desktop red, seed-mobile skipped: desktop first, note" "$r"
+check "desktop and non-desktop red, mobile shards skipped: desktop first, note" "$r"
 
 fresh
-roll aaa "$VERCEL" 'E2E / seed-mobile:COMPLETED:SUCCESS' 'E2E / shard-desktop (2, 8):COMPLETED:FAILURE' > "$FIX/pr.json.1"
+roll aaa "$VERCEL" 'E2E / seed-mobile:COMPLETED:SUCCESS' 'E2E / shard-mobile (1, 8):COMPLETED:SUCCESS' 'E2E / shard-desktop (2, 8):COMPLETED:FAILURE' > "$FIX/pr.json.1"
 runpr
-if echo "$out" | grep -q 'fail fast'; then r=1; else r=0; fi; check "desktop red with seed-mobile run: no fail-fast note" "$r"
+if echo "$out" | grep -q 'fail fast'; then r=1; else r=0; fi; check "desktop red with the mobile shards run: no fail-fast note" "$r"
 
 fresh
-roll aaa "$VERCEL" 'E2E / e2e:COMPLETED:FAILURE' 'E2E / seed-mobile:COMPLETED:SKIPPED' 'E2E / BSC breaker specs (desktop):COMPLETED:FAILURE' > "$FIX/pr.json.1"
+roll aaa "$VERCEL" 'E2E / e2e:COMPLETED:FAILURE' 'E2E / seed-mobile:COMPLETED:SUCCESS' 'E2E / shard-mobile:COMPLETED:SKIPPED' 'E2E / shard-desktop (5, 8):COMPLETED:FAILURE' > "$FIX/pr.json.1"
 runpr
-[ "$rc" = 1 ] && echo "$out" | grep -q 'failing check(s): E2E / BSC breaker specs (desktop), E2E / e2e · mobile skipped: desktop red (fail fast)'; r=$?
-check "only the desktop breaker red: first, with the note" "$r"
+[ "$rc" = 1 ] && echo "$out" | grep -q 'failing check(s): E2E / shard-desktop (5, 8), E2E / e2e · mobile skipped: desktop red (fail fast)'; r=$?
+check "a single desktop shard red, mobile skipped: first, with the note" "$r"
 
 # NEO-627 N1: E2E skipped but CI Gate failed (e.g. web-preview failed): no "by design".
 fresh

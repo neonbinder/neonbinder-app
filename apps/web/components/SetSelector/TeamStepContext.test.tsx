@@ -84,6 +84,20 @@ describe("candidateLinkLabels", () => {
   });
 });
 
+describe("candidatesIntro", () => {
+  it("says 'by that name' for rows that answer to the printed text", () => {
+    expect(candidatesIntro(3)).toBe("We've got 3 teams by that name. Pick the one on these cards.");
+  });
+
+  it("says where the teams are from when the text is a place, never 'by that name'", () => {
+    expect(candidatesIntro(6, "New York")).toBe(
+      "We've got 6 teams from New York. Pick the one on these cards.",
+    );
+    // A blank place falls back to the name wording rather than 'from .'.
+    expect(candidatesIntro(2, "  ")).toBe(candidatesIntro(2));
+  });
+});
+
 describe("TeamStepContext", () => {
   const reviewRowId = "row-1" as unknown as Id<"entityReviewQueue">;
   const context = (candidates: TeamStepCandidate[]) => ({
@@ -94,7 +108,9 @@ describe("TeamStepContext", () => {
   });
   // A FRESH element per render: a rerender of the same element bails out and
   // never re-reads the module-state mock.
-  const panel = () => <TeamStepContext reviewRowId={reviewRowId} onLink={vi.fn()} />;
+  const panel = () => (
+    <TeamStepContext reviewRowId={reviewRowId} printedName="New York" onLink={vi.fn()} />
+  );
 
   beforeEach(() => {
     answer = undefined;
@@ -106,6 +122,20 @@ describe("TeamStepContext", () => {
     for (const name of [candidatesIntro(2), "Printed on 1 card"]) {
       expect((await screen.findByRole("list", { name })).getAttribute("role")).toBe("list");
     }
+  });
+
+  it("leads a place's teams with 'from <place>', and a name's with 'by that name'", async () => {
+    answer = { ...context([cand("a", "1903–present"), cand("b", "1962–present")]), fromPlace: true };
+    const { unmount } = render(panel());
+    const list = await screen.findByRole("list", { name: candidatesIntro(2, "New York") });
+    expect(list.getAttribute("aria-labelledby")).toBe(screen.getByRole("status").id);
+    expect(screen.queryByText(/by that name/)).toBeNull();
+    unmount();
+
+    answer = context([cand("a", "1903–present"), cand("b", "1962–present")]);
+    render(panel());
+    expect(await screen.findByRole("list", { name: candidatesIntro(2) })).toBeTruthy();
+    expect(screen.queryByText(/from New York/)).toBeNull();
   });
 
   it("names both lists by their visible lead-in (aria-labelledby), not by a separate label", async () => {

@@ -43,7 +43,8 @@
 
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ANNOUNCE_AFTER_MS } from "../modules/WaitingOnMarketplace";
 import type { Id } from "../../convex/_generated/dataModel";
 import { NO_MARKETPLACE_IDS_MESSAGE } from "../../convex/marketplaceResolvability";
 import {
@@ -335,6 +336,26 @@ vi.mock("./EntityReviewWizard", () => ({
           }
         >
           Report career answers
+        </button>
+      )}
+      {onCareerChange && (
+        <button
+          type="button"
+          onClick={() =>
+            onCareerChange({
+              stints: [],
+              cardEdits: [{ newPlayerByName: [{ name: "Solo Player", ref: "np-one" }] }, undefined],
+              newPlayers: [
+                {
+                  ref: "np-one",
+                  name: "Other Person",
+                  stints: [{ teamId: "t-solo", fromYear: 2022, toYear: 2022 }],
+                },
+              ],
+            })
+          }
+        >
+          Report a new player
         </button>
       )}
       {onCareerChange && (
@@ -1690,6 +1711,29 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       expect(args.cards[1].teams).toEqual(["Solo Team"]);
     });
 
+    it("NEO-591: sends the new players at the top level and the ref on the card", async () => {
+      state.variantRow = { value: "Test Set", features: { autographFormat: "On Card" } };
+      const { rerender } = renderChecklist();
+      await syncPlayers(rerender, careerContext);
+      await screen.findByText("Wizard opened teams-only");
+      fireEvent.click(screen.getByText("Report a new player"));
+      await act(async () => {
+        fireEvent.click(screen.getByText("Confirm entity review"));
+      });
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+      const args = mockCommitChecklist.mock.calls[0][0];
+      expect(args.careerNewPlayers).toEqual([
+        {
+          ref: "np-one",
+          name: "Other Person",
+          stints: [{ teamId: "t-solo", fromYear: 2022, toYear: 2022 }],
+        },
+      ]);
+      expect(args.cards[0].newPlayerByName).toEqual([{ name: "Solo Player", ref: "np-one" }]);
+      expect(args.cards[1]).not.toHaveProperty("newPlayerByName");
+      expect(args).not.toHaveProperty("careerStints");
+    });
+
     it("an answer withdrawn sends no stints", async () => {
       state.variantRow = { value: "Test Set", features: { autographFormat: "On Card" } };
       const { rerender } = renderChecklist();
@@ -1703,6 +1747,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
       const args = mockCommitChecklist.mock.calls[0][0];
       expect(args).not.toHaveProperty("careerStints");
+      expect(args).not.toHaveProperty("careerNewPlayers");
       expect(args.cards[1].teams).toEqual(["Solo Team"]);
     });
   });
@@ -6413,6 +6458,7 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
   }
 
   it("NEO-487: a single build's wait line stays while another insert's run goes elsewhere — one line, never two (NEO-496)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     state.marketplaceWait = { waitingSince: 1, accumulatedMs: 0 };
     // An empty parallel: its button builds at once, no rebuild confirm.
     state.cards = [];
@@ -6435,9 +6481,10 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
       const { rerender } = render(<CardChecklist {...props} parallelRun={idle} />);
       // This row's own build, held up on the marketplace: its line shows.
       fireEvent.click(screen.getByRole("button", { name: "Build from Anime" }));
-      await waitFor(() => expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1), {
-        timeout: 3000,
+      await act(async () => {
+        vi.advanceTimersByTime(ANNOUNCE_AFTER_MS);
       });
+      expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1);
       // A run of another insert's parallels starts while that build is still
       // in flight (the operator saved the insert, then came back here).
       // NEO-496: that run's ledger belongs to its insert, not this row, so it
@@ -6457,9 +6504,7 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
         waitKey: "run-key",
       });
       rerender(<CardChecklist {...props} parallelRun={{ ...running, buildOne: idle.buildOne }} />);
-      await waitFor(() => expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1), {
-        timeout: 3000,
-      });
+      expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1);
       // And it is the build's line: no ledger for the other insert's run.
       const line = screen.getByText("Waiting on BuySportsCards…");
       expect(line.closest("section")?.textContent ?? "").not.toContain("Other Insert");
@@ -7401,4 +7446,91 @@ describe("CardChecklist — NEO-556 quick-add No Team", () => {
     });
     expect(mockAddCustomCard.mock.calls[0][0]).not.toHaveProperty("teamNone");
   });
+});
+
+/**
+ * NEO-487 / NEO-628 — the Set Builder's own "Waiting on BuySportsCards…" line
+ * during a Sync. It reads the run's `marketplaceWaits` row (mocked here as a
+ * wait that began long ago, so the 1.5 s client gate is the only delay).
+ *
+ *   - A one-marketplace Sync mounts no Match Cards dialog, so the PAGE shows
+ *     the line.
+ *   - A two-marketplace Sync opens Match Cards at once (`pairingPhase` is
+ *     "review"), and the page's line stands down: the dialog carries its own,
+ *     so the sentence is on screen exactly once, inside the dialog.
+ *   - NEO-624: "review" starts BEFORE the BuySportsCards call goes out, but
+ *     the dialog mounts only once the first rows stream in. Until it does the
+ *     page's line is the only thing saying what the fetch waits on, so it
+ *     stays up; the hand-over to the dialog's line leaves exactly one.
+ */
+describe("CardChecklist — the Sync wait line (NEO-487)", () => {
+  const WAIT = "Waiting on BuySportsCards…";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.skippedNames = [];
+    state.marketplaceWait = { waitingSince: 1, accumulatedMs: 0 };
+    mockDiscardCandidates.mockResolvedValue(undefined);
+    mockFetchChecklist.mockImplementation(() => new Promise(() => {}));
+  });
+
+  afterEach(() => {
+    state.marketplaceWait = undefined;
+  });
+
+  it("a one-marketplace Sync shows the wait line on the page, with no dialog around it", async () => {
+    state.ancestorChain = soloSlChain();
+    state.liveCandidates = null;
+    renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+
+    const line = await screen.findByText(WAIT, {}, { timeout: 3000 });
+    expect(screen.getAllByText(WAIT)).toHaveLength(1);
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+    expect(line.closest('[role="dialog"]')).toBeNull();
+    // The sentence is the status region's, with the running time after it.
+    expect(line.closest('[role="status"]')?.textContent).toMatch(/^Waiting on BuySportsCards…\s*\d+/);
+  });
+
+  it("a two-marketplace Sync shows the line once, inside Match Cards, and not on the page behind it", async () => {
+    state.ancestorChain = twoSidedChain();
+    state.liveCandidates = { ready: 1, total: 1, cards: [streamedCandidate] };
+    renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+    const line = await screen.findByText(WAIT, {}, { timeout: 3000 });
+    expect(screen.getAllByText(WAIT)).toHaveLength(1);
+    expect(line.closest('[role="dialog"]')).not.toBeNull();
+  });
+
+  it("a two-marketplace Sync keeps the page's line up until Match Cards mounts, then hands it to the dialog (NEO-624)", async () => {
+    state.ancestorChain = twoSidedChain();
+    // No rows have streamed in yet: the review phase is set, the dialog is not
+    // mounted, and the BuySportsCards call is the thing being waited on.
+    state.liveCandidates = null;
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+
+    const pageLine = await screen.findByText(WAIT, {}, { timeout: 3000 });
+    expect(screen.getAllByText(WAIT)).toHaveLength(1);
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+    expect(pageLine.closest('[role="dialog"]')).toBeNull();
+
+    // The first rows arrive and Match Cards mounts: the page's line stands down
+    // in the same render, the dialog's own takes over after its 1.5 s gate.
+    await streamCandidates(rerender, { ready: 1, total: 1, cards: [streamedCandidate] });
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+    expect(screen.queryByText(WAIT)).toBeNull();
+
+    const dialogLine = await screen.findByText(WAIT, {}, { timeout: 3000 });
+    expect(screen.getAllByText(WAIT)).toHaveLength(1);
+    expect(dialogLine.closest('[role="dialog"]')).not.toBeNull();
+  });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });

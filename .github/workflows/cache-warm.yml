@@ -1,0 +1,68 @@
+name: Cache Warm
+
+# NEO-628: keeps the default-branch dependency caches current.
+#
+# `.github/actions/web-deps` caches apps/web/node_modules and Playwright's
+# Chromium under exact keys (lockfile hash, Playwright version, runner image).
+# GitHub scopes a cache to the ref that saved it. A job can restore its own
+# ref's caches and the DEFAULT branch's, nothing else:
+#   - a pull_request run writes to refs/pull/<N>/merge (readable only by that
+#     PR's own runs);
+#   - a merge_group run writes to its refs/heads/gh-readonly-queue/main/...
+#     branch, which no later run can read;
+#   - so the only cache every PR run and every merge-queue run can hit on its
+#     first job is the one saved from refs/heads/main.
+# This workflow is what saves it, so a queue run does not start cold.
+#
+# Triggers, all of which run this file as it exists on the default branch:
+#   - workflow_run: Release completed on main (the merge that changed the
+#     lockfile or the Playwright pin has just landed);
+#   - weekly: a cache unused for 7 days is evicted, and a hit refreshes it;
+#   - workflow_dispatch: after a manual cache delete, or to prime a new image.
+#
+# SECURITY. The only writers of a main-scoped web-nm-* / pw-chromium-* cache
+# are this workflow and a manual dispatch of pr-pipeline.yml or e2e.yml on main
+# (release.yml does not use web-deps), all running main's own reviewed code. A
+# pull request, fork or Dependabot run can only write to its own
+# refs/pull/<N>/merge scope, which main, merge-queue and other-PR runs cannot
+# restore, so a PR can poison only its own later runs (code it already
+# controls). The job has no secrets, no
+# id-token and `contents: read`; the guard below refuses to run on anything but
+# main so a dispatch from a feature branch cannot write a branch-scoped copy.
+# Never add a secret to this job: it executes `npm ci` (install scripts) from
+# main.
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: cache-warm
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  warm:
+    name: Warm web dependency caches (main)
+    if: >-
+      (github.event_name != 'workflow_run' ||
+        (github.event.workflow_run.conclusion == 'success' &&
+         github.event.workflow_run.head_branch == 'main')) &&
+      (github.event_name == 'workflow_run' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      # The default branch's latest commit: for workflow_run, schedule and a
+      # dispatch on main alike, github.sha is that commit.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/web-deps

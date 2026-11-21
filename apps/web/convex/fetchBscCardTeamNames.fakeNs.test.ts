@@ -96,3 +96,75 @@ describe("fetchBscCardTeamNames on the fake", () => {
     expect(seen).toEqual([null]);
   });
 });
+
+// NEO-628 — the gate is keyed on the SAME value the call is sent as.
+describe("the gate key is the namespace the call is sent as", () => {
+  const gateScopes = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) => (await ctx.db.query("marketplaceCallGates").collect()).map((r) => r.scope));
+
+  /** Answers 429 for namespace `bad`, a team for every other; records each call's ns. */
+  function stub429For(bad: string): Array<string | null> {
+    const seen: Array<string | null> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        const ns = new Headers(init.headers).get(FAKE_BSC_NS_HEADER);
+        seen.push(ns);
+        return ns === bad
+          ? new Response("", { status: 429, headers: { "retry-after": "60" } })
+          : new Response(JSON.stringify({ teamName: "Reds" }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+      }),
+    );
+    return seen;
+  }
+
+  test("a signed-in caller's 429 opens THEIR namespace's gate, and another user's lookup still goes", async () => {
+    armFake();
+    const other = "user_2zzzOTHERuser";
+    const mine = fakeBscNamespaceFor(SUBJECT, CLOUD_URL);
+    const seen = stub429For(mine);
+    const t = convexTest(schema, modules);
+    const lookup = (subject: string) =>
+      t
+        .withIdentity({ subject })
+        .action(internal.adapters.buysportscards.fetchBscCardTeamNames, { bscCardIds: ["1"] });
+
+    const first = await lookup(SUBJECT);
+    expect(first[0]).toMatchObject({ success: false });
+    expect(await gateScopes(t)).toEqual([`ns:${mine}`]);
+
+    // The same user is now refused unsent; the other user is not.
+    const again = await lookup(SUBJECT);
+    expect(again[0]).toMatchObject({ success: false, skipped: true });
+    const theirs = await lookup(other);
+    expect(theirs[0]).toMatchObject({ success: true });
+    expect(seen).toEqual([mine, fakeBscNamespaceFor(other, CLOUD_URL)]);
+    expect(await gateScopes(t)).toEqual([`ns:${mine}`]);
+  });
+
+  test("with no user the 429 is the deployment's gate (the prefix is not a namespace)", async () => {
+    armFake();
+    stub429For("happy-otter-123-");
+    const t = convexTest(schema, modules);
+    await t.action(internal.adapters.buysportscards.fetchBscCardTeamNames, { bscCardIds: ["1"] });
+    expect(await gateScopes(t)).toEqual(["deployment"]);
+  });
+
+  test("on BuySportsCards a signed-in caller's 429 is the one deployment gate", async () => {
+    vi.stubEnv("CONVEX_CLOUD_URL", CLOUD_URL);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 429, headers: { "retry-after": "60" } })));
+    const t = convexTest(schema, modules);
+    await t
+      .withIdentity({ subject: SUBJECT })
+      .action(internal.adapters.buysportscards.fetchBscCardTeamNames, { bscCardIds: ["1"] });
+    expect(await gateScopes(t)).toEqual(["deployment"]);
+    // Another user is refused by it.
+    const theirs = await t
+      .withIdentity({ subject: "user_2zzzOTHERuser" })
+      .action(internal.adapters.buysportscards.fetchBscCardTeamNames, { bscCardIds: ["1"] });
+    expect(theirs[0]).toMatchObject({ success: false, skipped: true });
+  });
+});

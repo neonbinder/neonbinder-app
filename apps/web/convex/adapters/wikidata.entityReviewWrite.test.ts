@@ -36,10 +36,11 @@
  */
 
 import { getFunctionName, type FunctionReference } from "convex/server";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import {
+  __setEmptySearchReaskBackoffForTests,
   runEntityReviewLookupImpl,
   WIKIDATA_FETCH_TIMEOUT_MS,
   type EntityReviewLookupCtx,
@@ -48,6 +49,10 @@ import { OCC_RETRY_ATTEMPTS } from "../../lib/errors/occ-retry";
 import { isNonRetryableError } from "@convex-dev/workpool";
 import { WikidataUnavailableError } from "../../lib/errors/wikidata-unavailable";
 import { __resetEspnTeamListCache } from "./espn";
+
+// The retry pause is a real timer; zero it so no test waits on the clock.
+beforeAll(() => __setEmptySearchReaskBackoffForTests(0));
+afterAll(() => __setEmptySearchReaskBackoffForTests(undefined));
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -380,7 +385,7 @@ describe("a lookup that threw (unchanged)", () => {
     // The long-standing line, kept verbatim: a thrown lookup is still a caught
     // lookup failure. What it no longer covers is the write.
     const prefixed = errorSpy.mock.calls.filter(
-      (call) => typeof call[0] === "string" && call[0].startsWith("[entity-review-lookup]"),
+      (call: unknown[]) => typeof call[0] === "string" && call[0].startsWith("[entity-review-lookup]"),
     );
     expect(prefixed).toHaveLength(1);
     expect(linesFor(errorSpy, "entity_review_lookup_write_failed")).toEqual([]);

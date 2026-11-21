@@ -48,6 +48,8 @@
 - [Fake-BSC miss store tests](reference_fake_bsc_miss_store_test_patterns.md) — unref timer hang, owner reachability, dist break-checks, sheet drift fixtures
 - [NEO-555 probe/capture adversarial](reference_neo555_probe_capture_adversarial.md) — shallow-freeze trap, signal guard, body-read leak, break-check by revert
 - [NEO-556 No Team adversarial patterns](reference_neo556_no_team_adversarial_patterns.md) — oracle cartesian, ?raw source pins, client-vs-server commit agreement
+- [NEO-591 Onyx PDF + Prospect tests](reference_neo591_onyx_pdf_prospect_test_patterns.md) — hand-built PDF pages via groupPageItems, resolver world fixture, hint-branch split, mutation driver
+- [Full-suite load vs testTimeout](patterns_full_suite_load_and_test_timeout.md) — components tests run 3-4x slower under the full suite; components project timeout 20s
 - [LiveLine effect lag](feedback_live_line_effect_lag.md) — wait on the role=status node itself, not the visible span; forced-lag proof recipe
 - [NEO-587 rAF status race sweep](reference_neo587_raf_status_race_sweep.md) — slow-rAF shim to find one-frame-late status races; useLiveWords joins words; vacuous negatives
 - [NEO-609 title levels tests](reference_neo609_title_levels_test_patterns.md) — atFullLength padding, refill hides city cuts, Proof parity fixture, tsx probe loop
@@ -56,3 +58,7 @@
 - [NEO-426 teamless sport tests](reference_neo426_teamless_sport_test_patterns.md) — chunk-direct commit tests, undefined->null in t.run, module-registry probe, break results
 - [NEO-426 client teamless tests](reference_neo426_client_teamless_test_patterns.md) — private rule via partition, unresolved-team trap, parity sweep, zsh array trap
 - [NEO-482 call order tap + mutant module](reference_neo482_call_order_tap_and_mutant_module.md) — assert internal-mutation order by wrapping _handler; break-check via mutant copy in the modules glob
+- [vi.mock concurrent-import race](reference_vi_mock_concurrent_import_race.md) — async credentials mock raced under --shard; adapter got real module; fix = top-level warm-up import
+- [NEO-628 gate key adversarial](reference_neo628_gate_key_adversarial_patterns.md) — fake acquire writes no row, source-scan control, test.fails known gaps
+- [NEO-628 guard test patterns](reference_neo628_guard_test_patterns.md) — stub AxeBuilder replace semantics, yaml job-section pins, ?raw scan with control, Sync wait-line stand-down
+- [Slow component test profile recipe](reference_slow_demo_test_profile_recipe.md) — load-only timeouts are CPU-bound; in-test inspector profile, split tests, no real sleeps

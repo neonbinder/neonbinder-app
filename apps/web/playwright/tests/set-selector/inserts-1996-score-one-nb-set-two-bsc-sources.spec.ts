@@ -219,8 +219,9 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   // ── P4. THE CARD TITLES STEP ──
   // Which post-name steps come first: the career check (NEO-574) when a known player's career
   // does not show a card's team for 1996, teams only when a card would save teamless (every
-  // card here carries the checklist's team, so normally not); Next leaves their lines on
-  // their default ("Keep as is", "Leave for later").
+  // card here carries the checklist's team, so normally not); the walk answers every career
+  // line "Keep as is" (NEO-591: the default adds the team) and leaves the teams lines on
+  // "Leave for later".
   await passCareerAndTeamsSteps(page);
   await expect(wizard.getByText("Card titles", { exact: true })).toBeVisible();
   await expect(

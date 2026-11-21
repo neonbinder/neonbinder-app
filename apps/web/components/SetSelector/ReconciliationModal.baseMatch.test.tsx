@@ -14,7 +14,8 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ConvexProvider } from "convex/react";
 import { getFunctionName } from "convex/server";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi, afterEach } from "vitest";
+import { ANNOUNCE_AFTER_MS } from "../modules/WaitingOnMarketplace";
 import type { Id } from "../../convex/_generated/dataModel";
 import {
   BASE_MATCH_COPY,
@@ -634,6 +635,7 @@ describe("ReconciliationModal Base check — Save and the strip", () => {
 
 describe("ReconciliationModal Base check — waiting on BuySportsCards (PR 451)", () => {
   test("a held BSC check call shows one wait line, keyed by the key the call carried", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const f = fake({ mode: "hold", wait: { waitingSince: 1, accumulatedMs: 0 } });
     await renderModal(f, { bsc: [item("Bsc A", "b-a")] });
 
@@ -644,14 +646,17 @@ describe("ReconciliationModal Base check — waiting on BuySportsCards (PR 451)"
     )?.[1] as { waitKey?: string };
     expect(bscArgs.waitKey).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
 
-    const line = await screen.findByText("Waiting on BuySportsCards…", {}, { timeout: 3000 });
+    await act(async () => {
+      vi.advanceTimersByTime(ANNOUNCE_AFTER_MS);
+    });
+    const line = screen.getByText("Waiting on BuySportsCards…");
     expect(line.closest('[role="status"]')).not.toBeNull();
     expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1);
     const watched = f.client.watchQuery.mock.calls.map((c) => (c[1] as { runKey: string }).runKey);
     expect(new Set(watched)).toEqual(new Set([bscArgs.waitKey]));
 
     await f.answer(bscCall!);
-    await waitFor(() => expect(screen.queryByText("Waiting on BuySportsCards…")).toBeNull());
+    expect(screen.queryByText("Waiting on BuySportsCards…")).toBeNull();
   });
 
   test("SportLots check calls carry no key", async () => {
@@ -664,4 +669,8 @@ describe("ReconciliationModal Base check — waiting on BuySportsCards (PR 451)"
     expect(slArgs.length).toBeGreaterThan(0);
     for (const a of slArgs) expect(a).not.toHaveProperty("waitKey");
   });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });

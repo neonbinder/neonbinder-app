@@ -148,46 +148,63 @@ test("every e2e-scope.sh input is wired in the scope step", () => {
 
 // --- e2e.yml -----------------------------------------------------------------------
 
-test("seed-mobile still needs both desktop jobs and runs only if both SUCCEEDED (fail fast)", () => {
+test("seed-mobile starts early (needs only setup + seed), waits for the desktop shards and gates every preview-touching step on the wait result (NEO-628, NEO-627)", () => {
   const needs = jobNeeds(e2e, "seed-mobile");
-  for (const n of ["setup", "seed", "shard-desktop", "breaker-desktop"]) assert.ok(needs.includes(n), n);
+  assert.deepEqual([...needs].sort(), ["seed", "setup"]);
   const cond = jobIf(e2e, "seed-mobile");
-  has(cond, /needs\.shard-desktop\.result\s*==\s*'success'/);
-  has(cond, /needs\.breaker-desktop\.result\s*==\s*'success'/);
   has(cond, /needs\.setup\.result\s*==\s*'success'/);
   has(cond, /needs\.seed\.result\s*==\s*'success'/);
   has(cond, /!cancelled\(\)/);
+  const text = jobLines(e2e, "seed-mobile").join("\n");
+  has(text, /desktop_green:\s*\$\{\{\s*steps\.wait\.outputs\.all_success\s*\}\}/);
+  const wait = stepText(e2e, "seed-mobile", "Wait for the desktop pass to finish");
+  has(wait, /id:\s*wait/);
+  has(wait, /--pattern '\^shard-desktop \\\(' --count 8/);
+  for (const name of [
+    "Start Convex log capture (seed-mobile)",
+    "Enrichment fixture coverage (desktop shards drained)",
+    "Record seed start time",
+    "Start Convex latency probe (mobile seed)",
+    "Scripted reset + reference catalogue for the mobile pass",
+    "Seed global baseline for the mobile pass",
+  ]) has(stepText(e2e, "seed-mobile", name), /if:\s*steps\.wait\.outputs\.all_success\s*==\s*'true'/, name);
 });
 
-test("the mobile shards and breaker hang off seed-mobile and need it to have succeeded", () => {
-  for (const job of ["shard-mobile", "breaker-mobile"]) {
-    assert.ok(jobNeeds(e2e, job).includes("seed-mobile"), `${job} needs`);
-    has(jobIf(e2e, job), /needs\.seed-mobile\.result\s*==\s*'success'/, job);
-  }
+test("no breaker job or reference remains in e2e.yml", () => {
+  assert.doesNotMatch(readText(".github/workflows/e2e.yml"), /breaker/i);
+});
+
+test("the mobile shards need seed-mobile to have succeeded AND desktop_green == 'true' (fail fast)", () => {
+  assert.ok(jobNeeds(e2e, "shard-mobile").includes("seed-mobile"));
+  const cond = jobIf(e2e, "shard-mobile");
+  has(cond, /needs\.seed-mobile\.result\s*==\s*'success'/);
+  has(cond, /needs\.seed-mobile\.outputs\.desktop_green\s*==\s*'true'/);
 });
 
 test("the e2e gate and report stay always() and see every upstream job", () => {
   assert.equal(jobIf(e2e, "e2e").trim(), "always()");
   assert.equal(jobIf(e2e, "report").trim(), "always()");
   const gateNeeds = jobNeeds(e2e, "e2e");
-  for (const n of ["setup", "seed", "shard-desktop", "breaker-desktop", "seed-mobile", "shard-mobile", "breaker-mobile"]) assert.ok(gateNeeds.includes(n), `gate needs ${n}`);
+  for (const n of ["setup", "seed", "shard-desktop", "seed-mobile", "shard-mobile"]) assert.ok(gateNeeds.includes(n), `gate needs ${n}`);
 });
 
-test("report needs seed (the desktop coverage read uses its output) and reads it only when seed-mobile was skipped", () => {
+test("report needs seed (the desktop coverage read uses its output) and reads it only when no mobile reset happened", () => {
   assert.ok(jobNeeds(e2e, "report").includes("seed"));
   const desktop = stepText(e2e, "report", "desktop shards drained, mobile skipped");
   has(desktop, /needs\.seed-mobile\.result\s*==\s*'skipped'/);
+  has(desktop, /needs\.seed-mobile\.result\s*==\s*'success'\s*&&\s*needs\.seed-mobile\.outputs\.desktop_green\s*!=\s*'true'/);
   has(desktop, /needs\.seed\.result\s*==\s*'success'/);
   has(desktop, /COVERAGE_SINCE_MS:\s*"\$\{\{\s*needs\.seed\.outputs\.seed_since_ms\s*\}\}"/);
   has(desktop, /continue-on-error:\s*true/);
   const mobile = stepText(e2e, "report", "mobile shards drained)");
   has(mobile, /needs\.seed-mobile\.result\s*!=\s*'skipped'/);
+  has(mobile, /needs\.seed-mobile\.outputs\.desktop_green\s*!=\s*'true'/);
 });
 
 test("the gate runs the tested upstream script into GITHUB_ENV, and fails on FAIL_FAST", () => {
   const upstream = stepText(e2e, "e2e", "Upstream jobs");
   has(upstream, /bash \.github\/scripts\/e2e-upstream-verdict\.sh >> "\$GITHUB_ENV"/);
-  for (const v of ["R_SETUP", "R_SEED", "R_SEED_MOBILE", "R_SHARD_DESKTOP", "R_BREAKER_DESKTOP"]) has(upstream, new RegExp(`^\\s+${v}:`, "m"), v);
+  for (const v of ["R_SETUP", "R_SEED", "R_SEED_MOBILE", "R_DESKTOP_GREEN", "R_SHARD_DESKTOP"]) has(upstream, new RegExp(`^\\s+${v}:`, "m"), v);
   const text = readText(".github/workflows/e2e.yml");
   assert.ok(text.indexOf("uses: actions/checkout", text.indexOf("\n  e2e:")) < text.indexOf("name: Upstream jobs"), "checkout must precede the script");
   const shard = stepText(e2e, "e2e", "name: Shard jobs");

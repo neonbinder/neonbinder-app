@@ -44,7 +44,15 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
+
+function armFake() {
+  vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://neonbinder-fake-bsc-0000-uc.a.run.app");
+  vi.stubEnv("NEONBINDER_FAKE_BSC_KEY", "caller-key");
+  vi.stubEnv("TESTING_RESET_SECRET", "armed");
+  vi.stubEnv("CONVEX_CLOUD_URL", "https://happy-otter-123.convex.cloud");
+}
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -910,6 +918,48 @@ describe("commitCardChecklist — re-sync of existing rows, same rule (NEO-335)"
     );
   });
 
+  test("NEO-628: the lane is handed the committing operator's subject on the fake, which the commit takes from its verified identity", async () => {
+    armFake();
+    const t = convexTest(schema, modules);
+    const { rowId } = await firstSync(t);
+    const queued = await t.run(async (ctx) =>
+      (
+        ctx as unknown as {
+          db: { system: { query: (n: string) => { collect: () => Promise<Array<{ name: string; args: unknown[] }>> } } };
+        }
+      ).db.system.query("_scheduled_functions").collect(),
+    );
+    const entries = queued
+      .filter((r) => r.name.includes("enqueueBscTeamChecks"))
+      .map((r) => r.args[0] as { cardChecklistIds?: string[]; queuedBy?: string })
+      .filter((a) => (a.cardChecklistIds ?? []).includes(rowId));
+    expect(entries.length).toBeGreaterThan(0);
+    for (const entry of entries) expect(entry.queuedBy).toBe(ADMIN_IDENTITY.subject);
+    await settle(t);
+  });
+
+  test("NEO-628 N2: on real BSC no scheduled hop carries the operator's subject (finalize, then the lane enqueue)", async () => {
+    const t = convexTest(schema, modules);
+    const { rowId } = await firstSync(t);
+    const queued = await t.run(async (ctx) =>
+      (
+        ctx as unknown as {
+          db: { system: { query: (n: string) => { collect: () => Promise<Array<{ name: string; args: unknown[] }>> } } };
+        }
+      ).db.system.query("_scheduled_functions").collect(),
+    );
+    const finalizes = queued.filter((r) => r.name.includes("commitCardChecklistFinalize"));
+    const enqueues = queued
+      .filter((r) => r.name.includes("enqueueBscTeamChecks"))
+      .map((r) => r.args[0] as { cardChecklistIds?: string[] })
+      .filter((a) => (a.cardChecklistIds ?? []).includes(rowId));
+    // The finalize hop may already have run and been swept; what is left must be clean.
+    expect(finalizes.length + enqueues.length).toBeGreaterThan(0);
+    for (const r of finalizes) expect("queuedBy" in (r.args[0] as object)).toBe(false);
+    for (const a of enqueues) expect("queuedBy" in a).toBe(false);
+    await settle(t);
+  });
+
   test("a FAILED re-sync still queues the existing teamless row", async () => {
     const t = convexTest(schema, modules);
     const { sportId, leafId, rowId } = await firstSync(t);
@@ -1056,6 +1106,29 @@ describe("commitCardChecklist — adversarial edges of the team answer (NEO-335)
     expect(row.teamNoneConfirmedAt).toBeUndefined();
     expect(row.teamNoneConfirmedByUserId).toBeUndefined();
     expect((await settle(t)).has(row._id)).toBe(false);
+  });
+
+  test("invariant 8: the set's team is NOT stamped on a card whose listing names a team the commit could not give it", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const reds = await seedTeam(t, sportId, "Cincinnati Reds");
+    await t.run(async (ctx) => ctx.db.patch(leafId, { teamIds: [reds] }));
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [
+        // BSC answered with a team NB could not split or resolve, and the
+        // operator gave no pick.
+        card({ cardNumber: "1", bscRef: "B1", teamLookup: "answered", rawTeamName: "Cardinals / Browns" }),
+        // The control: no claim at all, so the set's team is the card's.
+        card({ cardNumber: "3", bscRef: "B3", teamLookup: "answered" }),
+      ],
+    });
+
+    const rows = await rowsByNumber(t, leafId);
+    expect(rows.get("1")!.teamOnCardIds).toBeUndefined();
+    expect(rows.get("3")!.teamOnCardIds).toEqual([reds]);
   });
 
   test("a pick whose team was deleted does not count as a team: \"No team on this card\" still applies", async () => {

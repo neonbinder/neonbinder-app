@@ -262,6 +262,14 @@
 - [Wizard step status rides the footer live region](reference_wizard_step_status_rides_the_footer_live_region.md) — a step that mounts/unmounts cannot own a role=status; compute words in the wizard, step renders only Retry
 - [Host-stored count goes stale](host-stored-count-goes-stale-ask-the-door.md) — door reports live counts (onCounts + recount + countOnMount); no subscription for big parents
 - [Attributes panel collapsed tests need a non-set level](reference_attributes_panel_collapsed_tests_need_non_set_level.md) — a setName row opens itself; collapsed tests use insert/parallel or click Hide first
+- [PDF runs ride along only with evidence](reference_pdf_runs_ride_along_only_when_they_add_evidence.md) — new reader record fields move the Topps golden snapshot; gate them; tsx probes need .mts
+- [convex data caps at 8192 rows](reference_convex_data_caps_at_8192_rows.md) — page a big table read-only with --order asc/desc and dedupe by _id
+- [New candidate field needs three client hand copies](reference_new_candidate_field_needs_three_client_hand_copies.md) — pairing-cards.ts, CardChecklist resolveChecklistPairs, PairingCard type pick fields by name; grep before done
+- [macOS has no timeout](reference_macos_has_no_timeout_command.md) — `timeout N tsc | grep` is command-not-found and looks clean; run root tsc in background to a log, check count > 0
+- [New checklist row field: three copy sites](reference_new_checklist_row_field_has_three_copy_sites.md) — parser sets it; checklist-sections withoutSubset + convex validators copy it field by field
+- [Numbers-differ fixtures need non-prefix pairs](reference_numbers_differ_fixtures_need_non_prefix_pairs.md) — "12" vs "OV-12" AGREE; ABSORB re-folds initialData so seed-only mutations stay green
+- [Number picker reuses ConflictRadioGroup](reference_number_picker_reuses_conflict_radio_group.md) — stable group name across a pick; hand-link picks wait in numberPicks; minted card needs shelf picker
+- [Pickers take a source/value list](reference_pickers_take_a_source_value_list.md) — name+number pickers: pick-options.ts, adapter per wire, typed = exact, namePicks answers the wizard
 - [Wizard extra query lives in a child component](reference_wizard_extra_query_lives_in_a_child_component.md) — new per-step read: child owns useQuery; getBatch stays slim; auto-linked rows carry context too
 - [Read-only diagnosis on a deployment](reference_read_only_diagnosis_on_a_deployment.md) — convex data caps 8192; internal fns run without identity; open-wizard cards live in checklistCandidates
 - [Lead-in names its list; cached status needs a tick](reference_lead_in_p_names_its_list_and_cached_status_needs_a_tick.md) — aria-labelledby on the lead-in p; delayed status fill from a remount
@@ -280,6 +288,13 @@
 - [Client teamless default mirrors server](client-teamless-default-mirrors-server-conservatively.md) — client may ASK about a card the server stamps, never skip one it would not; gate on every server data-claim
 - [convex-test typed harness](convex-test-typed-harness-alias.md) — makeT factory alias, not bare ReturnType<typeof convexTest>
 - [Testing hop status lines are an API](reference_testing_hop_status_lines_are_an_api.md) — /testing/*-fake status lines feed DONE/FAILED regexes in playwright/support; new op = FAILED-matching refusals, report the DONE prefix
+- [Typecheck gate skips components](typecheck-gate-skips-components.md) — npm run typecheck covers convex/ only; filter the root tsc to your files
+- [Radio pill that opens a picker](radio-pill-that-opens-a-picker.md) — arrows pick only; click/Enter open; Escape returns to the opener
+- [playerLinks pin greps playerIds keys in logs](reference_playerlinks_pin_greps_playerids_keys_in_logs.md) — name log keys differently; mint-after-resolve + prelude excludePlayerCreationRefs; run full convex suite
+- [Row status region via portal](reference_row_status_region_via_portal.md) — one always-mounted role=status per row, panels createPortal text into it; dirty-after-load needs a baseline
+- [Two team resolvers after NEO-602](reference_merge_two_team_resolvers_pairing_stays_year_only.md) — card text -> resolveCardTeamName (year-only if no cards); stint/existence -> resolveTeamForSetYear
+- [Printed place reads players, never the year](reference_printed_place_reads_players_never_the_year.md) — pairing settles only a lone in-league place team; several → card rule, playersMustDecide; a marketplace team among them AGREES
 - [Latch a conditionally shown control by row id](reference_latch_a_conditionally_shown_control_by_row_id.md) — id-keyed latch keeps a gated control (and focus) mounted; sample titles via the real builder
 - [Wizard plan waits on teamless-sport mock](reference_wizard_plan_waits_on_teamless_sport_mock.md) — test useQuery mock must answer listTeamlessSportIds or the bar stays 0; how to port a new step onto trackSteps
 - [Box rule: yellow line OR over cap](reference_box_rule_is_the_yellow_line_over_cap_stays.md) — NEO-637: box used when title leaves something out or is over 80; hand edits swapped in CardTitlesStep.changeShort
+- [Stand down on mounted, not phase](reference_stand_down_on_mounted_not_on_phase.md) — page element duplicated by a dialog keys on the dialog being mounted/open, not the phase before it (NEO-624)
