@@ -7881,14 +7881,7 @@ describe("CardChecklist — Match Cards opens only when a card needs the operato
     expect(mockDiscardCandidates).not.toHaveBeenCalled();
   });
 
-  /**
-   * KNOWN GAP (found by this ticket's tests, not caused by it): `CardPairingModal`
-   * declares `cancelBtnRef` and focuses it on open, but never attaches it to the
-   * Cancel button, so no dialog open (a skipped one reopened included) puts focus
-   * anywhere inside it. One line, `ref={cancelBtnRef}` on that NeonButton, makes
-   * this pass; when it lands, drop `.fails`.
-   */
-  it.fails("Back to matching after a skip puts focus on Cancel card matching", async () => {
+  it("Back to matching after a skip puts focus on Cancel card matching", async () => {
     await skipIntoWizard();
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Back to matching" }));

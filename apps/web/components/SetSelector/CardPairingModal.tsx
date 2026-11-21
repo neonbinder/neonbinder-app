@@ -5165,6 +5165,7 @@ export default function CardPairingModal({
             </div>
             <div className="flex gap-2">
               <NeonButton
+                ref={cancelBtnRef}
                 variant="negative"
                 size="2"
                 onClick={requestClose}
