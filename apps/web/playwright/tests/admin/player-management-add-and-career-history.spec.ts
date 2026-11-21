@@ -1,7 +1,8 @@
 // Origin: .maestro/flows/admin/player-management-add-and-career-history.yaml (Maestro suite retired in NEO-341; see git history)
-// Add a player by hand, create a team from the career editor, record two
-// stints at ONE team out of order, edit the pending stint with Enter, save,
-// reload: both stints survive in year order.
+// Add a player by hand, create two teams from the career editor, swap the held
+// team for the other through "Change team" (NEO-617: a stint holds ONE team),
+// record two stints at that team out of order, edit the pending stint with
+// Enter, save, reload: both stints survive in year order.
 //
 // The player is a REAL person whose Baseball lookup the enrichment recording
 // holds as a no-match (support/recorded-names.ts): the add makes no live
@@ -17,7 +18,10 @@ test(
   async ({ page, signIn, env }) => {
     const token = env.ATTEMPT_TOKEN;
     const player = recordedNoMatchPlayer(env, "player-management-add-and-career-history");
-    const team = `PMT${token}`;
+    // `team` is the one the stints end at; `replaced` is held first and swapped
+    // out through "Change team" (SET-REGISTRY.md, PMT/PMU).
+    const team = `PMU${token}`;
+    const replaced = `PMT${token}`;
 
     await signIn("/admin/players");
     await expectPlayersLoaded(page, LAUNCH_GATE);
@@ -25,9 +29,21 @@ test(
     await addPlayerByHand(page, player, "Baseball");
     await expect(page.getByText("No stints recorded yet.")).toBeVisible();
 
-    // A team nothing matches opens the New Team dialog on Enter.
-    await page.getByRole("button", { name: "Add team" }).click();
+    const addTeam = page.getByRole("button", { name: "Add team" });
+    const changeTeam = page.getByRole("button", { name: "Change team" });
     const search = page.getByRole("textbox", { name: "Search teams" });
+    const results = page.getByRole("listbox", { name: "Team typeahead results" });
+    const fromYear = page.getByLabel(/Stint from year/);
+    const heldChips = page.getByRole("button", { name: /^Remove team / });
+    // NEO-617: focus moves to the start year after a pick, so the picker says
+    // which team was picked in a polite live region (screen-reader only: asserted
+    // by its text, never by visibility).
+    const pickedAnnouncement = (name: string) =>
+      page.getByRole("status").filter({ hasText: `Team: ${name} selected` });
+
+    // A team nothing matches opens the New Team dialog on Enter. `team` is made
+    // first so it exists to be PICKED later, then cleared with its ×.
+    await addTeam.click();
     await search.fill(team);
     await expect(page.getByText("No matches.")).toBeVisible();
     await search.press("Enter");
@@ -37,23 +53,67 @@ test(
     await expectAccessible(page, { within: dialog, label: "New Team dialog" });
     await dialog.getByRole("button", { name: `Create team ${team}` }).click();
     await expect(page.getByRole("button", { name: `Remove team ${team}` })).toBeVisible();
+    await expect(fromYear).toBeFocused(); // the dialog's create is a pick too
+    await expect(pickedAnnouncement(team)).toHaveText(`Team: ${team} selected`);
+    // NEO-617: clearing the one chip brings the "+ Add team" invitation back.
+    await page.getByRole("button", { name: `Remove team ${team}` }).click();
+    await expect(heldChips).toHaveCount(0);
+    await expect(pickedAnnouncement(team)).toHaveCount(0);
+    await expect(addTeam).toBeVisible();
+    await expect(addTeam).toBeFocused(); // the × left the page, focus did not drop to <body>
+    await expect(changeTeam).toBeHidden();
+
+    // The team that will be replaced, made the same way.
+    await addTeam.click();
+    await search.fill(replaced);
+    await expect(page.getByText("No matches.")).toBeVisible();
+    await search.press("Enter");
+    const replacedDialog = page.getByRole("dialog", { name: `New team: ${replaced}` });
+    await replacedDialog.getByRole("button", { name: `Create team ${replaced}` }).click();
+    await expect(page.getByRole("button", { name: `Remove team ${replaced}` })).toBeVisible();
+    // NEO-617: a stint has one team, so the picker no longer invites a second.
+    await expect(changeTeam).toBeVisible();
+    await expect(addTeam).toBeHidden();
+    await expect(results).toBeHidden(); // the create was the pick, so the popover closed
+    // NEO-617: the team is chosen, so focus moves on to the start year.
+    await expect(fromYear).toBeFocused();
+    await expect(pickedAnnouncement(replaced)).toHaveText(`Team: ${replaced} selected`);
+    await expectAccessible(page, { label: "Player Management, stint team held" });
+
+    // NEO-617: "Change team" reopens the same search, and a pick REPLACES the
+    // held team, closes the popover and moves focus on to the start year.
+    await changeTeam.click();
+    await expect(search).toBeVisible();
+    await expectAccessible(page, { label: "Player Management, Change team popover" });
+    await search.fill(team);
+    await expect(results.getByRole("option", { name: new RegExp(`^Add ${team}`) })).toBeVisible();
+    await search.press("Enter"); // the keyboard pick: the one filtered match is highlighted
+    await expect(results).toBeHidden();
+    await expect(fromYear).toBeFocused();
+    await expect(pickedAnnouncement(team)).toHaveText(`Team: ${team} selected`);
+    await expect(pickedAnnouncement(replaced)).toHaveCount(0);
+    await expect(heldChips).toHaveCount(1);
+    await expect(page.getByRole("button", { name: `Remove team ${team}` })).toBeVisible();
+    await expect(page.getByRole("button", { name: `Remove team ${replaced}` })).toBeHidden();
+    await expect(changeTeam).toBeVisible();
 
     // Stint 1, the LATER one, added first so the ordering assert means something.
-    await page.getByRole("heading", { name: "Career history" }).click(); // closes the typeahead
-    await page.getByLabel(/Stint from year/).fill("2010");
+    await fromYear.fill("2010");
     await page.getByLabel(/Stint to year/).fill("2012");
     await page.getByRole("button", { name: "Add stint" }).click();
     const later = page.getByRole("link", { name: new RegExp(`${team} · 2010–2012`) });
     await expect(later).toBeVisible();
+    // The stint went to the team that replaced the first, never the first.
+    await expect(page.getByRole("link", { name: new RegExp(replaced) })).toHaveCount(0);
 
     // Stint 2 at the SAME team: pick it again, then type the years.
-    await page.getByRole("button", { name: "Add team" }).click();
-    await page.getByRole("textbox", { name: "Search teams" }).fill(team);
-    await page.getByRole("option", { name: new RegExp(`^Add ${team}`) }).click();
-    await page.getByRole("heading", { name: "Career history" }).click();
+    await addTeam.click();
+    await search.fill(team);
+    await results.getByRole("option", { name: new RegExp(`^Add ${team}`) }).click();
+    await expect(results).toBeHidden(); // NEO-617: the pick closes the popover
+    await expect(fromYear).toBeFocused();
 
     const toYear = page.getByLabel(/Stint to year/);
-    const fromYear = page.getByLabel(/Stint from year/);
     await toYear.fill("2005");
     await toYear.press("Enter");
     // Enter is "Add stint": the end year is recorded, the picked team is consumed,

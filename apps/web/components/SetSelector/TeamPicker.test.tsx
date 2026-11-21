@@ -1830,3 +1830,432 @@ describe("TeamPicker — labels prop (NEO-277)", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-617 — `single`: a field that holds exactly one team (a career stint)
+// ---------------------------------------------------------------------------
+
+describe("TeamPicker — single mode (NEO-617)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentSelectedRows = [makeTeam("t1", "New York Yankees")];
+    currentCandidates = [
+      makeTeam("t1", "New York Yankees"),
+      makeTeam("t2", "Boston Red Sox"),
+    ];
+    currentLeagues = [];
+    currentSports = [];
+    queryCalls = [];
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("picking a team REPLACES the held one rather than appending", () => {
+    const { onChange } = renderPicker({ single: true, value: [tid("t1")] });
+
+    fireEvent.click(screen.getByLabelText("Change team"));
+    fireEvent.click(screen.getByLabelText("Add Boston Red Sox"));
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith([tid("t2")]);
+  });
+
+  it("multi mode is unchanged: the same pick appends", () => {
+    const { onChange } = renderPicker({ value: [tid("t1")] });
+
+    openPopover();
+    fireEvent.click(screen.getByLabelText("Add Boston Red Sox"));
+
+    expect(onChange).toHaveBeenCalledWith([tid("t1"), tid("t2")]);
+    // ...and still stays open for a third.
+    expect(screen.getByRole("listbox")).toBeTruthy();
+  });
+
+  it("closes the popover on a pick and hands focus back to the trigger", async () => {
+    const { onChange } = renderPicker({ single: true, value: [] });
+
+    openPopover();
+    fireEvent.click(screen.getByLabelText("Add Boston Red Sox"));
+
+    expect(onChange).toHaveBeenCalledWith([tid("t2")]);
+    expect(screen.queryByRole("listbox")).toBeNull();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(document.activeElement).toBe(screen.getByLabelText("Add team"));
+  });
+
+  it("Enter on the highlighted row picks and closes too", () => {
+    const { onChange } = renderPicker({ single: true, value: [] });
+
+    openPopover();
+    fireEvent.keyDown(screen.getByLabelText("Search teams"), { key: "Enter" });
+
+    expect(onChange).toHaveBeenCalledWith([tid("t1")]);
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("offers no '+ Add team' once a team is held: one chip with its ×, and a 'Change team' trigger", () => {
+    renderPicker({ single: true, value: [tid("t1")] });
+
+    expect(screen.getByLabelText("Team: New York Yankees")).toBeTruthy();
+    expect(screen.getByLabelText("Remove team New York Yankees")).toBeTruthy();
+    expect(screen.queryByLabelText("Add team")).toBeNull();
+    const change = screen.getByRole("button", { name: "Change team" });
+    // Label in name (SC 2.5.3), and no "+": nothing is being added.
+    expect(change.textContent).toBe("Change team");
+    expect(change.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("'Change team' opens the same popover", () => {
+    renderPicker({ single: true, value: [tid("t1")] });
+
+    fireEvent.click(screen.getByRole("button", { name: "Change team" }));
+
+    expect(screen.getByRole("listbox")).toBeTruthy();
+    expect(screen.getByLabelText("Search teams")).toBeTruthy();
+  });
+
+  it("clearing the chip brings '+ Add team' back", () => {
+    function Harness() {
+      const [value, setValue] = React.useState<Array<Id<"teams">>>([tid("t1")]);
+      return <TeamPicker single value={value} onChange={setValue} sportId={SPORT_ID} />;
+    }
+    render(<Harness />);
+    expect(screen.queryByLabelText("Add team")).toBeNull();
+
+    fireEvent.click(screen.getByLabelText("Remove team New York Yankees"));
+
+    expect(screen.getByLabelText("Add team").textContent).toBe("+ Add team");
+    expect(screen.queryByRole("button", { name: "Change team" })).toBeNull();
+  });
+
+  it("clearing the chip hands focus to the '+ Add team' trigger, not <body>", async () => {
+    function Harness() {
+      const [value, setValue] = React.useState<Array<Id<"teams">>>([tid("t1")]);
+      return <TeamPicker single value={value} onChange={setValue} sportId={SPORT_ID} />;
+    }
+    render(<Harness />);
+    const remove = screen.getByLabelText("Remove team New York Yankees");
+    remove.focus();
+
+    fireEvent.click(remove);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(document.activeElement).toBe(screen.getByLabelText("Add team"));
+  });
+
+  it("describes the held team on the trigger without changing its name", () => {
+    renderPicker({ single: true, value: [tid("t1")], ariaDescribedBy: "stint-hint" });
+
+    const trigger = screen.getByRole("button", { name: "Change team" });
+    const tokens = trigger.getAttribute("aria-describedby")!.split(" ");
+    expect(tokens).toHaveLength(2);
+    expect(tokens[0]).toBe("stint-hint");
+    const chipText = document.getElementById(tokens[1]);
+    expect(chipText?.textContent).toBe("New York Yankees");
+  });
+
+  it("describes the held team with no empty tokens when the caller passes none", () => {
+    renderPicker({ single: true, value: [tid("t1")] });
+
+    const described = screen
+      .getByRole("button", { name: "Change team" })
+      .getAttribute("aria-describedby")!;
+    expect(described).not.toMatch(/^\s|\s$|\s\s/);
+    expect(document.getElementById(described)?.textContent).toBe("New York Yankees");
+  });
+
+  it("an empty single picker, and a multi one, keep the caller's description alone", () => {
+    const { unmount } = renderPicker({ single: true, value: [], ariaDescribedBy: "h" });
+    expect(screen.getByLabelText("Add team").getAttribute("aria-describedby")).toBe("h");
+    unmount();
+    renderPicker({ value: [tid("t1")] });
+    expect(screen.getByLabelText("Add team").hasAttribute("aria-describedby")).toBe(false);
+  });
+
+  describe("onPicked moves focus to the caller's next field", () => {
+    const settle = () =>
+      act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+    function Harness({ withHook = true }: { withHook?: boolean }) {
+      const [value, setValue] = React.useState<Array<Id<"teams">>>([]);
+      const nextRef = React.useRef<HTMLButtonElement>(null);
+      return (
+        <div>
+          <TeamPicker
+            single
+            value={value}
+            onChange={setValue}
+            sportId={SPORT_ID}
+            onPicked={withHook ? () => nextRef.current?.focus() : undefined}
+          />
+          <button type="button" ref={nextRef}>
+            Next field
+          </button>
+        </div>
+      );
+    }
+
+    it("a click on an option lands focus on the caller's target, not the trigger", async () => {
+      render(<Harness />);
+
+      openPopover();
+      fireEvent.click(screen.getByLabelText("Add Boston Red Sox"));
+      await settle();
+
+      expect(screen.queryByRole("listbox")).toBeNull();
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Next field" }));
+    });
+
+    it("Enter on the highlighted row lands focus there too", async () => {
+      render(<Harness />);
+
+      openPopover();
+      fireEvent.keyDown(screen.getByLabelText("Search teams"), { key: "Enter" });
+      await settle();
+
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Next field" }));
+    });
+
+    it("the New Team dialog's create does too, and the dialog's own close timer does not take it back", async () => {
+      currentCandidates = [];
+      currentSelectedRows = [makeTeam("new-team-1", "Savannah Bananas")];
+      mockFindOrCreate.mockResolvedValue(tid("new-team-1"));
+      render(<Harness />);
+
+      openPopover();
+      openNewTeamDialog("Savannah Bananas");
+      fireEvent.click(
+        screen.getByRole("button", { name: "Create team Savannah Bananas" }),
+      );
+      await waitFor(() => {
+        expect(document.activeElement).toBe(screen.getByRole("button", { name: "Next field" }));
+      });
+      await settle();
+
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Next field" }));
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+
+    it("without the hook, focus still returns to the trigger", async () => {
+      render(<Harness withHook={false} />);
+
+      openPopover();
+      fireEvent.click(screen.getByLabelText("Add Boston Red Sox"));
+      await settle();
+
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Change team" }));
+    });
+
+    it("announces the pick in a polite live region, and not before one", async () => {
+      currentSelectedRows = [makeTeam("t2", "Boston Red Sox")];
+      render(<Harness />);
+      const region = screen.getByRole("status");
+      expect(region.getAttribute("aria-live")).toBe("polite");
+      expect(region.textContent).toBe("");
+
+      openPopover();
+      fireEvent.click(screen.getByLabelText("Add Boston Red Sox"));
+      await settle();
+
+      expect(region.textContent).toBe("Team: Boston Red Sox selected");
+
+      fireEvent.click(screen.getByLabelText("Remove team Boston Red Sox"));
+      expect(region.textContent).toBe("");
+    });
+
+    it("clearing with the × still returns focus to the trigger, hook or not", async () => {
+      currentSelectedRows = [makeTeam("t2", "Boston Red Sox")];
+      render(<Harness />);
+      openPopover();
+      fireEvent.click(screen.getByLabelText("Add Boston Red Sox"));
+      await settle();
+
+      fireEvent.click(screen.getByLabelText("Remove team Boston Red Sox"));
+      await settle();
+
+      expect(document.activeElement).toBe(screen.getByLabelText("Add team"));
+    });
+
+    it("a MULTI picker given onPicked renders no live region and never calls it", async () => {
+      const onPicked = vi.fn();
+      const onChange = vi.fn();
+      render(
+        <TeamPicker value={[]} onChange={onChange} sportId={SPORT_ID} onPicked={onPicked} />,
+      );
+      expect(screen.queryByRole("status")).toBeNull();
+
+      openPopover();
+      fireEvent.click(screen.getByLabelText("Add Boston Red Sox"));
+      await settle();
+
+      expect(onChange).toHaveBeenCalledWith([tid("t2")]);
+      expect(onPicked).not.toHaveBeenCalled();
+      expect(screen.queryByRole("status")).toBeNull();
+      // Multi mode stays open for a second pick.
+      expect(screen.getByRole("listbox")).toBeTruthy();
+    });
+
+    it("a team created in the dialog is announced only once its name arrives", async () => {
+      currentCandidates = [];
+      currentSelectedRows = [];
+      mockFindOrCreate.mockResolvedValue(tid("new-team-1"));
+      const { rerender } = render(<Harness />);
+      const region = screen.getByRole("status");
+
+      openPopover();
+      openNewTeamDialog("Savannah Bananas");
+      fireEvent.click(
+        screen.getByRole("button", { name: "Create team Savannah Bananas" }),
+      );
+      await waitFor(() => {
+        expect(document.activeElement).toBe(screen.getByRole("button", { name: "Next field" }));
+      });
+      await settle();
+      // Picked and focus moved, but no row has loaded: nothing to say yet.
+      expect(region.textContent).toBe("");
+
+      currentSelectedRows = [makeTeam("new-team-1", "Savannah Bananas")];
+      rerender(<Harness />);
+
+      expect(region.textContent).toBe("Team: Savannah Bananas selected");
+    });
+
+    it("the announcement is set after the focus move, not with it", async () => {
+      currentSelectedRows = [makeTeam("t2", "Boston Red Sox")];
+      const seen: string[] = [];
+      function Probe() {
+        const [value, setValue] = React.useState<Array<Id<"teams">>>([]);
+        return (
+          <TeamPicker
+            single
+            value={value}
+            onChange={setValue}
+            sportId={SPORT_ID}
+            onPicked={() => {
+              seen.push(screen.getByRole("status").textContent ?? "");
+            }}
+          />
+        );
+      }
+      render(<Probe />);
+
+      openPopover();
+      fireEvent.click(screen.getByLabelText("Add Boston Red Sox"));
+      await settle();
+
+      // Empty at the moment the focus hook ran; filled in by the next commit.
+      expect(seen).toEqual([""]);
+      expect(screen.getByRole("status").textContent).toBe("Team: Boston Red Sox selected");
+    });
+
+    it("the held team is not offered again: its name finds no option, and Enter opens New Team instead of re-picking it", async () => {
+      // Pinned as it is: a single picker filters the held team out of its
+      // results like a multi one does, so there is no way to "re-pick" it.
+      // Typing its name leaves only the create row, which says it is already
+      // on file.
+      currentSelectedRows = [makeTeam("t1", "New York Yankees")];
+      const onPicked = vi.fn();
+      const onChange = vi.fn();
+      render(
+        <TeamPicker
+          single
+          value={[tid("t1")]}
+          onChange={onChange}
+          sportId={SPORT_ID}
+          onPicked={onPicked}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Change team" }));
+      expect(screen.queryByLabelText("Add New York Yankees")).toBeNull();
+      expect(screen.getByLabelText("Add Boston Red Sox")).toBeTruthy();
+
+      const search = screen.getByLabelText("Search teams");
+      fireEvent.change(search, { target: { value: "New York Yankees" } });
+      expect(screen.queryByLabelText("Add New York Yankees")).toBeNull();
+      expect(screen.getByText("No matches.")).toBeTruthy();
+      expect(screen.getByLabelText("New team New York Yankees").textContent).toContain(
+        "Already here",
+      );
+
+      fireEvent.keyDown(search, { key: "Enter" });
+      await settle();
+
+      expect(screen.getByLabelText("New team name")).toBeTruthy();
+      expect(onChange).not.toHaveBeenCalled();
+      expect(onPicked).not.toHaveBeenCalled();
+    });
+
+    it("a picker without the hook renders no live region", () => {
+      render(<Harness withHook={false} />);
+      expect(screen.queryByRole("status")).toBeNull();
+    });
+  });
+
+  it("an empty single picker reads exactly like a multi one", () => {
+    currentSelectedRows = [];
+    renderPicker({ single: true, value: [] });
+
+    expect(screen.getByLabelText("Add team").textContent).toBe("+ Add team");
+  });
+
+  it("Backspace on an empty query still clears the one chip", () => {
+    const { onChange } = renderPicker({ single: true, value: [tid("t1")] });
+    fireEvent.click(screen.getByRole("button", { name: "Change team" }));
+
+    fireEvent.keyDown(screen.getByLabelText("Search teams"), { key: "Backspace" });
+
+    expect(onChange).toHaveBeenCalledWith([]);
+  });
+
+  it("Tab from the 'Change team' trigger still moves into the open popover", () => {
+    renderPicker({ single: true, value: [tid("t1")] });
+    fireEvent.click(screen.getByRole("button", { name: "Change team" }));
+    const trigger = screen.getByRole("button", { name: "Change team" });
+    trigger.focus();
+
+    fireEvent.keyDown(trigger, { key: "Tab" });
+
+    expect(document.activeElement).toBe(screen.getByLabelText("Search teams"));
+  });
+
+  it("Escape closes without picking and returns focus to the trigger", async () => {
+    const { onChange } = renderPicker({ single: true, value: [tid("t1")] });
+    fireEvent.click(screen.getByRole("button", { name: "Change team" }));
+
+    fireEvent.keyDown(screen.getByLabelText("Search teams"), { key: "Escape" });
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.queryByRole("listbox")).toBeNull();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Change team" }),
+    );
+  });
+
+  it("a whole-set labels override without `change` still gets the default 'Change team'", () => {
+    renderPicker({
+      single: true,
+      value: [tid("t1")],
+      labels: {
+        root: "Stint team picker",
+        trigger: "Add stint team",
+        search: "Search stint teams",
+        results: "Stint team results",
+      },
+    });
+
+    expect(screen.getByRole("button", { name: "Change team" })).toBeTruthy();
+  });
+});

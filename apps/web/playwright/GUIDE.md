@@ -190,8 +190,11 @@ runs, not concurrent workers. To write, create a hand-made set (no
 marketplace ids, so it costs no sync) under real ancestors, suffixed
 `-${env.WORKER_INDEX}`, and register the prefix in `SET-REGISTRY.md` in the
 same commit. Never attach a marketplace to a hand-made row and never "Add as
-New" on a real set's children. Adding a new real set needs explicit owner
-approval every time: propose and wait. A constraint that seems to force a
+New" on a real set's children. A new real set needs no owner approval when the
+fake BSC serves it (recorded, or recorded with `fake-bsc.sh record`) and you
+register it in `SET-REGISTRY.md` (rule 1 there); anything beyond loading a set
+into the fake (a real marketplace write, a SportLots set, a change to the fake)
+is propose and wait. A constraint that seems to force a
 write to a real set is a finding to raise, not a licence.
 
 **R9 - All set-builder drilling goes through the drill helpers** in
