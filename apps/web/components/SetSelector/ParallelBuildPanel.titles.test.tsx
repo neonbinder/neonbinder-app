@@ -103,14 +103,19 @@ const settle = () =>
 beforeEach(() => {
   mockQuery.mockReset();
   mockMutation.mockReset();
-  // Nothing left to fix by the time it loads: no dialog, just the status line.
-  mockQuery.mockResolvedValue({
+  // Nothing left to fix by the time the dialog loads: no dialog, just the
+  // status line. The counts-only read on mount (`wantCards: 0`) still reports
+  // one failing title, so the door stays mounted until the self-open's own load
+  // has said so. If both read zero, the recount (microtasks) can land and drop
+  // the door before the door's 0 ms self-open timer fires, and under load it
+  // does: the timer is cleared with the door and nothing is ever said.
+  mockQuery.mockImplementation(async (_fn: string, args: { wantCards?: number }) => ({
     parallel: { _id: A, value: "Anime Gold" },
     boxPrefill: "",
     cards: [],
-    failingInPage: 0,
+    failingInPage: args.wantCards === 0 ? 1 : 0,
     cursor: null,
-  });
+  }));
   resetParallelTitlesAutoOpen();
 });
 
