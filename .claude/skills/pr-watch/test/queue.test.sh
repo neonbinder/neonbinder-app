@@ -100,4 +100,33 @@ printf "$RUN" completed failure > "$FIX/runs.json"
 printf '%s' '{"jobs":[{"name":"E2E / seed-mobile","status":"completed","conclusion":"skipped","url":"https://example.invalid/jobs/21"},{"name":"E2E / shard-mobile (1, 8)","status":"completed","conclusion":"failure","url":"https://example.invalid/jobs/22"}]}' > "$FIX/run-7.json"
 out=$(bash "$HERE/../watch.sh" --queue 42 2>&1); echo "$out" | grep -q 'fail fast' && { echo "FAIL fail-fast claimed without a desktop red"; fails=$((fails+1)); } || echo "ok   fail fast needs a desktop red"
 
+# NEO-627 pins: E2E skipped but CI Gate failed or cancelled prints no e2e note.
+for c in failure cancelled; do
+  fresh; pr OPEN "$Q" "[$ADD]" > "$FIX/graphql.json"
+  printf "$RUN" completed "$c" > "$FIX/runs.json"; printf "$INERT_JOBS" completed "$c" > "$FIX/run-7.json"
+  out=$(PR_WATCH_QUEUE_MAX_MIN=0 bash "$HERE/../watch.sh" --queue 42 2>&1)
+  if echo "$out" | grep -q 'E2E skipped'; then echo "FAIL e2e note printed with CI Gate $c"; echo "$out" | sed 's/^/     /'; fails=$((fails+1)); else echo "ok   no e2e note when CI Gate $c"; fi
+done
+
+# Fail fast: a desktop job and a non-desktop job both failed -> note, desktop first.
+J='{"name":"%s","status":"completed","conclusion":"%s","url":"https://example.invalid/jobs/%s"}'
+mkjobs() { printf '{"jobs":[%s]}' "$(IFS=,; echo "$*")"; }
+fresh; pr OPEN null "[$ADD,$(rem CI_FAILURE '{"__typename":"Bot","login":"github-merge-queue"}')]" > "$FIX/graphql.json"
+printf "$RUN" completed failure > "$FIX/runs.json"
+mkjobs "$(printf "$J" 'E2E / e2e' failure 1)" "$(printf "$J" 'E2E / seed-mobile' skipped 2)" "$(printf "$J" 'E2E / shard-desktop (2, 8)' failure 3)" > "$FIX/run-7.json"
+run "fail fast: desktop and non-desktop red, desktop first with note" 1 'failing job\(s\): PR Pipeline / E2E / shard-desktop \(2, 8\).*PR Pipeline / E2E / e2e.*mobile skipped: desktop red'
+
+# seed-mobile NOT skipped with a desktop red: no note.
+fresh; pr OPEN null "[$ADD,$(rem CI_FAILURE '{"__typename":"Bot","login":"github-merge-queue"}')]" > "$FIX/graphql.json"
+printf "$RUN" completed failure > "$FIX/runs.json"
+mkjobs "$(printf "$J" 'E2E / seed-mobile' success 2)" "$(printf "$J" 'E2E / shard-desktop (2, 8)' failure 3)" > "$FIX/run-7.json"
+out=$(bash "$HERE/../watch.sh" --queue 42 2>&1)
+if echo "$out" | grep -q 'fail fast'; then echo "FAIL note with seed-mobile not skipped"; echo "$out" | sed 's/^/     /'; fails=$((fails+1)); else echo "ok   no fail-fast note when seed-mobile ran"; fi
+
+# Only the desktop BSC breaker red, seed-mobile skipped: it sorts first and gets the note.
+fresh; pr OPEN null "[$ADD,$(rem CI_FAILURE '{"__typename":"Bot","login":"github-merge-queue"}')]" > "$FIX/graphql.json"
+printf "$RUN" completed failure > "$FIX/runs.json"
+mkjobs "$(printf "$J" 'E2E / e2e' failure 1)" "$(printf "$J" 'E2E / seed-mobile' skipped 2)" "$(printf "$J" 'E2E / BSC breaker specs (desktop)' failure 3)" > "$FIX/run-7.json"
+run "fail fast: desktop breaker red sorts first with note" 1 'failing job\(s\): PR Pipeline / E2E / BSC breaker specs \(desktop\).*PR Pipeline / E2E / e2e.*mobile skipped: desktop red'
+
 [ "$fails" = 0 ] && echo "all passed" || { echo "$fails failed"; exit 1; }

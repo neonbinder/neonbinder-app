@@ -27,7 +27,7 @@ there, and merges on green. A PR push runs only the cheap checks, so nothing her
 waits for a turn.
 
 Two behaviours shape the wait (NEO-627). A PR whose every changed path is inert
-(docs, `.claude/`, root `*.md`, fake-BSC recorder and tests) skips E2E and the
+(docs, `.claude/` except the pr-watch skill and agents, which run full E2E, root `*.md`, fake-BSC recorder and tests) skips E2E and the
 preview stack, so it finishes on the cheap checks in about 3 minutes;
 `pr-watch --queue` reads that as `E2E skipped (inert paths, NEO-627)`, and CI Gate
 decides. E2E also fails fast: a red desktop pass skips the mobile pass, so an

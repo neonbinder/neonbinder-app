@@ -184,7 +184,8 @@ fails when any spec fails or when any planned spec produced no result, so a dead
 shard cannot pass.
 
 Two skips are by design (NEO-627) and are not missing, pending or red. A PR whose
-every changed path is inert (docs, `.claude/`, root `*.md`, fake-BSC recorder
+every changed path is inert (docs, `.claude/` except the pr-watch skill and agents, which
+an area filter covers and so run full E2E, root `*.md`, fake-BSC recorder
 and tests) skips E2E: the caller job `E2E` is skipped, no `E2E / ...` job runs,
 and the line reads `e2e ⊘ skipped by design (inert paths NEO-627, ...)`;
 `--queue` adds `E2E skipped (inert paths, NEO-627): CI Gate decides`. `CI Gate`

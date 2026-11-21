@@ -192,7 +192,7 @@ tick() {
   # job ever ran: a change whose every path is inert (e2e-scope.sh), a
   # dependency-only PR, or a cheap PR run while the merge queue is live. CI Gate
   # decides green; this is not missing, pending or red.
-  if [ "$e2e_caller" = "SKIPPED" ] && case "$(named "^E2E / ")" in ""|"—") true ;; *) false ;; esac; then
+  if [ "$e2e_caller" = "SKIPPED" ] && [ "$req" = "SUCCESS" ] && case "$(named "^E2E / ")" in ""|"—") true ;; *) false ;; esac; then
     gate="⊘ skipped by design (inert paths NEO-627, deps-only or cheap PR run)"
   fi
   # NEO-627 fail fast: seed-mobile skipped after a red desktop pass. There are no

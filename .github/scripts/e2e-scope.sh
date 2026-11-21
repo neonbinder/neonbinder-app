@@ -5,7 +5,9 @@
 # then ANDs this verdict with the paths-filter outputs (e2e-inert-final.sh).
 #
 # Inert allow-list (EXACTLY these; a file anywhere else keeps E2E on):
-#   .claude/**                     agent config, skills, agent memory
+#   .claude/**                     agent config, skills, agent memory (except paths an
+#                                  area filter covers, e.g. the pr-watch skill and
+#                                  agents, which e2e-inert-final.sh sends to full E2E)
 #   docs/**                        runbooks and design notes
 #   *.md at the repository root    CLAUDE.md, DESIGN.md, PRODUCT.md (root only)
 #   services/fake-bsc/recorder/**  the recorder CLI: runs on a person's

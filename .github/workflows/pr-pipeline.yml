@@ -400,8 +400,8 @@ jobs:
   # than the narrower `changes.outputs.web`: E2E deliberately runs on
   # preprocess- and browser-only PRs, and every one of those needs a preview.
   # If you ever want a tighter skip, the two conditions have to move together —
-  # see the note on `e2e`. An inert-only PR (docs, .claude, root *.md, the
-  # recorder) builds no preview and so makes no Convex preview; the cleanup
+  # see the note on `e2e`. An inert-only PR (see e2e-scope.sh: docs, most of .claude,
+  # root *.md, the fake-bsc recorder) builds no preview and so makes no Convex preview; the cleanup
   # workflow already treats "no Deployment record" as nothing to clean up.
   #
   # Hosted build, not `vercel build`. The CLI refuses a LOCAL build for a project

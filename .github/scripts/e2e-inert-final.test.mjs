@@ -41,3 +41,7 @@ test("a scope verdict that is not exactly true is full, whatever the filters say
 test("fake_bsc is deliberately not consulted", () => {
   assert.equal(run({ F_FAKE_BSC: "true" }), "e2e_inert=true");
 });
+
+test("scope true with the scripts filter true (pr-watch skill, agents, workflows) is full", () => {
+  assert.equal(run({ SCOPE: "true", F_SCRIPTS: "true" }), "e2e_inert=false");
+});
