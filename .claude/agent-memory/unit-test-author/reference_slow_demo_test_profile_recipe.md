@@ -15,3 +15,8 @@ A component test that passes alone but hits 5000ms under load is CPU-bound, not 
 - Every demo-owned card has exactly one copy line, so "after the last copy" needs no add step; "next copy" needs one add.
 - `tsc -p .` at the app root takes minutes and 2.8GB; never run it as a check (gate is `npm run typecheck`).
 - A busy shared Mac (load average 100+) reproduces the red organically: run old and new file back to back for a real before/after.
+
+Late-catalog caches (demoStore):
+- `extendCatalog` pushes into shared arrays after first use, then callers must `refreshDataIndexes()`; an index built once from those arrays goes stale, so key it on the array length.
+- To test a smart binder without `containerCopies` being exported: seed sessionStorage with an `initialCollectionState()` plus a container carrying `rule` and raw copies, mount `DemoCollectionProvider`, read `useContainers()` `count.lines` (counts DemoCopy membership before the view-card filter, so it sees cards `demoCard` cannot).
+- Run vitest from `apps/web`; a `cd ../../..` from a nested dir silently lands in `app/` and the run prints nothing.

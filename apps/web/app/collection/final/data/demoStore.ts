@@ -358,11 +358,19 @@ function inScope(state: CollectionState, scope: Scope, side: Side): DemoCopy[] {
   return copies.filter((c) => c.homeId === scope);
 }
 
-let fixtureCardIndex: Map<string, (typeof fixtureCards)[number]> | undefined;
+let fixtureCardIndex: { size: number; byId: Map<string, (typeof fixtureCards)[number]> } | undefined;
 
-/** The fixture cards by id: a smart binder tests every copy, and a scan of the catalog per copy cost ~180 ms a write. */
+/**
+ * The fixture cards by id: a smart binder tests every copy, and a scan of the
+ * catalog per copy cost ~180 ms a write. The demo's sample sets join the
+ * catalog late (`extendCatalog` pushes into `fixtureCards`), so the index is
+ * rebuilt whenever the catalog's size differs from the one it was built at.
+ */
 function fixtureCardById() {
-  return (fixtureCardIndex ??= new Map(fixtureCards.map((f) => [f.id, f])));
+  if (!fixtureCardIndex || fixtureCardIndex.size !== fixtureCards.length) {
+    fixtureCardIndex = { size: fixtureCards.length, byId: new Map(fixtureCards.map((f) => [f.id, f])) };
+  }
+  return fixtureCardIndex.byId;
 }
 
 /** The copies a container lists (see `useContainerCopies`), in slot order. */
