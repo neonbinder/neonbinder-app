@@ -678,7 +678,7 @@ describe("ensureSelectorOptions — the twin holder read (NEO-325 security re-au
     ]);
   });
 
-  test("a BSC twin whose label carries a control character is not in the notice, and the clean twin beside it is", async () => {
+  test("a BSC label carrying a control character is cleansed at ingest and listed as the twin 'Bad Year'", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     stubYearLists({

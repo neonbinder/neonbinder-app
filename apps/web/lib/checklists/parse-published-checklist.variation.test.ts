@@ -126,6 +126,14 @@ describe("variationNameOf: bounds", () => {
     expect(name).toBe("Photo Throwback x y z");
   });
 
+  it("a real space beside a bidi or zero-width mark stays the separator", () => {
+    for (const mark of ["‏", "‎", "‮", "​", "﻿", "؜"]) {
+      expect(variationNameOf(`Judge (Photo ${mark} variation)`), mark).toBe("Photo variation");
+      expect(variationNameOf(`Judge (Photo${mark} variation)`), mark).toBe("Photo variation");
+      expect(variationNameOf(`Judge (Photo ${mark}variation)`), mark).toBe("Photo variation");
+    }
+  });
+
   it("looks at only the first few bracket groups", () => {
     const text = `${"(RC) ".repeat(50)}(Photo Variation)`;
     expect(variationNameOf(text)).toBeUndefined();

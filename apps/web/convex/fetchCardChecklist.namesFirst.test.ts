@@ -1005,6 +1005,19 @@ describe("a publisher checklist: variations (stem)", () => {
     const bidi = new Map((await stored(t)).map((r) => [r.cardNumber, r]));
     expect(bidi.get("38b")?.cardVariation).toBe("Photovariation two");
 
+    // A real space beside a format mark stays the separator.
+    await asAdmin.action(api.selectorOptions.fetchCardChecklist, {
+      selectorOptionId: leafId,
+      publishedChecklist: {
+        rows: [
+          { number: "38a", players: trout, teams: [] },
+          { number: "38b", players: trout, teams: [], variationName: "Photo ‏ variation" },
+        ],
+      },
+    });
+    const spaced = new Map((await stored(t)).map((r) => [r.cardNumber, r]));
+    expect(spaced.get("38b")?.cardVariation).toBe("Photo variation");
+
     // Zero-width and BOM characters too (U+061C, U+200B-200D, U+FEFF).
     await asAdmin.action(api.selectorOptions.fetchCardChecklist, {
       selectorOptionId: leafId,
