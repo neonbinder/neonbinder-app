@@ -31,7 +31,8 @@
     "test:e2e": "playwright test",
     "test:e2e:list": "playwright test --list",
     "test:e2e:typecheck": "tsc -p playwright/tsconfig.json",
-    "test:e2e:seed": "./e2e-seed-reset.sh && playwright test --project=setup"
+    "test:e2e:seed": "./e2e-seed-reset.sh && playwright test --project=setup",
+    "e2e:run": "node playwright/tools/e2e-run.mjs"
   },
   "dependencies": {
     "@clerk/backend": "^3.26.1",

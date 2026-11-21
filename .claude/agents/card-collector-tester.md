@@ -5,6 +5,7 @@ model: opus
 effort: medium
 memory: project
 color: cyan
+tools: Read, Grep, Glob, Bash, ToolSearch, mcp__claude-in-chrome__tabs_context_mcp, mcp__claude-in-chrome__tabs_create_mcp, mcp__claude-in-chrome__tabs_close_mcp, mcp__claude-in-chrome__navigate, mcp__claude-in-chrome__computer, mcp__claude-in-chrome__read_page, mcp__claude-in-chrome__find, mcp__claude-in-chrome__get_page_text, mcp__claude-in-chrome__form_input, mcp__claude-in-chrome__read_console_messages, mcp__claude-in-chrome__resize_window
 disallowedTools: Edit, Write, NotebookEdit
 ---
 
