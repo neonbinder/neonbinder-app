@@ -1,6 +1,6 @@
 // ONE FEATURE (NEO-639, MissingTeamFixer): the needs-attention fixer PRESELECTS a
-// player's set-year team only when it is his ONE answer. Three hand-added cards'
-// worth of cases, one rule:
+// player's set-year team only when it is his ONE answer. Two hand-added cards,
+// three cases, one rule:
 //   - a player with exactly ONE stint covering the set year: that team's chip is
 //     pressed when the fixer opens ("Saves 1 team on this card"), Enter accepts it;
 //   - a player with TWO teams that season (no set league to rank them): neither
