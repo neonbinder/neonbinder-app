@@ -394,7 +394,10 @@ import {
 // fetch's line and the save's line (Match Cards recounts with it).
 import { tallyFetchChecklistTeams } from "../lib/checklists/checklist-teams-tally";
 import { splitMarketplaceTeamNames } from "./adapters/marketplaceNames";
-import { MAX_CHECKLIST_TEAM_TEXTS } from "./checklistCandidates";
+import {
+  MAX_CHECKLIST_TEAM_TEXTS,
+  type marketplacePairViaValidator,
+} from "./checklistCandidates";
 import {
   checkPublishedChecklist,
   publishedChecklistValidator,
@@ -450,6 +453,31 @@ export { findAncestorLabels };
 // Re-exported for callers that reached the ceiling through this module before
 // the rule moved; convex/cardNumberPrefix.ts is its home.
 export { MAX_CARD_NUMBER_PREFIX_LENGTH } from "./cardNumberPrefix";
+
+/**
+ * NEO-640 / product rule 7 — a BSC↔SportLots pair made by NAME whose card
+ * numbers disagree (or one side has none) is matched at a lesser confidence:
+ * the name score times this factor. 0.9 puts an exact name at 90% and the
+ * weakest accepted near-name (0.92) at about 83%: visibly below a number pair
+ * (100%), and never confused with one. Exact-name pairs with agreeing numbers
+ * stay at 1.
+ */
+const NAME_PAIR_NUMBER_MISMATCH_FACTOR = 0.9;
+
+/**
+ * Do two marketplaces' card numbers agree? Same text (case and spacing aside),
+ * or the same digits where one carries a lone trailing letter ("38" and
+ * "38a", rule 7). Anything else, including an empty number, does not.
+ */
+function marketplaceCardNumbersAgree(a: string, b: string): boolean {
+  const x = a.trim().toLowerCase();
+  const y = b.trim().toLowerCase();
+  if (!x || !y) return false;
+  if (x === y) return true;
+  const bare = (n: string) => (/^\d+[a-z]$/.test(n) ? n.slice(0, -1) : n);
+  const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+  return /^\d+$/.test(short) && bare(long) === short;
+}
 import {
   BSC_SOURCE_FACETS,
   PROMOTED_PARALLEL_BSC_FACET,
@@ -17208,7 +17236,28 @@ export const fetchCardChecklist = action({
       // can short-circuit fuzzy matching.
       const slByNumber = new Map<string, typeof slCards[0]>();
       const slByRef = new Map<string, typeof slCards[0]>();
+      // NEO-640 / product rule 7 (D2) — a number one source lists on two or
+      // more cards is a TIE, and a tie is never paired by number: not to the
+      // first row listed, not to the last. Those cards, and the other side's
+      // rows with that number, sit out the number match AND the name match
+      // below and go to the operator. This index used to keep the first
+      // non-variation row, so a SportLots set listing "5" twice paired BSC's
+      // "5" with whichever came first — silently, with nothing to tell the
+      // operator a choice had been made, and (since Match Cards is skipped
+      // when everything pairs cleanly) with no dialog to catch it.
+      //
+      // SportLots files a card's variations under the base number, so a
+      // variation row never ties its base: the tie is counted among the
+      // non-variation rows, or among the variations when a number has no base
+      // row at all (the same set of rows `slByNumber` chose from).
+      const slRowsByNumber = new Map<string, Array<typeof slCards[0]>>();
       for (const c of slCards) {
+        const rows = slRowsByNumber.get(c.cardNumber);
+        if (rows) rows.push(c);
+        else slRowsByNumber.set(c.cardNumber, [c]);
+      }
+      const slTiedNumbers = new Set<string>();
+      for (const [number, rows] of slRowsByNumber) {
         // NEO-189: prefer the NON-variation row for a given number.
         //
         // SportLots files a card and its variations under ONE number — "#11
@@ -17219,10 +17268,21 @@ export const fetchCardChecklist = action({
         //
         // A bare BSC number means the base card, so that is what this index
         // must return. Variations are paired to variations separately below.
-        const prev = slByNumber.get(c.cardNumber);
-        if (!prev || (prev.isVariation && !c.isVariation)) {
-          slByNumber.set(c.cardNumber, c);
-        }
+        const bases = rows.filter((r) => !r.isVariation);
+        const pool = bases.length > 0 ? bases : rows;
+        if (pool.length > 1) slTiedNumbers.add(number);
+        else slByNumber.set(number, pool[0]);
+      }
+      // The same rule on BSC's side: two BSC cards numbered alike both looked
+      // up the one SportLots row and were both stamped as paired to it.
+      const bscCardCountByNumber = new Map<string, number>();
+      for (const c of bscCards) {
+        bscCardCountByNumber.set(
+          c.cardNumber,
+          (bscCardCountByNumber.get(c.cardNumber) ?? 0) + 1,
+        );
+      }
+      for (const c of slCards) {
         if (c.sportlotsRef) slByRef.set(c.sportlotsRef, c);
       }
 
@@ -17373,6 +17433,10 @@ export const fetchCardChecklist = action({
       const autoMatchedCards: Array<{
         card: ReconciledCard;
         confidence: number;
+        // NEO-640 — kept here, off `ReconciledCard` and `PairingCard`: it
+        // rides to the client on the candidate row only.
+        pairedBy?: Infer<typeof marketplacePairViaValidator>;
+        pairedNumber?: string;
       }> = [];
       const unmatchedBscCards: ReconciledCard[] = [];
       const unmatchedSlCards: ReconciledCard[] = [];
@@ -17404,29 +17468,66 @@ export const fetchCardChecklist = action({
       // 1a. Every BSC card's IDENTITY answer first: the operator's stored
       //     pairing, BSC's own SportLots cross-reference, a variation's
       //     counterpart, the number, the prefix-stripped number.
-      const identitySlOf = bscCards.map((bsc) => {
-        const stripped = cardNumberPrefix && bsc.cardNumber.startsWith(cardNumberPrefix)
+      //
+      //     NEO-640 — also records WHICH lookup answered (`via`), so the
+      //     client can tell a pair the operator already settled or an id
+      //     vouched for from one the server only guessed at by name.
+      const strippedNumberOf = (bsc: { cardNumber: string }) =>
+        cardNumberPrefix && bsc.cardNumber.startsWith(cardNumberPrefix)
           ? bsc.cardNumber.slice(cardNumberPrefix.length)
           : bsc.cardNumber;
+      // NEO-640 / rule 7 (D2): a BSC card whose number is a tie on either side
+      // — BSC lists it on two or more cards, or SportLots does — takes no
+      // number answer and no name answer; it waits for the operator.
+      const bscTiedKeys = new Set<string>();
+      for (const bsc of bscCards) {
+        if ((bscCardCountByNumber.get(bsc.cardNumber) ?? 0) > 1) {
+          bscTiedKeys.add(bsc.cardNumber);
+          bscTiedKeys.add(strippedNumberOf(bsc));
+        }
+      }
+      // (`slByNumber` already omits a number SportLots lists twice.)
+      const bscNumberIsTied = (bsc: { cardNumber: string }) =>
+        (bscCardCountByNumber.get(bsc.cardNumber) ?? 0) > 1;
+      const sitsOutNameMatch = (bsc: { cardNumber: string }) =>
+        bscNumberIsTied(bsc) ||
+        slTiedNumbers.has(bsc.cardNumber) ||
+        slTiedNumbers.has(strippedNumberOf(bsc));
+      const identitySlOf = bscCards.map((bsc) => {
+        const stripped = strippedNumberOf(bsc);
 
         // Operator's stored answer first — it outranks every heuristic.
         const storedSlRef = bsc.platformRef
           ? storedSlRefByBscRef.get(bsc.platformRef)
           : undefined;
-        const sl: typeof slCards[0] | undefined =
-          (storedSlRef && slByPlatformRef.get(storedSlRef))
-          || (bsc.sportlotsRef && slByRef.get(bsc.sportlotsRef))
+        type Via = Infer<typeof marketplacePairViaValidator>;
+        type Lookup = readonly [() => typeof slCards[0] | undefined, Via];
+        const lookups: Lookup[] = [
+          [() => (storedSlRef ? slByPlatformRef.get(storedSlRef) : undefined), "stored"],
+          [() => (bsc.sportlotsRef ? slByRef.get(bsc.sportlotsRef) : undefined), "crossRef"],
           // NEO-189: a variation's counterpart, matched by label above. Ranks
           // below the operator's stored answer and BSC's own cross-reference,
           // and above the number lookups — which cannot resolve a suffixed
           // number against SportLots at all.
-          || (bsc.platformRef ? slVariationPairByBscRef.get(bsc.platformRef) : undefined)
-          || slByNumber.get(bsc.cardNumber)
-          || slByNumber.get(stripped)
-          || undefined;
-        const fromStoredPairing =
-          storedSlRef !== undefined && slByPlatformRef.has(storedSlRef);
-        return { sl, fromStoredPairing };
+          [
+            () => (bsc.platformRef ? slVariationPairByBscRef.get(bsc.platformRef) : undefined),
+            "variation",
+          ],
+          // Rule 7 (D2): a tied number answers nobody.
+          [() => (bscNumberIsTied(bsc) ? undefined : slByNumber.get(bsc.cardNumber)), "number"],
+          [() => (bscNumberIsTied(bsc) ? undefined : slByNumber.get(stripped)), "number"],
+        ];
+        let sl: typeof slCards[0] | undefined;
+        let via: Via | undefined;
+        for (const [lookup, how] of lookups) {
+          const found = lookup();
+          if (found) {
+            sl = found;
+            via = how;
+            break;
+          }
+        }
+        return { sl, via };
       });
 
       // 1b. NEO-496 — the name fallback, over what no identity answer took:
@@ -17437,13 +17538,20 @@ export const fetchCardChecklist = action({
       //     Until NEO-496 this ran inside the walk below, so the first BSC
       //     card in list order took a contested SportLots card, and could take
       //     one a later BSC card was about to claim by number.
+      //     NEO-640 / rule 7 (D2): a card on a tied number, and the other
+      //     side's rows with that number, sit this out too.
       const identityClaimed = new Set<string>();
       for (const { sl } of identitySlOf) if (sl) identityClaimed.add(slClaimKey(sl));
       const nameSeekers = bscCards.map((bsc, i) =>
-        !identitySlOf[i].sl && bsc.players?.[0] ? normalizeName(bsc.players[0]) : undefined,
+        !identitySlOf[i].sl && !sitsOutNameMatch(bsc) && bsc.players?.[0]
+          ? normalizeName(bsc.players[0])
+          : undefined,
       );
       const nameOffers = slCards.map((card) =>
-        !identityClaimed.has(slClaimKey(card)) && card.cardName
+        !identityClaimed.has(slClaimKey(card)) &&
+        !slTiedNumbers.has(card.cardNumber) &&
+        !bscTiedKeys.has(card.cardNumber) &&
+        card.cardName
           ? normalizeName(card.cardName)
           : undefined,
       );
@@ -17454,7 +17562,7 @@ export const fetchCardChecklist = action({
 
       // 1c. Walk BSC, attach matching SL data
       for (const [bscIndex, bsc] of bscCards.entries()) {
-        const { fromStoredPairing } = identitySlOf[bscIndex];
+        const { via: identityVia } = identitySlOf[bscIndex];
         let sl = identitySlOf[bscIndex].sl;
 
         // 2. The name pair from 1b, if this card has one.
@@ -17464,13 +17572,28 @@ export const fetchCardChecklist = action({
           sl = namePair.sl;
           fuzzyScore = namePair.score;
         }
+        // NEO-640 — which lookup paired the two halves. Only a card with a
+        // SportLots half has one; the name pair is the one guess.
+        const pairedBy = namePair ? ("name" as const) : identityVia;
+        // Rule 7: a name pair whose numbers disagree says so and scores lower.
+        const numbersDisagree =
+          !!namePair &&
+          !!sl &&
+          !marketplaceCardNumbersAgree(bsc.cardNumber, sl.cardNumber) &&
+          !marketplaceCardNumbersAgree(strippedNumberOf(bsc), sl.cardNumber);
+        const pairedNumber =
+          numbersDisagree && sl?.cardNumber.trim() ? sl.cardNumber : undefined;
 
         // Confidence: an exact number / sportlotsRef hit is certain; a
         // Jaro-Winkler name match is not. Surfaced so the operator can see
         // which pairings deserve a second look.
         // A previously-confirmed pairing is certain by definition — it is the
         // operator's own answer being replayed, not a guess.
-        const pairConfidence = sl ? (fromStoredPairing ? 1 : (fuzzyScore ?? 1)) : 0;
+        const pairConfidence = sl
+          ? identityVia === "stored"
+            ? 1
+            : (fuzzyScore ?? 1) * (numbersDisagree ? NAME_PAIR_NUMBER_MISMATCH_FACTOR : 1)
+          : 0;
         if (sl) claimedSlRefs.add(slClaimKey(sl));
 
         const attributes = Array.from(new Set([
@@ -17566,8 +17689,16 @@ export const fetchCardChecklist = action({
           ...(sl ? {} : { unmatched: "sl" as const }),
         };
         out.push(candidate);
-        if (sl) autoMatchedCards.push({ card: candidate, confidence: pairConfidence });
-        else unmatchedBscCards.push(candidate);
+        if (sl) {
+          autoMatchedCards.push({
+            card: candidate,
+            confidence: pairConfidence,
+            ...(pairedBy ? { pairedBy } : {}),
+            ...(pairedNumber ? { pairedNumber } : {}),
+          });
+        } else {
+          unmatchedBscCards.push(candidate);
+        }
       }
 
       // 3. SL cards no BSC card claimed. These are NOT turned into NB cards
@@ -17889,6 +18020,8 @@ export const fetchCardChecklist = action({
         card: ReconciledCard,
         bucket: "matched" | "bscOnly" | "slOnly" | "checklistOnly",
         confidence?: number,
+        pairedBy?: Infer<typeof marketplacePairViaValidator>,
+        pairedNumber?: string,
       ) => ({
         cardNumber: card.cardNumber,
         cardName: card.cardName,
@@ -17917,6 +18050,9 @@ export const fetchCardChecklist = action({
           ? { checklistLink: checklistLinkByCard.get(card)! }
           : {}),
         confidence,
+        // NEO-640 — matched rows only; see the schema note.
+        ...(pairedBy ? { pairedBy } : {}),
+        ...(pairedNumber ? { pairedNumber } : {}),
         // NEO-341 — see `awaitingTeam` above.
         teamPending: awaitingTeam.has(card),
       });
@@ -17928,7 +18064,7 @@ export const fetchCardChecklist = action({
           userId: adminUserId,
           candidates: [
             ...autoMatchedCards.map((m) =>
-              toCandidate(m.card, "matched", m.confidence),
+              toCandidate(m.card, "matched", m.confidence, m.pairedBy, m.pairedNumber),
             ),
             ...unmatchedBscCards.map((c) => toCandidate(c, "bscOnly")),
             ...unmatchedSlCards.map((c) => toCandidate(c, "slOnly")),

@@ -125,6 +125,21 @@ const playersConflictValidator = v.object({
   preferred: v.optional(v.union(v.literal("bsc"), v.literal("sportlots"))),
 });
 
+/**
+ * NEO-640 — which lookup paired a matched row's BSC and SportLots halves:
+ * a stored link ("stored"), the cross-reference ("crossRef"), the variation
+ * rules ("variation"), the card number ("number") or the player/card name
+ * ("name"). Exported for `fetchCardChecklist`'s reconcile; the schema's
+ * `checklistCandidates.pairedBy` spells the same union.
+ */
+export const marketplacePairViaValidator = v.union(
+  v.literal("stored"),
+  v.literal("crossRef"),
+  v.literal("variation"),
+  v.literal("number"),
+  v.literal("name"),
+);
+
 /** One candidate as the action hands it over. */
 const candidateInputValidator = v.object({
   cardNumber: v.string(),
@@ -162,6 +177,9 @@ const candidateInputValidator = v.object({
   // NEO-496 — see `checklistLinkValidator`.
   checklistLink: v.optional(checklistLinkValidator),
   confidence: v.optional(v.number()),
+  // NEO-640 — see the schema note.
+  pairedBy: v.optional(marketplacePairViaValidator),
+  pairedNumber: v.optional(v.string()),
   /**
    * NEO-330 / NEO-341 — this card is waiting on a BSC team lookup the action
    * is about to run, so it is written `pending` and `resolveCandidateTeams`
@@ -1040,6 +1058,9 @@ export const getReadyCandidates = query({
         // NEO-496 — how the card paired with the publisher checklist.
         checklistLink: v.optional(checklistLinkValidator),
         confidence: v.optional(v.number()),
+        // NEO-640 — see the schema note.
+        pairedBy: v.optional(marketplacePairViaValidator),
+        pairedNumber: v.optional(v.string()),
         stem: v.string(),
         teamResolved: v.boolean(),
         // NEO-335 — see the schema note. Carried onto the preview card by
@@ -1099,6 +1120,8 @@ export const getReadyCandidates = query({
         bucket: r.bucket,
         checklistLink: r.checklistLink,
         confidence: r.confidence,
+        pairedBy: r.pairedBy,
+        pairedNumber: r.pairedNumber,
         stem: r.stem,
         // Lets the row show "resolving team…" rather than an empty cell that
         // looks like "this card has no team".

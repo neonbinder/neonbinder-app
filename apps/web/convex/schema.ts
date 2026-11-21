@@ -4011,6 +4011,25 @@ export default defineSchema({
     // Pairing confidence for a matched row; the modal surfaces a fuzzy match
     // differently from an exact one.
     confidence: v.optional(v.number()),
+    // NEO-640 — which lookup paired a matched row's two marketplace halves.
+    // Written on matched rows only; missing = written before NEO-640 (the
+    // client treats a missing value on a matched row as "needs the operator",
+    // since a name pair also carries confidence 1). Spelled the same as
+    // `marketplacePairViaValidator` in checklistCandidates.ts.
+    pairedBy: v.optional(
+      v.union(
+        v.literal("stored"),
+        v.literal("crossRef"),
+        v.literal("variation"),
+        v.literal("number"),
+        v.literal("name"),
+      ),
+    ),
+    // NEO-640 / product rule 7 — on a name pair whose card numbers differ, the
+    // SportLots number as listed, so Match Cards can say "numbers didn't
+    // match". Written only with `pairedBy: "name"`; absent when the numbers
+    // agree or SportLots listed none.
+    pairedNumber: v.optional(v.string()),
 
     // ── streaming ─────────────────────────────────────────────────────────
     // Card-number stem. A parent and its variations share one, and the whole

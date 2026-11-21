@@ -298,6 +298,9 @@ describe("fetchCardChecklist — SportLots reuses card numbers (NEO-189)", () =>
     expect(byBscRef.get("bsc-11c")?.platformData.sportlots?.ref).toBe(
       "2021 Topps Heritage #11 Alec Bohm [ VAR Throwback Alternate ]",
     );
+    // NEO-640 — the pair says which rule made it.
+    expect(byBscRef.get("bsc-11b")?.pairedBy).toBe("variation");
+    expect(byBscRef.get("bsc-11c")?.pairedBy).toBe("variation");
     expect(res.bscOnly).toHaveLength(0);
     expect(res.slOnly).toHaveLength(0);
   });
@@ -321,6 +324,7 @@ describe("fetchCardChecklist — SportLots reuses card numbers (NEO-189)", () =>
     expect(base?.platformData.sportlots?.ref).toBe(
       "2021 Topps Heritage #11 Alec Bohm|Spencer Howard",
     );
+    expect(base?.pairedBy).toBe("number");
   });
 
   test("a BSC variation SportLots does not carry stays BSC-only, not force-matched", async () => {

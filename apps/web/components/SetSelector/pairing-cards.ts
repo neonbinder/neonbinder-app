@@ -69,6 +69,16 @@ export type ReadyCandidate = {
   rawTeamName?: string;
   /** NEO-478 — the published checklist disagrees; see `PairingCard.checklistConflict`. */
   checklistConflict?: ChecklistConflict;
+  /**
+   * NEO-640 — which lookup paired a matched row's two marketplace halves;
+   * missing on a matched row = written before NEO-640.
+   */
+  pairedBy?: "stored" | "crossRef" | "variation" | "number" | "name";
+  /**
+   * NEO-640 — on a name pair whose numbers differ, SportLots' number as
+   * listed (rule 7's "numbers didn't match" note).
+   */
+  pairedNumber?: string;
 };
 
 /**
@@ -122,6 +132,9 @@ export function candidateToPairingCard(
     // takes them off before anything is saved.
     ...(c.checklistLink ? { checklistLink: c.checklistLink } : {}),
     ...(c.bucket === "checklistOnly" && c._id ? { checklistRowId: c._id } : {}),
+    // NEO-640: the number a name pair's SportLots half is listed under, when
+    // it differs from BSC's (rule 7's note). Wire-only, like the two above.
+    ...(c.pairedNumber ? { pairedNumber: c.pairedNumber } : {}),
   };
 }
 
