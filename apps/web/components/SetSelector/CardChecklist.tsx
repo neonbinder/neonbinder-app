@@ -2143,9 +2143,10 @@ export default function CardChecklist({
                 pausedAttached,
               )
             : matchedKeptMessage(serverSources, cards.length, pausedAttached);
-        // Only a run that skipped a Match Cards carries it onto the saved
-        // line (NEO-640); the one-source auto-keep's saved line is unchanged.
-        keptSentenceRef.current = serverSources.length > 1 ? keptSentence : null;
+        // Carried onto the saved line (NEO-640), one source or several: the
+        // commit lands within a frame and replaces the sentence that says why
+        // no Match Cards came up.
+        keptSentenceRef.current = keptSentence;
         soloKeptRef.current = withTeamsLine(keptSentence);
         setSyncMessage(
           [soloKeptRef.current, teamsLateRef.current ? TEAMS_LATE_NOTICE : null]

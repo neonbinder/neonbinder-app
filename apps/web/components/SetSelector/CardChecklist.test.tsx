@@ -3141,6 +3141,13 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     await act(async () => {
       finishCommit({ count: 2 });
     });
+    // NEO-640: the saved line replaces that sentence within a frame, so it
+    // carries it on.
+    await waitFor(() =>
+      expect(screen.getByText(/^Saved 2 cards\./).textContent).toBe(
+        "Saved 2 cards. Kept all 2 cards from SportLots. Nothing to match, no other marketplace attached.",
+      ),
+    );
   });
 
   it("does not commit until the whole streamed batch has arrived", async () => {
