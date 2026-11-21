@@ -141,6 +141,11 @@ async function fetchAndCommit(page: Page, env: FlowEnv, section: Locator): Promi
 
   // GUIDE "Checklist first": every row names its team or says No Team, so BSC is asked for no card one by one.
   const facts = await usePublishersChecklist(page, CHECKLISTS.leafPeteRoseLegacy2011);
+  // NEO-591: every row pairs its card, all 75. BSC names #27b and #38b "Old Teammates SP" and
+  // "One Heck of a Try SP" where the checklist's parser reads the trailing SP as a print marker;
+  // the pairing key drops it on both sides, so the SP cards pair their own rows instead of the
+  // rows becoming variations of #27a / #38a. `facts` is the product matcher's own answer.
+  expect(facts.matched, "every Leaf row pairs its card (a trailing SP is no part of a name)").toBe(facts.rows);
   await syncChecklistButton(page).click();
   // NEO-496 (D10, NQ1): the uploaded checklist is a second source, so the fetch opens Match Cards on
   // either branch (SportLots paused or not). The helper waits on it (7 s of ours plus BSC's), proves the

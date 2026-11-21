@@ -35,6 +35,8 @@ type BscCard = {
   teams?: string[];
   players?: string[];
   platformRef?: string;
+  isVariation?: boolean;
+  cardVariation?: string;
 };
 
 const mockState = vi.hoisted(() => ({
@@ -264,20 +266,18 @@ describe("fetchCardChecklist with a publisher checklist: who gets looked up", ()
     expect(result.checklistTeams).toEqual({ matched: 1, total: 3 });
   });
 
-  // D2 (Jason, 2026-11-10) — the E2E's card #6: the checklist prints #6 twice
-  // (two players, one invented team). It cannot say which row is the card, so
-  // the card is asked of BSC like one with no checklist answer, even though
-  // its own player is on exactly one of the rows; both rows are left over as
-  // checklist-only, and the line counts the marketplace's cards only.
-  test("a number repeated on the checklist: the card pairs with neither row and is looked up; N of M counts marketplace cards", async () => {
+  // NEO-591 (names first): row "6" is on the checklist twice, so the NUMBER
+  // pins neither row down, but the card's own player is on exactly one of
+  // them, and a repeated number only blocks number-keyed pairing. The card
+  // pairs with its player's row (this was: neither row, looked up from BSC) and
+  // the row's team answers it; the other "6" row (a different player) is left
+  // over as a checklist-only card.
+  test("a number repeated on the checklist: the card still pairs with its player's row; the other row is checklist-only", async () => {
     mockState.bscCards = [
       bsc("5", { players: ["A One"] }),
       bsc("6", { players: ["Six Player"] }),
       bsc("7", { players: ["C Three"] }),
     ];
-    mockState.teamNamesResult = {
-      "bsc-6": { rawTeamName: "Boston Red Sox", teamNames: ["Boston Red Sox"] },
-    };
     const { t, result } = await run({
       rows: [
         { number: "5", players: ["A One"], teams: ["Cincinnati Reds"] },
@@ -286,29 +286,26 @@ describe("fetchCardChecklist with a publisher checklist: who gets looked up", ()
         { number: "7", players: ["C Three"], teams: ["Cincinnati Reds"] },
       ],
     });
-    expect(mockState.teamLookupCalls).toEqual([["bsc-6"]]);
-    // Three rows carry "6": BSC's card and the two checklist-only rows.
+    // Every marketplace card is answered by the checklist: no lookup at all.
+    expect(mockState.teamLookupCalls).toEqual([]);
+    // Two rows carry "6": BSC's card and the checklist-only row.
     const staged = await t.run((ctx) => ctx.db.query("checklistCandidates").collect());
     const sixes = staged.filter((r) => r.cardNumber === "6");
-    expect(sixes).toHaveLength(3);
+    expect(sixes).toHaveLength(2);
     const six = sixes.find((r) => r.platformData.bsc?.ref === "bsc-6");
-    expect(six?.teamLookup).toBe("answered");
-    expect(six?.teams).toEqual(["Boston Red Sox"]);
+    expect(six?.teamLookup).toBe("checklist");
+    expect(six?.teams).toEqual(["Invented Team"]);
     expect(six?.players).toEqual(["Six Player"]);
     expect(six?.checklistConflict).toBeUndefined();
-    // The two rows stand as checklist-only cards for the operator to keep or drop.
-    expect(sixes.filter((r) => r.bucket === "checklistOnly").map((r) => r.players).sort()).toEqual([
+    // The other row stands as a checklist-only card for the operator to keep or drop.
+    expect(sixes.filter((r) => r.bucket === "checklistOnly").map((r) => r.players)).toEqual([
       ["Eight Player"],
-      ["Six Player"],
     ]);
-    expect(result.checklistTeams).toEqual({ matched: 2, total: 3 });
+    expect(result.checklistTeams).toEqual({ matched: 3, total: 3 });
     expect(result.checklistMatch).toMatchObject({
-      byNumber: 2,
-      byPlayerName: 0,
-      byPlayerFuzzy: 0,
-      unusedRowIndices: [1, 2],
-      leftoverCardKeys: ["bsc-6"],
-      checklistOnlyCount: 2,
+      unusedRowIndices: [2],
+      leftoverCardKeys: [],
+      checklistOnlyCount: 1,
     });
   });
 
@@ -323,11 +320,12 @@ describe("fetchCardChecklist with a publisher checklist: who gets looked up", ()
     expect(result.checklistTeams).toEqual({ matched: 1, total: 2 });
   });
 
-  // Rule 8 (the marketplace-side mirror of D2): BSC lists #5 twice, so the
-  // number pins neither card down, and the row's player naming exactly one of
-  // them does not rescue it. Both cards keep their BSC lookup; the row is left
-  // over as checklist-only for the operator.
-  test("a duplicate number on the marketplace side: neither card pairs, by number or by name; both are looked up", async () => {
+  // NEO-591 (names first): BSC lists #5 twice, so the number pins neither
+  // card down (rule 7), but the row's player names exactly one of them, and a
+  // repeated number only blocks number-keyed pairing. That card pairs with the
+  // row (this was: neither card, both looked up); the other keeps its BSC
+  // lookup.
+  test("a duplicate number on the marketplace side: the row pairs with the card its player names; the other is looked up", async () => {
     mockState.bscCards = [
       bsc("5", { players: ["A One"], platformRef: "bsc-5a" }),
       bsc("5", { players: ["B Two"], platformRef: "bsc-5b" }),
@@ -335,16 +333,13 @@ describe("fetchCardChecklist with a publisher checklist: who gets looked up", ()
     const { result } = await run({
       rows: [{ number: "5", players: ["A One"], teams: ["Cincinnati Reds"] }],
     });
-    expect(mockState.teamLookupCalls.flat().sort()).toEqual(["bsc-5a", "bsc-5b"]);
-    expect(result.checklistTeams).toEqual({ matched: 0, total: 2 });
+    expect(mockState.teamLookupCalls.flat().sort()).toEqual(["bsc-5b"]);
+    expect(result.checklistTeams).toEqual({ matched: 1, total: 2 });
     expect(result.checklistMatch).toMatchObject({
-      byNumber: 0,
-      byPlayerName: 0,
-      byPlayerFuzzy: 0,
-      unusedRowIndices: [0],
-      checklistOnlyCount: 1,
+      unusedRowIndices: [],
+      leftoverCardKeys: ["bsc-5b"],
+      checklistOnlyCount: 0,
     });
-    expect([...(result.checklistMatch?.leftoverCardKeys ?? [])].sort()).toEqual(["bsc-5a", "bsc-5b"]);
   });
 
   test("a row that names no team is no claim: the card keeps its BSC lookup and is not counted (B1)", async () => {
@@ -686,16 +681,25 @@ describe("fetchCardChecklist with a publisher checklist: NNO rows pair by player
     expect(result.checklistTeams).toEqual({ matched: 1, total: 1 });
   });
 
-  test("an NNO row never answers a numbered card", async () => {
+  // NEO-591 (names first): there is no "numbered" versus "no number" kind any
+  // more, so an NNO row answers a numbered card for the same player (this was:
+  // the row stood as its own checklist-only card and the card was looked up).
+  // The card keeps its number; the row's "NNO" is shown beside it.
+  test("an NNO row answers a numbered card for the same player, and the card keeps its number", async () => {
     mockState.bscCards = [bsc("12", { players: ["Chris Potter"] })];
-    const { result } = await run({
+    const { t, result } = await run({
       rows: [{ number: "NNO", players: ["Chris Potter"], teams: ["Roanoke Express"], noNumber: true }],
     });
-    expect(mockState.teamLookupCalls).toEqual([["bsc-12"]]);
-    // NEO-496: the NNO row stands as its own checklist-only card, which the
-    // line does not count (D2: marketplace cards only).
-    expect(result.checklistTeams).toEqual({ matched: 0, total: 1 });
-    expect(result.checklistMatch).toMatchObject({ checklistOnlyCount: 1, unusedRowIndices: [0] });
+    expect(mockState.teamLookupCalls).toEqual([]);
+    expect(result.checklistTeams).toEqual({ matched: 1, total: 1 });
+    expect(result.checklistMatch).toMatchObject({ checklistOnlyCount: 0, unusedRowIndices: [] });
+    const row = (await candidates(t)).get("12");
+    expect(row).toMatchObject({
+      teams: ["Roanoke Express"],
+      teamLookup: "checklist",
+      checklistLink: { checklistNumber: "NNO" },
+      sourceNumbers: { checklist: "NNO" },
+    });
   });
 });
 
@@ -1150,6 +1154,41 @@ describe("fetchCardChecklist with a publisher checklist: a No Team row paired by
     expect(aa?.teams ?? []).toEqual([]);
     expect(result.checklistTeams).toEqual({ matched: 1, total: 2 });
     expect(result.checklistMatch).toMatchObject({ needsOperator: false, byPlayerName: 1 });
+  });
+});
+
+describe("a lettered checklist row is one version, never 'all versions' (2024 Topps Chrome #300)", () => {
+  // The checklist file lists Julio Rodriguez only as 300b; BSC has base #300
+  // and the 300b variation. Base #300 once took the 300b row through a stem
+  // link and read "#300b Julio Rodriguez" beside the real 300b.
+  const julio = ["Julio Rodriguez"];
+  const cards = () => [
+    bsc("300", { players: julio }),
+    bsc("300b", { players: julio, isVariation: true, cardVariation: "Image Variation" }),
+  ];
+
+  test("row 300b only: 300b pairs 300b, base #300 has no checklist link and stays 300", async () => {
+    mockState.bscCards = cards();
+    const { t } = await run({
+      rows: [{ number: "300b", players: julio, teams: ["Seattle Mariners"] }],
+    });
+    const found = await candidates(t);
+    expect([...found.keys()].sort()).toEqual(["300", "300b"]);
+    expect(found.get("300b")?.checklistLink).toMatchObject({ via: "number", row: { number: "300b" } });
+    expect(found.get("300")?.checklistLink).toBeUndefined();
+  });
+
+  test("rows 300 and 300b: each card takes its own row", async () => {
+    mockState.bscCards = cards();
+    const { t } = await run({
+      rows: [
+        { number: "300", players: julio, teams: ["Seattle Mariners"] },
+        { number: "300b", players: julio, teams: ["Seattle Mariners"] },
+      ],
+    });
+    const found = await candidates(t);
+    expect(found.get("300")?.checklistLink).toMatchObject({ via: "number", row: { number: "300" } });
+    expect(found.get("300b")?.checklistLink).toMatchObject({ via: "number", row: { number: "300b" } });
   });
 });
 

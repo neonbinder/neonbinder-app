@@ -6,7 +6,7 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { beforeAll, describe, expect, test } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import { STATS_PAGE } from "./referenceSeed";
@@ -28,6 +28,12 @@ async function seedSportAndTeams(t: ReturnType<typeof convexTest>, teams: number
 }
 
 describe("referenceSeed", () => {
+  // NEO-591: the first action call in a file loads the function modules (about
+  // a second under load). Pay it here so no single test carries it.
+  beforeAll(async () => {
+    await convexTest(schema, modules).action(internal.referenceSeed.preflight, { tables: [] });
+  });
+
   test("preflight reports which tables hold rows and tolerates a table the schema lacks", async () => {
     const t = convexTest(schema, modules);
     await seedSportAndTeams(t, 2, 0);

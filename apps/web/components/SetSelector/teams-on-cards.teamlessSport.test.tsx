@@ -157,6 +157,92 @@ describe("autoNoTeamIndexes / teamlessCardIndexes: who counts as teamless", () =
     expect(partition([card({ players: ["Someone Else"] })], [], named).asked).toEqual([0]);
   });
 
+  describe("a career-created player is born in the set's sport (NEO-591)", () => {
+    const fresh = (over: Partial<PreviewCardForTeams> = {}): PreviewCardForTeams =>
+      card({ newPlayerByName: [{ name: "Pat Nonsport", ref: "np-one" }], ...over });
+
+    test("the set's sport is flagged: the card is stamped, not asked", () => {
+      const { auto, asked } = partition([fresh()], [], people({ ...FLAGGED, setSportId: NONE }));
+      expect([auto, asked]).toEqual([[0], []]);
+    });
+
+    test("the set's sport has teams: the card is asked", () => {
+      const { auto, asked } = partition([fresh()], [], people({ ...FLAGGED, setSportId: BALL }));
+      expect([auto, asked]).toEqual([[], [0]]);
+    });
+
+    test("the host cannot say the set's sport: unknown is never teamless", () => {
+      const { auto, asked } = partition([fresh()], [], people());
+      expect([auto, asked]).toEqual([[], [0]]);
+    });
+
+    test("it reads the SET's sport, not a namesake row's or a linked player's", () => {
+      // A decided review row for the same printed name sits in another sport;
+      // the new player is not that person, so only the set's sport counts.
+      const { auto } = partition(
+        [fresh()],
+        [created("Pat Nonsport", BALL)],
+        people({ ...FLAGGED, setSportId: NONE }),
+      );
+      expect(auto).toEqual([0]);
+    });
+
+    test("beside a linked player: both must be teamless", () => {
+      const two = fresh({ players: ["Pat Nonsport", "Ron Ballplayer"] });
+      const linkedIn = (sport: string) =>
+        people({
+          ...FLAGGED,
+          setSportId: NONE,
+          playerSportIds: new Map([[pid("ron"), sport]]),
+        });
+      const rows = [linked("Ron Ballplayer", pid("ron"))];
+      expect(partition([two], rows, linkedIn(NONE)).auto).toEqual([0]);
+      expect(partition([two], rows, linkedIn(BALL)).asked).toEqual([0]);
+    });
+
+    test("a data claim still holds it back: a listed team is asked, never stamped", () => {
+      const { auto, asked } = partition(
+        [fresh({ teams: ["Cubs"] })],
+        [pendingTeam("Cubs")],
+        people({ ...FLAGGED, setSportId: NONE }),
+      );
+      expect([auto, asked]).toEqual([[], [0]]);
+    });
+
+    test("a re-synced stored row is asked as before", () => {
+      const { auto, asked } = partition(
+        [fresh()],
+        [],
+        people({ ...FLAGGED, setSportId: NONE, existingIndexes: [0] }),
+      );
+      expect([auto, asked]).toEqual([[], [0]]);
+    });
+
+    test("the Save step names the set's sport, and the step drops the card", () => {
+      const stored = people({ ...FLAGGED, setSportId: NONE });
+      const who = autoNoTeamPeople([fresh()], [], undefined, stored);
+      expect(who).toEqual({
+        cards: 1,
+        names: ["Pat Nonsport"],
+        sportIds: [NONE],
+        sportUnknown: false,
+      });
+      expect(cardsForTeamsStep([fresh()], [], undefined, stored)).toEqual([]);
+    });
+
+    test("setSportId is carried only beside a flagged sport", () => {
+      expect(
+        storedPeople(undefined, undefined, undefined, undefined, { setSportId: BALL }),
+      ).toBeUndefined();
+      expect(
+        storedPeople(undefined, undefined, undefined, undefined, {
+          ...FLAGGED,
+          setSportId: BALL,
+        })?.setSportId,
+      ).toBe(BALL);
+    });
+  });
+
   test("a mixed card (one teamless person, one not) is asked", () => {
     const { auto, asked } = partition(
       [card({ players: ["Pat Nonsport", "Ron Ballplayer"] })],

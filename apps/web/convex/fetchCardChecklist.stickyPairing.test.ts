@@ -243,7 +243,10 @@ describe("fetchCardChecklist — stored pairing survives a re-sync (NEO-137)", (
     const insertId = await seedTree(t);
 
     // The shared SportLots set returns BOTH series' cards. "#1" is the sibling
-    // series' card; "#B1" is ours. Nothing in the data says so.
+    // series' card; "#B1" is ours. Nothing in the data says so: both series
+    // list a Cal Ripken Jr. (NEO-591 — a different player on "#1" would now
+    // be told apart by name, so the sibling card is the same player), and the
+    // matching number is all that separates them.
     mockState.bscCards = [
       {
         cardNumber: "1",
@@ -256,8 +259,8 @@ describe("fetchCardChecklist — stored pairing survives a re-sync (NEO-137)", (
     mockState.slCards = [
       {
         cardNumber: "1",
-        cardName: "Ken Griffey Jr.",
-        platformRef: "#1 Ken Griffey Jr.",
+        cardName: "Cal Ripken Jr.",
+        platformRef: "#1 Cal Ripken Jr.",
         sportlotsRef: "1",
         sourceSlSetId: "884412",
       },
@@ -270,7 +273,8 @@ describe("fetchCardChecklist — stored pairing survives a re-sync (NEO-137)", (
       },
     ];
 
-    // FIRST sync — the number heuristic grabs the WRONG SL card (#1), which is
+    // FIRST sync — the same player on both SL cards, so the number decides
+    // inside that player's group and grabs the WRONG SL card (#1), which is
     // exactly why this needs an operator.
     await asAdmin.action(api.selectorOptions.fetchCardChecklist, {
       selectorOptionId: insertId,
@@ -281,7 +285,7 @@ describe("fetchCardChecklist — stored pairing survives a re-sync (NEO-137)", (
     const first = await buckets(t, insertId);
     expect(first.matched).toHaveLength(1);
     expect(first.matched[0].platformData.sportlots?.ref).toBe(
-      "#1 Ken Griffey Jr.",
+      "#1 Cal Ripken Jr.",
     );
 
     // The operator overrides it and commits the correct pairing.
@@ -318,7 +322,7 @@ describe("fetchCardChecklist — stored pairing survives a re-sync (NEO-137)", (
     expect(second.matched[0].confidence).toBe(1);
     // The sibling series' card is left unassigned, not silently absorbed.
     expect(second.slOnly.map((c) => c.platformData.sportlots?.ref)).toEqual([
-      "#1 Ken Griffey Jr.",
+      "#1 Cal Ripken Jr.",
     ]);
     await drainScheduled(t);
   });

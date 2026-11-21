@@ -62,7 +62,8 @@
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { teamFullName } from "../../lib/teams/team-name";
-import { normalizeEntityName } from "./entityNearMatch";
+import { nameTokens, normalizeEntityName } from "./entityNearMatch";
+import { placeTextOrNull, teamLocationIs } from "./placeTeam";
 import { stintCountsForYear } from "./careerCoverage";
 import {
   erasOverlap,
@@ -386,6 +387,35 @@ export async function resolveTeamForSetYear(
   return { teamId: pick ? pick.row._id : null, candidates };
 }
 
+/** How many `search_name` hits one place text reads. */
+export const PLACE_TEAM_SEARCH_HITS = 32;
+
+/**
+ * NEO-591 — the sport's teams whose LOCATION is `x` ("Seattle"), from one
+ * bounded `search_name` read.
+ *
+ * `saturated` is the guard of rule 8: a window that came back FULL may have cut
+ * a further candidate off, so a caller that decides on a count must leave the
+ * text alone when it is set. Rows are not narrowed by league; that is the
+ * caller's.
+ */
+export async function findTeamsByLocation(
+  ctx: QueryCtx | MutationCtx,
+  sportId: Id<"selectorOptions">,
+  x: string,
+): Promise<{ rows: Doc<"teams">[]; saturated: boolean }> {
+  const term = nameTokens(x).join(" ");
+  if (!term) return { rows: [], saturated: false };
+  const hits = await ctx.db
+    .query("teams")
+    .withSearchIndex("search_name", (q) => q.search("nameNormalized", term).eq("sportId", sportId))
+    .take(PLACE_TEAM_SEARCH_HITS);
+  return {
+    rows: hits.filter((row) => teamLocationIs(row, x)),
+    saturated: hits.length >= PLACE_TEAM_SEARCH_HITS,
+  };
+}
+
 /** A `players.teamYears[]` entry as the pure era rules read it. */
 function toStint(stint: { teamId: Id<"teams">; fromYear?: number; toYear?: number }): Stint {
   return {
@@ -419,7 +449,33 @@ export type CardTeamResolution = TeamNameResolution & {
    *   reprint of the player's own team.
    */
   agreesWithYear: boolean;
+  /**
+   * NEO-591 — true when `candidates` are the in-league teams LOCATED at a
+   * printed place rather than the rows that answer to the text by name or
+   * alias. Absent otherwise. Display-only for the review step's wording.
+   */
+  fromPlace?: true;
 };
+
+/**
+ * NEO-591 — the in-league teams located at a printed place, or `[]` when the
+ * text is not read as a place (`placeTextOrNull`), the location read came back
+ * full (it may have cut a candidate off), or the set has no league. Teams of
+ * other leagues never count, as at pairing. The league ids are loaded lazily.
+ */
+async function placeCandidates(
+  ctx: QueryCtx | MutationCtx,
+  sportId: Id<"selectorOptions">,
+  raw: string,
+  loadLeagueIds: () => Promise<ReadonlySet<string>>,
+): Promise<Doc<"teams">[]> {
+  const x = placeTextOrNull(raw);
+  if (!x) return [];
+  const { rows, saturated } = await findTeamsByLocation(ctx, sportId, x);
+  if (saturated || rows.length === 0) return [];
+  const leagues = await loadLeagueIds();
+  return rows.filter((row) => row.leagueId !== undefined && leagues.has(row.leagueId));
+}
 
 /**
  * NEO-602 — the ONE place a team name printed on a CARD becomes a team id.
@@ -460,17 +516,57 @@ export async function resolveCardTeamName(
     loadCardPlayerIds?: () => Promise<
       ReadonlyArray<ReadonlyArray<Id<"players">>> | undefined
     >;
+    /**
+     * NEO-591 — the set's league ids, loaded only when needed (called once, and
+     * only when no team answers to `fullName` by name or alias). Present, the
+     * text may be a PLACE ("Seattle"): when TWO OR MORE in-league teams, of any
+     * era, are located there, they are the candidates and the cards' players
+     * decide (`pickCardTeam` with `playersMustDecide`: the year never chooses
+     * between a place's eras). The rows come back as `candidates` either way,
+     * so a caller that asks the operator can offer them. Fewer than two leave
+     * the answer as it always was (a lone place is settled at pairing, by
+     * `resolveChecklistPlaceTeams`). Absent, the name is read as a name only.
+     */
+    placeLeagueIds?: () => Promise<ReadonlySet<string>>;
+    /**
+     * NEO-591 — the place search's answer per normalised name, owned by the
+     * caller. A caller that resolves the same name more than once in one
+     * transaction (the commit prelude's create decision, then its resolve
+     * phase) hands the SAME map each time, so a name searches at most once.
+     * One map belongs to one league set (`placeLeagueIds` is fixed for the
+     * call) and one sport, and the caller empties it when it writes a team,
+     * since a new row can change who is located at a place.
+     */
+    placeCache?: Map<string, Promise<Doc<"teams">[]>>;
   } = {},
 ): Promise<CardTeamResolution> {
-  const candidates = await findTeamsByFullName(ctx, sportId, fullName);
+  let candidates = await findTeamsByFullName(ctx, sportId, fullName);
+  let isPlace = false;
+  if (candidates.length === 0 && options.placeLeagueIds) {
+    const cache = options.placeCache;
+    const cacheKey = normalizeEntityName(fullName);
+    let search = cache?.get(cacheKey);
+    if (!search) {
+      search = placeCandidates(ctx, sportId, fullName, options.placeLeagueIds);
+      cache?.set(cacheKey, search);
+    }
+    const atPlace = await search;
+    if (atPlace.length >= 2) {
+      candidates = atPlace;
+      isPlace = true;
+    }
+  }
   if (candidates.length === 0) {
     return { teamId: null, candidates, via: null, agreesWithYear: false };
   }
   const key = normalizeEntityName(fullName);
   // The name leg is `nameNormalized === key`; a row in the union that does not
-  // satisfy it got in through an alias.
+  // satisfy it got in through an alias. A place's rows are no name's, alias or
+  // not, so the alias-vs-own-name guard has nothing to say about them.
   const aliasOnlyIds = new Set<string>(
-    candidates.filter((row) => row.nameNormalized !== key).map((row) => row._id as string),
+    isPlace
+      ? []
+      : candidates.filter((row) => row.nameNormalized !== key).map((row) => row._id as string),
   );
 
   let cards: Stint[][][] | undefined;
@@ -514,9 +610,11 @@ export async function resolveCardTeamName(
   const pick = pickCardTeam(candidates, {
     setYear,
     aliasOnlyIds,
+    ...(isPlace ? { playersMustDecide: true } : {}),
     ...(cards ? { cards } : {}),
   });
-  if (!pick) return { teamId: null, candidates, via: null, agreesWithYear: false };
+  const place = isPlace ? { fromPlace: true as const } : {};
+  if (!pick) return { teamId: null, candidates, via: null, agreesWithYear: false, ...place };
   if (pick.via === "year" && candidates.length === 1) {
     const only = pickTeamForYear(candidates, setYear, { allowPastEra: true });
     if (only?.pastEra) {
@@ -539,6 +637,7 @@ export async function resolveCardTeamName(
     candidates,
     via: pick.via,
     agreesWithYear: pick.agreesWithYear,
+    ...place,
   };
 }
 

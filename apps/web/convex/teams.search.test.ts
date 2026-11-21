@@ -49,6 +49,7 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { normalizeTeamName } from "./teams";
+import { teamRowFields } from "./lib/teamRow";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -417,6 +418,31 @@ describe("teams.nearMatches", () => {
     expect(rows).toEqual([
       { _id: yankeesId, name: "New York Yankees", confidence: "close" },
     ]);
+  });
+
+  test("collector review: a typed PLACE is flagged locationMatch on the team that has it; a nickname is not", async () => {
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t, "Baseball", "BB");
+    const mariners = await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        ...teamRowFields({ name: "Mariners", location: "Seattle" }),
+        sportId: baseball,
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    const place = await t
+      .withIdentity(ADMIN)
+      .query(api.teams.nearMatches, { name: "Seattle", sportId: baseball });
+    expect(place).toEqual([
+      { _id: mariners, name: "Seattle Mariners", confidence: "close", locationMatch: true },
+    ]);
+
+    const nickname = await t
+      .withIdentity(ADMIN)
+      .query(api.teams.nearMatches, { name: "Mariners", sportId: baseball });
+    expect(nickname.map((r) => r._id)).toEqual([mariners]);
+    expect(nickname[0]).not.toHaveProperty("locationMatch");
   });
 
   test("finds the full club name from an abbreviated location", async () => {

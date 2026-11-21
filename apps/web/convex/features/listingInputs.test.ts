@@ -269,6 +269,11 @@ describe("mergeCardFeatures / listingInputsForCard", () => {
     expect(merged).toMatchObject({ isRookie: "true", parallelName: "Sliding", season: "2026" });
   });
 
+  test("NEO-591: a prospect card's merged features carry the Prospect Card attribute", () => {
+    expect(mergeCardFeatures({ cardNumber: "1", isProspect: true }, SET).isProspect).toBe("true");
+    expect(mergeCardFeatures({ cardNumber: "1" }, SET).isProspect).toBeUndefined();
+  });
+
   test("the inputs read the merged snapshot and the set's facts", () => {
     const inputs = listingInputsForCard({ cardNumber: "1" }, SET, {
       playerNames: ["A"],

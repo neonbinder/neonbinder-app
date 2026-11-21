@@ -4,8 +4,9 @@
 // silently: no team step and no "linked for you" decision for it, and every
 // card carries the current era. The wizard still opens, on NEO-574's Career
 // check alone, because the silent card's player has no career on file: that
-// step lists him on the CURRENT era (the team his card got), and left on "Keep
-// as is" it writes nothing.
+// step lists him on the CURRENT era (the team his card got), the line opening
+// on "Add to career" with that era staged (NEO-591), and answered "Keep as is"
+// it writes nothing.
 //
 // The Orioles shape, minted: `Bal<token> Ori<token>` (1954–present) is the
 // current era and holds the printed name as its own; `Mil<token> Bre<token>`
@@ -42,7 +43,7 @@ import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtu
 import { editCardButton } from "../../support/cards";
 import { usePastedChecklist } from "../../support/published-checklist";
 import { addPlayerByHand, expectPlayersLoaded } from "../../support/players";
-import { drillToCustom, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
+import { drillToCustom, escapeRe, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 import {
   advanceToSave,
   CAREER_STEP_SUBTITLE,
@@ -156,9 +157,16 @@ test(
     await expectWizardStep(page, CAREER_STEP_SUBTITLE);
     const line = careerLine(page, SILENT, CURRENT);
     await expect(line).toBeVisible();
-    await expect(line.getByRole("radio", { name: "Keep as is" })).toBeChecked();
+    // NEO-591: the line OPENS on "Add to career" with the card's team staged, and
+    // that team is the CURRENT era: a past set (2025) stages a closed stint.
+    await expect(line.getByRole("radio", { name: "Add to career" })).toBeChecked();
+    await expect(
+      wizard.getByRole("list", { name: `Stints to add for ${SILENT}` }).getByRole("listitem"),
+    ).toHaveText(new RegExp(`^${escapeRe(`${CURRENT} (2025–2025)`)}`));
     const lines = wizard.getByRole("list", { name: `${CAREER_STEP_SUBTITLE} · 1 to look at` });
-    await expect(lines.getByRole("listitem")).toHaveCount(1);
+    // One line: the staged stint is a list item too, nested in the line's, so
+    // count the items that hold a line's answers.
+    await expect(lines.getByRole("listitem").filter({ has: page.getByRole("radiogroup") })).toHaveCount(1);
     await expect(lines).toContainText("No career on file yet.");
     await expect(lines).toContainText("Cards #2");
     // Negatives, read against that step: the voter (his stint covers the team)
@@ -170,7 +178,7 @@ test(
     await expect(page.getByText(/names? (was|were) linked for you/)).toHaveCount(0);
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, Career check after a silent two-era link" });
 
-    // Every line left on "Keep as is" (advanceToSave), then the save.
+    // Every line answered "Keep as is" (advanceToSave's sweep), then the save.
     await advanceToSave(page);
     await expect(wizard.getByText("Save 2 cards?", { exact: true })).toBeVisible();
     await confirmSaveButton(page).click();

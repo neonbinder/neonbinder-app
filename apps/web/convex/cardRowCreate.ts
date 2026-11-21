@@ -110,6 +110,12 @@ export type NewCardRow = {
   attributes?: string[];
   isRookie?: boolean;
   isRelic?: boolean;
+  /**
+   * NEO-591 — the checklist said "Prospect": folded into
+   * `features.isProspect`, never a column (`deriveCardObservedFeatures`).
+   * New cards only, by `isRookie`'s route.
+   */
+  isProspect?: boolean;
   printRun?: number;
   cardVariation?: string;
   /** Observed only: folded into `features.autographed`, never stored. */

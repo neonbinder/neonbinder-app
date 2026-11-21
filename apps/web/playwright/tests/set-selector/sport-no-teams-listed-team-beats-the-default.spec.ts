@@ -9,7 +9,8 @@
 //   3. B-1's person is new. The operator moves him to the teamless sport (Baseball left
 //      off his sports) and adds him; every other name is skipped. The Career check
 //      (NEO-574) then asks about B-20's catalogue player, whose career has no Sun Devils
-//      stint by 2026; it is left on "Keep as is" (writes nothing).
+//      stint by 2026; its default is "Add to career" (NEO-591) and it is answered "Keep as is"
+//      (writes nothing).
 //   4. Save says nothing about No Team: the default does not reach a card a listing gave
 //      a team (invariant 8: a data claim holds a default back).
 //   5. The committed card B-1 has its person and the listed team, reads no "No Team", is
@@ -154,12 +155,14 @@ test(
     });
 
     // ══ 3b. THE CAREER CHECK (NEO-574): not this spec's feature, passed writing nothing ══
-    // One line, B-20's catalogue person, on its default. The line names the team as NB holds
-    // it, so it is found by its person ("<person> on <team>").
+    // One line, B-20's catalogue person, opening on "Add to career" (NEO-591). The line names
+    // the team as NB holds it, so it is found by its person ("<person> on <team>");
+    // `passCareerCheck` answers it "Keep as is", so no career is written.
     await expectWizardStep(page, CAREER_STEP_SUBTITLE);
     const careerLine = wizard.getByRole("radiogroup", { name: new RegExp(`^${escapeRe(careerPerson!)} on `) });
-    await expect(careerLine.getByRole("radio", { name: "Keep as is" })).toBeChecked();
+    await expect(careerLine.getByRole("radio", { name: "Add to career", exact: true })).toBeChecked();
     await passCareerCheck(page);
+    await expect(careerLine).toHaveCount(0);
 
     // ══ 4. SAVE: nothing about No Team; the listed team holds the default back ══
     await expectWizardStep(page, STEP_SUBTITLE.save);

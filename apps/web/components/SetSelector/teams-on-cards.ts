@@ -115,7 +115,8 @@ export { MAX_CARD_TEAMS };
  *  - the card re-syncs a stored row (the client cannot see that row's lookup
  *    bookkeeping, which the server's verdict reads);
  *  - a person is not known to be teamless: mixed card, a sport not loaded yet,
- *    a name still waiting on review;
+ *    a name still waiting on review (a "New player named X" from the career
+ *    check is known: the commit mints him in the set's sport);
  *  - the card has nobody on it (nothing says what sport it is);
  *  - a data claim stands (invariant 8): the listing names a team the operator
  *    has not ruled out, or a BSC card's team lookup has not ended with no
@@ -153,6 +154,14 @@ export interface PreviewCardForTeams {
   teams?: string[];
   players?: string[];
   /**
+   * NEO-574 / NEO-591 — a printed name the career step pointed at another
+   * person: an existing player (`playerIdByName`) or a new one the commit
+   * creates (`newPlayerByName`, by ref). That person is who the card has for
+   * the teams step, not whoever the printed name matched.
+   */
+  playerIdByName?: ReadonlyArray<{ name: string; playerId: string }>;
+  newPlayerByName?: ReadonlyArray<{ name: string; ref: string }>;
+  /**
    * How the fetch-time team lookup for this card ended. "failed" means the
    * listing's answer never arrived, so no rule may guess a team for it
    * (invariant 8): the operator picks. NEO-478 "checklist" means the
@@ -163,10 +172,11 @@ export interface PreviewCardForTeams {
    */
   teamLookup?: TeamLookupOutcome;
   /**
-   * NEO-426 — BSC's unsplit team value as its lookup returned it: a listing's
-   * team claim even when the card carries no team strings (a split refused
-   * over the cap). Only the teamless-sport default reads it, the way the
-   * commit's `commitTeamHint` does.
+   * BSC's unsplit team value, kept only where `teams` does not already say it
+   * (a split that was refused, or over the cap). With no team strings it is
+   * the listing's claim about the team: see `listedClaims`. NEO-426 — the
+   * teamless-sport default reads it too, the way the commit's `commitTeamHint`
+   * does.
    */
   rawTeamName?: string;
   /** NEO-426 — only the BSC ref's PRESENCE is read (a lookup is due or not). */
@@ -238,6 +248,13 @@ export interface EvidenceRequest {
 export interface TeamNameRequest {
   key: string;
   name: string;
+  /**
+   * Also ask for the teams whose LOCATION is this name. Every name a LISTING
+   * printed gets it (collector review): Onyx prints teams as places
+   * ("Seattle"), and the place is the only thing that finds "Seattle
+   * Mariners". It adds choices; it never pre-fills one.
+   */
+  location?: true;
 }
 
 /** One team chip. */
@@ -314,8 +331,49 @@ export const TEAMS_SECTION_NAMES_PER_REQUEST = 32;
 /** How many player calls the section makes at most (×32 players). */
 export const TEAMS_SECTION_MAX_REQUESTS = 8;
 
-/** How many name calls the section makes at most (×32 names). */
+/**
+ * NEO-591 — how many of one name call's names get the location leg. Mirrors
+ * `TEAM_SUGGESTION_MAX_LOCATION_NAMES` in convex/cardChecklist.ts (a browser
+ * bundle cannot import that module; the server ignores any past its own cap).
+ */
+export const TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST = 8;
+
+/**
+ * The name BUDGET, not a call count: at most 4 × `TEAMS_SECTION_NAMES_PER_REQUEST`
+ * (128) names are asked about. Calls are sliced further to keep each call's
+ * location leg within `TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST`, so up to 16
+ * calls happen for 128 names (`nameRequestSlices`).
+ */
 export const TEAMS_SECTION_MAX_NAME_REQUESTS = 4;
+
+/**
+ * The name requests split into calls: at most `TEAMS_SECTION_NAMES_PER_REQUEST`
+ * names and `TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST` location names each, in
+ * first-seen order. The server gives the location leg to the first 8 names of
+ * a call and silently none to the rest, so a call is closed at 8 location
+ * names rather than letting the 9th be asked for and quietly not answered.
+ * A set whose listings print a place on every card (Onyx) therefore makes more
+ * calls than one that does not, for the same names.
+ */
+export function nameRequestSlices(requests: readonly TeamNameRequest[]): TeamNameRequest[][] {
+  const out: TeamNameRequest[][] = [];
+  let current: TeamNameRequest[] = [];
+  let locations = 0;
+  for (const request of requests) {
+    const full =
+      current.length >= TEAMS_SECTION_NAMES_PER_REQUEST ||
+      (request.location && locations >= TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST);
+    if (full && current.length > 0) {
+      out.push(current);
+      current = [];
+      locations = 0;
+    }
+    current.push(request);
+    if (request.location) locations++;
+  }
+  if (current.length > 0) out.push(current);
+  return out;
+}
 
 const norm = (raw: string): string => normalizeEntityName(raw.trim());
 
@@ -373,8 +431,11 @@ export type NewRowTeamCard = PreviewCardForTeams;
  * NEO-556 — will the set-level default settle the team of this card when the
  * commit inserts it as a NEW row, so the wizard need not ask?
  *
- *  - A set team: always. The commit gives a teamless new row that team, and
- *    a card that resolves a team of its own has one anyway (NEO-277).
+ *  - A set team: when the card names none the commit could not give it. The
+ *    commit gives a teamless new row that team, and a card that resolves a
+ *    team of its own has one anyway (NEO-277). A listing value kept as the
+ *    "Listed as:" hint is a team the data names, so the set's team is not
+ *    stamped over it and the card is asked (invariant 8).
  *  - "No Team": only when the commit will STAMP the card No Team — the
  *    client half of `noTeamCardVerdict` as the commit asks it. Product
  *    invariant 8: a listing that names a team, or a BSC lookup that has not
@@ -394,7 +455,15 @@ export function setDefaultSettlesNewRow(
   card: NewRowTeamCard,
   setDefault: SetTeamDefaultKind,
 ): boolean {
-  if (setDefault === "teams") return true;
+  if (setDefault === "teams") {
+    // Invariant 8 (NEO-591): a card the data gives a team to (a listing's
+    // team the commit could not resolve into `teams`) never takes the set's
+    // team over it: the commit does not stamp it (`bscTeamHint`), so the
+    // operator is asked. A card that prints team strings has a team of its
+    // own (or a name waiting for review): as before.
+    if (cardTeamStrings(card).length > 0) return true;
+    return (card.rawTeamName?.trim() ?? "") === "";
+  }
   if (setDefault !== "noTeam") return false;
   if (cardTeamStrings(card).length > 0) return false;
   if ((card.rawTeamName?.trim() ?? "") !== "") return false;
@@ -479,10 +548,20 @@ export interface StoredPeople {
    * wizard cannot see, so they are asked about as before.
    */
   existingPositions?: ReadonlySet<number>;
+  /**
+   * NEO-426 / NEO-591 — the SET's sport id. A player the career check creates
+   * ("New player named X") is born in it: the commit mints him under the sport
+   * it walks from the set row (`createCareerNewPlayers`), then reads his home
+   * sport for the default like any other player's. So he is teamless exactly
+   * when this sport is flagged. Absent (the host cannot say) = not teamless.
+   */
+  setSportId?: string;
 }
 
 /** NEO-426 — the host's wire shapes for the teamless-sport default (see `StoredPeople`). */
 export interface TeamlessFacts {
+  /** NEO-591 — the set's sport id, see `StoredPeople.setSportId`. */
+  setSportId?: string;
   teamlessSportIds?: readonly string[];
   /** Linked or default player id → home sport id. */
   playerSportIds?: ReadonlyMap<string, string>;
@@ -552,6 +631,7 @@ export function storedPeople(
     ...(playerSports ? { playerSportIds: playerSports } : {}),
     ...(teamlessNames.size > 0 ? { teamlessPlayerNames: teamlessNames } : {}),
     ...(existing ? { existingPositions: existing } : {}),
+    ...(hasTeamless && teamless?.setSportId ? { setSportId: teamless.setSportId } : {}),
   };
 }
 
@@ -592,12 +672,17 @@ interface NamesView {
   playerSportIds: ReadonlyMap<string, string>;
   teamlessPlayerNames: ReadonlySet<string>;
   existingPositions: ReadonlySet<number>;
+  /** The set's sport id, where the host said it (a career-created player's home sport). */
+  setSportId?: string;
 }
 
 const NOBODY: ReadonlySet<never> = new Set<never>();
 const NO_SPORTS: ReadonlyMap<never, never> = new Map<never, never>();
 
-function namesView(rows: readonly TeamsReviewRow[], people?: StoredPeople): NamesView {
+function namesView(
+  rows: readonly TeamsReviewRow[],
+  people?: StoredPeople,
+): NamesView {
   const teamRowByKey = new Map<string, TeamsReviewRow>();
   const playerRowByKey = new Map<string, TeamsReviewRow>();
   for (const row of rows) {
@@ -618,6 +703,7 @@ function namesView(rows: readonly TeamsReviewRow[], people?: StoredPeople): Name
     playerSportIds: people?.playerSportIds ?? NO_SPORTS,
     teamlessPlayerNames: people?.teamlessPlayerNames ?? NOBODY,
     existingPositions: people?.existingPositions ?? NOBODY,
+    ...(people?.setSportId !== undefined ? { setSportId: people.setSportId } : {}),
   };
 }
 
@@ -640,7 +726,18 @@ function teamStringSkipped(raw: string, view: NamesView): boolean {
  * is an answer to the claim, so it no longer holds the guess back.
  */
 function listedClaims(card: PreviewCardForTeams, view: NamesView): string[] {
-  return cardTeamStrings(card).filter((raw) => !teamStringSkipped(raw, view));
+  const printed = cardTeamStrings(card).filter((raw) => !teamStringSkipped(raw, view));
+  // Invariant 8: a card whose listing named a team the card carries no string
+  // for (BSC's raw value, its split refused) is a claim too, exactly like a
+  // printed string that failed to resolve. Without it nothing holds back a
+  // "same player in this set" pre-fill over the team the data names. Only when
+  // the card has no team string at all (a raw value beside strings is already
+  // said by them, and all of its parts skipped is the operator's ruling), and
+  // not a value the operator ruled out.
+  const raw = card.rawTeamName?.trim() ?? "";
+  const listing =
+    raw && cardTeamStrings(card).length === 0 && !teamStringSkipped(raw, view) ? [raw] : [];
+  return [...printed, ...listing];
 }
 
 /** Will this printed team string resolve to a team at commit? */
@@ -657,12 +754,15 @@ function teamStringResolves(raw: string, view: NamesView): boolean {
 type CardPlayer = (
   | { kind: "created"; key: string; display: string; row: TeamsReviewRow }
   | { kind: "server"; key: string; display: string; request: EvidenceRequest }
+  /** NEO-591 — a player the career step creates: no career on file, and nothing to ask the server. */
+  | { kind: "new"; key: string; display: string }
 ) & {
   /**
    * NEO-426 — this person's HOME sport is flagged teamless, as far as the
    * host's facts say: a created player by his row's sport, a linked or
    * default one by his stored sport, one resolved before the sitting by the
-   * fetch's `teamlessPlayerNames`. Unknown = false.
+   * fetch's `teamlessPlayerNames`, a career-created one by the set's sport.
+   * Unknown = false.
    */
   teamless: boolean;
   /**
@@ -697,6 +797,38 @@ function cardPlayers(card: PreviewCardForTeams, index: number, view: NamesView):
     const key = norm(display);
     if (!key || seen.has(key)) continue;
     seen.add(key);
+    // NEO-574 / NEO-591 — a name the career step pointed at another person is
+    // THAT person's, keyed by who they are: a namesake's sibling card (same
+    // printed name, still on the first player) is not evidence for it.
+    const fresh = card.newPlayerByName?.find((r) => norm(r.name) === key);
+    if (fresh) {
+      // NEO-426 / NEO-591: the commit mints this person under the SET's sport
+      // (`createCareerNewPlayers`, the sport walked from the set row), so his
+      // home sport is the set's: teamless exactly when that sport is flagged,
+      // the same read the commit makes of his stored row. A host that cannot
+      // say the set's sport leaves it unknown, and unknown is never teamless.
+      out.push({
+        kind: "new",
+        key: `new:${fresh.ref}`,
+        display,
+        teamless: sportIsTeamless(view.setSportId, view),
+        ...sportFact(view.setSportId),
+      });
+      continue;
+    }
+    const relinked = card.playerIdByName?.find((r) => norm(r.name) === key);
+    if (relinked) {
+      const playerId = relinked.playerId as Id<"players">;
+      out.push({
+        kind: "server",
+        key: `id:${playerId}`,
+        display,
+        request: { key: `id:${playerId}`, playerId },
+        teamless: sportIsTeamless(view.playerSportIds.get(playerId), view),
+        ...sportFact(view.playerSportIds.get(playerId)),
+      });
+      continue;
+    }
     const row = view.playerRowByKey.get(key);
     const action = row?.decision?.action;
     if (row && action === "skip") continue;
@@ -1044,13 +1176,18 @@ export function teamNameRequests(
 ): TeamNameRequest[] {
   const view = namesView(rows, people);
   const out = new Map<string, TeamNameRequest>();
-  const add = (raw: string) => {
+  const add = (raw: string, location = false) => {
     const key = norm(raw);
-    if (key && !out.has(key)) out.set(key, { key, name: raw.trim() });
+    if (!key) return;
+    const have = out.get(key);
+    if (!have) out.set(key, { key, name: raw.trim(), ...(location ? { location: true as const } : {}) });
+    else if (location && !have.location) have.location = true;
   };
   for (const index of teamlessCardIndexes(cards, rows, settled, people)) {
     const card = cards[index];
-    for (const listed of listedClaims(card, view)) add(listed);
+    // Every listed name also asks for the teams LOCATED there (collector
+    // review): a held X is a place, and so is most of an Onyx checklist.
+    for (const listed of listedClaims(card, view)) add(listed, true);
     for (const player of cardPlayers(card, index, view)) {
       if (player.kind !== "created") continue;
       const dated = createdStints(player.row);
@@ -1302,7 +1439,9 @@ export function buildTeamsGroups(input: {
     // pooled: nothing on it is pre-filled anyway, and each card can still
     // take its own answer (C3).
     const groupKey =
-      players.length > 0 ? `players:${playerSetKey(players)}${claimKey}` : NO_PLAYERS_GROUP_KEY;
+      players.length > 0
+        ? `players:${playerSetKey(players)}${claimKey}`
+        : NO_PLAYERS_GROUP_KEY;
     const existing = groups.get(groupKey);
     const entry = { index, cardNumber: card.cardNumber, cardName: card.cardName };
     if (existing) {
@@ -1338,7 +1477,10 @@ export function buildTeamsGroups(input: {
       const verdicts = players.map((p) =>
         p.kind === "created"
           ? createdPlayerVerdict(p.row, linkedTeamNameById, setYear, currentYear, rankCtx)
-          : serverPlayerVerdict(serverEvidence.get(p.request.key)),
+          : p.kind === "new"
+            ? // A new player has no career yet: no evidence, nothing loading.
+              { answer: null, candidates: [], loading: false }
+            : serverPlayerVerdict(serverEvidence.get(p.request.key)),
       );
       loading = verdicts.some((v) => v.loading);
       const union = dedupeRefs(verdicts.flatMap((v) => v.answer ?? []));
@@ -1368,10 +1510,8 @@ export function buildTeamsGroups(input: {
     }
 
     const lead = suggestion ?? [];
-    const refs = dedupeRefs([...lead, ...listedRefs, ...byRank(choices)]).slice(
-      0,
-      Math.max(TEAMS_SECTION_MAX_OPTIONS, lead.length),
-    );
+    const refs = dedupeRefs([...lead, ...listedRefs, ...byRank(choices)])
+      .slice(0, Math.max(TEAMS_SECTION_MAX_OPTIONS, lead.length));
 
     groups.set(groupKey, {
       key: groupKey,
@@ -1519,8 +1659,9 @@ export function answerForChoice(
     if (id && extra.has(id) && !blockedTeamIds?.has(id)) teamIds.push(id as Id<"teams">);
   }
   if (teamIds.length === 0 && teams.length === 0) return undefined;
+  const ids = [...new Set(teamIds)];
   return {
-    ...(teamIds.length > 0 ? { teamIds: [...new Set(teamIds)] } : {}),
+    ...(ids.length > 0 ? { teamIds: ids } : {}),
     ...(teams.length > 0 ? { teams: [...new Set(teams)] } : {}),
   };
 }

@@ -44,6 +44,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ANNOUNCE_AFTER_MS } from "../modules/WaitingOnMarketplace";
 import type { Id } from "../../convex/_generated/dataModel";
 import { NO_MARKETPLACE_IDS_MESSAGE } from "../../convex/marketplaceResolvability";
 import {
@@ -335,6 +336,26 @@ vi.mock("./EntityReviewWizard", () => ({
           }
         >
           Report career answers
+        </button>
+      )}
+      {onCareerChange && (
+        <button
+          type="button"
+          onClick={() =>
+            onCareerChange({
+              stints: [],
+              cardEdits: [{ newPlayerByName: [{ name: "Solo Player", ref: "np-one" }] }, undefined],
+              newPlayers: [
+                {
+                  ref: "np-one",
+                  name: "Other Person",
+                  stints: [{ teamId: "t-solo", fromYear: 2022, toYear: 2022 }],
+                },
+              ],
+            })
+          }
+        >
+          Report a new player
         </button>
       )}
       {onCareerChange && (
@@ -1690,6 +1711,29 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       expect(args.cards[1].teams).toEqual(["Solo Team"]);
     });
 
+    it("NEO-591: sends the new players at the top level and the ref on the card", async () => {
+      state.variantRow = { value: "Test Set", features: { autographFormat: "On Card" } };
+      const { rerender } = renderChecklist();
+      await syncPlayers(rerender, careerContext);
+      await screen.findByText("Wizard opened teams-only");
+      fireEvent.click(screen.getByText("Report a new player"));
+      await act(async () => {
+        fireEvent.click(screen.getByText("Confirm entity review"));
+      });
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+      const args = mockCommitChecklist.mock.calls[0][0];
+      expect(args.careerNewPlayers).toEqual([
+        {
+          ref: "np-one",
+          name: "Other Person",
+          stints: [{ teamId: "t-solo", fromYear: 2022, toYear: 2022 }],
+        },
+      ]);
+      expect(args.cards[0].newPlayerByName).toEqual([{ name: "Solo Player", ref: "np-one" }]);
+      expect(args.cards[1]).not.toHaveProperty("newPlayerByName");
+      expect(args).not.toHaveProperty("careerStints");
+    });
+
     it("an answer withdrawn sends no stints", async () => {
       state.variantRow = { value: "Test Set", features: { autographFormat: "On Card" } };
       const { rerender } = renderChecklist();
@@ -1703,6 +1747,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
       const args = mockCommitChecklist.mock.calls[0][0];
       expect(args).not.toHaveProperty("careerStints");
+      expect(args).not.toHaveProperty("careerNewPlayers");
       expect(args.cards[1].teams).toEqual(["Solo Team"]);
     });
   });
@@ -6413,6 +6458,7 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
   }
 
   it("NEO-487: a single build's wait line stays while another insert's run goes elsewhere — one line, never two (NEO-496)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     state.marketplaceWait = { waitingSince: 1, accumulatedMs: 0 };
     // An empty parallel: its button builds at once, no rebuild confirm.
     state.cards = [];
@@ -6435,9 +6481,10 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
       const { rerender } = render(<CardChecklist {...props} parallelRun={idle} />);
       // This row's own build, held up on the marketplace: its line shows.
       fireEvent.click(screen.getByRole("button", { name: "Build from Anime" }));
-      await waitFor(() => expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1), {
-        timeout: 3000,
+      await act(async () => {
+        vi.advanceTimersByTime(ANNOUNCE_AFTER_MS);
       });
+      expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1);
       // A run of another insert's parallels starts while that build is still
       // in flight (the operator saved the insert, then came back here).
       // NEO-496: that run's ledger belongs to its insert, not this row, so it
@@ -6457,9 +6504,7 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
         waitKey: "run-key",
       });
       rerender(<CardChecklist {...props} parallelRun={{ ...running, buildOne: idle.buildOne }} />);
-      await waitFor(() => expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1), {
-        timeout: 3000,
-      });
+      expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1);
       // And it is the build's line: no ledger for the other insert's run.
       const line = screen.getByText("Waiting on BuySportsCards…");
       expect(line.closest("section")?.textContent ?? "").not.toContain("Other Insert");
@@ -7484,4 +7529,8 @@ describe("CardChecklist — the Sync wait line (NEO-487)", () => {
     expect(screen.getAllByText(WAIT)).toHaveLength(1);
     expect(dialogLine.closest('[role="dialog"]')).not.toBeNull();
   });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
