@@ -60,6 +60,15 @@ vi.mock("./credentials", async (importOriginal) => {
   };
 });
 
+// Warm the mocked module once, before any test runs. The adapters import
+// "./credentials" and convex-test's function loader imports it too, and when
+// those two first imports overlap (a BSC and a SportLots side fetched together)
+// vitest builds the async factory twice, and one importer can fall through to
+// the REAL module, so the adapter reads a real token and the sync ends in
+// "error". Vitest's own mocker says this does not work for concurrent imports.
+// Awaiting it here caches the mocked module before anything can race.
+await import("./credentials");
+
 const ADMIN_IDENTITY = {
   subject: "admin_neo211_status",
   issuer: "https://clerk.example.com",

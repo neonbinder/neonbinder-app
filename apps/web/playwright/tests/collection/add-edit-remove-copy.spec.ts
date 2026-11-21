@@ -214,7 +214,9 @@ test(
     await searchBox.fill(`"${words.length > 1 ? [...words].reverse().join(" ") : `${player} xylophone`}"`);
     await expect(quick.getByText("Not in the catalog yet.")).toBeVisible();
     await expect(hitRow(quick)).toHaveCount(0);
-    await expectAccessible(page, { label: "Checklists, search finds nothing" });
+    // NEO-628: the page was checked whole with the checklist loaded (above); only the
+    // search's own region changed.
+    await expectAccessible(page, { within: quick, label: "Checklists, search finds nothing" });
 
     // --- A player suggestion lists every card of that player -----------------
     await searchBox.fill(player);
@@ -224,7 +226,7 @@ test(
     await showCardRow(quick);
     // The search has settled on its hits (not "Flipping through the catalog…").
     await expect(quick.getByRole("status").filter({ hasText: /\d+ cards? match|The first \d+ matches/ })).toBeVisible();
-    await expectAccessible(page, { label: "Checklists, search hits with suggestions" });
+    await expectAccessible(page, { within: quick, label: "Checklists, search hits with suggestions" });
     await everyButton.click();
     const every = page.getByRole("region", { name: `Every ${player} card` });
     await expect(every).toBeVisible();

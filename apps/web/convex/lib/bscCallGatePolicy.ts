@@ -1,9 +1,11 @@
 /**
- * NEO-552 — the BSC call gate's policy: the deployment-wide breaker and token
- * bucket every BuySportsCards call passes through (`bscFetch`, CONTRACT.md
- * "BSC call breaker"). Pure: no Convex imports, no clock of its own, no I/O.
- * `convex/bscCallGate.ts` stores the state (`marketplaceCallGates`, one row)
- * and runs these functions inside its mutations; `lib/bscHttp.ts` classifies
+ * NEO-552 — the BSC call gate's policy: the breaker and token bucket every
+ * BuySportsCards call passes through (`bscFetch`, CONTRACT.md "BSC call
+ * breaker"). Pure: no Convex imports, no clock of its own, no I/O.
+ * `convex/bscCallGate.ts` stores the state (`marketplaceCallGates`, one row per
+ * gate KEY: NEO-628, one `"deployment"` key against real BSC, one `ns:` key
+ * per fake namespace; this policy is the same for every key and knows none of
+ * them) and runs these functions inside its mutations; `lib/bscHttp.ts` classifies
  * each answer with `classifyBscAnswer` / `classifyBscThrow`.
  *
  * Why (NEO-482, NEO-487, the CI lockout): BSC's edge answers 429 and then
@@ -120,7 +122,7 @@ export type BscGateTuning = { perMinute: number; burst: number } | { unlimited: 
 export const REAL_BSC_TUNING: BscGateTuning = { perMinute: 60, burst: 10 };
 /**
  * The fake is our own server: no rate cap (Jason, NEO-552). Only the breaker
- * applies, which the `@bsc-breaker` specs drive.
+ * applies, which the BSC fault specs drive.
  */
 export const FAKE_BSC_TUNING: BscGateTuning = { unlimited: true };
 
@@ -218,7 +220,7 @@ export function decideAcquire(
   const want = halfOpen ? 1 : clampAcquireCount(count);
   if ("unlimited" in tuning) {
     // No bucket: only a probe's lease is worth storing; a healthy grant
-    // writes nothing (8 shards share this one row).
+    // writes nothing (every caller of one key shares this row).
     const reportOutcome = halfOpen || s.streak > 0 || s.consecutiveFailures > 0;
     if (!halfOpen) {
       return { ok: true, granted: want, waitMs: 0, grantedAt: now, reportOutcome, probe: false, next: null };

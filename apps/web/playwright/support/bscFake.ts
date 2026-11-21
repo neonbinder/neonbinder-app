@@ -4,7 +4,7 @@
  * the real site, so a slow answer, a 429 or a 503 happens only when a spec asks
  * for it. This is the one place that asks.
  *
- *   test("...", { tag: ["@set-selector", "@bsc-breaker"] }, async ({ page, signIn, bscFake }) => {
+ *   test("...", { tag: ["@set-selector"] }, async ({ page, signIn, bscFake }) => {
  *     await signIn("/set-selector");
  *     await bscFake.setFaults([bscFault.tooManyRequests(BSC_PATH.cardListing, { retryAfterS: 90 })]);
  *     // ... press Sync; the fake answers 429 until teardown clears the rules.
@@ -23,17 +23,21 @@
  * is not a teardown: the next spec on the worker would meet what is left of it.
  * A teardown that cannot clear fails the test, by name.
  *
- * THE CALL GATE IS DEPLOYMENT-WIDE. Convex keeps ONE breaker per deployment
- * (`convex/bscCallGate.ts`; its token bucket is not applied against the fake, so there is no rate cap). A 429 opens it at once, and five
- * consecutive 5xx or timeouts open it too (no fault drops the connection: a
- * `reset` answers 503 at once, and a `hang` the caller outwaits ends in a 503 at
- * its 2-minute cap); while it is open EVERY shard's BSC calls are refused. So a rule of kind `429`, `503`,
- * `hang` or `reset` is allowed only in a spec tagged `@bsc-breaker` (listed in
- * `BREAKER_SPECS`, project-scope.mjs), which CI runs alone after every shard;
- * `setFaults` throws on the others. A `delay` is fine anywhere as long as it is
- * shorter than the caller's own timeout (a card-listing call gives up at 5 s,
- * the seller profile read at 20 s, the seller sheet at 90 s): a delay that
- * outlasts the timeout is a failure to the gate, and belongs in a breaker spec.
+ * THE CALL GATE IS THIS WORKER'S OWN (NEO-628). Against the fake, Convex keeps
+ * one BSC call gate per test user, keyed on the user's fake namespace
+ * (`convex/bscCallGate.ts`; against the real BSC it stays one per deployment).
+ * A 429 opens it at once, and five consecutive 5xx or timeouts open it too (no
+ * fault drops the connection: a `reset` answers 503 at once, and a `hang` the
+ * caller outwaits ends in a 503 at its 2-minute cap); while it is open the
+ * worker's own BSC calls are refused, and no other shard's. So any rule, a
+ * `429`, `503`, `hang` or `reset` included, may be posted from any spec, which
+ * runs in the ordinary shards and retries like any other. The fault only has to
+ * be the spec's own subject: a rule that opens the gate stops every later BSC
+ * call this test makes, so a spec that needs BSC after the fault clears it
+ * first (`clear()`). A `delay` shorter than the caller's own timeout (a
+ * card-listing call gives up at 5 s, the seller profile read at 20 s, the
+ * seller sheet at 90 s) is an answer; one that outlasts it counts as a failure
+ * to the gate, like a `hang`.
  *
  * ORDERS are not cleared by teardown: the fake has no per-order delete, only a
  * whole-account reset, which would wipe the worker's listings too. An order
@@ -119,10 +123,8 @@ export interface BscFaultRule {
   ttlS?: number;
 }
 
-/** The kinds that can open the deployment-wide BSC call gate, so need `@bsc-breaker`. */
-const BREAKER_KINDS: ReadonlySet<BscFaultKind> = new Set(["429", "503", "hang", "reset"]);
-/** The tag a spec carries when it may open the gate (project-scope.mjs BREAKER_TAG). */
-const BREAKER_TAG = "@bsc-breaker";
+/** The kinds that can open the worker's BSC call gate, so teardown clears the gate too. */
+const GATE_KINDS: ReadonlySet<BscFaultKind> = new Set(["429", "503", "hang", "reset"]);
 
 interface RuleOptions {
   method?: BscMethod;
@@ -162,17 +164,17 @@ function ruleOf(
 
 /** Builders for the rules specs ask for; each reads as the behaviour it makes. */
 export const bscFault = {
-  /** Answer 429 (with `Retry-After` when given). Opens the call gate: `@bsc-breaker` only. */
+  /** Answer 429 (with `Retry-After` when given). Opens the worker's call gate at once. */
   tooManyRequests: (pathTemplate: string, o: RuleOptions & { retryAfterS?: number } = {}): BscFaultRule =>
     ruleOf("429", pathTemplate, o, o.retryAfterS !== undefined ? { retryAfterS: o.retryAfterS } : {}),
-  /** Answer 503. Five in a row open the call gate: `@bsc-breaker` only. */
+  /** Answer 503. Five in a row open the worker's call gate. */
   unavailable: (pathTemplate: string, o: RuleOptions & { retryAfterS?: number } = {}): BscFaultRule =>
     ruleOf("503", pathTemplate, o, o.retryAfterS !== undefined ? { retryAfterS: o.retryAfterS } : {}),
   /** Hold the answer for `delayMs`, then answer normally. Keep it under the caller's own timeout. */
   slow: (pathTemplate: string, delayMs: number, o: RuleOptions = {}): BscFaultRule => ruleOf("delay", pathTemplate, o, { delayMs }),
-  /** Hold the answer: the caller's own timeout ends the call (the fake answers 503 at its 2-minute cap). Counts as a failure to the gate: `@bsc-breaker` only. */
+  /** Hold the answer: the caller's own timeout ends the call (the fake answers 503 at its 2-minute cap). Counts as a failure to the worker's gate. */
   hangs: (pathTemplate: string, o: RuleOptions = {}): BscFaultRule => ruleOf("hang", pathTemplate, o),
-  /** Answer 503 at once, with no `Retry-After` (the fake's `reset` kind; it never drops the socket). Counts as a failure to the gate: `@bsc-breaker` only. */
+  /** Answer 503 at once, with no `Retry-After` (the fake's `reset` kind; it never drops the socket). Counts as a failure to the worker's gate. */
   answersUnavailable: (pathTemplate: string, o: RuleOptions = {}): BscFaultRule => ruleOf("reset", pathTemplate, o),
 };
 
@@ -212,21 +214,17 @@ export class BscFake {
   private gateAtRisk = false;
   /** The worker's rules per site, as last posted (the fake holds them merged). */
   private readonly rules: Record<FakeSite, readonly FakeFaultRule[]> = { bsc: [], ebay: [] };
-  private readonly breakerAllowed: boolean;
 
   constructor(
     private readonly context: BrowserContext,
-    tags: readonly string[],
     /** The first arrival on a new page pays the app's cold load and Clerk handshake (the suite's LAUNCH_GATE). */
     private readonly arrivalMs: number,
-  ) {
-    this.breakerAllowed = tags.includes(BREAKER_TAG);
-  }
+  ) {}
 
   /**
    * Replace the worker's fault rules with `rules` (1 to 20). The rules stay until
-   * `clear()`, the test's end or their own TTL. Throws on a rule that can open
-   * the call gate in a spec without `@bsc-breaker`.
+   * `clear()`, the test's end or their own TTL. A rule that can open the
+   * worker's call gate marks the gate for clearing at teardown.
    *
    * Contract: ENTRY the worker is signed in (the spec has passed its `signIn` gate). EXIT the fake holds
    * the rules.
@@ -252,13 +250,7 @@ export class BscFake {
           `${strays[0].match.pathTemplate} is the other site's.`,
       );
     }
-    const risky = rules.filter((r) => BREAKER_KINDS.has(r.kind as BscFaultKind));
-    if (site === "bsc" && risky.length > 0 && !this.breakerAllowed) {
-      throw new Error(
-        `A ${risky[0].kind} fault on ${risky[0].match.pathTemplate} can open the deployment-wide BSC call gate, which stops every shard's BuySportsCards calls. ` +
-          `Tag this spec "${BREAKER_TAG}" and list it in BREAKER_SPECS (playwright/project-scope.mjs) so CI runs it alone after the shards.`,
-      );
-    }
+    const risky = rules.filter((r) => GATE_KINDS.has(r.kind as BscFaultKind));
     const merged = [...(site === "bsc" ? rules : this.rules.bsc), ...(site === "ebay" ? rules : this.rules.ebay)];
     if (merged.length > MAX_RULES) {
       throw new Error(`The fake holds at most ${MAX_RULES} fault rules per worker, both sites together; this would post ${merged.length}.`);
@@ -288,7 +280,11 @@ export class BscFake {
     await this.hop("poll=1", "Polled");
   }
 
-  /** Drop the worker's fault rules now (both sites), and the call gate when a rule could have opened it. */
+  /**
+   * Drop the worker's fault rules now (both sites), and the worker's own call
+   * gate when a rule could have opened it (`clear=all` clears this test user's
+   * gate only, never another worker's).
+   */
   async clear(): Promise<void> {
     if (!this.rulesSet && !this.gateAtRisk) return;
     const what = this.gateAtRisk ? "all" : "faults";

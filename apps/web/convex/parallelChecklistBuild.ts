@@ -167,6 +167,7 @@ import {
   type FetchFailure,
   type FetchFailureKind,
 } from "./lib/marketplaceFetchFailure";
+import { queuedByField } from "./lib/bscGateKey";
 
 // ---------------------------------------------------------------------------
 // Bounds
@@ -1752,6 +1753,11 @@ export const insertParallelCardsPage = internalMutation({
     remap: v.array(
       v.object({ from: v.id("cardChecklist"), to: v.id("cardChecklist") }),
     ),
+    /**
+     * NEO-628 — the operator building (the action's verified Clerk subject),
+     * passed to the team lane for the copies' lookups. Never read here.
+     */
+    queuedBy: v.optional(v.string()),
   },
   returns: v.object({
     created: v.array(
@@ -2158,6 +2164,7 @@ export const insertParallelCardsPage = internalMutation({
     if (lookupOwed.length > 0) {
       await ctx.scheduler.runAfter(0, internal.bscTeamPool.enqueueBscTeamChecks, {
         cardChecklistIds: lookupOwed,
+        ...(args.queuedBy !== undefined ? { queuedBy: args.queuedBy } : {}),
       });
     }
     return {
@@ -2342,7 +2349,7 @@ export const buildParallelChecklist = action({
     blockedReason: v.optional(v.string()),
   }),
   handler: async (ctx, args): Promise<BuildParallelResult> => {
-    await requireAdmin(ctx);
+    const adminId = await requireAdmin(ctx);
     if (args.waitKey !== undefined && !isValidWaitKey(args.waitKey)) {
       throw new ConvexError("buildParallelChecklist: waitKey must be 1-64 letters, digits, _ or -.");
     }
@@ -2873,6 +2880,7 @@ export const buildParallelChecklist = action({
             ...(c.keepSku ? { keepSku: c.keepSku } : {}),
           })),
           remap,
+          ...queuedByField(adminId),
         },
       );
       if (page.changed) {

@@ -175,7 +175,11 @@ job changes. A repeated `poll error` prints once.
 ## What the E2E fields mean
 `seed ✓/▶ · shards 3/16 · e2e ▶ · playwright ✓` reads the PR's own check rollup:
 the reusable E2E workflow runs two passes (desktop, then mobile, each on a fresh
-seed), so `seed a/b` is the desktop seed job then the `seed-mobile` job, `shards
+seed), so `seed a/b` is the desktop seed job then the `seed-mobile` job (NEO-628: that
+one starts right after the desktop seed and sits waiting for the desktop pass
+while it runs, so `seed-mobile` shows in progress, with a long wait step, from
+the first minutes; the progress count does not mean the mobile pass has started,
+only its `shard-mobile` jobs do), `shards
 n/m` counts finished `shard-desktop` + `shard-mobile` jobs (m grows from 8 to 16
 once the mobile pass starts), `e2e` is the single gate job (the real verdict), and `playwright` is
 the merged-JUnit check, which publishes after the gate. No secret or Convex
@@ -189,7 +193,8 @@ an area filter covers and so run full E2E, root `*.md`, fake-BSC recorder
 and tests) skips E2E: the caller job `E2E` is skipped, no `E2E / ...` job runs,
 and the line reads `e2e ⊘ skipped by design (inert paths NEO-627, ...)`;
 `--queue` adds `E2E skipped (inert paths, NEO-627): CI Gate decides`. `CI Gate`
-decides green. After a red desktop pass `seed-mobile` is skipped (fail fast): the
+decides green. After a red desktop pass the mobile shards are skipped (fail fast;
+`seed-mobile` waits, sees desktop red and ends without resetting): the
 verdict is red with the desktop job listed first and `mobile skipped: desktop
 red (fail fast)`; there are no mobile results or artifacts to look for.
 

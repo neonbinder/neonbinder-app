@@ -41,10 +41,9 @@
  * (it begins by resetting its account, then seeds it) and touches only its own
  * worker's account, so a second run repeats the first. Of the projects, only
  * the seed (`setup`) never retries (its own `retries: 0` below: a global wipe
- * and the shared real sets), and neither does a `@bsc-breaker` spec: each
- * says `test.describe.configure({ retries: 0 })`,
- * which beats this value and `--retries` (support/fixtures.ts
- * `noRetryOnSharedAccounts` refuses one that forgot). In CI every red spec on
+ * and the shared real sets). Every spec retries alike, the BSC fault specs
+ * included: since NEO-628 the BSC call gate a fault opens is the worker's own
+ * against the fake, so a retry reaches no other shard. In CI every red spec on
  * e2e / e2e-mobile is followed by the failure reset (support/fixtures.ts
  * `resetAfterFailure`), so a retry starts from a clean account; locally it
  * runs only with PW_FAILURE_RESET=1.
