@@ -123,3 +123,4 @@
 - [e2e-run tool in practice](patterns_e2e_run_tool_in_practice.md) — 180 s Bash auto-background vs 230 s slice, plant re-seeds, digest path/header quirks
 - [Pre-fix snapshot is the planted break](patterns_pre_fix_snapshot_is_the_planted_break.md) — bug-fix spec: serve the pre-fix commit for the red, the fix commit for green; reseed between
 - [Teams-step chip years, failed lookup](patterns_teams_step_chip_years_and_failed_lookup.md) — NEO-639: `Team · years — owner` off the pre-fill; vacuous `^Team — ` negatives; unscoped card-listing 503
+- [Fixer preselect on a custom-sport set](patterns_fixer_preselect_on_a_custom_sport_set.md) — NEO-639: admin-built careers, chip pressed state, Escape mid-walk, Space proves tie focus
