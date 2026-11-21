@@ -212,7 +212,7 @@ describe("AutographFormatPrompt — a stored leaf", () => {
     });
     const status = await screen.findByRole("status");
     expect(status.textContent).toBe(autographPromptSaved("Sticker/Label"));
-    expect(document.activeElement).toBe(status);
+    await waitFor(() => expect(document.activeElement).toBe(status));
     expect(screen.queryByRole("button", { name: AUTOGRAPH_CHOICE_LABEL["On Card"] })).toBeNull();
   });
 

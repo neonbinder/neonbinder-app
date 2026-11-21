@@ -122,7 +122,7 @@ export type BscGateTuning = { perMinute: number; burst: number } | { unlimited: 
 export const REAL_BSC_TUNING: BscGateTuning = { perMinute: 60, burst: 10 };
 /**
  * The fake is our own server: no rate cap (Jason, NEO-552). Only the breaker
- * applies, which the `@bsc-breaker` specs drive.
+ * applies, which the BSC fault specs drive.
  */
 export const FAKE_BSC_TUNING: BscGateTuning = { unlimited: true };
 

@@ -88,4 +88,6 @@
 - [BSC gate key is the rate-limit domain](bsc-gate-key-is-the-rate-limit-domain.md) — real BSC one key (per-IP 429), fake per namespace; team lane carries queuedBy; defer, never sleep in the one slot
 - [Axe cache hits only logged-out screens](axe-result-cache-hits-only-logged-out-screens.md) — ~194 of 3,608 s axe; per-user avatar, per-seed ids, shared CSS bundle defeat exact hashes
 - [Match Cards mid-stream idles the wait line](match-cards-mid-stream-idles-the-page-wait-line.md) — page "Waiting on" idles while the dialog is open; accept the dialog's "N of M done" (NEO-624)
+- [Agent tool allowlists: transcript facts](agent-tool-allowlists-what-the-transcripts-show.md) — Handback always injected; unlisted tool = error; read-only agents can't Write memory; playwright-test MCP never loads
+- [Monitor caps at 30 min](monitor-watches-cap-at-30-minutes.md) — no persistent mode; each line wakes main; print on change, resume state across re-arms
 - [Marketplace ids are never Convex field names](marketplace-ids-are-never-convex-field-names.md) — non-ASCII keys throw client-side, unlogged; arrays of {id,label}; server accepts old shape (NEO-625)

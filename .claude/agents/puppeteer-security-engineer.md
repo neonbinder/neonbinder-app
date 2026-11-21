@@ -11,6 +11,7 @@ model: sonnet
 effort: high
 memory: project
 color: purple
+tools: Read, Grep, Glob, Edit, Write, Bash, WebFetch
 ---
 
 You build and maintain `services/browser`, the one component in the platform

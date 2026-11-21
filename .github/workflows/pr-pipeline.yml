@@ -181,6 +181,9 @@ jobs:
               - 'apps/web/playwright/support/flaky-reporter.mjs'
               # NEO-555: a script test reads the workflow files (filter parity).
               - '.github/workflows/**'
+              # NEO-622: scripts/pr-watch-shell.test.mjs runs the pr-watch skill's shell tests.
+              - '.claude/skills/pr-watch/**'
+              - '.claude/agents/**'
             # NEO-386: the scanner script runs on a collector's own computer,
             # never deployed, so it gets its own small lane.
             scanner:

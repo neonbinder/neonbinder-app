@@ -5,6 +5,7 @@ model: sonnet
 effort: medium
 color: orange
 memory: project
+tools: Read, Grep, Glob, Bash, Write, ToolSearch, mcp__claude_ai_Sentry__get_sentry_resource, mcp__claude_ai_Sentry__search_issues, mcp__claude_ai_Sentry__get_issue_details, mcp__claude_ai_Sentry__search_errors, mcp__claude_ai_Sentry__search_logs, mcp__claude_ai_Sentry__search_traces, mcp__claude_ai_Sentry__get_trace_details, mcp__claude_ai_Sentry__search_replays, mcp__claude_ai_Sentry__get_replay_details, mcp__claude_ai_Sentry__find_releases, mcp__claude_ai_PostHog__exec, mcp__claude_ai_Vercel__get_runtime_errors, mcp__claude_ai_Vercel__get_runtime_logs
 ---
 
 You are the observability engineer for NeonBinder. Think in signal versus

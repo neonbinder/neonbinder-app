@@ -118,4 +118,5 @@
 - [Axe cost, options() and resultTypes](patterns_axe_cost_options_and_result_types.md) — options() replaces withTags; rules ~10% of a big call; owner rule, scope later states
 - [Prove a list overflows its scroller](patterns_prove_a_list_overflows_its_scroller.md) — last row scrolled in view, first row not in viewport; no CSS, no evaluate
 - [Hold a read to prove a wait line](patterns_hold_a_read_to_prove_a_wait_line.md) — slow results read = no dialog yet; no `.or()`; dialog line credits Confirm
+- [e2e-run tool in practice](patterns_e2e_run_tool_in_practice.md) — 180 s Bash auto-background vs 230 s slice, plant re-seeds, digest path/header quirks
 - [Pre-fix snapshot is the planted break](patterns_pre_fix_snapshot_is_the_planted_break.md) — bug-fix spec: serve the pre-fix commit for the red, the fix commit for green; reseed between
