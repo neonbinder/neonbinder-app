@@ -36,9 +36,30 @@ export function lintedFiles() {
   return out.sort();
 }
 
+/**
+ * A file with none of these substrings cannot hold a banned token, so the
+ * TypeScript parse (the cost of the whole scan) is skipped for it. Each branch
+ * is a necessary part of one finding in findPaletteViolations: a `dark:`
+ * variant, a colour name and a step digit, white/black as paint, a hex in
+ * brackets. The test runs on the text with its backslashes removed, so an
+ * identity escape (`"\\dark:"`) cannot hide a token; the escapes that spell
+ * other characters (`\\x64`, `\\u0064`, an octal, a line continuation) send the
+ * file to the parser, which reads the cooked value.
+ */
+const MAY_HOLD_VIOLATION = new RegExp(
+  [
+    "dark:",
+    "-(?:gray|slate|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\\d",
+    "-(?:white|black)",
+    "-\\[(?:color:)?#",
+  ].join("|"),
+);
+const NEEDS_COOKING = /\\[xu0-9\r\n\u2028\u2029]/;
+
 /** The banned tokens in one file's string literals and template chunks. */
 export function scanFile(rel) {
   const text = fs.readFileSync(path.join(WEB_ROOT, rel), "utf8");
+  if (!NEEDS_COOKING.test(text) && !MAY_HOLD_VIOLATION.test(text.replaceAll("\\", ""))) return [];
   const kind = rel.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
   const source = ts.createSourceFile(rel, text, ts.ScriptTarget.Latest, false, kind);
   const found = [];

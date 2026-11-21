@@ -86,6 +86,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
 });
@@ -360,13 +361,32 @@ describe("pollMySalesNow", () => {
         pollLeaseExpiresAt: Date.now() + 1_200,
       });
     });
-    const started = Date.now();
-    expect(await as(t).action(api.testing.pollMySalesNow, { platform: "ebay" })).toEqual({
-      ordersRead: 0,
-      ordersStored: 0,
-      linesApplied: 0,
-    });
-    expect(Date.now() - started).toBeGreaterThanOrEqual(1_000);
+    // The wait is real setTimeout steps; fake the timer and Date so the test
+    // reads the wait off the fake clock instead of sleeping through it.
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    try {
+      const started = Date.now();
+      const polled = as(t).action(api.testing.pollMySalesNow, { platform: "ebay" });
+      // Step the fake clock until the poll settles, yielding to the real event
+      // loop between steps (the wait timer is armed after real async work).
+      let settled = false;
+      void polled.then(
+        () => (settled = true),
+        () => (settled = true),
+      );
+      while (!settled) {
+        await vi.advanceTimersByTimeAsync(500);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      expect(await polled).toEqual({
+        ordersRead: 0,
+        ordersStored: 0,
+        linesApplied: 0,
+      });
+      expect(Date.now() - started).toBeGreaterThanOrEqual(1_000);
+    } finally {
+      vi.useRealTimers();
+    }
     const lease = await t.run(async (ctx) => (await ctx.db.query("marketplaceListingStates").first())?.pollLeaseToken);
     expect(lease ?? null).toBeNull();
   });
@@ -425,7 +445,7 @@ describe("seedMyTestCredentials for ebay on the fake", () => {
   beforeEach(() => {
     browserCalls = [];
     connectAnswer = Response.json({ username: "fake-seller", ebayUserId: "FAKE-1", environment: "fake", expiresAt: 1 });
-    process.env.NEONBINDER_BROWSER_URL = BROWSER;
+    vi.stubEnv("NEONBINDER_BROWSER_URL", BROWSER);
     __resetContractCache();
     vi.stubEnv("NEONBINDER_PAUSED_PLATFORMS", "");
     vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {

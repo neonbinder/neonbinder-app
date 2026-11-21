@@ -281,14 +281,18 @@ describe("client never skips a card the server would not stamp: every combinatio
     { teamless: true, loaded: false },
   ];
 
-  test("no combination has the client skipping where the server would not stamp", () => {
+  // One test per team-lookup state: the sweep is ~150k real calls into both
+  // rules, and each slice is independent, so a failure also names its lookup.
+  test.each(lookups.map((lookup) => [lookup ?? "none", lookup] as const))(
+    "no combination has the client skipping where the server would not stamp (team lookup: %s)",
+    (_label, lookup) => {
     let total = 0;
     let both = 0;
     let clientOnlyAsks = 0;
     const violations: string[] = [];
     for (const people of personSets) {
       for (const bsc of [false, true]) {
-        for (const teamLookup of lookups) {
+        for (const teamLookup of [lookup]) {
           for (const shape of teamShapes) {
             for (const raw of raws) {
               for (const defaultPlayer of defaults) {
@@ -318,8 +322,9 @@ describe("client never skips a card the server would not stamp: every combinatio
     }
     expect(violations.slice(0, 3)).toEqual([]);
     // The sweep reaches both agreeing stamps and client-asks-more.
-    expect(total).toBeGreaterThan(5000);
+    expect(total).toBeGreaterThan(1000);
     expect(both).toBeGreaterThan(0);
     expect(clientOnlyAsks).toBeGreaterThan(0);
-  });
+    },
+  );
 });
