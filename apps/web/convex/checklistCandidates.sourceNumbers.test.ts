@@ -108,4 +108,28 @@ describe("sourceNumbers on a staged candidate", () => {
     expect(plain?.numberMinted).toBeUndefined();
     expect(plain?.variationGroup).toBeUndefined();
   });
+
+  test("pairedBy round-trips through getReadyCandidates; a row without them stays without", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedRow(t);
+    await t.mutation(internal.checklistCandidates.startCandidateBatch, {
+      selectorOptionId,
+      batchId: "batch-1",
+      userId: ADMIN.subject,
+      candidates: [
+        candidate({ cardNumber: "38", pairedBy: "name" }),
+        candidate({ cardNumber: "39", pairedBy: "number" }),
+        candidate({ cardNumber: "40" }),
+      ],
+      readyImmediately: true,
+    });
+
+    const res = await t
+      .withIdentity(ADMIN)
+      .query(api.checklistCandidates.getReadyCandidates, { selectorOptionId });
+    const byNumber = (n: string) => res.cards.find((c) => c.cardNumber === n);
+    expect(byNumber("38")).toMatchObject({ pairedBy: "name" });
+    expect(byNumber("39")?.pairedBy).toBe("number");
+    expect(byNumber("40")?.pairedBy).toBeUndefined();
+  });
 });
