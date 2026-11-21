@@ -1,5 +1,4 @@
 import { defineConfig, defineProject } from "vitest/config";
-import os from "node:os";
 import path from "path";
 import {
   COMPONENTS_INCLUDE,
@@ -23,11 +22,6 @@ const ENV_ISOLATION = path.resolve(__dirname, "./vitest.setup.env-isolation.ts")
 // behavior is unaffected.
 export default defineConfig({
   test: {
-    // NEO-591: vitest's default is every core but one, which on a 12-core
-    // laptop (often shared with other sessions) starves each worker enough to
-    // turn a 1s test into a 5s one. Cap it; a runner with fewer cores keeps
-    // cores - 1 (never below 2).
-    maxWorkers: Math.min(8, Math.max(2, os.availableParallelism() - 1)),
     projects: [
       // Project 1: existing node/edge convex + lib tests — UNCHANGED behavior
       defineProject({
