@@ -15,9 +15,9 @@
  * one namespace and sent another would bring cross-shard refusals back.
  */
 
-/** The one key of the real BSC (and of any fake call with no namespace of its own). */
 import { resolveBscTarget } from "./bscHttp";
 
+/** The one key of the real BSC (and of any fake call with no namespace of its own). */
 export const BSC_GATE_DEPLOYMENT_KEY = "deployment";
 
 /** A fake namespace as the fake reads it: the same shape as `FAKE_NS_VALUE`. */
