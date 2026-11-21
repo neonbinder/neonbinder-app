@@ -1203,6 +1203,24 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
       expect(liveRegionText()).not.toContain(TEAMS_LATE_NOTICE);
     });
 
+    it("a wait whose component is gone never discards afterwards (it would bin a newer Sync's candidates for the same set)", async () => {
+      // NEO-638: candidates are keyed by set + admin, not by session, so a
+      // stale wait timing out after the operator left and came back would
+      // delete the NEW Sync's rows. The wait ends with its component instead.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      const { rerender, unmount } = renderChecklist();
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      await streamCandidates(rerender, halfResolved);
+      await act(async () => {
+        resolveFetch({ ...fetchDone, candidateCount: 3 });
+      });
+
+      unmount();
+      await vi.advanceTimersByTimeAsync(31_000);
+
+      expect(mockDiscardCandidates).not.toHaveBeenCalled();
+    });
+
     it("cancelling while it waits ends the run with the cancel message, not the timeout", async () => {
       const { rerender } = renderChecklist();
       fireEvent.click(screen.getByLabelText("Sync card checklist"));
@@ -3759,11 +3777,12 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     });
 
     it("still saves nothing when the ROWS never arrive", async () => {
+      // Fake clock first, as in the two-marketplace twin above (NEO-638).
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
       const { rerender } = renderChecklist();
       fireEvent.click(screen.getByLabelText("Sync card checklist"));
       await streamCandidates(rerender, patched);
 
-      vi.useFakeTimers();
       try {
         await act(async () => {
           resolveFetch({ ...fetchDone, candidateCount: 3 });
@@ -3785,6 +3804,22 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
         selectorOptionId: VARIANT_ID,
       });
       expect(screen.queryByText(/Fetching from BSC/)).toBeNull();
+    });
+
+    it("a wait whose component is gone never discards afterwards (it would bin a newer Sync's candidates for the same set)", async () => {
+      // NEO-638: same rule as the two-marketplace path; see the twin above.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      const { rerender, unmount } = renderChecklist();
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      await streamCandidates(rerender, patched);
+      await act(async () => {
+        resolveFetch({ ...fetchDone, candidateCount: 3 });
+      });
+
+      unmount();
+      await vi.advanceTimersByTimeAsync(31_000);
+
+      expect(mockDiscardCandidates).not.toHaveBeenCalled();
     });
   });
 });

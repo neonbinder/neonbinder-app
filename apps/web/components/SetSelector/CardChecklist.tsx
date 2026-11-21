@@ -1548,6 +1548,16 @@ export default function CardChecklist({
   // A ref, not state: the check runs inside an async closure that captured its
   // own render's values, which is exactly where a state read would be stale.
   const syncGenerationRef = useRef(0);
+  // NEO-638 — a run is over when its component is. Candidates are keyed by
+  // set + admin, not by session, so an old stream wait that timed out after
+  // unmount would discard a NEWER Sync's candidates for the same set.
+  // `abandoned()` reads the generation, so bumping it ends every pending wait.
+  useEffect(() => {
+    const generation = syncGenerationRef;
+    return () => {
+      generation.current++;
+    };
+  }, []);
 
   /**
    * NEO-221 — end the pairing session for good and bin what it was reviewing.
