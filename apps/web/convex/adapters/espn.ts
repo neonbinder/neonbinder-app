@@ -10,6 +10,9 @@
  * Wikidata rather than replacing it.
  */
 
+import { cleanseExternalName } from "../../lib/entities/cleanse-name";
+import { normalizeOrderedEntityName } from "../../lib/entities/normalize-name";
+
 const ESPN_API_BASE = "https://site.web.api.espn.com/apis/site/v2/sports";
 
 // NEO-96: `SPORT_TO_ESPN_LEAGUE`, a display-name-keyed map, used to live here
@@ -50,8 +53,22 @@ export interface EspnTeamInfo {
   league: string;
 }
 
-function normalize(s: string): string {
-  return s.trim().toLowerCase();
+/**
+ * NEO-643 — the ONE reading of a team name for the displayName lookup, applied
+ * to both sides: the shared ordered matcher fold (case, accents, junk,
+ * punctuation and spacing), so a name that differs from ESPN's only in those
+ * still finds its team. Ordered, not sorted: "San Diego Padres" and "Padres San
+ * Diego" are not the same franchise name.
+ */
+const normalize = normalizeOrderedEntityName;
+
+/**
+ * NEO-643 — a display name or location off ESPN, cleansed before it is stored
+ * or compared. An all-junk value is no value (`undefined`).
+ */
+function cleanseEspnText(raw: string | undefined): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  return cleanseExternalName(raw) || undefined;
 }
 
 /**
@@ -136,7 +153,19 @@ export async function fetchEspnTeamList(
 
   const entries = (data.sports?.[0]?.leagues?.[0]?.teams ?? [])
     .map((t) => t.team)
-    .filter((t): t is NonNullable<typeof t> => !!t);
+    .filter((t): t is NonNullable<typeof t> => !!t)
+    // NEO-643: the two name fields are cleansed once, here, so the memo, the
+    // lookup below and every caller of the list see the same clean text. The
+    // id and the colours are keys/values and pass through untouched.
+    .map((t): EspnTeamListEntry => {
+      const displayName = cleanseEspnText(t.displayName);
+      const location = cleanseEspnText(t.location);
+      return {
+        ...t,
+        displayName,
+        location,
+      };
+    });
   // An empty list is a shape change or an off-season quirk, not an answer —
   // leave it uncached so the next caller asks again.
   if (entries.length > 0) teamListCache.set(league.path, entries);

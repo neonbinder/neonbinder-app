@@ -42,8 +42,11 @@ import {
   boundParsedNames,
   splitMarketplacePlayerNames,
   splitMarketplaceTeamNames,
-  stripZeroWidth,
 } from "./marketplaceNames";
+// NEO-643 — every name or label BSC hands us is cleansed as it comes in (the
+// backslash it uses for an accent, soft hyphens, zero-width characters). Ids,
+// slugs and `platformRef` are never passed through it.
+import { cleanseExternalName } from "../../lib/entities/cleanse-name";
 // NEO-321 follow-up — a structured reason beside `success: false`, and the
 // self-imposed-limiter log line.
 // NEO-325 — the Base match probe's bounds and wire shapes, shared with the
@@ -753,7 +756,11 @@ export const fetchBscSelectorOptions = action({
         // Skip facet entries with zero inventory — BSC returns them but
         // they're not actually available options.
         if (typeof item.count === "number" && item.count <= 0) continue;
-        const label = item.label?.trim();
+        // NEO-643: the label is a display name ("…B\eisbol…" for Béisbol), so it
+        // is cleansed; the slug is the filter value BSC reads back and is only
+        // trimmed, exactly as before.
+        const label =
+          typeof item.label === "string" ? cleanseExternalName(item.label) : undefined;
         const slug = item.slug?.trim();
         if (!label || !slug) continue;
         options.push({
@@ -1004,7 +1011,9 @@ export function parseVariationDescription(
   raw: unknown,
 ): ParsedVariationDescription | undefined {
   if (typeof raw !== "string") return undefined;
-  const trimmed = raw.trim();
+  // NEO-643: a description is display text; BSC's backslash accent stand-in
+  // and the other junk go before the marker is read.
+  const trimmed = cleanseExternalName(raw);
   if (!trimmed) return undefined;
 
   const prefixed = trimmed.match(/^([A-Z]{2,4}):\s*(.*)$/);
@@ -1075,7 +1084,8 @@ export function parsePlayersField(raw: string): {
    */
   unrepresentable?: true;
 } {
-  const trimmed = raw.trim();
+  // NEO-643: "Wilmer R\ios" is "Wilmer Rios" before anything is split or parsed.
+  const trimmed = cleanseExternalName(raw);
   if (!trimmed) return { players: [], teams: [] };
 
   // 1. Team-card suffix — the whole string names a team, not a player.
@@ -2385,7 +2395,7 @@ async function fetchBscCardTeamNameAttempt(
       data && typeof data === "object" ? (data as BscCardListingPayload) : {};
     const teamNameValue =
       typeof payload.teamName === "string"
-        ? stripZeroWidth(payload.teamName).trim()
+        ? cleanseExternalName(payload.teamName)
         : "";
     // NEO-345 — the card's attribute tokens ride on the same response
     // (`playerAttribute`, a comma string such as "AU, SN25" or "AU ,  SN50";

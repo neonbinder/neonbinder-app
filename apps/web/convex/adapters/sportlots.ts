@@ -28,6 +28,9 @@ import { SL_SCOPE_BY_LEVEL } from "../marketplaceResolvability";
 import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
 import { MAX_CARD_PLAYERS } from "../features/cardAttention";
 import { displayVariationLabel } from "../../lib/cards/variations";
+// NEO-643 — names and labels SportLots serves are cleansed as they come in.
+// Ids (`value`, the set radio id, `platformRef`) are never passed through it.
+import { cleanseExternalName, stripNameJunk } from "../../lib/entities/cleanse-name";
 import { internal } from "../_generated/api";
 import { getCurrentUserId, requireAdmin } from "../auth";
 import {
@@ -238,7 +241,9 @@ function parseSelectOptions(
 
   while ((match = optionRegex.exec(selectContent)) !== null) {
     const value = match[1].trim();
-    const label = match[2].trim();
+    // NEO-643: the label is a display name and is cleansed; `value` is the
+    // option id SportLots reads back and is only trimmed.
+    const label = cleanseExternalName(match[2]);
 
     if (value && label && value !== "" && label !== "Select") {
       options.push({ value, label });
@@ -1073,7 +1078,10 @@ async function fetchSetNames(
 
   while ((match = radioRegex.exec(html)) !== null) {
     const radioId = match[1].trim();
-    const rawLabel = match[2].trim();
+    // NEO-643: cleansed before the brand-prefix reading, so a label with junk
+    // inside it is read, stripped and stored as the same clean name. The radio
+    // id is the slot value and stays byte-identical.
+    const rawLabel = cleanseExternalName(match[2]);
     // Applied HERE, to the parsed response, and nowhere else. The request has
     // already gone out, built from slot ids only.
     let setName: string;
@@ -1982,7 +1990,12 @@ export async function walkSlListcards(
       // apostrophe in every derived field or in none.
       //
       // `fullDescription` itself deliberately stays raw. See platformRef.
-      const decodedDescription = decodeSlEntities(fullDescription);
+      //
+      // NEO-643: the same head also deletes name junk (a backslash, soft
+      // hyphen, zero-width characters) and turns control characters into
+      // spaces, with `stripNameJunk` (no trim: the text is parsed next). Still
+      // only the derivation path: `platformRef` below keeps `fullDescription`.
+      const decodedDescription = stripNameJunk(decodeSlEntities(fullDescription));
 
       // Strip a leading "#NNN" if the description echoes the card number,
       // then run the token tokenizer to lift attributes / print run.
@@ -2010,7 +2023,8 @@ export async function walkSlListcards(
       // the pair raises no name or roster conflict. `{}` on anything else.
       const { team: teamCardTeam } = parseSlTeamCard(residual);
       const cardName =
-        teamCardTeam ?? (residual || withoutVariation || decodedDescription);
+        teamCardTeam ??
+        (residual || withoutVariation || decodedDescription.trim());
 
       // NEO-251: player names off the same residual `cardName` is built
       // from. Returns `{}` (so `players` stays undefined) on any doubt; see
