@@ -674,7 +674,11 @@ export function swapSetNameInTitle(
  *    the builder's own description is tried as the old text, and when that is
  *    not found either the edit is dropped and the title is the generated one
  *    (built with the new set name);
- *  - a hand edit whose row shows no line is left exactly as it is;
+ *  - a hand edit whose row shows no line is left exactly as it is. With
+ *    `lineRows` (the rows that showed a line when the current box edit began)
+ *    that is judged once for the whole edit: halfway through typing, the box
+ *    phrase is no longer whole in a title that carries it, which would show a
+ *    line that was never there;
  *  - a draft that is blank, or just the generated title, is no hand edit: the
  *    row follows the generated title and the draft is left alone.
  *
@@ -687,6 +691,7 @@ export function retitleDraftsForSetName(
   groups: readonly TitleGroup[],
   oldName: string,
   newName: string,
+  lineRows?: ReadonlySet<number>,
 ): Array<TitleAnswer | undefined> {
   if (oldName.trim() === newName.trim()) return [...drafts];
   const next = [...drafts];
@@ -694,7 +699,10 @@ export function retitleDraftsForSetName(
     for (const row of group.cards) {
       const draft = drafts[row.index]?.listingTitle;
       if (draft === undefined || !draft.trim() || draft.trim() === row.title) continue;
-      if (group.leftOut.length === 0 && row.leftOut.length === 0) continue;
+      const showsLine = lineRows
+        ? lineRows.has(row.index)
+        : group.leftOut.length > 0 || row.leftOut.length > 0;
+      if (!showsLine) continue;
       // The box text in effect first; failing that, the builder's own
       // description, which is the set-name text a title carries when no box
       // applied to it when it was generated.

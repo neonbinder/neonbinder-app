@@ -816,6 +816,17 @@ describe("NEO-637 — the box and a title the operator edited", () => {
       ).toEqual({ listingTitle: `Ohtani ${NEW} #1 Prior Box Prior Box` });
     });
 
+    test("lineRows decides which rows count as showing the line, whatever the lists say now", () => {
+      const edit = `${OLD} Ohtani my own #1 words`;
+      const answers = [{ listingTitle: edit }];
+      // The lists say the line shows, but this edit began with it not showing.
+      expect(retitleDraftsForSetName(answers, groups(answers), OLD, NEW, new Set())).toEqual(answers);
+      // And the other way round: it showed at the start of the edit.
+      expect(retitleDraftsForSetName(answers, groups(answers), OLD, NEW, new Set([0]))[0]).toEqual({
+        listingTitle: `${NEW} Ohtani my own #1 words`,
+      });
+    });
+
     test("an unchanged set name changes nothing", () => {
       const answers = [{ listingTitle: `${OLD} Ohtani my own #1` }];
       expect(retitleDraftsForSetName(answers, groups(answers), OLD, OLD)).toEqual(answers);

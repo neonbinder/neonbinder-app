@@ -322,6 +322,9 @@ export default function CardTitlesStep({
   // typing, unmount). Its status and refusal are read from this, never from
   // each keystroke, so a screen reader hears the count once per pause.
   const [shortSettledText, setShortSettledText] = useState<string>(() => shortName ?? prefill);
+  // NEO-637 — the rows whose line showed when the current box edit began (null
+  // between edits); see `changeShort`.
+  const lineRows = useRef<ReadonlySet<number> | null>(null);
   // NEO-637 — hand edits the box could not keep (the set name was not in them)
   // and rebuilt instead. `rebuiltEver` counts them for the status line;
   // `restorable` holds their text since the box last took focus, so Escape in
@@ -391,6 +394,14 @@ export default function CardTitlesStep({
     [settledShortName, liveShortName, titleGroups, groupsFor, drafts],
   );
 
+  /** The rows whose group or own "Left out to fit" line shows right now. */
+  const linesNow = (): ReadonlySet<number> =>
+    new Set(
+      titleGroups.flatMap((g) =>
+        g.cards.filter((c) => g.leftOut.length > 0 || c.leftOut.length > 0).map((c) => c.index),
+      ),
+    );
+
   /**
    * NEO-637 — the box's text changes (typing, or Escape taking it back). The
    * set name in effect is the checked box text, else the prefill. Titles with
@@ -401,13 +412,18 @@ export default function CardTitlesStep({
    * (`retitleDraftsForSetName`, read from the lists as they stand now).
    */
   const changeShort = (raw: string, restore = false) => {
+    // Which rows showed the line is judged once, from where this edit of the
+    // box began: a half-typed box phrase is no longer whole in a title that
+    // carries it, which would show a line that was never there and rebuild
+    // the operator's words. A title edit, or leaving the box, ends the edit.
+    if (lineRows.current === null) lineRows.current = linesNow();
     const text = oneLine(raw);
     const nextEdited = shortValue(text) !== undefined;
     const nextLive = onShortNameChange && nextEdited ? checkShortNameAnswer(text).value : undefined;
     const oldName = liveShortName ?? prefill;
     const newName = nextLive ?? prefill;
     setShortDraft(text);
-    const next = retitleDraftsForSetName(drafts, titleGroups, oldName, newName);
+    const next = retitleDraftsForSetName(drafts, titleGroups, oldName, newName, lineRows.current);
     // A hand edit that lost its draft was rebuilt: remember its words.
     next.forEach((answer, i) => {
       const was = drafts[i]?.listingTitle;
@@ -428,6 +444,7 @@ export default function CardTitlesStep({
   };
 
   const setField = (indexes: readonly number[], field: keyof TitleAnswer, value: string) => {
+    lineRows.current = null;
     setDrafts((prev) => {
       const next = [...prev];
       while (next.length < count) next.push(undefined);
@@ -436,6 +453,7 @@ export default function CardTitlesStep({
     });
   };
   const clearField = (indexes: readonly number[], field: keyof TitleAnswer) => {
+    lineRows.current = null;
     setDrafts((prev) => {
       const next = [...prev];
       for (const i of indexes) next[i] = without(next[i], field);
@@ -444,6 +462,7 @@ export default function CardTitlesStep({
   };
   /** Undo to the focus-time value; true when there was something to undo. */
   const undo = (indexes: readonly number[], field: keyof TitleAnswer): boolean => {
+    lineRows.current = null;
     const changed = indexes.some(
       (i) => (latest.current[i]?.[field] ?? undefined) !== (undoPoint.current[i]?.[field] ?? undefined),
     );
@@ -547,8 +566,12 @@ export default function CardTitlesStep({
               onFocus={() => {
                 shortUndo.current = shortLatest.current;
                 restorable.current.clear();
+                lineRows.current = linesNow();
               }}
-              onBlur={flushShort}
+              onBlur={() => {
+                lineRows.current = null;
+                flushShort();
+              }}
               onKeyDown={shortKeys}
               // No maxLength: the prefill can arrive over the cap and must
               // stay visible to be trimmed. The meter says where the cap is.

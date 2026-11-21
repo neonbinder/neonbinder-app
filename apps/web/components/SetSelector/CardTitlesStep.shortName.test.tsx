@@ -470,6 +470,82 @@ describe("CardTitlesStep — the box and a title the operator edited (NEO-637)",
     expect(titleFields()[0].value).toBe(`${PREFILL} Ohtani RC #1`);
   });
 
+  /** The box edited one keystroke at a time, as a person types and Backspaces. */
+  const keystrokes = (
+    box: HTMLElement,
+    from: string,
+    to: string,
+    after?: (typed: string) => void,
+  ) => {
+    let text = from;
+    const steps: string[] = [];
+    while (text !== to) {
+      if (to.startsWith(text)) text = to.slice(0, text.length + 1);
+      else text = text.slice(0, -1);
+      fireEvent.change(box, { target: { value: text } });
+      after?.(text);
+      steps.push(text);
+    }
+    return steps;
+  };
+
+  test("Backspacing the box leaves a title that showed no line exactly as typed, at every keystroke", () => {
+    setup({ cards: [card("1"), card("2")] });
+    const box = screen.getByRole("textbox", { name: LABEL });
+    fireEvent.change(box, { target: { value: BOX } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    // One word of the operator's own, so it is an edit and not the generated title.
+    const whole = `${BOX} Shohei Ohtani #1 Baseball Mint`;
+    fireEvent.change(screen.getByRole("textbox", { name: "Title for #1 Card 1" }), { target: { value: whole } });
+    expect(lineUnder(screen.getByRole("textbox", { name: "Title for #1 Card 1" }))).toHaveLength(0);
+    fireEvent.focus(box);
+    const stays = (step: string) =>
+      expect(titleFields()[0].value, `after typing "${step}"`).toBe(whole);
+    keystrokes(box, BOX, "2026 Topps", stays);
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(boxStatus().textContent).not.toMatch(/rebuilt/);
+    // Typing it forward again is no different.
+    keystrokes(box, "2026 Topps", BOX, stays);
+  });
+
+  test("Backspacing the box swaps a title that showed a line at each keystroke, from the text before it", () => {
+    setup({ cards: [card("1"), card("2")] });
+    const box = screen.getByRole("textbox", { name: LABEL });
+    fireEvent.change(box, { target: { value: BOX } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    fireEvent.change(screen.getByRole("textbox", { name: "Title for #1 Card 1" }), {
+      target: { value: `${BOX} Ohtani RC #1` },
+    });
+    fireEvent.focus(box);
+    keystrokes(box, BOX, "2026 Topps", (step) =>
+      expect(titleFields()[0].value, `after typing "${step}"`).toBe(`${step.trim()} Ohtani RC #1`),
+    );
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(boxStatus().textContent).not.toMatch(/rebuilt/);
+  });
+
+  test("a new edit of the box judges the line again from where that edit begins", () => {
+    setup({ cards: [card("1"), card("2")] });
+    const box = screen.getByRole("textbox", { name: LABEL });
+    fireEvent.change(box, { target: { value: BOX } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    const own = screen.getByRole("textbox", { name: "Title for #1 Card 1" });
+    // First edit: written whole, no line. The box is trimmed and left.
+    // One word of the operator's own, so it is an edit and not the generated title.
+    const whole = `${BOX} Shohei Ohtani #1 Baseball Mint`;
+    fireEvent.change(own, { target: { value: whole } });
+    fireEvent.focus(box);
+    keystrokes(box, BOX, "2026 Topps");
+    fireEvent.blur(box);
+    expect(titleFields()[0].value).toBe(whole);
+    // Then the operator drops the first name from the title: now it shows a line.
+    fireEvent.change(own, { target: { value: "2026 Topps Ohtani RC #1" } });
+    fireEvent.focus(box);
+    const steps = keystrokes(box, "2026 Topps", "2026");
+    expect(steps).toEqual(["2026 Topp", "2026 Top", "2026 To", "2026 T", "2026 ", "2026"]);
+    expect(titleFields()[0].value).toBe("2026 Ohtani RC #1");
+  });
+
   test("Escape in the box takes the swap back with it", () => {
     setup({ cards: [card("1"), card("2")] });
     const own = screen.getByRole("textbox", { name: "Title for #1 Card 1" });
