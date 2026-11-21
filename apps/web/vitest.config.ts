@@ -23,7 +23,7 @@ const ENV_ISOLATION = path.resolve(__dirname, "./vitest.setup.env-isolation.ts")
 // behavior is unaffected.
 export default defineConfig({
   test: {
-    // NEO-591: vitest's default is every core but one, which on a 12-core
+    // NEO-638: vitest's default is every core but one, which on a 12-core
     // laptop (often shared with other sessions) starves each worker enough to
     // turn a 1s test into a 5s one. Cap it; a runner with fewer cores keeps
     // cores - 1 (never below 2).
