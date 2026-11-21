@@ -136,3 +136,4 @@
 - [Neo574 client id override](patterns_neo574_client_id_override.md) — per-card id override + stint writer: validator shape that held; dedupe gap
 - [Neo622 local e2e runner](patterns_neo622_local_e2e_runner.md) — derived re-seed bypasses flag-keyed guard; regex patch list != git apply; APFS case
 - [Convex client error origin](patterns_convex_client_error_origin.md) — classify by client [CONVEX X(] prefix, not Request ID; convexToJson errors embed args
+- [Neo627 inert path skip](patterns_neo627_inert_path_skip.md) — file names in GITHUB_OUTPUT inject keys; merge_group base_sha stacking; fail-fast gate
