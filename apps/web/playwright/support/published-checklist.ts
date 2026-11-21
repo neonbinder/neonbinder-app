@@ -147,13 +147,18 @@ export type ChecklistName = (typeof CHECKLISTS)[keyof typeof CHECKLISTS];
  * file are two) skips the dialog only when every card pairs with exactly one row by its number
  * (or NNO card to NNO row by its player), no row is left over and no row names other players.
  *
- * `paused` is MEASURED on a SportLots-paused deployment (the run's sources are BSC and the file).
+ * `paused` is for a SportLots-paused deployment (the run's sources are BSC and the file): each
+ * entry agrees with the product's own matcher run over the file against BSC's cards (a capture IS
+ * BSC's cards; a trimmed file is matched against its whole one), and every file a spec uploads as
+ * is was confirmed on a run (SET-REGISTRY.md, "Published-checklist fixtures", lists the few that
+ * are read off the file only).
  * `live` is what the set's SportLots side changes: a set with no SportLots id fetches the same two
  * sources live, so it equals `paused`; a set the seed maps to SportLots too (Topps Chrome 2024,
  * Stars of MLB Network) adds a third source, UNMEASURED since the pause, and is written `true`
  * (a guess that opens costs the first live run one red, a guess that skips would commit unseen).
- * A file nothing uploads whole (`...Full`) is read off the file. A spec's own edit to a file
- * (`extraRows`: rows no card has) always opens it, which `usePublishersChecklist` applies.
+ * A file nothing uploads whole (`...Full`) is read off the file. A spec's own edit to the rows
+ * (appended, dropped, renumbered or split) always opens it, which `usePublishersChecklist` applies.
+ * A repeated number blocks only the number pass (rule 7, D2): an exactly-one name still pairs.
  */
 export interface MatchCardsFact {
   paused: boolean;
@@ -179,7 +184,8 @@ const MATCH_CARDS: Record<ChecklistName, MatchCardsFact> = {
   "2010-topps-insert-team-bonus": opens(false),
   "2010-topps-insert-silk-collection": opens(false),
   "2010-topps-insert-peak-performance": opens(false),
-  // PPR-CR and PPR-DU are each on two rows: a tie, left to the operator (rule 7, D2).
+  // PPR-CR and PPR-DU are each on two rows, so neither number pairs (rule 7, D2). PPR-CR's two
+  // players still pair by name; PPR-DU's two rows are both Dan Uggla, a tie left to the operator.
   "2010-topps-insert-peak-performance-relics": opens(true),
   "2010-topps-insert-turkey-red": opens(false),
   "2009-topps-insert-career-best-jumbo-jerseys": opens(false),
@@ -504,11 +510,15 @@ export async function usePublishersChecklist(
   edits: ChecklistEdits = {},
 ): Promise<ChecklistFacts> {
   const captured = checklistFacts(name, { edits });
-  // NEO-640: a row no card has is a "Checklist only" row, which only the operator can keep.
-  const facts: ChecklistFacts = {
-    ...captured,
-    matchCards: edits.extraRows?.length ? opens(true) : captured.matchCards,
-  };
+  // NEO-640: an edit to the rows themselves opens Match Cards: an appended row is "Checklist only",
+  // a dropped one leaves its card without a row, and a renumbered or split one pairs by its stem
+  // with a number for the operator to choose. A team cell changes no pair (the wizard settles it).
+  const structural =
+    (edits.extraRows?.length ?? 0) > 0 ||
+    (edits.drop?.length ?? 0) > 0 ||
+    Object.keys(edits.renumber ?? {}).length > 0 ||
+    Object.keys(edits.split ?? {}).length > 0;
+  const facts: ChecklistFacts = { ...captured, matchCards: structural ? opens(true) : captured.matchCards };
   // A second visit to the same open checklist (a discarded review fetched again)
   // may still hold the file the first visit used: the chip is then the proof.
   const chip = publishersChecklistChip(page, facts.rows);
@@ -647,11 +657,23 @@ export function checklistFetchProgress(page: Page): Locator {
  * with the paused sentence and the teams line, so only its start is pinned. Contract: a locator.
  */
 export function matchedKeptLine(page: Page, cards: number): Locator {
-  const text =
-    cards === 1
-      ? "Kept the 1 card. It matched across BSC and your checklist."
-      : `Kept all ${cards} cards. Every card matched across BSC and your checklist.`;
-  return page.getByText(new RegExp(`^${escapeRe(text)}`)).filter({ visible: true });
+  return page.getByText(new RegExp(`^${escapeRe(matchedKeptSentence(cards))}`)).filter({ visible: true });
+}
+
+/** NEO-640: the kept sentence itself, as `matchedKeptLine` and the saved line carry it. */
+export function matchedKeptSentence(cards: number): string {
+  return cards === 1
+    ? "Kept the 1 card. It matched across BSC and your checklist."
+    : `Kept all ${cards} cards. Every card matched across BSC and your checklist.`;
+}
+
+/**
+ * The line a save lands with, "Saved N cards." and whatever the run says after it (the kept
+ * sentence on a skipped run, the teams line). Only its start is pinned: the sentences after it are
+ * asserted one by one (`toContainText`). Contract: a locator, nothing waited for.
+ */
+export function savedLine(page: Page, cards: number): Locator {
+  return page.getByText(new RegExp(`^Saved ${cards} cards?\\.`)).filter({ visible: true });
 }
 
 /**
@@ -662,9 +684,10 @@ export function matchedKeptLine(page: Page, cards: number): Locator {
  *    dialog opens, and the kept line ("Kept all N cards. Every card matched across BSC and your
  *    checklist.", N the file's rows: on a skip each row is exactly one card) stays in front of
  *    it with the teams line;
- *  - `"saved"`: nothing is left to ask, so the cards are saved at once and "Saved N cards." (with
- *    the teams line) replaces the kept line, which is then on screen for the length of the write
- *    only and is not asserted.
+ *  - `"saved"`: nothing is left to ask, so the cards are saved at once, and the line the save
+ *    lands with starts "Saved N cards." and says the kept sentence again (the kept line itself is
+ *    on screen only for the write, so it is read off the saved line);
+ *  - `"either"`: whichever of the two comes, read as above.
  *
  * Contract: ENTRY Sync card checklist has just been pressed with `facts`' file in play and
  * `opensMatchCards` false. EXIT the tidy-up dialog is open (`"review"`) or the saved line is up.
@@ -679,20 +702,28 @@ export async function expectMatchCardsSkipped(
   await expect(page.getByRole("button", { name: "Cancel checklist fetch" })).toBeVisible();
   // One live BSC round trip, under its own "Waiting on BuySportsCards" line (NEO-487).
   await expectAfterMarketplace(page, progress, { platform: "BuySportsCards", what: `the end of ${what}`, state: "hidden" });
-  if (lands === "review") {
-    // Our own queueing once the fetch has landed (measured 1.3 s at most, #487): the standard 7 s.
-    await expect(page.getByRole("dialog", { name: /^Tidy up / })).toBeVisible();
+  const review = page.getByRole("dialog", { name: /^Tidy up / });
+  const saved = savedLine(page, facts.rows);
+  // Our own queueing once the fetch has landed (measured 1.3 s at most, #487): the standard 7 s.
+  if (lands === "either") await expect(review.or(saved).first()).toBeVisible();
+  if (lands === "review" || (lands === "either" && (await review.isVisible()))) {
+    await expect(review).toBeVisible();
     await expect(matchedKeptLine(page, facts.rows)).toBeVisible();
   } else {
-    await expect(page.getByText(new RegExp(`^Saved ${facts.rows} cards\\.`)).filter({ visible: true })).toBeVisible();
+    await expect(saved).toBeVisible();
+    await expect(saved).toContainText(matchedKeptSentence(facts.rows));
   }
   await expectTeamsFromChecklist(page, facts);
   // Paired with the landing just above (R2): the dialog never stood, and nobody confirmed one.
   await expect(matchCardsDialog(page)).toHaveCount(0);
 }
 
-/** NEO-640: where a skipped Match Cards lands (`expectMatchCardsSkipped`). */
-export type SkippedLanding = "review" | "saved";
+/**
+ * NEO-640: where a skipped Match Cards lands (`expectMatchCardsSkipped`). `"either"` is for a
+ * spec that already accepts both (the catalogue decides whether a name is left to review); the
+ * helper waits for one of them, then asserts the kept sentence where that one carries it.
+ */
+export type SkippedLanding = "review" | "saved" | "either";
 
 /**
  * NEO-640: settle a fetch with a publisher's checklist in play, on the file's own measured fact

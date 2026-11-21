@@ -56,6 +56,8 @@ import {
   checklistFetchProgress,
   expectTeamsFromChecklist,
   matchedKeptLine,
+  matchedKeptSentence,
+  savedLine,
   opensMatchCards,
   usePublishersChecklist,
   type ChecklistFacts,
@@ -131,6 +133,9 @@ async function fetchChecklist(
   const wizard = reviewWizard(page);
   const saved = page.getByText(/Saved [0-9]+/);
 
+  if (inspect && !opensMatchCards(facts, env)) {
+    throw new Error("fetchChecklist: an inspect needs the Match Cards dialog, and this file's facts skip it.");
+  }
   await syncChecklistButton(page).click();
   if (!opensMatchCards(facts, env)) {
     // Every card paired with its own row by number at 100% (the Future Stars file is BSC's own
@@ -145,6 +150,9 @@ async function fetchChecklist(
     if (await wizard.isVisible()) {
       // Behind the wizard the line still says why no Match Cards came up.
       await expect(matchedKeptLine(page, facts.rows)).toBeVisible();
+    } else {
+      // Saved at once: the line the save lands with says it again.
+      await expect(savedLine(page, facts.rows)).toContainText(matchedKeptSentence(facts.rows));
     }
     await expectTeamsFromChecklist(page, facts);
     // Paired with the landing just above (R2): the dialog never stood.

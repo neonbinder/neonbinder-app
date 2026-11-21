@@ -1,8 +1,9 @@
 // Origin: .maestro/flows/set-selector/checklist-one-marketplace-skips-match-dialog.yaml (Maestro suite retired in NEO-341; see git history)
 // A set with exactly ONE marketplace attached (BSC; SportLots carries no
 // 1995 Roanoke Express ECHL base) and the publisher's checklist: BSC and the
-// checklist are two sources (NEO-496, D10/NQ1), so Match Cards opens even with one
-// marketplace; the card the checklist leaves out is BSC's alone and is kept, so
+// checklist are two sources (NEO-496, D10/NQ1); the run starts on the progress line and
+// Match Cards opens because the card the checklist leaves out needs the operator
+// (NEO-640: a run with every card Matched at 100% would skip it). That card is BSC's alone and is kept, so
 // every fetched card is saved. The committed set lists them as "BSC only" and a
 // card added by hand titles itself from the set, not from "Unknown"/"All Brands".
 // (Renamed from checklist-one-marketplace-skips-match-dialog in NEO-496: with a
@@ -80,9 +81,11 @@ import { bscLookupOutcome, expectAfterMarketplace, expectStepWithSportLots } fro
 import { recordedNoMatchName } from "../../support/recorded-names";
 import {
   CHECKLISTS,
+  checklistFetchProgress,
   confirmChecklistMatchCards,
   expectTeamsFromChecklist,
   matchCardsDialog,
+  opensMatchCards,
   usePublishersChecklist,
 } from "../../support/published-checklist";
 import {
@@ -198,7 +201,7 @@ async function expectNoTeamChipsToTheEnd(page: Page, maxCards = 40): Promise<num
 }
 
 test(
-  "Checklist — a set with exactly ONE marketplace attached and its publisher's checklist opens Match Cards, keeps the card the checklist leaves out, and saves every fetched card",
+  "Checklist — a set with exactly ONE marketplace attached and its publisher's checklist starts on the progress line and opens Match Cards for the card the checklist leaves out, keeps it, and saves every fetched card",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     await signIn("/set-selector");
@@ -262,16 +265,25 @@ test(
     // The publisher's checklist, 24 of the 25 cards (LIVE_PLAYER's row left out), so BSC is
     // asked about ONE card and not 25 (NEO-489).
     const facts = await usePublishersChecklist(page, CHECKLISTS.roanokeExpress1995OneLive);
+    // NEO-640: a two-source run skips Match Cards only when every card is Matched at 100%; this
+    // file leaves a card out, so it must open (R2: the fixture's fact, stated before the fetch).
+    expect(opensMatchCards(facts, env), "Roanoke's one-live file leaves a card out, so Match Cards opens").toBe(true);
     await syncChecklistButton(page).click();
+    // NEO-640: every run with two or more sources starts on the progress line, no dialog yet; the
+    // dialog opens only once a streamed card turns out to need the operator.
+    await expect(checklistFetchProgress(page)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Cancel checklist fetch" })).toBeVisible();
 
-    // NEO-496 (D10, NQ1): ONE marketplace plus the publisher's checklist are TWO sources, so the
-    // fetch opens Match Cards (before NEO-496 it skipped the dialog and kept every card itself).
+    // NEO-496 (D10, NQ1): ONE marketplace plus the publisher's checklist are TWO sources, and the
+    // card the file leaves out needs the operator, so the fetch opens Match Cards.
     // One live BSC round trip (the one lookup): 7 s of our own time plus however long BuySportsCards
     // held it (NEO-487), never a flat ceiling.
     const matchCards = matchCardsDialog(page);
     await expectAfterMarketplace(page, matchCards, { platform: "BuySportsCards", what: "Match Cards after the fetch" });
     const confirmMatches = matchCards.getByRole("button", { name: "Confirm card matches", disabled: false });
     await expectAfterMarketplace(page, confirmMatches, { platform: "BuySportsCards", what: "Confirm unlocked after the fetch" });
+    // The dialog took over from the progress line.
+    await expect(checklistFetchProgress(page)).toHaveCount(0);
     // The teams line is said while the dialog is open (once the wizard takes over, only the save repeats it).
     await expectTeamsFromChecklist(page, facts);
     // Every row of the file pairs with its card by number; LIVE_PLAYER's card, the one the file

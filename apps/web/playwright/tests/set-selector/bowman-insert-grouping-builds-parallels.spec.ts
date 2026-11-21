@@ -50,7 +50,7 @@ import {
   syncChecklistButton,
 } from "../../support/set-builder";
 import { editCardButton } from "../../support/cards";
-import { CHECKLISTS, confirmChecklistMatchCards, matchCardsDialog, usePublishersChecklist } from "../../support/published-checklist";
+import { CHECKLISTS, settleChecklistFetch, usePublishersChecklist } from "../../support/published-checklist";
 import { advanceToSave, confirmSaveButton, reviewWizard } from "../../support/wizard";
 import type { Page } from "@playwright/test";
 
@@ -267,18 +267,11 @@ test(
     const facts = await usePublishersChecklist(page, CHECKLISTS.bowmanAnime2026);
     await syncChecklistButton(page).click();
 
-    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards opens
-    // with SportLots paused or live. The cards come from BSC (and SportLots, paired, when it is
-    // live): GUIDE R5's marketplace wait, measured time plus 7 s, never a flat ceiling.
-    const matchCards = matchCardsDialog(page);
-    await expectAfterMarketplace(page, matchCards.getByRole("button", { name: "Confirm card matches", disabled: false }), {
-      platform: "BuySportsCards",
-      what: "the Anime fetch's Match Cards",
-    });
-    await expect(matchCards.getByRole("heading", { name: "Match Cards — Anime" })).toBeVisible();
-    await expectAccessible(page, { within: matchCards, label: "Match Cards dialog" });
-    // Proves the teams line while the dialog is open, keeps any card the file leaves out, confirms.
-    await confirmChecklistMatchCards(page, { facts, what: "the Anime fetch" });
+    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources. NEO-640: the file is
+    // BSC's own 36 cards, each paired by its number at 100%, so Match Cards is skipped; the helper
+    // waits on the fetch (GUIDE R5's marketplace wait, measured time plus 7 s) and proves the kept
+    // sentence and the teams line on whichever comes, the wizard or the save.
+    await settleChecklistFetch(page, env, { facts, what: "the Anime fetch", lands: "either" });
 
     // Either new names need review, or the cards save straight away. Since
     // NEO-335 the wizard ("Tidy up <year> <set> <variant>" since NEO-497) has THREE shapes: names to decide

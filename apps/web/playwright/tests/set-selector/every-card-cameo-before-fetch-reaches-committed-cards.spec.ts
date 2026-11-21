@@ -62,7 +62,7 @@ import { escapeRe } from "../../support/cards";
 import type { CollectorSet } from "../../support/collection";
 import type { FlowEnv } from "../../support/env";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist } from "../../support/published-checklist";
+import { CHECKLISTS, settleChecklistFetch, usePublishersChecklist } from "../../support/published-checklist";
 import { drillToSet, pick, pickAfterBscSync, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 import { advanceToSave, confirmSaveButton, nextStepButton, reviewWizard, tidyUpName } from "../../support/wizard";
 
@@ -109,10 +109,10 @@ async function fetchAndCommit(page: Page, env: FlowEnv, section: Locator): Promi
   // GUIDE "Checklist first": every row names its team, so BSC is asked for no card one by one.
   const facts = await usePublishersChecklist(page, CHECKLISTS.toppsProfiles2026);
   await syncChecklistButton(page).click();
-  // NEO-496 (D10, NQ1): the uploaded checklist is a second source, so the fetch opens Match Cards on
-  // either branch (SportLots paused or not). The helper waits on it (7 s of ours plus BSC's), proves the
-  // teams line while it is open (the only time before the save), keeps any BSC-only card and confirms.
-  await confirmChecklistMatchCards(page, { facts, what: "the empty checklist's fetch" });
+  // NEO-496 (D10, NQ1): the uploaded checklist is a second source. NEO-640: the file is BSC's own 25
+  // cards, each paired by its number at 100%, so Match Cards is skipped; the helper waits on the fetch
+  // (7 s of ours plus BSC's) and proves the kept line and the teams line in front of the wizard.
+  await settleChecklistFetch(page, env, { facts, what: "the empty checklist's fetch", lands: "review" });
   const wizard = reviewWizard(page);
   await expect(wizard).toBeVisible({ timeout: WIZARD_OPENS });
   await expect(wizard).toHaveAccessibleName(tidyUpName({ year: BUILD.year, set: BUILD.set, variant: INSERT }));

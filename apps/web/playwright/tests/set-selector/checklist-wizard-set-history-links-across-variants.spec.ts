@@ -84,7 +84,7 @@ import {
 } from "../../support/set-builder";
 import { addPlayerByHand, expectPlayersLoaded, PLAYERS_MATCHES, playersCounter } from "../../support/players";
 import { expectAfterMarketplace, expectStepWithSportLots } from "../../support/marketplace-wait";
-import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist, type ChecklistName } from "../../support/published-checklist";
+import { CHECKLISTS, settleChecklistFetch, usePublishersChecklist, type ChecklistName } from "../../support/published-checklist";
 import {
   answerPlayerAsNew,
   advanceToSave,
@@ -343,10 +343,11 @@ async function fetchInsertToWizard(
   const published = await usePublishersChecklist(page, checklist);
   await syncChecklistButton(page).click();
 
-  // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards opens
-  // with SportLots paused or live. The helper waits on it (7 s of ours plus BSC's), proves the
-  // teams line while it is open, keeps any card the file leaves out, and confirms.
-  await confirmChecklistMatchCards(page, { facts: published, what: `${name}'s fetch` });
+  // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources. NEO-640: each file's own
+  // fact decides (`settleChecklistFetch`): a capture of every card skips Match Cards, Peak Performance
+  // Relics (two cards on PPR-DU, both Dan Uggla: a tie) opens it. Either way the helper waits on
+  // the fetch (7 s of ours plus BSC's) and proves the teams line.
+  await settleChecklistFetch(page, env, { facts: published, what: `${name}'s fetch`, lands: "review" });
   // Our own backend after the live fetch: the 7 s default.
   await expect(wizard, `${name}'s sync opens the tidy-up wizard`).toBeVisible();
 }

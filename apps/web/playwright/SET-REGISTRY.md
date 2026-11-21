@@ -913,7 +913,7 @@ these three.
 
 | flow | what it owns |
 |---|---|
-| `checklist-wizard-back-to-matching-resumes-decisions` | "Back to Match Cards" parks the review; re-confirming resumes the SAME batch with its decisions |
+| `checklist-wizard-back-to-matching-resumes-decisions` | the fetch skips Match Cards (every card Matched at 100%, NEO-640) and "Back to Match Cards" opens the skipped dialog with focus in it; re-confirming resumes the SAME batch with its decisions |
 | `checklist-wizard-link-to-existing-player` | "Link to Existing" resolves onto a roster player instead of minting a duplicate |
 | `checklist-wizard-career-team-entry` | the inline career-team mini-form on a player row, and the decision it feeds |
 
@@ -1219,7 +1219,7 @@ orders a spec injects, and the price sits in the free Cards under $20 slot.
 | none writes | the set's cards, players, teams or variants. They are **sole writers of a marketplace seller account's rows for this insert**, never of NB's catalogue: R7a holds the set read-only for them as for every other consumer |
 | the cards | the first rows in checklist order (two for BSC, three for eBay; the refusals spec the 4th and 5th), read off the quantity fields' names, so the choice follows the seed. The BSC spec's binder card (2c) is the LAST ordinary row of the Collection checklist, asserted to be neither box card. eBay's third card is boxed without a photo to prove the held-back reason and is never listed. eBay's first card's photos are a scanned pair (`public/placeholder-fixtures/01-vorkle-front.jpg` and `02-vorkle-back.jpg`) dropped into an Add cards run into the box and saved onto that card (picked by hand with "Wrong card? Find it": the scan's number and player mean nothing in Future Stars); the second card's is `fixtures/intake/03-bowe-front.jpg`, attached through the card drawer's Photos box |
 | writer | the BSC spec is the **sole writer among specs** of every BSC quantity for this insert, and the eBay listing spec of the first three cards' eBay listings (the refusals spec of the 4th and 5th). Since NEO-552 (BuySportsCards) and NEO-555 (eBay) both marketplaces are the fake: every worker has a seller of its own on each, so no seller is shared between workers, PRs or sessions, and no start-clean pass runs (the pass's reset clears the fake). Within one worker the specs run one after another, so the eBay listing spec and the refusals spec never list side by side on that worker's seller, and they box different cards. The BSC spec is the only spec that **starts syncing on BSC** (`listing=on`) or touches a worker's BSC sign-in outside `credentials-lifecycle` (its own `new-profile` account) and the bootstrap, besides `inventory-bsc-listing-2026-bowman-chrome-prefix`. eBay is connected (`sites=ebay` or the consent page) by the eBay listing spec, the refusals spec, `profile/ebay-connect-and-setup` (on the worker's isolated `new-profile` account and its `alt` seller, no card listed), `ebay-return-and-errors` (no card listed) and the over-80 pair (their own `ebt` set); each ends disconnected. NEO-535: `inventory-ebay-listing-title-over-80-is-held-then-requeued` holds a card with a 99-character title back, never listed, then queued again; `inventory-ebay-listing-title-over-80-lists-once-shortened` lists it once shortened. Both on the hand-made `ebt` set, not on Future Stars. The BSC and eBay specs run in the ordinary shards (any worker), on both projects (the refusals spec desktop only), once per pass on separate seeds |
-| reads | the set's other consumers read it and write nothing: `checklist-search-narrows-and-clears` (types into its search) and `checklist-pairing-dialog-cancel` (syncs it and Cancels, "The one sanctioned read-only visitor"). They can run in another shard while a listing spec lists: neither writes a card, and a marketplace quantity is per seller account, not per set. A spec added later must not save a BSC sign-in through the Profile form or pass `listing=on` to the seed hop, and must not leave cards in a box, or a worker still syncing would put them on real BSC |
+| reads | the set's other consumers read it and write nothing: `checklist-search-narrows-and-clears` (types into its search) and `checklist-pairing-dialog-cancel` (syncs it with FS-20's row left out of the file, so Match Cards opens (NEO-640), and Cancels, "The one sanctioned read-only visitor"). They can run in another shard while a listing spec lists: neither writes a card, and a marketplace quantity is per seller account, not per set. A spec added later must not save a BSC sign-in through the Profile form or pass `listing=on` to the seed hop, and must not leave cards in a box, or a worker still syncing would put them on real BSC |
 | end state | BSC: **connected and NOT syncing (Profile reads "Not syncing.")**; eBay: **NOT connected** (Profile -> Credentials -> eBay offers Connect, the product's Disconnect having withdrawn every live listing). For both: the box deleted, the common price cleared, and **every OTHER box the worker had (Unsorted included) left in-person** (opened and unchecked before listing starts, asserted, never turned back on, since that would re-queue their cards; the Up for Trade pile is not a box that lists). The afterEach runs on a pass too: on a failure BSC's first zeroes the touched rows (empties the box, Sync, walks it to rest, "0 listed"), removes a binder copy left behind, clears the price, then removes the sign-in and saves it again WITHOUT `listing=on`; eBay's closes the scan run, clears the price, then disconnects. The fake seller's policies, location and withdrawn items stay in the fake's memory until the pass's reset |
 | re-runs | **safe to re-run on the same seed**: the minted box differs per attempt, every count ends at 0, syncing is stopped or eBay disconnected. A re-run's first steps need the account "Not syncing." / eBay not connected, which the previous run's hook (or the bootstrap's reseed) guarantees |
 | cron | the 15-minute order poll can run a set's sync before a press (NEO-433), and can store an injected order before the spec's own `pollNow`; every spec holds either order to a hard end state (see their headers). The poll is never waited for, and the account stops listing before each spec ends |
@@ -3586,6 +3586,25 @@ second, and the block lasts about 45 s (the tool's 15 s then 30 s backoff
 clears it; the longest single episode was 330 s).** The tool recovered every time; no capture was stopped by a block (one run, Topps 2014 football, stopped on a request timeout and resumed from its cache).
 This is the same pushback a fetch without a checklist meets from Convex, and
 the reason the specs upload instead of fetching card by card.
+
+**Does a fetch with the file open Match Cards (NEO-640)?** A fetch with two or more sources (BSC and
+the file are two) skips Match Cards only when every card is Matched at 100%. Each file's answer is
+its `matchCards: { paused, live }` entry in `support/published-checklist.ts` (`MATCH_CARDS`), which
+`settleChecklistFetch` reads; the specs never race the dialog against the kept line. With SportLots
+paused: every whole capture below SKIPS (each card pairs with its own row by number, or an NNO card
+with its NNO row by player), and these OPEN: a file with a row left out (`-shehadi-live`,
+`-one-live`, `-five-live`, `2024-topps-chrome-base`, `prospect-dual-autographs`), Peak Performance
+Relics (PPR-DU is on two rows, both Dan Uggla: a tie), Pete Rose Legacy (rows naming other
+players), and the publisher-numbered files (Future Stars publisher numbering, the three Signature
+Series files: name pairs, shown with a %). An upload with rows appended, dropped, renumbered or split
+opens too. Live, a set the seed maps to SportLots (Topps Chrome 2024, Stars of MLB Network) is
+written to open (UNMEASURED: SportLots is paused). Every entry agrees with `checklistMatch` (the
+product's matcher over the file and BSC's cards), and every file a spec uploads as is was measured
+on a SportLots-paused run (NEO-640, desktop and mobile): the skips and the opens above. Not uploaded
+whole by any spec, so read off the file only: `-full` / whole Roanoke / whole ONIT, Oklahoma City
+Blazers (its spec pastes an edited copy), Memphis and New Haven (their specs append rows, which
+open), whole 2014 Topps Football (the paused branch edits it) and Future Stars' publisher numbering
+(its spec runs only while SportLots is live).
 
 | file | set (registered above) | rows | rows with a team | spec |
 |---|---|---|---|---|

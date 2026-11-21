@@ -1,6 +1,7 @@
 // Origin: .maestro/flows/set-selector/checklist-pairing-dialog-cancel.yaml (Maestro suite retired in NEO-341; see git history)
 // NEO-137/189/220: syncing the real 2024 Topps Chrome Insert > Future Stars
-// checklist opens the Match Cards dialog instead of committing; a manual
+// checklist (its publisher's file with FS-20 left out, NEO-640: a card with no
+// row needs the operator) opens the Match Cards dialog instead of committing; a manual
 // cross-link whose two sides name the card differently raises a name-conflict
 // choice (BSC's value preselected, SportLots' on request, or a typed third
 // name); NEO-344: every choice is the bare value, never which marketplace
@@ -13,7 +14,7 @@
 // pause on the page instead.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { escapeRe } from "../../support/cards";
-import { CHECKLISTS, usePublishersChecklist } from "../../support/published-checklist";
+import { CHECKLISTS, opensMatchCards, usePublishersChecklist } from "../../support/published-checklist";
 import {
   columnHeading,
   columnOption,
@@ -66,8 +67,12 @@ test(
     // BSC + SportLots round trip, the flow's 90 s).
     // NEO-489: the seed's own publisher's checklist first (BSC's answers for the 20 cards), so the
     // fetch asks BSC for no card one by one: this spec is about the pairing dialog, and twenty live
-    // lookups in a burst are what BSC rate-limits.
-    await usePublishersChecklist(page, CHECKLISTS.futureStars2024);
+    // lookups in a burst are what BSC rate-limits. NEO-640: the whole file pairs every card at 100%,
+    // which would let the run skip Match Cards, so FS-20's row is LEFT OUT (one card asked of BSC
+    // live): that card has no row, so the dialog opens (`opensMatchCards`, asserted). UNMEASURED
+    // live (this branch runs only while SportLots is live): re-read the counts below on its first run.
+    const facts = await usePublishersChecklist(page, CHECKLISTS.futureStars2024, { drop: ["FS-20"] });
+    expect(opensMatchCards(facts, env), "Future Stars without FS-20's row opens Match Cards").toBe(true);
     await syncChecklistButton(page).click();
     const dialog = page.getByRole("dialog", { name: /Match Cards/ });
     await expect(dialog).toBeVisible({ timeout: 90_000 });

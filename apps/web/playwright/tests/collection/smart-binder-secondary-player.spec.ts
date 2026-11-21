@@ -71,7 +71,7 @@ import { cameoPhrase as cameoWords, deleteBinder, holdInMain, openCollectorCheck
 import type { CollectorSet } from "../../support/collection";
 import type { FlowEnv } from "../../support/env";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { CHECKLISTS, checklistRows, confirmChecklistMatchCards, usePublishersChecklist } from "../../support/published-checklist";
+import { CHECKLISTS, checklistRows, settleChecklistFetch, usePublishersChecklist } from "../../support/published-checklist";
 import { drillToBaseVariant, drillToColdManufacturer, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 import {
   advanceToSave,
@@ -138,10 +138,15 @@ async function ensureChecklist(page: Page, env: FlowEnv): Promise<void> {
   // names its team or says No Team, so BSC is asked for no card one by one.
   const facts = await usePublishersChecklist(page, CHECKLISTS.topps1984FootballBase);
   await syncChecklistButton(page).click();
-  // NEO-496 (D10, NQ1): the uploaded checklist is a second source, so the fetch opens Match Cards on
-  // either branch (SportLots paused or not). The helper waits on it (7 s of ours plus BSC's), proves the
-  // teams line while it is open (the only time before the save), keeps any BSC-only card and confirms.
-  await confirmChecklistMatchCards(page, { facts: { ...facts, matched: facts.matched - TEAM_LEADER_NUMBERS.length }, what: "the empty checklist's fetch" });
+  // NEO-496 (D10, NQ1): the uploaded checklist is a second source. NEO-640: the file is BSC's own
+  // 396 cards, each paired by its number at 100% (a team-leader card's club is a team disagreement,
+  // which the wizard settles, not Match Cards), so Match Cards is skipped; the helper waits on the
+  // fetch (7 s of ours plus BSC's) and proves the kept line and the teams line beside the wizard.
+  await settleChecklistFetch(page, env, {
+    facts: { ...facts, matched: facts.matched - TEAM_LEADER_NUMBERS.length },
+    what: "the empty checklist's fetch",
+    lands: "review",
+  });
   const wizard = reviewWizard(page);
   await expect(wizard).toBeVisible({ timeout: WIZARD_OPENS });
   await expect(wizard).toHaveAccessibleName(tidyUpName({ year: BUILD.year, set: BUILD.set }));

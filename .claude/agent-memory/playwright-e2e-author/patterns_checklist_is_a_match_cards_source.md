@@ -1,6 +1,6 @@
 ---
 name: checklist-is-a-match-cards-source
-description: Since NEO-496 an official (publisher's) checklist (pasted, or the set's stored one) is a Match Cards source; BSC + a checklist opens Match Cards even with SportLots paused, and "Kept all N cards from BSC" is gone from those fetches
+description: Since NEO-496 an official (publisher's) checklist (pasted, or the set's stored one) is a Match Cards source; BSC + a checklist is two sources even with SportLots paused (NEO-640: the dialog opens only when a card needs the operator, see the per-fixture fact note), and "Kept all N cards from BSC" is gone from those fetches
 metadata:
   type: patterns
 ---
@@ -90,3 +90,5 @@ FIRST (`expectChecklistDisagreementFirst`, `pickDisagreementSide`, then Next).
 Match Cards "Cancel" with decisions made opens a "Discard N pairing?" confirm;
 click "Discard N pairing" too. Derive counts from the CSV through
 `nameFallbackFacts`, never hard-code.
+
+Update (NEO-640): "opens Match Cards" below now holds only for a file that leaves a card unmatched; a whole capture skips the dialog. See [[patterns_match_cards_skip_is_a_per_fixture_fact]].
