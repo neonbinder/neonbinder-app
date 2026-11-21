@@ -19,6 +19,7 @@
 
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { __resetContractCache } from "./credentials";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import {
@@ -80,13 +81,17 @@ const ADMIN_IDENTITY = {
 const SENTINEL = 1_000_000;
 
 beforeEach(() => {
+  // The browser-contract check is cached per module; a test that answers
+  // /health must not hand its answer to the next one.
+  __resetContractCache();
   vi.spyOn(console, "log").mockImplementation(() => {});
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
-  delete process.env.NEONBINDER_BROWSER_URL;
 });
 
 describe("skippedSyncMessage", () => {
@@ -368,7 +373,7 @@ describe("adapter output never reaches the persisted status row", () => {
       }),
     );
 
-    process.env.NEONBINDER_BROWSER_URL = "http://localhost:9999";
+    vi.stubEnv("NEONBINDER_BROWSER_URL", "http://localhost:9999");
     vi.stubGlobal("fetch", async (url: string | URL | Request) => {
       if (String(url).endsWith("/health")) {
         return new Response(
@@ -388,10 +393,35 @@ describe("adapter output never reaches the persisted status row", () => {
       );
     });
 
-    await asAdmin.action(api.selectorOptions.ensureSelectorOptions, {
-      level: "year",
-      parentId: sportId,
-    });
+    // The adapter retries a 500 after a real setTimeout backoff; fake the
+    // timer and step past it instead of sleeping through it.
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      const ran = asAdmin.action(api.selectorOptions.ensureSelectorOptions, {
+        level: "year",
+        parentId: sportId,
+      });
+      // The backoff timer is only armed once the action reaches it, which can
+      // follow real async work (a cold module load): step the fake clock until
+      // the action settles, yielding to the real event loop between steps.
+      let settled = false;
+      void ran.then(
+        () => (settled = true),
+        () => (settled = true),
+      );
+      // Bounded on the real clock (performance.now is not faked): an action
+      // stuck on something no timer releases fails here, not as a spin that
+      // outlives the test's own timeout.
+      const giveUpAt = performance.now() + 3_000;
+      while (!settled) {
+        if (performance.now() > giveUpAt) throw new Error("ensureSelectorOptions did not settle while the fake clock was stepped");
+        await vi.advanceTimersByTimeAsync(1_000);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      await ran;
+    } finally {
+      vi.useRealTimers();
+    }
 
     const status = await asAdmin.query(
       api.selectorOptions.getSelectorSyncStatus,

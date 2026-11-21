@@ -154,6 +154,19 @@ function switchSearchSport(fromLabel: string, toName: string) {
 // Tests
 // ---------------------------------------------------------------------------
 
+// NEO-638: every describe below starts from the same mocked-query state. It was
+// reset only inside the first describe, so any order that ran another group
+// first (a shuffle) read an unset map.
+beforeEach(() => {
+  currentSelectedRows = [];
+  currentCandidates = [];
+  currentSports = [];
+  currentSearchResults = undefined;
+  currentPlayerById = new Map();
+  currentFragmentCheck = undefined;
+  lastFragmentArgs = undefined;
+});
+
 describe("PlayerPicker", () => {
   beforeEach(() => {
     vi.clearAllMocks();

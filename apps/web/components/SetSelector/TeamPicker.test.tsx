@@ -201,6 +201,19 @@ const dialogLocationField = () =>
 // Tests
 // ---------------------------------------------------------------------------
 
+// NEO-638: every describe below starts from the same mocked-query state. It was
+// reset only inside the first describe (and by some groups for the fields they
+// use), so a shuffle that ran a group with sports set before one that assumes
+// none read the wrong label.
+beforeEach(() => {
+  currentSelectedRows = [];
+  currentCandidates = [];
+  currentAliasHits = {};
+  currentLeagues = [];
+  currentSports = [];
+  queryCalls = [];
+});
+
 describe("TeamPicker", () => {
   beforeEach(() => {
     vi.clearAllMocks();
