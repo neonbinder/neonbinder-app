@@ -96,7 +96,12 @@ import {
  *  - A grouped line's "N cards" expander lets one card take its own answer
  *    (C3) with the same controls, and hand it back with "Match the others".
  *  - A card whose listing named a team NB could not resolve shows that name
- *    ("Listed as: …") and is never pre-filled (invariant 8).
+ *    ("Listed as: …") and is never pre-filled (invariant 8). A card whose
+ *    lookup never answered is not a claim and is pre-filled like any other
+ *    (NEO-639). Under a set-level "No Team" (`setNoTeam`) nothing is.
+ *  - NEO-639 — every chip that is not part of the pre-fill says the players'
+ *    years with that team ("Reds · 1967–1983"), in its visible text and its
+ *    accessible name, so two unselected choices can be told apart.
  *  - `showSetTeamHint` (C7) points at the set-level team when the host
  *    judges the step long and the set has none.
  *
@@ -177,9 +182,23 @@ type ControlItem =
   | { id: string; kind: "team"; ref: TeamRef; label: string }
   | { id: string; kind: "none" | "later"; label: string };
 
+/**
+ * A team chip's name, words a voice user can say: the team, then (NEO-639)
+ * the players' years with it when the chip shows them — "Reds · 1967–1983".
+ * The accessible name starts with exactly the visible text (WCAG 2.5.3).
+ */
+function teamChipName(ref: TeamRef): string {
+  return ref.years ? `${ref.label} · ${ref.years}` : ref.label;
+}
+
 function lineItems(refs: TeamRef[]): ControlItem[] {
   return [
-    ...refs.map((ref) => ({ id: `team:${ref.key}`, kind: "team" as const, ref, label: ref.label })),
+    ...refs.map((ref) => ({
+      id: `team:${ref.key}`,
+      kind: "team" as const,
+      ref,
+      label: teamChipName(ref),
+    })),
     { id: "none", kind: "none", label: NONE_LABEL },
     { id: "later", kind: "later", label: LATER_LABEL },
   ];
@@ -237,6 +256,7 @@ export default function TeamsOnCardsSection({
   skippedTeamNames,
   defaultPlayer,
   teamless,
+  setNoTeam = false,
   disabled = false,
   showSetTeamHint = false,
 }: {
@@ -297,6 +317,14 @@ export default function TeamsOnCardsSection({
    * Pass a stable (memoised) object: it is a memo dependency.
    */
   teamless?: TeamlessFacts;
+  /**
+   * NEO-639 decision A — the node's own team default is a set-level "No
+   * Team". A card under it is here only because the commit will not stamp it
+   * (its lookup has not answered, or its listing names a team), and the
+   * set's answer is not overruled by a guess: every line comes up with its
+   * teams offered and none pre-filled. The host reads the node's row.
+   */
+  setNoTeam?: boolean;
   /** A commit is in flight; the choices hold still. */
   disabled?: boolean;
   /**
@@ -438,6 +466,7 @@ export default function TeamsOnCardsSection({
         teamNameEvidence,
         setLeagueIds,
         people,
+        setNoTeam,
       }),
     [
       cards,
@@ -449,6 +478,7 @@ export default function TeamsOnCardsSection({
       teamNameEvidence,
       setLeagueIds,
       people,
+      setNoTeam,
     ],
   );
 
@@ -1224,13 +1254,19 @@ function OtherTeamPicker({
  * say Padres in the team colour"), when that colour clears 4.5:1 on the chip;
  * otherwise the chip's own text colour. No colour dot: a round dot beside a
  * chip read as a selected radio. The ✓ is the only selection signal.
+ *
+ * NEO-639 — a chip outside the pre-fill also says the players' years with the
+ * team, quieter than the name and inside the same wrapping span, so a long
+ * "Johnny Bench 1967–1983; Pete Rose 1963–1978" wraps under the name rather
+ * than being cut off.
  */
 function TeamLabel({ teamRef }: { teamRef: TeamRef }) {
   const { mode } = useTheme();
   const color = liveryTextColor(teamRef.colors, mode);
   return (
-    <span className="min-w-0 break-words" style={color ? { color } : undefined}>
-      {teamRef.label}
+    <span className="min-w-0 break-words">
+      <span style={color ? { color } : undefined}>{teamRef.label}</span>
+      {teamRef.years && <span className="text-ink-3"> · {teamRef.years}</span>}
     </span>
   );
 }

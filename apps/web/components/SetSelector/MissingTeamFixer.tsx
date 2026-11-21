@@ -49,6 +49,12 @@ import {
  *   focus on Save, so one Enter wrote four teams onto a one-team card. Only an
  *   `inSetYear` suggestion is preselected now, and focus lands on Save only
  *   when something is.
+ * - **A set-year tie is never preselected either (NEO-639, decision B).** A
+ *   player's set-year team is preselected only when he has exactly ONE: a
+ *   player traded mid-season arrives with both clubs offered and neither
+ *   ticked, under a line that says so. The rule is per player, so on a
+ *   League Leaders card the players with one team that year still arrive
+ *   ticked.
  * - **The listing's claim is offered as NB's rows, era by era (NEO-330).**
  *   When the marketplace listing named a team the background lookup could not
  *   settle — usually a name we hold in several eras, none covering the set
@@ -154,6 +160,8 @@ export function careerHeading(
   inSetYear: boolean,
   listingDisagrees: boolean,
   uncoveredSetYear?: number,
+  /** NEO-639 — a player on the card has more than one team in the set year. */
+  setYearTie = false,
 ): string {
   if (!inSetYear) {
     return uncoveredSetYear !== undefined
@@ -162,6 +170,9 @@ export function careerHeading(
   }
   if (listingDisagrees) {
     return "From the career — the listing names a different team, so pick the one on the card.";
+  }
+  if (setYearTie) {
+    return "From the career — more than one team that season, so pick the one on the card.";
   }
   return "Suggested from career history — Enter accepts these.";
 }
@@ -291,9 +302,34 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
   );
 
   /**
-   * What may be preselected: set-year stints only, and only when BSC does not
-   * contradict them. A card with a BSC name and a set-year stint at a team
-   * that is not among that name's rows has two sources saying two things —
+   * NEO-639 (decision B) — each player's set-year teams. A player with exactly
+   * one has an answer; a player with two or more has a tie, which is a
+   * question for the operator, never the first team. By the player's name:
+   * it is all the suggestion carries, and two same-name players on one card
+   * folding into one tie can only cost a preselect, never make one.
+   */
+  const { loneSetYearTeamIds, setYearTie } = useMemo(() => {
+    const byPlayer = new Map<string, Array<Id<"teams">>>();
+    for (const s of suggestions ?? []) {
+      if (!s.inSetYear) continue;
+      const ids = byPlayer.get(s.playerName) ?? [];
+      if (!ids.includes(s.teamId)) ids.push(s.teamId);
+      byPlayer.set(s.playerName, ids);
+    }
+    const lone: Array<Id<"teams">> = [];
+    let tie = false;
+    for (const ids of byPlayer.values()) {
+      if (ids.length > 1) tie = true;
+      else if (!lone.includes(ids[0])) lone.push(ids[0]);
+    }
+    return { loneSetYearTeamIds: lone, setYearTie: tie };
+  }, [suggestions]);
+
+  /**
+   * What may be preselected: a player's ONE set-year team (decision B, above),
+   * and only when BSC does not contradict the set-year stints. A card with a
+   * BSC name and a set-year stint at a team that is not among that name's
+   * rows has two sources saying two things —
    * product invariant 7: surface it, never settle it. Nothing is preselected
    * and the career line says BSC disagrees. A BSC name we could not look up
    * (no sport) cannot vouch for anything, so it counts as disagreeing: the
@@ -306,8 +342,8 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
   const bscDisagrees =
     bscName !== "" && setYearTeamIds.some((id) => !marketplaceIds.has(id as string));
   const preselect = useMemo(
-    () => (bscDisagrees ? [] : setYearTeamIds.slice(0, MAX_CARD_TEAMS)),
-    [bscDisagrees, setYearTeamIds],
+    () => (bscDisagrees ? [] : loneSetYearTeamIds.slice(0, MAX_CARD_TEAMS)),
+    [bscDisagrees, loneSetYearTeamIds],
   );
   const ready = suggestions !== undefined && bscSettled;
 
@@ -566,6 +602,7 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
                 careerChips.some((chip) => chip.inSetYear),
                 bscDisagrees,
                 uncoveredSetYear,
+                setYearTie,
               )}
             </p>
             <ul
