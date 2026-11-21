@@ -358,6 +358,13 @@ function inScope(state: CollectionState, scope: Scope, side: Side): DemoCopy[] {
   return copies.filter((c) => c.homeId === scope);
 }
 
+let fixtureCardIndex: Map<string, (typeof fixtureCards)[number]> | undefined;
+
+/** The fixture cards by id: a smart binder tests every copy, and a scan of the catalog per copy cost ~180 ms a write. */
+function fixtureCardById() {
+  return (fixtureCardIndex ??= new Map(fixtureCards.map((f) => [f.id, f])));
+}
+
 /** The copies a container lists (see `useContainerCopies`), in slot order. */
 function containerCopies(state: CollectionState, id: string): DemoCopy[] {
   const container = state.containers.find((c) => c.id === id);
@@ -368,7 +375,7 @@ function containerCopies(state: CollectionState, id: string): DemoCopy[] {
   if (container.rule) {
     const rule = fixtureRule(container.rule);
     return collectionOf(state).filter((c) => {
-      const card = fixtureCards.find((f) => f.id === c.cardId);
+      const card = fixtureCardById().get(c.cardId);
       return !!card && evaluateRule(rule, card);
     });
   }
