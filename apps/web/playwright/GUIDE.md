@@ -907,11 +907,16 @@ this before diagnosing anything that touches BSC:
   specs do. The wait is made likelier, not guaranteed (the background read is armed
   30 s after the save and those specs press minutes later): both orders stay legal and
   end in the same hard asserts. The wait copy itself ("Waiting on BuySportsCards"
-  while a call is outstanding) is proved by the stall spec, whose hung lookups hold
-  the fetch for about ten seconds. When Match Cards opens before the line's 1.5 s
-  (NEO-624, seen on the phone project) the dialog's "still resolving (N of M done)"
-  sentence carries the wait instead and the page line stands down; the spec accepts
-  either and its `bsc-wait` annotation says which ran.
+  while a call is outstanding) is proved with a held read, never with an `.or()`
+  between places it might show (NEO-628): `bscFault.slow(BSC_PATH.results, ...)`
+  holds the fetch's one catalogue read (its timeout is 30 s, so a shorter hold is an
+  answer), and Match Cards cannot be open before that read returns, so the page's
+  line must show. The 429 spec proves it on a one-source fetch and owns its
+  whole-page axe check; the stall spec proves it on a two-source fetch and then the
+  dialog's own line (`waitingOn(matchCards, ...)`) while the hung lookups hold.
+  `expectAfterMarketplace` credits the dialog's line like the page's; the dialog's
+  "still resolving (N of M done)" sentence is never credited, because it stays up
+  after the fetch until the run's teams land, which is our own time.
 
 **A listing-on BSC seed is one store (NEO-483).** `/testing/seed-credentials?sites=buysportscards&listing=on`
 (`saveBscSignIn(page, { listing: true })`) saves the sign-in once and returns:

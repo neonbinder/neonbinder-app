@@ -33,9 +33,17 @@
 // checklist file would skip.
 //
 // WHAT IT PROVES, IN ORDER:
+//   0. The page's own "Waiting on BuySportsCards" line (CardChecklist's sync wait line)
+//      shows while a BSC call is held: the spec holds the fetch's one catalogue read
+//      (`bscFault.slow` on the results read, HOLD_MS, far under the read's 30 s timeout).
+//      This is the suite's deterministic proof of the PAGE line (NEO-628 audit): the set
+//      is BSC-only with no checklist, so the fetch is one-source and Match Cards never
+//      opens, and nothing else can stand the line down. (The stall spec's fetch is
+//      two-source, so its line is the one inside Match Cards.)
 //   1. The fetch's "Kept all N cards from BSC" line lands within 7 s of our own time
-//      (`expectAfterMarketplace`), and once it has, no "Waiting on BuySportsCards" line
-//      is up: a cooldown does not hold a call, it ends the lookup.
+//      (`expectAfterMarketplace`, which credits the held read), and once it has, no
+//      "Waiting on BuySportsCards" line is up: a cooldown does not hold a call, it ends
+//      the lookup.
 //   2. Every name is skipped, so the wizard reaches "Cards with no team" (every card
 //      is listed there: not one has a BSC pre-fill to confirm).
 //   3. After the save the checklist's status line names ALL of the set's cards as
@@ -54,6 +62,7 @@
 // skipped: no player and no team is minted.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { BSC_PATH, bscFault } from "../../support/bscFake";
+import { matchCardsDialog } from "../../support/published-checklist";
 import { editCardButton } from "../../support/cards";
 import { expectAfterMarketplace, waitingOn } from "../../support/marketplace-wait";
 import { setBuilderReady, syncChecklistButton } from "../../support/set-builder";
@@ -66,6 +75,12 @@ const CARDS = 32;
 const WAVE = 10;
 /** Long enough that the window outlasts the spec: the lane must not get a turn before the assert. */
 const RETRY_AFTER_S = 90;
+/**
+ * How long the fake holds the fetch's catalogue read: the line mounts 1.5 s into a wait, and it
+ * must outlast a whole-page axe check (light and dark) taken while it shows. Under the read's own 30 s timeout
+ * (BSC_CHECKLIST_FETCH_TIMEOUT_MS), so it is an answer, never a failure to the gate.
+ */
+const HOLD_MS = 15_000;
 
 test(
   "Checklist fetch — a BSC 429 on the team lookup opens the cooldown: the fetch lands at once, no team is guessed, and every card waits in the background queue (NEO-552)",
@@ -77,9 +92,20 @@ test(
     // The precondition for a FIRST fetch (fresh-only): a re-run fails here, by name.
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
 
+    // ── 0. The catalogue read is held: the page's own wait line says so ──
     // ── 1. BSC pushes back on every team lookup; the fetch meets the cooldown ──
-    await bscFake.setFaults([bscFault.tooManyRequests(BSC_PATH.cardListing, { retryAfterS: RETRY_AFTER_S, times: WAVE, ttlS: 600 })]);
+    await bscFake.setFaults([
+      bscFault.slow(BSC_PATH.results, HOLD_MS, { times: 1, ttlS: 600 }),
+      bscFault.tooManyRequests(BSC_PATH.cardListing, { retryAfterS: RETRY_AFTER_S, times: WAVE, ttlS: 600 }),
+    ]);
     await syncChecklistButton(page).click();
+    // One source, so no Match Cards: the line is the page's (it mounts 1.5 s into the held read).
+    await expect(waitingOn(page, "BuySportsCards")).toBeVisible();
+    await expect(matchCardsDialog(page)).toHaveCount(0);
+    // The owner of the whole-page check with the page's wait line up (the stall spec checks its dialog).
+    await expectAccessible(page, { label: "Checklist fetch waiting on BuySportsCards (the page's line)" });
+    // The read was still held when both passes finished, so they read the state named above.
+    await expect(waitingOn(page, "BuySportsCards"), "the held read ended before axe finished: raise HOLD_MS").toBeVisible();
     await expectAfterMarketplace(page, page.getByText(new RegExp(`Kept all ${CARDS} cards from BSC`)), {
       platform: "BuySportsCards",
       what: "the fetch's kept-cards line",

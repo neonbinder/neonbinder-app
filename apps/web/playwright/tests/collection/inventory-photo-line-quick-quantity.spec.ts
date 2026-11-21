@@ -98,9 +98,11 @@ test(
     await expect(said(`Boxed 1 more of ${short}. 2 in Unsorted.`)).toBeVisible();
     await expect(field).toHaveValue("2");
     await expect(field).not.toHaveAccessibleDescription(/also here/);
-    // NEO-628: the page was checked whole at 1 (above), with the floating notice and its
-    // Undo already up from the add; + changes only the card's row and the notice's words.
-    await expectAccessible(page, { within: rowOfCard, label: "Inventory Checklists, the photo line counted 2" });
+    // Whole page, with the floating status line and its Undo asserted up as the check starts: the
+    // check at 1 asserts no notice, so this one is the spec's proof of that line on the checklist.
+    // The "Pulled 2 ..." notice below is the same line with other words, so it needs no check of its own.
+    await expect(page.getByRole("button", { name: "Undo", exact: true })).toBeVisible();
+    await expectAccessible(page, { label: "Inventory Checklists, the photo line counted 2" });
     const stacked = await openLine("Raw, Excellent ×2");
     await expect(stacked.getByRole("button", { name: "Open front of Raw, Excellent ×2", exact: true })).toBeVisible();
     await expect(stacked.getByRole("button", { name: "Open back of Raw, Excellent ×2", exact: true })).toBeVisible();

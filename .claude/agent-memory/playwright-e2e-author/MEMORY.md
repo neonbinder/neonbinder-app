@@ -116,4 +116,4 @@
 - [Second variant needs a re-drill](patterns_second_variant_needs_a_redrill.md) — openVariant skips the create confirm while a checklist is open; use drillToCustom again
 - [Axe cost, options() and resultTypes](patterns_axe_cost_options_and_result_types.md) — options() replaces withTags; rules ~10% of a big call; owner rule, scope later states
 - [Prove a list overflows its scroller](patterns_prove_a_list_overflows_its_scroller.md) — last row scrolled in view, first row not in viewport; no CSS, no evaluate
-- [Stall proof: wait line or Match Cards sentence](patterns_stall_wait_line_or_match_cards_sentence.md) — NEO-624: page line idles while Match Cards streams; accept either, annotate
+- [Hold a read to prove a wait line](patterns_hold_a_read_to_prove_a_wait_line.md) — slow results read = no dialog yet; no `.or()`; dialog line credits Confirm
