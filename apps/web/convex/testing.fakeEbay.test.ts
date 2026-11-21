@@ -374,7 +374,12 @@ describe("pollMySalesNow", () => {
         () => (settled = true),
         () => (settled = true),
       );
+      // Bounded on the real clock (performance.now is not faked): a poll stuck
+      // on something no timer releases fails here, not as a spin that outlives
+      // the test's own timeout.
+      const giveUpAt = performance.now() + 3_000;
       while (!settled) {
+        if (performance.now() > giveUpAt) throw new Error("pollMySalesNow did not settle while the fake clock was stepped");
         await vi.advanceTimersByTimeAsync(500);
         await new Promise<void>((resolve) => setImmediate(resolve));
       }

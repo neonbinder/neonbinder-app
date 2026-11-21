@@ -56,10 +56,20 @@ const MAY_HOLD_VIOLATION = new RegExp(
 );
 const NEEDS_COOKING = /\\[xu0-9\r\n\u2028\u2029]/;
 
+/** True when the prefilter must send this text to the parser. */
+export function mayHoldViolation(text) {
+  return NEEDS_COOKING.test(text) || MAY_HOLD_VIOLATION.test(text.replaceAll("\\", ""));
+}
+
 /** The banned tokens in one file's string literals and template chunks. */
 export function scanFile(rel) {
   const text = fs.readFileSync(path.join(WEB_ROOT, rel), "utf8");
-  if (!NEEDS_COOKING.test(text) && !MAY_HOLD_VIOLATION.test(text.replaceAll("\\", ""))) return [];
+  if (!mayHoldViolation(text)) return [];
+  return scanSource(rel, text);
+}
+
+/** The full scan, no prefilter: the parse of `text` as if it were file `rel`. */
+export function scanSource(rel, text) {
   const kind = rel.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
   const source = ts.createSourceFile(rel, text, ts.ScriptTarget.Latest, false, kind);
   const found = [];

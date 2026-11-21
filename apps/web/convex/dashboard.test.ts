@@ -737,6 +737,8 @@ describe("newSince", () => {
     await tick();
     const since = Date.now();
     expect((await s.me.query(api.dashboard.newSince, { sinceMs: since })).lines).toEqual([]);
+    // The move's stamp must be strictly later than `since`; on a fast run both land in one millisecond.
+    await tick();
     await s.me.mutation(api.collectionContainers.empty, { containerId: mets });
     const lines = (await s.me.query(api.dashboard.newSince, { sinceMs: since })).lines;
     expect(lines.map((l) => [l.homeId, l.cardId])).toEqual([[s.homes.main, s.fx.strawberry2]]);
