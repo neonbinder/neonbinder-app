@@ -31,17 +31,17 @@
  *     for a name the server would insert.
  */
 
-import { foldDiacritics } from "./normalize-name";
+import { foldNameText } from "./normalize-name";
 
 /**
- * Fold diacritics and lowercase. No trimming, no whitespace collapsing, no
+ * Fold junk characters and diacritics, and lowercase (`foldNameText`). No trimming, no whitespace collapsing, no
  * punctuation handling — deliberately, so that for pure-ASCII input this is
  * exactly `String.prototype.toLowerCase` and every existing filter, prefix rank
  * and ordering behaves as it did. Callers trim the QUERY themselves, as they
  * always have.
  */
 export function nameSearchKey(raw: string): string {
-  return foldDiacritics(raw).toLowerCase();
+  return foldNameText(raw);
 }
 
 /**

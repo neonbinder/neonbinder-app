@@ -1,6 +1,5 @@
 /**
- * Fuzzy player- and team-name matching — port of the helpers in cardPool.ts
- * (via the preprocess service's audited Python port, `app/pairing/names.py`).
+ * Fuzzy player- and team-name matching for photo pairing and intake.
  *
  * Card fronts and card backs almost never print a player's name identically.
  * Fronts favour a surname in isolation ("BUEHLER"), or an initialled first
@@ -9,39 +8,28 @@
  * of increasingly permissive comparisons, each of which reports whether it
  * was an *exact* hit — the caller scores exact and fuzzy hits differently.
  *
+ * NEO-643: the normalisation is the ONE shared entity-name reading
+ * (`entityNameTokens` in `lib/entities/normalize-name.ts`), so this ladder and
+ * the identity keys can never disagree about what an accent, a stray
+ * backslash ("Wilmer R\ios" for Ríos), an initial run or a hyphen is. The only
+ * thing the ladder adds is dropping the generational suffix tokens.
+ *
  * Everything here is pure and string-only. It knows nothing about pooling.
  */
 
-/**
- * Generational and ordinal suffixes, stripped so "Ken Griffey Jr." and
- * "Ken Griffey" compare equal. The optional trailing `\.?` absorbs the period
- * in "Jr." *before* punctuation stripping runs — see `normalizePlayerName`
- * for why that ordering is load-bearing.
- *
- * NOTE the lone `v` in the alternation: it is a Roman-numeral suffix (as in
- * "Robert Griffin V"), but `\b(...|v)\b` will strip a standalone lowercase
- * `v` from ANYWHERE in the name, so "Bobby V" normalises to "bobby". That
- * quirk is ported verbatim from the original TypeScript rather than silently
- * corrected — the scoring thresholds downstream were tuned against this exact
- * behaviour, and a quiet divergence here would show up as unexplained pairing
- * drift.
- *
- * The `i` flag mirrors the source's `gi` flags. It is technically redundant
- * because the input is lowercased first, but it is kept so the constant reads
- * the same as the original and stays correct if a caller ever passes raw
- * text.
- */
-const NAME_SUFFIX_RE = /\b(jr|sr|ii|iii|iv|v)\b\.?/gi;
+import { entityNameTokens, foldNameText } from "../../../lib/entities/normalize-name";
 
 /**
- * Punctuation dropped outright: periods in initials ("P. Mahomes"), hyphens
- * in double-barrelled surnames, and apostrophes ("O'Neal"). OCR reads these
- * inconsistently between a front's display type and a back's body copy.
+ * Generational and ordinal suffix TOKENS, dropped so "Ken Griffey Jr." and
+ * "Ken Griffey" compare equal.
+ *
+ * NOTE the lone `v`: it is a Roman-numeral suffix (as in "Robert Griffin V"),
+ * but it is dropped wherever it stands as a whole token, so "Bobby V"
+ * normalises to "bobby". That quirk predates this module and is kept on
+ * purpose: the scoring thresholds downstream were tuned against it, and a
+ * quiet change here would show up as unexplained pairing drift.
  */
-const PUNCTUATION_RE = /[.\-']/g;
-
-/** Collapses the runs of whitespace that suffix/punctuation removal leaves behind. */
-const WHITESPACE_RE = /\s+/g;
+const NAME_SUFFIX_TOKENS: ReadonlySet<string> = new Set(["jr", "sr", "ii", "iii", "iv", "v"]);
 
 /**
  * Minimum characters a truncated first name must have before it may
@@ -69,21 +57,17 @@ export interface NameMatch {
 export const NO_MATCH: NameMatch = Object.freeze({ match: false, exact: false });
 
 /**
- * Lowercase, strip suffixes, strip punctuation, collapse whitespace.
+ * A player name as the ladder compares it: the shared entity-name tokens
+ * (folded, lowercased, punctuation dropped, runs of initials joined, source
+ * order) with the suffix tokens removed, joined by single spaces.
  *
- * **The order matters and is not the obvious one.** Suffix stripping runs
- * BEFORE punctuation stripping. `NAME_SUFFIX_RE` matches an optional trailing
- * period, so it removes "Jr." whole while the period is still present. Strip
- * punctuation first and "Jr." has already become "Jr", which still matches —
- * but "Jr." at the very end of a string relies on the period for its `\b`
- * boundary in several real inputs, and reversing the two steps regresses
- * exactly the case the suffix rule exists for. Ported in source order.
+ * Named `ladderPlayerName` because `players.normalizePlayerName` is the
+ * identity key (token-sorted, suffixes kept); the two are different things.
  */
-export function normalizePlayerName(name: string): string {
-  const lowered = name.toLowerCase();
-  const withoutSuffix = lowered.replace(NAME_SUFFIX_RE, "");
-  const withoutPunctuation = withoutSuffix.replace(PUNCTUATION_RE, "");
-  return withoutPunctuation.replace(WHITESPACE_RE, " ").trim();
+export function ladderPlayerName(name: string): string {
+  return entityNameTokens(name)
+    .filter((token) => !NAME_SUFFIX_TOKENS.has(token))
+    .join(" ");
 }
 
 /** Last whitespace-separated token of an already-normalized name. */
@@ -111,16 +95,8 @@ export function lastName(normalized: string): string {
  *    this is not a match, surname agreement notwithstanding.
  */
 export function playerNamesMatch(a: string, b: string): NameMatch {
-  // NEO-253: this ladder deliberately does NOT fold diacritics, unlike
-  // `lib/entities/normalize-name.ts` (the NB identity key) — it is a verbatim
-  // port of `services/preprocess/app/pairing/names.py` whose thresholds are
-  // tuned against this exact behaviour, and folding one side of a cross-service
-  // port is a silent divergence. The identity key is checked FIRST by
-  // `entityNearMatch.rank*Candidates`, so "José Ramírez" still ranks as an
-  // exact hit against "Jose Ramirez"; only the fuzzy rungs below ("J. Ramírez")
-  // still miss across accents.
-  const na = normalizePlayerName(a);
-  const nb = normalizePlayerName(b);
+  const na = ladderPlayerName(a);
+  const nb = ladderPlayerName(b);
 
   // 1 — exact after normalisation.
   if (na === nb) {
@@ -166,13 +142,14 @@ export function playerNamesMatch(a: string, b: string): NameMatch {
  *
  * Containment carries the load here: a front usually prints only the
  * nickname ("Chiefs") while a back spells out the full club ("Kansas City
- * Chiefs"). No normalisation beyond case-folding and trimming — team names
- * do not carry suffixes or initials, and stripping punctuation would fuse
- * distinct names more often than it would help.
+ * Chiefs"). No normalisation beyond the shared character fold (`foldNameText`:
+ * junk characters, accents, case) and trimming — team names do not carry
+ * suffixes or initials, and stripping punctuation would fuse distinct names
+ * more often than it would help.
  */
 export function teamNamesMatch(a: string, b: string): NameMatch {
-  const na = a.toLowerCase().trim();
-  const nb = b.toLowerCase().trim();
+  const na = foldNameText(a).trim();
+  const nb = foldNameText(b).trim();
 
   if (na === nb) {
     return { match: true, exact: true };

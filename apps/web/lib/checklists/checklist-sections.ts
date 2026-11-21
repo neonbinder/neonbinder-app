@@ -37,6 +37,7 @@ import {
   hasHiddenNameChars,
   sectionKeyOf,
 } from "../../convex/lib/publishedChecklistSections";
+import { cleanseExternalName } from "../entities/cleanse-name";
 import {
   PUBLISHED_CHECKLIST_MAX_NAME,
   type PublishedChecklistFormat,
@@ -90,10 +91,14 @@ export function checklistSectionKey(name: string): string {
   return sectionKeyOf(name);
 }
 
-/** A section name as stored: control characters gone, spacing collapsed. */
+/**
+ * A section name as stored (NEO-643): the shared `cleanseExternalName` (junk
+ * characters deleted, control characters to spaces, NFC, spacing collapsed).
+ * Bidi marks and the like survive it and are still refused by
+ * `hasHiddenNameChars`.
+ */
 export function cleanSectionName(name: string): string {
-  // eslint-disable-next-line no-control-regex
-  return name.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim();
+  return cleanseExternalName(name);
 }
 
 /** "Over 2,000 cards in one section. Split it in the file." */

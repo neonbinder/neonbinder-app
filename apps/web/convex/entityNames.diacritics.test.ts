@@ -386,6 +386,49 @@ describe("the review-queue resume key agrees across accents (NEO-253)", () => {
   });
 });
 
+describe("startBatch cleanses incoming names (NEO-643)", () => {
+  /**
+   * BSC writes "Wilmer R\ios" for Ríos. The row must be stored (and shown) as
+   * "Wilmer Rios", keyed the same as a clean spelling, and a resume that sends
+   * the backslash form again must find the SAME row rather than add a second.
+   */
+  test("a backslash or soft hyphen never reaches a stored row, and a resume keeps one row", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(USER);
+    const selectorOptionId = await seedSport(t);
+
+    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: USER.subject,
+      sportId: selectorOptionId,
+      playerNames: ["Wilmer R\\ios", "  Mike\u200b   Trout "],
+      teamNames: ["Le\\on Mex\u00adico"],
+    });
+
+    const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId,
+    });
+    expect(rows.map((r) => r.name).sort()).toEqual(["Leon Mexico", "Mike Trout", "Wilmer Rios"]);
+
+    const resumed = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: USER.subject,
+      sportId: selectorOptionId,
+      playerNames: ["Wilmer Ríos", "Mike Trout"],
+      teamNames: ["Leon Mexico"],
+    });
+    expect(resumed).toBe(batchId);
+    const after = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId,
+    });
+    expect(after.map((r) => r._id).sort()).toEqual(rows.map((r) => r._id).sort());
+
+    await drainScheduled(t);
+  });
+});
+
 describe("the entityReviewSkips key agrees across accents (NEO-253)", () => {
   /**
    * The skip is written by `commitCardChecklistPrelude` (its own `norm`) and

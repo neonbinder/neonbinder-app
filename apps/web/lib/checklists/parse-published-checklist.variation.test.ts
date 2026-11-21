@@ -119,7 +119,9 @@ describe("variationNameOf: bounds", () => {
   it("strips U+061C, the zero-width characters and the byte-order mark too", () => {
     const name = variationNameOf("Judge (Photo\u061c Throw\u200bback\u200c x\u200d y\ufeff z)")!;
     expect(/[\u061c\u200b-\u200d\ufeff]/.test(name)).toBe(false);
-    expect(name).toBe("Photo Throw back x y z");
+    // NEO-643: U+200B-U+200D and the BOM are deleted, not spaced
+    // (cleanseExternalName), so "Throw\u200bback" is "Throwback".
+    expect(name).toBe("Photo Throwback x y z");
   });
 
   it("looks at only the first few bracket groups", () => {

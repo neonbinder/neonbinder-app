@@ -61,6 +61,7 @@ import {
 import { formatYearSpan } from "../lib/players/player-description";
 // NEO-602 — `playerStepContext` marks the stints on a team a card printed with
 // the same fold the gate's career-team rule compares by.
+import { cleanseExternalName } from "../lib/entities/cleanse-name";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
 // NEO-254 — the New League step collects everything League Management edits, so
 // it validates against the SAME bounds. Imported rather than restated: two
@@ -1227,6 +1228,69 @@ function awaitsOperatorBeforeLookup(
 export const ENTITY_REVIEW_START_OPS = 800;
 
 /**
+ * NEO-643 — `startBatch`'s args with every NAME in them cleansed
+ * (`cleanseExternalName`): the incoming player and team lists, the caller's
+ * "no existing match" set, the names the facts are about, and the names and
+ * printed teams a step's context displays. Ids and every other field pass
+ * through untouched. Idempotent, which the self-scheduled continuation relies
+ * on, and the lists keep their length and order, so nothing that lines up
+ * with them can drift.
+ */
+function cleanseStartBatchNames<
+  A extends {
+    playerNames: string[];
+    teamNames: string[];
+    playersWithNoExistingMatch?: string[];
+    autoLinks?: Array<{ name: string }>;
+    historyCandidates?: Array<{ name: string }>;
+    preselects?: Array<{ name: string }>;
+    teamContexts?: Array<{
+      name: string;
+      cards: Array<{ players: Array<{ name: string }> }>;
+    }>;
+    playerContexts?: Array<{ name: string; cards: Array<{ teams: string[] }> }>;
+  },
+>(args: A): A {
+  const named = <T extends { name: string }>(rows: T[] | undefined): T[] | undefined =>
+    rows?.map((row) => ({ ...row, name: cleanseExternalName(row.name) }));
+  return {
+    ...args,
+    playerNames: args.playerNames.map(cleanseExternalName),
+    teamNames: args.teamNames.map(cleanseExternalName),
+    ...(args.playersWithNoExistingMatch
+      ? { playersWithNoExistingMatch: args.playersWithNoExistingMatch.map(cleanseExternalName) }
+      : {}),
+    ...(args.autoLinks ? { autoLinks: named(args.autoLinks) } : {}),
+    ...(args.historyCandidates ? { historyCandidates: named(args.historyCandidates) } : {}),
+    ...(args.preselects ? { preselects: named(args.preselects) } : {}),
+    ...(args.teamContexts
+      ? {
+          teamContexts: args.teamContexts.map((fact) => ({
+            ...fact,
+            name: cleanseExternalName(fact.name),
+            cards: fact.cards.map((card) => ({
+              ...card,
+              players: card.players.map((p) => ({ ...p, name: cleanseExternalName(p.name) })),
+            })),
+          })),
+        }
+      : {}),
+    ...(args.playerContexts
+      ? {
+          playerContexts: args.playerContexts.map((fact) => ({
+            ...fact,
+            name: cleanseExternalName(fact.name),
+            cards: fact.cards.map((card) => ({
+              ...card,
+              teams: card.teams.map(cleanseExternalName),
+            })),
+          })),
+        }
+      : {}),
+  };
+}
+
+/**
  * NEO-294 — what one `initialEnrichmentFor` call is charged.
  *
  * `BASE` is the pair of index reads `sameNamePlayers` always performs. `EXTRA`
@@ -1373,7 +1437,12 @@ export const startBatch = internalMutation({
     playerContexts: v.optional(v.array(playerContextFactValidator)),
   },
   returns: v.string(),
-  handler: async (ctx, args): Promise<string> => {
+  handler: async (ctx, incomingArgs): Promise<string> => {
+    // NEO-643 — every external name is cleansed before it is keyed, stored or
+    // shown (BSC's "R\ios" for Ríos, stray soft hyphens and zero-width
+    // characters). The continuation re-enters with these cleansed args, and
+    // cleansing is idempotent, so a chain never re-cleans into a different name.
+    const args = cleanseStartBatchNames(incomingArgs);
     /**
      * NEO-294 — system operations this transaction has spent. See
      * ENTITY_REVIEW_START_OPS for what each write and each name lookup costs

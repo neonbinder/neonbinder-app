@@ -67,7 +67,7 @@ import {
   needsAttention,
   type AttentionCardRow,
 } from "../../convex/features/cardAttention";
-import { foldDiacritics } from "../entities/normalize-name";
+import { foldNameText } from "../entities/normalize-name";
 
 /**
  * The parts of a checklist row the search reads. Structural, so any row shape
@@ -124,7 +124,7 @@ export type CardSearchFields = {
 
 /** Case- and accent-fold one string for comparison. */
 export function foldSearchText(raw: string): string {
-  return foldDiacritics(raw).toLowerCase();
+  return foldNameText(raw);
 }
 
 /**

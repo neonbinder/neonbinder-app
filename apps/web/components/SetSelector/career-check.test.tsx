@@ -984,6 +984,9 @@ describe("a new player (NEO-591)", () => {
     expect(cleanNewPlayerName("  Luis \t Rodriguez\n")).toBe("Luis Rodriguez");
     expect(cleanNewPlayerName("Lu\u200Bis\u0007 Rodriguez")).toBe("Luis Rodriguez");
     expect(cleanNewPlayerName(" \u200B ")).toBe("");
+    // NEO-643: the shared cleanser — BSC's backslash and a soft hyphen go too.
+    expect(cleanNewPlayerName("Wilmer R\\ios")).toBe("Wilmer Rios");
+    expect(cleanNewPlayerName("Lu\u00ADis \u200E Rodriguez")).toBe("Luis Rodriguez");
     expect(cleanNewPlayerName("x".repeat(500))).toHaveLength(120);
   });
 

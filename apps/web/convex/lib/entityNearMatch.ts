@@ -22,7 +22,7 @@
  */
 
 import {
-  normalizePlayerName,
+  ladderPlayerName,
   playerNamesMatch,
   teamNamesMatch,
 } from "./pairing/names";
@@ -241,7 +241,7 @@ export function rankTeamCandidates(
  * "J. Williams" is two. NEO-578.
  */
 function playerNameTokenCount(raw: string): number {
-  return normalizePlayerName(raw).split(" ").filter(Boolean).length;
+  return ladderPlayerName(raw).split(" ").filter(Boolean).length;
 }
 
 /**
@@ -262,9 +262,9 @@ function playerNameTokenCount(raw: string): number {
  * here unless the player is only a surname"). So when the query has two or more
  * tokens, a one-token stored name is dropped. A one-token query is untouched,
  * which keeps the NEO-463 fragment flow ("Walker" -> fuller names). Counted
- * with the ladder's own `normalizePlayerName` (suffixes stripped), so a stored
+ * with the ladder's own `ladderPlayerName` (suffixes stripped), so a stored
  * "Williams Jr." is one token here exactly as it is to rung 4. The ladder
- * itself is left alone: pairing and its Python port depend on that rung.
+ * itself is left alone: photo pairing depends on that rung.
  */
 export function rankPlayerCandidates(
   query: string,

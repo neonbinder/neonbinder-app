@@ -697,8 +697,14 @@ describe("ensureSelectorOptions — the twin holder read (NEO-325 security re-au
 
     expect(result.success).toBe(true);
     const s = await statusOf(t, sportId);
-    expect(s?.twinsLeft?.map((e) => e.name)).toEqual(["1997"]);
-    expect(JSON.stringify(s?.twinsLeft)).not.toContain("bsc-x");
+    // NEO-643: the BSC adapter now cleanses "Bad\u0007Year" to "Bad Year" at
+    // ingest, so the two BSC twins arrive as a plain label and ARE listed. The
+    // notice's own control-character guard is defence in depth behind that.
+    expect(s?.twinsLeft?.map((e) => e.name)).toEqual(["1997", "Bad Year"]);
+    // The ids are listed now, as for any clean twin: the cleansed label is a
+    // plain "Bad Year" held by two BSC ids. (Before NEO-643 the control
+    // character kept them out of the notice altogether.)
+    expect(s?.twinsLeft?.find((e) => e.name === "Bad Year")?.bsc.sort()).toEqual(["bsc-x", "bsc-y"]);
     expect(JSON.stringify(s?.twinsLeft)).not.toContain("\u0007");
   });
 });

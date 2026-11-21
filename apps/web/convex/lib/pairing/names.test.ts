@@ -1,28 +1,27 @@
 /**
- * Unit tests for convex/lib/pairing/names.ts — a case-for-case mirror of the
- * preprocess service's `tests/unit/test_pairing_names.py`.
+ * Unit tests for convex/lib/pairing/names.ts.
  *
- * Covers: normalisation ordering (suffix stripping before punctuation
- * stripping, which is what keeps "Jr." working), the ported standalone-`v`
- * quirk, last-name extraction, and every rung of the player-name ladder —
- * exact, surname-only, single initial, truncated-first-name prefix with its
- * 2-character floor, and the disagreement case. Plus team matching by
- * equality and by containment.
+ * Covers: the ladder's normalisation (the shared entity-name tokens minus the
+ * generational suffix tokens), the standalone-`v` quirk, NEO-643's accent and
+ * stray-backslash folds, last-name extraction, and every rung of the
+ * player-name ladder — exact, surname-only, single initial,
+ * truncated-first-name prefix with its 2-character floor, and the
+ * disagreement case. Plus team matching by equality and by containment.
  */
 
 import { describe, expect, test } from "vitest";
 
 import {
   MIN_PREFIX_CHARS,
+  ladderPlayerName,
   lastName,
-  normalizePlayerName,
   playerNamesMatch,
   teamNamesMatch,
 } from "./names";
 
-describe("normalizePlayerName", () => {
+describe("ladderPlayerName", () => {
   test("lowercases", () => {
-    expect(normalizePlayerName("Walker BUEHLER")).toBe("walker buehler");
+    expect(ladderPlayerName("Walker BUEHLER")).toBe("walker buehler");
   });
 
   test.each([
@@ -32,42 +31,50 @@ describe("normalizePlayerName", () => {
     ["Robert Griffin III", "robert griffin"],
     ["Robert Griffin II", "robert griffin"],
     ["Robert Griffin IV", "robert griffin"],
-  ])("strips generational suffixes: %s", (raw, expected) => {
-    expect(normalizePlayerName(raw)).toBe(expected);
-  });
-
-  test("suffix stripping precedes punctuation stripping", () => {
-    // The suffix pattern absorbs its own trailing period. If punctuation
-    // were stripped first the ordering assumption in the port would be
-    // inverted, so this pins the observable outcome of the source order.
-    expect(normalizePlayerName("Ken Griffey Jr.")).toBe("ken griffey");
+    ["Griffey, Jr.", "griffey"],
+  ])("drops generational suffix tokens: %s", (raw, expected) => {
+    expect(ladderPlayerName(raw)).toBe(expected);
   });
 
   test.each([
     ["P. Mahomes", "p mahomes"],
     ["Shaquille O'Neal", "shaquille oneal"],
-    ["Jean-Luc Picard", "jeanluc picard"],
-  ])("strips punctuation: %s", (raw, expected) => {
-    expect(normalizePlayerName(raw)).toBe(expected);
+    // The shared reading keeps a hyphen inside a token (the ladder used to
+    // delete it): "Jean-Luc" is one first name either way it is spelled.
+    ["Jean-Luc Picard", "jean-luc picard"],
+    ["C. J. Kayfus", "cj kayfus"],
+    ["C.J. Kayfus", "cj kayfus"],
+  ])("strips punctuation the way the identity key does: %s", (raw, expected) => {
+    expect(ladderPlayerName(raw)).toBe(expected);
+  });
+
+  test("a comma or ampersand is a word break, not deleted", () => {
+    expect(ladderPlayerName("Smith, John")).toBe("smith john");
+    expect(ladderPlayerName("Ruth&Gehrig")).toBe("ruth gehrig");
   });
 
   test("collapses whitespace and trims", () => {
-    expect(normalizePlayerName("  Walker   Buehler  ")).toBe("walker buehler");
+    expect(ladderPlayerName("  Walker   Buehler  ")).toBe("walker buehler");
   });
 
-  test("standalone v quirk is ported verbatim", () => {
-    // `\b(...|v)\b` strips a lone `v` from ANYWHERE in the name, not just a
-    // trailing Roman-numeral suffix. Ported deliberately; documented in
-    // names.ts. This test exists to make the quirk a decision, not a bug.
-    expect(normalizePlayerName("Bobby V")).toBe("bobby");
+  test("folds accents and deletes BSC's stray backslash", () => {
+    expect(ladderPlayerName("Wilmer Ríos")).toBe("wilmer rios");
+    expect(ladderPlayerName("Wilmer R\\ios")).toBe("wilmer rios");
+  });
+
+  test("standalone v quirk is kept", () => {
+    // A lone `v` token is dropped from ANYWHERE in the name, not just a
+    // trailing Roman-numeral suffix. Kept deliberately (documented in
+    // names.ts): this test makes the quirk a decision, not a bug.
+    expect(ladderPlayerName("Bobby V")).toBe("bobby");
   });
 
   test("v inside a word is untouched", () => {
-    expect(normalizePlayerName("Vlad Guerrero")).toBe("vlad guerrero");
+    expect(ladderPlayerName("Vlad Guerrero")).toBe("vlad guerrero");
   });
 
   test("empty string", () => {
-    expect(normalizePlayerName("")).toBe("");
+    expect(ladderPlayerName("")).toBe("");
   });
 });
 
@@ -99,6 +106,20 @@ describe("playerNamesMatch", () => {
       match: true,
       exact: true,
     });
+  });
+
+  test("NEO-643: BSC's backslash for an accent pairs with the accented name, exactly", () => {
+    expect(playerNamesMatch("Wilmer R\\ios", "Wilmer Ríos")).toEqual({
+      match: true,
+      exact: true,
+    });
+    expect(playerNamesMatch("W. R\\ios", "Wilmer Rios").match).toBe(true);
+  });
+
+  test("an accented surname matches across accents on the fuzzy rungs too", () => {
+    const result = playerNamesMatch("J. Ramírez", "Jose Ramirez");
+    expect(result.match).toBe(true);
+    expect(result.exact).toBe(false);
   });
 
   test("surname-only front matches full-name back", () => {
@@ -173,6 +194,14 @@ describe("teamNamesMatch", () => {
     const result = teamNamesMatch(a, b);
     expect(result.match).toBe(true);
     expect(result.exact).toBe(false);
+  });
+
+  test("NEO-643: folds accents and the stray backslash", () => {
+    expect(teamNamesMatch("Mexico City Diablos Rojos", "México City Diablos Rojos")).toEqual({
+      match: true,
+      exact: true,
+    });
+    expect(teamNamesMatch("M\\exico", "México")).toEqual({ match: true, exact: true });
   });
 
   test("unrelated teams do not match", () => {

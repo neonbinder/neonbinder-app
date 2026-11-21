@@ -25,7 +25,7 @@
  * settles it.
  */
 
-import { foldDiacritics } from "../entities/normalize-name";
+import { normalizeOrderedEntityName } from "../entities/normalize-name";
 
 /** A disagreement, with each marketplace's name exactly as it spelled it. */
 export type NameDisagreement = {
@@ -43,27 +43,21 @@ export type NameDisagreement = {
  * accents SportLots keeps ("Jose" / "José Ramírez"). Flagging any of those as a
  * disagreement would bury the real ones under noise, and a warning nobody reads
  * is the same as no warning — on the auto-matched path especially, where a
- * 660-row set would arrive with hundreds of false flags on it. Diacritics are
- * folded, then everything that is not a letter or digit collapses to a single
- * space, so only the words themselves are compared.
+ * 660-row set would arrive with hundreds of false flags on it. The key is the
+ * one entity-name reading (NEO-643): stray junk characters deleted, diacritics
+ * folded, punctuation dropped or turned into a word break, runs of initials
+ * joined, so only the words themselves are compared.
  *
  * Word ORDER is deliberately still significant: two sources listing the same
  * players in a different order on a multi-player card is worth a glance, and
  * this control costs a glance, not a click.
  */
 export function nameKey(name: string): string {
-  // NEO-253: the fold itself comes from `lib/entities/normalize-name.ts`, which
-  // is now the entity dedup key's home too. This function was the ONLY place in
-  // the codebase that folded before that ticket, which is exactly how the
-  // divergence stayed invisible: the pairing modal stopped flagging accents
-  // while `players.nameNormalized` was still shredding them. The two keys are
-  // still deliberately different past the fold (this one drops hyphens and
-  // keeps word order; the dedup key keeps hyphens and sorts), but they must not
-  // be able to disagree about what an accent IS.
-  return foldDiacritics(name)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
+  // NEO-643: the same ordered key `leagues.nameNormalized` uses, so this
+  // comparison, the identity keys and the pairing ladder cannot disagree about
+  // what an accent, a stray backslash or an initial IS. Word order is kept
+  // (no token sort) on purpose. It is never stored.
+  return normalizeOrderedEntityName(name);
 }
 
 /**

@@ -44,6 +44,8 @@ import {
   type CareerPair,
 } from "../../convex/lib/careerCoverage";
 import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
+import { cleanseExternalName } from "../../lib/entities/cleanse-name";
+import { foldNameText } from "../../lib/entities/normalize-name";
 import { MIN_CAREER_YEAR, maxCareerYear } from "../../lib/players/career-years";
 import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
 import { ignoredPlayerKeys } from "./career-prefill";
@@ -77,7 +79,7 @@ export type CareerRow = {
 export type CareerCard = CareerCheckCard;
 
 const norm = (raw: string): string => normalizeEntityName(raw.trim());
-const fold = (raw: string): string => raw.trim().replace(/\s+/g, " ").toLowerCase();
+const fold = (raw: string): string => foldNameText(raw).trim().replace(/\s+/g, " ");
 
 // ---------------------------------------------------------------------------
 // Pairs and lines
@@ -454,15 +456,15 @@ export function newPlayerRef(): string {
 }
 
 /**
- * The name as it is sent: runs of white space folded to one space, control and
- * invisible characters gone, trimmed, within the player-name bound. Empty
+ * The name as it is sent (`cleanseExternalName`: stray backslash, soft hyphen,
+ * zero-width and other invisible characters gone, runs of white space folded
+ * to one space, trimmed), within the player-name bound. Empty
  * means "not named yet" (Next waits for it).
  */
 export function cleanNewPlayerName(raw: string): string {
-  return raw
-    .replace(/\s+/g, " ")
-    .replace(/[\p{Cc}\p{Cf}]/gu, "")
-    .trim()
+  // Any format character (\p{Cf}) goes first, then the shared cleanser: junk
+  // deleted, control characters to spaces, NFC, whitespace collapsed, trimmed.
+  return cleanseExternalName(raw.replace(/\p{Cf}/gu, ""))
     .slice(0, MAX_PLAYER_NAME_LENGTH)
     .trim();
 }

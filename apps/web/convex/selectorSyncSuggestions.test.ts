@@ -114,7 +114,7 @@ describe("getSelectorSyncSuggestions", () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const parentId = await parentRow(t);
-    await setRow(t, parentId, "Topps Chrome", "Topps-Chrome!");
+    await setRow(t, parentId, "Topps Chrome", "Topps Chrome!");
 
     const out = await asAdmin.query(
       api.selectorOptions.getSelectorSyncSuggestions,
@@ -126,9 +126,25 @@ describe("getSelectorSyncSuggestions", () => {
     // merge "Gold /50" and "Gold 50" into one row.
     expect(out[0].suggestions[0]).toEqual({
       side: "bsc",
-      label: "Topps-Chrome!",
+      label: "Topps Chrome!",
       foldEqual: true,
     });
+  });
+
+  test("NEO-643: a hyphen is part of the name, so a hyphen-for-space label is a real difference", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const parentId = await parentRow(t);
+    await setRow(t, parentId, "Topps Chrome", "Topps-Chrome");
+
+    const out = await asAdmin.query(
+      api.selectorOptions.getSelectorSyncSuggestions,
+      { level: "setName", parentId },
+    );
+
+    // `nameKey` is the one ordered entity reading now: it keeps a hyphen inside
+    // a token, so this is flagged as a difference rather than a reformat.
+    expect(out[0].suggestions[0]).toMatchObject({ label: "Topps-Chrome", foldEqual: false });
   });
 
   test("a declined label stops nagging, and a NEW label starts again", async () => {

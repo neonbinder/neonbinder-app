@@ -175,6 +175,16 @@ describe("parsePublishedChecklist — CSV and TSV with a header", () => {
     ]);
   });
 
+  it("NEO-643: BSC's backslash for an accent is cleansed out of the player, team and variation note", () => {
+    const out = parsePublishedChecklist(
+      "Card Number,Player,Team\n12,Wilmer R\\ios (Photo Var\\iation),Le\\on Mex\u00adico",
+    );
+    expect(out.format).toBe("csv");
+    expect(out.rows[0].players).toEqual(["Wilmer Rios"]);
+    expect(out.rows[0].teams).toEqual(["Leon Mexico"]);
+    expect(out.rows[0].variationName).toBe("Photo Variation");
+  });
+
   it("detects tsv and accepts alternate spellings (Card No., Names, Club)", () => {
     const out = parsePublishedChecklist("Card No.\tNames\tClub\n9\tA Guy\tBoston Red Sox");
     expect(out.format).toBe("tsv");

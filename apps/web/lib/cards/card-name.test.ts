@@ -26,6 +26,16 @@ describe("nameKey — fold spelling, keep meaning", () => {
     expect(nameKey("José Ramírez")).toBe(nameKey("Jose Ramirez"));
   });
 
+  test("NEO-643: BSC's backslash for an accent folds to the accented name", () => {
+    expect(nameKey("Wilmer R\\ios")).toBe(nameKey("Wilmer Ríos"));
+    expect(nameKey("Wilmer R\\ios")).toBe("wilmer rios");
+  });
+
+  test("NEO-643: it is the ordered entity key, so initials join and a hyphen stays", () => {
+    expect(nameKey("C.J. Kayfus")).toBe(nameKey("C. J. Kayfus"));
+    expect(nameKey("Jean-Luc Picard")).toBe("jean-luc picard");
+  });
+
   test("punctuation and casing fold", () => {
     expect(nameKey("KEN GRIFFEY JR.")).toBe(nameKey("Ken Griffey Jr"));
   });

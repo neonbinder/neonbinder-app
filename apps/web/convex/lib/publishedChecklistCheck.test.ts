@@ -12,6 +12,27 @@ import { MAX_PUBLISHED_ROW_NAMES, checkPublishedChecklist } from "./publishedChe
 
 const row = (players: string[], teams: string[] = []) => ({ number: "1", players, teams });
 
+describe("checkPublishedChecklist — NEO-643 names are cleansed on the server too", () => {
+  test("a stray backslash, soft hyphen and zero-width space are gone from players, teams and the variation note", () => {
+    const checked = checkPublishedChecklist({
+      rows: [
+        {
+          number: "1",
+          players: ["Wilmer R\\ios", "Mike\u200b  Trout"],
+          teams: ["Le\\on Mex\u00adico"],
+          variationName: "Photo Var\\iation",
+        },
+      ],
+    })!;
+    expect(checked.rows[0]).toEqual({
+      number: "1",
+      players: ["Wilmer Rios", "Mike Trout"],
+      teams: ["Leon Mexico"],
+      variationName: "Photo Variation",
+    });
+  });
+});
+
 describe("checkPublishedChecklist — names sent per row", () => {
   test("the raw cap is generous next to a card's own caps", () => {
     expect(MAX_PUBLISHED_ROW_NAMES).toBe(40);
