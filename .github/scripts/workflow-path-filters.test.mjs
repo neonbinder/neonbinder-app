@@ -334,3 +334,37 @@ test("e2e.yml seed-mobile waits for exactly as many shard-desktop jobs as the ma
   assert.ok(wait, "seed-mobile wait-for-jobs.sh --count not found");
   assert.equal(Number(wait[1]), entries.length);
 });
+
+// NEO-628: the jobs this work touched check out with the token NOT written to
+// .git/config, so a later step (or a spec's subprocess) cannot push with it.
+// A job with no checkout fails too: a rename must not empty the loop.
+const checkoutSteps = (jobText) => {
+  const lines = jobText.split("\n");
+  const steps = [];
+  lines.forEach((l, i) => {
+    if (!/^ {6}- uses: actions\/checkout@/.test(l)) return;
+    let end = lines.length;
+    for (let j = i + 1; j < lines.length; j++) {
+      if (/^ {6}- /.test(lines[j])) {
+        end = j;
+        break;
+      }
+    }
+    steps.push(lines.slice(i, end).join("\n"));
+  });
+  return steps;
+};
+
+for (const [file, jobs] of [
+  ["e2e.yml", ["seed", "shard-desktop", "seed-mobile", "shard-mobile", "e2e"]],
+  ["pr-pipeline.yml", ["web-lint", "web-typecheck", "web-unit-shard", "web-unit"]],
+]) {
+  test(`${file}: every actions/checkout in ${jobs.join(", ")} sets persist-credentials: false`, () => {
+    const lines = read(file);
+    for (const job of jobs) {
+      const steps = checkoutSteps(jobSection(lines, job));
+      assert.ok(steps.length > 0, `${file} ${job}: no actions/checkout step found`);
+      for (const step of steps) assert.match(step, /\n {10}persist-credentials: false\b/, `${file} ${job}`);
+    }
+  });
+}
