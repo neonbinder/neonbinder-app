@@ -261,7 +261,16 @@ export type SlotAllocation = {
    */
   platformFacets: PlatformFacetShape;
   platformSlotSeq: SlotSeqShape;
-  /** Slot key per attached marketplace set id, including ids already present. */
+  /**
+   * Slot key per attached marketplace set id, including ids already present.
+   *
+   * NEO-625: a marketplace id is external text, so each side's map has NO
+   * prototype (`Object.create(null)`). On a plain `{}` an id of `__proto__`
+   * is swallowed by the inherited setter and `constructor` reads back
+   * `Object.prototype.constructor`; here both are ordinary keys, and every
+   * consumer's `map[id]` read stays safe. Do not spread or clone it into a
+   * plain object, and do not call `hasOwnProperty` on it.
+   */
   slotByIdBySide: Record<PlatformSide, Record<string, string>>;
   /** How many ids were genuinely new (already-attached ids do not count). */
   attachedCount: number;
@@ -302,8 +311,8 @@ export function allocateSlots(
   };
   const platformSlotSeq: SlotSeqShape = { ...(row.platformSlotSeq ?? {}) };
   const slotByIdBySide: Record<PlatformSide, Record<string, string>> = {
-    bsc: {},
-    sportlots: {},
+    bsc: Object.create(null),
+    sportlots: Object.create(null),
   };
   let attachedCount = 0;
 

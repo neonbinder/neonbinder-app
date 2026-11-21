@@ -5,6 +5,7 @@ model: sonnet
 effort: medium
 memory: project
 color: green
+tools: Read, Grep, Glob, Bash
 disallowedTools: Edit, Write, NotebookEdit
 ---
 
@@ -25,7 +26,7 @@ memory directory.
 1. `CLAUDE.md` (monorepo root): test conventions per package. Vitest +
    convex-test + happy-dom in `apps/web`, `node --test` in `services/browser`,
    pytest in `services/preprocess`.
-2. `apps/web/playwright/GUIDE.md`: the hard rules, R1-R9, the support
+2. `apps/web/playwright/GUIDE.md`: the hard rules, the R-rules, the support
    helpers, tags, gotchas. It is the authority for specs; this file does not
    restate it.
 3. `apps/web/playwright.config.ts`: the ACTUAL project names. The suite has

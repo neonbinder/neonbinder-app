@@ -239,7 +239,7 @@ describe("EntityColumn — custom-entry validation + confirm (NEO-219)", () => {
     await waitFor(() => {
       expect(screen.getByText("Create")).toBeTruthy();
     });
-    expect(document.activeElement?.textContent).toBe("Create");
+    await waitFor(() => expect(document.activeElement?.textContent).toBe("Create"));
   });
 
   it("Enter pressed twice in a row creates exactly ONCE", async () => {

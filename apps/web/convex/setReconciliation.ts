@@ -2217,6 +2217,51 @@ async function setIdAtOrAbove(
 }
 
 /**
+ * NEO-625 — one side of an item's wire `platformLabels`: the marketplace's
+ * display name per marketplace id.
+ *
+ * Two shapes are accepted. The ARRAY of `{ id, label }` is what the client
+ * sends now: a marketplace id is external text (BSC has an `exposé` insert),
+ * and the Convex client throws on a non-ASCII object KEY before a request ever
+ * leaves the browser, so ids must travel as values, never as field names.
+ * The RECORD (id as key) stays PERMANENTLY, for bundles built before
+ * NEO-625: `release.yml` deploys Convex before the SPA, so a tab running the
+ * old bundle keeps sending it until it reloads. Do not remove it.
+ */
+const platformLabelSideValidator = v.union(
+  v.record(v.string(), v.string()),
+  v.array(v.object({ id: v.string(), label: v.string() })),
+);
+
+/**
+ * NEO-625 — the wire labels of one item, as a `Map` per side. The one place
+ * either shape is read, so the two read sites below cannot disagree. A `Map`
+ * also has no `__proto__` / `constructor` lookup hazard, which a record
+ * indexed by a marketplace-supplied id does. A repeated id keeps its last
+ * label, as the record shape always did. A label for an id the item's
+ * `platformData` does not carry is never looked up, so it is ignored.
+ */
+type WirePlatformLabelSide = Infer<typeof platformLabelSideValidator>;
+function platformLabelMaps(
+  labels:
+    | { bsc?: WirePlatformLabelSide; sportlots?: WirePlatformLabelSide }
+    | undefined,
+): Record<PlatformSide, Map<string, string>> {
+  const toMap = (side: WirePlatformLabelSide | undefined) => {
+    const map = new Map<string, string>();
+    if (side === undefined) return map;
+    if (Array.isArray(side)) {
+      for (const { id, label } of side) map.set(id, label);
+    } else {
+      // Bundles built before NEO-625 (see `platformLabelSideValidator`).
+      for (const [id, label] of Object.entries(side)) map.set(id, label);
+    }
+    return map;
+  };
+  return { bsc: toMap(labels?.bsc), sportlots: toMap(labels?.sportlots) };
+}
+
+/**
  * NEO-211 — additive, id-keyed store for the reconciled levels.
  *
  * Same rewrite as `storeSelectorOptions`, plus the two things only the
@@ -2247,8 +2292,8 @@ export const storeReconciledOptions = mutation({
         // `platformData.sportlotsDisplay`: a single display string had no
         // meaning once one row could hold several SL sets.
         platformLabels: v.optional(v.object({
-          bsc: v.optional(v.record(v.string(), v.string())),
-          sportlots: v.optional(v.record(v.string(), v.string())),
+          bsc: v.optional(platformLabelSideValidator),
+          sportlots: v.optional(platformLabelSideValidator),
         })),
         metadata: metadataValidator,
         /**
@@ -2868,6 +2913,8 @@ export const storeReconciledOptions = mutation({
       const item = reconciledItems[i];
       const parsed = items[i];
       const outcome = plan.outcomes[i];
+      // NEO-625 — normalised once per item; both label reads below use it.
+      const labelsById = platformLabelMaps(item.platformLabels);
       if (outcome.kind === "withheld") {
         // NEO-300 — a subtree withhold reaches the operator, not only the
         // log. NEO-325 — and so does a sibling-level one, when the item
@@ -3057,7 +3104,7 @@ export const storeReconciledOptions = mutation({
           ) {
             relinkedAll.push({ id: row._id, value: w.value, side });
           }
-          const rawLabel = item.platformLabels?.[side]?.[refreshedId];
+          const rawLabel = labelsById[side].get(refreshedId);
           const labelCheck =
             rawLabel === undefined ? undefined : checkSelectorValue(rawLabel);
           const label =
@@ -3142,7 +3189,7 @@ export const storeReconciledOptions = mutation({
       }
       const insertValue = valueCheck.value;
       const safeLabel = (side: "bsc" | "sportlots", id: string) => {
-        const raw = item.platformLabels?.[side]?.[id];
+        const raw = labelsById[side].get(id);
         if (raw === undefined) return {};
         const checked = checkSelectorValue(raw);
         return checked.ok ? { label: checked.value } : {};

@@ -442,7 +442,6 @@ describe("NEO-581 — the button follows the cards", () => {
       }),
     );
     await waitFor(() => expect(doorButton(/card titles?$/)).toBeNull());
-    expect(document.activeElement).not.toBe(document.body);
-    expect(document.activeElement?.tagName).toBe("SECTION");
+    await waitFor(() => expect(document.activeElement?.tagName).toBe("SECTION"));
   });
 });

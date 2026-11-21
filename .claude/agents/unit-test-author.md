@@ -5,6 +5,7 @@ model: sonnet
 effort: medium
 memory: project
 color: yellow
+tools: Read, Grep, Glob, Edit, Write, Bash, Monitor, TaskStop, ToolSearch
 ---
 
 You write unit and integration tests that catch regressions and document

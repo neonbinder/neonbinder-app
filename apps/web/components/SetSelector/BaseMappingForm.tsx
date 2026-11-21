@@ -13,6 +13,7 @@ import BaseSetPicker, {
 } from "./BaseSetPicker";
 import type { PlatformItem } from "./ReconciliationModal";
 import { blockedMessageFromErrors } from "./selector-sync-feedback";
+import { reportCaughtError } from "@/lib/observability/report-caught-error";
 import { ATTACH_MORE_LABEL, EDIT_ATTRIBUTES_LABEL } from "./control-labels";
 
 type RawOptionsResult = {
@@ -405,8 +406,11 @@ export default function BaseMappingForm({
       // Everything else is a decision for the operator, including the cases
       // that used to be taken silently on their behalf.
       setPickerData(result);
-    } catch {
+    } catch (error) {
       setPickerOpen(false);
+      // NEO-625: reported before the fixed copy hides it (name, function and
+      // request id only when it came from Convex).
+      reportCaughtError(error, { feature: "base-mapping-form", step: "fetch" });
       // NEO-211 F3: the thrown text is a Convex/adapter error that can carry a
       // marketplace URL, a response body or a credential hint. Our own fixed
       // string; the detail stays in the Convex logs. The FETCH is what failed
@@ -479,6 +483,7 @@ export default function BaseMappingForm({
         void doSync();
         return;
       }
+      reportCaughtError(e, { feature: "base-mapping-form", step: "write" });
       // NEO-239: the WRITE failed, which is not "failed to fetch options" — the
       // fetch worked, the operator picked, and the server said no. Set after
       // the picker closes so it outlives the cancel copy that close raises.

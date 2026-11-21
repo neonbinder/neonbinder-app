@@ -5,6 +5,7 @@ model: sonnet
 effort: medium
 memory: project
 color: green
+tools: Read, Grep, Glob, Bash
 disallowedTools: Edit, Write, NotebookEdit
 ---
 
