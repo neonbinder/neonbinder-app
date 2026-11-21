@@ -16,6 +16,8 @@
  */
 
 /** The one key of the real BSC (and of any fake call with no namespace of its own). */
+import { resolveBscTarget } from "./bscHttp";
+
 export const BSC_GATE_DEPLOYMENT_KEY = "deployment";
 
 /** A fake namespace as the fake reads it: the same shape as `FAKE_NS_VALUE`. */
@@ -56,4 +58,22 @@ export function bscGateKey(input: {
     return BSC_GATE_DEPLOYMENT_KEY;
   }
   return `ns:${ns}`;
+}
+
+/**
+ * The operator to record on a background-lane item (NEO-628 N2): the Clerk
+ * subject on the fake, where the lane asks in that user's namespace and key;
+ * `undefined` on real BSC (one gate, the subject would sit in scheduled args
+ * and the pool's completion context for nothing). Every server site that mints
+ * a `queuedBy` goes through this, and `enqueueBscTeamChecks` applies it again
+ * as the sink, so a caller that forgets still stores nothing.
+ */
+export function queuedByForLane(userId: string | undefined): string | undefined {
+  return resolveBscTarget(process.env).mode === "fake" ? userId : undefined;
+}
+
+/** `queuedByForLane` as a spreadable field: `{ queuedBy }` on the fake, `{}` otherwise. */
+export function queuedByField(userId: string | undefined): { queuedBy?: string } {
+  const queuedBy = queuedByForLane(userId);
+  return queuedBy === undefined ? {} : { queuedBy };
 }

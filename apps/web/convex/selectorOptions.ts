@@ -500,6 +500,7 @@ import {
   slotLabel,
   type PlatformSide,
 } from "./platformSlots";
+import { queuedByField } from "./lib/bscGateKey";
 
 // The wire still speaks marketplace IDs — clients know nothing about slots.
 function wireToIds(v: string | string[] | undefined): string[] {
@@ -26138,7 +26139,7 @@ export const commitCardChecklist = action({
       skippedTeamNames: prelude.skippedTeamNames,
       reviewRowIds: args.batchId ? prelude.reviewRowIds : [],
       bscTeamEnrichmentIds,
-      queuedBy: operatorUserId,
+      ...queuedByField(operatorUserId),
       setNameAncestorId: prelude.setNameAncestorId,
       cardCount: args.cards.length,
     };

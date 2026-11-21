@@ -167,6 +167,7 @@ import {
   type FetchFailure,
   type FetchFailureKind,
 } from "./lib/marketplaceFetchFailure";
+import { queuedByField } from "./lib/bscGateKey";
 
 // ---------------------------------------------------------------------------
 // Bounds
@@ -2879,7 +2880,7 @@ export const buildParallelChecklist = action({
             ...(c.keepSku ? { keepSku: c.keepSku } : {}),
           })),
           remap,
-          queuedBy: adminId,
+          ...queuedByField(adminId),
         },
       );
       if (page.changed) {

@@ -1,9 +1,17 @@
 /**
  * NEO-628 — the BSC call gate's key (`lib/bscGateKey.ts`): the rate-limit
- * domain a call lands in. Pure; no env.
+ * domain a call lands in. Pure, except `queuedByForLane`, which reads the BSC
+ * target from the environment.
  */
-import { describe, expect, test } from "vitest";
-import { BSC_GATE_DEPLOYMENT_KEY, bscGateKey, bscGateKeyKind, isBscGateKey } from "./bscGateKey";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import {
+  BSC_GATE_DEPLOYMENT_KEY,
+  bscGateKey,
+  bscGateKeyKind,
+  isBscGateKey,
+  queuedByField,
+  queuedByForLane,
+} from "./bscGateKey";
 
 const NS = "happy-otter-123-aaaabbbbcccc";
 
@@ -58,5 +66,37 @@ describe("isBscGateKey / bscGateKeyKind", () => {
   test("the kind never carries the namespace", () => {
     expect(bscGateKeyKind("deployment")).toBe("deployment");
     expect(bscGateKeyKind(`ns:${NS}`)).toBe("ns");
+  });
+});
+
+describe("queuedByForLane / queuedByField (N2: the operator is recorded only on the fake)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+  const armFake = () => {
+    vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://neonbinder-fake-bsc-0000-uc.a.run.app");
+    vi.stubEnv("NEONBINDER_FAKE_BSC_KEY", "caller-key");
+    vi.stubEnv("TESTING_RESET_SECRET", "armed");
+    vi.stubEnv("CONVEX_CLOUD_URL", "https://happy-otter-123.convex.cloud");
+  };
+
+  test("real BSC records nothing", () => {
+    expect(queuedByForLane("user_2abc")).toBeUndefined();
+    expect(queuedByField("user_2abc")).toEqual({});
+    expect("queuedBy" in queuedByField("user_2abc")).toBe(false);
+  });
+
+  test("a misconfigured fake records nothing", () => {
+    armFake();
+    vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://evil.example.com");
+    expect(queuedByForLane("user_2abc")).toBeUndefined();
+    expect(queuedByField("user_2abc")).toEqual({});
+  });
+
+  test("the fake records the subject; no subject stays no key", () => {
+    armFake();
+    expect(queuedByForLane("user_2abc")).toBe("user_2abc");
+    expect(queuedByField("user_2abc")).toEqual({ queuedBy: "user_2abc" });
+    expect(queuedByField(undefined)).toEqual({});
   });
 });

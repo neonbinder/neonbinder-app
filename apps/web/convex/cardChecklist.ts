@@ -81,6 +81,7 @@ import { variantTypeKind } from "./variantRole";
 import { noTeamCardVerdict, stampNoTeam, teamDefaultOf } from "./lib/selectorTeams";
 // NEO-426 — a teamless sport is one more reason to stamp "No team".
 import { createSportNoTeamReader } from "./sportTeamless";
+import { queuedByField } from "./lib/bscGateKey";
 
 /**
  * Walk up the parent chain from a cardChecklist's selectorOption to
@@ -1335,7 +1336,7 @@ export const enqueueBscTeamBackfill = internalMutation({
         internal.bscTeamPool.enqueueBscTeamChecks,
         {
           cardChecklistIds: candidateIds,
-          ...(args.queuedBy !== undefined ? { queuedBy: args.queuedBy } : {}),
+          ...queuedByField(args.queuedBy),
         },
       );
     }

@@ -131,6 +131,13 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
+function armFake() {
+  vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://neonbinder-fake-bsc-0000-uc.a.run.app");
+  vi.stubEnv("NEONBINDER_FAKE_BSC_KEY", "caller-key");
+  vi.stubEnv("TESTING_RESET_SECRET", "armed");
+  vi.stubEnv("CONVEX_CLOUD_URL", "https://happy-otter-123.convex.cloud");
+}
+
 // ---------------------------------------------------------------------------
 // Fixture: sport → year → setName(Bowman) → variantType(Insert, tagged
 // `variant`) → insert(Anime) → parallel(Anime Kanji). Named after the E2E
@@ -519,7 +526,8 @@ describe("buildParallelChecklist — the happy path", () => {
     expect(copy).not.toHaveProperty("imageUrls");
   });
 
-  test("a build queues nothing but the BSC team lookups its copies owe (NEO-556)", async () => {
+  test("a build queues nothing but the BSC team lookups its copies owe (NEO-556); on the fake each is queued for the building operator", async () => {
+    armFake();
     const t = convexTest(schema, modules);
     // The lane's component is not mounted here: the enqueue lands in a list.
     const lane = captureBscTeamLane();
@@ -554,6 +562,31 @@ describe("buildParallelChecklist — the happy path", () => {
       // It reached the lane. (Filtered: another test's late job can land in
       // the same spy, and convex-test ids repeat across instances.)
       expect(lane.some((l) => l.item.cardChecklistId === one._id)).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  test("NEO-628 N2: on real BSC the build's scheduled enqueue carries no queuedBy", async () => {
+    const t = convexTest(schema, modules);
+    const lane = captureBscTeamLane();
+    try {
+      const { insert } = await seedTree(t);
+      const parallelId = await seedParallel(t, insert);
+      await insertCard(t, insert, { cardNumber: "1", cardName: "Team Card" });
+      bscState.cards = [{ cardNumber: "1", cardName: "Team Card", platformRef: "bsc-1" }];
+
+      await t
+        .withIdentity(ADMIN)
+        .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId });
+      await drainScheduled(t);
+
+      const copies = await cardsOn(t, parallelId);
+      const one = copies.find((c) => c.cardNumber === "1")!;
+      const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+      expect(scheduled.map((s) => s.name)).toEqual(["bscTeamPool:enqueueBscTeamChecks"]);
+      expect(scheduled[0].args).toEqual([{ cardChecklistIds: [one._id] }]);
+      expect(lane.some((l) => l.item.cardChecklistId === one._id && !("queuedBy" in l.item))).toBe(true);
     } finally {
       vi.restoreAllMocks();
     }
