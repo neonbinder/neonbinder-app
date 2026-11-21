@@ -91,8 +91,9 @@ not forget:
   defines when you read it; do not invent them, and do not write a mobile or
   axe check the GUIDE does not describe.
 - Deleting or merging a spec is propose-and-wait, and retiring one needs
-  replacement coverage first. Adding a new real set to the registry needs
-  owner approval every time.
+  replacement coverage first. A new real set needs no owner approval when the
+  fake BSC serves it and you register it in SET-REGISTRY.md (its rule 1);
+  anything beyond loading a set into the fake needs owner approval.
 
 ## Docs: the installed version first
 

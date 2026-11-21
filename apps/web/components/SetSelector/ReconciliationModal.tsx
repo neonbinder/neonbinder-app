@@ -133,9 +133,12 @@ export type ReconciledResult = {
     };
     // Marketplace display name per id, so each slot gets a meaningful label.
     // With several sets on a side, "which one is this" is otherwise unanswerable.
+    // An array of `{ id, label }`, never a record keyed by id: a marketplace
+    // id is external text and the Convex client throws on a non-ASCII object
+    // key before the request leaves the browser (NEO-625).
     platformLabels?: {
-      bsc?: Record<string, string>;
-      sportlots?: Record<string, string>;
+      bsc?: { id: string; label: string }[];
+      sportlots?: { id: string; label: string }[];
     };
     metadata?: ItemMetadata;
     /**
@@ -2245,16 +2248,17 @@ function ReconciliationDialog({
         // any, and each id's display name to `platformLabels`.
         const platformData: ReconciledResult["items"][number]["platformData"] = {};
         const platformLabels: Partial<
-          Record<MarketplaceSourceKey, Record<string, string>>
+          Record<MarketplaceSourceKey, { id: string; label: string }[]>
         > = {};
         for (const source of sources) {
           if (source.kind !== "marketplace") continue;
           const linked = set.links[source.key];
           if (linked.length === 0) continue;
           platformData[source.key] = linked.map((i) => i.platformValue);
-          const labels: Record<string, string> = {};
-          for (const i of linked) labels[i.platformValue] = i.value;
-          platformLabels[source.key] = labels;
+          platformLabels[source.key] = linked.map((i) => ({
+            id: i.platformValue,
+            label: i.value,
+          }));
         }
         // A set whose title was cleared takes its first linked item's name.
         let fallbackTitle = "";

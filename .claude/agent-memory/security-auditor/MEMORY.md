@@ -136,3 +136,4 @@
 - [Neo574 client id override](patterns_neo574_client_id_override.md) — per-card id override + stint writer: validator shape that held; dedupe gap
 - [Actions cache writer enumeration](patterns_actions_cache_writer_enumeration.md) — cache restored into secret jobs: list every main-scope writer (dispatch too); workflow_run checkout ref
 - [Filter identity where minted](patterns_filter_identity_where_minted.md) — identity filtered at the last scheduled hop persists in earlier hops' _scheduled_functions args
+- [Convex client error origin](patterns_convex_client_error_origin.md) — classify by client [CONVEX X(] prefix, not Request ID; convexToJson errors embed args
