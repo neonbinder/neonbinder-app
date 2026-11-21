@@ -282,3 +282,4 @@
 - [Testing hop status lines are an API](reference_testing_hop_status_lines_are_an_api.md) — /testing/*-fake status lines feed DONE/FAILED regexes in playwright/support; new op = FAILED-matching refusals, report the DONE prefix
 - [Latch a conditionally shown control by row id](reference_latch_a_conditionally_shown_control_by_row_id.md) — id-keyed latch keeps a gated control (and focus) mounted; sample titles via the real builder
 - [Wizard plan waits on teamless-sport mock](reference_wizard_plan_waits_on_teamless_sport_mock.md) — test useQuery mock must answer listTeamlessSportIds or the bar stays 0; how to port a new step onto trackSteps
+- [Stand down on mounted, not phase](reference_stand_down_on_mounted_not_on_phase.md) — page element duplicated by a dialog keys on the dialog being mounted/open, not the phase before it (NEO-624)
