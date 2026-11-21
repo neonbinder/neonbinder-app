@@ -793,27 +793,58 @@ describe("everything I own, paged", () => {
     expect(page.isDone).toBe(false);
   });
 
-  // 26 cards x 200 lines = 5,200 lines, past the 5,000 the old summary read.
-  // Seeded once for the two tests below (seeding is the cost, not the checks),
-  // so no single test carries it (NEO-591).
-  describe("past the old 5,000-line read", () => {
+  // ownedCards has no line cap of its own: it pages MAX_OWNED_PAGE_LINES at a
+  // time. Each card's lines here straddle page boundaries (100 lines against
+  // 64-line pages), so the walk proves a card spread over several pages is
+  // listed once, on the page holding its newest line, with every line
+  // counted. A 5,000-line walk proved nothing more and cost ~80 full-table
+  // scans in convex-test, over the 2 s unit limit (NEO-591).
+  test("pages to the very last line: every card listed once, on the page holding its newest line, with all its lines counted", async () => {
+    const { t, fx, me } = await setup();
+    const cardsHeld = 3;
+    const lines = 100;
+    expect(lines % MAX_OWNED_PAGE_LINES).not.toBe(0);
+    const ids = await insertManyOwned(t, fx, ME.subject, { cards: cardsHeld, linesPerCard: lines, keepTally: true });
+    // Walk page by page, recording the page each card is listed on.
+    const listed: Array<{ cardId: string; quantity: number; lines: number; page: number }> = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    for (;;) {
+      const result: {
+        page: Array<{ cardId: string; quantity: number; lines: number }>;
+        isDone: boolean;
+        continueCursor: string;
+      } = await me.query(api.collection.ownedCards, {
+        paginationOpts: { numItems: MAX_OWNED_PAGE_LINES, cursor },
+      });
+      for (const card of result.page) listed.push({ ...card, page: pages });
+      pages += 1;
+      if (result.isDone) break;
+      cursor = result.continueCursor;
+    }
+    expect(pages).toBe(Math.ceil((cardsHeld * lines) / MAX_OWNED_PAGE_LINES));
+    // Newest first: the last card inserted was touched last.
+    const newestFirst = [...ids].reverse();
+    expect(listed.map((c) => c.cardId)).toEqual(newestFirst);
+    for (const card of listed) expect(card).toMatchObject({ quantity: lines, lines });
+    // Lines run newest first, `lines` per card, so the k-th newest card's
+    // newest line is line k*lines of the walk, on page floor(k*lines/64).
+    expect(listed.map((c) => c.page)).toEqual(
+      newestFirst.map((_, k) => Math.floor((k * lines) / MAX_OWNED_PAGE_LINES)),
+    );
+  });
+
+  // 26 cards x 200 lines = 5,200 lines, past the 5,000 the hand count reads.
+  // Seeded once (seeding is the cost, not the check) (NEO-591).
+  describe("past the 5,000-line hand-count read", () => {
     const cardsHeld = 26;
     const lines = MAX_LINES_PER_CARD;
     let held: Awaited<ReturnType<typeof setup>>;
-    let ids: Array<Id<"cardChecklist">>;
     beforeAll(async () => {
       expect(cardsHeld * lines).toBeGreaterThan(MAX_TALLY_RECOUNT_LINES);
       held = await setup();
-      ids = await insertManyOwned(held.t, held.fx, ME.subject, { cards: cardsHeld, linesPerCard: lines, keepTally: true });
+      await insertManyOwned(held.t, held.fx, ME.subject, { cards: cardsHeld, linesPerCard: lines, keepTally: true });
     }, 60_000);
-
-    test("pages to the very last line: every card listed once, on the page holding its newest line, with all its lines counted", async () => {
-      const { cards, pages } = await walkOwned(held.me, MAX_OWNED_PAGE_LINES);
-      expect(pages).toBeGreaterThan(MAX_TALLY_RECOUNT_LINES / MAX_OWNED_PAGE_LINES);
-      // Newest first: the last card inserted was touched last.
-      expect(cards.map((c) => c.cardId)).toEqual([...ids].reverse());
-      for (const card of cards) expect(card).toMatchObject({ quantity: lines, lines });
-    });
 
     test("the tally is exact", async () => {
       expect(await held.me.query(api.collection.summary, {})).toMatchObject({
