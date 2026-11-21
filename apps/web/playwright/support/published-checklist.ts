@@ -138,10 +138,80 @@ export const CHECKLISTS = {
 
 export type ChecklistName = (typeof CHECKLISTS)[keyof typeof CHECKLISTS];
 
+/**
+ * NEO-640 (Jason, 2026-11-21: "we should only skip this if Matched is all at 100%"): does a fetch
+ * with this file, uploaded as is, open Match Cards? A run with two or more sources (BSC and the
+ * file are two) skips the dialog only when every card pairs with exactly one row by its number
+ * (or NNO card to NNO row by its player), no row is left over and no row names other players.
+ *
+ * `paused` is MEASURED on a SportLots-paused deployment (the run's sources are BSC and the file).
+ * `live` is what the set's SportLots side changes: a set with no SportLots id fetches the same two
+ * sources live, so it equals `paused`; a set the seed maps to SportLots too (Topps Chrome 2024,
+ * Stars of MLB Network) adds a third source, UNMEASURED since the pause, and is written `true`
+ * (a guess that opens costs the first live run one red, a guess that skips would commit unseen).
+ * A file nothing uploads whole (`...Full`) is read off the file. A spec's own edit to a file
+ * (`extraRows`: rows no card has) always opens it, which `usePublishersChecklist` applies.
+ */
+export interface MatchCardsFact {
+  paused: boolean;
+  live: boolean;
+}
+const opens = (paused: boolean, live = paused): MatchCardsFact => ({ paused, live });
+const MATCH_CARDS: Record<ChecklistName, MatchCardsFact> = {
+  // Every row is BSC's own card, by number; live, its SportLots base is mapped by the seed.
+  "2024-topps-stars-of-mlb-network-base": opens(false, true),
+  "2024-topps-stars-of-mlb-network-base-shehadi-live": opens(true),
+  "2026-onit-athlete-arizona-state-sun-devils-base": opens(false),
+  "2026-onit-athlete-arizona-state-sun-devils-base-one-live": opens(true),
+  "1995-hockey-tulsa-oilers-chl-base": opens(false),
+  "1995-hockey-memphis-riverkings-chl-base": opens(false),
+  "1995-hockey-san-antonio-iguanas-chl-base": opens(false),
+  "1995-hockey-fort-worth-fire-chl-base": opens(false),
+  "1995-hockey-oklahoma-city-blazers-chl-base": opens(false),
+  "1996-new-haven-ravens-rally-raffle-base": opens(false),
+  "2025-topps-welcome-to-the-club-3x-mvp-base": opens(false),
+  "2024-bbm-rookie-edition-premium-base": opens(false),
+  // Card #300's row is left out, so #300 is a BSC-only card.
+  "2024-topps-chrome-base": opens(true),
+  "2010-topps-insert-team-bonus": opens(false),
+  "2010-topps-insert-silk-collection": opens(false),
+  "2010-topps-insert-peak-performance": opens(false),
+  // PPR-CR and PPR-DU are each on two rows: a tie, left to the operator (rule 7, D2).
+  "2010-topps-insert-peak-performance-relics": opens(true),
+  "2010-topps-insert-turkey-red": opens(false),
+  "2009-topps-insert-career-best-jumbo-jerseys": opens(false),
+  "2026-football-bowman-base": opens(false),
+  "2014-football-topps-base": opens(false),
+  "1984-football-topps-base": opens(false),
+  "2011-leaf-pete-rose-legacy-base": opens(true),
+  "2026-topps-insert-profiles": opens(false),
+  "2024-topps-chrome-insert-future-stars": opens(false, true),
+  "2024-topps-chrome-insert-future-stars-publisher-numbering": opens(true),
+  "1995-hockey-roanoke-express-echl-base": opens(false),
+  "1995-hockey-roanoke-express-echl-base-one-live": opens(true),
+  "2025-bowman-draft-insert-bowman-draft-nights-autographs": opens(false),
+  "2025-bowman-draft-insert-prospect-dual-autographs": opens(true),
+  "2026-bowman-insert-anime": opens(false),
+  "1996-score-insert-dugout-collection-artists-proofs-series-1": opens(false),
+  "1995-hockey-halifax-mooseheads-qmjhl-base-full": opens(false),
+  "1995-hockey-halifax-mooseheads-qmjhl-base-five-live": opens(true),
+  // The publisher's own numbers: every row pairs by player name, shown with a %.
+  "2026-donruss-insert-retro-1997-donruss-signature-series-autographs": opens(true),
+  "2026-donruss-insert-retro-1997-donruss-signature-series-autographs-without-lowell": opens(true),
+  "2026-donruss-insert-retro-1997-donruss-signature-series-autographs-misspelled-lowder": opens(true),
+};
+
+/** NEO-640: does this fetch open Match Cards, on this run's SportLots switch? */
+export function opensMatchCards(facts: Pick<ChecklistFacts, "matchCards">, env: Pick<FlowEnv, "SL_PAUSED">): boolean {
+  return env.SL_PAUSED ? facts.matchCards.paused : facts.matchCards.live;
+}
+
 /** What a fixture file holds, read off the file itself so the spec never restates a count. */
 export interface ChecklistFacts {
   /** The file's absolute path, for `setInputFiles`. */
   path: string;
+  /** NEO-640: does a fetch with it open Match Cards (`opensMatchCards`)? */
+  matchCards: MatchCardsFact;
   /** Data rows the dialog reads (a one-word number, or NNO; a row mixing "No Team" with a team is skipped): what its preview and the chip call "N rows". */
   rows: number;
   /**
@@ -273,6 +343,7 @@ export function checklistFacts(name: ChecklistName): ChecklistFacts {
   }).length;
   return {
     path: `${DIRECTORY}${name}.csv`,
+    matchCards: MATCH_CARDS[name],
     rows: rows.length,
     matched: matchedNumbered + matchedUnnumbered,
   };
@@ -320,6 +391,7 @@ export function nameFallbackFacts(name: ChecklistName, cardsOf: ChecklistName): 
   const equalCounts = rows.length === cards.length;
   return {
     path: `${DIRECTORY}${name}.csv`,
+    matchCards: MATCH_CARDS[name],
     rows: all.length,
     cards: cards.length,
     equalCounts,
@@ -430,7 +502,12 @@ export async function usePublishersChecklist(
     throw new Error("usePublishersChecklist: noTeamOn and extraRows are one change each; a spec needing both builds its own file.");
   }
   const captured = checklistFacts(name);
-  const facts = { ...captured, rows: captured.rows + (options.extraRows?.length ?? 0) };
+  const facts: ChecklistFacts = {
+    ...captured,
+    rows: captured.rows + (options.extraRows?.length ?? 0),
+    // NEO-640: a row no card has is a "Checklist only" row, which only the operator can keep.
+    matchCards: options.extraRows?.length ? opens(true) : captured.matchCards,
+  };
   // A second visit to the same open checklist (a discarded review fetched again)
   // may still hold the file the first visit used: the chip is then the proof.
   const chip = publishersChecklistChip(page, facts.rows);
@@ -466,7 +543,9 @@ export async function usePublishersChecklist(
 export async function usePastedChecklist(page: Page, csv: string, rows: number): Promise<ChecklistFacts> {
   const chip = publishersChecklistChip(page, rows);
   await expect(publishersChecklistButton(page).or(chip).first()).toBeVisible();
-  const facts: ChecklistFacts = { path: "(pasted)", rows, matched: rows };
+  // NEO-640: a pasted checklist names only the rows its spec is about, so every other card is a
+  // BSC-only card and Match Cards opens.
+  const facts: ChecklistFacts = { path: "(pasted)", matchCards: opens(true), rows, matched: rows };
   if (await chip.isVisible()) return facts;
   await publishersChecklistButton(page).click();
   const dialog = publishersChecklistDialog(page);
@@ -556,6 +635,96 @@ export async function confirmChecklistMatchCards(
   }
   await confirm.click();
   await expect(dialog).toBeHidden();
+}
+
+/**
+ * NEO-640: the line every fetch with two or more sources starts on, a status naming them
+ * ("Fetching from BSC and your checklist…", then "N of M cards ready."), with its Cancel
+ * ("Cancel checklist fetch"). Contract: a locator, nothing waited for.
+ */
+export function checklistFetchProgress(page: Page): Locator {
+  return page.getByRole("status").filter({ hasText: /^Fetching from BSC and your checklist…/ });
+}
+
+/**
+ * NEO-640: the line a skipped Match Cards leaves, "Kept all N cards. Every card matched across BSC
+ * and your checklist." ("Kept the 1 card. It matched across …" for one). A skip is only ever BSC and
+ * the file (`MATCH_CARDS`: a set with a SportLots side is written to open live). The line goes on
+ * with the paused sentence and the teams line, so only its start is pinned. Contract: a locator.
+ */
+export function matchedKeptLine(page: Page, cards: number): Locator {
+  const text =
+    cards === 1
+      ? "Kept the 1 card. It matched across BSC and your checklist."
+      : `Kept all ${cards} cards. Every card matched across BSC and your checklist.`;
+  return page.getByText(new RegExp(`^${escapeRe(text)}`)).filter({ visible: true });
+}
+
+/**
+ * NEO-640: a fetch whose every card paired with its own row at 100% skips Match Cards. The run
+ * starts on the progress line (with its Cancel), and when the fetch ends the line goes with no
+ * dialog standing. Where it lands is the caller's `lands`, which the fixture decides:
+ *  - `"review"`: names (or teams, titles, a career check) are left to settle, so the tidy-up
+ *    dialog opens, and the kept line ("Kept all N cards. Every card matched across BSC and your
+ *    checklist.", N the file's rows: on a skip each row is exactly one card) stays in front of
+ *    it with the teams line;
+ *  - `"saved"`: nothing is left to ask, so the cards are saved at once and "Saved N cards." (with
+ *    the teams line) replaces the kept line, which is then on screen for the length of the write
+ *    only and is not asserted.
+ *
+ * Contract: ENTRY Sync card checklist has just been pressed with `facts`' file in play and
+ * `opensMatchCards` false. EXIT the tidy-up dialog is open (`"review"`) or the saved line is up.
+ */
+export async function expectMatchCardsSkipped(
+  page: Page,
+  { facts, what, lands }: { facts: ChecklistFacts; what: string; lands: SkippedLanding },
+): Promise<void> {
+  const progress = checklistFetchProgress(page);
+  await expect(progress, `the progress line of ${what}`).toBeVisible();
+  // A sibling of the status line, not inside it: the run's one control.
+  await expect(page.getByRole("button", { name: "Cancel checklist fetch" })).toBeVisible();
+  // One live BSC round trip, under its own "Waiting on BuySportsCards" line (NEO-487).
+  await expectAfterMarketplace(page, progress, { platform: "BuySportsCards", what: `the end of ${what}`, state: "hidden" });
+  if (lands === "review") {
+    // Our own queueing once the fetch has landed (measured 1.3 s at most, #487): the standard 7 s.
+    await expect(page.getByRole("dialog", { name: /^Tidy up / })).toBeVisible();
+    await expect(matchedKeptLine(page, facts.rows)).toBeVisible();
+  } else {
+    await expect(page.getByText(new RegExp(`^Saved ${facts.rows} cards\\.`)).filter({ visible: true })).toBeVisible();
+  }
+  await expectTeamsFromChecklist(page, facts);
+  // Paired with the landing just above (R2): the dialog never stood, and nobody confirmed one.
+  await expect(matchCardsDialog(page)).toHaveCount(0);
+}
+
+/** NEO-640: where a skipped Match Cards lands (`expectMatchCardsSkipped`). */
+export type SkippedLanding = "review" | "saved";
+
+/**
+ * NEO-640: settle a fetch with a publisher's checklist in play, on the file's own measured fact
+ * (`opensMatchCards`): through Match Cards (`confirmChecklistMatchCards`) when it opens, past it
+ * (`expectMatchCardsSkipped`, landing as `lands` says) when every card matched. Never a race
+ * between the two: a fixture that changes sides fails here by name. `keepChecklistOnly` needs rows
+ * no card has, which always open the dialog.
+ */
+export async function settleChecklistFetch(
+  page: Page,
+  env: FlowEnv,
+  {
+    facts,
+    what,
+    keepChecklistOnly,
+    lands,
+  }: { facts: ChecklistFacts; what: string; keepChecklistOnly?: number; lands: SkippedLanding },
+): Promise<void> {
+  if (opensMatchCards(facts, env)) {
+    await confirmChecklistMatchCards(page, { facts, what, keepChecklistOnly });
+    return;
+  }
+  if (keepChecklistOnly !== undefined) {
+    throw new Error(`settleChecklistFetch: ${what} keeps checklist-only rows, but its facts say Match Cards does not open.`);
+  }
+  await expectMatchCardsSkipped(page, { facts, what, lands });
 }
 
 /** The set panel's region, on the set level with its attributes open. Contract: a locator, nothing waited for. */
