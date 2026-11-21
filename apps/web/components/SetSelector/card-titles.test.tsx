@@ -722,6 +722,20 @@ describe("NEO-637 — the box and a title the operator edited", () => {
       expect(next[0]).toBeUndefined();
     });
 
+    test("an edit that lost the box text in effect but carries the builder's description is swapped from that", () => {
+      // The box was edited to "Prior Box" earlier; this title was written
+      // before that, so it still opens with the builder's own description.
+      const edit = `${OLD} Ohtani my own #1 words`;
+      const next = retitleDraftsForSetName([{ listingTitle: edit }], groups([{ listingTitle: edit }]), "Prior Box", NEW);
+      expect(next[0]).toEqual({ listingTitle: `${NEW} Ohtani my own #1 words` });
+    });
+
+    test("the box text in effect wins over the builder's description when both are in the edit", () => {
+      const edit = `Prior Box Ohtani ${OLD} #1`;
+      const next = retitleDraftsForSetName([{ listingTitle: edit }], groups([{ listingTitle: edit }]), "Prior Box", NEW);
+      expect(next[0]).toEqual({ listingTitle: `${NEW} Ohtani ${OLD} #1` });
+    });
+
     test("dropping the edit keeps the rest of the answer (the variation)", () => {
       const edit = "My Ohtani title #1";
       const answers = [{ listingTitle: edit, cardVariation: "Blue" }];

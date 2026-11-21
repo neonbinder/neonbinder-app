@@ -112,7 +112,7 @@ const TITLE_OVER = "Too long to list as-is.";
 
 /** NEO-535 copy, in the NB voice (no sign-off needed, Jason reviews while testing). */
 const TITLES_LEAD = "These titles had to leave something out or still run long. Check what went, then keep 'em or make 'em yours.";
-const SHORT_LEAD = "Set name hogging the title? Trim it here and every title below gets it.";
+const SHORT_LEAD = "Set name hogging the title? Trim it here and every title that left something out gets it.";
 const SHORT_LABEL = "Set name in titles";
 const stillOverLine = (n: number) =>
   n === 0 ? "Every title fits now." : n === 1 ? "1 title still runs long." : `${n} titles still run long.`;

@@ -12,7 +12,11 @@ import {
   type TitleAttentionItem,
   type TitleContext,
 } from "../../convex/features/listingInputs";
-import type { ListingCardInputs, ListingTeamSplit } from "../../convex/features/generateListing";
+import {
+  titleDescription,
+  type ListingCardInputs,
+  type ListingTeamSplit,
+} from "../../convex/features/generateListing";
 import {
   ASPECT_VALUE_MAX,
   LISTING_TITLE_MAX,
@@ -659,7 +663,8 @@ export function swapSetNameInTitle(
  *
  *  - a hand edit whose row shows the line gets the new set name: only the old
  *    set-name text inside it is swapped, the rest of the edit is kept; when
- *    the old text is not in the edit, the edit is dropped and the title is
+ *    the old text is not in the edit, the builder's own description is tried
+ *    as the old text, and when that is not in it either the edit is dropped and the title is
  *    the generated one (built with the new set name);
  *  - a hand edit whose row shows no line is left exactly as it is;
  *  - a draft that is blank, or just the generated title, is no hand edit: the
@@ -682,7 +687,12 @@ export function retitleDraftsForSetName(
       const draft = drafts[row.index]?.listingTitle;
       if (draft === undefined || !draft.trim() || draft.trim() === row.title) continue;
       if (group.leftOut.length === 0 && row.leftOut.length === 0) continue;
-      const swapped = swapSetNameInTitle(draft, oldName, newName);
+      // The box text in effect first; failing that, the builder's own
+      // description, which is the set-name text a title carries when no box
+      // applied to it when it was generated.
+      const swapped =
+        swapSetNameInTitle(draft, oldName, newName) ??
+        swapSetNameInTitle(draft, titleDescription(row.inputs), newName);
       const answer: TitleAnswer = { ...next[row.index] };
       if (swapped === undefined) delete answer.listingTitle;
       else answer.listingTitle = swapped;

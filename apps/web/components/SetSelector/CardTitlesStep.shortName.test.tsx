@@ -33,7 +33,7 @@ const CONTEXT: TitleContext = {
 const OVER: TitleContext = { ...CONTEXT, setNameValue: `${FIRST_NAME_SET} Collectors Box` };
 
 const LABEL = "Set name in titles";
-const LEAD = "Set name hogging the title? Trim it here and every title below gets it.";
+const LEAD = "Set name hogging the title? Trim it here and every title that left something out gets it.";
 const TITLES_LEAD = "These titles had to leave something out or still run long. Check what went, then keep 'em or make 'em yours.";
 const BOX = "2026 Topps Chrome Sapphire";
 
@@ -355,6 +355,18 @@ describe("CardTitlesStep — the box and a title the operator edited (NEO-637)",
     ]);
     // Rebuilt means it is the generated title again, not an edit to take back.
     expect(screen.queryByRole("button", { name: "Use generated title for #1 Card 1" })).toBeNull();
+  });
+
+  test("a hand edit written with the builder's description survives a box that was edited since", () => {
+    setup({ cards: [card("1"), card("2")] });
+    const box = screen.getByRole("textbox", { name: LABEL });
+    // The box is edited first; the title is then typed with the builder's
+    // description in it, which is no longer the box text in effect.
+    fireEvent.change(box, { target: { value: "Topps Sapphire" } });
+    const own = screen.getByRole("textbox", { name: "Title for #1 Card 1" });
+    fireEvent.change(own, { target: { value: `${PREFILL} Ohtani my own #1 words` } });
+    fireEvent.change(box, { target: { value: BOX } });
+    expect(titleFields()[0].value).toBe(`${BOX} Ohtani my own #1 words`);
   });
 
   test("a hand edit that shows no line is left as typed, old set name and all", () => {
