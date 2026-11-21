@@ -459,8 +459,10 @@ const joinSourceNames = (sources: readonly FetchSource[]): string => {
  *
  * The sibling of `soloKeptMessage`, and for the same reason: a step the
  * operator knows about did not happen, so the line says why. The count is what
- * was handed to the commit. "Back to Match Cards" in the wizard that follows
- * reopens the dialog that was skipped.
+ * was handed to the commit, and it may stand here because nothing can
+ * contradict it yet; the line after the save is `savedReasonMessage`, which
+ * carries no count. "Back to Match Cards" in the wizard that follows reopens the
+ * dialog that was skipped.
  */
 export const matchedKeptMessage = (
   sources: readonly FetchSource[],
@@ -469,8 +471,29 @@ export const matchedKeptMessage = (
   pausedAttached: readonly SyncSide[] = [],
 ): string =>
   (count === 1
-    ? `Kept the 1 card. It matched across ${joinSourceNames(sources)}.`
-    : `Kept all ${count} cards. Every card matched across ${joinSourceNames(sources)}.`) +
+    ? `The 1 card matched across ${joinSourceNames(sources)}. No Match Cards needed, totally clean.`
+    : `All ${count} cards matched across ${joinSourceNames(sources)}. No Match Cards needed, totally clean.`) +
+  (pausedAttached.length > 0 ? ` ${pausedSyncMessage(pausedAttached)}` : "");
+
+/**
+ * NEO-640 — why Match Cards did not open, as the "Saved N cards." line says
+ * it: right after the count and ahead of every caveat the commit adds.
+ *
+ * It carries NO count of its own. The count on the saved line is what the
+ * server wrote, and a card it refused ("linked to two cards — not saved") or
+ * deferred would make a second number here disagree with the first; so this
+ * says what the sources did, and `savedCount` only picks "it" or "every one".
+ * With one source in play there was nothing to line up; the paused-side
+ * sentence rides along, as it does on the line before the save.
+ */
+export const savedReasonMessage = (
+  sources: readonly FetchSource[],
+  savedCount: number,
+  pausedAttached: readonly SyncSide[] = [],
+): string =>
+  (sources.length > 1
+    ? `${joinSourceNames(sources)} agreed on ${savedCount === 1 ? "it" : "every one"}, so Match Cards sat this one out.`
+    : `Only ${joinSourceNames(sources)} was in play, so there was nothing to match.`) +
   (pausedAttached.length > 0 ? ` ${pausedSyncMessage(pausedAttached)}` : "");
 
 /**
@@ -482,14 +505,13 @@ export const matchedKeptMessage = (
  * `sources` the line names them all; with one (or none) it reads exactly as it
  * did for a single marketplace.
  *
- * `total` is written in one transaction and `ready` climbs as team enrichment
- * lands, which is the same pair the pairing dialog's own streaming line
- * reports. Before the batch is published there is no denominator to give, so
- * the line says what it is doing and nothing it cannot back up.
+ * Two functions, because the line speaks to two audiences. This is the part
+ * that never changes during a run (what it is doing, and from where), which a
+ * screen reader hears once. `soloProgressCount` is the part that ticks, drawn
+ * for the eye only; `soloProgressStep` is what the ear gets of it.
  */
-export const soloProgressMessage = (
+export const soloProgressStart = (
   side: SyncSide | null,
-  progress: { ready: number; total: number } | undefined,
   sources?: readonly FetchSource[],
 ): string => {
   const from =
@@ -498,11 +520,35 @@ export const soloProgressMessage = (
       : side
         ? ` from ${SIDE_LABEL[side]}`
         : "";
-  const counts =
-    progress && progress.total > 0
-      ? ` ${progress.ready} of ${progress.total} cards ready.`
-      : "";
-  return `Fetching${from}…${counts}`;
+  return `Fetching${from}…`;
+};
+
+/**
+ * `total` is written in one transaction and `ready` climbs as team enrichment
+ * lands, which is the same pair the pairing dialog's own streaming line
+ * reports. Before the batch is published there is no denominator to give, so
+ * the line says what it is doing and nothing it cannot back up (`null`).
+ */
+export const soloProgressCount = (
+  progress: { ready: number; total: number } | null | undefined,
+): string | null =>
+  progress && progress.total > 0
+    ? `${progress.ready} of ${progress.total} cards ready.`
+    : null;
+
+/**
+ * What a screen reader is told of the count: only the quarter marks (25, 50,
+ * 75 percent), the pairing dialog's own cadence (NEO-330), so a 700-card run
+ * is a handful of announcements and not 700. Empty until the first quarter,
+ * and at the end: the run moves on to its next line there. `ready` only
+ * climbs against a fixed `total`, so a quarter once said is never said again.
+ */
+export const soloProgressStep = (
+  progress: { ready: number; total: number } | null | undefined,
+): string => {
+  if (!progress || progress.total <= 0) return "";
+  const quarter = Math.floor((Math.min(progress.ready, progress.total) / progress.total) * 4);
+  return quarter >= 1 && quarter <= 3 ? `${quarter * 25}% of cards ready.` : "";
 };
 
 /**
@@ -951,15 +997,19 @@ export default function CardChecklist({
   /** The one-sided run's "Kept all N cards …" sentence, for the wizard notice. */
   const soloKeptRef = useRef<string | null>(null);
   /**
-   * NEO-640 — the same sentence without the checklist-teams line, for the
-   * "Saved N cards." line. A run that skipped Match Cards and has nothing for
+   * NEO-640 — what the "Saved N cards." line needs to say why no Match Cards
+   * came up (`savedReasonMessage`): the sources the skipped run fetched from,
+   * and the paused sides. A run that skipped Match Cards and has nothing for
    * the wizard to ask commits within a frame, and the saved line replaces the
-   * one that said why no dialog appeared; it carries the sentence on, the way
-   * it carries the teams line. Spent by the commit that lands (a failed one
-   * leaves it for the retry), and dropped when the operator goes back to
-   * Match Cards: that commit is no longer the run that was skipped.
+   * one that said why no dialog appeared; it carries the reason on, right
+   * after the count. Spent by the commit that lands (a failed one leaves it
+   * for the retry), and dropped when the operator goes back to Match Cards:
+   * that commit is no longer the run that was skipped.
    */
-  const keptSentenceRef = useRef<string | null>(null);
+  const skipReasonRef = useRef<{
+    sources: FetchSource[];
+    paused: SyncSide[];
+  } | null>(null);
   /**
    * NEO-330 — this run's teams missed the wait (see `TEAMS_LATE_NOTICE`). Read
    * by the wizard notice and the "Saved N cards." line, so the operator is told
@@ -1314,7 +1364,7 @@ export default function CardChecklist({
    *                    reducer survive a trip into the wizard and back.
    *
    * Unmounting it instead (what `setPairingOpen(false)` used to do) threw that
-   * reducer away, so "Back to matching" could only ever have meant "start the
+   * reducer away, so "Back to Match Cards" could only ever have meant "start the
    * pairing over".
    */
   const [pairingPhase, setPairingPhase] = useState<
@@ -1386,6 +1436,15 @@ export default function CardChecklist({
   useEffect(() => {
     pairingPhaseRef.current = pairingPhase;
   }, [pairingPhase]);
+  /**
+   * NEO-640 — `pendingPreview`, readable from `runCommit`'s catch for the same
+   * reason: whether the wizard is open is a fact about NOW, not about the
+   * render the failing commit was started from.
+   */
+  const pendingPreviewRef = useRef(pendingPreview);
+  useEffect(() => {
+    pendingPreviewRef.current = pendingPreview;
+  }, [pendingPreview]);
   /**
    * NEO-640 — open Match Cards the moment a visible row of this run's batch
    * needs the operator.
@@ -1647,6 +1706,20 @@ export default function CardChecklist({
   // A ref, not state: the check runs inside an async closure that captured its
   // own render's values, which is exactly where a state read would be stale.
   const syncGenerationRef = useRef(0);
+  // NEO-640 (security audit) — leaving the page cancels a run the way Cancel
+  // does. A clean run commits without the operator in front of anything (the
+  // one-source auto-keep and the multi-source skip), so a run whose rows
+  // landed AFTER the operator walked away must not save cards they can no
+  // longer see. Bumping the generation is all `abandoned()` needs: the settle
+  // wait stands down, the commit never starts, and the late result is dropped.
+  // Staged candidates are left for the next fetch's clear-stale step, as they
+  // are for any abandoned run.
+  useEffect(() => {
+    const generationRef = syncGenerationRef;
+    return () => {
+      generationRef.current++;
+    };
+  }, []);
 
   /**
    * NEO-221 — end the pairing session for good and bin what it was reviewing.
@@ -1655,7 +1728,7 @@ export default function CardChecklist({
    * this. Parking (D9) is what made that a rule rather than a nicety: a parked
    * phase keeps `streamedPairing` non-null, which keeps `CardPairingModal`
    * mounted and its reducer alive. That is exactly right while the wizard is
-   * up and can offer "Back to matching" — and exactly wrong the moment the
+   * up and can offer "Back to Match Cards" — and exactly wrong the moment the
    * wizard is not, because nothing on screen can then reach the session, its
    * candidates are never discarded, and the next sync re-shows the same
    * instance with the previous batch still in it.
@@ -1863,7 +1936,7 @@ export default function CardChecklist({
    */
   const handleSync = async () => {
     soloKeptRef.current = null;
-    keptSentenceRef.current = null;
+    skipReasonRef.current = null;
     teamsLateRef.current = false;
     checklistTeamsRef.current = null;
     // NEO-496: a new run counts its own sources.
@@ -2145,8 +2218,12 @@ export default function CardChecklist({
             : matchedKeptMessage(serverSources, cards.length, pausedAttached);
         // Carried onto the saved line (NEO-640), one source or several: the
         // commit lands within a frame and replaces the sentence that says why
-        // no Match Cards came up.
-        keptSentenceRef.current = keptSentence;
+        // no Match Cards came up. The saved line says it again without the
+        // count (`savedReasonMessage`), so only the facts are kept.
+        skipReasonRef.current = {
+          sources: [...serverSources],
+          paused: [...pausedAttached],
+        };
         soloKeptRef.current = withTeamsLine(keptSentence);
         setSyncMessage(
           [soloKeptRef.current, teamsLateRef.current ? TEAMS_LATE_NOTICE : null]
@@ -2280,7 +2357,7 @@ export default function CardChecklist({
     // NEO-221 (D9): PARKED, not closed. The dialog leaves the screen either
     // way, but parking keeps it mounted so its reducer — every link, keep,
     // rename and name choice the operator just made — is still there if the
-    // wizard hands them back with "Back to matching".
+    // wizard hands them back with "Back to Match Cards".
     //
     // A functional update rather than a bare set: `handleSync`'s
     // zero-candidate short-circuit calls this handler with no pairing session
@@ -2482,7 +2559,7 @@ export default function CardChecklist({
     // NEO-424 — and a batch the server linked names in is NOT "no names",
     // even with nothing left to answer: it opens the full wizard (the else
     // branch below), whose Save step lists every link with its Change. Keyed
-    // on the count, never on `batchId` alone — NEO-221's "Back to matching"
+    // on the count, never on `batchId` alone — NEO-221's "Back to Match Cards"
     // return trip hands back a batch of the operator's OWN decisions with no
     // unknowns, and that one must keep committing without a dialog.
     const noNames =
@@ -2751,25 +2828,33 @@ export default function CardChecklist({
       // on the line the cards land with too. A run that needs no question
       // commits straight away, and this banner replaces the sync line that
       // carried it first, so without this the operator never sees it.
-      // Reset by the next sync, never by this one.
-      //
-      // NEO-640 — and the sentence that says why no Match Cards came up, the
-      // same way and just ahead of it: a run with nothing for the wizard to
-      // ask lands "Saved N cards." within a frame of "Kept all N cards …", so
-      // without this the operator never reads why the dialog was skipped.
-      if (keptSentenceRef.current) {
-        notes.push(keptSentenceRef.current);
-        keptSentenceRef.current = null;
-      }
+      // Reset by the next sync, never by this one. It is the LAST thing the
+      // line says.
       if (checklistTeamsRef.current) {
         notes.push(`${checklistTeamsRef.current}.`);
       }
+      // NEO-640 — and the reason no Match Cards came up, the same way and
+      // FIRST: a run with nothing for the wizard to ask lands "Saved N cards."
+      // within a frame of the pre-save line that said why, so without this the
+      // operator never reads it. It sits right after the count, ahead of every
+      // caveat the commit adds ("not saved", "no longer listed upstream"), so
+      // a caveat is never read as qualifying it. No count of its own.
+      const skipReason = skipReasonRef.current
+        ? savedReasonMessage(
+            skipReasonRef.current.sources,
+            result.count,
+            skipReasonRef.current.paused,
+          )
+        : null;
+      skipReasonRef.current = null;
       const committedText = [
-        discardError
-          ? `Saved ${result.count} cards. (Could not clear staged candidates.)`
-          : `Saved ${result.count} cards.`,
+        `Saved ${result.count} ${result.count === 1 ? "card" : "cards"}.`,
+        skipReason,
+        discardError ? "(Could not clear staged candidates.)" : null,
         ...notes,
-      ].join(" ");
+      ]
+        .filter(Boolean)
+        .join(" ");
       setSyncMessage(committedText);
       // NEO-312 (J1): an insert's checklist is its parallels' checklist too,
       // so saving it builds them — one at a time, in the panel under this
@@ -2811,6 +2896,16 @@ export default function CardChecklist({
       );
       setSyncMessage(`Commit failed: ${message}`, "error");
       setCommitError(message);
+      // NEO-640 (a11y): a skipped multi-source run parks its Match Cards
+      // session before the commit, and the focus restore on Sync waits for
+      // the phase to be "closed". With no wizard open there is nothing on
+      // screen to go "Back to Match Cards" from, so the failure ends the session
+      // here; with the wizard open the phase stays parked and "Back to
+      // matching" keeps working. The alert stays: it is the sync banner's.
+      const wizardOpen = pendingPreviewRef.current !== null;
+      setPairingPhase((phase) =>
+        phase === "parked" && !wizardOpen ? "closed" : phase,
+      );
       return false;
     } finally {
       setCommitting(false);
@@ -3578,7 +3673,7 @@ export default function CardChecklist({
    *
    * NEO-221 (D9): non-null for `"review"` AND `"parked"`. This is what keeps
    * `CardPairingModal` MOUNTED (with `isOpen={false}`) while the operator is
-   * downstream in the wizard, so its reducer survives a "Back to matching".
+   * downstream in the wizard, so its reducer survives a "Back to Match Cards".
    * It is also the client's test for "is there a pairing session to go back
    * to" — the wizard gets an `onBack` only when this is non-null.
    *
@@ -4150,17 +4245,28 @@ export default function CardChecklist({
           <div
             ref={soloFetchRef}
             tabIndex={-1}
+            // A name without a role is ignored by most readers; "group" gives
+            // the park something to be announced as.
+            role="group"
             aria-labelledby="solo-fetch-status"
             className="p-2 mb-3 bg-notice-info-bg border border-notice-info-rule rounded-md text-notice-info-ink text-sm flex items-center justify-between gap-3 focus-outline"
           >
-            <span id="solo-fetch-status" role="status">
-              {soloProgressMessage(
-                soloFetch.side,
-                liveCandidates
-                  ? { ready: liveCandidates.ready, total: liveCandidates.total }
-                  : undefined,
-                soloFetch.sources ?? undefined,
+            {/* a11y (WCAG 4.1.3): the polite region is the start of the line
+                alone, which does not change during a run, so it is announced
+                once. The ticking "N of M cards ready." is for the eye
+                (`aria-hidden`); a second, visually hidden region says the
+                quarter marks, so a long run is a few announcements, not one
+                per card. The park is named by the first only. */}
+            <span>
+              <span id="solo-fetch-status" role="status">
+                {soloProgressStart(soloFetch.side, soloFetch.sources ?? undefined)}
+              </span>
+              {soloProgressCount(liveCandidates) && (
+                <span aria-hidden="true"> {soloProgressCount(liveCandidates)}</span>
               )}
+              <span role="status" className="sr-only">
+                {soloProgressStep(liveCandidates)}
+              </span>
             </span>
             {/* Reworded rather than suffixed, so Maestro's regex `id:` find
                 cannot match "Cancel card matching" or "Cancel entity review"
@@ -4175,7 +4281,7 @@ export default function CardChecklist({
             <button
               type="button"
               onClick={cancelSoloFetch}
-              aria-label="Cancel checklist fetch"
+              aria-label="Cancel card fetch"
               className="shrink-0 rounded-sm font-semibold underline decoration-dotted hover:decoration-solid py-1.5 -my-1.5"
             >
               Cancel
@@ -4625,7 +4731,7 @@ export default function CardChecklist({
           // NEO-221 (D9): MOUNTED for `"review"` and `"parked"`, OPEN only for
           // `"review"`. `CardPairingModal`'s `if (!isOpen) return null` sits
           // below all of its hooks, so a parked modal keeps its reducer — that
-          // is the entire mechanism behind the wizard's "Back to matching".
+          // is the entire mechanism behind the wizard's "Back to Match Cards".
           isOpen={pairingPhase === "review"}
           onClose={async () => {
             // Supersede any in-flight fetch so its result cannot reopen this
@@ -4668,7 +4774,7 @@ export default function CardChecklist({
           sources={pairingSources ?? undefined}
           resolveChecklistPairs={resolveChecklistPairs}
           setLabel={variantRow?.value}
-          // a11y: see syncButtonRef's own comment — "Back to matching" reopens
+          // a11y: see syncButtonRef's own comment — "Back to Match Cards" reopens
           // this modal by unmounting the wizard's own trigger button in the
           // same update that flips `isOpen`, so this component's own
           // document.activeElement-at-mount capture cannot be trusted.
@@ -4816,7 +4922,7 @@ export default function CardChecklist({
                   setCommitError(null);
                   // The skip is over: whatever the operator confirms now is
                   // their own pairing, not "every card matched".
-                  keptSentenceRef.current = null;
+                  skipReasonRef.current = null;
                   setPairingPhase("review");
                 }
               : undefined

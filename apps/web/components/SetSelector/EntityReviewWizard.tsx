@@ -1237,7 +1237,7 @@ export default function EntityReviewWizard({
    *
    * That is the batch whose only names are links the server made on its own
    * (set history, the Hall of Fame tie-break), plus at most the operator's
-   * own earlier decisions on a "Back to matching" return trip. The parent
+   * own earlier decisions on a "Back to Match Cards" return trip. The parent
    * opens the wizard for it so every link is seen before the save, and the
    * Decided list on Save is then the whole of the review — so it starts
    * expanded whatever its length, and a line above it says why the dialog
@@ -4705,7 +4705,7 @@ export default function EntityReviewWizard({
    * NEO-424 — the Save step's line over a batch that opened with nothing to
    * answer. Counted live, so a link the operator Changed and decided by hand
    * stops being one the line speaks for; gone once none is left. When the
-   * list also holds the operator's own decisions (a "Back to matching" return
+   * list also holds the operator's own decisions (a "Back to Match Cards" return
    * trip), it says how many of them are links.
    */
   const autoLinkedOnSave = openedWithEveryNameDecided ? countAutoLinked(rows) : 0;

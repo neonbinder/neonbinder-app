@@ -299,3 +299,4 @@
 - [Stand down on mounted, not phase](reference_stand_down_on_mounted_not_on_phase.md) — page element duplicated by a dialog keys on the dialog being mounted/open, not the phase before it (NEO-624)
 - [Render-phase open needs batch in state](reference_render_phase_open_needs_batch_in_state_and_fixture_batch_ids.md) — NEO-640 early open: previousBatchId in state; pre-streamed test fixtures never trip it; matched w/o pairedBy opens
 - [Names-first core: a name pair at 1 is clean](reference_names_first_core_makes_a_name_pair_at_one_clean.md) — skip predicate reads confidence + sourceNumbers, not pairedBy "name"; D2 duplicate-number tie vs main test
+- [Compiler memoization error points at unrelated callback](reference_compiler_memoization_error_points_at_unrelated_callback.md) — bisect your hunks; a new render-scope object breaks old useCallbacks

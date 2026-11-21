@@ -10067,7 +10067,7 @@ describe("NEO-424: a batch that opens with every name linked for you", () => {
   });
 
   /**
-   * A "Back to matching" return trip can open on a batch holding the
+   * A "Back to Match Cards" return trip can open on a batch holding the
    * operator's own decisions beside the links; the line counts the links.
    */
   it("counts the links when the list also holds the operator's own decisions", () => {

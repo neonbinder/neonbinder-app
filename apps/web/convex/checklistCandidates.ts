@@ -12,6 +12,7 @@ import {
   checklistPairRevertValidator,
   sourceNumbersValidator,
   checklistPairedRowValidator,
+  marketplacePairViaValidator,
 } from "./schema";
 import { cardNumberStem } from "../lib/cards/variations";
 // NEO-251 security review: the same two bounds the write path enforces, applied
@@ -157,20 +158,9 @@ const playersConflictValidator = v.object({
   preferred: v.optional(v.union(v.literal("bsc"), v.literal("sportlots"))),
 });
 
-/**
- * NEO-640 — which lookup paired a matched row's BSC and SportLots halves:
- * a stored link ("stored"), the cross-reference ("crossRef"), the variation
- * rules ("variation"), the card number ("number") or the player/card name
- * ("name"). Exported for `fetchCardChecklist`'s reconcile; the schema's
- * `checklistCandidates.pairedBy` spells the same union.
- */
-export const marketplacePairViaValidator = v.union(
-  v.literal("stored"),
-  v.literal("crossRef"),
-  v.literal("variation"),
-  v.literal("number"),
-  v.literal("name"),
-);
+// NEO-640 — defined in the schema beside the table that stores it, and
+// re-exported for `fetchCardChecklist`'s reconcile.
+export { marketplacePairViaValidator };
 
 /** One candidate as the action hands it over. */
 const candidateInputValidator = v.object({
