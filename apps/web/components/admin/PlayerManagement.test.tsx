@@ -127,16 +127,20 @@ vi.mock("convex/react", () => ({
 }));
 
 let lastPickerSportId: string | null = null;
+let lastPickerSingle = false;
 vi.mock("@/components/SetSelector/TeamPicker", () => ({
   default: ({
     onChange,
     sportId,
+    single,
   }: {
     value: string[];
     onChange: (next: string[]) => void;
     sportId?: string;
+    single?: boolean;
   }) => {
     lastPickerSportId = sportId ?? null;
+    lastPickerSingle = single === true;
     return (
       <div>
         <button type="button" onClick={() => onChange(["t-mariners"])}>
@@ -1578,6 +1582,30 @@ describe("PlayerManagement — the detail panel", () => {
     render(<PlayerManagement />);
     selectGriffey();
     expect(lastPickerSportId).toBe("sport-baseball");
+  });
+
+  it("asks the team picker for ONE team per stint (NEO-617)", () => {
+    render(<PlayerManagement />);
+    selectGriffey();
+    expect(lastPickerSingle).toBe(true);
+  });
+
+  it("a second pick replaces the first: the stint is added for the last team picked", async () => {
+    render(<PlayerManagement />);
+    selectGriffey();
+
+    fireEvent.click(screen.getByRole("button", { name: "Pick Seattle Mariners" }));
+    fireEvent.click(screen.getByRole("button", { name: "Pick Cincinnati Reds" }));
+    fireEvent.change(screen.getByLabelText("Stint from year"), {
+      target: { value: "2000" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add stint" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(mockSavePlayerFields).toHaveBeenCalledTimes(1));
+    const sent = mockSavePlayerFields.mock.calls[0][0].teamYears;
+    expect(sent).toContainEqual({ teamId: "t-reds", fromYear: 2000 });
+    expect(sent).toHaveLength(3);
   });
 
   it("refuses a repeat (team, start year) inline and sends nothing", () => {
