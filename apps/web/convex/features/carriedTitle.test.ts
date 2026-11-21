@@ -278,6 +278,31 @@ describe("assessParallelCopyTitle", () => {
     expect(outcome).toMatchObject({ carried: true, failing: false });
   });
 
+  test("NEO-637 step 2: a carried title over 80 with nothing left out is headed by the box", () => {
+    // The box is long enough that its own builder title gives up the Angels
+    // (step 2 is reached), short enough that the carried words, which say
+    // "Angels" and the number, fit under it.
+    const box = "Anime Kanji Orange Wave Sapphire Gold Rainbow";
+    const inputs = parallel("Kanji Orange Wave Refractor Sapphire Padparadscha Superfractor", 50, { setShortName: box });
+    const carried = "Mike Trout #BA-1 Angels /50";
+    expect(assessListingTitle(inputs)).toMatchObject({ tidyUp: true, shortNameUsed: true });
+    const builderHeaded = `${titleDescription(inputs)} ${carried}`;
+    expect(builderHeaded.length).toBeGreaterThan(80);
+    expect(leftOutOfTitle(inputs, builderHeaded)).toEqual([]);
+    const outcome = assessParallelCopyTitle(inputs, carried);
+    expect(outcome.title).toBe(`${box} ${carried}`);
+    expect(outcome).toMatchObject({ carried: true, failing: false });
+  });
+
+  test("NEO-637 step 2: with no box text the carried title is headed by the builder's description, line or no line", () => {
+    const inputs = parallel("Kanji Gold Refractor", 50);
+    const builderHeaded = `${titleDescription(inputs)} Trout Halos /50`;
+    expect(leftOutOfTitle(inputs, builderHeaded).length).toBeGreaterThan(0);
+    const outcome = assessParallelCopyTitle(inputs, "Trout Halos");
+    expect(outcome.title).toBe(builderHeaded);
+    expect(outcome).toMatchObject({ carried: true, failing: false });
+  });
+
   test("NEO-618 step 2: a blank box leaves the builder's description heading the rest", () => {
     const outcome = assessParallelCopyTitle(parallel("Kanji Gold Refractor", 50, { setShortName: "   " }), "Trout Halos");
     expect(outcome.title).toBe("2024 Topps Chrome Anime Kanji Gold Refractor Trout Halos /50");
@@ -437,3 +462,49 @@ describe("NEO-619: a hand edit re-headed onto a parallel that names itself", () 
     expect(outcome.title).toContain("Purple");
   });
 });
+
+/**
+ * NEO-637 — one box rule. The builder (`assessListingTitle`) and a parallel
+ * copy (`assessParallelCopyTitle`) take the box on the same inputs for the
+ * same reason: the title leaves something out, or runs over 80.
+ */
+describe("NEO-637 the builder and the parallel copy make the same box decision", () => {
+  const BOX = "Anime Kanji Gold";
+  const cases: Array<[string, ListingCardInputs]> = [
+    ["nothing left out, fits", parallel("Kanji Gold", undefined, { setShortName: BOX })],
+    ["a team left out", parallel("Kanji Gold Refractor", 50, { setShortName: BOX })],
+    ["a first name left out", parallel("Kanji Orange Wave Refractor Sapphire Gold X", 25, { setShortName: BOX })],
+    ["over 80 with nothing to cut", { ...parallel("Kanji Gold", undefined, { setShortName: BOX }), setName: `S${"x".repeat(89)}`, teamNames: [], cardNumber: "", playerNames: ["Ichiro"] }],
+    ["no box text", parallel("Kanji Gold Refractor", 50)],
+    ["a blank box", parallel("Kanji Gold Refractor", 50, { setShortName: "  " })],
+  ];
+
+  test.each(cases)("%s: same decision, same title, with no hand edit to carry", (_name, inputs) => {
+    const builder = assessListingTitle(inputs);
+    const copy = assessParallelCopyTitle(inputs);
+    expect(copy.shortNameUsed).toBe(builder.shortNameUsed);
+    expect(copy.title).toBe(builder.title);
+    // The decision itself is the one rule.
+    const box = inputs.setShortName?.trim();
+    const own = assessListingTitle({ ...inputs, setShortName: undefined });
+    const expected = !!box && (!own.fits || leftOutOfTitle(inputs, own.title).length > 0);
+    expect(builder.shortNameUsed === true).toBe(expected);
+  });
+
+  test("a hand edit whose words are the builder's own title decides the same way", () => {
+    let compared = 0;
+    for (const [, inputs] of cases) {
+      const builder = assessListingTitle({ ...inputs, setShortName: undefined });
+      const asCarried = builder.title.slice(titleDescription(inputs).length).trim();
+      if (!builder.title.startsWith(titleDescription(inputs)) || !asCarried) continue;
+      const outcome = assessParallelCopyTitle(inputs, asCarried.replace(/\s*\/\d+$/, ""));
+      if (!outcome.carried) continue;
+      const boxHeaded = !!inputs.setShortName?.trim() && outcome.title.startsWith(inputs.setShortName.trim());
+      expect(boxHeaded).toBe(assessListingTitle(inputs).shortNameUsed === true);
+      compared += 1;
+    }
+    // Never vacuous: at least one case reached a carried title.
+    expect(compared).toBeGreaterThan(0);
+  });
+});
+

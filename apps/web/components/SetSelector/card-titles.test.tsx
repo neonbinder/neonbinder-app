@@ -704,6 +704,40 @@ describe("NEO-637 — the box and a title the operator edited", () => {
       expect(swapSetNameInTitle("anything", "  ", NEW)).toBeUndefined();
     });
 
+    test("start, middle and end of the title", () => {
+      expect(swapSetNameInTitle("Old Set Ohtani #1", "Old Set", "New")).toBe("New Ohtani #1");
+      expect(swapSetNameInTitle("My Old Set Ohtani #1", "Old Set", "New")).toBe("My New Ohtani #1");
+      expect(swapSetNameInTitle("Ohtani #1 Old Set", "Old Set", "New")).toBe("Ohtani #1 New");
+    });
+
+    test("a name ending in punctuation, and non-letter edges around the run", () => {
+      expect(swapSetNameInTitle("Topps Co. Ohtani", "Topps Co.", "Topps")).toBe("Topps Ohtani");
+      expect(swapSetNameInTitle("(Old Set) Ohtani", "Old Set", "New")).toBe("(New) Ohtani");
+      expect(swapSetNameInTitle("Old Set, Ohtani", "Old Set", "New")).toBe("New, Ohtani");
+      // A name that itself ends in a non-letter needs no word edge after it.
+      expect(swapSetNameInTitle("Old Set!Ohtani", "Old Set!", "New")).toBe("NewOhtani");
+    });
+
+    test("leading space in the edit does not hide the opening run", () => {
+      expect(swapSetNameInTitle("  Old Set Ohtani Old Set", "Old Set", "New")).toBe("  New Ohtani Old Set");
+    });
+
+    test("the run at the start wins over a later copy; two copies with none at the start are a guess, so not found", () => {
+      expect(swapSetNameInTitle("Old Set Ohtani Old Set", "Old Set", "New")).toBe("New Ohtani Old Set");
+      expect(swapSetNameInTitle("Ohtani Old Set #1 Old Set", "Old Set", "New")).toBeUndefined();
+    });
+
+    test("a copy inside a longer word does not count towards the repeat", () => {
+      expect(swapSetNameInTitle("Ohtani Old Set #1 Old Setter", "Old Set", "New")).toBe("Ohtani New #1 Old Setter");
+    });
+
+    test("a swap can make the title longer than 80: it is returned as it is, never cut", () => {
+      const long = "N".repeat(79);
+      const swapped = swapSetNameInTitle("Old Ohtani #1", "Old", long);
+      expect(swapped).toBe(`${long} Ohtani #1`);
+      expect(swapped!.length).toBeGreaterThan(LISTING_TITLE_MAX);
+    });
+
     test("a pasted line break in the new text is one space", () => {
       expect(swapSetNameInTitle("Old Ohtani", "Old", "New\nSet")).toBe("New Set Ohtani");
     });
@@ -755,6 +789,31 @@ describe("NEO-637 — the box and a title the operator edited", () => {
       const generated = groups([])[0].cards[1].title;
       const answers = [{ listingTitle: "   " }, { listingTitle: generated }];
       expect(retitleDraftsForSetName(answers, groups(answers), OLD, NEW)).toEqual(answers);
+    });
+
+    test("a line shared by the group alone (the row's own is empty) counts as showing the line", () => {
+      const answers = [
+        { listingTitle: `${OLD} Ohtani my own #1` },
+        { listingTitle: `${OLD} Ohtani my own #2` },
+      ];
+      const [group] = groups(answers);
+      expect(group.leftOut.length).toBeGreaterThan(0);
+      expect(group.cards.every((c) => c.leftOut.length === 0)).toBe(true);
+      expect(retitleDraftsForSetName(answers, groups(answers), OLD, NEW)).toEqual([
+        { listingTitle: `${NEW} Ohtani my own #1` },
+        { listingTitle: `${NEW} Ohtani my own #2` },
+      ]);
+    });
+
+    test("an edit with the old text twice and none at the start falls to the builder's description, then rebuilds", () => {
+      const twice = `Ohtani Prior Box #1 Prior Box`;
+      expect(
+        retitleDraftsForSetName([{ listingTitle: twice }], groups([{ listingTitle: twice }]), "Prior Box", NEW)[0],
+      ).toBeUndefined();
+      const withDescription = `Ohtani ${OLD} #1 Prior Box Prior Box`;
+      expect(
+        retitleDraftsForSetName([{ listingTitle: withDescription }], groups([{ listingTitle: withDescription }]), "Prior Box", NEW)[0],
+      ).toEqual({ listingTitle: `Ohtani ${NEW} #1 Prior Box Prior Box` });
     });
 
     test("an unchanged set name changes nothing", () => {

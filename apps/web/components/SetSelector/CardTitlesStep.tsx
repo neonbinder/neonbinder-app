@@ -112,12 +112,16 @@ const TITLE_OVER = "Too long to list as-is.";
 
 /** NEO-535 copy, in the NB voice (no sign-off needed, Jason reviews while testing). */
 const TITLES_LEAD = "These titles had to leave something out or still run long. Check what went, then keep 'em or make 'em yours.";
-const SHORT_LEAD = "Set name hogging the title? Trim it here and every title that left something out gets it.";
+const SHORT_LEAD =
+  "Set name hogging the title? Trim it here and every title that left something out gets it, ones you wrote included.";
 const SHORT_LABEL = "Set name in titles";
 const stillOverLine = (n: number) =>
   n === 0 ? "Every title fits now." : n === 1 ? "1 title still runs long." : `${n} titles still run long.`;
 /** NEO-535 — an untouched prefill past the cap: not a fault, just not in use yet. */
 const PREFILL_OVER = "Over 80, so it's sitting out. Trim it and your titles pick it up.";
+/** NEO-637 copy: a hand edit that could not keep its words was rebuilt, and the box says so. */
+const rebuiltLine = (n: number) =>
+  n === 0 ? "" : n === 1 ? "1 title you wrote was rebuilt." : `${n} titles you wrote were rebuilt.`;
 const moreRowsLine = (n: number) => `And ${n} more, saved as generated.`;
 const USE_GENERATED = "Use generated title";
 /**
@@ -318,8 +322,19 @@ export default function CardTitlesStep({
   // typing, unmount). Its status and refusal are read from this, never from
   // each keystroke, so a screen reader hears the count once per pause.
   const [shortSettledText, setShortSettledText] = useState<string>(() => shortName ?? prefill);
+  // NEO-637 — hand edits the box could not keep (the set name was not in them)
+  // and rebuilt instead. `rebuiltEver` counts them for the status line;
+  // `restorable` holds their text since the box last took focus, so Escape in
+  // the box gives the words back along with the set name.
+  const rebuiltEver = useRef<Set<number>>(new Set());
+  const restorable = useRef<Map<number, string>>(new Map());
+  const [rebuiltCount, setRebuiltCount] = useState(0);
   const flushShort = useCallback(() => {
     setShortSettledText(shortLatest.current);
+    // Still rebuilt: no hand edit has been typed on the row since.
+    setRebuiltCount(
+      [...rebuiltEver.current].filter((i) => !latest.current[i]?.listingTitle?.trim()).length,
+    );
     const next = shortValue(shortLatest.current);
     if (shortSettled.current === next) return;
     shortSettled.current = next;
@@ -385,16 +400,31 @@ export default function CardTitlesStep({
    * not in it), and one whose row does not is left as typed
    * (`retitleDraftsForSetName`, read from the lists as they stand now).
    */
-  const changeShort = (raw: string) => {
+  const changeShort = (raw: string, restore = false) => {
     const text = oneLine(raw);
     const nextEdited = shortValue(text) !== undefined;
     const nextLive = onShortNameChange && nextEdited ? checkShortNameAnswer(text).value : undefined;
     const oldName = liveShortName ?? prefill;
     const newName = nextLive ?? prefill;
     setShortDraft(text);
-    if (oldName.trim() !== newName.trim()) {
-      setDrafts((prev) => retitleDraftsForSetName(prev, titleGroups, oldName, newName));
+    const next = retitleDraftsForSetName(drafts, titleGroups, oldName, newName);
+    // A hand edit that lost its draft was rebuilt: remember its words.
+    next.forEach((answer, i) => {
+      const was = drafts[i]?.listingTitle;
+      if (was?.trim() && !answer?.listingTitle) {
+        rebuiltEver.current.add(i);
+        restorable.current.set(i, was);
+      }
+    });
+    if (restore) {
+      // Escape takes the rebuilds back with the set name.
+      restorable.current.forEach((was, i) => {
+        if (!next[i]?.listingTitle) next[i] = { ...next[i], listingTitle: was };
+        rebuiltEver.current.delete(i);
+      });
+      restorable.current.clear();
     }
+    setDrafts(next);
   };
 
   const setField = (indexes: readonly number[], field: keyof TitleAnswer, value: string) => {
@@ -452,7 +482,7 @@ export default function CardTitlesStep({
     } else if (event.key === "Escape" && shortLatest.current !== shortUndo.current) {
       event.preventDefault();
       event.stopPropagation();
-      changeShort(shortUndo.current);
+      changeShort(shortUndo.current, true);
     }
   };
 
@@ -477,11 +507,12 @@ export default function CardTitlesStep({
   );
   // Progress only; a refusal is the alert below. Read at the last settle.
   const shortError = settledCheck.error;
-  const shortStatus = settledShortName
+  const shortProgress = settledShortName
     ? stillOverLine(stillOver)
     : !settledEdited && shortSettledText.trim().length > MAX_LISTING_SHORT_NAME_LENGTH
       ? PREFILL_OVER
       : "";
+  const shortStatus = [shortProgress, rebuiltLine(rebuiltCount)].filter(Boolean).join(" ");
 
   return (
     <div
@@ -515,6 +546,7 @@ export default function CardTitlesStep({
               onChange={(e) => changeShort(e.target.value)}
               onFocus={() => {
                 shortUndo.current = shortLatest.current;
+                restorable.current.clear();
               }}
               onBlur={flushShort}
               onKeyDown={shortKeys}

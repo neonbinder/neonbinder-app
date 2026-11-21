@@ -33,7 +33,8 @@ const CONTEXT: TitleContext = {
 const OVER: TitleContext = { ...CONTEXT, setNameValue: `${FIRST_NAME_SET} Collectors Box` };
 
 const LABEL = "Set name in titles";
-const LEAD = "Set name hogging the title? Trim it here and every title that left something out gets it.";
+const LEAD =
+  "Set name hogging the title? Trim it here and every title that left something out gets it, ones you wrote included.";
 const TITLES_LEAD = "These titles had to leave something out or still run long. Check what went, then keep 'em or make 'em yours.";
 const BOX = "2026 Topps Chrome Sapphire";
 
@@ -378,6 +379,95 @@ describe("CardTitlesStep — the box and a title the operator edited (NEO-637)",
     expect(lineUnder(own)).toHaveLength(0);
     fireEvent.change(screen.getByRole("textbox", { name: LABEL }), { target: { value: BOX } });
     expect(titleFields().map((f) => f.value)).toEqual([whole, `${BOX} Shohei Ohtani #2 Baseball`]);
+  });
+
+  test("a rebuilt hand edit is said at the settle, once, in the box's own status line", () => {
+    setup({ cards: [card("1"), card("2")] });
+    const box = screen.getByRole("textbox", { name: LABEL });
+    fireEvent.change(screen.getByRole("textbox", { name: "Title for #1 Card 1" }), {
+      target: { value: "My Ohtani title #1" },
+    });
+    fireEvent.change(box, { target: { value: BOX } });
+    // Not per keystroke: nothing is said until the box settles.
+    expect(boxStatus().textContent).toBe("");
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(boxStatus().textContent).toBe("Every title fits now. 1 title you wrote was rebuilt.");
+    expect(screen.getAllByRole("status").filter((el) => /rebuilt/.test(el.textContent ?? ""))).toHaveLength(1);
+  });
+
+  test("two rebuilt edits say so in the plural; none says nothing", () => {
+    setup({ cards: [card("1"), card("2")] });
+    const box = screen.getByRole("textbox", { name: LABEL });
+    fireEvent.change(box, { target: { value: BOX } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(boxStatus().textContent).not.toMatch(/rebuilt/);
+    fireEvent.change(box, { target: { value: PREFILL } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Title for #1 Card 1" }), {
+      target: { value: "My Ohtani title #1" },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "Title for #2 Card 2" }), {
+      target: { value: "My Ohtani title #2" },
+    });
+    fireEvent.change(box, { target: { value: BOX } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(boxStatus().textContent).toBe("Every title fits now. 2 titles you wrote were rebuilt.");
+  });
+
+  test("Escape in the box gives a rebuilt hand edit its words back", () => {
+    setup({ cards: [card("1"), card("2")] });
+    const box = screen.getByRole("textbox", { name: LABEL }) as HTMLTextAreaElement;
+    const own = screen.getByRole("textbox", { name: "Title for #1 Card 1" });
+    fireEvent.change(own, { target: { value: "My Ohtani title #1" } });
+    fireEvent.focus(box);
+    fireEvent.change(box, { target: { value: BOX } });
+    expect(titleFields()[0].value).toBe(`${BOX} Shohei Ohtani #1 Baseball`);
+    fireEvent.keyDown(box, { key: "Escape" });
+    expect(box.value).toBe(PREFILL);
+    expect(titleFields()[0].value).toBe("My Ohtani title #1");
+    // And it is not counted as rebuilt any more.
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(boxStatus().textContent).not.toMatch(/rebuilt/);
+  });
+
+  test("a box typed past 80 swaps nothing to a bogus name, and typing it back loses nothing", () => {
+    setup({ cards: [card("1"), card("2")] });
+    const box = screen.getByRole("textbox", { name: LABEL });
+    fireEvent.change(screen.getByRole("textbox", { name: "Title for #1 Card 1" }), {
+      target: { value: `${PREFILL} Ohtani RC #1` },
+    });
+    fireEvent.change(box, { target: { value: BOX } });
+    expect(titleFields()[0].value).toBe(`${BOX} Ohtani RC #1`);
+    const tooLong = `${BOX} ${"x".repeat(80)}`;
+    fireEvent.change(box, { target: { value: tooLong } });
+    // Refused: the title falls back to the set's own description, never the bogus text.
+    expect(titleFields()[0].value).toBe(`${PREFILL} Ohtani RC #1`);
+    expect(titleFields()[0].value).not.toContain("xxx");
+    fireEvent.change(box, { target: { value: "2026 Topps Chrome" } });
+    expect(titleFields()[0].value).toBe("2026 Topps Chrome Ohtani RC #1");
+  });
+
+  test("clearing the box back to its prefill, or to nothing, returns the title to the prefill form", () => {
+    setup({ cards: [card("1"), card("2")] });
+    const box = screen.getByRole("textbox", { name: LABEL });
+    fireEvent.change(screen.getByRole("textbox", { name: "Title for #1 Card 1" }), {
+      target: { value: `${PREFILL} Ohtani RC #1` },
+    });
+    fireEvent.change(box, { target: { value: BOX } });
+    expect(titleFields()[0].value).toBe(`${BOX} Ohtani RC #1`);
+    fireEvent.change(box, { target: { value: PREFILL } });
+    expect(titleFields()[0].value).toBe(`${PREFILL} Ohtani RC #1`);
+    fireEvent.change(box, { target: { value: BOX } });
+    fireEvent.change(box, { target: { value: "" } });
+    expect(titleFields()[0].value).toBe(`${PREFILL} Ohtani RC #1`);
+  });
+
+  test("without the wizard's callback there is no box, and a hand edit stays as typed", () => {
+    setup({ cards: [card("1"), card("2")], withCallback: false });
+    expect(screen.queryByRole("textbox", { name: LABEL })).toBeNull();
+    fireEvent.change(screen.getByRole("textbox", { name: "Title for #1 Card 1" }), {
+      target: { value: `${PREFILL} Ohtani RC #1` },
+    });
+    expect(titleFields()[0].value).toBe(`${PREFILL} Ohtani RC #1`);
   });
 
   test("Escape in the box takes the swap back with it", () => {

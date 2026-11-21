@@ -629,10 +629,13 @@ export function titleGroupKey(
 }
 
 /**
- * NEO-637 — `text` with the first whole-word run of `oldName` swapped for
- * `newName`, the rest of the words kept as typed. Case is ignored when
- * finding the run; the replacement is `newName` as written. Undefined when
- * `oldName` is not in `text` (or is blank): the caller rebuilds instead.
+ * NEO-637 — `text` with the run of `oldName` swapped for `newName`, the rest
+ * of the words kept as typed. Case is ignored when finding the run; the
+ * replacement is `newName` as written. The run is the one at the start of the
+ * title (a set name opens a title); failing that, the only one. Undefined when
+ * `oldName` is not in `text` as whole words, is blank, or is in it more than
+ * once with none at the start: which copy is the set name is a guess, so the
+ * caller tries something else or rebuilds instead.
  */
 export function swapSetNameInTitle(
   text: string,
@@ -644,14 +647,18 @@ export function swapSetNameInTitle(
   const lower = text.toLowerCase();
   const want = old.toLowerCase();
   const isWordChar = (ch: string | undefined) => !!ch && /[\p{L}\p{N}]/u.test(ch);
+  const runs: number[] = [];
   for (let at = lower.indexOf(want); at >= 0; at = lower.indexOf(want, at + 1)) {
     const end = at + want.length;
     // Whole words only: "Score" is not found inside "Scorecard".
     if (isWordChar(text[at - 1]) && isWordChar(old[0])) continue;
     if (isWordChar(text[end]) && isWordChar(old[old.length - 1])) continue;
-    return oneLine(`${text.slice(0, at)}${newName.trim()}${text.slice(end)}`);
+    runs.push(at);
   }
-  return undefined;
+  const opening = text.length - text.trimStart().length;
+  const at = runs.includes(opening) ? opening : runs.length === 1 ? runs[0] : undefined;
+  if (at === undefined) return undefined;
+  return oneLine(`${text.slice(0, at)}${newName.trim()}${text.slice(at + want.length)}`);
 }
 
 /**
@@ -663,9 +670,10 @@ export function swapSetNameInTitle(
  *
  *  - a hand edit whose row shows the line gets the new set name: only the old
  *    set-name text inside it is swapped, the rest of the edit is kept; when
- *    the old text is not in the edit, the builder's own description is tried
- *    as the old text, and when that is not in it either the edit is dropped and the title is
- *    the generated one (built with the new set name);
+ *    the old text is not in the edit (or is in it twice, none at the start),
+ *    the builder's own description is tried as the old text, and when that is
+ *    not found either the edit is dropped and the title is the generated one
+ *    (built with the new set name);
  *  - a hand edit whose row shows no line is left exactly as it is;
  *  - a draft that is blank, or just the generated title, is no hand edit: the
  *    row follows the generated title and the draft is left alone.
