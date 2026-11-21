@@ -36,6 +36,7 @@ import { internalMutation, type MutationCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { markBscTeamCheckGivenUpImpl } from "./bscTeamCheck";
 import { assertResetArmed } from "./resetArming";
+import { queuedByForLane } from "./lib/bscGateKey";
 
 /** One BSC call at a time, deployment wide. */
 export const BSC_TEAM_POOL_MAX_PARALLELISM = 1;
@@ -62,11 +63,21 @@ export const bscTeamCheckItemValidator = v.object({
   pass: v.number(),
   /** When the card was first queued (epoch ms): the 30-minute clock. */
   firstQueuedAt: v.number(),
+  /**
+   * NEO-628 — the Clerk subject of the operator who queued the card, passed by
+   * the server's enqueue callers (never read in scheduled code, never sent by
+   * a client), and only on the fake, where it is used: the card is asked in
+   * that user's namespace and behind that user's BSC call gate. Absent (real
+   * BSC, an item in flight across the deploy, or one from the old shim) is the
+   * deployment's own domain.
+   */
+  queuedBy: v.optional(v.string()),
 });
 export type BscTeamCheckItem = {
   cardChecklistId: Id<"cardChecklist">;
   pass: number;
   firstQueuedAt: number;
+  queuedBy?: string;
 };
 
 /** What one work item reports. `until` only with "deferred". */
@@ -136,15 +147,27 @@ export const enqueueBscTeamChecks = internalMutation({
     pass: v.optional(v.number()),
     firstQueuedAt: v.optional(v.number()),
     from: v.optional(v.number()),
+    /** NEO-628 — see `bscTeamCheckItemValidator.queuedBy`. */
+    queuedBy: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args): Promise<null> => {
     const from = args.from ?? 0;
+    // The ONE rule (NEO-628): the operator is recorded on an item only where it
+    // is used, on the fake. Real BSC has one gate, so a Clerk subject would be
+    // stored in the pool's args and completion context for nothing. Every
+    // re-enqueue spreads the item, so what is stored here is all there is.
+    const queuedBy = queuedByForLane(args.queuedBy);
     const firstQueuedAt = args.firstQueuedAt ?? Date.now();
     const pass = Math.min(Math.max(1, Math.floor(args.pass ?? 1)), BSC_TEAM_CHECK_MAX_PASSES);
     const chunk = args.cardChecklistIds.slice(from, from + BSC_TEAM_ENQUEUE_CHUNK_SIZE);
     for (const cardChecklistId of chunk) {
-      await enqueueItem(ctx, { cardChecklistId, pass, firstQueuedAt });
+      await enqueueItem(ctx, {
+        cardChecklistId,
+        pass,
+        firstQueuedAt,
+        ...(queuedBy !== undefined ? { queuedBy } : {}),
+      });
     }
     const next = from + BSC_TEAM_ENQUEUE_CHUNK_SIZE;
     if (next < args.cardChecklistIds.length) {
@@ -153,6 +176,7 @@ export const enqueueBscTeamChecks = internalMutation({
         pass,
         firstQueuedAt,
         from: next,
+        ...(queuedBy !== undefined ? { queuedBy } : {}),
       });
     } else {
       // Counts only.

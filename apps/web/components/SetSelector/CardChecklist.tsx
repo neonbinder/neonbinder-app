@@ -3478,6 +3478,16 @@ export default function CardChecklist({
         .map(toCard),
     };
   }, [pairingPhase, liveCandidates]);
+  /**
+   * NEO-487 / NEO-624 — Match Cards is on screen. This is `isOpen` of the
+   * `<CardPairingModal>` below, and the modal renders its `waitingSlot` only
+   * when open, so it is exactly "the dialog's own wait line exists". NOT
+   * `pairingPhase === "review"` alone: a two-source Sync sets that phase
+   * before the BuySportsCards call goes out, yet the dialog mounts only once
+   * the first rows stream in, and in between nothing else says what the fetch
+   * is waiting on.
+   */
+  const pairingDialogOpen = pairingPhase === "review" && streamedPairing !== null;
 
   const lastSynced = useMemo(() => {
     if (!cards || cards.length === 0) return null;
@@ -3942,11 +3952,14 @@ export default function CardChecklist({
             fetch is held up by a BSC call. Not while the pairing dialog is
             open: it carries its own, and two copies of one sentence on a
             page is one too many for a reader and a text locator alike.
+            "Open" is `pairingDialogOpen`, not the review phase: that
+            phase starts before the dialog has any rows to mount with
+            (NEO-624), and this line covers the gap.
             Always mounted (idle while the dialog is open), so its status
             region exists before it speaks. */}
         <WaitingOnMarketplaceRun
           runKey={syncWaitKey}
-          active={syncing && pairingPhase !== "review"}
+          active={syncing && !pairingDialogOpen}
           marketplace="BuySportsCards"
           className="mb-3"
         />

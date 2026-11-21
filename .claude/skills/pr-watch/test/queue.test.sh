@@ -87,17 +87,17 @@ printf "$RUN" in_progress "" > "$FIX/runs.json"; printf "$INERT_JOBS" in_progres
 PR_WATCH_QUEUE_MAX_MIN=0 run "inert skip before CI Gate finishes: E2E skipped, CI Gate decides" 2 'E2E skipped, CI Gate decides'
 out=$(PR_WATCH_QUEUE_MAX_MIN=0 bash "$HERE/../watch.sh" --queue 42 2>&1); echo "$out" | grep -q 'inert paths' && { echo "FAIL inert claimed before the gate finished"; fails=$((fails+1)); } || echo "ok   inert not claimed before the gate finished"
 
-# NEO-627 fail fast: desktop red, seed-mobile skipped. Ejected with the desktop failure
+# NEO-627 fail fast (NEO-628: seed-mobile ends green without resetting): desktop red, shard-mobile skipped. Ejected with the desktop failure
 # first and the note; nobody is sent looking for mobile artifacts.
-FF_JOBS='{"jobs":[{"name":"E2E / e2e","status":"completed","conclusion":"failure","url":"https://example.invalid/jobs/20"},{"name":"E2E / seed-mobile","status":"completed","conclusion":"skipped","url":"https://example.invalid/jobs/21"},{"name":"E2E / shard-mobile (1, 8)","status":"completed","conclusion":"skipped","url":"https://example.invalid/jobs/22"},{"name":"E2E / shard-desktop (3, 8)","status":"completed","conclusion":"failure","url":"https://example.invalid/jobs/23"},{"name":"CI Gate","status":"completed","conclusion":"failure","url":"https://example.invalid/jobs/24"}]}'
+FF_JOBS='{"jobs":[{"name":"E2E / e2e","status":"completed","conclusion":"failure","url":"https://example.invalid/jobs/20"},{"name":"E2E / seed-mobile","status":"completed","conclusion":"success","url":"https://example.invalid/jobs/21"},{"name":"E2E / shard-mobile (1, 8)","status":"completed","conclusion":"skipped","url":"https://example.invalid/jobs/22"},{"name":"E2E / shard-desktop (3, 8)","status":"completed","conclusion":"failure","url":"https://example.invalid/jobs/23"},{"name":"CI Gate","status":"completed","conclusion":"failure","url":"https://example.invalid/jobs/24"}]}'
 fresh; pr OPEN null "[$ADD,$(rem CI_FAILURE '{"__typename":"Bot","login":"github-merge-queue"}')]" > "$FIX/graphql.json"
 printf "$RUN" completed failure > "$FIX/runs.json"; printf '%s' "$FF_JOBS" > "$FIX/run-7.json"
 run "ejected after a desktop red names the desktop job first and says mobile was skipped" 1 'DONE EJECTED.*failing job\(s\): PR Pipeline / E2E / shard-desktop \(3, 8\): https://example.invalid/jobs/23; PR Pipeline / E2E / e2e.*mobile skipped: desktop red \(fail fast\)'
 
-# A skipped seed-mobile with no desktop failure is not called fail fast.
+# Mobile shards that ran with no desktop failure are not called fail fast.
 fresh; pr OPEN null "[$ADD,$(rem CI_FAILURE '{"__typename":"Bot","login":"github-merge-queue"}')]" > "$FIX/graphql.json"
 printf "$RUN" completed failure > "$FIX/runs.json"
-printf '%s' '{"jobs":[{"name":"E2E / seed-mobile","status":"completed","conclusion":"skipped","url":"https://example.invalid/jobs/21"},{"name":"E2E / shard-mobile (1, 8)","status":"completed","conclusion":"failure","url":"https://example.invalid/jobs/22"}]}' > "$FIX/run-7.json"
+printf '%s' '{"jobs":[{"name":"E2E / seed-mobile","status":"completed","conclusion":"success","url":"https://example.invalid/jobs/21"},{"name":"E2E / shard-mobile (1, 8)","status":"completed","conclusion":"failure","url":"https://example.invalid/jobs/22"}]}' > "$FIX/run-7.json"
 out=$(bash "$HERE/../watch.sh" --queue 42 2>&1); echo "$out" | grep -q 'fail fast' && { echo "FAIL fail-fast claimed without a desktop red"; fails=$((fails+1)); } || echo "ok   fail fast needs a desktop red"
 
 # NEO-627 pins: E2E skipped but CI Gate failed or cancelled prints no e2e note.
@@ -113,20 +113,20 @@ J='{"name":"%s","status":"completed","conclusion":"%s","url":"https://example.in
 mkjobs() { printf '{"jobs":[%s]}' "$(IFS=,; echo "$*")"; }
 fresh; pr OPEN null "[$ADD,$(rem CI_FAILURE '{"__typename":"Bot","login":"github-merge-queue"}')]" > "$FIX/graphql.json"
 printf "$RUN" completed failure > "$FIX/runs.json"
-mkjobs "$(printf "$J" 'E2E / e2e' failure 1)" "$(printf "$J" 'E2E / seed-mobile' skipped 2)" "$(printf "$J" 'E2E / shard-desktop (2, 8)' failure 3)" > "$FIX/run-7.json"
+mkjobs "$(printf "$J" 'E2E / e2e' failure 1)" "$(printf "$J" 'E2E / seed-mobile' success 2)" "$(printf "$J" 'E2E / shard-mobile' skipped 4)" "$(printf "$J" 'E2E / shard-desktop (2, 8)' failure 3)" > "$FIX/run-7.json"
 run "fail fast: desktop and non-desktop red, desktop first with note" 1 'failing job\(s\): PR Pipeline / E2E / shard-desktop \(2, 8\).*PR Pipeline / E2E / e2e.*mobile skipped: desktop red'
 
-# seed-mobile NOT skipped with a desktop red: no note.
+# Mobile shards NOT skipped with a desktop red: no note.
 fresh; pr OPEN null "[$ADD,$(rem CI_FAILURE '{"__typename":"Bot","login":"github-merge-queue"}')]" > "$FIX/graphql.json"
 printf "$RUN" completed failure > "$FIX/runs.json"
-mkjobs "$(printf "$J" 'E2E / seed-mobile' success 2)" "$(printf "$J" 'E2E / shard-desktop (2, 8)' failure 3)" > "$FIX/run-7.json"
+mkjobs "$(printf "$J" 'E2E / seed-mobile' success 2)" "$(printf "$J" 'E2E / shard-mobile (1, 8)' success 4)" "$(printf "$J" 'E2E / shard-desktop (2, 8)' failure 3)" > "$FIX/run-7.json"
 out=$(bash "$HERE/../watch.sh" --queue 42 2>&1)
-if echo "$out" | grep -q 'fail fast'; then echo "FAIL note with seed-mobile not skipped"; echo "$out" | sed 's/^/     /'; fails=$((fails+1)); else echo "ok   no fail-fast note when seed-mobile ran"; fi
+if echo "$out" | grep -q 'fail fast'; then echo "FAIL note with the mobile shards not skipped"; echo "$out" | sed 's/^/     /'; fails=$((fails+1)); else echo "ok   no fail-fast note when the mobile shards ran"; fi
 
-# Only the desktop BSC breaker red, seed-mobile skipped: it sorts first and gets the note.
+# A single desktop shard red, mobile shards skipped: it sorts first and gets the note.
 fresh; pr OPEN null "[$ADD,$(rem CI_FAILURE '{"__typename":"Bot","login":"github-merge-queue"}')]" > "$FIX/graphql.json"
 printf "$RUN" completed failure > "$FIX/runs.json"
-mkjobs "$(printf "$J" 'E2E / e2e' failure 1)" "$(printf "$J" 'E2E / seed-mobile' skipped 2)" "$(printf "$J" 'E2E / BSC breaker specs (desktop)' failure 3)" > "$FIX/run-7.json"
-run "fail fast: desktop breaker red sorts first with note" 1 'failing job\(s\): PR Pipeline / E2E / BSC breaker specs \(desktop\).*PR Pipeline / E2E / e2e.*mobile skipped: desktop red'
+mkjobs "$(printf "$J" 'E2E / e2e' failure 1)" "$(printf "$J" 'E2E / seed-mobile' success 2)" "$(printf "$J" 'E2E / shard-mobile' skipped 4)" "$(printf "$J" 'E2E / shard-desktop (4, 8)' failure 3)" > "$FIX/run-7.json"
+run "fail fast: a single desktop shard red sorts first with note" 1 'failing job\(s\): PR Pipeline / E2E / shard-desktop \(4, 8\).*PR Pipeline / E2E / e2e.*mobile skipped: desktop red'
 
 [ "$fails" = 0 ] && echo "all passed" || { echo "$fails failed"; exit 1; }

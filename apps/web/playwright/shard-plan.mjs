@@ -9,9 +9,6 @@
 //                                                        rewrite timings.json from one or more
 //                                                        (merged) Playwright JSON reports, each
 //                                                        spec's median over the reports
-//   node playwright/shard-plan.mjs --breaker  the BSC breaker specs (NEO-552), which no
-//                                                        shard runs: e2e.yml's breaker-desktop /
-//                                                        breaker-mobile jobs do, alone, after every shard
 //   node playwright/shard-plan.mjs --projects  the spec projects, one per line
 //                                                        (e2e.yml's gate reads it)
 //
@@ -48,7 +45,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { BREAKER_SPECS, BREAKER_TAG, ignoredSpecs } from "./project-scope.mjs";
+import { ignoredSpecs } from "./project-scope.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.resolve(HERE, "..");
@@ -71,72 +68,10 @@ function allSpecs() {
     .sort();
 }
 
-// NEO-552: the BSC breaker specs (project-scope.mjs) are planned in no shard, and
-// the tag and the list must name the same files. Checked on every plan. (NEO-555
-// retired the seller-spec list and its tag: eBay is the fake too, one account per test
-// user, so its listing specs run in the ordinary shards.)
-function checkTaggedList(specs, { list, tag, listName }) {
-  const tagged = specs.filter((s) => hasTag(fs.readFileSync(path.join(TESTS, s), "utf8"), tag));
-  const missing = list.filter((s) => !specs.includes(s));
-  const untagged = list.filter((s) => !tagged.includes(s));
-  const unlisted = tagged.filter((s) => !list.includes(s));
-  return [
-    ...missing.map((s) => `${listName} names ${s}, which does not exist`),
-    ...untagged.map((s) => `${s} is in ${listName} but lacks the ${tag} tag`),
-    ...unlisted.map((s) => `${s} carries ${tag} but is not in ${listName} (project-scope.mjs)`),
-  ];
-}
-
-// GUIDE hard rule 5: a breaker spec never retries (a retry reopens the
-// deployment-wide BSC gate). The runtime backstop (`noRetryOnSharedAccounts`)
-// refuses a retry only after a failure; this refuses a tagged spec without
-// `describe.configure({ retries: 0 })` before CI runs.
-// Comments are stripped first, so a configure call quoted in a comment does not count.
-const RETRIES_ZERO = /\b(?:test\.)?describe\.configure\(\s*\{[^}]*\bretries\s*:\s*0\b[^}]*\}\s*\)/;
-// A tag in any quote style ("@x", '@x', `@x`).
-const hasTag = (source, tag) => ['"', "'", "`"].some((q) => source.includes(`${q}${tag}${q}`));
-const stripComments = (source) => source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-
-/**
- * Problems for every spec carrying one of `tags` whose source lacks a
- * `describe.configure({ retries: 0 })`. `read(spec)` returns a spec's source.
- * @param {string[]} specs
- * @param {(spec: string) => string} read
- * @param {string[]} [tags]
- * @returns {string[]}
- */
-export function checkNoRetryTagged(specs, read, tags = [BREAKER_TAG]) {
-  const problems = [];
-  for (const spec of specs) {
-    const source = read(spec);
-    const tag = tags.find((t) => hasTag(source, t));
-    if (tag && !RETRIES_ZERO.test(stripComments(source))) {
-      problems.push(`${spec} carries ${tag} but lacks test.describe.configure({ retries: 0 }) (GUIDE hard rule 5)`);
-    }
-  }
-  return problems;
-}
-
-function checkBreakerTags(specs) {
-  const problems = [
-    ...checkTaggedList(specs, { list: BREAKER_SPECS, tag: BREAKER_TAG, listName: "BREAKER_SPECS" }),
-    ...checkNoRetryTagged(specs, (s) => fs.readFileSync(path.join(TESTS, s), "utf8")),
-  ];
-  if (problems.length) throw new Error(`breaker specs fail the planning checks (list, tag, retries):\n  ${problems.join("\n  ")}`);
-}
-
-/** The specs a shard may be handed on `project`: everything but the ignored and the breaker specs. */
+/** The specs a shard may be handed on `project`: everything but the specs project-scope.mjs leaves out of it. */
 function listSpecs(project) {
-  const specs = allSpecs();
-  checkBreakerTags(specs);
-  const ignored = new Set([...ignoredSpecs(project), ...BREAKER_SPECS]);
-  return specs.filter((p) => !ignored.has(p));
-}
-
-/** The breaker specs `breaker-<pass>` runs, alone after every shard (none is project-ignored). */
-function listBreakerSpecs() {
-  checkBreakerTags(allSpecs());
-  return [...BREAKER_SPECS].sort();
+  const ignored = new Set(ignoredSpecs(project));
+  return allSpecs().filter((p) => !ignored.has(p));
 }
 
 /** Seconds per spec on `project`, falling back to the desktop value. */
@@ -150,15 +85,15 @@ function loadTimings(project) {
 }
 
 // Specs whose run time swings far more than a median shows plan at no less
-// than this many seconds (NEO-389). pipeline-escalation-cold-start waits on
-// the heavy preprocess model: 1.6 to 5.4 min across runs when this was written,
-// median about 1.6. Since NEO-529 (real drop zone, no cold-start notice wait)
-// its heavy leg is 6.4-73.2 s over 7 green runs (cold 25.6-27.6 s a call), so
-// the floor below is a stale worst case until CI's own timings show it; the
-// number is deliberately left alone here.
-const MIN_SECONDS = {
-  "placeholders/pipeline-escalation-cold-start.spec.ts": 300,
-};
+// than this many seconds (NEO-389): `{ "<spec>": seconds }`. Empty today.
+// pipeline-escalation-cold-start sat here at 300 s while it waited on a cold
+// heavy model (1.6 to 5.4 min); since NEO-529 it takes 19-58 s, and the stale
+// floor made its RUN_TOGETHER unit (below) the heaviest in the plan, so LPT gave
+// that unit to shard 1 and shard 1 then ran 4-5 min short of the others
+// (NEO-628). A floor belongs here only while CI's own timings understate a
+// spec's real spread; a grouped spec's floor weighs its whole unit.
+/** @type {Record<string, number>} */
+export const MIN_SECONDS = {};
 
 // Specs that share the heavy preprocess service (NEO-407). Each sends photos
 // past the fast crop to the heavy model: the dev heavy service runs one photo
@@ -168,7 +103,7 @@ const MIN_SECONDS = {
 // luck (CI run 41212224696: real-scans timed out queued behind other heavy
 // jobs). Planned as ONE unit, they run one after another on one shard
 // (`workers: 1`), so within a pass they never overlap. Order is the listed one.
-const RUN_TOGETHER = [
+export const RUN_TOGETHER = [
   ["placeholders/pipeline-escalation-cold-start.spec.ts", "collection/add-cards-from-photos-real-scans.spec.ts"],
 ];
 function median(values) {
@@ -178,14 +113,28 @@ function median(values) {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
-function plan(n, project) {
-  const timings = loadTimings(project);
-  const specs = listSpecs(project);
+/**
+ * The plan for `n` shards on `project`: `[{ secs, specs }]`, one per shard.
+ * Longest-first over units; a RUN_TOGETHER group is one unit weighing the sum
+ * of its specs. Every input but `n` can be injected (the unit tests do):
+ * `timings` (seconds per spec, default timings.json for `project`), `specs`
+ * (default every planned spec on `project`), `minSeconds` (default
+ * MIN_SECONDS) and `runTogether` (default RUN_TOGETHER).
+ * @param {number} n
+ * @param {string} [project]
+ * @param {{ timings?: Record<string, number>, specs?: string[], minSeconds?: Record<string, number>, runTogether?: string[][] }} [inject]
+ * @returns {{ secs: number, specs: string[] }[]}
+ */
+export function plan(n, project = PROJECTS[0], inject = {}) {
+  const timings = inject.timings ?? loadTimings(project);
+  const specs = inject.specs ?? listSpecs(project);
+  const minSeconds = inject.minSeconds ?? MIN_SECONDS;
+  const runTogether = inject.runTogether ?? RUN_TOGETHER;
   const fallback = median(specs.map((s) => timings[s]).filter((v) => Number.isFinite(v)));
-  const secsOf = (spec) => Math.max(Number.isFinite(timings[spec]) ? timings[spec] : fallback, MIN_SECONDS[spec] ?? 0);
+  const secsOf = (spec) => Math.max(Number.isFinite(timings[spec]) ? timings[spec] : fallback, minSeconds[spec] ?? 0);
   const grouped = new Set();
   const units = [];
-  for (const group of RUN_TOGETHER) {
+  for (const group of runTogether) {
     const present = group.filter((spec) => specs.includes(spec));
     if (present.length === 0) continue;
     for (const spec of present) grouped.add(spec);
@@ -266,10 +215,7 @@ function main(argv) {
     if (!PROJECTS.includes(project)) throw new Error(`--project must be one of ${PROJECTS.join(", ")}, got '${project}'`);
     args.splice(pIdx, 2);
   }
-  if (args[0] === "--breaker") {
-    const rel = toPosix(path.relative(WEB, TESTS));
-    for (const spec of listBreakerSpecs()) console.log(`${rel}/${spec}`);
-  } else if (args[0] === "--projects") {
+  if (args[0] === "--projects") {
     for (const p of PROJECTS) console.log(p);
   } else if (args[0] === "--from-results") {
     if (!args[1]) throw new Error("usage: shard-plan.mjs --from-results <results.json>...");
@@ -279,7 +225,7 @@ function main(argv) {
     const i = args[1] === undefined ? undefined : Number(args[1]);
     if (!Number.isInteger(n) || n < 1 || (i !== undefined && (!Number.isInteger(i) || i < 1 || i > n))) {
       throw new Error(
-        "usage: shard-plan.mjs <N> [<i> in 1..N] [--project <p>] | --breaker | --from-results <results.json>... | --projects",
+        "usage: shard-plan.mjs <N> [<i> in 1..N] [--project <p>] | --from-results <results.json>... | --projects",
       );
     }
     const shards = plan(n, project);
@@ -294,7 +240,7 @@ function main(argv) {
   }
 }
 
-// Run as a CLI only: the unit tests import checkNoRetryTagged without planning.
+// Run as a CLI only: the unit tests import plan() without running main.
 // Real paths on both sides, since import.meta.url is resolved through symlinks.
 const invoked = process.argv[1] && fs.existsSync(process.argv[1]) ? fs.realpathSync(process.argv[1]) : undefined;
 if (invoked === fs.realpathSync(fileURLToPath(import.meta.url))) main(process.argv);

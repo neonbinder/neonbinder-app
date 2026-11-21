@@ -251,7 +251,15 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
+
+function armFake() {
+  vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://neonbinder-fake-bsc-0000-uc.a.run.app");
+  vi.stubEnv("NEONBINDER_FAKE_BSC_KEY", "caller-key");
+  vi.stubEnv("TESTING_RESET_SECRET", "armed");
+  vi.stubEnv("CONVEX_CLOUD_URL", "https://happy-otter-123.convex.cloud");
+}
 
 describe("getForBscTeamCheck", () => {
   test("returns null when the card has no platformData.bsc", async () => {
@@ -1485,6 +1493,33 @@ describe("enqueueBscTeamBackfill modes (NEO-345)", () => {
     expect(
       [...(pending[0].args[0] as { cardChecklistIds: string[] }).cardChecklistIds].sort(),
     ).toEqual([ids.legacy, ids.gaveUp].sort());
+  });
+
+  test("NEO-628 N2: on real BSC an operator-run backfill's scheduled enqueue carries no queuedBy, named or not", async () => {
+    const t = harness();
+    await seedEveryKind(t);
+    await t.mutation(internal.cardChecklist.enqueueBscTeamBackfill, { queuedBy: "user_2backfillOp" });
+    const named = await pendingScheduled(t);
+    expect(named).toHaveLength(1);
+    expect("queuedBy" in (named[0].args[0] as object)).toBe(false);
+  });
+
+  test("NEO-628: on the fake the queuing operator an operator-run backfill names rides to the lane, and is absent when none is named", async () => {
+    armFake();
+    const t = harness();
+    await seedEveryKind(t);
+
+    await t.mutation(internal.cardChecklist.enqueueBscTeamBackfill, { queuedBy: "user_2backfillOp" });
+    const named = await pendingScheduled(t);
+    expect(named).toHaveLength(1);
+    expect(named[0].args[0]).toMatchObject({ queuedBy: "user_2backfillOp" });
+
+    const t2 = harness();
+    await seedEveryKind(t2);
+    await t2.mutation(internal.cardChecklist.enqueueBscTeamBackfill, {});
+    const unnamed = await pendingScheduled(t2);
+    expect(unnamed).toHaveLength(1);
+    expect("queuedBy" in (unnamed[0].args[0] as object)).toBe(false);
   });
 
   test("a second re-ask does not select the re-asked cards again", async () => {
