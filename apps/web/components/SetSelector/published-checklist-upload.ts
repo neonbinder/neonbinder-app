@@ -58,7 +58,7 @@ export type ChecklistBatch = {
 };
 
 /**
- * A row's size with both flags present: an upper bound on what the server
+ * A row's size with every flag present (the prospect claim as the row has it): an upper bound on what the server
  * stores for it (its re-check only trims strings and may add a flag), so a
  * call planned within the limit is never over it on the server.
  */
@@ -69,6 +69,13 @@ function rowBytes(row: ChecklistSectionRow): number {
     teams: row.teams,
     noNumber: true,
     noTeam: true,
+    // NEO-591: the server stores a prospect claim beside the rest.
+    ...(row.prospect ? { prospect: true as const } : {}),
+    // Display-only: which teams sat inside the Prospect parens, stored too.
+    ...(row.prospectClaimedTeams ? { prospectClaimedTeams: row.prospectClaimedTeams } : {}),
+    // NEO-591 (variations): the checklist's note for a variation row is stored
+    // too, so it counts toward the call's byte limit.
+    ...(row.variationName ? { variationName: row.variationName } : {}),
   });
 }
 

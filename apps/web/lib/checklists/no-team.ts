@@ -19,6 +19,10 @@
  * a No Team claim. Both the client (to keep the card out of the Teams step)
  * and the server (to stamp confirmed no-team at commit) read the claim through
  * `checklistClaimsNoTeam`, so the two can never disagree.
+ *
+ * NEO-591: "Prospect (X)" names X as the card's team, so it is a plain team
+ * text and never a No Team claim. A bare "Prospect" IS the claim (the row
+ * carries `noTeam`).
  */
 
 /** Skip reason for a row whose team cell(s) say "No Team" and name a team. */

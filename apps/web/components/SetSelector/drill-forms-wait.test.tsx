@@ -13,7 +13,8 @@
 
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, afterEach } from "vitest";
+import { ANNOUNCE_AFTER_MS } from "../modules/WaitingOnMarketplace";
 
 vi.mock("../../convex/_generated/api", () => ({
   api: {
@@ -89,14 +90,19 @@ const forms: Array<[string, () => React.ReactElement]> = [
 
 describe.each(forms)("%s — waiting on BuySportsCards", (_name, ui) => {
   it("shows one wait line while the sync is pending, keyed by the key the action was given, and drops it once it settles", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     await act(async () => {
       render(ui());
     });
-    await waitFor(() => expect(st.calls).toHaveLength(1));
+    expect(st.calls).toHaveLength(1);
     const sent = st.calls[0].waitKey as string;
     expect(sent).toMatch(KEY_SHAPE);
 
-    const line = await screen.findByText(WAIT, {}, { timeout: 3000 });
+    expect(screen.queryByText(WAIT)).toBeNull();
+    await act(async () => {
+      vi.advanceTimersByTime(ANNOUNCE_AFTER_MS);
+    });
+    const line = screen.getByText(WAIT);
     expect(line.closest('[role="status"]')).not.toBeNull();
     expect(screen.getAllByText(WAIT)).toHaveLength(1);
     expect(new Set(st.asked)).toEqual(new Set([sent]));
@@ -104,7 +110,7 @@ describe.each(forms)("%s — waiting on BuySportsCards", (_name, ui) => {
     await act(async () => {
       st.settle[0]({ success: true, message: "Synced", optionsCount: 1, totalSets: 1 });
     });
-    await waitFor(() => expect(screen.queryByText(WAIT)).toBeNull());
+    expect(screen.queryByText(WAIT)).toBeNull();
   });
 });
 
@@ -124,4 +130,8 @@ describe("a Retry is a new run", () => {
     expect(second).toMatch(KEY_SHAPE);
     expect(second).not.toBe(first);
   });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });

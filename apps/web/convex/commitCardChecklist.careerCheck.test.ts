@@ -108,6 +108,45 @@ function insertPlayer(
   );
 }
 
+/**
+ * NEO-602 — "Oakland Athletics" is the Oakland row's own name (1968-2024) and,
+ * from 2025, an alias of the Athletics (own name "Athletics"). On a 2025 set
+ * the year alone points at the Athletics through an alias, which the card rule
+ * refuses while another row holds the name as its own; a player's career is
+ * what may settle it.
+ */
+const TWO_ERA_NAME = "Oakland Athletics";
+
+async function seedTwoEraTeams(t: T, sportId: Id<"selectorOptions">) {
+  const oakland = await t.run((ctx) =>
+    ctx.db.insert("teams", {
+      location: "Oakland",
+      name: "Athletics",
+      nameNormalized: normalizeTeamName(TWO_ERA_NAME),
+      sportId,
+      yearsActive: { from: 1968, to: 2024 },
+      lastUpdated: Date.now(),
+    }),
+  );
+  const athletics = await t.run(async (ctx) => {
+    const id = await ctx.db.insert("teams", {
+      name: "Athletics",
+      nameNormalized: normalizeTeamName("Athletics"),
+      sportId,
+      yearsActive: { from: 2025 },
+      aliases: [TWO_ERA_NAME],
+      lastUpdated: Date.now(),
+    });
+    await ctx.db.insert("teamAliases", {
+      teamId: id,
+      sportId,
+      aliasNormalized: normalizeTeamName(TWO_ERA_NAME),
+    });
+    return id;
+  });
+  return { oakland, athletics };
+}
+
 type CardOverrides = {
   cardNumber?: string;
   players?: string[];
@@ -222,6 +261,118 @@ describe("commitCardChecklist — careerStints", () => {
     expect(result.createdTeamIds).toHaveLength(1);
     expect(result.careerStints).toEqual({ added: 1, existing: 0, skipped: 0 });
     expect(await teamYearsOf(t, gwynn)).toEqual([{ teamId: result.createdTeamIds[0], fromYear: 1988 }]);
+  });
+
+  test("several stints for one player in one commit all land: saved teams by id, a new team by name, one team twice", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedSet(t);
+    const padres = await insertTeam(t, ids.sportId, "San Diego", "Padres");
+    const cubs = await insertTeam(t, ids.sportId, "Chicago", "Cubs");
+    const gwynn = await insertPlayer(t, ids.sportId, "Tony Gwynn", [{ teamId: cubs, fromYear: 1985, toYear: 1986 }]);
+    await t.run((ctx) =>
+      ctx.db.insert("entityReviewQueue", {
+        selectorOptionId: ids.leafId,
+        batchId: "batch-career-multi",
+        createdByUserId: "user_review_001",
+        kind: "team",
+        name: "Brand New Club",
+        sportId: ids.sportId,
+        status: "ready",
+        decision: { action: "create", create: { location: "Brand", name: "New Club" } },
+      }),
+    );
+
+    const result = await commit(
+      t,
+      ids,
+      [makeCard({ players: ["Tony Gwynn"], teams: ["Brand New Club"] })],
+      {
+        batchId: "batch-career-multi",
+        careerStints: [
+          { playerId: gwynn, teamId: padres, fromYear: 1982, toYear: 1984 },
+          { playerId: gwynn, teamName: "Brand New Club", fromYear: 1988 },
+          // The same team again, for another spell: a different (team, fromYear) key.
+          { playerId: gwynn, teamId: padres, fromYear: 1990, toYear: 1991 },
+          // Already on file: left alone, counted.
+          { playerId: gwynn, teamId: cubs, fromYear: 1985, toYear: 1986 },
+        ],
+      },
+    );
+
+    expect(result.careerStints).toEqual({ added: 3, existing: 1, skipped: 0 });
+    const [created] = result.createdTeamIds;
+    expect(await teamYearsOf(t, gwynn)).toEqual([
+      { teamId: padres, fromYear: 1982, toYear: 1984 },
+      { teamId: cubs, fromYear: 1985, toYear: 1986 },
+      { teamId: created, fromYear: 1988 },
+      { teamId: padres, fromYear: 1990, toYear: 1991 },
+    ]);
+  });
+
+  test("stints for several players in one commit each land on their own player", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedSet(t);
+    const padres = await insertTeam(t, ids.sportId, "San Diego", "Padres");
+    const cubs = await insertTeam(t, ids.sportId, "Chicago", "Cubs");
+    const gwynn = await insertPlayer(t, ids.sportId, "Tony Gwynn");
+    const sandberg = await insertPlayer(t, ids.sportId, "Ryne Sandberg");
+
+    const result = await commit(t, ids, [makeCard({ players: ["Tony Gwynn"] })], {
+      careerStints: [
+        { playerId: gwynn, teamId: padres, fromYear: 1982 },
+        { playerId: sandberg, teamId: cubs, fromYear: 1982 },
+        { playerId: gwynn, teamId: cubs, fromYear: 1999, toYear: 2000 },
+      ],
+    });
+
+    expect(result.careerStints).toEqual({ added: 3, existing: 0, skipped: 0 });
+    expect(await teamYearsOf(t, gwynn)).toEqual([
+      { teamId: padres, fromYear: 1982 },
+      { teamId: cubs, fromYear: 1999, toYear: 2000 },
+    ]);
+    expect(await teamYearsOf(t, sandberg)).toEqual([{ teamId: cubs, fromYear: 1982 }]);
+  });
+
+  test("one unresolvable stint among several is skipped and counted; the rest still land", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedSet(t);
+    const padres = await insertTeam(t, ids.sportId, "San Diego", "Padres");
+    const gwynn = await insertPlayer(t, ids.sportId, "Tony Gwynn");
+
+    const result = await commit(t, ids, [makeCard({ players: ["Tony Gwynn"] })], {
+      careerStints: [
+        { playerId: gwynn, teamId: padres, fromYear: 1982 },
+        { playerId: gwynn, teamName: "Nobody Heard Of Them", fromYear: 1988 },
+        { playerId: gwynn, teamId: padres, fromYear: 1990 },
+      ],
+    });
+
+    expect(result.careerStints).toEqual({ added: 2, existing: 0, skipped: 1 });
+    expect(await teamYearsOf(t, gwynn)).toEqual([
+      { teamId: padres, fromYear: 1982 },
+      { teamId: padres, fromYear: 1990 },
+    ]);
+  });
+
+  test("a career already at the cap takes no more: the extra stints are skipped and counted", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedSet(t);
+    const padres = await insertTeam(t, ids.sportId, "San Diego", "Padres");
+    const full = Array.from({ length: MAX_PLAYER_TEAM_YEARS - 1 }, (_, i) => ({
+      teamId: padres,
+      fromYear: 1900 + i,
+    }));
+    const gwynn = await insertPlayer(t, ids.sportId, "Tony Gwynn", full);
+
+    const result = await commit(t, ids, [makeCard({ players: ["Tony Gwynn"] })], {
+      careerStints: [
+        { playerId: gwynn, teamId: padres, fromYear: 1990 },
+        { playerId: gwynn, teamId: padres, fromYear: 1991 },
+      ],
+    });
+
+    expect(result.careerStints).toEqual({ added: 1, existing: 0, skipped: 1 });
+    expect(await teamYearsOf(t, gwynn)).toHaveLength(MAX_PLAYER_TEAM_YEARS);
   });
 
   test("a stint naming a printed team that resolves to nothing is skipped and counted, never guessed", async () => {
@@ -492,6 +643,69 @@ describe("commitCardChecklist — a card's playerIdByName", () => {
     const p = await insertPlayer(t, ids.sportId, "Bob Allen");
     const many = Array.from({ length: 40 }, (_, i) => ({ name: `Name ${i}`, playerId: p }));
     await expect(commit(t, ids, [makeCard({ playerIdByName: many })])).rejects.toThrow(/re-links/);
+  });
+});
+
+describe("commitCardChecklist — a card's playerIdByName and a two-era team name", () => {
+  test("the chosen player's career decides the era, not the career of the player the printed name ordinarily resolves to", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedSet(t, "Baseball", "2025");
+    const { oakland, athletics } = await seedTwoEraTeams(t, ids.sportId);
+    // The printed name resolves to a namesake whose career is Oakland's; the
+    // operator linked this card to Jacob Wilson, whose career is the Athletics'.
+    await insertPlayer(t, ids.sportId, "Bob Allen", [{ teamId: oakland, fromYear: 1979, toYear: 1984 }]);
+    const chosen = await insertPlayer(t, ids.sportId, "Jacob Wilson", [{ teamId: athletics, fromYear: 2025 }]);
+
+    const result = await commit(t, ids, [
+      makeCard({
+        cardNumber: "1",
+        players: ["Bob Allen"],
+        teams: [TWO_ERA_NAME],
+        playerIdByName: [{ name: "Bob Allen", playerId: chosen }],
+      }),
+    ]);
+
+    expect(result.unreviewedNameCount).toBe(0);
+    const [card] = await cardsOf(t, ids.leafId);
+    expect(card.playerIds).toEqual([chosen]);
+    expect(card.teamOnCardIds).toEqual([athletics]);
+  });
+
+  test("an ordinary card with the same name still reads the namesake's career (Oakland's, which the year does not back: not linked)", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedSet(t, "Baseball", "2025");
+    const { oakland } = await seedTwoEraTeams(t, ids.sportId);
+    await insertPlayer(t, ids.sportId, "Bob Allen", [{ teamId: oakland, fromYear: 1979, toYear: 1984 }]);
+
+    const result = await commit(t, ids, [
+      makeCard({ cardNumber: "1", players: ["Bob Allen"], teams: [TWO_ERA_NAME] }),
+    ]);
+
+    expect(result.unreviewedNameCount).toBe(1);
+    const [card] = await cardsOf(t, ids.leafId);
+    expect(card.teamOnCardIds ?? []).toEqual([]);
+  });
+
+  test("an override to a player deleted since is dropped from the evidence: the name's own resolution decides", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedSet(t, "Baseball", "2025");
+    const { athletics } = await seedTwoEraTeams(t, ids.sportId);
+    await insertPlayer(t, ids.sportId, "Bob Allen", [{ teamId: athletics, fromYear: 2025 }]);
+    const gone = await insertPlayer(t, ids.sportId, "Jacob Wilson");
+    await t.run((ctx) => ctx.db.delete(gone));
+
+    const result = await commit(t, ids, [
+      makeCard({
+        cardNumber: "1",
+        players: ["Bob Allen"],
+        teams: [TWO_ERA_NAME],
+        playerIdByName: [{ name: "Bob Allen", playerId: gone }],
+      }),
+    ]);
+
+    expect(result.unreviewedNameCount).toBe(0);
+    const [card] = await cardsOf(t, ids.leafId);
+    expect(card.teamOnCardIds).toEqual([athletics]);
   });
 });
 

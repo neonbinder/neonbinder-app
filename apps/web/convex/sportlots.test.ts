@@ -33,14 +33,23 @@
  */
 
 import { convexTest } from "convex-test";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import { SL_SELECTOR_BUDGET } from "./adapters/selectorBudgets";
 import { Id } from "./_generated/dataModel";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
 }).glob("./**/*.*s");
+
+// The empty-result recovery loop settles for a real SL_SELECTOR_BUDGET.emptyRetryBackoffMs
+// before each re-POST. Run exactly that pause at once; every other timer is untouched.
+const realSetTimeout = globalThis.setTimeout; // captured once, before any spy
+function skipSelectorSettleBackoff() {
+  return vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: (...args: unknown[]) => void, ms?: number, ...rest: unknown[]) =>
+    realSetTimeout(handler, ms === SL_SELECTOR_BUDGET.emptyRetryBackoffMs ? 0 : ms, ...rest)) as typeof setTimeout);
+}
 
 const ADMIN_IDENTITY = {
   subject: "admin_user_sl_001",
@@ -105,8 +114,13 @@ function extractSelset(body: string): string | undefined {
   return new URLSearchParams(body).get("selset") ?? undefined;
 }
 
+beforeEach(() => {
+  skipSelectorSettleBackoff();
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("fetchSportLotsChecklist setRadioId resolution (NEO-91)", () => {

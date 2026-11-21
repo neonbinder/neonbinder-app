@@ -22,7 +22,7 @@ const BOTH: FetchSource[] = ["bsc", "sportlots"];
 const BSC_CHECKLIST: FetchSource[] = ["bsc", "checklist"];
 const ALL_THREE: FetchSource[] = ["bsc", "sportlots", "checklist"];
 
-/** A BSC + SportLots pair, paired by number, at full confidence. */
+/** A BSC + SportLots pair, paired by number, at full confidence (no number choice pending). */
 const pair = (over: Partial<MatchCandidate> = {}): MatchCandidate => ({
   cardNumber: "1",
   cardName: "Solo One",
@@ -115,13 +115,25 @@ describe("matchCardsNeeded — two marketplaces", () => {
     expect(matchCardsNeeded([unstamped], BOTH)).toBe(true);
   });
 
-  it("a pair paired by name is a guess and opens", () => {
-    expect(matchCardsNeeded([pair({ pairedBy: "name" })], BOTH)).toBe(true);
+  it("a pair paired by name at full confidence is Matched at 100% and skips (the core scored it 1: same roster, numbers agree)", () => {
+    expect(matchCardsNeeded([pair({ pairedBy: "name" })], BOTH)).toBe(false);
   });
 
-  it("a pair carrying pairedNumber (the numbers-didn't-match note) opens", () => {
-    expect(matchCardsNeeded([pair({ pairedBy: "name", pairedNumber: "250" })], BOTH)).toBe(true);
-    expect(matchCardsNeeded([pair({ pairedNumber: "250" })], BOTH)).toBe(true);
+  it("a name pair scored below 1 opens: numbers differ (0.9) or a near name", () => {
+    expect(matchCardsNeeded([pair({ pairedBy: "name", confidence: 0.9 })], BOTH)).toBe(true);
+    expect(matchCardsNeeded([pair({ pairedBy: "name", confidence: 0.98 })], BOTH)).toBe(true);
+  });
+
+  it.each(["stored", "crossRef", "number", "variation", "name"] as const)(
+    "a pair paired by %s with the sources' numbers on offer opens: the number picker is on the row",
+    (pairedBy) => {
+      const numbers = { sourceNumbers: { bsc: "38", sportlots: "38a" } };
+      expect(matchCardsNeeded([pair({ pairedBy, ...numbers })], BOTH)).toBe(true);
+    },
+  );
+
+  it("a minted number is a choice too, and opens", () => {
+    expect(matchCardsNeeded([pair({ numberMinted: true })], BOTH)).toBe(true);
   });
 
   it("a pair at confidence 0.9 opens", () => {
@@ -305,8 +317,13 @@ describe("matchCardsNeeded — three sources", () => {
     expect(matchCardsNeeded([bscLinked()], ALL_THREE)).toBe(true);
   });
 
-  it("opens a name pair even when the checklist link is clean", () => {
-    expect(matchCardsNeeded([linkedPair({ pairedBy: "name" })], ALL_THREE)).toBe(true);
+  it("skips a name pair at full confidence when the checklist link is clean", () => {
+    expect(matchCardsNeeded([linkedPair({ pairedBy: "name" })], ALL_THREE)).toBe(false);
+  });
+
+  it("opens a pair with a number choice pending even when the checklist link is clean", () => {
+    const sourceNumbers = { bsc: "OV-1", sportlots: "1" };
+    expect(matchCardsNeeded([linkedPair({ sourceNumbers })], ALL_THREE)).toBe(true);
   });
 
   it("opens a pair at 0.9 even when the checklist link is clean", () => {

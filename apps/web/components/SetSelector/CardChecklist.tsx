@@ -208,6 +208,8 @@ type FetchPreview = {
     attributes?: string[];
     isRookie?: boolean;
     isRelic?: boolean;
+    /** NEO-591 — the checklist's Prospect claim; see `PairingCard.isProspect`. */
+    isProspect?: boolean;
     printRun?: number;
     autographType?: string;
     cardVariation?: string;
@@ -949,6 +951,16 @@ export default function CardChecklist({
   /** The one-sided run's "Kept all N cards …" sentence, for the wizard notice. */
   const soloKeptRef = useRef<string | null>(null);
   /**
+   * NEO-640 — the same sentence without the checklist-teams line, for the
+   * "Saved N cards." line. A run that skipped Match Cards and has nothing for
+   * the wizard to ask commits within a frame, and the saved line replaces the
+   * one that said why no dialog appeared; it carries the sentence on, the way
+   * it carries the teams line. Spent by the commit that lands (a failed one
+   * leaves it for the retry), and dropped when the operator goes back to
+   * Match Cards: that commit is no longer the run that was skipped.
+   */
+  const keptSentenceRef = useRef<string | null>(null);
+  /**
    * NEO-330 — this run's teams missed the wait (see `TEAMS_LATE_NOTICE`). Read
    * by the wizard notice and the "Saved N cards." line, so the operator is told
    * on the line that is on screen when the cards land, not only on one a
@@ -1005,6 +1017,9 @@ export default function CardChecklist({
             teams: p.row.teams,
             ...(p.row.noNumber ? { noNumber: true } : {}),
             ...(p.row.noTeam ? { noTeam: true } : {}),
+            // NEO-591: a Prospect row is a claim about the card; the server
+            // reads it the way it does for its own pairs.
+            ...(p.row.prospect ? { prospect: true } : {}),
           },
         })),
       },
@@ -1015,6 +1030,7 @@ export default function CardChecklist({
       ...(a.teamLookup ? { teamLookup: a.teamLookup } : {}),
       ...(a.checklistConflict ? { checklistConflict: a.checklistConflict } : {}),
       ...(a.players ? { fillPlayers: a.players } : {}),
+      ...(a.isProspect ? { isProspect: true as const } : {}),
     }));
   };
   /**
@@ -1847,6 +1863,7 @@ export default function CardChecklist({
    */
   const handleSync = async () => {
     soloKeptRef.current = null;
+    keptSentenceRef.current = null;
     teamsLateRef.current = false;
     checklistTeamsRef.current = null;
     // NEO-496: a new run counts its own sources.
@@ -2118,15 +2135,18 @@ export default function CardChecklist({
         // notice can keep this sentence in front of it: with no dialog, this
         // line is the only place the operator (and the E2E flow) learns how
         // many cards the fetch kept, and the wizard opens within a second.
-        soloKeptRef.current = withTeamsLine(
+        const keptSentence =
           serverSources.length === 1
             ? soloKeptMessage(
                 serverSides[0] ?? "checklist",
                 cards.length,
                 pausedAttached,
               )
-            : matchedKeptMessage(serverSources, cards.length, pausedAttached),
-        );
+            : matchedKeptMessage(serverSources, cards.length, pausedAttached);
+        // Only a run that skipped a Match Cards carries it onto the saved
+        // line (NEO-640); the one-source auto-keep's saved line is unchanged.
+        keptSentenceRef.current = serverSources.length > 1 ? keptSentence : null;
+        soloKeptRef.current = withTeamsLine(keptSentence);
         setSyncMessage(
           [soloKeptRef.current, teamsLateRef.current ? TEAMS_LATE_NOTICE : null]
             .filter(Boolean)
@@ -2632,6 +2652,11 @@ export default function CardChecklist({
         ...(preview.careerFields?.stints.length
           ? { careerStints: preview.careerFields.stints }
           : {}),
+        // NEO-591: and the players the career check creates (each card that
+        // points at one carries `newPlayerByName`, put on it above).
+        ...(preview.careerFields?.newPlayers?.length
+          ? { careerNewPlayers: preview.careerFields.newPlayers }
+          : {}),
       });
       // NEO-195: the candidates have been promoted into cardChecklist, so the
       // staging rows have done their job. Dropping them here rather than
@@ -2726,6 +2751,15 @@ export default function CardChecklist({
       // commits straight away, and this banner replaces the sync line that
       // carried it first, so without this the operator never sees it.
       // Reset by the next sync, never by this one.
+      //
+      // NEO-640 — and the sentence that says why no Match Cards came up, the
+      // same way and just ahead of it: a run with nothing for the wizard to
+      // ask lands "Saved N cards." within a frame of "Kept all N cards …", so
+      // without this the operator never reads why the dialog was skipped.
+      if (keptSentenceRef.current) {
+        notes.push(keptSentenceRef.current);
+        keptSentenceRef.current = null;
+      }
       if (checklistTeamsRef.current) {
         notes.push(`${checklistTeamsRef.current}.`);
       }
@@ -4779,6 +4813,9 @@ export default function CardChecklist({
               ? () => {
                   setPendingPreview(null);
                   setCommitError(null);
+                  // The skip is over: whatever the operator confirms now is
+                  // their own pairing, not "every card matched".
+                  keptSentenceRef.current = null;
                   setPairingPhase("review");
                 }
               : undefined

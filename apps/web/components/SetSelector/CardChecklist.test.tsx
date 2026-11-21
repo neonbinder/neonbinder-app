@@ -44,6 +44,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ANNOUNCE_AFTER_MS } from "../modules/WaitingOnMarketplace";
 import type { Id } from "../../convex/_generated/dataModel";
 import { NO_MARKETPLACE_IDS_MESSAGE } from "../../convex/marketplaceResolvability";
 import {
@@ -335,6 +336,26 @@ vi.mock("./EntityReviewWizard", () => ({
           }
         >
           Report career answers
+        </button>
+      )}
+      {onCareerChange && (
+        <button
+          type="button"
+          onClick={() =>
+            onCareerChange({
+              stints: [],
+              cardEdits: [{ newPlayerByName: [{ name: "Solo Player", ref: "np-one" }] }, undefined],
+              newPlayers: [
+                {
+                  ref: "np-one",
+                  name: "Other Person",
+                  stints: [{ teamId: "t-solo", fromYear: 2022, toYear: 2022 }],
+                },
+              ],
+            })
+          }
+        >
+          Report a new player
         </button>
       )}
       {onCareerChange && (
@@ -1714,6 +1735,29 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       expect(args.cards[1].teams).toEqual(["Solo Team"]);
     });
 
+    it("NEO-591: sends the new players at the top level and the ref on the card", async () => {
+      state.variantRow = { value: "Test Set", features: { autographFormat: "On Card" } };
+      const { rerender } = renderChecklist();
+      await syncPlayers(rerender, careerContext);
+      await screen.findByText("Wizard opened teams-only");
+      fireEvent.click(screen.getByText("Report a new player"));
+      await act(async () => {
+        fireEvent.click(screen.getByText("Confirm entity review"));
+      });
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+      const args = mockCommitChecklist.mock.calls[0][0];
+      expect(args.careerNewPlayers).toEqual([
+        {
+          ref: "np-one",
+          name: "Other Person",
+          stints: [{ teamId: "t-solo", fromYear: 2022, toYear: 2022 }],
+        },
+      ]);
+      expect(args.cards[0].newPlayerByName).toEqual([{ name: "Solo Player", ref: "np-one" }]);
+      expect(args.cards[1]).not.toHaveProperty("newPlayerByName");
+      expect(args).not.toHaveProperty("careerStints");
+    });
+
     it("an answer withdrawn sends no stints", async () => {
       state.variantRow = { value: "Test Set", features: { autographFormat: "On Card" } };
       const { rerender } = renderChecklist();
@@ -1727,6 +1771,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
       const args = mockCommitChecklist.mock.calls[0][0];
       expect(args).not.toHaveProperty("careerStints");
+      expect(args).not.toHaveProperty("careerNewPlayers");
       expect(args.cards[1].teams).toEqual(["Solo Team"]);
     });
   });
@@ -6458,6 +6503,7 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
   }
 
   it("NEO-487: a single build's wait line stays while another insert's run goes elsewhere — one line, never two (NEO-496)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     state.marketplaceWait = { waitingSince: 1, accumulatedMs: 0 };
     // An empty parallel: its button builds at once, no rebuild confirm.
     state.cards = [];
@@ -6480,9 +6526,10 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
       const { rerender } = render(<CardChecklist {...props} parallelRun={idle} />);
       // This row's own build, held up on the marketplace: its line shows.
       fireEvent.click(screen.getByRole("button", { name: "Build from Anime" }));
-      await waitFor(() => expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1), {
-        timeout: 3000,
+      await act(async () => {
+        vi.advanceTimersByTime(ANNOUNCE_AFTER_MS);
       });
+      expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1);
       // A run of another insert's parallels starts while that build is still
       // in flight (the operator saved the insert, then came back here).
       // NEO-496: that run's ledger belongs to its insert, not this row, so it
@@ -6502,9 +6549,7 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
         waitKey: "run-key",
       });
       rerender(<CardChecklist {...props} parallelRun={{ ...running, buildOne: idle.buildOne }} />);
-      await waitFor(() => expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1), {
-        timeout: 3000,
-      });
+      expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1);
       // And it is the build's line: no ledger for the other insert's run.
       const line = screen.getByText("Waiting on BuySportsCards…");
       expect(line.closest("section")?.textContent ?? "").not.toContain("Other Insert");
@@ -7566,7 +7611,7 @@ describe("CardChecklist — Match Cards opens only when a card needs the operato
     ...cleanPair(n, player),
     confidence: 0.9,
     pairedBy: "name" as const,
-    pairedNumber: "250",
+    sourceNumbers: { bsc: n, sportlots: "250" },
   });
 
   const BATCH = "batch-640";
@@ -7647,6 +7692,62 @@ describe("CardChecklist — Match Cards opens only when a card needs the operato
     const committed = mockCommitChecklist.mock.calls[0][0].cards;
     expect(committed.map((c: { cardNumber: string }) => c.cardNumber)).toEqual(["1", "2"]);
     await act(async () => finishCommit({ count: 2 }));
+  });
+
+  it("the saved line carries the kept sentence and then the teams line when nothing is left for the wizard to ask", async () => {
+    // The skip commits within a frame of saying why no Match Cards came up, and
+    // "Saved N cards." replaces that line: it has to carry the sentence on, the
+    // way it carries the teams line, or the operator never learns why.
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    await streamCandidates(rerender, cleanBatch);
+    await act(async () => {
+      resolveFetch(fetchDone(2, { checklistTeams: { matched: 2, total: 2 } }));
+    });
+
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(liveRegionText()).toContain("Saved 2 cards."));
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+    const saved = screen.getByText(/^Saved 2 cards\./).textContent;
+    expect(saved).toBe(
+      "Saved 2 cards. Kept all 2 cards. Every card matched across BSC and SportLots. " +
+        "Teams from your checklist: 2 of 2 cards.",
+    );
+    expect(saved?.match(/Teams from your checklist/g)).toHaveLength(1);
+  });
+
+  it("the saved line carries the kept sentence alone when the checklist gave no teams", async () => {
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    await streamCandidates(rerender, cleanBatch);
+    await act(async () => {
+      resolveFetch(fetchDone(2));
+    });
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(liveRegionText()).toContain("Saved 2 cards."));
+    expect(screen.getByText(/^Saved 2 cards\./).textContent).toBe(
+      "Saved 2 cards. Kept all 2 cards. Every card matched across BSC and SportLots.",
+    );
+  });
+
+  it("a run the operator settled in Match Cards saves without the kept sentence", async () => {
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    await streamCandidates(rerender, mixedBatch);
+    await act(async () => {
+      resolveFetch(fetchDone(2));
+    });
+    await waitFor(() =>
+      expect(screen.getByLabelText("Confirm card matches").textContent).toBe("Confirm"),
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    });
+
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(liveRegionText()).toContain("Saved 2 cards."));
+    expect(liveRegionText()).not.toContain("Kept all");
+    expect(liveRegionText()).not.toContain("Every card matched");
   });
 
   it("a single clean pair says 'Kept the 1 card. It matched across BSC and SportLots.'", async () => {
@@ -7891,4 +7992,8 @@ describe("CardChecklist — Match Cards opens only when a card needs the operato
       expect(document.activeElement).toBe(screen.getByLabelText("Cancel card matching")),
     );
   });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });

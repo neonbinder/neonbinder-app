@@ -63,6 +63,12 @@ export type CardObservedInputs = {
   isRookie?: boolean;
   isRelic?: boolean;
   /**
+   * NEO-591: the publisher checklist's team cell said "Prospect" /
+   * "Prospect (X)". Born as `features.isProspect` ("Prospect Card"); there is
+   * no typed column, and no marketplace token says it.
+   */
+  isProspect?: boolean;
+  /**
    * NEO-345: IGNORED. A marketplace's autograph wording (BSC's, or SportLots'
    * literal "Unknown") is never a source of the autograph FORMAT — Jason:
    * "the marketplaces don't tell us which it is". Kept on the type only so
@@ -327,6 +333,7 @@ export function deriveCardObservedFeatures(
   const attrs = card.attributes ?? [];
   if (card.isRookie || attrs.includes("RC")) f.isRookie = "true";
   if (card.isRelic || attrs.includes("RELIC")) f.isRelic = "true";
+  if (card.isProspect) f.isProspect = "true";
   if (attrs.includes("SSP")) f.shortPrint = "SSP";
   else if (attrs.includes("SP")) f.shortPrint = "SP";
   // NEO-345: an autograph's FORMAT is NB data, never a marketplace's guess.

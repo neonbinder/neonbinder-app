@@ -2,7 +2,7 @@ import { v, type Infer } from "convex/values";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { Id } from "./_generated/dataModel";
+import { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin, getCurrentUserIdentity } from "./auth";
 import { clearRecord } from "./checklistNameResolutions";
 import {
@@ -10,6 +10,7 @@ import {
   cardTeamLookupValidator,
   checklistConflictValidator,
   checklistPairRevertValidator,
+  sourceNumbersValidator,
   checklistPairedRowValidator,
 } from "./schema";
 import { cardNumberStem } from "../lib/cards/variations";
@@ -19,7 +20,32 @@ import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
 // NEO-333 — the whole-name-first team match, through the one resolution the
 // review gate and the commit prelude also use.
-import { resolveTeamForSetYear } from "./lib/teamRow";
+import { effectiveSetLeagueIds } from "./lib/selectorLeagues";
+import {
+  findTeamsByFullName,
+  findTeamsByLocation,
+  PLACE_TEAM_SEARCH_HITS,
+  resolveCardTeamName,
+  resolveTeamForSetYear,
+  TEAM_ERA_SCAN_LIMIT,
+} from "./lib/teamRow";
+import { pickPlaceTeam, placeTextOrNull } from "./lib/placeTeam";
+
+/**
+ * NEO-591 — the longest number a candidate's `sourceNumbers` may carry per
+ * source. A printed card number is a few characters ("OV-ANFI", "232C"); the
+ * fetch clips to this and `startCandidateBatch` refuses a longer one.
+ */
+export const MAX_SOURCE_NUMBER_LENGTH = 64;
+
+/**
+ * NEO-591 — the longest team cell a candidate may carry: every team a card may
+ * list at its name limit, a separator (" / ", ", ") between them, and room for
+ * a "Prospect (...)" wrapper. A cell is the printed text of at most that many
+ * teams, so a longer one is not ours.
+ */
+export const MAX_TEAM_CELL_LENGTH = MAX_CARD_TEAMS * (MAX_PLAYER_NAME_LENGTH + 3) + 16;
+import { teamFullName } from "../lib/teams/team-name";
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { findSportForSelectorOption } from "./cardChecklist";
 
@@ -83,9 +109,10 @@ const bucketValidator = v.union(
 
 /**
  * NEO-496 — how a card paired with a publisher-checklist row (Match Cards'
- * badge). `confidence` is set for a near-name pair only; `checklistNumber`
- * for a name pair with a numbered row (shown beside the card's own number,
- * never a conflict). Mirrors the schema field.
+ * badge). `confidence` is set when the pair is not certain (a near name, or
+ * numbers that differ, NEO-591); `checklistNumber` when the row's number is
+ * not the one the card was fetched with ("NNO" for a no-number row; shown
+ * beside the card's own number, never a conflict). Mirrors the schema field.
  */
 export const checklistLinkValidator = v.object({
   via: v.union(
@@ -95,7 +122,12 @@ export const checklistLinkValidator = v.object({
     v.literal("player"),
     v.literal("playerName"),
     v.literal("playerFuzzy"),
+    // NEO-591 — one row standing for several cards sharing its number's stem.
+    v.literal("stem"),
   ),
+  // NEO-591 — the row's index in the rows sent, set when several cards hold
+  // the same row (see the schema field).
+  rowKey: v.optional(v.number()),
   confidence: v.optional(v.number()),
   checklistNumber: v.optional(v.string()),
   /** The paired row and the card before it, for Match Cards' Unlink. */
@@ -149,6 +181,11 @@ const candidateInputValidator = v.object({
   attributes: v.optional(v.array(v.string())),
   isRookie: v.optional(v.boolean()),
   isRelic: v.optional(v.boolean()),
+  // NEO-591 — the checklist's Prospect claim (see the schema note).
+  isProspect: v.optional(v.boolean()),
+  // NEO-591 — the row's team cell as printed, display only (see the schema note).
+  teamCell: v.optional(v.string()),
+  rawTeamName: v.optional(v.string()),
   printRun: v.optional(v.number()),
   autographType: v.optional(v.string()),
   cardVariation: v.optional(v.string()),
@@ -176,10 +213,18 @@ const candidateInputValidator = v.object({
   bucket: bucketValidator,
   // NEO-496 — see `checklistLinkValidator`.
   checklistLink: v.optional(checklistLinkValidator),
+  // NEO-591 — the numbers each source printed, for a pair made by name whose
+  // numbers differ. Held to `MAX_SOURCE_NUMBER_LENGTH` by `startCandidateBatch`.
+  sourceNumbers: v.optional(sourceNumbersValidator),
+  // NEO-591 (variations) — a variation card created from a checklist row;
+  // the client seeds it as Keeping (see the schema field).
+  preKept: v.optional(v.literal(true)),
+  // NEO-591 — see the schema fields.
+  numberMinted: v.optional(v.literal(true)),
+  variationGroup: v.optional(v.string()),
   confidence: v.optional(v.number()),
   // NEO-640 — see the schema note.
   pairedBy: v.optional(marketplacePairViaValidator),
-  pairedNumber: v.optional(v.string()),
   /**
    * NEO-330 / NEO-341 — this card is waiting on a BSC team lookup the action
    * is about to run, so it is written `pending` and `resolveCandidateTeams`
@@ -463,6 +508,15 @@ export const startCandidateBatch = internalMutation({
         "player",
       );
       assertNames(c.cardNumber, c.teams ?? [], MAX_CARD_TEAMS, "teams", "team");
+      // The listed-team hint comes back from the client on a public commit
+      // arg, so it is held to a name's length.
+      assertNames(
+        c.cardNumber,
+        [c.rawTeamName].filter((n): n is string => n !== undefined),
+        1,
+        "listed team names",
+        "team",
+      );
       // PR 451 — the checklist conflict's four lists, on the same terms.
       const checklist = c.checklistConflict;
       if (checklist) {
@@ -480,6 +534,22 @@ export const startCandidateBatch = internalMutation({
             MAX_CARD_TEAMS,
             `${side} teams in its checklist conflict`,
             "team",
+          );
+        }
+      }
+      // NEO-591 — the printed team cell is display-only, but it is stored and
+      // read back on the same subscription as the names, so it is bounded too.
+      if (c.teamCell !== undefined && c.teamCell.length > MAX_TEAM_CELL_LENGTH) {
+        throw new Error(
+          `startCandidateBatch: card #${c.cardNumber.slice(0, MAX_SOURCE_NUMBER_LENGTH)} carries a team cell of ${c.teamCell.length} characters; the limit is ${MAX_TEAM_CELL_LENGTH}.`,
+        );
+      }
+      // NEO-591 — the numbers each source printed, held to a card number's
+      // length like every other string that comes from a marketplace page.
+      for (const printed of Object.values(c.sourceNumbers ?? {})) {
+        if (printed !== undefined && printed.length > MAX_SOURCE_NUMBER_LENGTH) {
+          throw new Error(
+            `startCandidateBatch: card #${c.cardNumber.slice(0, MAX_SOURCE_NUMBER_LENGTH)} carries a source number of ${printed.length} characters; the limit is ${MAX_SOURCE_NUMBER_LENGTH}.`,
           );
         }
       }
@@ -989,6 +1059,236 @@ export const resolveChecklistTeamTexts = internalQuery({
 });
 
 /**
+ * The most team texts one place-resolver call reads (each is a handful of
+ * indexed reads; the caller batches, `resolveChecklistPlaceTexts`). Texts past
+ * it answer null.
+ */
+export const MAX_PLACE_TEXTS_PER_QUERY = 20;
+/** How many `search_name` hits one text reads (the location leg, `findTeamsByLocation`). */
+export { PLACE_TEAM_SEARCH_HITS };
+
+/**
+ * The rows the sport holds under `x` as a full name (name or alias) plus the
+ * rows whose LOCATION is `x`, from one bounded `search_name` read.
+ *
+ * `saturated` is the guard of rule 8. Both reads are windows
+ * (`TEAM_ERA_SCAN_LIMIT` for the name leg, `PLACE_TEAM_SEARCH_HITS` for the
+ * search): a window that came back FULL may have cut a second candidate off,
+ * and "exactly one" read from it would be a guess. A caller that settles on a
+ * count must leave the text alone when `saturated` is set.
+ */
+async function teamRowsForPlace(
+  ctx: QueryCtx | MutationCtx,
+  sportId: Id<"selectorOptions">,
+  x: string,
+): Promise<{ byName: Doc<"teams">[]; byLocation: Doc<"teams">[]; saturated: boolean }> {
+  const byName = await findTeamsByFullName(ctx, sportId, x);
+  const location = await findTeamsByLocation(ctx, sportId, x);
+  const saturated = byName.length >= TEAM_ERA_SCAN_LIMIT || location.saturated;
+  const byLocation = location.rows;
+  return { byName, byLocation, saturated };
+}
+
+/**
+ * The set's sport and league(s) a place is read in, or null when it has no
+ * sport or no league (no guessing across leagues). Read once per query.
+ */
+async function placeScope(
+  ctx: QueryCtx | MutationCtx,
+  selectorOptionId: Id<"selectorOptions">,
+): Promise<{ sportId: Id<"selectorOptions">; leagues: ReadonlySet<string> } | null> {
+  const sportId = await findSportForSelectorOption(ctx, selectorOptionId);
+  if (!sportId) return null;
+  const leagues = new Set<string>(await effectiveSetLeagueIds(ctx, selectorOptionId));
+  return leagues.size === 0 ? null : { sportId, leagues };
+}
+
+/**
+ * Every team of the set's league(s), of any era, located at `x`; null when the
+ * text is not read as a place (a team answers to it by name or alias, or the
+ * read came back full and a further team may be past it: rule 8, a count read
+ * from a window is not trusted).
+ */
+async function inLeagueTeamsAtPlace(
+  ctx: QueryCtx | MutationCtx,
+  scope: { sportId: Id<"selectorOptions">; leagues: ReadonlySet<string> },
+  x: string,
+): Promise<Doc<"teams">[] | null> {
+  const { byName, byLocation, saturated } = await teamRowsForPlace(ctx, scope.sportId, x);
+  if (byName.length > 0 || saturated) return null;
+  return byLocation.filter((row) => row.leagueId && scope.leagues.has(row.leagueId));
+}
+
+/**
+ * The one team these candidates mean, as the string the card carries, or null.
+ * `qualifying` is EVERY in-league team at the place, whatever its era, and it
+ * must be exactly one (`pickPlaceTeam`): with several, the set year does not
+ * choose, the text stays as printed and the Names gate and the commit let the
+ * card's players decide (`resolveCardTeamName`'s place leg), else the operator.
+ * The commit's own lookup of that string must land on the same row, so the card
+ * cannot be written to another team than the one chosen.
+ *
+ * NEO-602: the commit's lookup is `resolveCardTeamName`, and a full name that
+ * reaches two eras ("Oakland Athletics" is one team's name and another's
+ * alias) is the cards' players' to settle, which this has no cards to ask. Read
+ * year-only with that rule's alias-vs-own-name guard, such a name answers null
+ * and the place stays parked for the operator.
+ */
+async function settleOneTeam(
+  ctx: QueryCtx | MutationCtx,
+  sportId: Id<"selectorOptions">,
+  setYear: number | undefined,
+  qualifying: readonly Doc<"teams">[],
+): Promise<string | null> {
+  const picked = pickPlaceTeam(qualifying, setYear);
+  if (!picked) return null;
+  const name = teamFullName(picked);
+  const back = await resolveCardTeamName(ctx, sportId, name, setYear);
+  return back.teamId === picked._id ? name : null;
+}
+
+/**
+ * NEO-591 (collector review) — a checklist team printed as a PLACE.
+ *
+ * Onyx prints teams as places ("Seattle", "Arizona", "St Louis"), and none of
+ * those is a team's name, so every such card was parked and the operator was
+ * asked about each one. When a plain team text names no team by name or alias,
+ * this tries the location: the teams whose location IS the text, limited to
+ * the set's league(s) (`effectiveSetLeagueIds`), across ALL their eras, and
+ * EXACTLY ONE may exist, and the commit's own lookup of its full name must
+ * land on that same row (`settleOneTeam`).
+ *
+ *  - "Seattle" in an MLB set with one in-league Seattle team is the Mariners
+ *    (the Kraken and the Seahawks are in other leagues). "New York" in an MLB
+ *    set is two teams: unchanged.
+ *  - Jason, 2026-11-20: several in-league teams of DIFFERENT ERAS at one place
+ *    (the 1969 Seattle Pilots beside the Mariners) are NOT settled by the set
+ *    year, which would link a retro Pilots card printed "Seattle" to the
+ *    Mariners without a word. The text is left as printed; the Names gate and
+ *    the commit decide per card from the players' stints, else the operator
+ *    (`resolveCardTeamName`, `placeLeagueIds`). At pairing it stands as the
+ *    checklist's printed text; against a marketplace team that is one of the
+ *    place's teams it AGREES (`resolveChecklistPlaceTeamIds`), against any
+ *    other team it is a disagreement the operator settles.
+ *  - A set with no league skips this entirely: no guessing across leagues.
+ *  - A text some team already answers to by name or alias is left alone (the
+ *    commit resolves it as it always did), as is a text with a comma (the
+ *    whole-name-first resolver owns those). "(A)" / "(N)" are not read.
+ *  - A read that came back full (`teamRowsForPlace`) is not trusted to count:
+ *    the text is left alone, and the card stays parked for the operator.
+ *
+ * Answers are aligned with `texts`: the settled team's full name, else null
+ * (the text is unchanged). At most `MAX_PLACE_TEXTS_PER_QUERY` texts are
+ * read per call (about ten indexed reads each; the caller batches,
+ * `resolveChecklistPlaceTexts`); texts past it answer null. Internal: only
+ * `fetchCardChecklist` and `applyPublishedChecklistPairs` ask, behind their
+ * own `requireAdmin`.
+ */
+export const resolveChecklistPlaceTeams = internalQuery({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    texts: v.array(v.string()),
+  },
+  returns: v.array(v.union(v.string(), v.null())),
+  handler: async (ctx, args) => {
+    const scope = await placeScope(ctx, args.selectorOptionId);
+    if (!scope) return args.texts.map(() => null);
+    const setYear = await findSetYearForSelectorOption(ctx, args.selectorOptionId);
+    const out: Array<string | null> = [];
+    for (const [i, raw] of args.texts.entries()) {
+      const x = i >= MAX_PLACE_TEXTS_PER_QUERY ? null : placeTextOrNull(raw);
+      const inLeague = x ? await inLeagueTeamsAtPlace(ctx, scope, x) : null;
+      out.push(inLeague ? await settleOneTeam(ctx, scope.sportId, setYear, inLeague) : null);
+    }
+    return out;
+  },
+});
+
+/**
+ * NEO-591 (Jason, 2026-11-20) — the teams a printed PLACE could mean, as ids:
+ * EVERY team of the set's league(s), whatever its era, whose location is the
+ * text. `resolveChecklistPlaceTeams` settles a place only when it is one team;
+ * this answers for the places it left as printed ("Seattle": the Pilots and
+ * the Mariners), so a card whose marketplace names one of those teams can be
+ * recognised as agreeing with the checklist instead of raising a team conflict
+ * (`applyChecklistRow`, `resolvePlaceTeamIds`). The place adds no claim beyond
+ * the marketplace's team; it never chooses a team and never writes one.
+ *
+ * Same scope and guards as `resolveChecklistPlaceTeams`, read once and shared
+ * (`placeScope`, `inLeagueTeamsAtPlace`): a set with no league, a text some
+ * team answers to by name or alias, a text read as no place (blank, a comma,
+ * over-long), a read that came back full, and a place no in-league team holds
+ * all answer null. Aligned with `texts`; at most `MAX_PLACE_TEXTS_PER_QUERY`
+ * texts are read per call (the caller batches). Internal: only the admin-gated
+ * pairing actions ask.
+ */
+export const resolveChecklistPlaceTeamIds = internalQuery({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    texts: v.array(v.string()),
+  },
+  returns: v.array(v.union(v.array(v.id("teams")), v.null())),
+  handler: async (ctx, args) => {
+    const scope = await placeScope(ctx, args.selectorOptionId);
+    if (!scope) return args.texts.map(() => null);
+    const out: Array<Array<Id<"teams">> | null> = [];
+    for (const [i, raw] of args.texts.entries()) {
+      const x = i >= MAX_PLACE_TEXTS_PER_QUERY ? null : placeTextOrNull(raw);
+      const inLeague = x ? await inLeagueTeamsAtPlace(ctx, scope, x) : null;
+      out.push(inLeague && inLeague.length > 0 ? inLeague.map((row) => row._id) : null);
+    }
+    return out;
+  },
+});
+
+/**
+ * NEO-591 — the most team names `resolveTeamIdentities` resolves in one call.
+ * Each is one indexed alias/name read; a name past the cap answers null (the
+ * operator picks, nothing is guessed).
+ */
+export const MAX_TEAM_IDENTITY_TEXTS = 200;
+
+/**
+ * NEO-591 — which NB team each name means, or null. For the checklist-versus-
+ * marketplace team comparison: "Oakland Athletics" (BSC) and "Oakland A's"
+ * (the checklist) are two aliases of one NB team, so they agree and the
+ * operator is never asked. Goes through `resolveCardTeamName`, the card rule
+ * the gate and the commit prelude use (a SET year, a card can show a team's
+ * past), read year-only: the cards' players are not resolved yet at pairing
+ * time. NEO-602: a name that reaches two eras the year cannot separate, or
+ * that the year reaches only as an alias while another team holds it as its
+ * own name ("Oakland Athletics" in a 2025 set), answers null; so does a name
+ * that matches no team. The disagreement then stays the operator's (rules 7
+ * and 8), never settled by the year against the players.
+ *
+ * Internal: the actions that ask are admin-gated themselves.
+ */
+export const resolveTeamIdentities = internalQuery({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    names: v.array(v.string()),
+  },
+  returns: v.array(v.union(v.id("teams"), v.null())),
+  handler: async (ctx, args) => {
+    const none = args.names.map(() => null);
+    const sportId = await findSportForSelectorOption(ctx, args.selectorOptionId);
+    if (!sportId) return none;
+    const setYear = await findSetYearForSelectorOption(ctx, args.selectorOptionId);
+    const out: Array<Id<"teams"> | null> = [];
+    for (const [i, raw] of args.names.entries()) {
+      const name = raw.trim();
+      if (i >= MAX_TEAM_IDENTITY_TEXTS || !name || name.length > MAX_PLAYER_NAME_LENGTH) {
+        out.push(null);
+        continue;
+      }
+      const { teamId } = await resolveCardTeamName(ctx, sportId, name, setYear);
+      out.push(teamId ?? null);
+    }
+    return out;
+  },
+});
+
+/**
  * The modal's live view, scoped to the signed-in operator.
  *
  * Scoping matters as much here as it does in `startCandidateBatch`: this query
@@ -1042,6 +1342,9 @@ export const getReadyCandidates = query({
         attributes: v.optional(v.array(v.string())),
         isRookie: v.optional(v.boolean()),
         isRelic: v.optional(v.boolean()),
+        // NEO-591 — see the schema note.
+        isProspect: v.optional(v.boolean()),
+        teamCell: v.optional(v.string()),
         printRun: v.optional(v.number()),
         autographType: v.optional(v.string()),
         cardVariation: v.optional(v.string()),
@@ -1057,10 +1360,15 @@ export const getReadyCandidates = query({
         bucket: bucketValidator,
         // NEO-496 — how the card paired with the publisher checklist.
         checklistLink: v.optional(checklistLinkValidator),
+        // NEO-591 — see `sourceNumbersValidator`.
+        sourceNumbers: v.optional(sourceNumbersValidator),
+        // NEO-591 (variations) — see the schema field.
+        preKept: v.optional(v.literal(true)),
+        numberMinted: v.optional(v.literal(true)),
+        variationGroup: v.optional(v.string()),
         confidence: v.optional(v.number()),
         // NEO-640 — see the schema note.
         pairedBy: v.optional(marketplacePairViaValidator),
-        pairedNumber: v.optional(v.string()),
         stem: v.string(),
         teamResolved: v.boolean(),
         // NEO-335 — see the schema note. Carried onto the preview card by
@@ -1102,6 +1410,8 @@ export const getReadyCandidates = query({
         attributes: r.attributes,
         isRookie: r.isRookie,
         isRelic: r.isRelic,
+        isProspect: r.isProspect,
+        teamCell: r.teamCell,
         printRun: r.printRun,
         autographType: r.autographType,
         cardVariation: r.cardVariation,
@@ -1119,9 +1429,12 @@ export const getReadyCandidates = query({
         checklistConflict: r.checklistConflict,
         bucket: r.bucket,
         checklistLink: r.checklistLink,
+        sourceNumbers: r.sourceNumbers,
+        preKept: r.preKept,
+        numberMinted: r.numberMinted,
+        variationGroup: r.variationGroup,
         confidence: r.confidence,
         pairedBy: r.pairedBy,
-        pairedNumber: r.pairedNumber,
         stem: r.stem,
         // Lets the row show "resolving team…" rather than an empty cell that
         // looks like "this card has no team".

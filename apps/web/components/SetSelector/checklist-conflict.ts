@@ -43,6 +43,8 @@ export type ChecklistConflictCard = {
   teams?: string[];
   teamLookup?: TeamLookupOutcome;
   checklistConflict?: ChecklistConflict;
+  /** The "Listed as:" hint. */
+  rawTeamName?: string;
 };
 
 /** Does this card carry a disagreement the operator still has to settle? */
@@ -105,6 +107,38 @@ export function applyChecklistChoice<T extends ChecklistConflictCard>(
     next.teamLookup = choice === "checklist" ? "checklist" : "answered";
   }
   return next;
+}
+
+/**
+ * NEO-591 — the operator already named this card in Match Cards, so the
+ * wizard's players question about it is answered: when the name they saved is
+ * the checklist's players (or the marketplace's), the card takes that side's
+ * players and the players disagreement is gone. A teams disagreement on the
+ * same card is a different question and stays. A name that is neither side's
+ * leaves the card as it is, for the wizard to ask.
+ *
+ * Returns a new object when it settles anything; the input is never touched.
+ */
+export function settlePlayersByName<T extends ChecklistConflictCard>(card: T, name: string): T {
+  const players = card.checklistConflict?.players;
+  if (!players) return card;
+  const joined = (list: readonly string[]) =>
+    list
+      .map((n) => n.trim())
+      .filter(Boolean)
+      .join(" / ")
+      .toLowerCase();
+  const wanted = name.trim().toLowerCase();
+  const choice: ChecklistChoice | undefined =
+    joined(players.checklist) === wanted
+      ? "checklist"
+      : joined(players.marketplace) === wanted
+        ? "marketplace"
+        : undefined;
+  if (!choice) return card;
+  const teams = card.checklistConflict?.teams;
+  const settled = applyChecklistChoice({ ...card, checklistConflict: { players } }, choice);
+  return teams ? { ...settled, checklistConflict: { teams } } : settled;
 }
 
 /** "Rhett Lowder", "Alonso, Schwarber and Soto", or "nobody named". */

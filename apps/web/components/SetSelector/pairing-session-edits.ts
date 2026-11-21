@@ -35,6 +35,9 @@
  *    unmatched columns looking exactly like cards that never matched. Hence
  *    `seedMatchedKeys`, which the reducer carries for this and only this.
  *
+ *  - NEO-591 (variations): a card NB created arrives in Keeping. That is not
+ *    the operator's work; taking one out is.
+ *
  * Deliberately NOT counted: which sections are collapsed, filter text, or the
  * selection highlight. None of them survive Confirm, so none of them are work.
  *
@@ -71,6 +74,13 @@ export type PairingEditState<Card> = {
   keptBsc: ReadonlyArray<unknown>;
   keptSl: ReadonlyArray<unknown>;
   /**
+   * NEO-591 (variations) — keys of the kept cards that ARRIVED kept (NB
+   * created them). Keeping one is not the operator's work; taking one out is,
+   * and that leaves no trace but the key's absence from the shelves. Optional:
+   * a caller with none counts every kept card, as before.
+   */
+  preKeptKeys?: ReadonlySet<string>;
+  /**
    * Keys of the pairs that arrived ALREADY matched — the seed plus everything
    * `ABSORB` has folded in since. Never removed, so a pair that leaves
    * `matched` is detectable by its absence rather than by a flag on a row that
@@ -84,7 +94,21 @@ export function countPairingEdits<Card>(
   state: PairingEditState<Card>,
   keyOf: (card: Card) => string,
 ): number {
-  let edits = state.keptBsc.length + state.keptSl.length;
+  const pre = state.preKeptKeys;
+  const keptKeys = new Set<string>();
+  let edits = 0;
+  for (const card of [...state.keptBsc, ...state.keptSl]) {
+    if (!pre) {
+      edits += 1;
+      continue;
+    }
+    const key = keyOf(card as Card);
+    keptKeys.add(key);
+    if (!pre.has(key)) edits += 1;
+  }
+  for (const key of pre ?? []) {
+    if (!keptKeys.has(key)) edits += 1;
+  }
   const stillMatched = new Set<string>();
 
   for (const pair of state.matched) {

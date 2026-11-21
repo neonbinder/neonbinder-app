@@ -93,7 +93,9 @@ describe("the skip path commits what Match Cards' Confirm would (NEO-640)", () =
     for (const card of candidatesToPairingCards(CLEAN)) {
       expect(card).not.toHaveProperty("checklistLink");
       expect(card).not.toHaveProperty("checklistRowId");
-      expect(card).not.toHaveProperty("pairedNumber");
+      expect(card).not.toHaveProperty("sourceNumbers");
+      expect(card).not.toHaveProperty("teamCell");
+      expect(card).not.toHaveProperty("preKept");
       expect(card).not.toHaveProperty("nameConflict");
       expect(card).not.toHaveProperty("playersConflict");
     }

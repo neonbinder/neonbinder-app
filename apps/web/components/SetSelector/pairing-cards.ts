@@ -16,7 +16,7 @@
  */
 
 import type { PairingCard } from "./CardPairingModal";
-import { committable } from "./checklist-match-apply";
+import { committable, type SourceNumbers } from "./checklist-match-apply";
 import type { ChecklistConflict } from "./checklist-conflict";
 
 /**
@@ -47,6 +47,10 @@ export type ReadyCandidate = {
   attributes?: string[];
   isRookie?: boolean;
   isRelic?: boolean;
+  /** NEO-591 — the checklist's Prospect claim; see `PairingCard.isProspect`. */
+  isProspect?: boolean;
+  /** NEO-591 — the row's team cell as printed; see `PairingCard.teamCell`. */
+  teamCell?: string;
   printRun?: number;
   autographType?: string;
   cardVariation?: string;
@@ -62,6 +66,23 @@ export type ReadyCandidate = {
     preferred?: "bsc" | "sportlots";
   };
   bucket: "matched" | "bscOnly" | "slOnly" | "checklistOnly";
+  /**
+   * NEO-591 — the numbers each source printed, present only when they differ;
+   * see `PairingCard.sourceNumbers`. `cardNumber` is already the chosen one.
+   */
+  sourceNumbers?: SourceNumbers;
+  /**
+   * NEO-591 (variations) — NB created this card (a variation); it opens in
+   * Keeping. See `PairingCard.preKept`.
+   */
+  preKept?: true;
+  /**
+   * NEO-591 — the number was derived by the sync, not printed by a marketplace
+   * for this card. The commit uses it; see `PairingCard.numberMinted`.
+   */
+  numberMinted?: true;
+  /** NEO-591 (variations) — see `PairingCard.variationGroup`. */
+  variationGroup?: string;
   /** NEO-496 — the server paired this card with a publisher checklist row. */
   checklistLink?: PairingCard["checklistLink"];
   teamLookup?: TeamLookup;
@@ -74,11 +95,6 @@ export type ReadyCandidate = {
    * missing on a matched row = written before NEO-640.
    */
   pairedBy?: "stored" | "crossRef" | "variation" | "number" | "name";
-  /**
-   * NEO-640 — on a name pair whose numbers differ, SportLots' number as
-   * listed (rule 7's "numbers didn't match" note).
-   */
-  pairedNumber?: string;
 };
 
 /**
@@ -122,6 +138,10 @@ export function candidateToPairingCard(
     // NEO-335: BSC's raw team value, only on the rows the server kept one for
     // (a split or refused split). Spread on the same terms as `teamLookup`.
     ...(c.rawTeamName ? { rawTeamName: c.rawTeamName } : {}),
+    // NEO-591: the checklist's Prospect claim, spread only when present so
+    // every other card is byte-identical to what it was.
+    ...(c.isProspect ? { isProspect: true } : {}),
+    ...(c.teamCell ? { teamCell: c.teamCell } : {}),
     // NEO-478: the checklist's disagreement, on the same terms. It is NOT a
     // cross-marketplace question, so the dialog carries it through untouched
     // and the wizard's "Checklist says otherwise" step settles it.
@@ -131,10 +151,15 @@ export function candidateToPairingCard(
     // dialog tells re-deliveries apart by. Both wire-only: `committable`
     // takes them off before anything is saved.
     ...(c.checklistLink ? { checklistLink: c.checklistLink } : {}),
+    // NEO-591: wire-only like the link; `committable` takes it off.
+    ...(c.sourceNumbers ? { sourceNumbers: c.sourceNumbers } : {}),
+    ...(c.preKept ? { preKept: true as const } : {}),
+    // NEO-591: both ride to the commit, which uses them (it never matches a
+    // stored card by a minted number, and links a variation group by its
+    // token). `committable` keeps them.
+    ...(c.numberMinted ? { numberMinted: true as const } : {}),
+    ...(c.variationGroup ? { variationGroup: c.variationGroup } : {}),
     ...(c.bucket === "checklistOnly" && c._id ? { checklistRowId: c._id } : {}),
-    // NEO-640: the number a name pair's SportLots half is listed under, when
-    // it differs from BSC's (rule 7's note). Wire-only, like the two above.
-    ...(c.pairedNumber ? { pairedNumber: c.pairedNumber } : {}),
   };
 }
 

@@ -64,11 +64,18 @@ export function isFullConfidence(confidence: number | undefined): boolean {
  * What lands in Matched, as `CardPairingModal` seeds it: a marketplace pair
  * (`bucket: "matched"`, both halves present), and a one-marketplace card the
  * server paired with a checklist row (`checklistLink`). What counts as 100%:
- *  - a marketplace pair at full confidence, paired by `"stored"`, `"crossRef"`
- *    or `"number"` (ties the data itself makes) or `"variation"` (numbers
- *    differ by design). `pairedBy` missing is unknown and is never assumed to
- *    be a number pair; `"name"` is a guess, shown with a % and, when the
- *    numbers differ, the "numbers didn't match" note (`pairedNumber`);
+ *  - a marketplace pair at full confidence that SAYS how it was paired
+ *    (`pairedBy` present: a matched row without one was written before
+ *    NEO-640 and is never assumed clean). The names-first core (NEO-591)
+ *    already scores a pair by what the sources agree on: the same roster with
+ *    the numbers agreeing is 1, the same roster with the numbers differing or
+ *    missing 0.9, a near name its score (times 0.9 when the numbers differ),
+ *    and a number-only pair whose names disagree 0.9. So a "name" pair at 100%
+ *    is one both the names and the numbers confirm, and the % is the whole
+ *    answer; nothing here re-derives it;
+ *  - no number choice pending: a card carrying `sourceNumbers` shows the
+ *    number picker, with the rule's pick preselected (rule 7: an automatic
+ *    number choice is the default, never final), so it opens the dialog;
  *  - a checklist link at full confidence, by a number or a case/prefix fold
  *    of one, to a row that prints the same number. A player-name link
  *    (exact or fuzzy) and a link to a row with a different number show a %
@@ -115,6 +122,9 @@ function isFullyMatched(
   if (c.bucket === "checklistOnly") return false;
   if (c.nameConflict || c.playersConflict) return false;
   if (c.checklistConflict?.players) return false;
+  // A number choice is pending: the picker is on the row (NEO-591). Whatever
+  // paired the card, the operator is offered each source's number.
+  if (c.sourceNumbers !== undefined || c.numberMinted) return false;
 
   if (c.bucket === "matched") {
     if (!isFullMarketplacePair(c)) return false;
@@ -141,12 +151,6 @@ function isFullyMatched(
 function isFullMarketplacePair(c: MatchCandidate): boolean {
   if (!c.platformData.bsc || !c.platformData.sportlots) return false;
   if (!isFullConfidence(c.confidence)) return false;
-  // The "numbers didn't match" note; only a name pair carries one.
-  if (c.pairedNumber !== undefined) return false;
-  return (
-    c.pairedBy === "stored" ||
-    c.pairedBy === "crossRef" ||
-    c.pairedBy === "number" ||
-    c.pairedBy === "variation"
-  );
+  // Written before NEO-640, or by a path that did not say how: unknown.
+  return c.pairedBy !== undefined;
 }

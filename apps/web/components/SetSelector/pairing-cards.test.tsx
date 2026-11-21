@@ -194,3 +194,48 @@ describe("NEO-335 — BSC's raw team value rides to the commit", () => {
     expect(card.rawTeamName).toBe(RAW);
   });
 });
+
+describe("NEO-591 — the numbers each source printed ride to the dialog, not to the commit", () => {
+  const PRINTED = { bsc: "OV-ANFI", checklist: "NNO" };
+
+  test("carried onto the card when the server sent them", () => {
+    expect(candidateToPairingCard({ ...FULL, sourceNumbers: PRINTED }).sourceNumbers).toEqual(
+      PRINTED,
+    );
+  });
+
+  test("absent leaves no key at all, so the card is byte-identical to before", () => {
+    expect("sourceNumbers" in candidateToPairingCard(FULL)).toBe(false);
+  });
+
+  test("the committable form (the no-dialog auto-keep path) drops them", () => {
+    const [card] = candidatesToPairingCards([
+      { ...FULL, bucket: "bscOnly", sourceNumbers: PRINTED },
+    ]);
+    expect("sourceNumbers" in card).toBe(false);
+  });
+});
+
+describe("NEO-591 — the minted number and variation group ride to the commit", () => {
+  test("carried onto the card, and kept by the committable form (the commit uses both)", () => {
+    const candidate = {
+      ...FULL,
+      bucket: "slOnly" as const,
+      numberMinted: true as const,
+      variationGroup: "grp-38",
+    };
+    expect(candidateToPairingCard(candidate)).toMatchObject({
+      numberMinted: true,
+      variationGroup: "grp-38",
+    });
+    const [card] = candidatesToPairingCards([candidate]);
+    expect(card.numberMinted).toBe(true);
+    expect(card.variationGroup).toBe("grp-38");
+  });
+
+  test("absent leaves no key at all", () => {
+    const card = candidateToPairingCard(FULL);
+    expect("numberMinted" in card).toBe(false);
+    expect("variationGroup" in card).toBe(false);
+  });
+});

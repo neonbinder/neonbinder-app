@@ -33,4 +33,23 @@ Team Management in another tab), or a commit on the zero-unknowns path with no
 callers (BSC team fill, legacy backfill) tend to take `teamId` and ignore the
 qualifier.
 
+**Rule 4: player evidence keyed by NAME ignores per-card identity overrides.**
+The prelude's card rule turns each card's printed player names into ids by
+name (`cardPlayerIdFor`: review link, else the one same-name player). A card
+whose player the operator re-pointed (`playerIdByName`, `newPlayerByName`:
+"a new person beside the namesake") still contributes the NAMESAKE's stints.
+Because the players' answer links when it agrees with the year, wrong-person
+evidence can lift the alias-only year guard (year-only would answer null).
+On any merge that brings a per-card override and name-keyed evidence
+together, check the evidence builder honours the override (or marks that
+team name as no-evidence, e.g. the `overflow` path).
+
+**Rule 5: a broader text that "agrees" with a narrower data claim clears a
+conflict only if it also leaves the row unanswered.** A broader text (a place)
+that "agrees" with a narrower data claim (the marketplace team) may clear a
+conflict only if it also leaves the row unanswered. Check the `answered` and
+write path, not just the conflict.
+
+Related: [[patterns-neo284-team-aliases]]
+
 Related: [[patterns-neo284-team-aliases]], [[patterns-neo307-alias-reverse-order]].

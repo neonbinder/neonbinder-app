@@ -230,13 +230,14 @@ describe("fetchCardChecklist — BSC ↔ SportLots name pairing (pinned before N
     expect(matched).toHaveLength(1);
     expect(matched[0].platformData.bsc?.ref).toBe("bsc-10");
     expect(matched[0].platformData.sportlots?.ref).toBe("2021 Topps #T-10 Mike Troutt");
-    // Name score (>= 0.92) times the number-mismatch factor (0.9): lesser than
-    // a number pair, and than an exact name on a mismatched number (rule 7).
-    expect(matched[0].confidence).toBeGreaterThanOrEqual(0.92 * 0.9 - 1e-9);
-    expect(matched[0].confidence).toBeLessThan(0.9);
-    expect(matched[0].pairedNumber).toBe("T-10");
-    // NEO-640 — a name pair says so, so the client never skips Match Cards on it.
+    // The name score, whole: "10" and "T-10" agree (a leading letter prefix is
+    // the same number), so nothing lowers it. Below 1, so it is shown with a %.
+    expect(matched[0].confidence).toBeGreaterThanOrEqual(0.92);
+    expect(matched[0].confidence).toBeLessThan(1);
+    // NEO-640 — a name pair says so, so the client never skips Match Cards on
+    // it; the numbers the sources printed ride with it for the picker.
     expect(matched[0].pairedBy).toBe("name");
+    expect(matched[0].sourceNumbers).toEqual({ bsc: "10", sportlots: "T-10" });
     expect(bscOnly).toHaveLength(0);
     expect(slOnly).toHaveLength(0);
   });
@@ -255,7 +256,7 @@ describe("fetchCardChecklist — BSC ↔ SportLots name pairing (pinned before N
     expect(slOnly).toHaveLength(1);
   });
 
-  test("a number pair outranks a name, and the numbered SportLots card is not offered to a name", async () => {
+  test("a unique number pairs a card whose name matches too, and the numbered SportLots card is not offered to a name", async () => {
     const t = convexTest(schema, modules);
     const id = await seedTree(t);
     bsc("1", "Mike Trout");
@@ -269,28 +270,31 @@ describe("fetchCardChecklist — BSC ↔ SportLots name pairing (pinned before N
     const byBsc = new Map(matched.map((m) => [m.platformData.bsc?.ref, m]));
     expect(byBsc.get("bsc-1")?.platformData.sportlots?.ref).toBe("2021 Topps #1 Mike Trout");
     expect(byBsc.get("bsc-1")?.confidence).toBe(1);
-    expect(byBsc.get("bsc-1")?.pairedBy).toBe("number");
+    // Names first (NEO-591): the same roster pairs, and the number confirms it.
+    expect(byBsc.get("bsc-1")?.pairedBy).toBe("name");
     expect(byBsc.get("bsc-2")?.platformData.sportlots?.ref).toBe("2021 Topps #T-9 Shohei Ohtani");
     expect(byBsc.get("bsc-2")?.pairedBy).toBe("name");
+    // "2" against "T-9": different numbers, so the pair is scored lower (rule 7).
+    expect(byBsc.get("bsc-2")?.confidence).toBeCloseTo(0.9, 6);
   });
 
-  test("an exact name on a different number is a name pair at a lesser confidence, and carries SportLots' number (NEO-640, rule 7)", async () => {
+  test("an exact name on a different number is a name pair at a lesser confidence, and carries both numbers (NEO-640, rule 7)", async () => {
     const t = convexTest(schema, modules);
     const id = await seedTree(t);
     bsc("10", "Mike Trout");
-    sl("T-10", "Mike Trout");
+    sl("T-9", "Mike Trout");
 
     await fetch(t, id);
     const { matched } = await buckets(t, id);
 
     expect(matched).toHaveLength(1);
     expect(matched[0].pairedBy).toBe("name");
-    expect(matched[0].pairedNumber).toBe("T-10");
+    expect(matched[0].sourceNumbers).toEqual({ bsc: "10", sportlots: "T-9" });
     expect(matched[0].confidence).toBeCloseTo(0.9, 6);
     expect(matched[0].confidence).toBeLessThan(1);
   });
 
-  test("a name pair whose numbers agree carries no pairedNumber and stays at 1 (NEO-640)", async () => {
+  test("a name pair whose numbers agree stays at 1 (NEO-640)", async () => {
     const t = convexTest(schema, modules);
     const id = await seedTree(t);
     // BSC lists the card as 38a, SportLots as 38: "38a" finds no SportLots
@@ -309,8 +313,10 @@ describe("fetchCardChecklist — BSC ↔ SportLots name pairing (pinned before N
 
     expect(matched).toHaveLength(1);
     expect(matched[0].pairedBy).toBe("name");
-    expect(matched[0].pairedNumber).toBeUndefined();
     expect(matched[0].confidence).toBe(1);
+    // "38a" and "38" agree, but they are printed differently: the picker is
+    // offered (an automatic number choice is never final), so the dialog opens.
+    expect(matched[0].sourceNumbers).toEqual({ bsc: "38a", sportlots: "38" });
   });
 
   test("a prefix-stripped number pairs by number (NEO-640)", async () => {
@@ -437,7 +443,7 @@ describe("fetchCardChecklist — a name tie goes to the operator (NEO-496, rule 
   });
 });
 
-describe("fetchCardChecklist — a number listed twice by one source is a tie (NEO-640, rule 7 / D2)", () => {
+describe("fetchCardChecklist — a number listed twice by one source (NEO-640, rule 7)", () => {
   test("SportLots lists one number on two cards: BSC's card with that number pairs with neither", async () => {
     const t = convexTest(schema, modules);
     const id = await seedTree(t);
@@ -454,12 +460,13 @@ describe("fetchCardChecklist — a number listed twice by one source is a tie (N
     expect(slOnly).toHaveLength(2);
   });
 
-  test("a tied number also sits out the name match, both ways", async () => {
+  test("a repeated number blocks only number-keyed pairing: an exactly-one name still pairs, a differing digit number does not", async () => {
     const t = convexTest(schema, modules);
     const id = await seedTree(t);
-    // BSC #5 would name-pair with the first SportLots #5 (an exact name), and
-    // BSC #6 would name-pair with the second. Both rows share a tied number,
-    // so neither is offered to anyone.
+    // Names first (NEO-591): BSC #5 Cal Raleigh and SportLots' #5 Cal Raleigh
+    // are the one roster on each side, and their numbers agree. BSC #6 Julio
+    // Rodriguez names SportLots' other #5, but 6 and 5 are two different plain
+    // numbers, which never pair automatically: both wait for the operator.
     bsc("5", "Cal Raleigh");
     bsc("6", "Julio Rodriguez");
     sl("5", "Cal Raleigh");
@@ -468,9 +475,11 @@ describe("fetchCardChecklist — a number listed twice by one source is a tie (N
     await fetch(t, id);
     const { matched, bscOnly, slOnly } = await buckets(t, id);
 
-    expect(matched).toHaveLength(0);
-    expect(bscOnly).toHaveLength(2);
-    expect(slOnly).toHaveLength(2);
+    expect(matched.map((m) => m.platformData.bsc?.ref)).toEqual(["bsc-5"]);
+    expect(matched[0].pairedBy).toBe("name");
+    expect(matched[0].confidence).toBe(1);
+    expect(bscOnly.map((c) => c.platformData.bsc?.ref)).toEqual(["bsc-6"]);
+    expect(slOnly).toHaveLength(1);
   });
 
   test("BSC lists one number on two cards: neither pairs with the one SportLots row, and the row waits too", async () => {
@@ -516,7 +525,7 @@ describe("fetchCardChecklist — a number listed twice by one source is a tie (N
     const { matched, bscOnly } = await buckets(t, id);
 
     expect(matched.map((m) => m.platformData.bsc?.ref)).toEqual(["bsc-6"]);
-    expect(matched[0].pairedBy).toBe("number");
+    expect(matched[0].pairedBy).toBe("name");
     expect(bscOnly.map((c) => c.platformData.bsc?.ref)).toEqual(["bsc-5"]);
   });
 
@@ -539,7 +548,7 @@ describe("fetchCardChecklist — a number listed twice by one source is a tie (N
 
     expect(matched).toHaveLength(1);
     expect(matched[0].platformData.sportlots?.ref).toBe("2021 Topps #11 Alec Bohm");
-    expect(matched[0].pairedBy).toBe("number");
+    expect(matched[0].pairedBy).toBe("name");
     expect(slOnly).toHaveLength(1);
   });
 });
