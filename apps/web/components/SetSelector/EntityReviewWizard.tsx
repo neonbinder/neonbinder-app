@@ -94,29 +94,33 @@ import CareerCheckStep from "./CareerCheckStep";
 import { CareerCoverageFetcher } from "./career-reads";
 import {
   applyCareerCardEdit,
+  cardTeamStrings,
   careerCommitFields,
+  isNewPlayerPick,
+  newPlayerNameReady,
   classifyPairs,
   coverageAskOf,
   deriveSittingPairs,
   gateJudgedKeys,
   CAREER_CHECKING,
   CAREER_NAMES_WAIT_MS,
-  CAREER_NEXT_BLOCKED,
+  CAREER_NEW_PLAYER_UNNAMED,
+  CAREER_STINT_UNADDED,
   CAREER_READ_FAILED,
   CAREER_TEAM_NOT_NEEDED,
   followUpPair,
-  linesWithBadYears,
   pairKey,
   reteamedIndexes,
-  stintDraftOf,
   toLines,
   unreferencedCreatedTeamRows,
+  type BatchTeam,
   type CareerAnswer,
   type CareerAnswers,
   type CareerCommitFields,
   type CareerContext,
   type CareerLine,
   type CoverageAsk,
+  type ExistingStint,
 } from "./career-check";
 import { careerPrefill } from "./career-prefill";
 // NEO-478: the "Checklist says otherwise" step, first, ahead of the names.
@@ -260,6 +264,9 @@ import {
  * query and shows no summary — no line at all is honest; a wrong one is not.
  */
 const MAX_RESOLVE_NAMES = 64;
+
+/** `teams.nearMatches` lists this many when asked for no more (the server's own default). */
+const TEAM_NEAR_MATCH_DEFAULT_LIMIT = 5;
 
 /**
  * Mirrors MAX_TEAM_FULL_NAME_LENGTH in convex/entityReviewQueue.ts (and
@@ -738,8 +745,10 @@ export default function EntityReviewWizard({
   /**
    * NEO-574 — the career step's answers as the commit reads them: stints to
    * add and per-card edits (a different player, a different team), aligned
-   * with `previewCards`. `undefined` while nothing was changed. The parent
-   * holds them in client state; they are never stored anywhere else.
+   * with `previewCards`. An untouched line counts as "Add to career" with the
+   * card's team staged, so this holds those stints too; `undefined` when
+   * there is nothing to send (no stints, no edits). The parent holds them in
+   * client state; they are never stored anywhere else.
    */
   onCareerChange?: (fields: CareerCommitFields | undefined) => void;
   /**
@@ -791,13 +800,14 @@ export default function EntityReviewWizard({
       incomingPreviewCards
         ? checklistIndexes.flatMap((index) => {
             const card = incomingPreviewCards[index];
-            return card.checklistConflict
+            const conflict = card.checklistConflict;
+            return conflict
               ? [
                   {
                     index,
                     cardNumber: card.cardNumber,
                     cardName: card.cardName,
-                    conflict: card.checklistConflict,
+                    conflict,
                   },
                 ]
               : [];
@@ -894,6 +904,12 @@ export default function EntityReviewWizard({
    * rest of the per-row state when the presented row changes.
    */
   const [careerEntryDirty, setCareerEntryDirty] = useState(false);
+  /**
+   * NEO-591 — a stints form on the Career check step holds a stint the
+   * operator started and has not added. Reported by the step (its forms keep
+   * the text); Next waits for it, as it waits for a new player's name.
+   */
+  const [careerStintDraft, setCareerStintDraft] = useState(false);
   /**
    * NEO-341 — the row whose sport chooser ("Sport for this name") is open, and
    * the row whose "Add years" form is open. Both controls keep their open state
@@ -1302,8 +1318,6 @@ export default function EntityReviewWizard({
   const footerStatusId = useId();
   /** NEO-574 — the first line's tab-stop radio, focused on arrival. */
   const careerFirstRef = useRef<HTMLButtonElement>(null);
-  /** NEO-574 (a11y) — Next pressed while an add form holds years that are not a stint. */
-  const [careerBlockedPresses, setCareerBlockedPresses] = useState(0);
   /** NEO-345 — the autograph step's question; its Next is described by it. */
   const autographLeadId = useId();
   /** NEO-345 — the autograph step's tab-stop choice, focused while unanswered. */
@@ -1628,10 +1642,24 @@ export default function EntityReviewWizard({
   const careerFields = useMemo(
     () =>
       careerEnabled && checklistedCards && careerLines.length > 0
-        ? careerCommitFields({ lines: careerLines, answers: careerAnswers, cards: checklistedCards })
+        ? careerCommitFields({
+            lines: careerLines,
+            answers: careerAnswers,
+            cards: checklistedCards,
+            setYear: careerSetYear,
+            coverage: careerCoverage,
+          })
         : undefined,
-    [careerEnabled, checklistedCards, careerLines, careerAnswers],
+    [careerEnabled, checklistedCards, careerLines, careerAnswers, careerSetYear, careerCoverage],
   );
+  /**
+   * NEO-591 — a "New player named …" line whose name box is empty: Next waits
+   * (the commit cannot create nobody). Only lines on the step count.
+   */
+  const careerUnnamed = careerLines.some((line) => {
+    const a = careerAnswers[line.key];
+    return a?.kind === "player" && isNewPlayerPick(a.pick) && !newPlayerNameReady(a.pick.name);
+  });
   /**
    * The cards every step AFTER the career step reads: with the operator's
    * career edits on them (a replaced team string gone, a picked team on, a
@@ -1734,7 +1762,17 @@ export default function EntityReviewWizard({
   const teamNearMatches = useQuery(
     api.teams.nearMatches,
     current && !reviewingDecided && current.kind === "team"
-      ? { name: current.name, sportId: current.sportId }
+      ? {
+          name: current.name,
+          sportId: current.sportId,
+          // The step lists every candidate row as a link, and the Link group
+          // counts its own matches ("6 possible matches"). Past the server's
+          // default of five the group asks for as many as the step lists, so
+          // the two counts agree.
+          ...((current.teamContext?.candidateTeamIds.length ?? 0) > TEAM_NEAR_MATCH_DEFAULT_LIMIT
+            ? { limit: current.teamContext?.candidateTeamIds.length }
+            : {}),
+        }
       : "skip",
   );
   /**
@@ -2103,14 +2141,80 @@ export default function EntityReviewWizard({
     }
     return [...ids].sort();
   }, [rows, hasTeamlessSports, cardsWithDefaultPlayer, careerGapLines, careerFields]);
-  const linkedTeams = useQuery(
-    api.teams.getManyByIds,
-    linkedTeamIds.length > 0 ? { ids: linkedTeamIds } : "skip",
-  );
   const linkedPlayers = useQuery(
     api.players.getManyByIds,
     linkedPlayerIds.length > 0 ? { ids: linkedPlayerIds } : "skip",
   );
+  /**
+   * NEO-591 — the stints the "Add to career" widget lists as already on file:
+   * the career lines' players' stints, with their teams' names. Read only once
+   * some line opens the widget: an untouched line is "Add to career", so any
+   * line without a stored answer does.
+   */
+  const careerWantsStints = careerLines.some((line) => {
+    const a = careerAnswers[line.key];
+    return (
+      a === undefined ||
+      a.kind === "add" ||
+      ((a.kind === "player" || a.kind === "team") && a.pick !== undefined)
+    );
+  });
+  const careerStintTeamIds = useMemo(() => {
+    if (!careerWantsStints) return [] as Array<Id<"teams">>;
+    const ids = new Set<Id<"teams">>();
+    for (const p of linkedPlayers ?? []) for (const y of p.teamYears ?? []) ids.add(y.teamId);
+    return [...ids].sort();
+  }, [careerWantsStints, linkedPlayers]);
+  const careerStintTeams = useQuery(
+    api.teams.getManyByIds,
+    careerStintTeamIds.length > 0 ? { ids: careerStintTeamIds } : "skip",
+  );
+  // Declared after the stint teams' read, so the wizard's own team read is the
+  // last `teams.getManyByIds` subscription of a render.
+  const linkedTeams = useQuery(
+    api.teams.getManyByIds,
+    linkedTeamIds.length > 0 ? { ids: linkedTeamIds } : "skip",
+  );
+  const careerExistingStintsOf = (playerId: string): ExistingStint[] => {
+    const player = (linkedPlayers ?? []).find((p) => p._id === playerId);
+    if (!player || !careerStintTeams) return [];
+    const nameOf = new Map(careerStintTeams.map((t) => [t._id as string, teamFullName(t)]));
+    return (player.teamYears ?? []).flatMap((y, i) => {
+      const label = nameOf.get(y.teamId);
+      return label
+        ? [
+            {
+              key: `${y.teamId}-${y.fromYear ?? "u"}-${i}`,
+              label,
+              ...(y.fromYear !== undefined ? { fromYear: y.fromYear } : {}),
+              ...(y.toYear !== undefined ? { toYear: y.toYear } : {}),
+            },
+          ]
+        : [];
+    });
+  };
+  /**
+   * NEO-591 — the teams this batch is creating that a card prints: the only
+   * not-yet-saved teams a career stint can name (the commit resolves a stint
+   * for one through the card's printed string, as it resolves the card's team).
+   */
+  const careerBatchTeams = useMemo<BatchTeam[]>(() => {
+    if (!rows || !checklistedCards) return [];
+    const printed = new Map<string, string>();
+    for (const card of checklistedCards) {
+      for (const t of cardTeamStrings(card)) {
+        const key = normalizeEntityName(t);
+        if (key && !printed.has(key)) printed.set(key, t);
+      }
+    }
+    const out: BatchTeam[] = [];
+    for (const row of rows) {
+      if (row.kind !== "team" || row.decision?.action !== "create" || !row.decision.create) continue;
+      const teamName = printed.get(normalizeEntityName(row.name));
+      if (teamName) out.push({ label: teamFullName(row.decision.create), teamName });
+    }
+    return out;
+  }, [rows, checklistedCards]);
 
   /**
    * NEO-426 — the teamless-sport default's facts, built once for the step
@@ -2126,8 +2230,11 @@ export default function EntityReviewWizard({
       playerSportIds,
       teamlessPlayerNames: teamlessPlayerNames ?? [],
       existingIndexes: existingCardIndexes,
+      // NEO-591 — a player the career check creates is born in the set's sport.
+      ...(sportId !== undefined ? { setSportId: sportId } : {}),
     };
   }, [
+    sportId,
     hasTeamlessSports,
     teamlessSportIds,
     linkedPlayers,
@@ -3845,6 +3952,9 @@ export default function EntityReviewWizard({
     // NEO-574 — the players a career-step relink picked, so a title can name them.
     const playerNameById = new Map<string, string>();
     for (const p of linkedPlayers ?? []) playerNameById.set(p._id, p.name);
+    // NEO-591 — and the players the career step creates, by the ref the cards carry.
+    const newPlayerNameByRef = new Map<string, string>();
+    for (const p of careerFields?.newPlayers ?? []) newPlayerNameByRef.set(p.ref, p.name);
     // NEO-606 — and the teams' Location / Name, so the preview shortens a team
     // as the commit's title will.
     const teamSplits = (linkedTeams ?? []).flatMap((t) => {
@@ -3856,9 +3966,10 @@ export default function EntityReviewWizard({
       linkedTeamNameById: byId,
       teamNameById: byId,
       playerNameById,
+      newPlayerNameByRef,
       teamSplits,
     };
-  }, [rows, linkedTeams, linkedPlayers]);
+  }, [rows, linkedTeams, linkedPlayers, careerFields]);
   /** The cards the titles step would ask about, recomputed from the team answers. */
   const titleIndexes = useMemo(
     () =>
@@ -3884,11 +3995,6 @@ export default function EntityReviewWizard({
    * Save), whichever step was asked for.
    */
   const autographUnanswered = postLive.autograph && autographAnswer === undefined;
-  /** NEO-574 — an add form holding years that are not a stint holds Next. */
-  const careerBadYears = useMemo(
-    () => linesWithBadYears(careerLines, careerAnswers),
-    [careerLines, careerAnswers],
-  );
   /** NEO-478 — the checklist step's answers are required too. */
   const checklistUnanswered = postLive.checklist && checklistUnansweredCount > 0;
   /** Every name decided and none on screen: the teams / autograph / titles / save steps. */
@@ -4055,8 +4161,8 @@ export default function EntityReviewWizard({
               ? autographChoiceRef.current
               : nextStepButtonRef.current
             : screenKey === "career"
-              ? // NEO-574 — the first line's radio; Leave it is already picked,
-                // so Enter there is "next line".
+              ? // NEO-574 — the first line's radio; Add to career is already
+                // picked (the default), so Enter there steps into its team box.
                 careerFirstRef.current
               : screenKey === "checklist"
                 ? // NEO-478 — the same rule: the first card still waiting, else Next.
@@ -4113,9 +4219,28 @@ export default function EntityReviewWizard({
    * link path hands `handleLink`; for a player or league row it is empty, so
    * `saveAsAlias` never reaches the server on a kind that refuses it.
    */
+  /*
+   * Collector review — ticked unless the string is a bare PLACE. A listing that
+   * prints "Arizona" or "Seattle" names a location, not a name for the team
+   * that happens to be linked here; saving it as an alias would claim every
+   * later set where the same word means another team (Arizona is also the
+   * University of Arizona). So a string equal to some team's location starts
+   * unticked; the operator can still tick it, and an answer once given holds.
+   */
+  const nameIsAPlace = (teamNearMatches ?? []).some((m) => m.locationMatch === true);
+  /**
+   * The default is not known until the matches arrive, and it can flip from
+   * ticked to unticked when they do. Until then, with no answer given, the box
+   * is held disabled, so a click on Link cannot save a place as an alias off a
+   * default that is about to change. The box stays mounted (see its comment).
+   */
+  const aliasDefaultPending =
+    current?.kind === "team" &&
+    saveAsAliasByRow[current._id] === undefined &&
+    teamNearMatches === undefined;
   const saveAsAlias =
     current && current.kind === "team"
-      ? (saveAsAliasByRow[current._id] ?? true)
+      ? (saveAsAliasByRow[current._id] ?? (!nameIsAPlace && !aliasDefaultPending))
       : false;
   /**
    * NEO-313 — the current name has been moved off the set's sport, and
@@ -4659,7 +4784,7 @@ export default function EntityReviewWizard({
     saving ||
     (postStep === "autograph" && autographUnanswered) ||
     (postStep === "checklist" && checklistUnanswered) ||
-    (postStep === "career" && (careerBadYears.length > 0 || careerChecking));
+    (postStep === "career" && (careerChecking || careerUnnamed || careerStintDraft));
   /**
    * NEO-345 (a11y) — a press (click, Enter or Space) on Next while the
    * autograph step is unanswered: say why in the step's status line and move
@@ -4679,16 +4804,14 @@ export default function EntityReviewWizard({
       }
       return;
     }
-    // NEO-574 — and the career step's, which says to fix the years.
-    if (postStep === "career" && careerBadYears.length > 0) {
-      setCareerBlockedPresses((n) => n + 1);
-      const bad = careerLines.find((l) => l.key === careerBadYears[0]);
-      if (bad) {
-        Array.from(document.querySelectorAll<HTMLElement>("[data-career-line]"))
-          .find((el) => el.dataset.careerLine === bad.key)
-          ?.querySelector<HTMLInputElement>("input")
-          ?.focus();
-      }
+    // NEO-591 — a new player with no name: say so, and land in the empty box.
+    if (postStep === "career" && careerUnnamed) {
+      document.querySelector<HTMLInputElement>('input[data-career-new-name="blank"]')?.focus();
+      return;
+    }
+    // NEO-591 — a stint started and not added: land in that form.
+    if (postStep === "career" && careerStintDraft) {
+      document.querySelector<HTMLInputElement>("[data-career-stint-draft] input")?.focus();
       return;
     }
     if (postStep !== "autograph" || !autographUnanswered) return;
@@ -4839,9 +4962,11 @@ export default function EntityReviewWizard({
         ? CAREER_CHECKING
         : careerReadFailed
           ? CAREER_READ_FAILED
-          : careerBlockedPresses > 0 && careerBadYears.length > 0
-            ? CAREER_NEXT_BLOCKED
-            : null;
+          : careerUnnamed
+            ? CAREER_NEW_PLAYER_UNNAMED
+            : careerStintDraft
+              ? CAREER_STINT_UNADDED
+              : null;
   const footerLine: string | null =
     careerLine ??
     (!expired &&
@@ -4901,7 +5026,10 @@ export default function EntityReviewWizard({
     ["Cards to save", summary.cardCount],
     ["Cards to delete", summary.deleteCount],
     ["Cards with field updates", summary.reviewDecisionCount],
-    ["New players and teams", Math.max(0, outcome.created - droppedNewTeams)],
+    [
+      "New players and teams",
+      Math.max(0, outcome.created - droppedNewTeams) + (careerFields?.newPlayers?.length ?? 0),
+    ],
     ["Linked to existing", outcome.linked],
     ["Skipped as not a name", outcome.skipped],
   ];
@@ -6094,8 +6222,11 @@ export default function EntityReviewWizard({
                     */}
                     {current.kind === "team" && !reviewingDecided && (
                       <TeamStepContext
-                        key={current._id}
+                        // Prefixed: it and TeamMatchSearch below are siblings,
+                        // and two children with one key is a React error.
+                        key={`team-context-${current._id}`}
                         reviewRowId={current._id}
+                        printedName={current.name}
                         disabled={busy}
                         onLink={(teamId) => {
                           void handleLink(current._id, "team", teamId, linkOptions);
@@ -6104,7 +6235,7 @@ export default function EntityReviewWizard({
                     )}
                     {current.kind === "team" ? (
                       <TeamMatchSearch
-                        key={current._id}
+                        key={`team-search-${current._id}`}
                         sportId={current.sportId}
                         // NEO-331: ranks the typed search by this set.
                         contextOptionId={selectorOptionId}
@@ -6142,7 +6273,7 @@ export default function EntityReviewWizard({
                           In the body, never in the footer: row 1 of the
                           footer is reserved (NEO-110).
 
-                          Ticked by default — see `saveAsAliasByRow`. Per row,
+                          Ticked by default unless the string is a bare place — see `saveAsAliasByRow`. Per row,
                           so an answer survives Back.
                         */}
                         <div className="space-y-0.5">
@@ -6154,7 +6285,7 @@ export default function EntityReviewWizard({
                               id={TEAM_SAVE_AS_ALIAS_FIELD_ID}
                               type="checkbox"
                               checked={saveAsAlias}
-                              disabled={busy}
+                              disabled={busy || aliasDefaultPending}
                               aria-describedby={saveAsAliasHelpId}
                               onChange={(e) =>
                                 setSaveAsAliasByRow((prev) => ({
@@ -6613,8 +6744,10 @@ export default function EntityReviewWizard({
               /*
                 NEO-574 — the "Career check" step: each (player, team) the
                 player's career does not show for the set's year, once, with
-                its cards. Every line defaults to "Leave it", so Next passes
-                it; nothing is written until Confirm & Save.
+                its cards. Every line defaults to "Add to career" with the
+                card's team staged, so Next passes it and Confirm & Save adds
+                those stints; "Keep as is" opts a line out. Nothing is written
+                until Confirm & Save.
               */
               careerSetYear !== undefined && sportId !== undefined ? (
                 <CareerCheckStep
@@ -6636,6 +6769,8 @@ export default function EntityReviewWizard({
                     (linkedTeams ?? []).find((t) => t._id === teamId)?.name
                   }
                   hasNoCareer={(line) => careerPlayerHasNoCareer(line)}
+                  existingStintsOf={careerExistingStintsOf}
+                  batchTeams={careerBatchTeams}
                   readFailed={careerReadFailed}
                   onRetry={() => {
                     retryCareerCheck();
@@ -6645,6 +6780,8 @@ export default function EntityReviewWizard({
                   disabled={saving}
                   headingId={careerLeadId}
                   firstRef={careerFirstRef}
+                  onStintDraftChange={setCareerStintDraft}
+                  blankNameReasonId={footerStatusId}
                 />
               ) : null
             ) : postStep === "autograph" ? (
@@ -7132,7 +7269,7 @@ export default function EntityReviewWizard({
                         postStep === "checklist"
                           ? `${checklistLeadId} ${checklistHintId}`
                           : postStep === "career"
-                            ? careerChecking
+                            ? careerChecking || careerUnnamed || careerStintDraft
                               ? `${careerLeadId} ${footerStatusId}`
                               : careerLeadId
                           : postStep === "teams"

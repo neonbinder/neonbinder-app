@@ -20,15 +20,18 @@ import { normalizeTeamName } from "./teams";
 import { normalizePlayerName } from "./players";
 import { normalizeLeagueName } from "./leagues";
 import {
+  TEAM_SUGGESTION_MAX_LOCATION_NAMES,
   TEAM_SUGGESTION_MAX_PLAYERS,
   TEAM_SUGGESTION_MAX_STINTS,
   TEAM_SUGGESTION_MAX_TEAM_NAMES,
 } from "./cardChecklist";
 import {
+  TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST,
   TEAMS_SECTION_NAMES_PER_REQUEST,
   TEAMS_SECTION_PLAYERS_PER_REQUEST,
 } from "../components/SetSelector/teams-on-cards";
 import { insertTestCard } from "../lib/testing/card-row";
+import { teamRowFields } from "./lib/teamRow";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -357,6 +360,8 @@ describe("teamSuggestionsForPreview — gate and bounds", () => {
   test("the wizard slices its requests at the server's caps", () => {
     expect(TEAMS_SECTION_PLAYERS_PER_REQUEST).toBe(TEAM_SUGGESTION_MAX_PLAYERS);
     expect(TEAMS_SECTION_NAMES_PER_REQUEST).toBe(TEAM_SUGGESTION_MAX_TEAM_NAMES);
+    // NEO-591: and the location leg's own cap, so the two cannot drift.
+    expect(TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST).toBe(TEAM_SUGGESTION_MAX_LOCATION_NAMES);
   });
 
   test("refuses more team names than the cap, by count", async () => {
@@ -864,6 +869,70 @@ describe("teamSuggestionsForPreview — NEO-569 undated stints (the Jackson Burn
 });
 
 describe("teamSuggestionsForPreview — teamNames (choices, never a pick)", () => {
+  test("NEO-591: locationNames also returns the teams LOCATED in the name, with their league level; other names get full-name rows alone", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedLeagues(t);
+    const ids = await t.run(async (ctx) => {
+      const make = (name: string, location: string, leagueId: Id<"leagues">) =>
+        ctx.db.insert("teams", {
+          ...teamRowFields({ name, location }),
+          sportId: s.sportId,
+          leagueId,
+          lastUpdated: Date.now(),
+        });
+      return {
+        sooners: await make("Sooners", "Oklahoma", s.ncaa),
+        redhawks: await make("RedHawks", "Oklahoma", s.il),
+        other: await make("Cowboys", "Oklahoma State", s.ncaa),
+      };
+    });
+    const ask = (locationNames?: string[]) =>
+      t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+        selectorOptionId: s.insertId,
+        players: [],
+        teamNames: ["Oklahoma"],
+        ...(locationNames ? { locationNames } : {}),
+      });
+    // Not asked for: no team is named just "Oklahoma", so nothing.
+    expect((await ask()).teamNames[0].teams).toEqual([]);
+    const located = (await ask(["oklahoma"])).teamNames[0].teams;
+    expect(located.map((x) => x.teamId).sort()).toEqual([ids.sooners, ids.redhawks].sort());
+    // A place that merely starts the same is not the place.
+    expect(located.map((x) => x.teamId)).not.toContain(ids.other);
+  });
+
+  test("security audit N1: locationNames is bounded like teamNames, and an over-long entry is skipped, not matched", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedLeagues(t);
+    await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        ...teamRowFields({ name: "Sooners", location: "Oklahoma" }),
+        sportId: s.sportId,
+        leagueId: s.ncaa,
+        lastUpdated: Date.now(),
+      }),
+    );
+    const ask = (locationNames: string[]) =>
+      t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+        selectorOptionId: s.insertId,
+        players: [],
+        teamNames: ["Oklahoma"],
+        locationNames,
+      });
+    // Past the cap teamNames has: refused outright.
+    await expect(
+      ask(Array.from({ length: TEAM_SUGGESTION_MAX_TEAM_NAMES + 1 }, (_, i) => `Place ${i}`)),
+    ).rejects.toThrow(/Too many place names/);
+    // At the cap it is accepted, and the entry that matters still works.
+    expect(
+      (await ask([...Array.from({ length: TEAM_SUGGESTION_MAX_TEAM_NAMES - 1 }, (_, i) => `Place ${i}`), "Oklahoma"]))
+        .teamNames[0].teams,
+    ).toHaveLength(1);
+    // An essay in the list is skipped (it can match no stored name) and does not stop the real one.
+    expect((await ask(["x".repeat(50_000), "Oklahoma"])).teamNames[0].teams).toHaveLength(1);
+    expect((await ask(["x".repeat(50_000)])).teamNames[0].teams).toEqual([]);
+  });
+
   test("a name resolves to every row it names in this sport, the era covering the set year first", async () => {
     const t = convexTest(schema, modules);
     const s = await seedLeagues(t);

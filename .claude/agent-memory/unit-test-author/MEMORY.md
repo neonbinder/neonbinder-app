@@ -48,6 +48,8 @@
 - [Fake-BSC miss store tests](reference_fake_bsc_miss_store_test_patterns.md) — unref timer hang, owner reachability, dist break-checks, sheet drift fixtures
 - [NEO-555 probe/capture adversarial](reference_neo555_probe_capture_adversarial.md) — shallow-freeze trap, signal guard, body-read leak, break-check by revert
 - [NEO-556 No Team adversarial patterns](reference_neo556_no_team_adversarial_patterns.md) — oracle cartesian, ?raw source pins, client-vs-server commit agreement
+- [NEO-591 Onyx PDF + Prospect tests](reference_neo591_onyx_pdf_prospect_test_patterns.md) — hand-built PDF pages via groupPageItems, resolver world fixture, hint-branch split, mutation driver
+- [Full-suite load vs testTimeout](patterns_full_suite_load_and_test_timeout.md) — components tests run 3-4x slower under the full suite; components project timeout 20s
 - [LiveLine effect lag](feedback_live_line_effect_lag.md) — wait on the role=status node itself, not the visible span; forced-lag proof recipe
 - [NEO-587 rAF status race sweep](reference_neo587_raf_status_race_sweep.md) — slow-rAF shim to find one-frame-late status races; useLiveWords joins words; vacuous negatives
 - [NEO-609 title levels tests](reference_neo609_title_levels_test_patterns.md) — atFullLength padding, refill hides city cuts, Proof parity fixture, tsx probe loop

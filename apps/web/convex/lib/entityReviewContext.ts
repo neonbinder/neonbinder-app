@@ -16,6 +16,13 @@ import { v } from "convex/values";
 /** `entityReviewQueue.teamContext` — a team step's candidates and triggering cards. */
 export const teamContextValidator = v.object({
   candidateTeamIds: v.array(v.id("teams")),
+  /**
+   * True when the candidates are the in-league teams LOCATED at the printed
+   * text (a place, NEO-591), not teams that answer to it by name or alias. The
+   * step's lead-in says "from New York" instead of "by that name". Absent for
+   * a name or alias match and on rows written before this field.
+   */
+  place: v.optional(v.literal(true)),
   cards: v.array(
     v.object({
       number: v.optional(v.string()),

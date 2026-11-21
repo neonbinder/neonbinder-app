@@ -1043,7 +1043,11 @@ the card it is about:
   BSC gives no team as a blank cell, so `No Team` is set by hand after a capture and
   recorded in SET-REGISTRY.md; a re-capture must put it back.
 - **Numbers are read as printed, in any case** (`TBD`, `PPR-DLa`, `1a`). `checklistFacts`
-  mirrors the parser and throws on two numbers in one file that differ only by case.
+  runs the product's own parser and matcher (`parsePublishedChecklist`,
+  `matchPublishedChecklist`; NEO-591), so N is what the fetch computes: never restate a
+  pairing rule in support code, import it. An edited upload (`usePublishersChecklist`'s
+  `ChecklistEdits`: team cells, a row renumbered, split into variations or dropped) gets
+  the edited file's facts; `nearNamePair` gives a near-name pair's % as Match Cards prints it.
 - **BSC does not 429 on its own any more, so a live card is answered.** The older
   specs' `.or()` over "answered" and "cooldown" (`bscLookupOutcome`, a `bsc-lookup`
   annotation) stay as they are and now take the answered side; do not add new ones.

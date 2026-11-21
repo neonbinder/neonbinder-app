@@ -97,6 +97,8 @@
 - [Capture diff paths are what the fake invents](reference_capture_diff_paths_are_what_the_fake_invents.md) — shape_drift paths = fake-only fields; stored shapes unreadable; CAPTURE_OPTIONAL; name variants by kind not id
 - [Capture optional paths: parent-only](reference_capture_optional_parent_only.md) — fake-bsc prefix exemption hides read fields under a present object; use parentOnly + list children
 - [Cloud Run socket destroy restarts the instance](reference_cloud_run_socket_destroy_restarts_instance.md) — fake faults end in 503, never socket.destroy(); hangCapMs injectable
+- [Names-first core reshapes fetch fixtures](reference_names_first_pair_core_shapes_the_fetch_tests.md) — "T-10" now pairs "10" by number; sibling-card fixtures must be the same player; sourceNumbers on stored rows
+- [Derived numbers skip the number tiers](reference_derived_numbers_skip_the_number_tiers.md) — flag minted/swapped numbers on the wire; resolveExistingIds skips slot+number and no-ref tiers
 - [eBay read path: one clock](ebay-read-path-bounded-by-one-clock.md) — 3 s a try, one retry on timeout; timeout is never a missing policy
 - [Direct helper bypasses action stubs](reference_direct_helper_bypasses_credentials_action_stubs.md) — runAction -> plain helper skips vi.mock action stubs; add a twin stub, spy _handler for no-hop proof
 - [One fake host pin for both marketplaces](reference_one_fake_host_pin_shared_by_both_marketplaces.md) — share isFakeServiceHost/signForFake; fake switch keyed on request not config validity; strict echo guard

@@ -755,3 +755,27 @@ describe("NEO-639 — a chip outside the pre-fill says the player's years with t
     expect(last()).toEqual([undefined]);
   });
 });
+
+describe("NEO-591 — a Prospect (X) card's team is an ordinary Teams-step line", () => {
+  it("lists the printed team as the listing's claim like any team, with no Remember box and nothing pre-filled", () => {
+    nameAnswer = () => [];
+    render(
+      <Harness
+        cards={[
+          {
+            cardNumber: "NNO",
+            cardName: "Cord Rager",
+            players: ["Cord Rager"],
+            teams: ["Dallas Baptist"],
+            teamLookup: "checklist",
+          },
+        ]}
+        rows={[{ _id: "r1", kind: "team", name: "Dallas Baptist", decision: null }]}
+      />,
+    );
+    expect(screen.getByText("Listed as:")).toBeTruthy();
+    expect(screen.getByText("Dallas Baptist")).toBeTruthy();
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    expect(last()).toEqual([undefined]);
+  });
+});

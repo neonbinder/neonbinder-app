@@ -455,8 +455,10 @@ export async function answerAutographStep(page: Page, choice: AutographChoice = 
 }
 
 /**
- * Press Next through the steps before "Autographed cards" (a teamless-card
- * step, say) until its radio group is up. Answers nothing.
+ * Press Next through the steps before "Autographed cards" (the career check, a
+ * teamless-card step) until its radio group is up. Answers nothing, except
+ * that every "Career check" line is put on "Keep as is" (`keepEveryCareerLine`;
+ * NEO-591: its default adds the card's team to the player's career).
  *
  * Contract: ENTRY every name is decided (the names-done footer is up). EXIT
  * the step is showing. A wizard that never offers the step fails here, by
@@ -471,6 +473,10 @@ export async function walkToAutographStep(page: Page): Promise<void> {
     if (await group.isVisible()) break;
     await expect(next, "the wizard offers Next on its way to the Autographed cards step").toBeVisible();
     const { subtitle } = await readProgress(page);
+    if (subtitle === CAREER_STEP_SUBTITLE) {
+      await keepEveryCareerLine(page);
+      await expectNoCareerLineAdds(page);
+    }
     await next.click();
     await expectPostNameStepLeft(page, subtitle);
   }
@@ -501,8 +507,54 @@ function postNameSubtitles(except: readonly string[] = []): RegExp {
 }
 
 /**
- * NEO-574: press Next past the "Career check" step when it comes (every line
- * left on "Keep as is", which writes nothing), and stop on the step after it.
+ * The Career check sweep's postcondition, read by the walkers that call `keepEveryCareerLine`
+ * rather than by the sweep itself: no line is left on "Add to career", which would write a stint
+ * to a catalogue player at Save. A sweep that silently did nothing fails here, in every spec that
+ * walks past the step. Positive first: a line answered "Keep as is" is on screen (R2).
+ */
+export async function expectNoCareerLineAdds(page: Page): Promise<void> {
+  const wizard = reviewWizard(page);
+  await expect(wizard.getByRole("radio", { name: "Keep as is", exact: true, checked: true }).first()).toBeVisible();
+  await expect(
+    wizard.getByRole("radio", { name: "Add to career", exact: true, checked: true }),
+    "no Career check line is left on Add to career (it would write a stint at Save)",
+  ).toHaveCount(0);
+}
+
+/**
+ * NEO-591: answer "Keep as is" on every line of the "Career check" step that is
+ * up, so a Next past it writes nothing. Every line OPENS on "Add to career" with
+ * the card's team staged (an untouched line adds that stint to the player's
+ * career at Confirm & Save), so a walk whose feature is not the career check
+ * must opt each line out, or it writes stints to catalogue players.
+ *
+ * Contract: ENTRY the career step is up (its subtitle visible). Waits (7 s) for
+ * Next to be usable first: Next is held while the careers are read and until
+ * every listed team's name has loaded, so no line arrives after the sweep. Each
+ * click is proved to have landed (one line fewer left to answer). EXIT every
+ * line's "Keep as is" is checked, none is on "Add to career"; nothing pressed.
+ */
+export async function keepEveryCareerLine(page: Page): Promise<void> {
+  const wizard = reviewWizard(page);
+  await expect(
+    wizard.getByRole("button", { name: "Next (Enter)", exact: true, disabled: false }),
+    "the Career check's Next is usable (the careers have been read)",
+  ).toBeVisible();
+  const keep = (checked?: boolean) =>
+    wizard.getByRole("radio", { name: "Keep as is", exact: true, ...(checked === undefined ? {} : { checked }) });
+  const lines = await keep().count();
+  for (let left = await keep(false).count(); left > 0; left--) {
+    await keep(false).first().click();
+    await expect(keep(false)).toHaveCount(left - 1);
+  }
+  await expect(keep(true)).toHaveCount(lines);
+  await expect(wizard.getByRole("radio", { name: "Add to career", exact: true, checked: true })).toHaveCount(0);
+}
+
+/**
+ * NEO-574: pass the "Career check" step when it comes, every line on "Keep as
+ * is" (`keepEveryCareerLine`; NEO-591: a line left untouched would ADD the
+ * card's team to the player's career), and stop on the step after it.
  * For a spec that asserts what the LATER steps hold (the teams step's lines,
  * or that there is no teams step) and whose fixture's known players may or may
  * not have the card's team on file: the branch waits for a settled post-name
@@ -511,7 +563,8 @@ function postNameSubtitles(except: readonly string[] = []): RegExp {
  * live step (R2).
  *
  * Contract: ENTRY every name is decided. EXIT a post-name step other than the
- * career check is up (the progress bar's subtitle names it).
+ * career check is up (the progress bar's subtitle names it); nothing was
+ * written to a career.
  */
 export async function passCareerCheck(page: Page): Promise<void> {
   await expectWizardStep(page, postNameSubtitles());
@@ -520,6 +573,8 @@ export async function passCareerCheck(page: Page): Promise<void> {
   await expectPostNameStepSettled(page);
   const { subtitle } = await readProgress(page);
   if (subtitle === CAREER_STEP_SUBTITLE) {
+    await keepEveryCareerLine(page);
+    await expectNoCareerLineAdds(page);
     await usableNextButton(page).click();
     await expectPostNameStepLeft(page, subtitle);
   }
@@ -528,8 +583,11 @@ export async function passCareerCheck(page: Page): Promise<void> {
 
 /**
  * Press Next past the "Career check" (NEO-574) and "Cards with no team" steps
- * when they come, leaving every line on its default ("Keep as is", "Leave for
- * later"), and stop on the first step after them (autograph, titles or Save).
+ * when they come, and stop on the first step after them (autograph, titles or
+ * Save). Every career line is answered "Keep as is" first
+ * (`keepEveryCareerLine`; NEO-591: its default, "Add to career", writes the
+ * card's team to the player's career); every teams line stays on its default
+ * ("Leave for later").
  * For a spec whose feature is a LATER step (the titles step) and which reads
  * where it is from the subtitle; a spec that only needs Save calls
  * `advanceToSave`.
@@ -546,6 +604,10 @@ export async function passCareerAndTeamsSteps(page: Page): Promise<void> {
     await expectPostNameStepSettled(page);
     const { subtitle } = await readProgress(page);
     if (!skipped.includes(subtitle)) return;
+    if (subtitle === CAREER_STEP_SUBTITLE) {
+      await keepEveryCareerLine(page);
+      await expectNoCareerLineAdds(page);
+    }
     await usableNextButton(page).click();
     await expectPostNameStepLeft(page, subtitle);
   }
@@ -1173,11 +1235,14 @@ export async function walkToPlayerRow(
  * - Presses Next until the Save step is up; each press is proved to have MOVED
  *   the wizard to a LATER post-name step (`expectPostNameStepLeft`, read off
  *   the progress bar's subtitle), so a Next that does nothing fails by name.
- *   Next leaves every line on its default (a pre-filled
- *   team, else "Leave for later"; every title kept; NEO-574: every "Career
- *   check" line on "Keep as is", which writes nothing) - the same answers the old
- *   final step's Confirm & Save saved. A spec whose FEATURE is the career,
- *   teams or titles step drives that step itself and does not call this.
+ *   Next leaves every teams and titles line on its default (a pre-filled team,
+ *   else "Leave for later"; every title kept) - the same answers the old final
+ *   step's Confirm & Save saved. NEO-591: a "Career check" line's default is
+ *   "Add to career" (it WRITES the card's team to the player's career), so
+ *   every career line is answered "Keep as is" first (`keepEveryCareerLine`)
+ *   and the walk writes no career. A spec whose FEATURE is the career, teams
+ *   or titles step drives that step itself and does not call this (or answers
+ *   it before calling this).
  * - NEO-345: the "Autographed cards" step (new AU cards on a part with no
  *   autograph format) is the one step whose answer is REQUIRED - its Next is
  *   aria-disabled until a tile is picked - so this picks "On card" there
@@ -1210,6 +1275,10 @@ export async function advanceToSave(page: Page): Promise<void> {
     if (await autograph.isVisible()) await answerAutographStep(page);
     await expect(next).toBeVisible();
     const { subtitle } = await readProgress(page);
+    if (subtitle === CAREER_STEP_SUBTITLE) {
+      await keepEveryCareerLine(page);
+      await expectNoCareerLineAdds(page);
+    }
     await next.click();
     await expectPostNameStepLeft(page, subtitle);
   }

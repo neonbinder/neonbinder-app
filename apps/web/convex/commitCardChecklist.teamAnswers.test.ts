@@ -1132,6 +1132,29 @@ describe("commitCardChecklist — adversarial edges of the team answer (NEO-335)
     expect((await settle(t)).has(row._id)).toBe(false);
   });
 
+  test("invariant 8: the set's team is NOT stamped on a card whose listing names a team the commit could not give it", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const reds = await seedTeam(t, sportId, "Cincinnati Reds");
+    await t.run(async (ctx) => ctx.db.patch(leafId, { teamIds: [reds] }));
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [
+        // BSC answered with a team NB could not split or resolve, and the
+        // operator gave no pick.
+        card({ cardNumber: "1", bscRef: "B1", teamLookup: "answered", rawTeamName: "Cardinals / Browns" }),
+        // The control: no claim at all, so the set's team is the card's.
+        card({ cardNumber: "3", bscRef: "B3", teamLookup: "answered" }),
+      ],
+    });
+
+    const rows = await rowsByNumber(t, leafId);
+    expect(rows.get("1")!.teamOnCardIds).toBeUndefined();
+    expect(rows.get("3")!.teamOnCardIds).toEqual([reds]);
+  });
+
   test("a pick whose team was deleted does not count as a team: \"No team on this card\" still applies", async () => {
     const t = convexTest(schema, modules);
     const { sportId, leafId } = await seedTree(t);

@@ -24,7 +24,7 @@
 - [Same-name player pick step](reference_same_name_player_panel.md) — NEO-332 "Which <name> is this?" step: locators, click the top candidate…
 - [NEO-335 Tidy up this set](reference_neo335_teams_on_cards_section.md) — wizard chrome, post-name steps, teams-line handles, the `N need you` pill…
 - [Quick-add PlayerPicker](reference_quick_add_player_picker.md) — create/pick handles; drawer chip is the only persistence proof
-- [Pairing conflict pills are bare values](patterns_pairing_conflict_pills_are_bare_values.md) — NEO-344: choices are `<value> — use this name|these…
+- [Conflict pills are bare values](patterns_pairing_conflict_pills_are_bare_values.md) — checklist pill `· your checklist`; untouched preselect still asks
 - [Prove a theme by painted colour](patterns_prove_a_theme_by_painted_colour.md) — banner bg + heading colour via toHaveCSS; pre-mount false…
 - [Collection checklist total and drawer](patterns_collection_checklist_total_and_drawer.md) — NEO-358: T = listed minus variation rows; missing…
 - [Collection writes are optimistic](patterns_collection_optimistic_writes_wait_for_the_notice.md) — confirm the LAST optimistic write by its notice; un-Have notice is in main; which writes are optimistic
@@ -49,7 +49,7 @@
 - [Published checklist upload fixtures](patterns_published_checklist_upload_fixtures.md) — NEO-478/482: NNO sets cannot upload, N-of-M arithmetic…
 - [Full local run on one account](patterns_full_local_run_on_one_account.md) — reds that are the single-account run: 12/hour cap, CI-only env…
 - [Cameo specs, sorted binder pages](patterns_cameo_specs_and_sorted_binder_pages.md) — NEO-528: catalogue-wide needs; exact rule summary; helpers
-- [Hand-made sets reach commit via a pasted checklist](reference_hand_made_rows_cannot_reach_the_commit_path.md) — NEO-496: no ids + pasted checklist = checklist-only commit; no checklist = no-ids stop
+- [Hand-made rows reach commit with a checklist](reference_hand_made_rows_cannot_reach_the_commit_path.md) — CORRECTED NEO-591: leaf or set-section checklist makes a no-ids fetch checklist-only
 - [Hand-made leaf reaches the gate only with a checklist](reference_hand_made_rows_cannot_reach_the_commit_path.md) — NEO-496 D10: pasted checklist = checklist-only solo fetch through the review gate and commit
 - [Planted red for server-side behaviour](patterns_planted_red_for_server_side_behaviour.md) — no backend push: plant a wrong expectation, read the…
 - [Commit-path default player needs a nameless card](reference_commit_path_default_player_needs_a_nameless_card.md) — NEO-528: listed/ruled-out…
@@ -77,7 +77,7 @@
 ## From the NEO-552 consolidation
 - [Local run backend, Vite, previews](patterns_local_run_backend_and_vite.md) — function-spec check, one Vite per worktree, CI seed resets
 - [BSC budget rules and the SportLots helper](patterns_bsc_budget_rules_and_sportlots_helper.md) — rules 1-3, expectStepWithSportLots, TSV mis-match trap
-- [NEO-574 career check step](patterns_career_check_step_neo574.md) — handles, advanceToSave guard 5, prefill, both sides checked, 6b year-rule staging
+- [NEO-574 career check step](patterns_career_check_step_neo574.md) — handles, prefill, 6b staging; NEO-591 default Add + keepEveryCareerLine, line-scoped names
 - [Planted break in convex/ code](reference_planted_break_on_convex_code.md) — linked-worktree copy named like the ticket; script pushes it; frozen wrapper
 - [Console check from traces + Vite log](patterns_console_check_from_traces_and_vite_log.md) — --trace=on outside repo, scan JSONL; Vite 8 forwards client console; baseline = PostHog+Clerk warns
 - [Set League and card League specs](patterns_set_league_and_card_league_specs.md) — NEO-569 handles, born-with-MLB needs real sport, noLeague dashboard Report scoping
@@ -86,6 +86,8 @@
 - [Leaf Vivid: a real unlicensed set](patterns_leaf_vivid_real_unlicensed_set.md) — NEO-556: find a set via year-wide sync, Proof type, held cards, parallel copies
 - [Stale batch masks a lookup loss](patterns_dialog_seed_from_stale_batch_masks_a_lookup_loss.md) — Match Cards drops lookup outcomes of pending rows; local green, CI 35 on the lane
 - [Attributes panel header needs the open panel](patterns_attributes_panel_header_controls_need_the_open_panel.md) — NEO-569: shut = title+toggle only; open before Rename/Delete/breadcrumb/Set actions
+- [NEO-591 Prospect and Onyx specs](reference_neo591_prospect_and_onyx_specs.md) — Prospect (X) = printed team, in-memory CSV edit, place cells (players decide, "Which team:"), relink, TL conflict
+- [Checklist facts run the product matcher](patterns_checklist_facts_run_the_product_matcher.md) — import parser+matcher, ChecklistEdits, number-picker/one-%/stem/sibling handles
 - [Team Management era/alias specs](patterns_team_management_era_alias_specs.md) — re-filter after reload (axe on 10k rows), row/status/alert handles, alias holder trips Create again
 - [Copy absence keys on the refusal clause](patterns_copy_absence_keys_on_the_refusal_clause.md) — NEO-602: toHaveCount(0) on a shared phrase trips on a new allowed-state statement
 - [Same-name team eras unprovable on a card](patterns_same_name_team_eras_unprovable_on_a_card.md) — NEO-602: chip/sub-line print no era; alias-held other era makes the drawer an era proof
@@ -107,11 +109,14 @@
 - [Planted break collides with a sibling plant](patterns_planted_break_collides_with_a_sibling_plant.md) — baseline red = sibling mid-plant; git diff HEAD first; restore by reversing, not cp
 - [red-run.mjs and client-wire.log](patterns_red_run_script_and_client_wire_log.md) — NEO-398: per red try triage, --attempt, artifact guards, untrusted output, listener fakes
 - [Injected orders ship up front](patterns_injected_orders_ship_up_front.md) — SHIPPED/FULFILLED keeps the Pick List clean; Convex error $-anchor trap; Switch by keyboard
+- [aria-hidden glyph breaks exact text](patterns_aria_hidden_glyph_breaks_exact_text.md) — Match Cards "⚠ " warnings; ^-anchored negatives vacuous; twin rows "row N of M" = column
+- [Template literal \b is backspace](patterns_template_literal_backslash_b.md) — new RegExp(`…\b`) never matches; write \\b; grep before a run
 - [Both projects locally: worker swap vs reseed](patterns_both_projects_locally_worker_index_vs_reseed.md) — recorded-player specs take a new WORKER_INDEX; sole-writer set specs need agent-convex --seed
 - [Insert vs parallel views; unchanged Regenerate](patterns_insert_vs_parallel_views_and_unchanged_regenerate.md) — Back to unpick a parallel; prove no-op Regenerate by live chips
 - [Note under a toggle; eBay aspects unassertable](patterns_note_under_a_toggle_and_ebay_aspects.md) — toHaveAccessibleDescription links the note; no hop/UI reads eBay aspects
 - [Post-name Next held then gone](patterns_post_name_next_held_then_gone.md) — NEO-574 career step: wait for usable Next/Save/autograph, press disabled:false only
 - [Second variant needs a re-drill](patterns_second_variant_needs_a_redrill.md) — openVariant skips the create confirm while a checklist is open; use drillToCustom again
+- [Duplicate key owner via captureOwnerStack](patterns_find_a_duplicate_key_owner_with_captureownerstack.md) — Vite-log "same key", no stack: snapshot main.tsx probe, served-file line = colliding element
 - [Axe cost, options() and resultTypes](patterns_axe_cost_options_and_result_types.md) — options() replaces withTags; rules ~10% of a big call; owner rule, scope later states
 - [Prove a list overflows its scroller](patterns_prove_a_list_overflows_its_scroller.md) — last row scrolled in view, first row not in viewport; no CSS, no evaluate
 - [Hold a read to prove a wait line](patterns_hold_a_read_to_prove_a_wait_line.md) — slow results read = no dialog yet; no `.or()`; dialog line credits Confirm

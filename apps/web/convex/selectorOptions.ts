@@ -92,7 +92,11 @@ import {
   resolveVariationParents,
   suggestVariationPairings,
 } from "../lib/cards/variations";
-import { compareCardNumbers } from "../lib/cards/card-number";
+import {
+  cardNumbersAgree,
+  compareCardNumbers,
+  preferCardNumber,
+} from "../lib/cards/card-number";
 // NEO-212: the SINGLE career-timeline ordering, shared with `enrichPlayer` in
 // convex/adapters/wikidata.ts. Both write `players.teamYears`, and a player
 // can be created by either, so they must not disagree about the order.
@@ -270,7 +274,10 @@ import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import {
   addPlayerSport,
   createCardYearTeamCache,
+  MAX_CAREER_NEW_PLAYERS,
+  MAX_CREATION_REF_LENGTH,
   MAX_CAREER_STINT_APPENDS,
+  MAX_PLAYER_TEAM_YEARS,
   narrowSameNamePlayersByCardYear,
   normalizePlayerName,
   playerBelongsToSport,
@@ -342,13 +349,10 @@ import {
 } from "./teams";
 // NEO-253: the shared normalisation core, imported rather than transcribed —
 // this file used to carry two separate hand copies of it.
-import { normalizeEntityName } from "../lib/entities/normalize-name";
-// NEO-496: the player-name score and pairing rule, shared with the publisher
+import { normalizeEntityName, rosterKey } from "../lib/entities/normalize-name";
+// NEO-591: the one names-first pairing core, shared with the publisher
 // checklist matcher (lib/checklists/match-published-checklist.ts).
-import {
-  PLAYER_NAME_AUTO_LINK,
-  pairNamesBySimilarity,
-} from "../lib/cards/name-similarity";
+import { pairNamesFirst } from "../lib/cards/pair-names-first";
 // NEO-236: the team name split. `teamFullName` composes location + nickname
 // for every name that leaves this file; `teamRowFields`/`findTeamByFullName`
 // are the ONE place a team row's identity fields are derived and looked up.
@@ -361,6 +365,7 @@ import {
   CARD_PLAYER_TEAM_MAX_CARDS,
   CARD_PLAYER_TEAM_MAX_PLAYERS_PER_CARD,
 } from "./lib/teamRow";
+import { effectiveSetLeagueIds } from "./lib/selectorLeagues";
 import {
   // NEO-331: names resolve link-only; only a New League answer (which carries
   // its level) creates. The sport default is never applied here: an
@@ -394,7 +399,13 @@ import {
 // fetch's line and the save's line (Match Cards recounts with it).
 import { tallyFetchChecklistTeams } from "../lib/checklists/checklist-teams-tally";
 import { splitMarketplaceTeamNames } from "./adapters/marketplaceNames";
-import { MAX_CHECKLIST_TEAM_TEXTS } from "./checklistCandidates";
+import {
+  MAX_CHECKLIST_TEAM_TEXTS,
+  MAX_PLACE_TEXTS_PER_QUERY,
+  MAX_SOURCE_NUMBER_LENGTH,
+  MAX_TEAM_IDENTITY_TEXTS,
+} from "./checklistCandidates";
+import { checklistClaimText } from "../lib/checklists/prospect-team-text";
 import {
   checkPublishedChecklist,
   publishedChecklistValidator,
@@ -416,6 +427,7 @@ import {
   checklistPairedRowValidator,
   selectorOptionFields,
   selectorOptionLevelValidator,
+  sourceNumbersValidator,
 } from "./schema";
 // NEO-334 — a variant type's title IS its kind (Base, Insert, Parallel). The
 // insert/parallel reading of a row beneath one is derived from that kind at
@@ -1419,6 +1431,14 @@ type CardPlayersByTeam = Map<
     cards: string[][];
     overflow: boolean;
     /**
+     * NEO-591 — parallel to `cards`: the players the OPERATOR chose for a
+     * printed name on that card (the career check's `playerIdByName`), so the
+     * card rule reads THAT player's career instead of the name's ordinary
+     * resolution. An empty list is the common case. Always the same length as
+     * `cards`; reset with it on overflow.
+     */
+    relinks: Array<Array<{ name: string; playerId: Id<"players"> }>>;
+    /**
      * NEO-602 — the same cards as the operator sees them on the team's review
      * step: number and players as printed, the first
      * `CARD_PLAYER_TEAM_MAX_CARDS` of them, and a count of every card that
@@ -1434,17 +1454,44 @@ type CardPlayersByTeam = Map<
   }
 >;
 
+/**
+ * `evidence` is what the career check changes about a card's players (NEO-591):
+ *
+ *  - `withheld` — the card carries a "New player named X" pick. The printed
+ *    name is a NEW person, and the name lookup would hand the card rule his
+ *    NAMESAKE's career, which says nothing about the card in hand (a 2026
+ *    "Oakland Athletics" would link by a namesake's 2025 Athletics stint). The
+ *    card therefore gives no evidence for any team it names, and the team's
+ *    entry is marked `overflow` like a name too common to sample, so the
+ *    OTHER cards printing that name cannot vote alone either: the name falls
+ *    back to the year with the rule's alias-only guard. Display bookkeeping
+ *    (`shown`, `total`) is untouched; the operator still sees the card.
+ *  - `relinks` — the operator re-linked a printed name to a specific player
+ *    (`playerIdByName`). That player's career IS evidence, so it travels with
+ *    the card for the rule to read in place of the name's resolution.
+ */
 function addCardPlayerNames(
   target: CardPlayersByTeam,
   teamName: string,
   playersOnCard: ReadonlyArray<string>,
   cardNumber?: string,
+  evidence?: {
+    withheld?: boolean;
+    relinks?: ReadonlyArray<{ name: string; playerId: Id<"players"> }>;
+  },
 ): void {
   const key = normalizeTeamName(teamName.trim());
   if (!key) return;
   let entry = target.get(key);
   if (!entry) {
-    entry = { cards: [], overflow: false, shown: [], total: 0, seen: new Set() };
+    entry = {
+      cards: [],
+      overflow: false,
+      relinks: [],
+      shown: [],
+      total: 0,
+      seen: new Set(),
+    };
     target.set(key, entry);
   }
   // The display list is the review gate's; the commit prelude passes no
@@ -1465,14 +1512,17 @@ function addCardPlayerNames(
   if (entry.overflow) return;
   const players = playersOnCard.map((p) => p.trim()).filter(Boolean);
   if (
+    evidence?.withheld ||
     entry.cards.length >= CARD_PLAYER_TEAM_MAX_CARDS ||
     players.length > CARD_PLAYER_TEAM_MAX_PLAYERS_PER_CARD
   ) {
     entry.overflow = true;
     entry.cards = [];
+    entry.relinks = [];
     return;
   }
   entry.cards.push(players);
+  entry.relinks.push(evidence?.relinks ? [...evidence.relinks] : []);
 }
 
 /**
@@ -1807,6 +1857,12 @@ const gateTeamAnswerValidator = v.object({
    * facing what looks like a brand-new team.
    */
   candidateTeamIds: v.array(v.id("teams")),
+  /**
+   * NEO-591 — the candidates are the in-league teams located at a printed
+   * PLACE, not rows that answer to the text by name or alias. Only the step's
+   * wording reads it. Absent otherwise.
+   */
+  place: v.optional(v.literal(true)),
 });
 
 /** What `resolveGateTeamAnswer` returns; the validator above is its shape. */
@@ -1820,6 +1876,7 @@ type GateTeamAnswer = {
   } | null;
   ambiguous: boolean;
   candidateTeamIds: Array<Id<"teams">>;
+  place?: true;
 };
 
 /**
@@ -1833,22 +1890,22 @@ async function resolveGateTeamAnswer(
     name: string;
     setYear?: number;
     cardPlayerIds?: Array<Array<Id<"players">>>;
+    /** NEO-591 — the set's leagues, for a printed PLACE; see `resolveCardTeamName`. */
+    placeLeagueIds?: () => Promise<ReadonlySet<string>>;
   },
 ): Promise<GateTeamAnswer> {
-  const pick = await resolveCardTeamName(
-    ctx,
-    args.sportId,
-    args.name,
-    args.setYear,
-    args.cardPlayerIds ? { cardPlayerIds: args.cardPlayerIds } : {},
-  );
+  const pick = await resolveCardTeamName(ctx, args.sportId, args.name, args.setYear, {
+    ...(args.cardPlayerIds ? { cardPlayerIds: args.cardPlayerIds } : {}),
+    ...(args.placeLeagueIds ? { placeLeagueIds: args.placeLeagueIds } : {}),
+  });
   const ambiguous = pick.candidates.length > 1;
   const candidateTeamIds =
     pick.candidates.length > 1 ? pick.candidates.map((candidate) => candidate._id) : [];
   const row = pick.teamId
     ? pick.candidates.find((candidate) => candidate._id === pick.teamId)
     : undefined;
-  if (!row || !pick.via) return { answer: null, ambiguous, candidateTeamIds };
+  const place = pick.fromPlace && candidateTeamIds.length > 0 ? { place: true as const } : {};
+  if (!row || !pick.via) return { answer: null, ambiguous, candidateTeamIds, ...place };
   return {
     answer: {
       teamId: row._id,
@@ -1859,6 +1916,7 @@ async function resolveGateTeamAnswer(
     },
     ambiguous: false,
     candidateTeamIds,
+    ...place,
   };
 }
 
@@ -1895,6 +1953,14 @@ export const RESOLVE_GATE_TEAMS_MAX = 50;
 export const resolveGateTeamNames = internalQuery({
   args: {
     sportId: v.id("selectorOptions"),
+    /**
+     * NEO-591 — the set being gated. With it a printed PLACE ("Seattle", which
+     * no team answers to by name) may be read against the set's league(s): two
+     * or more in-league teams of any era there are the candidates and the
+     * cards' players decide, else the operator. Absent, a name is read as a
+     * name only. One id, validated; the leagues are read once per call, lazily.
+     */
+    selectorOptionId: v.optional(v.id("selectorOptions")),
     setYear: v.optional(v.number()),
     asks: v.array(
       v.object({
@@ -1933,9 +1999,18 @@ export const resolveGateTeamNames = internalQuery({
         });
       }
     }
+    let leagueIds: Promise<ReadonlySet<string>> | undefined;
+    const selectorOptionId = args.selectorOptionId;
+    const placeLeagueIds = selectorOptionId
+      ? () =>
+          (leagueIds ??= effectiveSetLeagueIds(ctx, selectorOptionId).then(
+            (ids) => new Set<string>(ids),
+          ))
+      : undefined;
     return await mapBounded(args.asks, (ask) =>
       resolveGateTeamAnswer(ctx, {
         sportId: args.sportId,
+        ...(placeLeagueIds ? { placeLeagueIds } : {}),
         name: ask.name,
         ...(args.setYear !== undefined ? { setYear: args.setYear } : {}),
         ...(ask.cardPlayerIds ? { cardPlayerIds: ask.cardPlayerIds } : {}),
@@ -2561,6 +2636,8 @@ async function resolveUnknownsAndStartBatch(
   const unresolvedTeams: Array<{ normalized: string; name: string }> = [];
   /** NEO-602 — the rows each printed team name reached, when there are two or more. */
   const candidateTeamIdsByNorm = new Map<string, Array<Id<"teams">>>();
+  /** NEO-591 — the names whose candidates are the teams located at a printed place. */
+  const placeNames = new Set<string>();
 
   /*
    * NEO-592 — the year-only answers came back above, in one batch with every
@@ -2611,6 +2688,7 @@ async function resolveUnknownsAndStartBatch(
             (slice) =>
               gate.runQuery(internal.selectorOptions.resolveGateTeamNames, {
                 sportId: args.sportId,
+                selectorOptionId: args.selectorOptionId,
                 ...(setYear !== undefined ? { setYear } : {}),
                 asks: slice.map(({ name, cardPlayerIds }) =>
                   cardPlayerIds ? { name, cardPlayerIds } : { name },
@@ -2621,9 +2699,10 @@ async function resolveUnknownsAndStartBatch(
         );
   ruleSlices.forEach((slice, g) => {
     slice.forEach((ask, k) => {
-      const { answer, ambiguous, candidateTeamIds } = ruleAnswers[g][k];
+      const { answer, ambiguous, candidateTeamIds, place } = ruleAnswers[g][k];
       if (candidateTeamIds.length > 0) {
         candidateTeamIdsByNorm.set(ask.normalized, candidateTeamIds);
+        if (place) placeNames.add(ask.normalized);
       }
       if (!answer) {
         // Several rows and no answer (a tie, disagreeing cards, an alias-only
@@ -2933,6 +3012,7 @@ async function resolveUnknownsAndStartBatch(
   const teamContexts: Array<{
     name: string;
     candidateTeamIds: Array<Id<"teams">>;
+    place?: true;
     cards: Array<{
       number?: string;
       players: Array<{ name: string; playerId?: Id<"players"> }>;
@@ -2957,6 +3037,7 @@ async function resolveUnknownsAndStartBatch(
     teamContexts.push({
       name,
       candidateTeamIds,
+      ...(placeNames.has(normalized) ? { place: true as const } : {}),
       cards,
       moreCards: entry ? Math.max(0, entry.total - cards.length) : 0,
     });
@@ -4922,6 +5003,8 @@ type CardNameBearing = {
   // NEO-574 — the career check's per-card re-links. Bounded here; the ids are
   // validated against the table by the commit.
   playerIdByName?: ReadonlyArray<{ name: string }>;
+  // NEO-591 — the career check's "New player named X" picks, same bounds.
+  newPlayerByName?: ReadonlyArray<{ name: string; ref: string }>;
   // NEO-335 — BSC's unsplit team value, the commit's hint source.
   rawTeamName?: string;
 };
@@ -5022,6 +5105,29 @@ function assertCardBatchWithinLimits(
       if (relink.name.length > MAX_PLAYER_NAME_LENGTH) {
         throw new Error(
           `${fnName}: ${where} carries a re-linked player name of ${relink.name.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+        );
+      }
+    }
+    // NEO-591 — one new-player pick per printed player at most; the ref has its
+    // own format rule in the commit.
+    const newPlayers = card.newPlayerByName ?? [];
+    if (newPlayers.length > MAX_CARD_PLAYERS) {
+      throw new Error(
+        `${fnName}: ${where} carries ${newPlayers.length} new-player picks, above the ${MAX_CARD_PLAYERS}-player limit`,
+      );
+    }
+    for (const pick of newPlayers) {
+      if (pick.name.length > MAX_PLAYER_NAME_LENGTH) {
+        throw new Error(
+          `${fnName}: ${where} carries a new-player pick of ${pick.name.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+        );
+      }
+      // The ref is a client string that is compared and stored; the commit's
+      // format rule caps it, and the boundary holds the same length so an
+      // oversized one is refused before any phase reads it.
+      if (pick.ref.length > MAX_CREATION_REF_LENGTH) {
+        throw new Error(
+          `${fnName}: ${where} carries a new-player reference of ${pick.ref.length} characters; the limit is ${MAX_CREATION_REF_LENGTH}.`,
         );
       }
     }
@@ -15927,23 +16033,6 @@ export const syncSetsAcrossManufacturers = action({
 });
 
 /**
- * Fold + lowercase + strip punctuation + token-sort. Used both for fuzzy
- * matching during reconciliation and for matching against the existing
- * players/teams tables.
- *
- * NEO-253: was an inline transcription of `normalizePlayerName` /
- * `normalizeTeamName`, kept local to avoid pulling those modules into the
- * action runtime (Convex bundles per-file). It now aliases the shared core in
- * `lib/entities/normalize-name.ts`, which has no Convex imports at all, so the
- * bundling argument for the copy no longer applies — while the divergence the
- * copy invited (this one silently kept the old, unfolded behaviour for a name
- * the tables would have folded) does.
- */
-function normalizeName(raw: string): string {
-  return normalizeEntityName(raw);
-}
-
-/**
  * NEO-189 — merge the SportLots fan-out's per-set results.
  *
  * Two jobs, deliberately separated, because conflating them is the defect this
@@ -16056,6 +16145,45 @@ export function summarizeCollisions(
   return ` — all rows kept; ${parts.join("; ")}`;
 }
 
+/** NEO-591 — see `sourceNumbersValidator`. */
+type SourceNumbers = Infer<typeof sourceNumbersValidator>;
+
+/**
+ * NEO-591 (variations) — the note a checklist row carries for its variation
+ * ("photo variation", a VAR label), when the parser kept one. Read through a
+ * structural check so a row without the field (an older client) reads as none.
+ */
+function rowVariationName(row: object): string | undefined {
+  const name = (row as { variationName?: unknown }).variationName;
+  if (typeof name !== "string") return undefined;
+  const trimmed = name.trim();
+  return trimmed ? trimmed.slice(0, MAX_LABEL_LENGTH) : undefined;
+}
+
+/** NEO-591 (variations) — the letters a minted variation number may take, in order. */
+const MINT_LETTERS = "bcdefghijklmnopqrstuvwxyz";
+
+/** NEO-591 — a printed number held to `MAX_SOURCE_NUMBER_LENGTH` for the wire. */
+function clipSourceNumber(printed: string): string {
+  return printed.length > MAX_SOURCE_NUMBER_LENGTH
+    ? printed.slice(0, MAX_SOURCE_NUMBER_LENGTH)
+    : printed;
+}
+
+/**
+ * NEO-591 — do two sources PRINT a number differently? Trimmed and case-folded
+ * text, nothing smarter: "38" against "38a", "BCP-12" against "12" and "1b"
+ * against "1" all differ here even where `cardNumbersAgree` calls them the
+ * same card. Every number the sync decides on its own must be editable in
+ * Match Cards, so `sourceNumbers` is set whenever the printed text differs
+ * and the client decides, through `cardNumbersAgree`, whether to say
+ * "Numbers differ". Two no-number values (blank, "NNO") print alike.
+ */
+function printedNumbersDiffer(a: string, b: string): boolean {
+  if (isNoNumber(a) && isNoNumber(b)) return false;
+  return a.trim().toLowerCase() !== b.trim().toLowerCase();
+}
+
 interface ReconciledCard {
   cardNumber: string;
   cardName: string;
@@ -16113,6 +16241,21 @@ interface ReconciledCard {
    * sides) carry no such tag.
    */
   unmatched?: "bsc" | "sl";
+  /**
+   * NEO-591 — the numbers each source printed, set only on a pair the sources
+   * made by NAME whose numbers differ. `cardNumber` above is the one the card
+   * carries (`preferCardNumber`); this keeps the others for Match Cards.
+   */
+  sourceNumbers?: SourceNumbers;
+  /**
+   * NEO-591 (variations) — a checklist-only variation the fetch created from a
+   * row (`siblingRows`); the client seeds it as Keeping.
+   */
+  preKept?: true;
+  /** NEO-591 — the number was minted or swapped in by the sync; see `previewCardFields`. */
+  numberMinted?: true;
+  /** NEO-591 (variations) — NB-side token tying a row-paired card to its sibling-row variations. */
+  variationGroup?: string;
   /** PR 451 (NEO-478) — the publisher checklist disagrees on this card. */
   checklistConflict?: {
     players?: { marketplace: string[]; checklist: string[] };
@@ -16120,6 +16263,16 @@ interface ReconciledCard {
   };
   /** PR 451 (NEO-478) — the card's team answer came from the checklist. */
   teamLookup?: "checklist";
+  /** NEO-591 — the checklist's Prospect claim (born as the Prospect Card attribute). */
+  isProspect?: boolean;
+  /**
+   * NEO-591 — a checklist-only Prospect row's team cell as printed, set only
+   * when it differs from `teams` read as one Prospect claim ("Cincinnati Reds
+   * / Prospect (Frisco)"). Display only.
+   */
+  teamCell?: string;
+  /** NEO-335 — the "Listed as:" hint. */
+  rawTeamName?: string;
 }
 
 
@@ -16175,7 +16328,16 @@ export type FetchChecklistInfo = Infer<typeof fetchChecklistInfoValidator>;
 
 /** NEO-496 — a candidate's `checklistLink` (see checklistCandidates.ts). */
 type ChecklistLink = {
-  via: "number" | "caseFolded" | "prefixStripped" | "player" | "playerName" | "playerFuzzy";
+  via:
+    | "number"
+    | "caseFolded"
+    | "prefixStripped"
+    | "player"
+    | "playerName"
+    | "playerFuzzy"
+    | "stem";
+  /** NEO-591 — the row's index, set when several cards hold the same row. */
+  rowKey?: number;
   confidence?: number;
   checklistNumber?: string;
   row?: Infer<typeof checklistPairedRowValidator>;
@@ -16190,15 +16352,26 @@ type ChecklistLink = {
 export function checklistPairedRow(
   row: PublishedChecklistStoredRow,
   resolveText: (text: string) => readonly string[] | null,
+  resolvePlace?: (text: string) => string | null,
 ): Infer<typeof checklistPairedRowValidator> {
-  const own = checklistOnlyCard(row, resolveText);
+  const own = checklistOnlyCard(row, resolveText, resolvePlace);
   const teams = own.teams ?? [];
+  // The team cell as the checklist printed it. Sent only when the row as
+  // paired would read differently (a "Prospect (X)" whose X resolved to a
+  // team's full name, a team text resolved to a team's name), so the row line
+  // in Match Cards is the same words before and after the link.
+  const claim = checklistClaimText(row);
+  const variationName = rowVariationName(row);
+  const shown = checklistClaimText({ teams, prospect: own.isProspect === true });
   return {
     number: own.cardNumber,
     players: own.players ?? [],
     teams,
+    ...(claim && claim !== shown ? { claim } : {}),
     ...(row.noNumber || isNoNumber(own.cardNumber) ? { noNumber: true as const } : {}),
     ...(own.teamLookup === "checklist" && teams.length === 0 ? { noTeam: true as const } : {}),
+    ...(own.isProspect ? { prospect: true as const } : {}),
+    ...(variationName ? { variationName } : {}),
     cardName: own.cardName,
   };
 }
@@ -16215,8 +16388,9 @@ export function checklistPairedRow(
 export function checklistOnlyCard(
   row: PublishedChecklistStoredRow,
   resolveText: (text: string) => readonly string[] | null,
+  resolvePlace?: (text: string) => string | null,
 ): ReconciledCard {
-  const applied = applyChecklistRow({}, row, resolveText);
+  const applied = applyChecklistRow({}, row, resolveText, resolvePlace);
   const players = [...(applied.fillPlayers ?? row.players)];
   const number = row.number.trim();
   return {
@@ -16226,8 +16400,28 @@ export function checklistOnlyCard(
     ...(applied.answered && applied.teams
       ? { teams: applied.teams, teamLookup: "checklist" as const }
       : {}),
+    ...(applied.isProspect ? { isProspect: true } : {}),
+    ...printedTeamCell(row, applied.teams ?? [], applied.isProspect === true),
     platformData: {},
   };
+}
+
+/**
+ * NEO-591 — the row's team cell as printed, as `{ teamCell }`, for a MIXED
+ * Prospect row ("Cincinnati Reds / Prospect (Frisco)": some teams inside the
+ * parens, some not) whose resolved `teams` would read as one Prospect claim.
+ * Nothing for any other row, which reads from its `teams` as it always did.
+ */
+function printedTeamCell(
+  row: PublishedChecklistStoredRow,
+  teams: readonly string[],
+  isProspect: boolean,
+): { teamCell?: string } {
+  if (!isProspect || row.prospectClaimedTeams === undefined) return {};
+  const printed = checklistClaimText(row);
+  return printed && printed !== checklistClaimText({ teams, prospect: true })
+    ? { teamCell: printed }
+    : {};
 }
 
 /**
@@ -16303,6 +16497,180 @@ export async function resolveChecklistCommaTexts(
   };
 }
 
+/**
+ * Collector review — settle each distinct plain team text that is a PLACE
+ * ("Seattle"), through `checklistCandidates.resolveChecklistPlaceTeams`, and
+ * hand back the `resolvePlace` that `applyChecklistRow` asks. Shared by
+ * `fetchCardChecklist` step 3c and `publishedChecklistPairs`, like the other
+ * two resolvers, so an operator's own link settles a place exactly as the
+ * matcher's pair does.
+ *
+ * Distinct by the folded team key, a text with a comma is skipped (the
+ * whole-name-first resolver owns it), asked in batches of
+ * `MAX_PLACE_TEXTS_PER_QUERY`, at most `MAX_PLACE_TEAM_TEXTS` distinct
+ * texts per call. A text past the cap, or in a batch that fails, answers
+ * null: it stays as printed, which is today's behaviour (parked for the
+ * operator). The fetch neither fails nor guesses.
+ */
+export const MAX_PLACE_TEAM_TEXTS = 200;
+export async function resolveChecklistPlaceTexts(
+  ctx: Pick<ActionCtx, "runQuery">,
+  selectorOptionId: Id<"selectorOptions">,
+  texts: Iterable<string>,
+): Promise<(text: string) => string | null> {
+  const keyOf = (text: string) => normalizeEntityName(text);
+  const at = new Map<string, number>();
+  const toResolve: string[] = [];
+  for (const raw of texts) {
+    const t = raw.trim();
+    if (!t || checklistTeamTextNeedsResolving(t)) continue;
+    const key = keyOf(t);
+    if (at.has(key) || toResolve.length >= MAX_PLACE_TEAM_TEXTS) continue;
+    at.set(key, toResolve.length);
+    toResolve.push(t);
+  }
+  const answers: Array<string | null> = [];
+  for (let i = 0; i < toResolve.length; i += MAX_PLACE_TEXTS_PER_QUERY) {
+    const batch = toResolve.slice(i, i + MAX_PLACE_TEXTS_PER_QUERY);
+    try {
+      answers.push(
+        ...(await ctx.runQuery(internal.checklistCandidates.resolveChecklistPlaceTeams, {
+          selectorOptionId,
+          texts: batch,
+        })),
+      );
+    } catch {
+      answers.push(...batch.map(() => null));
+    }
+  }
+  return (text) => {
+    const i = at.get(keyOf(text.trim()));
+    return i === undefined ? null : (answers[i] ?? null);
+  };
+}
+
+/**
+ * NEO-591 — the NB team each team name of the paired cards and rows means
+ * (aliases included), asked once, through `checklistCandidates.
+ * resolveTeamIdentities`, and handed back as the `resolveTeamId` that
+ * `applyChecklistRow` asks. "Oakland Athletics" on BSC and "Oakland A's" on
+ * the checklist are one NB team; compared as strings they looked like a
+ * disagreement and the operator was asked. Shared by `fetchCardChecklist`
+ * step 3c and `publishedChecklistPairs`, like the other resolvers.
+ *
+ * Asks about exactly the names `applyChecklistRow` will compare: each card's
+ * teams (or its legacy single team) and each row's teams as the row will
+ * carry them (comma text through `resolveText`, a plain text through
+ * `resolvePlace`). At most `MAX_TEAM_IDENTITY_TEXTS`
+ * distinct names; a name past the cap, or whose lookup fails, answers null:
+ * the strings are compared as before and the operator picks. The fetch
+ * neither fails nor guesses (rule 8).
+ */
+export async function resolveChecklistTeamIdentities(
+  ctx: Pick<ActionCtx, "runQuery">,
+  selectorOptionId: Id<"selectorOptions">,
+  pairs: ReadonlyArray<{
+    card: { teams?: readonly string[]; team?: string };
+    row: { teams: readonly string[] };
+  }>,
+  resolveText: (text: string) => readonly string[] | null,
+  resolvePlace?: (text: string) => string | null,
+): Promise<(name: string) => string | null> {
+  const names = new Set<string>();
+  const add = (raw: string | undefined) => {
+    const t = raw?.trim();
+    if (t && names.size < MAX_TEAM_IDENTITY_TEXTS) names.add(t);
+  };
+  for (const { card, row } of pairs) {
+    // A card with no marketplace team has nothing to compare.
+    const own = card.teams?.length ? card.teams : card.team ? [card.team] : [];
+    if (own.length === 0) continue;
+    for (const t of own) add(t);
+    for (const raw of row.teams) {
+      const t = raw.trim();
+      if (!t) continue;
+      if (checklistTeamTextNeedsResolving(t)) for (const n of resolveText(t) ?? []) add(n);
+      else add(resolvePlace?.(t) ?? t);
+    }
+  }
+  const list = [...names];
+  let ids: Array<string | null> = list.map(() => null);
+  if (list.length > 0) {
+    try {
+      ids = await ctx.runQuery(internal.checklistCandidates.resolveTeamIdentities, {
+        selectorOptionId,
+        names: list,
+      });
+    } catch {
+      // A lookup that could not be read leaves every name unresolved.
+    }
+  }
+  const at = new Map(list.map((n, i) => [n, ids[i] ?? null]));
+  return (name) => at.get(name.trim()) ?? null;
+}
+
+/**
+ * NEO-591 (Jason, 2026-11-20) — the NB teams each UNSETTLED place text could
+ * mean ("Seattle" in an MLB set with the 1969 Pilots and the Mariners), as
+ * team ids, through `checklistCandidates.resolveChecklistPlaceTeamIds`, handed
+ * back as the `resolvePlaceTeamIds` that `applyChecklistRow` asks. When the
+ * marketplace names one of those teams the checklist's place agrees with it:
+ * no team conflict, and the card keeps the marketplace's team. Shared by
+ * `fetchCardChecklist` step 3c and `publishedChecklistPairs`, like the other
+ * resolvers, so a link the operator makes agrees exactly as the matcher's does.
+ *
+ * Asks only about the texts that can matter: a plain (comma-free) team text
+ * `resolvePlace` left as printed, on a row paired with a card that has a
+ * marketplace team of its own (a card with none has nothing to agree with;
+ * the card rule decides it at the gate and the commit). Distinct by the folded
+ * key, batches of `MAX_PLACE_TEXTS_PER_QUERY`, at most `MAX_PLACE_TEAM_TEXTS`
+ * texts per call. A text past the cap, or in a batch that fails, answers null:
+ * the place stays a disagreement the operator settles. The fetch neither fails
+ * nor guesses (rule 8).
+ */
+export async function resolveChecklistPlaceSets(
+  ctx: Pick<ActionCtx, "runQuery">,
+  selectorOptionId: Id<"selectorOptions">,
+  pairs: ReadonlyArray<{
+    card: { teams?: readonly string[]; team?: string };
+    row: { teams: readonly string[] };
+  }>,
+  resolvePlace?: (text: string) => string | null,
+): Promise<(text: string) => string[] | null> {
+  const keyOf = (text: string) => normalizeEntityName(text);
+  const at = new Map<string, number>();
+  const toResolve: string[] = [];
+  for (const { card, row } of pairs) {
+    if (!(card.teams?.length || card.team)) continue;
+    for (const raw of row.teams) {
+      const t = raw.trim();
+      if (!t || checklistTeamTextNeedsResolving(t) || resolvePlace?.(t)) continue;
+      const key = keyOf(t);
+      if (at.has(key) || toResolve.length >= MAX_PLACE_TEAM_TEXTS) continue;
+      at.set(key, toResolve.length);
+      toResolve.push(t);
+    }
+  }
+  const answers: Array<string[] | null> = [];
+  for (let i = 0; i < toResolve.length; i += MAX_PLACE_TEXTS_PER_QUERY) {
+    const batch = toResolve.slice(i, i + MAX_PLACE_TEXTS_PER_QUERY);
+    try {
+      answers.push(
+        ...(await ctx.runQuery(internal.checklistCandidates.resolveChecklistPlaceTeamIds, {
+          selectorOptionId,
+          texts: batch,
+        })),
+      );
+    } catch {
+      answers.push(...batch.map(() => null));
+    }
+  }
+  return (text) => {
+    const i = at.get(keyOf(text.trim()));
+    return i === undefined ? null : (answers[i] ?? null);
+  };
+}
+
 const previewCardFields = {
   cardNumber: v.string(),
   cardName: v.string(),
@@ -16312,6 +16680,11 @@ const previewCardFields = {
   attributes: v.optional(v.array(v.string())),
   isRookie: v.optional(v.boolean()),
   isRelic: v.optional(v.boolean()),
+  // NEO-591 — the publisher checklist's team cell said "Prospect" /
+  // "Prospect (X)": the NEW card is born with the Prospect Card attribute
+  // (`features.isProspect`), by `isRookie`'s route. A re-synced row ignores it
+  // (it is not an `NB_CONTENT_FIELDS` field, so the diff never offers it).
+  isProspect: v.optional(v.boolean()),
   printRun: v.optional(v.number()),
   autographType: v.optional(v.string()),
   cardVariation: v.optional(v.string()),
@@ -16366,6 +16739,26 @@ const previewCardFields = {
       preferred: v.optional(v.union(v.literal("bsc"), v.literal("sportlots"))),
     }),
   ),
+  // NEO-591 — the numbers each source printed for a pair made by name whose
+  // numbers differ. ACCEPTED and ignored by the commit, like `playersConflict`:
+  // the card carries one number, and the client strips this off a confirmed
+  // card. Held to `MAX_SOURCE_NUMBER_LENGTH` when a candidate is written.
+  sourceNumbers: v.optional(sourceNumbersValidator),
+  // NEO-591 (variations) — accepted and ignored, like `sourceNumbers`: the
+  // client seeds Keeping from it and strips it off a confirmed card.
+  preKept: v.optional(v.literal(true)),
+  // NEO-591 — the number was DERIVED by the sync (minted for a SportLots-only
+    // variation, or swapped in by `preferCardNumber`), so it is not a number a
+    // marketplace printed for this card. The commit never matches a stored
+    // row by slot+number or by number alone for such a card (it matches by its
+    // own ref or inserts), so a derived "38b" cannot land on a stored "38b".
+    // A forged flag only narrows matching.
+  numberMinted: v.optional(v.literal(true)),
+  // NEO-591 (variations) — an opaque NB-side token shared by a card that took a
+    // checklist row and the variation cards made from that row's siblings, so
+    // the commit links them without searching by number. Never a marketplace
+    // value; held to 32 characters by the commit.
+  variationGroup: v.optional(v.string()),
   unmatched: v.optional(v.union(v.literal("bsc"), v.literal("sl"))),
   // ── NEO-335: the card's team, answered before save ────────────────────────
   //
@@ -16419,6 +16812,18 @@ const previewCardFields = {
   // so an older bundle's payload commits as it always did.
   playerIdByName: v.optional(
     v.array(v.object({ name: v.string(), playerId: v.id("players") })),
+  ),
+  // NEO-591 — `newPlayerByName` — the career check's "New player named X": this
+  // card's printed `name` belongs to a player that does not exist yet. `ref`
+  // names an entry of the commit's top-level `careerNewPlayers`, which holds the
+  // name and career; the commit mints that player (or adopts the row a retried
+  // commit already made) and points THIS card, and only this card, at it. The
+  // printed name is kept in `playerLinks.nameOnCard`. A card may not carry both
+  // this and `playerIdByName` for one name. Optional, so an older bundle's
+  // payload commits as it always did; the ref and name are held to their rules
+  // before any phase writes.
+  newPlayerByName: v.optional(
+    v.array(v.object({ name: v.string(), ref: v.string() })),
   ),
   // `teamsAnswered` — this card's `teams` STRINGS are the operator's answer
   // in the wizard (a team staged in this review, or a sibling card's printed
@@ -17203,26 +17608,16 @@ export const fetchCardChecklist = action({
         sourceBscSetSlug?: string;
       }>;
 
-      // Index SL by both cardNumber and (after prefix-strip) for prefix-aware
-      // BSC matching, AND by sportlotsRef so BSC's built-in cross-reference
-      // can short-circuit fuzzy matching.
-      const slByNumber = new Map<string, typeof slCards[0]>();
+      // Index SL by its own ref, so BSC's built-in cross-reference
+      // (`sportlotsRef`) can short-circuit the pairing below.
+      //
+      // NEO-591 (names first, numbers confirm): there is no longer an index
+      // by card NUMBER. It answered `get("1")` with one SportLots card and no
+      // exactly-one guard, so two BSC "#1"s could each claim the one
+      // SportLots "#1" (rule 7: a number is not unique). Numbers pair only
+      // through `pairNamesFirst`, which counts them on both sides.
       const slByRef = new Map<string, typeof slCards[0]>();
       for (const c of slCards) {
-        // NEO-189: prefer the NON-variation row for a given number.
-        //
-        // SportLots files a card and its variations under ONE number — "#11
-        // Alec Bohm", "#11 Alec Bohm [ VAR Action Image ]", "#11 … [ VAR
-        // Throwback Alternate ]". A plain last-write-wins index therefore
-        // answered `get("11")` with whichever variation happened to be scraped
-        // last, and BSC's base #11 paired with a variation. Wrong, and silent.
-        //
-        // A bare BSC number means the base card, so that is what this index
-        // must return. Variations are paired to variations separately below.
-        const prev = slByNumber.get(c.cardNumber);
-        if (!prev || (prev.isVariation && !c.isVariation)) {
-          slByNumber.set(c.cardNumber, c);
-        }
         if (c.sportlotsRef) slByRef.set(c.sportlotsRef, c);
       }
 
@@ -17230,7 +17625,7 @@ export const fetchCardChecklist = action({
       //
       // Neither side's number can do this on its own: BSC suffixes a variation
       // (`1b`), SportLots reuses the parent's number and tags the description.
-      // So `slByNumber.get("1b")` finds nothing, the fuzzy name fallback cannot
+      // So a number lookup for "1b" finds nothing, the names-first pass cannot
       // help (the base already claimed that SL row, and a "Legend" variation may
       // be a different player entirely), and every variation lands in the
       // BSC-only column. A real 2025 Topps sync put 393 of them there.
@@ -17376,6 +17771,8 @@ export const fetchCardChecklist = action({
       }> = [];
       const unmatchedBscCards: ReconciledCard[] = [];
       const unmatchedSlCards: ReconciledCard[] = [];
+      // NEO-591 — see `tiedBscIndices`.
+      const tiedCards = new Set<ReconciledCard>();
       // `out` stays as the union of everything, purely so the team-lookup and
       // entity-bucketing passes below can walk every candidate once.
       const out: ReconciledCard[] = [];
@@ -17403,12 +17800,9 @@ export const fetchCardChecklist = action({
 
       // 1a. Every BSC card's IDENTITY answer first: the operator's stored
       //     pairing, BSC's own SportLots cross-reference, a variation's
-      //     counterpart, the number, the prefix-stripped number.
+      //     counterpart matched by its label. These are LINKS, not guesses,
+      //     so they stay ahead of names (NEO-591).
       const identitySlOf = bscCards.map((bsc) => {
-        const stripped = cardNumberPrefix && bsc.cardNumber.startsWith(cardNumberPrefix)
-          ? bsc.cardNumber.slice(cardNumberPrefix.length)
-          : bsc.cardNumber;
-
         // Operator's stored answer first — it outranks every heuristic.
         const storedSlRef = bsc.platformRef
           ? storedSlRefByBscRef.get(bsc.platformRef)
@@ -17417,39 +17811,73 @@ export const fetchCardChecklist = action({
           (storedSlRef && slByPlatformRef.get(storedSlRef))
           || (bsc.sportlotsRef && slByRef.get(bsc.sportlotsRef))
           // NEO-189: a variation's counterpart, matched by label above. Ranks
-          // below the operator's stored answer and BSC's own cross-reference,
-          // and above the number lookups — which cannot resolve a suffixed
-          // number against SportLots at all.
+          // below the operator's stored answer and BSC's own cross-reference.
           || (bsc.platformRef ? slVariationPairByBscRef.get(bsc.platformRef) : undefined)
-          || slByNumber.get(bsc.cardNumber)
-          || slByNumber.get(stripped)
           || undefined;
         const fromStoredPairing =
           storedSlRef !== undefined && slByPlatformRef.has(storedSlRef);
         return { sl, fromStoredPairing };
       });
 
-      // 1b. NEO-496 — the name fallback, over what no identity answer took:
-      //     BSC's first player against the SportLots card name, Jaro-Winkler
-      //     at or above `PLAYER_NAME_AUTO_LINK` (0.92). Each pair is BOTH
-      //     sides' one best (`pairNamesBySimilarity`); a tie on either side
-      //     leaves the cards unmatched for the operator (product rule 8).
-      //     Until NEO-496 this ran inside the walk below, so the first BSC
-      //     card in list order took a contested SportLots card, and could take
-      //     one a later BSC card was about to claim by number.
+      // 1b. NEO-591 — what no identity answer took, paired NAMES FIRST with the
+      //     numbers confirming (`pairNamesFirst`, product rule 7): the same
+      //     roster pairs whatever the numbers say ("OV-ANFI" on BSC against
+      //     "12" on SportLots), a number pairs only where it is exactly one
+      //     card on each side of the whole leftover set, then a near first
+      //     name (Jaro-Winkler at `PLAYER_NAME_AUTO_LINK`). A variation pairs
+      //     only with a variation. A tie on either side leaves the cards
+      //     unmatched for the operator (rule 8), and each pair carries the
+      //     core's confidence (0.9 when the numbers differ).
+      //
+      //     SportLots' own roster is read when it has one, else the card's
+      //     name (which is the player on a SportLots listing).
       const identityClaimed = new Set<string>();
       for (const { sl } of identitySlOf) if (sl) identityClaimed.add(slClaimKey(sl));
-      const nameSeekers = bscCards.map((bsc, i) =>
-        !identitySlOf[i].sl && bsc.players?.[0] ? normalizeName(bsc.players[0]) : undefined,
-      );
-      const nameOffers = slCards.map((card) =>
-        !identityClaimed.has(slClaimKey(card)) && card.cardName
-          ? normalizeName(card.cardName)
-          : undefined,
-      );
-      const namePairByBscIndex = new Map<number, { sl: typeof slCards[0]; score: number }>();
-      for (const p of pairNamesBySimilarity(nameSeekers, nameOffers, PLAYER_NAME_AUTO_LINK)) {
-        namePairByBscIndex.set(p.leftIndex, { sl: slCards[p.rightIndex], score: p.score });
+      const bscLeft: number[] = [];
+      for (let i = 0; i < bscCards.length; i++) if (!identitySlOf[i].sl) bscLeft.push(i);
+      const slLeft: number[] = [];
+      for (let i = 0; i < slCards.length; i++) {
+        if (!identityClaimed.has(slClaimKey(slCards[i]))) slLeft.push(i);
+      }
+      // NEO-591 (variations): the core's `stemLinks` are not read here. A
+      // variation left over on either side is handled after the walk (step
+      // 3a), by its own stem against a PAIRED parent.
+      const namePairByBscIndex = new Map<
+        number,
+        { sl: typeof slCards[0]; confidence: number; numbersAgree: boolean }
+      >();
+      // NEO-591 — the cards the core left in a TIE (a number or a player that
+      // fits more than one card on the other side). Step 3a never pre-keeps or
+      // mints for one: a tie is the operator's to pair (rule 8).
+      const tiedBscIndices = new Set<number>();
+      const tiedSlClaimKeys = new Set<string>();
+      if (bscLeft.length > 0 && slLeft.length > 0) {
+        const pairing = pairNamesFirst(
+          bscLeft.map((i) => ({
+            names: bscCards[i].players ?? [],
+            number: bscCards[i].cardNumber,
+            isVariation: bscCards[i].isVariation === true,
+          })),
+          slLeft.map((i) => ({
+            names: slCards[i].players?.length
+              ? slCards[i].players!
+              : slCards[i].cardName
+                ? [slCards[i].cardName]
+                : [],
+            number: slCards[i].cardNumber,
+            isVariation: slCards[i].isVariation === true,
+          })),
+          { prefix: cardNumberPrefix, kind: (item) => item.isVariation },
+        );
+        for (const i of pairing.tiedLeft) tiedBscIndices.add(bscLeft[i]);
+        for (const i of pairing.tiedRight) tiedSlClaimKeys.add(slClaimKey(slCards[slLeft[i]]));
+        for (const p of pairing.pairs) {
+          namePairByBscIndex.set(bscLeft[p.leftIndex], {
+            sl: slCards[slLeft[p.rightIndex]],
+            confidence: p.confidence,
+            numbersAgree: p.numbersAgree,
+          });
+        }
       }
 
       // 1c. Walk BSC, attach matching SL data
@@ -17457,21 +17885,40 @@ export const fetchCardChecklist = action({
         const { fromStoredPairing } = identitySlOf[bscIndex];
         let sl = identitySlOf[bscIndex].sl;
 
-        // 2. The name pair from 1b, if this card has one.
-        let fuzzyScore: number | undefined;
+        // 2. The names-first pair from 1b, if this card has one.
+        let corePairConfidence: number | undefined;
+        let numbersAgree = true;
         const namePair = sl ? undefined : namePairByBscIndex.get(bscIndex);
         if (namePair) {
           sl = namePair.sl;
-          fuzzyScore = namePair.score;
+          corePairConfidence = namePair.confidence;
+          numbersAgree = namePair.numbersAgree;
         }
 
-        // Confidence: an exact number / sportlotsRef hit is certain; a
-        // Jaro-Winkler name match is not. Surfaced so the operator can see
-        // which pairings deserve a second look.
-        // A previously-confirmed pairing is certain by definition — it is the
-        // operator's own answer being replayed, not a guess.
-        const pairConfidence = sl ? (fromStoredPairing ? 1 : (fuzzyScore ?? 1)) : 0;
+        // Confidence: an identity hit (the operator's stored pairing, BSC's
+        // own SportLots cross-reference, a variation's label) is certain; a
+        // names-first pair carries the core's confidence (1 for the same
+        // roster or a unique number with the numbers agreeing, 0.9 when they
+        // differ, the name score for a near name). Surfaced so the operator
+        // can see which pairings deserve a second look.
+        const pairConfidence = sl ? (corePairConfidence ?? 1) : 0;
         if (sl) claimedSlRefs.add(slClaimKey(sl));
+
+        // NEO-591 — the number the card carries. An identity pair keeps BSC's
+        // (as before). A names-first pair carries the more specific of the two
+        // (letters over digits over none, BSC's on a tie: `preferCardNumber`),
+        // and when the two disagree both are kept in `sourceNumbers`, which is
+        // how Match Cards says "Numbers differ" without calling it a conflict.
+        const cardNumber = sl && namePair
+          ? preferCardNumber(bsc.cardNumber, sl.cardNumber)
+          : bsc.cardNumber;
+        const sourceNumbers: SourceNumbers | undefined =
+          sl && printedNumbersDiffer(bsc.cardNumber, sl.cardNumber)
+            ? {
+                bsc: clipSourceNumber(bsc.cardNumber),
+                sportlots: clipSourceNumber(sl.cardNumber),
+              }
+            : undefined;
 
         const attributes = Array.from(new Set([
           ...(bsc.attributes ?? []),
@@ -17516,7 +17963,7 @@ export const fetchCardChecklist = action({
           : undefined;
 
         const candidate: ReconciledCard = {
-          cardNumber: bsc.cardNumber,
+          cardNumber,
           cardName: bsc.cardName || sl?.cardName || `Card #${bsc.cardNumber}`,
           team: bsc.team ?? sl?.team,
           teams: teamsArr,
@@ -17560,12 +18007,17 @@ export const fetchCardChecklist = action({
           // is strict, and an explicit `undefined` is not the same as an absent
           // optional on the wire.
           ...(nameConflict ? { nameConflict } : {}),
+          ...(sourceNumbers ? { sourceNumbers } : {}),
+          // A number `preferCardNumber` swapped in is ours, not one BSC printed
+          // for this card: the commit never matches a stored row on it.
+          ...(cardNumber !== bsc.cardNumber ? { numberMinted: true as const } : {}),
           // Spread for the same reason `nameConflict` is: `previewCardValidator`
           // is strict, and an explicit `undefined` is not an absent optional.
           ...(playersConflict ? { playersConflict } : {}),
           ...(sl ? {} : { unmatched: "sl" as const }),
         };
         out.push(candidate);
+        if (tiedBscIndices.has(bscIndex)) tiedCards.add(candidate);
         if (sl) autoMatchedCards.push({ card: candidate, confidence: pairConfidence });
         else unmatchedBscCards.push(candidate);
       }
@@ -17599,7 +18051,112 @@ export const fetchCardChecklist = action({
           unmatched: "bsc",
         };
         out.push(slOnly);
+        if (tiedSlClaimKeys.has(slClaimKey(sl))) tiedCards.add(slOnly);
         unmatchedSlCards.push(slOnly);
+      }
+
+      // 3a. NEO-591 (variations, Jason 2026-11-18) — a variation one marketplace
+      //     lists and the other does not. When its stem's parent was PAIRED
+      //     (exactly one non-variation card of the stem, matched on both
+      //     sides) and the variation is a TRUE one-sided leftover, it is
+      //     presumed wanted: it arrives pre-kept as a single-source variation
+      //     card, and the commit links it to its parent by stem
+      //     (`resolveVariationParents`). Its own marketplace ref only: the
+      //     parent's ref is never copied onto it (rule 5).
+      //
+      //     A true one-sided leftover is NOT:
+      //       - a card the core left in a TIE (rule 8: the operator pairs it);
+      //       - a card whose other side still holds an unmatched variation of
+      //         the same player and stem (SportLots "38 [VAR Action]" and
+      //         "38 [VAR Throwback]" against BSC 38b / 38c with labels that
+      //         match nothing: four cards, two real pairs the operator makes,
+      //         and a pre-keep or a minted letter would settle them wrongly).
+      //
+      //     SportLots keeps a variation under its parent's bare number ("38"
+      //     for the base and for each "[ VAR ... ]"). NB numbers a variation
+      //     with a letter ("38b", "38c": industry standard), so a bare-stem
+      //     SportLots-only variation is minted the next letter after the
+      //     base's, starting at b, skipping any letter a card of that stem
+      //     already uses, in this fetch OR already stored in this leaf, in
+      //     SportLots' order. The base keeps its own number. The minted number
+      //     is flagged (`numberMinted`) so the commit never matches a stored
+      //     row on it. With b through z all taken nothing is minted: the card
+      //     keeps the bare number, is not pre-kept, and is left for the
+      //     operator rather than duplicating a number.
+      {
+        const matchedCards = new Set(autoMatchedCards.map((m) => m.card));
+        const byStem = new Map<string, ReconciledCard[]>();
+        for (const card of out) {
+          const stem = cardNumberStem(card.cardNumber);
+          const group = byStem.get(stem);
+          if (group) group.push(card);
+          else byStem.set(stem, [card]);
+        }
+        const storedByStem = new Map<string, Set<string>>();
+        for (const row of committed) {
+          const stem = cardNumberStem(row.cardNumber);
+          const set = storedByStem.get(stem) ?? new Set<string>();
+          set.add(row.cardNumber.trim().toLowerCase());
+          storedByStem.set(stem, set);
+        }
+        const rosterOf = (c: ReconciledCard): string =>
+          rosterKey(c.players?.length ? c.players : c.cardName ? [c.cardName] : []);
+        // Unmatched variations by side, then stem, for the other-side check.
+        // `unmatchedBscCards` are BSC-only (`unmatched: "sl"`);
+        // `unmatchedSlCards` are SportLots-only (`unmatched: "bsc"`).
+        const leftoverVariations = new Set<ReconciledCard>();
+        const bscOnlyVariations = new Map<string, ReconciledCard[]>();
+        const slOnlyVariations = new Map<string, ReconciledCard[]>();
+        const collect = (
+          cards: readonly ReconciledCard[],
+          into: Map<string, ReconciledCard[]>,
+        ) => {
+          for (const c of cards) {
+            if (!c.isVariation) continue;
+            leftoverVariations.add(c);
+            const k = cardNumberStem(c.cardNumber);
+            const list = into.get(k);
+            if (list) list.push(c);
+            else into.set(k, [c]);
+          }
+        };
+        collect(unmatchedBscCards, bscOnlyVariations);
+        collect(unmatchedSlCards, slOnlyVariations);
+        // Does the OTHER side still hold an unmatched variation of this stem
+        // and player? A SportLots-only card looks at the BSC-only ones.
+        const contended = (card: ReconciledCard, stem: string): boolean => {
+          const others = (card.unmatched === "bsc" ? bscOnlyVariations : slOnlyVariations).get(stem);
+          if (!others) return false;
+          const mine = rosterOf(card);
+          // An unreadable roster cannot be told apart from the same player's.
+          return others.some((o) => mine === "" || rosterOf(o) === "" || rosterOf(o) === mine);
+        };
+        for (const [stem, group] of byStem) {
+          const parents = group.filter((c) => !c.isVariation);
+          if (parents.length !== 1 || !matchedCards.has(parents[0])) continue;
+          const used = new Set(group.map((c) => c.cardNumber.trim().toLowerCase()));
+          for (const stored of storedByStem.get(stem) ?? []) used.add(stored);
+          for (const card of group) {
+            if (!leftoverVariations.has(card)) continue;
+            if (tiedCards.has(card) || contended(card, stem)) continue;
+            // Only a SportLots-only card is renumbered; BSC already suffixes.
+            if (card.unmatched === "bsc" && card.cardNumber.trim() === stem) {
+              const letter = [...MINT_LETTERS].find((l) => !used.has(`${stem}${l}`));
+              // b through z all taken: no number to mint, so no pre-keep.
+              if (letter === undefined) continue;
+              used.add(`${stem}${letter}`);
+              // The printed number rides along so Match Cards can offer it
+              // against the minted one (the minted letter is preselected).
+              card.sourceNumbers = {
+                ...(card.sourceNumbers ?? {}),
+                sportlots: clipSourceNumber(card.cardNumber.trim()),
+              };
+              card.cardNumber = `${stem}${letter}`;
+              card.numberMinted = true;
+            }
+            card.preKept = true;
+          }
+        }
       }
 
       // 3b. NEO-251 — did an operator already settle this same roster
@@ -17661,14 +18218,17 @@ export const fetchCardChecklist = action({
         }
       }
 
-      // 3c. PR 451 (NEO-478) — the operator's publisher checklist.
+      // 3c. PR 451 (NEO-478), names first since NEO-591 — the operator's
+      //     publisher checklist.
       //
-      //     Each card it matches by number (exactly one card and exactly one
-      //     row, rule 7; one letter-prefix-strip fallback), or, for a card
-      //     with no number, by player against an NNO row (again exactly one
-      //     each side, D-B), whose row names a
-      //     team takes its team answer from the row: the row's teams, through
-      //     the same whole-name-first resolution BSC's raw value takes. Those
+      //     Each card it matches pairs NAMES FIRST with the number confirming
+      //     (`pairNamesFirst`, product rule 7): the same players pair whatever
+      //     the numbers say, a number pairs only where it is exactly one card
+      //     and one row, then a near name. There is no "numbered" versus "no
+      //     number" split, so a marketplace's "OV-ANFI" pairs the checklist's
+      //     "NNO" row for the same player. A row that names a team takes its
+      //     team answer from the row: the row's teams, through the same
+      //     whole-name-first resolution BSC's raw value takes. Those
       //     cards are written `ready` with `teamLookup: "checklist"` and BSC
       //     is never asked about them. A row whose team cell is blank is no
       //     claim, so its card keeps the BSC lookup (players still fill). A
@@ -17683,6 +18243,16 @@ export const fetchCardChecklist = action({
       //     marketplace's values. Players fill in where the marketplace has
       //     none. Unmatched cards (Jason, D2) still get the per-card BSC
       //     lookup below, bounded and cooldown-aware.
+      //
+      //     The card's number (new cards only): the pair carries the more
+      //     specific of the two, letters over digits over none, the
+      //     marketplace's on a tie (`preferCardNumber`). When the numbers
+      //     differ the checklist's is kept in `sourceNumbers.checklist` and,
+      //     when the row's number won, the marketplace's goes into
+      //     `link.revert.cardNumber` so Unlink puts it back. A card that
+      //     already exists in NB is never renumbered: its number is not an
+      //     `NB_CONTENT_FIELDS` field, so a re-sync's commit leaves it alone
+      //     (rule 3).
       //
       //     The rows themselves are never written anywhere.
       const checklistAnswered = new Set<ReconciledCard>();
@@ -17702,12 +18272,13 @@ export const fetchCardChecklist = action({
             team: c.team,
           })),
           published.rows,
+          { prefix: cardNumberPrefix },
         );
-        // NEO-490 — counts differ (`fallback: "operator"`): no name pair is in
-        // `match.matches`, so every numbered card keeps its BSC lookup below
-        // and the operator pairs them in Match Cards. Equal counts: the unique
-        // name pairs are in `matches` (`via: "playerName"`) and are applied
-        // exactly like number pairs (`applyChecklistRow`).
+        // NEO-591 — names first: `match.matches` holds every pair the
+        // checklist and the cards settle between them, whatever the counts and
+        // whatever the numbers say, and each is applied the same way
+        // (`applyChecklistRow`). What a tie leaves is in `unmatchedCardIndices`
+        // and `unusedRowIndices`, for the operator to pair in Match Cards.
         // Matched rows' teams first, so the resolver's bound is spent on the
         // cards a marketplace also lists before the checklist-only ones.
         const resolveText = await resolveChecklistCommaTexts(
@@ -17716,8 +18287,48 @@ export const fetchCardChecklist = action({
           [
             ...match.matches.flatMap((m) => published.rows[m.rowIndex].teams),
             ...match.unusedRowIndices.flatMap((i) => published.rows[i].teams),
+            ...match.siblingRows.flatMap((s) => published.rows[s.rowIndex].teams),
           ],
         );
+        // Collector review — a team printed as a place ("Seattle"), settled to
+        // the one team in the set's league(s) with that location, else left as
+        // printed. Same rows as `resolveText`, so the matched rows go first.
+        const resolvePlace = await resolveChecklistPlaceTexts(
+          ctx,
+          args.selectorOptionId,
+          [
+            ...match.matches.flatMap((m) => published.rows[m.rowIndex].teams),
+            ...match.unusedRowIndices.flatMap((i) => published.rows[i].teams),
+            ...match.siblingRows.flatMap((s) => published.rows[s.rowIndex].teams),
+          ],
+        );
+        // NEO-591 — which NB team each paired card's and row's team names mean
+        // (aliases included), so "Oakland Athletics" and "Oakland A's" are not
+        // a disagreement the operator is asked about.
+        const resolveTeamId = await resolveChecklistTeamIdentities(
+          ctx,
+          args.selectorOptionId,
+          match.matches.map((m) => ({ card: out[m.cardIndex], row: published.rows[m.rowIndex] })),
+          resolveText,
+          resolvePlace,
+        );
+        // NEO-591 (Jason 2026-11-20) — a place left as printed ("Seattle": the
+        // Pilots and the Mariners) agrees with a marketplace team that is one
+        // of the place's teams.
+        const resolvePlaceTeamIds = await resolveChecklistPlaceSets(
+          ctx,
+          args.selectorOptionId,
+          match.matches.map((m) => ({ card: out[m.cardIndex], row: published.rows[m.rowIndex] })),
+          resolvePlace,
+        );
+        // NEO-591 (variations) — how many cards hold each row. A stem link
+        // gives one row to several cards; each keeps its own link, revert and
+        // team conflict (rule 8: a card's own differing team is never
+        // overwritten), and `rowKey` tells Match Cards which links share a row.
+        const cardsPerRow = new Map<number, number>();
+        for (const m of match.matches) {
+          cardsPerRow.set(m.rowIndex, (cardsPerRow.get(m.rowIndex) ?? 0) + 1);
+        }
         let conflicts = 0;
         let refused = 0;
         let noTeamFromChecklist = 0;
@@ -17730,22 +18341,83 @@ export const fetchCardChecklist = action({
           // nothing guesses, rule 8).
           const ownPlayers = card.players ? [...card.players] : undefined;
           const ownTeams = card.teams?.length ? [...card.teams] : undefined;
+          // NEO-591 — the number the row is read under. A no-number row
+          // (blank, "NNO", or flagged) is the none class and never wins.
+          const row = published.rows[m.rowIndex];
+          const rowPrinted = rowHasNoNumber(row) ? "NNO" : row.number.trim();
+          const ownNumber = card.cardNumber;
+          const carriedNumber = preferCardNumber(ownNumber, rowPrinted);
+          const numbersAgree = cardNumbersAgree(ownNumber, rowPrinted, {
+            prefix: cardNumberPrefix,
+          });
           const wouldLookUp = !card.teams?.length && !card.team && !!card.platformData.bsc?.ref;
+          // A stem link's numbers are a stem and its suffixes ("38" for "38b"),
+          // which is no disagreement: the row's number is shown as a chip, with
+          // no "Numbers differ" note and no `sourceNumbers`.
+          const isStem = m.via === "stem";
           const link: ChecklistLink = {
             via: m.via,
+            ...((cardsPerRow.get(m.rowIndex) ?? 0) > 1 ? { rowKey: m.rowIndex } : {}),
             ...(m.confidence !== undefined ? { confidence: m.confidence } : {}),
-            ...(m.checklistNumber !== undefined ? { checklistNumber: m.checklistNumber } : {}),
-            row: checklistPairedRow(published.rows[m.rowIndex], resolveText),
+            ...(m.checklistNumber !== undefined
+              ? { checklistNumber: clipSourceNumber(m.checklistNumber) }
+              : isStem || !numbersAgree || carriedNumber !== ownNumber
+                ? { checklistNumber: clipSourceNumber(rowPrinted) }
+                : {}),
+            row: checklistPairedRow(
+              published.rows[m.rowIndex],
+              resolveText,
+              resolvePlace,
+            ),
           };
           checklistLinkByCard.set(card, link);
-          const applied = applyChecklistRow(card, published.rows[m.rowIndex], resolveText);
+          const applied = applyChecklistRow(
+            card,
+            published.rows[m.rowIndex],
+            resolveText,
+            resolvePlace,
+            resolveTeamId,
+            resolvePlaceTeamIds,
+          );
+          // NEO-591 — the Prospect Card attribute is a claim about the card,
+          // whatever became of the team (even a conflict).
+          if (applied.isProspect) card.isProspect = true;
           const teamsFromRow = applied.answered && applied.teams !== null;
           link.revert = {
             ...(ownPlayers ? { players: ownPlayers } : {}),
             teamsFromRow,
             ...(teamsFromRow && ownTeams ? { teams: ownTeams } : {}),
             ...(teamsFromRow && wouldLookUp ? { teamLookup: "failed" as const } : {}),
+            // NEO-591 — only when the row's number replaced the card's.
+            ...(carriedNumber !== ownNumber ? { cardNumber: ownNumber } : {}),
           };
+          if (carriedNumber !== ownNumber) {
+            card.cardNumber = carriedNumber;
+            // The row's print replaced the card's: ours now, not a marketplace's.
+            card.numberMinted = true;
+          }
+          // The numbers disagree: say so, with the checklist's own. The
+          // marketplace sources' numbers (`bsc` / `sportlots`) were set when
+          // those two paired, if they disagreed.
+          //
+          // NEO-591 (Jason 2026-11-18): every automatic number decision is
+          // editable, so this is set whenever the PRINTED text differs, also
+          // where `cardNumbersAgree` says "same card" (38 against 38a). A card
+          // with no marketplace pair yet still names the number it came with,
+          // under the marketplace that holds it, so the client can offer both.
+          if (!isStem && printedNumbersDiffer(ownNumber, rowPrinted)) {
+            const own = clipSourceNumber(ownNumber);
+            card.sourceNumbers = {
+              ...(card.sourceNumbers ?? {}),
+              ...(!card.sourceNumbers?.bsc && !card.sourceNumbers?.sportlots
+                ? {
+                    ...(card.platformData.bsc?.ref ? { bsc: own } : {}),
+                    ...(card.platformData.sportlots?.ref ? { sportlots: own } : {}),
+                  }
+                : {}),
+              checklist: clipSourceNumber(rowPrinted),
+            };
+          }
           if (applied.fillPlayers) card.players = [...applied.fillPlayers];
           if (applied.conflict) {
             card.checklistConflict = applied.conflict;
@@ -17777,7 +18449,48 @@ export const fetchCardChecklist = action({
         // the checklist's answer (never looked up: it has no BSC ref); a row
         // naming no team leaves the team to the operator.
         for (const rowIndex of match.unusedRowIndices) {
-          const card = checklistOnlyCard(published.rows[rowIndex], resolveText);
+          const card = checklistOnlyCard(
+            published.rows[rowIndex],
+            resolveText,
+            resolvePlace,
+          );
+          if (card.teamLookup === "checklist") {
+            checklistAnswered.add(card);
+            if (card.teams?.length === 0) noTeamFromChecklist++;
+          }
+          checklistOnlyCards.push(card);
+        }
+        // NEO-591 (variations) — a row that is a variation of a paired card
+        // ("38b" when the card "38" took row "38a") has no card of its own and
+        // the matcher leaves it out of `unusedRowIndices`, so it MUST be made
+        // here or it is silently dropped. Each is a checklist-only candidate
+        // carrying the row's number and data, a variation, and pre-kept: the
+        // operator is presumed to want it and can drop it in Match Cards. The
+        // commit links it to its parent by stem (`resolveVariationParents`).
+        for (const sibling of match.siblingRows) {
+          const card = checklistOnlyCard(
+            published.rows[sibling.rowIndex],
+            resolveText,
+            resolvePlace,
+          );
+          card.isVariation = true;
+          card.preKept = true;
+          // NB-side parent key: the card that took the sibling's base row and
+          // the sibling share a token (the parent's position in this fetch), so
+          // the commit links them without searching by number.
+          const parentCard = out[sibling.parentCardIndex];
+          if (parentCard) {
+            // The token is unique per FETCH only (a position in this fetch's
+            // `out`). Any future path that merges two fetches' candidates into
+            // one commit must mint new tokens, or two groups would collide.
+            const group = `g${sibling.parentCardIndex}`;
+            parentCard.variationGroup = group;
+            card.variationGroup = group;
+          }
+          // The checklist's own note for the variation (a parser that keeps it
+          // puts it on the row as `variationName`), as the card's name.
+          const variationName = rowVariationName(published.rows[sibling.rowIndex]);
+          if (variationName) card.cardVariation = variationName;
           if (card.teamLookup === "checklist") {
             checklistAnswered.add(card);
             if (card.teams?.length === 0) noTeamFromChecklist++;
@@ -17897,6 +18610,10 @@ export const fetchCardChecklist = action({
         attributes: card.attributes,
         isRookie: card.isRookie,
         isRelic: card.isRelic,
+        // NEO-591 — the streamed path is the only path.
+        ...(card.isProspect ? { isProspect: true } : {}),
+        ...(card.teamCell ? { teamCell: card.teamCell } : {}),
+        ...(card.rawTeamName ? { rawTeamName: card.rawTeamName } : {}),
         printRun: card.printRun,
         autographType: card.autographType,
         cardVariation: card.cardVariation,
@@ -17908,6 +18625,11 @@ export const fetchCardChecklist = action({
         // NEO-251: same rule — the streamed path is the only path, so a roster
         // conflict missing here is one the operator never sees.
         playersConflict: card.playersConflict,
+        // NEO-591 — same rule: the numbers a name pair differs on.
+        ...(card.sourceNumbers ? { sourceNumbers: card.sourceNumbers } : {}),
+        ...(card.preKept ? { preKept: card.preKept } : {}),
+        ...(card.numberMinted ? { numberMinted: card.numberMinted } : {}),
+        ...(card.variationGroup ? { variationGroup: card.variationGroup } : {}),
         // PR 451 (NEO-478) — same rule: the streamed path is the only path.
         ...(card.checklistConflict ? { checklistConflict: card.checklistConflict } : {}),
         ...(card.teamLookup ? { teamLookup: card.teamLookup } : {}),
@@ -18323,7 +19045,13 @@ export const resolveChecklistEntities = action({
       }
       for (const t of teamsOnCard) {
         additionalTeamNames.push(t);
-        addCardPlayerNames(cardPlayerNamesByTeam, t, c.players ?? [], c.cardNumber);
+        // NEO-591 — a card the career check answered "New player" gives the
+        // card rule no evidence (see `addCardPlayerNames`); the gate runs
+        // before that step, so this only matters to a caller that sends the
+        // answers early, and keeps the gate's rule the commit's rule.
+        addCardPlayerNames(cardPlayerNamesByTeam, t, c.players ?? [], c.cardNumber, {
+          withheld: (c.newPlayerByName?.length ?? 0) > 0,
+        });
       }
       // PR 451 (NEO-478) — an unsettled checklist disagreement: the card
       // carries the marketplace's side (resolved above), and the operator may
@@ -18856,6 +19584,88 @@ export const SAME_NAME_PREFETCH_CONCURRENCY = 25;
 export const PRELUDE_MAX_PAGES = 200;
 
 /**
+ * Add the strings `names` to the team's aliases, when it does not already
+ * answer to them. The one alias writer behind "Remember … as a name for this
+ * team": the entity-review prelude (a step the operator linked) calls it, so
+ * the caps and the guard against another team's primary name live in one place.
+ *
+ * Non-throwing by design: there is no operator in the loop and losing one
+ * alias must not abort a commit. A string over `MAX_TEAM_ALIAS_LENGTH`, a team
+ * already at `MAX_TEAM_ALIASES`, and a string that is another team's primary
+ * name in this sport whose years overlap the team's (NEO-602) are each logged
+ * (lengths and ids, never the string) and skipped; the link itself lands.
+ */
+async function rememberAliasesOnTeam(
+  ctx: MutationCtx,
+  linked: Doc<"teams">,
+  names: readonly string[],
+  caller: string,
+): Promise<void> {
+  const held = linked.aliases ?? [];
+  // Keys the team already answers to: its full name and every alias.
+  // `nameNormalized` IS `normalizeTeamName(teamFullName(row))` by
+  // construction (convex/lib/teamRow.ts), so it stands in for the name.
+  const answersTo = new Set<string>([
+    linked.nameNormalized,
+    ...held.map((a) => normalizeTeamName(a)),
+  ]);
+  const additions: string[] = [];
+  for (const name of names) {
+    const trimmed = name.trim();
+    const key = normalizeTeamName(trimmed);
+    if (!key || answersTo.has(key)) continue;
+    if (trimmed.length > MAX_TEAM_ALIAS_LENGTH) {
+      // Length, never the string: this reaches Sentry and the console.
+      console.warn(
+        `${caller}: a saveAsAlias string is ${trimmed.length} characters; the limit is ${MAX_TEAM_ALIAS_LENGTH}. Linked, not remembered.`,
+      );
+      continue;
+    }
+    if (held.length + additions.length >= MAX_TEAM_ALIASES) {
+      console.warn(
+        `${caller}: team ${linked._id} already holds ${MAX_TEAM_ALIASES} aliases. Linked, not remembered.`,
+      );
+      continue;
+    }
+    answersTo.add(key);
+    additions.push(trimmed);
+  }
+  if (additions.length === 0) return;
+  // NEO-284 security audit / NEO-602 — a string that is another team's
+  // PRIMARY name in this sport is not remembered when the two teams' years
+  // overlap, or either has none (undated cannot be told apart from
+  // overlapping): stored as an alias it would lock that team out of its
+  // own edits (NAME_TAKEN on every save) and share the string over the
+  // same seasons. A disjoint era may be worn as an alias — the card's
+  // players, else the set year, say which team a printed name means.
+  // Warn-and-skip, like the caps above; the link itself still lands.
+  // `selfId` so the linked team's own name is not a clash, `selfYears` so
+  // its era is the one compared.
+  const { aliases: safeAdditions, dropped } = await dropAliasesThatArePrimaryNames(ctx, {
+    sportId: linked.sportId,
+    aliases: additions,
+    selfId: linked._id,
+    ...(linked.yearsActive ? { selfYears: linked.yearsActive } : {}),
+  });
+  for (const { teamName } of dropped) {
+    // The owning team's display name only — never the parked string.
+    console.warn(
+      `${caller}: a saveAsAlias string is ${teamName}'s own name. Linked, not remembered.`,
+    );
+  }
+  if (safeAdditions.length === 0) return;
+  // Through the same helper every other writer uses, against the team's
+  // own composed name, so the stored list obeys the one contract. The
+  // inputs are inside the caps by the checks above, so this cannot throw.
+  const aliases = normalizeTeamAliasList(
+    [...held, ...safeAdditions],
+    teamFullName(linked),
+  );
+  await ctx.db.patch(linked._id, { aliases, lastUpdated: Date.now() });
+  await syncTeamAliases(ctx, { teamId: linked._id, sportId: linked.sportId, aliases });
+}
+
+/**
  * NEO-345 — the wizard's "Autographed cards" answer on the commit wire: one of
  * the two formats (`AUTOGRAPH_FORMATS`), never blank. The step requires an
  * answer, so "not asked" is the arg being absent.
@@ -18906,6 +19716,17 @@ export const commitCardChecklistPrelude = internalMutation({
         v.object({
           teamNameNormalized: v.string(),
           cards: v.array(v.array(v.string())),
+          /**
+           * NEO-591 — parallel to `cards`: the players the operator chose for
+           * a printed name on that card (the career check's `playerIdByName`).
+           * That player's career is the evidence for the name on that card,
+           * not the name's ordinary resolution. Absent: no card was re-linked.
+           */
+          cardPlayerIds: v.optional(
+            v.array(
+              v.array(v.object({ name: v.string(), playerId: v.id("players") })),
+            ),
+          ),
         }),
       ),
     ),
@@ -18958,6 +19779,17 @@ export const commitCardChecklistPrelude = internalMutation({
     ),
     /** NEO-296 — how many names of this phase's walk are already done. */
     resume: v.optional(v.object({ offset: v.number() })),
+    /**
+     * NEO-591 — the `creationRef`s of the career check's new players. A row
+     * carrying one of them was made by THIS commit's own answer (a retry after
+     * an earlier attempt got as far as minting it), so it is not a namesake to
+     * weigh: the same-name lookups below leave it out, and every OTHER card
+     * with that name resolves exactly as it would have on the first attempt.
+     * A row is left out only when it ALSO carries the calling operator's
+     * `createdByUserId` (the test `createCareerNewPlayers` adopts by); a ref
+     * on someone else's row hides nothing.
+     */
+    excludePlayerCreationRefs: v.optional(v.array(v.string())),
     /**
      * NEO-296 — narrow this call's page, for a test that needs the boundary in
      * a particular place.
@@ -19408,13 +20240,67 @@ export const commitCardChecklistPrelude = internalMutation({
      * to the year (the gate does the same: the operator answers the player
      * first). A "not a person" skip is left off the card.
      */
-    const playersByTeamKey = new Map<string, string[][]>(
+    const playersByTeamKey = new Map<
+      string,
+      { cards: string[][]; relinks: Array<Map<string, Id<"players">>> }
+    >(
       (args.teamPlayerNames ?? []).map(
-        (entry) => [entry.teamNameNormalized, entry.cards] as const,
+        (entry) =>
+          [
+            entry.teamNameNormalized,
+            {
+              cards: entry.cards,
+              // NEO-591 — one name -> chosen player map per card, aligned.
+              // `cardPlayerIds` pairs with `cards` by index, so a list of
+              // another length cannot say which card is which: it is ignored
+              // for this name (no re-link evidence), never mis-attributed.
+              relinks: entry.cards.map(
+                (_, i) =>
+                  new Map(
+                    (entry.cardPlayerIds?.length === entry.cards.length
+                      ? (entry.cardPlayerIds[i] ?? [])
+                      : []
+                    ).map(
+                      (e) => [e.name, e.playerId] as const,
+                    ),
+                  ),
+              ),
+            },
+          ] as const,
       ),
     );
+    // NEO-591 — `sameNamePlayers`, minus a row this commit's own new-player
+    // answer already minted (a retry). Not a namesake; see the arg. "Its own"
+    // is the ref AND the operator: `userId` is the caller's, read above.
+    const excludedCreationRefs = new Set(args.excludePlayerCreationRefs ?? []);
+    const sameNameForCommit = async (
+      key: string,
+    ): Promise<Array<Doc<"players">>> => {
+      const rows = await sameNamePlayers(ctx, key, args.sportId);
+      return excludedCreationRefs.size === 0
+        ? rows
+        : rows.filter(
+            (p) =>
+              !(
+                p.creationRef !== undefined &&
+                excludedCreationRefs.has(p.creationRef) &&
+                // The same two-part test `createCareerNewPlayers` adopts by: a
+                // ref alone is a client-chosen string, so another operator's
+                // row that happens to carry it stays a namesake.
+                p.createdByUserId === userId
+              ),
+          );
+    };
     const cardPlayerIdCache = new Map<string, Id<"players"> | null>();
-    const cardPlayerIdFor = async (playerName: string): Promise<Id<"players"> | null> => {
+    const cardPlayerIdFor = async (
+      playerName: string,
+      // NEO-591 — the player the operator chose for this name ON THIS CARD
+      // (`playerIdByName`). Not cached by name: it is this card's alone, and the
+      // chosen player's career is the evidence for the card, not whoever the
+      // printed name ordinarily resolves to.
+      chosenOnCard?: Id<"players">,
+    ): Promise<Id<"players"> | null> => {
+      if (chosenOnCard) return chosenOnCard;
       const key = normalizePlayerName(playerName);
       if (!key) return null;
       if (cardPlayerIdCache.has(key)) return cardPlayerIdCache.get(key)!;
@@ -19423,26 +20309,49 @@ export const commitCardChecklistPrelude = internalMutation({
       if (decision?.action === "link" && decision.linkedPlayerId) {
         found = decision.linkedPlayerId;
       } else {
-        const matches = await sameNamePlayers(ctx, key, args.sportId);
+        // NEO-591: the same lookup the player walk uses, so a retried commit
+        // does not weigh the row its own earlier attempt minted as a namesake
+        // and read different evidence than the first attempt did.
+        const matches = await sameNameForCommit(key);
         found = matches.length === 1 ? matches[0]._id : null;
       }
       cardPlayerIdCache.set(key, found);
       return found;
     };
+    // NEO-591 — the set's leagues for a printed PLACE, read once and only when
+    // a name no team answers to is asked (the gate reads the same, per query).
+    let setLeagueIds: Promise<ReadonlySet<string>> | undefined;
+    const placeLeagueIds = () =>
+      (setLeagueIds ??= effectiveSetLeagueIds(ctx, args.selectorOptionId).then(
+        (ids) => new Set<string>(ids),
+      ));
+    // NEO-591 — one place search per name per call: the create-decision branch
+    // and the resolve phase both ask `resolveTeamSilently` about a name, and
+    // the search is a bounded read. Emptied when a team is written (below).
+    const placeCache = new Map<string, Promise<Doc<"teams">[]>>();
     const resolveTeamSilently = async (name: string): Promise<Id<"teams"> | null> => {
       const pick = await resolveCardTeamName(ctx, args.sportId, name, setYear, {
+        placeLeagueIds,
+        placeCache,
         loadCardPlayerIds: async () => {
-          const cards = playersByTeamKey.get(normalizeTeamName(name.trim()));
-          if (!cards || cards.length === 0) return undefined;
+          const entry = playersByTeamKey.get(normalizeTeamName(name.trim()));
+          const cards = entry?.cards;
+          if (!entry || !cards || cards.length === 0) return undefined;
           const ids: Array<Array<Id<"players">>> = [];
-          for (const players of cards) {
+          for (const [cardIndex, players] of cards.entries()) {
             const onCard: Array<Id<"players">> = [];
             for (const player of players) {
               const key = normalizePlayerName(player);
-              if (!key || reviewByKey.get(`player:${key}`)?.decision?.action === "skip") {
+              const chosen = entry.relinks[cardIndex]?.get(player.trim());
+              // A chosen player beats everything, a "not a person" skip too:
+              // the operator linked this name to a person on this card.
+              if (
+                !chosen &&
+                (!key || reviewByKey.get(`player:${key}`)?.decision?.action === "skip")
+              ) {
                 continue;
               }
-              const id = await cardPlayerIdFor(player);
+              const id = await cardPlayerIdFor(player, chosen);
               if (!id) return undefined;
               if (!onCard.includes(id)) onCard.push(id);
             }
@@ -19862,6 +20771,8 @@ export const commitCardChecklistPrelude = internalMutation({
         ...(aliases.length ? { aliases } : {}),
         lastUpdated: Date.now(),
       });
+      // A new row can be located at a place a name was already searched for.
+      placeCache.clear();
       // The index half of `teams.aliases`, through the ONE writer. Skipped
       // for an empty list: a fresh id has nothing to diff against, and the
       // read it would spend is one per created team inside a budgeted
@@ -20312,68 +21223,7 @@ export const commitCardChecklistPrelude = internalMutation({
       if (!runCreates) break;
       const linked = await ctx.db.get(teamId);
       if (!linked || linked.sportId !== aliasSportByTeamId.get(teamId)) continue;
-      const held = linked.aliases ?? [];
-      // Keys the team already answers to: its full name and every alias.
-      // `nameNormalized` IS `normalizeTeamName(teamFullName(row))` by
-      // construction (convex/lib/teamRow.ts), so it stands in for the name.
-      const answersTo = new Set<string>([
-        linked.nameNormalized,
-        ...held.map((a) => normalizeTeamName(a)),
-      ]);
-      const additions: string[] = [];
-      for (const name of names) {
-        const trimmed = name.trim();
-        const key = normalizeTeamName(trimmed);
-        if (!key || answersTo.has(key)) continue;
-        if (trimmed.length > MAX_TEAM_ALIAS_LENGTH) {
-          // Length, never the string: this reaches Sentry and the console.
-          console.warn(
-            `commitCardChecklistPrelude: a saveAsAlias string is ${trimmed.length} characters; the limit is ${MAX_TEAM_ALIAS_LENGTH}. Linked, not remembered.`,
-          );
-          continue;
-        }
-        if (held.length + additions.length >= MAX_TEAM_ALIASES) {
-          console.warn(
-            `commitCardChecklistPrelude: team ${teamId} already holds ${MAX_TEAM_ALIASES} aliases. Linked, not remembered.`,
-          );
-          continue;
-        }
-        answersTo.add(key);
-        additions.push(trimmed);
-      }
-      if (additions.length === 0) continue;
-      // NEO-284 security audit / NEO-602 — a string that is another team's
-      // PRIMARY name in this sport is not remembered when the two teams' years
-      // overlap, or either has none (undated cannot be told apart from
-      // overlapping): stored as an alias it would lock that team out of its
-      // own edits (NAME_TAKEN on every save) and share the string over the
-      // same seasons. A disjoint era may be worn as an alias — the card's
-      // players, else the set year, say which team a printed name means.
-      // Warn-and-skip, like the caps above; the link itself still lands.
-      // `selfId` so the linked team's own name is not a clash, `selfYears` so
-      // its era is the one compared.
-      const { aliases: safeAdditions, dropped } = await dropAliasesThatArePrimaryNames(ctx, {
-        sportId: linked.sportId,
-        aliases: additions,
-        selfId: linked._id,
-        ...(linked.yearsActive ? { selfYears: linked.yearsActive } : {}),
-      });
-      for (const { teamName } of dropped) {
-        // The owning team's display name only — never the parked string.
-        console.warn(
-          `commitCardChecklistPrelude: a saveAsAlias string is ${teamName}'s own name. Linked, not remembered.`,
-        );
-      }
-      if (safeAdditions.length === 0) continue;
-      // Through the same helper every other writer uses, against the team's
-      // own composed name, so the stored list obeys the one contract. The
-      // inputs are inside the caps by the checks above, so this cannot throw.
-      const aliases = normalizeTeamAliasList(
-        [...held, ...safeAdditions],
-        teamFullName(linked),
-      );
-      await ctx.db.patch(linked._id, { aliases, lastUpdated: Date.now() });
-      await syncTeamAliases(ctx, { teamId: linked._id, sportId: linked.sportId, aliases });
+      await rememberAliasesOnTeam(ctx, linked, names, "commitCardChecklistPrelude");
     }
 
     const stagedTeamIdByLabel = new Map<string, Id<"teams">>();
@@ -21083,7 +21933,7 @@ export const commitCardChecklistPrelude = internalMutation({
             return [answered];
           }
         }
-        return await sameNamePlayers(ctx, key, args.sportId);
+        return await sameNameForCommit(key);
       };
       for (let i = 0; i < keys.length; i += SAME_NAME_PREFETCH_CONCURRENCY) {
         const chunk = keys.slice(i, i + SAME_NAME_PREFETCH_CONCURRENCY);
@@ -21105,7 +21955,7 @@ export const commitCardChecklistPrelude = internalMutation({
       if (!runResolve) {
         const createDecision = reviewByKey.get(`player:${norm(name)}`)?.decision;
         if (createDecision?.action !== "create") continue;
-        const already = await sameNamePlayers(ctx, norm(name), args.sportId);
+        const already = await sameNameForCommit(norm(name));
         // NEO-424 (D5) — one match is adopted by the resolve phase INSTEAD of
         // creating, unless the operator was shown that very row and answered
         // "somebody new" anyway. See `createRejectedSingleMatch`.
@@ -21152,7 +22002,7 @@ export const commitCardChecklistPrelude = internalMutation({
       // read here would have found only the primary name.
       const existingMatches =
         sameNamePrefetch.get(normalized) ??
-        (await sameNamePlayers(ctx, normalized, args.sportId));
+        (await sameNameForCommit(normalized));
       /*
        * NEO-424 (D5) — the operator's decision is read BEFORE the exactly-one
        * fast path, and a decision beats it.
@@ -21766,6 +22616,9 @@ const commitChunkCardValidator = v.object({
   attributes: v.optional(v.array(v.string())),
   isRookie: v.optional(v.boolean()),
   isRelic: v.optional(v.boolean()),
+  // NEO-591 — born as the Prospect Card attribute on an INSERT; never read on
+  // a re-synced row (see `previewCardFields.isProspect`).
+  isProspect: v.optional(v.boolean()),
   printRun: v.optional(v.number()),
   autographType: v.optional(v.string()),
   cardVariation: v.optional(v.string()),
@@ -22498,12 +23351,20 @@ export const commitCardChecklistChunk = internalMutation({
         // listing title so the title names the team the row will carry, and
         // BEFORE the BSC enrichment check so a card that has a team is not
         // queued to be asked for one.
+        //
+        // NEO-591 (product invariant 8) — except a card whose listing or
+        // checklist NAMES a team the commit could not give it (`bscTeamHint`:
+        // set by the prelude only for a card with no team id and no pending
+        // name, minus a name the operator ruled "not a team"). The data names a team, so no automated rule writes
+        // a different one: the set's team is not stamped and the operator
+        // decides (the Teams step asks, `setDefaultSettlesNewRow`).
+        const listingNamesATeam = (card.bscTeamHint?.trim() ?? "") !== "";
         const bornTeams = defaultTeamOnCardIds(
           {
             teamOnCardIds: card.teamOnCardIds,
             pendingTeamNames: insertPendingTeamNames,
           },
-          leafTeamIds ? { teamIds: leafTeamIds } : null,
+          leafTeamIds && !listingNamesATeam ? { teamIds: leafTeamIds } : null,
         );
         const insertTeamOnCardIds = bornTeams.ids ?? card.teamOnCardIds;
         const insertTeamNames = bornTeams.defaulted
@@ -22620,6 +23481,8 @@ export const commitCardChecklistChunk = internalMutation({
             attributes: card.attributes,
             isRookie: card.isRookie,
             isRelic: card.isRelic,
+            // NEO-591 — new cards only (a re-synced row never reads it).
+            isProspect: card.isProspect,
             printRun: card.printRun,
             cardVariation: card.cardVariation,
             autographType: card.autographType,
@@ -23501,6 +24364,14 @@ type IncomingMatchCard = {
   /** NEO-496 — the no-number key's second half; see `noRefMatchKey`. */
   cardName?: string;
   platformData?: WirePlatformData;
+  /**
+   * NEO-591 — the number was derived by the sync (minted, or swapped in by
+   * `preferCardNumber`). Such a card matches a stored row by its own ref or
+   * not at all: the slot+number and no-ref number tiers never see it, and it
+   * claims no number key, so a derived "38b" cannot land on a stored "38b"
+   * nor make a real "38b" look ambiguous.
+   */
+  numberMinted?: true;
 };
 
 /**
@@ -23615,6 +24486,7 @@ function resolveExistingIds(
   const incomingSlotKeyCount = new Map<string, number>();
   const incomingNumberCount = new Map<string, number>();
   for (const card of cards) {
+    if (card.numberMinted === true) continue;
     for (const side of MATCH_SIDES) {
       const key = incomingSlotKey(card, side);
       if (key) {
@@ -23651,6 +24523,8 @@ function resolveExistingIds(
     if (bscRef && withheld.bscRef.has(bscRef)) return true;
     const slRef = card.platformData?.sportlots?.ref;
     if (slRef && withheld.slRef.has(slRef)) return true;
+    // A derived number never reached the number tiers, so they cost it nothing.
+    if (card.numberMinted === true) return false;
     for (const side of MATCH_SIDES) {
       const key = incomingSlotKey(card, side);
       if (!key) continue;
@@ -23690,7 +24564,7 @@ function resolveExistingIds(
     } else if (slRowId) {
       matched = slRowId;
       tier = "slRef";
-    } else {
+    } else if (card.numberMinted !== true) {
       for (const side of MATCH_SIDES) {
         const key = incomingSlotKey(card, side);
         if (!key) continue;
@@ -25011,6 +25885,46 @@ export const validateOperatorPlayerIds = internalQuery({
   },
 });
 
+/**
+ * NEO-591 — the two facts the commit needs from the table before it lets the
+ * career check's "New player named X" answers write anything:
+ *
+ *  - `sportId`: the set's sport, walked from the row server-side
+ *    (`findSportForSelectorOption`), never taken from the action's own
+ *    client-supplied `sportId`. `null` when the row has no sport above it, and
+ *    the commit refuses.
+ *  - `fragmentCount`: how many of `names` are a single word that is the first
+ *    or last name of a fuller-named player in that sport (NEO-463,
+ *    `nameFragmentMatches`). The wizard has no one-name-player switch for a
+ *    new-player answer, so the commit refuses these up front rather than
+ *    minting "Ramirez" beside "Jose Ramirez" half-way through. A count, never
+ *    the names.
+ */
+export const validateCareerNewPlayers = internalQuery({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    names: v.array(v.string()),
+  },
+  returns: v.object({
+    sportId: v.union(v.id("selectorOptions"), v.null()),
+    fragmentCount: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    if (args.names.length > MAX_CAREER_NEW_PLAYERS) {
+      throw new Error(
+        `validateCareerNewPlayers: ${args.names.length} names exceeds the ${MAX_CAREER_NEW_PLAYERS}-player limit`,
+      );
+    }
+    const sportId = await findSportForSelectorOption(ctx, args.selectorOptionId);
+    if (!sportId) return { sportId: null, fragmentCount: 0 };
+    let fragmentCount = 0;
+    for (const name of args.names) {
+      if ((await nameFragmentMatches(ctx, name, sportId)).length > 0) fragmentCount++;
+    }
+    return { sportId, fragmentCount };
+  },
+});
+
 export const commitCardChecklist = action({
   args: {
     selectorOptionId: v.id("selectorOptions"),
@@ -25061,6 +25975,35 @@ export const commitCardChecklist = action({
           teamName: v.optional(v.string()),
           fromYear: v.number(),
           toYear: v.optional(v.number()),
+        }),
+      ),
+    ),
+    /**
+     * NEO-591 — the players the operator chose as "New player named X" in the
+     * wizard's career check, for the WHOLE batch. `ref` is minted by the client
+     * once per answer (stable across a Confirm retried from the same wizard
+     * state) and is what each card's `newPlayerByName` points at; `name` is the
+     * new player's name as the operator left it; `stints` is the career they
+     * staged, each naming a team by NB id or by the printed string a card in
+     * this commit carries (exactly one). Checked before any phase writes,
+     * minted as its own phase after the prelude's resolve walk and before the
+     * career stints and the chunks (`players.createCareerNewPlayers`). A retry
+     * adopts the row an earlier attempt made, by `ref`. NO enrichment is
+     * scheduled for these players.
+     */
+    careerNewPlayers: v.optional(
+      v.array(
+        v.object({
+          ref: v.string(),
+          name: v.string(),
+          stints: v.array(
+            v.object({
+              teamId: v.optional(v.id("teams")),
+              teamName: v.optional(v.string()),
+              fromYear: v.number(),
+              toYear: v.optional(v.number()),
+            }),
+          ),
         }),
       ),
     ),
@@ -25120,6 +26063,18 @@ export const commitCardChecklist = action({
     careerStints: v.optional(
       v.object({ added: v.number(), existing: v.number(), skipped: v.number() }),
     ),
+    // NEO-591 — what the new-player phase did, present only when the commit
+    // carried `careerNewPlayers`. Counts only: `adopted` is a retry finding the
+    // row an earlier attempt made; `stintsSkipped` is a stint whose team could
+    // not be resolved.
+    careerNewPlayers: v.optional(
+      v.object({
+        created: v.number(),
+        adopted: v.number(),
+        stintsAdded: v.number(),
+        stintsSkipped: v.number(),
+      }),
+    ),
   }),
   handler: async (ctx, args): Promise<{
     success: boolean;
@@ -25141,6 +26096,12 @@ export const commitCardChecklist = action({
     unreviewedNameCount: number;
     droppedPendingNameCount: number;
     careerStints?: { added: number; existing: number; skipped: number };
+    careerNewPlayers?: {
+      created: number;
+      adopted: number;
+      stintsAdded: number;
+      stintsSkipped: number;
+    };
   }> => {
     // Enforced HERE, before any phase runs, so a non-admin call writes
     // nothing at all — the phases below re-check, but this is the boundary.
@@ -25184,6 +26145,23 @@ export const commitCardChecklist = action({
           card.cardNumber ? `card #${card.cardNumber}` : `card at index ${index}`
         } still carries an unsettled checklist disagreement. Settle it in the "Checklist says otherwise" step before committing.`,
       );
+    }
+    // NEO-591 — `sourceNumbers` is accepted and ignored by the commit, but it
+    // is a client-supplied string map all the same: held to the 64-character
+    // cap `startCandidateBatch` enforces, so an unbounded value never rides in
+    // a commit argument. The card number is NB's own; no value is echoed.
+    for (const [index, card] of args.cards.entries()) {
+      const printed = card.sourceNumbers;
+      if (!printed) continue;
+      for (const value of [printed.bsc, printed.sportlots, printed.checklist]) {
+        if (value !== undefined && value.length > MAX_SOURCE_NUMBER_LENGTH) {
+          throw new ConvexError(
+            `commitCardChecklist: ${
+              card.cardNumber ? `card #${card.cardNumber}` : `card at index ${index}`
+            } carries a source number over ${MAX_SOURCE_NUMBER_LENGTH} characters.`,
+          );
+        }
+      }
     }
     // NEO-335 — the "Card titles" answers, held to the write path's caps before
     // ANY phase writes: the title to LISTING_TITLE_MAX (`updateCard`'s rule),
@@ -25251,6 +26229,126 @@ export const commitCardChecklist = action({
       });
     }
 
+    // NEO-591 — the career check's "New player named X" answers, held to their
+    // shape before ANY phase writes: a refusal costs the operator nothing, and
+    // the wizard never sends one that breaks these (a refusal is a client that
+    // skipped its own checks). Named by position, never by the name: this text
+    // reaches Sentry and the console. The table-side checks (the sport row, the
+    // one-word-name clash) run below with the player ids.
+    const careerNewPlayers = args.careerNewPlayers ?? [];
+    {
+      if (careerNewPlayers.length > MAX_CAREER_NEW_PLAYERS) {
+        throw new ConvexError(
+          `commitCardChecklist: ${careerNewPlayers.length} new players exceeds the ${MAX_CAREER_NEW_PLAYERS} limit for a single commit`,
+        );
+      }
+      const declaredRefs = new Set<string>();
+      const declaredKeys = new Set<string>();
+      const maxYear = maxCareerYear();
+      let nestedStints = 0;
+      careerNewPlayers.forEach((np, i) => {
+        const where = `new player ${i + 1}`;
+        if (!new RegExp(`^[A-Za-z0-9_-]{1,${MAX_CREATION_REF_LENGTH}}$`).test(np.ref)) {
+          throw new ConvexError(`commitCardChecklist: ${where} carries a malformed reference.`);
+        }
+        if (declaredRefs.has(np.ref)) {
+          throw new ConvexError(`commitCardChecklist: ${where} repeats another new player's reference.`);
+        }
+        declaredRefs.add(np.ref);
+        const name = np.name.trim();
+        if (name.length === 0) {
+          throw new ConvexError(`commitCardChecklist: ${where} has no name.`);
+        }
+        if (name.length > MAX_PLAYER_NAME_LENGTH) {
+          throw new ConvexError(
+            `commitCardChecklist: ${where} has a name of ${name.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+          );
+        }
+        // Cc controls, Cf format/zero-width, Zl/Zp separators — the same
+        // Unicode-property test the short name uses (`normalizeListingShortName`).
+        if (/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(name)) {
+          throw new ConvexError(
+            `commitCardChecklist: ${where} has a name with control or invisible characters.`,
+          );
+        }
+        // One player per folded name per commit: "Jose Ramirez" and "José
+        // Ramírez" are one key, and the client sends them as one entry.
+        const key = normalizePlayerName(name);
+        if (!key) {
+          throw new ConvexError(`commitCardChecklist: ${where} has a name with no letters or digits.`);
+        }
+        if (declaredKeys.has(key)) {
+          throw new ConvexError(`commitCardChecklist: ${where} repeats another new player's name.`);
+        }
+        declaredKeys.add(key);
+        if (np.stints.length > MAX_PLAYER_TEAM_YEARS) {
+          throw new ConvexError(
+            `commitCardChecklist: ${where} has ${np.stints.length} career stints; the limit is ${MAX_PLAYER_TEAM_YEARS}.`,
+          );
+        }
+        nestedStints += np.stints.length;
+        np.stints.forEach((stint, j) => {
+          const hasId = stint.teamId !== undefined;
+          const hasName = (stint.teamName ?? "").trim().length > 0;
+          if (hasId === hasName) {
+            throw new ConvexError(
+              `commitCardChecklist: ${where}, stint ${j + 1} must name exactly one team, by id or by printed name.`,
+            );
+          }
+          if ((stint.teamName ?? "").length > MAX_PLAYER_NAME_LENGTH) {
+            throw new ConvexError(
+              `commitCardChecklist: ${where}, stint ${j + 1} carries a team name over the ${MAX_PLAYER_NAME_LENGTH}-character limit.`,
+            );
+          }
+          try {
+            assertCareerStintYears(stint.fromYear, stint.toYear, maxYear);
+          } catch (error) {
+            throw new ConvexError(
+              `commitCardChecklist: ${where}, stint ${j + 1}: ${
+                error instanceof Error ? error.message : "invalid years."
+              }`,
+            );
+          }
+        });
+      });
+      // The two stint phases share one per-commit budget.
+      if (careerStints.length + nestedStints > MAX_CAREER_STINT_APPENDS) {
+        throw new ConvexError(
+          `commitCardChecklist: ${careerStints.length + nestedStints} career stints exceeds the ${MAX_CAREER_STINT_APPENDS} limit for a single commit`,
+        );
+      }
+      // Every card pick names a declared player, once, for a name the card
+      // prints and has not also re-linked; every declared player is used.
+      const usedRefs = new Set<string>();
+      args.cards.forEach((card, index) => {
+        const picks = card.newPlayerByName ?? [];
+        if (picks.length === 0) return;
+        const where = card.cardNumber ? `card #${card.cardNumber}` : `card at index ${index}`;
+        const printed = new Set((card.players ?? []).map((p) => p.trim()));
+        const relinked = new Set((card.playerIdByName ?? []).map((e) => e.name.trim()));
+        const picked = new Set<string>();
+        for (const pick of picks) {
+          const name = pick.name.trim();
+          if (!declaredRefs.has(pick.ref)) {
+            throw new ConvexError(`commitCardChecklist: ${where} points at a new player the commit does not declare.`);
+          }
+          if (!printed.has(name)) {
+            throw new ConvexError(`commitCardChecklist: ${where} names a new player for a name it does not print.`);
+          }
+          if (relinked.has(name) || picked.has(name)) {
+            throw new ConvexError(`commitCardChecklist: ${where} answers one printed name twice.`);
+          }
+          picked.add(name);
+          usedRefs.add(pick.ref);
+        }
+      });
+      for (const ref of declaredRefs) {
+        if (!usedRefs.has(ref)) {
+          throw new ConvexError("commitCardChecklist: a declared new player is used by no card.");
+        }
+      }
+    }
+
     // Checked before ANY phase writes, so an over-long delete list costs the
     // operator nothing. Finalize re-checks — it is separately callable.
     const operatorDeleteIds = args.operatorDeleteIds ?? [];
@@ -25269,6 +26367,10 @@ export const commitCardChecklist = action({
           ...args.cards.flatMap((c) => c.teamIds ?? []),
           // NEO-574 — a career stint's team, when it names one by id.
           ...careerStints.flatMap((stint) => (stint.teamId ? [stint.teamId] : [])),
+          // NEO-591 — and a new player's staged stints.
+          ...careerNewPlayers.flatMap((np) =>
+            np.stints.flatMap((stint) => (stint.teamId ? [stint.teamId] : [])),
+          ),
         ]),
       );
       let missing = 0;
@@ -25349,6 +26451,29 @@ export const commitCardChecklist = action({
       }
     }
 
+    // NEO-591 — the table-side checks on the new players, still before ANY
+    // phase writes: the set's sport (walked from the row, never the client's
+    // `sportId`) and the NEO-463 one-word-name clash.
+    let newPlayerSportId: Id<"selectorOptions"> | null = null;
+    if (careerNewPlayers.length > 0) {
+      const checked: { sportId: Id<"selectorOptions"> | null; fragmentCount: number } =
+        await ctx.runQuery(internal.selectorOptions.validateCareerNewPlayers, {
+          selectorOptionId: args.selectorOptionId,
+          names: careerNewPlayers.map((np) => np.name.trim()),
+        });
+      if (!checked.sportId) {
+        throw new ConvexError(
+          "commitCardChecklist: new players need a set that sits under a sport, and this one does not.",
+        );
+      }
+      if (checked.fragmentCount > 0) {
+        throw new ConvexError(
+          `commitCardChecklist: ${checked.fragmentCount} new player name(s) are a single word that matches a fuller player on file. Give the whole name and save.`,
+        );
+      }
+      newPlayerSportId = checked.sportId;
+    }
+
     // Run one phase: retry an optimistic-concurrency conflict a bounded number
     // of times, then rethrow labelled with the phase that failed.
     //
@@ -25402,9 +26527,23 @@ export const commitCardChecklist = action({
         playerNames.push(p.trim());
         addCardTeamNames(playerTeamNamesByPlayer, p, teamsOnCard);
       }
+      // NEO-591 — what the career check changed about this card's players, for
+      // the team era rule. A "New player named X" card is a NEW person, so the
+      // name's namesake must not lend the card his career: the card gives no
+      // evidence and its teams fall back to the year with the alias-only guard.
+      // An operator re-link (`playerIdByName`, kept only while the player
+      // still exists in this sport, as the card write keeps it) is a chosen
+      // player whose career IS evidence, so it travels with the card.
+      const withheld = (c.newPlayerByName?.length ?? 0) > 0;
+      const relinks = (c.playerIdByName ?? [])
+        .filter((e) => operatorPlayerNameById.has(e.playerId))
+        .map((e) => ({ name: e.name.trim(), playerId: e.playerId }));
       for (const t of teamsOnCard) {
         teamNames.push(t);
-        addCardPlayerNames(playersByTeamNorm, t, c.players ?? []);
+        addCardPlayerNames(playersByTeamNorm, t, c.players ?? [], undefined, {
+          withheld,
+          relinks,
+        });
       }
     }
 
@@ -25458,13 +26597,26 @@ export const commitCardChecklist = action({
       // NEO-602 — the players on each card naming a team, for the era rule.
       teamPlayerNames: Array.from(
         playersByTeamNorm,
-        ([teamNameNormalized, entry]) => ({ teamNameNormalized, cards: entry.cards }),
+        ([teamNameNormalized, entry]) => ({
+          teamNameNormalized,
+          cards: entry.cards,
+          // NEO-591 — only when a card was re-linked, so an ordinary commit's
+          // payload is the one it always was.
+          ...(entry.relinks.some((r) => r.length > 0)
+            ? { cardPlayerIds: entry.relinks }
+            : {}),
+        }),
       ).filter((entry) => entry.cards.length > 0),
       batchId: args.batchId,
       // NEO-335 — written by the page that opens the commit, read by all.
       ...(listingShortName ? { listingShortName } : {}),
       // NEO-345 — same page, same reason.
       ...(args.autographFormat ? { autographFormat: args.autographFormat } : {}),
+      // NEO-591 — a retry must not weigh the row its own earlier attempt minted
+      // as a namesake; see the prelude arg.
+      ...(careerNewPlayers.length > 0
+        ? { excludePlayerCreationRefs: careerNewPlayers.map((np) => np.ref) }
+        : {}),
     };
     /** Walk one phase to the end, returning every page it produced. */
     const walkPrelude = async (
@@ -25579,6 +26731,81 @@ export const commitCardChecklist = action({
     // prelude's own entry wins where it has one (the same player, same name).
     for (const [id, name] of operatorPlayerNameById) {
       if (!playerNameById.has(id)) playerNameById.set(id, name);
+    }
+    /*
+     * NEO-591 — the career check's "New player named X", minted as its own phase
+     * AFTER the resolve walk and BEFORE the career stints and every chunk.
+     *
+     * The order is load-bearing, not tidy. Minted any earlier, the new row sits
+     * beside its namesake when the resolve walk runs `sameNamePlayers`, and every
+     * OTHER card that prints the name drops to "unreviewed". Minted after the
+     * resolve walk, the walk saw exactly what it saw before this answer existed,
+     * and only the cards that carry `newPlayerByName` are pointed at the new row.
+     * The stints naming a team this commit created need the ids the prelude's
+     * creates phase minted, which is also why this runs here.
+     *
+     * Everything this phase could refuse was refused above, before any phase
+     * wrote; a stint whose team cannot be resolved here is skipped and counted.
+     * A retried commit ADOPTS the row an earlier attempt made (by `creationRef`).
+     * No enrichment is scheduled. Ids and counts only in the log.
+     */
+    const newPlayerIdByRef = new Map<string, Id<"players">>();
+    let careerNewPlayersResult:
+      | { created: number; adopted: number; stintsAdded: number; stintsSkipped: number }
+      | undefined;
+    if (careerNewPlayers.length > 0 && newPlayerSportId) {
+      let unresolved = 0;
+      const toMint = careerNewPlayers.map((np) => {
+        const stints: Array<{ teamId: Id<"teams">; fromYear: number; toYear?: number }> = [];
+        for (const stint of np.stints) {
+          const teamId = stint.teamId
+            ? operatorTeamNameById.has(stint.teamId)
+              ? stint.teamId
+              : undefined
+            : teamIdByName.get((stint.teamName ?? "").trim());
+          if (!teamId) {
+            unresolved++;
+            continue;
+          }
+          stints.push({
+            teamId,
+            fromYear: stint.fromYear,
+            ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
+          });
+        }
+        return { ref: np.ref, name: np.name.trim(), stints };
+      });
+      const minted: {
+        players: Array<{ ref: string; id: Id<"players">; name: string; created: boolean }>;
+        stintsAdded: number;
+        stintsSkipped: number;
+      } = await phase("career new players", () =>
+        ctx.runMutation(internal.players.createCareerNewPlayers, {
+          sportId: newPlayerSportId,
+          userId: operatorUserId,
+          players: toMint,
+        }),
+      );
+      for (const p of minted.players) {
+        newPlayerIdByRef.set(p.ref, p.id);
+        // The new player's own spelling, for the card's title.
+        playerNameById.set(p.id as string, p.name);
+      }
+      careerNewPlayersResult = {
+        created: minted.players.filter((p) => p.created).length,
+        adopted: minted.players.filter((p) => !p.created).length,
+        stintsAdded: minted.stintsAdded,
+        stintsSkipped: minted.stintsSkipped + unresolved,
+      };
+      console.log(
+        JSON.stringify({
+          msg: "commit_career_new_players",
+          selectorOptionId: args.selectorOptionId,
+          requested: careerNewPlayers.length,
+          newPlayerIds: minted.players.map((p) => p.id),
+          ...careerNewPlayersResult,
+        }),
+      );
     }
     /*
      * NEO-574 — the career check's stints, appended as their own phase AFTER
@@ -25719,6 +26946,14 @@ export const commitCardChecklist = action({
         if (operatorPlayerNameById.has(e.playerId)) {
           relinkedByName.set(e.name.trim(), e.playerId);
         }
+      }
+      // NEO-591 — "New player named X": the same per-card override, pointing at
+      // the player this commit just minted (or adopted). A ref the phase did not
+      // resolve (cannot happen once validated) leaves the name's ordinary
+      // resolution in place.
+      for (const e of c.newPlayerByName ?? []) {
+        const id = newPlayerIdByRef.get(e.ref);
+        if (id) relinkedByName.set(e.name.trim(), id);
       }
       // A card names a player once. An operator re-link that lands on a player
       // the card already carries (another name's ordinary resolution, or an
@@ -25882,6 +27117,7 @@ export const commitCardChecklist = action({
             : c.attributes,
           isRookie: c.isRookie,
           isRelic: c.isRelic,
+          ...(c.isProspect === true ? { isProspect: true } : {}),
           printRun: c.printRun,
           autographType: c.autographType,
           // NEO-335 — an operator-trimmed variation ("Card titles") is stored
@@ -26066,7 +27302,43 @@ export const commitCardChecklist = action({
       parentByIndex: Map<number, number>;
       unresolvedStems: string[];
     } = { parentByIndex: new Map(), unresolvedStems: [] };
-    for (const indices of variationPartitions.values()) {
+    // NEO-591 (variations) — the NB-side parent key. A card that took a
+    // checklist row and the variation cards the fetch made from that row's
+    // siblings share a `variationGroup` token; when exactly one non-variation
+    // card holds a token, its variations link to it directly, ahead of any
+    // search by number. A token is only a grouping (held to 32 characters, a
+    // forged one links nothing it should not: it needs exactly one parent and
+    // only ever points a variation at a card that also carries it).
+    const groupMembers = new Map<string, number[]>();
+    args.cards.forEach((c, i) => {
+      const token = c.variationGroup;
+      if (!token || token.length > 32) return;
+      const list = groupMembers.get(token);
+      if (list) list.push(i);
+      else groupMembers.set(token, [i]);
+    });
+    const groupLinked = new Set<number>();
+    for (const members of groupMembers.values()) {
+      const parents = members.filter((i) => !args.cards[i].isVariation);
+      if (parents.length !== 1) continue;
+      for (const i of members) {
+        if (!args.cards[i].isVariation) continue;
+        variationLinks.parentByIndex.set(i, parents[0]);
+        groupLinked.add(i);
+      }
+    }
+    // Indexed ONCE for the unattributed cross-partition rule below: every
+    // non-variation card by stem across the whole commit. A per-stem scan of
+    // `args.cards` would be stems x cards on a 14,000-card set.
+    const parentsByStem = new Map<string, number[]>();
+    args.cards.forEach((c, i) => {
+      if (c.isVariation) return;
+      const stem = cardNumberStem(c.cardNumber);
+      const list = parentsByStem.get(stem);
+      if (list) list.push(i);
+      else parentsByStem.set(stem, [i]);
+    });
+    for (const [sourceKey, indices] of variationPartitions) {
       const resolved = resolveVariationParents(
         indices.map((i) => ({
           cardNumber: args.cards[i].cardNumber,
@@ -26075,12 +27347,50 @@ export const commitCardChecklist = action({
         })),
       );
       for (const [child, parent] of resolved.parentByIndex) {
-        variationLinks.parentByIndex.set(indices[child], indices[parent]);
+        // A group link made above wins over a stem guess.
+        if (!groupLinked.has(indices[child])) {
+          variationLinks.parentByIndex.set(indices[child], indices[parent]);
+        }
+      }
+      // NEO-591 (variations) — a variation made from a checklist row (card 38
+      // took row "38a", row "38b" became its own card) carries no marketplace
+      // set, so it sits in the "unattributed" partition and its parent sits in
+      // the marketplace's. When the unattributed partition holds no parent of
+      // that stem itself, the variation joins the one non-variation card with
+      // that stem anywhere in the commit — only when it is exactly one (rule
+      // 7: a number is not unique, and two series can both have a #38).
+      let unresolved = resolved.unresolvedStems;
+      if (sourceKey === "unattributed" && unresolved.length > 0) {
+        // This partition's cards by stem, once: no scan per unresolved stem.
+        const inPartitionByStem = new Map<string, number[]>();
+        for (const i of indices) {
+          const stem = cardNumberStem(args.cards[i].cardNumber);
+          const list = inPartitionByStem.get(stem);
+          if (list) list.push(i);
+          else inPartitionByStem.set(stem, [i]);
+        }
+        const stillUnresolved: string[] = [];
+        for (const stem of unresolved) {
+          const inStem = inPartitionByStem.get(stem) ?? [];
+          const children = inStem.filter(
+            (i) => args.cards[i].isVariation && !groupLinked.has(i),
+          );
+          // Every variation of the stem already has its group parent.
+          if (children.length === 0) continue;
+          const hasOwnParent = inStem.some((i) => !args.cards[i].isVariation);
+          const parents = hasOwnParent ? [] : (parentsByStem.get(stem) ?? []);
+          if (parents.length === 1) {
+            for (const i of children) variationLinks.parentByIndex.set(i, parents[0]);
+          } else {
+            stillUnresolved.push(stem);
+          }
+        }
+        unresolved = stillUnresolved;
       }
       // Not deduped across partitions: the same stem unresolved in two source
       // sets is two separate groups needing review, and collapsing them would
       // understate the work.
-      variationLinks.unresolvedStems.push(...resolved.unresolvedStems);
+      variationLinks.unresolvedStems.push(...unresolved);
     }
     const links: Array<{
       childId: Id<"cardChecklist">;
@@ -26262,7 +27572,10 @@ export const commitCardChecklist = action({
       // conflict — reporting the payload size instead would claim rows that
       // were deliberately not written.
       count: chunkCards.length,
-      createdPlayerIds: prelude.createdPlayerIds,
+      // NEO-591 — the career check's new players are players this commit made.
+      createdPlayerIds: Array.from(
+        new Set<Id<"players">>([...prelude.createdPlayerIds, ...newPlayerIdByRef.values()]),
+      ),
       createdTeamIds: prelude.createdTeamIds,
       unmatchedExistingCount: unmatchedExistingIds.length,
       conflicts: match.conflicts.map((c) => ({
@@ -26309,6 +27622,7 @@ export const commitCardChecklist = action({
       // user-facing string needs a brand-voice draft and Jason's sign-off.
       droppedPendingNameCount,
       ...(careerStintsResult ? { careerStints: careerStintsResult } : {}),
+      ...(careerNewPlayersResult ? { careerNewPlayers: careerNewPlayersResult } : {}),
     };
   },
 });

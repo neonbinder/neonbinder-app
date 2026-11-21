@@ -605,6 +605,71 @@ describe("pickCardTeam", () => {
   });
 });
 
+describe("pickCardTeam — a printed PLACE (playersMustDecide, NEO-591)", () => {
+  // "Seattle" in a 2001 set: the one-season 1969 Pilots and the 1977- Mariners.
+  const PILOTS = { _id: "pilots", yearsActive: { from: 1969, to: 1969 } };
+  const MARINERS = { _id: "mariners", yearsActive: { from: 1977 } };
+  const NO_ALIAS = new Set<string>();
+  const place = (cards?: Parameters<typeof pickCardTeam>[1]["cards"], setYear = 2001) =>
+    pickCardTeam([PILOTS, MARINERS], {
+      setYear,
+      aliasOnlyIds: NO_ALIAS,
+      playersMustDecide: true,
+      ...(cards ? { cards } : {}),
+    });
+
+  test("no player evidence at all: null, where a printed name would fall to the year's Mariners", () => {
+    expect(place()).toBeNull();
+    expect(place([[]])).toBeNull();
+    // Players whose stints are on neither row say nothing either.
+    expect(place([[[{ teamId: "elsewhere", fromYear: 1990, toYear: 1995 }]]])).toBeNull();
+    // Control: the same rows as a NAME are settled by the year.
+    expect(pickCardTeam([PILOTS, MARINERS], { setYear: 2001, aliasOnlyIds: NO_ALIAS })?.row).toBe(
+      MARINERS,
+    );
+  });
+
+  test("a player with a Pilots stint is the Pilots, against the year (a visible, changeable answer)", () => {
+    expect(place([[[{ teamId: "pilots", fromYear: 1969, toYear: 1969 }]]])).toEqual({
+      row: PILOTS,
+      via: "players",
+      agreesWithYear: false,
+    });
+  });
+
+  test("a player with a Mariners stint is the Mariners, agreeing with the year", () => {
+    expect(place([[[{ teamId: "mariners", fromYear: 1995, toYear: 1999 }]]])).toEqual({
+      row: MARINERS,
+      via: "players",
+      agreesWithYear: true,
+    });
+  });
+
+  test("a split (one card per row) and a player on both rows are null", () => {
+    expect(
+      place([
+        [[{ teamId: "pilots", fromYear: 1969 }]],
+        [[{ teamId: "mariners", fromYear: 1995 }]],
+      ]),
+    ).toBeNull();
+    expect(
+      place([[[{ teamId: "pilots", fromYear: 1969 }, { teamId: "mariners", fromYear: 1977 }]]]),
+    ).toBeNull();
+  });
+
+  test("a silent card abstains only while the voters' row is the year's row", () => {
+    const mariners = [[{ teamId: "mariners", fromYear: 1995, toYear: 1999 }]];
+    const pilots = [[{ teamId: "pilots", fromYear: 1969, toYear: 1969 }]];
+    expect(place([mariners, []])?.row).toBe(MARINERS);
+    expect(place([pilots, []])).toBeNull();
+    expect(place([pilots, pilots])?.row).toBe(PILOTS);
+  });
+
+  test("a team that did not exist yet is never an answer, whatever a stint says", () => {
+    expect(place([[[{ teamId: "mariners", fromYear: 1995 }]]], 1970)).toBeNull();
+  });
+});
+
 describe("eraOverlapReason", () => {
   const dated = { from: 1968, to: 2024 };
 

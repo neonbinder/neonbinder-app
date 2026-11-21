@@ -155,6 +155,7 @@ import type * as lib_pairing_types from "../lib/pairing/types.js";
 import type * as lib_parallelCardLink from "../lib/parallelCardLink.js";
 import type * as lib_photoEdit from "../lib/photoEdit.js";
 import type * as lib_pickLines from "../lib/pickLines.js";
+import type * as lib_placeTeam from "../lib/placeTeam.js";
 import type * as lib_placeholderObjects from "../lib/placeholderObjects.js";
 import type * as lib_placeholderRefusals from "../lib/placeholderRefusals.js";
 import type * as lib_preprocessBaseline from "../lib/preprocessBaseline.js";
@@ -399,6 +400,7 @@ declare const fullApi: ApiFromModules<{
   "lib/parallelCardLink": typeof lib_parallelCardLink;
   "lib/photoEdit": typeof lib_photoEdit;
   "lib/pickLines": typeof lib_pickLines;
+  "lib/placeTeam": typeof lib_placeTeam;
   "lib/placeholderObjects": typeof lib_placeholderObjects;
   "lib/placeholderRefusals": typeof lib_placeholderRefusals;
   "lib/preprocessBaseline": typeof lib_preprocessBaseline;

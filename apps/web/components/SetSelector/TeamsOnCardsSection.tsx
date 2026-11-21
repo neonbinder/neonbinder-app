@@ -36,7 +36,9 @@ import {
   storedPeople,
   teamAnswersByCard,
   teamIdKey,
+  nameRequestSlices,
   teamNameRequests,
+  TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST,
   TEAMS_SECTION_MAX_NAME_REQUESTS,
   TEAMS_SECTION_MAX_REQUESTS,
   TEAMS_SECTION_NAMES_PER_REQUEST,
@@ -48,6 +50,7 @@ import {
   type ServerPlayerEvidence,
   type ServerTeam,
   type TeamAnswer,
+  type TeamNameRequest,
   type TeamlessFacts,
   type TeamRef,
   type TeamsGroup,
@@ -239,8 +242,18 @@ type SuggestionQuery = {
     selectorOptionId: Id<"selectorOptions">;
     players: Array<{ playerId?: Id<"players">; name?: string }>;
     teamNames?: string[];
+    locationNames?: string[];
   };
 };
+
+/** The `locationNames` arg for one slice of name requests, or nothing. */
+function locationNamesOf(slice: readonly TeamNameRequest[]): { locationNames?: string[] } {
+  const names = slice
+    .filter((r) => r.location)
+    .slice(0, TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST)
+    .map((r) => r.name);
+  return names.length > 0 ? { locationNames: names } : {};
+}
 
 export default function TeamsOnCardsSection({
   selectorOptionId,
@@ -360,6 +373,7 @@ export default function TeamsOnCardsSection({
       ),
     [cards, rows, settled, people],
   );
+  const nameSlices = useMemo(() => nameRequestSlices(nameRequests), [nameRequests]);
   const anyTeamless = useMemo(
     () => buildTeamsGroups({
       cards,
@@ -390,18 +404,18 @@ export default function TeamsOnCardsSection({
         },
       };
     }
-    for (let i = 0; i < nameRequests.length; i += TEAMS_SECTION_NAMES_PER_REQUEST) {
-      out[`n${i / TEAMS_SECTION_NAMES_PER_REQUEST}`] = {
+    nameSlices.forEach((slice, s) => {
+      out[`n${s}`] = {
         query: api.cardChecklist.teamSuggestionsForPreview,
         args: {
           selectorOptionId,
           players: [],
-          teamNames: nameRequests
-            .slice(i, i + TEAMS_SECTION_NAMES_PER_REQUEST)
-            .map((r) => r.name),
+          teamNames: slice.map((r) => r.name),
+          // Every listed name also asks for the teams located there.
+          ...locationNamesOf(slice),
         },
       };
-    }
+    });
     if (anyTeamless && Object.keys(out).length === 0) {
       out.meta = {
         query: api.cardChecklist.teamSuggestionsForPreview,
@@ -409,7 +423,7 @@ export default function TeamsOnCardsSection({
       };
     }
     return out;
-  }, [requests, nameRequests, selectorOptionId, anyTeamless]);
+  }, [requests, nameSlices, selectorOptionId, anyTeamless]);
   const results = useQueries(queries);
 
   const { serverEvidence, teamNameEvidence, setYear, sportId, setLeagueIds } = useMemo(() => {
@@ -428,12 +442,12 @@ export default function TeamsOnCardsSection({
       });
     }
     const names = new Map<string, ServerTeam[]>();
-    for (let s = 0; s * TEAMS_SECTION_NAMES_PER_REQUEST < nameRequests.length; s++) {
+    nameSlices.forEach((slice, s) => {
       (answered(`n${s}`)?.teamNames ?? []).forEach((entry, j) => {
-        const request = nameRequests[s * TEAMS_SECTION_NAMES_PER_REQUEST + j];
+        const request = slice[j];
         if (request) names.set(request.key, entry.teams);
       });
-    }
+    });
     // The set's facts are the same in every call; any answered one says them.
     const facts = Object.keys(results)
       .map(answered)
@@ -451,7 +465,7 @@ export default function TeamsOnCardsSection({
         return single ? [single] : [];
       })(),
     };
-  }, [results, requests, nameRequests]);
+  }, [results, requests, nameSlices]);
 
   const groups = useMemo(
     () =>

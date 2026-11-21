@@ -11,13 +11,14 @@
  * re-POSTs: an unchanged cookie simply comes back empty again, and the call
  * ends `empty_after_retries`.
  *
- * Each recovering call sleeps `emptyRetryBackoffMs` twice (real time, ~1s).
+ * Each recovering call sleeps `emptyRetryBackoffMs` twice (zeroed by skipSelectorSettleBackoff).
  */
 
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import { SL_SELECTOR_BUDGET } from "./adapters/selectorBudgets";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -79,6 +80,14 @@ await import("./credentials");
 
 let lines: string[];
 
+// The empty-result recovery loop settles for a real SL_SELECTOR_BUDGET.emptyRetryBackoffMs
+// before each re-POST. Run exactly that pause at once; every other timer is untouched.
+const realSetTimeout = globalThis.setTimeout; // captured once, before any spy
+function skipSelectorSettleBackoff() {
+  return vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: (...args: unknown[]) => void, ms?: number, ...rest: unknown[]) =>
+    realSetTimeout(handler, ms === SL_SELECTOR_BUDGET.emptyRetryBackoffMs ? 0 : ms, ...rest)) as typeof setTimeout);
+}
+
 beforeEach(() => {
   st.authCalls = 0;
   st.authSuccess = true;
@@ -87,6 +96,7 @@ beforeEach(() => {
   st.cookie = "PHPSESSID=old";
   st.onAuth = undefined;
   lines = [];
+  skipSelectorSettleBackoff();
   for (const m of ["log", "warn", "error", "info"] as const) {
     vi.spyOn(console, m).mockImplementation((...args: unknown[]) => {
       lines.push(args.map(String).join(" "));

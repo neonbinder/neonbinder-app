@@ -23,10 +23,12 @@
 - [Wildcard regex hides doubled words](wildcard-regex-around-a-label-hides-doubled-words.md) — `.*LABEL.*` passes a brand-doubled label; pin exact text for wording fixes
 - [New wizard step rides one spec](new-wizard-step-rides-one-sole-writer-spec.md) — unedited specs asserting the first post-name step; sub-states lack axe/live proof
 - [Cross-service source-read tests vs path filters](cross-service-source-read-tests-vs-path-filters.md) — parity tests reading a sibling service only run if its lane's filter lists those paths, both ways
+- [Spec helper restates the matcher](spec-helper-restates-matcher-goes-stale.md) — matcher rewrite: helper arithmetic stays green, fixtures built for a removed rule change case
 - [Inline workflow logic untested](inline-workflow-logic-untested-and-mirrored-regex.md) — yml gate/jq edits need a script test or yml-pin; hand-mirrored regexes drift
 - [Split spec drops assertions](marketplace-spec-split-to-helper-drops-assertions.md) — grep every removed string; one-shot fault may be spent by a poll
 - [Empty state on isolated account](empty-state-belongs-on-the-isolated-account.md) — sales/history pile up on the main account; empty-state asserts go on new-profile
 - [Silent write proved by later write](unconfirmed-write-proved-by-a-later-confirming-write.md) — same-client mutations apply in order; needs mutation-only, failure alert absent, reload
 - [Stored count replaced by live count](host-stored-count-replaced-by-live-count-stales-old-spec.md) — old spec asserting the button survives the fix goes stale; race token untested
+- [Deleted test file, surviving function](deleted-test-file-carries-surviving-function-tests.md) — map each deleted file's describes to functions still exported and untested
 - [Counter-removal port loses a control](counter-removal-port-loses-close-path.md) — ported specs drop sibling clicks; default-stamp specs miss BSC-answer path
 - [Merge-resolution copy audit](merge-resolution-copy-conflict-audit.md) — diff vs the other parent's removed expects; grep losing wording incl. support helpers; planted break for CSS-only fixes
