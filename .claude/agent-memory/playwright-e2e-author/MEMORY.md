@@ -116,4 +116,5 @@
 - [Note under a toggle; eBay aspects unassertable](patterns_note_under_a_toggle_and_ebay_aspects.md) — toHaveAccessibleDescription links the note; no hop/UI reads eBay aspects
 - [Post-name Next held then gone](patterns_post_name_next_held_then_gone.md) — NEO-574 career step: wait for usable Next/Save/autograph, press disabled:false only
 - [Second variant needs a re-drill](patterns_second_variant_needs_a_redrill.md) — openVariant skips the create confirm while a checklist is open; use drillToCustom again
+- [e2e-run tool in practice](patterns_e2e_run_tool_in_practice.md) — 180 s Bash auto-background vs 230 s slice, plant re-seeds, digest path/header quirks
 - [Pre-fix snapshot is the planted break](patterns_pre_fix_snapshot_is_the_planted_break.md) — bug-fix spec: serve the pre-fix commit for the red, the fix commit for green; reseed between

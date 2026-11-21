@@ -11,6 +11,7 @@ model: opus
 effort: high
 memory: project
 color: yellow
+tools: Read, Grep, Glob, Bash, ToolSearch, WebFetch, WebSearch, mcp__plugin_design_linear__get_issue, mcp__plugin_design_linear__list_issues, mcp__plugin_design_linear__list_comments
 disallowedTools: Edit, Write, NotebookEdit
 ---
 

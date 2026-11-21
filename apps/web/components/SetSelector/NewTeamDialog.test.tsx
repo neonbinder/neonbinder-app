@@ -674,7 +674,7 @@ describe("NewTeamDialog — focus", () => {
     fireEvent.keyDown(nameField(), { key: "Enter" });
 
     const button = await screen.findByRole("button", { name: "Creating team Padres" });
-    expect(document.activeElement).toBe(button);
+    await waitFor(() => expect(document.activeElement).toBe(button));
     expect(dialog().contains(document.activeElement)).toBe(true);
   });
 
