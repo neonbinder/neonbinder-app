@@ -343,7 +343,7 @@ export interface TitleReviewOptions {
    * NEO-535 — the "Set name in titles" box draft, ALREADY CHECKED
    * (`validShortName`) and only when the operator edited the box. Passed to
    * the builder as-is, as the leaf's whole description; the builder decides
-   * which cards it rewrites (those over the cap or short a first name), so
+   * which cards it rewrites (those whose title shows "Left out to fit"), so
    * the titles shown and the titles kept are the ones the server will
    * generate with it. It never changes which cards are on the step.
    */
@@ -622,6 +622,74 @@ export function titleGroupKey(
 ): string {
   const baseline = withoutVariation(leftOutOfTitle(inputs, title), overCapVariation);
   return `left:${baseline.filter((e) => !isOwnEntry(e, ownWords)).join("\u0000")}`;
+}
+
+/**
+ * NEO-637 — `text` with the first whole-word run of `oldName` swapped for
+ * `newName`, the rest of the words kept as typed. Case is ignored when
+ * finding the run; the replacement is `newName` as written. Undefined when
+ * `oldName` is not in `text` (or is blank): the caller rebuilds instead.
+ */
+export function swapSetNameInTitle(
+  text: string,
+  oldName: string,
+  newName: string,
+): string | undefined {
+  const old = oldName.trim();
+  if (!old) return undefined;
+  const lower = text.toLowerCase();
+  const want = old.toLowerCase();
+  const isWordChar = (ch: string | undefined) => !!ch && /[\p{L}\p{N}]/u.test(ch);
+  for (let at = lower.indexOf(want); at >= 0; at = lower.indexOf(want, at + 1)) {
+    const end = at + want.length;
+    // Whole words only: "Score" is not found inside "Scorecard".
+    if (isWordChar(text[at - 1]) && isWordChar(old[0])) continue;
+    if (isWordChar(text[end]) && isWordChar(old[old.length - 1])) continue;
+    return oneLine(`${text.slice(0, at)}${newName.trim()}${text.slice(end)}`);
+  }
+  return undefined;
+}
+
+/**
+ * NEO-637 — what the "Set name in titles" box does to the operator's own
+ * (hand-edited) titles when the set name in effect changes from `oldName` to
+ * `newName`. `groups` are the lists as the operator saw them BEFORE the
+ * change, so "shows the yellow line" is read off what was on screen: the
+ * group's shared line or the row's own.
+ *
+ *  - a hand edit whose row shows the line gets the new set name: only the old
+ *    set-name text inside it is swapped, the rest of the edit is kept; when
+ *    the old text is not in the edit, the edit is dropped and the title is
+ *    the generated one (built with the new set name);
+ *  - a hand edit whose row shows no line is left exactly as it is;
+ *  - a draft that is blank, or just the generated title, is no hand edit: the
+ *    row follows the generated title and the draft is left alone.
+ *
+ * Rows with no hand edit need nothing here: their generated title is built
+ * with the new set name by the builder's own rule (`assessListingTitle`).
+ * Always returns a fresh array.
+ */
+export function retitleDraftsForSetName(
+  drafts: ReadonlyArray<TitleAnswer | undefined>,
+  groups: readonly TitleGroup[],
+  oldName: string,
+  newName: string,
+): Array<TitleAnswer | undefined> {
+  if (oldName.trim() === newName.trim()) return [...drafts];
+  const next = [...drafts];
+  for (const group of groups) {
+    for (const row of group.cards) {
+      const draft = drafts[row.index]?.listingTitle;
+      if (draft === undefined || !draft.trim() || draft.trim() === row.title) continue;
+      if (group.leftOut.length === 0 && row.leftOut.length === 0) continue;
+      const swapped = swapSetNameInTitle(draft, oldName, newName);
+      const answer: TitleAnswer = { ...next[row.index] };
+      if (swapped === undefined) delete answer.listingTitle;
+      else answer.listingTitle = swapped;
+      next[row.index] = Object.keys(answer).length > 0 ? answer : undefined;
+    }
+  }
+  return next;
 }
 
 /** Where an operator's title draft stands against the generated title. */

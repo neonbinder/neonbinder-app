@@ -19,8 +19,10 @@ import { ASPECT_VALUE_MAX, LISTING_TITLE_MAX } from "../../convex/features/listi
 import {
   buildTitleGroups,
   cardsNeedingTitleReview,
+  retitleDraftsForSetName,
   setNameInTitlesPrefill,
   shortNameFieldApplies,
+  swapSetNameInTitle,
   teamIdNamesFromRefs,
   titleAnswersForCommit,
   titleDraftState,
@@ -675,5 +677,75 @@ describe("a split team in the preview (NEO-606)", () => {
     );
     expect(row.title).toBe(`${BOX} Shohei Ohtani #1 Baseball`);
     expect(row.leftOut).toEqual(["New York Yankees"]);
+  });
+});
+
+describe("NEO-637 — the box and a title the operator edited", () => {
+  const OLD = `2026 Topps ${FIRST_NAME_SET}`;
+  const NEW = "2026 Topps Chrome Sapphire";
+  const cards: PreviewCardForTitles[] = [
+    { cardNumber: "1", cardName: "Card 1", players: ["Shohei Ohtani"] },
+    { cardNumber: "2", cardName: "Card 2", players: ["Shohei Ohtani"] },
+  ];
+  const ctx = context();
+  const groups = (answers: Array<{ listingTitle?: string } | undefined>) =>
+    buildTitleGroups(cards, ctx, undefined, { answers }).titleGroups;
+
+  describe("swapSetNameInTitle", () => {
+    test("swaps the first whole-word run, any case, and keeps every other word", () => {
+      expect(swapSetNameInTitle("My 2026 topps Chrome RC Ohtani #1", "2026 Topps Chrome", "Score")).toBe(
+        "My Score RC Ohtani #1",
+      );
+    });
+
+    test("is undefined when the old text is not there, or only inside another word", () => {
+      expect(swapSetNameInTitle("My Ohtani title #1", OLD, NEW)).toBeUndefined();
+      expect(swapSetNameInTitle("Scorecard Ohtani", "Score", "Box")).toBeUndefined();
+      expect(swapSetNameInTitle("anything", "  ", NEW)).toBeUndefined();
+    });
+
+    test("a pasted line break in the new text is one space", () => {
+      expect(swapSetNameInTitle("Old Ohtani", "Old", "New\nSet")).toBe("New Set Ohtani");
+    });
+  });
+
+  describe("retitleDraftsForSetName", () => {
+    test("a hand edit whose row shows the line: the set name is swapped, the rest kept", () => {
+      const edit = `${OLD} Ohtani my own #1 words`;
+      const next = retitleDraftsForSetName([{ listingTitle: edit }], groups([{ listingTitle: edit }]), OLD, NEW);
+      expect(next[0]).toEqual({ listingTitle: `${NEW} Ohtani my own #1 words` });
+    });
+
+    test("a hand edit whose row shows the line but lost the old set name: the edit is dropped (rebuilt)", () => {
+      const edit = "My Ohtani title #1";
+      const next = retitleDraftsForSetName([{ listingTitle: edit }], groups([{ listingTitle: edit }]), OLD, NEW);
+      expect(next[0]).toBeUndefined();
+    });
+
+    test("dropping the edit keeps the rest of the answer (the variation)", () => {
+      const edit = "My Ohtani title #1";
+      const answers = [{ listingTitle: edit, cardVariation: "Blue" }];
+      const next = retitleDraftsForSetName(answers, groups(answers), OLD, NEW);
+      expect(next[0]).toEqual({ cardVariation: "Blue" });
+    });
+
+    test("a hand edit whose row shows no line is left exactly as typed", () => {
+      const edit = `${OLD} Shohei Ohtani #1 Baseball`;
+      const answers = [{ listingTitle: edit }];
+      const [row] = groups(answers).flatMap((g) => g.cards);
+      expect(row.leftOut).toEqual([]);
+      expect(retitleDraftsForSetName(answers, groups(answers), OLD, NEW)).toEqual(answers);
+    });
+
+    test("a blank draft, or one that is just the generated title, is no hand edit", () => {
+      const generated = groups([])[0].cards[1].title;
+      const answers = [{ listingTitle: "   " }, { listingTitle: generated }];
+      expect(retitleDraftsForSetName(answers, groups(answers), OLD, NEW)).toEqual(answers);
+    });
+
+    test("an unchanged set name changes nothing", () => {
+      const answers = [{ listingTitle: `${OLD} Ohtani my own #1` }];
+      expect(retitleDraftsForSetName(answers, groups(answers), OLD, OLD)).toEqual(answers);
+    });
   });
 });

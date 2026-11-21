@@ -8,6 +8,7 @@ import { listingInputsForCard } from "./listingInputs";
 import { titleChainFacts, type TitleChainRow } from "../listingShortName";
 import {
   assessListingTitle,
+  leftOutOfTitle,
   titleDescription,
   titleDescriptionForms,
   type ListingCardInputs,
@@ -250,15 +251,31 @@ describe("assessParallelCopyTitle", () => {
     expect(outcome).toMatchObject({ carried: true, fits: true, tidyUp: false, failing: false });
   });
 
-  test("NEO-618 step 2: a box-headed title over 80 leaves the builder's description heading the rest", () => {
+  test("NEO-637 step 2: a carried title that left something out is headed by the box even when that runs over 80", () => {
     const box = "Anime Kanji Gold Refractor Sapphire Orange Wave Padparadscha Superfractor Edition";
     const inputs = parallel("Kanji Gold Refractor", 50, { setShortName: box });
     expect(assessListingTitle({ ...inputs, setShortName: undefined })).toMatchObject({ fits: true, tidyUp: true });
+    // The builder-headed carried title fits but says nothing of the team or number.
+    const builderHeaded = `${titleDescription(inputs)} Trout Halos /50`;
+    expect(builderHeaded.length).toBeLessThanOrEqual(80);
+    expect(leftOutOfTitle(inputs, builderHeaded).length).toBeGreaterThan(0);
     expect(`${box} Trout Halos /50`.length).toBeGreaterThan(80);
     const outcome = assessParallelCopyTitle(inputs, "Trout Halos");
-    expect(outcome.title).toBe("2024 Topps Chrome Anime Kanji Gold Refractor Trout Halos /50");
-    expect(outcome.carried).toBe(true);
-    expect(outcome.failing).toBe(false);
+    // Box-headed, over 80: no carried answer, the builder's flagged result is stored.
+    expect(outcome.carried).toBeUndefined();
+    expect(outcome.failing).toBe(true);
+  });
+
+  test("NEO-637 step 2: a carried title that leaves nothing out keeps the builder's description, whatever the box", () => {
+    const box = "Anime Kanji Gold Refractor Sapphire Orange Wave Padparadscha Superfractor Edition";
+    const inputs = parallel("Kanji Gold Refractor", 50, { setShortName: box });
+    const carried = "Mike Trout #BA-1 Angels /50";
+    const builderHeaded = `${titleDescription(inputs)} ${carried}`;
+    expect(builderHeaded.length).toBeLessThanOrEqual(80);
+    expect(leftOutOfTitle(inputs, builderHeaded)).toEqual([]);
+    const outcome = assessParallelCopyTitle(inputs, carried.replace(" /50", ""));
+    expect(outcome.title).toBe(builderHeaded);
+    expect(outcome).toMatchObject({ carried: true, failing: false });
   });
 
   test("NEO-618 step 2: a blank box leaves the builder's description heading the rest", () => {

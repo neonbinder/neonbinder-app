@@ -16,6 +16,7 @@ import {
 import {
   buildTitleGroups,
   oneLine,
+  retitleDraftsForSetName,
   setNameInTitlesPrefill,
   type CardTitlesSource,
   type PreviewCardForTitles,
@@ -79,9 +80,14 @@ import type { TeamAnswer } from "./teams-on-cards";
  * parallel), prefilled with the set's stored box text or else the builder's
  * own description (`setNameInTitlesPrefill`), capped at 80. It is sent only
  * when edited. Every listed title is regenerated with the edited text as it
- * is typed; the builder decides which cards it rewrites (those over the cap
- * or short a first name), and the list itself never changes under the
- * operator's typing. The draft settles up like the other edits
+ * is typed; the builder decides which cards it rewrites (NEO-637: exactly
+ * the ones whose title shows the yellow "Left out to fit" line), and the
+ * list itself never changes under the operator's typing. The same goes for
+ * a title the operator edited by hand: when its row shows the line, the old
+ * set-name text inside the edit is swapped for the new and the rest of the
+ * edit is kept (the edit is dropped for the generated title when the old
+ * text is no longer in it); when its row shows no line, the edit is left as
+ * typed (`changeShort`). The draft settles up like the other edits
  * (`onShortNameChange`), and keys the same way: Enter settles in place,
  * Escape undoes in place.
  *
@@ -370,6 +376,27 @@ export default function CardTitlesStep({
     [settledShortName, liveShortName, titleGroups, groupsFor, drafts],
   );
 
+  /**
+   * NEO-637 — the box's text changes (typing, or Escape taking it back). The
+   * set name in effect is the checked box text, else the prefill. Titles with
+   * no hand edit follow it through the builder's own rule; a hand-edited
+   * title whose row shows the yellow "Left out to fit" line has its old
+   * set-name text swapped for the new (or is rebuilt when the old text is
+   * not in it), and one whose row does not is left as typed
+   * (`retitleDraftsForSetName`, read from the lists as they stand now).
+   */
+  const changeShort = (raw: string) => {
+    const text = oneLine(raw);
+    const nextEdited = shortValue(text) !== undefined;
+    const nextLive = onShortNameChange && nextEdited ? checkShortNameAnswer(text).value : undefined;
+    const oldName = liveShortName ?? prefill;
+    const newName = nextLive ?? prefill;
+    setShortDraft(text);
+    if (oldName.trim() !== newName.trim()) {
+      setDrafts((prev) => retitleDraftsForSetName(prev, titleGroups, oldName, newName));
+    }
+  };
+
   const setField = (indexes: readonly number[], field: keyof TitleAnswer, value: string) => {
     setDrafts((prev) => {
       const next = [...prev];
@@ -425,7 +452,7 @@ export default function CardTitlesStep({
     } else if (event.key === "Escape" && shortLatest.current !== shortUndo.current) {
       event.preventDefault();
       event.stopPropagation();
-      setShortDraft(shortUndo.current);
+      changeShort(shortUndo.current);
     }
   };
 
@@ -485,7 +512,7 @@ export default function CardTitlesStep({
               bare
               rows={2}
               value={shortDraft}
-              onChange={(e) => setShortDraft(oneLine(e.target.value))}
+              onChange={(e) => changeShort(e.target.value)}
               onFocus={() => {
                 shortUndo.current = shortLatest.current;
               }}

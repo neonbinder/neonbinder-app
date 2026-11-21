@@ -302,18 +302,82 @@ describe("CardTitlesStep — a long list is capped", () => {
   });
 });
 
-describe("CardTitlesStep — an operator's own title survives the box", () => {
-  test("the row keeps their words while the box rewrites the others", () => {
+/**
+ * NEO-637 (Jason, 2026-11-21) — the box rewrites only the titles whose field
+ * shows the yellow "Left out to fit" line, hand-edited ones included. A hand
+ * edit with the line gets the new set name in place of the old set-name text
+ * (the rest of the edit kept), or the generated title when the old text is not
+ * in it; a hand edit with no line is left exactly as typed.
+ */
+describe("CardTitlesStep — the box and a title the operator edited (NEO-637)", () => {
+  /** The "Left out to fit" lines under a title field's own row (its group line is above the row). */
+  const lineUnder = (field: HTMLElement) =>
+    Array.from(field.closest("li")?.querySelectorAll("p") ?? []).filter((p) =>
+      /^Left out to fit:/.test(p.textContent ?? ""),
+    );
+
+  test("a hand edit that shows the line: only the old set-name text is swapped, the rest is kept", () => {
+    setup({ cards: [card("1"), card("2")] });
+    const own = screen.getByRole("textbox", { name: "Title for #1 Card 1" }) as HTMLTextAreaElement;
+    fireEvent.change(own, { target: { value: `${PREFILL} Ohtani my own #1 words` } });
+    // The first name is out of that field and the other card's: the group's line shows.
+    expect(screen.getAllByText(/^Left out to fit: Shohei/).length).toBeGreaterThan(0);
+    fireEvent.change(screen.getByRole("textbox", { name: LABEL }), { target: { value: BOX } });
+    expect(titleFields().map((f) => f.value)).toEqual([
+      `${BOX} Ohtani my own #1 words`,
+      `${BOX} Shohei Ohtani #2 Baseball`,
+    ]);
+    // Still the operator's own title: it can be taken back to the generated one.
+    fireEvent.click(screen.getByRole("button", { name: "Use generated title for #1 Card 1" }));
+    expect(titleFields()[0].value).toBe(`${BOX} Shohei Ohtani #1 Baseball`);
+    expect(document.activeElement).toBe(titleFields()[0]);
+  });
+
+  test("the swap follows every keystroke of the box and lands on its last text", () => {
+    setup({ cards: [card("1"), card("2")] });
+    const own = screen.getByRole("textbox", { name: "Title for #1 Card 1" });
+    fireEvent.change(own, { target: { value: `${PREFILL} Ohtani RC #1` } });
+    const box = screen.getByRole("textbox", { name: LABEL });
+    for (const text of ["2026", "2026 Topps", BOX]) {
+      fireEvent.change(box, { target: { value: text } });
+    }
+    expect(titleFields()[0].value).toBe(`${BOX} Ohtani RC #1`);
+  });
+
+  test("a hand edit that shows the line but no longer holds the old set name is rebuilt", () => {
     setup({ cards: [card("1"), card("2")] });
     const own = screen.getByRole("textbox", { name: "Title for #1 Card 1" });
     fireEvent.change(own, { target: { value: "My Ohtani title #1" } });
     fireEvent.change(screen.getByRole("textbox", { name: LABEL }), { target: { value: BOX } });
     expect(titleFields().map((f) => f.value)).toEqual([
-      "My Ohtani title #1",
+      `${BOX} Shohei Ohtani #1 Baseball`,
       `${BOX} Shohei Ohtani #2 Baseball`,
     ]);
-    fireEvent.click(screen.getByRole("button", { name: "Use generated title for #1 Card 1" }));
-    expect(titleFields()[0].value).toBe(`${BOX} Shohei Ohtani #1 Baseball`);
-    expect(document.activeElement).toBe(titleFields()[0]);
+    // Rebuilt means it is the generated title again, not an edit to take back.
+    expect(screen.queryByRole("button", { name: "Use generated title for #1 Card 1" })).toBeNull();
+  });
+
+  test("a hand edit that shows no line is left as typed, old set name and all", () => {
+    setup({ cards: [card("1"), card("2")] });
+    const own = screen.getByRole("textbox", { name: "Title for #1 Card 1" }) as HTMLTextAreaElement;
+    // Everything the card has is in it (the sport is never listed): no line.
+    const whole = `${PREFILL} Shohei Ohtani #1 Baseball`;
+    fireEvent.change(own, { target: { value: whole } });
+    expect(lineUnder(own)).toHaveLength(0);
+    fireEvent.change(screen.getByRole("textbox", { name: LABEL }), { target: { value: BOX } });
+    expect(titleFields().map((f) => f.value)).toEqual([whole, `${BOX} Shohei Ohtani #2 Baseball`]);
+  });
+
+  test("Escape in the box takes the swap back with it", () => {
+    setup({ cards: [card("1"), card("2")] });
+    const own = screen.getByRole("textbox", { name: "Title for #1 Card 1" });
+    fireEvent.change(own, { target: { value: `${PREFILL} Ohtani RC #1` } });
+    const box = screen.getByRole("textbox", { name: LABEL });
+    fireEvent.focus(box);
+    fireEvent.change(box, { target: { value: BOX } });
+    expect(titleFields()[0].value).toBe(`${BOX} Ohtani RC #1`);
+    fireEvent.keyDown(box, { key: "Escape" });
+    expect((box as HTMLTextAreaElement).value).toBe(PREFILL);
+    expect(titleFields()[0].value).toBe(`${PREFILL} Ohtani RC #1`);
   });
 });

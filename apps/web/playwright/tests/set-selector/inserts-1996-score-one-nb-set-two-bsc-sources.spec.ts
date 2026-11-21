@@ -7,9 +7,9 @@
 // long enough that every title has to leave something out (NEO-609: a whole team, the
 // number or a first name sends a card to the step), so the wizard opens its "Card
 // titles" step and its "Set name in titles" box, and the box and per-card edits are
-// proved there, then read back off the stored cards. NEO-618: the box reaches every
-// title that left something out (a team or a number, not only a first name) whenever
-// the box version fits.
+// proved there, then read back off the stored cards. NEO-618 / NEO-637: the box reaches every
+// title that left something out (a team or a number, not only a first name), i.e. every
+// title that shows the "Left out to fit" line.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectAfterMarketplace } from "../../support/marketplace-wait";
 import {
@@ -245,8 +245,8 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await expect(title(12)).toHaveValue(DAULTON_BOXED);
   await expect(title(12)).not.toHaveAccessibleDescription(/Left out to fit/);
   // NEO-618: #2 fit with its full name and lost its team and number, and #6 fit and lost
-  // only its team. A Tidy Up cut is enough for the box when the box version fits: both
-  // open with the box text and get back everything they left out.
+  // only its team. A title that left anything out takes the box (NEO-637: the line shows
+  // under it): both open with the box text and get back everything they left out.
   await expect(title(2)).toHaveValue(BECKER_BOXED);
   await expect(title(2)).not.toHaveAccessibleDescription(/Left out to fit/);
   await expect(title(6)).toHaveValue(THOME_BOXED);
