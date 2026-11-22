@@ -22,3 +22,9 @@ the landing never runs?" The fix is an idempotent landing (recount, or a dirty m
 flush recounts), not a delta. A `test.fails` pin of the gap is a tracked bug, not a fix.
 Also check `deltaFor(leaf)` is the ledger's ONLY row: a future ledger write to another row would
 be dropped silently in deferred mode. Related: [[patterns-neo219-sanctioned-delete]] (actions escape OCC).
+
+**Fix shape that held (NEO-645):** the landing recounts the leaf (`recountCards`, bounded) and adds
+`counted - stored` through the ledger, so ancestors move by the same difference. It runs on every
+parallel commit, 0 inserts included. Recounts by concurrent commits converge because each lands
+the difference from the rows it read. Past the bound it falls back to the inserted delta. The
+deferred chunk throws if its ledger holds anything beyond the leaf (`holdsDeltasBeyond`).
