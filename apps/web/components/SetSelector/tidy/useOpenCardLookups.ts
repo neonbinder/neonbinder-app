@@ -3,11 +3,13 @@ import { useMutation } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import type { TidyCardContext } from "./tile-types";
 
-/** The context names whose row exists, is unanswered and was never looked up. */
+/**
+ * The context names whose row exists and was never looked up. The server says
+ * so (`row.neverLooked`): a lookup that finished and found nothing is also
+ * `ready`, unanswered and bare, and asking again for it is a no-op round trip.
+ */
 export function namesToAskAbout(context: NonNullable<TidyCardContext>) {
-  return context.names.filter(
-    (n) => n.row !== null && !n.row.answer && n.row.status === "ready" && !n.row.enrichment,
-  );
+  return context.names.filter((n) => n.row !== null && n.row.neverLooked);
 }
 
 /**
@@ -16,8 +18,8 @@ export function namesToAskAbout(context: NonNullable<TidyCardContext>) {
  * A card the legacy-name migration (M2) wrote has name rows born `ready` with no
  * enrichment, so nothing would ever look them up. The server decides whether a
  * name is really unasked (`tidyNames.neverLooked`: no generation, no request
- * time) and does nothing for one whose lookup already ran, so this only offers
- * every ready, unanswered, enrichment-less name once per sitting.
+ * time), and this offers only those, once per sitting. The server still refuses
+ * to ask twice, so a stale context costs nothing.
  */
 export function useOpenCardLookups(context: TidyCardContext | undefined) {
   const requestLookup = useMutation(api.tidyNames.requestLookup);

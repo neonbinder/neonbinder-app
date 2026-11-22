@@ -332,6 +332,50 @@ describe("tidyCards.cardContext — reads", () => {
     );
   });
 
+  test("a name row says whether anyone ever asked Wikidata about it (neverLooked)", async () => {
+    const t = convexTest(schema, modules);
+    const id = await t.run(async (ctx) => {
+      const s = await seedBase(ctx);
+      const rows: Array<[string, Record<string, unknown>]> = [
+        // Born (or migrated) ready and bare: nobody has asked.
+        ["Born Ready", {}],
+        // A lookup ran and found nothing: ready and bare, but it left a generation.
+        ["Finished Miss", { lookupGen: 2 }],
+        // Asked once, the generation since cleared: the request time still says so.
+        ["Asked Once", { lookupRequestedAt: NOW }],
+        // Not ready, or already answered or enriched: never "new" either.
+        ["Still Pending", { status: "pending" }],
+        ["Answered", { answer: { kind: "notEntity", by: "operator" } }],
+      ];
+      const c = await s.card("1", { pendingPlayerNames: rows.map(([n]) => n) });
+      const printed = [];
+      for (const [i, [name, extra]] of rows.entries()) {
+        const key = normalizeEntityName(name);
+        await ctx.db.insert("tidyNames", {
+          scopeId: s.base,
+          kind: "player",
+          nameNormalized: key,
+          name,
+          sportId: s.sport,
+          status: "ready",
+          ...extra,
+        } as never);
+        printed.push({ kind: "player" as const, scopeId: s.base, nameNormalized: key, printed: name, order: i });
+      }
+      await syncCardPrintedNames(ctx, { _id: c }, printed);
+      return c;
+    });
+    const view = await t.withIdentity(ADMIN).query(api.tidyCards.cardContext, { cardId: id });
+    const byName = Object.fromEntries(view!.names.map((n) => [n.printed, n.row!.neverLooked]));
+    expect(byName).toEqual({
+      "Born Ready": true,
+      "Finished Miss": false,
+      "Asked Once": false,
+      "Still Pending": false,
+      Answered: false,
+    });
+  });
+
   test("refuses a signed-out caller and a non-admin", async () => {
     const t = convexTest(schema, modules);
     const id = await t.run(async (ctx) => {

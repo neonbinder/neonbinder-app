@@ -791,6 +791,20 @@ describe("PlayerTile: one filled button per tile, and long labels wrap (NEO-645 
     expect(filledNames()).toEqual(["Link to Kendry Morales"]);
   });
 
+  it("the suggestion's button is described by the reason line under it, and nothing else is", () => {
+    queryResults["players.nearMatches"] = [exact];
+    renderOne(morales(setHistory));
+    const lead = screen.getByRole("button", { name: "Link to Kendry Morales (Football)" });
+    const reason = screen.getByText(
+      "Another card in this set is already linked to Kendry Morales (Football). Same one?",
+    );
+    expect(lead.getAttribute("aria-describedby")).toBe(reason.id);
+    expect(reason.id).not.toBe("");
+    expect(
+      screen.getByRole("button", { name: "Link to Kendry Morales" }).hasAttribute("aria-describedby"),
+    ).toBe(false);
+  });
+
   it("the suggestion leads the exact link when both show; the exact link is an outline", () => {
     queryResults["players.nearMatches"] = [exact];
     renderOne(morales(setHistory));

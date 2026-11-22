@@ -665,6 +665,31 @@ describe("the end screen: Review the skipped (NEO-645 audit)", () => {
     expect(screen.getByText("3 cards skipped, not ready to list")).toBeTruthy();
   });
 
+  it("Back from the review returns to the same end screen: the button and the tally are as they were", async () => {
+    await skipAll([pink("a", "1"), pink("b", "2"), pink("c", "3")]);
+    expect(screen.getByText("0 cards fixed, 3 skipped.")).toBeTruthy();
+    fireEvent.click(button("Review the 3 skipped"));
+    await waitFor(() => expect(url()).toBe("?tidy=a"));
+    fireEvent.click(button("Back"));
+    await waitFor(() => expect(url()).toBe("?tidy=done"));
+    expect(screen.getByRole("button", { name: "Review the 3 skipped" })).toBeTruthy();
+    expect(screen.getByText("0 cards fixed, 3 skipped.")).toBeTruthy();
+    expect(screen.getByText("3 cards skipped, not ready to list")).toBeTruthy();
+    expect(screen.getByText("No cards left")).toBeTruthy();
+  });
+
+  it("Back after reviewing part of the skipped still shows every skipped card on the end screen", async () => {
+    await skipAll([pink("a", "1"), pink("b", "2")]);
+    fireEvent.click(button("Review the 2 skipped"));
+    await waitFor(() => expect(url()).toBe("?tidy=a"));
+    fireEvent.click(button("Skip: not ready to list"));
+    await waitFor(() => expect(url()).toBe("?tidy=b"));
+    expect(screen.getByText("1 card left")).toBeTruthy();
+    fireEvent.click(button("Skip: not ready to list"));
+    await waitFor(() => expect(url()).toBe("?tidy=done"));
+    expect(screen.getByRole("button", { name: "Review the 2 skipped" })).toBeTruthy();
+  });
+
   it("brings back only the skipped ones: a card that was fixed stays counted as fixed", async () => {
     const cards = [blue("a", "1"), pink("b", "2")];
     const tree = (rows: CardChecklistRow[]) => (

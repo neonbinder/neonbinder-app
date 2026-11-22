@@ -42,7 +42,7 @@ import TeamTile from "./tiles/TeamTile";
 import TitleTile from "./tiles/TitleTile";
 import { useTidyKeys } from "./useTidyKeys";
 import { useOpenCardLookups } from "./useOpenCardLookups";
-import { useTidyWalkUrl } from "./useTidyWalkUrl";
+import { TIDY_DONE, useTidyWalkUrl } from "./useTidyWalkUrl";
 import {
   cardsLeft,
   cardsLeftText,
@@ -224,6 +224,11 @@ function WalkDialog({
   const [initial] = useState(() => loadSitting(leafId));
   const [passed, setPassed] = useState<readonly string[]>(initial.passed);
   const [trail, setTrail] = useState<readonly string[]>(initial.trail);
+  // The skipped cards "Review the N skipped" offered again, and not yet left. They
+  // stay in `passed` (so Back to the end screen shows the same tally and the same
+  // button); while one is in here it counts as open, wherever the walk is but the
+  // end screen.
+  const [reviewing, setReviewing] = useState<readonly string[]>([]);
 
   // ── what the walk reads ─────────────────────────────────────────────────
   // Subscribed only while the walk is mounted (an index range, NEO-392).
@@ -241,6 +246,14 @@ function WalkDialog({
   const awaitingLookup = useMemo(() => cards.filter(isAwaitingTeamLookup).length, [cards]);
   // The end screen's lookup line must not say "nothing for you to do" while cards still need a person.
   const needYouCount = useMemo(() => cards.filter((c) => needsTidyUp(c)).length, [cards]);
+
+  // What the walk counts as done: `passed`, less the skipped cards being
+  // reviewed. The end screen reads `passed` whole, so Back to it restores it.
+  const openPassed = useMemo(() => {
+    if (reviewing.length === 0 || location.kind === "done") return passed;
+    const back = new Set(reviewing);
+    return passed.filter((id) => !back.has(id));
+  }, [passed, reviewing, location.kind]);
 
   const current: CardChecklistRow | undefined =
     location.kind === "card" ? rowsById.get(location.cardId) : undefined;
@@ -260,7 +273,7 @@ function WalkDialog({
   // reaches a Convex argument unless a row of ours carries it.
   const needsResolve = location.kind === "first" || (location.kind === "card" && !current);
   const firstTarget = needsResolve
-    ? nextCardId(order, { passed, trail: [] }, null)
+    ? nextCardId(order, { passed: openPassed, trail: [] }, null)
     : null;
   useEffect(() => {
     if (!needsResolve) return;
@@ -279,7 +292,7 @@ function WalkDialog({
     saveSitting(leafId, { passed, trail });
   }, [leafId, passed, trail]);
 
-  const left = cardsLeft(order, { passed, trail: [] });
+  const left = cardsLeft(order, { passed: openPassed, trail: [] });
   const skipped = cardsSkipped(order, { passed, trail: [] });
   // Cards the sitting moved past that no longer need a person; the rest are the skipped ones.
   const fixed = Math.max(0, passed.length - skipped);
@@ -288,8 +301,9 @@ function WalkDialog({
   // ── moving ──────────────────────────────────────────────────────────────
   /** Leave `fromId` going forward: to the next card still to walk, or the end. */
   const advance = (fromId: string) => {
-    const sitting = withPassed({ passed, trail }, fromId);
-    setPassed(sitting.passed);
+    const sitting = withPassed({ passed: openPassed, trail }, fromId);
+    setPassed((prev) => (prev.includes(fromId) ? prev : [...prev, fromId]));
+    setReviewing((prev) => (prev.includes(fromId) ? prev.filter((id) => id !== fromId) : prev));
     const next = nextCardId(order, sitting, fromId);
     if (next) goToCard(next, fromId);
     else finish(fromId);
@@ -336,16 +350,21 @@ function WalkDialog({
 
   /**
    * End screen → "Review the N skipped": the skipped cards are offered again,
-   * starting at the first of them. They leave `passed` (the cards that were
-   * fixed stay there, so the tally still counts them) and the walk moves to the
-   * first: a push, so Back from there is the end screen again.
+   * starting at the first of them. `passed` is left alone (the tally and this
+   * button are derived from it, so Back to the end screen shows both as they
+   * were); the cards are marked as being reviewed, which makes each count as
+   * open until it is left again. The walk moves to the first: a push.
    */
   const reviewSkipped = () => {
     const first = skippedIds[0];
     if (!first) return;
-    const back = new Set(skippedIds);
-    setPassed((prev) => prev.filter((id) => !back.has(id)));
-    goToCard(first, null);
+    // One transition for the state and the push (router navigation is a
+    // transition; a sibling setState outside it would render the old URL first).
+    startTransition(() => {
+      setReviewing(skippedIds);
+      // From the end screen, so the footer's Back is the browser's Back: a step to it.
+      goToCard(first, TIDY_DONE);
+    });
   };
 
   const skip = () => {
@@ -517,7 +536,7 @@ function WalkDialog({
       ? { row: current, context, attention, leafId, sportId, leafCards: cards, setName }
       : null;
 
-  const planned = passed.length + left;
+  const planned = openPassed.length + left;
   const subtitle = cardsLeftText(left);
 
   return createPortal(
@@ -539,7 +558,7 @@ function WalkDialog({
             <WizardChrome
               titleId={titleId}
               title={title}
-              done={passed.length}
+              done={openPassed.length}
               planned={planned}
               subtitle={subtitle}
               aside={

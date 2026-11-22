@@ -296,6 +296,9 @@ describe("AddAllNewPlayers — the confirm's host (NEO-645 audit)", () => {
     expect(container.contains(trigger())).toBe(true);
     // The control still names what it controls, across the two places.
     expect(trigger().getAttribute("aria-controls")).toBe(group.id);
+    // And is described by the confirm's heading, which is portalled away from it.
+    const heading = screen.getByRole("heading", { name: "New players to add" });
+    expect(trigger().getAttribute("aria-describedby")).toBe(heading.id);
     // Closing takes the confirm out of the host again, which leaves it empty.
     fireEvent.click(screen.getByRole("button", { name: "Cancel adding new players" }));
     expect(host.childElementCount).toBe(0);

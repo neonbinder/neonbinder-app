@@ -69,7 +69,7 @@ export type TitleLengthState = {
   /** Short phrase for the counter row. `null` in the "ok" band. */
   hint: string | null;
   /**
-   * The over-cap FACT, without advice: "84 characters — 4 over the
+   * The over-cap FACT, without advice: "84 characters, 4 over the
    * 80-character limit." `null` unless over the cap. The advice that follows it
    * differs per field (the title blocks a save, an aspect value only warns), so
    * it is the alert component's to add, not this function's.
@@ -139,7 +139,7 @@ export function titleLengthState(
       over: true,
       overBy,
       hint: `${overBy} over`,
-      alert: `${length} characters — ${overBy} over the ${max}-character limit.`,
+      alert: `${length} characters, ${overBy} over the ${max}-character limit.`,
     };
   }
   if (soft && length >= LISTING_TITLE_SEARCH_CLIP) {

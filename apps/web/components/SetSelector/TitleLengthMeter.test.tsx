@@ -60,7 +60,7 @@ describe("titleLengthState — hard cap, no soft bands requested", () => {
     expect(state.overBy).toBe(14);
     expect(state.hint).toBe("14 over");
     expect(state.alert).toBe(
-      "94 characters — 14 over the 80-character limit.",
+      "94 characters, 14 over the 80-character limit.",
     );
   });
 
@@ -68,7 +68,7 @@ describe("titleLengthState — hard cap, no soft bands requested", () => {
     const state = titleLengthState(LISTING_TITLE_MAX + 1);
     expect(state.overBy).toBe(1);
     expect(state.hint).toBe("1 over");
-    expect(state.alert).toBe("81 characters — 1 over the 80-character limit.");
+    expect(state.alert).toBe("81 characters, 1 over the 80-character limit.");
   });
 });
 
@@ -154,7 +154,7 @@ describe("titleLengthState — a non-title field (the aspect value), soft left f
     const over = titleLengthState(66, ASPECT_VALUE_MAX);
     expect(over.over).toBe(true);
     expect(over.overBy).toBe(1);
-    expect(over.alert).toBe("66 characters — 1 over the 65-character limit.");
+    expect(over.alert).toBe("66 characters, 1 over the 65-character limit.");
   });
 });
 

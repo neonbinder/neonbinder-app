@@ -232,6 +232,7 @@ export default function AddAllNewPlayers({
           type="button"
           aria-expanded={open}
           aria-controls={open ? panelId : undefined}
+          aria-describedby={open ? headingId : undefined}
           aria-disabled={busy || count < 2 || undefined}
           className={DASHED_APPLY_CLASS}
           onClick={() => {

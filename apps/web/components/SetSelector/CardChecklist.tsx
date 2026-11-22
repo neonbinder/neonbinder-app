@@ -553,14 +553,14 @@ export const QUICK_ADD_NO_TEAM_FROM_SET_HINT =
   "From the set. Pick a team, or press No Team to turn it off.";
 
 /**
- * "5 need you" with nothing to fix; "5 need you · 2 to fix" when some of them
+ * "5 need you" with nothing to fix; "5 need you, 2 to fix" when some of them
  * block listing (pink). The pill stays one amber tone, so the split rides in
  * the text, which is also its accessible name. "N need you" is always the
  * start, so a reader and a spec find the count first.
  */
 export function needsYouLabel(count: number, toFix = 0): string {
   const head = count === 1 ? "1 needs you" : `${count} need you`;
-  return toFix > 0 ? `${head} · ${toFix} to fix` : head;
+  return toFix > 0 ? `${head}, ${toFix} to fix` : head;
 }
 
 /**

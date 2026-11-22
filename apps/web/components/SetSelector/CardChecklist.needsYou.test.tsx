@@ -161,9 +161,9 @@ function ui(parallelRun?: ParallelBuildRunner) {
   );
 }
 
-const pill = (name: string | RegExp = /^\d+ needs? you( · \d+ to fix)?$/) =>
+const pill = (name: string | RegExp = /^\d+ needs? you(, \d+ to fix)?$/) =>
   screen.getByRole("button", { name });
-const queryPill = () => screen.queryByRole("button", { name: /^\d+ needs? you( · \d+ to fix)?$/ });
+const queryPill = () => screen.queryByRole("button", { name: /^\d+ needs? you(, \d+ to fix)?$/ });
 /** The header's "N cards need you" live region — mounted even when empty. */
 const attentionStatus = () =>
   document.querySelector<HTMLElement>('[role="status"][data-attention-status]');
@@ -177,20 +177,20 @@ describe("CardChecklist — the one 'N need you' control (NEO-335)", () => {
 
   it("counts every attention kind, not only missing teams, and wears the amber attention pill", () => {
     render(ui());
-    const control = pill("4 need you · 4 to fix");
+    const control = pill("4 need you, 4 to fix");
     for (const cls of SET_ROW_ACTION_TONE_CLASSES.attention.split(" ")) {
       expect(control.classList.contains(cls)).toBe(true);
     }
     // SC 2.5.3: the visible text IS the name — no aria-label to drift from it.
     expect(control.getAttribute("aria-label")).toBeNull();
-    expect(control.textContent).toBe("4 need you · 4 to fix");
+    expect(control.textContent).toBe("4 need you, 4 to fix");
     expect(control.getAttribute("aria-haspopup")).toBe("dialog");
   });
 
   it("is singular for one card", () => {
     state.cards = [teamless(1), settled(2)];
     render(ui());
-    expect(pill("1 needs you · 1 to fix")).toBeTruthy();
+    expect(pill("1 needs you, 1 to fix")).toBeTruthy();
   });
 
   it("is the only control in its row", () => {
@@ -218,7 +218,7 @@ describe("CardChecklist — the one 'N need you' control (NEO-335)", () => {
   it("does not count a BSC card whose team lookup has not come back", () => {
     state.cards = [awaitingLookup(1), teamless(2)];
     render(ui());
-    expect(pill("1 needs you · 1 to fix")).toBeTruthy();
+    expect(pill("1 needs you, 1 to fix")).toBeTruthy();
   });
 
   it("counts a card that only needs a check (blue) as well as one that needs a fix (pink)", () => {
@@ -234,7 +234,7 @@ describe("CardChecklist — the one 'N need you' control (NEO-335)", () => {
       },
     ];
     render(ui());
-    expect(pill("2 need you · 1 to fix")).toBeTruthy();
+    expect(pill("2 need you, 1 to fix")).toBeTruthy();
   });
 
   it("says the split in the pill's own text when some cards are to fix, and not when none are", () => {
@@ -251,8 +251,8 @@ describe("CardChecklist — the one 'N need you' control (NEO-335)", () => {
       },
     ];
     const { unmount } = render(ui());
-    const mixed = pill("3 need you · 2 to fix");
-    expect(mixed.textContent).toBe("3 need you · 2 to fix");
+    const mixed = pill("3 need you, 2 to fix");
+    expect(mixed.textContent).toBe("3 need you, 2 to fix");
     expect(mixed.getAttribute("aria-label")).toBeNull();
     // `N need you` still opens the name, so a match on the start finds it.
     expect(screen.getByRole("button", { name: /^\d+ need you/ })).toBe(mixed);
@@ -311,12 +311,12 @@ describe("CardChecklist — the one 'N need you' control (NEO-335)", () => {
     vi.useFakeTimers();
     try {
       const { rerender } = render(ui());
-      expect(pill("4 need you · 4 to fix")).toBeTruthy();
+      expect(pill("4 need you, 4 to fix")).toBeTruthy();
 
       state.cards = [settled(1), teamless(2), settled(3), settled(4), settled(5)];
       rerender(ui());
       // The pill is immediate; the announcement waits for the count to settle.
-      expect(pill("1 needs you · 1 to fix")).toBeTruthy();
+      expect(pill("1 needs you, 1 to fix")).toBeTruthy();
       act(() => {
         vi.advanceTimersByTime(1500);
       });
@@ -332,7 +332,7 @@ describe("CardChecklist — the one 'N need you' control (NEO-335)", () => {
 
   it("parks focus on the Sync button when the pill leaves while focused, instead of dropping it to body", () => {
     const { rerender } = render(ui());
-    const button = pill("4 need you · 4 to fix");
+    const button = pill("4 need you, 4 to fix");
     act(() => button.focus());
     expect(document.activeElement).toBe(button);
 
@@ -512,7 +512,7 @@ describe("CardChecklist — 'Still looking up teams' while the background lookup
   it("sits beside the pill when other cards need the operator too", () => {
     state.cards = [awaitingLookup(1), awaitingLookup(2), teamless(3)];
     render(ui());
-    expect(pill("1 needs you · 1 to fix")).toBeTruthy();
+    expect(pill("1 needs you, 1 to fix")).toBeTruthy();
     // NEO-645: "Nothing for you to do yet." would contradict the pill beside it.
     expect(lookupLine(2, false)).toBeTruthy();
     expect(lookupLine(2)).toBeUndefined();
@@ -569,7 +569,7 @@ describe("CardChecklist — 'Still looking up teams' while the background lookup
     state.cards = [gaveUp(1)];
     rerender(ui());
     expect(lookupRegion()!.textContent).toBe("");
-    expect(pill("1 needs you · 1 to fix")).toBeTruthy();
+    expect(pill("1 needs you, 1 to fix")).toBeTruthy();
   });
 
   it("moves its number at most every 5 s, so a screen reader is not read every answer", () => {
@@ -638,8 +638,8 @@ describe("needsYouLabel", () => {
   });
 
   it("adds the to-fix count after a middle dot, always leading with the count", () => {
-    expect(needsYouLabel(1, 1)).toBe("1 needs you · 1 to fix");
-    expect(needsYouLabel(12, 3)).toBe("12 need you · 3 to fix");
+    expect(needsYouLabel(1, 1)).toBe("1 needs you, 1 to fix");
+    expect(needsYouLabel(12, 3)).toBe("12 need you, 3 to fix");
     expect(needsYouLabel(12, 3)).toMatch(/^\d+ need you/);
   });
 });

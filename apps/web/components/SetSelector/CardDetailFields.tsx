@@ -633,7 +633,7 @@ export function CardDetailFields({
       const state = titleLengthState(trimmed.length, LISTING_TITLE_MAX, true);
       if (state.over) {
         // Says what HAPPENED, not what is wrong: `TitleLengthAlert` already
-        // renders "Title is 157 characters — 77 over the 80-character limit.
+        // renders "Title is 157 characters, 77 over the 80-character limit.
         // Shorten it before saving." directly below this input, and throwing
         // that same sentence put two identical `role="alert"` nodes on screen,
         // announced twice for one mistake.

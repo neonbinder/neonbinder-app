@@ -33,7 +33,7 @@ const name = (over: Partial<Name> & { kind: Name["kind"]; printed: string }): Na
     cardOverride: false,
     scopeId: "leaf1",
     printedOn: null,
-    row: { name: over.printed, sportId: "sport1", status: "ready" },
+    row: { name: over.printed, sportId: "sport1", status: "ready", neverLooked: true },
     ...over,
   }) as unknown as Name;
 
@@ -51,23 +51,23 @@ beforeEach(() => {
 });
 
 describe("namesToAskAbout", () => {
-  it("keeps only ready, unanswered names with nothing on them", () => {
+  it("keeps only the names the server says were never looked up", () => {
+    const row = (over: Record<string, unknown>) =>
+      ({ sportId: "s", status: "ready", neverLooked: false, ...over }) as never;
     const ctx = context([
-      name({ kind: "player", printed: "Ready Bare" }),
-      name({ kind: "player", printed: "Pending", row: { name: "Pending", sportId: "s", status: "pending" } as never }),
+      name({ kind: "player", printed: "Never Asked" }),
+      // A lookup that finished and found nothing: ready, bare, unanswered, but asked.
+      name({ kind: "player", printed: "Finished Miss", row: row({ name: "Finished Miss" }) }),
+      name({ kind: "team", printed: "Pending", row: row({ name: "Pending", status: "pending" }) }),
       name({
         kind: "player",
         printed: "Answered",
-        row: { name: "Answered", sportId: "s", status: "ready", answer: { kind: "notEntity", by: "operator" } } as never,
+        row: row({ name: "Answered", answer: { kind: "notEntity", by: "operator" } }),
       }),
-      name({
-        kind: "team",
-        printed: "Enriched",
-        row: { name: "Enriched", sportId: "s", status: "ready", enrichment: { league: "X" } } as never,
-      }),
+      name({ kind: "team", printed: "Enriched", row: row({ name: "Enriched", enrichment: { league: "X" } }) }),
       name({ kind: "team", printed: "No Row", row: null }),
     ]);
-    expect(namesToAskAbout(ctx).map((n) => n.printed)).toEqual(["Ready Bare"]);
+    expect(namesToAskAbout(ctx).map((n) => n.printed)).toEqual(["Never Asked"]);
   });
 });
 
@@ -83,6 +83,27 @@ describe("useOpenCardLookups", () => {
     );
     expect(requestLookup).toHaveBeenCalledWith({ cardId: "card1", kind: "player", name: "Rookie Newguy" });
     expect(requestTeamLookup).toHaveBeenCalledWith({ cardId: "card1", name: "Pads", sportId: "sport1" });
+  });
+
+  it("sends nothing for a name whose lookup already finished", () => {
+    render(
+      <Probe
+        ctx={context([
+          name({
+            kind: "player",
+            printed: "Finished Miss",
+            row: { name: "Finished Miss", sportId: "sport1", status: "ready", neverLooked: false } as never,
+          }),
+          name({
+            kind: "team",
+            printed: "Finished Team",
+            row: { name: "Finished Team", sportId: "sport1", status: "ready", neverLooked: false } as never,
+          }),
+        ])}
+      />,
+    );
+    expect(requestLookup).not.toHaveBeenCalled();
+    expect(requestTeamLookup).not.toHaveBeenCalled();
   });
 
   it("offers each name once per sitting, however often the context re-renders", () => {

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import { QuestionMarkCircleIcon } from "@heroicons/react/16/solid";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
@@ -398,6 +398,9 @@ function UnansweredPlayerName({
 
   const printedOn = printedOnText(name.printedOn);
   const disabled = write.busy ? true : undefined;
+  // The reason line under the suggestion, and the id the suggestion's button
+  // is described by while that line is on screen.
+  const reasonId = useId();
 
   // One filled button per tile (the walk's own rule: the best answer leads,
   // everything else is an outline). In this order, and only on the lead row:
@@ -424,7 +427,9 @@ function UnansweredPlayerName({
       {showPreselect && preselect && !linkOpen && (
         <div className="flex items-start gap-2 rounded-md bg-raised-deep px-2.5 py-1.5">
           <QuestionMarkCircleIcon aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-ink-3" />
-          <p className="min-w-0 text-sm text-ink-2 wrap-anywhere">{preselectReasonLine(preselect)}</p>
+          <p id={reasonId} className="min-w-0 text-sm text-ink-2 wrap-anywhere">
+            {preselectReasonLine(preselect)}
+          </p>
         </div>
       )}
 
@@ -514,6 +519,7 @@ function UnansweredPlayerName({
               {...tone(leadAction === "preselect")}
               className={WRAP_LABEL_CLASS}
               aria-label={`Link to ${preselect.name} (${preselect.sportValue})${suffix}`}
+              aria-describedby={reasonId}
               aria-disabled={disabled}
               onClick={() => void link(preselect.playerId)}
             >

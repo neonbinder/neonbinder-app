@@ -3143,14 +3143,14 @@ describe("CardChecklist — NEO-102 attention count and walker (NEO-335: one 'N 
   });
 
   /** The header's one attention control; its visible text is its name. */
-  const needsYou = (name: string | RegExp = /^\d+ needs? you( · \d+ to fix)?$/) =>
+  const needsYou = (name: string | RegExp = /^\d+ needs? you(, \d+ to fix)?$/) =>
     screen.getByRole("button", { name });
-  const queryNeedsYou = () => screen.queryByRole("button", { name: /^\d+ needs? you( · \d+ to fix)?$/ });
+  const queryNeedsYou = () => screen.queryByRole("button", { name: /^\d+ needs? you(, \d+ to fix)?$/ });
 
   it("counts the flagged rows and marks only those rows in the grid", () => {
     renderChecklist();
 
-    expect(needsYou("1 needs you · 1 to fix")).toBeTruthy();
+    expect(needsYou("1 needs you, 1 to fix")).toBeTruthy();
     expect(screen.getAllByLabelText(/needs attention/)).toHaveLength(1);
     // NEO-272: the mark names the row's identity — number AND card name — so
     // twenty-five same-numbered rows no longer all announce the same sentence.
@@ -3271,7 +3271,7 @@ describe("CardChecklist — NEO-102 attention count and walker (NEO-335: one 'N 
     fireEvent.click(needsYou());
     fireEvent.click(screen.getByRole("button", { name: "Close the walk" }));
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(needsYou("1 needs you · 1 to fix")).toBeTruthy();
+    expect(needsYou("1 needs you, 1 to fix")).toBeTruthy();
   });
 
   /**
@@ -3290,14 +3290,14 @@ describe("CardChecklist — NEO-102 attention count and walker (NEO-335: one 'N 
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(within(banner).queryByRole("button")).toBeNull();
     expect(screen.queryByRole("button", { name: /one at a time/ })).toBeNull();
-    expect(needsYou("1 needs you · 1 to fix")).toBeTruthy();
+    expect(needsYou("1 needs you, 1 to fix")).toBeTruthy();
   });
 
   it("the header pill carries the live count after a commit", async () => {
     state.cards = [attentionCard(), attentionCard({ _id: "card-c", cardNumber: "3" })];
     await commitZeroCandidatePath();
 
-    expect(needsYou("2 need you · 2 to fix")).toBeTruthy();
+    expect(needsYou("2 need you, 2 to fix")).toBeTruthy();
   });
 
   it("after a commit that flagged nothing, the banner is there and the pill is not", async () => {

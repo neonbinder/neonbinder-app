@@ -34,6 +34,7 @@ import { internalMutation, mutation, query, type MutationCtx } from "./_generate
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
+import { neverLooked } from "./tidyNames";
 import {
   tidyNameAnswerValidator,
   tidyNameEnrichmentValidator,
@@ -122,6 +123,12 @@ export const contextNameValidator = v.object({
       name: v.string(),
       sportId: v.id("selectorOptions"),
       status: tidyLookupStatusValidator,
+      /**
+       * Nobody has asked Wikidata about this name (`tidyNames.neverLooked`).
+       * The walk asks for these and only these: a lookup that finished and
+       * found nothing is also `ready` with no enrichment, but it is not new.
+       */
+      neverLooked: v.boolean(),
       enrichment: v.optional(tidyNameEnrichmentValidator),
       candidateTeamIds: v.optional(v.array(v.id("teams"))),
       candidatePlace: v.optional(v.literal(true)),
@@ -296,6 +303,7 @@ export const cardContext = query({
               name: row.name,
               sportId: row.sportId,
               status: row.status,
+              neverLooked: neverLooked(row),
               ...(row.enrichment ? { enrichment: row.enrichment } : {}),
               ...(row.candidateTeamIds ? { candidateTeamIds: row.candidateTeamIds } : {}),
               ...(row.candidatePlace ? { candidatePlace: row.candidatePlace } : {}),
