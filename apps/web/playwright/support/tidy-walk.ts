@@ -271,18 +271,25 @@ export async function finishTidyWalk(page: Page): Promise<void> {
 }
 
 /**
- * The open card's identity as a person reads it: every "#<number>…" line on the
- * card (the face's number and the header, "#38b · Image Variation · Mike
- * Trout"). A locator; read it with `allTextContents` before a move.
+ * The open card's "#<number>" text on the card. The header line ("#38b · Image
+ * Variation · Mike Trout") draws its number in a span of its own (so "#FS-3"
+ * never wraps), and `getByText` keeps the innermost match, so this yields
+ * "#38b" ALONE, never the variation or the player: read a card's NUMBER off it,
+ * never its player. Who is on the card is the face's name (`cardFace`, "Card
+ * #NNO, Pete Incaviglia, Texas Rangers"), which also tells apart two cards whose
+ * numbers read the same (every NNO). A locator; read it with `allTextContents`
+ * before a move.
  */
 function cardIdentity(page: Page): Locator {
   return tidyWalk(page).getByText(/^#\S+( · .+)?$/);
 }
 
 /**
- * The open card's "#…" lines (`cardIdentity`), for a spec that proves a move by
- * hand, e.g. the browser's Back returning to the card it read: read them with
- * `allTextContents`, then assert `toHaveText(before)`.
+ * The open card's "#…" number text (`cardIdentity`: the number alone, never the
+ * player), for a spec that proves a move by hand between cards with different
+ * numbers, e.g. the browser's Back returning to the card it read: read it with
+ * `allTextContents`, then assert `toHaveText(before)`. To branch on WHO is on
+ * the card, assert on the face's name (`getByRole("img", { name: /^Card #…, <who>/ })`).
  */
 export function tidyCardIdentity(page: Page): Locator {
   return cardIdentity(page);

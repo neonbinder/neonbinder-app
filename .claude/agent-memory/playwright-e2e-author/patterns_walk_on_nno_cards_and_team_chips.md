@@ -8,11 +8,18 @@ metadata:
 Learned rewriting the Roanoke (all `NNO`) and 1996 Score title specs onto the Tidy Up walk.
 
 - **On an all-NNO checklist every card's "#…" lines read `#NNO`.** The header `#NNO · <name>`
-  is not matched by `getByText(/^#\S+( · .+)?$/)` (only the face's `#NNO` text is), so the lines
-  cannot tell cards apart. The face is ONE `img` named `Card #<n>, <who>[, <teams>]`: read it with
+  is not matched by `getByText(/^#\S+( · .+)?$/)`: the header draws its number in a span of its
+  own, and `getByText` keeps the innermost match, so `tidyCardIdentity` yields `#NNO` alone and
+  NEVER the player (a `.includes(player)` on it is always false; NEO-645 Leaf Vivid red). The
+  lines cannot tell cards apart. The face is ONE `img` named `Card #<n>, <who>[, <teams>]`: read it with
   `getAttribute("aria-label")`, prove Back/Forward with `toHaveAccessibleName(face)`, and take the
   card's name as its second part. `skipCard`/`saveAndNext` now prove a move by "a face named
   otherwise is visible" (a negative-lookahead name regex, one web-first wait).
+- **To branch on WHO the walk opened on, don't read then branch.** One web-first assert over the
+  dialog: `walk.filter({ has: faceNamed(who) }).filter({ has: <that card's answer> }).or(
+  walk.filter({ hasNot: faceNamed(who) }).filter({ has: <the other answer> }))`. Inner locators of
+  a filter are relative to the dialog, so build them from `page.getBy…`, never from `tidyTile`
+  (which starts at the dialog again).
 - **A no-team card's chips (`TeamFillChips`) hold their choice in component state until "Save
   team".** A team picked in "Other team…" or made with "+ New team" (inline group `New team:
   unnamed`, textbox "New team name", button `Create team <name>`) joins the chips PRESSED but

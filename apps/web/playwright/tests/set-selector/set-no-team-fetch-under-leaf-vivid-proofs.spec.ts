@@ -42,8 +42,6 @@ import {
   pinkTile,
   saveForLater,
   settleWalkAfterCommit,
-  tidyCardIdentity,
-  tidyTile,
   tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
@@ -161,11 +159,21 @@ test(
       const walk = tidyWalk(page);
       await expect(walk).toHaveAccessibleName(tidyUpName({ year: TARGET.year, set: TARGET.set, variant: PROOF }));
       await expect(pinkTile(page, "Team")).toHaveCount(0);
-      const claimed = (await tidyCardIdentity(page).allTextContents()).some((line) => line.includes(CLAIMED.player));
+      // Every card here is #NNO, so the card is told by its face, the one img named "Card #NNO,
+      // <who>[, <teams>]" (the "#…" lines read "#NNO" alone). One web-first assert, no read-then-
+      // branch: the walk is EITHER on the claimed card with the checklist's team, OR on a card named
+      // otherwise with the set's No Team. (Inner locators of a filter are relative to the dialog.)
+      const teamTile = page.getByRole("group", { name: "Team", exact: true });
+      const claimedFace = page.getByRole("img", { name: new RegExp(`^Card #\\S+, ${escapeRe(CLAIMED.player)}(,|$)`) });
+      const holdsClaim = walk
+        .filter({ has: claimedFace })
+        .filter({ has: teamTile.getByRole("group", { name: `Team ${CLAIMED.team}`, exact: true }) });
+      const holdsNoTeam = walk
+        .filter({ has: page.getByRole("img", { name: /^Card #\S+, .+/ }) })
+        .filter({ hasNot: claimedFace })
+        .filter({ has: teamTile.getByText("No team on this card.", { exact: true }) });
       await expect(
-        claimed
-          ? tidyTile(page, "Team").getByRole("group", { name: `Team ${CLAIMED.team}`, exact: true })
-          : tidyTile(page, "Team").getByText("No team on this card.", { exact: true }),
+        holdsClaim.or(holdsNoTeam),
         "the walk's first card holds its team answer: the checklist's team, else the set's No Team",
       ).toBeVisible();
       await expectAccessible(page, { within: walk, label: "Tidy Up walk on a Leaf Vivid Proof card born under No Team" });
