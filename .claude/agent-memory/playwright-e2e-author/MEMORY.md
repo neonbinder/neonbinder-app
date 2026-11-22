@@ -58,6 +58,7 @@
 - [Transient notice behind a seed redirect](patterns_transient_notice_behind_a_seed_redirect.md) — upload-then-redirect seed hides a window that closes mid-upload; line up confirm/heavy/first query
 - [Placeholder real-intake specs](patterns_placeholder_real_intake_specs.md) — NEO-529: drop on /print/placeholders, cap recovery via Recent runs, second-page tidy, ESM path, stale node_modules
 - [Sibling edits reload a local Vite run](patterns_sibling_edits_reload_a_local_vite_run.md) — one-off red on a step green on rerun: check Vite log for hmr/page reload at that time; eBay unmatched row names
+- [Tidy walk spec on a per-attempt sport](patterns_tidy_walk_spec_on_a_per_attempt_sport.md) — NEO-645: own sport + pasted checklist, Saved N cards., No Team vs blank, axe detail from json
 - [Failure PNG vs finally and afterEach](patterns_failure_screenshot_shows_the_finally_end_state.md) — PNG is taken after a body finally, before afterEach (PW 1.63)
 - [Fake BSC faults and the call gate](patterns_fake_bsc_faults_and_the_call_gate.md) — bscFake fixture, hop page; gate per test user on the fake (NEO-628), no breaker tag/job
 - [eBay hold spec on a hand-made set](patterns_ebay_hold_spec_on_a_handmade_set.md) — NEO-535: over-80 title fixture, hold-only run shape, tagged seller spec vs shard-plan
