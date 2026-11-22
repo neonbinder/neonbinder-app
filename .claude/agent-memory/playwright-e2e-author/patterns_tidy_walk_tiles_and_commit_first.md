@@ -91,3 +91,20 @@ that must not write a real set, there is no pre-save exit any more: give it its 
 - **A fresh-only real-set spec gets one run per seed.** If it goes red after the commit, check the
   rest of it on the same seed with a temporary, uncommitted copy that enters the committed set's
   walk from the "N need you" pill instead of fetching; delete the copy after the run.
+
+## Listing title tile on hand-made quick-add cards (NEO-645 card-title specs)
+
+- **Quick-add cards with no team are pink "noTeam"**, so the pill counts every teamless card in the
+  open checklist; keep the over-cap card alone on its own row to keep the pill at "1 needs you".
+- **Blue cut vs pink over:** a cut title that fits is "To check": shown as text, meter `N/80`, the
+  plain "Left out to fit: …" line, no textbox, Save & next usable; Save & next is the answer (badge
+  "is worth a check: listing title was cut short" goes, title unchanged). Over 80 is "To fix" and opens
+  the "Card title for #<n>" editor with `aria-invalid` and `expectOverCapLook(box, overLine)`.
+- **The tile's set-name save IS the row's "Set name in titles"**: after "Save and apply to all 1 card"
+  the Attributes panel's "Value for Set name in titles" holds it, and the stored title (drawer) is
+  the box title; read it back there instead of pressing a no-op Regenerate.
+- **Back/Forward on a one-card walk:** opening is a push, Done/Save for later a replace. Back from the
+  open card closes the walk with nothing written (pill still up); Forward reopens it on the card.
+  Back AFTER Done lands on a `?tidy=<card>` entry, not the drill, so prove URL moves before the answer.
+- **Name regexes for the a11y rename:** `/^Edit (card )?title/` covers "Edit card title" and the
+  coming "Edit title"/"Edit title for #N"; levels via `toHaveAccessibleDescription(/To fix/)`.

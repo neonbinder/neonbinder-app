@@ -38,7 +38,7 @@
 // is the one showing (house rule).
 //
 // R3 - `tidy-up-long-set-name-shortened-for-every-card-title` owns the Tidy Up walk's
-// name for a parallel; `card-title-uses-short-name-for-titles` owns the cut
+// name for a parallel; `card-title-cut-order-and-set-name-in-titles-from-the-listing-title-tile` owns the cut
 // order and "Set name in titles". This spec owns the switch alone.
 //
 // R7/R7a - every write lands in ONE per-attempt hand-made set, `psn<token>`,

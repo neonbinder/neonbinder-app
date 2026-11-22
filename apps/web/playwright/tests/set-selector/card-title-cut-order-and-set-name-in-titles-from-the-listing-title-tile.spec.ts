@@ -22,9 +22,12 @@
 //     note is read from the field's text, not from the generated assessment:
 //     the NEO-535 stale-note fix), and Regenerate brings both back.
 //   * Card C sits under an insert whose name never fits: its stored title is
-//     over 80 after every cut. The Attributes panel's "Set name in titles" on
-//     that insert row (placeholder: the builder's own description) is then
-//     used VERBATIM by Regenerate, with nothing prepended.
+//     over 80 after every cut, so the Tidy Up walk (NEO-645) shows its
+//     "Listing title" tile PINK and open for editing. The tile's "Shorten the
+//     set name for every card" writes the insert row's "Set name in titles"
+//     (the same value the Attributes panel shows, placeholder the builder's own
+//     description), and card C's title then opens with it VERBATIM, nothing
+//     prepended.
 //   * /collection's "Find a card" finds card B by its number, a word only its
 //     DESCRIPTION holds now that the title dropped it.
 //   * NEO-606, teams (cut row 9): card D's team has a Location and a Name, and
@@ -46,6 +49,10 @@
 //   * The "Left out to fit" absences are paired with the "Title built from"
 //     chips, which render only once Regenerate's preview has answered, so a
 //     note that never loaded cannot pass for "nothing left out".
+//   * Card C's stored title, read back in the drawer after the walk, is the
+//     full-string box title: a set name the tile kept to itself, or one the
+//     server prefixed with the year and maker, fails there; the panel's value
+//     fails if the tile wrote anywhere but the row's "Set name in titles".
 //   * The search asserts the one hit by its accessible name, which ends in the
 //     card's number: a title-only search finds nothing for that word.
 //   * Card D's title holds the nickname and not the location, and card E's
@@ -61,11 +68,14 @@
 // grid one column instead of two). STEP 3 asserts that one difference with
 // `isMobile`; nothing else branches.
 //
-// R3 - `checklist-title-length-refused-and-trimmed-on-the-listing-title-tile` owns the 80-character refusal
-// of a TYPED title and the variation cap; `inserts-1996-score-one-nb-set-two-
-// bsc-sources` drives the wizard's "Set name in titles" box on a real fetch.
-// This spec owns the cut order through Regenerate, the drawer's note, the
-// panel row and the description search.
+// R3 - `checklist-title-length-refused-and-trimmed-on-the-listing-title-tile`
+// owns the 80-character refusal of a TYPED title (the over-cap editor's lines,
+// Regenerate in the tile) and the variation cap;
+// `tidy-up-long-set-name-shortened-for-every-card-title` owns the tile's live
+// set-name preview and the retitle of the OTHER cards. This spec owns the cut
+// order through Regenerate, the drawer's note, the tile's set name landing on
+// the row's "Set name in titles" (panel and stored title), and the
+// description search.
 //
 // R7a / data isolation - a PER-ATTEMPT hand-made set `ttl<token>…` under the
 // REAL Baseball / 2024 / Topps (SET-REGISTRY.md, prefix `ttl`): the quick-add
@@ -77,7 +87,8 @@
 // own name and its "Insert" type name apart in every assertion (R7a).
 // The player is the catalogue's George Brett (one Baseball row, read only; the
 // same row `checklist-missing-team-fixer-hand-added-card` reads). Nothing is
-// deleted: the set is this attempt's alone. Cards Q, A, B and C carry no team;
+// deleted: the set is this attempt's alone. Cards Q, A, B and C carry no team
+// (the walk records card C as "No team on this card", its own card only);
 // D and E carry one each, made in the New team dialog for this attempt
 // (minted single tokens, GUIDE "Minted names"; a team is never looked up).
 //
@@ -120,7 +131,18 @@ import { drillToCustom, escapeRe, openAttributesPanel, setBuilderReady } from ".
 import { editCardButton } from "../../support/cards";
 import { goViaShell } from "../../support/collection";
 import { tidyUpName } from "../../support/wizard";
-import { expectNoOverCapLook, expectOverCapLook } from "../../support/theme";
+import { expectOverCapLook } from "../../support/theme";
+import {
+  answerPinkTeamTiles,
+  expectTidyWalkOpen,
+  finishTidyWalk,
+  mustFixLine,
+  pinkTile,
+  saveAndNext,
+  tidyFooterButton,
+  tidyTile,
+  tidyWalk,
+} from "../../support/tidy-walk";
 import type { Page } from "@playwright/test";
 
 const SET_LEN = 15;
@@ -184,7 +206,7 @@ async function addBrettCard(page: Page, number: string, team?: NewTeam): Promise
 }
 
 test(
-  "Listing titles - the cut order drops the # at 81, then the number before a first name, says what it left out, and an over-cap card takes Set name in titles verbatim",
+  "Listing titles - the cut order drops the # at 81, then the number before a first name, says what it left out, and an over-cap card's Listing title tile sets the row's Set name in titles, used verbatim",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env, isMobile }) => {
     const set = `ttl${env.ATTEMPT_TOKEN}`.padEnd(SET_LEN, "x");
@@ -369,114 +391,70 @@ test(
     await doneEditing.click();
     await expect(cardTitle).toBeHidden();
 
-    // ── STEP 4b: the walker's "Trim Set name in titles" pointer ──
-    // The over-cap card is flagged, and the attention walker (opened by hand
-    // from the pill) offers the row-wide fix beside its own field: a door to
-    // the row's "Set name in titles". It closes the walker and puts focus ON
-    // that box; typed text it would drop is asked about first.
+    // ── STEP 4b (NEO-645): the walk's Listing title tile shortens the set name ──
+    // Card C is pink (over the cap, and no team), the only card of this
+    // checklist the pill counts. Its Listing title tile opens ready to edit.
     const setNameInTitles = page.getByRole("textbox", { name: "Value for Set name in titles" });
     const pill = page.getByRole("button", { name: "1 needs you", exact: true });
-    const fixer = page.getByRole("dialog", {
-      name: tidyUpName({ year: "2024", set, variant: LONG_INSERT }),
-      exact: true,
-    });
-    const fixerTitle = fixer.getByRole("textbox", { name: `Card title for #${NUM_C}` });
-    const trim = fixer.getByRole("button", { name: "Trim Set name in titles", exact: true });
-    const tooLong = fixer.getByText("Too long to list as-is. Trim it here, or shorten the set name for the whole row.");
-    const fitsNow = fixer.getByText("Fits now. Enter saves it.", { exact: true });
-    const toss = page.getByRole("dialog", { name: "Toss what you typed?", exact: true });
     await expect(pill).toBeVisible();
     await pill.click();
-    await expect(fixer).toBeVisible();
-    // The card links a player with a career and no team, so the walker asks
-    // that first (a team step ranks ahead of the title step) and, with the
-    // card answered, ends the sitting. The card has none: record it, close
-    // the walker, and open it again for the title step.
-    const noTeam = fixer.getByRole("button", { name: "No team on this card", exact: true });
-    await expect(noTeam).toBeVisible();
-    await noTeam.click();
-    await expect(fixer.getByText(/All clear/)).toBeVisible();
-    await fixer.getByRole("button", { name: /Done \(Esc\)/ }).click();
-    await expect(fixer).toBeHidden();
-    await expect(pill).toBeVisible();
-    await pill.click();
-    await expect(fixerTitle).toHaveValue(titleCOver);
-    await expect(tooLong).toBeVisible();
-    await expect(trim).toBeVisible();
+    await expectTidyWalkOpen(page, { title: tidyUpName({ year: "2024", set, variant: LONG_INSERT }) });
+    const walk = tidyWalk(page);
+    const titleTile = tidyTile(page, "Listing title");
+    const walkTitle = titleTile.getByRole("textbox", { name: `Card title for #${NUM_C}`, exact: true });
+    const overLine = titleTile.getByText("Over the limit, so it opens ready to edit.", { exact: true });
+    await expect(titleTile).toHaveAccessibleDescription(/To fix/);
+    await expect(walkTitle).toHaveValue(titleCOver);
+    await expect(titleTile.getByText(`${titleCOver.length}/80`, { exact: true })).toBeVisible();
     // NEO-606: the whole box says "too long": invalid to a screen reader, and
-    // the error pink on its edge and on the note.
-    await expect(fixerTitle).toHaveAttribute("aria-invalid", "true");
-    await expectOverCapLook(fixerTitle, tooLong);
-    await expectAccessible(page, { within: fixer, label: "Attention walker, title over 80 with the Trim Set name door" });
+    // the error pink on its edge and on the line.
+    await expect(walkTitle).toHaveAttribute("aria-invalid", "true");
+    await expectOverCapLook(walkTitle, overLine);
+    // Pink holds Save & next, and the footer says why.
+    await expect(tidyFooterButton(page, "saveAndNext")).toBeDisabled();
+    await expect(mustFixLine(page)).toBeVisible();
+    await expectAccessible(page, { within: walk, label: "Tidy Up walk, a title over 80 after every cut" });
 
-    // A title trimmed down to the cap says so, the box lets go of the error,
-    // and the door goes (it shows only while the title is over).
-    await fixerTitle.fill(titleCOver.slice(0, 80));
-    await expect(fitsNow).toBeVisible();
-    await expect(tooLong).toHaveCount(0);
-    await expect(trim).toHaveCount(0);
-    await expect(fixerTitle).not.toHaveAttribute("aria-invalid", "true");
-    await expectNoOverCapLook(fixerTitle);
+    // "Shorten the set name for every card": the title box follows the name
+    // typed, and the save writes it to this checklist's row.
+    await titleTile.getByRole("button", { name: "Shorten the set name for every card", exact: true }).click();
+    const setNameBox = titleTile.getByRole("textbox", { name: "Set name in titles", exact: true });
+    await expect(setNameBox).toBeFocused();
+    await setNameBox.fill(box);
+    await expect(walkTitle).toHaveValue(titleCBox);
+    await expect(walkTitle).not.toHaveAttribute("aria-invalid", "true");
+    await titleTile.getByRole("button", { name: "Save and apply to all 1 card", exact: true }).click();
+    await expect(titleTile.getByRole("status").filter({ hasText: /^Set name saved\./ })).toBeVisible();
+    // The open card is retitled at once: no longer pink, shown as text, the
+    // editor closed.
+    await expect(titleTile.getByText(titleCBox, { exact: true })).toBeVisible();
+    await expect(pinkTile(page, "Listing title")).toHaveCount(0);
+    await expect(walkTitle).toHaveCount(0);
+    // "Edit card title" until the a11y pass renames it "Edit title" / "Edit title for #N".
+    await expect(titleTile.getByRole("button", { name: /^Edit (card )?title/ })).toBeVisible();
 
-    // Typed past the cap again: the door is back, and with typing to lose it
-    // asks first. Cancel keeps the typing; the confirm is itself a state.
-    const typedOver = `${titleCOver} typed`;
-    await fixerTitle.fill(typedOver);
-    await expect(tooLong).toBeVisible();
-    await trim.click();
-    await expect(toss).toBeVisible();
-    await expect(toss.getByRole("button", { name: "Toss it and go", exact: true })).toBeVisible();
-    await expectAccessible(page, { within: toss, label: "Toss what you typed confirm" });
-    await toss.getByRole("button", { name: "Cancel", exact: true }).click();
-    await expect(toss).toBeHidden();
-    await expect(fixer).toBeVisible();
-    await expect(fixerTitle).toHaveValue(typedOver);
+    // The card has no team: say so, and the card is done.
+    await answerPinkTeamTiles(page, { noTeam: "noTeamOnCard" });
+    await saveAndNext(page);
+    await expect(walk.getByText("All tidy. Nothing on this checklist needs you.", { exact: true })).toBeVisible();
+    await finishTidyWalk(page);
+    await expect(editCardButton(page, NUM_C)).toBeVisible();
+    await expect(pill).toHaveCount(0);
 
-    // Toss it and go: the walker closes and the box takes focus.
-    await trim.click();
-    await toss.getByRole("button", { name: "Toss it and go", exact: true }).click();
-    await expect(fixer).toBeHidden();
-    await expect(setNameInTitles).toBeFocused();
-
-    // Untouched, the door goes straight there with no question. Reopened, the
-    // walker starts again from the stored title, and focus leaves the box for
-    // the dialog first, so the second arrival is its own.
-    await pill.click();
-    await expect(fixerTitle).toHaveValue(titleCOver);
-    await expect(setNameInTitles).not.toBeFocused();
-    await trim.click();
-    await expect(fixer).toBeHidden();
-    await expect(toss).toHaveCount(0);
-    await expect(setNameInTitles).toBeFocused();
-
-    // ── STEP 5: "Set name in titles" on the long insert's row ──
+    // ── STEP 5: the tile wrote the row's "Set name in titles" ──
     await expect(page.getByRole("heading", { name: `Attributes for ${LONG_INSERT}` })).toBeVisible();
-    const editAttributes = page.getByRole("button", { name: "Edit attributes" });
-    const hideAttributes = page.getByRole("button", { name: "Hide attributes" });
-    // The panel remembers whether it was left open, so open it only if needed.
-    await expect(editAttributes.or(hideAttributes)).toBeVisible();
-    if (await editAttributes.isVisible()) await editAttributes.click();
-    await expect(hideAttributes).toBeVisible();
-    // Nothing stored: the placeholder is the description this row's cards get.
-    await expect(setNameInTitles).toHaveValue("");
+    await openAttributesPanel(page);
+    await expect(setNameInTitles).toHaveValue(box);
+    // The placeholder is still the description this row's cards get without one.
     await expect(setNameInTitles).toHaveAttribute("placeholder", `2024 Topps ${set} ${LONG_INSERT}`);
     await expectAccessible(page, { label: "Set attributes panel, Set name in titles row" });
-    await setNameInTitles.fill(box);
-    // Enter commits a single-line feature field in place (NEO-216); "Saved"
-    // waits for the write (NEO-412), so Regenerate below reads the new value.
-    await setNameInTitles.press("Enter");
-    await expect(page.getByText(/Saved Set name in titles/)).toBeVisible();
-    await expect(setNameInTitles).toHaveValue(box);
 
-    // ── STEP 6: Regenerate uses it verbatim ──
-    await editCardButton(page, NUM_C).click();
-    await expect(cardTitle).toBeVisible();
-    await regenerate.click();
+    // ── STEP 6: card C's stored title takes it verbatim ──
     // THE FEATURE: the box text opens the title as typed (a prepended year or
     // maker would read "2024 Topps 2024 Topps …"), and the card's own tokens
-    // follow in full.
+    // follow in full. The chips are a live read of the card's facts.
+    await editCardButton(page, NUM_C).click();
     await expect(cardTitle).toHaveValue(titleCBox);
-    await expect(page.getByText(/Saved Card title/)).toBeVisible();
     await expect(builtFrom.getByRole("listitem").filter({ hasText: box })).toBeVisible();
     await expect(overCap).toHaveCount(0);
     await expect(leftOut).toHaveCount(0);
