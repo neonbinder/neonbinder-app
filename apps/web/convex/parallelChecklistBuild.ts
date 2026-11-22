@@ -135,7 +135,7 @@ import {
   stampNoTeam,
   teamDefaultOf,
 } from "./lib/selectorTeams";
-import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS, deriveCardAttention } from "./features/cardAttention";
+import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS, blocksParallelBuild } from "./features/cardAttention";
 import { listCardPrintedNames } from "./cardPrintedNames";
 import {
   cardKey,
@@ -1395,21 +1395,6 @@ async function cardPage(
 }
 
 /**
- * NEO-645 (J3) — a source card the parallel build must not copy yet: one with a
- * pink item about WHICH names it carries (sources that disagree, a player or
- * team name still waiting for an answer). A teamless card is also pink, but it
- * is not refused here: the parallel's own Set Team fills a teamless copy
- * (NEO-556), so "no team yet" is the build's input, not a reason to stop.
- */
-function isUntidyForCopy(row: Doc<"cardChecklist">): boolean {
-  return deriveCardAttention(row).items.some(
-    (item) =>
-      item.level === "fix" &&
-      (item.kind === "sourcesDisagree" || item.kind === "playerName" || item.kind === "teamName"),
-  );
-}
-
-/**
  * One page of the source row's cards (an insert's, or the Base's), reduced to
  * what the link key reads. Paged across transactions and bounded by rows and
  * bytes (NEO-321 audit N1); the action sums the pages against
@@ -1432,7 +1417,7 @@ export const loadInsertCardsForLink = internalQuery({
       cards: page.page.map((row) => ({
         ...linkableOf(row),
         // NEO-645 (J3) — from the row alone, no extra read.
-        ...(isUntidyForCopy(row) ? { pink: true as const } : {}),
+        ...(blocksParallelBuild(row) ? { pink: true as const } : {}),
         ...(row.variationOfCardId
           ? { variationOfCardId: row.variationOfCardId }
           : {}),

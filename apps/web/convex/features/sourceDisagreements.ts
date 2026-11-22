@@ -178,3 +178,41 @@ export function namesHeld(
   if (!entry) return { held: false, names: [] };
   return { held: true, names: entry.chosen ? entry.chosen.value : [] };
 }
+
+/**
+ * NEO-645 (schema doc 4) — the names the review gate writes NO `tidyNames` row
+ * for: a name that sits only on the sides of a disagreement nobody has
+ * settled, or only on the side NB's own pick did not take. Nothing is looked
+ * up for a side that may never be used; when the operator picks a side, the
+ * walk creates the row then (`ensureTidyNameRow`).
+ *
+ * A name that is ALSO printed somewhere settled (a card with no disagreement
+ * for that field, or the value NB picked) keeps its row. `heldElsewhere` are
+ * the normalised names the caller found on settled places; `isKnown` is the
+ * same test `pickByNb` uses at the commit, so the gate and the commit agree on
+ * which entries are unsettled. Pure: normalised keys in, normalised keys out.
+ */
+export function namesOnlyOnUnsettledSides(input: {
+  entries: ReadonlyArray<Pick<DisagreementEntry, "field" | "values">>;
+  heldElsewhere: { players: ReadonlySet<string>; teams: ReadonlySet<string> };
+  isKnown: { players: (nameKey: string) => boolean; teams: (nameKey: string) => boolean };
+}): { players: Set<string>; teams: Set<string> } {
+  const kept = {
+    players: new Set(input.heldElsewhere.players),
+    teams: new Set(input.heldElsewhere.teams),
+  };
+  const sides = { players: new Set<string>(), teams: new Set<string>() };
+  for (const raw of input.entries) {
+    const entry = pickByNb({ ...raw }, (key) => input.isKnown[raw.field](key));
+    for (const value of entry.values) {
+      const taken = entry.chosen !== undefined && entry.chosen.value === value.value;
+      for (const name of value.value) {
+        (taken ? kept : sides)[raw.field].add(normalizeEntityName(name));
+      }
+    }
+  }
+  for (const field of ["players", "teams"] as const) {
+    for (const key of kept[field]) sides[field].delete(key);
+  }
+  return sides;
+}

@@ -28,6 +28,7 @@ import {
   mutation,
   query,
   type MutationCtx,
+  type QueryCtx,
 } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -1698,6 +1699,53 @@ const TEAM_SUGGESTION_LOCATION_HITS = 16;
  */
 const TEAM_SUGGESTION_CAREER_TEAMS_READ = 24;
 
+/**
+ * NEO-335 / NEO-645 — the nodes the stored team tiers read (`sameNode`,
+ * `parallelOf`, `baseSet`): the sport the cards are filed under, the node a
+ * parallel copies, and the set's base checklist (the variantType whose title
+ * is the word "Base", `variantTypeKind`; exactly one, or the tier is skipped).
+ */
+export async function storedTierNodes(
+  ctx: Pick<QueryCtx, "db">,
+  node: Doc<"selectorOptions">,
+): Promise<{
+  sportId: Id<"selectorOptions"> | undefined;
+  parallelOfNodeId: Id<"selectorOptions"> | null;
+  baseNodeId: Id<"selectorOptions"> | null;
+}> {
+  // One walk up the chain for the facts it holds: the sport (the card
+  // links are filed under the CARD's sport) and the setName row whose
+  // children hold the base checklist.
+  let sportId: Id<"selectorOptions"> | undefined;
+  let setNameNode: Doc<"selectorOptions"> | null = null;
+  {
+    let cursor: Doc<"selectorOptions"> | null = node;
+    let depth = 0;
+    while (cursor && depth < 16) {
+      if (cursor.level === "setName" && !setNameNode) setNameNode = cursor;
+      if (cursor.level === "sport") {
+        sportId = cursor._id;
+        break;
+      }
+      cursor = cursor.parentId ? await ctx.db.get(cursor.parentId) : null;
+      depth += 1;
+    }
+  }
+  const parallelOfNodeId = node.level === "parallel" && node.parentId ? node.parentId : null;
+  let baseNodeId: Id<"selectorOptions"> | null = null;
+  if (setNameNode) {
+    const bases: Array<Id<"selectorOptions">> = [];
+    for (const childId of (setNameNode.children ?? []).slice(0, TEAM_SUGGESTION_SET_CHILD_SCAN)) {
+      const child = await ctx.db.get(childId);
+      if (child?.level === "variantType" && variantTypeKind(child) === "base") {
+        bases.push(child._id);
+      }
+    }
+    if (bases.length === 1) baseNodeId = bases[0];
+  }
+  return { sportId, parallelOfNodeId, baseNodeId };
+}
+
 const teamSuggestionTierValidator = v.union(
   v.literal("sameNode"),
   v.literal("parallelOf"),
@@ -1893,24 +1941,9 @@ export const teamSuggestionsForPreview = query({
       };
     }
 
-    // One walk up the chain for the facts it holds: the sport (the card
-    // links are filed under the CARD's sport) and the setName row whose
-    // children hold the base checklist.
-    let sportId: Id<"selectorOptions"> | undefined;
-    let setNameNode: Doc<"selectorOptions"> | null = null;
-    {
-      let cursor: Doc<"selectorOptions"> | null = node;
-      let depth = 0;
-      while (cursor && depth < 16) {
-        if (cursor.level === "setName" && !setNameNode) setNameNode = cursor;
-        if (cursor.level === "sport") {
-          sportId = cursor._id;
-          break;
-        }
-        cursor = cursor.parentId ? await ctx.db.get(cursor.parentId) : null;
-        depth += 1;
-      }
-    }
+    // The sport, the base checklist and the node a parallel copies: one walk,
+    // shared with the commit's own stored-evidence read (`storedTeamEvidence`).
+    const { sportId, parallelOfNodeId, baseNodeId } = await storedTierNodes(ctx, node);
     const setYear = await findSetYearForSelectorOption(ctx, node._id);
 
     // C2b / NEO-569 — the set's leagues, by NB's own field and NB's own rows,
@@ -1927,27 +1960,6 @@ export const teamSuggestionsForPreview = query({
             levels: setLeagues.map((league) => league.level ?? null),
           }
         : null;
-
-    const parallelOfNodeId =
-      node.level === "parallel" && node.parentId ? node.parentId : null;
-
-    // The base checklist: the variantType whose title is the word "Base"
-    // (`variantTypeKind`, NEO-334 — the title is the kind, there is no flag).
-    // Exactly one, or the tier is skipped.
-    let baseNodeId: Id<"selectorOptions"> | null = null;
-    if (setNameNode) {
-      const bases: Array<Id<"selectorOptions">> = [];
-      for (const childId of (setNameNode.children ?? []).slice(
-        0,
-        TEAM_SUGGESTION_SET_CHILD_SCAN,
-      )) {
-        const child = await ctx.db.get(childId);
-        if (child?.level === "variantType" && variantTypeKind(child) === "base") {
-          bases.push(child._id);
-        }
-      }
-      if (bases.length === 1) baseNodeId = bases[0];
-    }
 
     const relevantNodes = new Set<string>(
       [node._id, parallelOfNodeId, baseNodeId].filter(
@@ -2178,5 +2190,91 @@ export const teamSuggestionsForPreview = query({
       players,
       teamNames,
     };
+  },
+});
+
+/** How many players one `storedTeamEvidence` call reads (each is up to ~50 reads). */
+export const STORED_TEAM_EVIDENCE_PLAYERS_PER_CALL = 16;
+
+/**
+ * NEO-645 (Q1 = A) — the "stored cards of the set" tier of the commit's own
+ * team fill: for each player, the team set his OTHER cards already carry under
+ * the node being saved, the node it copies (a parallel), or the set's base
+ * checklist — exactly the stored tiers `teamSuggestionsForPreview` offered the
+ * old Teams step (`suggestTeamsForPlayer`, minus the career, which the commit
+ * chunk reads itself).
+ *
+ * Per player, either:
+ *  - `answer`: one team set agrees (the first tier that has cards decides);
+ *  - `disagree`: that tier's cards disagree with each other. The search STOPS
+ *    for this player (a career tier must not outvote two printed cards), so the
+ *    card is left for the operator.
+ * A player with no stored evidence is absent from the result, and the chunk
+ * falls through to his career. Never a guess at which of two same-name players
+ * is meant: the caller sends player ids. The bound (24 newest links per
+ * player) can cost a suggestion, never produce a wrong one.
+ */
+export const storedTeamEvidence = internalQuery({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    askAbout: v.array(v.id("players")),
+  },
+  returns: v.array(
+    v.object({
+      playerId: v.id("players"),
+      status: v.union(v.literal("answer"), v.literal("disagree")),
+      teamIds: v.array(v.id("teams")),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    if (args.askAbout.length > STORED_TEAM_EVIDENCE_PLAYERS_PER_CALL) {
+      throw new ConvexError(
+        `Too many players to read stored teams for at once (${args.askAbout.length}; max ${STORED_TEAM_EVIDENCE_PLAYERS_PER_CALL}).`,
+      );
+    }
+    const node = await ctx.db.get(args.selectorOptionId);
+    if (!node) return [];
+    const { sportId, parallelOfNodeId, baseNodeId } = await storedTierNodes(ctx, node);
+    if (!sportId) return [];
+    const relevantNodes = new Set<string>(
+      [node._id, parallelOfNodeId, baseNodeId].filter(
+        (id): id is Id<"selectorOptions"> => id !== null,
+      ),
+    );
+    const out: Array<{
+      playerId: Id<"players">;
+      status: "answer" | "disagree";
+      teamIds: Array<Id<"teams">>;
+    }> = [];
+    for (const playerId of new Set(args.askAbout)) {
+      const cards: Array<Doc<"cardChecklist">> = [];
+      for (const cardId of await recentCardIdsForPlayer(
+        ctx,
+        playerId,
+        sportId,
+        TEAM_SUGGESTION_LINKS_PER_PLAYER,
+      )) {
+        const card = await ctx.db.get(cardId);
+        if (card && relevantNodes.has(card.selectorOptionId)) cards.push(card);
+      }
+      const suggestion = suggestTeamsForPlayer({
+        playerId,
+        // No player row: the stored tiers only, the career is the chunk's.
+        player: undefined,
+        cards,
+        nodeId: node._id,
+        parallelOfNodeId,
+        baseNodeId,
+        year: undefined,
+        currentYear: new Date().getFullYear(),
+        maxCandidates: TEAM_SUGGESTION_MAX_CANDIDATES,
+      });
+      if (suggestion.answer) {
+        out.push({ playerId, status: "answer", teamIds: suggestion.answer.teamIds });
+      } else if (suggestion.candidates.length > 0) {
+        out.push({ playerId, status: "disagree", teamIds: [] });
+      }
+    }
+    return out;
   },
 });

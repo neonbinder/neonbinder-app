@@ -613,6 +613,26 @@ function allTidyItems(row: AttentionCardRow): TidyAttentionItem[] {
 }
 
 /**
+ * NEO-645 (J3, Jason 2026-11-22) — does this card keep its parallels from being
+ * built? The parallels COPY the card, so a card whose NAMES are unanswered must
+ * not be copied: sources that disagree and nobody chose, a player name still
+ * waiting, a team name still waiting. The other pink items do not hold a build:
+ * a teamless card (the parallel's own Set Team fills it, NEO-556), an autograph
+ * with no format, a title over the limit. One pure rule, read by the server's
+ * refusal (`parallelChecklistBuild`) and the client's held auto-start
+ * (`CardChecklist`), so the two can never disagree.
+ */
+export function blocksParallelBuild(row: AttentionCardRow): boolean {
+  return deriveCardAttention(row).items.some(
+    (item) =>
+      item.level === "fix" &&
+      (item.kind === "sourcesDisagree" ||
+        item.kind === "playerName" ||
+        item.kind === "teamName"),
+  );
+}
+
+/**
  * NEO-645 — what this card still needs from a human, from the row alone. The
  * badge, the pill count and the walk membership all call this, so they cannot
  * disagree (count = walk = pill).

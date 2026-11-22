@@ -44,7 +44,7 @@ import { resetSitting } from "./tidy/walk-order";
 // NEO-497: the tidy-up dialogs name the set ("Tidy up 2024 Topps Chrome").
 import { tidyUpTitleFromChain } from "./WizardChrome";
 import {
-  deriveCardAttention,
+  blocksParallelBuild,
   isAwaitingTeamLookup,
   needsTidyUp,
   teamLookupStatusLine,
@@ -1149,7 +1149,7 @@ export default function CardChecklist({
   const tidyOpen = tidy.location.kind !== "closed";
   /** A commit landed: open the walk once the live rows say a card needs a person. */
   const openTidyAfterCommitRef = useRef(false);
-  /** J3: an insert's parallels wait for the checklist to have nothing pink. */
+  /** J3: an insert's parallels wait until no card has an unanswered name (`blocksParallelBuild`). */
   const heldParallelBuildRef = useRef<{
     id: Id<"selectorOptions">;
     value: string;
@@ -2101,8 +2101,9 @@ export default function CardChecklist({
       // notice, stoppable between parallels.
       //
       // NEO-645 (J3): not yet. The parallels copy this checklist's cards, so
-      // they wait until the checklist has nothing pink left: an unanswered
-      // card must never be copied. The effect below starts the build (or the
+      // they wait until no card has an unanswered name left (`blocksParallelBuild`:
+      // sources that disagree, a player or team name still waiting). A teamless
+      // card does not hold them: the parallel's own Set Team fills it. The effect below starts the build (or the
       // operator's "Build from ..." button does, as it always could).
       if (parallelBuild?.role === "insert") {
         heldParallelBuildRef.current = {
@@ -2476,7 +2477,7 @@ export default function CardChecklist({
     if (held) {
       if (held.id !== variantId) {
         heldParallelBuildRef.current = null;
-      } else if (!cards.some((c) => deriveCardAttention(c).level === "fix")) {
+      } else if (!cards.some((c) => blocksParallelBuild(c))) {
         heldParallelBuildRef.current = null;
         void parallelRun.start({ id: held.id, value: held.value }, convex).then((failure) => {
           if (failure) setSyncMessage(`${held.committedText} ${planFailedText(failure)}`);

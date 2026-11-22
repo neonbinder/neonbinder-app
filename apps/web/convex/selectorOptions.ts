@@ -234,6 +234,7 @@ import {
 import {
   findSportForSelectorOption,
   MAX_BSC_TEAM_NAME_LENGTH,
+  STORED_TEAM_EVIDENCE_PLAYERS_PER_CALL,
 } from "./cardChecklist";
 // NEO-335 — type only: the per-card answer of the fetch-time BSC team lookup.
 import type { BscCardTeamLookup } from "./adapters/buysportscards";
@@ -443,10 +444,16 @@ import {
 import {
   buildDisagreements,
   namesHeld,
+  namesOnlyOnUnsettledSides,
   pickByNb,
+  type DisagreementEntry,
   type SourceKey,
 } from "./features/sourceDisagreements";
-import { planBatchTeamFill } from "./features/teamFillOnCommit";
+import {
+  planBatchTeamFill,
+  planCardFill,
+  type StoredTeamEvidence,
+} from "./features/teamFillOnCommit";
 import { indexTypedNames, reconcilePrintedAfterEdit } from "./tidyTypedNames";
 import { syncCardPrintedNames, listCardPrintedNames, type DesiredPrintedName } from "./cardPrintedNames";
 import { computeCoverage } from "./lib/careerCoverageFacts";
@@ -2058,6 +2065,16 @@ async function resolveUnknownsAndStartBatch(
     additionalPlayerNames?: string[];
     additionalTeamNames?: string[];
     /**
+     * NEO-645 — where the sources disagree (built from the wire cards), and the
+     * names printed on settled places, so the names that sit only on an
+     * unsettled side get no `tidyNames` row (schema doc 4). Absent, every name
+     * gets its row as before.
+     */
+    disagreementSides?: {
+      entries: DisagreementEntry[];
+      heldElsewhere: { players: string[]; teams: string[] };
+    };
+    /**
      * NEO-254 — the team names printed on the SAME card as each player name.
      *
      * Keyed by the NORMALIZED player name (see `addCardTeamNames`); the map is
@@ -3083,6 +3100,32 @@ async function resolveUnknownsAndStartBatch(
           : {}),
       },
     });
+  }
+  // NEO-645 (schema doc 4) — a name that sits only on the sides of an
+  // unsettled disagreement (or on the side NB's pick did not take) gets no row:
+  // nothing is looked up for a side that may never be used, and the walk makes
+  // the row when the operator picks it.
+  if (args.disagreementSides && args.disagreementSides.entries.length > 0) {
+    const unknownPlayerKeys = new Set(unknownPlayers.map((n) => normalizeEntityName(n)));
+    const unknownTeamKeys = new Set(unknownTeams.map((n) => normalizeEntityName(n)));
+    const skipped = namesOnlyOnUnsettledSides({
+      entries: args.disagreementSides.entries,
+      heldElsewhere: {
+        players: new Set(args.disagreementSides.heldElsewhere.players),
+        teams: new Set(args.disagreementSides.heldElsewhere.teams),
+      },
+      isKnown: {
+        players: (key) => !unknownPlayerKeys.has(key),
+        teams: (key) => !unknownTeamKeys.has(key),
+      },
+    });
+    for (let i = gateItems.length - 1; i >= 0; i--) {
+      const item = gateItems[i];
+      const key = normalizeEntityName(item.name);
+      if ((item.kind === "player" ? skipped.players : skipped.teams).has(key)) {
+        gateItems.splice(i, 1);
+      }
+    }
   }
   for (let at = 0; at < gateItems.length; ) {
     const done: { processed: number } = await gate.runMutation(
@@ -19198,6 +19241,27 @@ export const resolveChecklistEntities = action({
       }
     }
 
+    // NEO-645 (schema doc 4) — where the sources disagree, and the names
+    // printed on settled places, so the gate writes no row for a name that sits
+    // only on an unsettled side.
+    const disagreementEntries: DisagreementEntry[] = [];
+    const heldElsewhere = { players: new Set<string>(), teams: new Set<string>() };
+    for (const c of args.cards) {
+      let entries: DisagreementEntry[] = [];
+      try {
+        entries = buildDisagreements(c, []);
+      } catch {
+        // Too big to keep: the commit refuses it with its own message.
+      }
+      disagreementEntries.push(...entries);
+      if (!entries.some((e) => e.field === "players")) {
+        for (const p of c.players ?? []) heldElsewhere.players.add(normalizeEntityName(p));
+      }
+      if (!entries.some((e) => e.field === "teams")) {
+        for (const t of cardTeamNames(c)) heldElsewhere.teams.add(normalizeEntityName(t));
+      }
+    }
+
     const resolvedNames = emptyResolvedNames();
     const result = await resolveUnknownsAndStartBatch(ctx, {
       selectorOptionId: args.selectorOptionId,
@@ -19205,6 +19269,17 @@ export const resolveChecklistEntities = action({
       sportLabel: prelude.sportLabel,
       additionalPlayerNames,
       additionalTeamNames,
+      ...(disagreementEntries.length > 0
+        ? {
+            disagreementSides: {
+              entries: disagreementEntries,
+              heldElsewhere: {
+                players: [...heldElsewhere.players],
+                teams: [...heldElsewhere.teams],
+              },
+            },
+          }
+        : {}),
       cardTeamNamesByPlayer,
       cardPlayerNamesByTeam,
       cardsByPlayer,
@@ -22733,6 +22808,18 @@ const commitChunkCardValidator = v.object({
       reason: tidyTeamFillReasonValidator,
     }),
   ),
+  // NEO-645 (Q1 = A) — the stored-cards tier of the fill, read by the action
+  // (`cardChecklist.storedTeamEvidence`) for this card's players when the batch
+  // tier left it teamless; the chunk adds the career tier per player.
+  storedTeams: v.optional(
+    v.array(
+      v.object({
+        playerId: v.id("players"),
+        status: v.union(v.literal("answer"), v.literal("disagree")),
+        teamIds: v.array(v.id("teams")),
+      }),
+    ),
+  ),
 });
 
 /**
@@ -23066,31 +23153,24 @@ export const commitCardChecklistChunk = internalMutation({
       }
       return fillTeamMemo.get(teamId as string) ?? null;
     };
-    /** The one team each player's career gives for the set's year, as a union; undefined unless EVERY player answers. */
-    const careerFillFor = async (
-      careerPlayers: ReadonlyArray<Id<"players">>,
-    ): Promise<Array<Id<"teams">> | undefined> => {
+    /** The one team a player's career gives for the set's year, or undefined (no year, no answer, or a team of another sport). */
+    const careerTeamFor = async (playerId: Id<"players">): Promise<Id<"teams"> | undefined> => {
       const year = await setYearOf();
-      if (year === undefined || careerPlayers.length === 0) return undefined;
-      const teams: Array<Id<"teams">> = [];
-      for (const playerId of careerPlayers) {
-        let stints = playerStintMemo.get(playerId as string);
-        if (!stints) {
-          const player = await ctx.db.get(playerId);
-          stints = (player?.teamYears ?? []).map((t) => ({
-            key: t.teamId as string,
-            ...(t.fromYear !== undefined ? { fromYear: t.fromYear } : {}),
-            ...(t.toYear !== undefined ? { toYear: t.toYear } : {}),
-          }));
-          playerStintMemo.set(playerId as string, stints);
-        }
-        const verdict = careerTeamVerdict({ stints, year, currentYear: new Date().getFullYear() });
-        if (!verdict.answer) return undefined;
-        const teamId = verdict.answer.key as Id<"teams">;
-        if (!(await fillTeamRow(teamId))) return undefined;
-        if (!teams.includes(teamId)) teams.push(teamId);
+      if (year === undefined) return undefined;
+      let stints = playerStintMemo.get(playerId as string);
+      if (!stints) {
+        const player = await ctx.db.get(playerId);
+        stints = (player?.teamYears ?? []).map((t) => ({
+          key: t.teamId as string,
+          ...(t.fromYear !== undefined ? { fromYear: t.fromYear } : {}),
+          ...(t.toYear !== undefined ? { toYear: t.toYear } : {}),
+        }));
+        playerStintMemo.set(playerId as string, stints);
       }
-      return teams.length > 0 && teams.length <= MAX_CARD_TEAMS ? teams : undefined;
+      const verdict = careerTeamVerdict({ stints, year, currentYear: new Date().getFullYear() });
+      if (!verdict.answer) return undefined;
+      const teamId = verdict.answer.key as Id<"teams">;
+      return (await fillTeamRow(teamId)) ? teamId : undefined;
     };
     const coverageMemo = new Map<string, boolean>();
     /** careerGap checks for a one-player card whose printed teams the career does not cover. */
@@ -23581,10 +23661,12 @@ export const commitCardChecklistChunk = internalMutation({
           const filled =
             card.teamFill !== undefined
               ? card.teamFill
-              : await (async () => {
-                  const ids = await careerFillFor(card.playerIds ?? []);
-                  return ids ? { teamIds: ids, reason: "career" as const } : undefined;
-                })();
+              : await planCardFill({
+                  players: card.playerIds ?? [],
+                  stored: card.storedTeams ?? [],
+                  career: careerTeamFor,
+                  maxTeams: MAX_CARD_TEAMS,
+                });
           if (filled) {
             const rows: Array<Doc<"teams">> = [];
             for (const teamId of filled.teamIds) {
@@ -27473,32 +27555,65 @@ export const commitCardChecklist = action({
         },
       };
     });
-    // NEO-645 (Q1 = A) — the batch tier of the commit's own team fill: a
+    // NEO-645 (Q1 = A) — the commit's own team fill, tier by tier. BATCH: a
     // teamless card whose player set other cards of this commit print WITH a
-    // team, all agreeing on one. The chunk adds the career tier and applies
-    // either only when nothing else gave the card a team (set default first).
+    // team, all agreeing on one. STORED: the player's other cards already saved
+    // under this node, the node it copies, or the set's base checklist
+    // (`cardChecklist.storedTeamEvidence`), read here for the players whose
+    // cards are still teamless. The chunk adds the career tier per player and
+    // applies the fill only when nothing else gave the card a team (set
+    // default first). Rule 8: `mayFill` is false when any source names a team.
+    const fillInputs = chunkCardsRaw.map(({ card }, i) => ({
+      index: i,
+      players: card.playerIds ?? [],
+      teamIds: card.teamOnCardIds ?? [],
+      mayFill:
+        card.existingId === undefined &&
+        (card.playerIds ?? []).length > 0 &&
+        !card.pendingPlayerNames?.length &&
+        !card.pendingTeamNames?.length &&
+        !card.bscTeamHint &&
+        card.teamNone !== true &&
+        !(card.sourceDisagreements ?? []).some((e) => e.field === "teams" && !e.chosen),
+    }));
     const batchFills = new Map(
-      planBatchTeamFill(
-        chunkCardsRaw.map(({ card }, i) => ({
-          index: i,
-          players: card.playerIds ?? [],
-          teamIds: card.teamOnCardIds ?? [],
-          mayFill:
-            card.existingId === undefined &&
-            (card.playerIds ?? []).length > 0 &&
-            !card.pendingPlayerNames?.length &&
-            !card.pendingTeamNames?.length &&
-            !card.bscTeamHint &&
-            card.teamNone !== true &&
-            !(card.sourceDisagreements ?? []).some((e) => e.field === "teams" && !e.chosen),
-        })),
-        MAX_CARD_TEAMS,
-      ).map((fill) => [fill.index, fill] as const),
+      planBatchTeamFill(fillInputs, MAX_CARD_TEAMS).map((fill) => [fill.index, fill] as const),
     );
+    const storedWanted = new Set<Id<"players">>();
+    for (const input of fillInputs) {
+      if (!input.mayFill || input.teamIds.length > 0 || batchFills.has(input.index)) continue;
+      for (const playerId of input.players) storedWanted.add(playerId as Id<"players">);
+    }
+    const storedByPlayer = new Map<string, StoredTeamEvidence<Id<"players">, Id<"teams">>>();
+    const wanted = [...storedWanted];
+    for (let at = 0; at < wanted.length; at += STORED_TEAM_EVIDENCE_PLAYERS_PER_CALL) {
+      const found = await ctx.runQuery(internal.cardChecklist.storedTeamEvidence, {
+        selectorOptionId: args.selectorOptionId,
+        // (Not a `cardChecklist` write: the args of a read, named for the pin.)
+        askAbout: wanted.slice(at, at + STORED_TEAM_EVIDENCE_PLAYERS_PER_CALL),
+      });
+      for (const entry of found) storedByPlayer.set(entry.playerId as string, entry);
+    }
     const chunkCards = chunkCardsRaw.map((entry, i) => {
       const fill = batchFills.get(i);
-      return fill
-        ? { ...entry, card: { ...entry.card, teamFill: { teamIds: fill.teamIds, reason: fill.reason } } }
+      if (fill) {
+        return { ...entry, card: { ...entry.card, teamFill: { teamIds: fill.teamIds, reason: fill.reason } } };
+      }
+      const stored = (fillInputs[i].mayFill ? fillInputs[i].players : [])
+        .map((playerId) => storedByPlayer.get(playerId))
+        .filter((e): e is StoredTeamEvidence<Id<"players">, Id<"teams">> => e !== undefined);
+      return stored.length > 0
+        ? {
+            ...entry,
+            card: {
+              ...entry.card,
+              storedTeams: stored.map((e) => ({
+                playerId: e.playerId,
+                status: e.status,
+                teamIds: [...e.teamIds],
+              })),
+            },
+          }
         : entry;
     });
 
