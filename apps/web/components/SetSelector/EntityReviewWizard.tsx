@@ -555,6 +555,7 @@ export default function EntityReviewWizard({
   onTitleAnswersChange,
   onListingShortNameChange,
   hasSetTeam = false,
+  setNoTeam = false,
   hasAutographFormat = false,
   onAutographFormatChange,
   sportId,
@@ -706,6 +707,13 @@ export default function EntityReviewWizard({
    * answering every card.
    */
   hasSetTeam?: boolean;
+  /**
+   * NEO-639 decision A — that set-level default is "No Team" (NEO-556). The
+   * Teams step then pre-fills nothing: a card under it is asked about only
+   * because the commit will not stamp it, and a guess does not overrule the
+   * set's answer. Read the way `hasSetTeam` is: the parent holds the leaf row.
+   */
+  setNoTeam?: boolean;
   /**
    * NEO-345 — the leaf these cards save under already says how its
    * autographs are signed (`features.autographFormat`). Read the way
@@ -7000,6 +7008,7 @@ export default function EntityReviewWizard({
                   skippedPlayerNames={skippedPlayerNames}
                   skippedTeamNames={skippedTeamNames}
                   teamless={teamlessFacts}
+                  setNoTeam={setNoTeam}
                   disabled={saving}
                   showSetTeamHint={showSetTeamHint}
                 />

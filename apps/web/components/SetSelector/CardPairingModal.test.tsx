@@ -2506,8 +2506,8 @@ describe("CardPairingModal — enrichment that lands after the dialog opened", (
   });
 
   test("a lookup that failed after the dialog opened reaches onConfirm as failed", async () => {
-    // The Teams step's `|lookup-failed` claim (rule 8) hangs on this: a
-    // failure is an outcome too, and must not be dropped as "still pending".
+    // The teamless-sport and set "No Team" stamps (`lookupHasEnded`) hang on
+    // this: a failure is an outcome too, and must not be dropped as "still pending".
     const { onConfirm, stream } = renderThenStream(withoutTeam, {
       ...withoutTeam,
       teamLookup: "failed",

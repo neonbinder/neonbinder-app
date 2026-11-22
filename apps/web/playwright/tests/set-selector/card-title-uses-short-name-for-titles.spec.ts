@@ -4,8 +4,10 @@
 // title is built to fit eBay's 80 characters by cutting in a fixed order,
 // never a word of the set's description, and what it had to leave out is said
 // under the field, read from the text the field holds now. A title that cannot
-// fit after every cut takes the set's "Set name in titles" verbatim, and the
-// collector's card search reads the description, which keeps everything.
+// fit after every cut takes the set's "Set name in titles" verbatim, and so does
+// one that says it left something out (NEO-637); a title that left nothing out
+// keeps the builder's own description. The collector's card search reads the
+// description, which keeps everything.
 //   * NEO-609: each level names itself and then its variant type's name, in the
 //     singular ("<row> Insert"); the type name is a quiet cut (row 5) and goes
 //     before the "#" rule is ever tried (the rule starts at the Tidy Up line).
@@ -31,6 +33,11 @@
 //     nickname and nothing is reported left out. Card E's team has the same
 //     length and no location: it can only go whole, and the note names it in
 //     full.
+//   * NEO-637: once the row holds a "Set name in titles", a card added under it
+//     takes the box only when its own title would show the yellow line. Card F
+//     (card Q's shape) leaves nothing out and is stored with the builder's
+//     description; card G (card B's shape) would leave its number out, so it is
+//     stored from the box, the number back and no line.
 //
 // R2 - what makes it fail if the feature breaks:
 //   * Every title is a full-string match computed from the cut rules (below),
@@ -44,6 +51,9 @@
 //   * Card D's title holds the nickname and not the location, and card E's
 //     holds no team at all: a team dropped whole where its location would do
 //     (or a location dropped where the team has none) fails on the value.
+//   * Card F's value opens with the description, not the box (a box applied to a
+//     title that left nothing out fails there), and card G's opens with the box
+//     and holds the number (a box held back from a title with the line fails).
 //
 // Desktop and mobile - CardDetailPanel and the Attributes panel render the
 // same controls with the same names at phone width; only widths change (the
@@ -97,10 +107,16 @@
 //   card E       the same, with ONE 31-character team name and no location:
 //                the type name, the sport, then the team whole (58); the
 //                refill puts the sport and the type name back: 74.
+//   card F       card Q's shape (a 9-character number), added once the row's
+//                box is "2024 Topps <set>" (26): 74 with nothing left out, so
+//                the box is not used.
+//   card G       card B's shape (a 31-character number): without the box 70
+//                with the number left out; with it 26 + 13 + 33 = 72, the
+//                sport (81) the one quiet cut, nothing left out.
 // Card B's number leads with `NB<token>`, a single token (GUIDE, minted names)
 // the search index splits off at the hyphen; no other card holds it.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { drillToCustom, escapeRe, setBuilderReady } from "../../support/set-builder";
+import { drillToCustom, escapeRe, openAttributesPanel, setBuilderReady } from "../../support/set-builder";
 import { editCardButton } from "../../support/cards";
 import { goViaShell } from "../../support/collection";
 import { tidyUpName } from "../../support/wizard";
@@ -116,6 +132,7 @@ const NUM_A = "91A-AA1234567890123456789"; // 25 characters
 const NUM_C = "C1";
 const NUM_D = "D1";
 const NUM_E = "E1";
+const NUM_F = "F9-123456"; // card Q's shape, 9 characters
 
 /** A team made in the New team dialog: `location` set only when the team has one. */
 type NewTeam = { name: string; location?: string };
@@ -203,6 +220,13 @@ test(
     const titleD = `${description} ${PLAYER} #${NUM_D} ${teamD.name}`;
     const titleE = `${head} #${NUM_E} Baseball`;
     expect([titleD.length, titleE.length]).toEqual([74, 74]);
+    // NEO-637: the Rw row's own box, and the two cards added under it.
+    const rwBox = `2024 Topps ${set}`;
+    const numG = `G${env.ATTEMPT_TOKEN}`.padEnd(31, "0");
+    expect(numG, "card G's number is 31 characters on every runner").toHaveLength(31);
+    const titleF = `${description} ${PLAYER} #${NUM_F} Baseball`;
+    const titleG = `${rwBox} ${PLAYER} #${numG}`;
+    expect([rwBox.length, titleF.length, titleG.length]).toEqual([26, 74, 72]);
 
     const drawer = page.getByRole("dialog", { name: /^Card #/ });
     const cardTitle = drawer.getByRole("textbox", { name: "Card title", exact: true });
@@ -316,7 +340,7 @@ test(
     await doneEditing.click();
     await expect(cardTitle).toBeHidden();
     // Card E: a team with no location can only be dropped whole (a Tidy Up
-    // cut), and the note names it in full.
+    // cut), and the yellow note names it in full.
     await addBrettCard(page, NUM_E, teamE);
     await editCardButton(page, NUM_E).click();
     await expect(cardTitle).toBeVisible();
@@ -457,6 +481,49 @@ test(
     await expect(overCap).toHaveCount(0);
     await expect(leftOut).toHaveCount(0);
     await expectAccessible(page, { within: drawer, label: "Card drawer, title from Set name in titles" });
+    await doneEditing.click();
+    await expect(cardTitle).toBeHidden();
+
+    // ── STEP 6b (NEO-637): the box reaches only a title that left something out ──
+    // Back on the Rw row, give it a box of its own, then add two cards under it.
+    // The insert reads the box through the same rule as Regenerate and the wizard.
+    await drillToCustom(page, {
+      sport: "Baseball",
+      year: "2024",
+      manufacturer: "Topps",
+      set,
+      variantType: "Insert",
+      variant: row,
+    });
+    await expect(page.getByRole("heading", { name: `Attributes for ${row}` })).toBeVisible();
+    await openAttributesPanel(page);
+    await expect(setNameInTitles).toHaveValue("");
+    await expect(setNameInTitles).toHaveAttribute("placeholder", description);
+    await setNameInTitles.fill(rwBox);
+    await setNameInTitles.press("Enter");
+    await expect(page.getByText(/Saved Set name in titles/)).toBeVisible();
+    await expect(setNameInTitles).toHaveValue(rwBox);
+    // The save and the card writes below go from this tab in order, so the
+    // cards are inserted with the box already stored.
+    await addBrettCard(page, NUM_F);
+    await addBrettCard(page, numG);
+    // Card F leaves nothing out (only the quiet type name goes), so no line and
+    // no box: the builder's own description opens it.
+    await editCardButton(page, NUM_F).click();
+    await expect(cardTitle).toBeVisible();
+    await expect(cardTitle).toHaveValue(titleF);
+    await expect(builtFrom.getByRole("listitem").filter({ hasText: `#${NUM_F}` })).toBeVisible();
+    await expect(leftOut).toHaveCount(0);
+    await doneEditing.click();
+    await expect(cardTitle).toBeHidden();
+    // Card G would leave its number out (the line), so the box opens it and the
+    // number is back: nothing is reported left out.
+    await editCardButton(page, numG).click();
+    await expect(cardTitle).toBeVisible();
+    await expect(cardTitle).toHaveValue(titleG);
+    await expect(builtFrom.getByRole("listitem").filter({ hasText: rwBox })).toBeVisible();
+    await expect(leftOut).toHaveCount(0);
+    await expectAccessible(page, { within: drawer, label: "Card drawer, a title that left something out takes the row's box" });
     await doneEditing.click();
     await expect(cardTitle).toBeHidden();
 

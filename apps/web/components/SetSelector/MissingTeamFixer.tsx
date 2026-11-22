@@ -7,6 +7,7 @@ import TeamPicker from "./TeamPicker";
 import { MAX_CARD_TEAMS } from "./card-attention";
 import {
   useAttentionContextOptionId,
+  useAttentionSetNoTeam,
   useAttentionSportId,
   type AttentionFixerProps,
   type TeamCheckOutcome,
@@ -49,6 +50,18 @@ import {
  *   focus on Save, so one Enter wrote four teams onto a one-team card. Only an
  *   `inSetYear` suggestion is preselected now, and focus lands on Save only
  *   when something is.
+ * - **A set-year tie is never preselected either (NEO-639, decision B).** A
+ *   player's set-year team is preselected only when he has exactly ONE: a
+ *   player traded mid-season arrives with both clubs offered and neither
+ *   ticked, under a line that says so. The rule is per player, so on a
+ *   League Leaders card the players with one team that year still arrive
+ *   ticked — and then the line names both facts, and focus goes to the tied
+ *   player's first chip, not to Save: one Enter there would have saved the
+ *   lone teams and quietly skipped the traded player.
+ * - **A set whose own team default is "No Team" preselects nothing (NEO-639,
+ *   decision A).** The set has answered for every card; a career team is
+ *   offered, never ticked over that answer, the same rule the wizard's Teams
+ *   step follows. The walker passes the fact through `AttentionSetContext`.
  * - **The listing's claim is offered as NB's rows, era by era (NEO-330).**
  *   When the marketplace listing named a team the background lookup could not
  *   settle — usually a name we hold in several eras, none covering the set
@@ -144,16 +157,32 @@ export function outcomeHeading(
   return null;
 }
 
+/** NEO-639 — the facts beyond the career itself that change the career line. */
+export type CareerHeadingFacts = {
+  /** A player on the card has more than one team in the set year. */
+  setYearTie?: boolean;
+  /** Something is preselected anyway: the other players' one team each. */
+  othersTicked?: boolean;
+  /** The set's own team default is "No Team", so nothing is preselected. */
+  setNoTeam?: boolean;
+};
+
 /**
  * The line over the career chips. Exported for the copy test.
  *
  * `uncoveredSetYear` is the set's year when the server fell back to the whole
  * career because no stint covers it; undefined when the set has no year.
+ *
+ * Precedence, first that holds: a career fallback, the listing disagreeing,
+ * the set's No Team, a tie beside ticked teams, a tie alone, then the plain
+ * "Enter accepts". Each line promises only what the panel does: "Enter
+ * accepts" appears only when something is ticked and nothing is left open.
  */
 export function careerHeading(
   inSetYear: boolean,
   listingDisagrees: boolean,
   uncoveredSetYear?: number,
+  facts: CareerHeadingFacts = {},
 ): string {
   if (!inSetYear) {
     return uncoveredSetYear !== undefined
@@ -162,6 +191,15 @@ export function careerHeading(
   }
   if (listingDisagrees) {
     return "From the career — the listing names a different team, so pick the one on the card.";
+  }
+  if (facts.setNoTeam) {
+    return "From the career — this set says No Team, so pick one only if it’s on the card.";
+  }
+  if (facts.setYearTie && facts.othersTicked) {
+    return "From the career — some players have more than one team that season. Pick theirs; the others are ticked.";
+  }
+  if (facts.setYearTie) {
+    return "From the career — more than one team that season, so pick the one on the card.";
   }
   return "Suggested from career history — Enter accepts these.";
 }
@@ -184,6 +222,7 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
   // AttentionSportContext.
   const sportId = useAttentionSportId();
   const contextOptionId = useAttentionContextOptionId();
+  const setNoTeam = useAttentionSetNoTeam();
   const suggestions = useQuery(api.cardChecklist.suggestedTeamsForCard, {
     cardId: row._id,
   });
@@ -222,6 +261,8 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
   const optionsRef = useRef<HTMLDivElement>(null);
   const pickerRegionRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  /** Every chip's button by team id, so focus can land on a particular one. */
+  const chipRefs = useRef(new Map<string, HTMLButtonElement>());
   /**
    * NEO-330 a11y — the operator has started working the picker (a key or a
    * press inside it, its portalled popover included: React events follow the
@@ -291,13 +332,40 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
   );
 
   /**
-   * What may be preselected: set-year stints only, and only when BSC does not
-   * contradict them. A card with a BSC name and a set-year stint at a team
-   * that is not among that name's rows has two sources saying two things —
+   * NEO-639 (decision B) — each player's set-year teams. A player with exactly
+   * one has an answer; a player with two or more has a tie, which is a
+   * question for the operator, never the first team. By the player's name:
+   * it is all the suggestion carries, and two same-name players on one card
+   * folding into one tie can only cost a preselect, never make one.
+   */
+  const { loneSetYearTeamIds, tiedTeamIds } = useMemo(() => {
+    const byPlayer = new Map<string, Array<Id<"teams">>>();
+    for (const s of suggestions ?? []) {
+      if (!s.inSetYear) continue;
+      const ids = byPlayer.get(s.playerName) ?? [];
+      if (!ids.includes(s.teamId)) ids.push(s.teamId);
+      byPlayer.set(s.playerName, ids);
+    }
+    const lone: Array<Id<"teams">> = [];
+    const tied = new Set<string>();
+    for (const ids of byPlayer.values()) {
+      if (ids.length > 1) for (const id of ids) tied.add(id as string);
+      else if (!lone.includes(ids[0])) lone.push(ids[0]);
+    }
+    return { loneSetYearTeamIds: lone, tiedTeamIds: tied };
+  }, [suggestions]);
+  const setYearTie = tiedTeamIds.size > 0;
+
+  /**
+   * What may be preselected: a player's ONE set-year team (decision B, above),
+   * and only when BSC does not contradict the set-year stints. A card with a
+   * BSC name and a set-year stint at a team that is not among that name's
+   * rows has two sources saying two things —
    * product invariant 7: surface it, never settle it. Nothing is preselected
    * and the career line says BSC disagrees. A BSC name we could not look up
    * (no sport) cannot vouch for anything, so it counts as disagreeing: the
-   * cost is one click, the alternative is a silent write.
+   * cost is one click, the alternative is a silent write. And nothing under
+   * a set whose own default is "No Team" (decision A, `setNoTeam`).
    */
   const setYearTeamIds = useMemo(
     () => [...careerByTeam.values()].filter((chip) => chip.inSetYear).map((chip) => chip.teamId),
@@ -306,8 +374,8 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
   const bscDisagrees =
     bscName !== "" && setYearTeamIds.some((id) => !marketplaceIds.has(id as string));
   const preselect = useMemo(
-    () => (bscDisagrees ? [] : setYearTeamIds.slice(0, MAX_CARD_TEAMS)),
-    [bscDisagrees, setYearTeamIds],
+    () => (bscDisagrees || setNoTeam ? [] : loneSetYearTeamIds.slice(0, MAX_CARD_TEAMS)),
+    [bscDisagrees, setNoTeam, loneSetYearTeamIds],
   );
   const ready = suggestions !== undefined && bscSettled;
 
@@ -319,8 +387,14 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
 
   // Initial focus follows what the copy promises (NEO-282, NEO-330). With a
   // set-year team preselected the panel says "Enter accepts", so focus lands
-  // on "Save & Next (Enter)" and the first Enter saves. With chips on screen
-  // and NOTHING preselected — a career fallback, or the listing's eras — Save
+  // on "Save & Next (Enter)" and the first Enter saves. With a set-year tie
+  // on the card (NEO-639) the panel says "pick", so focus lands on the tied
+  // player's first chip, whatever else is ticked: on Save, one Enter would
+  // write the other players' teams and skip his. The first of HIS chips, in
+  // panel order, that is not already ticked for someone else — never just the
+  // first button, which may be a listing era that is not his. With chips on
+  // screen and NOTHING preselected — a career fallback, the listing's eras,
+  // or a set whose own default is No Team — Save
   // is aria-disabled and would write nothing anyway; focus goes to the first
   // chip, where Enter or Space picks it (the eras come first, so that is
   // usually the era the listing named). With no chips at all it goes to the
@@ -331,23 +405,35 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
   // card just answered (the NEO-189 stranding finding). Keyed on the target,
   // not on live selection, so toggling a chip never moves focus.
   const chipCount = marketplaceChips.length + careerChips.length;
-  const focusTarget: "save" | "chip" | "picker" = !ready
+  const tieFocusTeamId = useMemo(() => {
+    if (!setYearTie) return undefined;
+    const tied = [...marketplaceChips, ...careerChips]
+      .map((chip) => chip.teamId as string)
+      .filter((id) => tiedTeamIds.has(id));
+    return tied.find((id) => !preselect.includes(id as Id<"teams">)) ?? tied[0];
+  }, [setYearTie, marketplaceChips, careerChips, tiedTeamIds, preselect]);
+  const focusTarget: "save" | "tie" | "chip" | "picker" = !ready
     ? "picker"
-    : preselect.length > 0
-      ? "save"
-      : chipCount > 0
-        ? "chip"
-        : "picker";
+    : tieFocusTeamId !== undefined
+      ? "tie"
+      : preselect.length > 0
+        ? "save"
+        : chipCount > 0
+          ? "chip"
+          : "picker";
   useEffect(() => {
     const raf = requestAnimationFrame(() => {
       if (pickerEngagedRef.current) return;
+      const tieChip =
+        tieFocusTeamId !== undefined ? chipRefs.current.get(tieFocusTeamId) : undefined;
       if (focusTarget === "save" && saveBtnRef.current) saveBtnRef.current.focus();
+      else if (focusTarget === "tie" && tieChip) tieChip.focus();
       else if (focusTarget === "chip" && optionsRef.current?.querySelector("button")) {
         optionsRef.current.querySelector("button")?.focus();
       } else pickerRegionRef.current?.querySelector("button")?.focus();
     });
     return () => cancelAnimationFrame(raf);
-  }, [focusTarget]);
+  }, [focusTarget, tieFocusTeamId]);
 
   // Memoized so the identity is stable per `teamIds` — `chosenSet` and
   // `playerLine` both depend on it, and a fresh [] every render would rebuild
@@ -395,6 +481,10 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
     return (
       <li key={chip.teamId as string}>
         <button
+          ref={(el) => {
+            if (el) chipRefs.current.set(chip.teamId as string, el);
+            else chipRefs.current.delete(chip.teamId as string);
+          }}
           type="button"
           aria-pressed={on}
           aria-disabled={blocked || undefined}
@@ -499,9 +589,10 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
         // because TeamPicker's typeahead owns its own Enter (select, or create
         // a team that matched nothing); BUTTON because Enter on a focused
         // button already activates it natively. Focus starts on "Save & Next"
-        // itself whenever a set-year team is preselected (NEO-282, NEO-330),
-        // and on the first chip when nothing is, so without this guard
-        // one Enter would reach `save` twice — from here on keydown, then
+        // itself whenever a set-year team is preselected and no player is
+        // tied (NEO-282, NEO-330, NEO-639), and on a chip otherwise, so
+        // without this guard one Enter would reach `save` twice — from here
+        // on keydown, then
         // from the button's own click (the `busy` gate would swallow the
         // second, but one keystroke should mean one path) — and Enter on a
         // chip the operator tabbed back to would toggle it AND save in the
@@ -566,6 +657,7 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
                 careerChips.some((chip) => chip.inSetYear),
                 bscDisagrees,
                 uncoveredSetYear,
+                { setYearTie, othersTicked: preselect.length > 0, setNoTeam },
               )}
             </p>
             <ul

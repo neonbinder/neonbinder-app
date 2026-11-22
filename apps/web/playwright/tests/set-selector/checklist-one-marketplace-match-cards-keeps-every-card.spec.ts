@@ -35,19 +35,24 @@
 // checklist names is a data claim that stays (components/SetSelector/teams-on-cards.ts,
 // `checklistClaim`): no rule fills another team over it and skipping the New Team
 // step does not release it (NEO-478, tried 2026-11-10 with the whole file and put
-// back). That is exactly why ONE card keeps its live lookup: Chris Pollack's card
-// is asked of BSC, whose "Roanoke Express" the New Team step's skip DOES release,
-// so the created player's career-team PRE-FILL (STEP 6, the NEO-335 behaviour this
-// spec exists to prove) still happens on his card. The other 24 cards are claimed:
-// they land on "Cards with no players" under Leave for later with nothing pre-filled,
-// which is all this spec ever asked of them. Before this the two syncs made 50
-// live BSC lookups (25 cards twice), enough to get the next spec rate-limited.
+// back). That is exactly why ONE card is left to BSC: Chris Pollack's card makes no
+// checklist claim, so the created player's career-team PRE-FILL (STEP 6, the NEO-335
+// behaviour this spec exists to prove) happens on his card. The other 24 cards are
+// claimed: they land on "Cards with no players" under Leave for later with nothing
+// pre-filled, which is all this spec ever asked of them. Before this the two syncs
+// made 50 live BSC lookups (25 cards twice), enough to get the next spec rate-limited.
 //
-// BOTH OUTCOMES OF THAT ONE LOOKUP PASS (NEO-489, Jason 2026-11-11): BSC rate-limits the live
-// card now and then, and a 429 or an already-open cooldown means the lookup is skipped and his
-// card is asked of the operator instead. STEP 6 accepts either (BSC answered: the career team is
-// pre-checked; skipped: it is offered and the spec picks it), annotates which one ran
-// (`bsc-lookup`), and every later assert is the same in both.
+// THAT ONE LOOKUP FAILS ON THE FIRST SYNC, ON PURPOSE (NEO-639). Before the first fetch the
+// fake BSC is told to answer 503 to every card-listing read on this worker (`bscFault.
+// answersUnavailable`, support/bscFake.ts; Pollack's card is the only one this sync reads, so
+// no card id is needed). A lookup that never answered is MISSING data, not a claim (CLAUDE.md
+// invariant 8): his card still gets the league-ranked career pre-fill (STEP 6), the chip the
+// pre-fill passes over says his years with that team, and once the card saves WITH a team it
+// is not queued for the background lookup ("Still looking up teams" stays away, STEP 7).
+// Before NEO-639 the failed lookup held every guess back and the line came up on "Leave for
+// later". One card, a 503 and one retry: two failures, under the five that open this worker's
+// own BSC call gate (NEO-628). The rule is cleared before the STEP 10 re-sync, whose lookup
+// answers from the recording as it always did.
 //
 // NEO-569 rides this fixture as well: the set's League list decides which of a
 // created player's in-window career teams the Teams step pre-selects. Before the
@@ -77,7 +82,8 @@ import {
   syncChecklistButton,
 } from "../../support/set-builder";
 import { editCardButton } from "../../support/cards";
-import { bscLookupOutcome, expectAfterMarketplace, expectStepWithSportLots } from "../../support/marketplace-wait";
+import { expectAfterMarketplace, expectStepWithSportLots } from "../../support/marketplace-wait";
+import { BSC_PATH, bscFault } from "../../support/bscFake";
 import { recordedNoMatchName } from "../../support/recorded-names";
 import {
   CHECKLISTS,
@@ -204,7 +210,7 @@ async function expectNoTeamChipsToTheEnd(page: Page, maxCards = 40): Promise<num
 test(
   "Checklist — a set with exactly ONE marketplace attached and its publisher's checklist starts on the progress line and opens Match Cards for the card the checklist leaves out, keeps it, and saves every fetched card",
   { tag: ["@set-selector"] },
-  async ({ page, signIn, env }) => {
+  async ({ page, signIn, env, bscFake }) => {
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
 
@@ -269,6 +275,8 @@ test(
     // NEO-640: a two-source run skips Match Cards only when every card is Matched at 100%; this
     // file leaves a card out, so it must open (R2: the fixture's fact, stated before the fetch).
     expect(opensMatchCards(facts, env), "Roanoke's one-live file leaves a card out, so Match Cards opens").toBe(true);
+    // NEO-639: that one card's team lookup FAILS (header). `times` unset: the retry fails too.
+    await bscFake.setFaults([bscFault.answersUnavailable(BSC_PATH.cardListing)]);
     await syncChecklistButton(page).click();
     // NEO-640: every run with two or more sources starts on the progress line, no dialog yet; the
     // dialog opens only once a streamed card turns out to need the operator.
@@ -508,21 +516,28 @@ test(
     // ...and the Penguins pick above no longer holds: one team per card on this row.
     await expect(wizard.getByRole("radio", { name: /^Pittsburgh Penguins — #/ })).not.toBeChecked();
 
-    // THE PRE-FILL (NEO-569). BSC does not 429 on its own any more (GUIDE, "BSC does not 429 on
-    // its own"), so his live card is answered and the line is final here. It offers both
-    // in-window career teams (same years: 1994-1996 covers the set year 1995), and the SET'S
-    // LEAGUES break the tie: Wisconsin Badgers play in NCAA, which the Base row's League list
-    // now holds, so they are CHECKED by default, nobody touched them; the club has no league and
-    // ranks last, so it is offered and not selected. Without NCAA on the row the same two teams tie
-    // and neither is selected (the planted proof: skip the "Add league" step above and this goes red).
-    const careerTeamRadio = wizard.getByRole("radio", { name: `${team} — ${LIVE_PLAYER}`, exact: true });
+    // THE PRE-FILL (NEO-569), ON A CARD WHOSE LOOKUP FAILED (NEO-639). His card's BSC lookup
+    // answered 503 (header), which is missing data, not a claim, so nothing holds the guess back.
+    // The line offers both in-window career teams (same years: 1994-1996 covers the set year
+    // 1995), and the SET'S LEAGUES break the tie: Wisconsin Badgers play in NCAA, which the Base
+    // row's League list now holds, so they are CHECKED by default, nobody touched them; the club
+    // has no league and ranks last, so it is offered and not selected. Without NCAA on the row the
+    // same two teams tie and neither is selected (the planted proof: skip the "Add league" step
+    // above and this goes red). Before NEO-639 the failed lookup left the whole line unselected.
+    // THE YEARS (NEO-639): the chip the pre-fill passes over says his years with that club, in
+    // its visible text and its name ("<team> · 1994–1996"); the pre-filled chip says none.
+    const careerTeamRadio = wizard.getByRole("radio", { name: `${team} · 1994–1996 — ${LIVE_PLAYER}`, exact: true });
     const collegeRadio = wizard.getByRole("radio", { name: `${COLLEGE_TEAM} — ${LIVE_PLAYER}`, exact: true });
+    await expect(wizard.getByRole("radiogroup", { name: `Team for ${LIVE_PLAYER}`, exact: true })).toBeVisible();
     await expect(careerTeamRadio).toBeVisible();
     await expect(collegeRadio).toBeVisible();
     await expect(collegeRadio).toBeChecked();
     await expect(careerTeamRadio).not.toBeChecked();
-    bscLookupOutcome("answered", LIVE_PLAYER);
-    await expectAccessible(page, { within: wizard, label: "Entity review wizard, Teams step with a league-ranked pre-fill" });
+    await expect(careerTeamRadio).toHaveText(`${team} · 1994–1996`);
+    await expectAccessible(page, {
+      within: wizard,
+      label: "Entity review wizard, Teams step with a league-ranked pre-fill on a failed lookup, years on the other chip",
+    });
     // The operator then picks the club, so everything after is as it was.
     await careerTeamRadio.check();
     await expect(careerTeamRadio).toBeChecked();
@@ -568,6 +583,10 @@ test(
     // answered. 7 s is the R5 bar and the discriminator: the old climb could not
     // finish inside it. Exact name, so a count that is still moving fails by its number.
     await expect(page.getByRole("button", { name: needYou, exact: true })).toBeVisible();
+    // NEO-639: his card's lookup failed, but it saved WITH the team picked above, so it is not
+    // queued for the background lookup: no "Still looking up teams" line (were it queued, the
+    // line would read "for 1 card"). Paired with the count just above, read off the same page.
+    await expect(page.getByRole("status").filter({ hasText: /Still looking up teams for/ })).toHaveCount(0);
 
     // Every card is BSC only; nothing is SL only.
     await expect(page.getByText(new RegExp(`\\(${FETCHED}\\)`)).first()).toBeVisible();
@@ -649,7 +668,9 @@ test(
     // stored with no player link against an incoming name, both content
     // changes, so "Skip changes" (apply nothing, keep NeonBinder's version) is
     // the deterministic way through.
-    // The same checklist again (the chip may still hold it): ONE live BSC lookup this time too.
+    // The same checklist again (the chip may still hold it): ONE live BSC lookup this time too, and
+    // it ANSWERS: the first sync's 503 rule (NEO-639) is dropped first, so the re-sync is as before.
+    await bscFake.clear();
     await usePublishersChecklist(page, CHECKLISTS.roanokeExpress1995OneLive);
     await syncChecklistButton(page).click();
     // A live BSC fetch: Match Cards again (two sources, NEO-496), with LIVE_PLAYER's card kept so
@@ -679,7 +700,8 @@ test(
     // ...and the settled pre-filled card is NOT asked again: its line would be the
     // created player's, offering (and pre-filling) the RXT team from his stored
     // card and career. Paired with the positive above.
-    await expect(wizard.getByRole("radio", { name: new RegExp(`^${team} — `) })).toHaveCount(0);
+    // NEO-639: a chip outside the pre-fill carries years ("<team> · 1994–1996 — ..."), so either name.
+    await expect(wizard.getByRole("radio", { name: new RegExp(`^${team}( · [^—]+)? — `) })).toHaveCount(0);
 
     // ONE Next leaves every line on its default and lands on Save (nothing sits
     // between the teams step and Save), for every fetched card again.

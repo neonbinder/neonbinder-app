@@ -121,13 +121,16 @@ type RowOverrides = {
 };
 const SPORT_ID = "sport-baseball" as unknown as Id<"selectorOptions">;
 
-function fixerElement(
-  rowOverrides: RowOverrides = {},
-  opts: { sportId?: Id<"selectorOptions"> | null } = {},
-) {
+type FixerOpts = {
+  sportId?: Id<"selectorOptions"> | null;
+  /** NEO-639 (decision A): the set's own team default is "No Team". */
+  setNoTeam?: boolean;
+};
+
+function fixerElement(rowOverrides: RowOverrides = {}, opts: FixerOpts = {}) {
   const sportId = opts.sportId === null ? undefined : (opts.sportId ?? SPORT_ID);
   return (
-    <AttentionSportContext.Provider value={{ sportId }}>
+    <AttentionSportContext.Provider value={{ sportId, setNoTeam: opts.setNoTeam }}>
       <MissingTeamFixer
         row={{
           _id: CARD_ID,
@@ -143,10 +146,7 @@ function fixerElement(
   );
 }
 
-function renderFixer(
-  rowOverrides: RowOverrides = {},
-  opts: { sportId?: Id<"selectorOptions"> | null } = {},
-) {
+function renderFixer(rowOverrides: RowOverrides = {}, opts: FixerOpts = {}) {
   return render(fixerElement(rowOverrides, opts));
 }
 
@@ -270,6 +270,178 @@ describe("MissingTeamFixer — what is preselected, and where focus lands (NEO-3
     fireEvent.click(saveButton());
     await act(async () => {});
     expect(mockUpdateCard).not.toHaveBeenCalled();
+  });
+
+  it("NEO-639: a player with two set-year teams is a tie — neither is preselected, and the heading says so", async () => {
+    suggestions = [
+      suggestion({ teamId: "team-reds", name: "Cincinnati Reds", playerName: "Traded Guy" }),
+      suggestion({ teamId: "team-mets", name: "New York Mets", playerName: "Traded Guy" }),
+    ];
+    renderFixer();
+
+    expect(chips()).toHaveLength(2);
+    expect(pressed()).toHaveLength(0);
+    expect(screen.getByTestId("picker-value").textContent).toBe("");
+    expect(saveButton().getAttribute("aria-disabled")).toBe("true");
+    expect(
+      screen.getByText(
+        "From the career — more than one team that season, so pick the one on the card.",
+      ),
+    ).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(chips()[0]));
+  });
+
+  it("NEO-639: the tie is per player — a co-player's one set-year team is still preselected", () => {
+    suggestions = [
+      suggestion({ teamId: "team-reds", name: "Cincinnati Reds", playerName: "Traded Guy" }),
+      suggestion({ teamId: "team-mets", name: "New York Mets", playerName: "Traded Guy" }),
+      suggestion({ teamId: "team-cubs", name: "Chicago Cubs", playerName: "Stayed Put" }),
+    ];
+    renderFixer();
+
+    expect(pressed().map((b) => b.getAttribute("aria-label"))).toEqual([
+      "Chicago Cubs · Stayed Put played here",
+    ]);
+    expect(screen.getByTestId("picker-value").textContent).toBe("team-cubs");
+  });
+
+  it("NEO-639 (mixed tie): the line names both facts, and focus is on the tied player's first chip, not Save", async () => {
+    // The lone player's chip comes FIRST in the panel, so "the first button"
+    // would be his — the focus has to find the tied player's own chip.
+    suggestions = [
+      suggestion({ teamId: "team-cubs", name: "Chicago Cubs", playerName: "Stayed Put" }),
+      suggestion({ teamId: "team-reds", name: "Cincinnati Reds", playerName: "Traded Guy" }),
+      suggestion({ teamId: "team-mets", name: "New York Mets", playerName: "Traded Guy" }),
+    ];
+    renderFixer();
+
+    expect(pressed().map((b) => b.getAttribute("aria-label"))).toEqual([
+      "Chicago Cubs · Stayed Put played here",
+    ]);
+    expect(
+      screen.getByText(
+        "From the career — some players have more than one team that season. Pick theirs; the others are ticked.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText("Suggested from career history — Enter accepts these.")).toBeNull();
+    const reds = screen.getByLabelText("Cincinnati Reds · Traded Guy played here");
+    await waitFor(() => expect(document.activeElement).toBe(reds));
+    expect(document.activeElement).not.toBe(saveButton());
+    expect(document.activeElement).not.toBe(chips()[0]);
+  });
+
+  it("NEO-639 (mixed tie): a tied team already ticked for a co-player is skipped for focus", async () => {
+    // Stayed Put's one team is the Reds; Traded Guy had the Reds AND the Mets.
+    // Focus on the Reds would make Enter UNtick a team; it goes to the Mets.
+    suggestions = [
+      suggestion({ teamId: "team-reds", name: "Cincinnati Reds", playerName: "Stayed Put" }),
+      suggestion({ teamId: "team-reds", name: "Cincinnati Reds", playerName: "Traded Guy" }),
+      suggestion({ teamId: "team-mets", name: "New York Mets", playerName: "Traded Guy" }),
+    ];
+    renderFixer();
+
+    expect(screen.getByTestId("picker-value").textContent).toBe("team-reds");
+    const mets = screen.getByLabelText("New York Mets · Traded Guy played here");
+    await waitFor(() => expect(document.activeElement).toBe(mets));
+  });
+
+  it("NEO-639 (mixed tie): Enter on the focused chip ticks it and saves nothing", async () => {
+    suggestions = [
+      suggestion({ teamId: "team-cubs", name: "Chicago Cubs", playerName: "Stayed Put" }),
+      suggestion({ teamId: "team-reds", name: "Cincinnati Reds", playerName: "Traded Guy" }),
+      suggestion({ teamId: "team-mets", name: "New York Mets", playerName: "Traded Guy" }),
+    ];
+    renderFixer();
+    const reds = screen.getByLabelText("Cincinnati Reds · Traded Guy played here");
+    await waitFor(() => expect(document.activeElement).toBe(reds));
+
+    // The panel's Enter-to-save skips a BUTTON target; the chip's own
+    // activation is its click.
+    fireEvent.keyDown(reds, { key: "Enter" });
+    fireEvent.click(reds);
+    await act(async () => {});
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+    expect(screen.getByTestId("picker-value").textContent).toBe("team-cubs,team-reds");
+  });
+
+  it("NEO-639: a tie focuses the tied player's chip even when a listing era comes first", async () => {
+    // The listing names a team the career does not, so its era chip is the
+    // first button in the panel and the listing disagrees (its line wins).
+    erasByName = {
+      "Oakland Athletics": [
+        { _id: "team-oak", name: "Athletics", location: "Oakland", label: "Oakland Athletics" },
+      ],
+    };
+    suggestions = [
+      suggestion({ teamId: "team-reds", name: "Cincinnati Reds", playerName: "Traded Guy" }),
+      suggestion({ teamId: "team-mets", name: "New York Mets", playerName: "Traded Guy" }),
+    ];
+    renderFixer({ bscTeamName: "Oakland Athletics" });
+
+    expect(chips()[0].textContent).toContain("Oakland Athletics");
+    expect(pressed()).toHaveLength(0);
+    expect(
+      screen.getByText(
+        "From the career — the listing names a different team, so pick the one on the card.",
+      ),
+    ).toBeTruthy();
+    const reds = screen.getByLabelText("Cincinnati Reds · Traded Guy played here");
+    await waitFor(() => expect(document.activeElement).toBe(reds));
+  });
+
+  it("NEO-639 (decision A): under the set's own No Team, a lone set-year team is offered, not preselected", async () => {
+    suggestions = [
+      suggestion({ teamId: "team-1", name: "San Diego Padres", playerName: "Fernando Tatis Jr." }),
+    ];
+    renderFixer({}, { setNoTeam: true });
+
+    expect(chips()).toHaveLength(1);
+    expect(pressed()).toHaveLength(0);
+    expect(screen.getByTestId("picker-value").textContent).toBe("");
+    expect(saveButton().getAttribute("aria-disabled")).toBe("true");
+    expect(
+      screen.getByText(
+        "From the career — this set says No Team, so pick one only if it’s on the card.",
+      ),
+    ).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(chips()[0]));
+    expect(document.activeElement).not.toBe(saveButton());
+  });
+
+  it("NEO-639 (decision A): under the set's own No Team, a listing the career agrees with is not preselected either", () => {
+    erasByName = {
+      "San Diego Padres": [
+        { _id: "team-1", name: "Padres", location: "San Diego", label: "San Diego Padres" },
+      ],
+    };
+    suggestions = [
+      suggestion({ teamId: "team-1", name: "San Diego Padres", playerName: "Fernando Tatis Jr." }),
+    ];
+    renderFixer({ bscTeamName: "San Diego Padres" }, { setNoTeam: true });
+
+    expect(pressed()).toHaveLength(0);
+    expect(screen.getByTestId("picker-value").textContent).toBe("");
+    // The listing's line never says "Enter accepts" over nothing ticked.
+    expect(screen.getByText("The listing names “San Diego Padres” — pick it if it matches the card.")).toBeTruthy();
+  });
+
+  it("NEO-639 (decision A): a set with a team default, or none, still preselects", () => {
+    suggestions = [
+      suggestion({ teamId: "team-1", name: "San Diego Padres", playerName: "Fernando Tatis Jr." }),
+    ];
+    renderFixer({}, { setNoTeam: false });
+    expect(screen.getByTestId("picker-value").textContent).toBe("team-1");
+  });
+
+  it("NEO-639: the same team sent twice for one player is one team, not a tie", () => {
+    suggestions = [
+      suggestion({ teamId: "team-reds", name: "Cincinnati Reds", playerName: "Johnny Bench" }),
+      suggestion({ teamId: "team-reds", name: "Cincinnati Reds", playerName: "Johnny Bench" }),
+    ];
+    renderFixer();
+
+    expect(screen.getByTestId("picker-value").textContent).toBe("team-reds");
+    expect(screen.getByText("Suggested from career history — Enter accepts these.")).toBeTruthy();
   });
 
   it("with no chips at all, focus goes to the picker", async () => {
@@ -473,6 +645,40 @@ describe("MissingTeamFixer — heading copy (NEO-330)", () => {
     expect(careerHeading(false, false)).toBe(
       "No year on this set — here’s the whole career. Pick the one on the card.",
     );
+    // NEO-639 — a set-year tie has its own line; the listing's disagreement
+    // and a career fallback still speak first.
+    expect(careerHeading(true, false, undefined, { setYearTie: true })).toBe(
+      "From the career — more than one team that season, so pick the one on the card.",
+    );
+    expect(careerHeading(true, true, undefined, { setYearTie: true })).toBe(
+      "From the career — the listing names a different team, so pick the one on the card.",
+    );
+    expect(careerHeading(false, false, 2025, { setYearTie: true })).toBe(
+      "No 2025 team on file — here’s the whole career. Pick the one on the card.",
+    );
+    // A tie beside other players' ticked teams names both facts.
+    expect(careerHeading(true, false, undefined, { setYearTie: true, othersTicked: true })).toBe(
+      "From the career — some players have more than one team that season. Pick theirs; the others are ticked.",
+    );
+    // Ticked with no tie is the plain line.
+    expect(careerHeading(true, false, undefined, { othersTicked: true })).toBe(
+      "Suggested from career history — Enter accepts these.",
+    );
+    // Decision A: the set's No Team speaks after a fallback and the listing,
+    // and before any tie.
+    const noTeam = "From the career — this set says No Team, so pick one only if it’s on the card.";
+    expect(careerHeading(true, false, undefined, { setNoTeam: true })).toBe(noTeam);
+    expect(careerHeading(true, false, undefined, { setNoTeam: true, setYearTie: true })).toBe(noTeam);
+    expect(careerHeading(true, true, undefined, { setNoTeam: true })).toBe(
+      "From the career — the listing names a different team, so pick the one on the card.",
+    );
+    expect(careerHeading(false, false, 2025, { setNoTeam: true })).toBe(
+      "No 2025 team on file — here’s the whole career. Pick the one on the card.",
+    );
+    // Never names the marketplace.
+    for (const facts of [{ setNoTeam: true }, { setYearTie: true, othersTicked: true }]) {
+      expect(careerHeading(true, false, undefined, facts)).not.toMatch(/BSC|SportLots|BuySportsCards/);
+    }
   });
 
   it("playedHere joins full names", () => {

@@ -150,6 +150,24 @@ beforeEach(() => {
   mockApply.mockClear();
 });
 
+// NEO-638: dnd-kit's KeyboardSensor attaches its document keydown listener one
+// macrotask AFTER a keyboard pick-up. A test that ends right after the pick-up
+// would otherwise let it attach after the next test has mounted, where it
+// swallows that test's keys (preventDefault) in whatever order a shuffle chose.
+// Let that task run, then end any drag, while this test's tree is still mounted.
+const endAnyKeyboardDrag = async () => {
+  await act(async () => {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  });
+  act(() => {
+    fireEvent.keyDown(document, { key: "Escape", code: "Escape" });
+  });
+};
+afterEach(async () => {
+  if (vi.isFakeTimers()) return;
+  await endAnyKeyboardDrag();
+});
+
 describe("ParallelGroupingModal — keyboard entry point", () => {
   /**
    * The window listener this replaced fired wherever focus was, which is why
@@ -589,8 +607,8 @@ describe("ParallelGroupingModal — draggable rows", () => {
   // click-swallowing capture listener 50ms after a drag ends, so wait it
   // out or the next test's first click is eaten.
   afterEach(async () => {
+    await endAnyKeyboardDrag();
     act(() => {
-      fireEvent.keyDown(document, { key: "Escape", code: "Escape" });
       fireEvent.mouseUp(document);
     });
     await act(async () => {

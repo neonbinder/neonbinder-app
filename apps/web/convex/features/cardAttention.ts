@@ -202,7 +202,10 @@ export type AttentionCardRow = {
  * `adapters/buysportscards.ts`) and then stamps `teamCheckDoneAt` through
  * `bscTeamCheck.markBscTeamCheckGivenUp`, writing no team — so the card lands
  * here, badged, for the operator to pick. Jason, 2026-10-11: "If a team lookup
- * never returns then the user must select a team."
+ * never returns then the user must select a team." A lookup that never
+ * returned is missing data, not a claim (invariant 8, NEO-639): the fixer
+ * offers the career as for any card, preselecting a player's set-year team
+ * only when he has exactly one.
  */
 export function deriveCardAttention(row: AttentionCardRow): AttentionItem[] {
   const items: AttentionItem[] = [];

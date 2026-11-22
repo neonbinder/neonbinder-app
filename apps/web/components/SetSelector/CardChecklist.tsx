@@ -1706,12 +1706,18 @@ export default function CardChecklist({
   // A ref, not state: the check runs inside an async closure that captured its
   // own render's values, which is exactly where a state read would be stale.
   const syncGenerationRef = useRef(0);
-  // NEO-640 (security audit) — leaving the page cancels a run the way Cancel
-  // does. A clean run commits without the operator in front of anything (the
-  // one-source auto-keep and the multi-source skip), so a run whose rows
-  // landed AFTER the operator walked away must not save cards they can no
-  // longer see. Bumping the generation is all `abandoned()` needs: the settle
-  // wait stands down, the commit never starts, and the late result is dropped.
+  // NEO-640 / NEO-638 — a run is over when its component is: leaving the page
+  // cancels a run the way Cancel does. ONE unmount path, one bump of the
+  // generation, and `abandoned()` (which reads it) does the rest:
+  //  - NEO-640: a clean run commits without the operator in front of anything
+  //    (the one-source auto-keep and the multi-source skip), so a run whose
+  //    rows landed AFTER the operator walked away must not save cards they can
+  //    no longer see. The settle wait stands down, the commit never starts,
+  //    and the late result is dropped.
+  //  - NEO-638: candidates are keyed by set + admin, not by session, so an old
+  //    stream wait that timed out after unmount would discard a NEWER Sync's
+  //    candidates for the same set. Bumping the generation ends every pending
+  //    wait before it can.
   // Staged candidates are left for the next fetch's clear-stale step, as they
   // are for any abandoned run.
   useEffect(() => {
@@ -4703,6 +4709,9 @@ export default function CardChecklist({
           cards={cards}
           sportId={ancestorSportId}
           contextOptionId={variantId}
+          // NEO-639 (decision A): under the set's own "No Team" the team
+          // fixer offers careers and preselects none, like the Teams step.
+          setNoTeam={setTeamDefaultKind(variantRow) === "noTeam"}
           // a11y: the durable restore target, because the control that opened
           // this may not survive the sitting — the pill unmounts at
           // `attentionCount === 0`, which is exactly the state the walker is
@@ -4869,6 +4878,9 @@ export default function CardChecklist({
           // NEO-556: a "No Team" default counts too — the hint then points
           // at the answer already given rather than at setting one.
           hasSetTeam={setTeamDefaultKind(variantRow) !== "none"}
+          // NEO-639 (decision A): under the set's own "No Team", the teams
+          // step offers each line's teams and pre-fills none.
+          setNoTeam={setTeamDefaultKind(variantRow) === "noTeam"}
           // NEO-497: "Tidy up 2024 Topps Chrome", not "this set".
           title={tidyTitle}
           // NEO-221 (D6): the whole account of what Confirm is about to do,
