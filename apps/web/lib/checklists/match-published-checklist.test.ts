@@ -8,6 +8,7 @@
 import { describe, expect, test } from "vitest";
 import {
   MAX_CHECKLIST_MISREADS,
+  checklistNameKey,
   exactChecklistNumber,
   isNoNumber,
   matchPublishedChecklist,
@@ -26,6 +27,26 @@ const row = (number: string, players: string[] = [], teams: string[] = []) => ({
   number,
   players,
   teams,
+});
+
+describe("checklistNameKey (NEO-643: the one entity-name reading)", () => {
+  test("BSC's backslash for an accent keys the same as the accented name", () => {
+    expect(checklistNameKey("Wilmer R\\ios")).toBe(checklistNameKey("Wilmer Ríos"));
+    expect(checklistNameKey("Wilmer R\\ios")).toBe("wilmer rios");
+  });
+
+  test("a checklist row naming Ríos pairs with a BSC card printing R\\ios", () => {
+    const r = matchPublishedChecklist(
+      [card("12", ["Wilmer R\\ios"])],
+      [row("12", ["Wilmer Ríos"])],
+    );
+    expect(r.matches).toHaveLength(1);
+    expect(r.unmatchedCardIndices).toEqual([]);
+  });
+
+  test("initials join however they are spaced", () => {
+    expect(checklistNameKey("C.J. Kayfus")).toBe(checklistNameKey("C. J. Kayfus"));
+  });
 });
 
 describe("matchPublishedChecklist: the exactly-one guard", () => {

@@ -90,6 +90,7 @@
  */
 
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../../convex/features/cardAttention";
+import { cleanseExternalName } from "../entities/cleanse-name";
 import { HOBBY_MARKER_PATTERN } from "../cards/print-run-markers";
 import { isNoClaimTeamText, isNoTeamText, NO_TEAM_AND_A_TEAM } from "./no-team";
 import { bracketedNotesEnd, matchBrackets, readProspectCell } from "./prospect";
@@ -460,7 +461,9 @@ const MAX_NOTE_GROUPS = 8;
 
 /** A note as a name: VAR keyword and control characters gone, bounded. "" when nothing is left. */
 function variationNameFromNote(note: string): string {
-  let name = note
+  // NEO-643: cleansed first (junk deleted inside the word), then the rest of
+  // the invisible set becomes a space as it always did.
+  let name = cleanseExternalName(note)
     .replace(CONTROL_CHARS, " ")
     .replace(VAR_KEYWORD, " ")
     .replace(/\s+/g, " ")
@@ -569,7 +572,12 @@ function keepFirstBracket(text: string): string {
  * is by it (NEO-591); see `keepFirstBracket`.
  */
 function cleanNamePart(text: string, keepBrackets = false): string {
-  return dropTrademarks(dropMarkers(keepBrackets ? keepFirstBracket(text) : dropBracketed(text)));
+  // NEO-643: a name read out of a file is cleansed as it comes in (BSC-style
+  // "R\ios" backslashes, soft hyphens, zero-width characters gone; spacing
+  // collapsed), whichever source the file was exported from.
+  return cleanseExternalName(
+    dropTrademarks(dropMarkers(keepBrackets ? keepFirstBracket(text) : dropBracketed(text))),
+  );
 }
 
 /** Player names that are the card's subject, not a person. */
@@ -1489,7 +1497,7 @@ export function parsePublishedChecklist(
   if (text.length > PUBLISHED_CHECKLIST_MAX_TEXT) {
     return { rows: [], skipped: [], format: "lines", tooBig: true };
   }
-  const lines = text.replace(/^﻿/, "").split(/\r\n|\r|\n/);
+  const lines = text.replace(/^\uFEFF/, "").split(/\r\n|\r|\n/);
   const firstIndex = lines.findIndex((l) => l.trim() !== "");
   const out = new ParseCollector(mode);
   if (firstIndex === -1) return { rows: [], skipped: [], format: "lines" };
@@ -1809,7 +1817,11 @@ export const COLUMN_HEADINGS_AGAIN = "Column headings again";
 /** Said for a section line that names no player. */
 const NO_PLAYER_ON_LINE = "No player on this line";
 
-/** A heading's name as stored: trademarks gone, spacing collapsed. */
+/**
+ * A heading's name as stored: trademarks gone, spacing collapsed. A heading
+ * becomes a section name, a stored link key, so it is not cleansed (NEO-643,
+ * no backfill).
+ */
 function cleanHeadingName(text: string): string {
   return dropTrademarks(text).replace(/\s+/g, " ").trim();
 }

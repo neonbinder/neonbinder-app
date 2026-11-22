@@ -212,6 +212,7 @@ import {
   findTeamsByFullName,
   teamRowFields,
 } from "./lib/teamRow";
+import { cleanseExternalName } from "../lib/entities/cleanse-name";
 import { erasOverlap } from "../lib/teams/team-era";
 import {
   longestToken,
@@ -538,9 +539,13 @@ const teamsResultValidator = v.object({
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/** Trim, collapse whitespace, refuse empty or over-long. */
+/**
+ * Cleanse (NEO-643: the dataset's stray backslashes, soft hyphens and
+ * zero-width characters out; spacing collapsed and trimmed), refuse empty or
+ * over-long.
+ */
 function boundedName(raw: string, what: string, key: string): string {
-  const name = raw.trim().replace(/\s+/g, " ");
+  const name = cleanseExternalName(raw);
   if (name.length === 0) {
     throw new ConvexError(`${what} for "${key}" is empty.`);
   }
@@ -713,7 +718,9 @@ export const upsertLeagues = internalMutation({
       if (row.yearsActive) assertYears(row.yearsActive, "A league span", name);
       const wikidataId = row.wikidataId ? boundedQid(row.wikidataId, name) : undefined;
       // Bounded the way League Management bounds them, own name dropped.
-      const aliases = row.aliases ? normalizeLeagueAliasList(row.aliases, name) : [];
+      const aliases = row.aliases
+        ? normalizeLeagueAliasList(row.aliases.map(cleanseExternalName), name)
+        : [];
 
       // Asked BEFORE the helper runs, because `findOrCreateLeague` does not say
       // whether it inserted and the script's report is the operator's only view
@@ -982,7 +989,7 @@ async function loadTeams(
     processed = rowIndex + 1;
     const key = boundedKey(row.key);
     const name = boundedName(row.name, "A team name", key);
-    const location = row.location?.trim().replace(/\s+/g, " ") || undefined;
+    const location = (row.location && cleanseExternalName(row.location)) || undefined;
     const fullName = teamFullName({ name, location });
     if (fullName.length > MAX_NAME_LENGTH) {
       throw new ConvexError(
@@ -996,7 +1003,9 @@ async function loadTeams(
     // Bounded and de-duplicated on the way in, exactly as the admin editor
     // does it, and against the full name this row would carry — so the
     // dataset's own label for the row is dropped when it IS the row's name.
-    const aliases = row.aliases ? normalizeTeamAliasList(row.aliases, fullName) : [];
+    const aliases = row.aliases
+      ? normalizeTeamAliasList(row.aliases.map(cleanseExternalName), fullName)
+      : [];
     const incomingKeys = new Set<string>([
       fields.nameNormalized,
       ...aliases.map((alias) => normalizeTeamName(alias)),
@@ -1868,7 +1877,7 @@ function cleanStints(
   }
   return raw.map((stint) => {
     const hasTeam = stint.teamId !== undefined;
-    const school = stint.school?.trim().replace(/\s+/g, " ") || undefined;
+    const school = (stint.school && cleanseExternalName(stint.school)) || undefined;
     if (hasTeam === (school !== undefined)) {
       throw new ConvexError(
         `A stint for "${key}" must name exactly one of teamId or school.`,
@@ -2614,14 +2623,16 @@ function boundedAliasList(raw: ReadonlyArray<string> | undefined, key: string): 
       `"${key}" has ${list.length} aliases; the limit is ${MAX_PLAYER_ALIASES}.`,
     );
   }
-  for (const alias of list) {
-    if (alias.trim().length > MAX_PLAYER_ALIAS_LENGTH) {
+  // NEO-643: aliases are names too, cleansed before the length bound.
+  const cleaned = list.map((alias) => cleanseExternalName(alias));
+  for (const alias of cleaned) {
+    if (alias.length > MAX_PLAYER_ALIAS_LENGTH) {
       throw new ConvexError(
-        `An alias for "${key}" is ${alias.trim().length} characters; the limit is ${MAX_PLAYER_ALIAS_LENGTH}.`,
+        `An alias for "${key}" is ${alias.length} characters; the limit is ${MAX_PLAYER_ALIAS_LENGTH}.`,
       );
     }
   }
-  return [...list];
+  return cleaned;
 }
 
 /**

@@ -386,6 +386,78 @@ describe("the review-queue resume key agrees across accents (NEO-253)", () => {
   });
 });
 
+describe("startBatch cleanses incoming names (NEO-643)", () => {
+  /**
+   * BSC writes "Wilmer R\ios" for Ríos. The row must be stored (and shown) as
+   * "Wilmer Rios", keyed the same as a clean spelling, and a resume that sends
+   * the backslash form again must find the SAME row rather than add a second.
+   */
+  test("a backslash or soft hyphen never reaches a stored row, and a resume keeps one row", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(USER);
+    const selectorOptionId = await seedSport(t);
+
+    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: USER.subject,
+      sportId: selectorOptionId,
+      playerNames: ["Wilmer R\\ios", "  Mike\u200b   Trout "],
+      teamNames: ["Le\\on Mex\u00adico"],
+    });
+
+    const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId,
+    });
+    expect(rows.map((r) => r.name).sort()).toEqual(["Leon Mexico", "Mike Trout", "Wilmer Rios"]);
+
+    const resumed = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: USER.subject,
+      sportId: selectorOptionId,
+      playerNames: ["Wilmer Ríos", "Mike Trout"],
+      teamNames: ["Leon Mexico"],
+    });
+    expect(resumed).toBe(batchId);
+    const after = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId,
+    });
+    expect(after.map((r) => r._id).sort()).toEqual(rows.map((r) => r._id).sort());
+
+    await drainScheduled(t);
+  });
+
+  test("a name that NFC lengthens past the bound is refused, by length and not by echo", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSport(t);
+    // 100 characters raw, 200 once composed: U+0958 composes to two characters.
+    const long = "\u0958".repeat(100);
+    expect(long.length).toBeLessThanOrEqual(120);
+    for (const lists of [{ playerNames: [long], teamNames: [] }, { playerNames: [], teamNames: [long] }]) {
+      const attempt = t.mutation(internal.entityReviewQueue.startBatch, {
+        selectorOptionId,
+        createdByUserId: USER.subject,
+        sportId: selectorOptionId,
+        ...lists,
+      });
+      await expect(attempt).rejects.toThrow(/once cleansed; the limit is 120/);
+      await expect(attempt).rejects.not.toThrow(/\u0958/);
+    }
+    // At the bound exactly is fine.
+    const ok = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: USER.subject,
+      sportId: selectorOptionId,
+      playerNames: ["A".repeat(120)],
+      teamNames: [],
+    });
+    expect(typeof ok).toBe("string");
+
+    await drainScheduled(t);
+  });
+});
+
 describe("the entityReviewSkips key agrees across accents (NEO-253)", () => {
   /**
    * The skip is written by `commitCardChecklistPrelude` (its own `norm`) and

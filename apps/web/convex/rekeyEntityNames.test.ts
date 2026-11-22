@@ -528,6 +528,85 @@ describe("rekeyEntityNames: an armed run", () => {
   });
 });
 
+describe("rekeyEntityNames: hyphenated names are already current (NEO-643)", () => {
+  /**
+   * Jason, 2026-11-22: a hyphen stays inside its token in a STORED key, so the
+   * rows main's code wrote ("smith-jones", "barons wilkes-barre") are current
+   * and the dry run, which is the runbook's check, must report 0 for every one
+   * of them. The first cut of NEO-643 spaced the hyphen in the stored key and
+   * this same dry run would have reported ~2,600 rows to re-key.
+   */
+  test("rows keyed by main's code report toRekey 0 in every table, and an armed run writes nothing", async () => {
+    arm();
+    const t = convexTest(schema, modules);
+    const baseball = await insertSelector(t, "sport", "Baseball");
+    const set = await insertSelector(t, "setName", "1996 Score");
+    await t.run(async (ctx) => {
+      const player = async (name: string, nameNormalized: string, aliases?: string[]) =>
+        ctx.db.insert("players", { name, nameNormalized, sportId: baseball, aliases, lastUpdated: NOW });
+      // An alias row is current only while the owner still lists the alias.
+      const smith = await player("Smith-Jones", "smith-jones", ["S-Jones"]);
+      await player("Shin-Soo Choo", "choo shin-soo");
+      await player("Min-jae Kim", "kim min-jae");
+      await player("Jae-min Kim", "jae-min kim");
+      await ctx.db.insert("playerSports", { playerId: smith, sportId: baseball, nameNormalized: "smith-jones" });
+      await ctx.db.insert("playerAliases", { playerId: smith, sportId: baseball, aliasNormalized: "s-jones" });
+      const team = await ctx.db.insert("teams", {
+        location: "Wilkes-Barre",
+        name: "Barons",
+        nameNormalized: "barons wilkes-barre",
+        sportId: baseball,
+        aliases: ["Barons of Wilkes-Barre"],
+        lastUpdated: NOW,
+      });
+      await ctx.db.insert("teamAliases", { teamId: team, sportId: baseball, aliasNormalized: "barons of wilkes-barre" });
+      await ctx.db.insert("leagues", {
+        level: "other" as const,
+        name: "Division I-A",
+        nameNormalized: "division i-a",
+        sportId: baseball,
+        lastUpdated: NOW,
+      });
+      await ctx.db.insert("franchises", {
+        name: "Wilkes-Barre Barons",
+        nameNormalized: "barons wilkes-barre",
+        sportId: baseball,
+        lastUpdated: NOW,
+      });
+      await ctx.db.insert("entityReviewSkips", {
+        selectorOptionId: set,
+        kind: "player",
+        name: "Shin-Soo Choo",
+        nameNormalized: "choo shin-soo",
+        skippedAt: NOW,
+        skippedByUserId: "user_seed",
+      });
+      await ctx.db.insert("entityReviewQueue", {
+        selectorOptionId: set,
+        batchId: "batch-1",
+        createdByUserId: "user_seed",
+        sportId: baseball,
+        status: "ready" as const,
+        kind: "player",
+        name: "Min-jae Kim",
+        nameNormalized: "kim min-jae",
+      });
+    });
+    const before = await snapshot(t);
+
+    const report = await dryRun(t);
+
+    expect(report.isComplete).toBe(true);
+    expect(report.samples).toEqual([]);
+    for (const table of ALL_TABLES) expect(toRekey(report, table)).toBe(0);
+    expect(report.collisionCount).toBe(0);
+
+    const armed = await armedRun(t);
+    expect(armed.tables.every((r) => r.toRekey === 0 && r.applied === 0)).toBe(true);
+    expect(await snapshot(t)).toEqual(before);
+  });
+});
+
 describe("rekeyEntityNames: report lists are capped, counts stay exact", () => {
   test(`samples keep at most ${SAMPLES_PER_TABLE} per table while toRekey counts every row`, async () => {
     const t = convexTest(schema, modules);

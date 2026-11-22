@@ -32,7 +32,7 @@
  * (Rule 6b keeps its own guard that every candidate has a career on file;
  * that guard is about "unknown is not absent" for RIVALS and is unchanged.)
  */
-import { normalizeEntityName } from "../../lib/entities/normalize-name";
+import { entityNameCompareKey, foldNameForCompare } from "../../lib/entities/normalize-name";
 
 /** The most pairs one coverage read answers; more is refused, never cut. */
 export const CAREER_COVERAGE_MAX_PAIRS = 32;
@@ -53,7 +53,7 @@ export function franchiseIdKey(franchiseId: string): string {
  * for text that normalises to nothing so a caller never adds an empty key.
  */
 export function teamNameKey(raw: string): string | null {
-  const norm = normalizeEntityName(raw);
+  const norm = entityNameCompareKey(raw);
   return norm.length > 0 ? `n:${norm}` : null;
 }
 
@@ -189,9 +189,9 @@ export type DeriveCareerPairsInput = {
   teamFor: (printed: string) => { teamId?: string; teamName?: string } | undefined;
 };
 
-/** Case-fold and collapse whitespace: the dedupe key for team TEXT with no id. */
+/** The shared name fold plus collapsed whitespace: the dedupe key for team TEXT with no id. */
 function foldText(raw: string): string {
-  return raw.trim().replace(/\s+/g, " ").toLowerCase();
+  return foldNameForCompare(raw).trim().replace(/\s+/g, " ");
 }
 
 /**

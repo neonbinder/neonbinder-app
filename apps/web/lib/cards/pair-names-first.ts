@@ -15,7 +15,7 @@
  * "no-number" kinds and never paired across them, paired 0 of 56 on an Onyx
  * set. A player's name is the stronger identity in practice. So:
  *
- *  1. **T1, the same roster** (`rosterKey`): an item pairs with the item on
+ *  1. **T1, the same roster** (`rosterCompareKey`): an item pairs with the item on
  *     the other side that names the same players when each side has exactly
  *     one. The numbers then only say whether they AGREE (`numbersAgree`);
  *     they never stop the pair. A player with several cards in the set is a
@@ -73,7 +73,7 @@ import {
 import { PLAYER_NAME_AUTO_LINK, pairNamesBySimilarity } from "./name-similarity";
 import { dropTrailingMarkers } from "./print-run-markers";
 import { cardNumberStem } from "./variations";
-import { normalizeEntityName, rosterKey } from "../entities/normalize-name";
+import { entityNameCompareKey, rosterCompareKey } from "../entities/normalize-name";
 
 /** What a pair's confidence is multiplied by when its numbers differ. */
 export const NUMBERS_DIFFER_FACTOR = 0.9;
@@ -183,7 +183,7 @@ export type NamesFirstResult = {
 
 type Info = {
   index: number;
-  /** `rosterKey`, "" when the item names no one. */
+  /** `rosterCompareKey` (a hyphen is a space), "" when the item names no one. */
   key: string;
   none: boolean;
   exact: string;
@@ -208,7 +208,7 @@ function describe(
     const stem = none ? null : cardNumberStem(exact).toUpperCase();
     return {
       index,
-      key: rosterKey(item.names.map(dropTrailingMarkers)),
+      key: rosterCompareKey(item.names.map(dropTrailingMarkers)),
       none,
       exact,
       folded: none ? "" : normalizeChecklistNumber(item.number),
@@ -415,7 +415,7 @@ function pairKind<T extends NamesFirstItem>(
   if (lLeft.length > 0 && rLeft.length > 0) {
     const firstName = (names: readonly string[]) => {
       const first = names.map((n) => dropTrailingMarkers(n)).find(Boolean);
-      return first ? normalizeEntityName(first) || undefined : undefined;
+      return first ? entityNameCompareKey(first) || undefined : undefined;
     };
     for (const p of pairNamesBySimilarity(
       lLeft.map((i) => firstName(left[i.index].names)),

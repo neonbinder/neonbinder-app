@@ -31,17 +31,23 @@
  *     for a name the server would insert.
  */
 
-import { foldDiacritics } from "./normalize-name";
+import {
+  entityNameCompareTokens,
+  entityNameTokens,
+  foldNameForCompare,
+} from "./normalize-name";
 
 /**
- * Fold diacritics and lowercase. No trimming, no whitespace collapsing, no
- * punctuation handling — deliberately, so that for pure-ASCII input this is
- * exactly `String.prototype.toLowerCase` and every existing filter, prefix rank
- * and ordering behaves as it did. Callers trim the QUERY themselves, as they
- * always have.
+ * Fold junk characters and diacritics, lowercase, and read a hyphen as a space
+ * (`foldNameForCompare`; NEO-643, "a hyphen matches a space"), so typing
+ * "smith jo" finds "Smith-Jones". No trimming, no whitespace collapsing, no
+ * other punctuation handling — deliberately, so that for pure-ASCII input
+ * without a dash this is exactly `String.prototype.toLowerCase` and every
+ * existing filter, prefix rank and ordering behaves as it did. Callers trim the
+ * QUERY themselves, as they always have.
  */
 export function nameSearchKey(raw: string): string {
-  return foldDiacritics(raw).toLowerCase();
+  return foldNameForCompare(raw);
 }
 
 /**
@@ -65,4 +71,58 @@ export function nameMatchesQuery(name: string, query: string): boolean {
 export function nameHasQueryPrefix(name: string, query: string): boolean {
   const q = nameSearchKey(query.trim());
   return !!q && nameSearchKey(name).startsWith(q);
+}
+
+/** Every typed word is the start of SOME word of `words`. */
+function everyWordStartsAWord(typed: readonly string[], words: readonly string[]): boolean {
+  return typed.every((t) => words.some((word) => word.startsWith(t)));
+}
+
+/**
+ * NEO-643 — does typed text hit a STORED name? A strict superset of what main
+ * answered.
+ *
+ * Main read the typed text as a stored key reads it (a hyphen stays inside its
+ * word) and split the stored `nameNormalized` on spaces. NEO-643 reads a hyphen
+ * as a space in typed text, so two sets of readings arrive:
+ *
+ * - `compareReadings` (`entityNameCompareReadings`): a hyphen is a space, runs
+ *   of initials are joined. They are tried against the stored name read the
+ *   same way, with the hyphen split and its initials re-joined ("k-c royals"
+ *   reads as `["kc", "royals"]`, so "KC Royals", "K C Royals" and "K-C Royals"
+ *   all find it), and against the plain hyphen-split words ("wilkes-barre"
+ *   reads as `["wilkes", "barre"]`).
+ * - `storedReadings` (`entityNameQueryReadings`): main's own reading, tried
+ *   against the stored name split on spaces, exactly as main did. Typing a
+ *   stored "J-P Arencibia" in full joins to "jp" in the first set and cannot
+ *   reach the stored "j-p"; this leg still finds it, so no row main returned
+ *   is dropped.
+ *
+ * `aliases` are text the operator typed, read by the same chains.
+ */
+export function storedNameMatchesTyped(
+  nameNormalized: string,
+  compareReadings: readonly (readonly string[])[],
+  storedReadings: readonly (readonly string[])[],
+  aliases: readonly string[] = [],
+): boolean {
+  const compareNames = [
+    entityNameCompareTokens(nameNormalized),
+    nameNormalized.split(/[\s-]+/).filter(Boolean),
+    ...aliases.map((alias) => entityNameCompareTokens(alias)),
+  ];
+  if (
+    compareReadings.some(
+      (typed) => typed.length > 0 && compareNames.some((words) => everyWordStartsAWord(typed, words)),
+    )
+  ) {
+    return true;
+  }
+  const storedNames = [
+    nameNormalized.split(" ").filter(Boolean),
+    ...aliases.map((alias) => entityNameTokens(alias)),
+  ];
+  return storedReadings.some(
+    (typed) => typed.length > 0 && storedNames.some((words) => everyWordStartsAWord(typed, words)),
+  );
 }

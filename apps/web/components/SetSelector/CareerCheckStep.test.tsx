@@ -833,6 +833,20 @@ describe("Add to career", () => {
     });
   });
 
+  it("adds nothing when two batch teams read as the printed text (rule 8: a tie is never the first)", () => {
+    batch = [
+      { label: "Memphis RiverKings", teamName: "RiverKings" },
+      { label: "MEMPHIS RIVERKINGS", teamName: "River Kings" },
+    ];
+    render(<Harness />);
+    fireEvent.click(radio(tatis(), "Add to career"));
+    nextEntry = { name: "Memphis RiverKings", fromYear: 2012, toYear: 2014 };
+    fireEvent.click(screen.getByRole("button", { name: "Add stint for Fernando Tatis Jr." }));
+    // No unique match, so it acts as no match: nothing staged, the default's one chip stays.
+    expect(answersSeen[keyOf("p-tatis")]).toBeUndefined();
+    expect(within(stintsList("Fernando Tatis Jr.")).getAllByRole("listitem")).toHaveLength(1);
+  });
+
   it("adds nothing for a team it cannot name (no id, not in the batch)", () => {
     render(<Harness />);
     fireEvent.click(radio(tatis(), "Add to career"));

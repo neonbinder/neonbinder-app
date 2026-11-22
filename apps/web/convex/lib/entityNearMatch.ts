@@ -22,13 +22,15 @@
  */
 
 import {
-  normalizePlayerName,
+  ladderPlayerName,
   playerNamesMatch,
   teamNamesMatch,
 } from "./pairing/names";
 // NEO-253: the shared normalisation core. Re-exported below under the names
 // this module has always published, and used directly by the ranking helpers.
 import {
+  entityNameCompareKey,
+  entityNameCompareTokens,
   entityNameTokens,
   normalizeEntityName,
 } from "../../lib/entities/normalize-name";
@@ -150,10 +152,12 @@ export function longestToken(raw: string): string | null {
  * only "york".
  */
 function sharedSignificantTokens(a: string, b: string): string[] {
-  const bTokens = new Set(entityNameTokens(b));
+  // Comparison tokens: a hyphen is a space here (NEO-643), so "Smith Jones"
+  // shares both words with a stored "Smith-Jones".
+  const bTokens = new Set(entityNameCompareTokens(b));
   const seen = new Set<string>();
   const shared: string[] = [];
-  for (const token of entityNameTokens(a)) {
+  for (const token of entityNameCompareTokens(a)) {
     if (seen.has(token)) continue;
     if (token.length < MIN_SIGNIFICANT_TOKEN_LENGTH) continue;
     if (GENERIC_TOKENS.has(token)) continue;
@@ -168,11 +172,19 @@ function sharedSignificantTokens(a: string, b: string): string[] {
 interface ScoredCandidate extends RankedNearMatch {
   name: string;
   shared: number;
+  /**
+   * NEO-643 — the candidate reads as the query once a hyphen is a space
+   * ("Smith Jones" against a stored "Smith-Jones"): the pairing ladder's exact
+   * rung. It is `close`, never `exact`, because the stored identity keys differ
+   * and `findOrCreate` would mint a twin, but it ranks first among the close
+   * ones so the operator sees the stored row at the top.
+   */
+  sameWords: boolean;
 }
 
 /**
- * Exact first, then most shared significant tokens, then name, then input
- * order. The last rung exists only to make the result stable across engines —
+ * Exact first, then the same words (a hyphen read as a space), then most
+ * shared significant tokens, then name, then input order. The last rung exists only to make the result stable across engines —
  * two candidates with the same name and score are genuinely interchangeable,
  * but a wizard that reorders them between renders is not.
  */
@@ -180,6 +192,7 @@ function orderCandidates(scored: ScoredCandidate[]): RankedNearMatch[] {
   return scored
     .sort((a, b) => {
       if (a.confidence !== b.confidence) return a.confidence === "exact" ? -1 : 1;
+      if (a.sameWords !== b.sameWords) return a.sameWords ? -1 : 1;
       if (a.shared !== b.shared) return b.shared - a.shared;
       const byName = a.name.localeCompare(b.name);
       if (byName !== 0) return byName;
@@ -212,15 +225,17 @@ export function rankTeamCandidates(
   // An empty query would match every candidate through containment
   // (`"anything".includes("")`), which is the opposite of useful.
   if (!normalizedQuery) return [];
+  const comparableQuery = entityNameCompareKey(query);
 
   const scored: ScoredCandidate[] = [];
   candidates.forEach((candidate, index) => {
     const shared = sharedSignificantTokens(query, candidate.name).length;
 
     if (normalizeEntityName(candidate.name) === normalizedQuery) {
-      scored.push({ index, confidence: "exact", name: candidate.name, shared });
+      scored.push({ index, confidence: "exact", name: candidate.name, shared, sameWords: true });
       return;
     }
+    const sameWords = entityNameCompareKey(candidate.name) === comparableQuery;
 
     const containmentUsable =
       query.trim().length >= MIN_CONTAINMENT_CHARS &&
@@ -228,7 +243,7 @@ export function rankTeamCandidates(
     const fuzzy = containmentUsable && teamNamesMatch(query, candidate.name).match;
 
     if (fuzzy || shared > 0) {
-      scored.push({ index, confidence: "close", name: candidate.name, shared });
+      scored.push({ index, confidence: "close", name: candidate.name, shared, sameWords });
     }
   });
 
@@ -241,7 +256,7 @@ export function rankTeamCandidates(
  * "J. Williams" is two. NEO-578.
  */
 function playerNameTokenCount(raw: string): number {
-  return normalizePlayerName(raw).split(" ").filter(Boolean).length;
+  return ladderPlayerName(raw).split(" ").filter(Boolean).length;
 }
 
 /**
@@ -262,9 +277,9 @@ function playerNameTokenCount(raw: string): number {
  * here unless the player is only a surname"). So when the query has two or more
  * tokens, a one-token stored name is dropped. A one-token query is untouched,
  * which keeps the NEO-463 fragment flow ("Walker" -> fuller names). Counted
- * with the ladder's own `normalizePlayerName` (suffixes stripped), so a stored
+ * with the ladder's own `ladderPlayerName` (suffixes stripped), so a stored
  * "Williams Jr." is one token here exactly as it is to rung 4. The ladder
- * itself is left alone: pairing and its Python port depend on that rung.
+ * itself is left alone: photo pairing depends on that rung.
  */
 export function rankPlayerCandidates(
   query: string,
@@ -272,6 +287,7 @@ export function rankPlayerCandidates(
 ): RankedNearMatch[] {
   const normalizedQuery = normalizeEntityName(query);
   if (!normalizedQuery) return [];
+  const comparableQuery = entityNameCompareKey(query);
   const queryIsFullName = playerNameTokenCount(query) >= 2;
 
   const scored: ScoredCandidate[] = [];
@@ -279,15 +295,16 @@ export function rankPlayerCandidates(
     const shared = sharedSignificantTokens(query, candidate.name).length;
 
     if (normalizeEntityName(candidate.name) === normalizedQuery) {
-      scored.push({ index, confidence: "exact", name: candidate.name, shared });
+      scored.push({ index, confidence: "exact", name: candidate.name, shared, sameWords: true });
       return;
     }
+    const sameWords = entityNameCompareKey(candidate.name) === comparableQuery;
 
     // NEO-578: a full-name query never lands on a surname-only row.
     if (queryIsFullName && playerNameTokenCount(candidate.name) <= 1) return;
 
     if (playerNamesMatch(query, candidate.name).match) {
-      scored.push({ index, confidence: "close", name: candidate.name, shared });
+      scored.push({ index, confidence: "close", name: candidate.name, shared, sameWords });
     }
   });
 

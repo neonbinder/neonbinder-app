@@ -97,6 +97,7 @@
  * compared as for any pair.
  */
 
+import { orderedEntityNameCompareKey } from "../entities/normalize-name";
 import { dropTrailingMarkers } from "../cards/print-run-markers";
 import { pairNamesFirst, type NamesFirstPair } from "../cards/pair-names-first";
 import {
@@ -236,13 +237,8 @@ export function rowHasNoNumber(row: Pick<ChecklistRowInput, "number" | "noNumber
 
 /** A person's or team's name as the two sides compare it. */
 export function checklistNameKey(name: string): string {
-  return name
-    .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
-    .toLowerCase()
-    .replace(/[.'’`]/g, "")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
+  // NEO-643: the one entity-name reading, word order kept; never stored.
+  return orderedEntityNameCompareKey(name);
 }
 
 function namesKey(names: readonly string[]): string {
