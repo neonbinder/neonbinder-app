@@ -18,7 +18,7 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { teamFullName, teamShortName } from "@/lib/teams/team-name";
 import { eraLabel, teamOptionLabel } from "@/lib/teams/team-era";
 import { useFollowedParam } from "@/src/hooks/use-followed-param";
-import { teamFilterReadings, teamMatchesFilter } from "@/lib/teams/team-filter";
+import { teamFilterReadings, teamMatchesFilter, teamSearchReadings } from "@/lib/teams/team-filter";
 
 /**
  * NEO-236 security review — the browser-side half of `teams.saveTeamFields`'s
@@ -1566,6 +1566,9 @@ export default function TeamManagement() {
   // one; the list says it is loading instead (see `listPending`).
   const base = searchAnswer?.teams ?? (listPending ? NO_TEAMS : teams);
   const filterReadings = useMemo(() => teamFilterReadings(filter), [filter]);
+  // NEO-643 — main's own reading, kept beside it so the screen never drops a
+  // team main would have listed (a stored "K-C Royals" typed in full).
+  const storedFilterReadings = useMemo(() => teamSearchReadings(filter), [filter]);
 
   const visible = useMemo(() => {
     const matched = base.filter((team) => {
@@ -1584,7 +1587,7 @@ export default function TeamManagement() {
       // already scoped to the dropdown's league (`listForManagement` and
       // `searchForManagement` each take it), so a check in the browser could
       // only ever hide a bug in what the screen asked for.
-      return searchAnswer !== undefined || teamMatchesFilter(team, filterReadings);
+      return searchAnswer !== undefined || teamMatchesFilter(team, filterReadings, storedFilterReadings);
     });
     return matched.sort(
       (a, b) =>
@@ -1598,7 +1601,7 @@ export default function TeamManagement() {
         // with work outstanding, not the row the history starts with.
         (a.yearsActive?.from ?? Infinity) - (b.yearsActive?.from ?? Infinity),
     );
-  }, [base, searchAnswer, filterReadings]);
+  }, [base, searchAnswer, filterReadings, storedFilterReadings]);
 
   /**
    * NEO-330 — the open team, read by id.

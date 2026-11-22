@@ -1,8 +1,5 @@
-import {
-  entityNameCompareReadings,
-  entityNameCompareTokens,
-  entityNameQueryReadings,
-} from "../entities/normalize-name";
+import { storedNameMatchesTyped } from "../entities/name-search";
+import { entityNameCompareReadings, entityNameQueryReadings } from "../entities/normalize-name";
 
 /**
  * NEO-330 — what "this team matches what I typed" means, in ONE place.
@@ -50,23 +47,21 @@ export function teamSearchReadings(raw: string): string[][] {
  * Whether a team answers to the typed text.
  *
  * `nameNormalized` is the folded, punctuation-stripped tokens of the composed
- * full name (location + nickname), so it is read as-is, except that a hyphen
- * inside a stored token ("wilkes-barre") splits into its words, because a
- * hyphen is a space when typed text is matched (NEO-643); aliases are stored as
- * the operator typed them and are tokenised here the same way.
+ * full name (location + nickname). Aliases are stored as the operator typed
+ * them and are tokenised here the same way.
+ *
+ * NEO-643 — a strict superset of what main answered (`storedNameMatchesTyped`):
+ * `readings` (`teamFilterReadings`, a hyphen is a space) are tried against the
+ * name with its hyphens split, and `storedReadings` (`teamSearchReadings`,
+ * main's own reading) against the name split on spaces as main did. So a
+ * stored "K-C Royals" is found by "K-C Royals", "K-C Royal", "KC Royals" and
+ * "K C Royals" alike.
  */
 export function teamMatchesFilter(
   team: { nameNormalized: string; aliases?: readonly string[] },
   readings: readonly (readonly string[])[],
+  storedReadings: readonly (readonly string[])[],
 ): boolean {
-  if (readings.length === 0) return true;
-  const names = [
-    team.nameNormalized.split(/[\s-]+/).filter(Boolean),
-    ...(team.aliases ?? []).map((alias) => entityNameCompareTokens(alias)),
-  ];
-  return readings.some((typed) =>
-    names.some((words) =>
-      typed.every((t) => words.some((word) => word.startsWith(t))),
-    ),
-  );
+  if (readings.length === 0 && storedReadings.length === 0) return true;
+  return storedNameMatchesTyped(team.nameNormalized, readings, storedReadings, team.aliases);
 }

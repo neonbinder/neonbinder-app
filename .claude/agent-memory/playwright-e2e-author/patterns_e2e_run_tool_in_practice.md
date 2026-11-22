@@ -26,6 +26,11 @@ the tool's current code before relying on any line here; some may be fixed.
 - The screenshot or trace path in the digest can be redacted (`[long token removed]`) or
   clipped at 200 chars. Find the files yourself with `ls <runDir>/results/<project>/*/`
   (screenshot, `error-context.md`, trace).
+- The digest's "convex/: CHANGED since the push (rerun with --push)" compares
+  against e2e-run's OWN push stamp. A push by the workspace's deployment script
+  (its seed path runs `convex dev --once`) does not update it, so the warning can
+  be stale. Check the deployed code by a function or behaviour only the
+  current commit has before you trust or dismiss it.
 - `status` on a worktree with no `.e2e-local/` yet can crash (ENOENT on
   run.lock). Any `run` creates the folder.
 

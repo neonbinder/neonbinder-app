@@ -82,8 +82,6 @@ const MUST_MATCH: Array<[string, string, string]> = [
   ["acute stand-in for the accent", "Jos\u00B4e Ram\u00B4irez", "José Ramírez"],
   ["diaeresis and cedilla stand-ins", "Mu\u00A8ller Fran\u00B8cois", "Müller François"],
   ["grave accent stand-in", "Jos`e Ram`irez", "José Ramírez"],
-  ["full-width letters", "\uFF2Dike Trout", "Mike Trout"],
-  ["ligature", "\uFB01nn Wolfhard", "Finn Wolfhard"],
   ["a control character is a space", "Mike\u0000Trout", "Mike Trout"],
   // Every dash form but the ASCII hyphen-minus was always a separator in the
   // stored key too, so these agree in the stored keys as well (as on main).
@@ -110,6 +108,20 @@ const HYPHEN_IS_A_SPACE_WHEN_COMPARING: Array<[string, string, string]> = [
   ["a hyphen between initials against dotted initials", "J-P Arencibia", "J.P. Arencibia"],
 ];
 
+/**
+ * NEO-643, Jason 2026-11-22: a stored key never moves except by the junk
+ * deletion, so the compatibility fold (NFKD) is a COMPARISON-only step. Each
+ * pair is the same name to every comparison matcher and two keys in every stored
+ * identity key (which keep main's NFD: a full-width or ligature letter is not a
+ * key character, and "\u00BA" is dropped rather than read as an "o").
+ */
+const COMPATIBILITY_FOLD_WHEN_COMPARING: Array<[string, string, string]> = [
+  ["full-width letters", "\uFF2Dike Trout", "Mike Trout"],
+  ["ligature", "\uFB01nn Wolfhard", "Finn Wolfhard"],
+  ["a masculine ordinal sign against an o", "Naval 1\u00BA de Maio", "Naval 1o de Maio"],
+  ["a feminine ordinal sign against an a", "Mar\u00AD\u00AA", "Mara"],
+];
+
 const MUST_STAY_APART: Array<[string, string, string]> = [
   ["a different letter, not junk", "Wilmer Rios", "Wilmer Ros"],
   ["a replacement character is a lost letter", `R${REPLACEMENT}os`, "Rios"],
@@ -129,6 +141,25 @@ describe("one name matcher: names that must match", () => {
     // Symmetric.
     expect(Object.values(verdicts(b, a)).every(Boolean)).toBe(true);
   });
+});
+
+describe("one name matcher: a compatibility letter folds when COMPARING, never in a stored key (NEO-643)", () => {
+  test.each(COMPATIBILITY_FOLD_WHEN_COMPARING)(
+    "%s: %j = %j in every comparison matcher, and two keys in every stored key",
+    (_why, a, b) => {
+      for (const [x, y] of [
+        [a, b],
+        [b, a],
+      ]) {
+        expect(
+          Object.entries(comparisonVerdicts(x, y)).filter(([, same]) => !same).map(([k]) => k),
+        ).toEqual([]);
+        expect(
+          Object.entries(storedVerdicts(x, y)).filter(([, same]) => same).map(([k]) => k),
+        ).toEqual([]);
+      }
+    },
+  );
 });
 
 describe("one name matcher: a hyphen is a space when COMPARING, and not in a stored key (NEO-643)", () => {

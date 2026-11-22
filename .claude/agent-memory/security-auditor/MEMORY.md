@@ -144,4 +144,4 @@
 - [Neo622 local e2e runner](patterns_neo622_local_e2e_runner.md) — derived re-seed bypasses flag-keyed guard; regex patch list != git apply; APFS case
 - [Convex client error origin](patterns_convex_client_error_origin.md) — classify by client [CONVEX X(] prefix, not Request ID; convexToJson errors embed args
 - [Neo627 inert path skip](patterns_neo627_inert_path_skip.md) — file names in GITHUB_OUTPUT inject keys; merge_group base_sha stacking; fail-fast gate
-- [Neo643 ingest cleanse fold drift](patterns_neo643_ingest_cleanse_fold_drift.md) — label cleanse vs narrower stored-value folds; SL All Brands prefix filter drops ids
+- [Neo643 ingest cleanse fold drift](patterns_neo643_ingest_cleanse_fold_drift.md) — cleanse vs narrower folds; SL prefix filter; stored/compare split drops J-P rows

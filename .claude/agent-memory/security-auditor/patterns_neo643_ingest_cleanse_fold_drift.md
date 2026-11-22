@@ -31,3 +31,14 @@ GitHub. That is the Trojan Source shape the repo's own guards refuse. Ask for
 that compares an adapter label to a stored value or to stored metadata, and
 check its fold is at least as wide as the cleanse. Treat a filter that decides
 which ids are returned as a link-loss path.
+
+**Stored key vs comparison key split (later in NEO-643).** Stored keys kept
+main's hyphen-inside-token; comparisons read a hyphen as a space. Two checks
+that paid off: (1) diff `normalizeEntityName` against
+`git show origin/main:` over every BMP char and test only "does the key
+contain a hyphen" — 0 drift proves no re-key. (2) A filter that runs over
+index hits with the COMPARISON reading must be a superset of main's filter.
+Splitting a stored token on the hyphen does not re-join initials, while the
+typed comparison reading does: stored "k-c royals" splits to k, c, royals,
+typed "K-C Royals" reads as kc, royals, so the row drops. Fix: OR main's
+stored-reading test into the filter.

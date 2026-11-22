@@ -119,6 +119,60 @@ describe("players.search: a hyphen is a space when typed (NEO-643)", () => {
   );
 });
 
+// NEO-643 — a strict superset of main: typing a stored hyphenated-initials
+// name in full must still find it. The comparison reading joins "K-C" to "kc"
+// while the stored key keeps "k-c"; main's own reading matches the stored word.
+describe("search finds a stored name with hyphenated initials (NEO-643, superset of main)", () => {
+  const ADMIN = { subject: "admin_643", role: "admin" };
+
+  test.each(["K-C Royals", "K-C Royal", "KC Royals", "K C Royals", "k-c", "royals k-c"])(
+    "teams.searchForManagement: %j finds a stored K-C Royals",
+    async (query) => {
+      const t = convexTest(schema, modules);
+      const baseball = await seedSport(t, "Baseball");
+      await seedTeam(t, "K-C Royals", baseball);
+      await seedTeam(t, "Boston Red Sox", baseball);
+      expect(normalizeEntityName("K-C Royals")).toBe("k-c royals");
+
+      const result = await t.withIdentity(ADMIN).query(api.teams.searchForManagement, { query });
+
+      expect(result.teams.map((team) => team.name)).toEqual(["K-C Royals"]);
+    },
+  );
+
+  test.each(["J-P Arencibia", "J-P Aren", "JP Arencibia", "J P Arencibia", "arencibia j-p"])(
+    "players.search: %j finds a stored J-P Arencibia (member leg)",
+    async (query) => {
+      const t = convexTest(schema, modules);
+      const football = await seedSport(t, "Football");
+      const baseball = await seedSport(t, "Baseball");
+      const playerId = await t.run(async (ctx) =>
+        ctx.db.insert("players", {
+          name: "J-P Arencibia",
+          nameNormalized: normalizeEntityName("J-P Arencibia"),
+          sportId: football,
+          createdByUserId: "user_seed",
+          lastUpdated: 1_700_000_000_000,
+        }),
+      );
+      await t.run(async (ctx) => {
+        await ctx.db.insert("playerSports", {
+          playerId,
+          sportId: baseball,
+          nameNormalized: normalizeEntityName("J-P Arencibia"),
+        });
+      });
+      expect(normalizeEntityName("J-P Arencibia")).toBe("arencibia j-p");
+
+      const rows = await t
+        .withIdentity(MEMBER)
+        .query(api.players.search, { query, sportId: baseball });
+
+      expect(rows.map((r) => r._id)).toEqual([playerId]);
+    },
+  );
+});
+
 describe("players.search: the multi-sport member leg reads both", () => {
   test.each(["J. T", "J. T. R", "J. T. Real", "JT Realmuto"])(
     "%j finds a member of the sport stored as jt realmuto",

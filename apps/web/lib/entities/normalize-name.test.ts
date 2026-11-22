@@ -15,7 +15,7 @@
  */
 
 import { describe, expect, test } from "vitest";
-import { cleanseExternalName } from "./cleanse-name";
+import { cleanseExternalName, stripNameJunk } from "./cleanse-name";
 import {
   dashesToSpaces,
   entityNameCompareKey,
@@ -324,12 +324,30 @@ describe("foldNameText — NEO-643 junk characters", () => {
     }
   });
 
-  test("a compatibility letter folds onto its plain letters (NFKD)", () => {
-    expect(foldNameText("\uFF2Dike")).toBe("mike");
-    expect(normalizeEntityName("\uFF2Dike Trout")).toBe(normalizeEntityName("Mike Trout"));
-    expect(foldNameText("\uFB01nn")).toBe("finn");
-    expect(normalizeEntityName("Fe\uFB01n")).toBe(normalizeEntityName("Fefin"));
-    expect(normalizeEntityName("\uFF2A\uFF4F\u0073\u00E9")).toBe(normalizeEntityName("Jose"));
+  test("a compatibility letter is NOT folded in a stored key (NFD, as main)", () => {
+    // Stored keys never move except by the junk deletion: a full-width or
+    // ligature letter is not a key character, exactly as on main.
+    expect(foldNameText("\uFF2Dike")).toBe("\uFF4Dike");
+    expect(normalizeEntityName("\uFF2Dike Trout")).toBe("ike trout");
+    expect(normalizeEntityName("\uFF2Dike Trout")).not.toBe(normalizeEntityName("Mike Trout"));
+    expect(normalizeEntityName("\uFB01nn Wolfhard")).toBe("nn wolfhard");
+    // "\u00BA" is dropped, not read as an "o": the three names a re-key dry run
+    // on a reference seed found NFKD would have moved.
+    expect(normalizeEntityName("Naval 1\u00BA de Maio")).toBe("1 de maio naval");
+    expect(normalizeEntityName("1\u00BA de Agosto")).toBe("1 agosto de");
+    expect(normalizeEntityName("1\u00BA Dezembro")).toBe("1 dezembro");
+  });
+
+  test("a compatibility letter folds onto its plain letters when COMPARING (NFKD)", () => {
+    expect(foldNameForCompare("\uFF2Dike")).toBe("mike");
+    expect(entityNameCompareKey("\uFF2Dike Trout")).toBe(entityNameCompareKey("Mike Trout"));
+    expect(foldNameForCompare("\uFB01nn")).toBe("finn");
+    expect(entityNameCompareKey("Fe\uFB01n")).toBe(entityNameCompareKey("Fefin"));
+    expect(entityNameCompareKey("\uFF2A\uFF4F\u0073\u00E9")).toBe(entityNameCompareKey("Jose"));
+    expect(entityNameCompareKey("1\u00BA Dezembro")).toBe(entityNameCompareKey("1o Dezembro"));
+    expect(entityNameCompareTokens("\uFF2Dike Trout")).toEqual(["mike", "trout"]);
+    expect(entityNameCompareReadings("\uFF2Dike Tr")).toEqual([["mike", "tr"]]);
+    expect(orderedEntityNameCompareKey("\uFB01nn Wolfhard")).toBe("finn wolfhard");
   });
 
   test("a trademark sign stays a separator, NFKD does not spell it TM", () => {
@@ -444,6 +462,13 @@ describe("NEO-643: stored keys equal origin/main's, for names without a junk cha
     ["Big 12", "12 big", "big 12", ["big", "12"]],
     ["Smith, John", "john smith", "smith john", ["smith", "john"]],
     ["Mary-Kate  Olsen-Smith", "mary-kate olsen-smith", "mary-kate olsen-smith", ["mary-kate", "olsen-smith"]],
+    // NFKD turns "\u00BA" into an "o" ("1o agosto de"); main's NFD leaves it, and the
+    // key class drops it. A read-only re-key dry run on a reference seed found
+    // exactly these three stored teams moved by the NFKD attempt.
+    ["Naval 1\u00BA de Maio", "1 de maio naval", "naval 1 de maio", ["naval", "1", "de", "maio"]],
+    ["1\u00BA de Agosto", "1 agosto de", "1 de agosto", ["1", "de", "agosto"]],
+    ["1\u00BA Dezembro", "1 dezembro", "1 dezembro", ["1", "dezembro"]],
+    ["Mar\u00AAia \uFF2Dike \uFB01nn", "ia ike mar nn", "mar ia ike nn", ["mar", "ia", "ike", "nn"]],
   ];
 
   test.each(MAIN)("%j", (name, identity, ordered, tokens) => {
@@ -468,10 +493,141 @@ describe("NEO-643: stored keys equal origin/main's, for names without a junk cha
     expect(entityNameQueryReadings("Smith-Jo")).toEqual([["smith-jo"]]);
   });
 
+  test("the cleanse step (NFC) never changes a stored key", () => {
+    for (const name of [
+      "Naval 1\u00BA de Maio",
+      "Jose\u0301 Ram\u00EDrez",
+      "\uFF2Dike Trout",
+      "\uFB01nn Wolfhard",
+      "Smith-Jones",
+      "Mar\u00AAia",
+    ]) {
+      expect(normalizeEntityName(cleanseExternalName(name))).toBe(normalizeEntityName(name));
+      expect(normalizeOrderedEntityName(cleanseExternalName(name))).toBe(normalizeOrderedEntityName(name));
+    }
+  });
+
   test("the two full-width and small hyphen-minus forms stay separators, as on main", () => {
     // NFKD turns U+FF0D and U+FE63 into "-"; the key must still space them.
     expect(normalizeEntityName("Smith\uFF0DJones")).toBe("jones smith");
     expect(normalizeEntityName("Smith\uFE63Jones")).toBe("jones smith");
+  });
+});
+
+/**
+ * A frozen copy of origin/main's chain (2026-11-22), the reference the fuzz
+ * below compares the stored keys to. It is a copy on purpose: a test cannot
+ * import another branch's module, and the point is that it never changes.
+ */
+const MAIN_FOLD = (raw: string): string => raw.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+function mainTokens(raw: string): string[] {
+  const t = MAIN_FOLD(raw)
+    .toLowerCase()
+    .replace(/[.,'"`’]/g, "")
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  const out: string[] = [];
+  let run: string[] = [];
+  const flush = () => {
+    if (run.length >= 2) out.push(run.join(""));
+    else out.push(...run);
+    run = [];
+  };
+  for (const x of t) {
+    if (/^[a-z]$/.test(x)) run.push(x);
+    else {
+      flush();
+      out.push(x);
+    }
+  }
+  flush();
+  return out;
+}
+
+describe("NEO-643: a fuzz of stored keys against origin/main's chain", () => {
+  // Letters, digits, accents (composed and combining), the ordinal signs, the
+  // full-width and ligature letters NFKD would fold, every dash form, the
+  // trademark signs, punctuation, spaces. Junk characters are drawn too, and
+  // those strings are skipped: the junk deletion is the one allowed difference.
+  const ALPHABET = [
+    ..."abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+    ..." ",
+    ..."  ",
+    ..."éÉíñüöçåøßæłÅ",
+    "\u0301",
+    "\u0308",
+    "\u00BA",
+    "\u00AA",
+    "\uFF2D",
+    "\uFF4B",
+    "\uFF11",
+    "\uFB01",
+    "\uFB02",
+    "\u00B2",
+    "\u00BD",
+    "\u2160",
+    "\u0130",
+    "-",
+    "-",
+    "\u2010",
+    "\u2011",
+    "\u2012",
+    "\u2013",
+    "\u2014",
+    "\u2015",
+    "\u2212",
+    "\uFE58",
+    "\uFE63",
+    "\uFF0D",
+    "\u2122",
+    "\u2120",
+    ..."\".,'’&/()#!?",
+    "\\",
+    "\u00AD",
+    "\u200B",
+    "\u00B4",
+    "\t",
+  ];
+
+  function mulberry32(seed: number): () => number {
+    let a = seed;
+    return () => {
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  test("300,000 random strings key exactly as main does, except where a junk character is deleted", () => {
+    const rand = mulberry32(643);
+    let compared = 0;
+    const diffs: string[] = [];
+    for (let i = 0; i < 300_000; i++) {
+      const len = 1 + Math.floor(rand() * 14);
+      let s = "";
+      for (let j = 0; j < len; j++) s += ALPHABET[Math.floor(rand() * ALPHABET.length)];
+      if (stripNameJunk(s) !== s) continue;
+      compared++;
+      const m = mainTokens(s);
+      const mine = [
+        normalizeEntityName(s),
+        normalizeOrderedEntityName(s),
+        entityNameTokens(s).join("\u0001"),
+        rosterKey([s, "x"]),
+      ];
+      const want = [
+        [...m].sort().join(" "),
+        m.join(" "),
+        m.join("\u0001"),
+        [...new Set([[...m].sort().join(" "), "x"].filter(Boolean))].sort().join("|"),
+      ];
+      if (mine.some((v, k) => v !== want[k]) && diffs.length < 5) diffs.push(JSON.stringify(s));
+    }
+    expect(diffs).toEqual([]);
+    // The draw must have exercised the strings, not skipped them all as junk.
+    expect(compared).toBeGreaterThan(100_000);
   });
 });
 

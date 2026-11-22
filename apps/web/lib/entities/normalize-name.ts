@@ -72,19 +72,31 @@
  * the re-key pass — never a softening of this function to accept both shapes.
  *
  * ### The NEO-643 exception: junk characters, no backfill
- *
- * NEO-643 added `foldNameText`, which DELETES the junk class (the backslash,
- * every Unicode format character, the spacing accent marks; see `NAME_JUNK` in
- * `cleanse-name.ts`) before anything else (BSC writes "Wilmer R\ios" for Ríos),
- * and folds with NFKD, so a full-width or ligature letter keys as its plain
- * letters. The key changes only for a name that contains one of those
- * characters; every other name keys exactly as before. The owner ruled out a
- * backfill, so the usual re-key pass is not run for this change. The affected
- * rows are found with the read-only dry run (`rekeyEntityNames:run '{}'`) and
- * fixed by hand, renaming each with the inline edit. The rule above still
- * stands for any other change to this chain.
- *
- * ### NEO-643: a hyphen is a space when two names are COMPARED, never in a stored key
+
+NEO-643 added `foldNameText`, which DELETES the junk class (the backslash,
+every Unicode format character, the spacing accent marks; see `NAME_JUNK` in
+`cleanse-name.ts`) before anything else (BSC writes "Wilmer R\ios" for Ríos).
+That deletion is the ONLY change to a stored key: the decomposition stays
+main's NFD. The key changes only for a name that contains one of those
+characters; every other name keys exactly as before, byte for byte. The owner
+ruled out a backfill, so the usual re-key pass is not run for this change. The
+affected rows are found with the read-only dry run (`rekeyEntityNames:run '{}'`)
+and fixed by hand, renaming each with the inline edit. The rule above still
+stands for any other change to this chain.
+
+### NEO-643: NFD for a stored key, NFKD only when two names are COMPARED
+
+A first attempt folded the stored key with NFKD, so a full-width or ligature
+letter keyed as its plain letters. That moved real rows: NFKD turns "º"
+(U+00BA) into "o", so "Naval 1º de Maio", "1º de Agosto" and "1º Dezembro"
+keyed "1o ..." where main keys "1 ...". A read-only re-key dry run on a
+reference seed found exactly those three. The rule is therefore that a stored
+key never changes except by the junk deletion, and a compatibility fold lives
+on the comparison path only: `foldNameForCompare` and the `*Compare*` helpers
+decompose with NFKD ("Ｍike" = "Mike", "ﬁ" = "fi", "1º" = "1o"); the stored
+chain uses NFD, exactly as main does.
+
+### NEO-643: a hyphen is a space when two names are COMPARED, never in a stored key
  *
  * Jason, 2026-11-21: "a hyphen matches a space". "Smith-Jones" = "Smith Jones",
  * "Wilkes-Barre" = "Wilkes Barre", "Topps-Chrome" = "Topps Chrome". The first
@@ -120,8 +132,9 @@
  *
  * Every other dash form (the en and em dashes, U+2010 to U+2015, the minus sign
  * and the small and full-width forms) was always a separator in the stored key
- * and still is; `foldNameText` turns those into spaces before NFKD so the two
- * full-width forms cannot become a hyphen-minus behind its back.
+ * and still is; the fold turns those into spaces before any decomposition, so
+ * the two full-width forms cannot become a hyphen-minus behind NFKD on the
+ * comparison path.
  *
  * ## What is deliberately NOT normalised here
  *
@@ -135,7 +148,7 @@
 
 import { stripNameJunk } from "./cleanse-name";
 
-/** Combining marks left behind by NFKD — the accents themselves. */
+/** Combining marks left behind by NFD / NFKD — the accents themselves. */
 const COMBINING_MARKS = /[\u0300-\u036f]/g;
 
 /**
@@ -158,7 +171,7 @@ const NON_KEY_CHARS = /[^a-z0-9\s-]/g;
  * non-breaking hyphen U+2011, the figure dash U+2012, the en and em dashes, the
  * horizontal bar, the minus sign U+2212, and the small and full-width forms
  * U+FE58, U+FE63 and U+FF0D. In a stored key these have always been separators
- * (the key class drops them); `foldNameText` makes that explicit BEFORE NFKD,
+ * (the key class drops them); the fold makes that explicit BEFORE the decomposition,
  * which would otherwise turn the small and full-width hyphen-minus into an
  * ASCII one and keep it inside a token.
  */
@@ -186,13 +199,25 @@ export function dashesToSpaces(raw: string): string {
 const TRADEMARK_SIGNS = /[\u2120\u2122]/g;
 
 /**
- * NEO-643 — the CHARACTER fold both a stored key and a comparison start from:
- * `stripNameJunk` (the junk class is DELETED, each control character becomes a
- * space), decompose to NFKD, drop the combining marks, lowercase.
- *
- * NFKD, not NFD, so a compatibility letter folds onto its plain letters: the
- * full-width "\uFF2Dike" is "mike" and the "\uFB01" ligature is "fi". The stored
- * text (`cleanseExternalName`) stays NFC; only the key folds this far.
+ * The character fold, parametrised by the decomposition form. Private: the two
+ * public folds below fix the form, and nothing else may choose one.
+ */
+function foldWith(raw: string, form: "NFD" | "NFKD"): string {
+  return stripNameJunk(raw)
+    .replace(TRADEMARK_SIGNS, " ")
+    .replace(OTHER_DASHES, " ")
+    .normalize(form)
+    .replace(COMBINING_MARKS, "")
+    .toLowerCase();
+}
+
+/**
+ * NEO-643 — the CHARACTER fold a STORED key starts from: `stripNameJunk` (the
+ * junk class is DELETED, each control character becomes a space), decompose to
+ * NFD, drop the combining marks, lowercase. Main's fold plus the junk deletion
+ * and nothing more, so a stored key is byte-identical to main's for every name
+ * without a junk character (a "º" is still "º", which the key class then
+ * drops; NFKD would have made it an "o").
  *
  * The junk is DELETED, not turned into a separator, because it sits inside a
  * word: BSC's "Wilmer R\ios" must land on "wilmer rios", the same text as
@@ -202,35 +227,33 @@ const TRADEMARK_SIGNS = /[\u2120\u2122]/g;
  * different people, and a replacement character is a lost letter we cannot
  * name.
  *
- * What this fold does NOT do is read a hyphen as a space. The ASCII hyphen-minus
- * comes through untouched, because the stored identity keys keep it inside its
- * token (see the module note). A comparison calls `foldNameForCompare`, or
- * `dashesToSpaces` first. (The other dash forms are turned into spaces here, as
- * they always were in the key, so NFKD cannot turn one into a hyphen-minus.)
+ * What this fold does NOT do is read a hyphen as a space, or fold a
+ * compatibility letter. The ASCII hyphen-minus comes through untouched, because
+ * the stored identity keys keep it inside its token (see the module note). A
+ * comparison calls `foldNameForCompare`. (The other dash forms are turned into
+ * spaces here, as they always were in the key.)
  *
  * Pure ASCII without a backslash, a backtick or a control character is
- * unchanged apart from case (NFKD is the identity on ASCII), which keeps every
- * existing unaccented key.
+ * unchanged apart from case, which keeps every existing unaccented key.
  */
 export function foldNameText(raw: string): string {
-  return stripNameJunk(raw)
-    .replace(TRADEMARK_SIGNS, " ")
-    .replace(OTHER_DASHES, " ")
-    .normalize("NFKD")
-    .replace(COMBINING_MARKS, "")
-    .toLowerCase();
+  return foldWith(raw, "NFD");
 }
 
 /**
  * NEO-643 — the fold for COMPARING two names that are not stored keys: every
  * dash is a space first (Jason, 2026-11-21: "a hyphen matches a space"), then
- * `foldNameText`. Not collapsed and not trimmed, as `foldNameText`.
+ * the junk deletion and an NFKD decomposition, so a full-width or ligature
+ * letter reads as its plain letters ("\uFF2Dike" is "mike", "\uFB01" is "fi") and
+ * the ordinal signs read as letters ("1\u00BA" is "1o"). Not collapsed and not
+ * trimmed.
  *
  * Never for a stored key, and never for a comparison against one: a stored
- * "smith-jones" is only found by a key that kept its hyphen.
+ * "smith-jones" is only found by a key that kept its hyphen, and a stored
+ * "1 agosto de" by one that kept main's NFD.
  */
 export function foldNameForCompare(raw: string): string {
-  return foldNameText(dashesToSpaces(raw));
+  return foldWith(dashesToSpaces(raw), "NFKD");
 }
 
 /**
@@ -287,9 +310,13 @@ export function entityNameTokens(raw: string): string[] {
   return joinInitialRuns(unjoinedTokens(raw));
 }
 
-/** Fold, lowercase, strip and split — every step of the chain before the join. */
-function unjoinedTokens(raw: string): string[] {
-  return foldNameText(raw)
+/**
+ * Fold, lowercase, strip and split — every step of the chain before the join.
+ * `compare` swaps the stored NFD fold for the comparison one (`foldNameForCompare`:
+ * NFKD, every dash a space); only the `*Compare*` helpers pass it.
+ */
+function unjoinedTokens(raw: string, compare = false): string[] {
+  return (compare ? foldNameForCompare(raw) : foldNameText(raw))
     .replace(DROPPED_PUNCTUATION, "")
     .replace(NON_KEY_CHARS, " ")
     .split(/\s+/)
@@ -309,7 +336,10 @@ function unjoinedTokens(raw: string): string[] {
  * other query has exactly one reading, `entityNameTokens(raw)`, first.
  */
 export function entityNameQueryReadings(raw: string): string[][] {
-  const tokens = unjoinedTokens(raw);
+  return queryReadings(unjoinedTokens(raw));
+}
+
+function queryReadings(tokens: string[]): string[][] {
   const joined = joinInitialRuns(tokens);
   const n = tokens.length;
   if (n < 2 || !SINGLE_LETTER.test(tokens[n - 1]) || !SINGLE_LETTER.test(tokens[n - 2])) {
@@ -357,14 +387,17 @@ export function rosterKey(names: readonly string[]): string {
 // space. Never a stored key, never compared against one (see the module note).
 // ---------------------------------------------------------------------------
 
-/** `entityNameTokens` for a comparison: "Smith-Jones" is `["smith", "jones"]`. */
+/**
+ * `entityNameTokens` for a comparison: "Smith-Jones" is `["smith", "jones"]`
+ * and a full-width or ligature letter reads as its plain letters.
+ */
 export function entityNameCompareTokens(raw: string): string[] {
-  return entityNameTokens(dashesToSpaces(raw));
+  return joinInitialRuns(unjoinedTokens(raw, true));
 }
 
 /** `entityNameQueryReadings` for typed text matched against a name's tokens. */
 export function entityNameCompareReadings(raw: string): string[][] {
-  return entityNameQueryReadings(dashesToSpaces(raw));
+  return queryReadings(unjoinedTokens(raw, true));
 }
 
 /**
@@ -374,12 +407,12 @@ export function entityNameCompareReadings(raw: string): string[][] {
  * INCOMING names agree, and wrong for a key that is stored.
  */
 export function entityNameCompareKey(raw: string): string {
-  return normalizeEntityName(dashesToSpaces(raw));
+  return entityNameCompareTokens(raw).sort().join(" ");
 }
 
 /** `normalizeOrderedEntityName` for a comparison: source order, a hyphen a space. */
 export function orderedEntityNameCompareKey(raw: string): string {
-  return normalizeOrderedEntityName(dashesToSpaces(raw));
+  return entityNameCompareTokens(raw).join(" ");
 }
 
 /** `rosterKey` for a comparison: every name through `entityNameCompareKey`. */
