@@ -30,8 +30,46 @@
  * target into view and refuses to click through an overlapping control (it
  * waits, then fails by name), so the clipped-form failure cannot pass
  * silently here and a spec simply clicks the field.
+ *
+ * ## NEO-645: the wizard is gone; these names now drive the Tidy Up walk
+ *
+ * The pre-save wizard and the post-save walker were replaced by one per-card
+ * walk (`support/tidy-walk.ts`). Match Cards now ends in the commit, the walk
+ * opens AFTER it (cards already saved), and every tile saves as it is
+ * answered. Until each importer is rewritten onto `tidy-walk.ts`, this file
+ * keeps every name so the specs compile. The ones with a walk equivalent are
+ * re-implemented on it:
+ *
+ * - `reviewWizard`, `wizardProgress`, `TIDY_UP_NAME`, `tidyUpName`: unchanged
+ *   (the walk wears the same dialog name and the same "Wizard progress" bar,
+ *   whose `aria-valuetext` now reads "N cards left").
+ * - `advanceToSave`: `walkAnsweringEverything` (D7's "answer every pink player
+ *   and team tile"), ending on the walk's end screen.
+ * - `confirmSaveButton`: the end screen's "Done (Esc)" (there is no save step;
+ *   the cards were saved before the walk opened).
+ * - `cancelAndDiscard`, `cancelUndecided`, `discardResumedReviewBatch`: "Save
+ *   for later (Esc)" / the walk open (nothing to discard: nothing is staged).
+ * - `answerPlayerAsNew`, `answerStepAsNew`, `walkToPlayerRow`: the Player /
+ *   Team tile's create on the open card, and Skip to a card with a Player row.
+ *
+ * Every other helper below drives a wizard STEP that no longer exists (name
+ * steps, Decided (N), Back to previous decision, the Career check, Cards with
+ * no team, Checklist says otherwise, Card titles, Ready to save). They are left
+ * as they were, so a spec still calling one fails on the missing control by
+ * name; its spec is rewritten onto the tiles (`tidy-walk.ts`).
  */
 import { expect, type Locator, type Page } from "@playwright/test";
+import {
+  createPlayerOnOpenRow,
+  createTeamOnOpenRow,
+  creatablePlayerRow,
+  expectTidyWalkOpen,
+  pinkTile,
+  saveForLater,
+  skipUntil,
+  tidyFooterButton,
+  walkAnsweringEverything,
+} from "./tidy-walk";
 import { expectAccessible } from "./fixtures";
 import type { FlowEnv } from "./env";
 import { expectAfterMarketplace, expectStepWithSportLots } from "./marketplace-wait";
@@ -332,9 +370,13 @@ async function expectPostNameStepSettled(page: Page): Promise<void> {
   ).toBeVisible();
 }
 
-/** The Save step's commit button. */
+/**
+ * NEO-645: there is no Save step (the cards are saved before the walk opens).
+ * This is now the walk's end-screen "Done (Esc)", so `advanceToSave` then a
+ * click on this walks the cards and closes the walk.
+ */
 export function confirmSaveButton(page: Page): Locator {
-  return reviewWizard(page).getByRole("button", { name: /Confirm & Save/ });
+  return tidyFooterButton(page, "done");
 }
 
 /**
@@ -697,7 +739,7 @@ export async function fetchChecklistToWizard(
     }),
   );
   // The helper's product is this screen, so it checks it (GUIDE "Accessibility checks").
-  await expectAccessible(page, { within: reviewWizard(page), label: "entity-review wizard" });
+  await expectAccessible(page, { within: reviewWizard(page), label: "Tidy Up walk" });
 }
 
 /** `openOneMarketplaceSetBase`'s ancestors when the caller names none. */
@@ -853,15 +895,16 @@ export async function fetchOneMarketplaceSetChecklistToWizard(
   await expect(reviewWizard(page)).toHaveAccessibleName(
     tidyUpName({ year: target.year ?? ONE_MARKETPLACE_DEFAULTS.year, set: target.set }),
   );
-  await expectAccessible(page, { within: reviewWizard(page), label: "entity-review wizard" });
+  await expectAccessible(page, { within: reviewWizard(page), label: "Tidy Up walk" });
 }
 
-/** Cancel out of the wizard and discard its decisions (the flows' ending). */
+/**
+ * NEO-645: "Save for later (Esc)". There is nothing to discard any more (the
+ * cards were saved before the walk opened, and each tile saved as it was
+ * answered), so a spec that relied on "no cards saved" needs rewriting.
+ */
 export async function cancelAndDiscard(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "Cancel (Esc)" }).click();
-  await expect(page.getByText(/Discard [0-9]+ decisions?/)).toBeVisible();
-  await page.getByRole("button", { name: "Discard", exact: true }).click();
-  await expect(page.getByText("Fetch cancelled — no cards saved.")).toBeVisible();
+  await saveForLater(page);
 }
 
 /**
@@ -870,12 +913,14 @@ export async function cancelAndDiscard(page: Page): Promise<void> {
  * the "Discard N decisions?" question, which a batch with no decision never raises).
  */
 export async function cancelUndecided(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "Cancel (Esc)" }).click();
-  await expect(page.getByText("Fetch cancelled — no cards saved.")).toBeVisible();
-  await expect(reviewWizard(page)).toBeHidden();
+  // NEO-645: "Save for later (Esc)" (see `cancelAndDiscard`).
+  await saveForLater(page);
 }
 
 /**
+ * NEO-645: nothing is staged any more, so this only asserts the walk is open
+ * (see the file header); the rest of this comment describes the retired wizard.
+ *
  * util-discard-resumed-review-batch.yaml: a batch an earlier flow left behind
  * opens with decisions already on it (its "Decided (k)" history is up); throw
  * it away and fetch again so this flow starts with nothing decided.
@@ -893,19 +938,12 @@ export async function discardResumedReviewBatch(
   target: DrillTarget = {},
   options: { checklist?: ChecklistName; firstFetch?: boolean } = {},
 ): Promise<void> {
-  // Settled into one state first (the header is up), then branch on it.
-  await expect(wizardProgress(page)).toBeVisible();
-  if (await decidedSummary(page).isVisible()) {
-    await page.getByRole("button", { name: "Cancel (Esc)" }).click();
-    await expect(page.getByText(/Discard [0-9]+ decisions?/)).toBeVisible();
-    await page.getByRole("button", { name: "Discard", exact: true }).click();
-    await expect(page.getByText("Fetch cancelled — no cards saved.")).toBeVisible({ timeout: 30_000 });
-    await fetchChecklistToWizard(page, env, target, options);
-  }
-  // A fresh batch opens with nothing decided, but its own lookups start
-  // settling rows at once: what must hold here is that a batch is on screen
-  // with nothing expired (an expired batch has an empty subtitle).
-  await expect(wizardProgress(page)).toHaveAttribute("aria-valuetext", /\S/);
+  // NEO-645: nothing is staged between a fetch and its save any more, so there is
+  // no batch to resume or discard; the walk is simply open.
+  void env;
+  void target;
+  void options;
+  await expectTidyWalkOpen(page);
 }
 
 /**
@@ -949,6 +987,9 @@ export function addAsNewPlayerButton(page: Page): Locator {
 }
 
 /**
+ * NEO-645: now `createPlayerOnOpenRow` (see the file header); the rest of this
+ * comment describes the retired wizard.
+ *
  * Answer the presented New Player step as a CREATE and return once the wizard
  * has moved off the row (NEO-424). The caller's intent is "this player is
  * new"; the helper owns the step's two shapes:
@@ -969,38 +1010,8 @@ export function addAsNewPlayerButton(page: Page): Locator {
  * i.e. its decision was recorded.
  */
 export async function answerPlayerAsNew(page: Page): Promise<void> {
-  const wizard = reviewWizard(page);
-  const button = addAsNewPlayerButton(page);
-  await expect(button).toBeVisible();
-  const demoted = /anyway$/.test(((await button.textContent()) ?? "").trim());
-  const row = await readNameStep(page);
-  await button.click();
-  if (demoted) {
-    // The plain step of THIS row: its primary with this row's skip beside it.
-    const thisRow = page.getByRole("button", { name: row, exact: true });
-    const plain = wizard.filter({ has: thisRow }).getByRole("button", { name: "Add as New Player", exact: true });
-    const moved = otherNameRow(page, row)
-      .or(nextStepButton(page))
-      .or(confirmSaveButton(page))
-      .or(wizard.getByText(/still looking up/));
-    await expect(plain.or(moved).first()).toBeVisible();
-    // Not a poll (GUIDE "Idioms": settle into ONE state, then branch). The wait
-    // above returns once the app is in one of two states, and neither changes
-    // on its own afterwards:
-    //  - the plain step of THIS row: the "anyway" press recorded nothing, so it
-    //    stays up until it is pressed (it cannot turn into `moved` by itself);
-    //  - `moved`: the press recorded the create and the walk left the row, so
-    //    this row's skip is gone and `plain`, scoped to a wizard that still has
-    //    it, can never match again.
-    // The product opens the plain step only from a row inserted READY with no
-    // lookup (`preselectAwaitingLookup` in EntityReviewWizard.tsx); a row whose
-    // lookup already ran records the create on the first press and never shows
-    // it, so `plain` cannot be read true for a row that is about to move on.
-    // `isVisible` therefore reads the settled state, and `expectNameStepLeft`
-    // below is the hard assert of either path.
-    if (await plain.isVisible()) await plain.click();
-  }
-  await expectNameStepLeft(page, row);
+  // NEO-645: the open card's first Player row that offers "Add as new player".
+  await createPlayerOnOpenRow(page);
 }
 
 /**
@@ -1013,6 +1024,9 @@ export function newStepHeading(page: Page): Locator {
 }
 
 /**
+ * NEO-645: now `createTeamOnOpenRow` (see the file header); the rest of this
+ * comment describes the retired wizard.
+ *
  * util-wizard-answer-step-as-new.yaml (NEO-331): answer the wizard's
  * presented New Team / New League step as a create, and return once the
  * wizard has moved off it.
@@ -1034,31 +1048,11 @@ export async function answerStepAsNew(
   page: Page,
   { level = "Other" }: { level?: "Major" | "Minor" | "College" | "International" | "Independent" | "Other" } = {},
 ): Promise<void> {
-  const wizard = reviewWizard(page);
-  const heading = newStepHeading(page);
-  await expect(heading).toBeVisible();
-  const step = ((await heading.textContent()) ?? "").trim();
-  const isLeague = step.startsWith("New League: ");
-  // When the name already exists (another spec, or the batch itself, created
-  // it earlier in the run) the step leads with "Link to <name>" and offers
-  // "Add as New Team anyway"; the util taps "Add as New" either way.
-  const primary = wizard.getByRole("button", {
-    name: isLeague ? /^Add as New League( anyway)?$/ : /^Add as New Team( anyway)?$/,
-  });
-  if (isLeague) {
-    const radio = wizard.getByRole("radio", { name: level, exact: true });
-    await radio.click();
-    await expect(radio, `Level "${level}" is not pressed on "${step}"`).toBeChecked();
-  }
-  // No lookup holds the primary: only a missing level (pressed above), a
-  // draft error, or a decision write in flight, so it is a UX budget, not a
-  // lookup wait.
-  await expect(primary, `"${step}": its Add as New is still held`).toBeEnabled();
-  await primary.click();
-  await expect(
-    wizard.getByRole("heading", { level: 3, name: step, exact: true }),
-    `"${step}" is still on screen after Add as New`,
-  ).toBeHidden();
+  // NEO-645: the open card's first unanswered team name, created in the Team
+  // tile's inline New team form. A league is no step of its own any more (the
+  // form's league field is optional), so `level` is not pressed.
+  void level;
+  await createTeamOnOpenRow(page);
 }
 
 /**
@@ -1123,6 +1117,9 @@ export async function skipEveryNameBut(
 }
 
 /**
+ * NEO-645: now `skipUntil` a card with a pink Player row (see the file
+ * header); the rest of this comment describes the retired wizard.
+ *
  * util-wizard-walk-to-player-row(-creating-teams).yaml: move the wizard past
  * every team/league step to the first player row. `creatingTeams: false`
  * skips each team/league step (a skip creates nothing); `true` adds each as
@@ -1159,72 +1156,18 @@ export async function walkToPlayerRow(
   page: Page,
   { creatingTeams = false, readyToCreate = false }: { creatingTeams?: boolean; readyToCreate?: boolean } = {},
 ): Promise<void> {
-  const wizard = reviewWizard(page);
-  const person = personSkip(page);
-  // A step's skip stays aria-disabled while that row's live lookup is in
-  // flight, so only the usable one counts (the lookups' 180 s budget).
-  const stepSkip = wizard.getByRole("button", {
-    name: /^Skip .* — (not a team|this team has no league)$/,
-    disabled: false,
-  });
-
-  // A pass over the team/league steps, ending on a player row.
-  const passTeamSteps = async (): Promise<void> => {
-    await awaitLookupsSettled(page);
-    for (let i = 0; i < 200; i++) {
-      await expect(person.or(stepSkip)).toBeVisible({ timeout: LOOKUPS });
-      if (await person.isVisible()) break;
-      // The step's own skip names it, so its going away means the step moved on.
-      const name = (await stepSkip.first().getAttribute("aria-label")) ?? "";
-      if (creatingTeams) {
-        await answerStepAsNew(page);
-      } else {
-        await stepSkip.first().click();
-      }
-      await expect(wizard.getByRole("button", { name, exact: true })).toBeHidden();
-    }
-    await expect(person).toBeVisible({ timeout: 30_000 });
-  };
-
-  // Twice, because the lookups of the rows behind the team/league steps settle
-  // only once the earlier steps are decided.
-  for (let pass = 0; pass < 2; pass++) {
-    await passTeamSteps();
-  }
-
-  if (readyToCreate) {
-    // The footer line that explains a held create (one node; the chip's own
-    // "needs a team decision" lives in the body and is not matched).
-    const held = wizard.getByText(/team decisions?, or untick (it|them)\./);
-    // Anchored on the trailing "(<sport>)": a plain exact match reads "Link to
-    // <name>" and a pick-step row "Link to <name>, ...".
-    const preselected = wizard.getByRole("button", { name: /^Link to .+ \([^)]+\)$/ });
-    // A same-name PICK step (NEO-332) is inserted READY, so it is often the
-    // first settled player the wizard pins; it offers no career editor and its
-    // create is "Create new", not "Add as New Player": walk past it too.
-    const pickStep = wizard.getByRole("heading", { level: 3, name: /^Which .+ is this\?$/ });
-    // `times` is a runaway guard: a batch whose every remaining player is held,
-    // preselected or a pick step runs out of players and fails the visibility
-    // assert below.
-    for (let i = 0; i < 20; i++) {
-      await expect(person).toBeVisible();
-      if (!(await held.isVisible()) && !(await preselected.isVisible()) && !(await pickStep.isVisible())) break;
-      // Wait for THIS skip to land before looking again: until the decision
-      // round-trips the row is still up, and a second pass would skip the
-      // player after it too. The row's own skip going is the decision landing.
-      const row = await readNameStep(page);
-      await person.click();
-      await expectNameStepLeft(page, row);
-      await passTeamSteps();
-    }
-    await expect(person).toBeVisible();
-    await expect(held, "the player the walk stopped on still holds its create").toBeHidden();
-    await expect(preselected, "the player the walk stopped on is a preselect, with nothing to create").toBeHidden();
-    await expect(pickStep, "the player the walk stopped on is a same-name pick step, with no career editor").toBeHidden();
-  }
+  // NEO-645: Skip cards until one has a pink Player row (with `readyToCreate`,
+  // one that offers a plain "Add as new player"). Teams are tiles on the same
+  // card now, never steps in front of the player, so `creatingTeams` has
+  // nothing to walk past.
+  void creatingTeams;
+  await skipUntil(page, readyToCreate ? creatablePlayerRow(page) : pinkTile(page, "Player"));
 }
 
 /**
+ * NEO-645: now `walkAnsweringEverything` (see the file header); the rest of
+ * this comment describes the retired wizard.
+ *
  * util-wizard-advance-to-save.yaml (NEO-335): from "every name decided" walk
  * the career / teams / autograph / titles steps to the Save step, and answer
  * nothing on them that the product does not REQUIRE.
@@ -1265,28 +1208,8 @@ export async function walkToPlayerRow(
  * gap-only re-sync now opens the wizard straight onto it).
  */
 export async function advanceToSave(page: Page): Promise<void> {
-  const wizard = reviewWizard(page);
-  const next = usableNextButton(page);
-  const save = confirmSaveButton(page);
-  const autograph = autographChoices(page);
-  for (let i = 0; i < 5; i++) {
-    await expectPostNameStepSettled(page);
-    if (await save.isVisible()) break;
-    if (await autograph.isVisible()) await answerAutographStep(page);
-    await expect(next).toBeVisible();
-    const { subtitle } = await readProgress(page);
-    if (subtitle === CAREER_STEP_SUBTITLE) {
-      await keepEveryCareerLine(page);
-      await expectNoCareerLineAdds(page);
-    }
-    await next.click();
-    await expectPostNameStepLeft(page, subtitle);
-  }
-  await expect(save).toBeVisible();
-  // The subtitle is pinned in the header with the footer, not body content.
-  await expect(wizard.getByText(STEP_SUBTITLE.save, { exact: true })).toBeVisible();
-  await expectWizardStep(page, STEP_SUBTITLE.save);
-  await expect(wizardProgress(page), "the Save step ends the progress bar").toHaveAttribute("aria-valuenow", "100");
+  // NEO-645 (D7): the walk's "answer everything", ending on its end screen.
+  await walkAnsweringEverything(page);
 }
 
 /**

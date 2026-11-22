@@ -52,16 +52,7 @@ import {
   syncChecklistButton,
 } from "../support/set-builder";
 import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist, type ChecklistFacts } from "../support/published-checklist";
-import {
-  addAsNewStep,
-  advanceToSave,
-  answerStepAsNew,
-  checklistDisagreementHeading,
-  confirmSaveButton,
-  expectWizardStep,
-  reviewWizard,
-  wizardProgress,
-} from "../support/wizard";
+import { finishTidyWalk, settleWalkAfterCommit, tidyWalk, walkAnsweringEverything } from "../support/tidy-walk";
 import type { Locator, Page } from "@playwright/test";
 
 const SL_PAUSE_NOTICE = "SportLots is on pause: nothing from SportLots was asked for or changed.";
@@ -109,14 +100,22 @@ async function expectBareStemOnly(pairing: Locator) {
  * Fetch a variant's checklist and settle the card-pairing dialog: keep every
  * card only one marketplace has, then confirm. Waits are the caller's (the
  * Base and the insert checklists have different measured ceilings).
+ *
+ * NEO-645: Confirm commits the cards ("Saved N cards."); the Tidy Up walk opens
+ * AFTER the save, when a card needs a person, and the caller walks it. Returns
+ * the saved line.
  */
 async function fetchChecklist(
   page: Page,
   facts: ChecklistFacts,
-  { open, settle, inspect }: { open: number; settle: number; inspect?: (pairing: Locator) => Promise<void> },
+  {
+    open,
+    settle,
+    commit,
+    inspect,
+  }: { open: number; settle: number; commit: number; inspect?: (pairing: Locator) => Promise<void> },
 ) {
   const pairing = page.getByRole("dialog", { name: /^Match Cards/ });
-  const wizard = reviewWizard(page);
   const saved = page.getByText(/Saved [0-9]+/);
 
   await syncChecklistButton(page).click();
@@ -144,64 +143,33 @@ async function fetchChecklist(
   // Checklist rows no card paired are left in their column: the seed saves the marketplace's cards.
   await confirm.click();
   await expect(pairing).toBeHidden({ timeout: settle });
-  await expect(wizard.or(saved).first()).toBeVisible({ timeout: settle });
+  // NEO-645: the gate and the commit now run straight after Confirm (they ran behind the
+  // wizard's Confirm & Save before), so the saved line waits on both: `commit` is the old
+  // wizard-open ceiling plus the old save ceiling, each the flow's measured cold-path value.
+  await expect(saved).toBeVisible({ timeout: commit });
+  return saved;
 }
 
 /**
- * Walk the entity-review wizard of a freshly fetched Base checklist to its
- * Save step and save: bulk-add the unknown players, then answer every team,
- * league and pick step one at a time (live enrichment lookups), leave the
- * post-name steps on their defaults, confirm. Shared by the seed's big Base
- * checklists; `maxSteps` bounds the walk (a team/league/pick step each).
+ * NEO-645 (D7): walk the Tidy Up walk a commit opened, answering every pink
+ * Player and Team tile (`walkAnsweringEverything`: link the one player or team
+ * the product offers, else create; a same-name pick step links its top
+ * candidate, never mints one more same-name player; a no-team card keeps its
+ * pre-filled chips, the old wizard's default), then close it on its end screen.
+ * The seed is a data-loading track; it proves none of the tiles.
+ *
+ * `file` names the captured checklist: it is BSC's own answers, so it cannot
+ * disagree with BSC, and a card with a "Sources disagree" tile means the
+ * capture is stale (re-capture it, SET-REGISTRY.md).
  */
-async function walkWizardToSave(page: Page, maxSteps: number) {
-  const wizard = reviewWizard(page);
-  await wizard.getByRole("button", { name: /^Add remaining players as new/ }).click();
-  // Enabled only: the button is aria-disabled while the row's enrichment
-  // lookup is in flight, and between rows.
-  // Any state: a league step's primary is held until a level is pressed
-  // (NEO-331), and answerStepAsNew presses "Other" first.
-  const addAsNew = addAsNewStep(page);
-  // NEO-335: "names done" is two footer states. With every name decided the
-  // wizard walks on to "Cards with no team" / "Card titles" (footer "Next
-  // (Enter)", no Confirm & Save), then "Ready to save" (the only step with
-  // Confirm & Save). Neither button is on screen while a name is undecided.
-  const namesDone = wizard.getByRole("button", { name: /^Next \(Enter\)$|Confirm & Save/ });
-  // NEO-330: with the reference catalogue loaded the Base batch is a
-  // handful of names, and some are same-name players the bulk leaves for
-  // the operator. Such a row is the PICK step (NEO-332), inserted ready, so
-  // it can be on screen from the start. It is answered by LINKING the top
-  // candidate, never `Add as New Player` (that mints one more same-name
-  // player). No spec reads these rows and the reset rebuilds them. Scoped
-  // to the candidate list so the footer's `Link to existing instead` is out.
-  const pickStep = wizard.getByRole("heading", { level: 3, name: /^Which .* is this\?$/ });
-  const firstCandidate = wizard
-    .getByRole("list", { name: "Players already filed under this name" })
-    .getByRole("button", { name: /^Link to / })
-    .first();
-  // Teams and leagues are walked one at a time (enrichment lookups; the
-  // flow's 240 s per step and 250 steps at most). The wait wakes on every
-  // answerable outcome: a team/league step, a pick step, or the end.
-  for (let i = 0; i < maxSteps; i++) {
-    await expect(addAsNew.or(pickStep).or(namesDone).first()).toBeVisible({ timeout: 240_000 });
-    if (await namesDone.isVisible()) break;
-    if (await pickStep.isVisible()) {
-      const step = ((await pickStep.textContent()) ?? "").trim();
-      await firstCandidate.click();
-      // By the exact heading: a following pick step has another name.
-      await expect(
-        wizard.getByRole("heading", { level: 3, name: step, exact: true }),
-        `"${step}" is still on screen after Link to`,
-      ).toBeHidden();
-    } else {
-      await answerStepAsNew(page);
-    }
-  }
-  // The teams / titles steps, each left on its defaults by Next (the answers
-  // the old final step's Confirm & Save saved), then the Save step. The seed
-  // is a data-loading track; it proves none of those steps.
-  await advanceToSave(page);
-  await confirmSaveButton(page).click();
+async function walkTidyUp(page: Page, file: string) {
+  const tally = await walkAnsweringEverything(page);
+  expect(
+    tally.disagreements,
+    `the seed's ${file} disagrees with BSC on ${tally.disagreements} cards (Sources disagree): the capture is stale`,
+  ).toBe(0);
+  await finishTidyWalk(page);
+  return tally;
 }
 
 /**
@@ -376,24 +344,24 @@ test(
     // The captured checklist goes in before the Sync: the fetch then asks BSC for no card
     // the file answers (a seed with a card-listing call per card met BSC's 429).
     const facts = await usePublishersChecklist(page, CHECKLISTS.toppsChrome2024Base);
-    await fetchChecklist(page, facts, { open: 60_000, settle: 60_000, inspect: expectBareStemOnly });
+    const savedBase = await fetchChecklist(page, facts, {
+      open: 60_000,
+      settle: 60_000,
+      // The old wizard opened within 60 s and its save landed within 120 s.
+      commit: 180_000,
+      inspect: expectBareStemOnly,
+    });
+    // NEO-645: the commit lands BEFORE the walk, so the count is on screen now.
+    await expect(page.getByText(/Saved 335 cards/)).toBeVisible();
 
-    // First run: confirm every new player/team/league the checklist names.
-    // NEO-335: the wizard's dialog name starts "Tidy up" ("Tidy up 2024 Topps
-    // Chrome" since NEO-497); "Confirm New Players & Teams" is gone.
-    const wizard = reviewWizard(page);
-    if (await wizard.isVisible()) {
-      // The file is BSC's own answers, so it cannot disagree with BSC: a "Checklist says
-      // otherwise" step here means the capture is stale (re-capture it, SET-REGISTRY.md),
-      // and the walk below would sit on a step it has no answer for until its 240 s ran out.
-      await expect(wizardProgress(page)).toBeVisible();
-      await expect(
-        checklistDisagreementHeading(page),
-        "the seed's 2024-topps-chrome-base.csv disagrees with BSC (Checklist says otherwise): the capture is stale",
-      ).toBeHidden();
-      await walkWizardToSave(page, 250);
+    // First run: answer every new player and team the checklist names (D7). The walk
+    // opens by itself when a card needs a person ("Tidy up 2024 Topps Chrome").
+    if (await settleWalkAfterCommit(page, savedBase)) {
+      const base = await walkTidyUp(page, "2024-topps-chrome-base.csv");
+      // Gold Wave Refractors is built from Base below, and a build refuses a source with any
+      // pink card (NEO-645 J3): every Base card must leave the walk with nothing to fix.
+      expect(base.skipped, `${base.skipped} Base cards were left with something to fix`).toBe(0);
     }
-    await expect(page.getByText(/Saved 335 cards/)).toBeVisible({ timeout: 120_000 });
     await expect(page.getByText(/^#[0-9]/).first()).toBeVisible();
 
     // ── Insert: reconcile, Future Stars checklist ──────────────────────────
@@ -408,33 +376,22 @@ test(
     // The seed's Future Stars checklist is BSC's own answers (the 20 cards), so the fetch asks BSC
     // for no card (D4): the BSC listing specs that read this set no longer depend on 20 live reads.
     const futureStars = await usePublishersChecklist(page, CHECKLISTS.futureStars2024);
-    await fetchChecklist(page, futureStars, { open: 90_000, settle: 90_000 });
-    // Every Future Stars player is already known from Base: no NAMES review.
-    // NEO-335: one wizard shape is legitimate here, NO NAMES and past-the-names
-    // steps only: a card that would save with no team (a SportLots-only card
-    // never carries one), a new card whose title gets trimmed or (NEO-574) a
-    // new card whose team its player's career does not show opens the review
-    // straight onto "Career check" / "Cards with no team" / "Card titles", its first step.
-    // fetchChecklist waited for the wizard or the "Saved" banner, so which one
-    // is up is settled and read once. The seed answers nothing on those steps.
-    if (await wizard.isVisible()) {
-      // The file is BSC's own answers, so a "Checklist says otherwise" step means the capture is stale.
-      await expect(wizardProgress(page)).toBeVisible();
-      await expect(
-        checklistDisagreementHeading(page),
-        "the seed's 2024-topps-chrome-insert-future-stars.csv disagrees with BSC (Checklist says otherwise): the capture is stale",
-      ).toBeHidden();
-      // A names review fails here, by name: nothing is undecided.
-      await expect(wizard.getByRole("button", { name: /Skip remaining names|Add remaining players as new/ })).toHaveCount(0);
-      // NEO-574: a new card whose team its known player's career does not show for 2024
-      // opens the "Career check" first. NEO-467: the header's progress bar names that first step.
-      await expectWizardStep(page, /^(Career check|Cards with no team|Card titles)$/);
-      await advanceToSave(page);
-      // The Save step, for all 20; the strict count below then pins the save.
-      await expect(wizard.getByRole("heading", { name: "Save 20 cards?" })).toBeVisible();
-      await confirmSaveButton(page).click();
+    const savedInsert = await fetchChecklist(page, futureStars, {
+      open: 90_000,
+      settle: 90_000,
+      // The old review opened within 90 s and its save landed within 120 s.
+      commit: 210_000,
+    });
+    // NEO-645: the save comes first; the strict count pins it.
+    await expect(page.getByText(/Saved 20 cards/)).toBeVisible();
+    // Every Future Stars player is already known from Base: no player NAME is asked. The walk can
+    // still open for blue checks (a career gap, a cut title) or a card with no team (a
+    // SportLots-only card never carries one); the seed answers what D7 says and Skips nothing it
+    // could answer.
+    if (await settleWalkAfterCommit(page, savedInsert)) {
+      const insert = await walkTidyUp(page, "2024-topps-chrome-insert-future-stars.csv");
+      expect(insert.players, "a Future Stars player name was asked: every one is known from Base").toBe(0);
     }
-    await expect(page.getByText(/Saved 20 cards/)).toBeVisible({ timeout: 120_000 });
 
     // ── Parallel: reconcile, Gold Wave Refractors built from Base ──────────
     await drillToSet(page, env);
@@ -456,7 +413,7 @@ test(
       page.getByText(/^Gold Wave Refractors — Built 300 cards(, [^.]+)?\./),
     ).toBeVisible({ timeout: 120_000 });
     await expect(page.getByRole("dialog", { name: /^Match Cards/ })).toBeHidden();
-    await expect(reviewWizard(page)).toBeHidden();
+    await expect(tidyWalk(page)).toBeHidden();
     await expect(page.getByText(/^#[0-9]/).first()).toBeVisible({ timeout: 15_000 });
     if (!env.SL_PAUSED) {
       await expect(page.getByText("SL", { exact: true }).first()).toBeVisible();
