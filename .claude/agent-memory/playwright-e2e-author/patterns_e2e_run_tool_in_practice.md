@@ -31,6 +31,9 @@ the tool's current code before relying on any line here; some may be fixed.
   (its seed path runs `convex dev --once`) does not update it, so the warning can
   be stale. Check the deployed code by a function or behaviour only the
   current commit has before you trust or dismiss it.
+- `seed` does not start Vite. After `stop-vite`, its setup phase dies on
+  `net::ERR_CONNECTION_REFUSED` at the sign-in hop (the reset and import still
+  ran). Harmless: the next `run --setup` starts Vite and runs setup again.
 - `status` on a worktree with no `.e2e-local/` yet can crash (ENOENT on
   run.lock). Any `run` creates the folder.
 
