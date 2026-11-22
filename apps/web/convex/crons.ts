@@ -81,6 +81,22 @@ crons.interval(
 );
 
 /**
+ * NEO-645 — forget Wikidata output a day after it was looked up.
+ *
+ * The same hourly reaper and the same day main gave its review rows
+ * (`reap abandoned entity-review batches`: hourly, 24 hours): the output of a
+ * name lookup is working state for the walk, never kept longer than needed. An
+ * expired row goes back to a name nobody has asked about and is asked again
+ * when the operator needs it; answers stay. See `sweepExpiredLookupOutput`.
+ */
+crons.interval(
+  "forget expired name lookup output",
+  { hours: 1 },
+  internal.tidyNames.sweepExpiredLookupOutput,
+  {},
+);
+
+/**
  * NEO-195 — reap checklist candidates whose fetch never finished.
  *
  * Confirm and cancel both clean up after themselves; this covers the run that

@@ -18,7 +18,7 @@ export function namesToAskAbout(context: NonNullable<TidyCardContext>) {
  * A card the legacy-name migration (M2) wrote has name rows born `ready` with no
  * enrichment, so nothing would ever look them up. The server decides whether a
  * name is really unasked (`tidyNames.neverLooked`: no generation, no request
- * time), and this offers only those, once per sitting. The server still refuses
+ * time), and this offers only those, once per sitting and answer. The server still refuses
  * to ask twice, so a stale context costs nothing.
  */
 export function useOpenCardLookups(context: TidyCardContext | undefined) {
@@ -29,7 +29,10 @@ export function useOpenCardLookups(context: TidyCardContext | undefined) {
   useEffect(() => {
     if (!context) return;
     for (const n of namesToAskAbout(context)) {
-      const key = `${context.cardId}|${n.kind}|${n.nameNormalized}`;
+      // The answer's generation is part of the key: a name whose lookup output
+      // expired (`tidyNames.sweepExpiredLookupOutput`) and is then changed back
+      // is a new question, asked again in the same sitting.
+      const key = `${context.cardId}|${n.kind}|${n.nameNormalized}|${n.row!.answerGen ?? 0}`;
       if (offered.current.has(key)) continue;
       offered.current.add(key);
       const ask =

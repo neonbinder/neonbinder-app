@@ -23,6 +23,9 @@
  *                            calls it first, so a name is matched against the
  *                            players and teams that exist NOW and asked again if
  *                            unlinked. Only an operator's "not an entity" stays.
+ *   - `sweepExpiredLookupOutput` hourly cron: Wikidata output a day old is
+ *                            forgotten (the row goes back to never-looked-up;
+ *                            answers stay), as main's 24h reaper did.
  *   - `fanOut*`              an answer reaches every card in its scope: paged,
  *                            compare-and-set, stops when the answer is replaced.
  *   - `enqueuePendingLookups` after the commit finalizes (schema doc 4b).
@@ -1002,7 +1005,8 @@ export const requestTeamLookup = mutation({
     if (!key) throw new ConvexError("A name is required.");
     const before = await readRow(ctx, scopeId, "team", key);
     if (before) {
-      // A printed team a migration left `ready` with no lookup: ask it once.
+      // A printed team a migration left `ready` with no lookup, or whose lookup
+      // output expired (`sweepExpiredLookupOutput`): ask it again, once.
       if (neverLooked(before)) await scheduleLookup(ctx, before, {});
       return null;
     }
@@ -1197,6 +1201,119 @@ export const sweepStaleLookups = internalMutation({
     const done = stale.length < LOOKUP_SWEEP_CHUNK;
     if (!done) await ctx.scheduler.runAfter(0, internal.tidyNames.sweepStaleLookups, {});
     return { aged: stale.length, done };
+  },
+});
+
+/**
+ * How long Wikidata output may sit on a name row (Jason: "I don't want to store
+ * that data for anything longer than necessary"). Main's queue rows were deleted
+ * at the commit and, when a session was abandoned, by the hourly reaper after
+ * 24 hours (`ENTITY_REVIEW_ABANDONED_MS`, `sweepAbandonedBatches`); the rows
+ * here outlive the commit because the walk answers them card by card, so the
+ * same hourly reaper and the same day apply, counted from the lookup.
+ */
+export const LOOKUP_OUTPUT_TTL_MS = 24 * 60 * 60 * 1000;
+/** Rows one `sweepExpiredLookupOutput` run reads per status. */
+export const LOOKUP_OUTPUT_SWEEP_CHUNK = 100;
+
+/** The `enrichment` keys that are Wikidata's (or ESPN's) output, not NB data. */
+export const LOOKUP_OUTPUT_KEYS = [
+  "wikidataId",
+  "careerTeams",
+  "undatedCareerTeams",
+  "isHallOfFame",
+  "description",
+  "birthYear",
+  "enwikiTitle",
+  "league",
+  "leagueWikidataId",
+  "location",
+  "yearsActive",
+  "colors",
+  "espnId",
+] as const;
+
+/** Does this enrichment carry anything a lookup found? */
+export function hasLookupOutput(enrichment: Enrichment | undefined): boolean {
+  return !!enrichment && LOOKUP_OUTPUT_KEYS.some((key) => enrichment[key] !== undefined);
+}
+
+/** The enrichment without the lookup's output: what the gate itself put there (same-name choice, preselect). */
+export function withoutLookupOutput(enrichment: Enrichment | undefined): Enrichment | undefined {
+  if (!enrichment) return undefined;
+  const kept: Record<string, unknown> = { ...enrichment };
+  for (const key of LOOKUP_OUTPUT_KEYS) delete kept[key];
+  return Object.keys(kept).length > 0 ? (kept as Enrichment) : undefined;
+}
+
+/**
+ * Cron target (crons.ts, hourly like main's reaper): forget Wikidata output
+ * that is a day old.
+ *
+ * A row whose lookup was stamped (`lookupRequestedAt`) more than
+ * `LOOKUP_OUTPUT_TTL_MS` ago loses what the lookup found: the Wikidata keys of
+ * its enrichment, its status, its generation and its stamp. It goes back to the
+ * state of a name nobody has asked about (`neverLooked`), so the next time the
+ * operator needs the lookup it is asked again through the ordinary path
+ * (`requestLookup`, which the open card does for a never-looked name).
+ *
+ * KEPT: the answer and everything about it (`answerGen`, `fanOutFrom`, who and
+ * when), the sport, the gate's own facts (a same-name choice's candidates and
+ * a preselect are NB players, not Wikidata output; `candidateTeamIds` and
+ * `candidatePlace` are NB team rows). An operator's ruling is an answer, so it
+ * stays. A row still `pending` is left to `sweepStaleLookups`.
+ *
+ * A row nobody answered and no card prints (the lookup rows `requestTeamLookup`
+ * makes for a career team, or a name whose cards are gone) has nothing left to
+ * hold, and is deleted.
+ *
+ * Only rows with a stamp older than the cutoff are read (an index range on
+ * `status` and the stamp), and every row it touches leaves that range (the
+ * stamp is cleared or the row deleted), so each run starts from the top, a run
+ * that finds nothing stale reads nothing, and a second run changes nothing. A
+ * full chunk schedules another.
+ */
+export const sweepExpiredLookupOutput = internalMutation({
+  args: {},
+  returns: v.object({ cleared: v.number(), deleted: v.number(), done: v.boolean() }),
+  handler: async (ctx) => {
+    const cutoff = Date.now() - LOOKUP_OUTPUT_TTL_MS;
+    let cleared = 0;
+    let deleted = 0;
+    let full = false;
+    for (const status of ["ready", "error"] as const) {
+      // `gt 0` keeps rows with no stamp (born ready, never asked) out of the range.
+      const stale = await ctx.db
+        .query("tidyNames")
+        .withIndex("by_status_requested", (q) =>
+          q.eq("status", status).gt("lookupRequestedAt", 0).lt("lookupRequestedAt", cutoff),
+        )
+        .take(LOOKUP_OUTPUT_SWEEP_CHUNK);
+      if (stale.length === LOOKUP_OUTPUT_SWEEP_CHUNK) full = true;
+      for (const row of stale) {
+        if (row.answer === undefined) {
+          const printers = await listPrintersOfName(
+            ctx,
+            { scopeId: row.scopeId, kind: row.kind, nameNormalized: row.nameNormalized },
+            1,
+          );
+          if (printers.length === 0) {
+            await ctx.db.delete(row._id);
+            deleted += 1;
+            continue;
+          }
+        }
+        await ctx.db.patch(row._id, {
+          enrichment: withoutLookupOutput(row.enrichment),
+          status: "ready",
+          lookupGen: undefined,
+          lookupRequestedAt: undefined,
+        });
+        cleared += 1;
+      }
+    }
+    if (full) await ctx.scheduler.runAfter(0, internal.tidyNames.sweepExpiredLookupOutput, {});
+    return { cleared, deleted, done: !full };
   },
 });
 

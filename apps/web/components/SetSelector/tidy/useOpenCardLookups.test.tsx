@@ -114,6 +114,16 @@ describe("useOpenCardLookups", () => {
     expect(requestLookup).toHaveBeenCalledTimes(1);
   });
 
+  it("asks again when the same name is changed back (a new answer generation), after its lookup output expired", () => {
+    const row = (answerGen: number) =>
+      ({ name: "Rookie Newguy", sportId: "sport1", status: "ready", neverLooked: true, answerGen }) as never;
+    const { rerender } = render(
+      <Probe ctx={context([name({ kind: "player", printed: "Rookie Newguy", row: row(1) })])} />,
+    );
+    rerender(<Probe ctx={context([name({ kind: "player", printed: "Rookie Newguy", row: row(2) })])} />);
+    expect(requestLookup).toHaveBeenCalledTimes(2);
+  });
+
   it("asks again for the same name on another card", () => {
     const names = [name({ kind: "player", printed: "Rookie Newguy" })];
     const { rerender } = render(<Probe ctx={context(names, "card1")} />);
