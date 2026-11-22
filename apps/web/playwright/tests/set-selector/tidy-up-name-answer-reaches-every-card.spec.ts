@@ -27,17 +27,17 @@ import { usePastedChecklist } from "../../support/published-checklist";
 import { drillToCustom, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 import {
   createPlayerOnOpenRow,
-  expectCardsLeft,
   expectCardSettled,
+  expectCardsLeft,
   needsYouPill,
   pinkTile,
   saveAndNext,
   saveForLater,
   settleWalkAfterCommit,
   tidyTile,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
-import { tidyUpName } from "../../support/wizard";
 
 const YEAR = "2026";
 
@@ -111,8 +111,9 @@ test(
     await expectCardSettled(page);
     await expect(sharedRow.getByRole("button", { name: "Change player", exact: true })).toBeVisible();
 
-    // ── STEP 5: Save for later; the checklist counts the two cards still flagged (#3, #4) ──
+    // ── STEP 5: Save for later; the checklist counts the two cards still flagged, both pink (#3 no
+    // team, #4 its unanswered name) ──
     await saveForLater(page);
-    await expect(needsYouPill(page)).toHaveAccessibleName("2 need you");
+    await expect(needsYouPill(page)).toHaveAccessibleName("2 need you, 2 to fix");
   },
 );

@@ -86,9 +86,9 @@
 // "Base" the spec used before NEO-609: a single-token row keeps the level's
 // own name and its "Insert" type name apart in every assertion (R7a).
 // The player is the catalogue's George Brett (one Baseball row, read only; the
-// same row `checklist-missing-team-fixer-hand-added-card` reads). Nothing is
-// deleted: the set is this attempt's alone. Cards Q, A, B and C carry no team
-// (the walk records card C as "No team on this card", its own card only);
+// same row `tidy-up-team-tile-offers-the-whole-career-unpicked-when-no-stint-covers-the-year`
+// reads). Nothing is deleted: the set is this attempt's alone. Cards Q, A, B
+// and C carry no team (the walk records card C as "No team on this card", its own card only);
 // D and E carry one each, made in the New team dialog for this attempt
 // (minted single tokens, GUIDE "Minted names"; a team is never looked up).
 //
@@ -130,7 +130,6 @@ import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtu
 import { drillToCustom, escapeRe, openAttributesPanel, setBuilderReady } from "../../support/set-builder";
 import { editCardButton } from "../../support/cards";
 import { goViaShell } from "../../support/collection";
-import { tidyUpName } from "../../support/wizard";
 import { expectOverCapLook } from "../../support/theme";
 import {
   answerPinkTeamTiles,
@@ -141,6 +140,7 @@ import {
   saveAndNext,
   tidyFooterButton,
   tidyTile,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
 import type { Page } from "@playwright/test";
@@ -395,7 +395,7 @@ test(
     // Card C is pink (over the cap, and no team), the only card of this
     // checklist the pill counts. Its Listing title tile opens ready to edit.
     const setNameInTitles = page.getByRole("textbox", { name: "Value for Set name in titles" });
-    const pill = page.getByRole("button", { name: "1 needs you", exact: true });
+    const pill = page.getByRole("button", { name: "1 needs you, 1 to fix", exact: true });
     await expect(pill).toBeVisible();
     await pill.click();
     await expectTidyWalkOpen(page, { title: tidyUpName({ year: "2024", set, variant: LONG_INSERT }) });

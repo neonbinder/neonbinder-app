@@ -59,7 +59,7 @@ node playwright/tools/e2e-run.mjs status | digest [last|<runDir>] | stop | stop-
 - `set-builder.ts`: `setBuilderReady(page)`, `columnHeading(page, column)`, `columnSearch(page, column)`, `columnOption(page, column, name)` (exact own text, badges ignored), `pick(page, column, name, { search? })`, `selectOrCreate(page, column, name, { via?: "search"|"list", confirm? })`, `syncChecklistButton(page)`, `openAttributesPanel(page)`, `customSport(env)`.
 - Drills: `drillToSet(page, env, { sport?, year?, manufacturer?, set?, createManufacturer? })` (default 2024 Topps Chrome), `drillToBaseVariant(page, env, target?)`, `drillToColdManufacturer(page, env, { sport?, year?, manufacturer?, expectSets? })`, `drillToCustom(page, { sport?, year?, manufacturer?, set?, variantType?, variant? })`, `drillToCustomSet(page, env, { set, variantType?, variant? })`.
 - `cards.ts`: `addCardViaForm(page, { cardNumber, playerName, cardName?, beforeSubmit? })`, `addCustomCard(page, env, { set, cardNumber, playerName, cardName?, variantType?, insertName? })`, `editCardButton`, `deleteCardButton`, `confirmDeleteCardButton`, `escapeRe`.
-- `wizard.ts`: `reviewWizard(page)` (dialog `/^Tidy up /`), `tidyUpName({ year, set, variant? })` (omit `variant` for Base), `fetchChecklistToWizard(page, env, target?, { checklist?, firstFetch? })`, `expectWizardStep`, `expectNothingDecided`, `readNameStep`/`expectNameStepLeft`, `readDecidedCount`/`expectDecidedCount`, `advanceToSave(page)`, `confirmSaveButton(page)`, `readBackDecision`.
+- `tidy-walk.ts` (the per-card Tidy Up walk): `tidyWalk(page)`, `tidyUpName({ year, set, variant? })` (omit `variant` for Base), `settleWalkAfterCommit(page, savedLine)` (true when the walk opened), `openTidyWalk`/`needsYouPill`, `tidyTile`/`pinkTile`, `expectCardsLeft`, `saveAndNext`, `skipCard`, `skipUntil`, `saveForLater`, `finishTidyWalk`, `walkAnsweringEverything` (answer every pink Player/Team tile to the end screen), `ruleOutOpenPlayerRows`, `takeSourceSide`, `fetchChecklistToTidyWalk(page, env, target?, { checklist?, firstFetch? })`.
 - `published-checklist.ts`: `usePublishersChecklist(page, name, { noTeamOn?, extraRows? })` returns `ChecklistFacts`; `CHECKLISTS`, `checklistFacts(name)` (N of M read off the file), `confirmChecklistMatchCards`.
 - `collection.ts`: `drillToCollectorBase(page, target = TOPPS_CHROME_2024)` returns a Locator; `createBox`, `deleteOpenBox`, `inventoryTabs`, `confirmRemoved`; Sync status: `syncRun`, `pressSync(page, sync, title)` ("ran"/"throttled"), `expectRunOrSellerWait`, `followRunToRest`, `queueSettled`, `walkForCleanup` (hooks only).
 - `marketplace-wait.ts`: `expectAfterMarketplace(page, target, { platform, what?, cap?, state? })`, `expectStepWithSportLots(page, target, env, { liveMs, what, pausedMs?, statusLine?, state? })`.
@@ -73,9 +73,9 @@ node playwright/tools/e2e-run.mjs status | digest [last|<runDir>] | stop | stop-
 - Roles: `type="search"` is `searchbox`; column search is `combobox`; `<select>` is `combobox` (use `selectOption`); dialogs are portaled: locate from `page`, not `main`.
 - A `has`/`hasNot` locator is relative to the filtered element: one rooted at page or region never matches, and `hasNot` then passes everything.
 - A negative assert passes on a dead page: pair it with a positive one.
-- Branch on app state only after `expect(a.or(b)).toBeVisible()`; bounded `for` loops only; after a wizard step wait for its own control to go before the next.
-- The wizard is `Tidy up <year> <set> [<variant>]`: find it by `TIDY_UP_NAME`, never the old literal; no step counts; read decisions back with `readBackDecision`.
-- Fresh-only specs (live Wikidata proof, committing wizard flows, recorded-name specs) pass once per seed: a second run's red is expected, rerun with `--fresh`.
+- Branch on app state only after `expect(a.or(b)).toBeVisible()`; bounded `for` loops only; a walk move is proved by the next card's face (`saveAndNext`/`skipCard` do it), never by the URL alone.
+- The Tidy Up walk (`Tidy up <year> <set> [<variant>]`, `tidyUpName`): the cards are saved before it opens and each tile saves when answered; "Save for later (Esc)" and "Skip: not ready to list" write nothing; Save & next is held while anything is pink. A tile's level is its description ("To fix" pink, "To check" blue). The pill reads "N need you" plus ", M to fix" when M are pink: assert the whole string.
+- Fresh-only specs (live Wikidata proof, a real set's first fetch, recorded-name specs) pass once per seed: a second run's red is expected, rerun with `--fresh`.
 - Paused or live: the spec branches on `env.SL_PAUSED`/`env.EBAY_PAUSED`, never on the notice; below Years a paused tree looks BSC-only.
 - A BSC read that failed with no fault in the spec is an unrecorded request (`501`, `x-nb-fake: unrecorded`): a recorder run, never a spec change.
 - A real-set fetch uploads its publisher checklist first; a live card is named at the call site; no blank team cell (`No Team`).
@@ -90,7 +90,7 @@ node playwright/tools/e2e-run.mjs status | digest [last|<runDir>] | stop | stop-
 | ## Files, names, tags | file layout, the spec skeleton |
 | ## Support (use these, keep the set small) | every helper, with its contract |
 | ## Locators: names, substrings and scope | locator table, visibility, idioms |
-| ## Gotchas (read before your first spec) | wizard, roles, live regions, fresh-only |
+| ## Gotchas (read before your first spec) | the Tidy Up walk, roles, live regions, fresh-only |
 | ## Desktop and mobile | the two projects, mobile branches, `project-scope.mjs` |
 | ## Accessibility checks | `expectAccessible`, light and dark, exclusions |
 | ## Worker-state seeding | seed, bootstrap, checklist upload in the seed |

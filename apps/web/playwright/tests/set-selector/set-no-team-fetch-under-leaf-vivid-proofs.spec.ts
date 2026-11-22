@@ -44,9 +44,9 @@ import {
   settleWalkAfterCommit,
   tidyCardIdentity,
   tidyTile,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
-import { tidyUpName } from "../../support/wizard";
 import { expectAfterMarketplace } from "../../support/marketplace-wait";
 
 const PROOF = "Animated Autographs Pre-Production Proofs Lazer Red";

@@ -95,9 +95,14 @@ const YEAR = "1995";
 const LIVE_PLAYER = "Chris Pollack";
 /** An NCAA hockey team of the reference catalogue ("Wisconsin" + "Badgers"), his second career stint. */
 const COLLEGE_TEAM = "Wisconsin Badgers";
-/** "1 needs you" / "N need you", the pill's whole name. */
+/**
+ * The pill's whole name: "1 needs you, 1 to fix" / "N need you, N to fix". On this fixture every
+ * counted card is pink at every read: until its name is answered it is a player-name item, and
+ * its printed team is a team-name item until "Not a team", then "no team" until a team is saved.
+ * So the to-fix count is always the whole count.
+ */
 function needYou(n: number): string {
-  return n === 1 ? "1 needs you" : `${n} need you`;
+  return `${n === 1 ? "1 needs you" : `${n} need you`}, ${n} to fix`;
 }
 
 /** LIVE_PLAYER's name row on the open card's Player tile (answered or not). */

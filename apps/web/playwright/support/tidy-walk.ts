@@ -2,8 +2,7 @@
  * NEO-645 — the per-card Tidy Up walk ("Tidy up <year> <set> [<variant>]").
  *
  * It replaced the pre-save entity-review wizard and the post-save attention
- * walker (`support/wizard.ts` keeps their old names, mapped onto this file,
- * until every importer is rewritten). The cards are SAVED before the walk opens
+ * walker. The cards are SAVED before the walk opens
  * (Match Cards ends in the commit), and every tile saves the moment it is
  * answered (J1), so nothing here commits and nothing rolls back:
  *
@@ -31,12 +30,50 @@
  * the address changing and the browser's Back walks back through the cards.
  *
  * Every wait here is 7 s (R5): the walk's moves are client-side and its answers
- * are our own single writes. A lookup an answer starts is never waited for.
+ * are our own single writes. A lookup an answer starts is never waited for. The
+ * one exception is the fetch that opens the walk on a real set
+ * (`fetchChecklistToTidyWalk`, `fetchOneMarketplaceSetChecklistToTidyWalk`, at
+ * the end of this file), which waits on the marketplace by the BSC rule.
  */
 import { expect, type Locator, type Page } from "@playwright/test";
+import type { FlowEnv } from "./env";
+import { expectAccessible } from "./fixtures";
+import { expectAfterMarketplace, expectStepWithSportLots } from "./marketplace-wait";
+import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist, type ChecklistName } from "./published-checklist";
+import {
+  DRILL_DEFAULTS,
+  ONE_MARKETPLACE_DEFAULTS,
+  drillToBaseVariant,
+  openOneMarketplaceSetBase,
+  syncChecklistButton,
+  type DrillTarget,
+  type OneMarketplaceSet,
+} from "./set-builder";
 
 /** The walk's dialog name starts with this (NEO-497: it then names the checklist it tidies). */
 export const TIDY_WALK_NAME = /^Tidy up /;
+
+/**
+ * NEO-497: the walk's full name for the checklist at `<year> / <set> /
+ * <variant>`: the year row, the SET row (never the manufacturer) and the
+ * checklist's own row, in that order. `variant` is the words the title shows,
+ * taken exactly: a parallel under an insert reads "<insert> <parallel>" (the
+ * insert's name first, unless the parallel's own name already starts with it),
+ * so the caller passes that whole text; this helper does not re-derive the
+ * rule, so it cannot agree with a broken one.
+ *
+ * A Base checklist's title does not say "Base" (Jason, 2026-11-11): leave
+ * `variant` out for it ("Tidy up 2024 Topps Chrome"). Passing "Base" throws,
+ * so an expectation cannot quietly bring the word back.
+ */
+export function tidyUpName({ year, set, variant }: { year: string; set: string; variant?: string }): string {
+  if (variant?.trim().toLowerCase() === "base") {
+    throw new Error(
+      'tidyUpName: a Base checklist\'s title does not say "Base" (NEO-497); leave `variant` out for it',
+    );
+  }
+  return variant === undefined ? `Tidy up ${year} ${set}` : `Tidy up ${year} ${set} ${variant}`;
+}
 
 /** The footer's words (Jason-approved copy, NEO-645 contracts). */
 export const TIDY_FOOTER = {
@@ -147,7 +184,7 @@ export async function expectCardsLeft(page: Page, n: number): Promise<void> {
 /**
  * The walk is open and holds still: its progress bar is up and it shows a card
  * (its tiles mounted, none still "Looking at this card") or its end screen.
- * `title` pins the dialog's whole name (`tidyUpName` in support/wizard.ts).
+ * `title` pins the dialog's whole name (`tidyUpName`).
  * Contract: 7 s each.
  */
 export async function expectTidyWalkOpen(page: Page, { title }: { title?: string } = {}): Promise<void> {
@@ -182,9 +219,14 @@ export async function openTidyWalk(page: Page, options: { title?: string } = {})
   await expectTidyWalkOpen(page, options);
 }
 
-/** The checklist's "N need you" / "1 needs you" pill (rendered only while a card needs a person). */
+/**
+ * The checklist's "N need you" / "1 needs you" pill (rendered only while a card
+ * needs a person), plus ", M to fix" when M of those cards have something pink
+ * ("3 need you, 2 to fix"). Its text is its name: a spec that knows its cards
+ * asserts the whole string, suffix included.
+ */
 export function needsYouPill(page: Page): Locator {
-  return page.getByRole("button", { name: /^[0-9]+ needs? you$/ });
+  return page.getByRole("button", { name: /^[0-9]+ needs? you(, [0-9]+ to fix)?$/ });
 }
 
 /**
@@ -804,4 +846,131 @@ export function addAllNewPlayersTrigger(page: Page, n: number): Locator {
  */
 export function newPlayersToAdd(page: Page): Locator {
   return tidyWalk(page).getByRole("group", { name: "New players to add", exact: true });
+}
+
+// ── fetching a real set's checklist into the walk ───────────────────────────
+
+/**
+ * A live marketplace fetch: the ceiling a step that also drives a LIVE
+ * SportLots round trip keeps (`expectStepWithSportLots`). BuySportsCards alone
+ * is the fake and takes the standard 7 s (NEO-552).
+ */
+const FETCH = 120_000;
+
+/**
+ * Drill to a real set's Base checklist (2024 Topps Stars of MLB Network by
+ * default, a 10-card set the seed maps and leaves empty), upload its
+ * publisher's checklist (NEO-489; the default set always has one), fetch, and
+ * confirm Match Cards keeping every marketplace card
+ * (`confirmChecklistMatchCards`). With no checklist: live, the two
+ * marketplaces pair the same way; with SportLots paused it is the
+ * one-marketplace solo path ("Kept all N cards from BSC").
+ *
+ * NEO-645: Confirm SAVES the cards and the walk opens on them by itself, so
+ * this helper is for a fetch whose cards need a person (any unknown name
+ * does). The fetch WRITES the set: the default set is read-only for every
+ * spec but its registered sole writer (R7a, SET-REGISTRY.md).
+ *
+ * `firstFetch`: the precondition of a FIRST fetch ("No cards in this checklist
+ * yet."), asserted before the upload; a local re-run on an already-fetched seed
+ * fails there, by name: re-seed first.
+ *
+ * Contract: EXIT the walk is open, named for the set it fetched ("Tidy up 2024
+ * Topps Stars of MLB Network" by default; a Base checklist's title leaves
+ * "Base" out), settled and axe-clean.
+ */
+export async function fetchChecklistToTidyWalk(
+  page: Page,
+  env: FlowEnv,
+  target: DrillTarget = {},
+  {
+    checklist = target.set === undefined ? CHECKLISTS.starsOfMlbNetwork : undefined,
+    firstFetch = false,
+  }: { checklist?: ChecklistName; firstFetch?: boolean } = {},
+): Promise<void> {
+  const drilled = { set: "Topps Stars of MLB Network", ...target };
+  await drillToBaseVariant(page, env, drilled);
+  if (firstFetch) await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
+  const facts = checklist === undefined ? undefined : await usePublishersChecklist(page, checklist);
+  await syncChecklistButton(page).click();
+
+  const confirmMatches = page.getByRole("button", { name: "Confirm card matches" });
+  if (facts !== undefined) {
+    // NEO-496 (D10, NQ1): BSC plus the checklist are two sources, so Match Cards opens even with
+    // SportLots paused.
+    await confirmChecklistMatchCards(page, { facts, what: "the fetch of the Base checklist" });
+  } else if (!env.SL_PAUSED) {
+    await expect(page.getByText(/Match Cards/).first()).toBeVisible({ timeout: FETCH });
+    // The button reads "Loading…" (aria-disabled) while cards still stream in: wait for the usable one.
+    const ready = page.getByRole("button", { name: "Confirm card matches", disabled: false });
+    await expect(ready).toBeVisible({ timeout: FETCH });
+    await ready.click();
+  } else {
+    // One marketplace answered: the solo path keeps its cards without pairing. One live BSC
+    // round trip: 7 s of our own time plus the seconds the screen says it is waiting on BSC
+    // (NEO-487), never a flat ceiling.
+    await expectAfterMarketplace(page, page.getByText(/Kept all [0-9]+ cards? from BSC/), {
+      platform: "BuySportsCards",
+      what: "the solo fetch's kept-cards line",
+    });
+    await expect(page.getByText(/Match Cards/)).toBeHidden();
+    await expect(confirmMatches).toBeHidden();
+  }
+  // Live, the walk opens after the pairing's Confirm (a live SportLots + BSC round trip's
+  // aftermath); paused, once the commit has landed, our own work: the standard 7 s.
+  await expectStepWithSportLots(page, tidyWalk(page), env, { liveMs: FETCH, what: "the Tidy Up walk opening", statusLine: false });
+  await expectTidyWalkOpen(page, {
+    title: tidyUpName({ year: drilled.year ?? DRILL_DEFAULTS.year, set: drilled.set ?? DRILL_DEFAULTS.set }),
+  });
+  // The helper's product is this screen, so it checks it (GUIDE "Accessibility checks").
+  await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk" });
+}
+
+/**
+ * The one-marketplace twin of `fetchChecklistToTidyWalk` (NEO-330): open the
+ * set's Base with ONE marketplace attached (`openOneMarketplaceSetBase`), fetch
+ * the never-fetched checklist, and land in the walk. With `checklist`, BSC and
+ * the uploaded file are two sources (NEO-496, NQ1), so Match Cards opens and is
+ * confirmed keeping every BSC card (and `extraRows`, the cards the file alone
+ * names, NEO-574); without one, the solo path keeps BSC's cards.
+ *
+ * Contract: ENTRY the set is registered one-marketplace and never fetched (a
+ * fetched set fails on "No cards in this checklist yet.", by name: re-seed).
+ * EXIT the walk is open, named for the set ("Tidy up 1995 <set>" by default),
+ * settled and axe-clean. The fetch saved the cards: the caller is the set's
+ * registered sole writer (SET-REGISTRY.md).
+ */
+export async function fetchOneMarketplaceSetChecklistToTidyWalk(
+  page: Page,
+  env: FlowEnv,
+  target: OneMarketplaceSet,
+): Promise<void> {
+  await openOneMarketplaceSetBase(page, env, target);
+  await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
+  const facts =
+    target.checklist === undefined
+      ? undefined
+      : await usePublishersChecklist(page, target.checklist, target.extraRows ? { extraRows: target.extraRows } : {});
+  await syncChecklistButton(page).click();
+
+  if (facts !== undefined) {
+    // One live BSC round trip, waited on inside with `expectAfterMarketplace` (NEO-487).
+    await confirmChecklistMatchCards(page, {
+      facts,
+      what: `the fetch of ${target.set}`,
+      keepChecklistOnly: target.extraRows?.length,
+    });
+  } else {
+    // `soloKeptMessage` prints only on the NEO-255 branch, once the streamed batch has arrived in
+    // full, and names the one side it asked: the sync point and the proof one marketplace answered.
+    await expectAfterMarketplace(page, page.getByText(/Kept all [0-9]+ cards? from BSC/), {
+      platform: "BuySportsCards",
+      what: "the solo fetch's kept-cards line",
+    });
+  }
+  // The commit and the walk opening are our own work once the fetch has landed: 7 s.
+  await expectTidyWalkOpen(page, {
+    title: tidyUpName({ year: target.year ?? ONE_MARKETPLACE_DEFAULTS.year, set: target.set }),
+  });
+  await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk" });
 }

@@ -32,7 +32,6 @@ import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtu
 import { drillToCustom, setBuilderReady } from "../../support/set-builder";
 import { addCardViaForm, createTeamInCardForm, escapeRe } from "../../support/cards";
 import { expectDrawerTeams } from "../../support/also-pictured";
-import { tidyUpName } from "../../support/wizard";
 import {
   expectCardsLeft,
   needsYouPill,
@@ -43,6 +42,7 @@ import {
   tidyCardHeader,
   tidyFooterButton,
   tidyTile,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
 
@@ -112,7 +112,7 @@ test(
     await expect(noTeamMark(one.number)).toBeVisible();
     await expect(page.getByText(holder.name, { exact: true })).toBeVisible();
     await expect(anyMark(holder.number)).toHaveCount(0);
-    await expect(needsYouPill(page)).toHaveText("2 need you");
+    await expect(needsYouPill(page)).toHaveText("2 need you, 2 to fix");
 
     // ── #2: two teams picked, both saved ──
     await openTidyWalk(page, { title: tidyUpName({ year: "2024", set }) });

@@ -79,9 +79,8 @@ import { BSC_PATH, bscFault } from "../../support/bscFake";
 import { matchCardsDialog } from "../../support/published-checklist";
 import { editCardButton } from "../../support/cards";
 import { expectAfterMarketplace, waitingOn } from "../../support/marketplace-wait";
-import { setBuilderReady, syncChecklistButton } from "../../support/set-builder";
+import { openOneMarketplaceSetBase, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 import { saveForLater, settleWalkAfterCommit } from "../../support/tidy-walk";
-import { openOneMarketplaceSetBase } from "../../support/wizard";
 
 const SET = "Dayton Bombers ECHL";
 /** The set's card count on BSC (SET-REGISTRY.md measurement). */

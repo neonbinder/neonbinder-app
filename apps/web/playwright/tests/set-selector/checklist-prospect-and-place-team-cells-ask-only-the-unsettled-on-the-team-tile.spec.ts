@@ -70,10 +70,9 @@ import {
   publishersChecklistChip,
   publishersChecklistDialog,
 } from "../../support/published-checklist";
-import { tidyUpName } from "../../support/wizard";
 import {
-  expectCardsLeft,
   expectCardSettled,
+  expectCardsLeft,
   finishTidyWalk,
   mustFixLine,
   pinkTile,
@@ -83,6 +82,7 @@ import {
   tidyCardIdentity,
   tidyFooterButton,
   tidyTile,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
 

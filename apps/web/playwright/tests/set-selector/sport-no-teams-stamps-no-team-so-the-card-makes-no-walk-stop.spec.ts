@@ -50,12 +50,11 @@ import {
 import { addCardViaForm, confirmDeleteCardButton, deleteCardButton, editCardButton, escapeRe } from "../../support/cards";
 import { usePastedChecklist } from "../../support/published-checklist";
 import { ensureSportHasTeams, openSportAttributes, pressTeamlessToggle, teamlessToggle } from "../../support/teamless-sport";
-import { tidyUpName } from "../../support/wizard";
 import {
   createPlayerOnOpenRow,
   createTeamOnOpenRow,
-  expectCardsLeft,
   expectCardSettled,
+  expectCardsLeft,
   finishTidyWalk,
   mustFixLine,
   needsYouPill,
@@ -64,6 +63,7 @@ import {
   settleWalkAfterCommit,
   tidyFooterButton,
   tidyTile,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
 

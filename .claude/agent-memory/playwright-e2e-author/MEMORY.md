@@ -142,3 +142,4 @@
 - [Rule-out walk and source side](patterns_rule_out_walk_and_source_side.md) — Not a player/team loops with keep, Checklist side by its column text, J3 after the end
 - [Name lookup status, same-name fixtures](patterns_name_lookup_status_and_same_name_fixtures.md) — NEO-645: one namesake auto-links (two to stop); no-match can be status error; ariaSnapshot probe
 - [Walk on NNO cards, team chips](patterns_walk_on_nno_cards_and_team_chips.md) — NEO-645: face name is the identity on #NNO; chips unsaved till Save team; Other team… labels; stints need a saved team
+- [Count pill suffix and anchored negatives](patterns_count_pill_suffix_and_anchored_negatives.md) — "N need you, M to fix"; anchored `you$` regex negatives pass forever; use needsYouPill

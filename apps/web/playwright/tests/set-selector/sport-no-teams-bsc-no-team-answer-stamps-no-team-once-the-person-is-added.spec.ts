@@ -44,11 +44,11 @@ import { columnOption, columnSelection, customSport, drillToBaseVariant, escapeR
 import { editCardButton } from "../../support/cards";
 import { CHECKLISTS } from "../../support/published-checklist";
 import { ensureSportHasTeams, openSportAttributes, pressTeamlessToggle, teamlessToggle } from "../../support/teamless-sport";
-import { fetchChecklistToWizard } from "../../support/wizard";
 import {
   createPlayerOnOpenRow,
   expectCardSettled,
   expectTidyWalkOpen,
+  fetchChecklistToTidyWalk,
   mustFixLine,
   pinkTile,
   saveAndNext,
@@ -59,7 +59,7 @@ import {
   tidyWalk,
 } from "../../support/tidy-walk";
 
-/** `fetchChecklistToWizard`'s default set (Topps Stars of MLB Network), with the file that leaves card 1 to BSC. */
+/** `fetchChecklistToTidyWalk`'s default set (Topps Stars of MLB Network), with the file that leaves card 1 to BSC. */
 const TARGET = {};
 const FETCH = { checklist: CHECKLISTS.starsOfMlbNetworkShehadiLive, firstFetch: true };
 /** Card 1's person: the one card the uploaded file leaves to BSC. */
@@ -120,10 +120,10 @@ test(
     await expect(page.getByRole("heading", { name: `Attributes for ${sport} (Sport)` })).toBeVisible();
 
     // ══ 2. THE FIRST FETCH: every card answered by the file but card 1, which BSC answers ══
-    // `fetchChecklistToWizard` asserts the set is still empty (fresh-only), then "Teams from your
+    // `fetchChecklistToTidyWalk` asserts the set is still empty (fresh-only), then "Teams from your
     // checklist: 9 of N cards" (9 read off the file) inside Match Cards, whose Confirm saves the
     // cards; the walk opens on its own.
-    await fetchChecklistToWizard(page, env, TARGET, FETCH);
+    await fetchChecklistToTidyWalk(page, env, TARGET, FETCH);
     await expectTidyWalkOpen(page);
     const walk = tidyWalk(page);
 

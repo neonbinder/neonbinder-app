@@ -46,9 +46,9 @@ import {
   tidyCardHeader,
   tidyFooterButton,
   tidyTile,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
-import { tidyUpName } from "../../support/wizard";
 import type { Locator, Page } from "@playwright/test";
 
 const YEAR = "2025";

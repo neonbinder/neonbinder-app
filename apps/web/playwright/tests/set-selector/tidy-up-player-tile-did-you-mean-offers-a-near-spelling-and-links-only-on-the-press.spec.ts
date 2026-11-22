@@ -48,9 +48,9 @@ import {
   saveForLater,
   settleWalkAfterCommit,
   tidyTile,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
-import { tidyUpName } from "../../support/wizard";
 
 const YEAR = "2020";
 const STINT = { from: "2018", to: "2021" };

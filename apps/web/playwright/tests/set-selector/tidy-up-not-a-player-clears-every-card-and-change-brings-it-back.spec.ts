@@ -37,9 +37,9 @@ import {
   settleWalkAfterCommit,
   skipCard,
   tidyTile,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
-import { tidyUpName } from "../../support/wizard";
 
 const YEAR = "2026";
 /** The row's answer; on a multi-name card it carries " <printed>", which these cards are not. */
@@ -129,8 +129,8 @@ test(
     await expect(row.getByText("Printed on #1, #2", { exact: true })).toBeVisible();
     await expect(pinkTile(page, "Player")).toHaveCount(1);
 
-    // ── STEP 6: the checklist counts all three cards as needing a person ──
+    // ── STEP 6: the checklist counts all three cards as needing a person, each one pink ──
     await saveForLater(page);
-    await expect(needsYouPill(page)).toHaveAccessibleName("3 need you");
+    await expect(needsYouPill(page)).toHaveAccessibleName("3 need you, 3 to fix");
   },
 );

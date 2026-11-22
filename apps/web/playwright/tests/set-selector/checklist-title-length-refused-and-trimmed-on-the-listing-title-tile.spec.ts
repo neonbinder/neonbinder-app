@@ -10,7 +10,6 @@
 // wrapping check (NEO-535), keyed on `isMobile`.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom } from "../../support/set-builder";
-import { tidyUpName } from "../../support/wizard";
 import { expectNoOverCapLook, expectOverCapLook } from "../../support/theme";
 import {
   expectCardsLeft,
@@ -21,6 +20,7 @@ import {
   saveAndNext,
   tidyFooterButton,
   tidyTile,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
 
@@ -208,7 +208,8 @@ test(
     // The row carries the blue mark, and the checklist counts the card.
     await expect(attentionBadge).toBeVisible();
     // The header's pill (NEO-335): singular for one card, and its visible text
-    // is its accessible name, so the exact name is the exact count.
+    // is its accessible name, so the exact name is the exact count. Blue only,
+    // so no ", N to fix".
     await expect(needsYouPill(page)).toHaveAccessibleName("1 needs you");
     await expectAccessible(page, { label: "Checklist with a worth-a-check mark for an over-long variation" });
 

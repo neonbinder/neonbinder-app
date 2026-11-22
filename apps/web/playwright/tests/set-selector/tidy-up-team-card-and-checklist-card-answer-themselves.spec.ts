@@ -44,9 +44,9 @@ import {
   skipCard,
   tidyFooterButton,
   tidyTile,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
-import { tidyUpName } from "../../support/wizard";
 
 const YEAR = "2026";
 /** The purple note on a name NB ruled out itself (tidy/parts/copy.ts `NOT_A_PLAYER_SAME_AS_TEAM_NOTE`). */
@@ -151,7 +151,7 @@ test(
     await finishTidyWalk(page);
 
     // ── STEP 6: read back the Checklist card, and the pill ──
-    await expect(needsYouPill(page)).toHaveAccessibleName("2 need you");
+    await expect(needsYouPill(page)).toHaveAccessibleName("2 need you, 2 to fix");
     const drawer = await openCardDrawer(page, "3");
     await expect(drawer.getByRole("textbox", { name: "Card name", exact: true })).toHaveValue("Checklist");
     await expect(drawer.getByRole("button", { name: "No Team for this card", pressed: true })).toBeVisible();

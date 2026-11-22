@@ -46,9 +46,10 @@ import {
   settleWalkAfterCommit,
   tidyFooterButton,
   tidyTile,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
-import { LOOKUPS, tidyUpName } from "../../support/wizard";
+import { LOOKUPS } from "../../support/recorded-names";
 
 const YEAR = "2024";
 const WALKER = "Adam Walker";

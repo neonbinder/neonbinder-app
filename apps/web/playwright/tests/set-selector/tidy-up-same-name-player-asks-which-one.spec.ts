@@ -28,15 +28,16 @@
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { emptyListAndPickSport, expectPlayersLoaded, PLAYERS_MATCHES, playersCounter } from "../../support/players";
 import { CHECKLISTS } from "../../support/published-checklist";
-import { fetchChecklistToWizard, tidyUpName } from "../../support/wizard";
 import {
   expectCardSettled,
   expectTidyWalkOpen,
+  fetchChecklistToTidyWalk,
   pinkTile,
   saveForLater,
   skipCard,
   skipUntil,
   tidyTile,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
 import type { Page } from "@playwright/test";
@@ -86,7 +87,7 @@ test(
     await expect(page.getByText(/b\. 1851/).first()).toBeVisible();
 
     // ── The fetch: BSC plus the checklist, Match Cards confirmed, the cards saved, the walk open ──
-    await fetchChecklistToWizard(page, env, TARGET, { checklist: CHECKLISTS.bbmRookieEditionPremium, firstFetch: true });
+    await fetchChecklistToTidyWalk(page, env, TARGET, { checklist: CHECKLISTS.bbmRookieEditionPremium, firstFetch: true });
     await expectTidyWalkOpen(page, { title: tidyUpName({ year: YEAR, set: SET }) });
     const walk = tidyWalk(page);
     const header = walk.getByText(CARD, { exact: true });

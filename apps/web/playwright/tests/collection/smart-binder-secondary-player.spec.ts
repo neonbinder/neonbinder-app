@@ -74,8 +74,7 @@ import type { FlowEnv } from "../../support/env";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { CHECKLISTS, checklistRows, confirmChecklistMatchCards, usePublishersChecklist } from "../../support/published-checklist";
 import { drillToBaseVariant, drillToColdManufacturer, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
-import { saveForLater, settleWalkAfterCommit, tidyWalk } from "../../support/tidy-walk";
-import { tidyUpName } from "../../support/wizard";
+import { saveForLater, settleWalkAfterCommit, tidyUpName, tidyWalk } from "../../support/tidy-walk";
 
 /** The set as the set builder drills it, and as the collector's cascade does. */
 const BUILD = { sport: "Football", year: "1984", manufacturer: "Topps", set: "Topps" } as const;
@@ -102,7 +101,7 @@ const TEAM_LEADER_NUMBERS = checklistRows(CHECKLISTS.topps1984FootballBase)
  * committed when the checklist is still empty, adopted as it is otherwise.
  * Contract: EXIT the checklist is on screen with cards in it.
  *
- * Its own fetch rather than `fetchChecklistToWizard` (R9 divergence): that
+ * Its own fetch rather than `fetchChecklistToTidyWalk` (R9 divergence): that
  * helper's result line counts every row the file answers, while here the
  * team-leader cards are disagreements (Match Cards' teams line counts the rest).
  */

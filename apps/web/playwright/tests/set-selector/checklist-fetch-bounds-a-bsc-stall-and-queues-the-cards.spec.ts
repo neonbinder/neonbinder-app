@@ -92,9 +92,8 @@ import {
   matchCardsDialog,
   usePublishersChecklist,
 } from "../../support/published-checklist";
-import { setBuilderReady, syncChecklistButton } from "../../support/set-builder";
+import { openOneMarketplaceSetBase, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 import { saveForLater, settleWalkAfterCommit } from "../../support/tidy-walk";
-import { openOneMarketplaceSetBase } from "../../support/wizard";
 
 const SET = "Halifax Mooseheads QMJHL";
 /** The set's card count on BSC. */

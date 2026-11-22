@@ -22,16 +22,17 @@ import { CHECKLISTS } from "../../support/published-checklist";
 import { expectPlayersLoaded, expectTeamsLoaded, teamsCounter } from "../../support/players";
 import { recordedNoMatchPlayer } from "../../support/recorded-names";
 import { escapeRe } from "../../support/set-builder";
-import { fetchOneMarketplaceSetChecklistToWizard, tidyUpName } from "../../support/wizard";
 import {
   expectCardSettled,
   expectTidyWalkOpen,
+  fetchOneMarketplaceSetChecklistToTidyWalk,
   pinkTile,
   saveForLater,
   skipCard,
   skipUntil,
   tidyCardIdentity,
   tidyTile,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
 import type { Page } from "@playwright/test";
@@ -104,7 +105,7 @@ test(
     await expect(page.getByText(`Saved ${scaffold}`)).toBeVisible();
 
     // ── PART 2: the set; BSC plus its checklist, Match Cards confirmed (the cards are saved) ──
-    await fetchOneMarketplaceSetChecklistToWizard(page, env, {
+    await fetchOneMarketplaceSetChecklistToTidyWalk(page, env, {
       sport: "Baseball",
       year: SET_YEAR,
       set: SET,

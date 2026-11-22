@@ -4,7 +4,7 @@
 // R1 - ONE feature: the checklist marks each card that needs a person with ONE
 // badge at its level, pink "needs attention" (to fix: the card cannot be listed
 // yet) or blue "is worth a check" (a stop that never blocks), and the three
-// places that count those cards agree, card for card: the header's "N need you"
+// places that count those cards agree, card for card: the header's "N need you, M to fix"
 // pill, the checklist search's "attention" keyword, and the Tidy Up walk the
 // pill opens ("N cards left"). A card born linked to a player and a team, whose
 // title fits, carries no mark and is counted nowhere.
@@ -45,12 +45,12 @@ import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtu
 import { setBuilderReady, drillToCustom } from "../../support/set-builder";
 import { addCardViaForm, createTeamInCardForm, editCardButton, escapeRe } from "../../support/cards";
 import { recordedNoMatchPlayer } from "../../support/recorded-names";
-import { tidyUpName } from "../../support/wizard";
 import {
   expectCardsLeft,
   needsYouPill,
   openTidyWalk,
   tidyCardHeader,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
 
@@ -132,8 +132,9 @@ test(
     // A card has one mark, never both levels.
     await expect(mark(n701)).toHaveCount(1);
     await expect(mark(n704)).toHaveCount(1);
-    // The pill counts pink AND blue: its visible text is its name, so the text IS the count.
-    await expect(needsYouPill(page)).toHaveText("3 need you");
+    // The pill counts pink AND blue, then how many of them are pink ("…, 2 to fix"): its visible
+    // text is its name, so the text IS the count.
+    await expect(needsYouPill(page)).toHaveText("3 need you, 2 to fix");
     await expectAccessible(page, { label: "Checklist with pink and blue attention badges and the need-you pill" });
 
     // #703's player was STORED: the drawer's picker chip (off the live query) is the read-back.
@@ -174,7 +175,7 @@ test(
     await expect(mark(n702)).toHaveCount(0);
     await expect(editCardButton(page, n702)).toBeVisible();
     await expect(pink(n701)).toBeVisible();
-    await expect(needsYouPill(page)).toHaveText("2 need you");
+    await expect(needsYouPill(page)).toHaveText("2 need you, 1 to fix");
     await search.fill("attention");
     await expect(page.getByText("2 of 4 cards", { exact: true })).toBeVisible();
     await expect(rows).toHaveCount(2);
@@ -190,7 +191,7 @@ test(
     // Save for later (Esc) writes nothing: the counts hold.
     await page.keyboard.press("Escape");
     await expect(tidyWalk(page)).toBeHidden();
-    await expect(needsYouPill(page)).toHaveText("2 need you");
+    await expect(needsYouPill(page)).toHaveText("2 need you, 1 to fix");
     await expect(pink(n701)).toBeVisible();
     await expect(blue(n704)).toBeVisible();
   },

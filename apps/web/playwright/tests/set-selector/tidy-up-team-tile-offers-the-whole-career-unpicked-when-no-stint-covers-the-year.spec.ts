@@ -8,7 +8,7 @@
 //
 // The flow: quick-add card #851 with the catalogue's George Brett and no team, so it is badged "no
 // team on this card yet" at once (no marketplace ref, nothing to wait for) and the pill reads "1
-// needs you". The pill opens the walk on it: the Team tile is pink, its career chip "Kansas City
+// needs you, 1 to fix". The pill opens the walk on it: the Team tile is pink, its career chip "Kansas City
 // Royals · George Brett 1973–1993" is NOT pressed (a chip is pressed only when a stint covers the
 // set's year; then it would read "· George Brett played here"), there is no Save team, and Save &
 // next is held. The chip pressed is a choice, not a write: Save team appears, the tile stays pink
@@ -47,7 +47,6 @@ import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtu
 import { drillToCustom, setBuilderReady } from "../../support/set-builder";
 import { addCardViaForm, confirmDeleteCardButton, deleteCardButton, editCardButton } from "../../support/cards";
 import { expectDrawerTeams } from "../../support/also-pictured";
-import { tidyUpName } from "../../support/wizard";
 import {
   expectCardsLeft,
   mustFixLine,
@@ -59,6 +58,7 @@ import {
   tidyCardHeader,
   tidyFooterButton,
   tidyTile,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
 
@@ -122,7 +122,7 @@ test(
     // counts it alone (its name is its visible text, so the exact name is the exact count).
     await expect(editCardButton(page, NUMBER)).toBeVisible();
     await expect(noTeamMark).toBeVisible();
-    await expect(needsYouPill(page)).toHaveText("1 needs you");
+    await expect(needsYouPill(page)).toHaveText("1 needs you, 1 to fix");
 
     // ── STEP 2: the walk opens on this card, its Team tile pink ──
     await openTidyWalk(page, { title: tidyUpName({ year: "2024", set }) });

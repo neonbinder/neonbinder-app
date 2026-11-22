@@ -48,9 +48,9 @@ import {
   skipUntil,
   tidyCardHeader,
   tidyTile,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
-import { tidyUpName } from "../../support/wizard";
 
 const FILE = "2026-onyx-vintage-baseball.pdf";
 const PDF = new URL(`../../fixtures/checklists/${FILE}`, import.meta.url).pathname;
@@ -146,7 +146,8 @@ test(
     await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk on a card read from an Onyx PDF" });
     // The parse is the subject, not the names: leave them for later, nothing written.
     await saveForLater(page);
-    await expect(needsYouPill(page)).toHaveAccessibleName(`${SECTION_ROWS} need you`);
+    // Every card's player name is unanswered (pink), so every card counted is one to fix.
+    await expect(needsYouPill(page)).toHaveAccessibleName(`${SECTION_ROWS} need you, ${SECTION_ROWS} to fix`);
 
     // ══ 3. REMOVE: back to the set, whose panel holds the checklist ══
     // A fresh drill: Back from here steps through the walk's cards (each card shown is an address).

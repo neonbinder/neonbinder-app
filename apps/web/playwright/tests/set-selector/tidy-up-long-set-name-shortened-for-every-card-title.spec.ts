@@ -53,7 +53,6 @@ import {
   drillToCustomSet,
   setBuilderReady,
 } from "../../support/set-builder";
-import { tidyUpName } from "../../support/wizard";
 import {
   answerPinkTeamTiles,
   expectCardsLeft,
@@ -66,6 +65,7 @@ import {
   saveForLater,
   tidyFooterButton,
   tidyTile,
+  tidyUpName,
   tidyWalk,
   tidyWalkProgress,
 } from "../../support/tidy-walk";
@@ -148,7 +148,7 @@ test(
     // ── The insert's checklist: two cards, each titled over 80 by the set name ──
     await addCardViaForm(page, { cardNumber: "901", playerName: `Tup901${T}` });
     await addCardViaForm(page, { cardNumber: "902", playerName: `Tup902${T}` });
-    await expect(needsYouPill(page)).toHaveAccessibleName("2 need you");
+    await expect(needsYouPill(page)).toHaveAccessibleName("2 need you, 2 to fix");
     // The insert (not Base): its own name, no variant type word.
     await openTidyWalk(page, { title: tidyUpName({ year, set: SET, variant: HOST }) });
     await expectWalkNamed(page, tidyUpName({ year, set: SET, variant: HOST }));

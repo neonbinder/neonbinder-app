@@ -431,7 +431,7 @@ test(
     }
 
     // ── 2024 Topps Stars of MLB Network: base mapped, checklist left empty ──
-    // The read-only wizard specs' fixture (fetchChecklistToWizard's default;
+    // The read-only wizard specs' fixture (fetchChecklistToTidyWalk's default;
     // SET-REGISTRY.md "Topps Stars of MLB Network"). NEO-475: it replaced Topps
     // Big League (310 cards) with a 10-card set, so every wizard fetch reads 10
     // BSC cards instead of 310. Filed under 2024 Topps by its name, so the

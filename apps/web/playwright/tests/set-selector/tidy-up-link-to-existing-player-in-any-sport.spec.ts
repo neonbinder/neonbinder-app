@@ -25,16 +25,17 @@ import { CHECKLISTS } from "../../support/published-checklist";
 import { addPlayerByHand, expectPlayersLoaded, PLAYERS_MATCHES, playersCounter } from "../../support/players";
 import { recordedNoMatchName } from "../../support/recorded-names";
 import { escapeRe } from "../../support/set-builder";
-import { fetchOneMarketplaceSetChecklistToWizard, tidyUpName } from "../../support/wizard";
 import {
   expectCardSettled,
   expectTidyWalkOpen,
+  fetchOneMarketplaceSetChecklistToTidyWalk,
   pinkTile,
   saveForLater,
   skipCard,
   skipUntil,
   tidyCardIdentity,
   tidyTile,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
 import type { Page } from "@playwright/test";
@@ -87,7 +88,7 @@ test(
     await addPlayerByHand(page, gw, "Football");
 
     // ── The fetch: BSC plus the checklist, Match Cards confirmed, the cards saved, the walk open ──
-    await fetchOneMarketplaceSetChecklistToWizard(page, env, { set: SET, checklist: CHECKLISTS.sanAntonioIguanas });
+    await fetchOneMarketplaceSetChecklistToTidyWalk(page, env, { set: SET, checklist: CHECKLISTS.sanAntonioIguanas });
     await expectTidyWalkOpen(page, { title: tidyUpName({ year: YEAR, set: SET }) });
     const walk = tidyWalk(page);
 

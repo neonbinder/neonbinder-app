@@ -51,7 +51,7 @@ import {
 } from "../../support/set-builder";
 import { editCardButton } from "../../support/cards";
 import { CHECKLISTS, confirmChecklistMatchCards, matchCardsDialog, usePublishersChecklist } from "../../support/published-checklist";
-import { settleWalkAfterCommit, tidyForTheParallelBuild, tidyWalk } from "../../support/tidy-walk";
+import { needsYouPill, settleWalkAfterCommit, tidyForTheParallelBuild, tidyWalk } from "../../support/tidy-walk";
 import type { Page } from "@playwright/test";
 
 const BOWMAN = { sport: "Baseball", year: "2026", manufacturer: "Bowman", set: "Bowman" };
@@ -492,7 +492,7 @@ test(
     const cardTitle = page.getByRole("textbox", { name: "Card title", exact: true });
     const doneEditing = page.getByRole("button", { name: "Done editing card" });
     const search = page.getByRole("searchbox", { name: "Search cards" });
-    const needYou = page.getByRole("button", { name: /^[0-9]+ needs? you$/ });
+    const needYou = needsYouPill(page);
     const fixCardTitles = page.getByRole("button", { name: "Fix card titles", exact: true });
 
     await openParallel(LONG_PARALLEL);

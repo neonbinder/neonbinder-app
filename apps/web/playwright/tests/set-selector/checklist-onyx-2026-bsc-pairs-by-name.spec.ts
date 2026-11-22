@@ -50,8 +50,7 @@ import {
   publishersChecklistChip,
   publishersChecklistDialog,
 } from "../../support/published-checklist";
-import { setBuilderReady, syncChecklistButton } from "../../support/set-builder";
-import { openOneMarketplaceSetBase } from "../../support/wizard";
+import { openOneMarketplaceSetBase, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 
 /** The set's NB name, as the Sets column lists it under All Brands. */
 const SET = "Onyx Vintage";

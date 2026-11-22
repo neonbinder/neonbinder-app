@@ -89,8 +89,7 @@ import {
   publishersChecklistChip,
   publishersChecklistDialog,
 } from "../../support/published-checklist";
-import { setBuilderReady, syncChecklistButton } from "../../support/set-builder";
-import { openOneMarketplaceSetBase } from "../../support/wizard";
+import { openOneMarketplaceSetBase, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 import {
   expectCardSettled,
   finishTidyWalk,

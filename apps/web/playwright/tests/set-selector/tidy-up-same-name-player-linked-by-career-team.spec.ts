@@ -36,9 +36,9 @@ import {
   saveForLater,
   settleWalkAfterCommit,
   tidyTile,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
-import { tidyUpName } from "../../support/wizard";
 import type { Page } from "@playwright/test";
 
 const YEAR = "2020";
@@ -155,9 +155,9 @@ test(
     await expect(walk.getByText(`Which ${NAME} is this?`)).toHaveCount(0);
     await expectAccessible(page, { within: walk, label: "Tidy Up walk, a shared name linked by career team" });
 
-    // The checklist agrees: one card needs a person.
+    // The checklist agrees: one card needs a person, and its unanswered name is pink.
     await saveForLater(page);
-    await expect(needsYouPill(page)).toHaveAccessibleName("1 needs you");
+    await expect(needsYouPill(page)).toHaveAccessibleName("1 needs you, 1 to fix");
 
     // ── STEP 2: the card is on NEAR's card list, and FAR has none ──
     await page.getByRole("link", { name: "Players", exact: true }).click();

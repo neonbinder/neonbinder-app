@@ -64,16 +64,17 @@
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToCustomSet, setBuilderReady } from "../../support/set-builder";
 import { editCardButton } from "../../support/cards";
-import { tidyUpName } from "../../support/wizard";
 import {
   expectCardSettled,
   expectTidyWalkOpen,
   finishTidyWalk,
   mustFixLine,
+  needsYouPill,
   pinkTile,
   saveAndNext,
   tidyFooterButton,
   tidyTile,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
 
@@ -183,6 +184,7 @@ test(
       name: new RegExp(`^Card ${NUMBER}(, .*)? is worth a check: listing title was cut short$`),
     });
     await expect(badge).toBeVisible();
+    // Blue only, so the pill has no ", N to fix" (its whole name is the count).
     const pill = page.getByRole("button", { name: "1 needs you", exact: true });
     await expect(pill).toBeVisible();
     await pill.click();
@@ -227,7 +229,7 @@ test(
     // ── STEP 4: out of Tidy Up, the title unchanged ──
     await expect(editCardButton(page, NUMBER)).toBeVisible();
     await expect(badge).toHaveCount(0);
-    await expect(page.getByRole("button", { name: /^[0-9]+ needs? you$/ })).toHaveCount(0);
+    await expect(needsYouPill(page)).toHaveCount(0);
     await editCardButton(page, NUMBER).click();
     await expect(cardTitle).toHaveValue(listedTitle);
     await expect(leftOut).toHaveText(`Left out to fit: ${team}, #${NUMBER}, ${FIRST}`);

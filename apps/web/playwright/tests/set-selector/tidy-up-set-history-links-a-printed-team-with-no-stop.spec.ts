@@ -56,9 +56,9 @@ import {
   saveAndNext,
   settleWalkAfterCommit,
   tidyTile,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
-import { tidyUpName } from "../../support/wizard";
 import type { Page } from "@playwright/test";
 
 /** The purple note a team linked from the set's saved cards carries (tidy/parts/copy.ts `linkedForText`). */

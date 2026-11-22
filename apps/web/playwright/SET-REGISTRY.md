@@ -900,12 +900,11 @@ a hand-added card is born linked (`playerIds`) and never carries a pending name
 product path the product no longer has, so they were deleted rather than
 rewritten around a fiction.
 
-Wizard coverage now lives in two places: the unit files
-(`EntityReviewWizard.test.tsx` cancel/back/Enter blocks, `entityReviewQueue`
-resume tests, `entityReviewSkips`, `SkippedNamesPanel`) and — for the live,
-end-to-end path — STEP 6 of `tests/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.spec.ts`,
-which opens the wizard on a genuine cold two-source fetch and now also covers
-decide → Cancel (Esc) → "Discard 1 decision?" → keep, and the Enter commit.
+NEO-645 retired the wizard itself: a fetch saves its cards when Match Cards is
+confirmed, and the per-card Tidy Up walk (`support/tidy-walk.ts`) asks what is
+left. Its specs are the `tidy-up-*` and `tidy-walk-*` files under
+`tests/set-selector/`; a hand-made, marketplace-free subtree reaches the walk
+through a pasted checklist (`usePastedChecklist`), whose names are unknown.
 
 Do not re-create them **the way they were written**: a marketplace-free subtree
 cannot produce an unknown name any more.
@@ -922,10 +921,10 @@ these three.
 |---|---|
 | ~~`checklist-wizard-back-to-matching-resumes-decisions`~~ | retired and deleted (NEO-645, decision 12): the cards save on Match Cards' Confirm, so there is no review to park |
 | ~~`checklist-wizard-link-to-existing-player`~~ | merged into `tidy-up-link-to-existing-player-in-any-sport` (NEO-645, decision 20) |
-| `checklist-wizard-career-team-entry` | the inline career-team mini-form on a player row, and the decision it feeds |
+| ~~`checklist-wizard-career-team-entry`~~ | renamed `tidy-up-career-tile-reviews-a-new-players-wikidata-career` (NEO-645): the walk's Career tile |
 
-all sharing `fetchChecklistToWizard`, and all three
-READ-ONLY (Cancel → Discard). A fourth, `checklist-wizard-skip-not-a-person`
+all sharing one fetch helper, and all three READ-ONLY (Cancel →
+Discard) until NEO-645. A fourth, `checklist-wizard-skip-not-a-person`
 (the per-row skip, and "Skip remaining names" deciding every row that is left,
 lookups included), read this set until NEO-330: with the reference catalogue
 loaded, Big League stages too few names for its footer skip, so it moved to
@@ -993,9 +992,9 @@ them. The refresh procedure in `docs/operations/neo330-reference-seed.md`
 re-measures every wizard fixture for exactly this reason.
 
 **The path.** All four reach the wizard through
-`fetchOneMarketplaceSetChecklistToWizard` (support/wizard.ts) (extracted from
+`fetchOneMarketplaceSetChecklistToTidyWalk` (support/tidy-walk.ts) (extracted from
 `checklist-wizard-link-team-saves-alias`'s inline path; its drill, set pick and
-cancelled picker are `openOneMarketplaceSetBase`, which a flow
+cancelled picker are `openOneMarketplaceSetBase` (support/set-builder.ts), which a flow
 re-entering a set it committed calls again): the cold drill util
 with `MANUFACTURER: "All Brands"`, the set picked from the view, the base
 picker CANCELLED (BSC answers; SportLots' 1995 catalogue is offered and
@@ -1044,7 +1043,7 @@ Jason's approval and a probe like the one above. `Dayton Bombers ECHL` is taken 
 > **History.** These three sets are no longer used by any flow: NEO-330 moved
 > their flows onto the 1995 minor-league hockey sets above, because the
 > reference catalogue knows their rosters. Kept for the measurements and the
-> two-sided mapping rule, which still governs `fetchChecklistToWizard`.
+> two-sided mapping rule, which still governs `fetchChecklistToTidyWalk`.
 
 The four `checklist-wizard-*` flows on Topps Big League are read-only: they
 prove the wizard's decisions and always exit through Cancel → Discard. Three
@@ -1132,7 +1131,7 @@ re-run needs a fresh seed — rerun `npm run test:e2e:seed`.
 added there taxes every PR.
 
 Instead each flow provisions its own set on its own runner, in parallel.
-`fetchChecklistToWizard` (support/wizard.ts) already handles the cold
+`fetchChecklistToTidyWalk` (support/tidy-walk.ts) already handles the cold
 first-time path with no extra step: the warm drill's closing
 `visible: "Base"` (60s) covers the cold variant-type sync, and
 `drillToBaseVariant` (support/set-builder.ts) has a `when: visible "Select Base Set"` branch
@@ -1357,7 +1356,7 @@ matching"**.
 
 **There is currently ZERO one-sided coverage.** Every flow in the suite that
 reaches the pairing dialog — `tests/setup.spec.ts` ×3, `checklist-pairing-dialog-cancel`,
-`fetchChecklistToWizard` and its four `checklist-wizard-*`
+`fetchChecklistToTidyWalk` and its four `checklist-wizard-*`
 callers, the three `*-commits` siblings, `inserts-1996-score` — is on a set with
 BOTH sides attached. They cover the ≥2 half of the rule, which this ticket does
 not change; none of them can express the =1 half.
@@ -1463,6 +1462,13 @@ not change; none of them can express the =1 half.
     on the same preview the same evening).
 
 #### What STEPs 5, 6, 6b, 6c, 7, 9 and 10 do, and what that writes (NEO-335)
+
+> **NEO-645.** The review's steps below (`Cards with no team`, `Ready to
+> save`, Confirm & Save) are retired: Match Cards' Confirm saves the cards and
+> the Tidy Up walk asks the rest, card by card. The spec's header comment
+> (`checklist-one-marketplace-match-cards-keeps-every-card`) is the current
+> account of its steps; what it writes is unchanged (one player, two teams,
+> the answers on four cards).
 
 Past its names the review now walks a TEAMS step of its own (NEO-335 Phase 2:
 subtitle `Cards with no team`, intro `Pick a team for each card, or leave it
@@ -2135,7 +2141,7 @@ per run; CI reseeds every run. A LOCAL re-run needs a fresh seed.
 ### Topps Stars of MLB Network — the NEO-426 BSC-no-team fixture (NEO-475, NEO-645) ✅ APPROVED by Jason 2026-11-09
 
 `Baseball → 2024 → Topps → Topps Stars of MLB Network → Base` is
-`fetchChecklistToWizard`'s default set. Until NEO-645 it was the read-only
+`fetchChecklistToTidyWalk`'s default set. Until NEO-645 it was the read-only
 entity-review wizard fixture: its readers fetched it and left by Cancel →
 Discard, so it stayed empty. NEO-645 commits on Match Cards' Confirm, before the
 walk, so no fetch can leave it empty (overnight decision 10). Its readers went
@@ -2219,8 +2225,9 @@ one way:
 
 #### Concurrency: four readers, ZERO writers
 
-All four flows exit through **Cancel → Discard** (`cancelBatch`). None commits,
-none chooses "Add as New" through to a save, none writes a card, player, team or
+All four flows exited through **Cancel → Discard** (the retired wizard's
+`cancelBatch`, gone with it in NEO-645: a fetch now saves its cards). None committed,
+none chose "Add as New" through to a save, none wrote a card, player, team or
 skip record. That is what makes four flows on one shared set legal, and it is
 not a style preference — it is the only safe design available, because:
 
@@ -2254,7 +2261,7 @@ read.
 `Baseball → 2024 → BBM → BBM Rookie Edition Premium → Base` belongs to exactly
 one flow, `tidy-up-same-name-player-asks-which-one` (was `checklist-wizard-same-name-pick-step`;
 NEO-645 made it the set's sole WRITER, fresh-only), which reaches it through
-`fetchChecklistToWizard(page, env, { manufacturer: "BBM", set }, { firstFetch: true })`. It replaced
+`fetchChecklistToTidyWalk(page, env, { manufacturer: "BBM", set }, { firstFetch: true })`. It replaced
 Topps Chrome NPB (section below, now history): 36 BSC cards per fetch instead
 of 216. The flow, its b. 1851 `Shuya Yamada` and its assertions are unchanged.
 
@@ -2437,7 +2444,7 @@ axe in light and dark on the three-column layout. Fixture: the seed's Future Sta
 `Baseball → 2024 → Topps → Topps Chrome NPB → Base` belongs to exactly one flow,
 `checklist-wizard-same-name-pick-step`. `tests/setup.spec.ts` provisions nothing for it:
 the flow syncs its variant types and maps Base on both sides on its first drill,
-through `fetchChecklistToWizard`, like the three committing
+through `fetchChecklistToTidyWalk`, like the three committing
 fixtures above.
 
 **What the flow does to make the fixture.** Before it fetches, it adds a
@@ -2911,6 +2918,13 @@ Location half would then need a per-attempt token of its own.
 
 ### NEO-236 — the review wizard's bulk add is about PLAYERS only
 
+> **History (NEO-645).** The entity-review wizard this section describes, its
+> steps and footers (`Confirm & Save`, `Skip remaining names`, `Add as New …`)
+> and its helpers (`support/wizard.ts`: `advanceToSave`, `answerStepAsNew`)
+> are retired. A fetch now saves its cards when Match Cards is confirmed, and
+> the per-card Tidy Up walk (`support/tidy-walk.ts`) asks what is left. Kept
+> for the reasoning only.
+
 Jason, 2026-09-05: *"add all remaining as new should still process teams, it
 should only apply to players."* The footer button is now
 **`Add remaining players as new (N)`**, where N counts undecided PLAYERS, and
@@ -2999,6 +3013,13 @@ names-done footer after the loop is still the real gate.
 > elsewhere describes. See the comment at `tests/setup.spec.ts`'s own loop.
 
 ### NEO-254 — a New LEAGUE step, and why no flow covers it on its own
+
+> **History (NEO-645).** The entity-review wizard this section describes, its
+> steps and footers (`Confirm & Save`, `Skip remaining names`, `Add as New …`)
+> and its helpers (`support/wizard.ts`: `advanceToSave`, `answerStepAsNew`)
+> are retired. A fetch now saves its cards when Match Cards is confirmed, and
+> the per-card Tidy Up walk (`support/tidy-walk.ts`) asks what is left. Kept
+> for the reasoning only.
 
 The bulk mints no league either (`decideAllRemaining` returns early on any
 `row.kind !== "player"`), so a team whose enrichment names a league NB does not
@@ -3200,8 +3221,9 @@ NEO-260 retired both the claim and the names. **Nothing removes them.** There is
 no delete-team (or delete-player) affordance anywhere in the product: the only
 deletes in the codebase are the armed internal reset batches
 (`selectorOptions:resetTeamsBatch` / `resetLeaguesBatch`, reachable only through
-`e2e-baseline.sh reset`) and `entityReviewQueue:cancelBatch`, which by its own
-contract touches only review-queue rows and never `teams`, `players` or
+`e2e-baseline.sh reset`) and the review queue's own sweeps
+(`entityReviewQueue:sweepStalePendingRows` / `sweepAbandonedBatches`), which by
+their own contract touch only review-queue rows and never `teams`, `players` or
 `cardChecklist`. The TeamPicker's `Remove team <name>` control **unlinks** a team
 from a card; the row it points at is untouched.
 
@@ -3617,7 +3639,7 @@ the reason the specs upload instead of fetching card by card.
 
 | file | set (registered above) | rows | rows with a team | spec |
 |---|---|---|---|---|
-| `2024-topps-stars-of-mlb-network-base` | Baseball > 2024 > Topps > Stars of MLB Network > Base | 10 | 10, every one `No Team` (hand-set, Jason 2026-11-11: the hosts and the show card have no team; BSC gave none, and the capture tool writes that as a blank cell, which makes no claim) | `fetchChecklistToWizard`'s default file (no `target.set`); since NEO-645 read by no spec (its last reader, `checklist-wizard-back-to-matching-resumes-decisions`, was retired and deleted, decision 12), so in practice the source of the next file; 10 matched, 0 live |
+| `2024-topps-stars-of-mlb-network-base` | Baseball > 2024 > Topps > Stars of MLB Network > Base | 10 | 10, every one `No Team` (hand-set, Jason 2026-11-11: the hosts and the show card have no team; BSC gave none, and the capture tool writes that as a blank cell, which makes no claim) | `fetchChecklistToTidyWalk`'s default file (no `target.set`); since NEO-645 read by no spec (its last reader, `checklist-wizard-back-to-matching-resumes-decisions`, was retired and deleted, decision 12), so in practice the source of the next file; 10 matched, 0 live |
 | `2024-topps-stars-of-mlb-network-base-shehadi-live` | same | 9 (card 1, Lauren Shehadi, LEFT OUT; made from the file above with no BSC call) | 9, every one `No Team` | `sport-no-teams-bsc-no-team-answer-stamps-no-team-once-the-person-is-added` (NEO-426); 9 matched, 1 live (card 1, whose listing names no team) |
 | `2026-onit-athlete-arizona-state-sun-devils-base` | Baseball > 2026 > ONIT Athlete > ONIT Athlete Arizona State Sun Devils > Base | 29 (`B-1`..`B-29`) | 29, every one `Arizona State Sun Devils` | none uploaded whole: the source of the next file. Captured 2026-11-19 at `--rate 0.5`, 0 429s |
 | `2026-onit-athlete-arizona-state-sun-devils-base-one-live` | same | 28 (`B-1`, Austin Musso, LEFT OUT; made from the capture's cache with `--omit-number B-1`, no BSC call) | 28 | `sport-no-teams-listing-team-holds-back-the-default` (NEO-426); 28 matched, 1 live (`B-1`, whose listing names the team) |

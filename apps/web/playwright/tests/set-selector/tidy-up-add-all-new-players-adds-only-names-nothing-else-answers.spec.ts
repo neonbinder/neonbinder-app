@@ -19,7 +19,7 @@
 //   4. Reopen, "Add 3 players": the status beside the trigger reads "Added 3 players.", and the
 //      four cards printing those names leave the walk (one card left: #5).
 //   5. Save & next from #1 lands on #5: #2-#4 are never shown, and #5's Player tile is still pink.
-//   6. Save for later; the checklist's pill counts the one card. Players admin lists each new name
+//   6. Save for later; the checklist's pill counts the one card, pink ("1 needs you, 1 to fix"). Players admin lists each new name
 //      once in this sport, and the on-file name twice, as before (no third one was made).
 //
 // FIXTURE (SET-REGISTRY.md "Custom sets", the `anp`/`anq` prefixes; R7a): a per-attempt sport
@@ -48,9 +48,9 @@ import {
   saveForLater,
   settleWalkAfterCommit,
   tidyTile,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
-import { tidyUpName } from "../../support/wizard";
 
 const YEAR = "2026";
 
@@ -167,7 +167,7 @@ test(
 
     // ── STEP 6: the pill counts the one card; Players admin holds each name once ──
     await saveForLater(page);
-    await expect(needsYouPill(page)).toHaveAccessibleName("1 needs you");
+    await expect(needsYouPill(page)).toHaveAccessibleName("1 needs you, 1 to fix");
     await page.getByRole("link", { name: "Players", exact: true }).click();
     await expectPlayersLoaded(page);
     const sportPicker = page.getByRole("combobox", { name: "Sport", exact: true });

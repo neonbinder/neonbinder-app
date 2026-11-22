@@ -105,10 +105,10 @@ import {
   tidyCardIdentity,
   tidyFooterButton,
   tidyTile,
-  tidyWalk,
   type TidyTileName,
+  tidyUpName,
+  tidyWalk,
 } from "../../support/tidy-walk";
-import { tidyUpName } from "../../support/wizard";
 
 const BUILD = { sport: "Baseball", year: "2011", manufacturer: "Leaf", set: "Leaf Pete Rose Legacy" } as const;
 /** How a card's description names the set ("<year> <set>"). */

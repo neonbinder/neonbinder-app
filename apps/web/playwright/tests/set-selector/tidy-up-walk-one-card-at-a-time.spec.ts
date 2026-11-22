@@ -20,7 +20,7 @@
 //
 // R2 - every move is proved by the card that lands (`skipCard`/`saveAndNext`
 // compare the "#..." lines before and after) and by the count after the walk:
-// the pill drops from "3 need you" to "1 needs you" (#1, skipped, the only card
+// the pill drops from "3 need you, 2 to fix" to "1 needs you, 1 to fix" (#1, skipped, the only card
 // left flagged). Enter on the pink #1 is held: the Skip right after it lands on
 // #2, which it could not if Enter had already moved the walk on. Every
 // negative (`toHaveCount(0)`, `toBeHidden`) sits beside a positive.
@@ -50,19 +50,19 @@ import type { Page } from "@playwright/test";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToCustom, setBuilderReady } from "../../support/set-builder";
 import { addCardViaForm, createTeamInCardForm, escapeRe } from "../../support/cards";
-import { tidyUpName } from "../../support/wizard";
 import {
-  expectCardsLeft,
   expectCardSettled,
+  expectCardsLeft,
   mustFixLine,
   needsYouPill,
   openTidyWalk,
   pinkTile,
-  skipCard,
   saveAndNext,
+  skipCard,
   tidyCardHeader,
   tidyFooterButton,
   tidyTile,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
 
@@ -121,7 +121,7 @@ test(
     await expect(pinkBadge(cardA.number)).toBeVisible();
     await expect(pinkBadge(cardB.number)).toBeVisible();
     await expect(blueBadge(cardC.number)).toBeVisible();
-    await expect(needsYouPill(page)).toHaveText("3 need you");
+    await expect(needsYouPill(page)).toHaveText("3 need you, 2 to fix");
 
     // ── #1, pink: the header, the tally, the count, and Save & next held ──
     await openTidyWalk(page, { title });
@@ -155,7 +155,7 @@ test(
     await page.keyboard.press("Escape");
     await expect(walk).toBeHidden();
     await expect(page).not.toHaveURL(/[?&]tidy=/);
-    await expect(needsYouPill(page)).toHaveText("3 need you");
+    await expect(needsYouPill(page)).toHaveText("3 need you, 2 to fix");
     await expect(pinkBadge(cardA.number)).toBeVisible();
 
     // The pill starts a new sitting: the skipped #1 is offered again.
@@ -164,7 +164,7 @@ test(
     await expectCardsLeft(page, 3);
     await page.keyboard.press("Escape");
     await expect(walk).toBeHidden();
-    await expect(needsYouPill(page)).toHaveText("3 need you");
+    await expect(needsYouPill(page)).toHaveText("3 need you, 2 to fix");
 
     // ── A pasted link opens that card, not the first ──
     await page.goto(withTidy(page, idB));
@@ -230,7 +230,7 @@ test(
     await expect(page).not.toHaveURL(/[?&]tidy=/);
 
     // What was written: #2's answer and #3's "seen". Skipped #1 is the one card left.
-    await expect(needsYouPill(page)).toHaveText("1 needs you");
+    await expect(needsYouPill(page)).toHaveText("1 needs you, 1 to fix");
     await expect(pinkBadge(cardA.number)).toBeVisible();
     await expect(anyMark(cardB.number)).toHaveCount(0);
     await expect(anyMark(cardC.number)).toHaveCount(0);

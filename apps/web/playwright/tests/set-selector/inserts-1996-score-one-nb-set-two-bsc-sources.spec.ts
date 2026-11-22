@@ -28,7 +28,6 @@ import {
 } from "../../support/set-builder";
 import { cardAttentionMark, editCardButton } from "../../support/cards";
 import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist } from "../../support/published-checklist";
-import { tidyUpName } from "../../support/wizard";
 import {
   expectCardSettled,
   expectCardsLeft,
@@ -39,6 +38,7 @@ import {
   skipUntil,
   tidyCardIdentity,
   tidyTile,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
 import { expectNoOverCapLook, expectOverCapLook } from "../../support/theme";

@@ -43,9 +43,9 @@ import {
   settleWalkAfterCommit,
   skipCard,
   tidyTile,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
-import { tidyUpName } from "../../support/wizard";
 
 const YEAR = "2026";
 

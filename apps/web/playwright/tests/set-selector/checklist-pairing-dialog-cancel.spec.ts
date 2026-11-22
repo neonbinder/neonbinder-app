@@ -23,7 +23,7 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../../support/set-builder";
-import { reviewWizard } from "../../support/wizard";
+import { tidyWalk } from "../../support/tidy-walk";
 
 test(
   "Checklist — the card-pairing dialog opens instead of committing, flags a marketplace name disagreement on a manual link, and cancelling writes nothing",
@@ -238,7 +238,7 @@ test(
     // The set is untouched: Sync is available for a retry and no entity-review
     // wizard opened.
     // By the dialog's name prefix, so the check holds whatever set it names (NEO-497).
-    await expect(reviewWizard(page)).toBeHidden();
+    await expect(tidyWalk(page)).toBeHidden();
     await expect(syncChecklistButton(page)).toBeVisible();
     await expectAccessible(page, { label: "Future Stars checklist after the sync was cancelled" });
   },

@@ -53,9 +53,9 @@ import {
   skipCard,
   tidyFooterButton,
   tidyTile,
+  tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
-import { tidyUpName } from "../../support/wizard";
 import type { Page } from "@playwright/test";
 
 const YEAR = "2025";

@@ -66,8 +66,7 @@ import type { FlowEnv } from "../../support/env";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist } from "../../support/published-checklist";
 import { drillToSet, pick, pickAfterBscSync, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
-import { saveForLater, settleWalkAfterCommit, tidyWalk } from "../../support/tidy-walk";
-import { tidyUpName } from "../../support/wizard";
+import { saveForLater, settleWalkAfterCommit, tidyUpName, tidyWalk } from "../../support/tidy-walk";
 
 const BUILD = { sport: "Baseball", year: "2026", manufacturer: "Topps", set: "Topps" } as const;
 const INSERT = "Profiles";
