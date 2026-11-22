@@ -139,7 +139,6 @@ export default function EntityLinkSearch({
   sportId,
   contextOptionId,
   initialQuery,
-  contextCardId,
   onSelect,
   onCancel,
 }: {
@@ -157,11 +156,6 @@ export default function EntityLinkSearch({
    * selected so the first keystroke replaces it) and runs at once.
    */
   initialQuery?: string;
-  /**
-   * NEO-645 (S2) — the card being tidied. Players only: results are ranked for
-   * it, the card's team in the card's year first (`players.search`).
-   */
-  contextCardId?: Id<"cardChecklist">;
   onSelect: (
     id: Id<"players"> | Id<"teams"> | Id<"leagues">,
     name: string,
@@ -189,9 +183,7 @@ export default function EntityLinkSearch({
   // reason to open a subscription at all.
   const players = useQuery(
     api.players.search,
-    kind === "player" && trimmed
-      ? { query: trimmed, sportId, ...(contextCardId ? { contextCardId } : {}) }
-      : "skip",
+    kind === "player" && trimmed ? { query: trimmed, sportId } : "skip",
   );
   // NEO-331 — ranked by the set under review; see the note at the top. Every
   // key written out, never spread (see TeamPicker): `undefined` is dropped on

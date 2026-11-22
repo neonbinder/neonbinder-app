@@ -20,7 +20,6 @@ import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
 import {
   linkedForText,
-  NOT_A_PLAYER_SAME_AS_TEAM_NOTE,
   preselectReasonLine,
   stintYears,
   type LinkedForReason,
@@ -35,18 +34,6 @@ export type ContextName = Ctx["names"][number];
 export type ContextPlayer = Ctx["players"][number];
 
 const NO_FRAGMENT_MATCHES: NameFragmentMatch[] = [];
-
-/** "Did you mean Jackson Holliday (Baltimore Orioles 2024–)?": a near spelling, with who he is. */
-function didYouMeanLabel(near: {
-  name: string;
-  teamName?: string;
-  fromYear?: number;
-  toYear?: number;
-}): string {
-  const years = stintYears(near);
-  const who = near.teamName ? ` (${[near.teamName, years].filter(Boolean).join(" ")})` : "";
-  return `Did you mean ${near.name}${who}?`;
-}
 
 /** "Jackson Merrill · b. 2003 · Padres 2024–": who a linked name is. */
 export function PlayerSummary({
@@ -137,9 +124,6 @@ export default function PlayerNameRow({
         <p className="text-sm text-ink-2 wrap-anywhere">
           <span className="font-medium text-ink">{name.printed}</span> is not a player.
         </p>
-        {answer.by === "auto" && answer.autoReason === "sameAsTeam" && (
-          <TidyNote>{NOT_A_PLAYER_SAME_AS_TEAM_NOTE}</TidyNote>
-        )}
         <div className="flex flex-wrap gap-2">
           <NeonButton
             size="1"
@@ -248,12 +232,6 @@ function UnansweredPlayerName({
     api.players.nearMatches,
     rowSportId ? { name: queryName, sportId: rowSportId } : "skip",
   );
-  // NEO-645 (S2): players on file whose name is a near spelling of this one.
-  // Offered, never linked: the operator presses the button.
-  const didYouMean = useQuery(
-    api.players.didYouMean,
-    rowSportId ? { cardId: row._id, name: queryName, sportId: rowSportId } : "skip",
-  );
   const fragmentCheck = useQuery(
     api.players.nameFragmentCheck,
     rowSportId ? { name: queryName, sportId: rowSportId } : "skip",
@@ -296,19 +274,11 @@ function UnansweredPlayerName({
   // the exact-name evidence has loaded, so it never flips under the operator.
   const preselect = enrichment?.preselect ?? null;
   const preselectOffered = preselect !== null && sameNameCandidates.length === 0 && !createAnyway;
-  // NEO-645: what this set already did with the name leads the row whatever else
-  // is on file: a namesake in the exact list does not take the suggestion away,
-  // and its own links follow it.
-  const setHistoryLead =
-    preselect !== null && preselect.reason === "setHistory" && !createAnyway && matches !== undefined;
-  const showPreselect =
-    setHistoryLead || (preselectOffered && matches !== undefined && exactRows.length === 0);
-  const showExact =
-    !pickStep &&
-    !createAnyway &&
-    exactSingle !== null &&
-    !(showPreselect && exactSingle._id === preselect?.playerId) &&
-    (!showPreselect || setHistoryLead);
+  // Only where nothing better is on screen: an exact namesake in the list is
+  // the stronger, live answer, so the suggestion (set history included) gives
+  // way to it. Held until the exact-name evidence has loaded.
+  const showPreselect = preselectOffered && matches !== undefined && exactRows.length === 0;
+  const showExact = !pickStep && !createAnyway && exactSingle !== null && !showPreselect;
   const promotedIds = new Set<string>([
     ...(showPreselect && preselect ? [preselect.playerId as string] : []),
     ...(showExact && exactSingle ? [exactSingle._id as string] : []),
@@ -320,7 +290,6 @@ function UnansweredPlayerName({
       !(pickStep && sameNameCandidates.some((c) => c.playerId === m._id)),
   );
   const creating = !pickStep && !showPreselect && !showExact;
-  const nearSpellings = creating && !createAnyway ? (didYouMean ?? []) : [];
   // Nothing is created until both lookups have answered: either can still turn
   // "new" into a link, a same-name pick or the fragment question, and a created
   // player can't be taken back.
@@ -404,18 +373,16 @@ function UnansweredPlayerName({
 
   // One filled button per tile (the walk's own rule: the best answer leads,
   // everything else is an outline). In this order, and only on the lead row:
-  // the suggested link, the exact link, the first "Did you mean", Add as new.
-  const leadAction: "preselect" | "exact" | "didYouMean" | "create" | null = !lead
+  // the suggested link, the exact link, Add as new.
+  const leadAction: "preselect" | "exact" | "create" | null = !lead
     ? null
     : showPreselect && preselect
       ? "preselect"
       : showExact && exactSingle
         ? "exact"
-        : nearSpellings.length > 0
-          ? "didYouMean"
-          : creating
-            ? "create"
-            : null;
+        : creating
+          ? "create"
+          : null;
   /** The filled green button, or a blue outline. */
   const tone = (filled: boolean) =>
     filled ? ({} as const) : ({ variant: "secondary", outline: true } as const);
@@ -506,7 +473,6 @@ function UnansweredPlayerName({
             kind="player"
             sportId={rowSportId}
             initialQuery={queryName}
-            contextCardId={row._id}
             onSelect={(id) => void link(id)}
             onCancel={closeLink}
           />
@@ -538,22 +504,6 @@ function UnansweredPlayerName({
               {`Link to ${exactSingle.name}`}
             </NeonButton>
           )}
-          {nearSpellings.map((near, index) => {
-            const label = didYouMeanLabel(near);
-            return (
-              <NeonButton
-                key={near._id}
-                size="1"
-                {...tone(leadAction === "didYouMean" && index === 0)}
-                className={WRAP_LABEL_CLASS}
-                aria-label={`${label}${suffix}`}
-                aria-disabled={disabled}
-                onClick={() => void link(near._id)}
-              >
-                {label}
-              </NeonButton>
-            );
-          })}
           {(showPreselect || showExact || pickStep) && (
             <NeonButton
               size="1"
