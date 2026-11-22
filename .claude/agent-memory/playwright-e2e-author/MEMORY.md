@@ -128,3 +128,4 @@
 - [Resume a fresh-only walk spec via the pill](patterns_resume_a_fresh_only_walk_spec_through_the_pill.md) — red inside the walk after Skips: snapshot-only copy reopens via "N need you"; chained `has` skips every card
 - [Title repeat rule, worker-11 arithmetic, shared snapshot results](patterns_title_repeat_of_set_name_and_shared_snapshot_results.md) — distinct set/team prefixes; size for worker 11; --exclude results + own --output
 - [Probe the rest of a spent fresh-only run](patterns_probe_the_rest_of_a_spent_fresh_only_run.md) — red after commit, no reseed: throwaway probe reopens the walk by the pill, then rm
+- [Career tile fixtures](patterns_career_tile_fixtures.md) — NEO-645: gap only at commit for a pre-made player; recorded Wikidata careers; probe names read-only; --output wiped per run
