@@ -247,19 +247,51 @@ export function tidyCardIdentity(page: Page): Locator {
 }
 
 /**
+ * The open card's face: ONE `img` named "Card #<number>, <who>[, <teams>]"
+ * (TidyCardFace). Its name tells two cards with the same "#…" lines apart: on
+ * a checklist where every number is NNO, every card's lines read "#NNO".
+ */
+function cardFace(page: Page): Locator {
+  return tidyWalk(page).getByRole("img", { name: /^Card #/ });
+}
+
+/** What a move is proved against: the card's "#…" lines and its face's name. */
+type CardSeen = { lines: string[]; face: string | null };
+
+async function readCardSeen(page: Page): Promise<CardSeen> {
+  return {
+    lines: await cardIdentity(page).allTextContents(),
+    face: await cardFace(page).first().getAttribute("aria-label"),
+  };
+}
+
+/** `s` as a literal inside a RegExp. */
+function literal(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
  * Wait until a footer move has landed. The address changes BEFORE the next
  * card renders (the router updates history, then React renders), so the
  * address alone would let the old card's tiles be read as the new one's: the
  * move is proved by the address AND by what is on screen, the end screen when
- * the address says `done`, else a card whose "#…" lines differ from `before`.
+ * the address says `done`, else a card whose face is named otherwise than
+ * `before`'s (the name carries the number, so it differs wherever the "#…"
+ * lines do, and also between two NNO cards). Falls back to the "#…" lines on
+ * a face with no name.
  */
-async function expectMovedFrom(page: Page, from: string, before: string[], what: string): Promise<void> {
+async function expectMovedFrom(page: Page, from: string, before: CardSeen, what: string): Promise<void> {
   await expect(page, `${what} moved the walk on`).not.toHaveURL(from);
   if (/[?&]tidy=done(&|$)/.test(page.url())) {
     await expect(endScreen(page), `${what} reached the end screen`).toBeVisible();
     return;
   }
-  await expect(cardIdentity(page), `${what} put another card on screen`).not.toHaveText(before);
+  if (before.face) {
+    const another = tidyWalk(page).getByRole("img", { name: new RegExp(`^(?!${literal(before.face)}$)Card #`) });
+    await expect(another, `${what} put another card on screen`).toBeVisible();
+  } else {
+    await expect(cardIdentity(page), `${what} put another card on screen`).not.toHaveText(before.lines);
+  }
   await expectCardSettled(page);
 }
 
@@ -270,7 +302,7 @@ async function expectMovedFrom(page: Page, from: string, before: string[], what:
  */
 export async function skipCard(page: Page): Promise<void> {
   const from = page.url();
-  const before = await cardIdentity(page).allTextContents();
+  const before = await readCardSeen(page);
   await tidyFooterButton(page, "skip", { usable: true }).click();
   await expectMovedFrom(page, from, before, "Skip");
 }
@@ -285,7 +317,7 @@ export async function saveAndNext(page: Page): Promise<void> {
   const from = page.url();
   const save = tidyFooterButton(page, "saveAndNext", { usable: true });
   await expect(save, "Save & next is usable (nothing on the card is pink)").toBeVisible();
-  const before = await cardIdentity(page).allTextContents();
+  const before = await readCardSeen(page);
   await save.click();
   await expectMovedFrom(page, from, before, "Save & next");
 }
