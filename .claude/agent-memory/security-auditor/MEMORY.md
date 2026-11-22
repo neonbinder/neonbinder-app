@@ -146,3 +146,4 @@
 - [Neo627 inert path skip](patterns_neo627_inert_path_skip.md) — file names in GITHUB_OUTPUT inject keys; merge_group base_sha stacking; fail-fast gate
 - [Public-surface PRs skip the guards-file pins](patterns_public_surface_prs_skip_the_guards_file_pins.md) — publicFunctionAuth.test.ts pinned, but publicFunctionAuthGuards.test.ts write-nothing and audit-field pins missing
 - [Deferred ledger flush](patterns_deferred_ledger_flush.md) — counts moved out of the inserting txn: delta landing never heals on re-run; need recount
+- [Revert narrows input validator](patterns_revert_narrows_input_validator.md) — schema keeps literal: check returns reuse it, no row round-trips
