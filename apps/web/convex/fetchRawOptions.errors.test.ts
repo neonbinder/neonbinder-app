@@ -20,6 +20,7 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { NO_MARKETPLACE_IDS_MESSAGE } from "./marketplaceResolvability";
+import { __resetContractCache } from "./credentials";
 
 const modules = (
   import.meta as unknown as {
@@ -38,6 +39,7 @@ const ADMIN_IDENTITY = {
 const SENTINEL = 1_000_000;
 
 beforeEach(() => {
+  __resetContractCache();
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
   vi.spyOn(console, "warn").mockImplementation(() => {});

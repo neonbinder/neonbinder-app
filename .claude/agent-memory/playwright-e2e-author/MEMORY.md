@@ -123,3 +123,4 @@
 - [e2e-run tool in practice](patterns_e2e_run_tool_in_practice.md) — 180 s Bash auto-background vs 230 s slice, plant re-seeds, digest path/header quirks
 - [Pre-fix snapshot is the planted break](patterns_pre_fix_snapshot_is_the_planted_break.md) — bug-fix spec: serve the pre-fix commit for the red, the fix commit for green; reseed between
 - [Name-fold specs on a discard-only fixture](patterns_name_fold_specs_on_a_discard_only_fixture.md) — NEO-643: full-row CSV, toggle conflict clause, unknown name keeps the wizard, plant NAME_JUNK + convex touch
+- [Type a live-rewrite box by keystrokes](patterns_type_a_live_rewrite_box_by_keystrokes.md) — fill() is one change; Backspace exposes intermediate box texts that flip per-row rules (NEO-637)
