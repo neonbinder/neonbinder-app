@@ -12,13 +12,6 @@
  *   - `applyVariation`         Apply a corrected variation to the cards that share it.
  *   - `applySetNameToTitles`   "Shorten the set name for every card".
  *
- * ## STATUS: signatures first
- *
- * This is the first slice (W1a): validators, the auth gate and the contracts
- * below are final so the tile builders can code against them. The four write
- * mutations throw "not implemented yet" after the admin gate and write nothing;
- * W1b implements them to the contracts in their doc comments.
- *
  * ## Conventions every mutation here follows
  *
  *  - `requireAdmin` first.
@@ -66,6 +59,7 @@ import {
   entryFor,
   sameDisagreement,
   sameValue,
+  sameValueSets,
 } from "./tidyPickSource";
 import {
   newNameWriteCache,
@@ -448,7 +442,7 @@ export const markReviewed = mutation({
   },
 });
 
-// ─── write mutations (contracts only) ───────────────────────────────────────
+// ─── write mutations ────────────────────────────────────────────────────────
 
 /**
  * Sources disagree: use one value.
@@ -465,7 +459,9 @@ export const markReviewed = mutation({
  *   `tidyNames` answer applies; anything else becomes a pending name plus a
  *   name row (born `pending`, lookup enqueued AFTER the write) and a
  *   `cardPrintedNames` row through the one writer. A generated title is
- *   regenerated (a hand-typed one is left alone).
+ *   regenerated (a hand-typed one is left alone). The card's own name follows
+ *   the pick when it is one of the spellings the sources gave and is left
+ *   alone when it matches none (typed by hand): `pickedCardName`.
  * - Stamps `chosen: { value, by: "operator", typed? }` on the entry. That stamp
  *   on its own does not bump `lastUpdated`; the link/pending writes it causes
  *   do.
@@ -473,7 +469,9 @@ export const markReviewed = mutation({
  *   disagreement". The server checks EACH card carries the same field with the
  *   same set of values and no `chosen`; a card that differs is refused and
  *   counted, never written. The open card is written in the call; the rest by
- *   scheduled `APPLY_PAGE_SIZE`-card pages.
+ *   scheduled `APPLY_PAGE_SIZE`-card pages, each of which re-checks the card
+ *   against the open card's offered values (the same set, the picked value
+ *   still among them) and enqueues the lookups of each card's OWN leaf.
  *
  * Returns the cards written in the call, the cards queued for scheduled pages,
  * and the cards refused.
@@ -533,9 +531,11 @@ export const pickSourceValue = mutation({
         field: args.field,
         value: names,
         typed: args.typed,
+        // The open card's own entry: each page checks every card it is handed
+        // against it, so a card edited since this call is never trusted.
+        offered: found.entry.values.map((o) => o.value),
         cardIds: accepted.slice(at, at + APPLY_PAGE_SIZE),
         userId,
-        leafId: card.selectorOptionId,
       });
     }
     // Lookups for the names this left pending go out after the write commits.
@@ -554,21 +554,36 @@ export const pickSourceValuePage = internalMutation({
     field: v.union(v.literal("players"), v.literal("teams")),
     value: v.array(v.string()),
     typed: v.optional(v.literal(true)),
+    /** The values the open card's entry offered: the disagreement every card must still carry. */
+    offered: v.array(v.array(v.string())),
     cardIds: v.array(v.id("cardChecklist")),
     userId: v.string(),
-    leafId: v.id("selectorOptions"),
   },
   returns: v.object({ applied: v.number(), refused: v.number() }),
   handler: async (ctx, args) => {
     const cache = newNameWriteCache(ctx);
     let applied = 0;
     let refused = 0;
-    let pending = false;
+    // A name row lives in the card's OWN leaf, so each leaf that was left a
+    // pending name gets its own lookup enqueue.
+    const pendingLeaves = new Set<Id<"selectorOptions">>();
     for (const id of args.cardIds) {
       const card = await ctx.db.get(id);
       const found = card ? entryFor(card, args.field) : undefined;
-      // Compare-and-set: a card chosen or edited since the call is left alone.
-      if (!card || !found || found.entry.chosen) {
+      // Compare-and-set: a card chosen or edited since the call is left alone,
+      // and so is one that no longer carries the disagreement the operator saw:
+      // the same set of values, with the picked one still among them (a typed
+      // value is the operator's own and needs no offer).
+      if (
+        !card ||
+        !found ||
+        found.entry.chosen ||
+        !sameValueSets(
+          args.offered,
+          found.entry.values.map((o) => o.value),
+        ) ||
+        (!args.typed && !found.entry.values.some((o) => sameValue(o.value, args.value)))
+      ) {
         refused += 1;
         continue;
       }
@@ -579,13 +594,11 @@ export const pickSourceValuePage = internalMutation({
         userId: args.userId,
         cache,
       });
-      pending = pending || r.pending;
+      if (r.pending) pendingLeaves.add(card.selectorOptionId);
       applied += 1;
     }
-    if (pending) {
-      await ctx.scheduler.runAfter(0, internal.tidyNames.enqueuePendingLookups, {
-        scopeId: args.leafId,
-      });
+    for (const scopeId of pendingLeaves) {
+      await ctx.scheduler.runAfter(0, internal.tidyNames.enqueuePendingLookups, { scopeId });
     }
     return { applied, refused };
   },
@@ -895,6 +908,13 @@ export const applySetNameToTitles = mutation({
     const metadata = { ...(leaf.metadata ?? {}) };
     if (next) metadata.listingShortName = next;
     else delete metadata.listingShortName;
+    // The run id of the retitle chain this save starts (the NEO-535 run id,
+    // `listingShortNameSavedAt`, written the same way). A chain pages on only
+    // while the leaf still holds ITS id and ITS box, so two quick saves leave
+    // one live chain: the older one would otherwise swap a stale old -> new
+    // pair into titles the newer one has already settled.
+    const runId = Math.max(Date.now(), (leaf.metadata?.listingShortNameSavedAt ?? 0) + 1);
+    metadata.listingShortNameSavedAt = runId;
     await ctx.db.patch(args.leafId, {
       metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
       lastUpdated: Date.now(),
@@ -906,6 +926,7 @@ export const applySetNameToTitles = mutation({
       leafId: args.leafId,
       oldShortName: old,
       newShortName: next,
+      runId,
       cursor: null,
     });
     return { openCardRetitled, scheduled: true };
@@ -953,10 +974,21 @@ export const retitleLeafPage = internalMutation({
     leafId: v.id("selectorOptions"),
     oldShortName: v.optional(v.string()),
     newShortName: v.optional(v.string()),
+    /** The `metadata.listingShortNameSavedAt` the save that started this chain wrote. */
+    runId: v.number(),
     cursor: v.union(v.string(), v.null()),
   },
   returns: v.object({ retitled: v.number(), done: v.boolean() }),
   handler: async (ctx, args) => {
+    // A newer save, or any other writer of the box, ends this chain.
+    const leaf = await ctx.db.get(args.leafId);
+    if (
+      !leaf ||
+      leaf.metadata?.listingShortNameSavedAt !== args.runId ||
+      leaf.metadata?.listingShortName !== args.newShortName
+    ) {
+      return { retitled: 0, done: true };
+    }
     const page = await ctx.db
       .query("cardChecklist")
       .withIndex("by_selector_option_and_sort", (q) => q.eq("selectorOptionId", args.leafId))

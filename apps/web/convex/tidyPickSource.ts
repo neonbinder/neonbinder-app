@@ -22,7 +22,8 @@
  * Every write goes through `writeNameChange` (links, title, description, the
  * teamless default) and `syncCardPrintedNames` (the printed-name index).
  * `chosen` alone does not bump `lastUpdated` (the NEO-203 baseVersion); the
- * link writes it causes do.
+ * link writes it causes do, and so does a card name that follows the pick
+ * (`pickedCardName`).
  */
 
 import { ConvexError } from "convex/values";
@@ -46,6 +47,7 @@ import { sameNamePlayers } from "./players";
 import { resolveTeamForSetYear } from "./lib/teamRow";
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
+import { nameKey } from "../lib/cards/card-name";
 
 /** Names one picked value may hold (a card carries at most 20 players). */
 export const MAX_PICK_NAMES = 20;
@@ -85,10 +87,22 @@ export function sameValue(a: ReadonlyArray<string>, b: ReadonlyArray<string>): b
   return ka.length === kb.length && ka.every((k, i) => k === kb[i]);
 }
 
+/** Two lists of values are the same set (order aside, each value by `sameValue`). */
+export function sameValueSets(
+  a: ReadonlyArray<ReadonlyArray<string>>,
+  b: ReadonlyArray<ReadonlyArray<string>>,
+): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((va) => b.some((vb) => sameValue(va, vb)));
+}
+
 /** Two entries carry the same disagreement: the same set of values (order aside). */
 export function sameDisagreement(a: Entry, b: Entry): boolean {
-  if (a.field !== b.field || a.values.length !== b.values.length) return false;
-  return a.values.every((va) => b.values.some((vb) => sameValue(va.value, vb.value)));
+  if (a.field !== b.field) return false;
+  return sameValueSets(
+    a.values.map((x) => x.value),
+    b.values.map((x) => x.value),
+  );
 }
 
 export function entryFor(
@@ -98,6 +112,35 @@ export function entryFor(
   const list = card.sourceDisagreements ?? [];
   const index = list.findIndex((e) => e.field === field);
   return index < 0 ? undefined : { entry: list[index], index };
+}
+
+/**
+ * The card name a pick leaves, or undefined to leave it alone (decision 23).
+ *
+ * Match Cards preselects ONE source's spelling as `cardName`, so a card whose
+ * players were picked from the other source read "Carl Boudreau" as its name
+ * and "Carl Bodureau" as its player. The name follows the pick when it IS one
+ * of the spellings the sources gave (any offered value, or the value an earlier
+ * pick chose: a Change re-follows). A name that matches none of them was typed
+ * by hand and stays. Compared the way the marketplaces' own names are
+ * (`nameKey`: accents folded, "|" and " / " the same), so only the words count.
+ * A card name holds players or teams joined with " / "; a team card carries the
+ * team there, a player card the players, so one rule serves both fields.
+ */
+export function pickedCardName(
+  card: Pick<Doc<"cardChecklist">, "cardName">,
+  entry: Entry,
+  names: ReadonlyArray<string>,
+): string | undefined {
+  if (names.length === 0) return undefined;
+  const picked = names.join(" / ");
+  if (card.cardName === picked) return undefined;
+  const have = nameKey(card.cardName);
+  if (have === "") return undefined;
+  const offered = [...entry.values.map((o) => o.value), ...(entry.chosen ? [entry.chosen.value] : [])];
+  return offered.some((value) => value.length > 0 && nameKey(value.join(" / ")) === have)
+    ? picked
+    : undefined;
 }
 
 type Resolved =
@@ -253,12 +296,21 @@ export async function applyPickToCard(
     JSON.stringify(before.teamOnCardIds) !== JSON.stringify(fields.teamOnCardIds) ||
     JSON.stringify(before.pendingTeamNames) !== JSON.stringify(fields.pendingTeamNames);
 
-  // The stamp first, alone: it must not bump `lastUpdated`.
-  await ctx.db.patch(card._id, { sourceDisagreements: entries });
+  // The stamp first, alone: on its own it must not bump `lastUpdated`. A card
+  // name that follows the pick is content, so it does (the NEO-203 baseVersion).
+  const cardName = pickedCardName(card, found.entry, args.names);
+  await ctx.db.patch(card._id, {
+    sourceDisagreements: entries,
+    ...(cardName !== undefined ? { cardName, lastUpdated: Date.now() } : {}),
+  });
   if (changed) {
-    const stamped = { ...card, sourceDisagreements: entries } as Doc<"cardChecklist">;
+    const stamped = {
+      ...card,
+      sourceDisagreements: entries,
+      ...(cardName !== undefined ? { cardName } : {}),
+    } as Doc<"cardChecklist">;
     await writeNameChange(ctx, stamped, fields, args.cache, args.userId);
   }
   await syncCardPrintedNames(ctx, card, desired);
-  return { pending: anyPending, written: changed };
+  return { pending: anyPending, written: changed || cardName !== undefined };
 }

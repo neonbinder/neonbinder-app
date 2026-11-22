@@ -303,26 +303,6 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
     // dropdown from the league's own rows. Admin-only since NEO-156; pinned
     // here when its arguments grew.
     ["teams.listForManagement", (t) => t.query(api.teams.listForManagement, { leagueId: "none" })],
-    // NEO-301: both bulk fast paths are public ACTIONS now (a query picks the
-    // page, an internal mutation writes it), and the admin gate runs in the
-    // action before either half is reached. The create twin was never pinned
-    // here; it is now.
-    [
-      "entityReviewQueue.recordAllRemainingAsSkip",
-      (t, sportId) =>
-        t.action(api.entityReviewQueue.recordAllRemainingAsSkip, {
-          selectorOptionId: sportId,
-          batchId: "no-such-batch",
-        }),
-    ],
-    [
-      "entityReviewQueue.recordAllRemainingAsCreate",
-      (t, sportId) =>
-        t.action(api.entityReviewQueue.recordAllRemainingAsCreate, {
-          selectorOptionId: sportId,
-          batchId: "no-such-batch",
-        }),
-    ],
     // NEO-332. Pinned here because the action's return shape grew
     // (`ambiguousPlayers`); the gate runs before the cards are read, so an
     // empty list is inert and the refusal is the gate.
@@ -334,187 +314,6 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
           sportId,
           cards: [],
         }),
-    ],
-    [
-      "entityReviewSkips.listForSet",
-      (t, sportId) => t.query(api.entityReviewSkips.listForSet, { selectorOptionId: sportId }),
-    ],
-    // NEO-221. Un-deciding a reviewed row puts a name back into the wizard as
-    // an open question, and the wizard drives the GLOBAL players/teams tables
-    // — same surface, same gate as `recordDecision` beside it. Needs a real
-    // row id, so one is seeded first; the gate runs before that id is read, so
-    // the refusal is the gate and not a missing-row error.
-    [
-      "entityReviewQueue.clearDecision",
-      async (t, sportId) => {
-        const reviewRowId = await t.run(async (ctx) =>
-          ctx.db.insert("entityReviewQueue", {
-            selectorOptionId: sportId,
-            batchId: "batch-1",
-            createdByUserId: "somebody",
-            kind: "player" as const,
-            name: "Mike Trout",
-            sportId,
-            status: "ready" as const,
-            decision: { action: "create" as const },
-          }),
-        );
-        return t.mutation(api.entityReviewQueue.clearDecision, { reviewRowId });
-      },
-    ],
-    // NEO-236. Staging a player's career teams INSERTS review rows and
-    // schedules pooled Wikidata lookups for them, so an ungated caller could
-    // both put steps in front of an operator who never asked for them and
-    // enqueue unbounded work on the deployment-wide pool. Same table, same
-    // batch, same gate as `recordDecision`. Needs a real row id; the gate runs
-    // before that id is read, so the refusal is the gate and not a
-    // missing-row error.
-    [
-      "entityReviewQueue.stageCareerTeamRows",
-      async (t, sportId) => {
-        const reviewRowId = await t.run(async (ctx) =>
-          ctx.db.insert("entityReviewQueue", {
-            selectorOptionId: sportId,
-            batchId: "batch-1",
-            createdByUserId: "somebody",
-            kind: "player" as const,
-            name: "Travis Bazzana",
-            sportId,
-            status: "ready" as const,
-            enrichment: {
-              careerTeams: [{ name: "Sydney Blue Sox", fromYear: 2019 }],
-            },
-          }),
-        );
-        return t.mutation(api.entityReviewQueue.stageCareerTeamRows, {
-          reviewRowId,
-        });
-      },
-    ],
-    // NEO-248. The undo of the staging patch above: it strips the operator's
-    // typed years off a staged step. Ungated, a caller could silently empty
-    // another operator's career-team entries — the same table and the same
-    // blast radius as the mutation that wrote them, so the same gate. Both ids
-    // are read after the gate runs, so the refusal is the gate rather than a
-    // missing-row error.
-    [
-      "entityReviewQueue.clearCareerTeamStint",
-      async (t, sportId) => {
-        const reviewRowId = await t.run(async (ctx) =>
-          ctx.db.insert("entityReviewQueue", {
-            selectorOptionId: sportId,
-            batchId: "batch-1",
-            createdByUserId: "somebody",
-            kind: "player" as const,
-            name: "Travis Bazzana",
-            sportId,
-            status: "ready" as const,
-          }),
-        );
-        const teamRowId = await t.run(async (ctx) =>
-          ctx.db.insert("entityReviewQueue", {
-            selectorOptionId: sportId,
-            batchId: "batch-1",
-            createdByUserId: "somebody",
-            kind: "team" as const,
-            name: "Sydney Blue Sox",
-            sportId,
-            status: "ready" as const,
-            source: {
-              kind: "careerTeamOf" as const,
-              playerRowId: reviewRowId,
-              manualStint: { fromYear: 2001, toYear: 2005 },
-            },
-          }),
-        );
-        return t.mutation(api.entityReviewQueue.clearCareerTeamStint, {
-          reviewRowId,
-          teamRowId,
-        });
-      },
-    ],
-    // NEO-313. The operator's cross-sport override: re-points a review row at
-    // another sport, deletes the steps it staged and enqueues a pooled
-    // Wikidata lookup. Same table, same batch, same gate as `recordDecision`.
-    // The ids are read after the gate, so the refusal is the gate.
-    [
-      "entityReviewQueue.switchRowSport",
-      async (t, sportId) => {
-        const rowId = await t.run(async (ctx) =>
-          ctx.db.insert("entityReviewQueue", {
-            selectorOptionId: sportId,
-            batchId: "batch-1",
-            createdByUserId: "somebody",
-            kind: "player" as const,
-            name: "Justin Fields",
-            sportId,
-            status: "ready" as const,
-          }),
-        );
-        return t.mutation(api.entityReviewQueue.switchRowSport, { rowId, sportId });
-      },
-    ],
-    // NEO-332. Create new on a same-name pick step: flips the row to
-    // `pending` and enqueues a pooled Wikidata lookup (and can re-stage
-    // career-team steps). Ungated, a caller could spend the deployment-wide
-    // 5-wide lane at will. Same table, same batch, same gate as
-    // `recordDecision`. The id is read after the gate, so the refusal is the
-    // gate and not a missing-row error.
-    [
-      "entityReviewQueue.requestPlayerLookup",
-      async (t, sportId) => {
-        const reviewRowId = await t.run(async (ctx) =>
-          ctx.db.insert("entityReviewQueue", {
-            selectorOptionId: sportId,
-            batchId: "batch-1",
-            createdByUserId: "somebody",
-            kind: "player" as const,
-            name: "Bob Allen",
-            sportId,
-            status: "ready" as const,
-          }),
-        );
-        return t.mutation(api.entityReviewQueue.requestPlayerLookup, { reviewRowId });
-      },
-    ],
-    // NEO-602. The team step's cards, players and stints: reads other
-    // people's player careers, so admin like the batch it belongs to. The row
-    // is read after the gate, so the refusal is the gate.
-    [
-      "entityReviewQueue.teamStepContext",
-      async (t, sportId) => {
-        const reviewRowId = await t.run(async (ctx) =>
-          ctx.db.insert("entityReviewQueue", {
-            selectorOptionId: sportId,
-            batchId: "batch-1",
-            createdByUserId: "somebody",
-            kind: "team" as const,
-            name: "Baltimore Orioles",
-            sportId,
-            status: "ready" as const,
-          }),
-        );
-        return t.query(api.entityReviewQueue.teamStepContext, { reviewRowId });
-      },
-    ],
-    // NEO-602. The same-name player step's cards and candidates' stints: reads
-    // other people's player careers, so admin like the batch it belongs to.
-    [
-      "entityReviewQueue.playerStepContext",
-      async (t, sportId) => {
-        const reviewRowId = await t.run(async (ctx) =>
-          ctx.db.insert("entityReviewQueue", {
-            selectorOptionId: sportId,
-            batchId: "batch-1",
-            createdByUserId: "somebody",
-            kind: "player" as const,
-            name: "Luis Castillo",
-            sportId,
-            status: "ready" as const,
-          }),
-        );
-        return t.query(api.entityReviewQueue.playerStepContext, { reviewRowId });
-      },
     ],
     // NEO-313. Writes a player's additional sports — globally-shared
     // reference data, and it re-derives the alias index. Admin, like
@@ -592,35 +391,6 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
     // The refusal is only meaningful if nothing was written on the way to it.
     const doc = await t.run(async (ctx) => ctx.db.get(playerId));
     expect(doc?.isHallOfFame).toBeUndefined();
-  });
-
-  test("entityReviewSkips.clearSkip rejects anonymous and signed-in non-admin callers, and deletes nothing", async () => {
-    // The one DESTRUCTIVE function of the ten. A skip row is what keeps a name
-    // out of the review wizard for a set, so an ungated delete would let any
-    // caller silently re-open decisions an operator had already made.
-    const t = convexTest(schema, modules);
-    const sportId = await seedSport(t);
-    const skipId = await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewSkips", {
-        selectorOptionId: sportId,
-        kind: "player" as const,
-        name: "CHECKLIST",
-        nameNormalized: "checklist",
-        skippedAt: 1_700_000_000_000,
-        skippedByUserId: "seed",
-      }),
-    );
-
-    await expect(
-      t.mutation(api.entityReviewSkips.clearSkip, { skipId }),
-    ).rejects.toThrow(/Not authenticated/);
-    await expect(
-      t.withIdentity(SIGNED_IN).mutation(api.entityReviewSkips.clearSkip, { skipId }),
-    ).rejects.toThrow(/Admin access required/);
-
-    expect(
-      await t.run(async (ctx) => ctx.db.query("entityReviewSkips").collect()),
-    ).toHaveLength(1);
   });
 
   test("teams.search is signed-in, not admin, and answers empty rather than throwing", async () => {
@@ -1691,28 +1461,32 @@ describe("NEO-305: the set ⇄ parallel doors are admin-gated", () => {
   });
 });
 
-describe("NEO-301: the bulk review decide is a public action over two internal halves", () => {
+describe("NEO-645: the old review wizard has no public surface", () => {
   /**
-   * `recordAllRemainingAsCreate` / `recordAllRemainingAsSkip` became actions so
-   * the page they walk is read in a query, outside any transaction's OCC read
-   * set. The two halves take a `callerId` ARGUMENT and trust it — correct for
-   * an internal function whose only caller is the admin-gated action, and a
-   * forged-identity write primitive if either were ever declared public. So
-   * the keyword is pinned, the same reading-the-source way as the NEO-154 and
-   * NEO-289 blocks (convex-test does not enforce the public/internal boundary).
+   * One-card Tidy Up replaced the wizard, and every public function of
+   * `entityReviewQueue.ts` and `entityReviewSkips.ts` went with it (getBatch,
+   * recordDecision, the step contexts, the bulk actions, clearSkip, ...). What
+   * remains of the queue module is internal, for the deploy window. Pinned by
+   * reading the source, the way the NEO-154 blocks are (convex-test does not
+   * enforce the public/internal boundary): a public function added back here
+   * would be an ungated door onto a table nothing reads any more.
    */
+  test("entityReviewQueue.ts declares no public query, mutation or action", () => {
+    const src = readFileSync(join(__dirname, "entityReviewQueue.ts"), "utf8");
+    expect(src).not.toMatch(/=\s*(query|mutation|action)\(/);
+    expect(src).not.toMatch(/import\s*\{[^}]*\b(query|mutation|action)\b[^}]*\}\s*from "\.\/_generated\/server"/);
+  });
+
+  test("entityReviewSkips.ts is gone", () => {
+    expect(existsSync(join(__dirname, "entityReviewSkips.ts"))).toBe(false);
+  });
+
   test.each([
-    ["entityReviewQueue.ts", "recordAllRemainingAsCreate", "action"],
-    ["entityReviewQueue.ts", "recordAllRemainingAsSkip", "action"],
-    ["entityReviewQueue.ts", "listBulkCandidates", "internalQuery"],
-    ["entityReviewQueue.ts", "decideRowsByIds", "internalMutation"],
-  ])("%s :: %s is declared %s", (file, fn, keyword) => {
-    const src = readFileSync(join(__dirname, file), "utf8");
+    ["getInternal", "internalQuery"],
+    ["applyLookupResult", "internalMutation"],
+  ])("entityReviewQueue.%s (the in-flight lookup's door) is %s", (fn, keyword) => {
+    const src = readFileSync(join(__dirname, "entityReviewQueue.ts"), "utf8");
     expect(src).toContain(`export const ${fn} = ${keyword}({`);
-    for (const other of ["query", "mutation", "action", "internalQuery", "internalMutation", "internalAction"]) {
-      if (other === keyword) continue;
-      expect(src).not.toContain(`export const ${fn} = ${other}(`);
-    }
   });
 });
 

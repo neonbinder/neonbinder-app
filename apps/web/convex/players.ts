@@ -4345,11 +4345,6 @@ export const appendCareerStints = internalMutation({
  * The public, operator-facing wrapper over `appendCareerStints` (which stays
  * the internal writer of `players.teamYears`).
  *
- * ## STATUS: signature first (NEO-645 W1a)
- *
- * The validators, the admin gate and this contract are final; the body throws
- * "not implemented yet" and writes nothing. W1b implements it.
- *
  * ## Contract
  *
  * - `requireAdmin`. Years are held to the bounds every other writer holds

@@ -324,67 +324,6 @@ describe("the location-composed team key folds accents (NEO-236 + NEO-253)", () 
   });
 });
 
-describe("the review-queue resume key agrees across accents (NEO-253)", () => {
-  /**
-   * A resume reconciles the batch against the incoming names by
-   * `kind` + normalized name. The names come back from a re-fetch or a second
-   * pairing session, so their SPELLING can legitimately change between the two
-   * Confirms — SportLots supplies accents, BSC does not, and which side won a
-   * given merge is not stable. Keyed unfolded, the second Confirm dropped the
-   * operator's decision on the ground and inserted a fresh `pending` row
-   * alongside it.
-   */
-  test("resuming with the other spelling keeps the row and its decision", async () => {
-    const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(USER);
-    const selectorOptionId = await seedSport(t);
-
-    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
-      selectorOptionId,
-      createdByUserId: USER.subject,
-      sportId: selectorOptionId,
-      playerNames: ["José Ramírez"],
-      teamNames: ["Montréal Expos"],
-    });
-
-    const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
-      selectorOptionId,
-      batchId,
-    });
-    expect(rows).toHaveLength(2);
-    const playerRow = rows.find((r) => r.kind === "player")!;
-    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
-      reviewRowId: playerRow._id,
-      action: "create",
-    });
-
-    const resumed = await t.mutation(internal.entityReviewQueue.startBatch, {
-      selectorOptionId,
-      createdByUserId: USER.subject,
-      sportId: selectorOptionId,
-      playerNames: ["Jose Ramirez"],
-      teamNames: ["Montreal Expos"],
-    });
-    expect(resumed).toBe(batchId);
-
-    const after = await asAdmin.query(api.entityReviewQueue.getBatch, {
-      selectorOptionId,
-      batchId,
-    });
-    // Still two rows, the SAME two rows, and the decision survived.
-    expect(after).toHaveLength(2);
-    expect(after.map((r) => r._id).sort()).toEqual(
-      rows.map((r) => r._id).sort(),
-    );
-    expect(
-      after.find((r) => r.kind === "player")?.decision,
-    ).toEqual({ action: "create" });
-
-    // Both `startBatch` calls scheduled
-    // `wikidataPool:enqueueEntityReviewLookups`. See the file note.
-    await drainScheduled(t);
-  });
-});
 
 describe("the entityReviewSkips key agrees across accents (NEO-253)", () => {
   /**

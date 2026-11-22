@@ -9,7 +9,8 @@
  *                       / Not a team / clear. The one door for a name's answer.
  *   - `createPlayer`    Add as new player.
  *   - `setNameSport`    the Sport chip on a player or team tile.
- *   - `requestLookup`   "Add as new player anyway": ask Wikidata now.
+ *   - `requestLookup`   "Add as new player anyway": ask Wikidata now (and for a
+ *                       migrated name nobody has asked about: `neverLooked`).
  *   - `lookupsPending`  a small subscribed read: which names are still looking.
  *
  * and the INTERNAL machinery behind them:
@@ -877,7 +878,25 @@ export const setNameSport = mutation({
   },
 });
 
-/** "Add as new player anyway": ask Wikidata about a name that was born `ready`. */
+/**
+ * A name row nobody has asked Wikidata about: born (or migrated: M2) `ready`
+ * with nothing on it. A row whose lookup ran and found nothing has a
+ * generation or a request time, so it is never asked twice from here.
+ */
+export const neverLooked = (row: Doc<"tidyNames">): boolean =>
+  row.status === "ready" &&
+  !row.answer &&
+  row.enrichment === undefined &&
+  // A name the gate offered candidates for is a choice, not an unasked name.
+  (row.candidateTeamIds?.length ?? 0) === 0 &&
+  row.candidatePlace === undefined &&
+  (row.lookupGen ?? 0) === 0 &&
+  row.lookupRequestedAt === undefined;
+
+/**
+ * Ask Wikidata about a player name that was born `ready`: "Add as new player
+ * anyway", and (the walk opening a card) a name migrated with no lookup at all.
+ */
 export const requestLookup = mutation({
   args: {
     cardId: v.id("cardChecklist"),
@@ -895,7 +914,7 @@ export const requestLookup = mutation({
       row.status === "ready" &&
       awaitsOperatorBeforeLookup(row.enrichment) &&
       row.enrichment?.wikidataId === undefined;
-    if (!awaits) return null;
+    if (!awaits && !neverLooked(row)) return null;
     await scheduleLookup(ctx, row, {});
     return null;
   },
@@ -922,7 +941,8 @@ async function lookupScopeOf(
  *
  * Assistive and free of side effects on the card: the row is never answered and
  * nothing reads it but `teamLookup`. An existing row (a printed team of the same
- * name, or an earlier ask) is reused and never looked up again.
+ * name, or an earlier ask) is reused and never looked up again, except one that
+ * was never looked up at all (migrated `ready` with nothing on it: M2).
  */
 export const requestTeamLookup = mutation({
   args: {
@@ -942,7 +962,11 @@ export const requestTeamLookup = mutation({
     const key = normalizeEntityName(name);
     if (!key) throw new ConvexError("A name is required.");
     const before = await readRow(ctx, scopeId, "team", key);
-    if (before) return null;
+    if (before) {
+      // A printed team a migration left `ready` with no lookup: ask it once.
+      if (neverLooked(before)) await scheduleLookup(ctx, before, {});
+      return null;
+    }
     const row = await ensureTidyNameRow(ctx, {
       scopeId,
       kind: "team",

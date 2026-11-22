@@ -309,8 +309,15 @@ const cardsPageReturns = v.object({
   printedRows: v.number(),
   pendingDropped: v.number(),
   cardsPatched: v.number(),
-  /** The `_creationTime` the next page starts after; null once the table is done. */
-  after: v.union(v.number(), v.null()),
+  /** The cursor the next call pages from (the SAME one when `resumeAfter` is set). */
+  continueCursor: v.union(v.string(), v.null()),
+  /**
+   * Set when the op budget stopped the page part-way: the last card this call
+   * finished. The next call re-reads the same page and starts after it, so a
+   * card is never skipped and a card that shares a `_creationTime` with it is
+   * never lost (a bare `_creationTime` cursor skipped those).
+   */
+  resumeAfter: v.union(v.id("cardChecklist"), v.null()),
   isDone: v.boolean(),
 });
 
@@ -330,7 +337,9 @@ async function readNameRow(
 
 export const backfillLegacyPendingNamesPage = internalMutation({
   args: {
-    after: v.union(v.number(), v.null()),
+    cursor: v.union(v.string(), v.null()),
+    /** The last card a budget-stopped call finished; see `cardsPageReturns`. */
+    resumeAfter: v.optional(v.union(v.id("cardChecklist"), v.null())),
     apply: v.boolean(),
     /** Tests only: a smaller page. */
     pageSize: v.optional(v.number()),
@@ -342,13 +351,19 @@ export const backfillLegacyPendingNamesPage = internalMutation({
     assertArmedToWrite(args.apply);
     const size = Math.max(1, Math.min(args.pageSize ?? CARDS_PAGE, CARDS_PAGE));
     const budget = Math.max(1, Math.min(args.opBudget ?? CARDS_OP_BUDGET, CARDS_OP_BUDGET));
-    const after = args.after;
-    const cards = await ctx.db
+    const page = await ctx.db
       .query("cardChecklist")
-      .withIndex("by_creation_time", (q) => (after === null ? q : q.gt("_creationTime", after)))
-      .take(size);
+      .withIndex("by_creation_time")
+      .paginate({ cursor: args.cursor, numItems: size });
+    // Resume part-way through the page a budget stop left. A card that is no
+    // longer in the page (deleted since) restarts the page: every step below is
+    // idempotent, so doing a card twice is harmless and skipping one is not.
+    const resumeAt = args.resumeAfter
+      ? page.page.findIndex((c) => c._id === args.resumeAfter)
+      : -1;
+    const cards = page.page.slice(resumeAt + 1);
     let ops = 1;
-    let last: number | null = after;
+    let lastDone: Id<"cardChecklist"> | null = args.resumeAfter ?? null;
     let scanned = 0;
     const out = { cardsWithNames: 0, nameRowsInserted: 0, printedRows: 0, pendingDropped: 0, cardsPatched: 0 };
     let stoppedEarly = false;
@@ -357,7 +372,7 @@ export const backfillLegacyPendingNamesPage = internalMutation({
         (card.pendingPlayerNames?.length ?? 0) > 0 || (card.pendingTeamNames?.length ?? 0) > 0;
       if (!hasPending) {
         scanned += 1;
-        last = card._creationTime;
+        lastDone = card._id;
         continue;
       }
       // A card with names costs its names x ~3 plus its own reads and writes.
@@ -437,10 +452,24 @@ export const backfillLegacyPendingNamesPage = internalMutation({
       }
       if (plan.patchesPending) out.cardsPatched += 1;
       scanned += 1;
-      last = card._creationTime;
+      lastDone = card._id;
     }
-    const isDone = !stoppedEarly && cards.length < size;
-    return { scanned, ...out, after: isDone ? null : last, isDone };
+    if (stoppedEarly) {
+      return {
+        scanned,
+        ...out,
+        continueCursor: args.cursor,
+        resumeAfter: lastDone,
+        isDone: false,
+      };
+    }
+    return {
+      scanned,
+      ...out,
+      continueCursor: page.isDone ? null : page.continueCursor,
+      resumeAfter: null,
+      isDone: page.isDone,
+    };
   },
 });
 
@@ -467,18 +496,25 @@ export const backfillLegacyPendingNames = internalAction({
       pendingDropped: 0,
       cardsPatched: 0,
     };
-    let after: number | null = null;
+    let cursor: string | null = null;
+    let resumeAfter: Id<"cardChecklist"> | null = null;
     let pages = 0;
     for (;;) {
       if (pages >= MAX_PAGES) throw new Error("backfillLegacyPendingNames: did not finish");
-      const page: typeof total & { after: number | null; isDone: boolean } = await ctx.runMutation(
-        internal.tidyMigrations.backfillLegacyPendingNamesPage,
-        { after, apply: arming.apply },
-      );
+      const page: typeof total & {
+        continueCursor: string | null;
+        resumeAfter: Id<"cardChecklist"> | null;
+        isDone: boolean;
+      } = await ctx.runMutation(internal.tidyMigrations.backfillLegacyPendingNamesPage, {
+        cursor,
+        resumeAfter,
+        apply: arming.apply,
+      });
       pages += 1;
       for (const key of Object.keys(total) as Array<keyof typeof total>) total[key] += page[key];
       if (page.isDone) break;
-      after = page.after;
+      cursor = page.continueCursor;
+      resumeAfter = page.resumeAfter;
     }
     return {
       mode: arming.apply ? ("applied" as const) : ("dryRun" as const),

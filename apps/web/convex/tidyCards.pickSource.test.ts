@@ -467,17 +467,61 @@ describe("pickSourceValue — Apply to the cards with the same disagreement", ()
 
   test("pickSourceValuePage counts what it refused", async () => {
     const t = newT();
-    const { w, judge, open, ids } = await fiveCards(t);
+    const { judge, open, ids } = await fiveCards(t);
     const out = await t.mutation(internal.tidyCards.pickSourceValuePage, {
       field: "players",
       value: [JUDGE],
+      offered: [[JUDGE], [SOTO]],
       cardIds: [ids.same, ids.settled],
       userId: "op",
-      leafId: w.base,
     });
     expect(out).toEqual({ applied: 1, refused: 1 });
     expect((await card(t, ids.same))!.playerIds).toEqual([judge]);
     expect(open).toBeTruthy();
+  });
+
+  test("a page re-checks the disagreement itself: a card whose values changed since the call is refused", async () => {
+    const t = newT();
+    const { open, ids } = await fiveCards(t);
+    await pick(t, open, [JUDGE], { cardIds: [ids.same, ids.sameReordered] });
+    // Between the call and the page, a re-sync gave one card a different disagreement,
+    // and (the other) dropped the picked value from its own offers.
+    await t.run(async (ctx) => {
+      await ctx.db.patch(ids.same, { sourceDisagreements: [playersEntry([JUDGE], ["Mookie Betts"])] });
+      await ctx.db.patch(ids.sameReordered, { sourceDisagreements: [playersEntry([SOTO, "Extra"], [SOTO])] });
+    });
+    await drainScheduled(t);
+    for (const id of [ids.same, ids.sameReordered]) {
+      const c = (await card(t, id))!;
+      expect(c.playerIds).toBeUndefined();
+      expect(c.sourceDisagreements?.[0].chosen).toBeUndefined();
+    }
+  });
+
+  test("a page refuses a picked value its card no longer offers, even when the value sets still match in size", async () => {
+    const t = newT();
+    const { ids } = await fiveCards(t);
+    const out = await t.mutation(internal.tidyCards.pickSourceValuePage, {
+      field: "players",
+      value: ["Somebody Else"],
+      offered: [[JUDGE], [SOTO]],
+      cardIds: [ids.same],
+      userId: "op",
+    });
+    expect(out).toEqual({ applied: 0, refused: 1 });
+    expect((await card(t, ids.same))!.playerIds).toBeUndefined();
+  });
+
+  test("a typed value needs no offer on the page, only the same disagreement", async () => {
+    const t = newT();
+    const { open, ids } = await fiveCards(t);
+    await pick(t, open, ["Somebody Else"], { typed: true, cardIds: [ids.same, ids.differs] });
+    await drainScheduled(t);
+    expect((await card(t, ids.same))!.sourceDisagreements?.[0].chosen).toMatchObject({
+      value: ["Somebody Else"],
+      typed: true,
+    });
+    expect((await card(t, ids.differs))!.sourceDisagreements?.[0].chosen).toBeUndefined();
   });
 
   test("at most 100 OTHER cards: 101 is refused, and nothing at all is written, the open card included", async () => {
@@ -513,5 +557,109 @@ describe("pickSourceValue — Apply to the cards with the same disagreement", ()
     expect(pages).toHaveLength(2);
     await drainScheduled(t);
     expect((await card(t, ids[99]))!.playerIds).toEqual([judge]);
+  });
+});
+
+describe("pickSourceValue — lookups go out for each card's own scope", () => {
+  test("a name left pending on cards in two leaves is queued for lookup in BOTH leaves", async () => {
+    const t = newT();
+    const { w, open } = await setup(t);
+    const other = await t.run((ctx) =>
+      printCard(ctx, w, {
+        leaf: w.insert,
+        number: "9",
+        extra: { sourceDisagreements: [playersEntry()] },
+      }),
+    );
+    const out = await pick(t, open, [SOTO], { cardIds: [other] });
+    expect(out).toEqual({ applied: 1, scheduled: 1, refused: 0 });
+    await drainScheduled(t);
+    const rows = (await nameRows(t)).filter((r) => r.nameNormalized === normalizeEntityName(SOTO));
+    expect(rows.map((r) => r.scopeId).sort()).toEqual([w.base, w.insert].sort());
+    // Each scope's row was asked about (the enqueue bumps the generation), not just the open card's.
+    expect(rows.every((r) => (r.lookupGen ?? 0) === 1)).toBe(true);
+  });
+});
+
+describe("pickSourceValue — the card's own name follows the pick (decision 23)", () => {
+  const CARL_A = "Carl Boudreau";
+  const CARL_B = "Carl Bodureau";
+  const named = (t: T, w: Awaited<ReturnType<typeof setup>>["w"], n: string, cardName: string, entry: Entry) =>
+    t.run((ctx) =>
+      printCard(ctx, w, { number: n, extra: { cardName, sourceDisagreements: [entry] } }),
+    );
+
+  test("a card named for the losing source's spelling takes the picked spelling", async () => {
+    const t = newT();
+    const { w } = await setup(t);
+    // Match Cards preselected the first spelling for the name; the operator picks the other.
+    const id = await named(t, w, "20", CARL_A, playersEntry([CARL_A], [CARL_B]));
+    await pick(t, id, [CARL_B]);
+    expect((await card(t, id))!.cardName).toBe(CARL_B);
+  });
+
+  test("a card named for the picked spelling already keeps it", async () => {
+    const t = newT();
+    const { w } = await setup(t);
+    const id = await named(t, w, "21", CARL_B, playersEntry([CARL_A], [CARL_B]));
+    await pick(t, id, [CARL_B]);
+    const c = (await card(t, id))!;
+    expect(c.cardName).toBe(CARL_B);
+  });
+
+  test("a card name that matches no source value was typed by hand and is left alone", async () => {
+    const t = newT();
+    const { w } = await setup(t);
+    const id = await named(t, w, "22", "Carl B. (rookie)", playersEntry([CARL_A], [CARL_B]));
+    await pick(t, id, [CARL_B]);
+    expect((await card(t, id))!.cardName).toBe("Carl B. (rookie)");
+  });
+
+  test("a rename bumps lastUpdated (the name is content under an open review)", async () => {
+    const t = newT();
+    const { w } = await setup(t);
+    const id = await named(t, w, "23", CARL_A, playersEntry([CARL_A], [CARL_B]));
+    await pick(t, id, [CARL_B]);
+    expect((await card(t, id))!.lastUpdated).toBeGreaterThan(WORLD_NOW);
+  });
+
+  test("a typed value replaces a card name that was either source's spelling", async () => {
+    const t = newT();
+    const { w } = await setup(t);
+    const id = await named(t, w, "24", CARL_B, playersEntry([CARL_A], [CARL_B]));
+    await pick(t, id, ["Carl Boudreaux"], { typed: true });
+    expect((await card(t, id))!.cardName).toBe("Carl Boudreaux");
+  });
+
+  test("several players are joined the way the sources print them", async () => {
+    const t = newT();
+    const { w } = await setup(t);
+    const id = await named(t, w, "25", `${JUDGE}|${SOTO}`, playersEntry([JUDGE, SOTO], [JUDGE]));
+    await pick(t, id, [JUDGE]);
+    expect((await card(t, id))!.cardName).toBe(JUDGE);
+  });
+
+  test("Apply to the same disagreement renames each card by the same rule", async () => {
+    const t = newT();
+    const { w } = await setup(t);
+    const entry = playersEntry([CARL_A], [CARL_B]);
+    const open = await named(t, w, "30", CARL_A, entry);
+    const follows = await named(t, w, "31", CARL_A, entry);
+    const typed = await named(t, w, "32", "Carl B. (rookie)", entry);
+    await pick(t, open, [CARL_B], { cardIds: [follows, typed] });
+    await drainScheduled(t);
+    expect((await card(t, open))!.cardName).toBe(CARL_B);
+    expect((await card(t, follows))!.cardName).toBe(CARL_B);
+    expect((await card(t, typed))!.cardName).toBe("Carl B. (rookie)");
+  });
+
+  test("a team card named for a team value follows a teams pick; a player card's name is not touched by it", async () => {
+    const t = newT();
+    const { w, open } = await setup(t);
+    const teamCard = await named(t, w, "40", "Padres", teamsEntry(["Padres"], ["San Diego Padres"]));
+    await pick(t, teamCard, ["San Diego Padres"], { field: "teams" });
+    expect((await card(t, teamCard))!.cardName).toBe("San Diego Padres");
+    // The open player card keeps the name it was given.
+    expect((await card(t, open))!.cardName).toBe("Card 1");
   });
 });

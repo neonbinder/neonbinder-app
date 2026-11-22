@@ -91,7 +91,6 @@ import type * as drillPath from "../drillPath.js";
 import type * as ebayConnect from "../ebayConnect.js";
 import type * as enrichmentFixtures from "../enrichmentFixtures.js";
 import type * as entityReviewQueue from "../entityReviewQueue.js";
-import type * as entityReviewSkips from "../entityReviewSkips.js";
 import type * as fakeBsc from "../fakeBsc.js";
 import type * as features_cardAttention from "../features/cardAttention.js";
 import type * as features_carriedTitle from "../features/carriedTitle.js";
@@ -351,7 +350,6 @@ declare const fullApi: ApiFromModules<{
   ebayConnect: typeof ebayConnect;
   enrichmentFixtures: typeof enrichmentFixtures;
   entityReviewQueue: typeof entityReviewQueue;
-  entityReviewSkips: typeof entityReviewSkips;
   fakeBsc: typeof fakeBsc;
   "features/cardAttention": typeof features_cardAttention;
   "features/carriedTitle": typeof features_carriedTitle;

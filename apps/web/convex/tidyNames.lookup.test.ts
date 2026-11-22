@@ -218,12 +218,27 @@ describe("requestLookup", () => {
     expect(await scheduledLookups(t)).toEqual([]);
   });
 
-  test("a plain ready row with nothing awaited is a no-op", async () => {
+  test("a ready row whose lookup already ran and found nothing is a no-op", async () => {
+    const t = newT();
+    const s = await setup(t, { lookupGen: 1, lookupRequestedAt: 5 });
+    await requestLookup(t, s.open);
+    expect((await rowById(t, s.rowId))!.status).toBe("ready");
+    expect((await rowById(t, s.rowId))!.lookupGen).toBe(1);
+    expect(await scheduledLookups(t)).toEqual([]);
+  });
+
+  test("a name a migration left ready with no lookup at all is asked, once (opening its card fires this)", async () => {
     const t = newT();
     const s = await setup(t);
     await requestLookup(t, s.open);
-    expect((await rowById(t, s.rowId))!.status).toBe("ready");
-    expect(await scheduledLookups(t)).toEqual([]);
+    const row = (await rowById(t, s.rowId))!;
+    expect(row.status).toBe("pending");
+    expect(row.lookupGen).toBe(1);
+    expect((await scheduledLookups(t))[0].args[0]).toEqual({ items: [{ rowId: s.rowId, gen: 1 }] });
+    // The walk may offer it again: while it is pending nothing more is asked.
+    await requestLookup(t, s.open);
+    expect((await rowById(t, s.rowId))!.lookupGen).toBe(1);
+    expect(await scheduledLookups(t)).toHaveLength(1);
   });
 
   test("an answered row is refused; a team name has no lookup to ask for", async () => {
@@ -426,14 +441,42 @@ describe("requestTeamLookup / teamLookup: a team that is not printed on the card
     expect(await scheduledLookups(t)).toHaveLength(1);
   });
 
-  test("a printed team of the same name already has its row: nothing new is born or looked up", async () => {
+  test("a printed team of the same name that was already looked up has its row: nothing new is born or looked up", async () => {
     const t = newT();
-    const { w, open, rowId } = await setup(t, { status: "ready" }, "team");
+    const { w, open, rowId } = await setup(
+      t,
+      { status: "ready", lookupGen: 1, lookupRequestedAt: 5 },
+      "team",
+    );
     await ask(t, open, w.sport, NAME);
     expect(await teamRows(t)).toHaveLength(1);
     expect(await scheduledLookups(t)).toEqual([]);
     expect(await read(t, open, NAME)).toEqual({ status: "ready" });
-    expect((await rowById(t, rowId))!.lookupGen ?? 0).toBe(0);
+    expect((await rowById(t, rowId))!.lookupGen).toBe(1);
+  });
+
+  test("a printed team a migration left ready with no lookup at all is asked once, and not again", async () => {
+    const t = newT();
+    const { w, open, rowId } = await setup(t, { status: "ready" }, "team");
+    await ask(t, open, w.sport, NAME);
+    expect(await teamRows(t)).toHaveLength(1);
+    const row = (await rowById(t, rowId))!;
+    expect(row.status).toBe("pending");
+    expect(row.lookupGen).toBe(1);
+    expect(await scheduledLookups(t)).toHaveLength(1);
+    // A second ask while it is looking up is a no-op.
+    await ask(t, open, w.sport, NAME);
+    expect((await rowById(t, rowId))!.lookupGen).toBe(1);
+    expect(await scheduledLookups(t)).toHaveLength(1);
+  });
+
+  test("a team row the gate offered candidate teams for is a choice, not an unasked name", async () => {
+    const t = newT();
+    const { w, open, rowId } = await setup(t, { status: "ready" }, "team");
+    await t.run((ctx) => ctx.db.patch(rowId, { candidateTeamIds: [w.padres] }));
+    await ask(t, open, w.sport, NAME);
+    expect((await rowById(t, rowId))!.status).toBe("ready");
+    expect(await scheduledLookups(t)).toEqual([]);
   });
 
   test("a result that lands is what the form reads", async () => {

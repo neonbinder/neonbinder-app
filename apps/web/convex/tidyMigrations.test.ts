@@ -298,6 +298,103 @@ describe("M2 backfillLegacyPendingNames", () => {
   });
 });
 
+describe("M2 backfillLegacyPendingNamesPage — the cursor is a real one", () => {
+  async function cards(t: T, scope: Sel, count: number) {
+    const ids: Id<"cardChecklist">[] = [];
+    for (let i = 1; i <= count; i++) {
+      ids.push(
+        await t.run((ctx) =>
+          insertTestCard(ctx, {
+            selectorOptionId: scope,
+            cardNumber: String(i),
+            cardName: `Card ${i}`,
+            platformData: {},
+            sortOrder: i,
+            lastUpdated: 1_700_000_000_000,
+            pendingPlayerNames: [`Player Number${String.fromCharCode(96 + i)}`],
+          }),
+        ),
+      );
+    }
+    return ids;
+  }
+
+  test("a budget stop returns the SAME cursor and the last card it finished; the next call resumes after it", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const ids = await cards(t, s.leaf, 5);
+    arm();
+    const first = await t.mutation(internal.tidyMigrations.backfillLegacyPendingNamesPage, {
+      cursor: null,
+      apply: true,
+      opBudget: 14,
+    });
+    expect(first.isDone).toBe(false);
+    expect(first.continueCursor).toBeNull();
+    expect(first.resumeAfter).toBe(ids[first.scanned - 1]);
+    expect(first.scanned).toBeLessThan(5);
+
+    // Resume until done, the way the action does: every card ends up migrated, once.
+    let cursor = first.continueCursor;
+    let resumeAfter = first.resumeAfter;
+    let scanned = first.scanned;
+    for (let pages = 0; pages < 20; pages++) {
+      const next = await t.mutation(internal.tidyMigrations.backfillLegacyPendingNamesPage, {
+        cursor,
+        resumeAfter,
+        apply: true,
+        opBudget: 14,
+      });
+      scanned += next.scanned;
+      if (next.isDone) break;
+      cursor = next.continueCursor;
+      resumeAfter = next.resumeAfter;
+    }
+    expect(scanned).toBe(5);
+    const printed = await t.run((ctx) => ctx.db.query("cardPrintedNames").collect());
+    expect(printed.map((r) => r.cardChecklistId).sort()).toEqual([...ids].sort());
+  });
+
+  test("a card that is gone from the page since the budget stop restarts the page instead of skipping the rest", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const ids = await cards(t, s.leaf, 4);
+    arm();
+    // The earlier call finished card 2, then card 2 was deleted before the resume.
+    await t.run((ctx) => ctx.db.delete(ids[1]));
+    const out = await t.mutation(internal.tidyMigrations.backfillLegacyPendingNamesPage, {
+      cursor: null,
+      resumeAfter: ids[1],
+      apply: true,
+    });
+    // Every remaining card was done (the page restarted, idempotently), none skipped.
+    expect(out.scanned).toBe(3);
+    const printed = await t.run((ctx) => ctx.db.query("cardPrintedNames").collect());
+    expect(printed.map((r) => r.cardChecklistId).sort()).toEqual([ids[0], ids[2], ids[3]].sort());
+    expect(out.isDone).toBe(true);
+  });
+
+  test("a finished page hands back Convex's own cursor, and the last page ends the walk", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await cards(t, s.leaf, 3);
+    const page = await t.mutation(internal.tidyMigrations.backfillLegacyPendingNamesPage, {
+      cursor: null,
+      apply: false,
+      pageSize: 2,
+    });
+    expect(page.isDone).toBe(false);
+    expect(typeof page.continueCursor).toBe("string");
+    expect(page.resumeAfter).toBeNull();
+    const last = await t.mutation(internal.tidyMigrations.backfillLegacyPendingNamesPage, {
+      cursor: page.continueCursor,
+      apply: false,
+      pageSize: 2,
+    });
+    expect(last).toMatchObject({ scanned: 1, isDone: true, continueCursor: null });
+  });
+});
+
 describe("M3 drainEntityReviewQueue", () => {
   async function queueRow(t: T, scope: Sel, sport: Sel, name: string) {
     return t.run((ctx) =>

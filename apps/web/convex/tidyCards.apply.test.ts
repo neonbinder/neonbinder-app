@@ -606,6 +606,66 @@ describe("applySetNameToTitles — the three title cases", () => {
     expect((await card(t, s.generated))!.listingTitle).toContain("Hologram");
   });
 
+  /** The retitle chains a save scheduled, oldest first. */
+  const chains = async (t: T) =>
+    (await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect()))
+      .filter((f) => f.name.includes("retitleLeafPage"))
+      .sort((a, b) => a._creationTime - b._creationTime)
+      .map((f) => f.args[0] as Record<string, unknown> & { runId: number });
+
+  test("each save stamps its chain with a run id on the leaf, and a later save moves it on", async () => {
+    const t = newT();
+    const s = await setup(t);
+    await apply(t, s, SHORT);
+    const first = (await t.run((ctx) => ctx.db.get(s.w.base)))!.metadata?.listingShortNameSavedAt;
+    await apply(t, s, "Other Name");
+    const second = (await t.run((ctx) => ctx.db.get(s.w.base)))!.metadata?.listingShortNameSavedAt;
+    expect(first).toBeGreaterThan(0);
+    expect(second).toBeGreaterThan(first!);
+    const [a, b] = await chains(t);
+    expect(a.runId).toBe(first);
+    expect(b.runId).toBe(second);
+  });
+
+  test("two quick saves leave ONE live chain: the older one stops before it touches a title", async () => {
+    const t = newT();
+    const s = await setup(t);
+    await apply(t, s, SHORT);
+    await apply(t, s, "Other Name");
+    const [older, newer] = await chains(t);
+    const typed = (await card(t, s.leftOut))!.listingTitle;
+
+    // The older chain would swap its own stale old -> new pair into the hand edit.
+    const stale = await t.mutation(internal.tidyCards.retitleLeafPage, older as never);
+    expect(stale).toEqual({ retitled: 0, done: true });
+    expect((await card(t, s.leftOut))!.listingTitle).toBe(typed);
+    expect((await card(t, s.generated))!.listingTitle?.startsWith(SHORT)).toBe(false);
+
+    // The newer chain does the work, once, under the name now on the leaf.
+    const live = await t.mutation(internal.tidyCards.retitleLeafPage, newer as never);
+    expect(live.retitled).toBeGreaterThan(0);
+    expect((await card(t, s.generated))!.listingTitle?.startsWith("Other Name")).toBe(true);
+    expect((await card(t, s.leftOut))!.listingTitle).toBe("Other Name Jackson #3");
+  });
+
+  test("a chain also stops when another writer changed the box under it", async () => {
+    const t = newT();
+    const s = await setup(t);
+    await apply(t, s, SHORT);
+    const [chain] = await chains(t);
+    // The attributes panel spreads `metadata`, so the run id stays and the box moves.
+    await t.run(async (ctx) => {
+      const leaf = (await ctx.db.get(s.w.base))!;
+      await ctx.db.patch(s.w.base, { metadata: { ...leaf.metadata, listingShortName: "Panel Name" } });
+    });
+    const typed = (await card(t, s.leftOut))!.listingTitle;
+    expect(await t.mutation(internal.tidyCards.retitleLeafPage, chain as never)).toEqual({
+      retitled: 0,
+      done: true,
+    });
+    expect((await card(t, s.leftOut))!.listingTitle).toBe(typed);
+  });
+
   test("a card of another leaf, a leaf that cannot carry a short name and a gone leaf are refused", async () => {
     const t = newT();
     const s = await setup(t);

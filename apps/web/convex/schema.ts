@@ -338,7 +338,9 @@ export const selectorOptionMetadataFields = {
    * the one it writes with, so saving A, then B, then A again leaves one live
    * chain, not two.
    *
-   * Written only by `saveTitleFixes`, beside the box. Every other writer of
+   * Written by `saveTitleFixes`, beside the box, and by
+   * `tidyCards.applySetNameToTitles` (NEO-645), which starts a chain of its own
+   * the same way (two quick saves leave one live chain). Every other writer of
    * `listingShortName` (the attributes panel, the wizard commit, the
    * short-name backfill) spreads `metadata` and leaves it as it is: none of
    * them starts a chain, and a box they change stops the live one by itself.
