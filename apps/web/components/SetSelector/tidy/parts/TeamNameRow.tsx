@@ -10,7 +10,7 @@ import SportSwitch from "../../SportSwitch";
 import type { TidyCardContext, TidyRow } from "../tile-types";
 import { useInlinePart } from "../inline-stack";
 import { linkedForText } from "./copy";
-import InlineNewTeam from "./InlineNewTeam";
+import InlineNewTeam, { teamLookupCarryOf } from "./InlineNewTeam";
 import { printedOnText } from "./printed-on";
 import TeamCandidates, { type TeamCandidate } from "./TeamCandidates";
 import type { TidyWrite } from "./tidy-write";
@@ -300,6 +300,7 @@ function UnansweredTeamName({
           initialName={queryName}
           espnLocation={enrichment?.location}
           leagueSuggestion={enrichment?.league}
+          carry={teamLookupCarryOf(enrichment)}
           createLabel="Create team"
           createAriaLabel={(full, creating) =>
             creating ? `Creating team ${full}` : full ? `Create team ${full}` : "Create team"

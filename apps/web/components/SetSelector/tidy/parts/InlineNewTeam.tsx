@@ -61,12 +61,39 @@ function claimNewTeamForm(key: string, close: () => void): () => void {
 
 const NO_HOLDERS: ReadonlyArray<never> = [];
 
+/**
+ * NEO-645 — what a lookup said about the team that is not a form field: the
+ * era, the colours and the ESPN / Wikidata ids. It rides along on the create
+ * and is kept by the server on a NEW row only (`teams.findOrCreate`
+ * `enrichment`), as the review wizard's commit used to write it. Assistive:
+ * the operator's own answers win, and nothing here is shown or asked.
+ */
+export type TeamLookupCarry = {
+  yearsActive?: { from: number; to?: number };
+  colors?: { primary?: string; secondary?: string };
+  espnId?: string;
+  wikidataId?: string;
+};
+
+/** The carry-able slice of a stored name row's enrichment (or a career entry), nothing else. */
+export function teamLookupCarryOf(source: TeamLookupCarry | null | undefined): TeamLookupCarry | undefined {
+  if (!source) return undefined;
+  const out: TeamLookupCarry = {
+    ...(source.yearsActive ? { yearsActive: source.yearsActive } : {}),
+    ...(source.colors ? { colors: source.colors } : {}),
+    ...(source.espnId ? { espnId: source.espnId } : {}),
+    ...(source.wikidataId ? { wikidataId: source.wikidataId } : {}),
+  };
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 export default function InlineNewTeam({
   formKey,
   sportId,
   initialName,
   espnLocation,
   leagueSuggestion,
+  carry,
   neededBy,
   createLabel,
   createAriaLabel,
@@ -83,6 +110,8 @@ export default function InlineNewTeam({
   espnLocation?: string;
   /** A league name a lookup proposed, for the form's extra option. */
   leagueSuggestion?: string;
+  /** The rest of the lookup's answer, kept on the new team (see `TeamLookupCarry`). */
+  carry?: TeamLookupCarry;
   /** "Needed by: Mike Trout": why the form is open, when it was not asked for directly. */
   neededBy?: string;
   /** The visible words of the create button: "Create team" / "Create team and add stint". */
@@ -176,6 +205,13 @@ export default function InlineNewTeam({
     try {
       const location = draft.location.trim();
       const aliases = parseAliases(draft.aliases);
+      // The league suggestion is what the League field shows while nothing was
+      // picked, so the server writes it (link-only) when no league was answered.
+      const suggested = leagueSuggestion?.trim();
+      const enrichment = {
+        ...(suggested ? { league: suggested } : {}),
+        ...(carry ?? {}),
+      };
       const id = await findOrCreate({
         name: draft.name.trim(),
         sportId,
@@ -186,6 +222,7 @@ export default function InlineNewTeam({
         ...(draft.yearsActive ? { yearsActive: draft.yearsActive } : {}),
         ...(confirmNewEra ? { newEra: true } : {}),
         ...(aliases.length > 0 ? { aliases } : {}),
+        ...(Object.keys(enrichment).length > 0 ? { enrichment } : {}),
       });
       try {
         await onCreated(id);

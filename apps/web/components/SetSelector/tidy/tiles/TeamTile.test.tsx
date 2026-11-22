@@ -272,6 +272,53 @@ describe("TeamTile", () => {
       expect(screen.queryByRole("group", { name: "New team: Padres" })).toBeNull();
     });
 
+    it("a new team keeps the lookup's league suggestion, era, colours and ids (NEO-645)", async () => {
+      queryResults["teams.nearMatches"] = [];
+      mutation("teams.findOrCreate").mockResolvedValue("team-new");
+      renderTile({
+        ctx: context({
+          names: [
+            teamName({
+              row: {
+                name: "Padres",
+                sportId: SPORT,
+                status: "ready",
+                enrichment: {
+                  league: "Major League Baseball",
+                  location: "San Diego",
+                  yearsActive: { from: 1969 },
+                  colors: { primary: "#2f241d", secondary: "#ffc425" },
+                  espnId: "25",
+                  wikidataId: "Q650850",
+                  // Not team facts: never forwarded.
+                  description: "ignored",
+                },
+              },
+            }),
+          ],
+        }),
+      });
+      await click(screen.getByRole("button", { name: "+ New team" }));
+      await click(screen.getByRole("button", { name: "Submit new team form" }));
+      const sent = mutation("teams.findOrCreate").mock.calls[0][0] as Record<string, unknown>;
+      expect(sent.enrichment).toEqual({
+        league: "Major League Baseball",
+        yearsActive: { from: 1969 },
+        colors: { primary: "#2f241d", secondary: "#ffc425" },
+        espnId: "25",
+        wikidataId: "Q650850",
+      });
+    });
+
+    it("a lookup with nothing to carry sends no enrichment key", async () => {
+      queryResults["teams.nearMatches"] = [];
+      mutation("teams.findOrCreate").mockResolvedValue("team-new");
+      renderTile();
+      await click(screen.getByRole("button", { name: "+ New team" }));
+      await click(screen.getByRole("button", { name: "Submit new team form" }));
+      expect(mutation("teams.findOrCreate").mock.calls[0][0]).not.toHaveProperty("enrichment");
+    });
+
     it("a name another team holds as an alias becomes 'Link to {holder}', and creating is held", async () => {
       queryResults["teams.nearMatches"] = [];
       queryResults["teams.nameHeldAsAliasBy"] = [

@@ -2063,18 +2063,9 @@ export default function CardChecklist({
           `${result.unmatchedExistingCount} no longer listed upstream (kept).`,
         );
       }
-      // NEO-221 (D12): names whose review rows were never decided. The cards
-      // ARE saved — this is not a failure — but they carry the typed name
-      // instead of a player/team LINK, which is what every listing and player
-      // page reads. Said here because it is otherwise invisible until someone
-      // notices a card attributed to nobody; the same cards are badged for the
-      // attention walker, and `UnreviewedNameFixer` is how they get answered
-      // without waiting for the next sync.
-      if (result.unreviewedNameCount) {
-        notes.push(
-          `${result.unreviewedNameCount} names were not reviewed; those cards have no player/team link.`,
-        );
-      }
+      // NEO-645: no "names were not reviewed" note. The walk opens next and
+      // answers those names, so the line would describe a state that is about
+      // to be fixed in front of the operator.
       // NEO-330 — said once more on the line the cards land with, then spent:
       // a later commit that is not this run's must not inherit it.
       if (teamsLateRef.current) {

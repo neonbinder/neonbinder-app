@@ -256,6 +256,36 @@ describe("CareerTile", () => {
       });
     });
 
+    it("the team made for a stint keeps Wikidata's id for that team (NEO-645)", async () => {
+      queryResults["teams.erasByNameAndSport"] = eras;
+      mutation("teams.findOrCreate").mockResolvedValue("team-mis");
+      renderTile(
+        [newItem],
+        context({
+          names: [
+            wikidataName({
+              careerTeams: [{ name: "San Antonio Missions", fromYear: 2023, toYear: 2023, wikidataId: "Q7414889" }],
+            }),
+          ],
+        }),
+      );
+      await click(screen.getByRole("button", { name: "+ New team San Antonio Missions" }));
+      await click(screen.getByRole("button", { name: "Submit new team form" }));
+      expect(mutation("teams.findOrCreate").mock.calls[0][0]).toMatchObject({
+        name: "San Antonio Missions",
+        enrichment: { wikidataId: "Q7414889" },
+      });
+    });
+
+    it("a career entry with no id sends no enrichment", async () => {
+      queryResults["teams.erasByNameAndSport"] = eras;
+      mutation("teams.findOrCreate").mockResolvedValue("team-mis");
+      renderTile([newItem], context({ names: [wikidataName(career)] }));
+      await click(screen.getByRole("button", { name: "+ New team San Antonio Missions" }));
+      await click(screen.getByRole("button", { name: "Submit new team form" }));
+      expect(mutation("teams.findOrCreate").mock.calls[0][0]).not.toHaveProperty("enrichment");
+    });
+
     it("'Not now' leaves the stint off and writes nothing", async () => {
       queryResults["teams.erasByNameAndSport"] = eras;
       renderTile([newItem], context({ names: [wikidataName(career)] }));

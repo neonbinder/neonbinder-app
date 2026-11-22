@@ -14,7 +14,7 @@ import InlineNewTeam from "./InlineNewTeam";
 import type { TidyWrite } from "./tidy-write";
 
 type Ctx = NonNullable<TidyCardContext>;
-type CareerEntry = { name: string; fromYear: number; toYear?: number };
+type CareerEntry = { name: string; fromYear: number; toYear?: number; wikidataId?: string };
 
 /** What a Wikidata career team resolved to in NeonBinder. */
 type Resolution =
@@ -202,6 +202,7 @@ export default function NewPlayerCareerRow({
                       formKey={`career:${player.playerId}:${key}`}
                       sportId={player.sportId}
                       initialName={e.name}
+                      carry={e.wikidataId ? { wikidataId: e.wikidataId } : undefined}
                       neededBy={player.name}
                       createLabel="Create team and add stint"
                       createAriaLabel={(full, creating) =>

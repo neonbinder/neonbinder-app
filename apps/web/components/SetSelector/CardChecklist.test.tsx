@@ -4602,21 +4602,17 @@ describe("CardChecklist — NEO-221 D12: names nobody reviewed", () => {
   });
 
   /**
-   * The cards ARE saved, so this is a NOTE on the success banner rather than a
-   * failure — but it is the only announcement that some of them landed with no
-   * player or team link at all.
+   * NEO-645: the old wizard left unreviewed names behind, so the banner said
+   * so. The walk opens next and answers them, so the banner keeps the count
+   * and nothing more.
    */
-  it("appends the unreviewed-names sentence to the commit banner", async () => {
+  it("keeps only the count on the commit banner when names are still unanswered", async () => {
     state.liveCandidates = { ready: 0, total: 0, cards: [] };
     mockResolveEntities.mockResolvedValue({
       unknownPlayers: [],
       unknownTeams: [],
       batchId: undefined,
     });
-    // A COUNT and nothing else: the names themselves stay on the cards
-    // (`pendingPlayerNames`/`pendingTeamNames`), which is where the attention
-    // walker's fixer reads them from. Shipping them back through the commit
-    // return as well would be a second copy that can only go stale.
     mockCommitChecklist.mockResolvedValue({ count: 2, unreviewedNameCount: 3 });
     mockDiscardCandidates.mockResolvedValue(undefined);
     mockFetchChecklist.mockResolvedValue({
@@ -4632,11 +4628,9 @@ describe("CardChecklist — NEO-221 D12: names nobody reviewed", () => {
     });
     await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
 
-    expect(
-      screen.getByText(
-        "Saved 2 cards. 3 names were not reviewed; those cards have no player/team link.",
-      ),
-    ).toBeTruthy();
+    expect(screen.getByText("Saved 2 cards.")).toBeTruthy();
+    expect(screen.queryByText(/not reviewed/)).toBeNull();
+    expect(screen.queryByText(/no player\/team link/)).toBeNull();
   });
 
   it("says nothing extra when every name was reviewed", async () => {

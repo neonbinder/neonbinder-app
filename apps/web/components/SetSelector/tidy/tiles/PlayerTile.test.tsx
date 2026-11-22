@@ -188,6 +188,129 @@ describe("PlayerTile", () => {
     expect(mutation("tidyNames.createPlayer")).toHaveBeenCalledWith({ cardId: CARD, name: "Jackson Merrill" });
   });
 
+  describe("Wikidata career teams (NEO-212)", () => {
+    const careerCtx = (over: Record<string, unknown> = {}) =>
+      context({
+        names: [
+          printedName({
+            row: nameRow({
+              enrichment: {
+                description: "American baseball outfielder",
+                careerTeams: [
+                  { name: "San Diego Padres", fromYear: 2024 },
+                  { name: "Salt Lake Bees", fromYear: 2022, toYear: 2023 },
+                ],
+              },
+            }),
+            ...over,
+          }),
+        ],
+      });
+
+    it("lists each career team with a ticked checkbox, oldest first", () => {
+      queryResults["players.nearMatches"] = [];
+      renderTile({ ctx: careerCtx() });
+      const group = screen.getByRole("group", { name: "Career teams to add:" });
+      const boxes = Array.from(group.querySelectorAll("input[type=checkbox]")) as HTMLInputElement[];
+      expect(boxes.map((b) => b.getAttribute("aria-label"))).toEqual([
+        "Include career team Salt Lake Bees (2022–2023)",
+        "Include career team San Diego Padres (2024–present)",
+      ]);
+      expect(boxes.every((b) => b.checked)).toBe(true);
+    });
+
+    it("creates with every team when nothing was unticked (no key sent)", async () => {
+      queryResults["players.nearMatches"] = [];
+      renderTile({ ctx: careerCtx() });
+      await act(async () => fireEvent.click(screen.getByRole("button", { name: "Add as new player" })));
+      expect(mutation("tidyNames.createPlayer")).toHaveBeenCalledWith({ cardId: CARD, name: "Jackson Merrill" });
+    });
+
+    it("sends the unticked team names with the create, and re-ticking takes one back", async () => {
+      queryResults["players.nearMatches"] = [];
+      renderTile({ ctx: careerCtx() });
+      const bees = screen.getByRole("checkbox", { name: "Include career team Salt Lake Bees (2022–2023)" });
+      const padres = screen.getByRole("checkbox", { name: "Include career team San Diego Padres (2024–present)" });
+      fireEvent.click(bees);
+      fireEvent.click(padres);
+      expect((bees as HTMLInputElement).checked).toBe(false);
+      fireEvent.click(padres);
+      expect((padres as HTMLInputElement).checked).toBe(true);
+      await act(async () => fireEvent.click(screen.getByRole("button", { name: "Add as new player" })));
+      expect(mutation("tidyNames.createPlayer")).toHaveBeenCalledWith({
+        cardId: CARD,
+        name: "Jackson Merrill",
+        excludedCareerTeamNames: ["Salt Lake Bees"],
+      });
+    });
+
+    it("one team with two stints unticks together (the server keys on the name)", async () => {
+      queryResults["players.nearMatches"] = [];
+      renderTile({
+        ctx: context({
+          names: [
+            printedName({
+              row: nameRow({
+                enrichment: {
+                  careerTeams: [
+                    { name: "Los Angeles Angels", fromYear: 2011, toYear: 2013 },
+                    { name: "Los Angeles Angels", fromYear: 2016 },
+                  ],
+                },
+              }),
+            }),
+          ],
+        }),
+      });
+      fireEvent.click(screen.getByRole("checkbox", { name: "Include career team Los Angeles Angels (2016–present)" }));
+      expect(
+        (screen.getByRole("checkbox", { name: "Include career team Los Angeles Angels (2011–2013)" }) as HTMLInputElement)
+          .checked,
+      ).toBe(false);
+      await act(async () => fireEvent.click(screen.getByRole("button", { name: "Add as new player" })));
+      expect(mutation("tidyNames.createPlayer")).toHaveBeenCalledWith({
+        cardId: CARD,
+        name: "Jackson Merrill",
+        excludedCareerTeamNames: ["Los Angeles Angels"],
+      });
+    });
+
+    it("shows no list for a lookup with no career", () => {
+      queryResults["players.nearMatches"] = [];
+      renderTile();
+      expect(screen.queryByRole("group", { name: "Career teams to add:" })).toBeNull();
+    });
+
+    it("names the player in each box when the card prints more than one name", () => {
+      queryResults["players.nearMatches"] = [];
+      renderTile({
+        row: card({ pendingPlayerNames: ["Jackson Merrill", "Fernando Tatis"] }),
+        ctx: context({
+          names: [
+            printedName({
+              row: nameRow({ enrichment: { careerTeams: [{ name: "San Diego Padres", fromYear: 2024 }] } }),
+            }),
+            printedName({
+              printed: "Fernando Tatis",
+              nameNormalized: "fernando tatis",
+              order: 1,
+              row: nameRow({
+                name: "Fernando Tatis",
+                enrichment: { careerTeams: [{ name: "San Diego Padres", fromYear: 2019 }] },
+              }),
+            }),
+          ],
+        }),
+      });
+      expect(
+        screen.getByRole("checkbox", { name: "Include career team San Diego Padres (2024–present) Jackson Merrill" }),
+      ).toBeTruthy();
+      expect(
+        screen.getByRole("checkbox", { name: "Include career team San Diego Padres (2019–present) Fernando Tatis" }),
+      ).toBeTruthy();
+    });
+  });
+
   it("'Not a player' answers notEntity for the name", async () => {
     queryResults["players.nearMatches"] = [];
     renderTile();

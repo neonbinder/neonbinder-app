@@ -126,6 +126,74 @@ describe("tidyNames.createPlayer — what the lookup's career becomes (was: a pl
     expect((await allOf(t, "teams")).map((x) => x.name)).toEqual(["Los Angeles Angels"]);
   });
 
+  test("a career team the operator unticked is left off the player (NEO-212 excludedCareerTeamNames)", async () => {
+    const t = newT();
+    const s = await openCard(t, "Mike Trout", {
+      careerTeams: [
+        { name: "Los Angeles Angels", fromYear: 2011 },
+        { name: "Salt Lake Bees", fromYear: 2010, toYear: 2010 },
+      ],
+    });
+    const angels = await seedTeam(t, s.sportId, { name: "Los Angeles Angels" });
+    await seedTeam(t, s.sportId, { name: "Salt Lake Bees" });
+
+    const { playerId } = await create(t, s.card._id, "Mike Trout", {
+      // Case, spacing and an accent do not matter: the shared name matcher decides.
+      excludedCareerTeamNames: ["  salt lake  BEES "],
+    });
+
+    expect((await playerRow(t, playerId))!.teamYears).toEqual([{ teamId: angels, fromYear: 2011 }]);
+    // The unticked team still exists; it is only off THIS player.
+    expect(await allOf(t, "teams")).toHaveLength(2);
+  });
+
+  test("unticking every career team creates a player with no teamYears", async () => {
+    const t = newT();
+    const s = await openCard(t, "Mike Trout", {
+      careerTeams: [{ name: "Los Angeles Angels", fromYear: 2011 }],
+    });
+    await seedTeam(t, s.sportId, { name: "Los Angeles Angels" });
+    const { playerId } = await create(t, s.card._id, "Mike Trout", {
+      excludedCareerTeamNames: ["Los Angeles Angels"],
+    });
+    expect((await playerRow(t, playerId))!.teamYears).toBeUndefined();
+  });
+
+  test("an unticked name that matches nothing is harmless; the career is untouched", async () => {
+    const t = newT();
+    const s = await openCard(t, "Mike Trout", {
+      careerTeams: [{ name: "Los Angeles Angels", fromYear: 2011 }],
+    });
+    const angels = await seedTeam(t, s.sportId, { name: "Los Angeles Angels" });
+    const { playerId } = await create(t, s.card._id, "Mike Trout", {
+      excludedCareerTeamNames: ["Somebody Else FC"],
+    });
+    expect((await playerRow(t, playerId))!.teamYears).toEqual([{ teamId: angels, fromYear: 2011 }]);
+  });
+
+  test("the unticked list is bounded and validated, and a refusal writes no player", async () => {
+    const t = newT();
+    const s = await openCard(t, "Mike Trout", {
+      careerTeams: [{ name: "Los Angeles Angels", fromYear: 2011 }],
+    });
+    await expect(
+      create(t, s.card._id, "Mike Trout", {
+        excludedCareerTeamNames: Array.from({ length: 65 }, (_, i) => `Team ${i}`),
+      }),
+    ).rejects.toThrow(/the limit is 64/);
+    await expect(
+      create(t, s.card._id, "Mike Trout", { excludedCareerTeamNames: ["   "] }),
+    ).rejects.toThrow(/has no name/);
+    // The refusal carries the length, never the name.
+    const long = "X".repeat(121);
+    const err = (await create(t, s.card._id, "Mike Trout", { excludedCareerTeamNames: [long] }).catch(
+      (e) => e,
+    )) as Error;
+    expect(String(err.message)).toMatch(/121 characters; the limit is 120/);
+    expect(String(err.message)).not.toContain(long);
+    expect(await allOf(t, "players")).toHaveLength(0);
+  });
+
   test("a career team matching a held SPLIT row (location + nickname) links to it and creates nothing", async () => {
     const t = newT();
     const s = await openCard(t, "Mike Trout", {

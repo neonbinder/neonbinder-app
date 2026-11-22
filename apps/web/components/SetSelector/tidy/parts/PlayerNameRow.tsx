@@ -203,6 +203,8 @@ function UnansweredPlayerName({
   const [createAnyway, setCreateAnyway] = useState(false);
   const [sportOpen, setSportOpen] = useState(false);
   const [addSetSport, setAddSetSport] = useState(false);
+  // NEO-212: the Wikidata career teams the operator unticked, by name.
+  const [excludedCareer, setExcludedCareer] = useState<ReadonlySet<string>>(new Set());
   const linkButtonRef = useRef<HTMLButtonElement | null>(null);
 
   useInlinePart(linkOpen, () => setLinkOpen(false));
@@ -287,6 +289,19 @@ function UnansweredPlayerName({
       "Couldn't link that player. Try again.",
     );
 
+  const toggleCareerTeam = (teamName: string) =>
+    setExcludedCareer((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(teamName)) next.add(teamName);
+      return next;
+    });
+  // Only names this row's lookup actually proposed, in the lookup's own spelling.
+  const excludedNames = Array.from(
+    new Set(
+      (enrichment?.careerTeams ?? []).map((ct) => ct.name).filter((n) => excludedCareer.has(n)),
+    ),
+  );
+
   const create = (oneNamePlayer: boolean) =>
     checking ? Promise.resolve(false) : write.run(
       () =>
@@ -294,6 +309,7 @@ function UnansweredPlayerName({
           cardId: row._id,
           name: name.printed,
           ...(oneNamePlayer ? { oneNamePlayer: true as const } : {}),
+          ...(excludedNames.length > 0 ? { excludedCareerTeamNames: excludedNames } : {}),
         }),
       "Couldn't add that player. Try again.",
     );
@@ -368,7 +384,14 @@ function UnansweredPlayerName({
       {creating && !linkOpen && !checking && (
         <div className="grid gap-1">
           <p className="text-sm text-ink wrap-anywhere">{`“${queryName}” is new to NeonBinder.`}</p>
-          <WikidataBlock status={status} enrichment={enrichment} />
+          <WikidataBlock
+            status={status}
+            enrichment={enrichment}
+            excludedCareerTeams={excludedCareer}
+            onToggleCareerTeam={toggleCareerTeam}
+            disabled={write.busy}
+            labelSuffix={suffix}
+          />
         </div>
       )}
 

@@ -86,6 +86,7 @@ import {
   playerBelongsToSport,
 } from "./players";
 import { rememberAliasesOnTeam } from "./rememberTeamAliases";
+import { MAX_TEAM_NAME_LENGTH } from "./teams";
 import { findSportForSelectorOption } from "./cardChecklist";
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { resolveTeamForSetYear } from "./lib/teamRow";
@@ -542,10 +543,45 @@ export const answerName = mutation({
   },
 });
 
+/** The Wikidata career teams the operator can untick is capped at the lookup's own 64. */
+export const MAX_EXCLUDED_CAREER_TEAM_NAMES = 64;
+
+/**
+ * NEO-212 / NEO-645: validate and normalize the Wikidata career-team labels the
+ * operator unticked before "Add as new player". Trims, drops a duplicate (by the
+ * shared name matcher, so "Montréal Expos" and "Montreal Expos" are one), and
+ * refuses a blank, an over-long or an over-many list. `ConvexError`, with the
+ * count or length and never the name: a team name reaches Sentry and the console.
+ * Returns the normalized keys.
+ */
+export function normalizeExcludedCareerTeamNames(names: ReadonlyArray<string>): Set<string> {
+  if (names.length > MAX_EXCLUDED_CAREER_TEAM_NAMES) {
+    throw new ConvexError(
+      `${names.length} career teams were unticked; the limit is ${MAX_EXCLUDED_CAREER_TEAM_NAMES}.`,
+    );
+  }
+  const keys = new Set<string>();
+  for (const raw of names) {
+    const name = raw.trim().replace(/\s+/g, " ");
+    if (name.length === 0) throw new ConvexError("An unticked career team has no name.");
+    if (name.length > MAX_TEAM_NAME_LENGTH) {
+      throw new ConvexError(
+        `A team name is ${name.length} characters; the limit is ${MAX_TEAM_NAME_LENGTH}.`,
+      );
+    }
+    keys.add(normalizeEntityName(name));
+  }
+  return keys;
+}
+
 /**
  * Add as new player. Creates the player from the row's lookup (career teams
  * matched, never created: NEO-236), then answers exactly as a link would, and
  * records `newPlayerCareer` on THIS card only.
+ *
+ * `excludedCareerTeamNames` (additive, NEO-212): the Wikidata career teams the
+ * operator unticked. Matching is by the shared name matcher, so an unticked
+ * stint never reaches `teamYears`.
  *
  * `addSetSport` (additive): the player is created in the row's sport and also
  * plays the set's (NEO-313).
@@ -556,6 +592,7 @@ export const createPlayer = mutation({
     name: v.string(),
     oneNamePlayer: v.optional(v.literal(true)),
     addSetSport: v.optional(v.literal(true)),
+    excludedCareerTeamNames: v.optional(v.array(v.string())),
   },
   returns: v.object({ playerId: v.id("players"), answerGen: v.number() }),
   handler: async (ctx, args) => {
@@ -574,6 +611,7 @@ export const createPlayer = mutation({
     // NEO-463: a one-word name that is part of a fuller-named player is refused
     // unless the operator confirmed a one-name player. Nothing is written first.
     await assertNotNameFragment(ctx, name, row.sportId, args.oneNamePlayer);
+    const excluded = normalizeExcludedCareerTeamNames(args.excludedCareerTeamNames ?? []);
 
     const enrichment = row.enrichment;
     const teamYearByKey = new Map<
@@ -581,6 +619,8 @@ export const createPlayer = mutation({
       { teamId: Id<"teams">; fromYear: number; toYear?: number }
     >();
     for (const ct of enrichment?.careerTeams ?? []) {
+      // NEO-212: a team the operator unticked is never matched.
+      if (excluded.has(normalizeEntityName(ct.name))) continue;
       // Match only (NEO-236): a stint at a team nobody reviewed is dropped, not invented.
       const { teamId } = await resolveTeamForSetYear(ctx, row.sportId, ct.name, ct.fromYear);
       if (!teamId) continue;
