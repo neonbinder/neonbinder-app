@@ -181,11 +181,21 @@ vi.mock("./CardLeagueRow", () => ({ default: () => null }));
 // stand-in makes "the walk opened" observable without its queries, and shows
 // the URL's own position so a test can see which card the checklist asked for.
 vi.mock("./tidy/TidyUpWalk", () => ({
-  default: ({ onClose, title }: { onClose: () => void; title?: string }) => (
+  default: ({
+    onClose,
+    title,
+    setNoTeam,
+  }: {
+    onClose: () => void;
+    title?: string;
+    setNoTeam?: boolean;
+  }) => (
     <div role="dialog" aria-label={title ?? "Tidy up stand-in"}>
       <button type="button" onClick={onClose}>
         Close the walk
       </button>
+      {/* NEO-639 (decision A): what the checklist tells the walk about the set's team default. */}
+      <p>{`Set No Team: ${setNoTeam ? "yes" : "no"}`}</p>
     </div>
   ),
 }));
@@ -3264,6 +3274,28 @@ describe("CardChecklist — NEO-102 attention count and walker (NEO-335: one 'N 
     );
 
     expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
+  describe("NEO-639 (decision A): the set's own No Team reaches the walk", () => {
+    it("under a No Team set the walk is told the set says No Team", () => {
+      state.variantRow = { value: "Test Set", noTeamDefault: { setAt: 1, setByUserId: "u" } };
+      renderChecklist();
+      fireEvent.click(needsYou());
+      expect(screen.getByText("Set No Team: yes")).toBeTruthy();
+    });
+
+    it("under a set with no team default, or a set-level team, it is not", () => {
+      renderChecklist();
+      fireEvent.click(needsYou());
+      expect(screen.getByText("Set No Team: no")).toBeTruthy();
+    });
+
+    it("a set-level TEAM is not a No Team", () => {
+      state.variantRow = { value: "Test Set", teamIds: ["team-set"] };
+      renderChecklist();
+      fireEvent.click(needsYou());
+      expect(screen.getByText("Set No Team: no")).toBeTruthy();
+    });
   });
 
   it("closing the walk puts the pill back, and the walk is gone", () => {

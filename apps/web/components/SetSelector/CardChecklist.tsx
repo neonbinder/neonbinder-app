@@ -3832,6 +3832,10 @@ export default function CardChecklist({
           season={faceHeader.season}
           variantName={faceHeader.variantName}
           variantKind={faceHeader.variantKind}
+          // NEO-639 (decision A): under the set's own "No Team" the Team tile
+          // offers a card's teams and preselects none, and Apply to all offers
+          // nothing: the set has answered for every card.
+          setNoTeam={setIsNoTeam}
           title={tidyTitle}
           cards={cards}
           // a11y: the durable restore target, because the control that opened

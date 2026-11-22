@@ -124,6 +124,64 @@ describe("linking a pending player name fills the team the career gives", () => 
     }
   });
 
+  test("a lookup that never answered is not a claim: a card whose team check gave up is filled", async () => {
+    const t = newT();
+    const { w, dodgers, player } = await world(t, (_w, d) => [{ teamId: d, fromYear: 2024 }]);
+    const id = await t.run((ctx) =>
+      printCard(ctx, w, {
+        number: "1",
+        printed: [{ kind: "player", name: NAME }],
+        extra: { teamCheckDoneAt: 1, teamCheckOutcome: "gaveUp" },
+      }),
+    );
+    await answer(t, id, player);
+    const card = await get(t, id);
+    expect(card?.teamOnCardIds).toEqual([dodgers]);
+    expect(card?.tidyChecks).toContainEqual({ kind: "teamFill", teamIds: [dodgers], reason: "career" });
+  });
+
+  test("rule 8: a card the publisher checklist answered (teamCheckOutcome checklist) is held back", async () => {
+    const t = newT();
+    const { w, player } = await world(t, (_w, d) => [{ teamId: d, fromYear: 2024 }]);
+    const id = await t.run((ctx) =>
+      printCard(ctx, w, {
+        number: "1",
+        printed: [{ kind: "player", name: NAME }],
+        extra: { teamCheckDoneAt: 1, teamCheckOutcome: "checklist" },
+      }),
+    );
+    await answer(t, id, player);
+    const card = await get(t, id);
+    expect(card?.playerIds).toEqual([player]);
+    expect(card?.teamOnCardIds).toBeUndefined();
+    expect(card?.tidyChecks?.some((c) => c.kind === "teamFill") ?? false).toBe(false);
+  });
+
+  test("NEO-639 (decision A): under the set's own No Team the career fills nothing, on the open card or the fan-out's", async () => {
+    const t = newT();
+    const { w, dodgers, player } = await world(t, (_w, d) => [{ teamId: d, fromYear: 2024 }]);
+    await t.run((ctx) => ctx.db.patch(w.base, { noTeamDefault: { setAt: 1, setByUserId: "op" } }));
+    const [open, other] = await t.run(async (ctx) => [
+      await printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: NAME }] }),
+      await printCard(ctx, w, { number: "2", printed: [{ kind: "player", name: NAME }] }),
+    ]);
+    await answer(t, open, player);
+    await drainScheduled(t);
+    for (const id of [open, other]) {
+      const card = await get(t, id);
+      expect(card?.playerIds).toEqual([player]);
+      expect(card?.teamOnCardIds).toBeUndefined();
+      expect(card?.tidyChecks?.some((c) => c.kind === "teamFill") ?? false).toBe(false);
+    }
+    // Control: the same answer under a set with no team default fills.
+    await t.run((ctx) => ctx.db.patch(w.base, { noTeamDefault: undefined }));
+    const control = await t.run((ctx) =>
+      printCard(ctx, w, { number: "3", printed: [{ kind: "player", name: NAME }] }),
+    );
+    await answer(t, control, player);
+    expect((await get(t, control))?.teamOnCardIds).toEqual([dodgers]);
+  });
+
   test("a card that already has a team keeps it", async () => {
     const t = newT();
     const { w, angels, player } = await world(t, (_w, d) => [{ teamId: d, fromYear: 2020 }]);

@@ -155,21 +155,78 @@ export function outcomeHeading(outcome: TeamCheckOutcome | undefined, hasHint: b
   return null;
 }
 
-/** The line over the career chips. */
+/**
+ * What else decides the line over the career chips (NEO-639).
+ *
+ *  - `tie`: a player's window holds more than one team and no rule breaks the
+ *    tie, so nothing is preselected;
+ *  - `setNoTeam`: the set's own team default is "No Team", so a career team is
+ *    offered and never preselected over the set's answer.
+ */
+export type CareerHeadingFacts = { tie?: boolean; setNoTeam?: boolean };
+
+/**
+ * The line over the career chips. Precedence, first that holds: the whole
+ * career because no stint covers the year, a tie in the window, no year at
+ * all; then, for a team that is in the window, the listing disagreeing, the
+ * set's No Team, and last the plain "Suggested". Each line promises only what
+ * the tile does.
+ */
 export function careerHeading(
   inSetYear: boolean,
   listingDisagrees: boolean,
   uncoveredSetYear?: number,
+  facts: CareerHeadingFacts = {},
 ): string {
   if (!inSetYear) {
-    return uncoveredSetYear !== undefined
-      ? `No ${uncoveredSetYear} team on file. Here's the whole career, so pick the one on the card.`
-      : "No year on this set. Here's the whole career, so pick the one on the card.";
+    if (uncoveredSetYear !== undefined) {
+      return `No ${uncoveredSetYear} team on file. Here's the whole career, so pick the one on the card.`;
+    }
+    if (facts.tie) {
+      return "From the career. More than one team that season, so pick the one on the card.";
+    }
+    return "No year on this set. Here's the whole career, so pick the one on the card.";
   }
   if (listingDisagrees) {
     return "From the career. The listing names a different team, so pick the one on the card.";
   }
+  if (facts.setNoTeam) {
+    return "From the career. This set says No Team, so pick one only if it's on the card.";
+  }
   return "Suggested from career history.";
+}
+
+/**
+ * NEO-639 — one player's years with one team, as a chip prints them. Several
+ * stints at the team merge where they overlap or touch ("2015–2017" and
+ * "2018–2019" read "2015–2019"), oldest first, separate spans joined ", ". Each
+ * span reads as `stintYears` does: "2024–" when open, "2026" for one season. An
+ * undated stint prints nothing; an end before its start (bad data) reads as the
+ * years between the two, never as nothing.
+ */
+export function mergedStintYears(stints: ReadonlyArray<{ fromYear?: number; toYear?: number }>): string {
+  const spans: Array<{ from: number; to: number }> = [];
+  for (const s of stints) {
+    if (s.fromYear === undefined || !Number.isFinite(s.fromYear)) continue;
+    if (s.toYear !== undefined && !Number.isFinite(s.toYear)) continue;
+    spans.push(
+      s.toYear === undefined
+        ? { from: s.fromYear, to: Number.POSITIVE_INFINITY }
+        : { from: Math.min(s.fromYear, s.toYear), to: Math.max(s.fromYear, s.toYear) },
+    );
+  }
+  spans.sort((a, b) => a.from - b.from || a.to - b.to);
+  const merged: Array<{ from: number; to: number }> = [];
+  for (const span of spans) {
+    const last = merged[merged.length - 1];
+    if (last && span.from <= last.to + 1) last.to = Math.max(last.to, span.to);
+    else merged.push({ ...span });
+  }
+  return merged
+    .map(({ from, to }) =>
+      stintYears({ fromYear: from, ...(to === Number.POSITIVE_INFINITY ? {} : { toYear: to }) }),
+    )
+    .join(", ");
 }
 
 // ── The Career tile (ported from career-check.ts, NEO-591) ──

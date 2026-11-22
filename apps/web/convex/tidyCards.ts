@@ -71,6 +71,7 @@ import {
 } from "./tidyCardWrites";
 import { careerVerdictFor, newCareerVerdictCache, type CareerVerdictCache } from "./lib/careerVerdict";
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
+import { teamDefaultOf } from "./lib/selectorTeams";
 import { queueRetitledCardNow } from "./listingTitleRequeue";
 import { recheckCareerGaps } from "./tidyCareerGap";
 import { listingInputsForStoredCard } from "./storedCardTitle";
@@ -619,7 +620,8 @@ export const pickSourceValuePage = internalMutation({
  * skips and counts any it refuses. A card is written only when ALL hold:
  *  - it carries exactly one player, the same player as `sourceCardId`;
  *  - it has no teams, no pending team names, no `bscTeamName`, no checklist
- *    claim, no unsettled or chosen teams disagreement, and no No-team stamp;
+ *    claim, no unsettled or chosen teams disagreement, and no No-team stamp,
+ *    and its set's own team default is not "No Team" (NEO-639, decision A);
  *  - `careerTeamVerdict` / `stintCoversWindow` (`lib/teamFill.ts`) over the
  *    player's stints gives EXACTLY `teamId` for that card's year (this is the
  *    fill rule, not the career-gap rule).
@@ -680,12 +682,15 @@ export const applyTeamToPlayerCards = mutation({
 
 /** Per-call reads `cardTakesTeamFill` shares across cards. */
 type TeamFillFacts = {
+  /** By leaf id: the set's own team default is "No Team" (NEO-639 decision A). */
+  noTeamLeaf: Map<string, boolean>;
   stints: Map<string, Array<{ key: string; fromYear?: number; toYear?: number }>>;
   years: Map<string, number | undefined>;
   /** The set's leagues and the career teams' ranks (`lib/careerVerdict`). */
   verdict: CareerVerdictCache;
 };
 const newTeamFillFacts = (): TeamFillFacts => ({
+  noTeamLeaf: new Map(),
   stints: new Map(),
   years: new Map(),
   verdict: newCareerVerdictCache(),
@@ -717,6 +722,15 @@ export async function cardTakesTeamFill(
   if ((card.sourceDisagreements ?? []).some((d) => d.field === "teams")) return false;
 
   const leafKey = card.selectorOptionId as string;
+  // NEO-639 (decision A): the set's own "No Team" has answered for every card, so
+  // no card of it takes a team the career suggests.
+  if (!facts.noTeamLeaf.has(leafKey)) {
+    facts.noTeamLeaf.set(
+      leafKey,
+      teamDefaultOf(await ctx.db.get(card.selectorOptionId)).kind === "noTeam",
+    );
+  }
+  if (facts.noTeamLeaf.get(leafKey)) return false;
   if (!facts.years.has(leafKey)) {
     facts.years.set(leafKey, await findSetYearForSelectorOption(ctx, card.selectorOptionId));
   }

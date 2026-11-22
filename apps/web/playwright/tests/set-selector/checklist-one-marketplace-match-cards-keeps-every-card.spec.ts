@@ -40,6 +40,15 @@
 // reference catalogue. With the NCAA in the set's leagues the Badgers rank first and are
 // PRE-SELECTED on his no-team card; the club, same years, is offered and not selected.
 //
+// NEEDS A RUN (NEO-639 merged into NEO-645). Main made the FIRST sync's lookup fail on purpose
+// (`bscFake.setFaults([bscFault.answersUnavailable(BSC_PATH.cardListing)])` before the fetch,
+// `bscFake.clear()` before the re-sync) to prove a lookup that never answered holds no pre-fill
+// back. That is not folded in here: on the walk a card whose lookup failed waits for the lookup
+// (it is not a stop, `isAwaitingTeamLookup`), so STEP 6's pink Team tile for LIVE_PLAYER's card
+// and the `bscLookupOutcome("answered")` annotation would not read the same. The claim is proved
+// on the walk by checklist-fetch-bsc-429-cooldown-... (#7 filled from a 429'd lookup) and by
+// tidyTeamFillAgreement.test.ts; what is added here is the years on the unselected chip (STEP 11).
+//
 // Sole writer of the Roanoke Express ECHL set; fresh-only (it commits the checklist). Re-seed
 // before re-running.
 import type { Page } from "@playwright/test";
@@ -545,6 +554,10 @@ test(
     await expect(teamChip(page, team)).toBeVisible();
     await expect(teamChip(page, COLLEGE_TEAM)).toHaveAttribute("aria-pressed", "true");
     await expect(teamChip(page, team)).toHaveAttribute("aria-pressed", "false");
+    // NEO-639: the chip the pre-fill passes over says his years with that club ("<team> · <player>
+    // 1994–1996"), so the two offered teams can be told apart; the pre-filled one says who played there.
+    await expect(teamChip(page, team)).toContainText("1994–1996");
+    await expect(teamChip(page, COLLEGE_TEAM)).toContainText(`${LIVE_PLAYER} played here`);
     await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk, a league-ranked team pre-fill" });
     // The operator picks the club instead, and saves it: the card's last pink goes, and Save & next
     // (the career is only blue) moves on.

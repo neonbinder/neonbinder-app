@@ -1019,6 +1019,62 @@ describe("suggestedTeamsForCard", () => {
     expect(suggestions.map((s) => [s.teamId, s.playerName])).toEqual([[reds, "Pete Rose"]]);
   });
 
+  test("NEO-639: a tie in the window flags both teams, preselects neither, and a lone co-player is not preselected over it", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t, { season: "2024" });
+    const angels = await insertTeam(t, sportId, "Los Angeles Angels");
+    const dodgers = await insertTeam(t, sportId, "Los Angeles Dodgers");
+    const reds = await insertTeam(t, sportId, "Cincinnati Reds");
+    // Angels to 2023, Dodgers from 2024: both reach the 2023-2024 window.
+    const ohtani = await insertPlayer(t, sportId, "Shohei Ohtani", [
+      { teamId: angels, fromYear: 2018, toYear: 2023 },
+      { teamId: dodgers, fromYear: 2024 },
+    ]);
+    const bench = await insertPlayer(t, sportId, "Johnny Bench", [{ teamId: reds, fromYear: 2024 }]);
+
+    // Alone, the tied player is offered whole and flagged; nothing is preselected.
+    const solo = await insertCard(t, leafId, { cardNumber: "1", playerIds: [ohtani] });
+    const alone = await asAdmin.query(api.cardChecklist.suggestedTeamsForCard, { cardId: solo });
+    expect(alone.map((s) => [s.teamId, s.inSetYear, s.tieInWindow]).sort()).toEqual(
+      [
+        [angels, false, true],
+        [dodgers, false, true],
+      ].sort(),
+    );
+
+    // With a co-player whose one team is not tied, the card is still asked as a
+    // whole: his team is offered, unflagged and unselected, and the tied
+    // player's are flagged. (The commit fills a combo card only when every
+    // player answers; the tile follows it.)
+    const combo = await insertCard(t, leafId, { cardNumber: "2", playerIds: [ohtani, bench] });
+    const both = await asAdmin.query(api.cardChecklist.suggestedTeamsForCard, { cardId: combo });
+    expect(both.filter((s) => s.inSetYear)).toEqual([]);
+    expect(both.find((s) => s.teamId === reds)).toMatchObject({ playerName: "Johnny Bench", inSetYear: false });
+    expect(both.find((s) => s.teamId === reds)).not.toHaveProperty("tieInWindow");
+    expect(both.filter((s) => s.tieInWindow).map((s) => s.teamId).sort()).toEqual([angels, dodgers].sort());
+  });
+
+  test("NEO-639: a player's one team (or none in the year) is never flagged as a tie", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t, { season: "2024" });
+    const reds = await insertTeam(t, sportId, "Cincinnati Reds");
+    const mets = await insertTeam(t, sportId, "New York Mets");
+    const one = await insertPlayer(t, sportId, "Lone Teamer", [{ teamId: reds, fromYear: 2020 }]);
+    const retired = await insertPlayer(t, sportId, "Retired Teamer", [
+      { teamId: reds, fromYear: 1990, toYear: 1995 },
+      { teamId: mets, fromYear: 1996, toYear: 2000 },
+    ]);
+    const a = await insertCard(t, leafId, { cardNumber: "1", playerIds: [one] });
+    const b = await insertCard(t, leafId, { cardNumber: "2", playerIds: [retired] });
+    for (const cardId of [a, b]) {
+      const suggestions = await asAdmin.query(api.cardChecklist.suggestedTeamsForCard, { cardId });
+      expect(suggestions.length).toBeGreaterThan(0);
+      for (const s of suggestions) expect(s).not.toHaveProperty("tieInWindow");
+    }
+  });
+
   test("a set-year stint at a shared name is in the set year and still era-labelled", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);

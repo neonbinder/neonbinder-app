@@ -32,6 +32,15 @@
 // fewer BSC calls and smaller recordings. Here the point is the per-card lookup, which a
 // checklist file would skip.
 //
+// NEEDS A RUN (NEO-639 merged into NEO-645). On main the old Teams step pre-filled FOUR cards from
+// a lookup that never answered (#7 Kevin Brown, #9 and #P2 Sergei Kharin, #16 Mike Murray) and 28
+// cards waited. The walk has no Teams step: the commit's own fill and the fill when a name is
+// answered write a team, so only the exactly-one-match player (#7) is filled at the save and 31
+// wait, which is what this spec asserts (WAITING). If a run shows #9, #P2 or #16 filled too, the
+// count moves by the number of cards filled and the expectation below moves with it. The claim
+// itself, a lookup that never answered holds no pre-fill back, is proved here by #7 and by
+// convex/tidyTeamFillAgreement.test.ts.
+//
 // WHAT IT PROVES, IN ORDER:
 //   0. The page's own "Waiting on BuySportsCards" line (CardChecklist's sync wait line)
 //      shows while a BSC call is held: the spec holds the fetch's one catalogue read

@@ -24,4 +24,9 @@ export type TidyTileProps = {
   leafCards: readonly TidyRow[];
   /** For copy, e.g. the title tile. */
   setName: string;
+  /**
+   * NEO-639 (decision A): the checklist's own team default is "No Team". Optional:
+   * a tile rendered alone reads it as the set having no such answer.
+   */
+  setNoTeam?: boolean;
 };

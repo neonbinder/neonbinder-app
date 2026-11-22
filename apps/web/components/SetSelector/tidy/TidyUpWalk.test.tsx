@@ -76,11 +76,11 @@ vi.mock("./tiles/TeamTile", async () => {
   return {
     // The shape of "No team on this card": the pressed button leaves the page,
     // and the tile says it was answered (what every real tile does).
-    default: function TeamTile() {
+    default: function TeamTile({ setNoTeam }: { setNoTeam?: boolean }) {
       const [answered, setAnswered] = useState(false);
       const onAnswered = useAnswered();
       return (
-        <div data-testid="tile-team">
+        <div data-testid="tile-team" data-set-no-team={setNoTeam ? "yes" : "no"}>
           {answered ? (
             <p>No team on this card: saved</p>
           ) : (
@@ -154,7 +154,10 @@ function UrlProbe() {
   return <output data-testid="url">{location.search}</output>;
 }
 
-function mount(cards: CardChecklistRow[], opts: { search?: string; onClose?: () => void } = {}) {
+function mount(
+  cards: CardChecklistRow[],
+  opts: { search?: string; onClose?: () => void; setNoTeam?: boolean } = {},
+) {
   const onClose = opts.onClose ?? vi.fn();
   const view = render(
     <MemoryRouter initialEntries={[`/${opts.search ?? "?tidy=first"}`]}>
@@ -165,6 +168,7 @@ function mount(cards: CardChecklistRow[], opts: { search?: string; onClose?: () 
         title="Tidy up 2024 Topps Chrome"
         cards={cards}
         onClose={onClose}
+        {...(opts.setNoTeam !== undefined ? { setNoTeam: opts.setNoTeam } : {})}
       />
     </MemoryRouter>,
   );
@@ -236,6 +240,18 @@ describe("opening", () => {
       "tile-title",
       "tile-more",
     ]);
+  });
+});
+
+describe("the set's own No Team (NEO-639, decision A)", () => {
+  it("reaches the Team tile when the checklist says so", async () => {
+    mount([pink("a", "1")], { setNoTeam: true });
+    expect((await screen.findByTestId("tile-team")).getAttribute("data-set-no-team")).toBe("yes");
+  });
+
+  it("is not told to the Team tile otherwise", async () => {
+    mount([pink("a", "1")]);
+    expect((await screen.findByTestId("tile-team")).getAttribute("data-set-no-team")).toBe("no");
   });
 });
 

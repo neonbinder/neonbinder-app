@@ -448,7 +448,11 @@ describe("NEO-212 — admin-gated reads still omit their audit fields", () => {
  * NEO-335 — `cardChecklist.teamSuggestionsForPreview` is an admin read over
  * players' careers. `publicFunctionAuth.test.ts` pins its gate; this pins the
  * other half: what an admin is answered carries the team, never the player
- * row's audit column or its raw career.
+ * row's audit column or the raw player row. NEO-639 lets one derived copy of
+ * the career through, `stints`: dated stints only, at teams already checked
+ * to be in the sport, capped, each entry exactly `{ teamId, fromYear, toYear? }`.
+ * The row's own `teamYears` (and any field a stint entry might grow) never
+ * reaches the wire.
  */
 describe("NEO-335 — the wizard's team suggestions are an admin read with no audit field", () => {
   test("teamSuggestionsForPreview answers an admin without shipping the player row's createdByUserId", async () => {
@@ -487,6 +491,15 @@ describe("NEO-335 — the wizard's team suggestions are an admin read with no au
     expect(wire).not.toContain("createdByUserId");
     expect(wire).not.toContain("clerk_some_operator");
     expect(wire).not.toContain("teamYears");
+    // NEO-639 — the dated copy is allowed, and it is only these three keys:
+    // a field added to a stint later has to come through this pin first.
+    const stints = result.players[0].stints ?? [];
+    expect(stints.length).toBeGreaterThan(0);
+    for (const stint of stints) {
+      const extra = Object.keys(stint).filter((k) => !["teamId", "fromYear", "toYear"].includes(k));
+      expect(extra).toEqual([]);
+    }
+    expect(stints).toEqual([{ teamId, fromYear: 1967, toYear: 1983 }]);
   });
 });
 

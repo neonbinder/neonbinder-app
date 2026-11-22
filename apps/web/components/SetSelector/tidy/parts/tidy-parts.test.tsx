@@ -10,6 +10,7 @@ import {
   linkedForText,
   teamLinkedForText,
   marketplaceHeading,
+  mergedStintYears,
   noStintText,
   outcomeHeading,
   playedHere,
@@ -52,6 +53,72 @@ describe("copy", () => {
     expect(stintYears({ fromYear: 2023, toYear: 2023 })).toBe("2023");
     expect(stintYears({ fromYear: 2011, toYear: 2018 })).toBe("2011–2018");
     expect(stintYears({})).toBe("");
+  });
+
+  describe("mergedStintYears (NEO-639): the years a chip prints", () => {
+    it("no dated stint prints nothing", () => {
+      expect(mergedStintYears([])).toBe("");
+      expect(mergedStintYears([{}, { toYear: 2020 }])).toBe("");
+    });
+
+    it("a closed stint prints its span; one season prints one year; an open stint runs on", () => {
+      expect(mergedStintYears([{ fromYear: 2024, toYear: 2026 }])).toBe("2024–2026");
+      expect(mergedStintYears([{ fromYear: 2026, toYear: 2026 }])).toBe("2026");
+      expect(mergedStintYears([{ fromYear: 2024 }])).toBe("2024–");
+    });
+
+    it("overlapping stints and stints that touch (next season) merge into one span", () => {
+      expect(mergedStintYears([{ fromYear: 2015, toYear: 2018 }, { fromYear: 2017, toYear: 2020 }])).toBe("2015–2020");
+      expect(mergedStintYears([{ fromYear: 2015, toYear: 2017 }, { fromYear: 2018, toYear: 2019 }])).toBe("2015–2019");
+    });
+
+    it("separate spans print oldest first, joined by a comma, whatever order they arrive in", () => {
+      expect(
+        mergedStintYears([{ fromYear: 2021, toYear: 2022 }, { fromYear: 2015, toYear: 2017 }]),
+      ).toBe("2015–2017, 2021–2022");
+    });
+
+    it("an open stint swallows a later closed one", () => {
+      expect(mergedStintYears([{ fromYear: 2020 }, { fromYear: 2022, toYear: 2023 }])).toBe("2020–");
+    });
+
+    it("an end before its start (bad data) still prints the years between them", () => {
+      expect(mergedStintYears([{ fromYear: 2020, toYear: 2018 }])).toBe("2018–2020");
+    });
+
+    it("a stint with a non-finite year is ignored, never printed as NaN", () => {
+      expect(mergedStintYears([{ fromYear: Number.NaN }, { fromYear: 2020, toYear: Number.NaN }])).toBe("");
+    });
+  });
+
+  describe("careerHeading (NEO-639)", () => {
+    it("a tie in the window says so; it is not 'no year on this set'", () => {
+      expect(careerHeading(false, false, undefined, { tie: true })).toBe(
+        "From the career. More than one team that season, so pick the one on the card.",
+      );
+      expect(careerHeading(false, false, undefined)).toBe(
+        "No year on this set. Here's the whole career, so pick the one on the card.",
+      );
+    });
+
+    it("a career with nothing in the year still says so first, even beside a tie", () => {
+      expect(careerHeading(false, false, 2025, { tie: true })).toBe(
+        "No 2025 team on file. Here's the whole career, so pick the one on the card.",
+      );
+    });
+
+    it("the set's No Team says the team is offered, not picked", () => {
+      expect(careerHeading(true, false, undefined, { setNoTeam: true })).toBe(
+        "From the career. This set says No Team, so pick one only if it's on the card.",
+      );
+    });
+
+    it("the listing disagreeing outranks the set's No Team; a plain suggestion has neither", () => {
+      expect(careerHeading(true, true, undefined, { setNoTeam: true })).toBe(
+        "From the career. The listing names a different team, so pick the one on the card.",
+      );
+      expect(careerHeading(true, false)).toBe("Suggested from career history.");
+    });
   });
 
   it("names a preselected player with the basis for it", () => {

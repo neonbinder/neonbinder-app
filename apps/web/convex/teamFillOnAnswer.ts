@@ -10,7 +10,9 @@
  * (`careerTeamVerdict`, the set year and the year before, every player on the
  * card answering, at most `MAX_CARD_TEAMS` teams) and the same rule 8: a card
  * a source named a team for, a pending team name, a "No team" stamp and a
- * disputed teams field are never filled.
+ * disputed teams field are never filled, and neither is any card of a set whose
+ * own team default is "No Team" (NEO-639, decision A). A lookup that never
+ * answered is missing data, not a claim: it holds nothing back.
  *
  * Career tier only. The stored-cards tier (the player's other cards under this
  * node) is a read of up to ~50 documents per player, which a fan-out page of 50
@@ -27,9 +29,12 @@ import { MAX_CARD_TEAMS } from "./features/cardAttention";
 import { planCardFill } from "./features/teamFillOnCommit";
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { careerVerdictFor, newCareerVerdictCache, type CareerVerdictCache } from "./lib/careerVerdict";
+import { teamDefaultOf } from "./lib/selectorTeams";
 
 export type FillReadCache = {
   years: Map<string, number | undefined>;
+  /** By leaf id: the set's own team default is "No Team" (NEO-639 decision A). */
+  noTeamLeaf: Map<string, boolean>;
   stints: Map<string, Array<{ key: string; fromYear?: number; toYear?: number }>>;
   teamSport: Map<string, Id<"selectorOptions"> | null>;
   /** The set's leagues and the career teams' ranks (`lib/careerVerdict`). */
@@ -38,6 +43,7 @@ export type FillReadCache = {
 
 export const newFillReadCache = (): FillReadCache => ({
   years: new Map(),
+  noTeamLeaf: new Map(),
   stints: new Map(),
   teamSport: new Map(),
   verdict: newCareerVerdictCache(),
@@ -83,6 +89,15 @@ export async function planFillOnAnswer(
   cache: FillReadCache,
 ): Promise<Array<Id<"teams">> | undefined> {
   const leafKey = card.selectorOptionId as string;
+  // NEO-639 (decision A): the set's own "No Team" has answered for every card; a
+  // career does not overrule it. Same rule as the commit's fill.
+  if (!cache.noTeamLeaf.has(leafKey)) {
+    cache.noTeamLeaf.set(
+      leafKey,
+      teamDefaultOf(await ctx.db.get(card.selectorOptionId)).kind === "noTeam",
+    );
+  }
+  if (cache.noTeamLeaf.get(leafKey)) return undefined;
   if (!cache.years.has(leafKey)) {
     cache.years.set(leafKey, await findSetYearForSelectorOption(ctx, card.selectorOptionId));
   }

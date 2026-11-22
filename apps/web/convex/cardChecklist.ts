@@ -1541,6 +1541,13 @@ export const suggestedTeamsForCard = query({
        * set has no resolvable year.
        */
       uncoveredSetYear: v.optional(v.number()),
+      /**
+       * NEO-639: true when the window itself holds more than one team for a
+       * player on the card (a trade, or two stints covering the set's year and
+       * the one before) and no rule breaks the tie, so the tile preselects
+       * nothing and says why. Absent otherwise (omitted, not false).
+       */
+      tieInWindow: v.optional(v.literal(true)),
     }),
   ),
   handler: async (ctx, args) => {
@@ -1575,6 +1582,7 @@ export const suggestedTeamsForCard = query({
       playerName: string;
       inSetYear: boolean;
       uncoveredSetYear?: number;
+      tieInWindow?: true;
     };
     const teamTextById = new Map<string, { name: string; label: string } | null>();
 
@@ -1612,6 +1620,8 @@ export const suggestedTeamsForCard = query({
       teamIds: Array<Id<"teams">>;
       answered: boolean;
       uncoveredSetYear?: number;
+      /** NEO-639: the window holds several teams and nothing breaks the tie. */
+      tieInWindow?: true;
     };
     const plans: PlayerPlan[] = [];
     const verdictCache = newCareerVerdictCache();
@@ -1669,6 +1679,7 @@ export const suggestedTeamsForCard = query({
           player,
           teamIds: verdict.candidates.filter((key) => windowKeys.includes(key)) as Array<Id<"teams">>,
           answered: false,
+          tieInWindow: true,
         });
       } else {
         // Nothing covers the window: the retired-player case. The career is
@@ -1702,6 +1713,7 @@ export const suggestedTeamsForCard = query({
           playerName: plan.player.name,
           inSetYear: preselects && plan.answered && i === 0,
           ...(plan.uncoveredSetYear !== undefined ? { uncoveredSetYear: plan.uncoveredSetYear } : {}),
+          ...(plan.tieInWindow ? { tieInWindow: true as const } : {}),
         });
       }
     }
@@ -1823,6 +1835,14 @@ export async function storedTierNodes(
   return { sportId, parallelOfNodeId, baseNodeId };
 }
 
+/**
+ * NEO-639 — how many of one player's DATED stints come back as `stints`, in
+ * the order the row holds them. Display only (the Teams step prints a
+ * player's years beside a team chip), so a career past this simply loses the
+ * years on its latest chips, never a chip.
+ */
+export const TEAM_SUGGESTION_MAX_STINTS = 48;
+
 const teamSuggestionTierValidator = v.union(
   v.literal("sameNode"),
   v.literal("parallelOf"),
@@ -1858,11 +1878,21 @@ type SuggestedTeam = {
   rank?: number;
 };
 
+type SuggestionStint = { teamId: Id<"teams">; fromYear: number; toYear?: number };
+
 type PlayerSuggestionResult = {
   playerId: Id<"players"> | null;
   answer: { tier: TeamSuggestionTier; teams: Array<SuggestedTeam> } | null;
   candidates: Array<SuggestedTeam>;
+  /** NEO-639 — see "Stints" on `teamSuggestionsForPreview`. Absent = none. */
+  stints?: Array<SuggestionStint>;
 };
+
+const suggestionStintValidator = v.object({
+  teamId: v.id("teams"),
+  fromYear: v.number(),
+  toYear: v.optional(v.number()),
+});
 
 /**
  * NEO-335 — per-player team evidence for the entity review wizard's Teams
@@ -1913,6 +1943,19 @@ type PlayerSuggestionResult = {
  * existing team (so it can be ranked). Nothing is created and nothing is
  * picked here.
  *
+ * ## Stints — the player's years, for the chips (NEO-639)
+ *
+ * Each player found also comes back with `stints`: his DATED career stints
+ * (`teamId`, `fromYear`, `toYear` when closed), in the order his row holds
+ * them, capped at `TEAM_SUGGESTION_MAX_STINTS`, at teams this call has already
+ * read and found in the set's sport (the career's first
+ * `TEAM_SUGGESTION_CAREER_TEAMS_READ` teams, and every team it suggests), so
+ * they cost no extra reads. Display
+ * only: the Teams step prints a player's years with a team beside every chip it
+ * does not pre-fill, so the operator can tell two choices apart. Undated stints
+ * are left out (they have no years to print). `stints` is absent when there
+ * are none, and for an entry with no player (an ambiguous or unknown name).
+ *
  * NEO-591: `locationNames` — a subset of `teamNames` that is ALSO read the
  * location way: the sport's teams whose location is the name ("Oklahoma", the
  * place of the Oklahoma Sooners, a name no row holds whole) join that name's
@@ -1962,6 +2005,8 @@ export const teamSuggestionsForPreview = query({
           }),
         ),
         candidates: v.array(suggestedTeamValidator),
+        /** NEO-639 — the player's dated stints, for display. See "Stints" above. */
+        stints: v.optional(v.array(suggestionStintValidator)),
       }),
     ),
     /** One entry per `teamNames` input, in order; empty when none were asked. */
@@ -2171,7 +2216,29 @@ export const teamSuggestionsForPreview = query({
         const read = await readTeam(teamId);
         if (read) candidates.push(read.team);
       }
-      const result: PlayerSuggestionResult = { playerId, answer, candidates };
+      // NEO-639 — the years the chips print. The career the window just read,
+      // dated stints only, in the row's order, and only at a team already
+      // read and found in this sport (`teamCache`: every team a chip can show
+      // has been through it by now). No reads.
+      const stints: Array<SuggestionStint> = [];
+      for (const entry of usablePlayer?.teamYears ?? []) {
+        if (stints.length >= TEAM_SUGGESTION_MAX_STINTS) break;
+        if (entry.fromYear === undefined) continue;
+        if (!teamCache.get(entry.teamId)) continue;
+        stints.push({
+          teamId: entry.teamId,
+          fromYear: entry.fromYear,
+          ...(entry.toYear !== undefined ? { toYear: entry.toYear } : {}),
+        });
+      }
+      const result: PlayerSuggestionResult = {
+        playerId,
+        answer,
+        candidates,
+        // Absent rather than empty: most callers never print years, and an
+        // answer with none stays the shape it was before NEO-639.
+        ...(stints.length > 0 ? { stints } : {}),
+      };
       byPlayerId.set(playerId, result);
       return result;
     };

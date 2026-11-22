@@ -49,10 +49,20 @@ const NO_CONTEXT_YET = {
  * is guarded twice. The client only PROPOSES the cards that look alike from the
  * checklist it holds; `tidyCards.applyTeamToPlayerCards` re-checks every one
  * (same single player, no team claim from any source, the career names exactly
- * this team for that card's year) and skips the rest. Rule 8: a data claim
+ * this team for that card's year) and skips the rest. Under the set's own "No Team"
+ * (`setNoTeam`, NEO-639 decision A) it is not offered at all: the server takes no
+ * card of such a set, and the chips preselect nothing. Rule 8: a data claim
  * holds back a guess, so a card a source named a team for is never proposed.
  */
-export default function TeamTile({ row, context, attention, leafId, sportId, leafCards }: TidyTileProps) {
+export default function TeamTile({
+  row,
+  context,
+  attention,
+  leafId,
+  sportId,
+  leafCards,
+  setNoTeam = false,
+}: TidyTileProps) {
   const write = useTidyWrite();
   const answered = useAnswered();
   const updateCard = useMutation(api.selectorOptions.updateCard);
@@ -139,7 +149,9 @@ export default function TeamTile({ row, context, attention, leafId, sportId, lea
   const playerId = row.playerIds?.length === 1 ? row.playerIds[0] : undefined;
   const sourceTeamId = teamsOnCard.length === 1 && !open ? teamsOnCard[0] : undefined;
   const proposed =
-    playerId && sourceTeamId
+    // Under the set's own "No Team" the server takes no card (NEO-639 decision A),
+    // so none is offered: the count stays honest.
+    playerId && sourceTeamId && !setNoTeam
       ? leafCards.filter((c) => proposesTeam(c, row._id, playerId)).slice(0, APPLY_PROPOSE_MAX)
       : [];
   const playerName = ctx.players.find((p) => p.playerId === playerId)?.name;
@@ -210,6 +222,7 @@ export default function TeamTile({ row, context, attention, leafId, sportId, lea
           leafId={leafId}
           players={ctx.players}
           write={write}
+          setNoTeam={setNoTeam}
         />
       )}
 
@@ -237,7 +250,7 @@ export default function TeamTile({ row, context, attention, leafId, sportId, lea
             >
               {teamsOnCard.length === 0 ? "+ Add team" : "+ Another team"}
             </NeonButton>
-            {sourceTeamId && playerName && (
+            {sourceTeamId && playerName && !setNoTeam && (
               <ApplyToAllButton
                 count={proposed.length}
                 label={

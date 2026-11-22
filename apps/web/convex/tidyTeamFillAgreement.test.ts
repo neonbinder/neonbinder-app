@@ -53,7 +53,14 @@ afterEach(async () => {
 
 type Stint = { team: "A" | "B"; fromYear?: number; toYear?: number };
 
-async function commitOne(opts: { year: string; stints: Stint[] }) {
+async function commitOne(opts: {
+  year: string;
+  stints: Stint[];
+  /** NEO-639 (decision A): the set's own team default is "No Team". */
+  setNoTeam?: boolean;
+  /** How the fetch-time team lookup for the card ended (NEO-639: `failed` is missing data, not a claim). */
+  teamLookup?: "failed";
+}) {
   const t = convexTest(schema, modules);
   live.push(t);
   const world = await t.run(async (ctx) => {
@@ -70,6 +77,9 @@ async function commitOne(opts: { year: string; stints: Stint[] }) {
         ...(s.toYear !== undefined ? { toYear: s.toYear } : {}),
       })),
     );
+    if (opts.setNoTeam) {
+      await ctx.db.patch(w.base, { noTeamDefault: { setAt: 1, setByUserId: "op" } });
+    }
     return { w, a, b, player };
   });
   await t.withIdentity(ADMIN).action(api.selectorOptions.commitCardChecklist, {
@@ -90,6 +100,7 @@ async function commitOne(opts: { year: string; stints: Stint[] }) {
         cardVariation: undefined,
         platformData: { bsc: { ref: "ref-1" } },
         unmatched: undefined,
+        ...(opts.teamLookup ? { teamLookup: opts.teamLookup } : {}),
       },
     ] as never,
   });
@@ -107,6 +118,33 @@ async function commitOne(opts: { year: string; stints: Stint[] }) {
 
 const preselected = (tile: Array<{ teamId: Id<"teams">; inSetYear: boolean }>) =>
   tile.filter((s) => s.inSetYear).map((s) => s.teamId);
+
+describe("NEO-639: a missing lookup is not a claim; the set's own No Team is", () => {
+  const oneTeam: Stint[] = [{ team: "B", fromYear: 2024 }];
+
+  test("a card whose team lookup failed is filled from the career like any other, and the tile preselects the same team", async () => {
+    const { world, card, tile } = await commitOne({ year: "2024", stints: oneTeam, teamLookup: "failed" });
+    expect(card.teamOnCardIds).toEqual([world.b]);
+    expect(card.tidyChecks).toContainEqual({ kind: "teamFill", teamIds: [world.b], reason: "career" });
+    expect(preselected(tile)).toEqual([world.b]);
+  });
+
+  test("under the set's own No Team the commit writes no team and no note, though the career gives exactly one", async () => {
+    const { card } = await commitOne({ year: "2024", stints: oneTeam, setNoTeam: true });
+    expect(card.teamOnCardIds ?? []).toEqual([]);
+    expect(card.tidyChecks?.some((c) => c.kind === "teamFill") ?? false).toBe(false);
+  });
+
+  test("the control: the same card in a set with no team default is filled", async () => {
+    const { world, card } = await commitOne({ year: "2024", stints: oneTeam });
+    expect(card.teamOnCardIds).toEqual([world.b]);
+  });
+
+  test("under the set's own No Team a failed lookup still fills nothing (the set's answer is not overruled)", async () => {
+    const { card } = await commitOne({ year: "2024", stints: oneTeam, setNoTeam: true, teamLookup: "failed" });
+    expect(card.teamOnCardIds ?? []).toEqual([]);
+  });
+});
 
 describe("the tile preselects exactly what the commit writes", () => {
   test("Angels 2018-2023 and Dodgers 2024-: a tie in the 2023-2024 window, nothing written, both offered, none preselected", async () => {
@@ -274,7 +312,7 @@ describe("the set's leagues break a window tie", () => {
           stripped,
           world.player,
           teamId,
-          { stints: new Map(), years: new Map(), verdict: newCareerVerdictCache() },
+          { noTeamLeaf: new Map(), stints: new Map(), years: new Map(), verdict: newCareerVerdictCache() },
         );
       return { badgers: await read(world.badgers), express: await read(world.express) };
     });

@@ -11,7 +11,7 @@ import EntityLinkSearch from "../../EntityLinkSearch";
 import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
 import type { TidyCardContext, TidyRow } from "../tile-types";
-import { careerHeading, marketplaceHeading, outcomeHeading, playedHere, stintYears } from "./copy";
+import { careerHeading, marketplaceHeading, mergedStintYears, outcomeHeading, playedHere } from "./copy";
 import InlineNewTeam from "./InlineNewTeam";
 import type { TidyWrite } from "./tidy-write";
 
@@ -22,6 +22,8 @@ type TeamChip = {
   label: string;
   playerNames: string[];
   inSetYear: boolean;
+  /** A player's window holds several teams and nothing breaks the tie (NEO-639). */
+  tie?: boolean;
 };
 
 /**
@@ -33,12 +35,18 @@ type TeamChip = {
  *
  *  - The listing's team (`bscTeamName`) is the listing's CLAIM, shown as the
  *    rows NB holds under that name. It is never written as NB data.
- *  - A career chip is preselected only when a stint COVERS the set's year, and
- *    never when the listing names a team the career does not (rule 8: a data
- *    claim holds back a guess). A lookup that failed or never ran is not a
- *    claim: with no listing name, the career pre-fills as usual.
- *  - A chip that is not preselected carries the player's years with that team,
- *    so the operator can choose.
+ *  - A career chip is preselected only when the pre-fill criteria give exactly
+ *    that team (`suggestedTeamsForCard`'s `inSetYear`: the commit's own verdict,
+ *    one team in the set year and the year before for every player on the
+ *    card), and never when the listing names a team the career does not (rule 8:
+ *    a data claim holds back a guess). A lookup that failed or never ran is not
+ *    a claim (NEO-639): with no listing name, the career pre-fills as usual.
+ *  - NEO-639 (decision A): under the set's own "No Team" (`setNoTeam`) the
+ *    career is offered and never preselected: the set has answered for every
+ *    card, and a guess does not overrule it.
+ *  - A chip that is not preselected carries the players' years with that team
+ *    (every dated stint, merged), so the operator can choose. The label follows
+ *    the pre-fill, never the current pick, so a toggle never changes it.
  *
  * Nothing is written until Save (`updateCard`, which sets the teams on the card
  * through the one writer) or "No team on this card" (`confirmCardNoTeam`).
@@ -49,12 +57,15 @@ export default function TeamFillChips({
   leafId,
   players,
   write,
+  setNoTeam = false,
 }: {
   row: TidyRow;
   sportId: Id<"selectorOptions"> | undefined;
   leafId: Id<"selectorOptions">;
   players: readonly ContextPlayer[];
   write: TidyWrite;
+  /** The set's own team default is "No Team" (NEO-639 decision A). */
+  setNoTeam?: boolean;
 }) {
   const suggestions = useQuery(api.cardChecklist.suggestedTeamsForCard, { cardId: row._id });
   const bscName = row.bscTeamName?.trim() ?? "";
@@ -93,12 +104,14 @@ export default function TeamFillChips({
       if (existing) {
         if (!existing.playerNames.includes(s.playerName)) existing.playerNames.push(s.playerName);
         existing.inSetYear = existing.inSetYear || s.inSetYear;
+        if (s.tieInWindow) existing.tie = true;
       } else {
         byTeam.set(s.teamId as string, {
           teamId: s.teamId,
           label: s.label,
           playerNames: [s.playerName],
           inSetYear: s.inSetYear,
+          ...(s.tieInWindow ? { tie: true } : {}),
         });
       }
     }
@@ -138,8 +151,8 @@ export default function TeamFillChips({
   const bscDisagrees =
     bscName !== "" && setYearTeamIds.some((id) => !marketplaceIds.has(id as string));
   const preselect = useMemo(
-    () => (bscDisagrees ? [] : setYearTeamIds.slice(0, MAX_CARD_TEAMS)),
-    [bscDisagrees, setYearTeamIds],
+    () => (bscDisagrees || setNoTeam ? [] : setYearTeamIds.slice(0, MAX_CARD_TEAMS)),
+    [bscDisagrees, setNoTeam, setYearTeamIds],
   );
   const ready = suggestions !== undefined && bscSettled;
 
@@ -164,13 +177,16 @@ export default function TeamFillChips({
     extraIds.length > 0 && sportId ? { sportId } : "skip",
   );
 
-  const yearsWith = (teamId: Id<"teams">): string => {
-    for (const p of players) {
-      const stint = p.stints.find((s) => s.teamId === teamId && s.fromYear !== undefined);
-      if (stint) return `${p.name} ${stintYears(stint)}`;
-    }
-    return "";
-  };
+  // The players' years with a team: every player with a dated stint there, by
+  // name, in card order ("Johnny Bench 1967–1983; Pete Rose 1963–1978"), each
+  // one's stints merged. Empty when nobody on the card has one.
+  const yearsWith = (teamId: Id<"teams">): string =>
+    players
+      .flatMap((p) => {
+        const years = mergedStintYears(p.stints.filter((s) => s.teamId === teamId));
+        return years ? [`${p.name} ${years}`] : [];
+      })
+      .join("; ");
 
   const toggle = (teamId: Id<"teams">) => {
     if (chosenSet.has(teamId as string)) setTeamIds(chosen.filter((id) => id !== teamId));
@@ -272,6 +288,7 @@ export default function TeamFillChips({
               careerChips.some((c) => c.inSetYear),
               bscDisagrees,
               uncoveredSetYear,
+              { tie: careerChips.some((c) => c.tie), setNoTeam },
             )}
           </p>
           <ul className="flex flex-wrap gap-1.5" aria-labelledby={`fill-career-${row._id}`}>

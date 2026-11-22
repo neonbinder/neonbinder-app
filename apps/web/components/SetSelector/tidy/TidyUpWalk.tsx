@@ -131,6 +131,12 @@ type WalkProps = {
   season?: string;
   variantName?: string | null;
   variantKind?: VariantKind;
+  /**
+   * NEO-639 (decision A): the checklist's own team default is "No Team". The Team
+   * tile then offers a teamless card's teams and preselects none, and "Apply to
+   * all" offers nothing, the same rule the server's fills follow.
+   */
+  setNoTeam?: boolean;
   /** The dialog's name: "Tidy up 2024 Topps Chrome". */
   title?: string;
   /** The checklist's live rows, ALL of them: the walk derives its own queue. */
@@ -192,6 +198,7 @@ function WalkDialog({
   season,
   variantName,
   variantKind,
+  setNoTeam = false,
   title,
   cards,
   restoreFocusRef,
@@ -533,7 +540,7 @@ function WalkDialog({
 
   const tileProps: TidyTileProps | null =
     current && attention
-      ? { row: current, context, attention, leafId, sportId, leafCards: cards, setName }
+      ? { row: current, context, attention, leafId, sportId, leafCards: cards, setName, setNoTeam }
       : null;
 
   const planned = openPassed.length + left;

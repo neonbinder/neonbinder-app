@@ -305,6 +305,31 @@ describe("applyTeamToPlayerCards — a card takes the team only when nothing nam
     expect(await applyTeam(t, tw, [claimed])).toEqual({ applied: 0, skipped: 1 });
   });
 
+  test("a lookup that never answered is not a claim: a card whose team check gave up is still written", async () => {
+    const t = newT();
+    const tw = await teamWorld(t);
+    const gaveUp = await merrillCard(t, tw, "17", {
+      teamCheckDoneAt: WORLD_NOW,
+      teamCheckOutcome: "gaveUp",
+    });
+    expect(await applyTeam(t, tw, [gaveUp])).toEqual({ applied: 1, skipped: 0 });
+    expect((await card(t, gaveUp))!.teamOnCardIds).toEqual([tw.w.padres]);
+  });
+
+  test("NEO-639 (decision A): no card of a set whose own team default is No Team takes the fill", async () => {
+    const t = newT();
+    const tw = await teamWorld(t);
+    const teamless = await merrillCard(t, tw, "18");
+    await t.run((ctx) =>
+      ctx.db.patch(tw.w.base, { noTeamDefault: { setAt: WORLD_NOW, setByUserId: "op" } }),
+    );
+    expect(await applyTeam(t, tw, [teamless])).toEqual({ applied: 0, skipped: 1 });
+    expect((await card(t, teamless))!.teamOnCardIds).toBeUndefined();
+    // The same card, once the set no longer says No Team, is written.
+    await t.run((ctx) => ctx.db.patch(tw.w.base, { noTeamDefault: undefined }));
+    expect(await applyTeam(t, tw, [teamless])).toEqual({ applied: 1, skipped: 0 });
+  });
+
   test("a mixed batch writes only the cards that pass, and counts the rest", async () => {
     const t = newT();
     const tw = await teamWorld(t);

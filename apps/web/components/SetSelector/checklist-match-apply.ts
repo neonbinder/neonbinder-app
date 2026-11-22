@@ -476,7 +476,8 @@ export function pairedRowCard(row: ServerPairedRow, rowId: string): PairingCard 
  *  - teams: only when the row settled them (`teamsFromRow`). Then the card's
  *    own teams come back (absent: none) and so does its lookup outcome:
  *    `"failed"` when BSC was never asked because the row answered, which is
- *    the operator-picks state (rule 8: missing data is never guessed).
+ *    missing data, not a claim (rule 8, NEO-639): the Teams step pre-fills
+ *    it from NB's own evidence and the operator confirms.
  *    Otherwise the teams were the card's own, or its lookup's, and stay.
  *  - NEO-591: the number goes back to `revert.cardNumber` (absent: the row did
  *    not change it), and the checklist's number leaves `sourceNumbers`.

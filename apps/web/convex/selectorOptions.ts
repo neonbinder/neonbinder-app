@@ -23778,6 +23778,12 @@ export const commitCardChecklistChunk = internalMutation({
         // other cards of this commit (the action's batch tier), else the one
         // team his career gives for the set's year. Rule 8: not when any
         // source names a team here, a team is pending, or "No team" was said.
+        // NEO-639 (decision A) — and not under the set's own "No Team": the set
+        // has answered for every card, and a guess does not overrule it. A card
+        // the stamp below holds back (its lookup has not answered) stays
+        // teamless for the lookup, not for a career. A lookup that never
+        // answered is missing data, not a claim: it holds the fill back from
+        // nothing (`mayFill` and this gate never read `teamLookup`).
         // Note-only: the `teamFill` check says it was written, and is cleared
         // when the team is changed by hand.
         let insertTeamFill:
@@ -23785,6 +23791,7 @@ export const commitCardChecklistChunk = internalMutation({
           | undefined;
         if (
           (insertTeamOnCardIds ?? []).length === 0 &&
+          leafNoTeam === undefined &&
           !listingNamesATeam &&
           insertPendingTeamNames.length === 0 &&
           insertPendingPlayerNames.length === 0 &&

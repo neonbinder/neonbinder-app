@@ -1459,8 +1459,9 @@ export const checklistPairedRowValidator = v.object({
  *  - `teams`: the card's own teams before the row (absent: none).
  *  - `teamLookup: "failed"`: the card had no team of its own and a BSC
  *    listing whose team lookup was skipped because the row answered it.
- *    "failed" is the data-missing state (rule 8): the operator picks the
- *    team and no rule guesses one.
+ *    "failed" is the data-missing state (rule 8): no listing claim stands,
+ *    so the wizard's Teams step pre-fills it from NB's own evidence like any
+ *    other card (NEO-639), and the operator confirms the team.
  */
 export const checklistPairRevertValidator = v.object({
   players: v.optional(v.array(v.string())),

@@ -311,3 +311,6 @@
 - [Tile and commit share one verdict](reference_tile_and_commit_share_one_verdict.md) — client preselect and server write call one pure fn; one test drives both; goldens/pins updated on purpose
 - [Radix size-1 button does not wrap](reference_radix_button_size1_does_not_wrap_long_labels.md) — 24px fixed height, no wrap; data-driven labels overflow phones; use h-auto min-h-6 max-w-full wrap-anywhere
 - [Open card then paged pass double-applies](reference_open_card_then_paged_pass_double_applies.md) — skip the in-call card in the scheduled pages; one helper for the shared career verdict
+- [Optional result field: omit when empty](reference_optional_result_field_omit_when_empty.md) — always-present [] reds toEqual pins in convex tests; spread only when non-empty
+- [Mixed preselect: focus the open question](pattern_mixed_preselect_focus_goes_to_the_open_question.md) — some ticked, one tied: focus its chip by ref, not Save; heading names both
+- [Port a retired-UI rule: audit every server fill site](reference_porting_a_rule_from_a_retired_ui_audit_every_server_fill_site.md) — tile, commit fill, answer-time fill, Apply to all each gate rule 8 separately (NEO-645 x NEO-639)
