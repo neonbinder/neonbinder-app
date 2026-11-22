@@ -1,7 +1,8 @@
 /**
- * NEO-645 (S3a) — a player name the same card prints as its team (a team card) is
- * answered "Not a player" by the gate itself: an auto `notEntity`, no lookup, no
- * question. The operator's own answer on the name wins, and it is changeable.
+ * NEO-645 — a player name the same card prints as its team (a team card) is an
+ * ordinary name, as it is on main's Tidy Up wizard: the gate queues it and asks;
+ * it never answers "Not a player" for the operator. An operator's own answer
+ * survives the next gate run.
  */
 
 import { convexTest } from "convex-test";
@@ -100,35 +101,26 @@ const playerRows = async (t: T) =>
   (await t.run((ctx) => ctx.db.query("tidyNames").collect())).filter((r) => r.kind === "player");
 
 describe("a player name the card prints as its team", () => {
-  test("is answered 'Not a player' by the gate: auto, no lookup, not asked", async () => {
+  test("is an ordinary name: asked like any other, no automatic answer", async () => {
     const t = newT();
     const s = await setup(t);
     const result = await gate(t, s, [
       card([TEAM], 1, [TEAM]),
       card(["Aaron Judge"], 2, [TEAM]),
     ]);
-    expect(result.unknownPlayers).toEqual(["Aaron Judge"]);
+    expect(result.unknownPlayers.slice().sort()).toEqual([TEAM, "Aaron Judge"].sort());
     const rows = await playerRows(t);
     const teamCard = rows.find((r) => r.nameNormalized === normalizeEntityName(TEAM));
-    expect(teamCard?.answer).toEqual({ kind: "notEntity", by: "auto", autoReason: "sameAsTeam" });
-    expect(teamCard?.status).toBe("ready");
-    // The real player still goes through the normal rules.
+    expect(teamCard).toBeDefined();
+    expect(teamCard?.answer).toBeUndefined();
     const judge = rows.find((r) => r.nameNormalized === normalizeEntityName("Aaron Judge"));
     expect(judge?.answer).toBeUndefined();
   });
 
-  test("is matched by the shared name matcher (accents, case, punctuation)", async () => {
+  test("the shared name matcher (accents, case, punctuation) changes nothing: still asked", async () => {
     const t = newT();
     const s = await setup(t);
     await gate(t, s, [card(["new york  YANKEES."], 1, [TEAM])]);
-    const [row] = await playerRows(t);
-    expect(row.answer).toMatchObject({ kind: "notEntity", by: "auto", autoReason: "sameAsTeam" });
-  });
-
-  test("a card whose player is NOT its team's name is left to the normal rules", async () => {
-    const t = newT();
-    const s = await setup(t);
-    await gate(t, s, [card(["Aaron Judge"], 1, [TEAM])]);
     const [row] = await playerRows(t);
     expect(row.answer).toBeUndefined();
   });

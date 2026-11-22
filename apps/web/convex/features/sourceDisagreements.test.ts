@@ -3,9 +3,9 @@
  * built from the wire card the commit receives.
  *
  * Pure: strings in, entries out. Pins what is stored (a REAL difference), what
- * is not (values that agree after the shared name matcher), NB's own pick
- * (exactly one value made only of NB rows), and the 4096-byte cap that keeps a
- * leaf-wide `getCardChecklist` read small (an overflow refuses and names the
+ * is not (values that agree after the shared name matcher), that NB never
+ * picks a side (every stored disagreement is unsettled), and the 4096-byte cap
+ * that keeps a leaf-wide `getCardChecklist` read small (an overflow refuses and names the
  * card by NB's own number).
  */
 
@@ -17,7 +17,6 @@ import {
   assertDisagreementsFit,
   buildDisagreements,
   namesHeld,
-  pickByNb,
   sameNames,
   type DisagreementEntry,
 } from "./sourceDisagreements";
@@ -230,59 +229,6 @@ describe("buildDisagreements — bounds", () => {
   });
 });
 
-describe("pickByNb — NB picks only when exactly one value is made of NB rows", () => {
-  const entry: DisagreementEntry = {
-    field: "players",
-    values: [
-      { value: ["Aaron Judge"], sources: ["bsc"] },
-      { value: ["Zed Nobody"], sources: ["sportlots"] },
-    ],
-  };
-
-  test("exactly one all-known value is chosen by nb", () => {
-    const out = pickByNb(entry, (k) => k.includes("judge"));
-    expect(out.chosen).toEqual({ value: ["Aaron Judge"], by: "nb" });
-  });
-
-  test("both values known is a question for the operator", () => {
-    expect(pickByNb(entry, () => true).chosen).toBeUndefined();
-  });
-
-  test("neither value known is a question for the operator", () => {
-    expect(pickByNb(entry, () => false).chosen).toBeUndefined();
-  });
-
-  test("a value is known only when EVERY name in it is", () => {
-    const two: DisagreementEntry = {
-      field: "players",
-      values: [
-        { value: ["Aaron Judge", "Zed Nobody"], sources: ["bsc"] },
-        { value: ["Juan Soto"], sources: ["sportlots"] },
-      ],
-    };
-    const out = pickByNb(two, (k) => k.includes("judge") || k.includes("soto"));
-    expect(out.chosen?.value).toEqual(["Juan Soto"]);
-  });
-
-  test("a value naming nobody (No team) is never picked, even though every one of zero names is known", () => {
-    const teams: DisagreementEntry = {
-      field: "teams",
-      values: [
-        { value: [], sources: ["checklist"] },
-        { value: ["Padres"], sources: ["bsc"] },
-      ],
-    };
-    expect(pickByNb(teams, () => false).chosen).toBeUndefined();
-    expect(pickByNb(teams, () => true).chosen?.value).toEqual(["Padres"]);
-  });
-
-  test("does not mutate the entry it is given", () => {
-    const frozen = structuredClone(entry);
-    pickByNb(entry, (k) => k.includes("judge"));
-    expect(entry).toEqual(frozen);
-  });
-});
-
 describe("namesHeld — an unsettled field holds NOTHING", () => {
   const unsettled: DisagreementEntry = {
     field: "players",
@@ -301,7 +247,7 @@ describe("namesHeld — an unsettled field holds NOTHING", () => {
   });
 
   test("a chosen entry holds the chosen value", () => {
-    const chosen = { ...unsettled, chosen: { value: ["B"], by: "nb" as const } };
+    const chosen = { ...unsettled, chosen: { value: ["B"], by: "operator" as const } };
     expect(namesHeld([chosen], "players")).toEqual({ held: true, names: ["B"] });
   });
 });

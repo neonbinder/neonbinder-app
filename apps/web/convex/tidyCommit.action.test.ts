@@ -207,14 +207,15 @@ describe("commit — sourceDisagreements", () => {
     expect((await byNumber(t, w.base)).get("7")!.sourceDisagreements).toBeUndefined();
   });
 
-  test("exactly one value made only of NB players is picked by nb, and its names are written", async () => {
+  test("exactly one value made only of NB players is still a question for the operator: NB never picks", async () => {
     const t = newT();
-    const { w, judge } = await world(t);
-    // The prelude resolves the names the card lists; the conflict then picks among them.
+    const { w } = await world(t);
+    // The prelude resolves the names the card lists; the conflict still stays unsettled.
     await commit(t, w, [wire("7", { players: [JUDGE, NOBODY], ...conflict([JUDGE], [NOBODY]) })]);
     const card = (await byNumber(t, w.base)).get("7")!;
-    expect(card.sourceDisagreements![0].chosen).toEqual({ value: [JUDGE], by: "nb" });
-    expect(card.playerIds).toEqual([judge]);
+    expect(card.sourceDisagreements![0].chosen).toBeUndefined();
+    expect(card.playerIds).toBeUndefined();
+    expect(card.pendingPlayerNames).toBeUndefined();
   });
 
   test("both values known to NB is a question for the operator", async () => {

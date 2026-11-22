@@ -204,11 +204,6 @@ export const gateItemValidator = v.object({
       reason: v.union(v.literal("priorYearProduct"), v.literal("onlyNamesake")),
     }),
   ),
-  /**
-   * NEO-645 (S3a): a card prints this PLAYER name as its own team's name too (a
-   * team card), so the gate answers it "Not a player" itself.
-   */
-  notEntityAuto: v.optional(v.literal("sameAsTeam")),
   /** NEO-602: the rows a team name reached. Display only. */
   candidateTeamIds: v.optional(v.array(v.id("teams"))),
   /** NEO-591: the candidates are places. */
@@ -1280,10 +1275,7 @@ export const upsertFromGatePage = internalMutation({
       let enrichment: Enrichment | undefined;
       let awaitsChoice = false;
       const auto = item.auto;
-      if (item.notEntityAuto && item.kind === "player") {
-        // A team card's own name: not a person. Operator answers win below.
-        answer = { kind: "notEntity", by: "auto", autoReason: item.notEntityAuto };
-      } else if (auto && item.kind === "player" && auto.playerId) {
+      if (auto && item.kind === "player" && auto.playerId) {
         answer = { kind: "linkPlayer", playerId: auto.playerId, by: "auto", autoReason: auto.origin };
         const ids = [
           auto.playerId,

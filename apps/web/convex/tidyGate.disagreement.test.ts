@@ -170,32 +170,20 @@ describe("namesOnlyOnUnsettledSides", () => {
     ],
   });
   const none = { players: new Set<string>(), teams: new Set<string>() };
-  const knownNone = { players: () => false, teams: () => false };
 
-  test("every side's names are skipped while nothing is known", () => {
+  test("every side's names are skipped, whether or not NB already has a row for them", () => {
     const out = namesOnlyOnUnsettledSides({
       entries: [entry(["A One"], ["B Two"])],
       heldElsewhere: none,
-      isKnown: knownNone,
     });
     expect([...out.players].sort()).toEqual(["a one", "b two"]);
     expect(out.teams.size).toBe(0);
-  });
-
-  test("the side NB picks is kept; the losing side is skipped", () => {
-    const out = namesOnlyOnUnsettledSides({
-      entries: [entry(["A One"], ["B Two"])],
-      heldElsewhere: none,
-      isKnown: { players: (k) => k === "a one", teams: () => false },
-    });
-    expect([...out.players]).toEqual(["b two"]);
   });
 
   test("a name held on a settled place is never skipped", () => {
     const out = namesOnlyOnUnsettledSides({
       entries: [entry(["A One"], ["B Two"])],
       heldElsewhere: { players: new Set(["b two"]), teams: new Set() },
-      isKnown: knownNone,
     });
     expect([...out.players]).toEqual(["a one"]);
   });

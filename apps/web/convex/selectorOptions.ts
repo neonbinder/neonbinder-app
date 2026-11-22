@@ -445,7 +445,6 @@ import {
   buildDisagreements,
   namesHeld,
   namesOnlyOnUnsettledSides,
-  pickByNb,
   type DisagreementEntry,
   type SourceKey,
 } from "./features/sourceDisagreements";
@@ -2092,13 +2091,6 @@ async function resolveUnknownsAndStartBatch(
      */
     cardTeamNamesByPlayer?: Map<string, string[]>;
     /**
-     * NEO-645 (S3a) — player names a card prints as its own team's name too (a
-     * team card, "New York Yankees, New York Yankees"). They are not people:
-     * the gate answers each "Not a player" itself (an auto `notEntity`, changed
-     * on the tile like any answer), and they are neither looked up nor asked.
-     */
-    sameAsTeamPlayerNames?: string[];
-    /**
      * NEO-490 — the players printed on each card naming a team, keyed by the
      * NORMALIZED team name (see `addCardPlayerNames`). NEO-602: read for
      * EVERY printed team name, not just the ones the year left open. When
@@ -2193,14 +2185,7 @@ async function resolveUnknownsAndStartBatch(
     if (!teamByNorm.has(norm)) teamByNorm.set(norm, trimmed);
   };
 
-  // NEO-645 (S3a) — a team card's own name is ruled out by the gate itself, so
-  // it is not a name to resolve, look up or ask about.
-  const sameAsTeamKeys = new Set(
-    (args.sameAsTeamPlayerNames ?? []).map((p) => normalizeEntityName(p)),
-  );
-  for (const p of args.additionalPlayerNames ?? []) {
-    if (!sameAsTeamKeys.has(normalizeEntityName(p))) addPlayer(p);
-  }
+  for (const p of args.additionalPlayerNames ?? []) addPlayer(p);
   for (const t of args.additionalTeamNames ?? []) addTeam(t);
 
   // Custom cards (added via addCustomCard) can declare pending player /
@@ -3122,36 +3107,15 @@ async function resolveUnknownsAndStartBatch(
       },
     });
   }
-  // NEO-645 (S3a) — the team cards' own names, answered "Not a player" here.
-  // An operator's earlier answer on the row wins (`upsertFromGatePage`).
-  const sameAsTeamSeen = new Set<string>();
-  for (const name of args.sameAsTeamPlayerNames ?? []) {
-    const key = normalizeEntityName(name);
-    if (!key || sameAsTeamSeen.has(key)) continue;
-    sameAsTeamSeen.add(key);
-    gateItems.push({
-      kind: "player",
-      name: name.trim(),
-      sportId: args.sportId,
-      notEntityAuto: "sameAsTeam",
-    });
-  }
   // NEO-645 (schema doc 4) — a name that sits only on the sides of an
-  // unsettled disagreement (or on the side NB's pick did not take) gets no row:
-  // nothing is looked up for a side that may never be used, and the walk makes
+  // unsettled disagreement gets no row: nothing is looked up for a side that may never be used, and the walk makes
   // the row when the operator picks it.
   if (args.disagreementSides && args.disagreementSides.entries.length > 0) {
-    const unknownPlayerKeys = new Set(unknownPlayers.map((n) => normalizeEntityName(n)));
-    const unknownTeamKeys = new Set(unknownTeams.map((n) => normalizeEntityName(n)));
     const skipped = namesOnlyOnUnsettledSides({
       entries: args.disagreementSides.entries,
       heldElsewhere: {
         players: new Set(args.disagreementSides.heldElsewhere.players),
         teams: new Set(args.disagreementSides.heldElsewhere.teams),
-      },
-      isKnown: {
-        players: (key) => !unknownPlayerKeys.has(key),
-        teams: (key) => !unknownTeamKeys.has(key),
       },
     });
     for (let i = gateItems.length - 1; i >= 0; i--) {
@@ -16345,14 +16309,6 @@ function rowVariationName(row: object): string | undefined {
   return trimmed ? trimmed.slice(0, MAX_LABEL_LENGTH) : undefined;
 }
 
-/** NEO-645 (S3) — a checklist card's printed subject ("Checklist"), when the row kept one. */
-function rowSubject(row: object): string | undefined {
-  const subject = (row as { subject?: unknown }).subject;
-  if (typeof subject !== "string") return undefined;
-  const trimmed = subject.trim();
-  return trimmed ? trimmed.slice(0, MAX_LABEL_LENGTH) : undefined;
-}
-
 /** NEO-591 (variations) — the letters a minted variation number may take, in order. */
 const MINT_LETTERS = "bcdefghijklmnopqrstuvwxyz";
 
@@ -16588,11 +16544,7 @@ export function checklistOnlyCard(
   const number = row.number.trim();
   return {
     cardNumber: number,
-    // NEO-645 (S3): a checklist card keeps the printed word as its name.
-    cardName:
-      players.length > 0
-        ? players.join(" / ")
-        : rowSubject(row) ?? `Card #${number || "NNO"}`,
+    cardName: players.length > 0 ? players.join(" / ") : `Card #${number || "NNO"}`,
     ...(players.length > 0 ? { players } : {}),
     ...(applied.answered && applied.teams
       ? { teams: applied.teams, teamLookup: "checklist" as const }
@@ -19233,15 +19185,9 @@ export const resolveChecklistEntities = action({
     // NEO-602 — and each player's own cards (number, printed team), for the
     // same-name pick step.
     const cardsByPlayer: CardsByPlayer = new Map();
-    // NEO-645 (S3a) — the player names a card prints as its own team's name.
-    const sameAsTeamPlayerNames: string[] = [];
     for (const c of args.cards) {
       const teamsOnCard = cardTeamNames(c);
-      const teamKeys = new Set(teamsOnCard.map((t) => normalizeEntityName(t)));
       for (const p of c.players ?? []) {
-        if (teamKeys.has(normalizeEntityName(p)) && normalizeEntityName(p) !== "") {
-          sameAsTeamPlayerNames.push(p);
-        }
         additionalPlayerNames.push(p);
         addCardTeamNames(cardTeamNamesByPlayer, p, teamsOnCard);
         addCardForPlayer(cardsByPlayer, p, teamsOnCard, c.cardNumber);
@@ -19339,7 +19285,6 @@ export const resolveChecklistEntities = action({
       resolvedNames,
       prelude,
       timing,
-      ...(sameAsTeamPlayerNames.length > 0 ? { sameAsTeamPlayerNames } : {}),
     });
     // NEO-335 — after the gate, from the gate's own answers.
     // NEO-426 — and, beside it (they read independent rows, so they are asked
@@ -27533,36 +27478,25 @@ export const commitCardChecklist = action({
 
     // Resolve per-card playerIds / teamOnCardIds. Cards whose names are
     // all unresolved end up with empty arrays (left undefined).
-    // NEO-645 — the names the prelude settled, as keys, for NB's own pick of a
-    // disagreeing field (exactly one value whose every name is already an NB row).
-    const knownPlayerKeys = new Set(
-      prelude.playerIdByName.map(({ name }) => normalizeEntityName(name)),
-    );
-    const knownTeamKeys = new Set(
-      prelude.teamIdByName.map(({ name }) => normalizeEntityName(name)),
-    );
     const chunkCardsRaw = committed.map(({ card: rawCard, index }) => {
       // NEO-645 — where the sources still disagree, on a card this commit
       // INSERTS (a stored row's disagreement is never re-derived: D4). An
       // unsettled field holds NOTHING on the new row (no ids, no pending
-      // names); NB's own pick, when there is exactly one, is written as if the
-      // source had said it. Rule 8: the card is also marked as one a source
-      // named a player / team on, so no default fills over it.
+      // names); NB never picks a side, the operator does in the walk. Rule 8:
+      // the card is also marked as one a source named a player / team on, so
+      // no default fills over it.
       const isInsert = match.existingIdByIndex[index] === undefined;
       const marketplaceSources: SourceKey[] = [
         ...(rawCard.platformData?.bsc ? (["bsc"] as const) : []),
         ...(rawCard.platformData?.sportlots ? (["sportlots"] as const) : []),
       ];
       const disagreements = isInsert
-        ? buildDisagreements(rawCard, marketplaceSources).map((entry) =>
-            pickByNb(entry, (key) =>
-              entry.field === "players" ? knownPlayerKeys.has(key) : knownTeamKeys.has(key),
-            ),
-          )
+        ? buildDisagreements(rawCard, marketplaceSources)
         : [];
       const heldPlayers = namesHeld(disagreements, "players");
       const heldTeams = namesHeld(disagreements, "teams");
-      const teamsUnsettled = heldTeams.held && disagreements.some((e) => e.field === "teams" && !e.chosen);
+      // Every stored disagreement is unsettled at the commit.
+      const teamsUnsettled = heldTeams.held;
       const c = {
         ...rawCard,
         ...(heldPlayers.held ? { players: heldPlayers.names } : {}),

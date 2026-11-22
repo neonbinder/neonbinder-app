@@ -681,12 +681,32 @@ describe("pickSourceValue — the card's own name follows the pick (decision 23)
     expect((await card(t, id))!.cardName).toBe("Carl Boudreaux");
   });
 
-  test("several players are joined the way the sources print them", async () => {
+  test("a side holding several names never renames the card (each side must hold exactly one)", async () => {
     const t = newT();
     const { w } = await setup(t);
-    const id = await named(t, w, "25", `${JUDGE}|${SOTO}`, playersEntry([JUDGE, SOTO], [JUDGE]));
+    const id = await named(t, w, "25", `${JUDGE} / ${SOTO}`, playersEntry([JUDGE, SOTO], [JUDGE]));
     await pick(t, id, [JUDGE]);
+    expect((await card(t, id))!.cardName).toBe(`${JUDGE} / ${SOTO}`);
+  });
+
+  test("a picked value holding several names never renames the card", async () => {
+    const t = newT();
+    const { w } = await setup(t);
+    const id = await named(t, w, "26", JUDGE, playersEntry([JUDGE], [JUDGE, SOTO]));
+    await pick(t, id, [JUDGE, SOTO]);
     expect((await card(t, id))!.cardName).toBe(JUDGE);
+  });
+
+  test("the card name matches the losing side by case and edge space only", async () => {
+    const t = newT();
+    const { w } = await setup(t);
+    const id = await named(t, w, "27", ` ${CARL_A.toUpperCase()} `, playersEntry([CARL_A], [CARL_B]));
+    await pick(t, id, [CARL_B]);
+    expect((await card(t, id))!.cardName).toBe(CARL_B);
+    // An accent or a "|" is not the same name here: the card keeps what it has.
+    const other = await named(t, w, "28", "Carl Boudreaú", playersEntry([CARL_A], [CARL_B]));
+    await pick(t, other, [CARL_B]);
+    expect((await card(t, other))!.cardName).toBe("Carl Boudreaú");
   });
 
   test("Apply to the same disagreement renames each card by the same rule", async () => {
@@ -703,13 +723,12 @@ describe("pickSourceValue — the card's own name follows the pick (decision 23)
     expect((await card(t, typed))!.cardName).toBe("Carl B. (rookie)");
   });
 
-  test("a team card named for a team value follows a teams pick; a player card's name is not touched by it", async () => {
+  test("a teams pick never renames the card (main's teams branch leaves the name alone)", async () => {
     const t = newT();
     const { w, open } = await setup(t);
     const teamCard = await named(t, w, "40", "Padres", teamsEntry(["Padres"], ["San Diego Padres"]));
     await pick(t, teamCard, ["San Diego Padres"], { field: "teams" });
-    expect((await card(t, teamCard))!.cardName).toBe("San Diego Padres");
-    // The open player card keeps the name it was given.
+    expect((await card(t, teamCard))!.cardName).toBe("Padres");
     expect((await card(t, open))!.cardName).toBe("Card 1");
   });
 });

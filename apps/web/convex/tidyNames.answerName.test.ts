@@ -381,32 +381,6 @@ describe("answerName — Not a player takes the name off the card AND out of its
     }
   });
 
-  test("a name NB ruled out itself (the card's own team) is changed like any answer (NEO-645 S3a)", async () => {
-    const t = newT();
-    const { w, ids } = await twoCards(t);
-    await t.run(async (ctx) => {
-      const row = await ctx.db
-        .query("tidyNames")
-        .withIndex("by_scope_kind_name", (q) =>
-          q.eq("scopeId", w.base).eq("kind", "player").eq("nameNormalized", KEY),
-        )
-        .first();
-      await ctx.db.patch(row!._id, {
-        answer: { kind: "notEntity", by: "auto", autoReason: "sameAsTeam" },
-        answerGen: 1,
-      });
-    });
-    await t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
-      cardId: ids[0],
-      kind: "player",
-      name: BO,
-      answer: { kind: "clear" },
-    });
-    await drainScheduled(t);
-    expect((await rowOf(t, w.base, "player", BO))!.answer).toBeUndefined();
-    expect((await card(t, ids[0]))!.pendingPlayerNames).toEqual([BO]);
-  });
-
   test("a hand-typed title is kept when the name leaves the card", async () => {
     const t = newT();
     const w = await world(t);

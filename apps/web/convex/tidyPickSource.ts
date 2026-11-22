@@ -48,7 +48,6 @@ import { resolveTeamForSetYear } from "./lib/teamRow";
 import { stampNoTeam } from "./lib/selectorTeams";
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
-import { nameKey } from "../lib/cards/card-name";
 
 /** Names one picked value may hold (a card carries at most 20 players). */
 export const MAX_PICK_NAMES = 20;
@@ -115,32 +114,34 @@ export function entryFor(
   return index < 0 ? undefined : { entry: list[index], index };
 }
 
+/** Two names alike when only case and edge space differ (main's `sameName`). */
+function sameName(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
 /**
  * The card name a pick leaves, or undefined to leave it alone (decision 23).
  *
- * Match Cards preselects ONE source's spelling as `cardName`, so a card whose
- * players were picked from the other source read "Carl Boudreau" as its name
- * and "Carl Bodureau" as its player. The name follows the pick when it IS one
- * of the spellings the sources gave (any offered value, or the value an earlier
- * pick chose: a Change re-follows). A name that matches none of them was typed
- * by hand and stays. Compared the way the marketplaces' own names are
- * (`nameKey`: accents folded, "|" and " / " the same), so only the words count.
- * A card name holds players or teams joined with " / "; a team card carries the
- * team there, a player card the players, so one rule serves both fields.
+ * Main's rule (`applyChecklistChoice`, checklist-conflict.ts): a pick renames
+ * a one-player card whose name WAS the losing player ("Rhett Lowder" ->
+ * "Rhett Loder"), so the card's name and its player never disagree. The pick
+ * and the losing side each hold exactly one name, and the card's name equals
+ * the losing side's. Any other card name is left alone, and so is a pick or a
+ * side holding several names. A teams pick never renames (main's teams branch
+ * leaves `cardName` alone).
+ *
+ * With more than two values the "losing side" is any other offered value: a
+ * Change re-follows because the value the card is named for is still offered.
  */
 export function pickedCardName(
   card: Pick<Doc<"cardChecklist">, "cardName">,
   entry: Entry,
   names: ReadonlyArray<string>,
 ): string | undefined {
-  if (names.length === 0) return undefined;
-  const picked = names.join(" / ");
-  if (card.cardName === picked) return undefined;
-  const have = nameKey(card.cardName);
-  if (have === "") return undefined;
-  const offered = [...entry.values.map((o) => o.value), ...(entry.chosen ? [entry.chosen.value] : [])];
-  return offered.some((value) => value.length > 0 && nameKey(value.join(" / ")) === have)
-    ? picked
+  if (entry.field !== "players" || names.length !== 1) return undefined;
+  const others = entry.values.filter((o) => !sameValue(o.value, names));
+  return others.some((o) => o.value.length === 1 && sameName(card.cardName, o.value[0]))
+    ? names[0]
     : undefined;
 }
 
