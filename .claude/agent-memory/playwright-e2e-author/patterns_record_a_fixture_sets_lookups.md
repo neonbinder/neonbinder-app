@@ -126,7 +126,7 @@ placeholder is the CARD NAME box), the spine label's "Name on the label", and
 descriptions never reach a search. Multi-word card names were still made
 single tokens for the rule's sake.
 
-See [[patterns_pick_a_wizard_name_from_bsc_facets_and_the_gate_resolver]],
+See [[patterns_pick_a_fixture_name_from_bsc_facets_and_the_resolver]],
 [[patterns_button_name_substring_hides_demoted_variants]].
 
 ## Catalogue seeded wizard staging
