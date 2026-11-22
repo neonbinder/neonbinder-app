@@ -1,42 +1,41 @@
-// NEO-426 (R1): a sport marked "No teams in this sport" saves its players' new
-// cards as No team without asking. The ONE feature, as an operator meets it:
-//   1. The sport row's Attributes panel carries the toggle; pressed on, it says
-//      so (toast) and reads pressed.
-//   2. A checklist fetch whose card 1's only player is a NEW player of that
-//      sport, with nothing naming a team (a BLANK team cell: no claim), asks
-//      nothing about the card's team: the wizard goes from the names straight to
-//      Save, never through "Cards with no team".
-//   3. The Save step says why: it names the person, says the card saves with
-//      No Team because the sport has none, and points at the card editor. It
-//      counts ONE card: card 3, the same player with a team the data names, is
-//      not the default's (invariant 8: a data claim holds a default back).
-//   4. The committed card 1 reads No Team, card 3 its named team; neither is
-//      badged, and neither is counted in the header's need-you pill.
-//   5. The default never blocks a team: a team picked in the card editor wins,
-//      and it is still there after a reload.
-//   6. The quick-add form is the other birth path: a card added by hand for the
-//      same player is born No Team too.
-//   7. Turning the flag off says the sport asks for a team again, reads not
-//      pressed, and changes no card already saved.
-// Not here, and why: a BuySportsCards lookup that answers "no team" for a new
-// player of a teamless sport (and a listing that names a team the catalogue does
-// not hold, held for the operator) needs a real set whose recorded listings show
-// it; no recorded set has one yet (NEO-426 hand-off). Unit tests pin both
-// (cardChecklist.bscTeamlessSport.test.ts, teams-on-cards.teamlessSport.test.ts).
+// NEO-426 on the NEO-645 walk (R1): a sport marked "No teams in this sport" stamps No team on a
+// card whose people all play it, so that card makes no Tidy Up stop. The ONE feature, as an
+// operator meets it:
+//   1. The sport row's Attributes panel carries the toggle; pressed on, it says so (toast) and
+//      reads pressed.
+//   2. A checklist-only fetch saves three cards for ONE new player of that sport: #1 and #2 with
+//      a BLANK team cell (no claim), #3 with a team the checklist names. The commit saves them
+//      (the player still a pending name) and the walk opens on #1, "3 cards left". #1's Team
+//      tile is pink: nothing can be stamped while the name is unknown (he could play anywhere).
+//   3. Adding him as a new player (his sport is the set's, the teamless one) stamps the default
+//      on every card it may reach: #1's Team tile turns to "No team on this card." by itself,
+//      and #2 leaves the walk without ever being shown ("2 cards left").
+//   4. #3 is the counter-case (invariant 8: a data claim holds a default back): its Team tile
+//      stays pink with the checklist's team for the operator to answer, never "No team on this
+//      card.". Answered, the walk ends "All tidy".
+//   5. The checklist: #1 and #2 read No Team, #3 its named team; nothing is badged or counted.
+//   6. The default never blocks a team: a team picked in the card editor wins, after a reload.
+//   7. The quick-add form is the other birth path: a card added by hand for the same player is
+//      born No Team, unbadged.
+//   8. Turning the flag off says the sport asks for a team again, reads not pressed, and changes
+//      no card already saved.
+// The listing-names-a-team half is `sport-no-teams-listing-team-holds-back-the-default`; BSC
+// answering "no team" is `sport-no-teams-bsc-no-team-answer-saves-no-team`.
 //
-// FIXTURE (SET-REGISTRY.md, the `tls` custom-set prefix): a per-attempt hand-made
-// set `tls<token>` under the worker's own `E2E Test Sport <w>` › 2026 › Topps,
-// `Insert` › `Base` (R7a). No marketplace id anywhere on the path, so the Sync
-// is checklist-only (a pasted two-row checklist is the only source: no BSC, no
-// recording) and nothing is looked up: the custom sport has no Wikidata mapping,
-// so the minted player costs no enrichment call, and teams are never looked up
-// (GUIDE "Enrichment fixtures").
-// SOLE WRITER of that set and of the worker's custom sport's teamless flag for
-// the length of the test; self-cleaning (R7): the afterEach, on a second page so
-// a red body's screenshot stays whole, turns the flag off (the body already
-// does, in step 7) and deletes the cards and the set's rows. Minted names are
-// single tokens (`Teamless<token>`, `TLW<token>`, `TLC<token>`); not
-// fresh-only, since every name is per attempt.
+// R2: every move of the walk is proved by the card that lands and the count ("N cards left");
+// each negative (`toHaveCount(0)`) sits beside a positive.
+//
+// FIXTURE (SET-REGISTRY.md, the `tls` custom-set prefix): a per-attempt hand-made set
+// `tls<token>` under the worker's own `E2E Test Sport <w>` › 2026 › Topps, `Insert` › `Base`
+// (R7a). No marketplace id anywhere on the path, so the Sync is checklist-only (a pasted
+// three-row checklist is the only source: no Match Cards, no BSC, no recording) and nothing is
+// looked up: the custom sport has no Wikidata mapping, so the minted player costs no enrichment
+// call (GUIDE "Enrichment fixtures").
+// SOLE WRITER of that set and of the worker's custom sport's teamless flag for the length of the
+// test; self-cleaning (R7): the afterEach, on a second page so a red body's screenshot stays
+// whole, turns the flag off (the body already does, in step 8) and deletes the cards and the
+// set's rows. Minted names are single tokens (`Teamless<token>`, `TLW<token>`, `TLC<token>`);
+// not fresh-only, since every name is per attempt.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import type { Page } from "@playwright/test";
 import {
@@ -51,19 +50,22 @@ import {
 import { addCardViaForm, confirmDeleteCardButton, deleteCardButton, editCardButton, escapeRe } from "../../support/cards";
 import { usePastedChecklist } from "../../support/published-checklist";
 import { ensureSportHasTeams, openSportAttributes, pressTeamlessToggle, teamlessToggle } from "../../support/teamless-sport";
+import { tidyUpName } from "../../support/wizard";
 import {
-  answerPlayerAsNew,
-  answerStepAsNew,
-  awaitLookupsSettled,
-  confirmSaveButton,
-  expectNothingDecided,
-  expectWizardStep,
-  personSkip,
-  reviewWizard,
-  STEP_SUBTITLE,
-  tidyUpName,
-  wizardProgress,
-} from "../../support/wizard";
+  createPlayerOnOpenRow,
+  createTeamOnOpenRow,
+  expectCardsLeft,
+  expectCardSettled,
+  finishTidyWalk,
+  mustFixLine,
+  needsYouPill,
+  pinkTile,
+  saveAndNext,
+  settleWalkAfterCommit,
+  tidyFooterButton,
+  tidyTile,
+  tidyWalk,
+} from "../../support/tidy-walk";
 
 const YEAR = "2026";
 const MANUFACTURER = "Topps";
@@ -74,11 +76,6 @@ const written: {
   sportFlagged: boolean;
   leafUrl?: string;
   set?: string;
-  /**
-   * The checklist pasted for a fetch under review (Sync pressed, not yet saved): the review's batch
-   * refuses the rows' deletes until it is cancelled.
-   */
-  reviewOf?: string;
   cards: string[];
 } = {
   sportFlagged: false,
@@ -90,9 +87,10 @@ function rowSays(page: Page, number: string, text: string) {
   return page.getByText(new RegExp(`#${escapeRe(number)}[^#]*${text}`));
 }
 
-function noTeamBadge(page: Page, number: string) {
+/** Any badge on the card's row: pink "needs attention: …" or blue "is worth a check: …". */
+function anyMark(page: Page, number: string) {
   return page.getByRole("img", {
-    name: new RegExp(`^Card ${escapeRe(number)}(, .*)? needs attention: no team on this card yet$`),
+    name: new RegExp(`^Card ${escapeRe(number)}(, .*)? (needs attention|is worth a check): `),
   });
 }
 
@@ -129,25 +127,10 @@ test.afterEach(async ({ page }, testInfo) => {
     if (written.leafUrl && written.set) {
       const { leafUrl, set } = written;
       await tidyStep("delete the set's cards and rows", async () => {
+        // The cards are saved at the commit (NEO-645), and nothing is staged: no batch holds the
+        // rows, so the deletes need no walk closed first (a walk left open is not in the address).
         await tidy.goto(leafUrl);
         await expect(tidy.getByRole("button", { name: "Open add card form" })).toBeVisible({ timeout: LAUNCH_GATE });
-        if (written.reviewOf) {
-          // A review in progress refuses the deletes ("finish or cancel it first"). A pasted
-          // checklist lives on the page that pasted it, so paste it again: the fetch then resumes
-          // the same batch (one per set and account), and Cancel ends it, discarding any decision.
-          await usePastedChecklist(tidy, written.reviewOf, written.reviewOf.trim().split("\n").length - 1);
-          await syncChecklistButton(tidy).click();
-          await expect(wizardProgress(tidy)).toBeVisible();
-          // A batch with decisions asks before it discards them; one with none just closes.
-          await reviewWizard(tidy).getByRole("button", { name: "Cancel (Esc)" }).click();
-          const discard = tidy.getByRole("button", { name: "Discard", exact: true });
-          const cancelled = tidy.getByText("Fetch cancelled — no cards saved.");
-          await expect(discard.or(cancelled).first()).toBeVisible();
-          if (await discard.isVisible()) await discard.click();
-          await expect(cancelled).toBeVisible();
-          await expect(reviewWizard(tidy)).toBeHidden();
-          written.reviewOf = undefined;
-        }
         for (const number of [...written.cards]) {
           await deleteCardButton(tidy, number).click();
           await confirmDeleteCardButton(tidy, number).click();
@@ -177,7 +160,7 @@ test.afterEach(async ({ page }, testInfo) => {
 });
 
 test(
-  "No teams in this sport — a new card whose only player plays a teamless sport saves as No team without asking, the Save step says so, and a team picked later sticks (NEO-426)",
+  "No teams in this sport — a card whose only player plays a teamless sport is stamped No team and makes no Tidy Up stop; a team the checklist names holds the default back, and a team picked later sticks (NEO-426)",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     const token = env.ATTEMPT_TOKEN;
@@ -190,7 +173,6 @@ test(
     written.set = SET;
     written.sportFlagged = false;
     written.leafUrl = undefined;
-    written.reviewOf = undefined;
     written.cards = [];
 
     await signIn("/set-selector");
@@ -204,7 +186,7 @@ test(
     await pressTeamlessToggle(page, false);
     await expectAccessible(page, { label: "Sport attributes with No teams in this sport on" });
 
-    // ══ 2. THE SET: a hand-made per-attempt leaf, its one-row checklist pasted ══
+    // ══ 2. THE SET: a hand-made per-attempt leaf, its three-row checklist pasted ══
     await drillToCustom(page, { sport, year: YEAR, manufacturer: MANUFACTURER, set: SET, variantType: "Insert", variant: "Base" });
     const leafUrl = page.url();
     written.leafUrl = leafUrl;
@@ -216,57 +198,84 @@ test(
     await expect(columnSelection(page, "Inserts", "Base")).toBeVisible();
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
 
-    // A BLANK team cell makes no claim (GUIDE "Checklist first"): nothing names a team
-    // for card 1. Card 3 is the SAME teamless player with a team the data names
-    // (invariant 8: a data claim holds the default back; the card keeps that team).
-    const checklist = `number,player,team\n1,${PLAYER},\n3,${PLAYER},${CLAIMED}\n`;
-    await usePastedChecklist(page, checklist, 2);
-    written.reviewOf = checklist; // from the press on, a batch may hold the rows until it is saved
+    // A BLANK team cell makes no claim (GUIDE "Checklist first"): nothing names a team for #1 or
+    // #2. #3 is the SAME player with a team the data names.
+    const checklist = `number,player,team\n1,${PLAYER},\n2,${PLAYER},\n3,${PLAYER},${CLAIMED}\n`;
+    await usePastedChecklist(page, checklist, 3);
     await syncChecklistButton(page).click();
 
-    // ══ 3. THE WIZARD: the new player, then straight to Save ══
-    const wizard = reviewWizard(page);
-    await expect(wizard).toBeVisible();
-    await expect(wizard).toHaveAccessibleName(tidyUpName({ year: YEAR, set: SET }));
-    await awaitLookupsSettled(page);
-    await expectNothingDecided(page);
-    // Card 3's team comes first (the batch presents teams before players): created, so
-    // card 3 is born with it.
-    await expectWizardStep(page, STEP_SUBTITLE.team);
-    await expect(wizard.getByRole("heading", { level: 3, name: `New Team: ${CLAIMED}` })).toBeVisible();
-    await answerStepAsNew(page);
-    await expectWizardStep(page, STEP_SUBTITLE.player);
-    await expect(personSkip(page)).toHaveAccessibleName(`Skip ${PLAYER} — not a person`);
+    // The commit saves the three cards (the player a pending name on each), and the walk opens.
+    const opened = await settleWalkAfterCommit(page, page.getByText(/Saved 3 cards\./).first());
+    expect(opened, "three cards with an unanswered name, so the walk opened").toBe(true);
+    written.cards.push("1", "2", "3");
+    const walk = tidyWalk(page);
+    await expect(walk).toHaveAccessibleName(tidyUpName({ year: YEAR, set: SET }));
+    await expectCardsLeft(page, 3);
+    const header = (number: string) => walk.getByText(`#${number} · ${PLAYER}`, { exact: true });
+    const teamTile = tidyTile(page, "Team");
+    const stampedLine = teamTile.getByText("No team on this card.", { exact: true });
+
+    // ══ 3. #1: the player answered, and the default stamps No team by itself ══
+    await expect(header("1")).toBeVisible();
+    await expectCardSettled(page);
+    await expect(pinkTile(page, "Player")).toHaveCount(1);
+    // R2 precondition: while the name is unknown nothing is stamped, so the Team tile is pink.
+    await expect(pinkTile(page, "Team")).toHaveCount(1);
+    await expect(stampedLine).toHaveCount(0);
     // The name's sport is the set's sport, the one marked teamless.
-    await expect(wizard.getByRole("button", { name: `Sport for this name: ${sport}` })).toBeVisible();
-    await expectAccessible(page, { within: wizard, label: "New player step in a teamless sport" });
-    await answerPlayerAsNew(page);
+    const playerRow = tidyTile(page, "Player").getByRole("group", { name: `Player ${PLAYER}`, exact: true });
+    await expect(playerRow.getByRole("button", { name: `Sport for this name: ${sport}` })).toBeVisible();
+    await expectAccessible(page, { within: walk, label: "Tidy Up walk on a new player of a teamless sport" });
 
-    // No "Cards with no team" step: the names lead straight to Save.
-    await expect(confirmSaveButton(page)).toBeVisible();
-    await expectWizardStep(page, STEP_SUBTITLE.save);
-    await expect(wizard.getByRole("heading", { name: "Save 2 cards?" })).toBeVisible();
-    // The note names the person the default stamped, and counts ONE card: his card 3,
-    // whose data names a team, is not the default's ("2 cards save with No Team" would be).
-    await expect(wizard.getByText(new RegExp(`^${escapeRe(PLAYER)} saves with No Team\\. `))).toBeVisible();
-    await expectAccessible(page, { within: wizard, label: "Save step with the teamless-sport note" });
-    await confirmSaveButton(page).click();
-    await expect(wizard).toBeHidden();
-    written.reviewOf = undefined;
-    written.cards.push("1", "3");
+    expect(await createPlayerOnOpenRow(page)).toBe(`Player ${PLAYER}`);
+    await expect(pinkTile(page, "Player")).toHaveCount(0);
+    // The Team tile answered itself: No team, nothing left to fix.
+    await expect(stampedLine).toBeVisible();
+    await expect(pinkTile(page, "Team")).toHaveCount(0);
+    await expect(teamTile.getByRole("button", { name: "No team on this card", exact: true })).toHaveCount(0);
+    await expect(mustFixLine(page)).toHaveCount(0);
+    await expect(tidyFooterButton(page, "saveAndNext", { usable: true })).toBeVisible();
+    // #2 had nothing else and drops out; #1 (a blue career check on the card the player was added
+    // on) and #3 (its claimed team) stay.
+    await expectCardsLeft(page, 2);
+    await expectAccessible(page, { within: walk, label: "Tidy Up walk on a card stamped No team by its sport" });
 
-    // ══ 4. THE CARDS: card 1 No Team, card 3 its named team; neither badged nor counted ══
+    // ══ 4. #3: the checklist's team holds the default back; the operator answers it ══
+    await saveAndNext(page);
+    await expect(header("3")).toBeVisible();
+    await expect(walk.getByText(/^#2 · /), "#2 was stamped, so the walk never shows it").toHaveCount(0);
+    await expectCardsLeft(page, 1);
+    await expect(playerRow.getByRole("button", { name: "Change", exact: true })).toBeVisible();
+    await expect(pinkTile(page, "Team")).toHaveCount(1);
+    await expect(teamTile.getByRole("group", { name: `Team ${CLAIMED}`, exact: true })).toBeVisible();
+    await expect(stampedLine).toHaveCount(0);
+    await expectAccessible(page, { within: walk, label: "Tidy Up walk on a card whose checklist names a team" });
+    // Navigation lives in the URL: Back is #1 again, Forward #3.
+    await page.goBack();
+    await expect(header("1")).toBeVisible();
+    await expect(header("3")).toHaveCount(0);
+    await page.goForward();
+    await expect(header("3")).toBeVisible();
+    await expectCardSettled(page);
+
+    expect(await createTeamOnOpenRow(page)).toBe(`Team ${CLAIMED}`);
+    await expect(pinkTile(page, "Team")).toHaveCount(0);
+    await saveAndNext(page);
+    await expect(walk.getByText("All tidy. Nothing on this checklist needs you.")).toBeVisible();
+    await expectCardsLeft(page, 0);
+    await finishTidyWalk(page);
+
+    // ══ 5. THE CARDS: #1 and #2 No Team, #3 its named team; none badged or counted ══
     await expect(editCardButton(page, "1")).toBeVisible();
     await expect(rowSays(page, "1", "No Team")).toBeVisible();
-    await expect(noTeamBadge(page, "1")).toHaveCount(0);
-    await expect(editCardButton(page, "3")).toBeVisible();
+    await expect(rowSays(page, "2", "No Team")).toBeVisible();
     await expect(rowSays(page, "3", CLAIMED)).toBeVisible();
     await expect(rowSays(page, "3", "No Team")).toHaveCount(0);
-    await expect(noTeamBadge(page, "3")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: /^[0-9]+ needs? you$/ })).toHaveCount(0);
-    await expectAccessible(page, { label: "Checklist with a card saved No team by its sport" });
+    for (const number of ["1", "2", "3"]) await expect(anyMark(page, number)).toHaveCount(0);
+    await expect(needsYouPill(page)).toHaveCount(0);
+    await expectAccessible(page, { label: "Checklist with cards saved No team by their sport" });
 
-    // ══ 5. A TEAM PICKED LATER WINS, AND STICKS ══
+    // ══ 6. A TEAM PICKED LATER WINS, AND STICKS ══
     const cardName = page.getByRole("textbox", { name: "Card name" });
     const cardToggle = (pressed: boolean) => page.getByRole("button", { name: "No Team for this card", pressed });
     await editCardButton(page, "1").click();
@@ -302,9 +311,9 @@ test(
     await page.getByRole("button", { name: "Done editing card" }).click();
     await expect(cardName).toBeHidden();
 
-    // ══ 6. QUICK-ADD: the same player's hand-added card is born No Team ══
+    // ══ 7. QUICK-ADD: the same player's hand-added card is born No Team ══
     await addCardViaForm(page, {
-      cardNumber: "2",
+      cardNumber: "4",
       playerName: PLAYER,
       beforeSubmit: async () => {
         // The results popover opens below the field and is fixed to the viewport, so lift the form.
@@ -320,27 +329,28 @@ test(
         await expect(find).toBeHidden();
       },
     });
-    written.cards.push("2");
-    await expect(rowSays(page, "2", "No Team")).toBeVisible();
-    await expect(noTeamBadge(page, "2")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: /^[0-9]+ needs? you$/ })).toHaveCount(0);
+    written.cards.push("4");
+    await expect(rowSays(page, "4", "No Team")).toBeVisible();
+    await expect(anyMark(page, "4")).toHaveCount(0);
+    await expect(needsYouPill(page)).toHaveCount(0);
 
-    // ══ 7. FLAG OFF: the sport asks for a team again, and no existing card changes ══
+    // ══ 8. FLAG OFF: the sport asks for a team again, and no existing card changes ══
     await openSportAttributes(page, sport);
     await pressTeamlessToggle(page, true);
     written.sportFlagged = false;
     await expectAccessible(page, { label: "Sport attributes with No teams in this sport off" });
-    // The leaf again, by its address: clearing the flag touched no card. Card 1 keeps
-    // the team picked in step 5, card 2 is still No Team (unbadged, uncounted), card 3
-    // still has its named team.
+    // The leaf again, by its address: clearing the flag touched no card. #1 keeps the team picked
+    // in step 6, #2 and #4 are still No Team (unbadged, uncounted), #3 still has its named team.
     await page.goto(leafUrl);
     // A full load pays the app's launch and the Clerk handshake again (LAUNCH_GATE, as the reload above).
     await expect(editCardButton(page, "1")).toBeVisible({ timeout: LAUNCH_GATE });
     await expect(columnSelection(page, "Inserts", "Base")).toBeVisible();
     await expect(rowSays(page, "1", TEAM)).toBeVisible();
     await expect(rowSays(page, "2", "No Team")).toBeVisible();
-    await expect(noTeamBadge(page, "2")).toHaveCount(0);
+    await expect(rowSays(page, "4", "No Team")).toBeVisible();
+    await expect(anyMark(page, "2")).toHaveCount(0);
+    await expect(anyMark(page, "4")).toHaveCount(0);
     await expect(rowSays(page, "3", CLAIMED)).toBeVisible();
-    await expect(page.getByRole("button", { name: /^[0-9]+ needs? you$/ })).toHaveCount(0);
+    await expect(needsYouPill(page)).toHaveCount(0);
   },
 );

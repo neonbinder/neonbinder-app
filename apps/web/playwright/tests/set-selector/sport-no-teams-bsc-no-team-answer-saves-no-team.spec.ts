@@ -15,8 +15,8 @@
 // The default needs BOTH halves: had BSC's lookup failed (a cooldown, an unrecorded
 // read), or had she stayed in Baseball, card 1 would wait on "Cards with no team"
 // (invariant 8: no answer, no default). The listed-team half (a team on the listing
-// beats the default) is `sport-no-teams-listed-team-beats-the-default`; the pasted
-// checklist path and the quick-add path are `sport-no-teams-saves-cards-no-team`.
+// beats the default) is `sport-no-teams-listing-team-holds-back-the-default`; the pasted
+// checklist path and the quick-add path are `sport-no-teams-stamps-no-team-so-the-card-makes-no-walk-stop`.
 //
 // FIXTURE (SET-REGISTRY.md, "Topps Stars of MLB Network"): the shared READ-ONLY wizard
 // fixture, `Baseball › 2024 › Topps › Topps Stars of MLB Network › Base`, a reader like
@@ -27,7 +27,7 @@
 // recorded in the fake. Shehadi is a recorded Baseball no-match, so her lookup is a
 // fixture hit; moved to the custom sport she costs none (no Wikidata mapping).
 // SOLE WRITER of the worker's custom sport's teamless flag for the length of the test
-// (as `sport-no-teams-saves-cards-no-team` is for its own); the body turns it off and
+// (as `sport-no-teams-stamps-no-team-so-the-card-makes-no-walk-stop` is for its own); the body turns it off and
 // the afterEach does so on a second page if the body did not (R7). Re-runnable: nothing
 // is minted and nothing is committed.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";

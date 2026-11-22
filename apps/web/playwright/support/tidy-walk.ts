@@ -447,7 +447,11 @@ function openTeamRows(page: Page): Locator {
 }
 
 /** Answer one printed team name by creating it in the inline New team form (the row's "+ New team"). */
-async function createTeamFromRow(page: Page, row: Locator): Promise<void> {
+async function createTeamFromRow(page: Page, open: Locator): Promise<void> {
+  // Re-anchor the row by its own name: the open form hides "Not a team", so a row found by
+  // that button (`openTeamRows`) stops matching the moment "+ New team" is pressed.
+  const rowName = (await open.getAttribute("aria-label")) ?? "";
+  const row = tidyTile(page, "Team").getByRole("group", { name: rowName, exact: true });
   await expect(row.getByText("Checking for teams by that name…"), "the team row is still checking").toHaveCount(0);
   await row.getByRole("button", { name: /^\+ New team( .+)?$/, disabled: false }).click();
   const form = row.getByRole("group", { name: /^New team: / });

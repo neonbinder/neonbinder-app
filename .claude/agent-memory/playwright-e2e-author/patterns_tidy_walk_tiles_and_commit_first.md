@@ -73,3 +73,21 @@ that must not write a real set, there is no pre-save exit any more: give it its 
   "Set name in titles" (focused); the title BOX's value follows each typed name (assert with two
   fills); "Save and apply to all N cards" -> status "Set name saved. The other cards' titles are
   updating." and the others are retitled by a scheduled page before the walk reaches them.
+
+## Teamless default on the walk, filtered rows, and a fresh-only fetch's one shot (NEO-426 specs)
+
+- **A row found by a control that the answer hides stops matching mid-answer.** `openTeamRows`
+  filters on "Not a team"; pressing "+ New team" opens the form and hides it, so the same locator
+  then finds nothing ("New team: …" form "not found" while the ARIA snapshot shows it open).
+  Read the row's `aria-label` once and re-anchor by name (`createTeamFromRow` does now).
+- **The teamless-sport default on the walk:** a card whose player name is still pending has a PINK
+  Team tile (nothing can be stamped for an unknown person). Answering the name re-asks the default:
+  the Team tile turns into "No team on this card." by itself, and a sibling card with the same name
+  and nothing else leaves the walk ("N cards left" drops; Save & next never shows it). A card whose
+  data names a team (checklist cell, BSC listing) is never stamped.
+- **An NB team's name can be longer than the source string** (listing "Arizona State Sun Devils",
+  NB row "Arizona State Sun Devils baseball"). Old substring locators hid it; an exact
+  `Team <name>` group misses. Match from the start: `^Team <escaped>( |$)`.
+- **A fresh-only real-set spec gets one run per seed.** If it goes red after the commit, check the
+  rest of it on the same seed with a temporary, uncommitted copy that enters the committed set's
+  walk from the "N need you" pill instead of fetching; delete the copy after the run.
