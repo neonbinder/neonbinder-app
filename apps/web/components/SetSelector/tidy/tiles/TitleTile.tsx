@@ -1,12 +1,14 @@
 import { useCallback, useId, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
-import { assessListingTitle } from "../../../../convex/features/generateListing";
+import { assessListingTitle, titleDescription } from "../../../../convex/features/generateListing";
+import { MAX_LISTING_SHORT_NAME_LENGTH } from "../../../../convex/listingShortName";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { Input } from "../../../primitives/Input";
 import { Textarea } from "../../../primitives/Textarea";
 import NeonButton from "../../../modules/NeonButton";
 import { oneLine } from "../../card-titles";
+import { AUTO_TITLE_CUT_TEXT } from "../../title-copy";
 import {
   ASPECT_VALUE_MAX,
   LISTING_TITLE_MAX,
@@ -269,7 +271,16 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
   // operator types a title of their own.
   const shown = livePreviewTitle !== null && !typedOwn ? livePreviewTitle : text;
   const state = titleLengthState(shown.length, LISTING_TITLE_MAX, true);
-  const leftOut = useMemo(() => preview.leftOutOf(text), [preview, text]);
+  // A name still waiting for its answer (a player or team not made yet) is not
+  // in the title because it is unanswered, not because it did not fit.
+  const waitingNames = useMemo(
+    () => [...(row.pendingPlayerNames ?? []), ...(row.pendingTeamNames ?? [])],
+    [row.pendingPlayerNames, row.pendingTeamNames],
+  );
+  const leftOut = useMemo(
+    () => preview.leftOutOf(text, waitingNames),
+    [preview, text, waitingNames],
+  );
 
   const changeTitle = (next: string) => {
     const wasOver = titleLengthState(shown.length, LISTING_TITLE_MAX, true).over;
@@ -349,7 +360,7 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
       </p>
 
       {cut && !state.over && leftOut.length === 0 && (
-        <p className="text-sm text-ink-2">Auto title was cut short. Rewrite it.</p>
+        <p className="text-sm text-ink-2">{AUTO_TITLE_CUT_TEXT}</p>
       )}
       {/* One form, cut or not: the purple note. */}
       {!state.over && leftOut.length > 0 && (
@@ -410,7 +421,15 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
               closeSetName();
               return;
             }
-            setSetNameDraft(previewData?.inputs.setShortName ?? setName);
+            // What the titles open with now: the set's stored short name, else
+            // the builder's own description ("1996 Score Dugout Collection …"),
+            // never the set row's bare name, which no title says on its own.
+            const inputs = previewData?.inputs;
+            const current = inputs
+              ? inputs.setShortName?.trim() ||
+                titleDescription({ ...inputs, setShortName: undefined }).slice(0, MAX_LISTING_SHORT_NAME_LENGTH).trim()
+              : "";
+            setSetNameDraft(current || setName);
             setSetNameSaved(null);
             setShortening(true);
             requestAnimationFrame(() => setNameRef.current?.focus());

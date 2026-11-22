@@ -557,7 +557,7 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     renderPanel(
       makeCard({ listingTitle: titleOfLength(78), listingTitleTruncated: true }),
     );
-    expect(screen.getByText("Auto title was cut short — rewrite it")).toBeTruthy();
+    expect(screen.getByText("Auto title was cut short. Rewrite it.")).toBeTruthy();
   });
 
   it("NEO-535: a cut-short title says what was cut instead, and an over-cap one only that it is too long", () => {
@@ -565,7 +565,7 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
       makeCard({ listingTitle: titleOfLength(78), listingTitleTruncated: true }),
     );
     expect(screen.getByText(/^Left out to fit: /)).toBeTruthy();
-    expect(screen.queryByText("Auto title was cut short — rewrite it")).toBeNull();
+    expect(screen.queryByText("Auto title was cut short. Rewrite it.")).toBeNull();
   });
 
   it("NEO-535: an over-cap title is never also called cut short", () => {
@@ -574,7 +574,7 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
       makeCard({ listingTitle: titleOfLength(90), listingTitleTruncated: true }),
     );
     expect(screen.getByRole("alert").textContent).toContain("10 over the 80-character limit");
-    expect(screen.queryByText("Auto title was cut short — rewrite it")).toBeNull();
+    expect(screen.queryByText("Auto title was cut short. Rewrite it.")).toBeNull();
   });
 
   it("NEO-535: Regenerate asks the server to rebuild the description as well", async () => {

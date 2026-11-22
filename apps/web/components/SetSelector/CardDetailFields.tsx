@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { Input } from "../primitives/Input";
 import { Textarea } from "../primitives/Textarea";
 import { oneLine } from "./card-titles";
+import { AUTO_TITLE_CUT_TEXT } from "./title-copy";
 import { NotesLengthMeter } from "./NotesLengthMeter";
 import { useConvex, useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
@@ -1339,7 +1340,7 @@ export function CardDetailFields({
               is not "cut short"; nor beside "Left out to fit", which says
               exactly what was cut. */}
           {card.listingTitleTruncated && !titleState.over && titleLeftOut.length === 0 && (
-            <TitleFieldNote>Auto title was cut short — rewrite it</TitleFieldNote>
+            <TitleFieldNote>{AUTO_TITLE_CUT_TEXT}</TitleFieldNote>
           )}
           {/* NEO-535: read from the text in the field now, so retyping a
               cut word takes it off the note. */}

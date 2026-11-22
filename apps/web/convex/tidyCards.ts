@@ -69,13 +69,11 @@ import {
   writeNameChange,
   type NameWriteCache,
 } from "./tidyCardWrites";
-import { careerTeamVerdict } from "./lib/teamFill";
+import { careerVerdictFor, newCareerVerdictCache, type CareerVerdictCache } from "./lib/careerVerdict";
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { queueRetitledCardNow } from "./listingTitleRequeue";
 import { recheckCareerGaps } from "./tidyCareerGap";
 import { listingInputsForStoredCard } from "./storedCardTitle";
-import { generatedTitleTruncatedFlag } from "./features/listingInputs";
-import { assessListingTitle } from "./features/generateListing";
 import { retitleForSetName } from "./features/setNameInTitles";
 import { LISTING_SHORT_NAME_LEVELS, normalizeListingShortName } from "./listingShortName";
 
@@ -684,8 +682,14 @@ export const applyTeamToPlayerCards = mutation({
 type TeamFillFacts = {
   stints: Map<string, Array<{ key: string; fromYear?: number; toYear?: number }>>;
   years: Map<string, number | undefined>;
+  /** The set's leagues and the career teams' ranks (`lib/careerVerdict`). */
+  verdict: CareerVerdictCache;
 };
-const newTeamFillFacts = (): TeamFillFacts => ({ stints: new Map(), years: new Map() });
+const newTeamFillFacts = (): TeamFillFacts => ({
+  stints: new Map(),
+  years: new Map(),
+  verdict: newCareerVerdictCache(),
+});
 
 /**
  * Rule 8 for the guarded Apply-to-all: a card takes the team only when NOTHING
@@ -731,10 +735,13 @@ export async function cardTakesTeamFill(
       })),
     );
   }
-  const verdict = careerTeamVerdict({
+  // NEO-569 — the same ranked, sport-checked verdict the tile and the commit read.
+  const { verdict } = await careerVerdictFor(ctx, facts.verdict, {
     stints: facts.stints.get(playerKey)!,
     year,
     currentYear: new Date().getFullYear(),
+    selectorOptionId: card.selectorOptionId,
+    sportId: card.sportId,
   });
   return verdict.answer?.key === (teamId as string);
 }
@@ -936,6 +943,10 @@ export const applySetNameToTitles = mutation({
       newShortName: next,
       runId,
       cursor: null,
+      // The open card was decided in this call. A second pass would read the
+      // title this one wrote against the same old -> new pair: a swapped hand
+      // edit no longer holds the old name, so it would be rebuilt.
+      openCardId: args.cardId,
     });
     return { openCardRetitled, scheduled: true };
   },
@@ -962,13 +973,14 @@ async function retitleCardForSetName(
     inputsAfter: inputs,
     oldShortName,
     newShortName,
+    waitingNames: [...(card.pendingPlayerNames ?? []), ...(card.pendingTeamNames ?? [])],
   });
   if (decision.kind === "leave") return false;
   const patch: Partial<Doc<"cardChecklist">> =
     decision.kind === "generated"
       ? {
           listingTitle: decision.title,
-          listingTitleTruncated: generatedTitleTruncatedFlag(assessListingTitle(inputs)),
+          listingTitleTruncated: decision.truncated,
         }
       : { listingTitle: decision.title };
   await ctx.db.patch(card._id, { ...patch, lastUpdated: Date.now() });
@@ -985,6 +997,8 @@ export const retitleLeafPage = internalMutation({
     /** The `metadata.listingShortNameSavedAt` the save that started this chain wrote. */
     runId: v.number(),
     cursor: v.union(v.string(), v.null()),
+    /** The card `applySetNameToTitles` already decided; the pages skip it. */
+    openCardId: v.optional(v.id("cardChecklist")),
   },
   returns: v.object({ retitled: v.number(), done: v.boolean() }),
   handler: async (ctx, args) => {
@@ -1004,6 +1018,7 @@ export const retitleLeafPage = internalMutation({
     const cache = newNameWriteCache(ctx);
     let retitled = 0;
     for (const card of page.page) {
+      if (card._id === args.openCardId) continue;
       if (await retitleCardForSetName(ctx, card, args.oldShortName, args.newShortName, cache)) {
         retitled += 1;
       }

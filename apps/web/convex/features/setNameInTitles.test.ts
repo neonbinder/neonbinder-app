@@ -23,6 +23,8 @@ import {
   retitleForSetName,
   swapSetNameInTitle,
   titleShowsLeftOut,
+  truncatedAfterSetName,
+  withoutWaitingNames,
 } from "./setNameInTitles";
 
 const LONG: ListingCardInputs = {
@@ -190,5 +192,157 @@ describe("swapSetNameInTitle", () => {
 
   test("the swapped title is one line", () => {
     expect(oneLine(swapSetNameInTitle("Old\nBo", "Old", "New\n\nName")!)).not.toMatch(/[\r\n]/);
+  });
+});
+
+// ── NEO-645 follow-ups, one fixture: 1996 Score, a long insert, no rookie flag ──
+const SCORE: ListingCardInputs = {
+  cardNumber: "3",
+  playerNames: ["Ryan Klesko"],
+  teamNames: ["Atlanta Braves"],
+  year: "1996",
+  manufacturer: "Score",
+  setName: "Score",
+  insertName: "Dugout Collection Artists Proofs Hologram Foil Series II",
+  sport: "Baseball",
+};
+const BOX = "1996 Score Dugout Collection Artists Proofs";
+
+describe("a hand edit that lost only the card's own words still shows the line", () => {
+  // Typed "Klesko #3" after the description: "Ryan" and the team are out. They
+  // are the card's own words, and they are what the "Left out to fit" line lists.
+  const typed = `${titleDescription(SCORE)} Klesko #3`;
+
+  test("the title shows the line though every missing entry is a player or team word", () => {
+    expect(leftOutOfTitle(SCORE, typed)).toEqual(["Atlanta Braves", "Ryan"]);
+    expect(titleShowsLeftOut(SCORE, typed)).toBe(true);
+  });
+
+  test("the new set name is swapped in for the description and 'Klesko #3' is kept", () => {
+    const out = retitleForSetName({
+      storedTitle: typed,
+      inputsAfter: { ...SCORE, setShortName: BOX },
+      oldShortName: undefined,
+      newShortName: BOX,
+    });
+    expect(out).toEqual({ kind: "swapped", title: `${BOX} Klesko #3` });
+  });
+
+  test("a second box edit swaps the first box's text for the second, 'Klesko #3' still kept", () => {
+    const next = "1996 Score Dugout Collection";
+    const out = retitleForSetName({
+      storedTitle: `${BOX} Klesko #3`,
+      inputsAfter: { ...SCORE, setShortName: next },
+      oldShortName: BOX,
+      newShortName: next,
+    });
+    expect(out).toEqual({ kind: "swapped", title: `${next} Klesko #3` });
+  });
+
+  test("a title with every word back, the team before the number, is left exactly as typed", () => {
+    const own = `${BOX} Ryan Klesko Atlanta Braves #3`;
+    expect(titleShowsLeftOut({ ...SCORE, setShortName: BOX }, own)).toBe(false);
+    const out = retitleForSetName({
+      storedTitle: own,
+      inputsAfter: { ...SCORE, setShortName: "1996 Score Dugout Collection" },
+      oldShortName: BOX,
+      newShortName: "1996 Score Dugout Collection",
+    });
+    expect(out).toEqual({ kind: "leave" });
+  });
+
+  test("an over-length variation is not a line on its own (it has its own field)", () => {
+    const longVariation = "V".repeat(70);
+    const inputs = { ...SCORE, setShortName: BOX, cardVariation: longVariation };
+    const stored = `${BOX} Ryan Klesko Atlanta Braves #3`;
+    expect(titleShowsLeftOut(inputs, stored)).toBe(false);
+  });
+});
+
+describe("a name still waiting for an answer is not left out", () => {
+  const waiting: ListingCardInputs = { ...SCORE, playerNames: ["Dave Stewart"] };
+
+  test("withoutWaitingNames drops a waiting player and a waiting team, case-insensitively", () => {
+    const inputs: ListingCardInputs = { ...SCORE, playerNames: ["Dave Stewart", "Bo Jackson"], teamNames: ["Oakland Athletics"] };
+    expect(withoutWaitingNames(inputs, [" dave stewart ", "OAKLAND ATHLETICS"])).toMatchObject({
+      playerNames: ["Bo Jackson"],
+      teamNames: [],
+    });
+    expect(withoutWaitingNames(inputs, undefined)).toBe(inputs);
+    expect(withoutWaitingNames(inputs, [])).toBe(inputs);
+  });
+
+  test("a hand edit that omits only the waiting name is left as typed", () => {
+    const typed = `${BOX} #3 Atlanta Braves My Own Words`;
+    expect(titleShowsLeftOut({ ...waiting, setShortName: BOX }, typed)).toBe(true);
+    const out = retitleForSetName({
+      storedTitle: typed,
+      inputsAfter: { ...waiting, setShortName: "1996 Score Dugout Collection" },
+      oldShortName: BOX,
+      newShortName: "1996 Score Dugout Collection",
+      waitingNames: ["Dave Stewart"],
+    });
+    expect(out).toEqual({ kind: "leave" });
+  });
+
+  test("the title the commit generated (without the waiting name) is rebuilt without it", () => {
+    const before: ListingCardInputs = { ...waiting, playerNames: [], setShortName: BOX };
+    const stored = assessListingTitle(before).title;
+    const out = retitleForSetName({
+      storedTitle: stored,
+      inputsAfter: { ...waiting, setShortName: "1996 Score Dugout Collection" },
+      oldShortName: BOX,
+      newShortName: "1996 Score Dugout Collection",
+      waitingNames: ["Dave Stewart"],
+    });
+    expect(out.kind).toBe("generated");
+    if (out.kind === "generated") expect(out.title).not.toContain("Stewart");
+  });
+});
+
+describe("a rebuilt title is flagged only when something is left to check", () => {
+  const daulton: ListingCardInputs = {
+    cardNumber: "12",
+    playerNames: ["Darren Daulton"],
+    teamNames: ["Philadelphia Phillies"],
+    teamSplits: [{ location: "Philadelphia", name: "Phillies" }],
+    year: "1996",
+    manufacturer: "Score",
+    setName: "Score",
+    insertName: "Dugout Collection Artists Proofs Hologram Foil Series II",
+    sport: "Baseball",
+  };
+
+  test("the box brings the first name back and the team fits as its nickname: nothing to check", () => {
+    const before = assessListingTitle(daulton);
+    expect(before.dropped).toEqual(["Philadelphia Phillies", "Darren"]);
+    const out = retitleForSetName({
+      storedTitle: before.title,
+      inputsAfter: { ...daulton, setShortName: BOX },
+      oldShortName: undefined,
+      newShortName: BOX,
+    });
+    expect(out).toMatchObject({
+      kind: "generated",
+      title: "1996 Score Dugout Collection Artists Proofs Darren Daulton #12 Phillies Baseball",
+    });
+    // The first build marks a box-built title as one to review; a set-name save
+    // that rebuilt it and left nothing out must not add a check with no line.
+    expect(assessListingTitle({ ...daulton, setShortName: BOX }).coreFits).toBe(false);
+    expect((out as { truncated: true | undefined }).truncated).toBeUndefined();
+  });
+
+  test("a title that still leaves something out is flagged", () => {
+    const tight = { ...daulton, setShortName: "1996 Score Dugout Collection Artists Proofs Hologram Foil Series II Extra" };
+    const after = assessListingTitle(tight);
+    expect(after.dropped.length > 0 || after.tidyUp).toBe(true);
+    expect(truncatedAfterSetName(after)).toBe(true);
+  });
+
+  test("a title that fits whole is not flagged, however it was built", () => {
+    expect(truncatedAfterSetName({ coreFits: true, tidyUp: false, dropped: [] })).toBeUndefined();
+    expect(truncatedAfterSetName({ coreFits: false, tidyUp: false, dropped: [] })).toBeUndefined();
+    expect(truncatedAfterSetName({ coreFits: false, tidyUp: true, dropped: [] })).toBe(true);
+    expect(truncatedAfterSetName({ coreFits: false, tidyUp: false, dropped: ["Atlanta Braves"] })).toBe(true);
   });
 });

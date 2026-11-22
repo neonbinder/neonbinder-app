@@ -310,3 +310,4 @@
 - [Key hints hide on coarse pointers](reference_key_hint_hides_on_coarse_pointers_via_hintedlabel.md) — HintedLabel sr-onlys (Esc)/(Enter); drop aria-label to satisfy label-in-name, regex lookups
 - [Tile and commit share one verdict](reference_tile_and_commit_share_one_verdict.md) — client preselect and server write call one pure fn; one test drives both; goldens/pins updated on purpose
 - [Radix size-1 button does not wrap](reference_radix_button_size1_does_not_wrap_long_labels.md) — 24px fixed height, no wrap; data-driven labels overflow phones; use h-auto min-h-6 max-w-full wrap-anywhere
+- [Open card then paged pass double-applies](reference_open_card_then_paged_pass_double_applies.md) — skip the in-call card in the scheduled pages; one helper for the shared career verdict

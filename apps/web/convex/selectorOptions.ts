@@ -457,7 +457,7 @@ import {
 import { indexTypedNames, reconcilePrintedAfterEdit } from "./tidyTypedNames";
 import { syncCardPrintedNames, listCardPrintedNames, type DesiredPrintedName } from "./cardPrintedNames";
 import { computeCoverage, newCoverageMemo } from "./lib/careerCoverageFacts";
-import { careerTeamVerdict } from "./lib/teamFill";
+import { careerVerdictFor, newCareerVerdictCache } from "./lib/careerVerdict";
 // NEO-334 — a variant type's title IS its kind (Base, Insert, Parallel). The
 // insert/parallel reading of a row beneath one is derived from that kind at
 // creation and fed to `deriveOwnLevelFeatures`; it is never persisted.
@@ -23255,6 +23255,7 @@ export const commitCardChecklistChunk = internalMutation({
       return chunkSetYear.year;
     };
     const playerStintMemo = new Map<string, Array<{ key: string; fromYear?: number; toYear?: number }>>();
+    const careerVerdictCache = newCareerVerdictCache();
     const fillTeamMemo = new Map<string, Doc<"teams"> | null>();
     const fillTeamRow = async (teamId: Id<"teams">): Promise<Doc<"teams"> | null> => {
       if (!fillTeamMemo.has(teamId as string)) {
@@ -23278,7 +23279,17 @@ export const commitCardChecklistChunk = internalMutation({
         }));
         playerStintMemo.set(playerId as string, stints);
       }
-      const verdict = careerTeamVerdict({ stints, year, currentYear: new Date().getFullYear() });
+      // NEO-569 — ranked by the set's leagues, over this sport's teams only
+      // (the same verdict the Team tile reads).
+      const sportId = await cardSport();
+      if (!sportId) return undefined;
+      const { verdict } = await careerVerdictFor(ctx, careerVerdictCache, {
+        stints,
+        year,
+        currentYear: new Date().getFullYear(),
+        selectorOptionId: args.selectorOptionId,
+        sportId,
+      });
       if (!verdict.answer) return undefined;
       const teamId = verdict.answer.key as Id<"teams">;
       return (await fillTeamRow(teamId)) ? teamId : undefined;

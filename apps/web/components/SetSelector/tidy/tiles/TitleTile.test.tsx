@@ -81,6 +81,34 @@ beforeEach(() => {
 
 const titleField = () => screen.getByLabelText("Card title for #USC118") as HTMLTextAreaElement;
 
+describe("TitleTile Left out to fit: a name still waiting is not left out", () => {
+  const stored = "2024 Topps Chrome Update #USC118";
+  const waitingInputs = { ...inputs, playerNames: ["Dave Stewart"], isRookie: false };
+
+  it("lists the name a card prints that is not answered yet as nothing left out to fit", () => {
+    previewResult = { title: stored, coreFits: true, dropped: [], inputs: waitingInputs };
+    renderTile(cardOf("c1", { listingTitle: stored, pendingPlayerNames: ["Dave Stewart"] }));
+    expect(screen.queryByText(/Left out to fit/)).toBeNull();
+  });
+
+  it("still lists a name that was answered and did not fit", () => {
+    previewResult = { title: stored, coreFits: true, dropped: [], inputs: waitingInputs };
+    renderTile(cardOf("c1", { listingTitle: stored }));
+    expect(screen.getByText("Left out to fit: Dave Stewart")).toBeTruthy();
+  });
+
+  it("lists only the answered name when another is waiting", () => {
+    previewResult = {
+      title: stored,
+      coreFits: true,
+      dropped: [],
+      inputs: { ...waitingInputs, playerNames: ["Dave Stewart", "Rickey Henderson"] },
+    };
+    renderTile(cardOf("c1", { listingTitle: stored, pendingPlayerNames: ["Dave Stewart"] }));
+    expect(screen.getByText("Left out to fit: Rickey Henderson")).toBeTruthy();
+  });
+});
+
 describe("TitleTile levels", () => {
   it("is plain when the title fits, showing it as text with Edit title", () => {
     renderTile(cardOf("c1"));
@@ -211,15 +239,53 @@ describe("TitleTile editing", () => {
   });
 });
 
+describe("TitleTile set name for every card: what the field opens on", () => {
+  const open = () => fireEvent.click(screen.getByRole("button", { name: "Shorten the set name for every card" }));
+
+  it("opens on the set's stored short name when it has one", () => {
+    previewResult = { title: SHORT, coreFits: true, dropped: [], inputs: { ...inputs, setShortName: "2024 TC Update" } };
+    renderTile(cardOf("c1"));
+    open();
+    expect((screen.getByLabelText("Set name in titles") as HTMLInputElement).value).toBe("2024 TC Update");
+  });
+
+  it("opens on the description with the insert in it, never the set row's name alone", () => {
+    previewResult = {
+      title: SHORT,
+      coreFits: true,
+      dropped: [],
+      inputs: { ...inputs, setName: "Score", year: "1996", insertName: "Dugout Collection Artists Proofs" },
+    };
+    renderTile(cardOf("c1"));
+    open();
+    expect((screen.getByLabelText("Set name in titles") as HTMLInputElement).value).toBe(
+      "1996 Score Dugout Collection Artists Proofs",
+    );
+  });
+
+  it("is capped at the 80 characters a set name in titles may hold", () => {
+    previewResult = {
+      title: SHORT,
+      coreFits: true,
+      dropped: [],
+      inputs: { ...inputs, setName: "Score ".repeat(30).trim(), year: "1996" },
+    };
+    renderTile(cardOf("c1"));
+    open();
+    expect((screen.getByLabelText("Set name in titles") as HTMLInputElement).value.length).toBeLessThanOrEqual(80);
+  });
+});
+
 describe("TitleTile set name for every card", () => {
   const open = () => fireEvent.click(screen.getByRole("button", { name: "Shorten the set name for every card" }));
 
-  it("opens inline with the current name, the old one, and a live preview", () => {
+  it("opens inline with the name titles use now (the builder's description), the old one, and a live preview", () => {
     const leaf = [cardOf("c1"), cardOf("c2"), cardOf("c3")];
     renderTile(leaf[0], none, leaf);
     open();
     const box = screen.getByLabelText("Set name in titles") as HTMLInputElement;
-    expect(box.value).toBe("Topps Chrome Update");
+    // The year and set the titles open with, not the set row's bare name.
+    expect(box.value).toBe("2024 Topps Chrome Update");
     expect(screen.getByText("Was “Topps Chrome Update”")).toBeTruthy();
     expect(screen.getByText("The title above shows this card with the new set name as you type.")).toBeTruthy();
     fireEvent.change(box, { target: { value: "TC Update" } });

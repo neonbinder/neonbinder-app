@@ -67,45 +67,67 @@ export function swapSetNameInTitle(
   return oneLine(`${text.slice(0, at)}${newName.trim()}${text.slice(at + want.length)}`);
 }
 
-/** Every word of `entry` is one of the card's own player/team/number words. */
-function isOwnEntry(entry: string, ownWords: ReadonlySet<string>): boolean {
-  const words = entry.toLowerCase().split(/\s+/).filter(Boolean);
-  return words.length > 0 && words.every((w) => ownWords.has(w));
-}
-
-/** The words a card's own players, teams and number are made of. */
-export function ownWordsOfInputs(inputs: ListingCardInputs): Set<string> {
-  return new Set(
-    [
-      ...(inputs.playerNames ?? []),
-      ...(inputs.cameoNames ?? []),
-      ...(inputs.teamNames ?? []),
-      inputs.cardNumber,
-      `#${inputs.cardNumber}`,
-    ].flatMap((n) => n.toLowerCase().split(/\s+/).filter(Boolean)),
-  );
+/**
+ * `inputs` without the names a card prints that are still waiting for an answer
+ * (a player or team not made yet). A title is built without them (the commit
+ * stores the title it wrote, and the name joins it once answered), so they are
+ * never "left out to fit": reading them as left out put a "Left out to fit:
+ * Dave Stewart" on a card whose player does not exist yet, and made a hand-typed
+ * title look like it showed the line.
+ */
+export function withoutWaitingNames(
+  inputs: ListingCardInputs,
+  waiting: ReadonlyArray<string> | undefined,
+): ListingCardInputs {
+  const names = new Set((waiting ?? []).map((n) => n.trim().toLowerCase()).filter(Boolean));
+  if (names.size === 0) return inputs;
+  const answered = (list: string[] | undefined) =>
+    list?.filter((n) => !names.has(n.trim().toLowerCase()));
+  return {
+    ...inputs,
+    playerNames: answered(inputs.playerNames) ?? [],
+    ...(inputs.teamNames ? { teamNames: answered(inputs.teamNames) } : {}),
+  };
 }
 
 /**
  * Does the stored title show a "Left out to fit" line under `inputs`? The
- * words the generator would have cut that the title is ALSO missing, less the
- * card's own names and number and an over-length variation (which has its own
- * field). Read from the text the field holds now, never the generator's own
- * assessment.
+ * words the generator would have cut that the title is ALSO missing, less an
+ * over-length variation (which has its own field). Read from the text the field
+ * holds now, never the generator's own assessment.
+ *
+ * The card's own words count: a title that lost the team, the number or a first
+ * name shows the line, as the tile's "Left out to fit" does (NEO-637 read it the
+ * same way; "Klesko #3" loses "Ryan" and the team and so takes the new set name).
+ * Only the GROUPING of cards on the old step ignored them, never this test.
  */
 export function titleShowsLeftOut(inputs: ListingCardInputs, title: string): boolean {
   const variation = inputs.cardVariation?.trim();
   const overCapVariation =
     variation && variation.length > ASPECT_VALUE_MAX ? variation : undefined;
-  const own = ownWordsOfInputs(inputs);
-  return leftOutOfTitle(inputs, title.trim()).some(
-    (entry) => entry !== overCapVariation && !isOwnEntry(entry, own),
-  );
+  return leftOutOfTitle(inputs, title.trim()).some((entry) => entry !== overCapVariation);
+}
+
+/**
+ * The `listingTitleTruncated` a title REBUILT for a set-name change is stored
+ * with. A blue check must have something to act on: a title the new set name
+ * rebuilt with nothing left out (the box brought the first name back, the team
+ * fits as its nickname) is not one, however it was built, so only a title that
+ * still leaves something out (a Tidy Up cut, or words on the "Left out to fit"
+ * line) is flagged. The first build flags every box-built title (NEO-535); this
+ * is the operator's own set-name save, and flagging every card it rebuilt would
+ * put the whole checklist on the walk with an empty line.
+ */
+export function truncatedAfterSetName(
+  after: Pick<ReturnType<typeof assessListingTitle>, "coreFits" | "tidyUp" | "dropped">,
+): true | undefined {
+  if (after.coreFits) return undefined;
+  return after.tidyUp || after.dropped.length > 0 ? true : undefined;
 }
 
 export type SetNameRetitle =
   | { kind: "leave" }
-  | { kind: "generated"; title: string; coreFits: boolean }
+  | { kind: "generated"; title: string; truncated: true | undefined }
   | { kind: "swapped"; title: string };
 
 /**
@@ -120,8 +142,11 @@ export function retitleForSetName(args: {
   inputsAfter: ListingCardInputs;
   oldShortName: string | undefined;
   newShortName: string | undefined;
+  /** Printed names still waiting for an answer: the title is built without them. */
+  waitingNames?: ReadonlyArray<string>;
 }): SetNameRetitle {
-  const { storedTitle, inputsAfter } = args;
+  const { storedTitle } = args;
+  const inputsAfter = withoutWaitingNames(args.inputsAfter, args.waitingNames);
   const inputsBefore: ListingCardInputs = {
     ...inputsAfter,
     setShortName: args.oldShortName?.trim() || undefined,
@@ -133,7 +158,7 @@ export function retitleForSetName(args: {
   if (stored === "" || stored === before.title) {
     return stored === after.title
       ? { kind: "leave" }
-      : { kind: "generated", title: after.title, coreFits: after.coreFits };
+      : { kind: "generated", title: after.title, truncated: truncatedAfterSetName(after) };
   }
   // A hand edit: only one that shows the line is touched.
   if (!titleShowsLeftOut(inputsBefore, stored)) return { kind: "leave" };
@@ -142,7 +167,7 @@ export function retitleForSetName(args: {
     (args.oldShortName ? swapSetNameInTitle(stored, args.oldShortName, newName) : undefined) ??
     swapSetNameInTitle(stored, titleDescription(inputsBefore), newName);
   if (swapped === undefined) {
-    return { kind: "generated", title: after.title, coreFits: after.coreFits };
+    return { kind: "generated", title: after.title, truncated: truncatedAfterSetName(after) };
   }
   return swapped === stored ? { kind: "leave" } : { kind: "swapped", title: swapped };
 }

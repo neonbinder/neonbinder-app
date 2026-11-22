@@ -584,6 +584,40 @@ describe("applySetNameToTitles — the three title cases", () => {
     expect((await card(t, s.otherEdit))!.lastUpdated).toBe(WORLD_NOW);
   });
 
+  test("saved from the hand-edited card itself, its swapped title survives the scheduled pages", async () => {
+    const t = newT();
+    const s = await setup(t);
+    // The operator is on the card they typed; the call swaps it and the pages
+    // must not run the same old -> new pair over the title it already wrote.
+    const out = await apply(t, s, SHORT, s.leftOut);
+    expect(out).toEqual({ openCardRetitled: true, scheduled: true });
+    expect((await card(t, s.leftOut))!.listingTitle).toBe(`${SHORT} Jackson #3`);
+    await drainScheduled(t);
+    expect((await card(t, s.leftOut))!.listingTitle).toBe(`${SHORT} Jackson #3`);
+    // The pages still reach the others.
+    expect((await card(t, s.generated))!.listingTitle?.startsWith(SHORT)).toBe(true);
+  });
+
+  test("a second set name swaps the first one out of a hand edit again", async () => {
+    const t = newT();
+    const s = await setup(t);
+    await apply(t, s, SHORT);
+    await drainScheduled(t);
+    await apply(t, s, "Topps Holo 91", s.leftOut);
+    await drainScheduled(t);
+    expect((await card(t, s.leftOut))!.listingTitle).toBe("Topps Holo 91 Jackson #3");
+  });
+
+  test("a title the new set name rebuilds with nothing left out carries no 'cut short' flag", async () => {
+    const t = newT();
+    const s = await setup(t);
+    await apply(t, s, SHORT);
+    await drainScheduled(t);
+    const rebuilt = (await card(t, s.generated))!;
+    expect(rebuilt.listingTitle?.startsWith(SHORT)).toBe(true);
+    expect(rebuilt.listingTitleTruncated).toBeUndefined();
+  });
+
   test("setting the same name again writes nothing and schedules nothing", async () => {
     const t = newT();
     const s = await setup(t);

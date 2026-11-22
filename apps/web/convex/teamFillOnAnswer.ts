@@ -26,18 +26,21 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { MAX_CARD_TEAMS } from "./features/cardAttention";
 import { planCardFill } from "./features/teamFillOnCommit";
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
-import { careerTeamVerdict } from "./lib/teamFill";
+import { careerVerdictFor, newCareerVerdictCache, type CareerVerdictCache } from "./lib/careerVerdict";
 
 export type FillReadCache = {
   years: Map<string, number | undefined>;
   stints: Map<string, Array<{ key: string; fromYear?: number; toYear?: number }>>;
   teamSport: Map<string, Id<"selectorOptions"> | null>;
+  /** The set's leagues and the career teams' ranks (`lib/careerVerdict`). */
+  verdict: CareerVerdictCache;
 };
 
 export const newFillReadCache = (): FillReadCache => ({
   years: new Map(),
   stints: new Map(),
   teamSport: new Map(),
+  verdict: newCareerVerdictCache(),
 });
 
 /** What a card must be, besides teamless, for NO source to have named a team (rule 8). */
@@ -99,7 +102,14 @@ export async function planFillOnAnswer(
       }));
       cache.stints.set(key, stints);
     }
-    const verdict = careerTeamVerdict({ stints, year, currentYear: new Date().getFullYear() });
+    // NEO-569 — ranked by the set's leagues, over this sport's teams only.
+    const { verdict } = await careerVerdictFor(ctx, cache.verdict, {
+      stints,
+      year,
+      currentYear: new Date().getFullYear(),
+      selectorOptionId: card.selectorOptionId,
+      sportId,
+    });
     if (!verdict.answer) return undefined;
     const teamId = verdict.answer.key as Id<"teams">;
     if (!cache.teamSport.has(teamId)) {

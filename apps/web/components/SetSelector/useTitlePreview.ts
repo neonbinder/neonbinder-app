@@ -8,6 +8,7 @@ import {
   leftOutOfTitle,
   singularTypeName,
 } from "../../convex/features/generateListing";
+import { withoutWaitingNames } from "../../convex/features/setNameInTitles";
 import { variantTypeKindFromTitle } from "../../convex/variantRole";
 
 /**
@@ -242,7 +243,13 @@ export type TitlePreview = {
    * until a preview is fetched; never the generator's own assessment, so
    * retyping a cut word takes it off the note.
    */
-  leftOutOf: (text: string) => string[];
+  /**
+   * "Left out to fit" for `text`. `notYetNamed`: names the card prints that are
+   * still waiting for an answer (a player or team not made yet). They are not
+   * in the stored title because they are not answered, not because they did
+   * not fit, so they are never listed (NEO-645).
+   */
+  leftOutOf: (text: string, notYetNamed?: ReadonlyArray<string>) => string[];
   /** A regenerate is in flight (or its query has not resolved yet). */
   loading: boolean;
   /**
@@ -313,7 +320,8 @@ export function useTitlePreview(
 
   const inputs = preview?.inputs;
   const leftOutOf = useCallback(
-    (text: string) => (inputs ? leftOutOfTitle(inputs, text.trim()) : []),
+    (text: string, notYetNamed?: ReadonlyArray<string>) =>
+      inputs ? leftOutOfTitle(withoutWaitingNames(inputs, notYetNamed), text.trim()) : [],
     [inputs],
   );
 

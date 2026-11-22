@@ -55,9 +55,8 @@ import { refreshedListingDescription } from "./cardDescriptionRefresh";
 // NEO-330: also the key `entityReviewSkips.nameNormalized` is written with
 // (the commit prelude's `norm`). A skip lookup keyed any other way would miss.
 import { normalizeEntityName } from "../lib/entities/normalize-name";
+import { careerVerdictFor, newCareerVerdictCache } from "./lib/careerVerdict";
 import {
-  careerTeamVerdict,
-  stintCoversWindow,
   suggestTeamsForPlayer,
   teamPreferenceRank,
   UNRANKED,
@@ -1615,6 +1614,8 @@ export const suggestedTeamsForCard = query({
       uncoveredSetYear?: number;
     };
     const plans: PlayerPlan[] = [];
+    const verdictCache = newCareerVerdictCache();
+    const sportId = row.sportId;
     for (const player of players) {
       const stints = (player.teamYears ?? []).map((entry) => ({
         key: entry.teamId as string,
@@ -1632,14 +1633,17 @@ export const suggestedTeamsForCard = query({
         });
         continue;
       }
-      const verdict = careerTeamVerdict({ stints, year, currentYear: thisYear });
-      const windowKeys = [
-        ...new Set(
-          dated
-            .filter((s) => stintCoversWindow({ fromYear: s.fromYear!, toYear: s.toYear }, year))
-            .map((s) => s.key),
-        ),
-      ];
+      // NEO-569 — the verdict is ranked by the set's leagues and counted over
+      // this sport's teams only, exactly as the commit's fill reads it
+      // (`careerVerdictFor`), so a tie in the window breaks toward the set's
+      // league here and there alike.
+      const { verdict, windowKeys } = await careerVerdictFor(ctx, verdictCache, {
+        stints,
+        year,
+        currentYear: thisYear,
+        selectorOptionId: row.selectorOptionId,
+        sportId,
+      });
       if (verdict.answer) {
         plans.push({
           player,
@@ -1647,14 +1651,18 @@ export const suggestedTeamsForCard = query({
           answered: true,
         });
       } else if (windowKeys.length > 0) {
-        // A tie in the window: every team in it, none chosen.
-        plans.push({ player, teamIds: windowKeys as Array<Id<"teams">>, answered: false });
+        // A tie in the window: every team in it, none chosen (best-ranked first).
+        plans.push({
+          player,
+          teamIds: verdict.candidates.filter((key) => windowKeys.includes(key)) as Array<Id<"teams">>,
+          answered: false,
+        });
       } else {
         // Nothing covers the window: the retired-player case. The career is
         // offered whole, as choices, never as an answer.
         plans.push({
           player,
-          teamIds: [...new Set(dated.map((s) => s.key as Id<"teams">))],
+          teamIds: [...new Set(verdict.candidates.filter((key) => dated.some((s) => s.key === key)))] as Array<Id<"teams">>,
           answered: false,
           uncoveredSetYear: year,
         });
