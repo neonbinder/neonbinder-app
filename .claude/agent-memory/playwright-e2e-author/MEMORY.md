@@ -124,10 +124,12 @@
 - [e2e-run tool in practice](patterns_e2e_run_tool_in_practice.md) — 180 s Bash auto-background vs 230 s slice, plant re-seeds, digest path/header quirks
 - [Pre-fix snapshot is the planted break](patterns_pre_fix_snapshot_is_the_planted_break.md) — bug-fix spec: serve the pre-fix commit for the red, the fix commit for green; reseed between
 - [Type a live-rewrite box by keystrokes](patterns_type_a_live_rewrite_box_by_keystrokes.md) — fill() is one change; Backspace exposes intermediate box texts that flip per-row rules (NEO-637)
-- [Tidy walk tiles, commit first](patterns_tidy_walk_tiles_and_commit_first.md) — NEO-645: tile=region, pink=description "To fix"; save lands before the walk; no cancel-unsaved; keys via header click; blue = long-team title cut; disagree tile + set-name shortener handles; teamless default, re-anchor filtered rows
+- [Tidy walk tiles, commit first](patterns_tidy_walk_tiles_and_commit_first.md) — NEO-645: tile=group, pink="To fix"; save lands before the walk; no cancel-unsaved; a11y-pass names; blue = long-team title cut; disagree tile + set-name shortener handles; teamless default, re-anchor filtered rows
 - [Resume a fresh-only walk spec via the pill](patterns_resume_a_fresh_only_walk_spec_through_the_pill.md) — red inside the walk after Skips: snapshot-only copy reopens via "N need you"; chained `has` skips every card
 - [Title repeat rule, worker-11 arithmetic, shared snapshot results](patterns_title_repeat_of_set_name_and_shared_snapshot_results.md) — distinct set/team prefixes; size for worker 11; --exclude results + own --output
 - [Probe the rest of a spent fresh-only run](patterns_probe_the_rest_of_a_spent_fresh_only_run.md) — red after commit, no reseed: throwaway probe reopens the walk by the pill, then rm
 - [Career tile fixtures](patterns_career_tile_fixtures.md) — NEO-645: gap only at commit for a pre-made player; recorded Wikidata careers; probe names read-only; --output wiped per run
 - [Career-team link fixture + counter-fixture proof](patterns_career_team_link_fixture_and_counter_fixture_proof.md) — NEO-490 6b on a hand-made sport (2020, stints 2010/2024); spec-only counter-fixture when a plant is barred
 - [Set-history link with no walk stop](patterns_set_history_link_with_no_walk_stop.md) — notes render only in walk tiles: one clean card + one blue-gap card; fixture-flip red
+- [Match Cards specs after commit-first](patterns_match_cards_specs_after_commit_first.md) — Cancel card matching is the pre-save exit; NB blue pick; No Team empty value; Back after a walk; stripped note data
+- [Team fill career-tier fixture](patterns_team_fill_career_tier_fixture.md) — Q1-A fill visible via 70-char team; tile chips read set year, commit [y-1,y]: both negative stints cover y

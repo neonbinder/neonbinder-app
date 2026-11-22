@@ -11,7 +11,7 @@
  *     person, or from the checklist's "N need you" pill (`openTidyWalk`);
  *   - one card at a time: a card face, a header line ("#38b · Image Variation
  *     · Mike Trout"), a tally ("3 to fix · 1 to check") and tiles, each a
- *     `region` named by its heading (`tidyTile`): "Sources disagree", "Player",
+ *     `group` named by its heading (`tidyTile`): "Sources disagree", "Player",
  *     "Career", "Team", "Autograph", "Listing title", "More about this card";
  *   - a tile's level is in its accessible DESCRIPTION, not its colour: "To fix"
  *     (pink, holds Save & next), "To check" (blue), "Waiting" (a skeleton), none
@@ -47,7 +47,7 @@ export const TIDY_FOOTER = {
   done: "Done (Esc)",
 } as const;
 
-/** A tile's heading, which is its region's accessible name. */
+/** A tile's heading, which is its group's accessible name. */
 export type TidyTileName =
   | "Sources disagree"
   | "Player"
@@ -64,8 +64,11 @@ const TO_FIX = "To fix";
 const NOT_A_PLAYER = /^Not a player \(checklist, team card, stadium\)( .+)?$/;
 /** "Not a team", plus " <printed name>" on a card with more than one team name. */
 const NOT_A_TEAM = /^Not a team( .+)?$/;
-/** An answered name row's Change ("Change", or "Change <printed name>" on a multi-name card). */
-const CHANGE = /^Change( .+)?$/;
+/** An answered player row's Change ("Change player", or "Change player <printed name>" on a multi-name card). */
+// Tolerant of the pre-26cea34c "Change" / "Change <printed>" until every Vite serves the rename.
+const CHANGE_PLAYER = /^Change( player)?( .+)?$/;
+/** An answered team row's Change ("Change team", or "Change team <printed name>" on a multi-name card). */
+const CHANGE_TEAM = /^Change( team)?( .+)?$/;
 
 /** The open walk. Contract: a locator, nothing waited for. */
 export function tidyWalk(page: Page): Locator {
@@ -88,7 +91,10 @@ export function tidyFooterButton(page: Page, name: keyof typeof TIDY_FOOTER, { u
 
 /** One tile of the open card, by its heading. Contract: a locator, nothing waited for. */
 export function tidyTile(page: Page, name: TidyTileName): Locator {
-  return tidyWalk(page).getByRole("region", { name, exact: true });
+  // A `group` since 26cea34c; the `region` alternative keeps a build from before it working
+  // (a running snapshot), and goes once every build is past it.
+  const walk = tidyWalk(page);
+  return walk.getByRole("group", { name, exact: true }).or(walk.getByRole("region", { name, exact: true }));
 }
 
 /**
@@ -316,7 +322,7 @@ function openPlayerRows(page: Page): Locator {
 /** The answered row named `Player <printed>`: its Change is up and its "Not a player" is gone. */
 async function expectPlayerRowAnswered(page: Page, rowName: string): Promise<void> {
   const row = tidyTile(page, "Player").getByRole("group", { name: rowName, exact: true });
-  await expect(row.getByRole("button", { name: CHANGE }), `"${rowName}" was answered`).toBeVisible();
+  await expect(row.getByRole("button", { name: CHANGE_PLAYER }), `"${rowName}" was answered`).toBeVisible();
   await expect(row.getByRole("button", { name: NOT_A_PLAYER })).toHaveCount(0);
 }
 
@@ -481,7 +487,7 @@ export async function createTeamOnOpenRow(page: Page): Promise<string> {
   const rowName = (await row.getAttribute("aria-label")) ?? "";
   await createTeamFromRow(page, row);
   const done = tidyTile(page, "Team").getByRole("group", { name: rowName, exact: true });
-  await expect(done.getByRole("button", { name: CHANGE }), `"${rowName}" was answered`).toBeVisible();
+  await expect(done.getByRole("button", { name: CHANGE_TEAM }), `"${rowName}" was answered`).toBeVisible();
   return rowName;
 }
 
@@ -530,7 +536,7 @@ export async function answerPinkTeamTiles(
       else await createTeamFromRow(page, row);
     }
     const done = tile.getByRole("group", { name: rowName, exact: true });
-    await expect(done.getByRole("button", { name: CHANGE }), `"${rowName}" was answered`).toBeVisible();
+    await expect(done.getByRole("button", { name: CHANGE_TEAM }), `"${rowName}" was answered`).toBeVisible();
     await expect(done.getByRole("button", { name: NOT_A_TEAM })).toHaveCount(0);
     answered++;
   }
@@ -556,16 +562,18 @@ export async function answerPinkTeamTiles(
 
 /**
  * NEO-345 on the walk: a pink Autograph tile ("How is this card signed?") gets
- * `choice` and is proved answered (pressed, the tile no longer pink).
+ * `choice` (a radio in the "Autograph format" radiogroup) and is proved answered
+ * (checked, the tile no longer pink).
  */
 export async function answerPinkAutographTile(
   page: Page,
   choice: "On-card auto" | "Sticker auto" = "On-card auto",
 ): Promise<boolean> {
   if ((await pinkTile(page, "Autograph").count()) === 0) return false;
-  const button = tidyTile(page, "Autograph").getByRole("button", { name: choice, exact: true, disabled: false });
-  await button.click();
-  await expect(tidyTile(page, "Autograph").getByRole("button", { name: choice, exact: true, pressed: true })).toBeVisible();
+  const formats = tidyTile(page, "Autograph").getByRole("radiogroup", { name: "Autograph format", exact: true });
+  const radio = formats.getByRole("radio", { name: choice, exact: true, disabled: false });
+  await radio.click();
+  await expect(formats.getByRole("radio", { name: choice, exact: true, checked: true })).toBeVisible();
   await expect(pinkTile(page, "Autograph")).toHaveCount(0);
   return true;
 }

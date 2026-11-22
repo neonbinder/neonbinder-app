@@ -153,7 +153,7 @@ test(
     await expect(pinkTile(page, "Player")).toHaveCount(0);
 
     // The default was asked again as his name was answered, and the listed team held it back.
-    await expect(listedTeam.getByRole("button", { name: "Change", exact: true })).toBeVisible();
+    await expect(listedTeam.getByRole("button", { name: "Change team", exact: true })).toBeVisible();
     await expect(pinkTile(page, "Team")).toHaveCount(0);
     await expect(stampedLine).toHaveCount(0);
     await expectAccessible(page, { within: walk, label: "Tidy Up walk on a teamless-sport card whose listing names a team" });

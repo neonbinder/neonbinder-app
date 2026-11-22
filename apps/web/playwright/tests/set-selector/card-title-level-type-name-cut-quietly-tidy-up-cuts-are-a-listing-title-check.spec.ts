@@ -200,8 +200,7 @@ test(
     await expect(titleTile.getByText(listedTitle, { exact: true })).toBeVisible();
     await expect(titleTile.getByText(`${listedTitle.length}/80`, { exact: true })).toBeVisible();
     await expect(titleTile.getByText(`Left out to fit: ${team}, #${NUMBER}, ${FIRST}`, { exact: true })).toBeVisible();
-    // "Edit card title" until the a11y pass renames it "Edit title" / "Edit title for #N".
-    await expect(titleTile.getByRole("button", { name: /^Edit (card )?title/ })).toBeVisible();
+    await expect(titleTile.getByRole("button", { name: "Edit title", exact: true })).toBeVisible();
     await expect(titleTile.getByRole("textbox")).toHaveCount(0);
     // Nothing on the card is pink: Save & next is usable and no "to fix" line shows.
     await expect(tidyFooterButton(page, "saveAndNext", { usable: true })).toBeVisible();

@@ -134,7 +134,7 @@ test(
       "1 to fix before this card can save. Skip it and it can't be listed until it's fixed.",
     );
     // The first card of a sitting has nothing before it.
-    await expect(tidyFooterButton(page, "back")).toBeDisabled();
+    await expect(tidyFooterButton(page, "back")).toHaveAttribute("aria-disabled", "true");
     const idA = tidyParam(page);
     expect(idA, "the walk's position is in the address").not.toBe("");
     await expectAccessible(page, { within: walk, label: "Tidy Up walk on a card with something to fix" });

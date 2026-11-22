@@ -231,7 +231,7 @@ test(
     await expect(titleTile.getByText(`${stored.length}/80`, { exact: true })).toBeVisible();
     const titleBox = titleTile.getByRole("textbox", { name: `Card title for #${num}`, exact: true });
     await expect(titleBox).toHaveCount(0);
-    await expect(titleTile.getByRole("button", { name: "Edit card title", exact: true })).toBeVisible();
+    await expect(titleTile.getByRole("button", { name: "Edit title", exact: true })).toBeVisible();
     // What the stored title left out (NEO-535), read off the tile.
     const leftOut = titleTile.getByText(`Left out to fit: ${variationText}`, { exact: true });
     await expect(leftOut).toBeVisible();
@@ -282,7 +282,7 @@ test(
     await titleBox.fill(stored);
     await titleBox.press("Enter");
     await expect(titleBox).toHaveCount(0);
-    await expect(titleTile.getByRole("button", { name: "Edit card title", exact: true })).toBeVisible();
+    await expect(titleTile.getByRole("button", { name: "Edit title", exact: true })).toBeVisible();
     await expect(shownTitle).toHaveText(stored);
 
     // ── The variation trimmed to 65: the note and the pink go, and it saves ──

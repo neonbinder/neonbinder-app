@@ -203,7 +203,7 @@ test(
     await expect(setNameBox).toHaveCount(0);
     await expect(box901).toHaveCount(0);
     await expect(titleTile.getByText(titleWith(SHORT, "901"))).toBeVisible();
-    await expect(titleTile.getByRole("button", { name: "Edit card title", exact: true })).toBeVisible();
+    await expect(titleTile.getByRole("button", { name: "Edit title", exact: true })).toBeVisible();
     await expect(pinkTile(page, "Listing title")).toHaveCount(0);
     // The card's other pink (no team) is answered, so Save & next can take it.
     await answerPinkTeamTiles(page, { noTeam: "noTeamOnCard" });
@@ -213,7 +213,7 @@ test(
     await expect(titleTile.getByText(titleWith(SHORT, "902"))).toBeVisible();
     await expect(pinkTile(page, "Listing title")).toHaveCount(0);
     await expect(titleTile.getByRole("textbox", { name: "Card title for #902", exact: true })).toHaveCount(0);
-    await expect(titleTile.getByRole("button", { name: "Edit card title", exact: true })).toBeVisible();
+    await expect(titleTile.getByRole("button", { name: "Edit title", exact: true })).toBeVisible();
     await expect(titleTile.getByText(longSet)).toHaveCount(0);
     await answerPinkTeamTiles(page, { noTeam: "noTeamOnCard" });
     await saveAndNext(page);

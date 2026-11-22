@@ -1,20 +1,25 @@
 ---
 name: patterns-tidy-walk-tiles-and-commit-first
-description: NEO-645 per-card Tidy Up walk — tile = region named by heading, pink = description "To fix"; the commit lands BEFORE the walk, so there is no cancel-without-saving and read-only fetch fixtures stop being read-only
+description: NEO-645 per-card Tidy Up walk — tile = group named by heading, pink = description "To fix"; the commit lands BEFORE the walk, so there is no cancel-without-saving and read-only fetch fixtures stop being read-only
 metadata:
   type: project
 ---
 
 The NEO-645 walk (`support/tidy-walk.ts`) replaced the entity-review wizard and the attention walker.
 
-- **A tile is a `region` named by its h3** ("Player", "Team", "Career", "Autograph", "Listing title",
-  "Sources disagree", "More about this card"). Its level is NOT a name or a colour: it is the
-  section's accessible description from an sr-only span ("To fix", "To check", "Waiting"). Branch
+- **A tile is a `group` named by its h3** ("Player", "Team", "Career", "Autograph", "Listing title",
+  "Sources disagree", "More about this card"; a `region` before the a11y pass). Its level is NOT a
+  name or a colour: it is the tile's accessible description, from a VISIBLE "To fix" / "To check"
+  beside the heading (an sr-only "Waiting"). Branch
   with `tile.filter({ has: page.getByText("To fix", { exact: true }) })` (`pinkTile`) and count it;
   assert with `toHaveAccessibleDescription`.
 - **A name row is a `group` "Player <printed>" / "Team <printed>".** Unanswered = it holds "Not a
-  player (checklist, team card, stadium)" / "Not a team"; answered = it holds "Change". Controls get
-  a " <printed>" suffix only on a multi-name card, so match them with `( .+)?$`.
+  player (checklist, team card, stadium)" / "Not a team"; answered = it holds "Change player" / "Change
+  team". Controls get a " <printed>" suffix only on a multi-name card, so match them with `( .+)?$`.
+- **After the a11y pass:** Autograph is a radiogroup "Autograph format" of radios (`checked`, not
+  `pressed`); More about's disclosure is "Card fields" (`aria-expanded`); Back and Skip are
+  `aria-disabled` (prove a refusal with `toHaveAttribute("aria-disabled","true")`); an answer moves
+  focus to Save & next (nothing pink) or the first pink tile's first control.
 - **"More about this card" is on every card**: the positive marker that a card (not the end screen
   "Done (Esc)") is up. "Looking at this card" is the context-loading skeleton.
 - **A move is proved by the URL AND the screen.** `?tidy=<card>|done` changes BEFORE the next card
@@ -59,9 +64,10 @@ that must not write a real set, there is no pre-save exit any more: give it its 
 
 - **Sources disagree tile:** list "What each source says: Player name", one listitem per source
   whose textContent starts with its label ("BSC…", "Checklist…"; the differing letters are a `<u>`,
-  so use `toContainText`). Buttons `Use “<value>”`, "Type another…" (opens textbox "Type the
-  player name yourself"; Esc closes only the field and refocuses the button), then status
-  `Using “<value>” (<source label>)` and "Change the player name".
+  so use `toContainText`). Buttons `Use “<value>”`, "Type another… player name" (opens textbox
+  "Type the player name yourself"; Esc closes only the field and refocuses the button; its submit
+  is "Use this player name"), then status `Using “<value>” (<source label>)` and "Change the
+  player name".
 - **A pick writes the PLAYER, not "Card name".** The card name keeps the commit's (Match Cards
   preselected) spelling; read a pick back from the drawer's "Title built from" chips and the
   stored "Card title", never the Card name box.
@@ -106,8 +112,8 @@ that must not write a real set, there is no pre-save exit any more: give it its 
 - **Back/Forward on a one-card walk:** opening is a push, Done/Save for later a replace. Back from the
   open card closes the walk with nothing written (pill still up); Forward reopens it on the card.
   Back AFTER Done lands on a `?tidy=<card>` entry, not the drill, so prove URL moves before the answer.
-- **Name regexes for the a11y rename:** `/^Edit (card )?title/` covers "Edit card title" and the
-  coming "Edit title"/"Edit title for #N"; levels via `toHaveAccessibleDescription(/To fix/)`.
+- **The Listing title tile's edit button is "Edit title"** (was "Edit card title"); levels via
+  `toHaveAccessibleDescription(/To fix/)`.
 
 ## Team-tile answers that change what the tile asks, and Back after Done (NEO-591 prospect, NEO-426 specs)
 

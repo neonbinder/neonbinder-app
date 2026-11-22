@@ -110,7 +110,7 @@ test(
     await expectAccessible(page, { within: walk, label: "Tidy Up walk, Link to existing search results" });
     await linkGretzky.click();
     // Saved at once (J1): the row reads answered, names him, and the tile is no longer pink.
-    await expect(first.getByRole("button", { name: "Change", exact: true })).toBeVisible();
+    await expect(first.getByRole("button", { name: "Change player", exact: true })).toBeVisible();
     await expect(first.getByText(GRETZKY, { exact: true })).toBeVisible();
     await expect(first.getByRole("button", { name: LINK_EXISTING })).toHaveCount(0);
     await expect(pinkTile(page, "Player")).toHaveCount(0);
@@ -141,7 +141,7 @@ test(
     await second.getByRole("button", { name: LINK_EXISTING, exact: true }).click();
     await second.getByRole("textbox", { name: "Search existing players" }).fill(gw);
     await second.getByRole("option", { name: `Link to ${gw}`, exact: true }).click();
-    await expect(second.getByRole("button", { name: "Change", exact: true })).toBeVisible();
+    await expect(second.getByRole("button", { name: "Change player", exact: true })).toBeVisible();
     await expect(second.getByText(gw, { exact: true })).toBeVisible();
     await expect(pinkTile(page, "Player")).toHaveCount(0);
     await expectAccessible(page, { within: walk, label: "Tidy Up walk, printed name linked across sports" });
@@ -152,7 +152,7 @@ test(
     await expect(tidyCardIdentity(page), "Back returned to the card linked across sports").toHaveText(secondCard);
     await expectCardSettled(page);
     await expect(second.getByText(gw, { exact: true })).toBeVisible();
-    await expect(second.getByRole("button", { name: "Change", exact: true })).toBeVisible();
+    await expect(second.getByRole("button", { name: "Change player", exact: true })).toBeVisible();
     await expect(second.getByRole("button", { name: LINK_EXISTING })).toHaveCount(0);
 
     // ── STEP 4: the switch was that name's alone: the next unknown name is still on Hockey ──

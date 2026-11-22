@@ -116,7 +116,7 @@ test(
     const teamRow = tidyTile(page, "Team").getByRole("group", { name: `Team ${ROW}`, exact: true });
     const NOT_A_TEAM = /^Not a team( .+)?$/;
     const notATeam = teamRow.getByRole("button", { name: NOT_A_TEAM });
-    const change = teamRow.getByRole("button", { name: /^Change( .+)?$/ });
+    const change = teamRow.getByRole("button", { name: /^Change team( .+)?$/ });
     // Eight of the nine cards print the club; Skip writes nothing, so any card before it is left as is.
     // (A `has` locator is relative to the row it filters, so it is rooted at the page.)
     await skipUntil(page, teamRow.filter({ has: page.getByRole("button", { name: NOT_A_TEAM }) }));

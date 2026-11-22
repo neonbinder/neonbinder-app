@@ -372,7 +372,7 @@ test(
         if (seen.filter((n) => picks[n]).length === 1) {
           await expectAccessible(page, { within: walk, label: "Tidy Up walk, a pink Sources disagree tile" });
           // "Type another…" opens a field of its own; Esc closes the field (not the walk) and writes nothing.
-          const typeAnother = disagree.getByRole("button", { name: "Type another…", exact: true });
+          const typeAnother = disagree.getByRole("button", { name: "Type another… player name", exact: true });
           await typeAnother.click();
           const typed = disagree.getByRole("textbox", { name: "Type the player name yourself", exact: true });
           await expect(typed).toBeFocused();

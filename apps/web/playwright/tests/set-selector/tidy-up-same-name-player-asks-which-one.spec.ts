@@ -104,7 +104,7 @@ test(
     const linkCatalogue = pickList.getByRole("button", { name: new RegExp(`^Link to ${NAME}, (?!born ).+`) });
     const anyway = row.getByRole("button", { name: "Add as new player anyway", exact: true });
     const create = row.getByRole("button", { name: "Add as new player", exact: true });
-    const change = row.getByRole("button", { name: "Change", exact: true });
+    const change = row.getByRole("button", { name: "Change player", exact: true });
     await expect(pickList).toBeVisible();
     await expect(question).toBeVisible();
     await expect(row.getByText("We've got 2 on file under that name. Pick the one on this card.", { exact: true })).toBeVisible();

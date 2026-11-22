@@ -89,8 +89,8 @@ import {
 const FILE = new URL("../../fixtures/checklists/prospect-team-cells.csv", import.meta.url).pathname;
 /** The catalogue team a known X names (NCAA; the set's league is MLB, so only its full name links). */
 const SOONERS = "Oklahoma Sooners";
-/** An answered row's Change: "Change", or "Change team" once the accessibility pass lands (decision 22). */
-const CHANGE = /^Change( team)?$/;
+/** An answered row's Change (decision 22); on a multi-name card it carries " <printed>", which these cards are not. */
+const CHANGE = "Change team";
 
 /**
  * The committed file with this attempt's edits: #2's X is the catalogue's full team name, #3's X
@@ -221,7 +221,7 @@ test(
         await expect(form.getByRole("textbox", { name: "New team name" })).toHaveValue(minted);
         await form.getByRole("button", { name: /^Create team( .+)?$/, disabled: false }).click();
         await expect(form).toHaveCount(0);
-        await expect(row.getByRole("button", { name: CHANGE })).toBeVisible();
+        await expect(row.getByRole("button", { name: CHANGE, exact: true })).toBeVisible();
         await expect(row.getByRole("button", { name: "Not a team", exact: true })).toHaveCount(0);
         await expect(pinkTile(page, "Team")).toHaveCount(0);
         await saveAndNext(page);
@@ -253,7 +253,7 @@ test(
       // "No team on this card") is pressed.
       await place.getByRole("button", { name: "Not a team", exact: true }).click();
       await expect(place.getByText(`${AMBIGUOUS.cell} is not a team.`, { exact: true })).toBeVisible();
-      await expect(place.getByRole("button", { name: CHANGE })).toBeVisible();
+      await expect(place.getByRole("button", { name: CHANGE, exact: true })).toBeVisible();
       await expect(placeTeams).toHaveCount(0);
       await expect(teamTile.getByText("Suggested from career history.", { exact: true })).toBeVisible();
       const cubs = teamTile.getByRole("button", { name: `${BY_PLAYER.team} · ${AMBIGUOUS.player} played here`, exact: true });

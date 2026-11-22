@@ -44,8 +44,8 @@ import { tidyUpName } from "../../support/wizard";
 const YEAR = "2026";
 /** The row's answer; on a multi-name card it carries " <printed>", which these cards are not. */
 const NOT_A_PLAYER = "Not a player (checklist, team card, stadium)";
-/** An answered row's Change ("Change", becoming "Change player"). */
-const CHANGE = /^Change( player)?$/;
+/** An answered row's Change; on a multi-name card it carries " <printed>", which these cards are not. */
+const CHANGE = "Change player";
 
 test(
   "Tidy Up — Not a player clears a printed name on every card that prints it, and Change brings it back on every card",
@@ -78,7 +78,7 @@ test(
     const cardLines = (number: string) => walk.getByText(new RegExp(`^#${number}( · .+)?$`));
     const row = tidyTile(page, "Player").getByRole("group", { name: `Player ${NAME}`, exact: true });
     const notAPlayer = row.getByRole("button", { name: NOT_A_PLAYER, exact: true });
-    const change = row.getByRole("button", { name: CHANGE });
+    const change = row.getByRole("button", { name: CHANGE, exact: true });
     const answered = row.getByText(`${NAME} is not a player.`);
 
     // ── STEP 1: #1 asks about the name, printed on #1 and #2 ──

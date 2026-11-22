@@ -74,7 +74,7 @@ test(
     const question = row.getByRole("group", { name: new RegExp(`^Just ${escapeRe(ONE_WORD)}\\? We've got `) });
     const linkFuller = question.getByRole("button", { name: new RegExp(`^Link to ${escapeRe(FULLER)}(,|$)`) });
     const oneName = row.getByRole("button", { name: "Add as a one-name player", exact: true });
-    const change = row.getByRole("button", { name: "Change", exact: true });
+    const change = row.getByRole("button", { name: "Change player", exact: true });
     await expect(pinkTile(page, "Player")).toHaveCount(1);
     await expect(question).toBeVisible();
     await expect(linkFuller).toBeVisible();

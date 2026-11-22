@@ -430,8 +430,7 @@ test(
     await expect(titleTile.getByText(titleCBox, { exact: true })).toBeVisible();
     await expect(pinkTile(page, "Listing title")).toHaveCount(0);
     await expect(walkTitle).toHaveCount(0);
-    // "Edit card title" until the a11y pass renames it "Edit title" / "Edit title for #N".
-    await expect(titleTile.getByRole("button", { name: /^Edit (card )?title/ })).toBeVisible();
+    await expect(titleTile.getByRole("button", { name: "Edit title", exact: true })).toBeVisible();
 
     // The card has no team: say so, and the card is done.
     await answerPinkTeamTiles(page, { noTeam: "noTeamOnCard" });
