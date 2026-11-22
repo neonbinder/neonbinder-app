@@ -1,6 +1,6 @@
 /**
  * NEO-645 callout 2 — "Sources disagree": one column per source, a pick per
- * distinct value, "Type another…", the blue NB-picked state, Change, and the
+ * distinct value, "Type another…", Change, and the
  * apply-to-the-same offer (which only proposes; the server checks each card).
  */
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -123,11 +123,9 @@ describe("SourcesDisagreeTile", () => {
       expect(screen.getByRole("status").textContent).toBe("");
     });
 
-    it("an answer of no team reads 'Using no team', and the NB-picked flip says 'Use no team instead'", () => {
+    it("an answer of no team reads 'Using no team'", () => {
       renderTile({ ...NO_TEAM, chosen: { value: [], by: "operator" } } as RowDisagreement);
       expect(screen.getByRole("status").textContent).toBe("Using no team (SportLots)");
-      renderTile({ ...NO_TEAM, chosen: { value: ["San Diego Padres"], by: "nb" } } as RowDisagreement);
-      expect(screen.getByRole("button", { name: "Use no team instead" })).toBeTruthy();
     });
   });
 
@@ -199,28 +197,6 @@ describe("SourcesDisagreeTile", () => {
     renderTile(UNCHOSEN);
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Use “Jackson Merril”" })));
     expect(screen.getByRole("alert").textContent).toBe("That card changed. Refresh and try again.");
-  });
-
-  describe("NB already has one value (blue)", () => {
-    const NB: RowDisagreement = { ...UNCHOSEN, chosen: { value: MERRILL, by: "nb" } };
-    const attention: TidyAttention = {
-      level: "check",
-      items: [{ level: "check", kind: "nbPicked", field: "players", key: "picked:players:x" }],
-    };
-
-    it("says it went with the one already in the binder, and offers the other", async () => {
-      renderTile(NB, { attention });
-      expect(screen.getByRole("group", { name: "Sources disagree" }).getAttribute("data-tidy-level")).toBe("check");
-      expect(screen.getByText("Went with “Jackson Merrill”, they're already in your binder.")).toBeTruthy();
-      expect(screen.getByText("In NeonBinder")).toBeTruthy();
-      await act(async () => fireEvent.click(screen.getByRole("button", { name: "Use “Jackson Merril” instead" })));
-      expect(mockPick).toHaveBeenCalledWith({ cardId: "card-1", field: "players", value: MERRIL });
-    });
-
-    it("drops back to plain once the walk has seen it", () => {
-      renderTile(NB, { attention: { level: "none", items: [] } });
-      expect(screen.getByRole("group", { name: "Sources disagree" }).getAttribute("data-tidy-level")).toBe("plain");
-    });
   });
 
   describe("answered by the operator", () => {

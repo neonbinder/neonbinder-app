@@ -31,9 +31,6 @@ import { titleAttentionItems } from "./listingInputs";
 // NEO-645: the autograph rule reads NB's own vocabulary (attribute token and
 // format list). Both live in a module that is as browser-safe as this one.
 import { AUTOGRAPH_FORMATS, carriesAutographToken } from "./deriveCardFeatures";
-// NEO-645: "does the title say the player?" is one pure helper, read here and by
-// the Listing title tile through this derivation, so the two cannot disagree.
-import { titleMissesPlayer } from "../../lib/cards/title-names-player";
 
 /**
  * One thing a card still needs from a human.
@@ -179,12 +176,6 @@ export type AttentionCardRow = {
    * absent) does not.
    */
   features?: Readonly<Record<string, string>>;
-  /**
-   * NEO-645 — the name each linked player was printed with
-   * (`cardChecklist.playerLinks`). Read only by `titleNoPlayer`, for the names
-   * the card says; the canonical player name is not on the row.
-   */
-  playerLinks?: ReadonlyArray<{ readonly nameOnCard: string }>;
   /** NEO-645 — fields on which the sources still disagree. See the schema. */
   sourceDisagreements?: readonly TidyDisagreement[];
   /** NEO-645 — facts stored where they change. See the schema. */
@@ -452,8 +443,6 @@ export type TidyAttentionItem =
   // The stored title is over eBay's cap (`titleAttentionItems`).
   | { level: "fix"; kind: "titleOverLimit"; length: number }
   // ── blue ──
-  // NB's own rows decided a disagreement (`chosen.by === "nb"`).
-  | { level: "check"; kind: "nbPicked"; field: "players" | "teams"; key: string }
   // The player was created on this card; check the career Wikidata proposed.
   | { level: "check"; kind: "newPlayerCareer"; playerId: string; key: string }
   // J2: no stint covers the card's team by the card's year (stored at write time).
@@ -461,9 +450,7 @@ export type TidyAttentionItem =
   // The generated title's core was cut to fit ("Left out where today's wizard asks").
   | { level: "check"; kind: "titleCut"; key: string }
   // The variation is over the item-specific value cap.
-  | { level: "check"; kind: "variationOverLimit"; length: number; key: string }
-  // The card names a player and the stored title carries none (`titleMissesPlayer`).
-  | { level: "check"; kind: "titleNoPlayer"; key: string };
+  | { level: "check"; kind: "variationOverLimit"; length: number; key: string };
 
 export type TidyAttentionKind = TidyAttentionItem["kind"];
 
@@ -527,34 +514,6 @@ export function tidyReviewedKeyNoPlayer(listingTitle: string): string {
 }
 
 /**
- * NEO-645 — the player names this card says, from the row alone: the name each
- * linked player was printed with, plus any name still waiting for an answer.
- * A card with no link and no pending name (a name ruled "not a player", a card
- * about a team) says none, and a title cannot miss a player it never named.
- */
-export function cardSaysPlayerNames(
-  row: Pick<AttentionCardRow, "playerLinks" | "pendingPlayerNames">,
-): string[] {
-  return [
-    ...(row.playerLinks ?? []).map((l) => l.nameOnCard),
-    ...(row.pendingPlayerNames ?? []),
-  ].filter((n) => n.trim().length > 0);
-}
-
-/**
- * NEO-645 — the card names a player but its stored title carries none, so a
- * buyer searching for the player would never find it. No stored title is not a
- * title to check. The Listing title tile reads this through the derivation.
- */
-export function titleLacksPlayer(
-  row: Pick<AttentionCardRow, "playerLinks" | "pendingPlayerNames" | "listingTitle">,
-): boolean {
-  const title = row.listingTitle ?? "";
-  if (title.trim().length === 0) return false;
-  return titleMissesPlayer(title, cardSaysPlayerNames(row));
-}
-
-/**
  * NEO-645 — everything this card has to say, before `tidyReviewed` is applied.
  * Order is the tiles' order: sources (2), players (3), career (4), team (5),
  * autograph (6), title (7).
@@ -569,13 +528,6 @@ function allTidyItems(row: AttentionCardRow): TidyAttentionItem[] {
   for (const d of disagreements) {
     if (!d.chosen) {
       items.push({ level: "fix", kind: "sourcesDisagree", field: d.field });
-    } else if (d.chosen.by === "nb") {
-      items.push({
-        level: "check",
-        kind: "nbPicked",
-        field: d.field,
-        key: tidyReviewedKeyPicked(d.field, d.chosen.value),
-      });
     }
   }
 
@@ -663,13 +615,6 @@ function allTidyItems(row: AttentionCardRow): TidyAttentionItem[] {
         key: tidyReviewedKeyVariation(row.cardVariation ?? ""),
       });
     }
-  }
-  if (titleLacksPlayer(row)) {
-    items.push({
-      level: "check",
-      kind: "titleNoPlayer",
-      key: tidyReviewedKeyNoPlayer(row.listingTitle ?? ""),
-    });
   }
   return items;
 }

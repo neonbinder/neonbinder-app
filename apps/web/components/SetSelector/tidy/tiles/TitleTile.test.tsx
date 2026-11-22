@@ -25,7 +25,6 @@ vi.mock("convex/react", () => ({
 import { AnsweredProvider } from "../answered";
 import TitleTile from "./TitleTile";
 import { WRAP_LABEL_CLASS } from "../TidyTile";
-import { deriveCardAttention } from "../../../../convex/features/cardAttention";
 import { assessListingTitle } from "../../../../convex/features/generateListing";
 import type { TidyAttention, TidyRow, TidyTileProps } from "../tile-types";
 
@@ -457,88 +456,34 @@ describe("TitleTile variation", () => {
   });
 });
 
-describe("TitleTile variation on a title in trouble (NEO-645 S8)", () => {
-  // 63 characters: under the 65 cap, so the field-cap rule never offers it.
+describe("TitleTile variation: offered for a variation over the cap only", () => {
+  // 63 characters: under the 65 cap, so the aspect rule never raises it.
   const LONG_FITS = "Image Variation; Jersey half on, wearing headphones and bandana";
   const over = attn({ level: "fix", kind: "titleOverLimit" });
   const cut = { level: "check", items: [{ level: "check", kind: "titleCut", key: "cut:1" }] } as unknown as TidyAttention;
 
-  it("is offered on an over-80 title with a long variation, beside Shorten the set name", () => {
+  it("is not offered for a long variation on an over-80 title, or on a cut one", () => {
     expect(LONG_FITS.length).toBeLessThanOrEqual(65);
     renderTile(cardOf("c1", { listingTitle: LONG, cardVariation: LONG_FITS }), over);
-    expect(screen.getByLabelText("Trim the variation")).toBeTruthy();
+    expect(screen.queryByLabelText("Trim the variation")).toBeNull();
     expect(screen.getByRole("button", { name: "Shorten the set name for every card" })).toBeTruthy();
-  });
-
-  it("is offered on a cut title too", () => {
-    renderTile(cardOf("c1", { cardVariation: LONG_FITS }), cut);
-    expect(screen.getByLabelText("Trim the variation")).toBeTruthy();
+    cleanup();
+    renderTile(cardOf("c2", { cardVariation: LONG_FITS }), cut);
+    expect(screen.queryByLabelText("Trim the variation")).toBeNull();
   });
 
   it("is not offered for a short variation, or when the title is fine", () => {
     renderTile(cardOf("c1", { listingTitle: LONG, cardVariation: "Image Variation" }), over);
     expect(screen.queryByLabelText("Trim the variation")).toBeNull();
+    cleanup();
     renderTile(cardOf("c2", { cardVariation: LONG_FITS }));
     expect(screen.queryByLabelText("Trim the variation")).toBeNull();
   });
 
-  it("offers Apply to the cards with the same variation after the trim is saved", async () => {
-    const mine = cardOf("c1", { listingTitle: LONG, cardVariation: LONG_FITS });
-    const twin = cardOf("c2", { cardVariation: LONG_FITS });
-    renderTile(mine, over, [mine, twin]);
-    fireEvent.change(screen.getByLabelText("Trim the variation"), { target: { value: "Headphones" } });
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save variation" })));
-    expect(mockUpdateCard).toHaveBeenCalledWith({ id: "c1", cardVariation: "Headphones" });
-    await act(async () =>
-      fireEvent.click(screen.getByRole("button", { name: "Apply to the 1 card with the same variation" })),
-    );
-    expect(mockApplyVariation).toHaveBeenCalledWith({ cardIds: ["c2"], from: LONG_FITS, to: "Headphones" });
-  });
-});
-
-describe("TitleTile: a player name with no player in the title (NEO-645 S6)", () => {
-  const NOBODY = "2024 Topps Chrome Update #USC118 RC Rookie";
-  const noPlayer = { level: "check", kind: "titleNoPlayer", key: "noPlayer:x" };
-  const blue = (...items: Array<Record<string, unknown>>) =>
-    ({ level: "check", items }) as unknown as TidyAttention;
-  const levelOf = () => screen.getByRole("group", { name: "Listing title" }).getAttribute("data-tidy-level");
-
-  it("goes blue and says so when the card's attention carries titleNoPlayer", () => {
-    renderTile(cardOf("c1", { listingTitle: NOBODY }), blue(noPlayer));
-    expect(levelOf()).toBe("check");
-    expect(screen.getByText("The title has no player. This card names one, so check it.")).toBeTruthy();
-  });
-
-  it("stays plain without the item", () => {
-    renderTile(cardOf("c1"), none);
-    expect(levelOf()).toBe("plain");
-    expect(screen.queryByText(/has no player/)).toBeNull();
-  });
-
-  it("agrees with the derivation on the same row, linked or pending", () => {
-    const linked = cardOf("c1", {
-      playerIds: ["p1"],
-      playerLinks: [{ playerId: "p1", nameOnCard: "Aaron Judge" }],
-      listingTitle: NOBODY,
-    });
-    renderTile(linked, deriveCardAttention(linked as never) as unknown as TidyAttention);
-    expect(levelOf()).toBe("check");
-    cleanup();
-    const said = cardOf("c2", {
-      playerIds: ["p1"],
-      playerLinks: [{ playerId: "p1", nameOnCard: "Aaron Judge" }],
-    });
-    renderTile(said, deriveCardAttention(said as never) as unknown as TidyAttention);
-    expect(levelOf()).toBe("plain");
-  });
-
-  it("is still pink, not blue, when the title is over the limit", () => {
-    renderTile(
-      cardOf("c1", { listingTitle: LONG.replace("Aaron Judge", "Somebody Else") }),
-      attn({ level: "fix", kind: "titleOverLimit" }, noPlayer),
-    );
-    expect(levelOf()).toBe("fix");
-    expect(screen.queryByText(/has no player/)).toBeNull();
+  it("is offered beside the over-80 title once the variation itself is over the cap", () => {
+    const variationOver = { level: "check", kind: "variationOverLimit", length: 90, key: "var:1" };
+    renderTile(cardOf("c1", { listingTitle: LONG, cardVariation: "x".repeat(90) }), attn({ level: "fix", kind: "titleOverLimit" }, variationOver));
+    expect(screen.getByLabelText("Trim the variation")).toBeTruthy();
   });
 });
 

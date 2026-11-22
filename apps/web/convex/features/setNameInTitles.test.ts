@@ -18,12 +18,12 @@ import {
   titleDescription,
   type ListingCardInputs,
 } from "./generateListing";
+import { generatedTitleTruncatedFlag } from "./listingInputs";
 import {
   oneLine,
   retitleForSetName,
   swapSetNameInTitle,
   titleShowsLeftOut,
-  truncatedAfterSetName,
   withoutWaitingNames,
 } from "./setNameInTitles";
 
@@ -300,7 +300,7 @@ describe("a name still waiting for an answer is not left out", () => {
   });
 });
 
-describe("a rebuilt title is flagged only when something is left to check", () => {
+describe("a rebuilt title is flagged as every generated title is", () => {
   const daulton: ListingCardInputs = {
     cardNumber: "12",
     playerNames: ["Darren Daulton"],
@@ -313,9 +313,11 @@ describe("a rebuilt title is flagged only when something is left to check", () =
     sport: "Baseball",
   };
 
-  test("the box brings the first name back and the team fits as its nickname: nothing to check", () => {
+  test("a rebuilt title whose core did not fit is flagged, whatever the box brought back", () => {
     const before = assessListingTitle(daulton);
     expect(before.dropped).toEqual(["Philadelphia Phillies", "Darren"]);
+    const after = assessListingTitle({ ...daulton, setShortName: BOX });
+    expect(after.coreFits).toBe(false);
     const out = retitleForSetName({
       storedTitle: before.title,
       inputsAfter: { ...daulton, setShortName: BOX },
@@ -325,24 +327,30 @@ describe("a rebuilt title is flagged only when something is left to check", () =
     expect(out).toMatchObject({
       kind: "generated",
       title: "1996 Score Dugout Collection Artists Proofs Darren Daulton #12 Phillies Baseball",
+      truncated: generatedTitleTruncatedFlag(after),
     });
-    // The first build marks a box-built title as one to review; a set-name save
-    // that rebuilt it and left nothing out must not add a check with no line.
-    expect(assessListingTitle({ ...daulton, setShortName: BOX }).coreFits).toBe(false);
+    expect((out as { truncated: true | undefined }).truncated).toBe(true);
+  });
+
+  test("a rebuilt title that fits whole is not flagged", () => {
+    const small: ListingCardInputs = {
+      cardNumber: "38",
+      playerNames: ["Bo Jackson"],
+      teamNames: ["Kansas City Royals"],
+      year: "1991",
+      manufacturer: "Upper Deck",
+      setName: "Upper Deck",
+      setShortName: "UD",
+    };
+    const after = assessListingTitle({ ...small, setShortName: "UD Base" });
+    expect(after.coreFits).toBe(true);
+    const out = retitleForSetName({
+      storedTitle: undefined,
+      inputsAfter: { ...small, setShortName: "UD Base" },
+      oldShortName: "UD",
+      newShortName: "UD Base",
+    });
+    expect(out).toMatchObject({ kind: "generated" });
     expect((out as { truncated: true | undefined }).truncated).toBeUndefined();
-  });
-
-  test("a title that still leaves something out is flagged", () => {
-    const tight = { ...daulton, setShortName: "1996 Score Dugout Collection Artists Proofs Hologram Foil Series II Extra" };
-    const after = assessListingTitle(tight);
-    expect(after.dropped.length > 0 || after.tidyUp).toBe(true);
-    expect(truncatedAfterSetName(after)).toBe(true);
-  });
-
-  test("a title that fits whole is not flagged, however it was built", () => {
-    expect(truncatedAfterSetName({ coreFits: true, tidyUp: false, dropped: [] })).toBeUndefined();
-    expect(truncatedAfterSetName({ coreFits: false, tidyUp: false, dropped: [] })).toBeUndefined();
-    expect(truncatedAfterSetName({ coreFits: false, tidyUp: true, dropped: [] })).toBe(true);
-    expect(truncatedAfterSetName({ coreFits: false, tidyUp: false, dropped: ["Atlanta Braves"] })).toBe(true);
   });
 });

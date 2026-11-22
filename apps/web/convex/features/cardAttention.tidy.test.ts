@@ -306,33 +306,6 @@ describe("deriveCardAttention — title boundaries", () => {
 });
 
 describe("deriveCardAttention — blue", () => {
-  test("a disagreement NB decided is blue, keyed on the value it chose", () => {
-    const row: AttentionCardRow = {
-      ...CLEAN,
-      sourceDisagreements: [
-        {
-          field: "players",
-          values: [
-            { value: ["Jackson Merril"], sources: ["bsc"] },
-            { value: ["Jackson Merrill"], sources: ["checklist"] },
-          ],
-          chosen: { value: ["Jackson Merrill"], by: "nb" },
-        },
-      ],
-    };
-    expect(deriveCardAttention(row)).toEqual({
-      level: "check",
-      items: [
-        {
-          level: "check",
-          kind: "nbPicked",
-          field: "players",
-          key: tidyReviewedKeyPicked("players", ["Jackson Merrill"]),
-        },
-      ],
-    });
-  });
-
   test("a new player's career is blue only while that player is on the card", () => {
     const row: AttentionCardRow = {
       ...CLEAN,
@@ -395,6 +368,18 @@ describe("deriveCardAttention — blue", () => {
         tidyChecks: [{ kind: "teamFill", teamIds: ["t1"], reason: "otherCards" }],
       }).items,
     ).toEqual([]);
+  });
+});
+
+describe("deriveCardAttention — what it never says", () => {
+  test("a title that names no player is not an item (the old Card titles step had no such check)", () => {
+    expect(
+      deriveCardAttention({
+        ...CLEAN,
+        listingTitle: "2024 Topps Chrome #USC118 RC Rookie",
+        pendingPlayerNames: [],
+      }),
+    ).toEqual({ level: "none", items: [] });
   });
 });
 
@@ -560,100 +545,6 @@ describe("the key helpers", () => {
   test("the cap matches the schema doc (16 keys of at most 64 characters)", () => {
     expect(TIDY_REVIEWED_MAX_KEYS).toBe(16);
     expect(TIDY_REVIEWED_KEY_MAX_LENGTH).toBe(64);
-  });
-});
-
-describe("deriveCardAttention — titleNoPlayer (blue)", () => {
-  const JUDGE = [{ nameOnCard: "Aaron Judge" }];
-  const NOBODY = "2024 Topps Chrome #USC118 RC Rookie";
-  const base: AttentionCardRow = {
-    ...CLEAN,
-    playerLinks: JUDGE,
-    listingTitle: "2024 Topps Chrome Aaron Judge #USC118",
-  };
-
-  test("a title that says the linked player's surname raises nothing", () => {
-    expect(deriveCardAttention(base)).toEqual({ level: "none", items: [] });
-  });
-
-  test("a linked player the title never names is blue, keyed on the title", () => {
-    const row = { ...base, listingTitle: NOBODY };
-    expect(deriveCardAttention(row)).toEqual({
-      level: "check",
-      items: [{ level: "check", kind: "titleNoPlayer", key: tidyReviewedKeyNoPlayer(NOBODY) }],
-    });
-  });
-
-  test("accents and case are folded, and a Jr. suffix is not the surname", () => {
-    expect(
-      level({
-        ...base,
-        playerLinks: [{ nameOnCard: "José Ramírez Jr." }],
-        listingTitle: "2024 Topps JOSE RAMIREZ #12",
-      }),
-    ).toBe("none");
-  });
-
-  test("a card that names no player (no link, no pending name) has nothing to miss", () => {
-    expect(
-      level({ ...CLEAN, playerIds: [], listingTitle: NOBODY, teamOnCardIds: ["t1"] }),
-    ).toBe("none");
-    // A name ruled "not a player" leaves no link and no pending name, so the
-    // card's own name never counts.
-    expect(level({ ...CLEAN, playerLinks: undefined, listingTitle: NOBODY })).toBe("none");
-  });
-
-  test("a pending name is a name the card says; it is pink and blue both", () => {
-    const row: AttentionCardRow = {
-      ...CLEAN,
-      playerIds: [],
-      pendingPlayerNames: ["Aaron Judge"],
-      listingTitle: NOBODY,
-    };
-    expect(level(row)).toBe("fix");
-    expect(kinds(row)).toEqual(["playerName", "titleNoPlayer"]);
-  });
-
-  test("one name said is enough on a multi-player card", () => {
-    expect(
-      level({
-        ...base,
-        playerIds: ["p1", "p2"],
-        playerLinks: [{ nameOnCard: "Aaron Judge" }, { nameOnCard: "Juan Soto" }],
-        listingTitle: "2024 Topps Chrome Soto #USC118",
-      }),
-    ).toBe("none");
-  });
-
-  test("no stored title is not a title to check", () => {
-    expect(level({ ...base, listingTitle: undefined })).toBe("none");
-    expect(level({ ...base, listingTitle: "   " })).toBe("none");
-  });
-
-  test("a name with no letters or digits says nothing", () => {
-    expect(level({ ...base, playerLinks: [{ nameOnCard: "?!" }], listingTitle: NOBODY })).toBe("none");
-  });
-
-  test("Save & next clears it: its key is a review key, and seen suppresses it", () => {
-    const row = { ...base, listingTitle: NOBODY };
-    expect(currentReviewKeys(row)).toEqual([tidyReviewedKeyNoPlayer(NOBODY)]);
-    expect(
-      deriveCardAttention({ ...row, tidyReviewed: { keys: currentReviewKeys(row) } }),
-    ).toEqual({ level: "none", items: [] });
-  });
-
-  test("a new title that still lacks the player re-raises it", () => {
-    const row = { ...base, listingTitle: NOBODY };
-    const reviewed = { keys: currentReviewKeys(row) };
-    const edited = deriveCardAttention({ ...row, listingTitle: `${NOBODY} Refractor`, tidyReviewed: reviewed });
-    expect(edited.items.map((i) => i.kind)).toEqual(["titleNoPlayer"]);
-  });
-
-  test("the key fits the stored cap and ordering puts it after the other title items", () => {
-    expect(tidyReviewedKeyNoPlayer(NOBODY).length).toBeLessThanOrEqual(TIDY_REVIEWED_KEY_MAX_LENGTH);
-    expect(
-      kinds({ ...base, listingTitle: NOBODY, listingTitleTruncated: true }),
-    ).toEqual(["titleCut", "titleNoPlayer"]);
   });
 });
 

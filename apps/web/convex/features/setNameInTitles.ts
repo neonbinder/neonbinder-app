@@ -18,6 +18,10 @@
  *    generated one;
  *  - ANY OTHER hand edit is left exactly as typed.
  *
+ * A rebuilt title carries the same `listingTitleTruncated` flag every generated
+ * title does (`generatedTitleTruncatedFlag`: the core did not fit), so the set
+ * name box rebuilds a card exactly as insert and Regenerate do.
+ *
  * Pure and browser-safe: no Convex imports beyond types.
  */
 
@@ -27,6 +31,7 @@ import {
   titleDescription,
   type ListingCardInputs,
 } from "./generateListing";
+import { generatedTitleTruncatedFlag } from "./listingInputs";
 import { ASPECT_VALUE_MAX } from "./listingLimits";
 
 /** A title (or the box) is one line: each run of line breaks reads as one space. */
@@ -108,23 +113,6 @@ export function titleShowsLeftOut(inputs: ListingCardInputs, title: string): boo
   return leftOutOfTitle(inputs, title.trim()).some((entry) => entry !== overCapVariation);
 }
 
-/**
- * The `listingTitleTruncated` a title REBUILT for a set-name change is stored
- * with. A blue check must have something to act on: a title the new set name
- * rebuilt with nothing left out (the box brought the first name back, the team
- * fits as its nickname) is not one, however it was built, so only a title that
- * still leaves something out (a Tidy Up cut, or words on the "Left out to fit"
- * line) is flagged. The first build flags every box-built title (NEO-535); this
- * is the operator's own set-name save, and flagging every card it rebuilt would
- * put the whole checklist on the walk with an empty line.
- */
-export function truncatedAfterSetName(
-  after: Pick<ReturnType<typeof assessListingTitle>, "coreFits" | "tidyUp" | "dropped">,
-): true | undefined {
-  if (after.coreFits) return undefined;
-  return after.tidyUp || after.dropped.length > 0 ? true : undefined;
-}
-
 export type SetNameRetitle =
   | { kind: "leave" }
   | { kind: "generated"; title: string; truncated: true | undefined }
@@ -158,7 +146,7 @@ export function retitleForSetName(args: {
   if (stored === "" || stored === before.title) {
     return stored === after.title
       ? { kind: "leave" }
-      : { kind: "generated", title: after.title, truncated: truncatedAfterSetName(after) };
+      : { kind: "generated", title: after.title, truncated: generatedTitleTruncatedFlag(after) };
   }
   // A hand edit: only one that shows the line is touched.
   if (!titleShowsLeftOut(inputsBefore, stored)) return { kind: "leave" };
@@ -167,7 +155,7 @@ export function retitleForSetName(args: {
     (args.oldShortName ? swapSetNameInTitle(stored, args.oldShortName, newName) : undefined) ??
     swapSetNameInTitle(stored, titleDescription(inputsBefore), newName);
   if (swapped === undefined) {
-    return { kind: "generated", title: after.title, truncated: truncatedAfterSetName(after) };
+    return { kind: "generated", title: after.title, truncated: generatedTitleTruncatedFlag(after) };
   }
   return swapped === stored ? { kind: "leave" } : { kind: "swapped", title: swapped };
 }

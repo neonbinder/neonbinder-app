@@ -72,12 +72,10 @@ export const TIDY_ATTENTION_LABELS: Record<TidyAttentionKind, string> = {
   noTeam: "no team on this card yet",
   autograph: "autograph format not set",
   titleOverLimit: "title is over the 80-character limit",
-  nbPicked: "we picked between the sources, worth a look",
   newPlayerCareer: "new player, check their career",
   careerGap: "team is missing from the player's career",
   titleCut: "listing title was cut short",
   variationOverLimit: "variation text is over the 65-character limit",
-  titleNoPlayer: "listing title has no player in it",
 };
 
 /** The reason text for one item. Falls back for a kind a newer deploy added. */

@@ -20,11 +20,10 @@ import type { TidyDisagreement as RowDisagreement } from "../../../../convex/fea
  * server: "Judge / Soto" against "Judge | Soto" never reaches this tile, so
  * every differing column is a real difference.
  *
- * Three states, one per entry on the card:
+ * Two states, one per entry on the card. NeonBinder never picks between the
+ * sources for you, so every disagreement starts unsettled:
  *
  *   - unchosen          pink. A button per distinct value, and a typed one.
- *   - chosen by NB      blue. Exactly one value was already in NeonBinder, so
- *                       the server went with it; a button flips to another.
  *   - chosen by you     plain. "Using “X”", Change, and Apply-to-the-same.
  *
  * There is no "Not sure yet": a card cannot be listed without the answer.
@@ -108,13 +107,12 @@ function diffParts(text: string, other: string): { head: string; mid: string; ta
   };
 }
 
-export default function SourcesDisagreeTile({ row, attention, leafCards }: TidyTileProps) {
+export default function SourcesDisagreeTile({ row, leafCards }: TidyTileProps) {
   const entries = row.sourceDisagreements ?? [];
   if (entries.length === 0) return null;
 
   const unsettled = entries.some((d) => !d.chosen);
-  const nbPicked = attention.items.some((i) => i.kind === "nbPicked");
-  const level: TidyTileLevel = unsettled ? "fix" : nbPicked ? "check" : "plain";
+  const level: TidyTileLevel = unsettled ? "fix" : "plain";
 
   return (
     <TidyTile heading="Sources disagree" level={level}>
@@ -179,7 +177,7 @@ function DisagreementEntry({
   const single = entry.values.length === 2 && entry.values.every((v) => v.value.length === 1);
 
   const candidates = useMemo(() => {
-    if (!chosen || chosen.by !== "operator") return [];
+    if (!chosen) return [];
     const key = disagreementKey(entry);
     return leafCards
       .filter((c) => c._id !== row._id)
@@ -252,7 +250,6 @@ function DisagreementEntry({
       >
         {sources.map((source) => {
           const value = entry.values.find((v) => (v.sources as readonly string[]).includes(source))!;
-          const inNb = chosen?.by === "nb" && sameValue(value.value, chosen.value);
           const other = single ? entry.values.find((v) => v !== value) : undefined;
           const parts =
             other && value.value.length > 0 && other.value.length > 0
@@ -275,7 +272,6 @@ function DisagreementEntry({
                   show(value.value, entry.field)
                 )}
               </span>
-              {inNb && <span className="text-xs text-neon-green-text">In NeonBinder</span>}
             </li>
           );
         })}
@@ -285,16 +281,14 @@ function DisagreementEntry({
           already in the page, and a card that opens already answered says nothing. */}
       <p className="text-sm text-ink wrap-anywhere empty:hidden" role="status">
         {chosen && !changing
-          ? chosen.by === "nb"
-            ? `Went with ${quoted(chosen.value, entry.field)}, they're already in your binder.`
-            : chosenFrom
-              ? `Using ${quoted(chosen.value, entry.field)} (${chosenFrom})`
-              : `Using ${quoted(chosen.value, entry.field)}`
+          ? chosenFrom
+            ? `Using ${quoted(chosen.value, entry.field)} (${chosenFrom})`
+            : `Using ${quoted(chosen.value, entry.field)}`
           : ""}
       </p>
 
       <div className="flex flex-wrap items-center gap-2">
-        {chosen && !changing && chosen.by === "operator" && (
+        {chosen && !changing && (
           <NeonButton
             variant="secondary"
             outline
@@ -309,23 +303,6 @@ function DisagreementEntry({
             Change
           </NeonButton>
         )}
-        {chosen && !changing && chosen.by === "nb" &&
-          entry.values
-            .filter((v) => !sameValue(v.value, chosen.value))
-            .map((v) => (
-              <NeonButton
-                key={v.value.join("\u001f")}
-                variant="secondary"
-                outline
-                size="1"
-                type="button"
-                className={WRAP_LABEL_CLASS}
-                aria-disabled={busy || undefined}
-                onClick={() => void pick(v.value, false)}
-              >
-                {`Use ${quoted(v.value, entry.field)} instead`}
-              </NeonButton>
-            ))}
         {choosing &&
           entry.values.map((v, i) => (
             <NeonButton
@@ -365,7 +342,7 @@ function DisagreementEntry({
             Type another…
           </NeonButton>
         )}
-        {chosen?.by === "operator" && !changing && (
+        {chosen && !changing && (
           <ApplyToAllButton
             count={candidates.length}
             label={`Apply to the ${candidates.length} ${candidates.length === 1 ? "card" : "cards"} with the same disagreement`}
