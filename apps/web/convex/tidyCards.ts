@@ -668,7 +668,8 @@ const newTeamFillFacts = (): TeamFillFacts => ({ stints: new Map(), years: new M
 
 /**
  * Rule 8 for the guarded Apply-to-all: a card takes the team only when NOTHING
- * on it names or rules out a team and the player's own career gives exactly
+ * on it names or rules out a team (a source's name, "No team", or the
+ * checklist's own answer) and the player's own career gives exactly
  * this team for the card's year. Pure reads; the write is `writeTeamFill`.
  */
 export async function cardTakesTeamFill(
@@ -685,6 +686,9 @@ export async function cardTakesTeamFill(
   }
   if (card.bscTeamName) return false;
   if (card.teamNoneConfirmedAt !== undefined) return false;
+  // The publisher checklist answered this card's team (teamless, or a team that
+  // did not land): a data claim, so nothing is guessed over it (rule 8).
+  if (card.teamCheckOutcome === "checklist") return false;
   if ((card.sourceDisagreements ?? []).some((d) => d.field === "teams")) return false;
 
   const leafKey = card.selectorOptionId as string;

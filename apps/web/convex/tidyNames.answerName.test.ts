@@ -259,14 +259,11 @@ describe("answerName — compare-and-set and the generation", () => {
     expect(after.pendingPlayerNames).toBeUndefined();
   });
 
-  // BUG: an answer given while the previous answer's fan-out has not reached
-  // every card strands the cards it had not reached. Job 1 stops (stale), and
-  // job 2 compares each card against `fromAnswer` (the first answer), which
-  // those cards never received, so it skips them too. The row says "answered"
-  // but the cards still carry the name as pending, with no job left to fix it.
-  // Repro: answer A, then answer B before the scheduled fan-out has run; cards
-  // other than the open one end unlinked.
-  test.fails("a newer answer stops the older job: every card ends on the LAST answer", async () => {
+  // An answer given while the previous answer's fan-out has not reached every
+  // card: job 1 stops (stale), and job 2 takes a card in ANY state an earlier
+  // unfinished answer may have left (`tidyNames.fanOutFrom`), so nobody is
+  // stranded on the older answer or still pending.
+  test("a newer answer stops the older job: every card ends on the LAST answer", async () => {
     const t = newT();
     const w = await world(t);
     const ids = await t.run(async (ctx) => {

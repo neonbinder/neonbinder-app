@@ -295,13 +295,7 @@ describe("applyTeamToPlayerCards — a card takes the team only when nothing nam
     expect((await card(t, none))!.teamOnCardIds).toBeUndefined();
   });
 
-  // BUG: the plan (section 5) says Apply to all skips a card with a "checklist
-  // claim" (the publisher checklist answered the card teamless or named a team
-  // that did not land: `teamCheckOutcome: "checklist"`). `cardTakesTeamFill`
-  // never reads `teamCheckOutcome`, so a card the checklist answered is filled.
-  // Repro: a one-player card with `teamCheckDoneAt` and
-  // `teamCheckOutcome: "checklist"` and no team, pending name or stamp.
-  test.fails("rule 8: a card the publisher checklist answered (teamCheckOutcome checklist) is refused", async () => {
+  test("rule 8: a card the publisher checklist answered (teamCheckOutcome checklist) is refused", async () => {
     const t = newT();
     const tw = await teamWorld(t);
     const claimed = await merrillCard(t, tw, "16", {

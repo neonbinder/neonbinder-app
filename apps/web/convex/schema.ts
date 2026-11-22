@@ -4250,6 +4250,12 @@ export default defineSchema({
     answerGen: v.optional(v.number()),
     answeredByUserId: v.optional(v.string()),
     answeredAt: v.optional(v.number()),
+    // The states cards of this name may still be in because an earlier
+    // answer's fan-out has not finished (newest first; `null` is "unanswered").
+    // A newer answer's fan-out takes a card in ANY of them, so a job that went
+    // stale part-way strands nobody. Set when an answer changes, cleared when
+    // the current answer's fan-out reaches its last page.
+    fanOutFrom: v.optional(v.array(v.union(tidyNameAnswerValidator, v.null()))),
   })
     // The point upsert and the answer read; its `[scopeId]` prefix is the
     // gate's and prelude's one-range answer read and the delete/wipe sweep.

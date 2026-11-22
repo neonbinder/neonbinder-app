@@ -261,6 +261,14 @@ async function resolveName(
   return { card, printed, printedRows, scopeId, row, key };
 }
 
+/** How many unfinished states a name remembers (a fifth quick answer would be a person mashing keys). */
+const FAN_OUT_STATES_MAX = 8;
+
+function sameState(a: Answer | null, b: Answer | null): boolean {
+  if (a === null || b === null) return a === b;
+  return sameAnswer(a, b);
+}
+
 function sameAnswer(a: Answer | undefined, b: Answer): boolean {
   if (!a || a.kind !== b.kind || a.by !== b.by) return false;
   if (a.kind === "linkPlayer" && b.kind === "linkPlayer") {
@@ -427,11 +435,20 @@ async function applyAnswer(
     stored === undefined ? row.answer === undefined : sameAnswer(row.answer, stored);
   const prev = row.answer;
   let answerGen = row.answerGen ?? 0;
+  // The states a card of this name may be in: what the answer being replaced
+  // produced, and whatever an earlier, unfinished fan-out left behind.
+  let fanOutFrom: Array<Answer | null> = [];
   if (!unchanged) {
     answerGen += 1;
+    fanOutFrom = [prev ?? null];
+    for (const state of row.fanOutFrom ?? []) {
+      if (!fanOutFrom.some((seen) => sameState(seen, state))) fanOutFrom.push(state);
+    }
+    fanOutFrom = fanOutFrom.slice(0, FAN_OUT_STATES_MAX);
     const patch: Partial<Doc<"tidyNames">> = {
       answer: stored,
       answerGen,
+      fanOutFrom,
       answeredByUserId: stored ? userId : undefined,
       answeredAt: stored ? Date.now() : undefined,
       ...(sportPatch ? { sportId: sportPatch } : {}),
@@ -488,12 +505,15 @@ async function applyAnswer(
         kind,
         nameNormalized: key,
         gen: answerGen,
-        ...(prev ? { fromAnswer: prev } : {}),
+        fromStates: fanOutFrom,
         change,
         openCardId: card._id,
         userId,
       });
       fanOutScheduled = true;
+    } else if (fanOutFrom.length > 0) {
+      // Nobody else printed it: no job is owed, and none is left to clear this.
+      await ctx.db.patch(row._id, { fanOutFrom: undefined });
     }
   }
   return { answerGen, fanOutScheduled };
@@ -620,6 +640,9 @@ const fanOutArgs = {
   nameNormalized: v.string(),
   gen: v.number(),
   fromAnswer: v.optional(tidyNameAnswerValidator),
+  // The states a card may be in (newest first, `null` = unanswered): the
+  // replaced answer's, plus an earlier job's that went stale part-way.
+  fromStates: v.optional(v.array(v.union(tidyNameAnswerValidator, v.null()))),
   change: changeValidator,
   openCardId: v.id("cardChecklist"),
   userId: v.string(),
@@ -631,6 +654,7 @@ export type FanOutPageArgs = {
   nameNormalized: string;
   gen: number;
   fromAnswer?: Answer;
+  fromStates?: Array<Answer | null>;
   change: NameChange;
   openCardId: Id<"cardChecklist">;
   userId: string;
@@ -666,6 +690,7 @@ export async function fanOutPageImpl(
     { scopeId: args.scopeId, kind: args.kind, nameNormalized: args.nameNormalized },
     { numItems: FAN_OUT_PAGE_SIZE, cursor: args.cursor },
   );
+  const states: Array<Answer | null> = args.fromStates ?? [args.fromAnswer ?? null];
   let applied = 0;
   let skipped = 0;
   for (const printed of page.page) {
@@ -683,19 +708,29 @@ export async function fanOutPageImpl(
     };
     const rows =
       args.change.kind === "linkPlayer" ? await listCardPrintedNames(ctx, card._id) : [];
-    const plan = planNameChange(
-      card,
-      ref,
-      args.change,
-      { answer: args.fromAnswer },
-      { unlinkedBefore: unlinkedBeforeCount(card, rows, ref), previousAnswer: args.fromAnswer },
-    );
+    // Compare-and-set against every state the card may legitimately be in; a
+    // card in none of them was changed by hand and is left alone.
+    let plan: ReturnType<typeof planNameChange> = { status: "skipped" };
+    for (const state of states) {
+      plan = planNameChange(
+        card,
+        ref,
+        args.change,
+        { answer: state ?? undefined },
+        { unlinkedBefore: unlinkedBeforeCount(card, rows, ref), previousAnswer: state ?? undefined },
+      );
+      if (plan.status !== "skipped") break;
+    }
     if (plan.status === "changed") {
       await writeNameChange(ctx, card, plan.fields, cache, args.userId);
       applied += 1;
     } else {
       skipped += 1;
     }
+  }
+  // The last page of the CURRENT answer's job: every older state is cleared.
+  if (page.isDone && row.fanOutFrom !== undefined) {
+    await ctx.db.patch(row._id, { fanOutFrom: undefined });
   }
   return {
     done: page.isDone,

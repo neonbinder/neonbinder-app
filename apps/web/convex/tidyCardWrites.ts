@@ -283,7 +283,23 @@ export async function regenerateTitleFields(
   const next: Card = { ...card, ...patch } as Card;
   let titleChanged = false;
   const before = await titleForStoredCard(ctx, card, cache.titles);
-  if (card.listingTitle === before.title) {
+  // A card born with a name still waiting stores the title the commit wrote,
+  // WITHOUT that name; `titleForStoredCard` reads a pending name as the
+  // fallback and so computes one WITH it. Either is the generated title (the
+  // commit's, or a regeneration's); only a title matching neither was typed.
+  let generated = card.listingTitle === before.title;
+  if (
+    !generated &&
+    ((card.pendingPlayerNames ?? []).length > 0 || (card.pendingTeamNames ?? []).length > 0)
+  ) {
+    const blank = await titleForStoredCard(
+      ctx,
+      { ...card, pendingPlayerNames: undefined, pendingTeamNames: undefined },
+      cache.titles,
+    );
+    generated = card.listingTitle === blank.title;
+  }
+  if (generated) {
     const after = await titleForStoredCard(ctx, next, cache.titles);
     if (after.title !== card.listingTitle) {
       patch.listingTitle = after.title;
