@@ -12,9 +12,11 @@
 // The flow:
 // - The set builder drills to Profiles and branches on the checklist's own
 //   state. Empty: Ken Griffey Jr. is stored as a cameo on every card (no cards,
-//   so no confirm), the publisher's checklist is uploaded, the checklist
-//   synced, every review name nobody knows is skipped, and the 25 cards are
-//   saved. Already committed (a rerun on the same seed): the stored cameo is
+//   so no confirm), the publisher's checklist is uploaded and the checklist
+//   synced; Match Cards' Confirm saves the 25 cards (NEO-645: commit first).
+//   The names are not this spec's subject: if the Tidy Up walk opens on them
+//   it is closed with "Save for later (Esc)", which writes nothing. Already
+//   committed (a rerun on the same seed): the stored cameo is
 //   read back. Both branches end on the same asserts.
 // - TP-1's and TP-3's drawers: their own player (Shohei Ohtani, Hank Aaron),
 //   Griffey under "Also on this card", "Cameo: Ken Griffey Jr." in the
@@ -41,7 +43,7 @@
 // binder and copy, and removes both.
 //
 // R3: the drill is `drillToSet` + `pick` + `pickAfterBscSync` (R9), the upload
-// `usePublishersChecklist`, the review `support/wizard.ts`, the set builder's
+// `usePublishersChecklist`, the walk `support/tidy-walk.ts`, the set builder's
 // names `support/also-pictured.ts`, and the collector's `support/cameo-binder.ts`.
 import type { Locator, Page } from "@playwright/test";
 import {
@@ -64,7 +66,8 @@ import type { FlowEnv } from "../../support/env";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist } from "../../support/published-checklist";
 import { drillToSet, pick, pickAfterBscSync, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
-import { advanceToSave, confirmSaveButton, nextStepButton, reviewWizard, tidyUpName } from "../../support/wizard";
+import { saveForLater, settleWalkAfterCommit, tidyWalk } from "../../support/tidy-walk";
+import { tidyUpName } from "../../support/wizard";
 
 const BUILD = { sport: "Baseball", year: "2026", manufacturer: "Topps", set: "Topps" } as const;
 const INSERT = "Profiles";
@@ -82,11 +85,6 @@ const OWN_CARDS = [
   { number: "TP-3", player: "Hank Aaron", title: "2026 Topps Profiles Hank Aaron & Ken Griffey Jr. #TP-3 Atlanta Braves Baseball" },
 ] as const;
 const CARDS = 25;
-
-/** The wizard opens behind the entity check's batch (live lookups; the same spec's ceiling). */
-const WIZARD_OPENS = 60_000;
-/** "Skip remaining names" is repeated while lookups still stage names (the same spec's ceiling). */
-const BATCH_GROWS = 60_000;
 
 /** Drill the set builder to Profiles. EXIT its Attributes panel heading is up. */
 async function drillToProfiles(page: Page, env: FlowEnv): Promise<void> {
@@ -113,22 +111,17 @@ async function fetchAndCommit(page: Page, env: FlowEnv, section: Locator): Promi
   // either branch (SportLots paused or not). The helper waits on it (7 s of ours plus BSC's), proves the
   // teams line while it is open (the only time before the save), keeps any BSC-only card and confirms.
   await confirmChecklistMatchCards(page, { facts, what: "the empty checklist's fetch" });
-  const wizard = reviewWizard(page);
-  await expect(wizard).toBeVisible({ timeout: WIZARD_OPENS });
-  await expect(wizard).toHaveAccessibleName(tidyUpName({ year: BUILD.year, set: BUILD.set, variant: INSERT }));
-  // The names are not this spec's claim: skip the ones nobody knows, repeating
-  // while a lookup can still stage one, then save.
-  const namesDone = nextStepButton(page).or(confirmSaveButton(page));
-  const skipRemaining = wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ });
-  await expect(async () => {
-    if (await skipRemaining.isVisible()) await skipRemaining.click();
-    await expect(namesDone).toBeVisible({ timeout: 7_000 });
-  }).toPass({ timeout: BATCH_GROWS });
-  await advanceToSave(page);
-  await expect(wizard.getByRole("heading", { name: `Save ${CARDS} cards?` })).toBeVisible();
-  await confirmSaveButton(page).click();
-  await expect(page.getByText(new RegExp(`Saved ${CARDS} cards`))).toBeVisible();
-  await expect(wizard).toBeHidden();
+  // NEO-645: Confirm IS the commit (our own write, 7 s); the cards are saved before any walk.
+  const saved = page.getByText(new RegExp(`Saved ${CARDS} cards\\.`)).first();
+  await expect(saved).toBeVisible();
+  // The walk opens only if a card needs a person (a name nobody knows, a blue check). Either way
+  // the cards are already saved: an open walk is closed with Save for later, which writes nothing.
+  if (await settleWalkAfterCommit(page, saved)) {
+    await expect(tidyWalk(page)).toHaveAccessibleName(tidyUpName({ year: BUILD.year, set: BUILD.set, variant: INSERT }));
+    await saveForLater(page);
+  }
+  await expect(tidyWalk(page)).toBeHidden();
+  await expect(page.getByRole("heading", { level: 2, name: `Cards (${CARDS})` })).toBeVisible();
   await drillToProfiles(page, env);
 }
 
