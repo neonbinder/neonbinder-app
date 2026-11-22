@@ -300,3 +300,5 @@
 - [Stand down on mounted, not phase](reference_stand_down_on_mounted_not_on_phase.md) — page element duplicated by a dialog keys on the dialog being mounted/open, not the phase before it (NEO-624)
 - [BSD sed has no \b](reference_bsd_sed_has_no_word_boundary.md) — macOS sed ignores \b so a bulk rename silently no-ops; python re.sub; keep a Legacy-named old body when a shared fn changes shape
 - [Extracting fields from a drawer keeps the lint override list](reference_extracting_fields_from_a_drawer_keeps_the_lint_override_list.md) — add the new file to per-file eslint overrides; hooks stay unconditional, gate JSX only
+- [Proxy api mock, live-region waits](reference_proxy_api_mock_and_live_region_waits.md) — component tests: Proxy `api` returning "module.fn"; findByText for announced lead-ins; derive pre-fill in render, not an effect
+- [Retire a flow: stand-in mock first](reference_retire_a_flow_by_deleting_its_tests_after_a_stand_in_mock.md) — stand-in the replacement, JSON-report failures by describe, script-delete retired `it(` blocks

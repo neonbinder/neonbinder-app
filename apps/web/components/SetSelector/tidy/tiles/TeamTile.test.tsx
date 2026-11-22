@@ -1,0 +1,534 @@
+/**
+ * NEO-645 tile 5, "Team": a skeleton while the spelling is unsettled; an
+ * unanswered printed team name (candidates, link with "Remember as a name",
+ * New team, Not a team); a card with no team (chips and their pre-fill rules,
+ * "No team on this card"); the purple fill note; and the guarded "Apply to all".
+ */
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../../../../convex/_generated/api", () => ({
+  api: new Proxy(
+    {},
+    {
+      get: (_t, mod) =>
+        typeof mod !== "string" || mod === "then"
+          ? undefined
+          : new Proxy(
+              {},
+              {
+                get: (_t2, fn) => (typeof fn !== "string" || fn === "then" ? undefined : `${mod}.${fn}`),
+              },
+            ),
+    },
+  ),
+}));
+
+const queryResults: Record<string, unknown> = {};
+const mutations: Record<string, ReturnType<typeof vi.fn>> = {};
+const mutation = (ref: string) => (mutations[ref] ??= vi.fn().mockResolvedValue(null));
+vi.mock("convex/react", () => ({
+  useQuery: (ref: string, args: unknown) => (args === "skip" ? undefined : queryResults[ref]),
+  useMutation: (ref: string) => mutation(ref),
+  useConvex: () => ({ query: vi.fn() }),
+}));
+
+vi.mock("../../EntityLinkSearch", () => ({
+  default: ({ kind, onSelect }: { kind: string; onSelect: (id: string, n: string) => void }) => (
+    <button type="button" onClick={() => onSelect("team-9", "Someone")}>
+      {`Pick a ${kind}`}
+    </button>
+  ),
+}));
+
+/** The search owns its own test file; here it is a pick button and the caller's checkbox. */
+vi.mock("../../../entities/TeamMatchSearch", () => ({
+  TeamMatchSearch: ({
+    onPick,
+    children,
+  }: {
+    onPick: (id: string, n: string) => void;
+    children?: React.ReactNode;
+  }) => (
+    <div>
+      <button type="button" onClick={() => onPick("team-7", "San Diego Padres")}>
+        Pick San Diego Padres
+      </button>
+      {children}
+    </div>
+  ),
+}));
+
+vi.mock("../../NewTeamForm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../NewTeamForm")>()),
+  default: ({ onSubmit }: { onSubmit?: () => void }) => (
+    <button type="button" onClick={() => onSubmit?.()}>
+      Submit new team form
+    </button>
+  ),
+}));
+
+import TeamTile from "./TeamTile";
+import type { TidyAttention, TidyCardContext, TidyRow, TidyTileProps } from "../tile-types";
+
+const CARD = "card-1";
+const SPORT = "sport-1";
+
+const card = (extra: Record<string, unknown> = {}) =>
+  ({ _id: CARD, cardNumber: "USC42", cardName: "Jackson Merrill", ...extra }) as unknown as TidyRow;
+
+const teamName = (over: Record<string, unknown> = {}) => ({
+  kind: "team" as const,
+  nameNormalized: "padres",
+  printed: "Padres",
+  order: 0,
+  cardOverride: false,
+  scopeId: "leaf-1",
+  row: { name: "Padres", sportId: SPORT, status: "ready" as const },
+  printedOn: null,
+  ...over,
+});
+
+const context = (over: Record<string, unknown> = {}) =>
+  ({
+    cardId: CARD,
+    names: [],
+    players: [],
+    playersMore: false,
+    teams: [],
+    linkedFor: [],
+    ...over,
+  }) as unknown as NonNullable<TidyCardContext>;
+
+const nameItem: TidyAttention["items"][number] = { level: "fix", kind: "teamName", names: ["Padres"] };
+const noTeamItem: TidyAttention["items"][number] = { level: "fix", kind: "noTeam" };
+
+function renderTile(
+  opts: {
+    row?: TidyRow;
+    ctx?: TidyCardContext | undefined;
+    items?: TidyAttention["items"];
+    leafCards?: TidyRow[];
+  } = {},
+) {
+  const props: TidyTileProps = {
+    row: opts.row ?? card({ pendingTeamNames: ["Padres"] }),
+    context: "ctx" in opts ? opts.ctx : context({ names: [teamName()] }),
+    attention: { level: "fix", items: opts.items ?? [nameItem] },
+    leafId: "leaf-1" as never,
+    sportId: SPORT as never,
+    leafCards: opts.leafCards ?? [],
+    setName: "Set",
+  };
+  return render(<TeamTile {...props} />);
+}
+
+const click = (el: HTMLElement) => act(async () => fireEvent.click(el));
+
+beforeEach(() => {
+  for (const k of Object.keys(queryResults)) delete queryResults[k];
+  for (const k of Object.keys(mutations)) delete mutations[k];
+});
+
+describe("TeamTile", () => {
+  it("is a skeleton, with nothing to press, while a teams disagreement is unsettled", () => {
+    renderTile({ items: [{ level: "fix", kind: "sourcesDisagree", field: "teams" }] });
+    expect(screen.getByRole("region", { name: "Team" }).getAttribute("data-tidy-level")).toBe("waiting");
+    expect(screen.getByText("Waiting on the spelling above")).toBeTruthy();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("renders nothing for a card with no team names, no team and nothing to ask", () => {
+    const { container } = renderTile({ row: card(), ctx: context(), items: [] });
+    expect(container.textContent).toBe("");
+  });
+
+  describe("an unanswered printed name", () => {
+    it("links the lone exact match and remembers the printed name as an alias for it", async () => {
+      queryResults["teams.nearMatches"] = [
+        { _id: "team-7", name: "San Diego Padres", confidence: "exact", yearsActive: { from: 1969 } },
+      ];
+      renderTile();
+      expect(screen.getByRole("region", { name: "Team" }).getAttribute("data-tidy-level")).toBe("fix");
+      await click(screen.getByRole("button", { name: "Link to San Diego Padres · 1969–present" }));
+      expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
+        cardId: CARD,
+        kind: "team",
+        name: "Padres",
+        answer: { kind: "linkTeam", teamId: "team-7", saveAsAlias: true },
+      });
+    });
+
+    it("a string that is another team's LOCATION starts with 'Remember' unticked", async () => {
+      queryResults["teams.nearMatches"] = [
+        { _id: "team-1", name: "Padres", confidence: "close", locationMatch: true },
+      ];
+      renderTile();
+      const box = screen.getByRole("checkbox", { name: "Remember “Padres” as a name for this team" });
+      expect((box as HTMLInputElement).checked).toBe(false);
+      await click(screen.getByRole("button", { name: "Pick San Diego Padres" }));
+      expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
+        cardId: CARD,
+        kind: "team",
+        name: "Padres",
+        answer: { kind: "linkTeam", teamId: "team-7" },
+      });
+    });
+
+    it("a pick from the search remembers the name unless the box is cleared", async () => {
+      queryResults["teams.nearMatches"] = [];
+      renderTile();
+      const box = screen.getByRole("checkbox", { name: "Remember “Padres” as a name for this team" });
+      expect((box as HTMLInputElement).checked).toBe(true);
+      await click(box);
+      await click(screen.getByRole("button", { name: "Pick San Diego Padres" }));
+      expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
+        cardId: CARD,
+        kind: "team",
+        name: "Padres",
+        answer: { kind: "linkTeam", teamId: "team-7" },
+      });
+    });
+
+    it("offers each team the name could mean, by era, and links the one picked", async () => {
+      queryResults["teams.nearMatches"] = [];
+      queryResults["teams.getManyByIds"] = [
+        { _id: "t-new", name: "Padres", location: "San Diego", yearsActive: { from: 1969 } },
+        { _id: "t-old", name: "Padres", location: "San Diego", yearsActive: { from: 1936, to: 1968 } },
+      ];
+      renderTile({
+        ctx: context({
+          names: [teamName({ row: { name: "Padres", sportId: SPORT, status: "ready", candidateTeamIds: ["t-new", "t-old"] } })],
+        }),
+      });
+      // The lead-in is a live region: announced a beat after the rows are there.
+      expect(await screen.findByText("We've got 2 teams by that name. Pick the one on this card.")).toBeTruthy();
+      const links = screen.getAllByRole("button", { name: /^Link to San Diego Padres/ });
+      expect(links).toHaveLength(2);
+      expect(new Set(links.map((b) => b.getAttribute("aria-label") ?? b.textContent)).size).toBe(2);
+      await click(links[0]);
+      expect(mutation("tidyNames.answerName")).toHaveBeenCalledTimes(1);
+    });
+
+    it("'Not a team' answers notEntity for the name", async () => {
+      queryResults["teams.nearMatches"] = [];
+      renderTile();
+      await click(screen.getByRole("button", { name: "Not a team" }));
+      expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
+        cardId: CARD,
+        kind: "team",
+        name: "Padres",
+        answer: { kind: "notEntity" },
+      });
+    });
+
+    it("'+ New team' opens the form inside the tile; creating it links the name", async () => {
+      queryResults["teams.nearMatches"] = [];
+      mutation("teams.findOrCreate").mockResolvedValue("team-new");
+      renderTile();
+      await click(screen.getByRole("button", { name: "+ New team" }));
+      expect(screen.getByRole("group", { name: "New team: Padres" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Cancel new team" })).toBeTruthy();
+      await click(screen.getByRole("button", { name: "Submit new team form" }));
+      expect(mutation("teams.findOrCreate")).toHaveBeenCalledWith(expect.objectContaining({ name: "Padres", sportId: SPORT }));
+      expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
+        cardId: CARD,
+        kind: "team",
+        name: "Padres",
+        answer: { kind: "linkTeam", teamId: "team-new" },
+      });
+      // Closed again once it is made.
+      expect(screen.queryByRole("group", { name: "New team: Padres" })).toBeNull();
+    });
+
+    it("a name another team holds as an alias becomes 'Link to {holder}', and creating is held", async () => {
+      queryResults["teams.nearMatches"] = [];
+      queryResults["teams.nameHeldAsAliasBy"] = [
+        { id: "team-holder", name: "San Diego Padres", yearsActive: { from: 1969 } },
+      ];
+      renderTile();
+      await click(screen.getByRole("button", { name: "+ New team" }));
+      await click(screen.getByRole("button", { name: "Link to San Diego Padres · 1969–present" }));
+      expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith(
+        expect.objectContaining({ answer: expect.objectContaining({ kind: "linkTeam", teamId: "team-holder" }) }),
+      );
+      expect(mutation("teams.findOrCreate")).not.toHaveBeenCalled();
+    });
+
+    it("two names on one card carry the printed name in every control", () => {
+      queryResults["teams.nearMatches"] = [];
+      renderTile({
+        ctx: context({
+          names: [
+            teamName(),
+            teamName({ nameNormalized: "dodgers", printed: "Dodgers", order: 1, row: { name: "Dodgers", sportId: SPORT, status: "ready" } }),
+          ],
+        }),
+      });
+      expect(screen.getByRole("button", { name: "Not a team Padres" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Not a team Dodgers" })).toBeTruthy();
+    });
+  });
+
+  describe("an answered name", () => {
+    const linked = (answer: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+      context({
+        names: [teamName({ row: { name: "Padres", sportId: SPORT, status: "ready", answer } })],
+        teams: [{ teamId: "team-7", name: "San Diego Padres", onCard: true, candidate: false }],
+        ...extra,
+      });
+
+    it("a team we linked says why, is plain, and Change clears the answer", async () => {
+      renderTile({
+        row: card({ teamOnCardIds: ["team-7"] }),
+        items: [],
+        ctx: linked(
+          { kind: "linkTeam", teamId: "team-7", by: "auto", autoReason: "careerTeam" },
+          { linkedFor: [{ kind: "team", teamId: "team-7", reason: "careerTeam" }] },
+        ),
+      });
+      expect(screen.getByRole("region", { name: "Team" }).getAttribute("data-tidy-level")).toBe("plain");
+      expect(screen.getByText("San Diego Padres")).toBeTruthy();
+      expect(screen.getByText("Linked for you: the only one on file who played for this card's team")).toBeTruthy();
+      await click(screen.getByRole("button", { name: "Change" }));
+      expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
+        cardId: CARD,
+        kind: "team",
+        name: "Padres",
+        answer: { kind: "clear" },
+      });
+    });
+
+    it("'Not a team' reads as answered and Change brings the question back", async () => {
+      renderTile({
+        row: card(),
+        items: [],
+        ctx: linked({ kind: "notEntity", by: "operator" }, { teams: [] }),
+      });
+      expect(screen.getByText("is not a team.")).toBeTruthy();
+      await click(screen.getByRole("button", { name: "Change" }));
+      expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith(
+        expect.objectContaining({ answer: { kind: "clear" } }),
+      );
+    });
+  });
+
+  describe("a card with no team", () => {
+    const player = {
+      playerId: "player-1",
+      name: "Jimmie Foxx",
+      sportId: SPORT,
+      stints: [
+        { teamId: "t-a", teamName: "Philadelphia Athletics", fromYear: 1925, toYear: 1935 },
+        { teamId: "t-b", teamName: "Boston Red Sox", fromYear: 1936, toYear: 1942 },
+      ],
+      stintsMore: false,
+    };
+    const items = [noTeamItem];
+    const row = () => card({ playerIds: ["player-1"] });
+    const ctx = () => context({ players: [player] });
+
+    it("pre-fills a stint that covers the set's year and saves it with the Save button", async () => {
+      queryResults["cardChecklist.suggestedTeamsForCard"] = [
+        { teamId: "t-b", name: "Boston Red Sox", label: "Boston Red Sox", source: "career", playerName: "Jimmie Foxx", inSetYear: true },
+      ];
+      renderTile({ row: row(), ctx: ctx(), items });
+      const chip = screen.getByRole("button", { name: /Boston Red Sox/ });
+      expect(chip.getAttribute("aria-pressed")).toBe("true");
+      expect(screen.getByText("Suggested from career history.")).toBeTruthy();
+      await click(screen.getByRole("button", { name: "Save team" }));
+      expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({ id: CARD, teamOnCardIds: ["t-b"] });
+    });
+
+    it("never pre-fills a whole-career fallback, and shows the player's years with each team", async () => {
+      queryResults["cardChecklist.suggestedTeamsForCard"] = [
+        { teamId: "t-a", name: "Philadelphia Athletics", label: "Philadelphia Athletics", source: "career", playerName: "Jimmie Foxx", inSetYear: false, uncoveredSetYear: 2025 },
+        { teamId: "t-b", name: "Boston Red Sox", label: "Boston Red Sox", source: "career", playerName: "Jimmie Foxx", inSetYear: false, uncoveredSetYear: 2025 },
+      ];
+      renderTile({ row: row(), ctx: ctx(), items });
+      for (const chip of screen.getAllByRole("button", { name: /Athletics|Red Sox/ })) {
+        expect(chip.getAttribute("aria-pressed")).toBe("false");
+      }
+      expect(screen.getByRole("button", { name: /Philadelphia Athletics · Jimmie Foxx 1925–1935/ })).toBeTruthy();
+      expect(screen.getByText("No 2025 team on file. Here’s the whole career, so pick the one on the card.")).toBeTruthy();
+      // Nothing chosen: Save is held.
+      await click(screen.getByRole("button", { name: "Save team" }));
+      expect(mutation("selectorOptions.updateCard")).not.toHaveBeenCalled();
+      await click(screen.getByRole("button", { name: /Boston Red Sox/ }));
+      await click(screen.getByRole("button", { name: "Save team" }));
+      expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({ id: CARD, teamOnCardIds: ["t-b"] });
+    });
+
+    it("never pre-fills against a team the listing names (rule 8)", () => {
+      queryResults["cardChecklist.suggestedTeamsForCard"] = [
+        { teamId: "t-b", name: "Boston Red Sox", label: "Boston Red Sox", source: "career", playerName: "Jimmie Foxx", inSetYear: true },
+      ];
+      queryResults["teams.erasByNameAndSport"] = [
+        { _id: "t-a", name: "Philadelphia Athletics", label: "Philadelphia Athletics" },
+      ];
+      renderTile({ row: card({ playerIds: ["player-1"], bscTeamName: "Philadelphia Athletics" }), ctx: ctx(), items });
+      for (const chip of screen.getAllByRole("button", { name: /Athletics|Red Sox/ })) {
+        expect(chip.getAttribute("aria-pressed")).toBe("false");
+      }
+      expect(
+        screen.getByText("From the career. The listing names a different team, so pick the one on the card."),
+      ).toBeTruthy();
+      expect(
+        screen.getByText("The listing names “Philadelphia Athletics”. Pick it if it matches the card."),
+      ).toBeTruthy();
+    });
+
+    it("a lookup that never answered holds nothing back: the career pre-fills as usual", () => {
+      queryResults["cardChecklist.suggestedTeamsForCard"] = [
+        { teamId: "t-b", name: "Boston Red Sox", label: "Boston Red Sox", source: "career", playerName: "Jimmie Foxx", inSetYear: true },
+      ];
+      renderTile({ row: card({ playerIds: ["player-1"], teamCheckOutcome: "gaveUp" }), ctx: ctx(), items });
+      expect(screen.getByRole("button", { name: /Boston Red Sox/ }).getAttribute("aria-pressed")).toBe("true");
+      expect(screen.getByText("We couldn’t get a team from the listing for this card. Pick the one on the card.")).toBeTruthy();
+    });
+
+    it("'No team on this card' records the answer", async () => {
+      queryResults["cardChecklist.suggestedTeamsForCard"] = [];
+      mutation("cardChecklist.confirmCardNoTeam").mockResolvedValue({ confirmed: true, stamped: true });
+      renderTile({ row: row(), ctx: ctx(), items });
+      await click(screen.getByRole("button", { name: "No team on this card" }));
+      expect(mutation("cardChecklist.confirmCardNoTeam")).toHaveBeenCalledWith({ cardId: CARD });
+    });
+
+    it("says so when the card turned out to have teams", async () => {
+      queryResults["cardChecklist.suggestedTeamsForCard"] = [];
+      mutation("cardChecklist.confirmCardNoTeam").mockResolvedValue({ confirmed: false, stamped: false });
+      renderTile({ row: row(), ctx: ctx(), items });
+      await click(screen.getByRole("button", { name: "No team on this card" }));
+      expect(screen.getByRole("alert").textContent).toMatch(/nothing to confirm/);
+    });
+
+    it("'Other team…' adds a searched team to the choice", async () => {
+      queryResults["cardChecklist.suggestedTeamsForCard"] = [];
+      renderTile({ row: row(), ctx: ctx(), items });
+      await click(screen.getByRole("button", { name: "Other team…" }));
+      await click(screen.getByRole("button", { name: "Pick a team" }));
+      await click(screen.getByRole("button", { name: "Save team" }));
+      expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({ id: CARD, teamOnCardIds: ["team-9"] });
+    });
+  });
+
+  describe("a card that has its team", () => {
+    const base = () => ({
+      row: card({
+        playerIds: ["player-1"],
+        teamOnCardIds: ["team-7"],
+        tidyChecks: [{ kind: "teamFill", teamIds: ["team-7"], reason: "career" }],
+      }),
+      items: [] as TidyAttention["items"],
+      ctx: context({
+        players: [{ playerId: "player-1", name: "Jackson Merrill", sportId: SPORT, stints: [], stintsMore: false }],
+        teams: [{ teamId: "team-7", name: "San Diego Padres", onCard: true, candidate: false }],
+      }),
+    });
+
+    it("says the commit filled it in, from the career or from the other cards", () => {
+      const { unmount } = renderTile(base());
+      expect(screen.getByText("Team filled from the player's career")).toBeTruthy();
+      unmount();
+      const other = base();
+      other.row = card({
+        playerIds: ["player-1"],
+        teamOnCardIds: ["team-7"],
+        tidyChecks: [{ kind: "teamFill", teamIds: ["team-7"], reason: "otherCards" }],
+      });
+      renderTile(other);
+      expect(screen.getByText("Team filled from the player's other cards")).toBeTruthy();
+    });
+
+    it("drops the note once the operator changed the team by hand", () => {
+      const b = base();
+      b.row = card({
+        playerIds: ["player-1"],
+        teamOnCardIds: ["team-8"],
+        tidyChecks: [{ kind: "teamFill", teamIds: ["team-7"], reason: "career" }],
+      });
+      renderTile(b);
+      expect(screen.queryByText(/Team filled from/)).toBeNull();
+    });
+
+    it("Change swaps the team on this card only", async () => {
+      renderTile(base());
+      await click(screen.getByRole("button", { name: "Change" }));
+      await click(screen.getByRole("button", { name: "Pick a team" }));
+      expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({ id: CARD, teamOnCardIds: ["team-9"] });
+    });
+
+    it("'+ Another team' adds one", async () => {
+      renderTile(base());
+      await click(screen.getByRole("button", { name: "+ Another team" }));
+      await click(screen.getByRole("button", { name: "Pick a team" }));
+      expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
+        id: CARD,
+        teamOnCardIds: ["team-7", "team-9"],
+      });
+    });
+
+    describe("Apply to all", () => {
+      const sibling = (id: string, extra: Record<string, unknown> = {}) =>
+        card({ _id: id, playerIds: ["player-1"], ...extra });
+
+      it("proposes only this player's other teamless, unclaimed cards, and the server decides", async () => {
+        const b = base();
+        renderTile({
+          ...b,
+          leafCards: [
+            b.row,
+            sibling("c2"),
+            sibling("c3"),
+            sibling("c4", { teamOnCardIds: ["team-1"] }),
+            sibling("c5", { bscTeamName: "Padres" }),
+            sibling("c6", { pendingTeamNames: ["Padres"] }),
+            sibling("c7", { teamNoneConfirmedAt: 1 }),
+            sibling("c8", { sourceDisagreements: [{ field: "teams", values: [] }] }),
+            sibling("c9", { teamCheckOutcome: "checklist" }),
+            sibling("c10", { playerIds: ["player-1", "player-2"] }),
+            sibling("c11", { playerIds: ["player-2"] }),
+          ],
+        });
+        await click(screen.getByRole("button", { name: "Apply to all 2 other Jackson Merrill cards" }));
+        expect(mutation("tidyCards.applyTeamToPlayerCards")).toHaveBeenCalledWith({
+          sourceCardId: CARD,
+          teamId: "team-7",
+          cardIds: ["c2", "c3"],
+        });
+      });
+
+      it("is not offered with nothing to apply to, on a two-player card, or with two teams", () => {
+        const b = base();
+        const { unmount } = renderTile({ ...b, leafCards: [b.row] });
+        expect(screen.queryByRole("button", { name: /Apply to/ })).toBeNull();
+        unmount();
+
+        const twoPlayers = { ...b, row: card({ playerIds: ["player-1", "player-2"], teamOnCardIds: ["team-7"] }) };
+        const { unmount: u2 } = renderTile({ ...twoPlayers, leafCards: [sibling("c2")] });
+        expect(screen.queryByRole("button", { name: /Apply to/ })).toBeNull();
+        u2();
+
+        const twoTeams = { ...b, row: card({ playerIds: ["player-1"], teamOnCardIds: ["team-7", "team-8"] }) };
+        renderTile({ ...twoTeams, leafCards: [sibling("c2")] });
+        expect(screen.queryByRole("button", { name: /Apply to/ })).toBeNull();
+      });
+
+      it("a single card reads in the singular", () => {
+        const b = base();
+        renderTile({ ...b, leafCards: [b.row, sibling("c2")] });
+        expect(screen.getByRole("button", { name: "Apply to the other Jackson Merrill card" })).toBeTruthy();
+      });
+    });
+  });
+
+  it("shows a refused write inline, in the tile", async () => {
+    queryResults["teams.nearMatches"] = [];
+    mutation("tidyNames.answerName").mockRejectedValueOnce(new Error("Server Error"));
+    renderTile();
+    await click(screen.getByRole("button", { name: "Not a team" }));
+    const tile = screen.getByRole("region", { name: "Team" });
+    expect(within(tile).getByRole("alert").textContent).toBe("Couldn't save that answer. Try again.");
+  });
+});

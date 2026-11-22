@@ -1,0 +1,286 @@
+/**
+ * NEO-645 tile 4, "Career": blue, only while the card has a career gap or a new
+ * player's Wikidata career. Stints are written to the PLAYER ("Add to career",
+ * "Create team and add stint", "Add stints to {player}", "+ Add stint");
+ * "Keep as is" and "Not now" write nothing.
+ */
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../../../../convex/_generated/api", () => ({
+  api: new Proxy(
+    {},
+    {
+      get: (_t, mod) =>
+        typeof mod !== "string" || mod === "then"
+          ? undefined
+          : new Proxy(
+              {},
+              {
+                get: (_t2, fn) => (typeof fn !== "string" || fn === "then" ? undefined : `${mod}.${fn}`),
+              },
+            ),
+    },
+  ),
+}));
+
+const queryResults: Record<string, unknown> = {};
+const mutations: Record<string, ReturnType<typeof vi.fn>> = {};
+const mutation = (ref: string) => (mutations[ref] ??= vi.fn().mockResolvedValue(null));
+const mockConvexQuery = vi.fn();
+vi.mock("convex/react", () => ({
+  useQuery: (ref: string, args: unknown) => {
+    if (args === "skip") return undefined;
+    const result = queryResults[ref];
+    return typeof result === "function" ? (result as (a: unknown) => unknown)(args) : result;
+  },
+  useMutation: (ref: string) => mutation(ref),
+  useConvex: () => ({ query: mockConvexQuery }),
+}));
+
+/** The entry form owns its own tests; here it is one button that adds a known team. */
+vi.mock("../../CareerTeamEntry", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../CareerTeamEntry")>()),
+  default: ({ onAdd }: { onAdd: (e: { name: string; fromYear: number; teamId: string }) => void }) => (
+    <button type="button" onClick={() => onAdd({ name: "Texas Rangers", fromYear: 2020, teamId: "team-tex" })}>
+      Entry form stub
+    </button>
+  ),
+}));
+
+vi.mock("../../NewTeamForm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../NewTeamForm")>()),
+  default: ({ onSubmit }: { onSubmit?: () => void }) => (
+    <button type="button" onClick={() => onSubmit?.()}>
+      Submit new team form
+    </button>
+  ),
+}));
+
+import CareerTile from "./CareerTile";
+import type { TidyAttention, TidyCardContext, TidyRow, TidyTileProps } from "../tile-types";
+
+const CARD = "card-1";
+const SPORT = "sport-1";
+
+const card = (extra: Record<string, unknown> = {}) =>
+  ({ _id: CARD, cardNumber: "USC42", cardName: "Jackson Merrill", playerIds: ["player-1"], ...extra }) as unknown as TidyRow;
+
+const player = (extra: Record<string, unknown> = {}) => ({
+  playerId: "player-1",
+  name: "Jackson Merrill",
+  sportId: SPORT,
+  stints: [{ teamId: "t-old", teamName: "El Paso Chihuahuas", fromYear: 2022, toYear: 2023 }],
+  stintsMore: false,
+  ...extra,
+});
+
+const context = (over: Record<string, unknown> = {}) =>
+  ({
+    cardId: CARD,
+    names: [],
+    players: [player()],
+    playersMore: false,
+    teams: [{ teamId: "team-pad", name: "San Diego Padres", onCard: true, candidate: false }],
+    linkedFor: [],
+    ...over,
+  }) as unknown as NonNullable<TidyCardContext>;
+
+const gapItem = { level: "check", kind: "careerGap", playerId: "player-1", teamId: "team-pad", key: "careerGap:x" } as const;
+const newItem = { level: "check", kind: "newPlayerCareer", playerId: "player-1", key: "newPlayerCareer:x" } as const;
+
+const wikidataName = (enrichment: Record<string, unknown>) => ({
+  kind: "player" as const,
+  nameNormalized: "jackson merrill",
+  printed: "Jackson Merrill",
+  order: 0,
+  cardOverride: false,
+  scopeId: "leaf-1",
+  row: {
+    name: "Jackson Merrill",
+    sportId: SPORT,
+    status: "ready" as const,
+    answer: { kind: "linkPlayer", playerId: "player-1", by: "operator" },
+    enrichment,
+  },
+  printedOn: null,
+});
+
+function renderTile(items: TidyAttention["items"], ctx: TidyCardContext | undefined = context()) {
+  const props: TidyTileProps = {
+    row: card(),
+    context: ctx,
+    attention: { level: "check", items },
+    leafId: "leaf-1" as never,
+    sportId: SPORT as never,
+    leafCards: [],
+    setName: "Set",
+  };
+  return render(<CareerTile {...props} />);
+}
+
+const click = (el: HTMLElement) => act(async () => fireEvent.click(el));
+
+beforeEach(() => {
+  for (const k of Object.keys(queryResults)) delete queryResults[k];
+  for (const k of Object.keys(mutations)) delete mutations[k];
+  mockConvexQuery.mockReset();
+  queryResults["selectorOptions.getAncestorChain"] = [{ _id: "y", level: "year", value: "2024" }];
+});
+
+describe("CareerTile", () => {
+  it("renders nothing when the card has no career item", () => {
+    const { container } = renderTile([]);
+    expect(container.textContent).toBe("");
+  });
+
+  describe("a career gap on an existing player", () => {
+    it("is blue and says which team is missing by which year", () => {
+      renderTile([gapItem]);
+      expect(screen.getByRole("region", { name: "Career" }).getAttribute("data-tidy-level")).toBe("check");
+      expect(screen.getByText("No San Diego Padres in the career by 2024.")).toBeTruthy();
+      expect(screen.getByRole("list", { name: "Career on file for Jackson Merrill" })).toBeTruthy();
+      expect(screen.getByText("El Paso Chihuahuas · 2022–2023")).toBeTruthy();
+    });
+
+    it("a player with no stints at all has 'No career on file yet.'", () => {
+      renderTile([gapItem], context({ players: [player({ stints: [] })] }));
+      expect(screen.getByText("No career on file yet.")).toBeTruthy();
+    });
+
+    it("'Add to career' writes the card's team to the PLAYER from the set's year", async () => {
+      renderTile([gapItem]);
+      await click(screen.getByRole("button", { name: "Add to career" }));
+      expect(mutation("players.addStint")).toHaveBeenCalledWith({
+        playerId: "player-1",
+        teamId: "team-pad",
+        fromYear: 2024,
+        cardId: CARD,
+      });
+    });
+
+    it("'Keep as is' writes nothing, and reads as chosen", async () => {
+      renderTile([gapItem]);
+      const keep = screen.getByRole("button", { name: "Keep as is" });
+      expect(keep.getAttribute("aria-pressed")).toBe("false");
+      await click(keep);
+      expect(keep.getAttribute("aria-pressed")).toBe("true");
+      expect(Object.values(mutations).every((m) => m.mock.calls.length === 0)).toBe(true);
+    });
+
+    it("'+ Add stint' adds a team NB holds, with its years", async () => {
+      renderTile([gapItem]);
+      await click(screen.getByRole("button", { name: "+ Add stint for Jackson Merrill" }));
+      await click(screen.getByRole("button", { name: "Entry form stub" }));
+      expect(mutation("players.addStint")).toHaveBeenCalledWith({
+        playerId: "player-1",
+        teamId: "team-tex",
+        fromYear: 2020,
+        cardId: CARD,
+      });
+    });
+
+    it("shows a refused write inline", async () => {
+      mutation("players.addStint").mockRejectedValueOnce(new Error("Server Error"));
+      renderTile([gapItem]);
+      await click(screen.getByRole("button", { name: "Add to career" }));
+      expect(screen.getByRole("alert").textContent).toBe("Couldn't add that stint. Try again.");
+    });
+  });
+
+  describe("a new player's Wikidata career", () => {
+    const career = {
+      careerTeams: [
+        { name: "San Diego Padres", fromYear: 2024 },
+        { name: "San Antonio Missions", fromYear: 2023, toYear: 2023 },
+      ],
+    };
+    const eras = (args: unknown) =>
+      (args as { name: string }).name === "San Diego Padres"
+        ? [{ _id: "team-pad", name: "Padres", label: "San Diego Padres", yearsActive: { from: 1969 } }]
+        : [];
+
+    it("says it comes from Wikidata, and which teams NB has and lacks", () => {
+      queryResults["teams.erasByNameAndSport"] = eras;
+      renderTile([newItem], context({ names: [wikidataName(career)] }));
+      expect(screen.getByText("From Wikidata · new player only")).toBeTruthy();
+      expect(screen.getByText("San Diego Padres · 2024–")).toBeTruthy();
+      expect(screen.getByText("✓ team in NB")).toBeTruthy();
+      expect(screen.getByText("San Antonio Missions · 2023")).toBeTruthy();
+      expect(screen.getByText("team not in NB")).toBeTruthy();
+    });
+
+    it("'Add stints to {player}' adds only the teams NB holds", async () => {
+      queryResults["teams.erasByNameAndSport"] = eras;
+      renderTile([newItem], context({ names: [wikidataName(career)] }));
+      await click(screen.getByRole("button", { name: "Add stints to Jackson Merrill" }));
+      expect(mutation("players.addStint")).toHaveBeenCalledTimes(1);
+      expect(mutation("players.addStint")).toHaveBeenCalledWith({
+        playerId: "player-1",
+        teamId: "team-pad",
+        fromYear: 2024,
+        cardId: CARD,
+      });
+    });
+
+    it("a stint already on the player is not offered again", () => {
+      queryResults["teams.erasByNameAndSport"] = eras;
+      renderTile(
+        [newItem],
+        context({
+          names: [wikidataName(career)],
+          players: [player({ stints: [{ teamId: "team-pad", teamName: "San Diego Padres", fromYear: 2024 }] })],
+        }),
+      );
+      expect(screen.queryByRole("button", { name: "Add stints to Jackson Merrill" })).toBeNull();
+      expect(screen.getByText("✓ in the career")).toBeTruthy();
+    });
+
+    it("a team NB lacks is made inline, then added as a stint", async () => {
+      queryResults["teams.erasByNameAndSport"] = eras;
+      mutation("teams.findOrCreate").mockResolvedValue("team-mis");
+      renderTile([newItem], context({ names: [wikidataName(career)] }));
+      await click(screen.getByRole("button", { name: "+ New team San Antonio Missions" }));
+      expect(screen.getByRole("group", { name: "New team: San Antonio Missions" })).toBeTruthy();
+      expect(screen.getByText("Create team and add stint")).toBeTruthy();
+      await click(screen.getByRole("button", { name: "Submit new team form" }));
+      expect(mutation("teams.findOrCreate")).toHaveBeenCalledWith(
+        expect.objectContaining({ name: "San Antonio Missions", sportId: SPORT }),
+      );
+      expect(mutation("players.addStint")).toHaveBeenCalledWith({
+        playerId: "player-1",
+        teamId: "team-mis",
+        fromYear: 2023,
+        toYear: 2023,
+        cardId: CARD,
+      });
+    });
+
+    it("'Not now' leaves the stint off and writes nothing", async () => {
+      queryResults["teams.erasByNameAndSport"] = eras;
+      renderTile([newItem], context({ names: [wikidataName(career)] }));
+      await click(screen.getByRole("button", { name: "Not now San Antonio Missions" }));
+      expect(screen.queryByText("San Antonio Missions · 2023")).toBeNull();
+      expect(Object.values(mutations).every((m) => m.mock.calls.length === 0)).toBe(true);
+    });
+
+    it("a team Wikidata gave without years is asked for them, then added to the player", async () => {
+      queryResults["teams.erasByNameAndSport"] = eras;
+      mockConvexQuery.mockResolvedValue([{ _id: "team-tex", name: "Texas Longhorns", label: "Texas Longhorns" }]);
+      renderTile([newItem], context({ names: [wikidataName({ undatedCareerTeams: ["Texas Longhorns"] })] }));
+      await click(screen.getByRole("button", { name: "Add years for Texas Longhorns" }));
+      fireEvent.change(screen.getByLabelText("From year for Texas Longhorns"), { target: { value: "2019" } });
+      await click(screen.getByRole("button", { name: "Save years for Texas Longhorns" }));
+      expect(mockConvexQuery).toHaveBeenCalledWith("teams.erasByNameAndSport", {
+        name: "Texas Longhorns",
+        sportId: SPORT,
+      });
+      expect(mutation("players.addStint")).toHaveBeenCalledWith({
+        playerId: "player-1",
+        teamId: "team-tex",
+        fromYear: 2019,
+        cardId: CARD,
+      });
+    });
+  });
+});
