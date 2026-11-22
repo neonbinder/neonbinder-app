@@ -29,7 +29,7 @@ import { ConfirmDialog } from "../modules/confirm-dialog";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { teamFullName } from "../../lib/teams/team-name";
 import { FeatureValueControl } from "./FeatureValueControl";
-import { AUTOGRAPH_CHOICE_LABEL, AUTOGRAPH_FORMATS } from "./entity-review-steps";
+import { AUTOGRAPH_CHOICE_LABEL, AUTOGRAPH_FORMATS } from "./autograph-format";
 import CardPrefixRow from "./CardPrefixRow";
 import RenameEntityControl, { type RenameEntityHandle } from "./RenameEntityControl";
 import { derivedVariantFlags, variantTypeKind } from "../../convex/variantRole";

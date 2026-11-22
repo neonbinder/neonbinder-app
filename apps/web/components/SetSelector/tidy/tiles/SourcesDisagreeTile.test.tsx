@@ -1,0 +1,220 @@
+/**
+ * NEO-645 callout 2 — "Sources disagree": one column per source, a pick per
+ * distinct value, "Type another…", the blue NB-picked state, Change, and the
+ * apply-to-the-same offer (which only proposes; the server checks each card).
+ */
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ConvexError } from "convex/values";
+
+vi.mock("../../../../convex/_generated/api", () => ({
+  api: { tidyCards: { pickSourceValue: "tidyCards.pickSourceValue" } },
+}));
+const mockPick = vi.fn();
+vi.mock("convex/react", () => ({
+  useMutation: (ref: string) => (ref === "tidyCards.pickSourceValue" ? mockPick : vi.fn()),
+}));
+
+import SourcesDisagreeTile from "./SourcesDisagreeTile";
+import type { TidyAttention, TidyRow, TidyTileProps } from "../tile-types";
+import type { RowDisagreement } from "./row-fields";
+
+const MERRIL = ["Jackson Merril"];
+const MERRILL = ["Jackson Merrill"];
+const UNCHOSEN: RowDisagreement = {
+  field: "players",
+  values: [
+    { value: MERRIL, sources: ["bsc", "sportlots"] },
+    { value: MERRILL, sources: ["checklist"] },
+  ],
+};
+
+const rowOf = (id: string, d?: RowDisagreement): TidyRow =>
+  ({
+    _id: id,
+    cardNumber: "USC42",
+    cardName: "Jackson Merrill",
+    ...(d ? { sourceDisagreements: [d] } : {}),
+  }) as unknown as TidyRow;
+
+function renderTile(
+  d: RowDisagreement | undefined,
+  { attention, leafCards }: { attention?: TidyAttention; leafCards?: TidyRow[] } = {},
+) {
+  const row = rowOf("card-1", d);
+  const props: TidyTileProps = {
+    row,
+    context: undefined,
+    attention: attention ?? { level: d && !d.chosen ? "fix" : "none", items: [] },
+    leafId: "leaf-1" as never,
+    sportId: undefined,
+    leafCards: leafCards ?? [row],
+    setName: "Topps Chrome Update",
+  };
+  return render(<SourcesDisagreeTile {...props} />);
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mockPick.mockResolvedValue({ applied: 1, scheduled: 0, refused: 0 });
+});
+
+describe("SourcesDisagreeTile", () => {
+  it("renders nothing for a card the sources agree on", () => {
+    const { container } = renderTile(undefined);
+    expect(container.textContent).toBe("");
+  });
+
+  it("is pink with one column per source, labelled as Match Cards labels them", () => {
+    renderTile(UNCHOSEN);
+    const section = screen.getByRole("region", { name: "Sources disagree" });
+    expect(section.getAttribute("data-tidy-level")).toBe("fix");
+    const columns = within(screen.getByRole("list", { name: /What each source says/ })).getAllByRole("listitem");
+    expect(columns.map((c) => c.textContent)).toEqual([
+      expect.stringContaining("BSC"),
+      expect.stringContaining("SportLots"),
+      expect.stringContaining("Checklist"),
+    ]);
+    expect(columns[0].textContent).toContain("Jackson Merril");
+    expect(columns[2].textContent).toContain("Jackson Merrill");
+  });
+
+  it("offers a button per distinct value and no 'Not sure yet'", () => {
+    renderTile(UNCHOSEN);
+    expect(screen.getByRole("button", { name: "Use “Jackson Merril”" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Use “Jackson Merrill”" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Type another…" })).toBeTruthy();
+    expect(screen.queryByText(/not sure/i)).toBeNull();
+  });
+
+  it("a pick calls pickSourceValue for this card and field", async () => {
+    renderTile(UNCHOSEN);
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Use “Jackson Merrill”" })));
+    expect(mockPick).toHaveBeenCalledWith({ cardId: "card-1", field: "players", value: MERRILL });
+  });
+
+  it("'Type another…' opens an inline field; Enter sends the typed names with typed: true", async () => {
+    renderTile(UNCHOSEN);
+    fireEvent.click(screen.getByRole("button", { name: "Type another…" }));
+    const field = screen.getByLabelText("Type the player name yourself");
+    fireEvent.change(field, { target: { value: "Aaron Judge / Juan Soto" } });
+    await act(async () => {
+      fireEvent.keyDown(field, { key: "Enter" });
+    });
+    expect(mockPick).toHaveBeenCalledWith({
+      cardId: "card-1",
+      field: "players",
+      value: ["Aaron Judge", "Juan Soto"],
+      typed: true,
+    });
+  });
+
+  it("Esc closes the typed field and returns focus to its button", async () => {
+    renderTile(UNCHOSEN);
+    const open = screen.getByRole("button", { name: "Type another…" });
+    fireEvent.click(open);
+    fireEvent.keyDown(screen.getByLabelText("Type the player name yourself"), { key: "Escape" });
+    expect(screen.queryByLabelText("Type the player name yourself")).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(open));
+  });
+
+  it("an empty typed value sends nothing", () => {
+    renderTile(UNCHOSEN);
+    fireEvent.click(screen.getByRole("button", { name: "Type another…" }));
+    fireEvent.change(screen.getByLabelText("Type the player name yourself"), { target: { value: "  /  " } });
+    fireEvent.keyDown(screen.getByLabelText("Type the player name yourself"), { key: "Enter" });
+    expect(mockPick).not.toHaveBeenCalled();
+  });
+
+  it("shows a refused pick inline, with the server's own words", async () => {
+    mockPick.mockRejectedValueOnce(new ConvexError("That card changed. Refresh and try again."));
+    renderTile(UNCHOSEN);
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Use “Jackson Merril”" })));
+    expect(screen.getByRole("alert").textContent).toBe("That card changed. Refresh and try again.");
+  });
+
+  describe("NB already has one value (blue)", () => {
+    const NB: RowDisagreement = { ...UNCHOSEN, chosen: { value: MERRILL, by: "nb" } };
+    const attention: TidyAttention = {
+      level: "check",
+      items: [{ level: "check", kind: "nbPicked", field: "players", key: "picked:players:x" }],
+    };
+
+    it("says it went with the one already in the binder, and offers the other", async () => {
+      renderTile(NB, { attention });
+      expect(screen.getByRole("region", { name: "Sources disagree" }).getAttribute("data-tidy-level")).toBe("check");
+      expect(screen.getByText("Went with “Jackson Merrill”, they're already in your binder.")).toBeTruthy();
+      expect(screen.getByText("In NeonBinder")).toBeTruthy();
+      await act(async () => fireEvent.click(screen.getByRole("button", { name: "Use “Jackson Merril” instead" })));
+      expect(mockPick).toHaveBeenCalledWith({ cardId: "card-1", field: "players", value: MERRIL });
+    });
+
+    it("drops back to plain once the walk has seen it", () => {
+      renderTile(NB, { attention: { level: "none", items: [] } });
+      expect(screen.getByRole("region", { name: "Sources disagree" }).getAttribute("data-tidy-level")).toBe("plain");
+    });
+  });
+
+  describe("answered by the operator", () => {
+    const CHOSEN: RowDisagreement = { ...UNCHOSEN, chosen: { value: MERRILL, by: "operator" } };
+
+    it("says what is used and where it came from, with Change", () => {
+      renderTile(CHOSEN);
+      expect(screen.getByText("Using “Jackson Merrill” (Checklist)")).toBeTruthy();
+      expect(screen.getByRole("region", { name: "Sources disagree" }).getAttribute("data-tidy-level")).toBe("plain");
+      fireEvent.click(screen.getByRole("button", { name: "Change the player name" }));
+      expect(screen.getByRole("button", { name: "Use “Jackson Merril”" })).toBeTruthy();
+    });
+
+    it("offers the cards with the same disagreement, and only those", async () => {
+      const same = rowOf("card-2", UNCHOSEN);
+      const reordered = rowOf("card-3", { ...UNCHOSEN, values: [...UNCHOSEN.values].reverse() });
+      const answered = rowOf("card-4", CHOSEN);
+      const other = rowOf("card-5", { field: "players", values: [{ value: ["A"], sources: ["bsc"] }, { value: ["B"], sources: ["checklist"] }] });
+      const teams = rowOf("card-6", { ...UNCHOSEN, field: "teams" });
+      renderTile(CHOSEN, { leafCards: [rowOf("card-1", CHOSEN), same, reordered, answered, other, teams] });
+      const apply = screen.getByRole("button", { name: "Apply to the 2 cards with the same disagreement" });
+      await act(async () => fireEvent.click(apply));
+      expect(mockPick).toHaveBeenCalledWith({
+        cardId: "card-1",
+        field: "players",
+        value: MERRILL,
+        cardIds: ["card-2", "card-3"],
+      });
+    });
+
+    it("offers nothing when no other card shares it", () => {
+      renderTile(CHOSEN);
+      expect(screen.queryByRole("button", { name: /Apply to the/ })).toBeNull();
+    });
+
+    it("says how many cards the server left alone", async () => {
+      mockPick.mockResolvedValueOnce({ applied: 1, scheduled: 0, refused: 1 });
+      renderTile(CHOSEN, { leafCards: [rowOf("card-1", CHOSEN), rowOf("card-2", UNCHOSEN)] });
+      await act(async () =>
+        fireEvent.click(screen.getByRole("button", { name: "Apply to the 1 card with the same disagreement" })),
+      );
+      expect(screen.getByText("1 card no longer matched and was left as it was.")).toBeTruthy();
+    });
+  });
+
+  it("names the field when a card disagrees on two", () => {
+    const row = {
+      ...rowOf("card-1"),
+      sourceDisagreements: [UNCHOSEN, { ...UNCHOSEN, field: "teams" }],
+    } as unknown as TidyRow;
+    render(
+      <SourcesDisagreeTile
+        row={row}
+        context={undefined}
+        attention={{ level: "fix", items: [] }}
+        leafId={"leaf-1" as never}
+        sportId={undefined}
+        leafCards={[row]}
+        setName="Set"
+      />,
+    );
+    expect(screen.getByText("Player name")).toBeTruthy();
+    expect(screen.getByText("Team name")).toBeTruthy();
+  });
+});

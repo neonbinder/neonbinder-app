@@ -1,0 +1,237 @@
+/**
+ * NEO-645 callout 7 — "Listing title": pink and open over 80, blue when cut,
+ * Regenerate, the inline set-name panel with its live preview, the variation
+ * trim, and the purple notes.
+ */
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../../../../convex/_generated/api", () => ({
+  api: {
+    selectorOptions: { updateCard: "updateCard", previewListingTitle: "previewListingTitle" },
+    tidyCards: { applySetNameToTitles: "applySetNameToTitles", applyVariation: "applyVariation" },
+  },
+}));
+const mockUpdateCard = vi.fn();
+const mockApplySetName = vi.fn();
+const mockApplyVariation = vi.fn();
+let previewResult: unknown;
+vi.mock("convex/react", () => ({
+  useMutation: (ref: string) =>
+    ref === "updateCard" ? mockUpdateCard : ref === "applySetNameToTitles" ? mockApplySetName : ref === "applyVariation" ? mockApplyVariation : vi.fn(),
+  useQuery: (ref: string) => (ref === "previewListingTitle" ? previewResult : undefined),
+}));
+
+import TitleTile from "./TitleTile";
+import type { TidyAttention, TidyRow, TidyTileProps } from "../tile-types";
+
+const LONG = "2024 Topps Chrome Update Aaron Judge #USC118 Refractor Rookie Card RC New York Yankees Baseball Auto";
+// What the generator itself writes for `inputs` below, so no "Left out" note shows.
+const SHORT = "2024 Topps Chrome Update Aaron Judge #USC118 RC Rookie";
+
+const inputs = {
+  cardNumber: "USC118",
+  playerNames: ["Aaron Judge"],
+  year: "2024",
+  setName: "Topps Chrome Update",
+  isRookie: true,
+};
+
+const none: TidyAttention = { level: "none", items: [] };
+const attn = (...items: Array<Record<string, unknown>>): TidyAttention =>
+  ({ level: "fix", items }) as unknown as TidyAttention;
+
+const cardOf = (id: string, extra: Record<string, unknown> = {}) =>
+  ({ _id: id, cardNumber: "USC118", cardName: "Aaron Judge", listingTitle: SHORT, attributes: [], ...extra }) as unknown as TidyRow;
+
+function renderTile(row: TidyRow, attention: TidyAttention = none, leafCards: TidyRow[] = [row]) {
+  const props: TidyTileProps = {
+    row,
+    context: undefined,
+    attention,
+    leafId: "leaf-1" as never,
+    sportId: undefined,
+    leafCards,
+    setName: "Topps Chrome Update",
+  };
+  return render(<TitleTile {...props} />);
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mockUpdateCard.mockResolvedValue(null);
+  mockApplySetName.mockResolvedValue({ openCardRetitled: true, scheduled: true });
+  mockApplyVariation.mockResolvedValue({ applied: 1, skipped: 0 });
+  previewResult = { title: SHORT, coreFits: true, dropped: [], inputs };
+});
+
+const titleField = () => screen.getByLabelText("Card title for #USC118") as HTMLTextAreaElement;
+
+describe("TitleTile levels", () => {
+  it("is plain when the title fits, showing it as text with Edit title", () => {
+    renderTile(cardOf("c1"));
+    expect(screen.getByRole("region", { name: "Listing title" }).getAttribute("data-tidy-level")).toBe("plain");
+    expect(screen.getByText(SHORT)).toBeTruthy();
+    expect(screen.queryByLabelText("Card title for #USC118")).toBeNull();
+    expect(screen.getByRole("button", { name: "Edit card title" })).toBeTruthy();
+  });
+
+  it("is pink and opens ready to edit when over 80", () => {
+    renderTile(cardOf("c1", { listingTitle: LONG }), attn({ level: "fix", kind: "titleOverLimit" }));
+    expect(screen.getByRole("region", { name: "Listing title" }).getAttribute("data-tidy-level")).toBe("fix");
+    expect(titleField().value).toBe(LONG);
+    expect(screen.getByText("Over the limit, so it opens ready to edit.")).toBeTruthy();
+    expect(titleField().getAttribute("aria-invalid")).toBe("true");
+    expect(screen.getByRole("button", { name: "Save title" }).getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("is blue when the generated title was cut", () => {
+    renderTile(cardOf("c1"), { level: "check", items: [{ level: "check", kind: "titleCut", key: "cut:1" }] } as unknown as TidyAttention);
+    expect(screen.getByRole("region", { name: "Listing title" }).getAttribute("data-tidy-level")).toBe("check");
+  });
+});
+
+describe("TitleTile editing", () => {
+  it("Enter saves a title that fits and closes the editor", async () => {
+    renderTile(cardOf("c1"));
+    fireEvent.click(screen.getByRole("button", { name: "Edit card title" }));
+    fireEvent.change(titleField(), { target: { value: "Judge RC" } });
+    await act(async () => {
+      fireEvent.keyDown(titleField(), { key: "Enter" });
+    });
+    expect(mockUpdateCard).toHaveBeenCalledWith({ id: "c1", listingTitle: "Judge RC" });
+    expect(screen.queryByLabelText("Card title for #USC118")).toBeNull();
+  });
+
+  it("refuses to save over 80 and says so", async () => {
+    renderTile(cardOf("c1", { listingTitle: LONG }), attn({ level: "fix", kind: "titleOverLimit" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save title" }));
+    });
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+  });
+
+  it("typing it under the limit says 'Fits now. Enter saves it.'", () => {
+    renderTile(cardOf("c1", { listingTitle: LONG }), attn({ level: "fix", kind: "titleOverLimit" }));
+    fireEvent.change(titleField(), { target: { value: SHORT } });
+    expect(screen.getByText("Fits now. Enter saves it.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save title" }).getAttribute("aria-disabled")).toBeNull();
+  });
+
+  it("shows a refused save inline and keeps the text", async () => {
+    mockUpdateCard.mockRejectedValueOnce(new Error("x"));
+    renderTile(cardOf("c1"));
+    fireEvent.click(screen.getByRole("button", { name: "Edit card title" }));
+    fireEvent.change(titleField(), { target: { value: "Judge RC" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save title" }));
+    });
+    expect(screen.getAllByRole("alert").some((a) => a.textContent === "Didn't save, try again.")).toBe(true);
+    expect(titleField().value).toBe("Judge RC");
+  });
+
+  it("Regenerate saves the rebuilt title and rebuilds the description", async () => {
+    previewResult = { title: "Judge RC rebuilt", coreFits: true, dropped: [], inputs };
+    renderTile(cardOf("c1"));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Regenerate card title" }));
+    });
+    expect(mockUpdateCard).toHaveBeenCalledWith({ id: "c1", listingTitle: "Judge RC rebuilt" });
+    expect(mockUpdateCard).toHaveBeenCalledWith({ id: "c1", regenerateDescription: true });
+  });
+
+  it("Regenerate over typed text asks once more first", () => {
+    renderTile(cardOf("c1"));
+    fireEvent.click(screen.getByRole("button", { name: "Edit card title" }));
+    fireEvent.change(titleField(), { target: { value: "My own wording" } });
+    fireEvent.click(screen.getByRole("button", { name: "Regenerate card title" }));
+    expect(screen.getByText("Regenerate again to replace the title you have typed.")).toBeTruthy();
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+  });
+});
+
+describe("TitleTile set name for every card", () => {
+  const open = () => fireEvent.click(screen.getByRole("button", { name: "Shorten the set name for every card" }));
+
+  it("opens inline with the current name, the old one, and a live preview", () => {
+    const leaf = [cardOf("c1"), cardOf("c2"), cardOf("c3")];
+    renderTile(leaf[0], none, leaf);
+    open();
+    const box = screen.getByLabelText("Set name in titles") as HTMLInputElement;
+    expect(box.value).toBe("Topps Chrome Update");
+    expect(screen.getByText("Was “Topps Chrome Update”")).toBeTruthy();
+    expect(screen.getByText("The title above shows this card with the new set name as you type.")).toBeTruthy();
+    fireEvent.change(box, { target: { value: "TC Update" } });
+    // The title above is the generator's answer for this card with the typed name.
+    expect(screen.getByText(SHORT)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Shorten the set name for every card" }).getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("Save and apply to all N cards writes the name for this card's leaf", async () => {
+    const leaf = [cardOf("c1"), cardOf("c2"), cardOf("c3")];
+    renderTile(leaf[0], none, leaf);
+    open();
+    fireEvent.change(screen.getByLabelText("Set name in titles"), { target: { value: "TC Update" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save and apply to all 3 cards" }));
+    });
+    expect(mockApplySetName).toHaveBeenCalledWith({ leafId: "leaf-1", cardId: "c1", listingShortName: "TC Update" });
+    expect(screen.getByText("Set name saved. The other cards' titles are updating.")).toBeTruthy();
+    expect(screen.queryByLabelText("Set name in titles")).toBeNull();
+  });
+
+  it("offers no apply while the box is empty, and Cancel closes it", () => {
+    renderTile(cardOf("c1"));
+    open();
+    fireEvent.change(screen.getByLabelText("Set name in titles"), { target: { value: "  " } });
+    expect(screen.queryByRole("button", { name: /Save and apply/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel set name change" }));
+    expect(screen.queryByLabelText("Set name in titles")).toBeNull();
+  });
+
+  it("Esc in the field closes it without saving", () => {
+    renderTile(cardOf("c1"));
+    open();
+    fireEvent.keyDown(screen.getByLabelText("Set name in titles"), { key: "Escape" });
+    expect(screen.queryByLabelText("Set name in titles")).toBeNull();
+    expect(mockApplySetName).not.toHaveBeenCalled();
+  });
+});
+
+describe("TitleTile variation", () => {
+  const OVER = "A variation that runs well past the eBay item-specific limit of sixty-five characters";
+  const attention = { level: "check", items: [{ level: "check", kind: "variationOverLimit", key: "var:1" }] } as unknown as TidyAttention;
+
+  it("shows the trim editor only when the variation is over", () => {
+    renderTile(cardOf("c1", { cardVariation: "Short" }));
+    expect(screen.queryByLabelText("Trim the variation")).toBeNull();
+    renderTile(cardOf("c2", { cardVariation: OVER }), attention);
+    expect(screen.getByLabelText("Trim the variation")).toBeTruthy();
+  });
+
+  it("saves the trim, then offers the cards with the same variation", async () => {
+    const mine = cardOf("c1", { cardVariation: OVER });
+    const twin = cardOf("c2", { cardVariation: OVER });
+    const other = cardOf("c3", { cardVariation: "Different" });
+    renderTile(mine, attention, [mine, twin, other]);
+    fireEvent.change(screen.getByLabelText("Trim the variation"), { target: { value: "Sunglasses" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save variation" })));
+    expect(mockUpdateCard).toHaveBeenCalledWith({ id: "c1", cardVariation: "Sunglasses" });
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Apply to the 1 card with the same variation" })),
+    );
+    expect(mockApplyVariation).toHaveBeenCalledWith({ cardIds: ["c2"], from: OVER, to: "Sunglasses" });
+  });
+});
+
+describe("TitleTile purple notes", () => {
+  it("says the numbers didn't match, from the stored source numbers", () => {
+    renderTile(cardOf("c1", { sourceNumbers: { bsc: "USC118", sportlots: "118" } }));
+    expect(screen.getByRole("note").textContent).toBe("Numbers didn't match: BSC USC118, SportLots 118");
+  });
+
+  it("says nothing when every source agrees", () => {
+    renderTile(cardOf("c1", { sourceNumbers: { bsc: "USC118", checklist: "USC118" } }));
+    expect(screen.queryByRole("note")).toBeNull();
+  });
+});

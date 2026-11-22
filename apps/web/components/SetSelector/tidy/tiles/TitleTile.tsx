@@ -1,0 +1,487 @@
+import { useCallback, useId, useMemo, useRef, useState } from "react";
+import { useMutation, useQuery } from "convex/react";
+import { api } from "../../../../convex/_generated/api";
+import { assessListingTitle } from "../../../../convex/features/generateListing";
+import { userFacingMessage } from "@/lib/errors/user-facing-message";
+import { Input } from "../../../primitives/Input";
+import { Textarea } from "../../../primitives/Textarea";
+import NeonButton from "../../../modules/NeonButton";
+import { oneLine } from "../../card-titles";
+import {
+  ASPECT_VALUE_MAX,
+  LISTING_TITLE_MAX,
+  OVER_FIELD_CLASS,
+  TitleLengthAlert,
+  TitleLengthMeter,
+  overFieldProps,
+  titleLengthState,
+} from "../../TitleLengthMeter";
+import { useTitlePreview } from "../../useTitlePreview";
+import { SOURCES_WITH_CHECKLIST, SOURCE_KEYS } from "../../reconciliation-sources";
+import { useInlinePart } from "../inline-stack";
+import TidyTile, { ApplyToAllButton, TidyNote, type TidyTileLevel } from "../TidyTile";
+import type { TidyTileProps } from "../tile-types";
+import { rowFields } from "./row-fields";
+
+/**
+ * NEO-645 callout 7 — "Listing title".
+ *
+ * - Pink over 80 characters, and then it opens ready to edit. Blue when the
+ *   generated title was cut to fit (`titleCut`) or the variation is over the
+ *   item-specific cap (`variationOverLimit`). Plain otherwise, because the
+ *   tile also carries the purple notes ("Left out", "Numbers didn't match"),
+ *   which only ever show on a card that is already a stop.
+ * - Regenerate keeps its name. It rebuilds the title (and, like the side
+ *   panel's, the description) and saves it when it fits.
+ * - "Shorten the set name for every card" opens the set-name field inline.
+ *   This card's title updates live as the name is typed; Save writes the name
+ *   and retitles every card (`tidyCards.applySetNameToTitles`).
+ * - The variation editor appears for `variationOverLimit`; after a save,
+ *   "Apply to the N cards with the same variation" offers the trim to the rest.
+ *
+ * Everything saves as it is answered (J1) and opens inline, never in a dialog.
+ */
+
+/** `tidyCards.MAX_APPLY_CARDS`, hand-copied: the server graph cannot be imported here. Keep in step. */
+const MAX_APPLY_CARDS = 100;
+
+const OVER_TEXT = "Over the limit, so it opens ready to edit.";
+const FITS_NOW = "Fits now. Enter saves it.";
+
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+export default function TitleTile(props: TidyTileProps) {
+  // One body per card: a drafted title or an open field never carries over.
+  return <TitleTileBody key={props.row._id} {...props} />;
+}
+
+function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileProps) {
+  const updateCard = useMutation(api.selectorOptions.updateCard);
+  const applySetNameToTitles = useMutation(api.tidyCards.applySetNameToTitles);
+  const applyVariation = useMutation(api.tidyCards.applyVariation);
+  const uid = useId();
+
+  const stored = row.listingTitle ?? "";
+  const over = attention.items.some((i) => i.kind === "titleOverLimit");
+  const cut = attention.items.some((i) => i.kind === "titleCut");
+  const variationOver = attention.items.some((i) => i.kind === "variationOverLimit");
+  const level: TidyTileLevel = over ? "fix" : cut || variationOver ? "check" : "plain";
+
+  // ── the title field ───────────────────────────────────────────────────
+  // `draft` is null while the title is shown as text; an over-cap title opens
+  // already in edit mode.
+  const [draft, setDraft] = useState<string | null>(over ? stored : null);
+  const [openedByOperator, setOpenedByOperator] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [overByKeystroke, setOverByKeystroke] = useState(false);
+  const [fitsNow, setFitsNow] = useState(false);
+  const titleRef = useRef<HTMLTextAreaElement | null>(null);
+  const editButtonRef = useRef<HTMLButtonElement | null>(null);
+  const editing = draft !== null;
+  const text = draft ?? stored;
+
+  const closeEditor = () => {
+    setDraft(null);
+    setOpenedByOperator(false);
+    setFitsNow(false);
+    requestAnimationFrame(() => editButtonRef.current?.focus());
+  };
+  // An editor that opened itself (over the cap) does not own Esc until the
+  // operator touches it, so Esc on arrival still means "Save for later".
+  useInlinePart(editing && openedByOperator, closeEditor);
+
+  const saveTitle = useCallback(
+    async (next: string, regenerate = false) => {
+      const trimmed = oneLine(next).trim();
+      if (!trimmed || titleLengthState(trimmed.length, LISTING_TITLE_MAX, true).over) return false;
+      setBusy(true);
+      setError(null);
+      try {
+        await updateCard({ id: row._id, listingTitle: trimmed });
+        if (regenerate) {
+          // Like the side panel's Regenerate: a description that reads as the
+          // builder's own is rebuilt; one the operator wrote is left alone.
+          await updateCard({ id: row._id, regenerateDescription: true }).catch(() => undefined);
+        }
+        setDraft(null);
+        setOpenedByOperator(false);
+        setFitsNow(false);
+        return true;
+      } catch (e) {
+        setError(userFacingMessage(e, "Didn't save, try again."));
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [row._id, updateCard],
+  );
+
+  const applyGenerated = useCallback(
+    (title: string) => {
+      setDraft(title);
+      setFitsNow(false);
+      setOverByKeystroke(false);
+      void saveTitle(title, true);
+    },
+    [saveTitle],
+  );
+  const preview = useTitlePreview(row._id, applyGenerated);
+  const previewData = useQuery(api.selectorOptions.previewListingTitle, { cardId: row._id });
+
+  const changeTitle = (next: string) => {
+    const wasOver = titleLengthState(text.length, LISTING_TITLE_MAX, true).over;
+    const nowOver = titleLengthState(next.length, LISTING_TITLE_MAX, true).over;
+    setOverByKeystroke(nowOver && (wasOver ? overByKeystroke : true));
+    if (nowOver) setFitsNow(false);
+    else if (wasOver) setFitsNow(true);
+    setDraft(next);
+  };
+
+  // ── the set name ──────────────────────────────────────────────────────
+  const [shortening, setShortening] = useState(false);
+  const [setNameDraft, setSetNameDraft] = useState("");
+  const [setNameBusy, setSetNameBusy] = useState(false);
+  const [setNameError, setSetNameError] = useState<string | null>(null);
+  const [setNameSaved, setSetNameSaved] = useState<string | null>(null);
+  const setNameRef = useRef<HTMLInputElement | null>(null);
+  const shortenButtonRef = useRef<HTMLButtonElement | null>(null);
+  const closeSetName = () => {
+    setShortening(false);
+    requestAnimationFrame(() => shortenButtonRef.current?.focus());
+  };
+  useInlinePart(shortening, closeSetName);
+
+  const livePreviewTitle = useMemo(() => {
+    if (!shortening || !previewData?.inputs) return null;
+    const box = setNameDraft.trim();
+    return assessListingTitle({ ...previewData.inputs, setShortName: box || undefined }).title;
+  }, [shortening, previewData, setNameDraft]);
+
+  const applySetName = async () => {
+    const name = setNameDraft.trim();
+    if (!name || setNameBusy) return;
+    setSetNameBusy(true);
+    setSetNameError(null);
+    try {
+      const result: { scheduled: boolean } = await applySetNameToTitles({
+        leafId,
+        cardId: row._id,
+        listingShortName: name,
+      });
+      setSetNameSaved(
+        result.scheduled
+          ? "Set name saved. The other cards' titles are updating."
+          : "Set name saved.",
+      );
+      setShortening(false);
+      setDraft(null);
+    } finally {
+      setSetNameBusy(false);
+    }
+  };
+
+  // ── the variation ─────────────────────────────────────────────────────
+  const [variationFrom] = useState(() => (row.cardVariation ?? "").trim());
+  const [variationDraft, setVariationDraft] = useState(row.cardVariation ?? "");
+  const [variationSaved, setVariationSaved] = useState<string | null>(null);
+  const [variationBusy, setVariationBusy] = useState(false);
+  const [variationError, setVariationError] = useState<string | null>(null);
+  const showVariation = variationOver || variationSaved !== null;
+
+  const saveVariation = async () => {
+    const next = variationDraft.trim();
+    if (variationBusy || next === (row.cardVariation ?? "").trim()) return;
+    setVariationBusy(true);
+    setVariationError(null);
+    try {
+      await updateCard({ id: row._id, cardVariation: next });
+      setVariationSaved(next);
+    } catch (e) {
+      setVariationError(userFacingMessage(e, "Didn't save, try again."));
+    } finally {
+      setVariationBusy(false);
+    }
+  };
+
+  const sameVariation = useMemo(
+    () =>
+      variationSaved === null
+        ? []
+        : leafCards
+            .filter((c) => c._id !== row._id && (c.cardVariation ?? "").trim() === variationFrom)
+            .slice(0, MAX_APPLY_CARDS),
+    [variationSaved, variationFrom, leafCards, row._id],
+  );
+
+  // ── what to say about the title ───────────────────────────────────────
+  const shown = livePreviewTitle ?? text;
+  const state = titleLengthState(shown.length, LISTING_TITLE_MAX, true);
+  const leftOut = useMemo(() => preview.leftOutOf(text), [preview, text]);
+  const titleAlertId = `${uid}-title-limit`;
+  const variationAlertId = `${uid}-variation-limit`;
+  const nbNumbers = rowFields(row).sourceNumbers;
+  const mismatched = useMemo(() => {
+    if (!nbNumbers) return null;
+    const named = SOURCE_KEYS.flatMap((key) => {
+      const num = nbNumbers[key];
+      return num ? [{ key, num }] : [];
+    });
+    if (!named.some((n) => n.num !== row.cardNumber)) return null;
+    return named
+      .map((n) => `${SOURCES_WITH_CHECKLIST.find((s) => s.key === n.key)?.label ?? n.key} ${n.num}`)
+      .join(", ");
+  }, [nbNumbers, row.cardNumber]);
+
+  return (
+    <TidyTile
+      heading="Listing title"
+      level={level}
+      aside={<TitleLengthMeter length={shown.length} soft />}
+    >
+      {editing ? (
+        <Textarea
+          bare
+          ref={titleRef}
+          rows={2}
+          value={text}
+          onChange={(e) => {
+            changeTitle(oneLine(e.target.value));
+            preview.cancelConfirm();
+          }}
+          onFocus={() => setOpenedByOperator(true)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void saveTitle(text);
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              e.stopPropagation();
+              closeEditor();
+            }
+          }}
+          readOnly={busy}
+          aria-disabled={busy || undefined}
+          className={`block w-full resize-none p-1.5 text-sm [field-sizing:content] ${OVER_FIELD_CLASS}`}
+          aria-label={`Card title for #${row.cardNumber}`}
+          aria-invalid={state.over || undefined}
+          {...overFieldProps(state.over)}
+          aria-describedby={state.over ? titleAlertId : undefined}
+        />
+      ) : (
+        <p className="text-sm text-ink wrap-anywhere">{shown || "No title yet"}</p>
+      )}
+
+      <p
+        id={titleAlertId}
+        role={state.over && overByKeystroke ? "alert" : "status"}
+        aria-atomic="true"
+        className={`text-xs empty:hidden ${state.over ? "text-neon-pink-text" : "text-neon-green-text"}`}
+      >
+        {state.over ? OVER_TEXT : fitsNow ? FITS_NOW : ""}
+      </p>
+      {preview.confirming && (
+        <p role="status" aria-atomic="true" className="text-xs text-neon-blue-text">
+          Regenerate again to replace the title you have typed.
+        </p>
+      )}
+
+      {cut &&
+        !state.over &&
+        (leftOut.length > 0 ? (
+          <p className="text-sm text-ink-2 wrap-anywhere">Left out to fit: {leftOut.join(", ")}</p>
+        ) : (
+          <p className="text-sm text-ink-2">Auto title was cut short — rewrite it</p>
+        ))}
+      {!cut && !state.over && leftOut.length > 0 && (
+        <TidyNote>Left out to fit: {leftOut.join(", ")}</TidyNote>
+      )}
+      {mismatched && <TidyNote>Numbers didn't match: {mismatched}</TidyNote>}
+
+      <div className="flex flex-wrap items-center gap-2">
+        {editing ? (
+          <NeonButton
+            variant="primary"
+            size="1"
+            type="button"
+            aria-disabled={busy || state.over || !text.trim() || undefined}
+            onClick={() => void saveTitle(text)}
+          >
+            {busy ? "Saving…" : "Save title"}
+          </NeonButton>
+        ) : (
+          <NeonButton
+            ref={editButtonRef}
+            variant="secondary"
+            outline
+            size="1"
+            type="button"
+            aria-label="Edit card title"
+            onClick={() => {
+              setDraft(stored);
+              setOpenedByOperator(true);
+              requestAnimationFrame(() => titleRef.current?.focus());
+            }}
+          >
+            Edit title
+          </NeonButton>
+        )}
+        <NeonButton
+          variant="secondary"
+          outline
+          size="1"
+          type="button"
+          aria-label={preview.loading ? "Regenerate card title — rebuilding" : "Regenerate card title"}
+          aria-disabled={preview.loading || busy || undefined}
+          onClick={() => preview.request(editing && text !== stored)}
+        >
+          Regenerate
+        </NeonButton>
+        <NeonButton
+          ref={shortenButtonRef}
+          variant="secondary"
+          outline
+          size="1"
+          type="button"
+          aria-expanded={shortening}
+          aria-controls={shortening ? `${uid}-set-name` : undefined}
+          onClick={() => {
+            if (shortening) {
+              closeSetName();
+              return;
+            }
+            setSetNameDraft(previewData?.inputs.setShortName ?? setName);
+            setSetNameSaved(null);
+            setShortening(true);
+            requestAnimationFrame(() => setNameRef.current?.focus());
+          }}
+        >
+          Shorten the set name for every card
+        </NeonButton>
+      </div>
+      <p role="alert" className="text-xs text-neon-pink-text empty:hidden">
+        {error}
+      </p>
+      <p role="status" className="text-xs text-neon-green-text empty:hidden">
+        {setNameSaved}
+      </p>
+
+      {shortening && (
+        <div
+          id={`${uid}-set-name`}
+          className="grid gap-2 rounded-lg border border-rule bg-raised-deep p-2.5"
+        >
+          <p className="text-xs font-medium text-ink">Set name in titles</p>
+          <Input
+            bare
+            ref={setNameRef}
+            type="text"
+            value={setNameDraft}
+            onChange={(e) => setSetNameDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                applySetName().catch((err: unknown) =>
+                  setSetNameError(userFacingMessage(err, "Didn't save, try again.")),
+                );
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                closeSetName();
+              }
+            }}
+            readOnly={setNameBusy}
+            aria-label="Set name in titles"
+            className="w-full p-1.5 text-sm"
+            placeholder="A shorter name for the set"
+          />
+          <p className="text-xs text-ink-3 wrap-anywhere">{`Was “${setName}”`}</p>
+          <p className="text-xs text-ink-2">
+            The title above shows this card with the new set name as you type.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <ApplyToAllButton
+              count={setNameDraft.trim() ? leafCards.length : 0}
+              label={`Save and apply to all ${leafCards.length} cards`}
+              onApply={applySetName}
+            />
+            <NeonButton
+              variant="negative"
+              outline
+              size="1"
+              type="button"
+              aria-label="Cancel set name change"
+              onClick={closeSetName}
+            >
+              Cancel
+            </NeonButton>
+          </div>
+          <p role="alert" className="text-xs text-neon-pink-text empty:hidden">
+            {setNameError}
+          </p>
+        </div>
+      )}
+
+      {showVariation && (
+        <div className="grid gap-1.5 border-t border-rule pt-2">
+          <div className="flex items-center justify-between gap-2 text-xs text-ink-2">
+            <span>Variation</span>
+            <TitleLengthMeter length={variationDraft.length} max={ASPECT_VALUE_MAX} />
+          </div>
+          <Input
+            bare
+            type="text"
+            value={variationDraft}
+            onChange={(e) => setVariationDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void saveVariation();
+              }
+            }}
+            readOnly={variationBusy}
+            aria-label="Trim the variation"
+            className={`w-full p-1.5 text-sm ${OVER_FIELD_CLASS}`}
+            {...overFieldProps(variationDraft.length > ASPECT_VALUE_MAX)}
+            aria-describedby={variationDraft.length > ASPECT_VALUE_MAX ? variationAlertId : undefined}
+          />
+          <TitleLengthAlert
+            id={variationAlertId}
+            length={variationDraft.length}
+            max={ASPECT_VALUE_MAX}
+            what="Variation"
+            blocking={false}
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <NeonButton
+              variant="primary"
+              size="1"
+              type="button"
+              aria-disabled={variationBusy || undefined}
+              onClick={() => void saveVariation()}
+            >
+              {variationBusy ? "Saving…" : "Save variation"}
+            </NeonButton>
+            {variationSaved !== null && (
+              <ApplyToAllButton
+                count={sameVariation.length}
+                label={`Apply to the ${plural(sameVariation.length, "card", "cards")} with the same variation`}
+                onApply={async () => {
+                  await applyVariation({
+                    cardIds: sameVariation.map((c) => c._id),
+                    from: variationFrom,
+                    to: variationSaved,
+                  });
+                }}
+              />
+            )}
+          </div>
+          <p role="alert" className="text-xs text-neon-pink-text empty:hidden">
+            {variationError}
+          </p>
+        </div>
+      )}
+    </TidyTile>
+  );
+}
