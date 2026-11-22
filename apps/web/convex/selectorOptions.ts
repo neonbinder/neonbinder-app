@@ -19441,6 +19441,15 @@ const STORED_TEAM_EVIDENCE_PARALLEL_CALLS = 8;
  * index ranges + writes per chunk): about 10-11.5 operations per card, 5 of
  * them these, so the chunk holds 112 cards (5 chunks, where 8 gave 90 and 7
  * chunks) at about 1,300 operations, inside the ~1,800 that strains.
+ *
+ * The career tier of the team fill (`careerVerdictFor`) adds reads that are
+ * charged to no card: each distinct career team's row once, plus its league and
+ * the set's leagues once (a per-chunk cache; a team past the verdict's 24-team
+ * read cap is never read), and a player's stints once. A chunk of 150 cards
+ * whose 5 players share an 8-team career measured 8 extra reads (33 -> 41), the
+ * same as a 15-card chunk; a 40-team career measured 24 (the cap). So the fill
+ * is a fixed cost of at most ~24 reads per distinct career, never per card, and
+ * sits inside the budget's slack (`tidyTeamFillAgreement.test.ts`).
  */
 const COMMIT_CHUNK_TIDY_OPS_PER_CARD = 5;
 export const COMMIT_CHUNK_OP_BUDGET =

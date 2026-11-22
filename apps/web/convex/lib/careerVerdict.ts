@@ -23,7 +23,9 @@
  *
  * Reads are lazy: a team's row (and its league) is read only when the verdict
  * can depend on it: the teams that cover the window, and the whole career when
- * the window is empty or any stint is undated.
+ * the window is empty or any stint is undated. A team the verdict never read (a
+ * career past `CAREER_TEAMS_READ`) is left out of the result, so every candidate
+ * has passed the sport and gone checks.
  */
 
 import type { Doc, Id } from "../_generated/dataModel";
@@ -112,7 +114,7 @@ export async function setPreferenceOf(
 
 export type CareerVerdictResult = {
   verdict: CareerVerdict<string>;
-  /** The stints the verdict was counted over: gone and other-sport teams removed. */
+  /** The stints the verdict was counted over: gone, other-sport and unread (past the cap) teams removed. */
   stints: Array<KeyedStint<string>>;
   /** Teams whose dated stint covers the window (empty with no year). */
   windowKeys: string[];
@@ -172,7 +174,11 @@ export async function careerVerdictFor(
     rank.set(key, teamPreferenceRank({ leagueId: team.leagueId ?? null, leagueLevel: level }, preference));
   }
 
-  const stints = input.stints.filter((stint) => !gone.has(stint.key));
+  // A team past the read cap was never checked for sport or gone: it is left out
+  // of the candidates (a verdict and chips built only from teams that passed),
+  // never offered unchecked at the lowest rank.
+  const read = new Set(wanted);
+  const stints = input.stints.filter((stint) => read.has(stint.key) && !gone.has(stint.key));
   const verdict = careerTeamVerdict({
     stints,
     year,
