@@ -93,19 +93,22 @@ export default function WikidataBlock({
           <p id={careerId} className="text-xs text-ink-3">
             Career teams to add:
           </p>
-          <ul className="grid gap-0.5">
+          <ul className="grid gap-1">
             {career.map((ct) => {
               const label = careerTeamLabel(ct);
               return (
                 <li key={`${ct.name}|${ct.fromYear}|${ct.toYear ?? ""}`}>
-                  <label className="flex items-center gap-2 text-xs text-ink-2 wrap-anywhere">
+                  <label className="flex min-h-6 items-center gap-2 text-xs text-ink-2 wrap-anywhere">
                     <input
                       type="checkbox"
                       checked={!excludedCareerTeams?.has(ct.name)}
-                      disabled={disabled}
+                      aria-disabled={disabled || undefined}
                       aria-label={`Include career team ${label}${labelSuffix}`}
-                      onChange={() => onToggleCareerTeam?.(ct.name)}
-                      className="h-3.5 w-3.5 shrink-0 rounded accent-neon-green-text focus-outline"
+                      onChange={() => {
+                        if (disabled) return;
+                        onToggleCareerTeam?.(ct.name);
+                      }}
+                      className="h-6 w-6 shrink-0 rounded accent-neon-green-text focus-outline aria-disabled:cursor-not-allowed aria-disabled:opacity-60"
                     />
                     <span>{label}</span>
                   </label>

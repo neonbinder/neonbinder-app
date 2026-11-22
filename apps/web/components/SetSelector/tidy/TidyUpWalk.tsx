@@ -1,5 +1,6 @@
 import {
   startTransition,
+  useCallback,
   useEffect,
   useId,
   useMemo,
@@ -24,6 +25,7 @@ import {
   teamLookupStatusLine,
 } from "../card-attention";
 import type { CardChecklistRow } from "../card-checklist-row";
+import { AnsweredProvider } from "./answered";
 import { InlineStackProvider, useCloseTopInlinePart, useInlineStackOpen } from "./inline-stack";
 import type { VariantKind } from "../../../app/collection/final/data/types";
 import TidyCardFace from "./TidyCardFace";
@@ -36,6 +38,7 @@ import SourcesDisagreeTile from "./tiles/SourcesDisagreeTile";
 import TeamTile from "./tiles/TeamTile";
 import TitleTile from "./tiles/TitleTile";
 import { useTidyKeys } from "./useTidyKeys";
+import { useOpenCardLookups } from "./useOpenCardLookups";
 import { useTidyWalkUrl } from "./useTidyWalkUrl";
 import {
   cardsLeft,
@@ -177,6 +180,12 @@ function WalkDialog({
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const headerRef = useRef<HTMLDivElement | null>(null);
+  const saveRef = useRef<HTMLButtonElement | null>(null);
+  const backRef = useRef<HTMLButtonElement | null>(null);
+  const saveForLaterRef = useRef<HTMLButtonElement | null>(null);
+  const headerLineId = useId();
+  const doneLineId = useId();
+  const doneLookupId = useId();
 
   // ── the sitting ─────────────────────────────────────────────────────────
   // Both halves are read while rendering (the count, the bar, the end screen,
@@ -204,6 +213,8 @@ function WalkDialog({
     api.tidyCards.cardContext,
     current ? { cardId: current._id } : "skip",
   );
+  // Names a migration left with no lookup get asked once when the card opens.
+  useOpenCardLookups(context);
 
   // `first`, or an id that is not one of this checklist's cards (a stale or
   // pasted link): replace it with the first card still to walk. The id never
@@ -334,12 +345,16 @@ function WalkDialog({
   // it), and give focus back when the walk goes.
   useEffect(() => {
     const opener = restoreFocusRef?.current ?? (document.activeElement as HTMLElement | null);
-    const durable = restoreFocusRef?.current ?? null;
     const release = dialogRef.current ? inertBackground(dialogRef.current) : () => {};
     return () => {
       release();
       requestAnimationFrame(() => {
-        const target = durable ?? opener;
+        // The durable target is asked for NOW, not when the walk opened: the
+        // checklist picks between its "N need you" pill (if cards still need
+        // someone) and its Sync button (the pill is gone), and only the
+        // moment the walk closes knows which.
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- read at close time on purpose
+        const target = restoreFocusRef?.current ?? opener;
         if (target && document.contains(target)) target.focus?.();
       });
     };
@@ -360,6 +375,39 @@ function WalkDialog({
     });
     return () => cancelAnimationFrame(id);
   }, [currentId, isDone]);
+
+  // An ANSWER on a tile (`useAnswered`): focus goes on, never back to the
+  // control that was pressed (an answered row's Change, a reopened search: one
+  // more Enter there would undo the answer). With nothing pink left on the card
+  // it lands on Save & next, so Enter saves and advances; otherwise on the
+  // first control of the first pink tile. Decided a frame later, from the page,
+  // so it sees the card as the answer left it.
+  const [answerTick, setAnswerTick] = useState(0);
+  const onAnswered = useCallback(() => setAnswerTick((t) => t + 1), []);
+  useEffect(() => {
+    if (answerTick === 0) return;
+    const id = requestAnimationFrame(() => {
+      const panel = panelRef.current;
+      if (!panel) return;
+      // Someone typing in a field of this card is left where they are.
+      const active = document.activeElement;
+      if (active && panel.contains(active) && isEditableTarget(active)) return;
+      const pink = panel.querySelector<HTMLElement>('[data-tidy-level="fix"]');
+      const first = pink?.querySelector<HTMLElement>(FOCUSABLE);
+      (first ?? saveRef.current)?.focus({ preventScroll: false });
+    });
+    return () => cancelAnimationFrame(id);
+  }, [answerTick]);
+
+  // Back goes unavailable at the oldest card. It is `aria-disabled`, so focus is
+  // not thrown out; if it was on Back, it moves to the next control along.
+  const hadBack = useRef(canGoBack);
+  useEffect(() => {
+    if (hadBack.current && !canGoBack && document.activeElement === backRef.current) {
+      saveForLaterRef.current?.focus({ preventScroll: true });
+    }
+    hadBack.current = canGoBack;
+  }, [canGoBack]);
 
   // Focus that is lost inside the walk comes back to the walk. A tile answer
   // (No team on this card, Looks right, a picked chip) can unmount the very
@@ -413,148 +461,180 @@ function WalkDialog({
 
   return createPortal(
     <Theme>
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        className="fixed inset-0 z-50 flex items-stretch justify-center bg-scrim sm:items-center sm:p-4"
-        onKeyDown={onKeyDown}
-      >
+      <AnsweredProvider value={onAnswered}>
         <div
-          ref={panelRef}
-          tabIndex={-1}
-          className="flex h-dvh w-full max-w-[45rem] flex-col bg-raised-deep outline-none sm:h-[min(52rem,calc(100dvh-2rem))] sm:rounded-lg sm:border sm:border-rule-strong sm:shadow-xl sm:shadow-offset"
+          ref={dialogRef}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby={titleId}
+          className="fixed inset-0 z-50 flex items-stretch justify-center bg-scrim sm:items-center sm:p-4"
+          onKeyDown={onKeyDown}
         >
-          <WizardChrome
-            titleId={titleId}
-            title={title}
-            done={passed.length}
-            planned={planned}
-            subtitle={subtitle}
-          />
+          <div
+            ref={panelRef}
+            tabIndex={-1}
+            className="flex h-dvh w-full max-w-[45rem] flex-col bg-raised-deep outline-none sm:h-[min(52rem,calc(100dvh-2rem))] sm:rounded-lg sm:border sm:border-rule-strong sm:shadow-xl sm:shadow-offset"
+          >
+            <WizardChrome
+              titleId={titleId}
+              title={title}
+              done={passed.length}
+              planned={planned}
+              subtitle={subtitle}
+            />
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-            {isDone ? (
-              <div ref={headerRef} tabIndex={-1} className="grid gap-2 outline-none">
-                {skipped > 0 && (
-                  <p role="status" className="text-base font-semibold text-neon-pink-text">
-                    {cardsSkippedText(skipped)}
-                  </p>
-                )}
-                {awaitingLookup > 0 && (
-                  <p className="text-sm text-ink-2">{teamLookupStatusLine(awaitingLookup)}</p>
-                )}
-                {skipped === 0 && awaitingLookup === 0 && (
-                  <p role="status" className="text-sm text-ink-2">
-                    {TIDY_ALL_CLEAR}
-                  </p>
-                )}
-              </div>
-            ) : tileProps ? (
-              <div className="grid gap-3.5" key={tileProps.row._id}>
-                <div className="grid justify-items-center gap-3 text-center sm:grid-cols-[auto_minmax(0,1fr)] sm:justify-items-start sm:text-left">
-                  <TidyCardFace
-                    row={tileProps.row}
-                    context={context}
-                    setName={setName}
-                    season={season}
-                    variantName={variantName}
-                    variantKind={variantKind}
-                  />
-                  <div
-                    ref={headerRef}
-                    tabIndex={-1}
-                    className="grid min-w-0 gap-1 outline-none"
-                  >
-                    <p className="text-lg font-semibold text-ink wrap-anywhere">{headerLine}</p>
-                    {tally && (
-                      <p className="text-sm">
-                        {pinkCount > 0 && (
-                          <span className="text-neon-pink-text">{pinkCount} to fix</span>
-                        )}
-                        {pinkCount > 0 && checkCount > 0 && (
-                          <span className="text-ink-3">{" · "}</span>
-                        )}
-                        {checkCount > 0 && (
-                          <span className="text-neon-blue-text">{checkCount} to check</span>
-                        )}
-                      </p>
-                    )}
-                  </div>
-                </div>
-                <SourcesDisagreeTile {...tileProps} />
-                <PlayerTile {...tileProps} />
-                <div className="ml-[18px] empty:hidden">
-                  <CareerTile {...tileProps} />
-                </div>
-                <TeamTile {...tileProps} />
-                <AutographTile {...tileProps} />
-                <TitleTile {...tileProps} />
-                <MoreAboutTile {...tileProps} />
-              </div>
-            ) : (
-              <p className="text-sm text-ink-3">Finding the next card.</p>
-            )}
-          </div>
-
-          <div className="grid shrink-0 gap-2 border-t border-rule-strong px-5 py-3.5">
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              <NeonButton
-                type="button"
-                variant="secondary"
-                outline
-                className="mr-auto"
-                onClick={back}
-                disabled={!canGoBack}
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+              {/* The end screen's verdict, mounted for the whole sitting so the line is a
+                  change to a live region already in the page (and a walk that opens on
+                  the end screen announces nothing it did not just do). */}
+              <p
+                id={doneLineId}
+                role="status"
+                className={`mb-2 empty:hidden ${
+                  skipped > 0 ? "text-base font-semibold text-neon-pink-text" : "text-sm text-ink-2"
+                }`}
               >
-                {TIDY_BACK_LABEL}
-              </NeonButton>
+                {isDone
+                  ? skipped > 0
+                    ? cardsSkippedText(skipped)
+                    : awaitingLookup === 0
+                      ? TIDY_ALL_CLEAR
+                      : ""
+                  : ""}
+              </p>
               {isDone ? (
-                <NeonButton type="button" onClick={onClose}>
-                  {TIDY_DONE_LABEL}
-                </NeonButton>
+                <div
+                  ref={headerRef}
+                  tabIndex={-1}
+                  role="group"
+                  aria-labelledby={`${doneLineId} ${doneLookupId}`}
+                  className="grid gap-2 outline-none"
+                >
+                  {awaitingLookup > 0 && (
+                    <p id={doneLookupId} className="text-sm text-ink-2">
+                      {teamLookupStatusLine(awaitingLookup)}
+                    </p>
+                  )}
+                </div>
+              ) : tileProps ? (
+                <div className="grid gap-3.5" key={tileProps.row._id}>
+                  <div className="grid justify-items-center gap-3 text-center sm:grid-cols-[auto_minmax(0,1fr)] sm:justify-items-start sm:text-left">
+                    <TidyCardFace
+                      row={tileProps.row}
+                      context={context}
+                      setName={setName}
+                      season={season}
+                      variantName={variantName}
+                      variantKind={variantKind}
+                    />
+                    <div
+                      ref={headerRef}
+                      tabIndex={-1}
+                      role="group"
+                      aria-labelledby={headerLineId}
+                      className="grid min-w-0 gap-1 outline-none"
+                    >
+                      <p id={headerLineId} className="text-lg font-semibold text-ink wrap-anywhere">
+                        {headerLine}
+                      </p>
+                      {tally && (
+                        <p className="text-sm">
+                          {pinkCount > 0 && (
+                            <span className="text-neon-pink-text">{pinkCount} to fix</span>
+                          )}
+                          {pinkCount > 0 && checkCount > 0 && (
+                            <span className="text-ink-3">{" · "}</span>
+                          )}
+                          {checkCount > 0 && (
+                            <span className="text-neon-blue-text">{checkCount} to check</span>
+                          )}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <SourcesDisagreeTile {...tileProps} />
+                  <PlayerTile {...tileProps} />
+                  <div className="ml-[18px] empty:hidden">
+                    <CareerTile {...tileProps} />
+                  </div>
+                  <TeamTile {...tileProps} />
+                  <AutographTile {...tileProps} />
+                  <TitleTile {...tileProps} />
+                  <MoreAboutTile {...tileProps} />
+                </div>
               ) : (
-                <>
-                  <NeonButton type="button" variant="secondary" outline onClick={onClose}>
-                    {TIDY_SAVE_FOR_LATER_LABEL}
-                  </NeonButton>
-                  <NeonButton
-                    type="button"
-                    variant="negative"
-                    outline
-                    onClick={skip}
-                    disabled={!current || saving}
-                  >
-                    {TIDY_SKIP_LABEL}
-                  </NeonButton>
-                  <NeonButton
-                    type="button"
-                    onClick={() => void save()}
-                    aria-disabled={!canSave || undefined}
-                    aria-describedby={pinkCount > 0 ? statusId : undefined}
-                  >
-                    {TIDY_SAVE_LABEL}
-                  </NeonButton>
-                </>
+                <p className="text-sm text-ink-3">Finding the next card.</p>
               )}
             </div>
-            {/* Always mounted, so a change is announced; the line says why Save is held. */}
-            <p
-              id={statusId}
-              role="status"
-              className="min-h-4 text-right text-xs text-neon-pink-text"
-            >
-              {!isDone && pinkCount > 0 ? mustFixLine(pinkCount) : ""}
-            </p>
-            {saveFailed && (
-              <p role="alert" className="text-right text-xs text-neon-pink-text">
-                {TIDY_SAVE_FAILED}
+
+            <div className="grid shrink-0 gap-2 border-t border-rule-strong px-5 py-3.5">
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <NeonButton
+                  type="button"
+                  variant="secondary"
+                  outline
+                  className="mr-auto"
+                  ref={backRef}
+                  onClick={() => {
+                    if (canGoBack) back();
+                  }}
+                  aria-disabled={!canGoBack || undefined}
+                >
+                  {TIDY_BACK_LABEL}
+                </NeonButton>
+                {isDone ? (
+                  <NeonButton type="button" onClick={onClose}>
+                    {TIDY_DONE_LABEL}
+                  </NeonButton>
+                ) : (
+                  <>
+                    <NeonButton
+                      ref={saveForLaterRef}
+                      type="button"
+                      variant="secondary"
+                      outline
+                      onClick={onClose}
+                    >
+                      {TIDY_SAVE_FOR_LATER_LABEL}
+                    </NeonButton>
+                    <NeonButton
+                      type="button"
+                      variant="negative"
+                      outline
+                      onClick={skip}
+                      aria-disabled={!current || saving || undefined}
+                    >
+                      {TIDY_SKIP_LABEL}
+                    </NeonButton>
+                    <NeonButton
+                      ref={saveRef}
+                      type="button"
+                      onClick={() => void save()}
+                      aria-disabled={!canSave || undefined}
+                      aria-describedby={pinkCount > 0 ? statusId : undefined}
+                    >
+                      {TIDY_SAVE_LABEL}
+                    </NeonButton>
+                  </>
+                )}
+              </div>
+              {/* Always mounted, so a change is announced; the line says why Save is held. */}
+              <p
+                id={statusId}
+                role="status"
+                className="min-h-4 text-right text-xs text-neon-pink-text"
+              >
+                {!isDone && pinkCount > 0 ? mustFixLine(pinkCount) : ""}
               </p>
-            )}
+              {saveFailed && (
+                <p role="alert" className="text-right text-xs text-neon-pink-text">
+                  {TIDY_SAVE_FAILED}
+                </p>
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      </AnsweredProvider>
     </Theme>,
     document.body,
   );

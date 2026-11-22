@@ -66,16 +66,22 @@ const props: TidyTileProps = {
 describe("MoreAboutTile", () => {
   it("is collapsed by default: no fields are mounted", () => {
     render(<MoreAboutTile {...props} />);
-    expect(screen.getByRole("region", { name: "More about this card" })).toBeTruthy();
-    const toggle = screen.getByRole("button", { name: "Show fields" });
+    expect(screen.getByRole("group", { name: "More about this card" })).toBeTruthy();
+    const toggle = screen.getByRole("button", { name: "Card fields" });
+    expect(toggle.getAttribute("aria-controls")).toBeNull();
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByLabelText("Card name")).toBeNull();
   });
 
   it("opens the leftover fields, and none that have a tile of their own", () => {
     render(<MoreAboutTile {...props} />);
-    fireEvent.click(screen.getByRole("button", { name: "Show fields" }));
-    expect(screen.getByRole("button", { name: "Hide fields" }).getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Card fields" }));
+    // One constant label: the state is aria-expanded, and aria-controls names what it opens.
+    const toggle = screen.getByRole("button", { name: "Card fields" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const controlled = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
+    expect(controlled?.contains(screen.getByLabelText("Card name"))).toBe(true);
+    expect(screen.queryByRole("button", { name: /Show fields|Hide fields/ })).toBeNull();
     expect(screen.getByLabelText("Card name")).toBeTruthy();
     expect(screen.getByLabelText("Print run")).toBeTruthy();
     expect(screen.getByLabelText("Card league row (stub)")).toBeTruthy();
@@ -86,8 +92,9 @@ describe("MoreAboutTile", () => {
 
   it("collapses again", () => {
     render(<MoreAboutTile {...props} />);
-    fireEvent.click(screen.getByRole("button", { name: "Show fields" }));
-    fireEvent.click(screen.getByRole("button", { name: "Hide fields" }));
+    fireEvent.click(screen.getByRole("button", { name: "Card fields" }));
+    fireEvent.click(screen.getByRole("button", { name: "Card fields" }));
     expect(screen.queryByLabelText("Card name")).toBeNull();
+    expect(screen.getByRole("button", { name: "Card fields" }).getAttribute("aria-expanded")).toBe("false");
   });
 });

@@ -30,24 +30,27 @@ export default function AddStintEntry({
     setOpen(false);
     requestAnimationFrame(() => buttonRef.current?.focus({ preventScroll: true }));
   };
-  useInlinePart(open, close);
+  const scopeRef = useRef<HTMLDivElement | null>(null);
+  useInlinePart(open, close, scopeRef);
 
   if (open) {
     return (
-      <CareerTeamEntry
-        sportId={sportId}
-        contextOptionId={leafId}
-        stagedNames={[]}
-        knownTeamsOnly
-        label={playerName}
-        disabled={disabled}
-        onDone={close}
-        onAdd={async (entry) => {
-          if (!entry.teamId) return;
-          const ok = await onAdd({ ...entry, teamId: entry.teamId });
-          if (ok) close();
-        }}
-      />
+      <div ref={scopeRef}>
+        <CareerTeamEntry
+          sportId={sportId}
+          contextOptionId={leafId}
+          stagedNames={[]}
+          knownTeamsOnly
+          label={playerName}
+          disabled={disabled}
+          onDone={close}
+          onAdd={async (entry) => {
+            if (!entry.teamId) return;
+            const ok = await onAdd({ ...entry, teamId: entry.teamId });
+            if (ok) close();
+          }}
+        />
+      </div>
     );
   }
   return (

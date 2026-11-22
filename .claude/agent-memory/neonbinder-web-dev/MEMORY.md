@@ -306,3 +306,4 @@
 - [Pin regexes match planner inputs](reference_pin_regexes_match_plan_inputs_not_just_writes.md) — rename planner keys, do not loosen source-slice pins
 - [New Team form shows the suggestion as the answer](reference_new_team_form_shows_suggestion_as_answer_server_must_write_it.md) — host must forward it via findOrCreate enrichment or the shown league is lost
 - [Apply result outlives its offer](reference_apply_result_must_outlive_the_offer_it_empties.md) — key the outcome on count at press time; also purple-text dark contrast fix
+- [Tidy walk answer focus belongs to the walk](project_tidy_walk_answer_focus_belongs_to_the_walk.md) — tiles call useAnswered(); walk lands on Save & next / next pink tile; opener restore only on Cancel/Esc

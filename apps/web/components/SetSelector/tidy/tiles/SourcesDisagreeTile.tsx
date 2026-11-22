@@ -1,10 +1,11 @@
-import { useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { Input } from "../../../primitives/Input";
 import NeonButton from "../../../modules/NeonButton";
 import { SOURCES_WITH_CHECKLIST, SOURCE_KEYS, type SourceKey } from "../../reconciliation-sources";
+import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
 import TidyTile, { ApplyToAllButton, type TidyTileLevel } from "../TidyTile";
 import type { TidyTileProps } from "../tile-types";
@@ -135,12 +136,24 @@ function DisagreementEntry({
   const [error, setError] = useState<string | null>(null);
   const typedRef = useRef<HTMLInputElement | null>(null);
   const typeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const entryRef = useRef<HTMLDivElement | null>(null);
+  const firstUseRef = useRef<HTMLButtonElement | null>(null);
+  const answered = useAnswered();
+  // Change unmounts itself and mounts the choices: focus is owed to the first
+  // one once it exists. Read after every render, cleared once it lands. (A pick
+  // is an answer: the walk moves focus on, not back to Change.)
+  const focusFirstUse = useRef(false);
+  useEffect(() => {
+    if (!focusFirstUse.current || !firstUseRef.current) return;
+    focusFirstUse.current = false;
+    firstUseRef.current.focus({ preventScroll: true });
+  });
 
   const closeTyping = () => {
     setTyping(false);
     requestAnimationFrame(() => typeButtonRef.current?.focus());
   };
-  useInlinePart(typing, closeTyping);
+  useInlinePart(typing, closeTyping, entryRef);
 
   const chosen = entry.chosen;
   const fieldLabel = FIELD_LABEL[entry.field];
@@ -174,6 +187,7 @@ function DisagreementEntry({
       setChanging(false);
       setTyping(false);
       setTyped("");
+      answered();
     } catch (e) {
       setError(userFacingMessage(e, "Didn't save, try again."));
     } finally {
@@ -212,7 +226,7 @@ function DisagreementEntry({
     : null;
 
   return (
-    <div className="grid gap-2">
+    <div ref={entryRef} className="grid gap-2">
       {heading && <p className="text-xs font-medium text-ink-2">{fieldLabel}</p>}
       <ul
         aria-label={`What each source says: ${fieldLabel}`}
@@ -246,15 +260,17 @@ function DisagreementEntry({
         })}
       </ul>
 
-      {chosen && !changing && (
-        <p className="text-sm text-ink wrap-anywhere" role="status">
-          {chosen.by === "nb"
+      {/* Mounted for the life of the entry: a pick is a change to a live region
+          already in the page, and a card that opens already answered says nothing. */}
+      <p className="text-sm text-ink wrap-anywhere empty:hidden" role="status">
+        {chosen && !changing
+          ? chosen.by === "nb"
             ? `Went with “${show(chosen.value)}”, they're already in your binder.`
             : chosenFrom
               ? `Using “${show(chosen.value)}” (${chosenFrom})`
-              : `Using “${show(chosen.value)}”`}
-        </p>
-      )}
+              : `Using “${show(chosen.value)}”`
+          : ""}
+      </p>
 
       <div className="flex flex-wrap items-center gap-2">
         {chosen && !changing && chosen.by === "operator" && (
@@ -263,7 +279,10 @@ function DisagreementEntry({
             outline
             size="1"
             type="button"
-            onClick={() => setChanging(true)}
+            onClick={() => {
+              focusFirstUse.current = true;
+              setChanging(true);
+            }}
             aria-label={`Change the ${fieldLabel.toLowerCase()}`}
           >
             Change
@@ -286,9 +305,10 @@ function DisagreementEntry({
               </NeonButton>
             ))}
         {choosing &&
-          entry.values.map((v) => (
+          entry.values.map((v, i) => (
             <NeonButton
               key={v.value.join("\u001f")}
+              ref={i === 0 ? firstUseRef : undefined}
               variant="secondary"
               outline
               size="1"
@@ -308,6 +328,7 @@ function DisagreementEntry({
             type="button"
             aria-expanded={typing}
             aria-controls={typing ? `${uid}-typed` : undefined}
+            aria-label={`Type another… ${fieldLabel.toLowerCase()}`}
             onClick={() => {
               if (typing) {
                 closeTyping();
@@ -357,6 +378,7 @@ function DisagreementEntry({
             variant="primary"
             size="1"
             type="button"
+            aria-label={`Use this ${fieldLabel.toLowerCase()}`}
             aria-disabled={busy || parseTyped(typed).length === 0 || undefined}
             onClick={submitTyped}
           >

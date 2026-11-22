@@ -8,8 +8,9 @@
  *   - A field handles them. Autocomplete swallows Enter (pick) and Escape
  *     (close the list) itself; whatever it did not swallow arrives here with
  *     `defaultPrevented` or an editable target, and is left alone.
- *   - A control owns Enter. A focused button, link or disclosure activates on
- *     Enter; this handler never turns that into a save as well.
+ *   - A control owns Enter. A focused button, link, disclosure, or native
+ *     checkbox or radio activates on Enter (or is the operator's to toggle);
+ *     this handler never turns that into a save as well.
  *   - Escape closes the TOP inline part first (a search, the New Team form,
  *     the title editor, the set-name field; `inline-stack.tsx`). Only with
  *     nothing inline open does it mean Save for later, and only outside a
@@ -25,7 +26,7 @@ import { isEditableTarget } from "@/lib/dom/is-editable-target";
 
 /** Targets that own Enter: pressing it on them does what they do. */
 const OWNS_ENTER =
-  'button, a[href], summary, select, [role="button"], [role="menuitem"], [role="option"], [role="tab"], [role="checkbox"], [role="radio"], [role="switch"], [role="link"]';
+  'button, a[href], summary, select, input[type="checkbox"], input[type="radio"], [role="button"], [role="menuitem"], [role="option"], [role="tab"], [role="checkbox"], [role="radio"], [role="switch"], [role="link"]';
 
 export function ownsEnter(target: EventTarget | null | undefined): boolean {
   return target instanceof Element && target.closest(OWNS_ENTER) !== null;

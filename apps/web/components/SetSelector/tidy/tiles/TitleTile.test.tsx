@@ -3,7 +3,7 @@
  * Regenerate, the inline set-name panel with its live preview, the variation
  * trim, and the purple notes.
  */
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../../convex/_generated/api", () => ({
@@ -22,6 +22,7 @@ vi.mock("convex/react", () => ({
   useQuery: (ref: string) => (ref === "previewListingTitle" ? previewResult : undefined),
 }));
 
+import { AnsweredProvider } from "../answered";
 import TitleTile from "./TitleTile";
 import { assessListingTitle } from "../../../../convex/features/generateListing";
 import type { TidyAttention, TidyRow, TidyTileProps } from "../tile-types";
@@ -45,7 +46,12 @@ const attn = (...items: Array<Record<string, unknown>>): TidyAttention =>
 const cardOf = (id: string, extra: Record<string, unknown> = {}) =>
   ({ _id: id, cardNumber: "USC118", cardName: "Aaron Judge", listingTitle: SHORT, attributes: [], ...extra }) as unknown as TidyRow;
 
-function renderTile(row: TidyRow, attention: TidyAttention = none, leafCards: TidyRow[] = [row]) {
+function renderTile(
+  row: TidyRow,
+  attention: TidyAttention = none,
+  leafCards: TidyRow[] = [row],
+  onAnswered: () => void = () => {},
+) {
   const props: TidyTileProps = {
     row,
     context: undefined,
@@ -55,7 +61,11 @@ function renderTile(row: TidyRow, attention: TidyAttention = none, leafCards: Ti
     leafCards,
     setName: "Topps Chrome Update",
   };
-  return render(<TitleTile {...props} />);
+  return render(
+    <AnsweredProvider value={onAnswered}>
+      <TitleTile {...props} />
+    </AnsweredProvider>,
+  );
 }
 
 beforeEach(() => {
@@ -71,15 +81,15 @@ const titleField = () => screen.getByLabelText("Card title for #USC118") as HTML
 describe("TitleTile levels", () => {
   it("is plain when the title fits, showing it as text with Edit title", () => {
     renderTile(cardOf("c1"));
-    expect(screen.getByRole("region", { name: "Listing title" }).getAttribute("data-tidy-level")).toBe("plain");
+    expect(screen.getByRole("group", { name: "Listing title" }).getAttribute("data-tidy-level")).toBe("plain");
     expect(screen.getByText(SHORT)).toBeTruthy();
     expect(screen.queryByLabelText("Card title for #USC118")).toBeNull();
-    expect(screen.getByRole("button", { name: "Edit card title" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Edit title" })).toBeTruthy();
   });
 
   it("is pink and opens ready to edit when over 80", () => {
     renderTile(cardOf("c1", { listingTitle: LONG }), attn({ level: "fix", kind: "titleOverLimit" }));
-    expect(screen.getByRole("region", { name: "Listing title" }).getAttribute("data-tidy-level")).toBe("fix");
+    expect(screen.getByRole("group", { name: "Listing title" }).getAttribute("data-tidy-level")).toBe("fix");
     expect(titleField().value).toBe(LONG);
     expect(screen.getByText("Over the limit, so it opens ready to edit.")).toBeTruthy();
     expect(titleField().getAttribute("aria-invalid")).toBe("true");
@@ -88,20 +98,54 @@ describe("TitleTile levels", () => {
 
   it("is blue when the generated title was cut", () => {
     renderTile(cardOf("c1"), { level: "check", items: [{ level: "check", kind: "titleCut", key: "cut:1" }] } as unknown as TidyAttention);
-    expect(screen.getByRole("region", { name: "Listing title" }).getAttribute("data-tidy-level")).toBe("check");
+    expect(screen.getByRole("group", { name: "Listing title" }).getAttribute("data-tidy-level")).toBe("check");
   });
 });
 
 describe("TitleTile editing", () => {
   it("Enter saves a title that fits and closes the editor", async () => {
     renderTile(cardOf("c1"));
-    fireEvent.click(screen.getByRole("button", { name: "Edit card title" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit title" }));
     fireEvent.change(titleField(), { target: { value: "Judge RC" } });
     await act(async () => {
       fireEvent.keyDown(titleField(), { key: "Enter" });
     });
     expect(mockUpdateCard).toHaveBeenCalledWith({ id: "c1", listingTitle: "Judge RC" });
     expect(screen.queryByLabelText("Card title for #USC118")).toBeNull();
+  });
+
+  it("is named by its visible words: Edit title, not 'Edit card title'", () => {
+    renderTile(cardOf("c1"));
+    const edit = screen.getByRole("button", { name: "Edit title" });
+    expect(edit.textContent).toBe("Edit title");
+    expect(edit.getAttribute("aria-label")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit card title" })).toBeNull();
+  });
+
+  it("a save from the editor is an answer: the walk moves focus on, not back to Edit title", async () => {
+    const onAnswered = vi.fn();
+    renderTile(cardOf("c1"), none, undefined, onAnswered);
+    fireEvent.click(screen.getByRole("button", { name: "Edit title" }));
+    fireEvent.change(titleField(), { target: { value: "Judge RC" } });
+    titleField().focus();
+    await act(async () => {
+      fireEvent.keyDown(titleField(), { key: "Enter" });
+    });
+    await waitFor(() => expect(onAnswered).toHaveBeenCalledTimes(1));
+  });
+
+  it("a Regenerate that saves leaves focus on Regenerate and does not tell the walk", async () => {
+    const onAnswered = vi.fn();
+    previewResult = { title: "Judge RC rebuilt", coreFits: true, dropped: [], inputs };
+    renderTile(cardOf("c1"), none, undefined, onAnswered);
+    const regen = screen.getByRole("button", { name: "Regenerate card title" });
+    regen.focus();
+    await act(async () => {
+      fireEvent.click(regen);
+    });
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    expect(onAnswered).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(regen);
   });
 
   it("refuses to save over 80 and says so", async () => {
@@ -122,7 +166,7 @@ describe("TitleTile editing", () => {
   it("shows a refused save inline and keeps the text", async () => {
     mockUpdateCard.mockRejectedValueOnce(new Error("x"));
     renderTile(cardOf("c1"));
-    fireEvent.click(screen.getByRole("button", { name: "Edit card title" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit title" }));
     fireEvent.change(titleField(), { target: { value: "Judge RC" } });
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Save title" }));
@@ -143,11 +187,24 @@ describe("TitleTile editing", () => {
 
   it("Regenerate over typed text asks once more first", () => {
     renderTile(cardOf("c1"));
-    fireEvent.click(screen.getByRole("button", { name: "Edit card title" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit title" }));
     fireEvent.change(titleField(), { target: { value: "My own wording" } });
     fireEvent.click(screen.getByRole("button", { name: "Regenerate card title" }));
     expect(screen.getByText("Regenerate again to replace the title you have typed.")).toBeTruthy();
     expect(mockUpdateCard).not.toHaveBeenCalled();
+  });
+
+  it("the Regenerate confirmation is a live region mounted from the start, empty until asked", () => {
+    renderTile(cardOf("c1"));
+    const statuses = screen.getAllByRole("status");
+    const confirm = statuses.find((el) => el.className.includes("text-neon-blue-text"));
+    expect(confirm?.textContent).toBe("");
+    fireEvent.click(screen.getByRole("button", { name: "Edit title" }));
+    fireEvent.change(titleField(), { target: { value: "My own wording" } });
+    fireEvent.click(screen.getByRole("button", { name: "Regenerate card title" }));
+    // The same element, now with words in it.
+    expect(confirm?.textContent).toBe("Regenerate again to replace the title you have typed.");
+    expect(confirm?.isConnected).toBe(true);
   });
 });
 
@@ -239,6 +296,29 @@ describe("TitleTile set name for every card", () => {
     expect(screen.queryByLabelText("Set name in titles")).toBeNull();
   });
 
+  it("an applied set name is an answer: the walk moves focus on, not back to Shorten", async () => {
+    const onAnswered = vi.fn();
+    const leaf = [cardOf("c1"), cardOf("c2")];
+    renderTile(leaf[0], none, leaf, onAnswered);
+    open();
+    fireEvent.change(screen.getByLabelText("Set name in titles"), { target: { value: "TC Update" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save and apply to all 2 cards" }));
+    });
+    expect(onAnswered).toHaveBeenCalledTimes(1);
+  });
+
+  it("Cancel hands focus back to the button that opened the panel (not an answer)", async () => {
+    const onAnswered = vi.fn();
+    renderTile(cardOf("c1"), none, undefined, onAnswered);
+    open();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel set name change" }));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Shorten the set name for every card" })),
+    );
+    expect(onAnswered).not.toHaveBeenCalled();
+  });
+
   it("offers no apply while the box is empty, and Cancel closes it", () => {
     renderTile(cardOf("c1"));
     open();
@@ -281,6 +361,18 @@ describe("TitleTile variation", () => {
     );
     expect(mockApplyVariation).toHaveBeenCalledWith({ cardIds: ["c2"], from: OVER, to: "Sunglasses" });
     expect(screen.getByText("Applied to 1 card.")).toBeTruthy();
+  });
+
+  it("says 'Variation saved.' in a status line that was on the page empty", async () => {
+    const mine = cardOf("c1", { cardVariation: OVER });
+    renderTile(mine, attention);
+    const trim = screen.getByLabelText("Trim the variation");
+    const note = trim.parentElement?.querySelector('p[role="status"].text-neon-green-text');
+    expect(note).toBeTruthy();
+    expect(note?.textContent).toBe("");
+    fireEvent.change(trim, { target: { value: "Sunglasses" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save variation" })));
+    expect(note?.textContent).toBe("Variation saved.");
   });
 
   it("says how many variations the server changed and left alone", async () => {

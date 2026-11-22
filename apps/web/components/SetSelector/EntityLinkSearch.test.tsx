@@ -644,3 +644,33 @@ describe("EntityLinkSearch — leagues", () => {
     ).toBeTruthy();
   });
 });
+
+describe("EntityLinkSearch — the highlighted row's quiet text (NEO-645)", () => {
+  it("paints the sport badge and the career line in ink-2 on the highlighted row, ink-3 on the others", () => {
+    currentPlayers = [
+      {
+        _id: "p1",
+        name: "Mike Trout",
+        sportValue: "Baseball",
+        stints: [{ label: "Angels", fromYear: 2011 }],
+      },
+      {
+        _id: "p2",
+        name: "Mike Trout Jr",
+        sportValue: "Football",
+        stints: [{ label: "Chargers", fromYear: 2020, toYear: 2021 }],
+      },
+    ];
+    renderSearch();
+    typeAndSettle("Search existing players", "Trout");
+    const [first, second] = screen.getAllByRole("option");
+    expect(first.getAttribute("aria-selected")).toBe("true");
+    // The 10px sport badge and the line under the name: ink-3 misses 4.5:1 on
+    // the green wash over a tile in dark (tokens.test.tsx), ink-2 clears it.
+    expect(screen.getByText("Baseball").className).toContain("text-ink-2");
+    expect(screen.getByText("Baseball").className).not.toContain("text-ink-3");
+    expect(first.querySelector("span.block")?.className).toContain("text-ink-2");
+    expect(screen.getByText("Football").className).toContain("text-ink-3");
+    expect(second.querySelector("span.block")?.className).toContain("text-ink-3");
+  });
+});

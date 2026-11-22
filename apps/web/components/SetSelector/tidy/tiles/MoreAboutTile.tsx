@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import NeonButton from "../../../modules/NeonButton";
@@ -19,11 +19,15 @@ import type { TidyTileProps } from "../tile-types";
  * default. Players, teams and the listing title have tiles, and the photo is
  * on the drawn card, so those sections are not here (`MORE_ABOUT_SECTIONS`).
  *
+ * The disclosure keeps one label, "Card fields"; `aria-expanded` says whether the
+ * fields are showing.
+ *
  * The fields mount only while open, so a collapsed tile subscribes to nothing
  * and holds no second copy of a control the walk already shows.
  */
 export default function MoreAboutTile({ row, leafId, sportId }: TidyTileProps) {
   const [open, setOpen] = useState(false);
+  const fieldsId = useId();
 
   return (
     <TidyTile
@@ -36,13 +40,18 @@ export default function MoreAboutTile({ row, leafId, sportId }: TidyTileProps) {
           size="1"
           type="button"
           aria-expanded={open}
+          aria-controls={open ? fieldsId : undefined}
           onClick={() => setOpen((v) => !v)}
         >
-          {open ? "Hide fields" : "Show fields"}
+          Card fields
         </NeonButton>
       }
     >
-      {open && <OpenFields row={row} leafId={leafId} sportId={sportId} />}
+      {open && (
+        <div id={fieldsId}>
+          <OpenFields row={row} leafId={leafId} sportId={sportId} />
+        </div>
+      )}
     </TidyTile>
   );
 }

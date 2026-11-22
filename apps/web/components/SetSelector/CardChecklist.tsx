@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useQuery, useAction, useMutation, useConvex } from "convex/react";
 import { userFacingMessage } from "../../lib/errors/user-facing-message";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
@@ -2504,6 +2504,18 @@ export default function CardChecklist({
     };
   }, []);
   const needsYouShown = attentionCount > 0;
+  // NEO-645 a11y: where the Tidy Up walk hands focus back, asked when it closes
+  // (not when it opened): the "N need you" pill if cards still need someone,
+  // else Sync, which is always mounted. A getter, so it reads the refs then.
+  const tidyRestoreRef = useMemo<RefObject<HTMLElement | null>>(
+    () =>
+      ({
+        get current(): HTMLElement | null {
+          return needsYouNodeRef.current ?? syncButtonRef.current;
+        },
+      }) as RefObject<HTMLElement | null>,
+    [],
+  );
   useEffect(() => {
     if (needsYouShown || !needsYouParkRef.current) return;
     needsYouParkRef.current = false;
@@ -3806,9 +3818,9 @@ export default function CardChecklist({
           cards={cards}
           // a11y: the durable restore target, because the control that opened
           // this may not survive the sitting: the pill unmounts when the count
-          // reaches zero, which is the state the walk is in when it ends.
-          // This Sync button is always mounted.
-          restoreFocusRef={syncButtonRef}
+          // reaches zero, which is the state the walk is in when it ends. The
+          // pill when it is still there, else the Sync button (always mounted).
+          restoreFocusRef={tidyRestoreRef}
           onClose={closeTidyWalk}
         />
       )}

@@ -7,26 +7,51 @@ import { describe, expect, it, vi } from "vitest";
 import TidyTile, { ApplyToAllButton, TidyNote } from "./TidyTile";
 
 describe("TidyTile", () => {
-  it("is a labelled section with an h3, and says its level in text", () => {
+  it("is a labelled group with an h3, and says its level in text", () => {
     render(
       <TidyTile heading="Player" level="fix">
         <p>body</p>
       </TidyTile>,
     );
-    const section = screen.getByRole("region", { name: "Player" });
+    const section = screen.getByRole("group", { name: "Player" });
     expect(screen.getByRole("heading", { level: 3, name: "Player" })).toBeTruthy();
     expect(section.getAttribute("data-tidy-level")).toBe("fix");
     expect(section.textContent).toContain("To fix");
     expect(section.className).toContain("border-neon-pink-text");
   });
 
+  it("writes the level beside the heading with a shape that is not a colour, and says it once", () => {
+    const { rerender } = render(<TidyTile heading="Player" level="fix" />);
+    const fix = screen.getByRole("group", { name: "Player" });
+    // The visible word is what describes the tile: one place, no sr-only twin.
+    const label = screen.getByText("To fix");
+    expect(label.className).not.toContain("sr-only");
+    expect(label.className).toContain("text-neon-pink-text");
+    expect(label.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+    expect(fix.getAttribute("aria-describedby")).toBe(label.id);
+    expect(screen.getAllByText("To fix")).toHaveLength(1);
+    const fixShape = label.querySelector("svg")?.innerHTML;
+
+    rerender(<TidyTile heading="Player" level="check" />);
+    const check = screen.getByText("To check");
+    expect(check.className).toContain("text-neon-blue-text");
+    expect(screen.getByRole("group", { name: "Player" }).getAttribute("aria-describedby")).toBe(check.id);
+    // Fix and check carry different shapes.
+    expect(check.querySelector("svg")?.innerHTML).not.toBe(fixShape);
+  });
+
+  it("a plain tile has no level label and no description", () => {
+    render(<TidyTile heading="Player" level="plain" />);
+    expect(screen.getByRole("group", { name: "Player" }).getAttribute("aria-describedby")).toBeNull();
+  });
+
   it("states 'To check' for blue and nothing for a plain tile", () => {
     const { rerender } = render(<TidyTile heading="Career" level="check" />);
-    const blue = screen.getByRole("region", { name: "Career" });
+    const blue = screen.getByRole("group", { name: "Career" });
     expect(blue.textContent).toContain("To check");
     expect(blue.className).toContain("border-neon-blue-text");
     rerender(<TidyTile heading="Career" level="plain" />);
-    const plain = screen.getByRole("region", { name: "Career" });
+    const plain = screen.getByRole("group", { name: "Career" });
     expect(plain.textContent).not.toMatch(/To (fix|check)/);
   });
 
@@ -36,10 +61,12 @@ describe("TidyTile", () => {
         <button type="button">Never shown</button>
       </TidyTile>,
     );
-    const section = screen.getByRole("region", { name: "Team" });
+    const section = screen.getByRole("group", { name: "Team" });
     expect(section.getAttribute("aria-busy")).toBe("true");
     expect(section.className).toContain("border-dashed");
     expect(screen.getByText("Waiting on the spelling above")).toBeTruthy();
+    // "Waiting" has nothing to see beyond the dashed edge and the line, so it is spoken only.
+    expect(screen.getByText("Waiting").className).toContain("sr-only");
     expect(screen.queryByRole("button", { name: "Never shown" })).toBeNull();
     expect(screen.queryByText("aside")).toBeNull();
   });
@@ -106,14 +133,33 @@ describe("ApplyToAllButton", () => {
     expect(screen.getByRole("status").textContent).toBe(text);
   });
 
-  it("keeps the result on screen when the apply itself empties the offer", async () => {
+  it("keeps the result on screen when the apply itself empties the offer, and the button with it", async () => {
     const onApply = vi.fn().mockResolvedValue({ applied: 3, skipped: 0 });
     const { rerender } = render(<ApplyToAllButton count={3} label="Apply to all 3 cards" onApply={onApply} />);
-    await act(async () => fireEvent.click(screen.getByRole("button")));
+    const button = screen.getByRole("button");
+    button.focus();
+    await act(async () => fireEvent.click(button));
     // The three cards now fit, so they are no longer offered.
     rerender(<ApplyToAllButton count={0} label="Apply to all 0 cards" onApply={onApply} />);
-    expect(screen.queryByRole("button")).toBeNull();
     expect(screen.getByRole("status").textContent).toBe("Applied to 3 cards.");
+    // The pressed button is still the same element, still focused, held aria-disabled,
+    // and still reads as what it was (not "Apply to all 0 cards").
+    const kept = screen.getByRole("button", { name: "Apply to all 3 cards" });
+    expect(kept).toBe(button);
+    expect(document.activeElement).toBe(button);
+    expect(kept.getAttribute("aria-disabled")).toBe("true");
+    // A press while the offer is empty does nothing.
+    onApply.mockClear();
+    fireEvent.click(kept);
+    expect(onApply).not.toHaveBeenCalled();
+  });
+
+  it("holds a pressed button aria-disabled when the offer empties", async () => {
+    const onApply = vi.fn().mockResolvedValue(undefined);
+    const { rerender } = render(<ApplyToAllButton count={2} label="Apply to all 2 cards" onApply={onApply} />);
+    await act(async () => fireEvent.click(screen.getByRole("button")));
+    rerender(<ApplyToAllButton count={0} label="Apply to all 0 cards" onApply={onApply} />);
+    expect(screen.getByRole("button").getAttribute("aria-disabled")).toBe("true");
   });
 
   it("forgets an old result when the offer changes", async () => {

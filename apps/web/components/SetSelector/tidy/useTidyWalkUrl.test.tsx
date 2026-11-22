@@ -96,11 +96,63 @@ describe("useTidyWalkUrl", () => {
     expect(probe.type).toBe("REPLACE");
   });
 
-  it("closes with a replace and drops only its own key", () => {
+  it("closes a walk that was pasted or refreshed into with a replace and drops only its own key", () => {
     const probe = mount("/?sport=s&tidy=a");
     act(() => probe.url!.close());
     expect(probe.search).toBe("?sport=s");
     expect(probe.type).toBe("REPLACE");
     expect(probe.url!.location).toEqual({ kind: "closed" });
+  });
+
+  describe("leaving takes the walk out of history (Back never reopens it)", () => {
+    it("Done after a walk of several cards goes back to the entry before the walk opened", () => {
+      const probe = mount("/?sport=s");
+      act(() => probe.url!.open());
+      act(() => probe.url!.showCard("a")); // `first` becomes the first card: a replace, depth kept
+      act(() => probe.url!.goToCard("b", "a"));
+      act(() => probe.url!.goToCard("c", "b"));
+      act(() => probe.url!.finish("c"));
+      expect(probe.search).toBe("?sport=s&tidy=done");
+      act(() => probe.url!.close());
+      // Back from the checklist is now what was before the walk, not "?tidy=c".
+      expect(probe.search).toBe("?sport=s");
+      expect(probe.type).toBe("POP");
+      expect(probe.url!.location).toEqual({ kind: "closed" });
+      act(() => probe.nav!(-1));
+      expect(probe.search).not.toContain("tidy");
+    });
+
+    it("Save for later on the first card leaves the same way", () => {
+      const probe = mount("/?sport=s");
+      act(() => probe.url!.open());
+      act(() => probe.url!.showCard("a"));
+      act(() => probe.url!.close());
+      expect(probe.search).toBe("?sport=s");
+      expect(probe.type).toBe("POP");
+    });
+
+    it("counts only this sitting's entries after a step back", () => {
+      const probe = mount("/?sport=s");
+      act(() => probe.url!.open());
+      act(() => probe.url!.showCard("a"));
+      act(() => probe.url!.goToCard("b", "a"));
+      act(() => probe.url!.stepBack());
+      expect(probe.search).toBe("?sport=s&tidy=a");
+      act(() => probe.url!.close());
+      expect(probe.search).toBe("?sport=s");
+    });
+
+    it("a walk with no depth (a pasted link, a new tab) has nothing before it that is ours: it only drops the param", () => {
+      const probe = mount("/?sport=s&tidy=a");
+      act(() => probe.url!.goToCard("b", "a")); // no depth to carry
+      act(() => probe.url!.close());
+      expect(probe.search).toBe("?sport=s");
+      expect(probe.type).toBe("REPLACE");
+    });
+
+    it("still reads a pasted ?tidy=<id>", () => {
+      const probe = mount("/?sport=s&tidy=card9");
+      expect(probe.url!.location).toEqual({ kind: "card", cardId: "card9" });
+    });
   });
 });

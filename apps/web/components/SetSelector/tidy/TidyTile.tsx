@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { ExclamationTriangleIcon, EyeIcon } from "@heroicons/react/16/solid";
 
 /**
  * NEO-645 — the tile shell for the per-card Tidy Up walk.
@@ -15,9 +16,12 @@ import type { ReactNode } from "react";
  *             disagreement, a lookup) so it renders no controls and runs
  *             nothing until it can.
  *
- * Colour is never the only carrier: the level is also written into the DOM
- * as text ("To fix", "To check", "Waiting") that the section is described by,
- * so a screen reader and a colour-blind operator get it too.
+ * Colour is never the only carrier. "To fix" and "To check" are written
+ * beside the heading, each behind its own shape (a warning triangle, an eye),
+ * and the tile is described by that visible word, so a colour-blind operator
+ * and a screen reader get it too, and it is read once. A waiting tile has no
+ * label to see (its dashed edge and its line say it), so "Waiting" is spoken
+ * text only.
  *
  * Roles, not palette steps: the edge and the heading use the neon `-text`
  * roles (they pass 3:1 on the tile in both modes), the wash is the
@@ -37,6 +41,17 @@ const LEVEL_CLASS: Record<TidyTileLevel, string> = {
   check: "border-2 border-neon-blue-text bg-wash-blue",
   plain: "border border-rule bg-raised",
   waiting: "border-[1.5px] border-dashed border-rule bg-transparent",
+};
+
+/** The shape beside the word, so "to fix" and "to check" differ without colour. */
+const LEVEL_ICON = {
+  fix: ExclamationTriangleIcon,
+  check: EyeIcon,
+} as const;
+
+const LEVEL_LABEL_CLASS: Record<"fix" | "check", string> = {
+  fix: "text-neon-pink-text",
+  check: "text-neon-blue-text",
 };
 
 const HEADING_CLASS: Record<TidyTileLevel, string> = {
@@ -66,9 +81,12 @@ export default function TidyTile({
   const levelId = useId();
   const levelText = LEVEL_TEXT[level];
   const waiting = level === "waiting";
+  const visible = level === "fix" || level === "check" ? level : null;
+  const Icon = visible ? LEVEL_ICON[visible] : null;
 
   return (
     <section
+      role="group"
       aria-labelledby={headingId}
       aria-describedby={levelText ? levelId : undefined}
       aria-busy={waiting || undefined}
@@ -76,14 +94,24 @@ export default function TidyTile({
       className={`grid min-w-0 gap-2 rounded-[10px] px-3.5 py-3 ${LEVEL_CLASS[level]}`}
     >
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <h3 id={headingId} className={`min-w-0 text-sm font-semibold wrap-anywhere ${HEADING_CLASS[level]}`}>
-          {heading}
-        </h3>
-        {levelText && (
-          <span id={levelId} className="sr-only">
-            {levelText}
-          </span>
-        )}
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <h3 id={headingId} className={`min-w-0 text-sm font-semibold wrap-anywhere ${HEADING_CLASS[level]}`}>
+            {heading}
+          </h3>
+          {Icon && visible ? (
+            <span
+              id={levelId}
+              className={`inline-flex items-center gap-1 text-xs font-medium ${LEVEL_LABEL_CLASS[visible]}`}
+            >
+              <Icon aria-hidden="true" className="h-3.5 w-3.5 shrink-0 self-center" />
+              {levelText}
+            </span>
+          ) : levelText ? (
+            <span id={levelId} className="sr-only">
+              {levelText}
+            </span>
+          ) : null}
+        </div>
         {aside != null && !waiting && <div className="min-w-0 text-xs text-ink-2 wrap-anywhere">{aside}</div>}
       </div>
       {waiting ? (
@@ -139,7 +167,9 @@ export function applyOutcomeText(result: void | ApplyCounts): string {
  * answer to every card it fits. `label` is the whole visible text
  * ("Apply to all 12 autographed cards"); `count` is how many cards it offers
  * to, and the button is not rendered for fewer than one (its result stays, so
- * "Applied to 3 cards." survives the offer emptying). The server re-checks every
+ * "Applied to 3 cards." survives the offer emptying). While that result is
+ * showing the button stays on the page, `aria-disabled`, so the operator who
+ * pressed it is not dropped out of the tab order when the offer empties. The server re-checks every
  * card (the client only proposes); its `{applied, skipped}` is the line shown
  * beside the button. A thrown error is shown here, inline, so the operator can
  * retry.
@@ -159,6 +189,10 @@ export function ApplyToAllButton({
   onApply: () => Promise<void | ApplyCounts>;
 }) {
   const [busy, setBusy] = useState(false);
+  // The words on the button when it was pressed: the caller's label counts the
+  // cards on offer, and "Apply to all 0 cards" is no label for a button that
+  // is only still here to hold focus.
+  const [pressedLabel, setPressedLabel] = useState<string | null>(null);
   // The last outcome, tied to the offer it answered: `at` is how many cards were
   // on offer when it was pressed. The apply itself shrinks the offer (the cards
   // now fit, so they stop being offered), so a smaller count keeps the result on
@@ -180,7 +214,8 @@ export function ApplyToAllButton({
   if (count < 1 && current === null && !busy) return null;
 
   const apply = async () => {
-    if (busy) return;
+    if (busy || count < 1) return;
+    setPressedLabel(label);
     setBusy(true);
     setOutcome(null);
     try {
@@ -195,14 +230,14 @@ export function ApplyToAllButton({
 
   return (
     <span className="inline-flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-      {count >= 1 && (
+      {(count >= 1 || current !== null || busy) && (
         <button
           type="button"
           onClick={() => void apply()}
-          aria-disabled={busy || undefined}
+          aria-disabled={busy || count < 1 || undefined}
           className="focus-outline hit-area-24 max-w-full rounded-[7px] border-[1.5px] border-dashed border-neon-blue-text bg-transparent px-2.5 py-1 text-left text-xs font-medium text-neon-blue-text wrap-anywhere hover:bg-neon-blue/10 aria-disabled:cursor-wait aria-disabled:opacity-60"
         >
-          {label}
+          {count >= 1 ? label : (pressedLabel ?? label)}
         </button>
       )}
       <span role="status" className="text-xs text-ink-2 empty:hidden">

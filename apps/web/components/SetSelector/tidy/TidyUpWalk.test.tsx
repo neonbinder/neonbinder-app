@@ -45,25 +45,47 @@ vi.mock("convex/react", () => ({
 
 vi.mock("./TidyCardFace", () => ({ default: () => <div data-testid="face" /> }));
 vi.mock("./tiles/SourcesDisagreeTile", () => ({ default: () => <div data-testid="tile-sources" /> }));
-vi.mock("./tiles/PlayerTile", () => ({ default: () => <div data-testid="tile-player" /> }));
-vi.mock("./tiles/CareerTile", () => ({ default: () => <div data-testid="tile-career" /> }));
-vi.mock("./tiles/TeamTile", () => ({
-  // The shape of "No team on this card": the pressed button leaves the page.
-  default: function TeamTile() {
-    const [answered, setAnswered] = useState(false);
-    return (
-      <div data-testid="tile-team">
-        {answered ? (
-          <p>No team on this card: saved</p>
-        ) : (
-          <button type="button" onClick={() => setAnswered(true)}>
-            No team on this card
-          </button>
-        )}
-      </div>
-    );
-  },
+// A tile's level is what the walk's "next pink tile" reads off the page.
+let playerLevel: "fix" | "plain" = "plain";
+// Off, the stub team tile answers without telling the walk: the focus repair for
+// a tile that has not been taught to (an unmounted button must not strand focus).
+let teamCallsAnswered = true;
+vi.mock("./tiles/PlayerTile", () => ({
+  default: () => (
+    <section data-testid="tile-player" data-tidy-level={playerLevel}>
+      <button type="button">Player control</button>
+    </section>
+  ),
 }));
+vi.mock("./tiles/CareerTile", () => ({ default: () => <div data-testid="tile-career" /> }));
+vi.mock("./tiles/TeamTile", async () => {
+  const { useAnswered } = await import("./answered");
+  return {
+    // The shape of "No team on this card": the pressed button leaves the page,
+    // and the tile says it was answered (what every real tile does).
+    default: function TeamTile() {
+      const [answered, setAnswered] = useState(false);
+      const onAnswered = useAnswered();
+      return (
+        <div data-testid="tile-team">
+          {answered ? (
+            <p>No team on this card: saved</p>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setAnswered(true);
+                if (teamCallsAnswered) onAnswered();
+              }}
+            >
+              No team on this card
+            </button>
+          )}
+        </div>
+      );
+    },
+  };
+});
 vi.mock("./tiles/AutographTile", () => ({ default: () => <div data-testid="tile-autograph" /> }));
 vi.mock("./tiles/MoreAboutTile", () => ({ default: () => <div data-testid="tile-more" /> }));
 vi.mock("./tiles/TitleTile", async () => {
@@ -136,6 +158,13 @@ function mount(cards: CardChecklistRow[], opts: { search?: string; onClose?: () 
   return { onClose, ...view };
 }
 
+/** One animation frame, inside act, so the walk's focus repair has run. */
+const nextFrame = () =>
+  act(async () => {
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+  });
+
 const url = () => screen.getByTestId("url").textContent;
 const button = (name: string) => screen.getByRole("button", { name });
 
@@ -145,6 +174,8 @@ beforeEach(() => {
   markReviewed.mockReset();
   markReviewed.mockResolvedValue({ keys: [] });
   pendingLookups = { names: [], more: false };
+  playerLevel = "plain";
+  teamCallsAnswered = true;
 });
 
 describe("the fixtures", () => {
@@ -220,7 +251,7 @@ describe("the footer", () => {
     );
     fireEvent.click(save);
     expect(markReviewed).not.toHaveBeenCalled();
-    expect(button("Skip: not ready to list").hasAttribute("disabled")).toBe(false);
+    expect(button("Skip: not ready to list").getAttribute("aria-disabled")).toBeNull();
   });
 
   it("Skip moves on with no write, and the end screen counts the skipped card", async () => {
@@ -258,11 +289,49 @@ describe("the footer", () => {
   it("Back steps to the card before, as it is now", async () => {
     mount([pink("a", "1"), pink("b", "2")]);
     await screen.findByTestId("tile-player");
-    expect(button("Back").hasAttribute("disabled")).toBe(true);
+    // At the oldest card Back says so with aria-disabled (never native `disabled`,
+    // which would drop a keyboard operator out of the tab order), and does nothing.
+    expect(button("Back").getAttribute("aria-disabled")).toBe("true");
+    expect(button("Back").hasAttribute("disabled")).toBe(false);
+    fireEvent.click(button("Back"));
+    expect(url()).toBe("?tidy=a");
     fireEvent.click(button("Skip: not ready to list"));
     await waitFor(() => expect(url()).toBe("?tidy=b"));
+    expect(button("Back").getAttribute("aria-disabled")).toBeNull();
     fireEvent.click(button("Back"));
     await waitFor(() => expect(url()).toBe("?tidy=a"));
+  });
+
+  it("Back and Skip hold with aria-disabled while a save is in flight, and Back's focus goes to Save for later", async () => {
+    let finish: (v: unknown) => void = () => {};
+    markReviewed.mockReturnValueOnce(new Promise((r) => (finish = r)));
+    mount([blue("a", "1"), blue("b", "2")]);
+    await screen.findByText("1 to check");
+    fireEvent.click(button("Skip: not ready to list"));
+    await waitFor(() => expect(url()).toBe("?tidy=b"));
+    await screen.findByText("1 to check");
+    await nextFrame();
+    const back = button("Back");
+    act(() => back.focus());
+    expect(document.activeElement).toBe(back);
+    fireEvent.click(button("Save & next (Enter)"));
+    expect(back.getAttribute("aria-disabled")).toBe("true");
+    expect(button("Skip: not ready to list").getAttribute("aria-disabled")).toBe("true");
+    // Still the same element in the page, so focus was not lost; it moves on to a live control.
+    expect(document.activeElement).toBe(button("Save for later (Esc)"));
+    fireEvent.click(button("Skip: not ready to list"));
+    expect(url()).toBe("?tidy=b");
+    await act(async () => finish({ keys: [] }));
+  });
+
+  it("the card header is a group named by the header line only, not the tally", async () => {
+    mount([pink("a", "38b", { cardVariation: "Image Variation" })]);
+    const line = await screen.findByText("#38b · Image Variation · Mike Trout");
+    const group = line.closest('[role="group"]') as HTMLElement;
+    expect(group.getAttribute("aria-labelledby")).toBe(line.id);
+    expect(group.getAttribute("tabindex")).toBe("-1");
+    expect(screen.getByRole("group", { name: "#38b · Image Variation · Mike Trout" })).toBe(group);
+    expect(group.textContent).toContain("1 to fix");
   });
 });
 
@@ -303,13 +372,6 @@ describe("the keys", () => {
   });
 });
 
-/** One animation frame, inside act, so the walk's focus repair has run. */
-const nextFrame = () =>
-  act(async () => {
-    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
-    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
-  });
-
 describe("focus", () => {
   it("lands on the card header when a card opens", async () => {
     mount([blue("a", "1")]);
@@ -333,6 +395,7 @@ describe("focus", () => {
   it("returns to the dialog when an answer unmounts the focused button, and Enter then saves", async () => {
     // Pink for the team, answered on the tile: the card is saveable once the
     // stub's answer lands, so use a blue card (nothing pink) for the Enter.
+    teamCallsAnswered = false;
     mount([blue("a", "1"), blue("b", "2")]);
     const answer = await screen.findByRole("button", { name: "No team on this card" });
     await nextFrame();
@@ -350,6 +413,46 @@ describe("focus", () => {
 
     fireEvent.keyDown(document.activeElement as Element, { key: "Enter" });
     await waitFor(() => expect(markReviewed).toHaveBeenCalledTimes(1));
+  });
+
+  it("S1: after an answer with nothing pink left, focus is on Save & next, and Enter there saves and advances", async () => {
+    mount([blue("a", "1"), blue("b", "2")]);
+    const answer = await screen.findByRole("button", { name: "No team on this card" });
+    await nextFrame();
+    act(() => answer.focus());
+    fireEvent.click(answer);
+    await nextFrame();
+    const save = button("Save & next (Enter)");
+    expect(document.activeElement).toBe(save);
+    // Enter on a focused button is the button's own click: the card saves and
+    // the walk moves on, and the answer is not undone on the way.
+    fireEvent.click(save);
+    await waitFor(() => expect(markReviewed).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(url()).toBe("?tidy=b"));
+    expect(screen.queryByRole("button", { name: /^Change/ })).toBeNull();
+  });
+
+  it("S1: the walk's Enter on that focused Save & next does not also act as a second save", async () => {
+    mount([blue("a", "1"), blue("b", "2")]);
+    const answer = await screen.findByRole("button", { name: "No team on this card" });
+    await nextFrame();
+    act(() => answer.focus());
+    fireEvent.click(answer);
+    await nextFrame();
+    // A button owns Enter: the dialog's key handler leaves it to the click.
+    fireEvent.keyDown(document.activeElement as Element, { key: "Enter" });
+    expect(markReviewed).not.toHaveBeenCalled();
+  });
+
+  it("S1: with something still pink, focus goes to the first control of the first pink tile", async () => {
+    playerLevel = "fix";
+    mount([pink("a", "1"), pink("b", "2")]);
+    const answer = await screen.findByRole("button", { name: "No team on this card" });
+    await nextFrame();
+    act(() => answer.focus());
+    fireEvent.click(answer);
+    await nextFrame();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Player control" }));
   });
 
   it("Esc still means Save for later after the focused button unmounts", async () => {
@@ -392,6 +495,30 @@ describe("the end screen", () => {
     expect(screen.queryByText(/skipped/)).toBeNull();
   });
 
+  it("holds one status line for the whole sitting, empty until the end screen says something", async () => {
+    mount([pink("a", "1")]);
+    await screen.findByTestId("tile-player");
+    const statuses = screen.getAllByRole("status");
+    const verdict = statuses.find((el) => el.className.includes("mb-2"));
+    expect(verdict?.textContent).toBe("");
+    fireEvent.click(button("Skip: not ready to list"));
+    await waitFor(() => expect(url()).toBe("?tidy=done"));
+    // The same element that was on the page all along.
+    expect(verdict?.isConnected).toBe(true);
+    expect(verdict?.textContent).toBe("1 card skipped, not ready to list");
+  });
+
+  it("names the end screen's focus group by what it says", async () => {
+    mount([], { search: "?tidy=done" });
+    await screen.findByText("All tidy. Nothing on this checklist needs you.");
+    await nextFrame();
+    const group = document.activeElement as HTMLElement;
+    expect(group.getAttribute("role")).toBe("group");
+    expect(group.getAttribute("aria-labelledby")).toContain(
+      screen.getByText("All tidy. Nothing on this checklist needs you.").id,
+    );
+  });
+
   it("is all clear with nothing skipped and nothing waiting", async () => {
     mount([], { search: "?tidy=done" });
     expect(await screen.findByText("All tidy. Nothing on this checklist needs you.")).toBeTruthy();
@@ -405,5 +532,44 @@ describe("the end screen", () => {
       fireEvent.keyDown(screen.getByRole("dialog"), { key: "Enter" });
     });
     expect(onClose).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("handing focus back when the walk closes", () => {
+  it("asks for the target at close time: the pill when it is there then, else Sync", async () => {
+    const sync = document.createElement("button");
+    sync.textContent = "Sync";
+    const pill = document.createElement("button");
+    pill.textContent = "1 needs you";
+    document.body.append(sync);
+    let pillThere = false;
+    const restoreFocusRef = {
+      get current() {
+        return pillThere ? pill : sync;
+      },
+    } as React.RefObject<HTMLElement | null>;
+    const onClose = vi.fn();
+    const { unmount } = render(
+      <MemoryRouter initialEntries={["/?tidy=first"]}>
+        <TidyUpWalk
+          leafId={LEAF}
+          setName="2024 Topps Chrome"
+          cards={[blue("a", "1")]}
+          restoreFocusRef={restoreFocusRef}
+          onClose={onClose}
+        />
+      </MemoryRouter>,
+    );
+    await screen.findByText("1 to check");
+    // The pill appears while the walk is open (cards still need someone).
+    document.body.append(pill);
+    pillThere = true;
+    unmount();
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    });
+    expect(document.activeElement).toBe(pill);
+    pill.remove();
+    sync.remove();
   });
 });

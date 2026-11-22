@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
@@ -15,6 +15,7 @@ import NameFragmentPanel, {
 import { PLAYER_AMBIGUITY_SCAN_LIMIT } from "../../../../lib/players/name-limits";
 import type { TidyCardContext, TidyRow } from "../tile-types";
 import { TidyNote } from "../TidyTile";
+import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
 import { linkedForText, preselectReasonLine, stintYears, type LinkedForReason } from "./copy";
 import { printedOnText } from "./printed-on";
@@ -83,21 +84,12 @@ export default function PlayerNameRow({
   write: TidyWrite;
 }) {
   const answer = name.row?.answer;
-  const answered = answer !== undefined;
   const answerName = useMutation(api.tidyNames.answerName);
   const wrapRef = useRef<HTMLDivElement | null>(null);
-  const changeRef = useRef<HTMLButtonElement | null>(null);
 
-  // When the answer lands the question unmounts under the operator's focus;
-  // hand it to the answered view's Change button instead of <body>.
-  const wasAnswered = useRef(answered);
-  useEffect(() => {
-    if (answered && !wasAnswered.current) {
-      const active = document.activeElement;
-      if (!active || active === document.body) changeRef.current?.focus({ preventScroll: true });
-    }
-    wasAnswered.current = answered;
-  }, [answered]);
+  // When the answer lands the question unmounts under the operator's focus. The
+  // walk moves it on (`useAnswered`): never to this row's Change, where one more
+  // Enter would undo the answer.
 
   const clear = () =>
     write.run(
@@ -121,15 +113,14 @@ export default function PlayerNameRow({
         </p>
         <div className="flex flex-wrap gap-2">
           <NeonButton
-            ref={changeRef}
             size="1"
             variant="secondary"
             outline
-            aria-label={`Change${suffix}`}
+            aria-label={multi ? `Change player${suffix}` : undefined}
             aria-disabled={write.busy ? true : undefined}
             onClick={() => void clear()}
           >
-            Change
+            Change player
           </NeonButton>
         </div>
       </div>
@@ -145,15 +136,14 @@ export default function PlayerNameRow({
         {reason && <TidyNote>{linkedForText(reason)}</TidyNote>}
         <div className="flex flex-wrap gap-2">
           <NeonButton
-            ref={changeRef}
             size="1"
             variant="secondary"
             outline
-            aria-label={`Change${suffix}`}
+            aria-label={multi ? `Change player${suffix}` : undefined}
             aria-disabled={write.busy ? true : undefined}
             onClick={() => void clear()}
           >
-            Change
+            Change player
           </NeonButton>
         </div>
       </div>
@@ -191,6 +181,14 @@ function UnansweredPlayerName({
   const createPlayer = useMutation(api.tidyNames.createPlayer);
   const setNameSport = useMutation(api.tidyNames.setNameSport);
   const requestLookup = useMutation(api.tidyNames.requestLookup);
+  const answered = useAnswered();
+
+  /** A write that ANSWERS the name: on success the walk moves focus on. */
+  const answer = async (fn: () => Promise<unknown>, fallback: string): Promise<boolean> => {
+    const ok = await write.run(fn, fallback);
+    if (ok) answered();
+    return ok;
+  };
 
   const nameRow = name.row;
   const rowSportId = nameRow?.sportId ?? setSportId;
@@ -201,14 +199,18 @@ function UnansweredPlayerName({
 
   const [linkOpen, setLinkOpen] = useState(false);
   const [createAnyway, setCreateAnyway] = useState(false);
-  const [sportOpen, setSportOpen] = useState(false);
   const [addSetSport, setAddSetSport] = useState(false);
   // NEO-212: the Wikidata career teams the operator unticked, by name.
   const [excludedCareer, setExcludedCareer] = useState<ReadonlySet<string>>(new Set());
   const linkButtonRef = useRef<HTMLButtonElement | null>(null);
 
-  useInlinePart(linkOpen, () => setLinkOpen(false));
-  useInlinePart(sportOpen, () => {});
+  // Cancel and Esc hand focus back to "Link to existing…"; a link is an answer
+  // and does not (the walk moves on).
+  const closeLink = () => {
+    setLinkOpen(false);
+    requestAnimationFrame(() => linkButtonRef.current?.focus({ preventScroll: true }));
+  };
+  useInlinePart(linkOpen, closeLink, wrapRef);
 
   const nearMatches = useQuery(
     api.players.nearMatches,
@@ -272,7 +274,7 @@ function UnansweredPlayerName({
   const checking = rowSportId !== undefined && (nearMatches === undefined || fragmentCheck === undefined);
 
   const link = (playerId: string) =>
-    write.run(
+    answer(
       async () => {
         await answerName({
           cardId: row._id,
@@ -303,7 +305,7 @@ function UnansweredPlayerName({
   );
 
   const create = (oneNamePlayer: boolean) =>
-    checking ? Promise.resolve(false) : write.run(
+    checking ? Promise.resolve(false) : answer(
       () =>
         createPlayer({
           cardId: row._id,
@@ -315,7 +317,7 @@ function UnansweredPlayerName({
     );
 
   const notAPlayer = () =>
-    write.run(
+    answer(
       () =>
         answerName({
           cardId: row._id,
@@ -343,11 +345,6 @@ function UnansweredPlayerName({
 
   const printedOn = printedOnText(name.printedOn);
   const disabled = write.busy ? true : undefined;
-
-  const closeLink = () => {
-    setLinkOpen(false);
-    requestAnimationFrame(() => linkButtonRef.current?.focus({ preventScroll: true }));
-  };
 
   return (
     <div ref={wrapRef} role="group" aria-label={`Player ${name.printed}`} className="grid gap-2">
@@ -411,18 +408,21 @@ function UnansweredPlayerName({
 
       {crossSport && (
         <div className="grid gap-0.5">
-          <label className="flex items-center gap-2 text-xs text-ink-2">
+          <label className="flex min-h-6 items-center gap-2 text-xs text-ink-2">
             <input
               type="checkbox"
               checked={addSetSport}
-              disabled={write.busy}
-              onChange={(e) => setAddSetSport(e.target.checked)}
+              aria-disabled={write.busy || undefined}
+              onChange={(e) => {
+                if (write.busy) return;
+                setAddSetSport(e.target.checked);
+              }}
               aria-label={`Also add ${setSportValue ?? "the set's sport"} to their sports${suffix}`}
-              className="h-4 w-4 rounded accent-neon-green-text focus-outline"
+              className="h-6 w-6 shrink-0 rounded accent-neon-green-text focus-outline aria-disabled:cursor-not-allowed aria-disabled:opacity-60"
             />
             <span>{`Also add ${setSportValue ?? "the set's sport"} to their sports`}</span>
           </label>
-          <p className="pl-6 text-xs text-ink-3">Leave it off for a one-off appearance in this set.</p>
+          <p className="pl-8 text-xs text-ink-3">Leave it off for a one-off appearance in this set.</p>
         </div>
       )}
 
@@ -507,7 +507,6 @@ function UnansweredPlayerName({
                 disabled={write.busy}
                 label={multi ? `Sport for ${name.printed}` : "Sport for this name"}
                 prefix="Sport:"
-                onOpenChange={setSportOpen}
                 onChange={(sportId) => void switchSport(sportId)}
               />
             </span>

@@ -456,3 +456,42 @@ describe("the purple note reads on every tile ground", () => {
     }
   }
 });
+
+/**
+ * NEO-645: the highlighted row of `EntityLinkSearch`'s results is `bg-neon-green/20`
+ * over whatever the search sits on: the panel, or a tile's plain, blue or pink
+ * ground (the Player and Team tiles open it inline). The name is
+ * `neon-green-text`; the sport badge and the career line beside it are quiet
+ * text on that same wash. axe flagged them in dark, where `ink-3` (a hint
+ * colour for the plain panel) slips under 4.5:1 on a tinted tile, so the
+ * highlighted row paints `ink-2`. Both roles are held to 4.5:1 on every ground
+ * the row can have, in both modes.
+ */
+describe("the player search's highlighted row reads on its green wash", () => {
+  const rgb = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  const over = (top: string, alpha: number, ground: string) => {
+    const t = rgb(top);
+    const g = rgb(ground);
+    return `#${t.map((c, i) => Math.round(alpha * c + (1 - alpha) * g[i]).toString(16).padStart(2, "0")).join("")}`;
+  };
+  const fills = { blue: "#00c2ff", pink: "#ff2e9a" } as const;
+
+  for (const mode of ["dark", "light"] as const) {
+    const panel = surfaceHex("raised-deep", mode);
+    const tiles: Record<string, string> = {
+      panel,
+      "plain tile": surfaceHex("raised", mode),
+      "blue tile": mode === "dark" ? over(fills.blue, 0.1, panel) : "#ffffff",
+      "pink tile": mode === "dark" ? over(fills.pink, 0.1, panel) : "#ffffff",
+    };
+    for (const [name, tile] of Object.entries(tiles)) {
+      const highlighted = over(tokenHex("neon-green", mode), 0.2, tile);
+      it(`${mode}: ink-2 on the highlighted row over the ${name}`, () => {
+        expect(contrastRatio(tokenHex("ink-2", mode), highlighted)).toBeGreaterThanOrEqual(4.5);
+      });
+      it(`${mode}: neon-green-text on the highlighted row over the ${name}`, () => {
+        expect(contrastRatio(tokenHex("neon-green-text", mode), highlighted)).toBeGreaterThanOrEqual(4.5);
+      });
+    }
+  }
+});

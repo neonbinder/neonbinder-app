@@ -7,19 +7,24 @@ import {
   useRef,
   useState,
   type ReactNode,
+  type RefObject,
 } from "react";
 
 /**
  * Every inline part of a tidy tile (a search that is open, the New Team form,
  * the title editor, the set-name field) registers itself here while it is
- * open. Esc closes the top part first, and while anything is open Enter and
- * Esc never mean "Save & next" / "Save for later".
+ * open. Esc closes the part that holds focus (the one the operator is in), or
+ * the most recently opened when focus is in none of them, and while anything is
+ * open Enter and Esc never mean "Save & next" / "Save for later".
  */
-type Entry = { id: number; close: () => void };
+type Entry = { id: number; close: () => void; scope?: RefObject<HTMLElement | null> };
 
 type Stack = {
   register: (entry: Entry) => () => void;
-  /** Closes the most recently opened part. Returns false when nothing is open. */
+  /**
+   * Closes the open part that contains focus, else the most recently opened.
+   * Returns false when nothing is open.
+   */
   closeTop: () => boolean;
   count: number;
 };
@@ -40,9 +45,15 @@ export function InlineStackProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const closeTop = useCallback(() => {
-    const top = entriesRef.current[entriesRef.current.length - 1];
-    if (!top) return false;
-    top.close();
+    const entries = entriesRef.current;
+    if (entries.length === 0) return false;
+    const active = document.activeElement;
+    // Newest first, so a part opened inside another (a New Team form inside a
+    // tile that also has a search open) is the one that closes.
+    const holder = active
+      ? [...entries].reverse().find((e) => e.scope?.current?.contains(active))
+      : undefined;
+    (holder ?? entries[entries.length - 1]).close();
     return true;
   }, []);
 
@@ -57,9 +68,15 @@ let nextId = 1;
 
 /**
  * Register an inline part while `open` is true. `close` is called when Esc
- * reaches the top of the stack; keep it fresh, it is read through a ref.
+ * closes this part; keep it fresh, it is read through a ref. `scope` is the
+ * element the part draws in: Esc with focus inside it closes it, whatever else
+ * is open. Without one the part is only ever closed as the most recent.
  */
-export function useInlinePart(open: boolean, close: () => void): void {
+export function useInlinePart(
+  open: boolean,
+  close: () => void,
+  scope?: RefObject<HTMLElement | null>,
+): void {
   const stack = useContext(InlineStackContext);
   const closeRef = useRef(close);
   useEffect(() => {
@@ -68,8 +85,8 @@ export function useInlinePart(open: boolean, close: () => void): void {
   const register = stack?.register;
   useEffect(() => {
     if (!open || !register) return;
-    return register({ id: nextId++, close: () => closeRef.current() });
-  }, [open, register]);
+    return register({ id: nextId++, close: () => closeRef.current(), scope });
+  }, [open, register, scope]);
 }
 
 /** True while any inline part is open. */

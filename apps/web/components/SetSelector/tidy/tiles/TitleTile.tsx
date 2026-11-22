@@ -18,6 +18,7 @@ import {
 } from "../../TitleLengthMeter";
 import { useTitlePreview } from "../../useTitlePreview";
 import { SOURCES_WITH_CHECKLIST, SOURCE_KEYS } from "../../reconciliation-sources";
+import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
 import TidyTile, { ApplyToAllButton, TidyNote, type TidyTileLevel } from "../TidyTile";
 import type { TidyTileProps } from "../tile-types";
@@ -49,6 +50,20 @@ const FITS_NOW = "Fits now. Enter saves it.";
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
+/**
+ * One frame after a save closed the part the operator was in: if focus fell to
+ * the page (the focused field or button unmounted), the save was an ANSWER and
+ * `answered` moves focus on; if it is on a live control (Regenerate, which also
+ * saves), leave it there.
+ */
+function answeredIfLost(answered: () => void) {
+  requestAnimationFrame(() => {
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    answered();
+  });
+}
+
 export default function TitleTile(props: TidyTileProps) {
   // One body per card: a drafted title or an open field never carries over.
   return <TitleTileBody key={props.row._id} {...props} />;
@@ -59,6 +74,7 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
   const applySetNameToTitles = useMutation(api.tidyCards.applySetNameToTitles);
   const applyVariation = useMutation(api.tidyCards.applyVariation);
   const uid = useId();
+  const answered = useAnswered();
 
   const stored = row.listingTitle ?? "";
   const over = attention.items.some((i) => i.kind === "titleOverLimit");
@@ -92,7 +108,7 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
   };
   // An editor that opened itself (over the cap) does not own Esc until the
   // operator touches it, so Esc on arrival still means "Save for later".
-  useInlinePart(editing && openedByOperator, closeEditor);
+  useInlinePart(editing && openedByOperator, closeEditor, titleRef);
 
   const saveTitle = useCallback(
     async (next: string, regenerate = false) => {
@@ -111,6 +127,8 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
         setOpenedByOperator(false);
         setFitsNow(false);
         setTypedOwn(false);
+        // The field and its Save button are gone; the walk moves focus on.
+        answeredIfLost(answered);
         return true;
       } catch (e) {
         setError(userFacingMessage(e, "Didn't save, try again."));
@@ -119,7 +137,7 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
         setBusy(false);
       }
     },
-    [row._id, updateCard],
+    [row._id, updateCard, answered],
   );
 
   const applyGenerated = useCallback(
@@ -143,11 +161,12 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
   const [setNameSaved, setSetNameSaved] = useState<string | null>(null);
   const setNameRef = useRef<HTMLInputElement | null>(null);
   const shortenButtonRef = useRef<HTMLButtonElement | null>(null);
+  const setNamePanelRef = useRef<HTMLDivElement | null>(null);
   const closeSetName = () => {
     setShortening(false);
     requestAnimationFrame(() => shortenButtonRef.current?.focus());
   };
-  useInlinePart(shortening, closeSetName);
+  useInlinePart(shortening, closeSetName, setNamePanelRef);
 
   const livePreviewTitle = useMemo(() => {
     if (!shortening || !previewData?.inputs) return null;
@@ -173,6 +192,8 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
       );
       setShortening(false);
       setDraft(null);
+      // The panel (field, Save and apply, Cancel) is gone with the save.
+      answered();
     } finally {
       setSetNameBusy(false);
     }
@@ -183,6 +204,10 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
   const [variationDraft, setVariationDraft] = useState(row.cardVariation ?? "");
   const [variationSaved, setVariationSaved] = useState<string | null>(null);
   const [variationBusy, setVariationBusy] = useState(false);
+  // Said into an always-mounted status line, empty until a save lands (the tile
+  // opens with nothing to announce), and cleared when a save starts so a second
+  // save of the same words is a change again.
+  const [variationNote, setVariationNote] = useState("");
   const [variationError, setVariationError] = useState<string | null>(null);
   const showVariation = variationOver || variationSaved !== null;
 
@@ -191,9 +216,11 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
     if (variationBusy || next === (row.cardVariation ?? "").trim()) return;
     setVariationBusy(true);
     setVariationError(null);
+    setVariationNote("");
     try {
       await updateCard({ id: row._id, cardVariation: next });
       setVariationSaved(next);
+      setVariationNote("Variation saved.");
     } catch (e) {
       setVariationError(userFacingMessage(e, "Didn't save, try again."));
     } finally {
@@ -290,11 +317,11 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
       >
         {state.over ? OVER_TEXT : fitsNow ? FITS_NOW : ""}
       </p>
-      {preview.confirming && (
-        <p role="status" aria-atomic="true" className="text-xs text-neon-blue-text">
-          Regenerate again to replace the title you have typed.
-        </p>
-      )}
+      {/* Mounted for the life of the tile, so the sentence is a change to a live
+          region that is already in the page. */}
+      <p role="status" aria-atomic="true" className="text-xs text-neon-blue-text empty:hidden">
+        {preview.confirming ? "Regenerate again to replace the title you have typed." : ""}
+      </p>
 
       {cut &&
         !state.over &&
@@ -326,7 +353,6 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
             outline
             size="1"
             type="button"
-            aria-label="Edit card title"
             onClick={() => {
               setDraft(stored);
               setOpenedByOperator(true);
@@ -378,6 +404,7 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
 
       {shortening && (
         <div
+          ref={setNamePanelRef}
           id={`${uid}-set-name`}
           className="grid gap-2 rounded-lg border border-rule bg-raised-deep p-2.5"
         >
@@ -488,6 +515,9 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
           </div>
           <p role="alert" className="text-xs text-neon-pink-text empty:hidden">
             {variationError}
+          </p>
+          <p role="status" className="text-xs text-neon-green-text empty:hidden">
+            {variationNote}
           </p>
         </div>
       )}

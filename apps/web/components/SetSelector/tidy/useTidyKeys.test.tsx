@@ -14,6 +14,13 @@ function Harness(options: TidyKeysOptions & { onNativeKey?: () => void }) {
       <button type="button">A control</button>
       <a href="#x">A link</a>
       <div role="combobox" aria-label="A search" tabIndex={0} />
+      <input type="checkbox" aria-label="A box to tick" />
+      <input type="radio" aria-label="A native choice" />
+      <div role="radiogroup" aria-label="A group">
+        <button type="button" role="radio" aria-checked="false">
+          A pill choice
+        </button>
+      </div>
       <p>Plain text</p>
     </div>
   );
@@ -51,6 +58,14 @@ describe("Enter", () => {
     const o = setup();
     fireEvent.keyDown(screen.getByRole("button", { name: "A control" }), { key: "Enter" });
     fireEvent.keyDown(screen.getByRole("link", { name: "A link" }), { key: "Enter" });
+    expect(o.onSave).not.toHaveBeenCalled();
+  });
+
+  it("is a native checkbox's or radio's own, so Enter never saves from a tick box", () => {
+    const o = setup();
+    fireEvent.keyDown(screen.getByRole("checkbox", { name: "A box to tick" }), { key: "Enter" });
+    fireEvent.keyDown(screen.getByRole("radio", { name: "A native choice" }), { key: "Enter" });
+    fireEvent.keyDown(screen.getByRole("radio", { name: "A pill choice" }), { key: "Enter" });
     expect(o.onSave).not.toHaveBeenCalled();
   });
 
@@ -130,6 +145,15 @@ describe("ownsEnter", () => {
     const inner = document.createElement("span");
     button.append(inner);
     expect(ownsEnter(inner)).toBe(true);
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    const text = document.createElement("input");
+    expect(ownsEnter(box)).toBe(true);
+    expect(ownsEnter(radio)).toBe(true);
+    // A text input is the field's own through `isEditableTarget`, not through this list.
+    expect(ownsEnter(text)).toBe(false);
     expect(ownsEnter(document.createElement("p"))).toBe(false);
     expect(ownsEnter(null)).toBe(false);
   });

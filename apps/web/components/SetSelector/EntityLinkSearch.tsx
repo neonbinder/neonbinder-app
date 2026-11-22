@@ -73,7 +73,9 @@ const MAX_STINTS_SHOWN = 3;
  * The two grounds a result row is ever painted on: the panel over the
  * dialog's `raised-deep`, and the highlighted row (`bg-neon-green/20`
  * composited over that same ground). A livery colour must clear 4.5:1 on
- * BOTH, or it would read on one row and vanish when highlighted. Both follow
+ * BOTH, or it would read on one row and vanish when highlighted. (The quiet
+ * text on a highlighted row is `ink-2`: `ink-3` misses 4.5:1 on the green wash
+ * over a tile in dark, held by `tokens.test.tsx`.) Both follow
  * the mode (NEO-356): dark is gray-900 and #0e3e31, as before; light is white
  * and a pale green.
  */
@@ -93,7 +95,15 @@ function compositeHex(fg: string, bg: string, alpha: number): string {
 
 function resultGrounds(mode: ThemeMode): string[] {
   const idle = tokenHex("raised-deep", mode);
-  return [idle, compositeHex(tokenHex("neon-green", mode), idle, 0.2)];
+  // The search opens inline in the walk's tiles (NEO-645), so the row can also
+  // sit on a tile's blue or pink wash (10% of the fill over the panel in dark;
+  // plain white in light, which the panel already stands for).
+  const bases =
+    mode === "dark"
+      ? [idle, compositeHex("#00c2ff", idle, 0.1), compositeHex("#ff2e9a", idle, 0.1)]
+      : [idle];
+  const green = tokenHex("neon-green", mode);
+  return bases.flatMap((base) => [base, compositeHex(green, base, 0.2)]);
 }
 
 /**
@@ -346,13 +356,19 @@ export default function EntityLinkSearch({
               <span className="flex items-baseline gap-2">
                 <span>{m.name}</span>
                 {m.sportValue && (
-                  <span className="rounded border border-control px-1 text-[0.625rem] leading-4 text-ink-3">
+                  <span
+                    className={`rounded border border-control px-1 text-[0.625rem] leading-4 ${
+                      idx === highlightIdx ? "text-ink-2" : "text-ink-3"
+                    }`}
+                  >
                     {m.sportValue}
                   </span>
                 )}
               </span>
               {shown.length > 0 && (
-                <span className="block truncate text-xs text-ink-3">
+                <span
+                  className={`block truncate text-xs ${idx === highlightIdx ? "text-ink-2" : "text-ink-3"}`}
+                >
                   {shown.map((st, i) => {
                     const color = stintColor(st.primaryColor, mode);
                     return (

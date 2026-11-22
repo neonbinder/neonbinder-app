@@ -4,7 +4,7 @@
  * New team, Not a team); a card with no team (chips and their pre-fill rules,
  * "No team on this card"); the purple fill note; and the guarded "Apply to all".
  */
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../../convex/_generated/api", () => ({
@@ -34,10 +34,23 @@ vi.mock("convex/react", () => ({
 }));
 
 vi.mock("../../EntityLinkSearch", () => ({
-  default: ({ kind, onSelect }: { kind: string; onSelect: (id: string, n: string) => void }) => (
-    <button type="button" onClick={() => onSelect("team-9", "Someone")}>
-      {`Pick a ${kind}`}
-    </button>
+  default: ({
+    kind,
+    onSelect,
+    onCancel,
+  }: {
+    kind: string;
+    onSelect: (id: string, n: string) => void;
+    onCancel: () => void;
+  }) => (
+    <div>
+      <button type="button" onClick={() => onSelect("team-9", "Someone")}>
+        {`Pick a ${kind}`}
+      </button>
+      <button type="button" onClick={onCancel}>
+        Cancel linking
+      </button>
+    </div>
   ),
 }));
 
@@ -68,6 +81,7 @@ vi.mock("../../NewTeamForm", async (importOriginal) => ({
   ),
 }));
 
+import { AnsweredProvider } from "../answered";
 import TeamTile from "./TeamTile";
 import type { TidyAttentionItem } from "../../../../convex/features/cardAttention";
 import type { TidyAttention, TidyCardContext, TidyRow, TidyTileProps } from "../tile-types";
@@ -110,6 +124,7 @@ function renderTile(
     ctx?: TidyCardContext | undefined;
     items?: TidyAttentionItem[];
     leafCards?: TidyRow[];
+    onAnswered?: () => void;
   } = {},
 ) {
   const props: TidyTileProps = {
@@ -121,7 +136,11 @@ function renderTile(
     leafCards: opts.leafCards ?? [],
     setName: "Set",
   };
-  return render(<TeamTile {...props} />);
+  return render(
+    <AnsweredProvider value={opts.onAnswered ?? (() => {})}>
+      <TeamTile {...props} />
+    </AnsweredProvider>,
+  );
 }
 
 const click = (el: HTMLElement) => act(async () => fireEvent.click(el));
@@ -134,7 +153,7 @@ beforeEach(() => {
 describe("TeamTile", () => {
   it("is a skeleton, with nothing to press, while a teams disagreement is unsettled", () => {
     renderTile({ items: [{ level: "fix", kind: "sourcesDisagree", field: "teams" }] });
-    expect(screen.getByRole("region", { name: "Team" }).getAttribute("data-tidy-level")).toBe("waiting");
+    expect(screen.getByRole("group", { name: "Team" }).getAttribute("data-tidy-level")).toBe("waiting");
     expect(screen.getByText("Waiting on the spelling above")).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
   });
@@ -150,7 +169,7 @@ describe("TeamTile", () => {
         { _id: "team-7", name: "San Diego Padres", confidence: "exact", yearsActive: { from: 1969 } },
       ];
       renderTile();
-      expect(screen.getByRole("region", { name: "Team" }).getAttribute("data-tidy-level")).toBe("fix");
+      expect(screen.getByRole("group", { name: "Team" }).getAttribute("data-tidy-level")).toBe("fix");
       await click(screen.getByRole("button", { name: "Link to San Diego Padres · 1969–present" }));
       expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
         cardId: CARD,
@@ -174,6 +193,21 @@ describe("TeamTile", () => {
         name: "Padres",
         answer: { kind: "linkTeam", teamId: "team-7" },
       });
+    });
+
+    it("the 'Remember' box is a 24px target and holds with aria-disabled while a write is in flight", async () => {
+      queryResults["teams.nearMatches"] = [];
+      renderTile();
+      const box = screen.getByRole("checkbox", { name: "Remember “Padres” as a name for this team" }) as HTMLInputElement;
+      expect(box.className).toContain("h-6");
+      expect(box.closest("label")?.className).toContain("min-h-6");
+      mutation("tidyNames.answerName").mockReturnValueOnce(new Promise(() => {}));
+      await click(screen.getByRole("button", { name: "Not a team" }));
+      expect(box.getAttribute("aria-disabled")).toBe("true");
+      expect(box.disabled).toBe(false);
+      const before = box.checked;
+      await click(box);
+      expect(box.checked).toBe(before);
     });
 
     it("a pick from the search remembers the name unless the box is cleared", async () => {
@@ -365,10 +399,10 @@ describe("TeamTile", () => {
           { linkedFor: [{ kind: "team", teamId: "team-7", reason: "careerTeam" }] },
         ),
       });
-      expect(screen.getByRole("region", { name: "Team" }).getAttribute("data-tidy-level")).toBe("plain");
+      expect(screen.getByRole("group", { name: "Team" }).getAttribute("data-tidy-level")).toBe("plain");
       expect(screen.getByText("San Diego Padres")).toBeTruthy();
       expect(screen.getByText("Linked for you: the only one on file who played for this card's team")).toBeTruthy();
-      await click(screen.getByRole("button", { name: "Change" }));
+      await click(screen.getByRole("button", { name: "Change team" }));
       expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
         cardId: CARD,
         kind: "team",
@@ -384,7 +418,7 @@ describe("TeamTile", () => {
         ctx: linked({ kind: "notEntity", by: "operator" }, { teams: [] }),
       });
       expect(screen.getByText("is not a team.")).toBeTruthy();
-      await click(screen.getByRole("button", { name: "Change" }));
+      await click(screen.getByRole("button", { name: "Change team" }));
       expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith(
         expect.objectContaining({ answer: { kind: "clear" } }),
       );
@@ -532,7 +566,7 @@ describe("TeamTile", () => {
 
     it("Change swaps the team on this card only", async () => {
       renderTile(base());
-      await click(screen.getByRole("button", { name: "Change" }));
+      await click(screen.getByRole("button", { name: "Change team" }));
       await click(screen.getByRole("button", { name: "Pick a team" }));
       expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({ id: CARD, teamOnCardIds: ["team-9"] });
     });
@@ -618,7 +652,63 @@ describe("TeamTile", () => {
     mutation("tidyNames.answerName").mockRejectedValueOnce(new Error("Server Error"));
     renderTile();
     await click(screen.getByRole("button", { name: "Not a team" }));
-    const tile = screen.getByRole("region", { name: "Team" });
+    const tile = screen.getByRole("group", { name: "Team" });
     expect(within(tile).getByRole("alert").textContent).toBe("Couldn't save that answer. Try again.");
+  });
+
+  describe("focus after an answer (S1) and after a cancel", () => {
+    const base = () => ({
+      row: card({ playerIds: ["player-1"], teamOnCardIds: ["team-7"] }),
+      items: [] as TidyAttention["items"],
+      ctx: context({
+        players: [{ playerId: "player-1", name: "Jackson Merrill", sportId: SPORT, stints: [], stintsMore: false }],
+        teams: [{ teamId: "team-7", name: "San Diego Padres", onCard: true, candidate: false }],
+      }),
+    });
+
+    it("'Change' is 'Change team' on the screen and to a reader", () => {
+      renderTile(base());
+      const change = screen.getByRole("button", { name: "Change team" });
+      expect(change.textContent).toBe("Change team");
+      expect(change.getAttribute("aria-label")).toBeNull();
+    });
+
+    it("a pick is an answer: the walk is told, focus is not sent back to the opener", async () => {
+      const onAnswered = vi.fn();
+      renderTile({ ...base(), onAnswered });
+      const change = screen.getByRole("button", { name: "Change team" });
+      change.focus();
+      await click(change);
+      const pick = screen.getByRole("button", { name: "Pick a team" });
+      pick.focus();
+      await click(pick);
+      expect(onAnswered).toHaveBeenCalledTimes(1);
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+      expect(document.activeElement).not.toBe(screen.getByRole("button", { name: "Change team" }));
+    });
+
+    it("Cancel gives focus back to the control that opened the search, and tells the walk nothing", async () => {
+      const onAnswered = vi.fn();
+      renderTile({ ...base(), onAnswered });
+      const add = screen.getByRole("button", { name: "+ Another team" });
+      add.focus();
+      await click(add);
+      fireEvent.click(screen.getByRole("button", { name: "Cancel linking" }));
+      await waitFor(() =>
+        expect(document.activeElement).toBe(screen.getByRole("button", { name: "+ Another team" })),
+      );
+      expect(onAnswered).not.toHaveBeenCalled();
+    });
+
+    it("'Not a team' is an answer; a refused one is not", async () => {
+      queryResults["teams.nearMatches"] = [];
+      const onAnswered = vi.fn();
+      renderTile({ onAnswered });
+      mutation("tidyNames.answerName").mockRejectedValueOnce(new Error("Server Error"));
+      await click(screen.getByRole("button", { name: "Not a team" }));
+      expect(onAnswered).not.toHaveBeenCalled();
+      await click(screen.getByRole("button", { name: "Not a team" }));
+      expect(onAnswered).toHaveBeenCalledTimes(1);
+    });
   });
 });

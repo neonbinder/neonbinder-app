@@ -5,6 +5,7 @@ import type { Id } from "../../../../convex/_generated/dataModel";
 import { MAX_CARD_PLAYERS } from "../../../../convex/features/cardAttention";
 import NeonButton from "../../../modules/NeonButton";
 import EntityLinkSearch from "../../EntityLinkSearch";
+import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
 import PlayerNameRow, { PlayerSummary, type ContextPlayer } from "../parts/PlayerNameRow";
 import { linkedForText } from "../parts/copy";
@@ -32,12 +33,30 @@ import type { TidyTileProps } from "../tile-types";
  */
 export default function PlayerTile({ row, context, attention, sportId }: TidyTileProps) {
   const write = useTidyWrite();
+  const answered = useAnswered();
   const updateCard = useMutation(api.selectorOptions.updateCard);
   const [searchFor, setSearchFor] = useState<
     { kind: "add" } | { kind: "change"; playerId: Id<"players"> } | null
   >(null);
   const addRef = useRef<HTMLButtonElement | null>(null);
-  useInlinePart(searchFor !== null, () => setSearchFor(null));
+  const searchScopeRef = useRef<HTMLDivElement | null>(null);
+  // The control that opened the search, so Cancel and Esc hand focus back to it.
+  // A pick is an ANSWER and does not: the walk moves focus on (`useAnswered`).
+  const openerRef = useRef<HTMLElement | null>(null);
+  const openSearch = (next: NonNullable<typeof searchFor>, opener: HTMLElement) => {
+    openerRef.current = opener;
+    setSearchFor(next);
+  };
+  const closeSearch = () => {
+    setSearchFor(null);
+    requestAnimationFrame(() => {
+      const opener = openerRef.current;
+      // A Change that swapped the player is a different row: its old button is gone.
+      const target = opener?.isConnected ? opener : addRef.current;
+      target?.focus({ preventScroll: true });
+    });
+  };
+  useInlinePart(searchFor !== null, closeSearch, searchScopeRef);
 
   if (attention.items.some((i) => i.kind === "sourcesDisagree" && i.field === "players")) {
     return (
@@ -84,6 +103,7 @@ export default function PlayerTile({ row, context, attention, sportId }: TidyTil
     write.run(async () => {
       await updateCard({ id: row._id, playerIds: next });
       setSearchFor(null);
+      answered();
     }, "Couldn't save that player. Try again.");
 
   const onSelect = (picked: string) => {
@@ -139,11 +159,13 @@ export default function PlayerTile({ row, context, attention, sportId }: TidyTil
                 size="1"
                 variant="secondary"
                 outline
-                aria-label={multi ? `Change ${player.name}` : "Change"}
+                aria-label={multi ? `Change player ${player.name}` : undefined}
                 aria-disabled={write.busy ? true : undefined}
-                onClick={() => setSearchFor({ kind: "change", playerId: player.playerId })}
+                onClick={(e) =>
+                  openSearch({ kind: "change", playerId: player.playerId }, e.currentTarget)
+                }
               >
-                Change
+                Change player
               </NeonButton>
             </div>
           </div>
@@ -151,15 +173,14 @@ export default function PlayerTile({ row, context, attention, sportId }: TidyTil
       })}
 
       {searchFor && sportForSearch ? (
-        <EntityLinkSearch
-          kind="player"
-          sportId={sportForSearch}
-          onSelect={(id) => void onSelect(id)}
-          onCancel={() => {
-            setSearchFor(null);
-            requestAnimationFrame(() => addRef.current?.focus({ preventScroll: true }));
-          }}
-        />
+        <div ref={searchScopeRef}>
+          <EntityLinkSearch
+            kind="player"
+            sportId={sportForSearch}
+            onSelect={(id) => void onSelect(id)}
+            onCancel={closeSearch}
+          />
+        </div>
       ) : (
         !open &&
         !atCap && (
@@ -170,7 +191,7 @@ export default function PlayerTile({ row, context, attention, sportId }: TidyTil
               variant="secondary"
               outline
               aria-disabled={write.busy ? true : undefined}
-              onClick={() => setSearchFor({ kind: "add" })}
+              onClick={(e) => openSearch({ kind: "add" }, e.currentTarget)}
             >
               + Another player
             </NeonButton>

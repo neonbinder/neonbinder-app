@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
@@ -8,7 +8,7 @@ import NeonButton from "../../../modules/NeonButton";
 import { TeamMatchSearch } from "../../../entities/TeamMatchSearch";
 import SportSwitch from "../../SportSwitch";
 import type { TidyCardContext, TidyRow } from "../tile-types";
-import { useInlinePart } from "../inline-stack";
+import { useAnswered } from "../answered";
 import { linkedForText } from "./copy";
 import InlineNewTeam, { teamLookupCarryOf } from "./InlineNewTeam";
 import { printedOnText } from "./printed-on";
@@ -51,16 +51,6 @@ export default function TeamNameRow({
 }) {
   const answer = name.row?.answer;
   const answerName = useMutation(api.tidyNames.answerName);
-  const changeRef = useRef<HTMLButtonElement | null>(null);
-  const answered = answer !== undefined;
-  const wasAnswered = useRef(answered);
-  useEffect(() => {
-    if (answered && !wasAnswered.current) {
-      const active = document.activeElement;
-      if (!active || active === document.body) changeRef.current?.focus({ preventScroll: true });
-    }
-    wasAnswered.current = answered;
-  }, [answered]);
 
   const suffix = multi ? ` ${name.printed}` : "";
   const clear = () =>
@@ -98,15 +88,14 @@ export default function TeamNameRow({
         )}
         <div className="flex flex-wrap gap-2">
           <NeonButton
-            ref={changeRef}
             size="1"
             variant="secondary"
             outline
-            aria-label={`Change${suffix}`}
+            aria-label={multi ? `Change team${suffix}` : undefined}
             aria-disabled={write.busy ? true : undefined}
             onClick={() => void clear()}
           >
-            Change
+            Change team
           </NeonButton>
         </div>
       </div>
@@ -142,6 +131,14 @@ function UnansweredTeamName({
 }) {
   const answerName = useMutation(api.tidyNames.answerName);
   const setNameSport = useMutation(api.tidyNames.setNameSport);
+  const answered = useAnswered();
+
+  /** A write that ANSWERS the name: on success the walk moves focus on. */
+  const answer = async (fn: () => Promise<unknown>, fallback: string): Promise<boolean> => {
+    const ok = await write.run(fn, fallback);
+    if (ok) answered();
+    return ok;
+  };
 
   const nameRow = name.row;
   const rowSportId = nameRow?.sportId ?? setSportId;
@@ -151,10 +148,8 @@ function UnansweredTeamName({
   const suffix = multi ? ` ${name.printed}` : "";
 
   const [newOpen, setNewOpen] = useState(false);
-  const [sportOpen, setSportOpen] = useState(false);
   const [aliasChoice, setAliasChoice] = useState<boolean | undefined>(undefined);
   const newRef = useRef<HTMLButtonElement | null>(null);
-  useInlinePart(sportOpen, () => {});
 
   const nearMatches = useQuery(
     api.teams.nearMatches,
@@ -209,7 +204,7 @@ function UnansweredTeamName({
   const saveAsAlias = aliasChoice ?? (!nameIsAPlace && !aliasDefaultPending);
 
   const link = (teamId: string) =>
-    write.run(async () => {
+    answer(async () => {
       await answerName({
         cardId: row._id,
         kind: "team",
@@ -223,7 +218,7 @@ function UnansweredTeamName({
     }, "Couldn't link that team. Try again.");
 
   const notATeam = () =>
-    write.run(
+    answer(
       () =>
         answerName({
           cardId: row._id,
@@ -269,18 +264,21 @@ function UnansweredTeamName({
           }}
         >
           <div className="space-y-0.5">
-            <label className="flex items-center gap-2 text-xs text-ink-2">
+            <label className="flex min-h-6 items-center gap-2 text-xs text-ink-2">
               <input
                 type="checkbox"
                 checked={saveAsAlias}
-                disabled={write.busy || aliasDefaultPending}
+                aria-disabled={write.busy || aliasDefaultPending || undefined}
                 aria-label={`Remember “${name.printed}” as a name for this team`}
-                onChange={(e) => setAliasChoice(e.target.checked)}
-                className="h-3.5 w-3.5 rounded accent-neon-green-text focus-outline"
+                onChange={(e) => {
+                  if (write.busy || aliasDefaultPending) return;
+                  setAliasChoice(e.target.checked);
+                }}
+                className="h-6 w-6 shrink-0 rounded accent-neon-green-text focus-outline aria-disabled:cursor-not-allowed aria-disabled:opacity-60"
               />
               <span>{`Remember “${name.printed}” as a name for this team`}</span>
             </label>
-            <p className="pl-5.5 text-xs text-ink-3">
+            <p className="pl-8 text-xs text-ink-3">
               Kicks in when you link. Next time this name shows up, it goes straight to that team.
             </p>
           </div>
@@ -313,6 +311,7 @@ function UnansweredTeamName({
               name: name.printed,
               answer: { kind: "linkTeam", teamId },
             });
+            answered();
           }}
           onUseExisting={(teamId) => void link(teamId)}
           onClose={() => {
@@ -363,7 +362,6 @@ function UnansweredTeamName({
                 disabled={write.busy}
                 label={multi ? `Sport for team ${name.printed}` : "Sport for this team name"}
                 prefix="Sport:"
-                onOpenChange={setSportOpen}
                 onChange={(sportId) => void switchSport(sportId)}
               />
             </span>

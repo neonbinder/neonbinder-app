@@ -10,10 +10,20 @@
  * ## Push vs replace
  *
  * Opening the walk and every move to another card is a `push`, so Back steps
- * through the cards. Closing the walk (Save for later, Done) and the clean-ups
- * (`first` becoming the first card's id, an unknown id becoming the first
- * card) are `replace`: a dialog closing is not navigation, and a correction
- * the operator did not ask for must never be a Back stop.
+ * through the cards. The clean-ups (`first` becoming the first card's id, an
+ * unknown id becoming the first card) are `replace`: a correction the operator
+ * did not ask for must never be a Back stop.
+ *
+ * ## Leaving
+ *
+ * Closing the walk (Save for later, Done) takes every entry the walk added out
+ * of history, so Back from the checklist goes to whatever was before the walk
+ * opened and never into it (a Back that lands on `?tidy=<last card>` reopens a
+ * walk nobody asked to reopen). Each entry the walk pushes carries its depth in
+ * `state.tidyDepth` (the first is 0, kept across the replace that turns `first`
+ * into a card), so leaving is one `navigate(-(depth + 1))`. A walk that was not
+ * opened here (a pasted link, a new tab) has no depth, and nothing before it is
+ * ours to go back to, so it just drops the param with a replace.
  *
  * ## What reaches a Convex argument
  *
@@ -66,8 +76,13 @@ export function withTidyParam(params: URLSearchParams, value: string | null): UR
   return next;
 }
 
-/** What a push between walk cards carries in the history entry. */
-type TidyState = { tidyFrom?: string };
+/** What a walk history entry carries. */
+type TidyState = {
+  /** The card a push left, so footer Back can use the browser's history. */
+  tidyFrom?: string;
+  /** How many walk entries came before this one since the walk opened here (the first is 0). */
+  tidyDepth?: number;
+};
 
 export type TidyWalkUrl = {
   location: TidyWalkLocation;
@@ -85,7 +100,10 @@ export type TidyWalkUrl = {
   showDone: () => void;
   /** Step back one history entry (the previous walk card). */
   stepBack: () => void;
-  /** Leave the walk. Replace. */
+  /**
+   * Leave the walk: out of history entirely when it was opened here, so Back
+   * never returns to it; a replace that drops the param otherwise.
+   */
   close: () => void;
 };
 
@@ -97,26 +115,36 @@ export function useTidyWalkUrl(): TidyWalkUrl {
   const tidyValue = searchParams.get(TIDY_PARAM);
   const location = useMemo(() => parseTidyParam(tidyValue), [tidyValue]);
 
-  const fromState = (routerLocation.state as TidyState | null | undefined)?.tidyFrom;
+  const entryState = routerLocation.state as TidyState | null | undefined;
+  const fromState = entryState?.tidyFrom;
+  const depth = typeof entryState?.tidyDepth === "number" ? entryState.tidyDepth : undefined;
   const canStepBack = typeof fromState === "string" && fromState.length > 0;
 
   // The handlers read the latest params so a write made in the same tick as
   // another change (the drill's own write) never rebuilds from a stale copy.
-  const latest = useRef({ searchParams, setSearchParams, navigate });
+  const latest = useRef({ searchParams, setSearchParams, navigate, depth });
   useLayoutEffect(() => {
-    latest.current = { searchParams, setSearchParams, navigate };
+    latest.current = { searchParams, setSearchParams, navigate, depth };
   });
 
   const write = useCallback(
     (value: string | null, mode: "push" | "replace", from?: string | null) => {
-      const { searchParams: params, setSearchParams: set } = latest.current;
-      const state: TidyState | undefined = from ? { tidyFrom: from } : undefined;
+      const { searchParams: params, setSearchParams: set, depth: here } = latest.current;
+      // A push is one entry deeper than this one; a replace stays where it is.
+      const next = here === undefined ? undefined : mode === "push" ? here + 1 : here;
+      const state: TidyState | undefined =
+        from || next !== undefined
+          ? { ...(from ? { tidyFrom: from } : {}), ...(next !== undefined ? { tidyDepth: next } : {}) }
+          : undefined;
       set(withTidyParam(params, value), { replace: mode === "replace", state });
     },
     [],
   );
 
-  const open = useCallback(() => write(TIDY_FIRST, "push"), [write]);
+  const open = useCallback(() => {
+    const { searchParams: params, setSearchParams: set } = latest.current;
+    set(withTidyParam(params, TIDY_FIRST), { state: { tidyDepth: 0 } satisfies TidyState });
+  }, []);
   const goToCard = useCallback(
     (cardId: string, from: string | null) => write(cardId, "push", from),
     [write],
@@ -124,7 +152,14 @@ export function useTidyWalkUrl(): TidyWalkUrl {
   const showCard = useCallback((cardId: string) => write(cardId, "replace"), [write]);
   const finish = useCallback((from: string | null) => write(TIDY_DONE, "push", from), [write]);
   const showDone = useCallback(() => write(TIDY_DONE, "replace"), [write]);
-  const close = useCallback(() => write(null, "replace"), [write]);
+  const close = useCallback(() => {
+    const { navigate: go, depth: here } = latest.current;
+    if (here === undefined) {
+      write(null, "replace");
+      return;
+    }
+    go(-(here + 1));
+  }, [write]);
   const stepBack = useCallback(() => latest.current.navigate(-1), []);
 
   return { location, canStepBack, open, goToCard, showCard, finish, showDone, stepBack, close };

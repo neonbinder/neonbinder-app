@@ -150,7 +150,8 @@ export default function InlineNewTeam({
   const nameInputRef = useRef<HTMLInputElement | null>(null);
   const createButtonRef = useRef<HTMLButtonElement | null>(null);
 
-  useInlinePart(true, onClose);
+  const formRef = useRef<HTMLDivElement | null>(null);
+  useInlinePart(true, onClose, formRef);
   const closeRef = useRef(onClose);
   useEffect(() => {
     closeRef.current = onClose;
@@ -280,6 +281,7 @@ export default function InlineNewTeam({
 
   return (
     <div
+      ref={formRef}
       role="group"
       aria-label={`New team: ${initialName.trim() || "unnamed"}`}
       className="grid gap-2 rounded-lg border border-rule bg-raised-deep p-2.5"

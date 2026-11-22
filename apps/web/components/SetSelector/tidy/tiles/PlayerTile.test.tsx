@@ -4,7 +4,7 @@
  * player, change), the "Linked for you" note, "Printed on", and never an empty
  * "Possible matches".
  */
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../../convex/_generated/api", () => ({
@@ -46,6 +46,7 @@ vi.mock("../../EntityLinkSearch", () => ({
   ),
 }));
 
+import { AnsweredProvider } from "../answered";
 import PlayerTile from "./PlayerTile";
 import type { TidyAttentionItem } from "../../../../convex/features/cardAttention";
 import type { TidyAttention, TidyCardContext, TidyRow, TidyTileProps } from "../tile-types";
@@ -93,6 +94,7 @@ function renderTile(
     row?: TidyRow;
     ctx?: TidyCardContext | undefined;
     items?: TidyAttentionItem[];
+    onAnswered?: () => void;
   } = {},
 ) {
   const props: TidyTileProps = {
@@ -104,7 +106,11 @@ function renderTile(
     leafCards: [],
     setName: "Set",
   };
-  return render(<PlayerTile {...props} />);
+  return render(
+    <AnsweredProvider value={opts.onAnswered ?? (() => {})}>
+      <PlayerTile {...props} />
+    </AnsweredProvider>,
+  );
 }
 
 beforeEach(() => {
@@ -116,7 +122,7 @@ beforeEach(() => {
 describe("PlayerTile", () => {
   it("is a skeleton, with nothing to press, while a players disagreement is unsettled", () => {
     renderTile({ items: [{ level: "fix", kind: "sourcesDisagree", field: "players" }] });
-    const tile = screen.getByRole("region", { name: "Player" });
+    const tile = screen.getByRole("group", { name: "Player" });
     expect(tile.getAttribute("data-tidy-level")).toBe("waiting");
     expect(screen.getByText("Looks up once the spelling is picked")).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
@@ -129,7 +135,7 @@ describe("PlayerTile", () => {
 
   it("waits while the context loads for a card that has players", () => {
     renderTile({ ctx: undefined });
-    expect(screen.getByRole("region", { name: "Player" }).getAttribute("data-tidy-level")).toBe("waiting");
+    expect(screen.getByRole("group", { name: "Player" }).getAttribute("data-tidy-level")).toBe("waiting");
   });
 
   it("a new name is pink, says it is new, and offers add / link / not a player", () => {
@@ -144,7 +150,7 @@ describe("PlayerTile", () => {
         ],
       }),
     });
-    expect(screen.getByRole("region", { name: "Player" }).getAttribute("data-tidy-level")).toBe("fix");
+    expect(screen.getByRole("group", { name: "Player" }).getAttribute("data-tidy-level")).toBe("fix");
     expect(screen.getByText("“Jackson Merrill” is new to NeonBinder.")).toBeTruthy();
     expect(screen.getByText("Wikidata: American baseball outfielder, b. 2003")).toBeTruthy();
     expect(screen.getByText("Printed on #USC1, #USC17")).toBeTruthy();
@@ -365,10 +371,10 @@ describe("PlayerTile", () => {
         linkedFor: [{ kind: "player", playerId: "player-1", reason: "setHistory" }],
       }),
     });
-    expect(screen.getByRole("region", { name: "Player" }).getAttribute("data-tidy-level")).toBe("plain");
+    expect(screen.getByRole("group", { name: "Player" }).getAttribute("data-tidy-level")).toBe("plain");
     expect(screen.getByText("Linked for you: another card in this set is already linked to them")).toBeTruthy();
     expect(screen.getByText(/b\. 2003/)).toBeTruthy();
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Change" })));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Change player" })));
     expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
       cardId: CARD,
       kind: "player",
@@ -387,7 +393,7 @@ describe("PlayerTile", () => {
       }),
     });
     expect(screen.getByText("Linked for you: exact name, plays in this set's sport")).toBeTruthy();
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Change" })));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Change player" })));
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Pick a player" })));
     expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({ id: CARD, playerIds: ["player-9"] });
   });
@@ -434,5 +440,112 @@ describe("PlayerTile", () => {
     });
     expect(screen.getByRole("button", { name: "Add as new player Jackson Merrill" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Add as new player Juan Soto" })).toBeTruthy();
+  });
+
+  it("the 'Also add … to their sports' box is a 24px target and holds with aria-disabled while a write is in flight", async () => {
+    queryResults["players.nearMatches"] = [];
+    renderTile({ ctx: context({ names: [printedName({ row: nameRow({ sportId: "sport-2" }) })] }) });
+    const box = screen.getByRole("checkbox", { name: /^Also add / }) as HTMLInputElement;
+    expect(box.className).toContain("h-6");
+    expect(box.closest("label")?.className).toContain("min-h-6");
+    mutation("tidyNames.answerName").mockReturnValueOnce(new Promise(() => {}));
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Not a player (checklist, team card, stadium)" })),
+    );
+    expect(box.getAttribute("aria-disabled")).toBe("true");
+    expect(box.disabled).toBe(false);
+    fireEvent.click(box);
+    expect(box.checked).toBe(false);
+  });
+
+  describe("focus after an answer (S1) and after a cancel", () => {
+    const linkedCtx = () =>
+      context({
+        players: [{ playerId: "player-1", name: "Jackson Merrill", sportId: SPORT, stints: [], stintsMore: false }],
+      });
+    const linkedRow = () => card({ playerIds: ["player-1"] });
+
+    it("'Change' is 'Change player' to a reader and on the screen", () => {
+      renderTile({ row: linkedRow(), items: [], ctx: linkedCtx() });
+      const change = screen.getByRole("button", { name: "Change player" });
+      expect(change.textContent).toBe("Change player");
+      expect(change.getAttribute("aria-label")).toBeNull();
+    });
+
+    it("a pick is an answer: the walk is told, and focus is not sent back to the opener", async () => {
+      const onAnswered = vi.fn();
+      renderTile({ row: linkedRow(), items: [], ctx: linkedCtx(), onAnswered });
+      const change = screen.getByRole("button", { name: "Change player" });
+      change.focus();
+      fireEvent.click(change);
+      const pick = screen.getByRole("button", { name: "Pick a player" });
+      pick.focus();
+      await act(async () => fireEvent.click(pick));
+      expect(onAnswered).toHaveBeenCalledTimes(1);
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+      expect(document.activeElement).not.toBe(screen.getByRole("button", { name: "Change player" }));
+    });
+
+    it("Cancel gives focus back to the Change that opened the search", async () => {
+      const onAnswered = vi.fn();
+      renderTile({ row: linkedRow(), items: [], ctx: linkedCtx(), onAnswered });
+      const change = screen.getByRole("button", { name: "Change player" });
+      change.focus();
+      fireEvent.click(change);
+      fireEvent.click(screen.getByRole("button", { name: "Cancel linking" }));
+      await waitFor(() => expect(document.activeElement).toBe(change));
+      expect(onAnswered).not.toHaveBeenCalled();
+    });
+
+    it("Cancel on '+ Another player' returns to that button, which was gone while the search was open", async () => {
+      renderTile({ row: linkedRow(), items: [], ctx: linkedCtx() });
+      const add = screen.getByRole("button", { name: "+ Another player" });
+      add.focus();
+      fireEvent.click(add);
+      fireEvent.click(screen.getByRole("button", { name: "Cancel linking" }));
+      await waitFor(() =>
+        expect(document.activeElement).toBe(screen.getByRole("button", { name: "+ Another player" })),
+      );
+    });
+
+    it("a name answered inline (Add as new player) tells the walk once the write lands", async () => {
+      queryResults["players.nearMatches"] = [];
+      const onAnswered = vi.fn();
+      renderTile({ onAnswered });
+      await act(async () => fireEvent.click(screen.getByRole("button", { name: "Add as new player" })));
+      expect(onAnswered).toHaveBeenCalledTimes(1);
+    });
+
+    it("'Not a player' tells the walk; a refused write does not", async () => {
+      queryResults["players.nearMatches"] = [];
+      const onAnswered = vi.fn();
+      renderTile({ onAnswered });
+      mutation("tidyNames.answerName").mockRejectedValueOnce(new Error("Server Error"));
+      const no = screen.getByRole("button", { name: "Not a player (checklist, team card, stadium)" });
+      await act(async () => fireEvent.click(no));
+      expect(onAnswered).not.toHaveBeenCalled();
+      await act(async () => fireEvent.click(no));
+      expect(onAnswered).toHaveBeenCalledTimes(1);
+    });
+
+    it("on a card with two names, Change carries the name so the two do not read alike", () => {
+      const ctx = context({
+        names: [
+          printedName({
+            row: nameRow({ answer: { kind: "linkPlayer", playerId: "player-1", by: "operator" } }),
+          }),
+          printedName({
+            nameNormalized: "juan soto",
+            printed: "Juan Soto",
+            order: 1,
+            row: nameRow({ name: "Juan Soto", answer: { kind: "notEntity", by: "operator" } }),
+          }),
+        ],
+        players: [{ playerId: "player-1", name: "Jackson Merrill", sportId: SPORT, stints: [], stintsMore: false }],
+      });
+      renderTile({ row: linkedRow(), items: [], ctx });
+      expect(screen.getByRole("button", { name: "Change player Jackson Merrill" }).textContent).toBe("Change player");
+      expect(screen.getByRole("button", { name: "Change player Juan Soto" })).toBeTruthy();
+    });
   });
 });

@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from "react";
+import { CheckIcon } from "@heroicons/react/16/solid";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
@@ -6,6 +7,7 @@ import { MAX_CARD_TEAMS } from "../../../../convex/features/cardAttention";
 import { teamFullName } from "../../../../lib/teams/team-name";
 import NeonButton from "../../../modules/NeonButton";
 import EntityLinkSearch from "../../EntityLinkSearch";
+import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
 import type { TidyCardContext, TidyRow } from "../tile-types";
 import { careerHeading, marketplaceHeading, outcomeHeading, playedHere, stintYears } from "./copy";
@@ -69,10 +71,19 @@ export default function TeamFillChips({
   const [newOpen, setNewOpen] = useState(false);
   const otherRef = useRef<HTMLButtonElement | null>(null);
   const newRef = useRef<HTMLButtonElement | null>(null);
-  useInlinePart(searchOpen, () => {
+  const saveRef = useRef<HTMLButtonElement | null>(null);
+  const searchScopeRef = useRef<HTMLDivElement | null>(null);
+  const answered = useAnswered();
+  // Cancel and Esc hand focus back to "Other team…". A pick or a created team
+  // is NOT an answer yet (Save team is), so it goes to Save team instead: one
+  // more Enter there saves, where Other team… would only reopen the search.
+  const closeSearch = () => {
     setSearchOpen(false);
     requestAnimationFrame(() => otherRef.current?.focus({ preventScroll: true }));
-  });
+  };
+  const focusSave = () => requestAnimationFrame(() => saveRef.current?.focus({ preventScroll: true }));
+  const createdRef = useRef(false);
+  useInlinePart(searchOpen, closeSearch, searchScopeRef);
 
   const careerByTeam = useMemo(() => {
     const byTeam = new Map<string, TeamChip>();
@@ -166,14 +177,16 @@ export default function TeamFillChips({
   const disabled = write.busy ? true : undefined;
   const canSave = chosen.length > 0 && !write.busy;
 
-  const save = () =>
-    write.run(
+  const save = async () => {
+    const ok = await write.run(
       () => updateCard({ id: row._id, teamOnCardIds: chosen }),
       "Couldn't save those teams. Try again.",
     );
+    if (ok) answered();
+  };
 
-  const recordNoTeam = () =>
-    write.run(async () => {
+  const recordNoTeam = async () => {
+    const ok = await write.run(async () => {
       const result = await confirmCardNoTeam({ cardId: row._id });
       if (!result.confirmed) {
         throw new Error(
@@ -181,6 +194,8 @@ export default function TeamFillChips({
         );
       }
     }, "Couldn't record that. Try again.");
+    if (ok) answered();
+  };
 
   const caseLine = outcomeHeading(row.teamCheckOutcome, bscName !== "");
 
@@ -197,12 +212,14 @@ export default function TeamFillChips({
             if (blocked || write.busy) return;
             toggle(chip.teamId);
           }}
-          className={`rounded-full border px-2 py-0.5 text-xs focus-outline ${
+          className={`hit-area-24 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs focus-outline ${
             on
               ? "border-neon-green-text bg-neon-green/20 text-neon-green-text"
               : "border-control bg-raised text-ink-2 hover:border-neon-blue-text hover:text-neon-blue-text"
           } ${blocked ? "opacity-40" : ""}`}
         >
+          {/* The chosen mark that is not a colour (SC 1.4.1); aria-pressed says it to a reader. */}
+          {on && <CheckIcon aria-hidden="true" className="h-3 w-3 shrink-0" />}
           {chip.label}
           {opts.suffix && <span className="text-neon-blue-text">{opts.suffix}</span>}
         </button>
@@ -284,27 +301,26 @@ export default function TeamFillChips({
         </ul>
       )}
 
-      {atCap && (
-        <p role="status" className="text-xs text-neon-blue-text">
-          That is the limit of {MAX_CARD_TEAMS} teams on one card. Remove one to add another.
-        </p>
-      )}
+      {/* Mounted for the life of the chips, so reaching the limit is a change to a
+          live region already in the page, and a card that opens at it says nothing. */}
+      <p role="status" className="text-xs text-neon-blue-text empty:hidden">
+        {atCap ? `That is the limit of ${MAX_CARD_TEAMS} teams on one card. Remove one to add another.` : ""}
+      </p>
 
       {searchOpen && sportId ? (
-        <EntityLinkSearch
-          kind="team"
-          sportId={sportId}
-          contextOptionId={leafId}
-          onSelect={(id) => {
-            addChosen(id as Id<"teams">);
-            setSearchOpen(false);
-            requestAnimationFrame(() => otherRef.current?.focus({ preventScroll: true }));
-          }}
-          onCancel={() => {
-            setSearchOpen(false);
-            requestAnimationFrame(() => otherRef.current?.focus({ preventScroll: true }));
-          }}
-        />
+        <div ref={searchScopeRef}>
+          <EntityLinkSearch
+            kind="team"
+            sportId={sportId}
+            contextOptionId={leafId}
+            onSelect={(id) => {
+              addChosen(id as Id<"teams">);
+              setSearchOpen(false);
+              focusSave();
+            }}
+            onCancel={closeSearch}
+          />
+        </div>
       ) : null}
 
       {newOpen && sportId ? (
@@ -317,15 +333,23 @@ export default function TeamFillChips({
             creating ? `Creating team ${full}` : full ? `Create team ${full}` : "Create team"
           }
           disabled={write.busy}
-          onCreated={(teamId) => addChosen(teamId)}
+          onCreated={(teamId) => {
+            createdRef.current = true;
+            addChosen(teamId);
+          }}
           onClose={() => {
             setNewOpen(false);
-            requestAnimationFrame(() => newRef.current?.focus({ preventScroll: true }));
+            // A created team goes to Save team; Cancel and Esc go back to "+ New team".
+            const created = createdRef.current;
+            createdRef.current = false;
+            if (created) focusSave();
+            else requestAnimationFrame(() => newRef.current?.focus({ preventScroll: true }));
           }}
         />
       ) : (
         <div className="flex flex-wrap items-center gap-2">
           <NeonButton
+            ref={saveRef}
             size="1"
             aria-disabled={canSave ? undefined : true}
             onClick={() => {

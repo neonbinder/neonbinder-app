@@ -15,6 +15,7 @@ vi.mock("convex/react", () => ({
   useMutation: (ref: string) => (ref === "tidyCards.pickSourceValue" ? mockPick : vi.fn()),
 }));
 
+import { AnsweredProvider } from "../answered";
 import SourcesDisagreeTile from "./SourcesDisagreeTile";
 import type { TidyAttention, TidyRow, TidyTileProps } from "../tile-types";
 import type { TidyDisagreement as RowDisagreement } from "../../../../convex/features/cardAttention";
@@ -39,7 +40,11 @@ const rowOf = (id: string, d?: RowDisagreement): TidyRow =>
 
 function renderTile(
   d: RowDisagreement | undefined,
-  { attention, leafCards }: { attention?: TidyAttention; leafCards?: TidyRow[] } = {},
+  {
+    attention,
+    leafCards,
+    onAnswered = () => {},
+  }: { attention?: TidyAttention; leafCards?: TidyRow[]; onAnswered?: () => void } = {},
 ) {
   const row = rowOf("card-1", d);
   const props: TidyTileProps = {
@@ -51,7 +56,11 @@ function renderTile(
     leafCards: leafCards ?? [row],
     setName: "Topps Chrome Update",
   };
-  return render(<SourcesDisagreeTile {...props} />);
+  return render(
+    <AnsweredProvider value={onAnswered}>
+      <SourcesDisagreeTile {...props} />
+    </AnsweredProvider>,
+  );
 }
 
 beforeEach(() => {
@@ -67,7 +76,7 @@ describe("SourcesDisagreeTile", () => {
 
   it("is pink with one column per source, labelled as Match Cards labels them", () => {
     renderTile(UNCHOSEN);
-    const section = screen.getByRole("region", { name: "Sources disagree" });
+    const section = screen.getByRole("group", { name: "Sources disagree" });
     expect(section.getAttribute("data-tidy-level")).toBe("fix");
     const columns = within(screen.getByRole("list", { name: /What each source says/ })).getAllByRole("listitem");
     expect(columns.map((c) => c.textContent)).toEqual([
@@ -83,7 +92,7 @@ describe("SourcesDisagreeTile", () => {
     renderTile(UNCHOSEN);
     expect(screen.getByRole("button", { name: "Use “Jackson Merril”" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Use “Jackson Merrill”" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Type another…" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Type another… player name" })).toBeTruthy();
     expect(screen.queryByText(/not sure/i)).toBeNull();
   });
 
@@ -95,7 +104,7 @@ describe("SourcesDisagreeTile", () => {
 
   it("'Type another…' opens an inline field; Enter sends the typed names with typed: true", async () => {
     renderTile(UNCHOSEN);
-    fireEvent.click(screen.getByRole("button", { name: "Type another…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Type another… player name" }));
     const field = screen.getByLabelText("Type the player name yourself");
     fireEvent.change(field, { target: { value: "Aaron Judge / Juan Soto" } });
     await act(async () => {
@@ -111,16 +120,40 @@ describe("SourcesDisagreeTile", () => {
 
   it("Esc closes the typed field and returns focus to its button", async () => {
     renderTile(UNCHOSEN);
-    const open = screen.getByRole("button", { name: "Type another…" });
+    const open = screen.getByRole("button", { name: "Type another… player name" });
     fireEvent.click(open);
     fireEvent.keyDown(screen.getByLabelText("Type the player name yourself"), { key: "Escape" });
     expect(screen.queryByLabelText("Type the player name yourself")).toBeNull();
     await waitFor(() => expect(document.activeElement).toBe(open));
   });
 
+  it("names the repeated buttons by their field, keeping the visible words in the name", () => {
+    renderTile(UNCHOSEN);
+    const type = screen.getByRole("button", { name: "Type another… player name" });
+    expect(type.textContent).toBe("Type another…");
+    fireEvent.click(type);
+    const use = screen.getByRole("button", { name: "Use this player name" });
+    expect(use.textContent).toBe("Use this");
+  });
+
+  it("a pick is an answer: it tells the walk, and focus is not sent back to Change", async () => {
+    const onAnswered = vi.fn();
+    renderTile(UNCHOSEN, { onAnswered });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Use “Jackson Merrill”" })));
+    expect(onAnswered).toHaveBeenCalledTimes(1);
+  });
+
+  it("a refused pick tells the walk nothing", async () => {
+    const onAnswered = vi.fn();
+    mockPick.mockRejectedValueOnce(new Error("no"));
+    renderTile(UNCHOSEN, { onAnswered });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Use “Jackson Merrill”" })));
+    expect(onAnswered).not.toHaveBeenCalled();
+  });
+
   it("an empty typed value sends nothing", () => {
     renderTile(UNCHOSEN);
-    fireEvent.click(screen.getByRole("button", { name: "Type another…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Type another… player name" }));
     fireEvent.change(screen.getByLabelText("Type the player name yourself"), { target: { value: "  /  " } });
     fireEvent.keyDown(screen.getByLabelText("Type the player name yourself"), { key: "Enter" });
     expect(mockPick).not.toHaveBeenCalled();
@@ -142,7 +175,7 @@ describe("SourcesDisagreeTile", () => {
 
     it("says it went with the one already in the binder, and offers the other", async () => {
       renderTile(NB, { attention });
-      expect(screen.getByRole("region", { name: "Sources disagree" }).getAttribute("data-tidy-level")).toBe("check");
+      expect(screen.getByRole("group", { name: "Sources disagree" }).getAttribute("data-tidy-level")).toBe("check");
       expect(screen.getByText("Went with “Jackson Merrill”, they're already in your binder.")).toBeTruthy();
       expect(screen.getByText("In NeonBinder")).toBeTruthy();
       await act(async () => fireEvent.click(screen.getByRole("button", { name: "Use “Jackson Merril” instead" })));
@@ -151,7 +184,7 @@ describe("SourcesDisagreeTile", () => {
 
     it("drops back to plain once the walk has seen it", () => {
       renderTile(NB, { attention: { level: "none", items: [] } });
-      expect(screen.getByRole("region", { name: "Sources disagree" }).getAttribute("data-tidy-level")).toBe("plain");
+      expect(screen.getByRole("group", { name: "Sources disagree" }).getAttribute("data-tidy-level")).toBe("plain");
     });
   });
 
@@ -161,7 +194,7 @@ describe("SourcesDisagreeTile", () => {
     it("says what is used and where it came from, with Change", () => {
       renderTile(CHOSEN);
       expect(screen.getByText("Using “Jackson Merrill” (Checklist)")).toBeTruthy();
-      expect(screen.getByRole("region", { name: "Sources disagree" }).getAttribute("data-tidy-level")).toBe("plain");
+      expect(screen.getByRole("group", { name: "Sources disagree" }).getAttribute("data-tidy-level")).toBe("plain");
       fireEvent.click(screen.getByRole("button", { name: "Change the player name" }));
       expect(screen.getByRole("button", { name: "Use “Jackson Merril”" })).toBeTruthy();
     });
@@ -205,6 +238,48 @@ describe("SourcesDisagreeTile", () => {
       );
       expect(screen.getByText("No cards changed.")).toBeTruthy();
     });
+  });
+
+  describe("the status line", () => {
+    const CHOSEN: RowDisagreement = { ...UNCHOSEN, chosen: { value: MERRILL, by: "operator" } };
+
+    it("is on the page before any answer, empty, and says the pick when the answer lands", () => {
+      const row = rowOf("card-1", UNCHOSEN);
+      const props = (r: TidyRow): TidyTileProps => ({
+        row: r,
+        context: undefined,
+        attention: { level: "fix", items: [] },
+        leafId: "leaf-1" as never,
+        sportId: undefined,
+        leafCards: [r],
+        setName: "Set",
+      });
+      const { rerender } = render(<SourcesDisagreeTile {...props(row)} />);
+      const status = screen.getByRole("status");
+      expect(status.textContent).toBe("");
+      rerender(<SourcesDisagreeTile {...props(rowOf("card-1", CHOSEN))} />);
+      // The same element: a change to a live region that was already there.
+      expect(screen.getByRole("status")).toBe(status);
+      expect(status.textContent).toBe("Using “Jackson Merrill” (Checklist)");
+    });
+
+    it("clears while Change is open, so the choices are the only thing on offer", () => {
+      renderTile(CHOSEN);
+      expect(screen.getByRole("status").textContent).toContain("Using");
+      fireEvent.click(screen.getByRole("button", { name: "Change the player name" }));
+      expect(screen.getByRole("status").textContent).toBe("");
+    });
+  });
+
+  it("Change puts focus on the first choice it brings back", async () => {
+    const CHOSEN: RowDisagreement = { ...UNCHOSEN, chosen: { value: MERRILL, by: "operator" } };
+    renderTile(CHOSEN);
+    const change = screen.getByRole("button", { name: "Change the player name" });
+    change.focus();
+    await act(async () => fireEvent.click(change));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Use “Jackson Merril”" })),
+    );
   });
 
   it("names the field when a card disagrees on two", () => {

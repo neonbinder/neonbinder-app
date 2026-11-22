@@ -5,6 +5,7 @@ import type { Id } from "../../../../convex/_generated/dataModel";
 import { MAX_CARD_TEAMS, teamFillOf } from "../../../../convex/features/cardAttention";
 import NeonButton from "../../../modules/NeonButton";
 import EntityLinkSearch from "../../EntityLinkSearch";
+import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
 import { linkedForText, teamFillText } from "../parts/copy";
 import TeamFillChips from "../parts/TeamFillChips";
@@ -45,13 +46,31 @@ const APPLY_PROPOSE_MAX = 100;
  */
 export default function TeamTile({ row, context, attention, leafId, sportId, leafCards }: TidyTileProps) {
   const write = useTidyWrite();
+  const answered = useAnswered();
   const updateCard = useMutation(api.selectorOptions.updateCard);
   const applyTeamToPlayerCards = useMutation(api.tidyCards.applyTeamToPlayerCards);
   const [searchFor, setSearchFor] = useState<
     { kind: "add" } | { kind: "change"; teamId: Id<"teams"> } | null
   >(null);
   const addRef = useRef<HTMLButtonElement | null>(null);
-  useInlinePart(searchFor !== null, () => setSearchFor(null));
+  const searchScopeRef = useRef<HTMLDivElement | null>(null);
+  // The control that opened the search, so Cancel and Esc hand focus back to it.
+  // A pick is an ANSWER and does not: the walk moves focus on (`useAnswered`).
+  const openerRef = useRef<HTMLElement | null>(null);
+  const openSearch = (next: NonNullable<typeof searchFor>, opener: HTMLElement) => {
+    openerRef.current = opener;
+    setSearchFor(next);
+  };
+  const closeSearch = () => {
+    setSearchFor(null);
+    requestAnimationFrame(() => {
+      const opener = openerRef.current;
+      // A Change that swapped the team is a different row: its old button is gone.
+      const target = opener?.isConnected ? opener : addRef.current;
+      target?.focus({ preventScroll: true });
+    });
+  };
+  useInlinePart(searchFor !== null, closeSearch, searchScopeRef);
 
   if (attention.items.some((i) => i.kind === "sourcesDisagree" && i.field === "teams")) {
     return <TidyTile heading="Team" level="waiting" waitingText="Waiting on the spelling above" />;
@@ -93,6 +112,7 @@ export default function TeamTile({ row, context, attention, leafId, sportId, lea
     write.run(async () => {
       await updateCard({ id: row._id, teamOnCardIds: next });
       setSearchFor(null);
+      answered();
     }, "Couldn't save that team. Try again.");
 
   const onSelect = (picked: string) => {
@@ -150,11 +170,11 @@ export default function TeamTile({ row, context, attention, leafId, sportId, lea
                 size="1"
                 variant="secondary"
                 outline
-                aria-label={unrowed.length > 1 || multi ? `Change ${team.name}` : "Change"}
+                aria-label={unrowed.length > 1 || multi ? `Change team ${team.name}` : undefined}
                 aria-disabled={write.busy ? true : undefined}
-                onClick={() => setSearchFor({ kind: "change", teamId: team.teamId })}
+                onClick={(e) => openSearch({ kind: "change", teamId: team.teamId }, e.currentTarget)}
               >
-                Change
+                Change team
               </NeonButton>
             </div>
           </div>
@@ -176,16 +196,15 @@ export default function TeamTile({ row, context, attention, leafId, sportId, lea
       )}
 
       {searchFor && sportId ? (
-        <EntityLinkSearch
-          kind="team"
-          sportId={sportId}
-          contextOptionId={leafId}
-          onSelect={(id) => void onSelect(id)}
-          onCancel={() => {
-            setSearchFor(null);
-            requestAnimationFrame(() => addRef.current?.focus({ preventScroll: true }));
-          }}
-        />
+        <div ref={searchScopeRef}>
+          <EntityLinkSearch
+            kind="team"
+            sportId={sportId}
+            contextOptionId={leafId}
+            onSelect={(id) => void onSelect(id)}
+            onCancel={closeSearch}
+          />
+        </div>
       ) : (
         !open &&
         !atCap && (
@@ -196,7 +215,7 @@ export default function TeamTile({ row, context, attention, leafId, sportId, lea
               variant="secondary"
               outline
               aria-disabled={write.busy ? true : undefined}
-              onClick={() => setSearchFor({ kind: "add" })}
+              onClick={(e) => openSearch({ kind: "add" }, e.currentTarget)}
             >
               {teamsOnCard.length === 0 ? "+ Add team" : "+ Another team"}
             </NeonButton>

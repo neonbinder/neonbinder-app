@@ -137,7 +137,7 @@ describe("CareerTile", () => {
   describe("a career gap on an existing player", () => {
     it("is blue and says which team is missing by which year", () => {
       renderTile([gapItem]);
-      expect(screen.getByRole("region", { name: "Career" }).getAttribute("data-tidy-level")).toBe("check");
+      expect(screen.getByRole("group", { name: "Career" }).getAttribute("data-tidy-level")).toBe("check");
       expect(screen.getByText("No San Diego Padres in the career by 2024.")).toBeTruthy();
       expect(screen.getByRole("list", { name: "Career on file for Jackson Merrill" })).toBeTruthy();
       expect(screen.getByText("El Paso Chihuahuas · 2022–2023")).toBeTruthy();
