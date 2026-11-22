@@ -1,8 +1,8 @@
 /**
  * NEO-602 x NEO-574 — a printed team name that fits two eras, with the
  * career check beside it. Two review-gate answers the Playwright specs
- * `checklist-two-era-team-name-silent-card-abstains` and
- * `checklist-two-era-team-name-asks-the-operator` depend on, pinned at the
+ * `tidy-up-two-era-team-name-links-silently-when-a-card-with-no-career-abstains` and
+ * `tidy-up-two-era-team-name-is-asked-on-the-team-tile-when-the-player-cannot-tell` depend on, pinned at the
  * action (`selectorOptions.resolveChecklistEntities`):
  *
  *  1. The silent card. Two cards print the current era's name; #1's player has

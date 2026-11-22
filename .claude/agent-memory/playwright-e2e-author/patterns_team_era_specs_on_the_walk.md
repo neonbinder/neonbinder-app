@@ -30,6 +30,18 @@ results". Walk order puts cards with pending team lookups last: branch on the fi
 **Counter-fixtures (one value):** two-eras: move OLD's start past the stint (1968 -> 1985) -> no
 support -> "Which team:" asked. Past-era: print the alias holder's own name instead -> one row ->
 linked by itself, Team tile not pink. Run as `w<n>counter-*.spec.ts`, read error-context, `rm`.
+Asked (no stints / stints on both): YEAR 2025 -> 2020 (newer era not born yet) -> linked by itself,
+card only blue. Silent-abstains: give the silent player a stint on the past era -> players disagree
+-> both cards pink, "2 cards left". The error-context of a toHaveAttribute red snapshots only the
+element: read the PNG to confirm WHICH stop the counter hit.
+
+**Silent link on the walk:** the silent card enters ONLY for its blue Career tile (group
+`Career <player>`, "No career on file yet.", `Keep as is` is aria-pressed); its Team row shows the
+team with no note and no "Which team:". The voter's card is not walked ("1 card left").
+**Asked row handles:** "Which team: <printed>", "Printed on #1", list named by the whole intro
+sentence ("We've got 2 teams by that name. Pick the one on this card."), combobox "Search all
+teams", checkbox `Remember “<printed>” as a name for this team`. Stints: `addCareerStint`
+(support/players.ts) after `createTeamInCareerEditor`.
 
 Related: [[patterns-career-team-link-fixture-and-counter-fixture-proof]],
 [[same-name-team-eras-unprovable-on-a-card]], [[patterns-tidy-walk-tiles-and-commit-first]].

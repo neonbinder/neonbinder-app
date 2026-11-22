@@ -54,7 +54,6 @@ export const CHECKLISTS = {
   fortWorthFire: "1995-hockey-fort-worth-fire-chl-base",
   oklahomaCityBlazers: "1995-hockey-oklahoma-city-blazers-chl-base",
   newHavenRavens: "1996-new-haven-ravens-rally-raffle-base",
-  welcomeToTheClub: "2025-topps-welcome-to-the-club-3x-mvp-base",
   bbmRookieEditionPremium: "2024-bbm-rookie-edition-premium-base",
   /**
    * Baseball 2024 Topps Chrome Base, the seed's own fetch: 334 rows, card #300's row LEFT OUT

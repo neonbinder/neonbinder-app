@@ -153,3 +153,36 @@ export function teamChip(scope: Page | Locator, full: string): Locator {
   const escaped = full.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return scope.getByRole("button", { name: new RegExp(`^[^\\p{L}\\p{N}]*Remove team ${escaped}[^\\p{L}\\p{N}]*$`, "u") });
 }
+
+/**
+ * In the open player's career editor: one stint on a team already on file, staged by "Add team"
+ * (typing `search`, a single token, and picking the option whose name starts `Add <full>` in
+ * "Team typeahead results", so two eras sharing the token are told apart by their whole names),
+ * then the years and "Add stint". The stint is written only by the player's Save, which the
+ * caller presses once every stint is in.
+ *
+ * Contract: ENTRY a player's detail panel is open and `full` exists. EXIT the career list holds a
+ * line `<full> · <from>–<to>` (exactly one).
+ */
+export async function addCareerStint(
+  page: Page,
+  stint: { search: string; full: string; from: string; to: string },
+): Promise<void> {
+  const escaped = stint.full.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  await page.getByRole("button", { name: "Add team" }).click();
+  await page.getByRole("textbox", { name: "Search teams" }).fill(stint.search);
+  await page
+    .getByRole("listbox", { name: "Team typeahead results" })
+    .getByRole("option", { name: new RegExp(`^Add ${escaped}`) })
+    .click();
+  await expect(teamChip(page, stint.full)).toBeVisible();
+  await page.getByLabel(/Stint from year/).fill(stint.from);
+  await page.getByLabel(/Stint to year/).fill(stint.to);
+  await page.getByRole("button", { name: "Add stint" }).click();
+  await expect(
+    page
+      .getByRole("list", { name: "Career history" })
+      .getByRole("listitem")
+      .filter({ hasText: `${stint.full} · ${stint.from}–${stint.to}` }),
+  ).toHaveCount(1);
+}

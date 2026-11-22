@@ -22,5 +22,5 @@ eras and stints only, so the alias holder exercises the same path, and the drawe
 `Remove team <other>` toHaveCount(0) beside `Remove team <expected>` visible is then a
 real era proof. Say why in the spec header. If the feature is specifically the
 own-name tie (step 4's alias guard), the alias variant does NOT cover it. Example:
-`checklist-two-era-team-name-silent-card-abstains`. Related:
+`tidy-up-two-era-team-name-links-silently-when-a-card-with-no-career-abstains`. Related:
 [[near-match-absence-proved-by-the-same-locator]].
