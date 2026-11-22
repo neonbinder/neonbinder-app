@@ -1856,7 +1856,7 @@ function PlayerDetail({
               href={qidUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-sm text-neon-blue-text underline underline-offset-2 focus-outline rounded-sm"
+              className="inline-flex min-h-6 items-center text-sm text-neon-blue-text underline underline-offset-2 focus-outline rounded-sm"
             >
               Wikidata {qid}
               <span className="sr-only"> (opens in new tab)</span>
@@ -2070,7 +2070,7 @@ function PlayerDetail({
             {stints.map((stint, index) => (
               <li
                 key={`${stint.teamId}-${stint.fromYear}`}
-                className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-1.5 text-sm text-ink-2"
+                className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-1 text-sm text-ink-2"
               >
                 {/* NEO-235 — the stint row is a way INTO the team.
                     Correcting a stint usually means the team behind it needs
@@ -2085,15 +2085,17 @@ function PlayerDetail({
                     would split it into two text nodes for both of those. The
                     visible text IS the accessible name, so no aria-label —
                     `title` carries the destination for a pointer instead. */}
-                <span className="truncate">
-                  <Link
-                    to={`/admin/teams?team=${stint.teamId}`}
-                    title={`Open ${teamName(stint.teamId)} in Team Management`}
-                    className="rounded-sm text-neon-blue-text underline underline-offset-2 transition-colors hover:decoration-2 focus-outline"
-                  >
-                    {teamName(stint.teamId)} · {stintRange(stint)}
-                  </Link>
-                </span>
+                {/* NEO-645 — the link is its own 24px-tall target and its text
+                    wraps. It used to sit in a `truncate` span as a bare line
+                    of text (~20px tall), which axe's target-size rule fails on
+                    a phone; a long team name was also clipped there. */}
+                <Link
+                  to={`/admin/teams?team=${stint.teamId}`}
+                  title={`Open ${teamName(stint.teamId)} in Team Management`}
+                  className="inline-flex min-h-6 min-w-0 items-center justify-self-start rounded-sm text-neon-blue-text underline underline-offset-2 transition-colors wrap-anywhere hover:decoration-2 focus-outline"
+                >
+                  {teamName(stint.teamId)} · {stintRange(stint)}
+                </Link>
                 <button
                   type="button"
                   onClick={() => removeStint(index)}

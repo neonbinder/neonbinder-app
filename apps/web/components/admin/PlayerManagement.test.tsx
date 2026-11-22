@@ -1578,6 +1578,27 @@ describe("PlayerManagement — the detail panel", () => {
     ]);
   });
 
+  it("keeps each stint link a 24px target that wraps instead of clipping (NEO-645)", () => {
+    // axe `target-size` failed on a phone: the link was a bare ~20px line of
+    // text inside a `truncate` span. happy-dom does not lay out, so this pins
+    // the classes that carry the fix: a 24px floor on the link itself, and no
+    // clipping ancestor between the link and its row.
+    render(<PlayerManagement />);
+    selectGriffey();
+
+    const rows = screen
+      .getByRole("list", { name: "Career history" })
+      .querySelectorAll("li");
+    expect(rows.length).toBeGreaterThan(0);
+    for (const li of Array.from(rows)) {
+      const link = li.querySelector("a");
+      expect(link?.className).toContain("min-h-6");
+      expect(link?.className).toContain("wrap-anywhere");
+      expect(link?.parentElement).toBe(li);
+      expect(li.querySelector(".truncate")).toBeNull();
+    }
+  });
+
   it("scopes the team picker to the player's sport", () => {
     render(<PlayerManagement />);
     selectGriffey();
@@ -1832,6 +1853,8 @@ describe("PlayerManagement — the detail panel", () => {
     );
     expect(link.getAttribute("target")).toBe("_blank");
     expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+    // NEO-645: a 24px floor on the link itself (axe target-size on a phone).
+    expect(link.className).toContain("min-h-6");
   });
 
   it("shows a malformed stored Wikidata id as text, never as a link", () => {
