@@ -7,6 +7,7 @@ import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import {
   careerHeading,
+  newPlayerNoCareerText,
   linkedForText,
   teamLinkedForText,
   marketplaceHeading,
@@ -107,6 +108,19 @@ describe("copy", () => {
       );
     });
 
+    it("a tie shows its line even when a chip is in the set year, so the heading never falls through", () => {
+      expect(careerHeading(true, false, undefined, { tie: true })).toBe(
+        "From the career. More than one team that season, so pick the one on the card.",
+      );
+      expect(careerHeading(true, false, undefined, { tie: false })).toBe("Suggested from career history.");
+    });
+
+    it("the set's No Team outranks a tie, in the year or out of it", () => {
+      const noTeam = "From the career. This set says No Team, so pick one only if it's on the card.";
+      expect(careerHeading(false, false, undefined, { tie: true, setNoTeam: true })).toBe(noTeam);
+      expect(careerHeading(true, false, undefined, { tie: true, setNoTeam: true })).toBe(noTeam);
+    });
+
     it("the set's No Team says the team is offered, not picked", () => {
       expect(careerHeading(true, false, undefined, { setNoTeam: true })).toBe(
         "From the career. This set says No Team, so pick one only if it's on the card.",
@@ -119,6 +133,14 @@ describe("copy", () => {
       );
       expect(careerHeading(true, false)).toBe("Suggested from career history.");
     });
+  });
+
+  it("a no-career note names its player, else its place on the card, so none repeat", () => {
+    expect(newPlayerNoCareerText("Quinn Rookie", false)).toBe("New player, no career from Wikidata");
+    expect(newPlayerNoCareerText("Quinn Rookie", true, 1)).toBe("New player Quinn Rookie, no career from Wikidata");
+    expect(newPlayerNoCareerText(undefined, true, 2)).toBe("New player 2, no career from Wikidata");
+    expect(newPlayerNoCareerText("  ", true, 3)).toBe("New player 3, no career from Wikidata");
+    expect(newPlayerNoCareerText(undefined, true)).toBe("New player, no career from Wikidata");
   });
 
   it("names a preselected player with the basis for it", () => {

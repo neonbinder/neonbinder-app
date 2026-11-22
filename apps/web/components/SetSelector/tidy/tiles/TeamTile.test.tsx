@@ -643,6 +643,56 @@ describe("TeamTile", () => {
         expect(screen.queryByRole("button", { name: /^Save teams?$/ })).toBeNull();
       });
 
+      it("a tie flagged beside a set-year chip still shows the tie line and preselects nothing", () => {
+        queryResults["cardChecklist.suggestedTeamsForCard"] = [
+          suggestion("t-c", "Cincinnati Reds", "Johnny Bench", { inSetYear: true }),
+          suggestion("t-a", "Los Angeles Angels", "Shohei Ohtani", { tieInWindow: true }),
+          suggestion("t-b", "Los Angeles Dodgers", "Shohei Ohtani", { tieInWindow: true }),
+        ];
+        const bench = playerWith("player-2", "Johnny Bench", [stint("t-c", 1967, 1983)]);
+        renderTile({
+          row: card({ playerIds: ["player-1", "player-2"] }),
+          ctx: context({ players: [tied, bench] }),
+          items,
+        });
+        expect(
+          screen.getByText("From the career. More than one team that season, so pick the one on the card."),
+        ).toBeTruthy();
+        for (const chip of screen.getAllByRole("button", { name: /Reds|Angels|Dodgers/ })) {
+          expect(chip.getAttribute("aria-pressed")).toBe("false");
+        }
+        expect(screen.queryByRole("button", { name: /^Save teams?$/ })).toBeNull();
+      });
+
+      it("the set's No Team outranks the tie line", () => {
+        queryResults["cardChecklist.suggestedTeamsForCard"] = [
+          suggestion("t-a", "Los Angeles Angels", "Shohei Ohtani", { tieInWindow: true }),
+          suggestion("t-b", "Los Angeles Dodgers", "Shohei Ohtani", { tieInWindow: true }),
+        ];
+        renderTile({ row: row(), ctx: context({ players: [tied] }), items, setNoTeam: true });
+        expect(
+          screen.getByText("From the career. This set says No Team, so pick one only if it's on the card."),
+        ).toBeTruthy();
+        expect(screen.queryByText(/More than one team that season/)).toBeNull();
+      });
+
+      it("the years sit on their own wrapping line inside the chip, never clipped, with the same accessible name", () => {
+        queryResults["cardChecklist.suggestedTeamsForCard"] = [
+          suggestion("t-a", "Los Angeles Angels", "Shohei Ohtani", { tieInWindow: true }),
+          suggestion("t-b", "Los Angeles Dodgers", "Shohei Ohtani", { tieInWindow: true }),
+        ];
+        renderTile({ row: row(), ctx: context({ players: [tied] }), items });
+        const chip = screen.getByRole("button", { name: "Los Angeles Angels · Shohei Ohtani 2018–2024" });
+        expect(chip.className).toContain("max-w-full");
+        expect(chip.className).toContain("flex-col");
+        expect(chip.className).toContain("rounded-2xl");
+        expect(chip.className).not.toContain("rounded-full");
+        expect(chip.className).toContain("hit-area-24");
+        const years = screen.getByText("Shohei Ohtani 2018–2024");
+        expect(years.className).toContain("wrap-anywhere");
+        expect(years.className).not.toMatch(/truncate|overflow-hidden|whitespace-nowrap/);
+      });
+
       it("the operator's pick of one tied team saves it", async () => {
         queryResults["cardChecklist.suggestedTeamsForCard"] = [
           suggestion("t-a", "Los Angeles Angels", "Shohei Ohtani", { tieInWindow: true }),

@@ -80,11 +80,18 @@ export const NOT_A_PLAYER_SAME_AS_TEAM_NOTE =
   "Ruled out for you: this card prints the same name as its team";
 
 /** The purple note on a player "Add all new players" created, when Wikidata gave no career. */
-export function newPlayerNoCareerText(playerName: string | undefined, several: boolean): string {
+export function newPlayerNoCareerText(
+  playerName: string | undefined,
+  several: boolean,
+  ordinal?: number,
+): string {
   const who = playerName?.trim();
-  return several && who
+  if (!several) return "New player, no career from Wikidata";
+  // Several on one card: each note says whose it is, by name, or by place
+  // ("New player 2") when the name is missing, so no two notes read alike.
+  return who
     ? `New player ${who}, no career from Wikidata`
-    : "New player, no career from Wikidata";
+    : `New player${ordinal ? ` ${ordinal}` : ""}, no career from Wikidata`;
 }
 
 /** The Q1-A purple note on a card whose team the commit filled in. */
@@ -167,10 +174,12 @@ export type CareerHeadingFacts = { tie?: boolean; setNoTeam?: boolean };
 
 /**
  * The line over the career chips. Precedence, first that holds: the whole
- * career because no stint covers the year, a tie in the window, no year at
- * all; then, for a team that is in the window, the listing disagreeing, the
- * set's No Team, and last the plain "Suggested". Each line promises only what
- * the tile does.
+ * career because no stint covers the year; a tie in the window (the server's
+ * own verdict, whatever else is in the year: nothing is preselected for it),
+ * which the set's No Team outranks, since that answer holds for every card;
+ * then no year at all; then, for a team that is in the window, the listing
+ * disagreeing, the set's No Team, and last the plain "Suggested". Each line
+ * promises only what the tile does.
  */
 export function careerHeading(
   inSetYear: boolean,
@@ -178,23 +187,24 @@ export function careerHeading(
   uncoveredSetYear?: number,
   facts: CareerHeadingFacts = {},
 ): string {
+  if (!inSetYear && uncoveredSetYear !== undefined) {
+    return `No ${uncoveredSetYear} team on file. Here's the whole career, so pick the one on the card.`;
+  }
+  if (facts.tie) {
+    return facts.setNoTeam ? SET_NO_TEAM_HEADING : TIE_HEADING;
+  }
   if (!inSetYear) {
-    if (uncoveredSetYear !== undefined) {
-      return `No ${uncoveredSetYear} team on file. Here's the whole career, so pick the one on the card.`;
-    }
-    if (facts.tie) {
-      return "From the career. More than one team that season, so pick the one on the card.";
-    }
     return "No year on this set. Here's the whole career, so pick the one on the card.";
   }
   if (listingDisagrees) {
     return "From the career. The listing names a different team, so pick the one on the card.";
   }
-  if (facts.setNoTeam) {
-    return "From the career. This set says No Team, so pick one only if it's on the card.";
-  }
+  if (facts.setNoTeam) return SET_NO_TEAM_HEADING;
   return "Suggested from career history.";
 }
+
+const TIE_HEADING = "From the career. More than one team that season, so pick the one on the card.";
+const SET_NO_TEAM_HEADING = "From the career. This set says No Team, so pick one only if it's on the card.";
 
 /**
  * NEO-639 — one player's years with one team, as a chip prints them. Several

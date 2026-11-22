@@ -150,9 +150,12 @@ export default function TeamFillChips({
   );
   const bscDisagrees =
     bscName !== "" && setYearTeamIds.some((id) => !marketplaceIds.has(id as string));
+  // The server asks a card with a tied player as a whole: nothing preselected.
+  // Read here too, so the heading's promise and the pre-fill cannot part ways.
+  const anyTie = useMemo(() => [...careerByTeam.values()].some((c) => c.tie), [careerByTeam]);
   const preselect = useMemo(
-    () => (bscDisagrees || setNoTeam ? [] : setYearTeamIds.slice(0, MAX_CARD_TEAMS)),
-    [bscDisagrees, setNoTeam, setYearTeamIds],
+    () => (bscDisagrees || setNoTeam || anyTie ? [] : setYearTeamIds.slice(0, MAX_CARD_TEAMS)),
+    [bscDisagrees, setNoTeam, anyTie, setYearTeamIds],
   );
   const ready = suggestions !== undefined && bscSettled;
 
@@ -226,7 +229,7 @@ export default function TeamFillChips({
     const on = chosenSet.has(chip.teamId as string);
     const blocked = !on && atCap;
     return (
-      <li key={chip.teamId as string}>
+      <li key={chip.teamId as string} className="max-w-full">
         <button
           type="button"
           aria-pressed={on}
@@ -235,29 +238,42 @@ export default function TeamFillChips({
             if (blocked || write.busy) return;
             toggle(chip.teamId);
           }}
-          className={`hit-area-24 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs focus-outline ${
+          className={`hit-area-24 inline-flex max-w-full flex-col items-start gap-0 border px-2 py-0.5 text-left text-xs focus-outline ${
+            opts.suffix ? "rounded-2xl" : "rounded-full"
+          } ${
             on
               ? "border-neon-green-text bg-neon-green/20 text-neon-green-text"
               : "border-control bg-raised text-ink-2 hover:border-neon-blue-text hover:text-neon-blue-text"
           } ${blocked ? "opacity-40" : ""}`}
         >
-          {/* The chosen mark that is not a colour (SC 1.4.1); aria-pressed says it to a reader. */}
-          {on && <CheckIcon aria-hidden="true" className="h-3 w-3 shrink-0" />}
-          {chip.label}
-          {opts.suffix && <span className="text-ink-2">{opts.suffix}</span>}
+          <span className="inline-flex items-center gap-1">
+            {/* The chosen mark that is not a colour (SC 1.4.1); aria-pressed says it to a reader. */}
+            {on && <CheckIcon aria-hidden="true" className="h-3 w-3 shrink-0" />}
+            {chip.label}
+          </span>
+          {/* NEO-645: the years (every player's, merged) get their own line, so a
+              long list wraps inside the chip at 320px and is never clipped. The
+              dot stays in the accessible name ("Team · Player 1967–1983") as a
+              reader-only separator. */}
+          {opts.suffix && (
+            <span className="block max-w-full text-ink-2 wrap-anywhere">
+              <span className="sr-only"> · </span>
+              {opts.suffix}
+            </span>
+          )}
         </button>
       </li>
     );
   };
 
-  /** "· Jimmie Foxx played here" when it is preselected; the player's years when it is not. */
+  /** "Jimmie Foxx played here" when it is preselected; the player's years when it is not. */
   const chipSuffix = (chip: TeamChip): string | undefined => {
     const years = yearsWith(chip.teamId);
     if (preselect.includes(chip.teamId)) {
-      return chip.playerNames.length > 0 ? ` · ${playedHere(chip.playerNames)}` : undefined;
+      return chip.playerNames.length > 0 ? playedHere(chip.playerNames) : undefined;
     }
-    if (years) return ` · ${years}`;
-    return chip.playerNames.length > 0 ? ` · ${playedHere(chip.playerNames)}` : undefined;
+    if (years) return years;
+    return chip.playerNames.length > 0 ? playedHere(chip.playerNames) : undefined;
   };
 
   return (
@@ -288,7 +304,7 @@ export default function TeamFillChips({
               careerChips.some((c) => c.inSetYear),
               bscDisagrees,
               uncoveredSetYear,
-              { tie: careerChips.some((c) => c.tie), setNoTeam },
+              { tie: anyTie, setNoTeam },
             )}
           </p>
           <ul className="flex flex-wrap gap-1.5" aria-labelledby={`fill-career-${row._id}`}>
@@ -323,7 +339,7 @@ export default function TeamFillChips({
                 playerNames: [],
                 inSetYear: false,
               },
-              { suffix: detail ? ` · ${detail}` : undefined },
+              { suffix: detail || undefined },
             );
           })}
         </ul>

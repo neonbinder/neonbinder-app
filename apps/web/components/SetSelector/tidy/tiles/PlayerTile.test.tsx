@@ -422,6 +422,33 @@ describe("PlayerTile", () => {
     expect(screen.getByRole("group", { name: "Player" }).getAttribute("data-tidy-level")).toBe("plain");
   });
 
+  it("several no-career players on one card each get a note of their own, by name or else by place", () => {
+    renderTile({
+      row: card({
+        playerIds: ["player-1", "player-2", "player-3", "player-4"],
+        tidyChecks: [
+          { kind: "newPlayerNoCareer", playerId: "player-1" },
+          { kind: "newPlayerNoCareer", playerId: "player-3" },
+          { kind: "newPlayerNoCareer", playerId: "player-4" },
+        ],
+      } as never),
+      items: [],
+      ctx: context({
+        players: [
+          { playerId: "player-1", name: "Quinn Rookie", sportId: SPORT, stints: [], stintsMore: false },
+          { playerId: "player-2", name: "Sam Veteran", sportId: SPORT, stints: [], stintsMore: false },
+        ],
+        linkedFor: [{ kind: "player", playerId: "player-1", reason: "exact" }],
+      }),
+    });
+    const notes = screen.getAllByRole("note").map((n) => n.textContent);
+    expect(notes).toContain("New player Quinn Rookie, no career from Wikidata");
+    // Two nameless ones never read alike.
+    expect(notes).toContain("New player 2, no career from Wikidata");
+    expect(notes).toContain("New player 3, no career from Wikidata");
+    expect(new Set(notes).size).toBe(notes.length);
+  });
+
   it("'+ Another player' adds one to the card, and is hidden while a name is unanswered", async () => {
     const linked = {
       row: card({ playerIds: ["player-1"] }),

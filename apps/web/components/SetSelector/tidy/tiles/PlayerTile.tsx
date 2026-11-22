@@ -180,9 +180,9 @@ export default function PlayerTile({ row, context, attention, sportId }: TidyTil
         );
       })}
 
-      {noCareerIds.map((playerId) => (
+      {noCareerIds.map((playerId, i) => (
         <TidyNote key={`no-career:${playerId}`}>
-          {newPlayerNoCareerText(playerById.get(playerId)?.name, multi)}
+          {newPlayerNoCareerText(playerById.get(playerId)?.name, multi, i + 1)}
         </TidyNote>
       ))}
 

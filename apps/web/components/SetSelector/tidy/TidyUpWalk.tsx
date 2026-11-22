@@ -449,7 +449,10 @@ function WalkDialog({
 
   // On every card: the header line is read (number, who, what is owed), and
   // Tab starts from there. Never a field: the walk must not start a typing
-  // session nobody asked for.
+  // session nobody asked for. `reviewing` is a dependency on purpose: "Review the
+  // N skipped" changes it in the same transition that moves the walk to the
+  // first skipped card, so that landing is focused by this effect (the header
+  // of that card), not left to the lost-focus repair below.
   useEffect(() => {
     if (!currentId && !isDone) return;
     const id = requestAnimationFrame(() => {
@@ -461,7 +464,7 @@ function WalkDialog({
       headerRef.current?.focus({ preventScroll: true });
     });
     return () => cancelAnimationFrame(id);
-  }, [currentId, isDone]);
+  }, [currentId, isDone, reviewing]);
 
   // An ANSWER on a tile (`useAnswered`): focus goes on, never back to the
   // control that was pressed (an answered row's Change, a reopened search: one

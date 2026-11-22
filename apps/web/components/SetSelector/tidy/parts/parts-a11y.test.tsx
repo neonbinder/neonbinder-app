@@ -151,7 +151,9 @@ describe("TeamFillChips", () => {
     // The line over the career chips, and the played-here suffix on a chip.
     const heading = container.querySelector<HTMLElement>('p[id^="fill-career-"]');
     expect(heading?.className).toContain("text-ink-2");
-    const suffix = screen.getByRole("button", { name: /San Diego Padres/ }).querySelector("span");
+    const suffix = screen
+      .getByRole("button", { name: /San Diego Padres/ })
+      .querySelector<HTMLElement>("span.block");
     expect(suffix?.className).toContain("text-ink-2");
     // Blue stays on hover only: no resting text in the chips' area is blue.
     const resting = Array.from(container.querySelectorAll<HTMLElement>("p, li span")).filter((el) =>

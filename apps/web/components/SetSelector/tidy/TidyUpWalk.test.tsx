@@ -681,6 +681,25 @@ describe("the end screen: Review the skipped (NEO-645 audit)", () => {
     expect(screen.getByText("3 cards skipped, not ready to list")).toBeTruthy();
   });
 
+  it("activated by keyboard, it lands focus on the first skipped card's header", async () => {
+    await skipAll([pink("a", "1"), pink("b", "2")]);
+    const review = button("Review the 2 skipped");
+    act(() => review.focus());
+    expect(document.activeElement).toBe(review);
+    // Enter on a button is the button's own: the walk's key handler leaves it alone.
+    fireEvent.keyDown(review, { key: "Enter" });
+    expect(url()).toBe("?tidy=done");
+    fireEvent.click(review);
+    await waitFor(() => expect(url()).toBe("?tidy=a"));
+    await screen.findByTestId("tile-player");
+    await nextFrame();
+    const header = document.activeElement as HTMLElement;
+    expect(header).not.toBe(document.body);
+    expect(header.getAttribute("role")).toBe("group");
+    expect(header.textContent).toContain("#1");
+    expect(header.textContent).not.toContain("#2");
+  });
+
   it("Back from the review returns to the same end screen: the button and the tally are as they were", async () => {
     await skipAll([pink("a", "1"), pink("b", "2"), pink("c", "3")]);
     expect(screen.getByText("0 cards fixed, 3 skipped.")).toBeTruthy();
