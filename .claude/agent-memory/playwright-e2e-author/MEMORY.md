@@ -129,3 +129,4 @@
 - [Title repeat rule, worker-11 arithmetic, shared snapshot results](patterns_title_repeat_of_set_name_and_shared_snapshot_results.md) — distinct set/team prefixes; size for worker 11; --exclude results + own --output
 - [Probe the rest of a spent fresh-only run](patterns_probe_the_rest_of_a_spent_fresh_only_run.md) — red after commit, no reseed: throwaway probe reopens the walk by the pill, then rm
 - [Career tile fixtures](patterns_career_tile_fixtures.md) — NEO-645: gap only at commit for a pre-made player; recorded Wikidata careers; probe names read-only; --output wiped per run
+- [Career-team link fixture + counter-fixture proof](patterns_career_team_link_fixture_and_counter_fixture_proof.md) — NEO-490 6b on a hand-made sport (2020, stints 2010/2024); spec-only counter-fixture when a plant is barred
