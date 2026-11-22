@@ -19,6 +19,10 @@
  *                            history picks, preselects, same-name choices, team
  *                            candidates) as rows BEFORE the commit (schema doc
  *                            4a). Driven page by page from the action.
+ *   - `resetForRefetch`      a fetch forgets every earlier answer (A17): the gate
+ *                            calls it first, so a name is matched against the
+ *                            players and teams that exist NOW and asked again if
+ *                            unlinked. Only an operator's "not an entity" stays.
  *   - `fanOut*`              an answer reaches every card in its scope: paged,
  *                            compare-and-set, stops when the answer is replaced.
  *   - `enqueuePendingLookups` after the commit finalizes (schema doc 4b).
@@ -1264,7 +1268,9 @@ export function cleansedGateNames(items: ReadonlyArray<{ kind: string; name: str
  * convergent, so the driving action re-calls with the remainder when the budget
  * runs out and a re-fetch converges on the same rows:
  *
- *  - an OPERATOR answer is never touched;
+ *  - an OPERATOR answer is never touched (a fetch's `resetForRefetch` has
+ *    already cleared every earlier one but a "not an entity" ruling, so what
+ *    stands here is this fetch's own, or a ruling main also kept);
  *  - an `auto` answer is replaced with the fresh fact, or cleared when the gate
  *    no longer has one;
  *  - an unanswered row still `pending` is left alone; otherwise its preselect,
@@ -1352,6 +1358,16 @@ export const upsertFromGatePage = internalMutation({
         if (existing.answer && existing.answer.by !== "auto") continue;
         if (existing.answer?.by === "auto" || existing.answer === undefined) {
           const patch: Partial<Doc<"tidyNames">> = {};
+          // A row nobody has looked up (the fetch's reset left it blank, or a
+          // migration did) that the gate asks about like a new name is born
+          // again: `pending` at generation 0, so it is looked up after the
+          // commit exactly as a new row is. A name the gate decides itself
+          // (an answer, a same-name choice, a preselect) stays `ready`.
+          if (!answer && !awaitsChoice && !existing.answer && neverLooked(existing)) {
+            patch.status = "pending";
+            patch.lookupGen = 0;
+            patch.lookupRequestedAt = Date.now();
+          }
           if (answer) {
             if (!sameAnswer(existing.answer, answer)) {
               patch.answer = answer;
@@ -1397,6 +1413,95 @@ export const upsertFromGatePage = internalMutation({
       ops += 1;
     }
     return { processed, ops };
+  },
+});
+
+/** Rows one `resetForRefetch` page reads (and at most patches). */
+export const RESET_PAGE = 150;
+
+/**
+ * NEO-645 (A17, Jason: "it should refetch all card data and use whatever
+ * player/team data exists now. We do not need to keep track of answers.") — a
+ * fetch starts from the set's name rows with every earlier answer forgotten.
+ *
+ * On main a review row lived for one batch and was deleted at the commit, so a
+ * later fetch matched names against the players and teams that exist NOW (main's
+ * normal rules) and asked again for anything unlinked. Here the rows outlive the
+ * commit (the walk answers them card by card), so without this step the commit
+ * prelude would read last fetch's operator link as a decision and let it beat
+ * the exactly-one match, and the gate's upsert would leave it standing.
+ *
+ * What a reset row keeps is what main kept: nothing about the name but the one
+ * durable ruling main also kept, an operator's "not a player / not a team"
+ * (`entityReviewSkips`, NEO-212). Everything else goes back to the shape of a
+ * row nobody has asked about: no answer, no Wikidata output, no candidates, no
+ * lookup state. `upsertFromGatePage` then re-asks each name the gate still
+ * needs (a new `pending` row's worth: looked up after the commit) and re-states
+ * every fact the gate still holds (auto-links, history choices, preselects).
+ * A name the gate no longer lists (it now matches exactly one player) is left
+ * blank, never looked up, and nothing reads it.
+ *
+ * The row is reset IN PLACE, never deleted: `cardPrintedNames` points at it
+ * for the cards that print the name, and an orphaned printed row would answer
+ * "That name has nothing to answer." A cleared answer bumps `answerGen`, so a
+ * fan-out still running for it stops (its generation no longer matches). The
+ * cards themselves are not touched here: the commit that follows rewrites them
+ * from the names as they now resolve. `lookupGen` goes back to zero, so a
+ * lookup result still in flight for the old question finds a different
+ * generation and is dropped.
+ *
+ * Paged (a scope holds a few hundred to a few thousand name rows); the gate
+ * drives it with the cursor until it returns null.
+ */
+export const resetForRefetch = internalMutation({
+  args: {
+    scopeId: v.id("selectorOptions"),
+    /** The sport the fetch asks its questions in; a blank row asks in it. */
+    sportId: v.id("selectorOptions"),
+    cursor: v.optional(v.string()),
+  },
+  returns: v.object({ cursor: v.union(v.string(), v.null()), reset: v.number() }),
+  handler: async (ctx, args) => {
+    const page = await ctx.db
+      .query("tidyNames")
+      .withIndex("by_scope_kind_name", (q) => q.eq("scopeId", args.scopeId))
+      .paginate({ numItems: RESET_PAGE, cursor: args.cursor ?? null });
+    let reset = 0;
+    for (const row of page.page) {
+      // The one ruling that outlives a fetch: an operator's "not an entity".
+      if (row.answer?.kind === "notEntity" && row.answer.by === "operator") continue;
+      const blank =
+        row.answer === undefined &&
+        row.status === "ready" &&
+        row.enrichment === undefined &&
+        row.candidateTeamIds === undefined &&
+        row.candidatePlace === undefined &&
+        row.lookupGen === undefined &&
+        row.lookupRequestedAt === undefined &&
+        row.fanOutFrom === undefined &&
+        row.answeredByUserId === undefined &&
+        row.answeredAt === undefined &&
+        row.sportId === args.sportId;
+      if (blank) continue;
+      await ctx.db.patch(row._id, {
+        answer: undefined,
+        ...(row.answer !== undefined || row.fanOutFrom !== undefined
+          ? { answerGen: (row.answerGen ?? 0) + 1 }
+          : {}),
+        answeredByUserId: undefined,
+        answeredAt: undefined,
+        fanOutFrom: undefined,
+        enrichment: undefined,
+        candidateTeamIds: undefined,
+        candidatePlace: undefined,
+        status: "ready",
+        lookupGen: undefined,
+        lookupRequestedAt: undefined,
+        sportId: args.sportId,
+      });
+      reset += 1;
+    }
+    return { cursor: page.isDone ? null : page.continueCursor, reset };
   },
 });
 

@@ -3012,8 +3012,14 @@ async function resolveUnknownsAndStartBatch(
   // NEO-645 — there is no review batch any more: every unknown name is a
   // `tidyNames` row of the set (one per scope, kind and name, shared by every
   // operator), written below. The Wikidata look-ups run after the finalize
-  // (`tidyNames.enqueuePendingLookups`), and a re-fetch finds the same rows, so
-  // "Back to matching" and a second sync never discard an answer.
+  // (`tidyNames.enqueuePendingLookups`). A fetch never reuses an earlier answer
+  // (A17, Jason: "it should refetch all card data and use whatever player/team
+  // data exists now. We do not need to keep track of answers"): the rows are
+  // reset first (`tidyNames.resetForRefetch`), exactly as main's per-batch
+  // review rows were gone by the next fetch, so a name resolves through the
+  // players and teams that exist now and is asked again if nothing links it.
+  // Only an operator's "not a player / not a team" ruling stays (main's
+  // `entityReviewSkips`, NEO-212).
   const batchStartedAt = Date.now();
   const callerId = await getCurrentUserId(ctx);
   if (!callerId) throw new Error("Not authenticated");
@@ -3049,6 +3055,22 @@ async function resolveUnknownsAndStartBatch(
    * `playerContexts`) is not stored: `tidyCards.cardContext` reads it live
    * from `cardPrintedNames`.
    */
+  // A17 — forget every earlier answer before this fetch's facts are written
+  // (and before the commit prelude reads the rows). Paged; idempotent, so
+  // "Back to matching", which gates again before the commit, finds blank rows
+  // and writes the same facts.
+  for (let cursor: string | null = null; ; ) {
+    const done: { cursor: string | null; reset: number } = await gate.runMutation(
+      internal.tidyNames.resetForRefetch,
+      {
+        scopeId: args.selectorOptionId,
+        sportId: args.sportId,
+        ...(cursor ? { cursor } : {}),
+      },
+    );
+    if (done.cursor === null) break;
+    cursor = done.cursor;
+  }
   const gateItems: GateItem[] = [];
   const noMatch = new Set(playersWithNoExistingMatch);
   const preselectFor = (name: string) => {
@@ -20263,7 +20285,10 @@ export const commitCardChecklistPrelude = internalMutation({
     // set's wizard. Keyed by kind+normalized-name so a player and a team that
     // happen to share a normalized name never collide.
     // NEO-645 — the answers now live in `tidyNames`, one row per (leaf, kind,
-    // name), shared across operators and kept past the commit. Each is read as
+    // name), shared across operators. The gate that opens this fetch has reset
+    // them (`tidyNames.resetForRefetch`: an earlier fetch's answers are gone,
+    // an operator's "not an entity" ruling stays), so what is read here is
+    // this fetch's own facts, never a leftover. Each is read as
     // the review row it replaces, so every rule below (a link beats the
     // exactly-one match, a skip suppresses the name, an auto-link carries its
     // origin, a team alias is remembered) runs unchanged. `args.batchId` is

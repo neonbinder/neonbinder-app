@@ -384,7 +384,7 @@ describe("the gate's round trips (the 200-name, 32-team shape)", () => {
     return { sportId, p, cards };
   }
 
-  test("at most 18 child calls, with the player slices and the teams batch as one call each", async () => {
+  test("at most 19 child calls, with the player slices and the teams batch as one call each", async () => {
     const t = newT();
     const { sportId, p, cards } = await bigSet(t);
     const names = new Set(cards.flatMap((c) => c.players));
@@ -404,7 +404,10 @@ describe("the gate's round trips (the 200-name, 32-team shape)", () => {
     // of 100 (`upsertFromGatePage`), so two write calls where the old queue
     // start was one; the reads are unchanged.
     expect(countOf(":upsertFromGatePage")).toBe(Math.ceil(names.size / 100));
-    expect(calls.length).toBeLessThanOrEqual(18);
+    // NEO-645 (A17): 18 -> 19. The fetch forgets the earlier fetch's answers
+    // first (`resetForRefetch`), one call for a scope of up to a page of rows.
+    expect(countOf(":resetForRefetch")).toBe(1);
+    expect(calls.length).toBeLessThanOrEqual(19);
 
     // The product's own tally agrees with the count taken from outside.
     const timing = logLines(log).find((l) => l.msg === "review_gate_timing")!;
