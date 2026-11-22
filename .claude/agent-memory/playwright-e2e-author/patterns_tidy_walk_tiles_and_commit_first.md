@@ -115,6 +115,18 @@ that must not write a real set, there is no pre-save exit any more: give it its 
 - **The Listing title tile's edit button is "Edit title"** (was "Edit card title"); levels via
   `toHaveAccessibleDescription(/To fix/)`.
 
+## Career fallback chips and fetch-or-adopt rewrites (NEO-330 / NEO-528 specs on the walk)
+
+- **No stint covers the set year:** the career chips' list is named by its heading "No <year> team on
+  file. Here’s the whole career, so pick the one on the card." (curly apostrophe; match with `.`).
+  An unpressed chip reads `<team> · <player> <from>–<to>`; only a PRESELECTED one reads `· <player>
+  played here`. Prove "nothing picked" by `pressed: true` count 0 in that list plus no `^Save teams?$`
+  button (it mounts with the first pressed chip). A pressed chip is a choice: tile still "To fix".
+- **Quick-add card header names the linked player** (`#851 · George Brett`), not the card name: a
+  free proof the PlayerPicker link landed.
+- **Fetch-or-adopt specs:** the rewritten commit/walk code runs only when the set is still empty, so
+  the first run on a seed is the only proof of it; the old "skip every name" maps to Save for later.
+
 ## Team-tile answers that change what the tile asks, and Back after Done (NEO-591 prospect, NEO-426 specs)
 
 - **"Not a team" on a printed place turns the card into a no-team card with NO claim left**, so

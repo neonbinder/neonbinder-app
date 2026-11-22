@@ -11,8 +11,9 @@
 //
 // The flow:
 // - The set builder (admin): the checklist is fetched and committed if it is
-//   still empty (the publisher's checklist uploaded first, every review name
-//   skipped), or adopted as it is (a rerun on the same seed). Card #355's
+//   still empty (the publisher's checklist uploaded first; Match Cards'
+//   Confirm saves it and the Tidy Up walk that opens is closed with "Save for
+//   later", answering nothing), or adopted as it is (a rerun on the same seed). Card #355's
 //   drawer gets P under "Also on this card"; its own player stays.
 // - The collector marks #123 (P's own) and #355 Have in Main; #355's card
 //   detail lists P under "Also on this card" (Back closes the detail).
@@ -51,8 +52,8 @@
 // on #355) is undone at the end and by the failure hook. The collector writes
 // only the signed-in user's own binder and copies.
 //
-// R3: the set builder drills through `support/set-builder.ts`, the fetch and
-// the review through `support/wizard.ts` and `support/published-checklist.ts`,
+// R3: the set builder drills through `support/set-builder.ts`, the fetch
+// through `support/published-checklist.ts`, the walk through `support/tidy-walk.ts`,
 // the collector cascade through `support/collection.ts`, and the set builder's
 // "Also on this card" names through `support/also-pictured.ts`. The set
 // builder's "Player on every card" control is `set-selector/player-on-every-card`.
@@ -73,16 +74,8 @@ import type { FlowEnv } from "../../support/env";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { CHECKLISTS, checklistRows, confirmChecklistMatchCards, usePublishersChecklist } from "../../support/published-checklist";
 import { drillToBaseVariant, drillToColdManufacturer, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
-import {
-  advanceToSave,
-  checklistDisagreementHeading,
-  confirmSaveButton,
-  expectChecklistDisagreementFirst,
-  nextStepButton,
-  pickSideForAllCards,
-  reviewWizard,
-  tidyUpName,
-} from "../../support/wizard";
+import { saveForLater, settleWalkAfterCommit, tidyWalk } from "../../support/tidy-walk";
+import { tidyUpName } from "../../support/wizard";
 
 /** The set as the set builder drills it, and as the collector's cascade does. */
 const BUILD = { sport: "Football", year: "1984", manufacturer: "Topps", set: "Topps" } as const;
@@ -93,15 +86,6 @@ const SET_LABEL = `${BUILD.year} ${BUILD.set}`;
 const CAMEO_NUMBER = "355";
 const OWN_NUMBER = "123";
 const P = "Dan Marino";
-
-/**
- * The fetch's wizard can keep staging names (each unknown name's lookup) while
- * "Skip remaining names" is pressed: the bulk skip is repeated until every name
- * is decided (`checklist-team-leader-cards-pair-and-the-walk-settles-the-checklist-team-claims`' ceiling).
- */
-const BATCH_GROWS = 60_000;
-/** The wizard opens behind the entity check's batch (live lookups; the same spec's ceiling). */
-const WIZARD_OPENS = 60_000;
 
 /**
  * The 1984 team-leader cards: BSC names each by its card ("Colts Team Leaders -
@@ -120,8 +104,7 @@ const TEAM_LEADER_NUMBERS = checklistRows(CHECKLISTS.topps1984FootballBase)
  *
  * Its own fetch rather than `fetchChecklistToWizard` (R9 divergence): that
  * helper's result line counts every row the file answers, while here the
- * team-leader cards are disagreements the operator settles first, and the
- * wizard opens on that step.
+ * team-leader cards are disagreements (Match Cards' teams line counts the rest).
  */
 async function ensureChecklist(page: Page, env: FlowEnv): Promise<void> {
   // No other spec opens Football 1984, so every column may sync itself: the
@@ -142,30 +125,17 @@ async function ensureChecklist(page: Page, env: FlowEnv): Promise<void> {
   // either branch (SportLots paused or not). The helper waits on it (7 s of ours plus BSC's), proves the
   // teams line while it is open (the only time before the save), keeps any BSC-only card and confirms.
   await confirmChecklistMatchCards(page, { facts: { ...facts, matched: facts.matched - TEAM_LEADER_NUMBERS.length }, what: "the empty checklist's fetch" });
-  const wizard = reviewWizard(page);
-  await expect(wizard).toBeVisible({ timeout: WIZARD_OPENS });
-  await expect(wizard).toHaveAccessibleName(tidyUpName({ year: BUILD.year, set: BUILD.set }));
-  // The file answers every card but the team-leader ones, which wait on the operator.
-  await expectChecklistDisagreementFirst(page);
-  await expect(wizard.getByRole("radiogroup", { name: /^Disagreement on #/ })).toHaveCount(TEAM_LEADER_NUMBERS.length);
-  await expectAccessible(page, { within: wizard, label: "Entity review wizard, team-leader cards the checklist names by club" });
-  // The club is the card's team (the checklist's side); not this spec's claim either way.
-  await pickSideForAllCards(page, "Use the checklist's", TEAM_LEADER_NUMBERS);
-  await nextStepButton(page).click();
-  await expect(checklistDisagreementHeading(page)).toBeHidden();
-
-  // The names are not this spec's claim: skip them all, repeating while a
-  // lookup can still stage a row, then save.
-  const namesDone = nextStepButton(page).or(confirmSaveButton(page));
-  const skipRemaining = wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ });
-  await expect(async () => {
-    if (await skipRemaining.isVisible()) await skipRemaining.click();
-    await expect(namesDone).toBeVisible({ timeout: 7_000 });
-  }).toPass({ timeout: BATCH_GROWS });
-  await advanceToSave(page);
-  await confirmSaveButton(page).click();
-  await expect(page.getByText(/Saved [1-9][0-9]* cards?/)).toBeVisible();
-  await expect(wizard).toBeHidden();
+  // NEO-645: Confirm SAVES the cards (our own write, 7 s), and the per-card Tidy Up walk opens by
+  // itself when a card still needs a person (names the catalogue lacks, the team-leader cards'
+  // disagreements). None of that is this spec's claim: "Save for later" closes the walk and writes
+  // nothing, as the old wizard's "Skip remaining names" left every name unanswered.
+  const saved = page.getByText(/Saved [1-9][0-9]* cards\./).first();
+  await expect(saved).toBeVisible();
+  if (await settleWalkAfterCommit(page, saved)) {
+    await expect(tidyWalk(page)).toHaveAccessibleName(tidyUpName({ year: BUILD.year, set: BUILD.set }));
+    await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk after the 1984 Topps Football fetch" });
+    await saveForLater(page);
+  }
   // A fresh load of the checklist, as a rerun finds it.
   await drillToBaseVariant(page, env, BUILD);
   await expect(cards).toBeVisible();
