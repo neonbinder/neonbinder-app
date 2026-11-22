@@ -13,9 +13,10 @@
  * it answers.
  */
 
-import { act, render } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 import React from "react";
 import {
+  BrowserRouter,
   MemoryRouter,
   useLocation,
   useNavigate,
@@ -54,6 +55,8 @@ import {
   useDrillUrlState,
   type DrillUrlState,
 } from "./useDrillUrlState";
+import { useTidyWalkUrl } from "./tidy/useTidyWalkUrl";
+import { forgetSearchWrite } from "./live-search-params";
 
 /** The resolver that says every asked id is real. */
 const allValid = (ids: string[]) => ids.map((_id) => ({ _id }));
@@ -164,6 +167,36 @@ describe("serializeDrillPath", () => {
 
   it("an empty path with no base is an empty query", () => {
     expect(serializeDrillPath([]).toString()).toBe("");
+  });
+
+  // NEO-645: the Tidy Up walk opens by appending `tidy`, so a drill that moved
+  // it to the front was a second writer racing the walk's own replace. The
+  // drill's keys stay where the first of them sat; nothing else moves.
+  it("NEO-645: `tidy` at the end is already canonical (opening the walk is not a reorder)", () => {
+    const base = new URLSearchParams("sport=s&year=y&brand=b&set=t&type=v&tidy=first");
+    expect(serializeDrillPath(["s", "y", "b", "t", "v"], base).toString()).toBe(base.toString());
+  });
+
+  it("NEO-645: `tidy` in front of the drill is canonical too, and a replace of it stays put", () => {
+    const base = new URLSearchParams("tidy=c1&sport=s&year=y");
+    expect(serializeDrillPath(["s", "y"], base).toString()).toBe("tidy=c1&sport=s&year=y");
+  });
+
+  it("NEO-645: a deeper pick lands beside the drill's keys, not behind `tidy`", () => {
+    const base = new URLSearchParams("sport=s&year=y&tidy=c1");
+    expect(serializeDrillPath(["s", "y", "b"], base).toString()).toBe(
+      "sport=s&year=y&brand=b&tidy=c1",
+    );
+  });
+
+  it("keeps every other param in its own order around the drill's keys", () => {
+    const base = new URLSearchParams("a=1&year=old&b=2&sport=old&c=3");
+    expect(serializeDrillPath(["s", "y"], base).toString()).toBe("a=1&sport=s&year=y&b=2&c=3");
+  });
+
+  it("appends the drill's keys when the base has none, and drops them when the path is empty", () => {
+    expect(serializeDrillPath(["s"], new URLSearchParams("utm=1")).toString()).toBe("utm=1&sport=s");
+    expect(serializeDrillPath([], new URLSearchParams("sport=s&utm=1&year=y")).toString()).toBe("utm=1");
   });
 });
 
@@ -772,5 +805,174 @@ describe("useDrillUrlState — a correction drops the trust it invalidates", () 
     await act(async () => h.navigate(-1));
     expect(resolverCalls).toHaveLength(0);
     expect(h.state().selection).toMatchObject({ yearId: "yr", variantTypeId: "vt" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-645: the walk opening races the drill's correction effect
+// ---------------------------------------------------------------------------
+
+/**
+ * Production does not run StrictMode, so effects run once. Under StrictMode the
+ * mount effects run twice and the second pass hides this race, which is why the
+ * bug only showed on a deployed build. NONE of these tests is wrapped in it.
+ *
+ * `Walk` is the resolve logic of `TidyUpWalk` (its effect, which replaces
+ * `tidy=first` with the first card); the real component has its own test.
+ */
+describe("useDrillUrlState + useTidyWalkUrl — opening the Tidy Up walk (NEO-645)", () => {
+  const START = "/admin/set-builder?sport=s&year=y&brand=b&set=t&type=v";
+  const CARDS = ["c1", "c2"];
+  const probe: { search: string; open: (() => void) | null; showCalls: string[] } = {
+    search: "",
+    open: null,
+    showCalls: [],
+  };
+
+  /**
+   * The walk's resolve effect, as `TidyUpWalk` had it before the belt-and-braces:
+   * its deps are only `needsResolve` and `firstTarget`, so it does NOT re-run when
+   * another writer restores `tidy=first`. That is deliberate. These tests pin the
+   * drill's half alone (the real component's own `entryKey` dependency, which
+   * would paper over the drill, is pinned in `TidyUpWalk.test.tsx`).
+   */
+  function useWalkResolve(firstCard: string) {
+    const { location, showCard, showDone } = useTidyWalkUrl();
+    const current =
+      location.kind === "card" && CARDS.includes(location.cardId) ? location.cardId : undefined;
+    const needsResolve = location.kind === "first" || (location.kind === "card" && !current);
+    const firstTarget = needsResolve ? firstCard : null;
+    React.useEffect(() => {
+      if (!needsResolve) return;
+      probe.showCalls.push(String(firstTarget));
+      if (firstTarget) showCard(firstTarget);
+      else showDone();
+    }, [needsResolve, firstTarget, showCard, showDone]);
+    return location;
+  }
+
+  function Walk() {
+    useWalkResolve("c1");
+    return null;
+  }
+
+  /** The checklist: owns the Open button and mounts the walk once `tidy` is set. */
+  function Checklist() {
+    const tidy = useTidyWalkUrl();
+    probe.open = tidy.open;
+    probe.search = useLocation().search;
+    return tidy.location.kind !== "closed" ? <Walk /> : null;
+  }
+
+  /** The drill is an ANCESTOR: the walk's effect runs first, the drill's after it. */
+  function AncestorPage() {
+    useDrillUrlState();
+    return <Checklist />;
+  }
+
+  /** One component, drill hooks FIRST: the drill's effect runs before the walk's. */
+  function DrillThenWalk() {
+    useDrillUrlState();
+    const tidy = useTidyWalkUrl();
+    probe.open = tidy.open;
+    probe.search = useLocation().search;
+    useWalkResolve("c1");
+    return null;
+  }
+
+  /** One component, walk hooks FIRST: the walk's effect runs before the drill's. */
+  function WalkThenDrill() {
+    const tidy = useTidyWalkUrl();
+    probe.open = tidy.open;
+    probe.search = useLocation().search;
+    useWalkResolve("c1");
+    useDrillUrlState();
+    return null;
+  }
+
+  beforeEach(() => {
+    probe.search = "";
+    probe.open = null;
+    probe.showCalls = [];
+    forgetSearchWrite();
+  });
+
+  const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+
+  async function openWalk() {
+    await settle();
+    await act(async () => {
+      probe.open!();
+      await new Promise((r) => setTimeout(r, 50));
+    });
+  }
+
+  const DRILL_QUERY = "sport=s&year=y&brand=b&set=t&type=v";
+
+  it("the drill as an ancestor of the walk: the walk's card replace is not undone", async () => {
+    render(
+      <MemoryRouter initialEntries={[START]}>
+        <AncestorPage />
+      </MemoryRouter>,
+    );
+    await openWalk();
+    await waitFor(() => expect(probe.search).toBe(`?${DRILL_QUERY}&tidy=c1`));
+  });
+
+  it("the same, under the browser's own history (BrowserRouter)", async () => {
+    window.history.replaceState(null, "", START);
+    render(
+      <BrowserRouter>
+        <AncestorPage />
+      </BrowserRouter>,
+    );
+    await openWalk();
+    await waitFor(() => expect(probe.search).toBe(`?${DRILL_QUERY}&tidy=c1`));
+    expect(window.location.search).toBe(`?${DRILL_QUERY}&tidy=c1`);
+  });
+
+  it("the drill's effect running BEFORE the walk's (reverse order) lands on the card too", async () => {
+    render(
+      <MemoryRouter initialEntries={[START]}>
+        <DrillThenWalk />
+      </MemoryRouter>,
+    );
+    await openWalk();
+    await waitFor(() => expect(probe.search).toBe(`?${DRILL_QUERY}&tidy=c1`));
+  });
+
+  it("the drill's effect running AFTER the walk's, in one component, lands on the card", async () => {
+    render(
+      <MemoryRouter initialEntries={[START]}>
+        <WalkThenDrill />
+      </MemoryRouter>,
+    );
+    await openWalk();
+    await waitFor(() => expect(probe.search).toBe(`?${DRILL_QUERY}&tidy=c1`));
+  });
+
+  it("opening the walk is one push and one replace: no reorder write from the drill", async () => {
+    const visits: Array<{ search: string; type: string }> = [];
+    function Visits() {
+      const location = useLocation();
+      const type = useNavigationType();
+      React.useEffect(() => {
+        visits.push({ search: location.search, type });
+      }, [location, type]);
+      return null;
+    }
+    render(
+      <MemoryRouter initialEntries={[START]}>
+        <Visits />
+        <AncestorPage />
+      </MemoryRouter>,
+    );
+    await openWalk();
+    await waitFor(() => expect(probe.search).toBe(`?${DRILL_QUERY}&tidy=c1`));
+    expect(visits.map((v) => [v.search, v.type])).toEqual([
+      [`?${DRILL_QUERY}`, "POP"],
+      [`?${DRILL_QUERY}&tidy=first`, "PUSH"],
+      [`?${DRILL_QUERY}&tidy=c1`, "REPLACE"],
+    ]);
   });
 });

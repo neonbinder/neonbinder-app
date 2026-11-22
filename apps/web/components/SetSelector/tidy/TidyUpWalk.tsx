@@ -207,7 +207,7 @@ function WalkDialog({
   const titleId = useId();
   const statusId = useId();
   const url = useTidyWalkUrl();
-  const { location, canStepBack, goToCard, showCard, showDone, finish, stepBack } = url;
+  const { location, entryKey, canStepBack, goToCard, showCard, showDone, finish, stepBack } = url;
 
   // Where "Add all N new players" draws its confirm: the top of the scrolling
   // area. State, not a ref, so the control re-renders once the element exists.
@@ -282,11 +282,17 @@ function WalkDialog({
   const firstTarget = needsResolve
     ? nextCardId(order, { passed: openPassed, trail: [] }, null)
     : null;
+  // `entryKey` is a dependency on purpose: it changes with every committed
+  // navigation, so if another writer ever puts `tidy=first` (or a stale id) back
+  // over the replace below, even in the same flush, the walk resolves again
+  // instead of sitting on "Finding the next card." with inputs that never
+  // changed. Idempotent: once the URL shows one of our cards, `needsResolve` is
+  // false and nothing is written.
   useEffect(() => {
     if (!needsResolve) return;
     if (firstTarget) showCard(firstTarget);
     else showDone();
-  }, [needsResolve, firstTarget, showCard, showDone]);
+  }, [needsResolve, firstTarget, entryKey, showCard, showDone]);
 
   // The trail, for Back after a refresh. Grown in the render that first shows
   // a card (the render-phase update React documents for "information from

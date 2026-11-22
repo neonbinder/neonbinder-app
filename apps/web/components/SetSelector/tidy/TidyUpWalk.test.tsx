@@ -6,8 +6,8 @@
  * Escape ordering can be driven. Router, URL, history and the sitting are real.
  */
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { useState } from "react";
-import { MemoryRouter, useLocation } from "react-router";
+import { useEffect, useRef, useState } from "react";
+import { MemoryRouter, useLocation, useSearchParams } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../convex/_generated/api", () => ({
@@ -15,6 +15,7 @@ vi.mock("../../../convex/_generated/api", () => ({
     tidyNames: { lookupsPending: "lookupsPending" },
     tidyCards: { cardContext: "cardContext", markReviewed: "markReviewed" },
     tidyNewPlayers: { newPlayerNames: "newPlayerNames", addNewPlayers: "addNewPlayers" },
+    drillPath: { resolveDrillPath: "resolveDrillPath" },
   },
 }));
 
@@ -39,6 +40,8 @@ vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
     if (args === "skip") return undefined;
     if (ref === "lookupsPending") return pendingLookups;
+    // The drill hook above the walk (NEO-645 race test): every id in the URL is real.
+    if (ref === "resolveDrillPath") return (args as { ids: string[] }).ids.map((_id) => ({ _id }));
     if (ref === "cardContext") {
       const { cardId } = args as { cardId: string };
       return {
@@ -120,6 +123,9 @@ vi.mock("./tiles/TitleTile", async () => {
 });
 
 import TidyUpWalk, { mustFixLine, reviewSkippedLabel } from "./TidyUpWalk";
+import { useDrillUrlState } from "../useDrillUrlState";
+import { useTidyWalkUrl } from "./useTidyWalkUrl";
+import { forgetSearchWrite } from "../live-search-params";
 import { resetSitting } from "./walk-order";
 import { currentReviewKeys, deriveCardAttention } from "../card-attention";
 import type { CardChecklistRow } from "../card-checklist-row";
@@ -946,3 +952,101 @@ describe("the walk's own surface (NEO-645 audit)", () => {
   });
 });
 
+
+describe("opening the walk beside the drill and other writers (NEO-645: a production-only race)", () => {
+  // No StrictMode here, on purpose: production runs every effect once, and the
+  // double mount-effects of StrictMode (the dev server) hide the bug.
+  const DRILL = "sport=s&year=y&brand=b&set=t&type=v";
+
+  /** The real set builder shape: the drill hook above the checklist that opens the walk. */
+  function Page({ cards, extra, after }: { cards: CardChecklistRow[]; extra?: React.ReactNode; after?: React.ReactNode }) {
+    useDrillUrlState();
+    const tidy = useTidyWalkUrl();
+    return (
+      <>
+        <UrlProbe />
+        {extra}
+        <button type="button" onClick={tidy.open}>
+          Open the walk
+        </button>
+        {tidy.location.kind !== "closed" && (
+          <TidyUpWalk
+            leafId={LEAF}
+            setName="2024 Topps Chrome"
+            title="Tidy up 2024 Topps Chrome"
+            cards={cards}
+            onClose={vi.fn()}
+          />
+        )}
+        {after}
+      </>
+    );
+  }
+
+  beforeEach(() => forgetSearchWrite());
+
+  it("the real drill and the real walk: opening ends on the first card, not on `first`", async () => {
+    render(
+      <MemoryRouter initialEntries={[`/?${DRILL}`]}>
+        <Page cards={[pink("c10", "10"), pink("c2", "2")]} />
+      </MemoryRouter>,
+    );
+    await act(async () => {});
+    fireEvent.click(button("Open the walk"));
+    await waitFor(() => expect(url()).toBe(`?${DRILL}&tidy=c2`));
+    expect(screen.queryByText("Finding the next card.")).toBeNull();
+    await screen.findByTestId("tile-player");
+  });
+
+  it("belt and braces: a writer that puts `tidy=first` back in the walk's own flush is resolved again", async () => {
+    // A rogue writer, built on the RENDERED params with no live-params protocol
+    // (the bug's shape). It sits AFTER the walk, so in the flush where the walk
+    // replaces `first` with a card it writes last and restores `first`: the walk
+    // never renders the card, its inputs (`needsResolve`, `firstTarget`) do not
+    // change, and only watching the URL's `tidy` value gets it out.
+    function Rogue() {
+      const [params, setParams] = useSearchParams();
+      const done = useRef(false);
+      useEffect(() => {
+        if (done.current || params.get("tidy") !== "first") return;
+        done.current = true;
+        setParams(new URLSearchParams(params), { replace: true });
+      }, [params, setParams]);
+      return null;
+    }
+    render(
+      <MemoryRouter initialEntries={[`/?${DRILL}`]}>
+        <Page cards={[pink("c10", "10"), pink("c2", "2")]} after={<Rogue />} />
+      </MemoryRouter>,
+    );
+    await act(async () => {});
+    fireEvent.click(button("Open the walk"));
+    await waitFor(() => expect(url()).toBe(`?${DRILL}&tidy=c2`));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    expect(url()).toBe(`?${DRILL}&tidy=c2`);
+    expect(screen.queryByText("Finding the next card.")).toBeNull();
+  });
+
+  it("is idempotent: a walk already on a card of the checklist writes nothing more", async () => {
+    const writes: string[] = [];
+    function Spy() {
+      const location = useLocation();
+      useEffect(() => {
+        writes.push(location.search);
+      }, [location]);
+      return null;
+    }
+    render(
+      <MemoryRouter initialEntries={[`/?${DRILL}&tidy=c2`]}>
+        <Page cards={[pink("c10", "10"), pink("c2", "2")]} extra={<Spy />} />
+      </MemoryRouter>,
+    );
+    await screen.findByTestId("tile-player");
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    expect(writes).toEqual([`?${DRILL}&tidy=c2`]);
+  });
+});

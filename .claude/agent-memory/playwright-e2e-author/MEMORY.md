@@ -140,3 +140,4 @@
 - [NNO walk, chips](patterns_walk_on_nno_cards_and_team_chips.md) — face name is the identity
 - [Count pill suffix](patterns_count_pill_suffix_and_anchored_negatives.md) — use needsYouPill
 - [Walk planted breaks](patterns_walk_helper_planted_breaks.md) — plants and red sites for the helpers
+- [StrictMode masks single-run effect bugs](patterns_strictmode_masks_single_invocation_effect_bugs.md) — local dev double effects hide a write a later effect undoes; CI prod build sticks

@@ -87,6 +87,14 @@ type TidyState = {
 
 export type TidyWalkUrl = {
   location: TidyWalkLocation;
+  /**
+   * The router entry the URL was last committed as. It changes on every
+   * navigation, including one that leaves `tidy` reading the same (another
+   * writer restoring `first` after the walk replaced it), which `location`
+   * cannot show: it is memoized on the `tidy` value. The walk's resolve effect
+   * depends on it.
+   */
+  entryKey: string;
   /** A walk card was on screen before this entry (so the browser can step back to it). */
   canStepBack: boolean;
   /** Open the walk at its first card. Push. */
@@ -170,5 +178,5 @@ export function useTidyWalkUrl(): TidyWalkUrl {
   }, [write]);
   const stepBack = useCallback(() => latest.current.navigate(-1), []);
 
-  return { location, canStepBack, open, goToCard, showCard, finish, showDone, stepBack, close };
+  return { location, entryKey: routerLocation.key, canStepBack, open, goToCard, showCard, finish, showDone, stepBack, close };
 }
