@@ -42,6 +42,7 @@ import {
   COMMIT_CHUNK_PARALLEL_CALLS,
   commitChunkSize,
 } from "./selectorOptions";
+import { ENQUEUE_PAGE } from "./tidyNames";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import { seedTidyWorld } from "../lib/testing/tidy-world";
 import { insertTestCard } from "../lib/testing/card-row";
@@ -559,5 +560,270 @@ describe("landing the counts", () => {
     const leaf = await t.run((ctx) => ctx.db.get(w.base));
     expect(leaf?.cardCount).toBe(0);
     expect(leaf?.lastCardAt).toBeUndefined();
+  });
+});
+
+// ─── adversarial pass (NEO-645) ──────────────────────────────────────────────
+
+/** Every `cardChecklist` row of the leaf, counted the way the leaf row should read. */
+async function truth(t: T, leaf: Id<"selectorOptions">) {
+  return t.run(async (ctx) => {
+    const rows = await ctx.db
+      .query("cardChecklist")
+      .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", leaf))
+      .collect();
+    return {
+      all: rows.length,
+      nonVariation: rows.filter((r) => r.variationOfCardId === undefined).length,
+    };
+  });
+}
+
+const MANY = CHUNK * 2 + 5;
+const distinct = (n: number) => Array.from({ length: n }, (_, i) => wireCard(String(1000 + i)));
+const commitAll = (t: T, w: { base: Id<"selectorOptions">; sport: Id<"selectorOptions"> }, cards: unknown[]) =>
+  t.withIdentity(ADMIN).action(api.selectorOptions.commitCardChecklist, {
+    selectorOptionId: w.base,
+    sportId: w.sport,
+    cards: cards as never,
+  });
+
+describe("a commit whose count landing fails", () => {
+  // KNOWN BUG (NEO-645 adversarial pass), pinned with test.fails so the gate stays green:
+  // delete `.fails` when the product is fixed. Rows landed but their counts never did; a re-run adopts the rows as updates (delta 0), so the leaf stays at 0.
+  test.fails("every chunk landed but the landing threw: a re-run still leaves the leaf and its ancestors at the real count", async () => {
+    const t = convexTest(schema, modules);
+    live.push(t);
+    const w = await seed(t);
+    const real = handlerOf<unknown, unknown>(commitCardChecklistLandCounts);
+    const landing = vi
+      .spyOn(commitCardChecklistLandCounts as unknown as Handler<unknown, unknown>, "_handler")
+      .mockImplementation(async () => {
+        throw new Error("landing blew up");
+      });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const cards = distinct(MANY);
+    await expect(commitAll(t, w, cards)).rejects.toThrow(/card counts failed/);
+    landing.mockImplementation(real as never);
+
+    await commitAll(t, w, cards);
+    const real_ = await truth(t, w.base);
+    expect(real_.all).toBe(MANY);
+    const [leaf, set] = await t.run((ctx) => Promise.all([ctx.db.get(w.base), ctx.db.get(w.set)]));
+    expect(leaf).toMatchObject({ cardCount: MANY, nonVariationCardCount: MANY });
+    expect(set).toMatchObject({ subtreeCardCount: MANY, subtreeNonVariationCardCount: MANY });
+  });
+
+  // KNOWN BUG (NEO-645 adversarial pass), pinned with test.fails so the gate stays green:
+  // delete `.fails` when the product is fixed. The logged-and-dropped landing loses the counts of the chunks that did land.
+  test.fails("a partial failure whose landing also fails: the retry counts the cards that landed exactly once", async () => {
+    const t = convexTest(schema, modules);
+    live.push(t);
+    const w = await seed(t);
+    const cards = distinct(MANY);
+    const realChunk = handlerOf<{ cards: Array<{ cardNumber: string }> }, unknown>(commitCardChecklistChunk);
+    const failFirst = vi
+      .spyOn(commitCardChecklistChunk as unknown as Handler<{ cards: Array<{ cardNumber: string }> }, unknown>, "_handler")
+      .mockImplementation(async (ctx, args) => {
+        if (args.cards.some((c) => c.cardNumber === cards[0].cardNumber)) throw new Error("chunk blew up");
+        return realChunk(ctx, args);
+      });
+    const realLand = handlerOf<unknown, unknown>(commitCardChecklistLandCounts);
+    const landing = vi
+      .spyOn(commitCardChecklistLandCounts as unknown as Handler<unknown, unknown>, "_handler")
+      .mockImplementation(async () => {
+        throw new Error("landing blew up");
+      });
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    await expect(commitAll(t, w, cards)).rejects.toThrow(/chunk 1\/\d+/);
+    expect(logged.mock.calls.some(([line]) => String(line).includes("commit_card_counts_not_landed"))).toBe(true);
+    failFirst.mockRestore();
+    landing.mockImplementation(realLand as never);
+
+    await commitAll(t, w, cards);
+    const leaf = await t.run((ctx) => ctx.db.get(w.base));
+    expect(leaf?.cardCount).toBe(MANY);
+  });
+});
+
+describe("a mixed insert and update commit counts the tree once", () => {
+  test("existing cards (one a variation) are adopted, new ones inserted across chunks: leaf and ancestors equal the rows", async () => {
+    const t = convexTest(schema, modules);
+    live.push(t);
+    const w = await seed(t);
+    // First commit: a base card and its variation, one chunk.
+    await commitAll(t, w, [wireCard("1"), wireCard("1b", { variation: true })]);
+    // Second commit: the same two (updates) beside enough new cards for several chunks.
+    await commitAll(t, w, [wireCard("1"), wireCard("1b", { variation: true }), ...distinct(MANY)]);
+    const real = await truth(t, w.base);
+    expect(real).toEqual({ all: MANY + 2, nonVariation: MANY + 1 });
+    const [leaf, set, sport] = await t.run((ctx) =>
+      Promise.all([ctx.db.get(w.base), ctx.db.get(w.set), ctx.db.get(w.sport)]),
+    );
+    expect(leaf).toMatchObject({ cardCount: real.all, nonVariationCardCount: real.nonVariation });
+    expect(set).toMatchObject({
+      subtreeCardCount: real.all,
+      subtreeNonVariationCardCount: real.nonVariation,
+    });
+    expect(sport?.hasCards).toBe(true);
+  });
+
+  test("a commit that only updates lands no counts and leaves the totals alone", async () => {
+    const t = convexTest(schema, modules);
+    live.push(t);
+    const w = await seed(t);
+    const cards = distinct(MANY);
+    await commitAll(t, w, cards);
+    const landCalls = vi.spyOn(
+      commitCardChecklistLandCounts as unknown as Handler<unknown, unknown>,
+      "_handler",
+    );
+    await commitAll(t, w, cards);
+    expect(landCalls).not.toHaveBeenCalled();
+    const leaf = await t.run((ctx) => ctx.db.get(w.base));
+    expect(leaf?.cardCount).toBe(MANY);
+  });
+});
+
+describe("chunksMayRunTogether on the numbers a real checklist has", () => {
+  const sortOrders = (numbers: string[], chunkSize: number) => {
+    const sorted = [...numbers].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    const order = new Map<string, number>();
+    sorted.forEach((n, i) => order.set(n, i));
+    const out: Array<Array<{ sortOrder: number }>> = [];
+    for (let i = 0; i < numbers.length; i += chunkSize) {
+      out.push(numbers.slice(i, i + chunkSize).map((n) => ({ sortOrder: order.get(n)! })));
+    }
+    return out;
+  };
+
+  test("two NNO cards in different chunks share a sort order: sequential", () => {
+    const numbers = ["1", "2", "NNO", "3", "4", "NNO"];
+    expect(chunksMayRunTogether(sortOrders(numbers, 3))).toBe(false);
+  });
+
+  test("letter-suffixed numbers are distinct sort orders: parallel", () => {
+    const numbers = ["1a", "1b", "1c", "2a", "2b", "2c"];
+    expect(chunksMayRunTogether(sortOrders(numbers, 3))).toBe(true);
+  });
+
+  test("a tie only between the first and last chunk is still caught", () => {
+    expect(chunksMayRunTogether([[{ sortOrder: 7 }], [{ sortOrder: 1 }], [{ sortOrder: 2 }], [{ sortOrder: 7 }]])).toBe(false);
+  });
+});
+
+describe("a commit with NNO cards across chunks", () => {
+  test("keeps the payload's creation order for the NNO cards and counts every card", async () => {
+    const t = convexTest(schema, modules);
+    live.push(t);
+    const w = await seed(t);
+    const cards = [
+      ...distinct(CHUNK - 1),
+      { ...wireCard("NNO"), cardName: "First NNO", platformData: { bsc: { ref: "bsc-nno-1" } } },
+      ...distinct(CHUNK).map((c, i) => ({ ...c, cardNumber: String(5000 + i), platformData: { bsc: { ref: `bsc-late-${i}` } } })),
+      { ...wireCard("NNO"), cardName: "Second NNO", platformData: { bsc: { ref: "bsc-nno-2" } } },
+    ];
+    const chunkCalls = vi.spyOn(
+      commitCardChecklistChunk as unknown as Handler<{ deferCardCounts?: boolean }, unknown>,
+      "_handler",
+    );
+    await commitAll(t, w, cards);
+    expect(chunkCalls.mock.calls.length).toBeGreaterThanOrEqual(2);
+    for (const [, args] of chunkCalls.mock.calls) expect(args.deferCardCounts).toBeUndefined();
+    const rows = await t.run((ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option_and_sort", (q) => q.eq("selectorOptionId", w.base))
+        .collect(),
+    );
+    const nno = rows.filter((r) => r.cardNumber === "NNO").map((r) => r.cardName);
+    expect(nno).toEqual(["First NNO", "Second NNO"]);
+    const leaf = await t.run((ctx) => ctx.db.get(w.base));
+    expect(leaf?.cardCount).toBe(cards.length);
+  });
+});
+
+describe("the lookup enqueue is scheduled, not awaited", () => {
+  const scheduledEnqueues = (t: T) =>
+    t.run(async (ctx) => {
+      const rows = await (ctx as unknown as {
+        db: { system: { query: (n: string) => { collect: () => Promise<Array<{ name: string; args: unknown[] }>> } } };
+      }).db.system.query("_scheduled_functions").collect();
+      return rows.filter((r) => r.name === "tidyNames:enqueuePendingLookups");
+    });
+
+  test("a commit schedules the enqueue for its leaf and does not run it inline", async () => {
+    const t = convexTest(schema, modules);
+    live.push(t);
+    const w = await seed(t);
+    const rowId = await t.run((ctx) =>
+      ctx.db.insert("tidyNames", {
+        scopeId: w.base,
+        kind: "player",
+        nameNormalized: "pending person",
+        name: "Pending Person",
+        sportId: w.sport,
+        status: "pending",
+        lookupGen: 0,
+      } as never),
+    );
+    await commitAll(t, w, distinct(MANY));
+    const queued = await scheduledEnqueues(t);
+    expect(queued).toHaveLength(1);
+    expect(queued[0].args[0]).toEqual({ scopeId: w.base });
+    // Not run inline: the row still waits for the scheduled function.
+    expect((await t.run((ctx) => ctx.db.get(rowId)))?.lookupGen).toBe(0);
+  });
+
+  test("a failed commit schedules nothing, and the re-run schedules it once more", async () => {
+    const t = convexTest(schema, modules);
+    live.push(t);
+    const w = await seed(t);
+    const cards = distinct(MANY);
+    const realChunk = handlerOf<{ cards: Array<{ cardNumber: string }> }, unknown>(commitCardChecklistChunk);
+    const failing = vi
+      .spyOn(commitCardChecklistChunk as unknown as Handler<{ cards: Array<{ cardNumber: string }> }, unknown>, "_handler")
+      .mockImplementation(async (ctx, args) => {
+        if (args.cards.some((c) => c.cardNumber === cards[0].cardNumber)) throw new Error("chunk blew up");
+        return realChunk(ctx, args);
+      });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await expect(commitAll(t, w, cards)).rejects.toThrow();
+    expect(await scheduledEnqueues(t)).toHaveLength(0);
+    failing.mockRestore();
+    await commitAll(t, w, cards);
+    expect(await scheduledEnqueues(t)).toHaveLength(1);
+  });
+
+  // KNOWN BUG (NEO-645 adversarial pass), pinned with test.fails so the gate stays green:
+  // delete `.fails` when the product is fixed. `enqueuePendingLookups` re-reads the same first ENQUEUE_PAGE pending rows (they stay pending after lookupGen is stamped), so names past the first page are never queued.
+  test.fails("the scheduled enqueue queues every pending name across pages, and a second run queues none twice", async () => {
+    const t = convexTest(schema, modules);
+    live.push(t);
+    const w = await seed(t);
+    const total = ENQUEUE_PAGE * 2 + 17;
+    await t.run(async (ctx) => {
+      for (let i = 0; i < total; i++) {
+        await ctx.db.insert("tidyNames", {
+          scopeId: w.base,
+          kind: "player",
+          nameNormalized: `pending person ${i}`,
+          name: `Pending Person ${i}`,
+          sportId: w.sport,
+          status: "pending",
+          lookupGen: 0,
+        } as never);
+      }
+    });
+    let queued = 0;
+    // The page reschedules itself while a full page was queued; walk it by hand.
+    for (let pass = 0; pass < 5; pass++) {
+      queued += await t.mutation(internal.tidyNames.enqueuePendingLookups, { scopeId: w.base });
+    }
+    expect(queued).toBe(total);
+    const rows = await t.run((ctx) => ctx.db.query("tidyNames").collect());
+    expect(rows.every((r) => r.lookupGen === 1)).toBe(true);
+    // Idempotent: a retry finds nothing left to queue.
+    expect(await t.mutation(internal.tidyNames.enqueuePendingLookups, { scopeId: w.base })).toBe(0);
   });
 });
