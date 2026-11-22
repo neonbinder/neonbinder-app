@@ -21,7 +21,6 @@ import { SOURCES_WITH_CHECKLIST, SOURCE_KEYS } from "../../reconciliation-source
 import { useInlinePart } from "../inline-stack";
 import TidyTile, { ApplyToAllButton, TidyNote, type TidyTileLevel } from "../TidyTile";
 import type { TidyTileProps } from "../tile-types";
-import { rowFields } from "./row-fields";
 
 /**
  * NEO-645 callout 7 — "Listing title".
@@ -221,7 +220,7 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
   const leftOut = useMemo(() => preview.leftOutOf(text), [preview, text]);
   const titleAlertId = `${uid}-title-limit`;
   const variationAlertId = `${uid}-variation-limit`;
-  const nbNumbers = rowFields(row).sourceNumbers;
+  const nbNumbers = row.sourceNumbers;
   const mismatched = useMemo(() => {
     if (!nbNumbers) return null;
     const named = SOURCE_KEYS.flatMap((key) => {
@@ -403,7 +402,7 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
           <div className="flex flex-wrap items-center gap-2">
             <ApplyToAllButton
               count={setNameDraft.trim() ? leafCards.length : 0}
-              label={`Save and apply to all ${leafCards.length} cards`}
+              label={`Save and apply to all ${plural(leafCards.length, "card", "cards")}`}
               onApply={applySetName}
             />
             <NeonButton

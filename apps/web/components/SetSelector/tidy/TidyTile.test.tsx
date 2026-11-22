@@ -90,6 +90,15 @@ describe("ApplyToAllButton", () => {
     expect(onApply).toHaveBeenCalledTimes(2);
   });
 
+  it("says no cards changed when the server counted none, and applied when it counted some", async () => {
+    const onApply = vi.fn().mockResolvedValueOnce({ applied: 0 }).mockResolvedValueOnce({ applied: 2 });
+    render(<ApplyToAllButton count={2} label="Apply to all 2 cards" onApply={onApply} />);
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Apply to all 2 cards" })));
+    expect(screen.getByRole("status").textContent).toBe("No cards changed.");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Apply to all 2 cards" })));
+    expect(screen.getByRole("status").textContent).toBe("Applied.");
+  });
+
   it("forgets an old result when the offer changes", async () => {
     const onApply = vi.fn().mockResolvedValue(undefined);
     const { rerender } = render(<ApplyToAllButton count={2} label="Apply to all 2 cards" onApply={onApply} />);

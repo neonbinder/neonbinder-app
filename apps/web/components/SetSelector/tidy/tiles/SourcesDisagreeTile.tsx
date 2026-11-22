@@ -8,7 +8,7 @@ import { SOURCES_WITH_CHECKLIST, SOURCE_KEYS, type SourceKey } from "../../recon
 import { useInlinePart } from "../inline-stack";
 import TidyTile, { ApplyToAllButton, type TidyTileLevel } from "../TidyTile";
 import type { TidyTileProps } from "../tile-types";
-import { rowFields, type RowDisagreement } from "./row-fields";
+import type { TidyDisagreement as RowDisagreement } from "../../../../convex/features/cardAttention";
 
 /**
  * NEO-645 callout 2 — "Sources disagree".
@@ -90,7 +90,7 @@ function diffParts(text: string, other: string): { head: string; mid: string; ta
 }
 
 export default function SourcesDisagreeTile({ row, attention, leafCards }: TidyTileProps) {
-  const entries = rowFields(row).sourceDisagreements ?? [];
+  const entries = row.sourceDisagreements ?? [];
   if (entries.length === 0) return null;
 
   const unsettled = entries.some((d) => !d.chosen);
@@ -154,7 +154,7 @@ function DisagreementEntry({
     return leafCards
       .filter((c) => c._id !== row._id)
       .filter((c) =>
-        (rowFields(c).sourceDisagreements ?? []).some(
+        (c.sourceDisagreements ?? []).some(
           (d) => d.field === entry.field && !d.chosen && disagreementKey(d) === key,
         ),
       )

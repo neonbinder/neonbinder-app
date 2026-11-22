@@ -465,7 +465,7 @@ describe("CardChecklistItem — NEO-208 pending team names", () => {
     // the link. One badge, the truthful one.
     renderItem({ card: makeCard({ pendingTeamNames: ["Savannah Bananas"] }) });
     const badge = screen.getByLabelText(/needs attention/);
-    expect(badge.getAttribute("aria-label")).toMatch(/not yet linked to a player or team/);
+    expect(badge.getAttribute("aria-label")).toMatch(/team name not yet linked/);
     expect(badge.getAttribute("aria-label")).not.toMatch(/no team on this card/);
   });
 

@@ -11,12 +11,13 @@
  * filtered any more.
  *
  * The walker itself is stubbed: its queue, order and done line are covered in
- * CardAttentionWalker.test.tsx. Heavy children that play no part here are
+ * tidy/TidyUpWalk.test.tsx. Heavy children that play no part here are
  * stubbed so the mocked Convex surface stays small.
  */
 
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import React from "react";
+import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
 import type { ParallelBuildRunner } from "./ParallelBuildPanel";
@@ -63,7 +64,6 @@ vi.mock("./CardChecklistItem", () => ({
   default: ({ card }: { card: { cardName: string } }) => <div>{card.cardName}</div>,
 }));
 vi.mock("./CardDetailPanel", () => ({ default: () => null }));
-vi.mock("./EntityReviewWizard", () => ({ default: () => null }));
 vi.mock("./CardPairingModal", () => ({ default: () => null }));
 vi.mock("./sync-review-modal", () => ({
   default: () => null,
@@ -71,10 +71,9 @@ vi.mock("./sync-review-modal", () => ({
 }));
 vi.mock("./CrossListingImportModal", () => ({ default: () => null }));
 // A visible stand-in, so "the walker opened" is observable without its queue.
-vi.mock("./CardAttentionWalker", () => ({
+vi.mock("./tidy/TidyUpWalk", () => ({
   default: () => <div role="dialog" aria-label="Walker stand-in" />,
 }));
-vi.mock("./SkippedNamesPanel", () => ({ default: () => null }));
 vi.mock("./TeamPicker", () => ({ default: () => null }));
 vi.mock("./PlayerPicker", () => ({ default: () => null }));
 
@@ -145,12 +144,14 @@ function awaitingLookup(n: number) {
 
 function ui(parallelRun?: ParallelBuildRunner) {
   return (
-    <CardChecklist
-      variantId={VARIANT_ID}
-      sourceChips={{}}
-      sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-      parallelRun={parallelRun}
-    />
+    <MemoryRouter>
+      <CardChecklist
+        variantId={VARIANT_ID}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        parallelRun={parallelRun}
+      />
+    </MemoryRouter>
   );
 }
 
@@ -212,6 +213,36 @@ describe("CardChecklist — the one 'N need you' control (NEO-335)", () => {
     state.cards = [awaitingLookup(1), teamless(2)];
     render(ui());
     expect(pill("1 needs you")).toBeTruthy();
+  });
+
+  it("counts a card that only needs a check (blue) as well as one that needs a fix (pink)", () => {
+    state.cards = [
+      teamless(1),
+      // Teamed and linked; its title was cut to fit: blue, "to check".
+      settled(2),
+      {
+        ...settled(3),
+        playerIds: ["player-1"],
+        listingTitle: "2024 Topps Chrome #3 Somebody",
+        listingTitleTruncated: true,
+      },
+    ];
+    render(ui());
+    expect(pill("2 need you")).toBeTruthy();
+  });
+
+  it("does not count a card that only carries a note (purple)", () => {
+    // The commit filled this card's team from the player's career: a note on
+    // a card that is already a stop, never a stop of its own.
+    state.cards = [
+      {
+        ...settled(1),
+        playerIds: ["player-1"],
+        tidyChecks: [{ kind: "teamFill", teamIds: ["team-1"], reason: "career" }],
+      },
+    ];
+    render(ui());
+    expect(queryPill()).toBeNull();
   });
 
   it("renders nothing — not even the row label — when nothing needs a person", () => {

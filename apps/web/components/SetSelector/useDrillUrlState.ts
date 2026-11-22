@@ -56,6 +56,7 @@ import { useSearchParams } from "react-router";
 import { api } from "../../convex/_generated/api";
 import { ALL_BRANDS_VIEW, type ManufacturerSelection } from "./all-brands-view";
 import type { SelectorLevel } from "./selector-sync-feedback";
+import { TIDY_PARAM } from "./tidy/useTidyWalkUrl";
 
 /**
  * The cascade's levels, root first. Keep in step with `DRILL_LEVELS` in
@@ -387,6 +388,10 @@ export function useDrillUrlState(): DrillUrlState {
       const { searchParams: params, setSearchParams: setParams } =
         latest.current;
       const serialized = serializeDrillPath(next, params);
+      // NEO-645: the Tidy Up walk (`?tidy=`) belongs to the checklist it was
+      // opened on. A write that moves the drill (anywhere else, a delete, a
+      // move, a reshape) ends it; one that leaves the path where it is does not.
+      if (next.join("/") !== latest.current.path.join("/")) serialized.delete(TIDY_PARAM);
       // One transition for all of it. The router commits a navigation inside
       // `startTransition`, so trust and the notice flag set outside it would
       // render a frame of their own first — the new trust against the OLD

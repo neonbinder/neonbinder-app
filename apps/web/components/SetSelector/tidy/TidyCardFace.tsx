@@ -7,7 +7,6 @@ import type {
   VariantKind,
 } from "../../../app/collection/final/data/types";
 import type { TidyCardContext, TidyRow } from "./tile-types";
-import { rowFields } from "./tiles/row-fields";
 
 /**
  * NEO-645 callout 1 — the drawn card at the top of the walk.
@@ -40,7 +39,6 @@ export default function TidyCardFace({
   variantName?: string | null;
   variantKind?: VariantKind;
 }) {
-  const fields = rowFields(row);
   const model = useMemo<ModelCard>(() => {
     const players = (context?.players ?? []).map((p) => ({
       id: p.playerId as string,
@@ -91,8 +89,8 @@ export default function TidyCardFace({
     };
   }, [row, context, setName, season, variantName, variantKind]);
 
-  const front = fields.imageUrls?.front;
-  const back = fields.imageUrls?.back;
+  const front = row.imageUrls?.front;
+  const back = row.imageUrls?.back;
   const photo =
     front || back
       ? {

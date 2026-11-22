@@ -132,15 +132,20 @@ export function ApplyToAllButton({
 }: {
   count: number;
   label: string;
-  onApply: () => Promise<void>;
+  /** Resolve to `{applied}` when the server counts the cards it changed; 0 reads "No cards changed.". */
+  onApply: () => Promise<void | { applied: number }>;
 }) {
   const [busy, setBusy] = useState(false);
   // The last outcome, tied to the offer it answered: a new offer (the label or
   // count moved) is a new question, so an old result stops showing by itself.
-  const [outcome, setOutcome] = useState<{ offer: string; kind: "done" | "failed" } | null>(null);
+  const [outcome, setOutcome] = useState<{
+    offer: string;
+    kind: "done" | "none" | "failed";
+  } | null>(null);
   const offer = `${label}\u0000${count}`;
   const failed = outcome?.offer === offer && outcome.kind === "failed";
   const done = outcome?.offer === offer && outcome.kind === "done";
+  const none = outcome?.offer === offer && outcome.kind === "none";
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -156,8 +161,9 @@ export function ApplyToAllButton({
     setBusy(true);
     setOutcome(null);
     try {
-      await onApply();
-      if (alive.current) setOutcome({ offer, kind: "done" });
+      const result = await onApply();
+      const nothing = result !== undefined && result.applied === 0;
+      if (alive.current) setOutcome({ offer, kind: nothing ? "none" : "done" });
     } catch {
       if (alive.current) setOutcome({ offer, kind: "failed" });
     } finally {
@@ -176,7 +182,7 @@ export function ApplyToAllButton({
         {label}
       </button>
       <span role="status" className="text-xs text-ink-2 empty:hidden">
-        {busy ? "Applying…" : done ? "Applied." : null}
+        {busy ? "Applying…" : done ? "Applied." : none ? "No cards changed." : null}
       </span>
       <span role="alert" className="text-xs text-neon-pink-text empty:hidden">
         {failed ? "Didn't apply, try again." : null}

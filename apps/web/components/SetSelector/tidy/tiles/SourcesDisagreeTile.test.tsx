@@ -17,7 +17,7 @@ vi.mock("convex/react", () => ({
 
 import SourcesDisagreeTile from "./SourcesDisagreeTile";
 import type { TidyAttention, TidyRow, TidyTileProps } from "../tile-types";
-import type { RowDisagreement } from "./row-fields";
+import type { TidyDisagreement as RowDisagreement } from "../../../../convex/features/cardAttention";
 
 const MERRIL = ["Jackson Merril"];
 const MERRILL = ["Jackson Merrill"];

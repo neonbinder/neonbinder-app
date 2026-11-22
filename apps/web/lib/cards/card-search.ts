@@ -43,7 +43,7 @@
  *              "Islanders".
  * - attention — whether the card needs a person, by the one rule the
  *              checklist's "N need you" pill and its walker count with
- *              (`needsAttention`, `convex/features/cardAttention.ts`). Read
+ *              (`deriveCardAttention`, `convex/features/cardAttention.ts`). Read
  *              only by the exact term "attention", which, like the platform
  *              keywords, matches this flag and nothing else and ANDs with the
  *              other terms ("attention bills"). Deliberately unadvertised: no
@@ -64,7 +64,7 @@
  */
 
 import {
-  needsAttention,
+  deriveCardAttention,
   type AttentionCardRow,
 } from "../../convex/features/cardAttention";
 import { foldDiacritics } from "../entities/normalize-name";
@@ -239,7 +239,7 @@ export type CardSearchHaystack = {
   text: string;
   /** The platform aliases of the filled slots, folded ("bsc", "sl", …). */
   platforms: readonly string[];
-  /** `needsAttention(card)` — what the "attention" keyword reads. */
+  /** `deriveCardAttention(card).level !== "none"` — what the "attention" keyword reads. */
   attention: boolean;
 };
 
@@ -279,7 +279,8 @@ export function cardSearchHaystack(
       ].join("\n"),
     ),
     platforms: fields.platforms.map(foldSearchText),
-    attention: needsAttention(card),
+    // NEO-645: pink (to fix) or blue (to check), the pill's own rule.
+    attention: deriveCardAttention(card).level !== "none",
   };
 }
 

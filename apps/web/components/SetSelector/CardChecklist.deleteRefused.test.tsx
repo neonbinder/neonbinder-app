@@ -19,6 +19,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { ConvexError } from "convex/values";
 import React from "react";
+import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
 
@@ -125,11 +126,13 @@ function card(n: string, name: string) {
 
 function ui() {
   return (
-    <CardChecklist
-      variantId={VARIANT_ID}
-      sourceChips={{}}
-      sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-    />
+    <MemoryRouter>
+      <CardChecklist
+        variantId={VARIANT_ID}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+      />
+    </MemoryRouter>
   );
 }
 

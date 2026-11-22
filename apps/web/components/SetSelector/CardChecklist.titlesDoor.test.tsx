@@ -11,6 +11,7 @@
 
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
+import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
 
@@ -123,12 +124,14 @@ const PARALLEL_ROLE = { role: "parallel" as const, sourceId: INSERT_ID, sourceVa
 
 function ui(parallelBuild?: React.ComponentProps<typeof CardChecklist>["parallelBuild"]) {
   return (
-    <CardChecklist
-      variantId={VARIANT_ID}
-      sourceChips={{}}
-      sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-      parallelBuild={parallelBuild}
-    />
+    <MemoryRouter>
+      <CardChecklist
+        variantId={VARIANT_ID}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        parallelBuild={parallelBuild}
+      />
+    </MemoryRouter>
   );
 }
 

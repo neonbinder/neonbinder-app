@@ -11,7 +11,6 @@ import {
 } from "../../autograph-format";
 import TidyTile, { ApplyToAllButton } from "../TidyTile";
 import type { TidyTileProps } from "../tile-types";
-import { rowFields } from "./row-fields";
 
 /**
  * NEO-645 callout 6 — "Autograph".
@@ -41,7 +40,7 @@ export default function AutographTile({ row, leafId, leafCards }: TidyTileProps)
 
   if (!carriesAutograph(row.attributes)) return null;
 
-  const format = asAutographFormat(rowFields(row).features?.autographed);
+  const format = asAutographFormat(row.features?.autographed);
   const signed = leafCards.filter((c) => carriesAutograph(c.attributes)).length;
 
   const choose = async (value: AutographFormat) => {

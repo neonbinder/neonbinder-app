@@ -25,6 +25,7 @@ import {
   within,
 } from "@testing-library/react";
 import React, { useEffect, useImperativeHandle } from "react";
+import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
 import { cardMatchesSearch } from "../../lib/cards/card-search";
@@ -172,11 +173,13 @@ const asRow = (c: ReturnType<typeof card>) =>
 
 function ui(sourceChips = {}) {
   return (
-    <CardChecklist
-      variantId={VARIANT_ID}
-      sourceChips={sourceChips}
-      sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-    />
+    <MemoryRouter>
+      <CardChecklist
+        variantId={VARIANT_ID}
+        sourceChips={sourceChips}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+      />
+    </MemoryRouter>
   );
 }
 

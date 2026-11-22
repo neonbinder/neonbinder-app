@@ -1,6 +1,11 @@
 export * from "../../convex/features/cardAttention";
 
-import type { AttentionKind } from "../../convex/features/cardAttention";
+import {
+  deriveCardAttention,
+  type AttentionCardRow,
+  type AttentionKind,
+  type TidyAttentionKind,
+} from "../../convex/features/cardAttention";
 
 /**
  * NEO-102 — the SPA's view of the derived "needs attention" rule.
@@ -76,4 +81,38 @@ export function stillLookingUpTeams(count: number): string {
  */
 export function teamLookupStatusLine(count: number): string {
   return `${stillLookingUpTeams(count)} Nothing for you to do yet.`;
+}
+
+/**
+ * NEO-645 — does this card need a person at all? Pink (to fix) or blue (to
+ * check). The one question the badge, the "N need you" pill, the grid's
+ * attention filter and the Tidy Up walk all ask, so they cannot disagree. A
+ * card with only purple notes is not counted: notes never make a stop.
+ */
+export function needsTidyUp(row: AttentionCardRow): boolean {
+  return deriveCardAttention(row).level !== "none";
+}
+
+/**
+ * NEO-645 — the badge's reason text for each kind `deriveCardAttention`
+ * raises. Wording only; the derivation carries no message strings. A `Record`
+ * over every kind, so a new kind must say what it is.
+ */
+export const TIDY_ATTENTION_LABELS: Record<TidyAttentionKind, string> = {
+  sourcesDisagree: "the sources disagree",
+  playerName: "player name not yet linked",
+  teamName: "team name not yet linked",
+  noTeam: "no team on this card yet",
+  autograph: "autograph format not set",
+  titleOverLimit: "title is over the 80-character limit",
+  nbPicked: "we picked between the sources, worth a look",
+  newPlayerCareer: "new player, check their career",
+  careerGap: "team is missing from the player's career",
+  titleCut: "listing title was cut short",
+  variationOverLimit: "variation text is over the 65-character limit",
+};
+
+/** The reason text for one item. Falls back for a kind a newer deploy added. */
+export function tidyItemLabel(item: { kind: string }): string {
+  return TIDY_ATTENTION_LABELS[item.kind as TidyAttentionKind] ?? "needs a look";
 }

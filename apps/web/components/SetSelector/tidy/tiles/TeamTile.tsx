@@ -209,7 +209,7 @@ export default function TeamTile({ row, context, attention, leafId, sportId, lea
                     : `Apply to all ${proposed.length} other ${playerName} cards`
                 }
                 onApply={async () => {
-                  await applyTeamToPlayerCards({
+                  return await applyTeamToPlayerCards({
                     sourceCardId: row._id,
                     teamId: sourceTeamId,
                     cardIds: proposed.map((c) => c._id),

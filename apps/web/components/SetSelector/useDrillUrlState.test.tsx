@@ -624,6 +624,20 @@ describe("useDrillUrlState — other query parameters", () => {
     expect(h.search()).toBe("?utm=1&keep=me");
   });
 
+  it("NEO-645: a drill change drops the open Tidy Up card; a write that keeps the path keeps it", async () => {
+    const h = mount("/?sport=sp&year=yr&tidy=card1");
+    await act(async () => {});
+    expect(paramsOf(h.search()).get("tidy")).toBe("card1");
+    // Picking the same row again is a no-op and never touches the walk.
+    await act(async () => h.state().select("year", "yr"));
+    expect(paramsOf(h.search()).get("tidy")).toBe("card1");
+    // Going somewhere else leaves the walk behind: the card belongs to the
+    // checklist it was opened on.
+    await act(async () => h.state().select("year", "yr2"));
+    expect(paramsOf(h.search()).get("tidy")).toBeNull();
+    expect(paramsOf(h.search()).get("year")).toBe("yr2");
+  });
+
   it("survive the resolver's truncation rewrite", async () => {
     mockResolver = () => [];
     const h = mount("/?utm=1&sport=gone");
