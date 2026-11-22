@@ -112,9 +112,10 @@ export function valuesDeepEqual(a: unknown, b: unknown): boolean {
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
- * The single fold used by tier 2, by the sibling-clash check, by
+ * The single fold used by the sibling-clash check, by
  * `declinedUpstreamLabels`, and by the suggestions query's "does the
- * marketplace label differ from NB's name?" test.
+ * marketplace label differ from NB's name?" test. Sync's name tier compares
+ * through the wider `nameTierKey` instead (below).
  *
  * Deliberately `toLowerCase().trim()` — exactly what both stores have always
  * keyed on — and deliberately NOT `nameKey` from lib/cards/card-name.ts.
@@ -122,9 +123,15 @@ export function valuesDeepEqual(a: unknown, b: unknown): boolean {
  * names but would newly fold apart-by-design siblings like "Gold /50" and
  * "Gold 50" into one row here, silently merging two parallels.
  *
- * One fold, used everywhere, is the point: a name the matcher treats as equal
- * must be a name the clash check refuses and the suggestions query calls
- * unchanged, or the three disagree about what a rename even is.
+ * This is the STORED key: the sibling-clash check, `declinedUpstreamLabels`
+ * and the suggestions query compare names through it, so it must not change
+ * under rows already written. It is therefore narrower than the sync name
+ * tier's `nameTierKey`, which also folds accents, junk characters and dashes.
+ * Two names the tier reads as equal ("Topps-Chrome" and "Topps Chrome", a
+ * stored "B\eisbol" and "Beisbol") can differ here, so the clash check does
+ * not refuse them as siblings. That is safe: when two sibling rows meet in the
+ * tier they become `nameSharedBySiblings`, and sync withholds the new ids for
+ * the operator to place. It never attaches an id to either row on a guess.
  */
 export function selectorValueKey(value: string): string {
   return value.toLowerCase().trim();
@@ -1147,10 +1154,25 @@ export function planSelectorSync<TId extends string>(args: {
   // behind it. Counted over the items that reach this pass carrying an id (an
   // id-less item is withheld below whatever the count says when a namesake
   // exists), excluding operator-promoted `identityOnly` lines.
-  // NEO-643: the rule sees both sides cleansed, like the keyed index below.
+  // NEO-643: the rule sees both sides cleansed and with their dashes read as
+  // spaces, like the keyed index below ("Rated-Rookie" = "Rated Rookie").
+  //
+  // A dash must never change a title's kind (`variantRole.ts`: "Base",
+  // "Insert(s)" and "Parallel(s)" are read from the title). Only a dash
+  // BETWEEN characters folds. A dash at an edge is left as the cleansed text
+  // has it, because folding it would let the rule's trim turn "Base-" into the
+  // word "Base" and attach the Base type's id to a row that is not the Base.
+  // Mid-title dashes cannot make a kind word: each is one whole word, so
+  // "Base-Set" becomes "Base Set", which is no kind, and so does every
+  // other dashed title.
+  const foldForRule = (raw: string): string => {
+    const cleansed = cleanseExternalName(raw);
+    const folded = dashesToSpaces(cleansed);
+    return folded.trim().length === cleansed.trim().length ? folded : cleansed;
+  };
   const sameNameRuleArg = args.sameName;
   const sameNameRule = sameNameRuleArg
-    ? (a: string, b: string) => sameNameRuleArg(cleanseExternalName(a), cleanseExternalName(b))
+    ? (a: string, b: string) => sameNameRuleArg(foldForRule(a), foldForRule(b))
     : undefined;
   const incomingByKey = new Map<string, number>();
   /** NEO-334 — the id-carrying items counted above, for the `sameName` scan. */

@@ -26,6 +26,7 @@ import {
   type IncomingItem,
   type MatchableRow,
 } from "./selectorSyncMatch";
+import { sameTitleWord, variantTypeKindFromTitle } from "./variantRole";
 import { SL_ALL_BRANDS_BRAND_ID, isSlAllBrandsBrandId } from "./slBrandAxis";
 
 type Row = MatchableRow<string> & { level: string };
@@ -327,6 +328,41 @@ describe("planSelectorSync name tier — NEO-643, stored rows are not backfilled
       sameName: sameWord,
     });
     expect(plan.outcomes[0]).toEqual({ kind: "matched", existingId: "a", tier: 2 });
+  });
+
+  test("the word rule reads a dash between characters as a space (variant types)", () => {
+    const plan = planSelectorSync({
+      existing: [row("a", "Rated-Rookie", { level: "variantType" })],
+      items: [item("Rated Rookie", { bsc: "bsc-1" })],
+      sameName: sameTitleWord,
+    });
+    expect(plan.outcomes[0]).toEqual({ kind: "matched", existingId: "a", tier: 2 });
+  });
+
+  test("a dash at the edge of a variant-type title never turns it into a kind word", () => {
+    // "Base-" is no kind; folding its edge dash would make it the word "Base"
+    // and attach the Base type's id to a row that is not the Base.
+    expect(variantTypeKindFromTitle("Base-")).toBeUndefined();
+    expect(variantTypeKindFromTitle("Base")).toBe("base");
+    for (const stored of ["Base-", "-Base", "Base \u2013", "Inserts-", "\u2014Parallel"]) {
+      const word = stored.replace(/[-\u2013\u2014\s]/g, "");
+      const plan = planSelectorSync({
+        existing: [row("a", stored, { level: "variantType" })],
+        items: [item(word, { bsc: "bsc-1" })],
+        sameName: sameTitleWord,
+      });
+      expect(plan.outcomes[0].kind, stored).toBe("insert");
+    }
+  });
+
+  test("a dash inside a kind word's title makes no kind word either", () => {
+    expect(variantTypeKindFromTitle("Base-Set")).toBeUndefined();
+    const plan = planSelectorSync({
+      existing: [row("a", "Base", { level: "variantType" })],
+      items: [item("Base-Set", { bsc: "bsc-1" })],
+      sameName: sameTitleWord,
+    });
+    expect(plan.outcomes[0].kind).toBe("insert");
   });
 
   test("an id-less checklist line still sees a stored namesake through the cleanse", () => {
