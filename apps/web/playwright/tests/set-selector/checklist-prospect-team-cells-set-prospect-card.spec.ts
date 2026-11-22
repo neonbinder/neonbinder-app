@@ -69,6 +69,7 @@ import {
   publishersChecklistButton,
   publishersChecklistChip,
   publishersChecklistDialog,
+  savedLine,
 } from "../../support/published-checklist";
 import {
   answerStepAsNew,
@@ -243,8 +244,13 @@ test(
     await expect(wizard.getByRole("heading", { name: `Save ${ROWS} cards?` })).toBeVisible();
     await confirmSaveButton(page).click();
     await expect(wizard).toBeHidden();
+    // NEO-640: the saved line says why nothing was matched right after its count (the checklist
+    // was the one source), then the teams line; its sentences are read one by one.
+    const saved = savedLine(page, ROWS);
+    await expect(saved).toBeVisible();
+    await expect(saved).toContainText(new RegExp(`^Saved ${ROWS} cards\\. Only your checklist was in play, so there was nothing to match\\.`));
     // The count includes checklist-named teams the operator still settles (New York, saved teamless), as it counts unresolved checklist teams: intended.
-    await expect(page.getByText(`Saved ${ROWS} cards. Teams from your checklist: ${ROWS} of ${ROWS} cards.`)).toBeVisible();
+    await expect(saved).toContainText(`Teams from your checklist: ${ROWS} of ${ROWS} cards.`);
 
     // ── 4. Read back: the rows, then each card's drawer ──
     for (const card of CARDS) {
