@@ -24,7 +24,7 @@
 //      this set is already linked to STAR (Football). Same one?" (schema item 15: the auto pick
 //      becomes the preselect); pressed, the row reads answered. Brantley's row shows E2: "Link to
 //      Michael Brantley (Football)", "Add as new player anyway" and the reason line; left alone.
-//   3. Peak Performance: Bob Gibson and Joe Morgan (two on file each, none active in 2010) link to
+//   3. Peak Performance: Bob Gibson and Joe Morgan (two Baseball namesakes each, none active in 2010) link to
 //      the Hall of Famer; the Washington Senators, Philadelphia Athletics and St. Louis Browns link
 //      from Walter Johnson's, Jimmie Foxx's and George Sisler's stints (NEO-490 rule 2b). Neither
 //      makes a walk stop, so they are read back: the drawers of PP-4, PP-21 and PP-22 carry the
@@ -91,7 +91,7 @@ const STAR = "Kendry Morales";
 const FIRST = "Team Bonus";
 /** Fetched second: STAR arrives linked; Michael Brantley is its one other unknown name. */
 const SECOND = "Silk Collection";
-/** Hall of Fame phase: Bob Gibson and Joe Morgan, two on file each, none active in 2010. */
+/** Hall of Fame phase: Bob Gibson and Joe Morgan, two Baseball namesakes each (Morgan has a Football one too), none active in 2010. */
 const THIRD = "Peak Performance";
 /** Team phase: the Browns, linked on THIRD; the wizard opens on its Save step for them alone. */
 const FOURTH = "Turkey Red";
@@ -384,15 +384,17 @@ test(
     await expect(tidyWalk(page)).toBeHidden();
     await expectCardTeam(page, "TR92", "George Sisler", BROWNS);
 
-    // The Hall of Famers: the 1943 Joe Morgan's page lists THIRD's card; the other Joe Morgan's does not.
+    // The Hall of Famers: the 1943 Joe Morgan's page lists THIRD's card; the other BASEBALL Joe
+    // Morgan's does not. The catalogue also files a Football Joe Morgan (b. 1928, 49ers), so every
+    // row is named by sport as well as born year: a row's name reads "<name> <sport> b. <year> <team>".
     await page.goto("/admin/players");
     await expectPlayersLoaded(page);
-    await openPlayer(page, MORGAN, new RegExp(`^${MORGAN} .*b\\. 1943`));
+    await openPlayer(page, MORGAN, /^Joe Morgan Baseball\b.*\bb\. 1943\b/);
     await expect(page.getByRole("list", { name: `Cards for ${MORGAN}` })).toContainText(THIRD);
-    await openPlayer(page, MORGAN, new RegExp(`^${MORGAN}(?!.*b\\. 1943)`));
+    await openPlayer(page, MORGAN, /^Joe Morgan Baseball\b(?!.*\bb\. 1943\b)/);
     await expect(page.getByText("Sport: Baseball").first()).toBeVisible();
     await expect(page.getByRole("list", { name: `Cards for ${MORGAN}` }).filter({ hasText: THIRD })).toHaveCount(0);
-    await openPlayer(page, GIBSON, new RegExp(`^${GIBSON} .*b\\. 1935`));
+    await openPlayer(page, GIBSON, /^Bob Gibson Baseball\b.*\bb\. 1935\b/);
     await expect(page.getByRole("list", { name: `Cards for ${GIBSON}` })).toContainText(THIRD);
 
     // ── PHASE 5: STAR's page lists both cards as Baseball GUEST cards ──
