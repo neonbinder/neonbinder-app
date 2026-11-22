@@ -132,7 +132,12 @@ that must not write a real set, there is no pre-save exit any more: give it its 
   verdict `convex/lib/careerVerdict.ts`): a retired player with ONE career team whose league is in
   the set's leagues (a hand-made row under a real sport inherits the sport's league) is PRESELECTED
   under "Suggested from career history." (`· <player> played here`). The whole-career-unpicked list
-  needs a multi-team career, or a set league list that does not rank the team.
+  needs a multi-team career (the `mtf` spec uses a two-team retired Hall of Famer, with the one-team
+  player as a positive-control card). Probe the catalogue read-only: `npx convex run
+  players:resolveNamesForReview` (unique name per sport), then `players:getInternal` (stints) and
+  `teams:getInternal` (each stint's team).
+- **`expectDrawerTeams` leaves the card search on that number**: a delete of ANOTHER card right
+  after finds no button. Read and delete card by card.
 - **Quick-add card header names the linked player** (`#851 · George Brett`), not the card name: a
   free proof the PlayerPicker link landed.
 - **Fetch-or-adopt specs:** the rewritten commit/walk code runs only when the set is still empty, so
