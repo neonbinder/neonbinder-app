@@ -68,11 +68,13 @@ describe("normalizeEntityName", () => {
     expect(normalizeEntityName("Green Bay (Packers)")).toBe("bay green packers");
   });
 
-  test("NEO-643: a hyphen is a space, so a hyphenated name is the spaced name", () => {
+  // The stored key keeps main's hyphen behaviour (NEO-643, Jason 2026-11-22):
+  // every `nameNormalized` already on disk was written that way.
+  test("keeps hyphens, so a hyphenated name stays one token", () => {
     expect(normalizeEntityName("Wilkes-Barre Barons")).toBe(
-      "barons barre wilkes",
+      "barons wilkes-barre",
     );
-    expect(normalizeEntityName("Wilkes-Barre Barons")).toBe(
+    expect(normalizeEntityName("Wilkes-Barre Barons")).not.toBe(
       normalizeEntityName("Wilkes Barre Barons"),
     );
   });
@@ -150,6 +152,22 @@ describe("longestToken", () => {
 });
 
 describe("rankTeamCandidates", () => {
+  // NEO-643: a hyphen is a space when two names are compared, but the stored
+  // keys differ, so it is never `exact` (find-or-create would mint a twin).
+  test("a spaced query ranks the stored hyphenated team first, as close", () => {
+    expect(
+      rankedTeamNames("Wilkes Barre Barons", [
+        { name: "Wilkes Barons" },
+        { name: "Scranton Wilkes-Barre Barons" },
+        { name: "Wilkes-Barre Barons" },
+      ]),
+    ).toEqual([
+      ["Wilkes-Barre Barons", "close"],
+      ["Scranton Wilkes-Barre Barons", "close"],
+      ["Wilkes Barons", "close"],
+    ]);
+  });
+
   test("normalised equality is exact, whatever the word order", () => {
     expect(rankedTeamNames("Yankees, New York", [{ name: "New York Yankees" }]))
       .toEqual([["New York Yankees", "exact"]]);
@@ -212,6 +230,42 @@ describe("rankTeamCandidates", () => {
 });
 
 describe("rankPlayerCandidates", () => {
+  // NEO-643: the stored key keeps the hyphen, so "Smith Jones" is not `exact`
+  // against a stored "Smith-Jones" (no auto-link; the operator adds an alias),
+  // but the ladder's exact rung reads a hyphen as a space and ranks it first.
+  test("a spaced query ranks the stored hyphenated player first, as close", () => {
+    expect(
+      rankedPlayerNames("Smith Jones", [
+        { name: "Smith Joneson" },
+        { name: "Smith-Jones" },
+        { name: "Smith Jonesy" },
+      ]),
+    ).toEqual([["Smith-Jones", "close"]]);
+  });
+
+  test("it outranks a close name that sorts earlier and shares the same words", () => {
+    // "Smith Jones Jr" is a ladder hit too (suffix stripped) with the same two
+    // shared words and an earlier name; only the hyphen-as-space rung puts the
+    // stored "Smith-Jones" above it.
+    const ranked = rankedPlayerNames("Smith Jones", [
+      { name: "Smith Jones Jr" },
+      { name: "Smith-Jones" },
+    ]);
+    expect(ranked).toEqual([
+      ["Smith-Jones", "close"],
+      ["Smith Jones Jr", "close"],
+    ]);
+  });
+
+  test("a hyphen against a space is never exact: the keys differ", () => {
+    expect(rankedPlayerNames("Smith Jones", [{ name: "Smith-Jones" }])).toEqual([
+      ["Smith-Jones", "close"],
+    ]);
+    expect(rankedPlayerNames("Smith-Jones", [{ name: "Smith-Jones" }])).toEqual([
+      ["Smith-Jones", "exact"],
+    ]);
+  });
+
   test("identical names are exact", () => {
     expect(rankedPlayerNames("Mike Trout", [{ name: "Mike Trout" }])).toEqual([
       ["Mike Trout", "exact"],

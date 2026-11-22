@@ -21,15 +21,15 @@
  *
  * Pure: no database.
  */
-import { normalizeEntityName } from "../../lib/entities/normalize-name";
+import { entityNameCompareKey } from "../../lib/entities/normalize-name";
 import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
 import { pickTeamForYear, type TeamEraRow } from "../../lib/teams/team-era";
 
-/** True when the row's place is X (the folded, token-sorted key both share). */
+/** True when the row's place is X (the folded, token-sorted key both share, a hyphen read as a space). */
 export function teamLocationIs(row: { location?: string | null }, x: string): boolean {
   const location = row.location?.trim() ?? "";
   if (!location) return false;
-  return normalizeEntityName(location) === normalizeEntityName(x);
+  return entityNameCompareKey(location) === entityNameCompareKey(x);
 }
 
 /**

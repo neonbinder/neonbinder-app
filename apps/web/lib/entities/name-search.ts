@@ -31,17 +31,19 @@
  *     for a name the server would insert.
  */
 
-import { foldNameText } from "./normalize-name";
+import { foldNameForCompare } from "./normalize-name";
 
 /**
- * Fold junk characters and diacritics, and lowercase (`foldNameText`). No trimming, no whitespace collapsing, no
- * punctuation handling — deliberately, so that for pure-ASCII input this is
- * exactly `String.prototype.toLowerCase` and every existing filter, prefix rank
- * and ordering behaves as it did. Callers trim the QUERY themselves, as they
- * always have.
+ * Fold junk characters and diacritics, lowercase, and read a hyphen as a space
+ * (`foldNameForCompare`; NEO-643, "a hyphen matches a space"), so typing
+ * "smith jo" finds "Smith-Jones". No trimming, no whitespace collapsing, no
+ * other punctuation handling — deliberately, so that for pure-ASCII input
+ * without a dash this is exactly `String.prototype.toLowerCase` and every
+ * existing filter, prefix rank and ordering behaves as it did. Callers trim the
+ * QUERY themselves, as they always have.
  */
 export function nameSearchKey(raw: string): string {
-  return foldNameText(raw);
+  return foldNameForCompare(raw);
 }
 
 /**

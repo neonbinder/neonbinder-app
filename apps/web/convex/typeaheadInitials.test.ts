@@ -85,6 +85,40 @@ describe("teams.search: the keystroke after a run of initials", () => {
   });
 });
 
+describe("players.search: a hyphen is a space when typed (NEO-643)", () => {
+  test.each(["smith jo", "smith-jo", "Smith-Jones", "jones smith"])(
+    "%j finds a member of the sport stored as smith-jones",
+    async (query) => {
+      const t = convexTest(schema, modules);
+      const football = await seedSport(t, "Football");
+      const baseball = await seedSport(t, "Baseball");
+      const playerId = await t.run(async (ctx) =>
+        ctx.db.insert("players", {
+          name: "Smith-Jones",
+          nameNormalized: normalizeEntityName("Smith-Jones"),
+          sportId: football,
+          createdByUserId: "user_seed",
+          lastUpdated: 1_700_000_000_000,
+        }),
+      );
+      await t.run(async (ctx) => {
+        await ctx.db.insert("playerSports", {
+          playerId,
+          sportId: baseball,
+          // The stored key keeps its hyphen, exactly as main wrote it.
+          nameNormalized: "smith-jones",
+        });
+      });
+
+      const rows = await t
+        .withIdentity(MEMBER)
+        .query(api.players.search, { query, sportId: baseball });
+
+      expect(rows.map((r) => r._id)).toEqual([playerId]);
+    },
+  );
+});
+
 describe("players.search: the multi-sport member leg reads both", () => {
   test.each(["J. T", "J. T. R", "J. T. Real", "JT Realmuto"])(
     "%j finds a member of the sport stored as jt realmuto",

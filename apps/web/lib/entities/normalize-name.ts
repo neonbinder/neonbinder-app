@@ -84,27 +84,44 @@
  * fixed by hand, renaming each with the inline edit. The rule above still
  * stands for any other change to this chain.
  *
- * ### The NEO-643 reversal: a hyphen is a space, so every hyphenated key changes
+ * ### NEO-643: a hyphen is a space when two names are COMPARED, never in a stored key
  *
- * Until NEO-643 the hyphen was a key character on purpose, so "Wilkes-Barre"
- * stayed one token and "Smith-Jones" never equalled "Smith Jones". Jason,
- * 2026-11-21, ruled the opposite, everywhere: "a hyphen matches a space".
- * "Smith-Jones" = "Smith Jones", "Wilkes-Barre" = "Wilkes Barre", "Topps-Chrome"
- * = "Topps Chrome". Every dash (`DASHES`) is now turned into a space inside
- * `foldNameText`, the one fold, so `normalizeEntityName`,
- * `normalizeOrderedEntityName`, `rosterKey`, the pairing ladder, the card-name
- * comparison, the checklist name key, the selector name tier, the set
- * reconciliation fold and every typeahead filter agree without a line of their
- * own. A consequence worth knowing: a hyphen between two single letters joins
- * them like any other initials ("J-P Arencibia" keys as "jp arencibia", the
- * same as "J.P. Arencibia"), because the dash is gone before `joinInitialRuns`
- * looks at the tokens.
+ * Jason, 2026-11-21: "a hyphen matches a space". "Smith-Jones" = "Smith Jones",
+ * "Wilkes-Barre" = "Wilkes Barre", "Topps-Chrome" = "Topps Chrome". The first
+ * attempt (36c4005c) put that in the one character fold, so it moved every
+ * STORED key: about 2,600 `players` / `teams` / alias rows keyed by main's code
+ * became unreachable by lookup, and the wizard offered "Shin-Soo Choo" as a new
+ * player. Jason ruled again on 2026-11-22, and the rule now has two halves that
+ * this module keeps apart on purpose:
  *
- * Unlike the junk-character change above, this one moves STORED keys: every
- * `players`, `teams` and `leagues` `nameNormalized` (and the
- * `entityReviewSkips` / `entityReviewQueue` keys built from the same function)
- * that contains a hyphen is now stale. The re-key pass above is the fix, as
- * always.
+ * - **Stored identity keys keep main's hyphen behaviour exactly.** A hyphen
+ *   (the ASCII hyphen-minus) stays INSIDE its token: "Smith-Jones" keys as
+ *   "smith-jones", "Wilkes-Barre Barons" as "barons wilkes-barre". That is
+ *   `normalizeEntityName`, `normalizeOrderedEntityName` and `entityNameTokens`
+ *   as the writers use them (`players`, `playerSports`, `playerAliases`,
+ *   `teams`, `teamAliases`, `leagues`, `franchises`, `entityReviewSkips`,
+ *   `entityReviewQueue`) and `rekeyEntityNames`. No re-key, no seed change:
+ *   for any name without a junk character the key is byte-identical to main's
+ *   (pinned in `normalize-name.test.ts`). The second reason is the token
+ *   sort: with the dash gone, "Min-jae Kim" and "Jae-min Kim" both sort to
+ *   "jae kim min" and would collide on one `players` row, two different people.
+ * - **Every COMPARISON that is not stored reads a hyphen as a space.** Card
+ *   pairing and the ladder, the card-name and checklist-name keys, the set
+ *   reconciliation fold, the selector name tier, search and typeahead, the
+ *   career check and `teamNamesMatch` go through the explicit second step:
+ *   `dashesToSpaces`, or one of the `*Compare*` helpers below, which apply it
+ *   to the raw text and then run the same chain. A caller that compares a name
+ *   with a STORED key (a `nameNormalized` it read, a skip key, a lookup by
+ *   index) must stay on the stored functions, or it would stop finding the row.
+ *
+ * So "Smith Jones" does not auto-link to a stored "Smith-Jones": the operator
+ * adds an alias. The near-match list still ranks the stored row first, through
+ * the pairing ladder's exact rung, which compares with the hyphen as a space.
+ *
+ * Every other dash form (the en and em dashes, U+2010 to U+2015, the minus sign
+ * and the small and full-width forms) was always a separator in the stored key
+ * and still is; `foldNameText` turns those into spaces before NFKD so the two
+ * full-width forms cannot become a hyphen-minus behind its back.
  *
  * ## What is deliberately NOT normalised here
  *
@@ -129,26 +146,33 @@ const COMBINING_MARKS = /[\u0300-\u036f]/g;
 const DROPPED_PUNCTUATION = /[.,'"`’]/g;
 
 /**
- * Everything else that is not a key character becomes a separator. The hyphen
- * is NOT in the class (it used to be, so "Wilkes-Barre" stayed one token):
- * `foldNameText` has already turned every dash into a space (NEO-643), so none
- * reaches this point.
+ * Everything else that is not a key character becomes a separator. The ASCII
+ * hyphen-minus is INSIDE the class, so "Wilkes-Barre" stays one token in a
+ * stored key, exactly as it always has. (A comparison turns the hyphen into a
+ * space first: see `dashesToSpaces`.)
  */
-const NON_KEY_CHARS = /[^a-z0-9\s]/g;
+const NON_KEY_CHARS = /[^a-z0-9\s-]/g;
 
 /**
- * NEO-643 — every dash: the hyphen-minus, the hyphen U+2010, the non-breaking
- * hyphen U+2011, the figure dash U+2012, the en and em dashes, the horizontal
- * bar, the minus sign U+2212, and the small and full-width forms U+FE58,
- * U+FE63 and U+FF0D. Listed in full so a caller that does not run NFKD
- * (`dashesToSpaces` on its own) sees the same set `foldNameText` does.
+ * Every dash form EXCEPT the ASCII hyphen-minus: the hyphen U+2010, the
+ * non-breaking hyphen U+2011, the figure dash U+2012, the en and em dashes, the
+ * horizontal bar, the minus sign U+2212, and the small and full-width forms
+ * U+FE58, U+FE63 and U+FF0D. In a stored key these have always been separators
+ * (the key class drops them); `foldNameText` makes that explicit BEFORE NFKD,
+ * which would otherwise turn the small and full-width hyphen-minus into an
+ * ASCII one and keep it inside a token.
  */
+const OTHER_DASHES = /[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g;
+
+/** Every dash, the ASCII hyphen-minus included. */
 const DASHES = /[-\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g;
 
 /**
- * NEO-643 — each dash becomes a space (not collapsed, not trimmed). Exported
- * for the one comparison that does not use `foldNameText` (the selector name
- * tier keeps accents), so a hyphen means the same thing there.
+ * NEO-643 — the EXPLICIT dash step for a comparison: each dash becomes a space
+ * (not collapsed, not trimmed). Applied by callers that compare two names that
+ * are not stored keys, never by the stored-key chain. Covers every dash form,
+ * so a caller that does not run `foldNameText` (the selector name tier keeps
+ * accents) sees the same set.
  */
 export function dashesToSpaces(raw: string): string {
   return raw.replace(DASHES, " ");
@@ -162,9 +186,9 @@ export function dashesToSpaces(raw: string): string {
 const TRADEMARK_SIGNS = /[\u2120\u2122]/g;
 
 /**
- * NEO-643 — the one fold every name comparison starts from: `stripNameJunk`
- * (the junk class is DELETED, each control character becomes a space),
- * decompose to NFKD, drop the combining marks, lowercase.
+ * NEO-643 — the CHARACTER fold both a stored key and a comparison start from:
+ * `stripNameJunk` (the junk class is DELETED, each control character becomes a
+ * space), decompose to NFKD, drop the combining marks, lowercase.
  *
  * NFKD, not NFD, so a compatibility letter folds onto its plain letters: the
  * full-width "\uFF2Dike" is "mike" and the "\uFB01" ligature is "fi". The stored
@@ -178,29 +202,42 @@ const TRADEMARK_SIGNS = /[\u2120\u2122]/g;
  * different people, and a replacement character is a lost letter we cannot
  * name.
  *
- * Every dash is a word separator here, not just in the keys (NEO-643, Jason
- * 2026-11-21; see the module note): "Smith-Jones" folds to "smith jones".
- * Because this is the one fold every matcher, search filter and comparison
- * starts from, they all agree.
+ * What this fold does NOT do is read a hyphen as a space. The ASCII hyphen-minus
+ * comes through untouched, because the stored identity keys keep it inside its
+ * token (see the module note). A comparison calls `foldNameForCompare`, or
+ * `dashesToSpaces` first. (The other dash forms are turned into spaces here, as
+ * they always were in the key, so NFKD cannot turn one into a hyphen-minus.)
  *
- * Pure ASCII without a backslash, a backtick, a dash or a control character is
+ * Pure ASCII without a backslash, a backtick or a control character is
  * unchanged apart from case (NFKD is the identity on ASCII), which keeps every
- * existing unaccented, unhyphenated key.
+ * existing unaccented key.
  */
 export function foldNameText(raw: string): string {
   return stripNameJunk(raw)
     .replace(TRADEMARK_SIGNS, " ")
+    .replace(OTHER_DASHES, " ")
     .normalize("NFKD")
     .replace(COMBINING_MARKS, "")
-    .toLowerCase()
-    .replace(DASHES, " ");
+    .toLowerCase();
 }
 
 /**
- * Kept so existing importers (`lib/cards/card-name.ts`, `card-search.ts`,
- * `name-search.ts`, `convex/adapters/teamColorCodes.ts`) keep working. It is
- * `foldNameText` under its old name, so it now also lowercases and deletes
- * junk; every one of those callers lowercased the result anyway.
+ * NEO-643 — the fold for COMPARING two names that are not stored keys: every
+ * dash is a space first (Jason, 2026-11-21: "a hyphen matches a space"), then
+ * `foldNameText`. Not collapsed and not trimmed, as `foldNameText`.
+ *
+ * Never for a stored key, and never for a comparison against one: a stored
+ * "smith-jones" is only found by a key that kept its hyphen.
+ */
+export function foldNameForCompare(raw: string): string {
+  return foldNameText(dashesToSpaces(raw));
+}
+
+/**
+ * Kept so the existing importer (`convex/adapters/teamColorCodes.ts`) keeps
+ * working. It is `foldNameText` under its old name, so it now also lowercases
+ * and deletes junk; that caller lowercased the result anyway, and turns every
+ * non-alphanumeric run into a space itself, so a hyphen is already a space there.
  */
 export const foldDiacritics = foldNameText;
 
@@ -313,4 +350,39 @@ export function normalizeOrderedEntityName(raw: string): string {
  */
 export function rosterKey(names: readonly string[]): string {
   return [...new Set(names.map(normalizeEntityName).filter(Boolean))].sort().join("|");
+}
+
+// ---------------------------------------------------------------------------
+// NEO-643 — the COMPARISON readings: the same chain with a hyphen read as a
+// space. Never a stored key, never compared against one (see the module note).
+// ---------------------------------------------------------------------------
+
+/** `entityNameTokens` for a comparison: "Smith-Jones" is `["smith", "jones"]`. */
+export function entityNameCompareTokens(raw: string): string[] {
+  return entityNameTokens(dashesToSpaces(raw));
+}
+
+/** `entityNameQueryReadings` for typed text matched against a name's tokens. */
+export function entityNameCompareReadings(raw: string): string[][] {
+  return entityNameQueryReadings(dashesToSpaces(raw));
+}
+
+/**
+ * `normalizeEntityName` for a comparison: token-sorted, a hyphen a space, so
+ * "Smith-Jones" and "Smith Jones" are equal and "Min-jae Kim" and "Jae-min Kim"
+ * are too (they are the same three tokens). That is right for asking whether two
+ * INCOMING names agree, and wrong for a key that is stored.
+ */
+export function entityNameCompareKey(raw: string): string {
+  return normalizeEntityName(dashesToSpaces(raw));
+}
+
+/** `normalizeOrderedEntityName` for a comparison: source order, a hyphen a space. */
+export function orderedEntityNameCompareKey(raw: string): string {
+  return normalizeOrderedEntityName(dashesToSpaces(raw));
+}
+
+/** `rosterKey` for a comparison: every name through `entityNameCompareKey`. */
+export function rosterCompareKey(names: readonly string[]): string {
+  return [...new Set(names.map(entityNameCompareKey).filter(Boolean))].sort().join("|");
 }

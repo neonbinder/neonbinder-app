@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from "vitest";
 import { normalizeEntityName } from "../entities/normalize-name";
-import { teamFilterReadings, teamMatchesFilter } from "./team-filter";
+import { teamFilterReadings, teamMatchesFilter, teamSearchReadings } from "./team-filter";
 
 const team = (fullName: string, aliases?: string[]) => ({
   nameNormalized: normalizeEntityName(fullName),
@@ -49,6 +49,22 @@ describe("teamMatchesFilter", () => {
     expect(matches("Loc0 TMTw0a112345", "TMTw0a112345")).toBe(true);
     expect(matches("Loc0 TMTw0a112345", "TMTw0a11234")).toBe(true);
     expect(matches("Loc0 TMTw0a112345", "TMTw0a1123456")).toBe(false);
+  });
+
+  it("NEO-643: a hyphen is a space, in what was typed and in the stored key", () => {
+    // The stored key keeps "wilkes-barre" as one token.
+    expect(normalizeEntityName("Wilkes-Barre Barons")).toBe("barons wilkes-barre");
+    expect(matches("Wilkes-Barre Barons", "wilkes barre")).toBe(true);
+    expect(matches("Wilkes-Barre Barons", "wilkes-barre")).toBe(true);
+    expect(matches("Wilkes-Barre Barons", "wilkes-ba")).toBe(true);
+    expect(matches("Wilkes-Barre Barons", "barre bar")).toBe(true);
+    expect(matches("Wilkes-Barre Barons", "wilkes-scranton")).toBe(false);
+    expect(matches("Scranton Yankees", "wilkes barre", ["Wilkes-Barre Red Barons"])).toBe(true);
+    expect(teamFilterReadings("wilkes-barre")).toEqual([["wilkes", "barre"]]);
+  });
+
+  it("asks the search index with the stored reading, hyphen and all", () => {
+    expect(teamSearchReadings("wilkes-barre")).toEqual([["wilkes-barre"]]);
   });
 
   it("matches every team when nothing matchable was typed", () => {

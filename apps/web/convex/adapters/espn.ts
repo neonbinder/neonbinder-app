@@ -11,7 +11,7 @@
  */
 
 import { cleanseExternalName } from "../../lib/entities/cleanse-name";
-import { normalizeOrderedEntityName } from "../../lib/entities/normalize-name";
+import { orderedEntityNameCompareKey } from "../../lib/entities/normalize-name";
 
 const ESPN_API_BASE = "https://site.web.api.espn.com/apis/site/v2/sports";
 
@@ -60,7 +60,7 @@ export interface EspnTeamInfo {
  * still finds its team. Ordered, not sorted: "San Diego Padres" and "Padres San
  * Diego" are not the same franchise name.
  */
-const normalize = normalizeOrderedEntityName;
+const normalize = orderedEntityNameCompareKey;
 
 /**
  * NEO-643 — a display name or location off ESPN, cleansed before it is stored

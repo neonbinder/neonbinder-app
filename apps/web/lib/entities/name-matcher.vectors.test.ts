@@ -8,12 +8,23 @@
  * splits the matchers is the bug this ticket exists to remove. The set-label
  * matcher (`computeMatches`) is checked on its own labels at the bottom.
  *
+ * ONE deliberate exception, ruled by Jason on 2026-11-22: a hyphen. The
+ * COMPARISON matchers (the `*Compare*` keys, `rosterCompareKey`, `nameKey`,
+ * `checklistNameKey`, the ladder, names-first pairing) read it as a space, while
+ * the STORED identity keys (`normalizeEntityName`, `normalizeOrderedEntityName`,
+ * `rosterKey`) keep it inside its token, byte-identical to what is on disk.
+ * The hyphen vectors therefore have their own list and their own two-sided
+ * assertion.
+ *
  * Junk characters are written as escapes so the file shows what is under test.
  */
 import { describe, expect, test } from "vitest";
 import {
+  entityNameCompareKey,
   normalizeEntityName,
   normalizeOrderedEntityName,
+  orderedEntityNameCompareKey,
+  rosterCompareKey,
   rosterKey,
 } from "./normalize-name";
 import { nameKey } from "../cards/card-name";
@@ -26,11 +37,18 @@ const ZWSP = "\u200B";
 const SHY = "\u00AD";
 const REPLACEMENT = "\uFFFD";
 
-/** Every matcher's verdict on "are these two the same name?". */
-const verdicts = (a: string, b: string): Record<string, boolean> => ({
+/** The STORED identity keys' verdicts: a hyphen stays inside its token. */
+const storedVerdicts = (a: string, b: string): Record<string, boolean> => ({
   identityKey: normalizeEntityName(a) === normalizeEntityName(b),
   orderedKey: normalizeOrderedEntityName(a) === normalizeOrderedEntityName(b),
   rosterKey: rosterKey([a]) === rosterKey([b]),
+});
+
+/** The COMPARISON matchers' verdicts: a hyphen is a space. */
+const comparisonVerdicts = (a: string, b: string): Record<string, boolean> => ({
+  identityCompareKey: entityNameCompareKey(a) === entityNameCompareKey(b),
+  orderedCompareKey: orderedEntityNameCompareKey(a) === orderedEntityNameCompareKey(b),
+  rosterCompareKey: rosterCompareKey([a]) === rosterCompareKey([b]),
   nameKey: nameKey(a) === nameKey(b),
   checklistNameKey: checklistNameKey(a) === checklistNameKey(b),
   ladderExact: playerNamesMatch(a, b).exact,
@@ -39,6 +57,12 @@ const verdicts = (a: string, b: string): Record<string, boolean> => ({
     [{ names: [a], number: "12" }],
     [{ names: [b], number: "SIG-1" }],
   ).pairs.some((p) => p.by === "name"),
+});
+
+/** Every matcher's verdict on "are these two the same name?". */
+const verdicts = (a: string, b: string): Record<string, boolean> => ({
+  ...storedVerdicts(a, b),
+  ...comparisonVerdicts(a, b),
 });
 
 const MUST_MATCH: Array<[string, string, string]> = [
@@ -61,13 +85,26 @@ const MUST_MATCH: Array<[string, string, string]> = [
   ["full-width letters", "\uFF2Dike Trout", "Mike Trout"],
   ["ligature", "\uFB01nn Wolfhard", "Finn Wolfhard"],
   ["a control character is a space", "Mike\u0000Trout", "Mike Trout"],
-  // NEO-643, Jason 2026-11-21: a hyphen matches a space, everywhere.
-  ["a hyphen against a space", "Smith-Jones", "Smith Jones"],
-  ["a hyphenated place against its spaced form", "Wilkes-Barre", "Wilkes Barre"],
-  ["a hyphenated set name against its spaced form", "Topps-Chrome", "Topps Chrome"],
-  ["a spaced hyphen against a space", "Smith - Jones", "Smith Jones"],
+  // Every dash form but the ASCII hyphen-minus was always a separator in the
+  // stored key too, so these agree in the stored keys as well (as on main).
   ["a non-breaking hyphen against a space", "Smith\u2011Jones", "Smith Jones"],
   ["an en dash against a space", "Smith\u2013Jones", "Smith Jones"],
+  ["a full-width hyphen against a space", "Smith\uFF0DJones", "Smith Jones"],
+];
+
+/**
+ * NEO-643, Jason 2026-11-21 and 2026-11-22: a hyphen matches a space in every
+ * COMPARISON, and the stored key still tells them apart. Each pair must be the
+ * same name to every comparison matcher and two different keys to every stored
+ * identity key.
+ */
+const HYPHEN_IS_A_SPACE_WHEN_COMPARING: Array<[string, string, string]> = [
+  ["a hyphen against a space", "Smith-Jones", "Smith Jones"],
+  ["a given name with a hyphen", "Shin-Soo Choo", "Shin Soo Choo"],
+  ["a hyphenated place against its spaced form", "Wilkes-Barre", "Wilkes Barre"],
+  ["a hyphenated team against its spaced form", "Wilkes-Barre Barons", "Wilkes Barre Barons"],
+  ["a hyphenated set name against its spaced form", "Topps-Chrome", "Topps Chrome"],
+  ["a spaced hyphen against a space", "Smith - Jones", "Smith Jones"],
   ["a figure dash against a hyphen", "Smith\u2012Jones", "Smith-Jones"],
   ["a hyphen between initials joins them", "J-P Arencibia", "JP Arencibia"],
   ["a hyphen between initials against dotted initials", "J-P Arencibia", "J.P. Arencibia"],
@@ -91,6 +128,44 @@ describe("one name matcher: names that must match", () => {
     expect(Object.entries(v).filter(([, same]) => !same).map(([k]) => k)).toEqual([]);
     // Symmetric.
     expect(Object.values(verdicts(b, a)).every(Boolean)).toBe(true);
+  });
+});
+
+describe("one name matcher: a hyphen is a space when COMPARING, and not in a stored key (NEO-643)", () => {
+  test.each(HYPHEN_IS_A_SPACE_WHEN_COMPARING)(
+    "%s: %j = %j in every comparison matcher, and two keys in every stored key",
+    (_why, a, b) => {
+      expect(
+        Object.entries(comparisonVerdicts(a, b)).filter(([, same]) => !same).map(([k]) => k),
+      ).toEqual([]);
+      expect(
+        Object.entries(comparisonVerdicts(b, a)).filter(([, same]) => !same).map(([k]) => k),
+      ).toEqual([]);
+      expect(
+        Object.entries(storedVerdicts(a, b)).filter(([, same]) => same).map(([k]) => k),
+      ).toEqual([]);
+    },
+  );
+
+  test('"Min-jae Kim" and "Jae-min Kim" are two people in every stored key', () => {
+    // With the dash gone the token sort would put both on "jae kim min" and
+    // collide two real players on one row.
+    expect(normalizeEntityName("Min-jae Kim")).not.toBe(normalizeEntityName("Jae-min Kim"));
+    expect(normalizeOrderedEntityName("Min-jae Kim")).not.toBe(normalizeOrderedEntityName("Jae-min Kim"));
+    expect(rosterKey(["Min-jae Kim"])).not.toBe(rosterKey(["Jae-min Kim"]));
+  });
+
+  test('"Min-jae Kim" and "Jae-min Kim" stay apart in the order-keeping comparison matchers', () => {
+    const v = comparisonVerdicts("Min-jae Kim", "Jae-min Kim");
+    expect(v.orderedCompareKey).toBe(false);
+    expect(v.nameKey).toBe(false);
+    expect(v.checklistNameKey).toBe(false);
+    expect(v.ladderExact).toBe(false);
+    expect(v.ladderKey).toBe(false);
+    // The two sorted comparison keys read them as the same three words, as they
+    // always read "Min Jae Kim" and "Jae Min Kim"; only the stored key matters
+    // for identity, and it keeps them apart (above).
+    expect(v.identityCompareKey).toBe(true);
   });
 });
 
@@ -125,21 +200,28 @@ describe("one name matcher: a backslash is deleted, not turned into a space", ()
   });
 });
 
-describe("one name matcher: a hyphen is a space (NEO-643)", () => {
-  test("Smith-Jones keys as two words in every key", () => {
-    expect(normalizeEntityName("Smith-Jones")).toBe("jones smith");
-    expect(normalizeOrderedEntityName("Smith-Jones")).toBe("smith jones");
-    expect(rosterKey(["Smith-Jones"])).toBe("jones smith");
+describe("one name matcher: what a hyphen keys as (NEO-643)", () => {
+  test("Smith-Jones is two words in every comparison key and one in every stored key", () => {
+    // Comparison: a hyphen is a space.
+    expect(entityNameCompareKey("Smith-Jones")).toBe("jones smith");
+    expect(orderedEntityNameCompareKey("Smith-Jones")).toBe("smith jones");
+    expect(rosterCompareKey(["Smith-Jones"])).toBe("jones smith");
     expect(nameKey("Smith-Jones")).toBe("smith jones");
     expect(checklistNameKey("Smith-Jones")).toBe("smith jones");
     expect(ladderPlayerName("Smith-Jones")).toBe("smith jones");
+    // Stored: the hyphen stays inside its token, as on main.
+    expect(normalizeEntityName("Smith-Jones")).toBe("smith-jones");
+    expect(normalizeOrderedEntityName("Smith-Jones")).toBe("smith-jones");
+    expect(rosterKey(["Smith-Jones"])).toBe("smith-jones");
   });
 
-  test("a hyphen between single letters joins them like any initials", () => {
-    expect(normalizeOrderedEntityName("J-P Arencibia")).toBe("jp arencibia");
-    expect(normalizeOrderedEntityName("J-P Arencibia")).toBe(normalizeOrderedEntityName("J.P. Arencibia"));
+  test("a hyphen between single letters joins them like any initials, when comparing", () => {
+    expect(orderedEntityNameCompareKey("J-P Arencibia")).toBe("jp arencibia");
+    expect(orderedEntityNameCompareKey("J-P Arencibia")).toBe(orderedEntityNameCompareKey("J.P. Arencibia"));
     // A lone letter beside a word is not a run: "A-Rod" is two tokens.
-    expect(normalizeOrderedEntityName("A-Rod")).toBe("a rod");
+    expect(orderedEntityNameCompareKey("A-Rod")).toBe("a rod");
+    // Stored, it is the one token it always was.
+    expect(normalizeOrderedEntityName("J-P Arencibia")).toBe("j-p arencibia");
   });
 });
 
@@ -204,7 +286,7 @@ describe("one name matcher: set labels in computeMatches", () => {
     expect(normalizeOrderedEntityName(bsc)).toBe(normalizeOrderedEntityName(sl));
   });
 
-  test("a hyphenated label pairs with its spaced label at confidence 1", () => {
+  test("a hyphenated label pairs with its spaced label at confidence 1 (a comparison)", () => {
     const r = computeMatches([item("Topps-Chrome")], [item("Topps Chrome")]);
     expect(r.autoMatched).toHaveLength(1);
     expect(r.autoMatched[0].confidence).toBe(1);

@@ -17,11 +17,20 @@
 import { describe, expect, test } from "vitest";
 import { cleanseExternalName } from "./cleanse-name";
 import {
+  dashesToSpaces,
+  entityNameCompareKey,
+  entityNameCompareReadings,
+  entityNameCompareTokens,
+  entityNameQueryReadings,
   entityNameTokens,
   foldDiacritics,
+  foldNameForCompare,
   foldNameText,
   normalizeEntityName,
   normalizeOrderedEntityName,
+  orderedEntityNameCompareKey,
+  rosterCompareKey,
+  rosterKey,
 } from "./normalize-name";
 
 describe("foldDiacritics", () => {
@@ -44,12 +53,26 @@ describe("foldDiacritics", () => {
     }
   });
 
-  test("NEO-643: every dash folds to a space, the compatibility forms included", () => {
-    // Hyphen-minus, hyphen, non-breaking hyphen, figure dash, en and em dash,
-    // horizontal bar, minus sign, and the small and full-width forms.
-    for (const dash of ["-", "\u2010", "\u2011", "\u2012", "\u2013", "\u2014", "\u2015", "\u2212", "\uFE58", "\uFE63", "\uFF0D"]) {
+  test("NEO-643: the character fold keeps the ASCII hyphen-minus; every other dash is a separator", () => {
+    // The stored keys keep a hyphen inside its token, so the one fold they all
+    // start from must not touch it.
+    expect(foldDiacritics("Wilkes-Barre")).toBe("wilkes-barre");
+    // Hyphen, non-breaking hyphen, figure dash, en and em dash, horizontal bar,
+    // minus sign, and the small and full-width forms were always separators in
+    // the key. NFKD would turn the last two into a hyphen-minus, so the fold
+    // spaces them first.
+    for (const dash of ["\u2010", "\u2011", "\u2012", "\u2013", "\u2014", "\u2015", "\u2212", "\uFE58", "\uFE63", "\uFF0D"]) {
       expect(foldDiacritics(`Wilkes${dash}Barre`)).toBe("wilkes barre");
     }
+  });
+
+  test("NEO-643: the comparison fold reads every dash as a space", () => {
+    for (const dash of ["-", "\u2010", "\u2011", "\u2012", "\u2013", "\u2014", "\u2015", "\u2212", "\uFE58", "\uFE63", "\uFF0D"]) {
+      expect(foldNameForCompare(`Wilkes${dash}Barre`)).toBe("wilkes barre");
+      expect(dashesToSpaces(`Wilkes${dash}Barre`)).toBe("Wilkes Barre");
+    }
+    // It is the character fold after the dash step, nothing more.
+    expect(foldNameForCompare("José Ramírez-Smith")).toBe("jose ramirez smith");
   });
 
   test("leaves a letter with no canonical decomposition alone", () => {
@@ -102,16 +125,20 @@ describe("normalizeEntityName — the players/teams dedup key", () => {
     expect(normalizeEntityName("Green Bay (Packers)")).toBe("bay green packers");
   });
 
-  test("NEO-643: a hyphen is a space, so a hyphenated name is the spaced name", () => {
-    expect(normalizeEntityName("Wilkes-Barre Barons")).toBe(
-      "barons barre wilkes",
-    );
-    expect(normalizeEntityName("Wilkes-Barre")).toBe(normalizeEntityName("Wilkes Barre"));
-    expect(normalizeEntityName("Smith-Jones")).toBe(normalizeEntityName("Smith Jones"));
-    expect(normalizeEntityName("Smith - Jones")).toBe(normalizeEntityName("Smith Jones"));
+  test("NEO-643: a hyphen stays inside its token in a stored key", () => {
+    expect(normalizeEntityName("Wilkes-Barre Barons")).toBe("barons wilkes-barre");
+    expect(normalizeEntityName("Wilkes-Barre")).not.toBe(normalizeEntityName("Wilkes Barre"));
+    expect(normalizeEntityName("Smith-Jones")).not.toBe(normalizeEntityName("Smith Jones"));
+    expect(normalizeEntityName("Smith - Jones")).not.toBe(normalizeEntityName("Smith Jones"));
+    // Every other dash was always a separator.
     expect(normalizeEntityName("Smith\u2011Jones")).toBe(normalizeEntityName("Smith Jones"));
     expect(normalizeEntityName("Smith\u2013Jones")).toBe(normalizeEntityName("Smith Jones"));
     expect(normalizeEntityName("Smith\u2012Jones")).toBe(normalizeEntityName("Smith Jones"));
+  });
+
+  test("NEO-643: the token sort cannot collide two hyphenated names", () => {
+    expect(normalizeEntityName("Min-jae Kim")).toBe("kim min-jae");
+    expect(normalizeEntityName("Jae-min Kim")).toBe("jae-min kim");
   });
 
   test("a punctuation-only name normalises to the empty key", () => {
@@ -225,9 +252,10 @@ describe("initials — NEO-322", () => {
     expect(ordered("N. H. L.")).toBe("nhl");
     expect(ordered("N. H. L.")).toBe(ordered("NHL"));
     expect(ordered("Class A")).toBe("class a");
-    // A hyphen is a space (NEO-643), so the two letters join like any initials.
-    expect(ordered("Division I-A")).toBe("division ia");
-    expect(ordered("Division I-A")).toBe(ordered("Division I A"));
+    // A hyphen stays inside its token in a stored key (NEO-643), so I-A is one
+    // token and never joins like the initials "I A" do.
+    expect(ordered("Division I-A")).toBe("division i-a");
+    expect(ordered("Division I-A")).not.toBe(ordered("Division I A"));
     expect(ordered("Liga MX")).toBe("liga mx");
   });
 });
@@ -377,5 +405,101 @@ describe("normalizeEntityName — NEO-643 one matcher for BSC's backslash", () =
         normalizeOrderedEntityName(x),
       );
     }
+  });
+});
+
+/**
+ * NEO-643 (Jason, 2026-11-22) — the STORED keys are main's, byte for byte.
+ *
+ * Every `nameNormalized` / `aliasNormalized` on disk was written by main's
+ * code, and lookups run through an index with the CURRENT key, so a stored key
+ * that moves strands its row. Jason ruled: no re-key and no seed change, so the
+ * keys of any name without a junk character must equal what origin/main's
+ * `normalizeEntityName`, `normalizeOrderedEntityName` and `entityNameTokens`
+ * return. The outputs below were produced by running origin/main's own
+ * `lib/entities/normalize-name.ts` (2026-11-22) and hard-coded; a sweep of
+ * 300,000 random strings over letters, accents, every dash form, punctuation
+ * and spaces matched it too. If one of these fails, a stored key moved: fix the
+ * code, never the expectation.
+ */
+describe("NEO-643: stored keys equal origin/main's, for names without a junk character", () => {
+  // [name, normalizeEntityName, normalizeOrderedEntityName, entityNameTokens]
+  const MAIN: Array<[string, string, string, string[]]> = [
+    ["Smith-Jones", "smith-jones", "smith-jones", ["smith-jones"]],
+    ["Shin-Soo Choo", "choo shin-soo", "shin-soo choo", ["shin-soo", "choo"]],
+    ["Min-jae Kim", "kim min-jae", "min-jae kim", ["min-jae", "kim"]],
+    ["Jae-min Kim", "jae-min kim", "jae-min kim", ["jae-min", "kim"]],
+    ["Wilkes-Barre Barons", "barons wilkes-barre", "wilkes-barre barons", ["wilkes-barre", "barons"]],
+    ["J-P Arencibia", "arencibia j-p", "j-p arencibia", ["j-p", "arencibia"]],
+    ["Division I-A", "division i-a", "division i-a", ["division", "i-a"]],
+    ["A - B", "- a b", "a - b", ["a", "-", "b"]],
+    ["Jean-Luc O'Neal", "jean-luc oneal", "jean-luc oneal", ["jean-luc", "oneal"]],
+    ["Nolan Ryan", "nolan ryan", "nolan ryan", ["nolan", "ryan"]],
+    ["José Ramírez", "jose ramirez", "jose ramirez", ["jose", "ramirez"]],
+    ["C. J. Kayfus", "cj kayfus", "cj kayfus", ["cj", "kayfus"]],
+    ["Topps-Chrome", "topps-chrome", "topps-chrome", ["topps-chrome"]],
+    ["Wilkes\u2013Barre", "barre wilkes", "wilkes barre", ["wilkes", "barre"]],
+    ["Ken Griffey Jr.", "griffey jr ken", "ken griffey jr", ["ken", "griffey", "jr"]],
+    ["Texas A&M", "am texas", "texas am", ["texas", "am"]],
+    ["Big 12", "12 big", "big 12", ["big", "12"]],
+    ["Smith, John", "john smith", "smith john", ["smith", "john"]],
+    ["Mary-Kate  Olsen-Smith", "mary-kate olsen-smith", "mary-kate olsen-smith", ["mary-kate", "olsen-smith"]],
+  ];
+
+  test.each(MAIN)("%j", (name, identity, ordered, tokens) => {
+    expect(normalizeEntityName(name)).toBe(identity);
+    expect(normalizeOrderedEntityName(name)).toBe(ordered);
+    expect(entityNameTokens(name)).toEqual(tokens);
+  });
+
+  test("the named hyphenated names each keep their own key", () => {
+    expect(normalizeEntityName("Smith-Jones")).toBe("smith-jones");
+    expect(normalizeEntityName("Shin-Soo Choo")).toBe("choo shin-soo");
+    expect(normalizeEntityName("Min-jae Kim")).toBe("kim min-jae");
+    expect(normalizeEntityName("Jae-min Kim")).toBe("jae-min kim");
+    expect(normalizeEntityName("Wilkes-Barre Barons")).toBe("barons wilkes-barre");
+  });
+
+  test("the roster key of stored names is main's too", () => {
+    expect(rosterKey(["Smith-Jones", "Shin-Soo Choo"])).toBe("choo shin-soo|smith-jones");
+  });
+
+  test("the typeahead readings of a stored key keep the hyphen in its word", () => {
+    expect(entityNameQueryReadings("Smith-Jo")).toEqual([["smith-jo"]]);
+  });
+
+  test("the two full-width and small hyphen-minus forms stay separators, as on main", () => {
+    // NFKD turns U+FF0D and U+FE63 into "-"; the key must still space them.
+    expect(normalizeEntityName("Smith\uFF0DJones")).toBe("jones smith");
+    expect(normalizeEntityName("Smith\uFE63Jones")).toBe("jones smith");
+  });
+});
+
+describe("NEO-643: the comparison readings read a hyphen as a space", () => {
+  test("the keys and tokens", () => {
+    expect(entityNameCompareKey("Smith-Jones")).toBe(entityNameCompareKey("Smith Jones"));
+    expect(entityNameCompareKey("Shin-Soo Choo")).toBe("choo shin soo");
+    expect(entityNameCompareKey("Wilkes-Barre Barons")).toBe("barons barre wilkes");
+    expect(orderedEntityNameCompareKey("Wilkes-Barre Barons")).toBe("wilkes barre barons");
+    expect(entityNameCompareTokens("Smith-Jones")).toEqual(["smith", "jones"]);
+    expect(rosterCompareKey(["Smith-Jones", "Shin-Soo Choo"])).toBe("choo shin soo|jones smith");
+  });
+
+  test("a hyphen between single letters joins like any initials", () => {
+    expect(orderedEntityNameCompareKey("J-P Arencibia")).toBe("jp arencibia");
+    expect(orderedEntityNameCompareKey("Division I-A")).toBe("division ia");
+  });
+
+  test("the typeahead readings", () => {
+    expect(entityNameCompareReadings("smith-jo")).toEqual([["smith", "jo"]]);
+    expect(entityNameCompareReadings("smith jo")).toEqual([["smith", "jo"]]);
+  });
+
+  test("the two readings differ only by the dash step, never by the stored chain", () => {
+    for (const name of ["Smith-Jones", "Shin-Soo Choo", "Wilkes-Barre Barons", "Nolan Ryan", "José Ramírez"]) {
+      expect(entityNameCompareKey(name)).toBe(normalizeEntityName(dashesToSpaces(name)));
+    }
+    // With no dash in the name the two readings are the same function.
+    expect(entityNameCompareKey("Nolan Ryan")).toBe(normalizeEntityName("Nolan Ryan"));
   });
 });

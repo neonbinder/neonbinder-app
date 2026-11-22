@@ -45,7 +45,7 @@ import {
 } from "../../convex/lib/careerCoverage";
 import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
 import { cleanseExternalName } from "../../lib/entities/cleanse-name";
-import { foldNameText } from "../../lib/entities/normalize-name";
+import { foldNameForCompare } from "../../lib/entities/normalize-name";
 import { MIN_CAREER_YEAR, maxCareerYear } from "../../lib/players/career-years";
 import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
 import { ignoredPlayerKeys } from "./career-prefill";
@@ -79,7 +79,7 @@ export type CareerRow = {
 export type CareerCard = CareerCheckCard;
 
 const norm = (raw: string): string => normalizeEntityName(raw.trim());
-const fold = (raw: string): string => foldNameText(raw).trim().replace(/\s+/g, " ");
+const fold = (raw: string): string => foldNameForCompare(raw).trim().replace(/\s+/g, " ");
 
 // ---------------------------------------------------------------------------
 // Pairs and lines

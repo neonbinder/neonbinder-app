@@ -9,8 +9,9 @@ import {
   erasOverlap,
 } from "../../lib/teams/team-era";
 import {
-  entityNameQueryReadings,
+  entityNameCompareReadings,
   normalizeOrderedEntityName,
+  orderedEntityNameCompareKey,
 } from "../../lib/entities/normalize-name";
 import { Input } from "../primitives/Input";
 import { Autocomplete, focusWithoutOpening } from "../primitives/Autocomplete";
@@ -675,9 +676,9 @@ export default function NewTeamForm({
   const typedLower = typed.toLowerCase();
   /** Every typeahead reading of the typed key (NEO-322): "N. C. S" joins to
    *  "ncs", the substring of nothing in "nc state", so it also reads as
-   *  "nc s". The first reading is `typedKey` itself. */
+   *  "nc s". The first reading is `typedKey` with a hyphen read as a space. */
   const typedReadings = typed
-    ? entityNameQueryReadings(typed)
+    ? entityNameCompareReadings(typed)
         .map((tokens) => tokens.join(" "))
         .filter((reading) => reading !== "")
     : [];
@@ -687,7 +688,10 @@ export default function NewTeamForm({
   const matchesTyped = (option: LeagueOption) =>
     option.haystack.some((text) => {
       if (text.toLowerCase().includes(typedLower)) return true;
-      const key = normalizeLeagueName(text);
+      // NEO-643 — typed text reads a hyphen as a space; the stored-style
+      // `normalizeLeagueName` (above) does not, so the haystack goes through
+      // the comparison key.
+      const key = orderedEntityNameCompareKey(text);
       return typedReadings.some((reading) => key.includes(reading));
     });
 

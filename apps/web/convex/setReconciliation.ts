@@ -120,7 +120,7 @@ import {
   setRowChecklistSections,
 } from "./lib/publishedChecklistSections";
 import { classifySections } from "../lib/checklists/classify-sections";
-import { foldNameText } from "../lib/entities/normalize-name";
+import { foldNameForCompare } from "../lib/entities/normalize-name";
 
 /**
  * A sentinel thrown to short-circuit a side's fetch block WITHOUT its catch
@@ -231,10 +231,10 @@ function singularize(tok: string): string {
 }
 
 function normalizeForMatch(s: string): string {
-  // NEO-643: the shared character fold first (stray backslash/zero-width junk
-  // deleted, accents off, lowercase), so "B\eisbol" and "Béisbol" agree. Without
+  // NEO-643: the shared comparison fold first (stray backslash/zero-width junk
+  // deleted, accents off, lowercase, a hyphen a space), so "B\eisbol" and "Béisbol" agree. Without
   // it the `[^\w\s]` strip below would delete the "é" outright and leave "bisbol".
-  const base = foldNameText(s)
+  const base = foldNameForCompare(s)
     .trim()
     .replace(/[^\w\s]/g, "")
     .replace(/\s+/g, " ");
@@ -830,7 +830,7 @@ export const variantSyncChecklistContext = internalQuery({
 
 /**
  * A section name or a target label folded for section matching: accents off
- * ("Exposé" = "expose", via the shared `foldNameText` inside `normalizeForMatch`), then a plural fold on every
+ * ("Exposé" = "expose", via the shared `foldNameForCompare` inside `normalizeForMatch`), then a plural fold on every
  * token longer than three letters ("Ballparks" = "Ballpark", "Legends" =
  * "Legend"). Both sides fold the same way, so "Series" against "Series"
  * still agrees.

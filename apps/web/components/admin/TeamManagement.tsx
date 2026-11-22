@@ -6,8 +6,9 @@ import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { Input, Textarea } from "@/components/primitives";
 import { Autocomplete } from "@/components/primitives/Autocomplete";
 import {
-  entityNameQueryReadings,
+  entityNameCompareReadings,
   normalizeOrderedEntityName,
+  orderedEntityNameCompareKey,
 } from "@/lib/entities/normalize-name";
 import NeonButton from "@/components/modules/NeonButton";
 import { parseAliases } from "@/components/SetSelector/NewLeagueForm";
@@ -496,14 +497,15 @@ function TeamDetail({
   // Every typeahead reading of the typed key (NEO-322), so "N. C. S" — on
   // the way to "N. C. State" — still finds "NC State" as "nc s".
   const franchiseTypedReadings = franchiseTyped
-    ? entityNameQueryReadings(franchiseTyped)
+    ? entityNameCompareReadings(franchiseTyped)
         .map((tokens) => tokens.join(" "))
         .filter((reading) => reading !== "")
     : [];
   const franchiseMatches = franchiseTyped
     ? franchiseOptions.filter((f) => {
         if (f.label.toLowerCase().includes(franchiseTypedLower)) return true;
-        const key = normalizeOrderedEntityName(f.label);
+        // NEO-643 — typed text reads a hyphen as a space.
+        const key = orderedEntityNameCompareKey(f.label);
         return franchiseTypedReadings.some((reading) => key.includes(reading));
       })
     : franchiseOptions;

@@ -74,7 +74,7 @@ import {
 // NEO-253: the one normalisation of an entity name, shared with teams,
 // leagues, the commit prelude and the browser-side review wizard.
 import {
-  entityNameQueryReadings,
+  entityNameCompareReadings,
   normalizeEntityName,
 } from "../lib/entities/normalize-name";
 // NEO-296: the bound on the batch id -> row read, with the op arithmetic.
@@ -2828,10 +2828,13 @@ export const search = query({
         return args.sportId ? search.eq("sportId", args.sportId) : search;
       })
       .take(limit);
-    const readings = entityNameQueryReadings(term);
+    // NEO-643 — a hyphen is a space in typed text: "smith jo" finds a stored
+    // "smith-jones", whose key keeps the hyphen inside its token, so the key's
+    // tokens are split on the hyphen here (the key itself is untouched).
+    const readings = entityNameCompareReadings(term);
     /** Every typed token is the prefix of one of the name's tokens. */
     const matchesEveryToken = (nameNormalized: string) => {
-      const nameTokens = nameNormalized.split(" ");
+      const nameTokens = nameNormalized.split(/[\s-]+/);
       return readings.some(
         (tokens) => tokens.length > 0 && tokens.every((t) => nameTokens.some((n) => n.startsWith(t))),
       );
@@ -2850,7 +2853,7 @@ export const search = query({
      * read; nothing here looks at another sport.
      *
      * NEO-322 — under either reading of the typed text
-     * (`entityNameQueryReadings`), so "J. T. R", one keystroke short of
+     * (`entityNameCompareReadings`), so "J. T. R", one keystroke short of
      * "J. T. Re", still finds "jt realmuto" instead of looking for "jtr".
      */
     /*

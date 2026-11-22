@@ -25,7 +25,7 @@
  * settles it.
  */
 
-import { normalizeOrderedEntityName } from "../entities/normalize-name";
+import { orderedEntityNameCompareKey } from "../entities/normalize-name";
 
 /** A disagreement, with each marketplace's name exactly as it spelled it. */
 export type NameDisagreement = {
@@ -57,7 +57,7 @@ export function nameKey(name: string): string {
   // comparison, the identity keys and the pairing ladder cannot disagree about
   // what an accent, a stray backslash or an initial IS. Word order is kept
   // (no token sort) on purpose. It is never stored.
-  return normalizeOrderedEntityName(name);
+  return orderedEntityNameCompareKey(name);
 }
 
 /**

@@ -8,16 +8,21 @@
  * of increasingly permissive comparisons, each of which reports whether it
  * was an *exact* hit — the caller scores exact and fuzzy hits differently.
  *
- * NEO-643: the normalisation is the ONE shared entity-name reading
- * (`entityNameTokens` in `lib/entities/normalize-name.ts`), so this ladder and
- * the identity keys can never disagree about what an accent, a stray
- * backslash ("Wilmer R\ios" for Ríos), an initial run or a hyphen is. The only
- * thing the ladder adds is dropping the generational suffix tokens.
+ * NEO-643: the normalisation is the shared entity-name reading, in its
+ * COMPARISON form (`entityNameCompareTokens` in `lib/entities/normalize-name.ts`),
+ * so this ladder and the identity keys agree about what an accent, a stray
+ * backslash ("Wilmer R\ios" for Ríos) or an initial run is. A hyphen is the one
+ * place they differ on purpose: here it is a space ("Smith-Jones" = "Smith
+ * Jones", Jason 2026-11-21), while a stored identity key keeps it inside its
+ * token. The ladder also drops the generational suffix tokens.
  *
  * Everything here is pure and string-only. It knows nothing about pooling.
  */
 
-import { entityNameTokens, foldNameText } from "../../../lib/entities/normalize-name";
+import {
+  entityNameCompareTokens,
+  foldNameForCompare,
+} from "../../../lib/entities/normalize-name";
 
 /**
  * Generational and ordinal suffix TOKENS, dropped so "Ken Griffey Jr." and
@@ -58,14 +63,14 @@ export const NO_MATCH: NameMatch = Object.freeze({ match: false, exact: false })
 
 /**
  * A player name as the ladder compares it: the shared entity-name tokens
- * (folded, lowercased, punctuation dropped, runs of initials joined, source
- * order) with the suffix tokens removed, joined by single spaces.
+ * (folded, lowercased, punctuation dropped, a hyphen read as a space, runs of
+ * initials joined, source order) with the suffix tokens removed, joined by single spaces.
  *
  * Named `ladderPlayerName` because `players.normalizePlayerName` is the
  * identity key (token-sorted, suffixes kept); the two are different things.
  */
 export function ladderPlayerName(name: string): string {
-  return entityNameTokens(name)
+  return entityNameCompareTokens(name)
     .filter((token) => !NAME_SUFFIX_TOKENS.has(token))
     .join(" ");
 }
@@ -142,14 +147,15 @@ export function playerNamesMatch(a: string, b: string): NameMatch {
  *
  * Containment carries the load here: a front usually prints only the
  * nickname ("Chiefs") while a back spells out the full club ("Kansas City
- * Chiefs"). No normalisation beyond the shared character fold (`foldNameText`:
- * junk characters, accents, case) and trimming — team names do not carry
+ * Chiefs"). No normalisation beyond the shared comparison fold (`foldNameForCompare`:
+ * junk characters, accents, case, a hyphen read as a space) and trimming — team names do not carry
  * suffixes or initials, and stripping punctuation would fuse distinct names
  * more often than it would help.
  */
 export function teamNamesMatch(a: string, b: string): NameMatch {
-  const na = foldNameText(a).trim();
-  const nb = foldNameText(b).trim();
+  // A dash became a space, so "Wilkes - Barre" is three spaces: collapse them.
+  const na = foldNameForCompare(a).replace(/\s+/g, " ").trim();
+  const nb = foldNameForCompare(b).replace(/\s+/g, " ").trim();
 
   if (na === nb) {
     return { match: true, exact: true };

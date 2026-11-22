@@ -175,6 +175,18 @@ describe("playerNamesMatch", () => {
   });
 });
 
+describe("ladderPlayerName and playerNamesMatch: a hyphen is a space (NEO-643)", () => {
+  test("a hyphenated name is the spaced name, exactly", () => {
+    expect(ladderPlayerName("Smith-Jones")).toBe("smith jones");
+    expect(playerNamesMatch("Smith-Jones", "Smith Jones")).toEqual({ match: true, exact: true });
+    expect(playerNamesMatch("Shin-Soo Choo", "Shin Soo Choo")).toEqual({ match: true, exact: true });
+  });
+
+  test("two hyphenated first names that differ stay apart", () => {
+    expect(playerNamesMatch("Min-jae Kim", "Jae-min Kim").match).toBe(false);
+  });
+});
+
 describe("teamNamesMatch", () => {
   test("identical is exact", () => {
     expect(teamNamesMatch("Dodgers", "Dodgers")).toEqual({ match: true, exact: true });
@@ -202,6 +214,22 @@ describe("teamNamesMatch", () => {
       exact: true,
     });
     expect(teamNamesMatch("M\\exico", "México")).toEqual({ match: true, exact: true });
+  });
+
+  test("NEO-643: a hyphen is a space", () => {
+    expect(teamNamesMatch("Wilkes-Barre Barons", "Wilkes Barre Barons")).toEqual({
+      match: true,
+      exact: true,
+    });
+    expect(teamNamesMatch("Wilkes - Barre Barons", "Wilkes-Barre Barons")).toEqual({
+      match: true,
+      exact: true,
+    });
+    expect(teamNamesMatch("Barons", "Wilkes-Barre Barons").match).toBe(true);
+    expect(teamNamesMatch("Wilkes Barre", "Wilkes-Barre Barons")).toEqual({
+      match: true,
+      exact: false,
+    });
   });
 
   test("unrelated teams do not match", () => {
