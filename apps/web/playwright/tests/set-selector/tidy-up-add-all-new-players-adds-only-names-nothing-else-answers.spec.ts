@@ -1,7 +1,7 @@
 // ONE FEATURE (R1, NEO-645 decision 32): the Tidy Up walk's "Add all N new players" adds, in one
 // confirmed press, every printed player name nothing in NeonBinder answers (no player, no near
 // spelling, no Wikidata ambiguity: a name Wikidata has no match for is the new-rookie case and is
-// offered), links each on every card that prints it (those cards leave the walk), and never
+// offered), links each on every card that prints it (nothing pink is left on them), and never
 // offers a name players on file already answer to (that card still stops).
 //
 // The old wizard's "Add remaining players as new" was this control; without it a set of a hundred
@@ -16,9 +16,13 @@
 //      file answer to. Its buttons are "Add 3 players" and "Cancel adding new players".
 //   3. Esc closes only the confirm (the walk stays open, nothing written) and puts focus back on
 //      the trigger.
-//   4. Reopen, "Add 3 players": the status beside the trigger reads "Added 3 players.", and the
-//      four cards printing those names leave the walk (one card left: #5).
-//   5. Save & next from #1 lands on #5: #2-#4 are never shown, and #5's Player tile is still pink.
+//   4. Reopen, "Add 3 players": the status beside the trigger reads "Added 3 players.". Every
+//      card printing those names has its player; #4 (Ulric's second card) leaves the walk, and
+//      the card each player was made on (#1, #2, #3) stays BLUE with the new player's Career
+//      check, as per-card "Add as new player" leaves it (plan: `newPlayerCareer`, only on the
+//      card where the player was created). Four cards left.
+//   5. Blue never holds: Save & next on #1, #2, #3 lands on #5; #4 is never shown, and #5's
+//      Player tile is still pink.
 //   6. Save for later; the checklist's pill counts the one card, pink ("1 needs you, 1 to fix"). Players admin lists each new name
 //      once in this sport, and the on-file name twice, as before (no third one was made).
 //
@@ -140,22 +144,34 @@ test(
     await expect(trigger).toHaveAttribute("aria-expanded", "false");
     await expectCardsLeft(page, 5);
 
-    // ── STEP 4: reopen and add; the four cards printing those names leave the walk ──
+    // ── STEP 4: reopen and add; every card printing those names has its player ──
     await trigger.click();
     await expect(confirm).toBeVisible();
     await add.click();
     await expect(walk.getByRole("status").filter({ hasText: /^Added 3 players\.$/ })).toBeVisible();
     await expect(confirm).toHaveCount(0);
-    await expectCardsLeft(page, 1);
-    // #1 itself now has its player: nothing on it is pink.
-    await expect(pinkTile(page, "Player")).toHaveCount(0);
-    await expect(
-      tidyTile(page, "Player").getByRole("group", { name: `Player ${NEW[0]}`, exact: true }).getByRole("button", { name: /^Change player( .+)?$/ }),
-    ).toBeVisible();
+    // #4 (Ulric's second card) leaves the walk: linked, nothing to check. #1-#3 stay, each BLUE
+    // with the new player's Career check (the card a player is made on, as per-card "Add as new
+    // player" does); #5 stays pink.
+    await expectCardsLeft(page, 4);
+    await expect(walk.getByText(`#1 · ${NEW[0]}`, { exact: true })).toBeVisible();
 
-    // ── STEP 5: Save & next skips #2-#4 (answered) and lands on #5, still asking ──
-    await saveAndNext(page);
+    // ── STEP 5: each new player's card is blue, never held; Save & next lands on #5 without #4 ──
+    for (const [i, name] of NEW.entries()) {
+      await expect(walk.getByText(`#${i + 1} · ${name}`, { exact: true })).toBeVisible();
+      await expectCardSettled(page);
+      await expect(pinkTile(page, "Player"), `#${i + 1}'s player was added`).toHaveCount(0);
+      await expect(
+        tidyTile(page, "Player").getByRole("group", { name: `Player ${name}`, exact: true }).getByRole("button", { name: /^Change player( .+)?$/ }),
+      ).toBeVisible();
+      await expect(tidyTile(page, "Career"), `#${i + 1} is where ${name} was made: a Career check`).toHaveAccessibleDescription(/To check/);
+      await expect(walk.getByText("1 to check", { exact: true })).toBeVisible();
+      await expect(walk.getByText(/^[0-9]+ to fix$/)).toHaveCount(0);
+      await expectCardsLeft(page, 4 - i);
+      await saveAndNext(page);
+    }
     await expect(walk.getByText(`#5 · ${ON_FILE}`, { exact: true })).toBeVisible();
+    await expect(walk.getByText(`#4 · ${NEW[0]}`, { exact: true }), "#4 was answered by the add").toHaveCount(0);
     await expectCardSettled(page);
     await expect(pinkTile(page, "Player"), "the name a player on file answers to still stops").toHaveCount(1);
     await expect(

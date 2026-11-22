@@ -6,7 +6,10 @@
 //   * Save for later (Esc) closes the walk and writes nothing;
 //   * Skip: not ready to list moves on and writes nothing; the end screen
 //     counts the card ("1 card skipped, not ready to list");
-//   * Back, and the browser's Back, step to the card before.
+//   * Back, and the browser's Back, step to the card before;
+//   * the end screen's "Review the N skipped" reopens the skipped cards from
+//     the first of them ("N cards left" again), and the browser's Back returns
+//     to the end screen with its tally and button unchanged.
 // The position is the address (`?tidy=<card>`): a pasted link opens that card,
 // and an id that is none of this checklist's cards opens the first card.
 //
@@ -218,6 +221,43 @@ test(
     await expect(pinkTile(page, "Team")).toHaveCount(1);
     await skipCard(page);
     await expect(tidyCardHeader(page, header(cardC))).toBeVisible();
+
+    // ── Skip the blue #3 too: the end screen offers the two skipped cards again ──
+    await skipCard(page);
+    const twoSkipped = walk.getByText("2 cards skipped, not ready to list", { exact: true });
+    const twoTally = walk.getByText("1 card fixed, 2 skipped.", { exact: true });
+    const reviewTwo = walk.getByRole("button", { name: "Review the 2 skipped", exact: true });
+    await expect(twoSkipped).toBeVisible();
+    await expect(twoTally).toBeVisible();
+    await expect(reviewTwo).toBeVisible();
+    await expectCardsLeft(page, 0);
+    const endUrl = page.url();
+    await expectAccessible(page, { within: walk, label: "Tidy Up walk end screen offering the skipped cards" });
+
+    // Review lands on the first skipped card (#1, not the answered #2), and both count as left again.
+    await reviewTwo.click();
+    await expect(tidyCardHeader(page, header(cardA))).toBeVisible();
+    await expectCardSettled(page);
+    await expect(page).toHaveURL(new RegExp(`[?&]tidy=${escapeRe(idA)}(&|$)`));
+    await expectCardsLeft(page, 2);
+    await expect(reviewTwo).toHaveCount(0);
+
+    // The browser's Back returns to the end screen, the tally and the button as they were.
+    await page.goBack();
+    await expect(page).toHaveURL(endUrl);
+    await expect(twoSkipped).toBeVisible();
+    await expect(twoTally).toBeVisible();
+    await expect(reviewTwo).toBeVisible();
+    await expect(tidyCardHeader(page, header(cardA))).toHaveCount(0);
+    await expectCardsLeft(page, 0);
+
+    // Review again, skip #1 a last time, and Save & next on #3 marks it seen.
+    await reviewTwo.click();
+    await expect(tidyCardHeader(page, header(cardA))).toBeVisible();
+    await expectCardsLeft(page, 2);
+    await skipCard(page);
+    await expect(tidyCardHeader(page, header(cardC))).toBeVisible();
+    await expectCardsLeft(page, 1);
 
     // ── Save & next on the blue card reaches the end screen ──
     await saveAndNext(page);

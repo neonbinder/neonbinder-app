@@ -146,6 +146,19 @@ that must not write a real set, there is no pre-save exit any more: give it its 
   walk on its last card. A column Back/Forward check placed after a walk lands in the walk; put
   it before the fetch, or prove Back inside the walk (end screen -> last card -> Forward).
 
+## "Add all N new players" and "Review the N skipped" (NEO-645 w8)
+
+- **A created player leaves a BLUE Career check on the card it was made on** (`newPlayerCareer`),
+  per-card add and bulk "Add all" alike. A name printed on #1 and #4 keeps #1 in the walk (blue,
+  "1 to check") and drops #4. Count the walk as (first card per new name) + the still-pink cards;
+  blue never holds Save & next.
+- The Add-all trigger and its "Added N players." status sit in the walk's header (inside the
+  dialog); after the add the trigger keeps its old label, aria-disabled.
+- **"Review the N skipped"** (end screen, footer) lands on the first skipped card; the cards being
+  reviewed count as left again ("N cards left"). Its move is a push: browser Back returns to the
+  end screen with the same verdict, tally and button. Reaching it with several skipped cards: skip a
+  blue card instead of Save & next.
+
 ## Autograph radiogroup and "Did you mean" on the Player tile (NEO-645 autograph + S2 specs)
 
 - **Autograph radios save on an arrow** and are `aria-disabled` while the write runs: before
