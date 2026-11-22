@@ -29,9 +29,9 @@
 // mapping). Minted names are single tokens per attempt (`Apl Ata<token>`, `Two Ata<token>`, teams
 // `ATT<token>`, `ATC<token>`), so the spec is not fresh-only. Nothing is deleted: the sport, its
 // rows, the five cards, the one new player and the one new team stand.
-import type { Locator, Page } from "@playwright/test";
+import type { Locator } from "@playwright/test";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { closeCardDrawer, openCardDrawer } from "../../support/also-pictured";
+import { expectDrawerTeams } from "../../support/also-pictured";
 import { escapeRe } from "../../support/cards";
 import { usePastedChecklist } from "../../support/published-checklist";
 import { drillToCustom, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
@@ -49,16 +49,6 @@ import {
 import { tidyUpName } from "../../support/wizard";
 
 const YEAR = "2026";
-
-/** Card `number`'s drawer holds exactly `teams` (one "Remove team <name>" chip each), read from the stored card. */
-async function expectDrawerTeams(page: Page, number: string, teams: string[]): Promise<void> {
-  const drawer = await openCardDrawer(page, number);
-  for (const team of teams) {
-    await expect(drawer.getByRole("button", { name: `Remove team ${team}`, exact: true })).toBeVisible();
-  }
-  await expect(drawer.getByRole("button", { name: /^Remove team / }), `card #${number} holds ${teams.length} team(s)`).toHaveCount(teams.length);
-  await closeCardDrawer(drawer);
-}
 
 test(
   "Tidy Up — Apply to all on the Team tile fills the player's other teamless cards where his career names the team, leaves a claimed or still-unsettled card alone, and says how many it left",

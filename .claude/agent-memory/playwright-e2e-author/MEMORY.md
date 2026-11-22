@@ -137,3 +137,4 @@
 - [Team Apply to all fixture](patterns_team_apply_to_all_fixture.md) — client proposes/server checks career; skip only via a two-name card; in-walk new player + inline team + stint
 - [Parallel-build specs tidy the base (J3)](patterns_parallel_build_specs_must_tidy_the_base_j3.md) — no Save for later before a build; tidyForTheParallelBuild; titles door waits behind the walk
 - [Need-you pill is not a team-lookup proof](patterns_need_you_pill_is_not_a_team_lookup_proof.md) — NEO-645: pill counts unlinked players; read mark reasons per row; Q1-A fill leaves the queue
+- [Tile state lost when card context arrives](patterns_tile_state_lost_when_card_context_arrives.md) — NEO-645: search opened right after a card opens closes itself; probe ms, report, temp copy
