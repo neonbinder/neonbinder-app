@@ -88,6 +88,7 @@ import VariantForm from "../SetSelector/VariantForm";
 // (auto re-subscribe + Retry) so a column never hangs forever on "Loading…".
 import ResilientEntityColumn from "../SetSelector/ResilientEntityColumn";
 import CardChecklist from "../SetSelector/CardChecklist";
+import { FETCH_FROM_MARKETPLACES_LABEL } from "../SetSelector/fetch-labels";
 import {
   buildButtonLabel,
   useHostedParallelBuildRun,
@@ -246,13 +247,14 @@ type TerminalFocusTarget =
 
 /**
  * The D3 landing spots, found by the accessible names their owners give
- * them. Keep in step with CardChecklist's empty-state fetch button
- * (`aria-label="Sync card checklist"`, visible "Fetch from Marketplaces"),
+ * them. Keep in step with CardChecklist's empty-state fetch button (no
+ * aria-label since NEO-645, so its visible "Fetch from Marketplaces" IS its
+ * name; spelled once in `fetch-labels.ts`),
  * ParallelBuildButton (no aria-label, so its visible text IS its name:
  * `buildButtonLabel`, imported rather than spelled, so the two cannot drift)
  * and SetAttributesPanel's toggle ("Edit attributes" / "Hide attributes"
  * inside the "Set attributes panel" region). With no cards there is exactly
- * one "Sync card checklist" button on the page, and exactly one "Build from
+ * one "Fetch from Marketplaces" button on the page, and exactly one "Build from
  * …": the header's copies render only once the checklist has cards.
  */
 function findTerminalFocusTarget(
@@ -261,8 +263,8 @@ function findTerminalFocusTarget(
   target: TerminalFocusTarget,
 ): HTMLElement | null {
   if (target.kind === "fetch") {
-    const button = page.querySelector<HTMLButtonElement>(
-      'button[aria-label="Sync card checklist"]',
+    const button = Array.from(page.querySelectorAll<HTMLButtonElement>("button")).find(
+      (el) => !row.contains(el) && (el.textContent ?? "").trim() === FETCH_FROM_MARKETPLACES_LABEL,
     );
     return button && !button.disabled ? button : null;
   }

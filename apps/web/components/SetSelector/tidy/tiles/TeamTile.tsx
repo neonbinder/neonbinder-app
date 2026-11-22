@@ -7,7 +7,7 @@ import NeonButton from "../../../modules/NeonButton";
 import EntityLinkSearch from "../../EntityLinkSearch";
 import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
-import { linkedForText, teamFillText } from "../parts/copy";
+import { teamFillText, teamLinkedForText } from "../parts/copy";
 import TeamFillChips from "../parts/TeamFillChips";
 import TeamNameRow from "../parts/TeamNameRow";
 import { useTidyWrite } from "../parts/tidy-write";
@@ -164,7 +164,14 @@ export default function TeamTile({ row, context, attention, leafId, sportId, lea
             className="grid gap-1.5"
           >
             <p className="text-sm font-medium text-ink wrap-anywhere">{team.name}</p>
-            {reason && <TidyNote>{linkedForText(reason)}</TidyNote>}
+            {reason && (
+              <TidyNote>
+                {teamLinkedForText(
+                  reason,
+                  context.players.find((p) => p.stints.some((s) => s.teamId === team.teamId))?.name,
+                )}
+              </TidyNote>
+            )}
             <div className="flex flex-wrap gap-2">
               <NeonButton
                 size="1"
@@ -249,13 +256,22 @@ export default function TeamTile({ row, context, attention, leafId, sportId, lea
  * (it also reads the player's stints against that card's year); this keeps the
  * button from offering cards the server is certain to refuse, and keeps its
  * count honest about what could be written.
+ *
+ * Every test here is `tidyCards.cardTakesTeamFill`'s, read the same way: a
+ * pending name counts by its LENGTH (a blank entry still refuses), the listing's
+ * team by truthiness (whitespace is still a claim). Keep it in step. The one
+ * test it cannot repeat is the career's verdict for the set's year: the server
+ * alone holds the player's whole career, so a card it refuses for that reason
+ * is counted in "left as it was".
  */
 function proposesTeam(card: TidyRow, openCardId: Id<"cardChecklist">, playerId: Id<"players">): boolean {
   if (card._id === openCardId) return false;
   if ((card.playerIds?.length ?? 0) !== 1 || card.playerIds?.[0] !== playerId) return false;
+  // A second name on the card that nobody has answered yet: the server refuses it.
+  if ((card.pendingPlayerNames ?? []).length > 0) return false;
   if ((card.teamOnCardIds?.length ?? 0) > 0) return false;
-  if ((card.pendingTeamNames ?? []).some((n) => n.trim().length > 0)) return false;
-  if ((card.bscTeamName ?? "").trim() !== "") return false;
+  if ((card.pendingTeamNames ?? []).length > 0) return false;
+  if (card.bscTeamName) return false;
   if (card.teamNoneConfirmedAt !== undefined) return false;
   if (card.teamCheckOutcome === "checklist") return false;
   if ((card.sourceDisagreements ?? []).some((d) => d.field === "teams")) return false;

@@ -59,6 +59,26 @@ export function linkedForText(reason: LinkedForReason): string {
   }
 }
 
+/**
+ * The same note on a TEAM row. `linkedForText("careerTeam")` is about a player
+ * ("the only one on file who played for this card's team"), so a team row says
+ * which player's career names the team instead. `playerName` is the card's
+ * player whose stints include it, when there is one.
+ */
+export function teamLinkedForText(reason: LinkedForReason, playerName?: string): string {
+  if (reason !== "careerTeam") return linkedForText(reason);
+  const who = playerName?.trim();
+  return who ? `Linked for you: ${who} played here` : "Linked for you: a player on this card played here";
+}
+
+/**
+ * NEO-645 (S3a): the purple note on a player name NB ruled out itself, because
+ * the same card prints it as its team. The card says so; the operator can
+ * still change it.
+ */
+export const NOT_A_PLAYER_SAME_AS_TEAM_NOTE =
+  "Ruled out for you: this card prints the same name as its team";
+
 /** The Q1-A purple note on a card whose team the commit filled in. */
 export function teamFillText(reason: "otherCards" | "career"): string {
   return reason === "career"

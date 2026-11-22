@@ -4,6 +4,7 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
 import { MAX_CARD_TEAMS } from "../../../../convex/features/cardAttention";
+import { leagueShortName, teamDetailLine } from "../../../../lib/teams/team-detail";
 import { teamFullName } from "../../../../lib/teams/team-name";
 import NeonButton from "../../../modules/NeonButton";
 import EntityLinkSearch from "../../EntityLinkSearch";
@@ -156,6 +157,12 @@ export default function TeamFillChips({
     api.teams.getManyByIds,
     extraIds.length > 0 ? { ids: [...extraIds].sort() } : "skip",
   );
+  // NEO-645 — a team picked with Other team… shows its league and years, so three
+  // "Baltimore Orioles" can be told apart once one is chosen.
+  const extraLeagues = useQuery(
+    api.leagues.list,
+    extraIds.length > 0 && sportId ? { sportId } : "skip",
+  );
 
   const yearsWith = (teamId: Id<"teams">): string => {
     for (const p of players) {
@@ -288,6 +295,10 @@ export default function TeamFillChips({
         <ul className="flex flex-wrap gap-1.5" aria-label="Teams you added">
           {extraIds.map((id) => {
             const team = extraRows?.find((t) => t._id === id);
+            const league = team?.leagueId
+              ? extraLeagues?.find((l) => l._id === team.leagueId)
+              : undefined;
+            const detail = team ? teamDetailLine(league ? leagueShortName(league) : undefined, team.yearsActive) : "";
             return renderChip(
               {
                 teamId: id,
@@ -295,7 +306,7 @@ export default function TeamFillChips({
                 playerNames: [],
                 inSetYear: false,
               },
-              {},
+              { suffix: detail ? ` · ${detail}` : undefined },
             );
           })}
         </ul>
@@ -348,16 +359,20 @@ export default function TeamFillChips({
         />
       ) : (
         <div className="flex flex-wrap items-center gap-2">
-          <NeonButton
-            ref={saveRef}
-            size="1"
-            aria-disabled={canSave ? undefined : true}
-            onClick={() => {
-              if (canSave) void save();
-            }}
-          >
-            {write.busy ? "Saving…" : chosen.length > 1 ? "Save teams" : "Save team"}
-          </NeonButton>
+          {/* Nothing chosen, nothing to save: the button appears with the first chip
+              (a press on a chip or a team picked with Other team… / New team). */}
+          {chosen.length > 0 && (
+            <NeonButton
+              ref={saveRef}
+              size="1"
+              aria-disabled={canSave ? undefined : true}
+              onClick={() => {
+                if (canSave) void save();
+              }}
+            >
+              {write.busy ? "Saving…" : chosen.length > 1 ? "Save teams" : "Save team"}
+            </NeonButton>
+          )}
           {sportId && !searchOpen && (
             <NeonButton
               ref={otherRef}

@@ -17,6 +17,7 @@ import type { Id } from "../../../convex/_generated/dataModel";
 import { inertBackground } from "@/lib/dom/inert-background";
 import { isEditableTarget } from "@/lib/dom/is-editable-target";
 import NeonButton from "../../modules/NeonButton";
+import HintedLabel from "../HintedLabel";
 import WizardChrome from "../WizardChrome";
 import {
   currentReviewKeys,
@@ -45,6 +46,7 @@ import {
   cardsLeftText,
   cardsSkipped,
   cardsSkippedText,
+  cardsTallyText,
   loadSitting,
   nextCardId,
   pendingLookupKeys,
@@ -144,20 +146,36 @@ export default function TidyUpWalk(props: WalkProps) {
   );
 }
 
-/** "#38b · Image Variation · Mike Trout": number, variation, who is on it. */
-export function cardHeaderLine(
+/**
+ * "#38b · Image Variation · Mike Trout": number, variation, who is on it. The
+ * number is its own piece because the header line wraps anywhere and a printed
+ * number such as "FS-3" must never split ("#FS-" over "3").
+ */
+export function cardHeaderParts(
   row: Pick<CardChecklistRow, "cardNumber" | "cardName" | "cardVariation" | "pendingPlayerNames">,
   playerNames: readonly string[] | undefined,
-): string {
+): { number: string; rest: string } {
   const who =
     playerNames && playerNames.length > 0
       ? playerNames.join(" / ")
       : (row.pendingPlayerNames ?? []).length > 0
         ? (row.pendingPlayerNames ?? []).join(" / ")
         : row.cardName;
-  return [`#${row.cardNumber}`, row.cardVariation?.trim(), who?.trim()]
-    .filter((part): part is string => !!part)
-    .join(" · ");
+  return {
+    number: `#${row.cardNumber}`,
+    rest: [row.cardVariation?.trim(), who?.trim()]
+      .filter((part): part is string => !!part)
+      .join(" · "),
+  };
+}
+
+/** The whole line as one string: "#38b · Image Variation · Mike Trout". */
+export function cardHeaderLine(
+  row: Pick<CardChecklistRow, "cardNumber" | "cardName" | "cardVariation" | "pendingPlayerNames">,
+  playerNames: readonly string[] | undefined,
+): string {
+  const { number, rest } = cardHeaderParts(row, playerNames);
+  return rest ? `${number} · ${rest}` : number;
 }
 
 function WalkDialog({
@@ -186,6 +204,7 @@ function WalkDialog({
   const headerLineId = useId();
   const doneLineId = useId();
   const doneLookupId = useId();
+  const doneTallyId = useId();
 
   // ── the sitting ─────────────────────────────────────────────────────────
   // Both halves are read while rendering (the count, the bar, the end screen,
@@ -242,6 +261,8 @@ function WalkDialog({
 
   const left = cardsLeft(order, { passed, trail: [] });
   const skipped = cardsSkipped(order, { passed, trail: [] });
+  // Cards the sitting moved past that no longer need a person; the rest are the skipped ones.
+  const fixed = Math.max(0, passed.length - skipped);
   const isDone = location.kind === "done";
 
   // ── moving ──────────────────────────────────────────────────────────────
@@ -448,7 +469,7 @@ function WalkDialog({
   }, []);
 
   const playerNames = context?.players.map((p) => p.nameOnCard ?? p.name);
-  const headerLine = current ? cardHeaderLine(current, playerNames) : "";
+  const header = current ? cardHeaderParts(current, playerNames) : null;
   const tally = attention ? tallyText(attention) : "";
 
   const tileProps: TidyTileProps | null =
@@ -507,9 +528,14 @@ function WalkDialog({
                   ref={headerRef}
                   tabIndex={-1}
                   role="group"
-                  aria-labelledby={`${doneLineId} ${doneLookupId}`}
+                  aria-labelledby={`${doneLineId} ${doneTallyId} ${doneLookupId}`}
                   className="grid gap-2 outline-none"
                 >
+                  {passed.length > 0 && (
+                    <p id={doneTallyId} className="text-sm text-ink">
+                      {cardsTallyText(fixed, skipped)}
+                    </p>
+                  )}
                   {awaitingLookup > 0 && (
                     <p id={doneLookupId} className="text-sm text-ink-2">
                       {teamLookupStatusLine(awaitingLookup)}
@@ -535,7 +561,8 @@ function WalkDialog({
                       className="grid min-w-0 gap-1 outline-none"
                     >
                       <p id={headerLineId} className="text-lg font-semibold text-ink wrap-anywhere">
-                        {headerLine}
+                        <span className="whitespace-nowrap">{header?.number}</span>
+                        {header?.rest ? ` · ${header.rest}` : ""}
                       </p>
                       {tally && (
                         <p className="text-sm">
@@ -584,7 +611,7 @@ function WalkDialog({
                 </NeonButton>
                 {isDone ? (
                   <NeonButton type="button" onClick={onClose}>
-                    {TIDY_DONE_LABEL}
+                    <HintedLabel label={TIDY_DONE_LABEL} />
                   </NeonButton>
                 ) : (
                   <>
@@ -595,7 +622,7 @@ function WalkDialog({
                       outline
                       onClick={onClose}
                     >
-                      {TIDY_SAVE_FOR_LATER_LABEL}
+                      <HintedLabel label={TIDY_SAVE_FOR_LATER_LABEL} />
                     </NeonButton>
                     <NeonButton
                       type="button"
@@ -613,7 +640,7 @@ function WalkDialog({
                       aria-disabled={!canSave || undefined}
                       aria-describedby={pinkCount > 0 ? statusId : undefined}
                     >
-                      {TIDY_SAVE_LABEL}
+                      <HintedLabel label={TIDY_SAVE_LABEL} />
                     </NeonButton>
                   </>
                 )}

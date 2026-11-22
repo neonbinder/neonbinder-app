@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { teamFullName } from "../../lib/teams/team-name";
+import { leagueShortName, teamDetailLine } from "../../lib/teams/team-detail";
 import { contrastRatio, normalizeHexColor } from "../../lib/print/contrast";
 import { Input } from "../primitives/Input";
+import HintedLabel from "./HintedLabel";
 import { useTheme } from "../../src/theme/ThemeProvider";
 import type { ThemeMode } from "../../src/theme/theme-mode";
 import { tokenHex } from "../../src/theme/tokens";
@@ -155,6 +157,7 @@ export default function EntityLinkSearch({
   onCancel: () => void;
 }) {
   const { mode } = useTheme();
+  const uid = useId();
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [highlightIdx, setHighlightIdx] = useState(0);
@@ -194,9 +197,19 @@ export default function EntityLinkSearch({
    * the same ranking the other two get. Adding a server-side search for a list
    * that fits on a screen would be a second thing to keep in step for nothing.
    */
+  // NEO-645 — a TEAM result also names its league ("MLB · 1954–present"), so
+  // three "Baltimore Orioles" can be told apart. The same list, read for the
+  // same reason: a sport's leagues fit on a screen.
   const leagues = useQuery(
     api.leagues.list,
-    kind === "league" && trimmed ? { sportId } : "skip",
+    (kind === "league" || kind === "team") && trimmed ? { sportId } : "skip",
+  );
+  const leagueNameById = useMemo(
+    () =>
+      new Map(
+        (kind === "team" ? (leagues ?? []) : []).map((l) => [l._id as string, leagueShortName(l)]),
+      ),
+    [kind, leagues],
   );
   /**
    * One `{ _id, name }` shape for both kinds, with a TEAM's name composed from
@@ -215,6 +228,8 @@ export default function EntityLinkSearch({
         // NEO-313 — players only: whose sport they are, and where they played.
         sportValue?: string;
         stints?: ResultStint[];
+        // NEO-645 — teams only: "MLB · 1954–present", off the row's own fields.
+        detail?: string;
       }>
     | undefined =
     kind === "player"
@@ -230,6 +245,10 @@ export default function EntityLinkSearch({
         : rankedTeams?.map(({ team }) => ({
             _id: team._id,
             name: teamFullName(team),
+            detail: teamDetailLine(
+              team.leagueId ? leagueNameById.get(team.leagueId as string) : undefined,
+              team.yearsActive,
+            ),
           }));
 
   useEffect(() => {
@@ -343,6 +362,7 @@ export default function EntityLinkSearch({
               // line below are what a sighted operator reads to choose; the
               // name alone is what a flow and a screen reader select by.
               aria-label={`Link to ${m.name}`}
+              aria-describedby={m.detail ? `${uid}-detail-${idx}` : undefined}
               role="option"
               aria-selected={idx === highlightIdx}
               className={`w-full text-left px-2 py-1 text-sm rounded ${
@@ -365,6 +385,14 @@ export default function EntityLinkSearch({
                   </span>
                 )}
               </span>
+              {m.detail && (
+                <span
+                  id={`${uid}-detail-${idx}`}
+                  className={`block text-xs wrap-anywhere ${idx === highlightIdx ? "text-ink-2" : "text-ink-3"}`}
+                >
+                  {m.detail}
+                </span>
+              )}
               {shown.length > 0 && (
                 <span
                   className={`block truncate text-xs ${idx === highlightIdx ? "text-ink-2" : "text-ink-3"}`}
@@ -398,7 +426,7 @@ export default function EntityLinkSearch({
         aria-label="Cancel linking"
         className="w-full text-left px-2 py-1 text-xs text-ink-3 hover:text-neon-pink-text focus:text-neon-pink-text focus-outline"
       >
-        Cancel (Esc)
+        <HintedLabel label="Cancel (Esc)" />
       </button>
     </div>
   );

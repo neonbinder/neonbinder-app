@@ -96,6 +96,41 @@ describe("SourcesDisagreeTile", () => {
     expect(screen.queryByText(/not sure/i)).toBeNull();
   });
 
+  describe("a source that named no team", () => {
+    const NO_TEAM: RowDisagreement = {
+      field: "teams",
+      values: [
+        { value: [], sources: ["sportlots"] },
+        { value: ["San Diego Padres"], sources: ["bsc"] },
+      ],
+    };
+
+    it("says it in the column, never an empty one", () => {
+      renderTile(NO_TEAM);
+      const columns = within(screen.getByRole("list", { name: /What each source says/ })).getAllByRole("listitem");
+      expect(columns.map((c) => c.textContent)).toEqual([
+        "BSCSan Diego Padres",
+        "SportLotsNo team on the card",
+      ]);
+    });
+
+    it("names its button 'Use no team', and picking it sends the empty list", async () => {
+      renderTile(NO_TEAM);
+      expect(screen.queryByRole("button", { name: "Use “”" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Use “San Diego Padres”" })).toBeTruthy();
+      await act(async () => fireEvent.click(screen.getByRole("button", { name: "Use no team" })));
+      expect(mockPick).toHaveBeenCalledWith({ cardId: "card-1", field: "teams", value: [] });
+      expect(screen.getByRole("status").textContent).toBe("");
+    });
+
+    it("an answer of no team reads 'Using no team', and the NB-picked flip says 'Use no team instead'", () => {
+      renderTile({ ...NO_TEAM, chosen: { value: [], by: "operator" } } as RowDisagreement);
+      expect(screen.getByRole("status").textContent).toBe("Using no team (SportLots)");
+      renderTile({ ...NO_TEAM, chosen: { value: ["San Diego Padres"], by: "nb" } } as RowDisagreement);
+      expect(screen.getByRole("button", { name: "Use no team instead" })).toBeTruthy();
+    });
+  });
+
   it("a pick calls pickSourceValue for this card and field", async () => {
     renderTile(UNCHOSEN);
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Use “Jackson Merrill”" })));

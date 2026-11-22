@@ -146,7 +146,8 @@ export function candidateToPairingCard(
     // dialog tells re-deliveries apart by. Both wire-only: `committable`
     // takes them off before anything is saved.
     ...(c.checklistLink ? { checklistLink: c.checklistLink } : {}),
-    // NEO-591: wire-only like the link; `committable` takes it off.
+    // NEO-591: rides to the commit (NEO-645: stored on the new row for the
+    // walk's "Numbers didn't match" note); `committable` keeps it.
     ...(c.sourceNumbers ? { sourceNumbers: c.sourceNumbers } : {}),
     ...(c.preKept ? { preKept: true as const } : {}),
     // NEO-591: both ride to the commit, which uses them (it never matches a

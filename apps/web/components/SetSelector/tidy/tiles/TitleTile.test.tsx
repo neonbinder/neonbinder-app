@@ -51,10 +51,11 @@ function renderTile(
   attention: TidyAttention = none,
   leafCards: TidyRow[] = [row],
   onAnswered: () => void = () => {},
+  context: TidyTileProps["context"] = undefined,
 ) {
   const props: TidyTileProps = {
     row,
-    context: undefined,
+    context,
     attention,
     leafId: "leaf-1" as never,
     sportId: undefined,
@@ -385,6 +386,96 @@ describe("TitleTile variation", () => {
       fireEvent.click(screen.getByRole("button", { name: "Apply to the 2 cards with the same variation" })),
     );
     expect(screen.getByText("Applied to 1 card. 1 left as it was.")).toBeTruthy();
+  });
+});
+
+describe("TitleTile variation on a title in trouble (NEO-645 S8)", () => {
+  // 63 characters: under the 65 cap, so the field-cap rule never offers it.
+  const LONG_FITS = "Image Variation; Jersey half on, wearing headphones and bandana";
+  const over = attn({ level: "fix", kind: "titleOverLimit" });
+  const cut = { level: "check", items: [{ level: "check", kind: "titleCut", key: "cut:1" }] } as unknown as TidyAttention;
+
+  it("is offered on an over-80 title with a long variation, beside Shorten the set name", () => {
+    expect(LONG_FITS.length).toBeLessThanOrEqual(65);
+    renderTile(cardOf("c1", { listingTitle: LONG, cardVariation: LONG_FITS }), over);
+    expect(screen.getByLabelText("Trim the variation")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Shorten the set name for every card" })).toBeTruthy();
+  });
+
+  it("is offered on a cut title too", () => {
+    renderTile(cardOf("c1", { cardVariation: LONG_FITS }), cut);
+    expect(screen.getByLabelText("Trim the variation")).toBeTruthy();
+  });
+
+  it("is not offered for a short variation, or when the title is fine", () => {
+    renderTile(cardOf("c1", { listingTitle: LONG, cardVariation: "Image Variation" }), over);
+    expect(screen.queryByLabelText("Trim the variation")).toBeNull();
+    renderTile(cardOf("c2", { cardVariation: LONG_FITS }));
+    expect(screen.queryByLabelText("Trim the variation")).toBeNull();
+  });
+
+  it("offers Apply to the cards with the same variation after the trim is saved", async () => {
+    const mine = cardOf("c1", { listingTitle: LONG, cardVariation: LONG_FITS });
+    const twin = cardOf("c2", { cardVariation: LONG_FITS });
+    renderTile(mine, over, [mine, twin]);
+    fireEvent.change(screen.getByLabelText("Trim the variation"), { target: { value: "Headphones" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save variation" })));
+    expect(mockUpdateCard).toHaveBeenCalledWith({ id: "c1", cardVariation: "Headphones" });
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Apply to the 1 card with the same variation" })),
+    );
+    expect(mockApplyVariation).toHaveBeenCalledWith({ cardIds: ["c2"], from: LONG_FITS, to: "Headphones" });
+  });
+});
+
+describe("TitleTile: a player name with no player in the title (NEO-645 S6)", () => {
+  const ctx = (over: Record<string, unknown> = {}) =>
+    ({ cardId: "c1", names: [], players: [], playersMore: false, teams: [], linkedFor: [], ...over }) as unknown as TidyTileProps["context"];
+  const NOBODY = "2024 Topps Chrome Update #USC118 RC Rookie";
+
+  it("goes blue and says so when the card names a player the title does not carry", () => {
+    renderTile(cardOf("c1", { listingTitle: NOBODY }), none, undefined, undefined, ctx());
+    expect(screen.getByRole("group", { name: "Listing title" }).getAttribute("data-tidy-level")).toBe("check");
+    expect(screen.getByText("The title has no player. This card names one, so check it.")).toBeTruthy();
+  });
+
+  it("stays plain when the title names the player", () => {
+    renderTile(cardOf("c1"), none, undefined, undefined, ctx());
+    expect(screen.getByRole("group", { name: "Listing title" }).getAttribute("data-tidy-level")).toBe("plain");
+    expect(screen.queryByText(/has no player/)).toBeNull();
+  });
+
+  it("waits for the card's context, so an answered 'not a player' never flashes blue", () => {
+    renderTile(cardOf("c1", { listingTitle: NOBODY }), none, undefined, undefined, undefined);
+    expect(screen.getByRole("group", { name: "Listing title" }).getAttribute("data-tidy-level")).toBe("plain");
+  });
+
+  it("is not blue for a name the operator answered 'not a player'", () => {
+    const named = {
+      kind: "player",
+      nameNormalized: "padres",
+      printed: "Padres",
+      order: 0,
+      cardOverride: false,
+      scopeId: "leaf-1",
+      row: { name: "Padres", sportId: "s", status: "ready", answer: { kind: "notEntity", by: "operator" } },
+      printedOn: null,
+    };
+    renderTile(cardOf("c1", { cardName: "Padres", listingTitle: NOBODY }), none, undefined, undefined, ctx({ names: [named] }));
+    expect(screen.getByRole("group", { name: "Listing title" }).getAttribute("data-tidy-level")).toBe("plain");
+  });
+
+  it("checks a linked player against the title too", () => {
+    const players = [{ playerId: "p1", name: "Aaron Judge", sportId: "s", stints: [], stintsMore: false }];
+    renderTile(cardOf("c1", { playerIds: ["p1"], listingTitle: NOBODY }), none, undefined, undefined, ctx({ players }));
+    expect(screen.getByRole("group", { name: "Listing title" }).getAttribute("data-tidy-level")).toBe("check");
+    renderTile(cardOf("c2", { playerIds: ["p1"] }), none, undefined, undefined, ctx({ players }));
+    expect(screen.getAllByRole("group", { name: "Listing title" })[1].getAttribute("data-tidy-level")).toBe("plain");
+  });
+
+  it("is still pink, not blue, when the title is over the limit", () => {
+    renderTile(cardOf("c1", { listingTitle: LONG.replace("Aaron Judge", "Somebody Else") }), attn({ level: "fix", kind: "titleOverLimit" }), undefined, undefined, ctx());
+    expect(screen.getByRole("group", { name: "Listing title" }).getAttribute("data-tidy-level")).toBe("fix");
   });
 });
 

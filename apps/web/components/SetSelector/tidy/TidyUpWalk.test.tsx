@@ -203,7 +203,7 @@ describe("opening", () => {
 
   it("names the dialog, counts the cards left and prints the header and the tally", async () => {
     mount([pink("a", "38b", { cardVariation: "Image Variation" }), blue("b", "40")]);
-    await screen.findByText("#38b · Image Variation · Mike Trout");
+    await screen.findByRole("group", { name: "#38b · Image Variation · Mike Trout" });
     expect(screen.getByRole("dialog", { name: "Tidy up 2024 Topps Chrome" })).toBeTruthy();
     expect(screen.getByText("2 cards left")).toBeTruthy();
     expect(screen.getByText("1 to fix")).toBeTruthy();
@@ -326,12 +326,37 @@ describe("the footer", () => {
 
   it("the card header is a group named by the header line only, not the tally", async () => {
     mount([pink("a", "38b", { cardVariation: "Image Variation" })]);
-    const line = await screen.findByText("#38b · Image Variation · Mike Trout");
-    const group = line.closest('[role="group"]') as HTMLElement;
-    expect(group.getAttribute("aria-labelledby")).toBe(line.id);
+    const group = await screen.findByRole("group", { name: "#38b · Image Variation · Mike Trout" });
+    const line = document.getElementById(group.getAttribute("aria-labelledby")!) as HTMLElement;
     expect(group.getAttribute("tabindex")).toBe("-1");
-    expect(screen.getByRole("group", { name: "#38b · Image Variation · Mike Trout" })).toBe(group);
+    expect(line.textContent).toBe("#38b · Image Variation · Mike Trout");
     expect(group.textContent).toContain("1 to fix");
+  });
+
+  it("keeps the card number on one line: 'FS-3' never wraps to '#FS-' over '3'", async () => {
+    mount([pink("a", "FS-3")]);
+    const group = await screen.findByRole("group", { name: "#FS-3 · Mike Trout" });
+    const line = document.getElementById(group.getAttribute("aria-labelledby")!) as HTMLElement;
+    const number = line.querySelector("span") as HTMLElement;
+    expect(number.textContent).toBe("#FS-3");
+    expect(number.className).toContain("whitespace-nowrap");
+    // The rest of the line still wraps anywhere.
+    expect(line.className).toContain("wrap-anywhere");
+  });
+
+  it("draws the key hints in brackets and keeps them in the accessible names on a coarse pointer", async () => {
+    mount([pink("a", "1")]);
+    await screen.findByTestId("tile-player");
+    for (const name of ["Save for later (Esc)", "Save & next (Enter)"]) {
+      const control = button(name);
+      const hint = control.querySelector("span") as HTMLElement;
+      expect(hint.textContent).toMatch(/^ \((Esc|Enter)\)$/);
+      // Out of sight on a touch screen, never out of the name.
+      expect(hint.className).toContain("[@media(pointer:coarse)]:sr-only");
+      expect(control.textContent).toBe(name);
+    }
+    // A label with no key is left whole.
+    expect(button("Skip: not ready to list").querySelector("span")).toBeNull();
   });
 });
 
@@ -506,6 +531,41 @@ describe("the end screen", () => {
     // The same element that was on the page all along.
     expect(verdict?.isConnected).toBe(true);
     expect(verdict?.textContent).toBe("1 card skipped, not ready to list");
+  });
+
+  it("tallies the sitting: cards that left the walk are fixed, the rest are skipped", async () => {
+    const cards = [blue("a", "1"), pink("b", "2")];
+    const tree = (rows: CardChecklistRow[]) => (
+      <MemoryRouter initialEntries={["/?tidy=first"]}>
+        <UrlProbe />
+        <TidyUpWalk
+          leafId={LEAF}
+          setName="2024 Topps Chrome"
+          title="Tidy up 2024 Topps Chrome"
+          cards={rows}
+          onClose={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+    const view = render(tree(cards));
+    await waitFor(() => expect(url()).toBe("?tidy=a"));
+    fireEvent.click(button("Save & next (Enter)"));
+    await waitFor(() => expect(url()).toBe("?tidy=b"));
+    // The saved card now needs nobody; the other is skipped and stays flagged.
+    view.rerender(tree([{ ...blue("a", "1"), listingTitleTruncated: false } as CardChecklistRow, cards[1]]));
+    fireEvent.click(button("Skip: not ready to list"));
+    await waitFor(() => expect(url()).toBe("?tidy=done"));
+    expect(await screen.findByText("1 card fixed, 1 skipped.")).toBeTruthy();
+    // The verdict stays the status line; the tally is its own sentence, named by the focus group.
+    expect(screen.getByText("1 card skipped, not ready to list").getAttribute("role")).toBe("status");
+    const group = document.querySelector('[role="group"][aria-labelledby]') as HTMLElement;
+    expect(group.getAttribute("aria-labelledby")).toContain(screen.getByText("1 card fixed, 1 skipped.").id);
+  });
+
+  it("says nothing of a tally on a walk that opened on the end screen", async () => {
+    mount([], { search: "?tidy=done" });
+    await screen.findByText("All tidy. Nothing on this checklist needs you.");
+    expect(screen.queryByText(/fixed/)).toBeNull();
   });
 
   it("names the end screen's focus group by what it says", async () => {

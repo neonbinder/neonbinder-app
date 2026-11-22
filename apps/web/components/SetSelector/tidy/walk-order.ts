@@ -201,6 +201,16 @@ export function cardsSkippedText(skipped: number): string {
   return `${skipped} ${skipped === 1 ? "card" : "cards"} skipped, not ready to list`;
 }
 
+/**
+ * The end screen's tally: "9 cards fixed, 2 skipped." A sitting with nothing
+ * skipped gets the sign-off too. The verdict line ("6 cards skipped, not ready
+ * to list" / "All tidy") stays the status line; this is the count beside it.
+ */
+export function cardsTallyText(fixed: number, skipped: number): string {
+  const head = `${fixed} ${fixed === 1 ? "card" : "cards"} fixed, ${skipped} skipped.`;
+  return skipped === 0 && fixed > 0 ? `${head} Totally rad.` : head;
+}
+
 /** "3 to fix · 1 to check", with either half left out at zero. Empty at none. */
 export function tallyText(attention: TidyAttention): string {
   const fix = attention.items.filter((i) => i.level === "fix").length;

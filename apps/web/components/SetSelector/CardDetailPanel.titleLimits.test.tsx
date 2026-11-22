@@ -168,7 +168,6 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     renderPanel(makeCard({ listingTitle: titleOfLength(40) }));
 
     expect(screen.getByText("40/80")).toBeTruthy();
-    expect(screen.queryByText("may clip on mobile")).toBeNull();
     expect(screen.queryByText("may clip in search")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
   });
@@ -177,7 +176,8 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     renderPanel(makeCard({ listingTitle: titleOfLength(55) }));
 
     expect(screen.getByText("55/80")).toBeTruthy();
-    expect(screen.getByText("may clip on mobile")).toBeTruthy();
+    expect(screen.getByText("may clip in search")).toBeTruthy();
+    expect(screen.queryByText(/on mobile/)).toBeNull();
     // Still saveable: the soft bands are display truncation, not a rule.
     expect(screen.queryByRole("alert")).toBeNull();
   });

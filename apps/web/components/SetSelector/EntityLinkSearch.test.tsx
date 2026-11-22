@@ -453,6 +453,15 @@ describe("EntityLinkSearch — keyboard", () => {
 
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
+
+  it("draws the Esc hint out of sight on a coarse pointer but keeps it in the button's text (NEO-645)", () => {
+    renderSearch();
+    const cancel = screen.getByLabelText("Cancel linking");
+    expect(cancel.textContent).toBe("Cancel (Esc)");
+    expect((cancel.querySelector("span") as HTMLElement).className).toContain(
+      "[@media(pointer:coarse)]:sr-only",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -473,6 +482,54 @@ describe("EntityLinkSearch — split team names", () => {
 
     fireEvent.click(option);
     expect(onSelect).toHaveBeenCalledWith("t1", "San Diego Padres");
+  });
+
+  it("tells same-name teams apart by league and years (NEO-645), keeping the option's name", () => {
+    currentLeagues = [
+      { _id: "l-mlb", name: "Major League Baseball", abbreviation: "MLB" },
+      { _id: "l-il", name: "International League" },
+    ];
+    currentTeams = [
+      { _id: "o1", name: "Orioles", location: "Baltimore", leagueId: "l-mlb", yearsActive: { from: 1954 } },
+      { _id: "o2", name: "Orioles", location: "Baltimore", leagueId: "l-mlb", yearsActive: { from: 1901, to: 1953 } },
+      { _id: "o3", name: "Orioles", location: "Baltimore", leagueId: "l-il", yearsActive: { from: 1884, to: 1902 } },
+    ];
+    const { onSelect } = renderSearch({ kind: "team" });
+    typeAndSettle("Search existing teams", "Orioles");
+
+    // The league list is read for a team search too, with the sport.
+    expect(lastArgsFor("leagues.list")).toEqual({ sportId: SPORT_ID });
+    const options = screen.getAllByRole("option", { name: "Link to Baltimore Orioles" });
+    // The accessible name is the E2E contract and does not move; the line under it is described by.
+    expect(options).toHaveLength(3);
+    const lines = options.map((o) => o.querySelector("span.block")?.textContent);
+    expect(lines).toEqual([
+      "MLB · 1954–present",
+      "MLB · 1901–1953",
+      "International League · 1884–1902",
+    ]);
+    for (const option of options) {
+      const describedBy = option.getAttribute("aria-describedby");
+      expect(describedBy).toBeTruthy();
+      expect(document.getElementById(describedBy!)?.textContent).toBe(option.querySelector("span.block")?.textContent);
+    }
+    fireEvent.click(options[1]);
+    expect(onSelect).toHaveBeenCalledWith("o2", "Baltimore Orioles");
+  });
+
+  it("says only the years while the league list is still loading, and nothing for a team with neither", () => {
+    currentLeagues = undefined;
+    currentTeams = [
+      { _id: "o1", name: "Orioles", location: "Baltimore", leagueId: "l-mlb", yearsActive: { from: 1954 } },
+      { _id: "o2", name: "Club Z" },
+    ];
+    renderSearch({ kind: "team" });
+    typeAndSettle("Search existing teams", "o");
+
+    const [first, second] = screen.getAllByRole("option");
+    expect(first.querySelector("span.block")?.textContent).toBe("1954–present");
+    expect(second.querySelector("span.block")).toBeNull();
+    expect(second.getAttribute("aria-describedby")).toBeNull();
   });
 
   it("leaves a location-less team exactly as it is", () => {

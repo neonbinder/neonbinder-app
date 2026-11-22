@@ -9,7 +9,7 @@ import { TeamMatchSearch } from "../../../entities/TeamMatchSearch";
 import SportSwitch from "../../SportSwitch";
 import type { TidyCardContext, TidyRow } from "../tile-types";
 import { useAnswered } from "../answered";
-import { linkedForText } from "./copy";
+import { teamLinkedForText } from "./copy";
 import InlineNewTeam, { teamLookupCarryOf } from "./InlineNewTeam";
 import { printedOnText } from "./printed-on";
 import TeamCandidates, { type TeamCandidate } from "./TeamCandidates";
@@ -63,6 +63,7 @@ export default function TeamNameRow({
   if (answer?.kind === "notEntity" || answer?.kind === "linkTeam") {
     const team =
       answer.kind === "linkTeam" ? context.teams.find((t) => t.teamId === answer.teamId) : undefined;
+    const linkedTeamId = answer.kind === "linkTeam" ? answer.teamId : undefined;
     const reason =
       answer.kind === "linkTeam"
         ? context.linkedFor.find((l) => l.kind === "team" && l.teamId === answer.teamId)?.reason
@@ -83,7 +84,10 @@ export default function TeamNameRow({
             role="note"
             className="w-fit max-w-full rounded-md border border-neon-purple-text/60 bg-neon-purple/10 px-2 py-0.5 text-xs text-neon-purple-text wrap-anywhere"
           >
-            {linkedForText(reason)}
+            {teamLinkedForText(
+              reason,
+              context.players.find((p) => p.stints.some((s) => s.teamId === linkedTeamId))?.name,
+            )}
           </p>
         )}
         <div className="flex flex-wrap gap-2">

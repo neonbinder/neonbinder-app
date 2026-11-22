@@ -46,7 +46,6 @@ export function committable<C extends PairingCard>(card: C): C {
     card.checklistLink === undefined &&
     card.checklistRowId === undefined &&
     card.teamCell === undefined &&
-    card.sourceNumbers === undefined &&
     card.preKept === undefined
   ) {
     return card;
@@ -56,10 +55,9 @@ export function committable<C extends PairingCard>(card: C): C {
   delete out.checklistRowId;
   // NEO-591: a checklist-only row's printed team cell is for its row line only.
   delete out.teamCell;
-  // NEO-591: the numbers each source printed are for the dialog's note only;
-  // the commit's validators refuse a field they do not know and save the one
-  // number the card carries.
-  delete out.sourceNumbers;
+  // NEO-645: `sourceNumbers` is KEPT. The commit accepts it
+  // (`previewCardFields.sourceNumbers`) and stores it on a new row, where the
+  // Tidy Up walk's Listing title tile reads it for "Numbers didn't match".
   // NEO-591 (variations): where the card started (already in Keeping) is the
   // dialog's own business.
   delete out.preKept;

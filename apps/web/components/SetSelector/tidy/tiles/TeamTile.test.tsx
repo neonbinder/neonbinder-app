@@ -396,12 +396,25 @@ describe("TeamTile", () => {
         items: [],
         ctx: linked(
           { kind: "linkTeam", teamId: "team-7", by: "auto", autoReason: "careerTeam" },
-          { linkedFor: [{ kind: "team", teamId: "team-7", reason: "careerTeam" }] },
+          {
+            linkedFor: [{ kind: "team", teamId: "team-7", reason: "careerTeam" }],
+            players: [
+              {
+                playerId: "player-1",
+                name: "Jackson Merrill",
+                sportId: SPORT,
+                stints: [{ teamId: "team-7", teamName: "San Diego Padres", fromYear: 2024 }],
+                stintsMore: false,
+              },
+            ],
+          },
         ),
       });
       expect(screen.getByRole("group", { name: "Team" }).getAttribute("data-tidy-level")).toBe("plain");
       expect(screen.getByText("San Diego Padres")).toBeTruthy();
-      expect(screen.getByText("Linked for you: the only one on file who played for this card's team")).toBeTruthy();
+      // The team row's own words: the player row's "the only one on file…" is about a person.
+      expect(screen.getByText("Linked for you: Jackson Merrill played here")).toBeTruthy();
+      expect(screen.queryByText(/only one on file/)).toBeNull();
       await click(screen.getByRole("button", { name: "Change team" }));
       expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
         cardId: CARD,
@@ -463,11 +476,13 @@ describe("TeamTile", () => {
       }
       expect(screen.getByRole("button", { name: /Philadelphia Athletics · Jimmie Foxx 1925–1935/ })).toBeTruthy();
       expect(screen.getByText("No 2025 team on file. Here’s the whole career, so pick the one on the card.")).toBeTruthy();
-      // Nothing chosen: Save is held.
-      await click(screen.getByRole("button", { name: "Save team" }));
+      // Nothing chosen: there is nothing to save, so there is no Save button at all.
+      expect(screen.queryByRole("button", { name: /^Save teams?$/ })).toBeNull();
       expect(mutation("selectorOptions.updateCard")).not.toHaveBeenCalled();
       await click(screen.getByRole("button", { name: /Boston Red Sox/ }));
       await click(screen.getByRole("button", { name: "Save team" }));
+      // Taking the chip back off puts the button away again.
+
       expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({ id: CARD, teamOnCardIds: ["t-b"] });
     });
 
@@ -513,6 +528,34 @@ describe("TeamTile", () => {
       renderTile({ row: row(), ctx: ctx(), items });
       await click(screen.getByRole("button", { name: "No team on this card" }));
       expect(screen.getByRole("alert").textContent).toMatch(/nothing to confirm/);
+    });
+
+    it("shows Save team only once there is a chip to save, and puts it away when the last one comes off", async () => {
+      queryResults["cardChecklist.suggestedTeamsForCard"] = [
+        { teamId: "t-b", name: "Boston Red Sox", label: "Boston Red Sox", source: "career", playerName: "Jimmie Foxx", inSetYear: false, uncoveredSetYear: 2025 },
+      ];
+      renderTile({ row: row(), ctx: ctx(), items });
+      expect(screen.queryByRole("button", { name: /^Save teams?$/ })).toBeNull();
+      // The way out of the question is still there.
+      expect(screen.getByRole("button", { name: "No team on this card" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Other team…" })).toBeTruthy();
+      await click(screen.getByRole("button", { name: /Boston Red Sox/ }));
+      expect(screen.getByRole("button", { name: "Save team" })).toBeTruthy();
+      await click(screen.getByRole("button", { name: /Boston Red Sox/ }));
+      expect(screen.queryByRole("button", { name: /^Save teams?$/ })).toBeNull();
+    });
+
+    it("a team picked with Other team… shows its league and years on its chip", async () => {
+      queryResults["cardChecklist.suggestedTeamsForCard"] = [];
+      queryResults["teams.getManyByIds"] = [
+        { _id: "team-9", name: "Orioles", location: "Baltimore", leagueId: "l-mlb", yearsActive: { from: 1954 } },
+      ];
+      queryResults["leagues.list"] = [{ _id: "l-mlb", name: "Major League Baseball", abbreviation: "MLB" }];
+      renderTile({ row: row(), ctx: ctx(), items });
+      await click(screen.getByRole("button", { name: "Other team…" }));
+      await click(screen.getByRole("button", { name: "Pick a team" }));
+      const chip = screen.getByRole("button", { name: "Baltimore Orioles · MLB · 1954–present" });
+      expect(chip.getAttribute("aria-pressed")).toBe("true");
     });
 
     it("'Other team…' adds a searched team to the choice", async () => {
@@ -609,6 +652,38 @@ describe("TeamTile", () => {
           teamId: "team-7",
           cardIds: ["c2", "c3"],
         });
+      });
+
+      it("reads every refusal the way the server does: a pending player name, a blank pending team name, a whitespace listing team", async () => {
+        const b = base();
+        renderTile({
+          ...b,
+          leafCards: [
+            b.row,
+            sibling("c2"),
+            // A second name nobody has answered: `cardTakesTeamFill` refuses on its length.
+            sibling("c3", { pendingPlayerNames: ["Jackson Merril"] }),
+            sibling("c4", { pendingPlayerNames: [""] }),
+            sibling("c5", { pendingTeamNames: [""] }),
+            sibling("c6", { bscTeamName: " " }),
+          ],
+        });
+        // Only c2 is left to offer, so the button speaks in the singular.
+        await click(screen.getByRole("button", { name: "Apply to the other Jackson Merrill card" }));
+        expect(mutation("tidyCards.applyTeamToPlayerCards")).toHaveBeenCalledWith({
+          sourceCardId: CARD,
+          teamId: "team-7",
+          cardIds: ["c2"],
+        });
+      });
+
+      it("offers nothing when the only other cards still have a pending player name", () => {
+        const b = base();
+        renderTile({
+          ...b,
+          leafCards: [b.row, sibling("c2", { pendingPlayerNames: ["Jackson Merril"] })],
+        });
+        expect(screen.queryByRole("button", { name: /Apply to/ })).toBeNull();
       });
 
       it.each([

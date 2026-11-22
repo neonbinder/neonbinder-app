@@ -42,8 +42,26 @@ const FIELD_LABEL: Record<RowDisagreement["field"], string> = {
 const sourceLabel = (key: SourceKey): string =>
   SOURCES_WITH_CHECKLIST.find((s) => s.key === key)?.label ?? key;
 
-/** One value, as the tile says it: several names read "A / B". */
-const show = (value: readonly string[]): string => value.join(" / ");
+/** One value as typed text: several names read "A / B". Empty reads "". */
+const joined = (value: readonly string[]): string => value.join(" / ");
+
+/**
+ * A source that answered with NO names (a listing with no team on it) is still
+ * an answer, and it needs words: an empty column and a button named `Use “”`
+ * say nothing to a person or a screen reader.
+ */
+const NONE_ON_CARD: Record<RowDisagreement["field"], { column: string; use: string }> = {
+  players: { column: "No player on the card", use: "no player" },
+  teams: { column: "No team on the card", use: "no team" },
+};
+
+/** One value, as the tile says it in a column. */
+const show = (value: readonly string[], field: RowDisagreement["field"]): string =>
+  value.length === 0 ? NONE_ON_CARD[field].column : joined(value);
+
+/** One value inside a sentence or a button name: “Padres”, or `no team` for none. */
+const quoted = (value: readonly string[], field: RowDisagreement["field"]): string =>
+  value.length === 0 ? NONE_ON_CARD[field].use : `“${joined(value)}”`;
 
 const sameValue = (a: readonly string[], b: readonly string[]): boolean =>
   a.length === b.length && a.every((n, i) => n === b[i]);
@@ -236,7 +254,10 @@ function DisagreementEntry({
           const value = entry.values.find((v) => (v.sources as readonly string[]).includes(source))!;
           const inNb = chosen?.by === "nb" && sameValue(value.value, chosen.value);
           const other = single ? entry.values.find((v) => v !== value) : undefined;
-          const parts = other ? diffParts(show(value.value), show(other.value)) : null;
+          const parts =
+            other && value.value.length > 0 && other.value.length > 0
+              ? diffParts(joined(value.value), joined(other.value))
+              : null;
           return (
             <li
               key={source}
@@ -251,7 +272,7 @@ function DisagreementEntry({
                     {parts.tail}
                   </>
                 ) : (
-                  show(value.value)
+                  show(value.value, entry.field)
                 )}
               </span>
               {inNb && <span className="text-xs text-neon-green-text">In NeonBinder</span>}
@@ -265,10 +286,10 @@ function DisagreementEntry({
       <p className="text-sm text-ink wrap-anywhere empty:hidden" role="status">
         {chosen && !changing
           ? chosen.by === "nb"
-            ? `Went with “${show(chosen.value)}”, they're already in your binder.`
+            ? `Went with ${quoted(chosen.value, entry.field)}, they're already in your binder.`
             : chosenFrom
-              ? `Using “${show(chosen.value)}” (${chosenFrom})`
-              : `Using “${show(chosen.value)}”`
+              ? `Using ${quoted(chosen.value, entry.field)} (${chosenFrom})`
+              : `Using ${quoted(chosen.value, entry.field)}`
           : ""}
       </p>
 
@@ -301,7 +322,7 @@ function DisagreementEntry({
                 aria-disabled={busy || undefined}
                 onClick={() => void pick(v.value, false)}
               >
-                {`Use “${show(v.value)}” instead`}
+                {`Use ${quoted(v.value, entry.field)} instead`}
               </NeonButton>
             ))}
         {choosing &&
@@ -316,7 +337,7 @@ function DisagreementEntry({
               aria-disabled={busy || undefined}
               onClick={() => void pick(v.value, false)}
             >
-              {`Use “${show(v.value)}”`}
+              {`Use ${quoted(v.value, entry.field)}`}
             </NeonButton>
           ))}
         {choosing && (
@@ -334,7 +355,7 @@ function DisagreementEntry({
                 closeTyping();
                 return;
               }
-              setTyped(chosen ? show(chosen.value) : "");
+              setTyped(chosen ? joined(chosen.value) : "");
               setTyping(true);
               requestAnimationFrame(() => typedRef.current?.focus());
             }}

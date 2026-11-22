@@ -49,6 +49,12 @@ import {
   needsTidyUp,
   teamLookupStatusLine,
 } from "./card-attention";
+import {
+  FETCHING_LABEL,
+  FETCH_FROM_MARKETPLACES_LABEL,
+  REFRESH_LABEL,
+  SAVING_LABEL,
+} from "./fetch-labels";
 import ChecklistSearch, { searchEmptyText } from "./ChecklistSearch";
 import {
   cardSearchHaystack,
@@ -2997,12 +3003,12 @@ export default function CardChecklist({
     </NeonButton>
   );
   const fetchLabel = syncing
-    ? "Fetching..."
+    ? FETCHING_LABEL
     : committing
-      ? "Saving..."
+      ? SAVING_LABEL
       : sortedCards.length === 0
-        ? "Fetch from Marketplaces"
-        : "Refresh";
+        ? FETCH_FROM_MARKETPLACES_LABEL
+        : REFRESH_LABEL;
 
   return (
     <div className="w-full flex flex-col gap-4">
@@ -3054,7 +3060,6 @@ export default function CardChecklist({
                       variant="secondary"
                       onClick={handleSync}
                       disabled={busy}
-                      aria-label="Sync card checklist"
                     >
                       {fetchLabel}
                     </NeonButton>
@@ -3681,7 +3686,6 @@ export default function CardChecklist({
                   ref={syncButtonRef}
                   onClick={handleSync}
                   disabled={busy}
-                  aria-label="Sync card checklist"
                 >
                   {fetchLabel}
                 </NeonButton>

@@ -6,6 +6,7 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { Input } from "../../../primitives/Input";
 import { Textarea } from "../../../primitives/Textarea";
 import NeonButton from "../../../modules/NeonButton";
+import { titleMissesPlayer } from "../../../../lib/cards/title-names-player";
 import { oneLine } from "../../card-titles";
 import {
   ASPECT_VALUE_MAX,
@@ -36,8 +37,13 @@ import type { TidyTileProps } from "../tile-types";
  * - "Shorten the set name for every card" opens the set-name field inline.
  *   This card's title updates live as the name is typed; Save writes the name
  *   and retitles every card (`tidyCards.applySetNameToTitles`).
- * - The variation editor appears for `variationOverLimit`; after a save,
+ * - The variation editor appears for `variationOverLimit`, and (NEO-645) on a
+ *   title that is over 80 or was cut when the variation is long enough to be
+ *   what is eating the room (`LONG_VARIATION`), so the trim is on offer where
+ *   the problem is, not only past the 65-character field cap. After a save,
  *   "Apply to the N cards with the same variation" offers the trim to the rest.
+ * - Blue as well (NEO-645) when the card names a player and the title carries
+ *   none: a buyer searching for that player would never find it.
  *
  * Everything saves as it is answered (J1) and opens inline, never in a dialog.
  */
@@ -45,7 +51,16 @@ import type { TidyTileProps } from "../tile-types";
 /** `tidyCards.MAX_APPLY_CARDS`, hand-copied: the server graph cannot be imported here. Keep in step. */
 const MAX_APPLY_CARDS = 100;
 
+/**
+ * NEO-645 — a variation at least this long, on a title that is over 80 or was
+ * cut to fit, is offered for trimming. A client display choice, never a rule:
+ * ("Image Variation" is 15; "Image Variation; Wearing sunglasses" is 35, and
+ * that is what pushes a title out.)
+ */
+const LONG_VARIATION = 20;
+
 const OVER_TEXT = "Over the limit, so it opens ready to edit.";
+const NO_PLAYER_TEXT = "The title has no player. This card names one, so check it.";
 const FITS_NOW = "Fits now. Enter saves it.";
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
@@ -69,7 +84,7 @@ export default function TitleTile(props: TidyTileProps) {
   return <TitleTileBody key={props.row._id} {...props} />;
 }
 
-function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileProps) {
+function TitleTileBody({ row, attention, context, leafId, leafCards, setName }: TidyTileProps) {
   const updateCard = useMutation(api.selectorOptions.updateCard);
   const applySetNameToTitles = useMutation(api.tidyCards.applySetNameToTitles);
   const applyVariation = useMutation(api.tidyCards.applyVariation);
@@ -80,7 +95,23 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
   const over = attention.items.some((i) => i.kind === "titleOverLimit");
   const cut = attention.items.some((i) => i.kind === "titleCut");
   const variationOver = attention.items.some((i) => i.kind === "variationOverLimit");
-  const level: TidyTileLevel = over ? "fix" : cut || variationOver ? "check" : "plain";
+  // NEO-645 — a card that names a player whose title carries none. Waits for the
+  // card's context (an answered "not a player" must not flash blue first).
+  const printedPlayers = useMemo((): string[] => {
+    if (!context) return [];
+    if ((row.playerIds?.length ?? 0) > 0) return context.players.map((p) => p.name);
+    const rows = context.names.filter((n) => n.kind === "player");
+    if (rows.length > 0) {
+      return rows.filter((n) => n.row?.answer?.kind !== "notEntity").map((n) => n.printed);
+    }
+    return [...(row.pendingPlayerNames ?? []), row.cardName ?? ""];
+  }, [context, row.playerIds, row.pendingPlayerNames, row.cardName]);
+  const playerMissing = titleMissesPlayer(stored, printedPlayers);
+  const level: TidyTileLevel = over
+    ? "fix"
+    : cut || variationOver || playerMissing
+      ? "check"
+      : "plain";
 
   // ── the title field ───────────────────────────────────────────────────
   // `draft` is null while the title is shown as text; an over-cap title opens
@@ -209,7 +240,11 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
   // save of the same words is a change again.
   const [variationNote, setVariationNote] = useState("");
   const [variationError, setVariationError] = useState<string | null>(null);
-  const showVariation = variationOver || variationSaved !== null;
+  // The editor also opens for a long variation on a title that is over or cut:
+  // that is where the operator is looking for something to trim.
+  const longVariationInTrouble =
+    (over || cut) && (row.cardVariation ?? "").trim().length >= LONG_VARIATION;
+  const showVariation = variationOver || longVariationInTrouble || variationSaved !== null;
 
   const saveVariation = async () => {
     const next = variationDraft.trim();
@@ -334,6 +369,7 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
         <TidyNote>Left out to fit: {leftOut.join(", ")}</TidyNote>
       )}
       {mismatched && <TidyNote>Numbers didn't match: {mismatched}</TidyNote>}
+      {playerMissing && !state.over && <p className="text-sm text-ink-2">{NO_PLAYER_TEXT}</p>}
 
       <div className="flex flex-wrap items-center gap-2">
         {editing ? (

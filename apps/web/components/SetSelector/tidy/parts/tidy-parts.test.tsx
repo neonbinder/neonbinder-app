@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import {
   careerHeading,
   linkedForText,
+  teamLinkedForText,
   marketplaceHeading,
   noStintText,
   outcomeHeading,
@@ -26,6 +27,18 @@ describe("copy", () => {
     expect(linkedForText("hallOfFame")).toBe(
       "Linked for you: none of the others on file played that year, but this one is in the Hall of Fame",
     );
+    expect(linkedForText("careerTeam")).toBe("Linked for you: the only one on file who played for this card's team");
+  });
+
+  it("a team row's 'Linked for you' note is about the team, never a player's wording", () => {
+    expect(teamLinkedForText("careerTeam", "Jackson Merrill")).toBe("Linked for you: Jackson Merrill played here");
+    expect(teamLinkedForText("careerTeam")).toBe("Linked for you: a player on this card played here");
+    expect(teamLinkedForText("careerTeam", "  ")).toBe("Linked for you: a player on this card played here");
+    // The team row never says "the only one on file", which is the player row's sentence.
+    expect(teamLinkedForText("careerTeam", "Jackson Merrill")).not.toMatch(/only one on file/);
+    // Every other reason reads as it does everywhere else.
+    expect(teamLinkedForText("setHistory")).toBe(linkedForText("setHistory"));
+    // The player row keeps its own wording.
     expect(linkedForText("careerTeam")).toBe("Linked for you: the only one on file who played for this card's team");
   });
 

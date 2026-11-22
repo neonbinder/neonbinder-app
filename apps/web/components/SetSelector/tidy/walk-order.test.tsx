@@ -8,6 +8,7 @@ import {
   cardsLeftText,
   cardsSkipped,
   cardsSkippedText,
+  cardsTallyText,
   loadSitting,
   lookupKey,
   lookupsFinished,
@@ -170,6 +171,12 @@ describe("words", () => {
   it("says cards skipped", () => {
     expect(cardsSkippedText(6)).toBe("6 cards skipped, not ready to list");
     expect(cardsSkippedText(1)).toBe("1 card skipped, not ready to list");
+    expect(cardsTallyText(9, 2)).toBe("9 cards fixed, 2 skipped.");
+    expect(cardsTallyText(1, 1)).toBe("1 card fixed, 1 skipped.");
+    expect(cardsTallyText(0, 6)).toBe("0 cards fixed, 6 skipped.");
+    // Nothing skipped earns the sign-off; a sitting that fixed nothing does not.
+    expect(cardsTallyText(9, 0)).toBe("9 cards fixed, 0 skipped. Totally rad.");
+    expect(cardsTallyText(0, 0)).toBe("0 cards fixed, 0 skipped.");
   });
 
   it("tallies pink and blue, leaving out a zero half", () => {

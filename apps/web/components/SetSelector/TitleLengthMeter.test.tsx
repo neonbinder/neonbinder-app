@@ -86,7 +86,7 @@ describe("titleLengthState — soft display bands (soft: true), the title field'
     expect(titleLengthState(54, LISTING_TITLE_MAX, true).tone).toBe("ok");
     expect(titleLengthState(55, LISTING_TITLE_MAX, true)).toMatchObject({
       tone: "mobile",
-      hint: "may clip on mobile",
+      hint: "may clip in search",
       over: false,
     });
     expect(titleLengthState(56, LISTING_TITLE_MAX, true).tone).toBe("mobile");
@@ -116,6 +116,17 @@ describe("titleLengthState — soft display bands (soft: true), the title field'
     // "may clip in search" and "will be rejected"; the more serious one is
     // the only one reported.
     expect(overCap.alert).not.toBeNull();
+  });
+
+  it("both soft bands say the same words; the tone still steps up at 70 (NEO-645)", () => {
+    const mobile = titleLengthState(60, LISTING_TITLE_MAX, true);
+    const search = titleLengthState(75, LISTING_TITLE_MAX, true);
+    expect(mobile.hint).toBe("may clip in search");
+    expect(search.hint).toBe(mobile.hint);
+    expect(mobile.tone).not.toBe(search.tone);
+    // The thresholds are unchanged: 55 and 70.
+    expect(titleLengthState(54, LISTING_TITLE_MAX, true).hint).toBeNull();
+    expect(titleLengthState(55, LISTING_TITLE_MAX, true).hint).toBe("may clip in search");
   });
 
   it("the two bands are strictly ordered: MOBILE_CLIP < SEARCH_CLIP < MAX (sanity against the constants, not just the literals above)", () => {
@@ -151,14 +162,15 @@ describe("TitleLengthMeter — rendering", () => {
   it("renders the raw count and no hint inside the safe band", () => {
     render(<TitleLengthMeter length={40} soft />);
     expect(screen.getByText("40/80")).toBeTruthy();
-    expect(screen.queryByText("may clip on mobile")).toBeNull();
     expect(screen.queryByText("may clip in search")).toBeNull();
   });
 
   it("renders the hint text at the mobile and search bands when soft", () => {
     const { rerender } = render(<TitleLengthMeter length={55} soft />);
     expect(screen.getByText("55/80")).toBeTruthy();
-    expect(screen.getByText("may clip on mobile")).toBeTruthy();
+    // One phrase for both bands (NEO-645); only the tone steps up at 70.
+    expect(screen.getByText("may clip in search")).toBeTruthy();
+    expect(screen.queryByText(/on mobile/)).toBeNull();
 
     rerender(<TitleLengthMeter length={70} soft />);
     expect(screen.getByText("70/80")).toBeTruthy();

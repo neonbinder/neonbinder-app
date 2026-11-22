@@ -30,8 +30,8 @@ import {
  *
  * ## Colour is never the only signal
  *
- * Every band that is not "fine" carries words: `may clip on mobile`,
- * `may clip in search`, and a full sentence in the alert. The colours below are
+ * Every band that is not "fine" carries words: `may clip in search` (both soft
+ * bands, NEO-645) and a full sentence in the alert. The colours below are
  * the app's existing roles — grey is neutral, the danger notice ink is over
  * the cap — plus two warm steps between them.
  *
@@ -111,6 +111,15 @@ export function overFieldProps(over: boolean): { "data-over"?: "true" } {
 }
 
 /**
+ * NEO-645 — ONE phrase for both soft bands. "May clip on mobile" (55) and "may
+ * clip in search" (70) were the same fact, search results cutting the title, at
+ * two screen sizes, and an operator read them as two different problems. The
+ * thresholds are unchanged (eBay's mobile tiles clip near 55, desktop results
+ * near 70); the colour still steps up at 70, and the words no longer change.
+ */
+export const CLIP_HINT = "may clip in search";
+
+/**
  * Classify a length against a cap.
  *
  * `soft` opts into the display-truncation bands, which belong to the listing
@@ -138,7 +147,7 @@ export function titleLengthState(
       tone: "search",
       over: false,
       overBy: 0,
-      hint: "may clip in search",
+      hint: CLIP_HINT,
       alert: null,
     };
   }
@@ -147,7 +156,7 @@ export function titleLengthState(
       tone: "mobile",
       over: false,
       overBy: 0,
-      hint: "may clip on mobile",
+      hint: CLIP_HINT,
       alert: null,
     };
   }

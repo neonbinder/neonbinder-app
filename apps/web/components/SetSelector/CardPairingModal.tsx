@@ -299,7 +299,7 @@ export type PairingCard = {
    * by NAME while their numbers differ (names first, numbers confirm). The
    * card's own `cardNumber` is the chosen one. Present only when the numbers
    * differ; a key only when that source is in the pair. Drives the "Numbers
-   * differ" note. Stripped at Confirm (`committable`).
+   * differ" note, and rides to the commit (NEO-645: the new row stores it).
    */
   sourceNumbers?: SourceNumbers;
   /**

@@ -97,6 +97,12 @@ vi.mock("convex/react", () => ({
 import CardChecklist from "./CardChecklist";
 import { SET_ROW_ACTION_TONE_CLASSES } from "./SetRowActionButton";
 
+/**
+ * The card checklist's fetch control. It has no aria-label (NEO-645), so its name is its
+ * visible words, which change with the state: Fetch from Marketplaces, Fetching..., Saving..., Refresh.
+ */
+const SYNC_BUTTON = /^(Fetch from Marketplaces|Fetching\.\.\.|Saving\.\.\.|Refresh)$/;
+
 const VARIANT_ID = "variant-1" as unknown as Id<"selectorOptions">;
 
 /** No team, no marketplace lookup to wait for: `missingTeam`. */
@@ -295,12 +301,12 @@ describe("CardChecklist — the one 'N need you' control (NEO-335)", () => {
     state.cards = [settled(1), settled(2)];
     rerender(ui());
     expect(queryPill()).toBeNull();
-    expect(document.activeElement).toBe(screen.getByLabelText("Sync card checklist"));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: SYNC_BUTTON }));
   });
 
   it("leaves focus alone when the pill leaves while focus is elsewhere", () => {
     const { rerender } = render(ui());
-    const sync = screen.getByLabelText("Sync card checklist") as HTMLElement;
+    const sync = screen.getByRole("button", { name: SYNC_BUTTON }) as HTMLElement;
     act(() => sync.blur());
     expect(document.activeElement).toBe(document.body);
     state.cards = [settled(1), settled(2)];

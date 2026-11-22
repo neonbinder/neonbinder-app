@@ -403,6 +403,12 @@ import CardChecklist, {
 } from "./CardChecklist";
 
 /**
+ * The card checklist's fetch control. It has no aria-label (NEO-645), so its name is its
+ * visible words, which change with the state: Fetch from Marketplaces, Fetching..., Saving..., Refresh.
+ */
+const SYNC_BUTTON = /^(Fetch from Marketplaces|Fetching\.\.\.|Saving\.\.\.|Refresh)$/;
+
+/**
  * Every live-region line on the page, hidden ones included: the sync banner
  * sits behind the pairing dialog, which may hide the page from AT queries.
  */
@@ -594,12 +600,25 @@ describe("CardChecklist — cancel during an in-flight fetch (NEO-189)", () => {
     );
   });
 
+  it("the fetch button's accessible name is its visible words, in every state (NEO-645)", async () => {
+    renderChecklist();
+    // Empty checklist: no aria-label, so "Fetch from Marketplaces" is the name.
+    const button = screen.getByRole("button", { name: "Fetch from Marketplaces" });
+    expect(button.getAttribute("aria-label")).toBeNull();
+    expect(button.textContent).toBe("Fetch from Marketplaces");
+    expect(screen.queryByRole("button", { name: "Sync card checklist" })).toBeNull();
+    // Pressed: the words change and the name follows them.
+    fireEvent.click(button);
+    const busy = await screen.findByRole("button", { name: "Fetching..." });
+    expect(busy.getAttribute("aria-label")).toBeNull();
+  });
+
   it("does not reopen the dialog or overwrite the cancelled message when the abandoned fetch resolves afterward", async () => {
     renderChecklist();
 
     // Kick off the sync — the empty-checklist state renders its own
-    // "Sync card checklist" button (sortedCards.length === 0 branch).
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    // "Fetch from Marketplaces" button (sortedCards.length === 0 branch).
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
 
     // The pairing dialog opens on the streamed candidate while the fetch is
     // still in flight — this is the "opens seconds in" behavior itself.
@@ -671,7 +690,7 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
 
   it("keeps the dialog open once the fetch resolves, and unlocks Confirm", async () => {
     renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
 
     // Open mid-fetch on the streamed candidate, Confirm still gated.
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
@@ -766,7 +785,7 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
 
     it("stays gated after the fetch resolves, says how far the teams have got, and unlocks once they land", async () => {
       const { rerender } = renderChecklist();
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, halfResolved);
       expect(await screen.findByText(/Match Cards/)).toBeTruthy();
 
@@ -827,7 +846,7 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
       // after the fake 31 s step and the wait ends on the wrong clock (NEO-638).
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
       const { rerender } = renderChecklist();
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, halfResolved);
       expect(screen.getByText(/Match Cards/)).toBeTruthy();
 
@@ -867,7 +886,7 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
       // after the fake 31 s step and the wait ends on the wrong clock (NEO-638).
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
       const { rerender } = renderChecklist();
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, halfResolved);
       expect(screen.getByText(/Match Cards/)).toBeTruthy();
 
@@ -909,7 +928,7 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
       // after the fake 31 s step and the wait ends on the wrong clock (NEO-638).
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
       const { rerender } = renderChecklist();
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, halfResolved);
       expect(screen.getByText(/Match Cards/)).toBeTruthy();
 
@@ -942,7 +961,7 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
       // delete the NEW Sync's rows. The wait ends with its component instead.
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
       const { rerender, unmount } = renderChecklist();
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, halfResolved);
       await act(async () => {
         resolveFetch({ ...fetchDone, candidateCount: 3 });
@@ -956,7 +975,7 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
 
     it("cancelling while it waits ends the run with the cancel message, not the timeout", async () => {
       const { rerender } = renderChecklist();
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, halfResolved);
       await act(async () => {
         resolveFetch(fetchDone);
@@ -991,7 +1010,7 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
     // still predate the batch write.
     state.liveCandidates = { ready: 0, total: 0, cards: [] };
     renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
 
     await act(async () => {
       resolveFetch({
@@ -1014,7 +1033,7 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
 
   it("closes the dialog and discards the batch when the fetch reports failure", async () => {
     renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
 
     await act(async () => {
@@ -1042,7 +1061,7 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
     // the sport off the chain lets it fail before the fetch, not after.
     state.ancestorChain = [{ _id: VARIANT_ID, level: "variantType", value: "Base" }];
     renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
 
     await waitFor(() =>
       expect(screen.getByText(/no sport ancestor/)).toBeTruthy(),
@@ -1056,10 +1075,10 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
     // identical refusal changed nothing and a screen-reader user heard silence.
     state.ancestorChain = [{ _id: VARIANT_ID, level: "variantType", value: "Base" }];
     renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     const first = await screen.findByText(/no sport ancestor/);
 
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     await waitFor(() =>
       expect(screen.getByText(/no sport ancestor/)).not.toBe(first),
     );
@@ -1140,7 +1159,7 @@ describe("CardChecklist — Confirm waits for the streamed team lookups (NEO-341
 
   it("keeps Confirm blocked after the fetch resolves until the last team lookup is seen, then confirms with it", async () => {
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     await streamCandidates(rerender, lookupOutstanding);
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
 
@@ -1179,7 +1198,7 @@ describe("CardChecklist — Confirm waits for the streamed team lookups (NEO-341
 
   it("does not settle on a batch shorter than the count the fetch reported", async () => {
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     // Every row that has ARRIVED is ready, but only one of two has arrived.
     await streamCandidates(rerender, {
       batchId: "batch-341",
@@ -1202,7 +1221,7 @@ describe("CardChecklist — Confirm waits for the streamed team lookups (NEO-341
 
   it("a failed fetch releases everything: no dialog, Sync usable, and the next run gates afresh", async () => {
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     await streamCandidates(rerender, lookupOutstanding);
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
 
@@ -1218,7 +1237,7 @@ describe("CardChecklist — Confirm waits for the streamed team lookups (NEO-341
     // Nothing is left waiting on lookups that will never land.
     expect(screen.queryByText(/Match Cards/)).toBeNull();
     expect(screen.queryByText(/teams are still resolving/)).toBeNull();
-    const sync = screen.getByLabelText("Sync card checklist");
+    const sync = screen.getByRole("button", { name: SYNC_BUTTON });
     expect((sync as HTMLButtonElement).disabled).toBe(false);
 
     // A second run is gated on ITS OWN report, not the failed one's.
@@ -1259,7 +1278,7 @@ describe("CardChecklist — Confirm waits for the streamed team lookups (NEO-341
       ],
     });
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     await streamCandidates(rerender, solo(1));
     await act(async () => {
       resolveFetch({
@@ -1375,7 +1394,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
 
   it("keeps every fetched card as a single and commits it, with no dialog at any point", async () => {
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
 
     // (2) No dialog while the fetch runs — which is exactly when it appears on
     // a two-sided set — and the inline progress line standing in for it.
@@ -1430,7 +1449,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     // focus and hands it back; here nothing does, so the run has to.
     await waitFor(() =>
       expect(document.activeElement).toBe(
-        screen.getByLabelText("Sync card checklist"),
+        screen.getByRole("button", { name: SYNC_BUTTON }),
       ),
     );
   });
@@ -1460,7 +1479,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
         batchId: undefined,
         ...(context ? { careerContext: context } : {}),
       });
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, playerBatch);
       await act(async () => {
         resolveFetch({
@@ -1500,7 +1519,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     };
 
     async function syncAutos(rerender: Parameters<typeof streamCandidates>[0]) {
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, autoBatch);
       await act(async () => {
         resolveFetch({
@@ -1569,7 +1588,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       batch: unknown,
       result: Record<string, unknown> = {},
     ) {
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, batch);
       await act(async () => {
         resolveFetch({
@@ -1845,7 +1864,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
         };
         const { rerender } = renderChecklist();
         await addChecklist();
-        fireEvent.click(screen.getByLabelText("Sync card checklist"));
+        fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
         expect(await screen.findByText(/Match Cards/)).toBeTruthy();
         await streamCandidates(rerender, { ...(state.liveCandidates as object), batchId: "batch-490b" });
         await act(async () => {
@@ -1966,7 +1985,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     };
 
     async function syncTeamless(rerender: Parameters<typeof streamCandidates>[0]) {
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, teamlessBatch);
       await act(async () => {
         resolveFetch({
@@ -2055,7 +2074,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
           batchId: undefined,
           ...(teamlessPlayerNames ? { teamlessPlayerNames } : {}),
         });
-        fireEvent.click(screen.getByLabelText("Sync card checklist"));
+        fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
         await streamCandidates(rerender, batch);
         await act(async () => {
           resolveFetch({
@@ -2125,7 +2144,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
      * it), so it must not pass for a team that resolved without review.
      */
     async function syncPrintingSoloTeam(rerender: Parameters<typeof streamCandidates>[0]) {
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, arrivedBatch);
       await act(async () => {
         resolveFetch({
@@ -2158,7 +2177,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       rerender: Parameters<typeof streamCandidates>[0],
       decide: "skip" | { applyFieldOf: RegExp },
     ) {
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, teamlessBatch);
       await act(async () => {
         resolveFetch({
@@ -2215,7 +2234,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     };
 
     async function syncTeamed(rerender: Parameters<typeof streamCandidates>[0]) {
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, arrivedBatch);
       await act(async () => {
         resolveFetch({
@@ -2283,7 +2302,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       () => new Promise((resolve) => (finishCommit = resolve)),
     );
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     await streamCandidates(rerender, arrivedBatch);
     await act(async () => {
       resolveFetch({
@@ -2314,7 +2333,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     // (3) The action's `candidateCount` is the contract, and the subscription
     // has to agree with it before a single card is promoted.
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
 
     // Half the batch on the wire so far.
     await streamCandidates(rerender, {
@@ -2348,7 +2367,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     // and it has to be the same abort: supersede the run, bin the candidates,
     // and survive the fetch resolving afterwards.
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     expect(screen.getByText(/Fetching from SportLots/)).toBeTruthy();
 
     await act(async () => {
@@ -2368,7 +2387,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     // on <body> and a keyboard operator restarts from the top of the document.
     await waitFor(() =>
       expect(document.activeElement).toBe(
-        screen.getByLabelText("Sync card checklist"),
+        screen.getByRole("button", { name: SYNC_BUTTON }),
       ),
     );
 
@@ -2400,7 +2419,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       cards: [streamedCandidate],
     };
     renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
 
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
     expect(screen.queryByText(/Fetching from SportLots/)).toBeNull();
@@ -2425,7 +2444,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     // slots at fetch time, saw two. The honest answer to "I am not sure how
     // many marketplaces this set has" is the dialog, never a silent commit.
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     expect(screen.queryByText(/Match Cards/)).toBeNull();
 
     await streamCandidates(rerender, arrivedBatch);
@@ -2459,7 +2478,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
    */
   it("hands over to the dialog when the one-sided batch contains a matched pair", async () => {
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     expect(screen.queryByText(/Match Cards/)).toBeNull();
 
     await streamCandidates(rerender, {
@@ -2503,7 +2522,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     // checked because either one on its own is a disagreement the operator
     // has to settle, and `candidatesToPairingCards` drops both.
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
 
     await streamCandidates(rerender, {
       batchId: "batch-255",
@@ -2538,7 +2557,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     // one set's cards onto another — and this path has no operator in front of
     // it to notice.
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
 
     await act(async () => {
       resolveFetch({
@@ -2581,7 +2600,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     // park a keyboard operator spends the whole fetch at the top of the
     // document with nothing announcing that anything began.
     renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
 
     await waitFor(() => {
       const parked = document.activeElement as HTMLElement | null;
@@ -2604,7 +2623,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     renderChecklist();
     const addCard = screen.getByLabelText("Open add card form");
     addCard.focus();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
 
     await waitFor(() =>
       expect(screen.getByText(/Fetching from SportLots/)).toBeTruthy(),
@@ -2616,7 +2635,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     // The pre-existing `candidateCount === 0` short-circuit is untouched by
     // this ticket, and has to stay reachable from the one-sided path too.
     renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
 
     await act(async () => {
       resolveFetch({
@@ -2638,7 +2657,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
 
   it("a failed one-sided fetch closes the run and discards, as a two-sided one does", async () => {
     renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     expect(screen.getByText(/Fetching from SportLots/)).toBeTruthy();
 
     await act(async () => {
@@ -2695,7 +2714,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     );
     try {
       const { rerender } = renderChecklist();
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
 
       expect(screen.queryByText(/Match Cards/)).toBeNull();
       expect(screen.getByText(/Fetching from BSC/)).toBeTruthy();
@@ -2747,7 +2766,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       cards: [streamedCandidate],
     };
     renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
     await act(async () => {
       resolveFetch({
@@ -2832,7 +2851,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
 
     it("does not commit a complete batch whose teams have not landed, and hands entity resolution the teams once they do", async () => {
       const { rerender } = renderChecklist();
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       expect(screen.getByText(/Fetching from BSC/)).toBeTruthy();
 
       await streamCandidates(rerender, prePatch);
@@ -2885,7 +2904,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       // Fake clock first, as in the two-marketplace twin above (NEO-638).
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
       const { rerender } = renderChecklist();
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, patched);
 
       try {
@@ -2915,7 +2934,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       // NEO-638: same rule as the two-marketplace path; see the twin above.
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
       const { rerender, unmount } = renderChecklist();
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, patched);
       await act(async () => {
         resolveFetch({ ...fetchDone, candidateCount: 3 });
@@ -2973,7 +2992,7 @@ describe("CardChecklist — commit paints 'Saved' only after the queries catch u
   /** Drive the fetch → resolve → commit path to the point of the discard. */
   async function runToCommit() {
     renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     await act(async () => {
       resolveFetch({
         success: true,
@@ -3101,7 +3120,7 @@ async function commitZeroCandidatePath() {
   );
 
   const rendered = renderChecklist();
-  fireEvent.click(screen.getByLabelText("Sync card checklist"));
+  fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
   await act(async () => {
     resolveFetch({
       success: true,
@@ -4496,7 +4515,7 @@ async function pairedEntityReviewPath() {
 
   const rendered = renderChecklist();
   await act(async () => {
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
   });
   expect(await screen.findByText(/Match Cards/)).toBeTruthy();
   return rendered;
@@ -4564,7 +4583,7 @@ describe("CardChecklist — NEO-424: links made for the operator open the wizard
     mockDiscardCandidates.mockResolvedValue(undefined);
     renderChecklist();
     await act(async () => {
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     });
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
   }
@@ -4624,7 +4643,7 @@ describe("CardChecklist — NEO-221 D12: names nobody reviewed", () => {
 
     renderChecklist();
     await act(async () => {
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     });
     await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
 
@@ -4684,7 +4703,7 @@ async function resyncAndExpectOnlyTheNewBatch() {
     }),
   );
   await act(async () => {
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
   });
 
   expect(await screen.findByText(/Match Cards/)).toBeTruthy();
@@ -4863,7 +4882,7 @@ describe("CardChecklist — NEO-251: conflicts reach the diff, not the commit", 
 
     renderChecklist();
     await act(async () => {
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     });
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
     await act(async () => {
@@ -4934,7 +4953,7 @@ describe("CardChecklist — NEO-251: conflicts reach the diff, not the commit", 
 
     renderChecklist();
     await act(async () => {
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     });
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
 
@@ -4987,7 +5006,7 @@ describe("CardChecklist — NEO-251: conflicts reach the diff, not the commit", 
 
     renderChecklist();
     await act(async () => {
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     });
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
 
@@ -5027,7 +5046,7 @@ describe("CardChecklist — NEO-251: conflicts reach the diff, not the commit", 
 
     renderChecklist();
     await act(async () => {
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     });
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
     await act(async () => {
@@ -5120,7 +5139,7 @@ describe("CardChecklist — NEO-312 a parallel row's Sync slot builds instead of
     renderParallelRow();
 
     // No ordinary Sync control exists on a parallel row at all.
-    expect(screen.queryByLabelText("Sync card checklist")).toBeNull();
+    expect(screen.queryByRole("button", { name: SYNC_BUTTON })).toBeNull();
     const button = screen.getByRole("button", { name: "Build from Anime" });
 
     mockBuildParallelChecklist.mockResolvedValue(parallelBuiltResult());
@@ -5175,7 +5194,7 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
     );
 
     renderInsertRow();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     await act(async () => {
       resolveFetch({
         success: true,
@@ -5442,7 +5461,7 @@ describe("CardChecklist — NEO-312 the auto-run after a commit (J1)", () => {
     mockFetchChecklist.mockImplementation(
       () => new Promise((resolve) => (resolveFetch = resolve)),
     );
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     await act(async () => {
       resolveFetch({
         success: true,
@@ -5491,7 +5510,7 @@ describe("CardChecklist — NEO-312 the auto-run after a commit (J1)", () => {
     });
     expect(screen.queryByText(/Saved 2 cards/)).toBeNull();
     // The new row is on screen, with its own Sync.
-    expect(screen.getByLabelText("Sync card checklist")).toBeTruthy();
+    expect(screen.getByRole("button", { name: SYNC_BUTTON })).toBeTruthy();
 
     await act(async () => {
       rerender(at(VARIANT_ID));
@@ -5567,7 +5586,7 @@ describe("CardChecklist — NEO-321 a base-parallel row builds from Base (D3)", 
     renderBaseParallel();
     expect(screen.getByRole("button", { name: "Build from Base" })).toBeTruthy();
     expect(screen.queryByText("Fetch from Marketplaces")).toBeNull();
-    expect(screen.queryByLabelText("Sync card checklist")).toBeNull();
+    expect(screen.queryByRole("button", { name: SYNC_BUTTON })).toBeNull();
     expect(screen.queryByText(/Match Cards/)).toBeNull();
   });
 
@@ -5576,7 +5595,7 @@ describe("CardChecklist — NEO-321 a base-parallel row builds from Base (D3)", 
     renderBaseParallel();
     expect(screen.getByRole("button", { name: "Rebuild from Base" })).toBeTruthy();
     expect(screen.queryByText("Refresh")).toBeNull();
-    expect(screen.queryByLabelText("Sync card checklist")).toBeNull();
+    expect(screen.queryByRole("button", { name: SYNC_BUTTON })).toBeNull();
   });
 
   it("the button's label follows the source's name, never a literal", () => {
@@ -5605,7 +5624,7 @@ describe("CardChecklist — NEO-321 a base-parallel row builds from Base (D3)", 
     expect(mockBuildParallelChecklist).not.toHaveBeenCalled();
     expect(mockFetchChecklist).not.toHaveBeenCalled();
     expect(screen.queryByText("Fetch from Marketplaces")).toBeNull();
-    expect(screen.queryByLabelText("Sync card checklist")).toBeNull();
+    expect(screen.queryByRole("button", { name: SYNC_BUTTON })).toBeNull();
   });
 
   it("with no single Base the stand-in says Can't build yet, is described by the reason, and is never actionable", () => {
@@ -5697,7 +5716,7 @@ describe("CardChecklist — NEO-321 the Base checklist is held while a base run 
 
   it("holds Sync too: a new Base save mid-copy would change what the run is copying", () => {
     renderBase(baseRun("running", [{ id: OTHER_PARALLEL, line: { kind: "building" } }]));
-    const sync = screen.getByLabelText("Sync card checklist") as HTMLButtonElement;
+    const sync = screen.getByRole("button", { name: SYNC_BUTTON }) as HTMLButtonElement;
     expect(sync.disabled).toBe(true);
   });
 
@@ -5822,7 +5841,7 @@ describe("CardChecklist — the team fence (NEO-333)", () => {
   it("one marketplace: waits for the teams, not just the rows, before it hands the cards on", async () => {
     state.ancestorChain = soloBscChain();
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
 
     // The rows arrived long ago; the action resolves before the team writes
     // reach the subscription.
@@ -5869,7 +5888,7 @@ describe("CardChecklist — the team fence (NEO-333)", () => {
     // checklistCandidates.test.ts).
     state.ancestorChain = soloBscChain();
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     await streamCandidates(rerender, {
       ...rowsWithTeams,
       ready: 1,
@@ -5902,7 +5921,7 @@ describe("CardChecklist — the team fence (NEO-333)", () => {
     // Same count, teams and all — but not the batch this run wrote.
     state.ancestorChain = soloBscChain();
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     await streamCandidates(rerender, { ...rowsWithTeams, batchId: "batch-old" });
     await act(async () => {
       resolveFetch({ ...fencedResult, attachedSides: ["bsc"] });
@@ -5916,7 +5935,7 @@ describe("CardChecklist — the team fence (NEO-333)", () => {
   it("two marketplaces: Confirm stays locked until the teams have reached the dialog", async () => {
     state.ancestorChain = twoSidedChain();
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     await streamCandidates(rerender, rowsWithoutTeams);
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
 
@@ -5946,7 +5965,7 @@ describe("CardChecklist — the team fence (NEO-333)", () => {
     try {
       state.ancestorChain = twoSidedChain();
       const { rerender } = renderChecklist();
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, rowsWithoutTeams);
       expect(screen.getByText(/Match Cards/)).toBeTruthy();
       await act(async () => {
@@ -6310,7 +6329,7 @@ describe("CardChecklist — the Sync wait line (NEO-487)", () => {
     state.liveCandidates = null;
     fakeGate();
     renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     // One millisecond short of the gate the line is not yet on screen.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(ANNOUNCE_AFTER_MS - 1);
@@ -6333,7 +6352,7 @@ describe("CardChecklist — the Sync wait line (NEO-487)", () => {
     state.liveCandidates = { ready: 1, total: 1, cards: [streamedCandidate] };
     fakeGate();
     renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     await passGate();
 
     expect(screen.getByText(/Match Cards/)).toBeTruthy();
@@ -6349,7 +6368,7 @@ describe("CardChecklist — the Sync wait line (NEO-487)", () => {
     state.liveCandidates = null;
     fakeGate();
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     await passGate();
 
     const pageLine = screen.getByText(WAIT);
