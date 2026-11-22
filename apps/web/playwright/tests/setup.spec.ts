@@ -169,6 +169,8 @@ async function walkTidyUp(page: Page, file: string) {
     `the seed's ${file} disagrees with BSC on ${tally.disagreements} cards (Sources disagree): the capture is stale`,
   ).toBe(0);
   await finishTidyWalk(page);
+  // The walk's counts, on the report (no console output in a spec).
+  test.info().annotations.push({ type: `tidy walk, ${file}`, description: JSON.stringify(tally) });
   return tally;
 }
 
@@ -358,9 +360,14 @@ test(
     // opens by itself when a card needs a person ("Tidy up 2024 Topps Chrome").
     if (await settleWalkAfterCommit(page, savedBase)) {
       const base = await walkTidyUp(page, "2024-topps-chrome-base.csv");
-      // Gold Wave Refractors is built from Base below, and a build refuses a source with any
-      // pink card (NEO-645 J3): every Base card must leave the walk with nothing to fix.
-      expect(base.skipped, `${base.skipped} Base cards were left with something to fix`).toBe(0);
+      // Gold Wave Refractors is built from Base below, and a build refuses a source with a card
+      // whose player or team NAME, or a sources disagreement, is still pink (NEO-645 J3,
+      // `blocksParallelBuild`). A pink over-long title or a card with no team does not block it,
+      // and the seed leaves those as the old wizard did (its titles step kept every title).
+      expect(
+        (base.skippedFor.Player ?? 0) + (base.skippedFor["Sources disagree"] ?? 0),
+        `Base cards left with a name or a disagreement to fix: ${JSON.stringify(base.skippedFor)}`,
+      ).toBe(0);
     }
     await expect(page.getByText(/^#[0-9]/).first()).toBeVisible();
 

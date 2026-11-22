@@ -217,11 +217,30 @@ export async function finishTidyWalk(page: Page): Promise<void> {
   await expect(page).not.toHaveURL(/[?&]tidy=/);
 }
 
-/** Wait until a footer move from the address `from` has landed: a new address, and a card or the end screen. */
-async function expectMovedFrom(page: Page, from: string, what: string): Promise<void> {
+/**
+ * The open card's identity as a person reads it: every "#<number>…" line on the
+ * card (the face's number and the header, "#38b · Image Variation · Mike
+ * Trout"). A locator; read it with `allTextContents` before a move.
+ */
+function cardIdentity(page: Page): Locator {
+  return tidyWalk(page).getByText(/^#\S+( · .+)?$/);
+}
+
+/**
+ * Wait until a footer move has landed. The address changes BEFORE the next
+ * card renders (the router updates history, then React renders), so the
+ * address alone would let the old card's tiles be read as the new one's: the
+ * move is proved by the address AND by what is on screen, the end screen when
+ * the address says `done`, else a card whose "#…" lines differ from `before`.
+ */
+async function expectMovedFrom(page: Page, from: string, before: string[], what: string): Promise<void> {
   await expect(page, `${what} moved the walk on`).not.toHaveURL(from);
-  await expect(cardOnScreen(page).or(endScreen(page)).first()).toBeVisible();
-  if (await cardOnScreen(page).isVisible()) await expectCardSettled(page);
+  if (/[?&]tidy=done(&|$)/.test(page.url())) {
+    await expect(endScreen(page), `${what} reached the end screen`).toBeVisible();
+    return;
+  }
+  await expect(cardIdentity(page), `${what} put another card on screen`).not.toHaveText(before);
+  await expectCardSettled(page);
 }
 
 /**
@@ -231,8 +250,9 @@ async function expectMovedFrom(page: Page, from: string, what: string): Promise<
  */
 export async function skipCard(page: Page): Promise<void> {
   const from = page.url();
+  const before = await cardIdentity(page).allTextContents();
   await tidyFooterButton(page, "skip", { usable: true }).click();
-  await expectMovedFrom(page, from, "Skip");
+  await expectMovedFrom(page, from, before, "Skip");
 }
 
 /**
@@ -245,8 +265,9 @@ export async function saveAndNext(page: Page): Promise<void> {
   const from = page.url();
   const save = tidyFooterButton(page, "saveAndNext", { usable: true });
   await expect(save, "Save & next is usable (nothing on the card is pink)").toBeVisible();
+  const before = await cardIdentity(page).allTextContents();
   await save.click();
-  await expectMovedFrom(page, from, "Save & next");
+  await expectMovedFrom(page, from, before, "Save & next");
 }
 
 /**
@@ -301,21 +322,40 @@ async function promotedPlayerLink(row: Locator): Promise<Locator | undefined> {
   return undefined;
 }
 
+/** The player-create button, plain or one-name, never "… anyway"; `( .+)?` is a multi-name card's suffix. */
+const CREATE_PLAYER = /^(Add as new player|Add as a one-name player)(?! anyway)( .+)?$/;
+/** The decline of a promoted link ("Add as new player anyway"), which only OPENS the plain create. */
+const CREATE_ANYWAY = /^Add as new player anyway( .+)?$/;
+
 /**
- * Answer every pink row of the open card's Player tile by LINKING when the
- * product offers one player to link (a same-name pick step's top candidate, an
- * exact namesake, a preselect), else by CREATING ("Add as new player", or "Add
- * as a one-name player" for a fragment). Never "Not a player", never a near
- * match (a fuzzy name is not this player). Each answer reaches every card in
- * the scope that prints the name (the server fans it out).
+ * Answer every pink row of the open card's Player tile the way the old seed's
+ * "Add remaining players as new" did (origin/main `decideAllRemaining`):
+ *  - a same-name pick step ("Which <name> is this?", two or more players on
+ *    file under the name) links its top candidate: the bulk left those rows
+ *    alone and the seed linked the first candidate, never minting one more
+ *    same-name player (NEO-332);
+ *  - every other name is CREATED. A row that promotes one player to link (an
+ *    exact namesake, or NEO-424's one namesake in another sport, "Link to
+ *    <name> (<sport>)") is declined with "Add as new player anyway", which
+ *    opens the plain create, then "Add as new player": the bulk created those
+ *    too (its ambiguity test reads the name's own sport only). `promoted:
+ *    "link"` takes the promoted link instead.
+ * Never "Not a player", never a near match from "Possible player matches".
+ *
+ * Each row is read only once its lookups have answered: the row says
+ * "Checking for players by that name…" and holds its create until both the
+ * near-match and the name-fragment reads land, and either can turn "new" into
+ * a promoted link, a pick step or the fragment question.
  *
  * Contract: ENTRY a settled card. EXIT no Player row is waiting for an answer
- * and the tile is not pink (rows the card holds without a name row, and
- * legacy pending names, are not this helper's: a tile still pink after the
- * last row fails here, by name). Returns how many rows were answered (0 when
- * the tile was not pink). `maxRows` is a runaway guard.
+ * and the tile is not pink (a tile still pink after the last row fails here,
+ * by name). Returns how many rows were answered (0 when the tile was not
+ * pink). `maxRows` is a runaway guard.
  */
-export async function answerPinkPlayerTiles(page: Page, { maxRows = 8 }: { maxRows?: number } = {}): Promise<number> {
+export async function answerPinkPlayerTiles(
+  page: Page,
+  { maxRows = 8, promoted = "create" }: { maxRows?: number; promoted?: "create" | "link" } = {},
+): Promise<number> {
   if ((await pinkTile(page, "Player").count()) === 0) return 0;
   let answered = 0;
   for (let i = 0; i < maxRows; i++) {
@@ -323,20 +363,31 @@ export async function answerPinkPlayerTiles(page: Page, { maxRows = 8 }: { maxRo
     if ((await rows.count()) === 0) break;
     const row = rows.first();
     const rowName = (await row.getAttribute("aria-label")) ?? "";
+    // Settle the row into ONE state before reading it: the lookups have answered (the hold
+    // line is gone) and a usable answer is up (R2: the positive under the negative).
+    await expect(row.getByText("Checking for players by that name…"), `"${rowName}" is still checking`).toHaveCount(0);
     const pick = row
       .getByRole("list", { name: "Players already filed under this name" })
       .getByRole("button", { disabled: false });
-    const create = row.getByRole("button", {
-      name: /^(Add as new player|Add as a one-name player)(?! anyway)( .+)?$/,
-      disabled: false,
-    });
+    const create = row.getByRole("button", { name: CREATE_PLAYER, disabled: false });
+    const anyway = row.getByRole("button", { name: CREATE_ANYWAY, disabled: false });
+    await expect(pick.or(create).or(anyway).first(), `"${rowName}" offers an answer`).toBeVisible();
     if ((await pick.count()) > 0) {
       // NEO-332: never mint one more same-name player; the top candidate is the seed's answer.
       await pick.first().click();
+    } else if ((await anyway.count()) > 0) {
+      const link = promoted === "link" ? await promotedPlayerLink(row) : undefined;
+      if (link !== undefined) {
+        await link.click();
+      } else {
+        await anyway.click();
+        // "anyway" only opens the plain create (and asks Wikidata about the name); the create
+        // is pressed once it is usable.
+        await expect(anyway, `"${rowName}" left its promoted link for the plain create`).toHaveCount(0);
+        await create.click();
+      }
     } else {
-      const promoted = await promotedPlayerLink(row);
-      if (promoted !== undefined) await promoted.click();
-      else await create.click();
+      await create.click();
     }
     await expectPlayerRowAnswered(page, rowName);
     answered++;
@@ -348,9 +399,7 @@ export async function answerPinkPlayerTiles(page: Page, { maxRows = 8 }: { maxRo
 
 /** The open card's first unanswered Player row that offers a plain create ("Add as new player" / one-name). */
 export function creatablePlayerRow(page: Page): Locator {
-  return openPlayerRows(page).filter({
-    has: page.getByRole("button", { name: /^(Add as new player|Add as a one-name player)(?! anyway)( .+)?$/ }),
-  });
+  return openPlayerRows(page).filter({ has: page.getByRole("button", { name: CREATE_PLAYER }) });
 }
 
 /**
@@ -364,9 +413,8 @@ export async function createPlayerOnOpenRow(page: Page): Promise<string> {
   const row = creatablePlayerRow(page).first();
   await expect(row, "the card has a Player row offering Add as new player").toBeVisible();
   const rowName = (await row.getAttribute("aria-label")) ?? "";
-  await row
-    .getByRole("button", { name: /^(Add as new player|Add as a one-name player)(?! anyway)( .+)?$/, disabled: false })
-    .click();
+  await expect(row.getByText("Checking for players by that name…"), "the row is still checking").toHaveCount(0);
+  await row.getByRole("button", { name: CREATE_PLAYER, disabled: false }).click();
   await expectPlayerRowAnswered(page, rowName);
   return rowName;
 }
@@ -382,6 +430,7 @@ function openTeamRows(page: Page): Locator {
 
 /** Answer one printed team name by creating it in the inline New team form (the row's "+ New team"). */
 async function createTeamFromRow(page: Page, row: Locator): Promise<void> {
+  await expect(row.getByText("Checking for teams by that name…"), "the team row is still checking").toHaveCount(0);
   await row.getByRole("button", { name: /^\+ New team( .+)?$/, disabled: false }).click();
   const form = row.getByRole("group", { name: /^New team: / });
   await expect(form).toBeVisible();
@@ -442,8 +491,14 @@ export async function answerPinkTeamTiles(
     const row = rows.first();
     const rowName = (await row.getAttribute("aria-label")) ?? "";
     const candidates = row.getByRole("list", { name: /^We've got [0-9]+ teams / }).getByRole("button", { disabled: false });
+    // Settle first: "+ New team" is held while the row checks for teams by that name (an exact
+    // match turns the answer into a link), and the hold line says so.
+    await expect(row.getByText("Checking for teams by that name…"), `"${rowName}" is still checking`).toHaveCount(0);
+    await expect(
+      candidates.or(row.getByRole("button", { name: /^(Link to |\+ New team)/, disabled: false })).first(),
+      `"${rowName}" offers an answer`,
+    ).toBeVisible();
     if (await row.getByText(/^Which team: /).isVisible()) {
-      // The candidates' list is named by a status line filled a tick after it mounts.
       await expect(candidates.first()).toBeVisible();
       await candidates.first().click();
     } else {
@@ -506,7 +561,12 @@ export interface WalkTally {
   teams: number;
   /** Cards that opened with a pink "Sources disagree" tile (never answered here; such a card is skipped). */
   disagreements: number;
+  /** Skipped cards per tile still pink when they were skipped (a card counts under each of its pink tiles). */
+  skippedFor: Partial<Record<TidyTileName, number>>;
 }
+
+/** The tiles that can be pink, in the walk's order. */
+const PINKABLE: readonly TidyTileName[] = ["Sources disagree", "Player", "Team", "Autograph", "Listing title"];
 
 /**
  * Walk the open walk to its end screen, answering on each card what a seed or
@@ -529,7 +589,7 @@ export async function walkAnsweringEverything(
     autograph = "On-card auto",
   }: { maxCards?: number; noTeam?: "prefilled" | "noTeamOnCard"; autograph?: "On-card auto" | "Sticker auto" | "leave" } = {},
 ): Promise<WalkTally> {
-  const tally: WalkTally = { cards: 0, saved: 0, skipped: 0, players: 0, teams: 0, disagreements: 0 };
+  const tally: WalkTally = { cards: 0, saved: 0, skipped: 0, players: 0, teams: 0, disagreements: 0, skippedFor: {} };
   await expectTidyWalkOpen(page);
   for (let i = 0; i < maxCards; i++) {
     if (await endScreen(page).isVisible()) break;
@@ -546,6 +606,9 @@ export async function walkAnsweringEverything(
       await saveAndNext(page);
       tally.saved++;
     } else {
+      for (const name of PINKABLE) {
+        if ((await pinkTile(page, name).count()) > 0) tally.skippedFor[name] = (tally.skippedFor[name] ?? 0) + 1;
+      }
       await skipCard(page);
       tally.skipped++;
     }
