@@ -20,7 +20,7 @@
 //   8. Turning the flag off says the sport asks for a team again, reads not pressed, and changes
 //      no card already saved.
 // The listing-names-a-team half is `sport-no-teams-listing-team-holds-back-the-default`; BSC
-// answering "no team" is `sport-no-teams-bsc-no-team-answer-saves-no-team`.
+// answering "no team" is `sport-no-teams-bsc-no-team-answer-stamps-no-team-once-the-person-is-added`.
 //
 // R2: every move of the walk is proved by the card that lands and the count ("N cards left");
 // each negative (`toHaveCount(0)`) sits beside a positive.

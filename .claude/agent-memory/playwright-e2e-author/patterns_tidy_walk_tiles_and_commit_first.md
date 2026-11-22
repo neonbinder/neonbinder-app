@@ -108,3 +108,20 @@ that must not write a real set, there is no pre-save exit any more: give it its 
   Back AFTER Done lands on a `?tidy=<card>` entry, not the drill, so prove URL moves before the answer.
 - **Name regexes for the a11y rename:** `/^Edit (card )?title/` covers "Edit card title" and the
   coming "Edit title"/"Edit title for #N"; levels via `toHaveAccessibleDescription(/To fix/)`.
+
+## Team-tile answers that change what the tile asks, and Back after Done (NEO-591 prospect, NEO-426 specs)
+
+- **"Not a team" on a printed place turns the card into a no-team card with NO claim left**, so
+  the fill chips PRESELECT a career team that meets the pre-fill rule ("Chicago Cubs · <player>
+  played here", pressed) under "Suggested from career history.". A preselect is not a write: the
+  tile stays pink, Save & next held, until "Save team". Assert pressed=true plus the card read
+  back teamless after Skip; the old wizard's "none picked" is gone (NEO-639 rule 8).
+- **A settled auto-link (place by stint, exact name, known Prospect X) makes no walk stop**; a
+  catalogue player whose linked team is outside his career still stops the card BLUE (Career "To
+  check"). Prove the walk's membership by the exact set of numbers shown plus `expectCardsLeft`.
+- **BSC answered "no team" shows on the pink Team tile** as "The listing has no team for this
+  card. …" while the person is pending; adding the person in a teamless home sport replaces the
+  chips with "No team on this card." by itself.
+- **Done replaces the `?tidy=done` entry**: browser Back from the checklist afterwards REOPENS the
+  walk on its last card. A column Back/Forward check placed after a walk lands in the walk; put
+  it before the fetch, or prove Back inside the walk (end screen -> last card -> Forward).

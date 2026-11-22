@@ -16,7 +16,7 @@
 //      "No Team", is not badged pink, and its card editor shows the team and "No Team for this
 //      card" off. A fresh load reads it back from the server, where the stamp is decided.
 // The other halves: BSC answering NO team leads to the default
-// (`sport-no-teams-bsc-no-team-answer-saves-no-team`); a team the CHECKLIST names holds it back
+// (`sport-no-teams-bsc-no-team-answer-stamps-no-team-once-the-person-is-added`); a team the CHECKLIST names holds it back
 // and goes to the operator on the Team tile (`sport-no-teams-stamps-no-team-so-the-card-makes-no-walk-stop`).
 //
 // FIXTURE (SET-REGISTRY.md, "ONIT Athlete Arizona State Sun Devils", approved by Jason

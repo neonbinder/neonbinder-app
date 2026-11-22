@@ -17,7 +17,7 @@ cards.").
 
 So a per-attempt hand-made set CAN prove "a fetch's commit creates cards with X": upload a
 small hand-written CSV on the leaf, Sync, read the cards back, delete them. Used by NEO-591
-`checklist-prospect-team-cells-set-prospect-card` (Baseball > 2024 > Topps, sport must be real
+`checklist-prospect-and-place-team-cells-ask-only-the-unsettled-on-the-team-tile` (Baseball > 2024 > Topps, sport must be real
 when the feature resolves teams/players against the set's sport).
 
 Recipe (NEO-602 `checklist-team-name-on-two-eras-follows-the-player`): `drillToCustom` to a
