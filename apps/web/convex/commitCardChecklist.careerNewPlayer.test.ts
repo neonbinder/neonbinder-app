@@ -345,67 +345,6 @@ describe("commitCardChecklist — careerNewPlayers", () => {
     ]);
   });
 
-  test("stints land on the new player: a saved team by id, a team the batch creates by name, one team twice, in order", async () => {
-    const t = convexTest(schema, modules);
-    const { ids, padres, cubs, namesake } = await twoBobAllens(t);
-    await t.run((ctx) =>
-      ctx.db.insert("entityReviewQueue", {
-        selectorOptionId: ids.leafId,
-        batchId: "batch-np-1",
-        createdByUserId: "user_review_001",
-        kind: "team",
-        name: "Brand New Club",
-        sportId: ids.sportId,
-        status: "ready",
-        decision: { action: "create", create: { location: "Brand", name: "New Club" } },
-      }),
-    );
-
-    const result = await commit(
-      t,
-      ids,
-      [
-        makeCard({
-          cardNumber: "1",
-          players: ["Bob Allen"],
-          teams: ["Brand New Club"],
-          newPlayerByName: [{ name: "Bob Allen", ref: "np-one" }],
-        }),
-      ],
-      {
-        batchId: "batch-np-1",
-        careerNewPlayers: [
-          {
-            ref: "np-one",
-            name: "Bob Allen",
-            stints: [
-              { teamName: "Brand New Club", fromYear: 1988 },
-              { teamId: padres, fromYear: 1982, toYear: 1984 },
-              { teamId: cubs, fromYear: 1990 },
-              { teamId: padres, fromYear: 1995, toYear: 1996 },
-              // The same (team, year) twice in one answer: written once.
-              { teamId: padres, fromYear: 1982, toYear: 1984 },
-            ],
-          },
-        ],
-      },
-    );
-
-    const [createdTeam] = result.createdTeamIds;
-    expect(createdTeam).toBeDefined();
-    const minted = (await playersNamed(t, "Bob Allen")).find((p) => p._id !== namesake)!;
-    expect(minted.teamYears).toEqual([
-      { teamId: padres, fromYear: 1982, toYear: 1984 },
-      { teamId: createdTeam, fromYear: 1988 },
-      { teamId: cubs, fromYear: 1990 },
-      { teamId: padres, fromYear: 1995, toYear: 1996 },
-    ]);
-    expect(result.careerNewPlayers).toEqual({ created: 1, adopted: 0, stintsAdded: 4, stintsSkipped: 0 });
-    // The namesake never gains any of them.
-    expect((await t.run((ctx) => ctx.db.get(namesake)))?.teamYears).toEqual([
-      { teamId: cubs, fromYear: 1985, toYear: 1986 },
-    ]);
-  });
 
   test("a stint whose printed team resolves to nothing is skipped and counted; the rest land", async () => {
     const t = convexTest(schema, modules);

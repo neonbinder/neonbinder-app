@@ -236,78 +236,7 @@ describe("commitCardChecklist — careerStints", () => {
     expect(await teamYearsOf(t, gwynn)).toHaveLength(2);
   });
 
-  test("a stint for a team the batch creates is written against the team the Teams step made", async () => {
-    const t = convexTest(schema, modules);
-    const ids = await seedSet(t);
-    const gwynn = await insertPlayer(t, ids.sportId, "Tony Gwynn");
-    await t.run((ctx) =>
-      ctx.db.insert("entityReviewQueue", {
-        selectorOptionId: ids.leafId,
-        batchId: "batch-career-1",
-        createdByUserId: "user_review_001",
-        kind: "team",
-        name: "Brand New Club",
-        sportId: ids.sportId,
-        status: "ready",
-        decision: { action: "create", create: { location: "Brand", name: "New Club" } },
-      }),
-    );
 
-    const result = await commit(t, ids, [makeCard({ players: ["Tony Gwynn"], teams: ["Brand New Club"] })], {
-      batchId: "batch-career-1",
-      careerStints: [{ playerId: gwynn, teamName: "Brand New Club", fromYear: 1988 }],
-    });
-
-    expect(result.createdTeamIds).toHaveLength(1);
-    expect(result.careerStints).toEqual({ added: 1, existing: 0, skipped: 0 });
-    expect(await teamYearsOf(t, gwynn)).toEqual([{ teamId: result.createdTeamIds[0], fromYear: 1988 }]);
-  });
-
-  test("several stints for one player in one commit all land: saved teams by id, a new team by name, one team twice", async () => {
-    const t = convexTest(schema, modules);
-    const ids = await seedSet(t);
-    const padres = await insertTeam(t, ids.sportId, "San Diego", "Padres");
-    const cubs = await insertTeam(t, ids.sportId, "Chicago", "Cubs");
-    const gwynn = await insertPlayer(t, ids.sportId, "Tony Gwynn", [{ teamId: cubs, fromYear: 1985, toYear: 1986 }]);
-    await t.run((ctx) =>
-      ctx.db.insert("entityReviewQueue", {
-        selectorOptionId: ids.leafId,
-        batchId: "batch-career-multi",
-        createdByUserId: "user_review_001",
-        kind: "team",
-        name: "Brand New Club",
-        sportId: ids.sportId,
-        status: "ready",
-        decision: { action: "create", create: { location: "Brand", name: "New Club" } },
-      }),
-    );
-
-    const result = await commit(
-      t,
-      ids,
-      [makeCard({ players: ["Tony Gwynn"], teams: ["Brand New Club"] })],
-      {
-        batchId: "batch-career-multi",
-        careerStints: [
-          { playerId: gwynn, teamId: padres, fromYear: 1982, toYear: 1984 },
-          { playerId: gwynn, teamName: "Brand New Club", fromYear: 1988 },
-          // The same team again, for another spell: a different (team, fromYear) key.
-          { playerId: gwynn, teamId: padres, fromYear: 1990, toYear: 1991 },
-          // Already on file: left alone, counted.
-          { playerId: gwynn, teamId: cubs, fromYear: 1985, toYear: 1986 },
-        ],
-      },
-    );
-
-    expect(result.careerStints).toEqual({ added: 3, existing: 1, skipped: 0 });
-    const [created] = result.createdTeamIds;
-    expect(await teamYearsOf(t, gwynn)).toEqual([
-      { teamId: padres, fromYear: 1982, toYear: 1984 },
-      { teamId: cubs, fromYear: 1985, toYear: 1986 },
-      { teamId: created, fromYear: 1988 },
-      { teamId: padres, fromYear: 1990, toYear: 1991 },
-    ]);
-  });
 
   test("stints for several players in one commit each land on their own player", async () => {
     const t = convexTest(schema, modules);

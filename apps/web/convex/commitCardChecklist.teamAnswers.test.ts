@@ -1479,44 +1479,6 @@ describe("commitCardChecklist — an answered team NAME fills an existing teamle
     await settle(t);
   });
 
-  test("a team staged as New Team in this review is created by the prelude and fills the existing row", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await firstSync(t);
-    const batchId = "batch-staged-team";
-    await t.run(async (ctx) =>
-      insertAsTidyName(ctx, {
-        selectorOptionId: leafId,
-        batchId,
-        createdByUserId: ADMIN_IDENTITY.subject,
-        kind: "team",
-        name: "Gotham Knights",
-        sportId,
-        status: "ready",
-        decision: { action: "create", create: { location: "Gotham", name: "Knights" } },
-      }),
-    );
-
-    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
-      selectorOptionId: leafId,
-      sportId,
-      batchId,
-      cards: [
-        card({ cardNumber: "1", bscRef: "B1", teams: ["Gotham Knights"], teamsAnswered: true }),
-      ],
-    });
-
-    const created = await t.run(async (ctx) =>
-      ctx.db
-        .query("teams")
-        .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
-        .collect(),
-    );
-    expect(created).toHaveLength(1);
-    const row = (await rowsByNumber(t, leafId)).get("1")!;
-    expect(row.teamOnCardIds).toEqual([created[0]._id]);
-    expect(row.pendingTeamNames ?? []).toEqual([]);
-    await settle(t);
-  });
 
   test("an answered name never overwrites a team the existing row already has", async () => {
     const t = convexTest(schema, modules);

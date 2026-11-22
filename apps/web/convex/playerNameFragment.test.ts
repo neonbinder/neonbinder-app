@@ -561,35 +561,4 @@ describe("NEO-463: the commit holds a fragment back instead of writing it", () =
     expect(one.playerIds ?? []).toEqual([]);
   });
 
-  test("a confirmed one-name create is written and linked", async () => {
-    const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { sportId, variantTypeId } = await seedSet(t);
-    await insertPlayer(t, sportId, "Larry Walker");
-    await insertReviewRow(t, {
-      selectorOptionId: variantTypeId,
-      sportId,
-      batchId: "c2",
-      name: "Walker",
-      decision: { action: "create", oneNamePlayer: true },
-    });
-
-    const result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
-      selectorOptionId: variantTypeId,
-      sportId,
-      cards: [card("1", ["Walker"])],
-      batchId: "c2",
-    });
-
-    expect(result.unreviewedNameCount).toBe(0);
-    const [walker] = await playersNamed(t, "Walker");
-    expect(walker).toBeDefined();
-    const [one] = await t.run(async (ctx) =>
-      ctx.db
-        .query("cardChecklist")
-        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantTypeId))
-        .collect(),
-    );
-    expect(one.playerIds).toEqual([walker._id]);
-  });
 });

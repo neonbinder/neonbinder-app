@@ -63,3 +63,4 @@
 - [NEO-628 guard test patterns](reference_neo628_guard_test_patterns.md) — stub AxeBuilder replace semantics, yaml job-section pins, ?raw scan with control, Sync wait-line stand-down
 - [Slow component test profile recipe](reference_slow_demo_test_profile_recipe.md) — load-only timeouts are CPU-bound; in-test inspector profile, split tests, no real sleeps
 - [NEO-645 tidy test patterns](reference_neo645_tidy_test_patterns.md) — id-only world fixture, fan-out drain, commit-action traps
+- [NEO-645 tidy ported tests](reference_neo645_tidy_ported_tests.md) — porting batch-wizard tests to tidyNames: fixture, walk-driven creates, bulk test removal
