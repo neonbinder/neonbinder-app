@@ -12,7 +12,7 @@ import CardDetailPanel from "./CardDetailPanel";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import NeonButton from "../modules/NeonButton";
 // NEO-345: the stored leaf's "how are these autographs signed?" line.
-import { AutographFormatPrompt } from "./AutographFormatStep";
+import { AutographFormatPrompt } from "./AutographFormatPrompt";
 import {
   asAutographFormat,
   carriesAutograph,
@@ -229,39 +229,6 @@ type PendingReview = {
   sportId: Id<"selectorOptions">;
   cards: PairingCard[];
   diff: SyncDiff;
-};
-
-/**
- * The sync banner's line while names wait in the review wizard.
- *
- * NEO-335 Phase 2 (Jason, 2026-10-10): one count, no per-type counts. The
- * wizard's header shows progress over every screen; the banner only has to
- * say that names are holding the save, and how many. New players, new teams
- * and NEO-332's same-name picks are all names that need a look, so they are
- * one number: every unknown player (an ambiguous one included — it is in
- * `unknownPlayers` too) plus every unknown team.
- */
-export const entityConfirmationMessage = (
-  unknownPlayers: readonly string[],
-  unknownTeams: readonly string[],
-  /**
-   * NEO-424 — names the batch linked on its own (set history, the Hall of
-   * Fame tie-break). They hold the save too: every one is shown in the
-   * wizard's Decided list for the operator to keep or Change. Only worded
-   * when nothing else is owed; beside names that need a look, the wizard
-   * says the rest.
-   */
-  autoLinked = 0,
-): string => {
-  const names = unknownPlayers.length + unknownTeams.length;
-  if (names === 0 && autoLinked > 0) {
-    return autoLinked === 1
-      ? "1 name was linked for you. Give it a look before this saves."
-      : `${autoLinked} names were linked for you. Give them a look before this saves.`;
-  }
-  return names === 1
-    ? "1 name needs a look before this saves."
-    : `${names} names need a look before this saves.`;
 };
 
 /**
@@ -616,8 +583,8 @@ export default function CardChecklist({
     id: variantId,
   });
   /**
-   * NEO-497 — "Tidy up 2024 Topps Chrome": the tidy-up dialogs (the
-   * pre-save wizard and the post-save walker) name the set they are tidying.
+   * NEO-497 — "Tidy up 2024 Topps Chrome": the Tidy Up walk names the
+   * set it is tidying.
    * The chain includes the leaf itself; "Tidy up this set" while it loads.
    */
   const tidyTitle = useMemo(() => tidyUpTitleFromChain(ancestorChain), [ancestorChain]);
@@ -678,11 +645,9 @@ export default function CardChecklist({
    * change however long it waited. A ref updated from an effect is the value
    * that does.
    */
-  /** The one-sided run's "Kept all N cards …" sentence, for the wizard notice. */
-  const soloKeptRef = useRef<string | null>(null);
   /**
    * NEO-330 — this run's teams missed the wait (see `TEAMS_LATE_NOTICE`). Read
-   * by the wizard notice and the "Saved N cards." line, so the operator is told
+   * by the sync notice and the "Saved N cards." line, so the operator is told
    * on the line that is on screen when the cards land, not only on one a
    * second later replaces.
    */
@@ -706,7 +671,7 @@ export default function CardChecklist({
   const addCustomCard = useMutation(api.selectorOptions.addCustomCard);
   /**
    * NEO-203 — the content diff is fetched ONCE, imperatively, between pairing
-   * and the entity wizard.
+   * and the commit.
    *
    * A `useQuery` subscription would be wrong twice over: its argument is the
    * whole confirmed card array (a new subscription key on every keystroke of
@@ -998,27 +963,12 @@ export default function CardChecklist({
    * every team in — `streamSettled`, NEO-341). This one outlives the fetch: the session stays alive until the operator
    * confirms and commits, or aborts.
    *
-   * NEO-221 (D9) widened this from a boolean to three states, so the wizard
-   * can hand the operator BACK to matching:
-   *
    *   - `"closed"`   — no session. `streamedPairing` is null and the dialog is
-   *                    unmounted.
+   *                    unmounted. Confirming the pairing closes it too: what
+   *                    the operator decided travels in the confirmed cards.
    *   - `"review"`   — the operator is pairing. The dialog is open.
-   *   - `"parked"`   — they confirmed the pairing and are now downstream (the
-   *                    content-diff review, the entity wizard, the commit).
-   *                    `streamedPairing` stays non-null so `CardPairingModal`
-   *                    stays MOUNTED with `isOpen={false}`, and its `if
-   *                    (!isOpen) return null` sits below all of its hooks —
-   *                    which is what makes every link, keep and rename in its
-   *                    reducer survive a trip into the wizard and back.
-   *
-   * Unmounting it instead (what `setPairingOpen(false)` used to do) threw that
-   * reducer away, so "Back to matching" could only ever have meant "start the
-   * pairing over".
    */
-  const [pairingPhase, setPairingPhase] = useState<
-    "closed" | "review" | "parked"
-  >("closed");
+  const [pairingPhase, setPairingPhase] = useState<"closed" | "review">("closed");
   /**
    * NEO-221 — which FETCH the mounted pairing modal belongs to. Bumped once
    * per `handleSync`, and used for nothing but the modal's React `key`.
@@ -1113,8 +1063,8 @@ export default function CardChecklist({
   /** The set's year, so the dialog reads a "1995 …" heading line as a title. */
   const setYearValue = ancestorChain?.find((c) => c.level === "year")?.value ?? null;
   /**
-   * NEO-478 — "Teams from your checklist: N of M cards", for this run. A ref
-   * like `soloKeptRef`: every line the run says from the fetch to the save
+   * NEO-478 — "Teams from your checklist: N of M cards", for this run. A ref:
+   * every line the run says from the fetch to the save
    * carries it.
    */
   const checklistTeamsRef = useRef<string | null>(null);
@@ -1314,14 +1264,9 @@ export default function CardChecklist({
   /**
    * NEO-221 — end the pairing session for good and bin what it was reviewing.
    *
-   * Every path that leaves the operator with NO dialog on screen has to call
-   * this. Parking (D9) is what made that a rule rather than a nicety: a parked
-   * phase keeps `streamedPairing` non-null, which keeps `CardPairingModal`
-   * mounted and its reducer alive. That is exactly right while the wizard is
-   * up and can offer "Back to matching" — and exactly wrong the moment the
-   * wizard is not, because nothing on screen can then reach the session, its
-   * candidates are never discarded, and the next sync re-shows the same
-   * instance with the previous batch still in it.
+   * Every path that leaves the operator with NO dialog on screen after a
+   * failure has to call this, or the candidates are never discarded and the
+   * next sync starts beside the previous batch.
    *
    * The discard failure is logged, not shown: nothing was saved, the operator
    * has already been told why, and the next fetch's clear-stale step sweeps
@@ -1524,7 +1469,6 @@ export default function CardChecklist({
    * data for cards that never exist.
    */
   const handleSync = async () => {
-    soloKeptRef.current = null;
     teamsLateRef.current = false;
     checklistTeamsRef.current = null;
     // NEO-496: a new run counts its own sources.
@@ -1767,11 +1711,9 @@ export default function CardChecklist({
         }
         const cards = candidatesToPairingCards(live.cards);
         setSoloFetch(null);
-        // Remembered so the wizard's "N names need a look before this saves."
-        // notice can keep this sentence in front of it: with no dialog, this
-        // line is the only place the operator (and the E2E flow) learns how
-        // many cards the fetch kept, and the wizard opens within a second.
-        soloKeptRef.current = withTeamsLine(
+        // With no dialog, this line is the only place the operator (and the E2E
+        // flow) learns how many cards the fetch kept.
+        const soloKept = withTeamsLine(
           soloKeptMessage(
             serverSides[0] ?? "checklist",
             cards.length,
@@ -1779,7 +1721,7 @@ export default function CardChecklist({
           ),
         );
         setSyncMessage(
-          [soloKeptRef.current, teamsLateRef.current ? TEAMS_LATE_NOTICE : null]
+          [soloKept, teamsLateRef.current ? TEAMS_LATE_NOTICE : null]
             .filter(Boolean)
             .join(" "),
         );
@@ -1899,16 +1841,8 @@ export default function CardChecklist({
       return;
     }
     const sportId = ancestorSportId;
-    // NEO-221 (D9): PARKED, not closed. The dialog leaves the screen either
-    // way, but parking keeps it mounted so its reducer — every link, keep,
-    // rename and name choice the operator just made — is still there if the
-    // wizard hands them back with "Back to matching".
-    //
-    // A functional update rather than a bare set: `handleSync`'s
-    // zero-candidate short-circuit calls this handler with no pairing session
-    // at all (phase is already `"closed"`), and parking a session that never
-    // existed would be a lie the footer could read back.
-    setPairingPhase((phase) => (phase === "review" ? "parked" : phase));
+    // The pairing decisions travel in `result`; the dialog is done.
+    setPairingPhase("closed");
     setCommitting(true);
     try {
       // Nothing incoming means nothing to diff, and — critically — it must NOT
@@ -1953,9 +1887,8 @@ export default function CardChecklist({
         `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
         "error",
       );
-      // The diff query or entity resolution threw, so no wizard opened and
-      // nothing on screen can reach the session we parked a moment ago. Un-park
-      // it, or it stays mounted with a stale reducer until the tab is closed.
+      // The diff query or entity resolution threw: bin the candidates the
+      // session was reviewing.
       abandonPairingSession();
     } finally {
       setCommitting(false);
@@ -1983,7 +1916,7 @@ export default function CardChecklist({
     // Fame, the alias rules) and records the rest as name rows; the commit
     // writes the cards with those names pending. Whatever still needs a
     // person is answered in Tidy Up afterwards, card by card, so there is no
-    // wizard to hold the save and nothing to "go back" to.
+    // gate to hold the save.
     const { batchId } = await resolveEntities({
       selectorOptionId: variantId,
       sportId,
@@ -2001,7 +1934,7 @@ export default function CardChecklist({
     };
     // `runCommit` has already put a failure in the sync banner ("Commit
     // failed: ..."), the one place an operator reads it on this path; all that
-    // is left is to end the parked pairing session.
+    // is left is to end the pairing session.
     if (!(await runCommit(preview))) setPairingPhase("closed");
   };
 
@@ -2017,8 +1950,8 @@ export default function CardChecklist({
         `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
         "error",
       );
-      // Same as `handlePairingConfirm`'s catch: the content review is gone, no
-      // wizard opened, and the parked session would otherwise be unreachable.
+      // Same as `handlePairingConfirm`'s catch: the content review is gone, so
+      // bin the candidates the session was reviewing.
       abandonPairingSession();
     } finally {
       setCommitting(false);
@@ -2188,10 +2121,7 @@ export default function CardChecklist({
       // the operator after the save is read live from the checklist by the
       // header's own control, not handed over by this handler.
       //
-      // NEO-221 (D9): the pairing session is spent — its cards are now NB
-      // rows. Closing the phase is what finally unmounts `CardPairingModal`
-      // and drops its reducer, and it is the point after which "Back to
-      // matching" would be meaningless.
+      // The pairing session is spent: its cards are now NB rows.
       setPairingPhase("closed");
       return true;
     } catch (error) {
@@ -2872,11 +2802,7 @@ export default function CardChecklist({
    * fetch, and gating on the fetch is what made a second source necessary in
    * the first place.
    *
-   * NEO-221 (D9): non-null for `"review"` AND `"parked"`. This is what keeps
-   * `CardPairingModal` MOUNTED (with `isOpen={false}`) while the operator is
-   * downstream in the wizard, so its reducer survives a "Back to matching".
-   * It is also the client's test for "is there a pairing session to go back
-   * to" — the wizard gets an `onBack` only when this is non-null.
+   * Non-null while the phase is `"review"`.
    *
    * Gated on `total`, not `ready`. `ready` counts rows whose TEAM has
    * resolved, and teams gate Confirm, not visibility (see
@@ -3908,10 +3834,6 @@ export default function CardChecklist({
           // `initialData`'s append-only absorb stacks the new batch on the old
           // one. See `pairingInstance`.
           key={pairingInstance}
-          // NEO-221 (D9): MOUNTED for `"review"` and `"parked"`, OPEN only for
-          // `"review"`. `CardPairingModal`'s `if (!isOpen) return null` sits
-          // below all of its hooks, so a parked modal keeps its reducer — that
-          // is the entire mechanism behind the wizard's "Back to matching".
           isOpen={pairingPhase === "review"}
           onClose={async () => {
             // Supersede any in-flight fetch so its result cannot reopen this
@@ -3954,10 +3876,7 @@ export default function CardChecklist({
           sources={pairingSources ?? undefined}
           resolveChecklistPairs={resolveChecklistPairs}
           setLabel={variantRow?.value}
-          // a11y: see syncButtonRef's own comment — "Back to matching" reopens
-          // this modal by unmounting the wizard's own trigger button in the
-          // same update that flips `isOpen`, so this component's own
-          // document.activeElement-at-mount capture cannot be trusted.
+          // a11y: see syncButtonRef's own comment.
           restoreFocusRef={syncButtonRef}
           // One source, live for the whole review — during the fetch and after
           // it. The modal absorbs updates append-only, so rows that arrive

@@ -69,6 +69,7 @@ vi.mock("../../NewTeamForm", async (importOriginal) => ({
 }));
 
 import TeamTile from "./TeamTile";
+import type { TidyAttentionItem } from "../../../../convex/features/cardAttention";
 import type { TidyAttention, TidyCardContext, TidyRow, TidyTileProps } from "../tile-types";
 
 const CARD = "card-1";
@@ -100,14 +101,14 @@ const context = (over: Record<string, unknown> = {}) =>
     ...over,
   }) as unknown as NonNullable<TidyCardContext>;
 
-const nameItem: TidyAttention["items"][number] = { level: "fix", kind: "teamName", names: ["Padres"] };
-const noTeamItem: TidyAttention["items"][number] = { level: "fix", kind: "noTeam" };
+const nameItem: TidyAttentionItem = { level: "fix", kind: "teamName", names: ["Padres"] };
+const noTeamItem: TidyAttentionItem = { level: "fix", kind: "noTeam" };
 
 function renderTile(
   opts: {
     row?: TidyRow;
     ctx?: TidyCardContext | undefined;
-    items?: TidyAttention["items"];
+    items?: TidyAttentionItem[];
     leafCards?: TidyRow[];
   } = {},
 ) {

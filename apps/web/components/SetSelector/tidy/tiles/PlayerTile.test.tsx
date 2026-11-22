@@ -47,6 +47,7 @@ vi.mock("../../EntityLinkSearch", () => ({
 }));
 
 import PlayerTile from "./PlayerTile";
+import type { TidyAttentionItem } from "../../../../convex/features/cardAttention";
 import type { TidyAttention, TidyCardContext, TidyRow, TidyTileProps } from "../tile-types";
 
 const CARD = "card-1";
@@ -85,13 +86,13 @@ const context = (over: Record<string, unknown> = {}) =>
     ...over,
   }) as unknown as NonNullable<TidyCardContext>;
 
-const fixItem: TidyAttention["items"][number] = { level: "fix", kind: "playerName", names: ["Jackson Merrill"] };
+const fixItem: TidyAttentionItem = { level: "fix", kind: "playerName", names: ["Jackson Merrill"] };
 
 function renderTile(
   opts: {
     row?: TidyRow;
     ctx?: TidyCardContext | undefined;
-    items?: TidyAttention["items"];
+    items?: TidyAttentionItem[];
   } = {},
 ) {
   const props: TidyTileProps = {

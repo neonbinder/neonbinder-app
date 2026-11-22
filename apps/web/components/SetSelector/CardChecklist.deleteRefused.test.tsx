@@ -71,15 +71,13 @@ vi.mock("react-virtuoso", () => ({
 }));
 
 vi.mock("./CardDetailPanel", () => ({ default: () => null }));
-vi.mock("./EntityReviewWizard", () => ({ default: () => null }));
 vi.mock("./CardPairingModal", () => ({ default: () => null }));
 vi.mock("./sync-review-modal", () => ({
   default: () => null,
   needsSyncReview: () => false,
 }));
 vi.mock("./CrossListingImportModal", () => ({ default: () => null }));
-vi.mock("./CardAttentionWalker", () => ({ default: () => null }));
-vi.mock("./SkippedNamesPanel", () => ({ default: () => null }));
+vi.mock("./tidy/TidyUpWalk", () => ({ default: () => null }));
 vi.mock("./TeamPicker", () => ({ default: () => null }));
 vi.mock("./PlayerPicker", () => ({ default: () => null }));
 

@@ -13,8 +13,16 @@ import WizardChrome, {
   WIZARD_PROGRESS_LABEL,
   WIZARD_TITLE,
 } from "./WizardChrome";
-import { STEP_SUBTITLE, type WizardStepKind } from "./entity-review-steps";
 import { contrastRatio, tokenHex } from "../../src/theme/tokens";
+
+/** The screen types the Tidy Up walk and other hosts put on the subtitle line. */
+const STEP_SUBTITLE: Readonly<Record<string, string>> = {
+  team: "New team",
+  player: "New player",
+  teams: "Cards with no team",
+  titles: "Card titles",
+  save: "Ready to save",
+};
 
 const fill = () => document.querySelector<HTMLElement>("[data-rail-fill]")!;
 const bar = () => screen.getByRole("progressbar", { name: WIZARD_PROGRESS_LABEL });
@@ -131,7 +139,7 @@ describe("WizardChrome", () => {
     expect(bar().getAttribute("aria-valuetext")).toBe("Ready to save");
   });
 
-  it.each(Object.entries(STEP_SUBTITLE) as Array<[WizardStepKind, string]>)(
+  it.each(Object.entries(STEP_SUBTITLE))(
     "shows the %s subtitle on the line below",
     (_kind, subtitle) => {
       render(<WizardChrome done={1} planned={2} subtitle={subtitle} />);

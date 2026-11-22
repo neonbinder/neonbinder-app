@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
-import { useSetNameInTitlesTarget } from "./set-name-in-titles-jump";
 import { PencilSquareIcon, TrashIcon } from "@heroicons/react/24/outline";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import { useConvex, useMutation, useQuery } from "convex/react";
@@ -465,45 +464,6 @@ export default function SetAttributesPanel({
     return chain.find((c) => c.level === "sport")?._id;
   }, [chain]);
 
-  // NEO-535 — the walker's "Trim Set name in titles" door lands here: the
-  // panel opens and the row's box takes focus (`set-name-in-titles-jump`).
-  // Counted rather than flagged, so a second trip re-runs the effect. Focused
-  // a frame late: the walker closing restores focus to its opener first. A
-  // collapsed panel may take a few frames to draw the box, so the look is
-  // retried for `SHORT_NAME_FRAMES`; if the box never shows, focus lands on
-  // the panel itself rather than staying wherever the walker left it.
-  const regionRef = useRef<HTMLDivElement | null>(null);
-  const [shortNameTrips, setShortNameTrips] = useState(0);
-  const openShortName = useCallback(() => {
-    setExpanded(true);
-    setShortNameTrips((n) => n + 1);
-  }, []);
-  useEffect(() => {
-    if (shortNameTrips === 0) return;
-    let frame = 0;
-    let tries = 0;
-    const look = () => {
-      const region = regionRef.current;
-      const field = region?.querySelector<HTMLElement>(
-        `[data-feat-key="${SHORT_NAME_FEATURE.key}"]`,
-      );
-      if (field) {
-        field.scrollIntoView({ block: "center" });
-        field.focus({ preventScroll: true });
-        return;
-      }
-      tries += 1;
-      if (tries < SHORT_NAME_FRAMES) {
-        frame = requestAnimationFrame(look);
-        return;
-      }
-      region?.scrollIntoView({ block: "start" });
-      region?.focus({ preventScroll: true });
-    };
-    frame = requestAnimationFrame(look);
-    return () => cancelAnimationFrame(frame);
-  }, [shortNameTrips]);
-
   const applicable = useMemo(() => {
     return EXPECTED_FEATURES.filter((f) => {
       if (f.hiddenAtLevels?.includes("set")) return false;
@@ -963,14 +923,9 @@ export default function SetAttributesPanel({
       className={`border border-rule-strong rounded-lg bg-raised-deep/60 space-y-3 focus-outline ${
         expanded ? "p-4" : "px-4 py-2"
       }`}
-      ref={regionRef}
-      // NEO-535: the "Trim Set name in titles" jump's fallback focus target;
-      // never a Tab stop.
-      tabIndex={-1}
       role="region"
       aria-label="Set attributes panel"
     >
-      {showShortNameRow && <SetNameInTitlesTarget open={openShortName} />}
       {/* Breadcrumb header (fixes QA #2 — which level/column applies).
           NEO-569 (Jason, 2026-11-17): collapsed, this shows ONLY the title and
           the "Edit attributes" toggle. The rename pencil, the Base tag, the
@@ -1490,8 +1445,6 @@ export default function SetAttributesPanel({
  * its cards get: the value it inherits (with its insert and parallel names
  * added, `titleChainFacts`), else the builder's own (`setDescriptionForTitles`).
  */
-/** Frames the "Set name in titles" jump waits for the box before focusing the panel. */
-const SHORT_NAME_FRAMES = 10;
 
 const SHORT_NAME_FEATURE: ExpectedFeature = {
   key: "listingShortName",
@@ -1607,12 +1560,6 @@ function asChainRow(row: {
         }
       : {}),
   };
-}
-
-/** Registers this panel as where "Set name in titles" lives, while mounted. */
-function SetNameInTitlesTarget({ open }: { open: () => void }) {
-  useSetNameInTitlesTarget(open);
-  return null;
 }
 
 function ShortNameRow({
