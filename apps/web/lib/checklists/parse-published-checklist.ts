@@ -91,7 +91,6 @@
 
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../../convex/features/cardAttention";
 import { HOBBY_MARKER_PATTERN } from "../cards/print-run-markers";
-import { checklistSubject } from "./checklist-subject";
 import { isNoClaimTeamText, isNoTeamText, NO_TEAM_AND_A_TEAM } from "./no-team";
 import { bracketedNotesEnd, matchBrackets, readProspectCell } from "./prospect";
 import { mixedProspectClaim } from "./prospect-team-text";
@@ -154,13 +153,6 @@ export type PublishedChecklistRow = {
    * nothing (`variationNameOf`).
    */
   variationName?: string;
-  /**
-   * NEO-645 (S3): the row's printed subject when it is the checklist card
-   * itself ("Checklist", "Checklist 1-100", "Team Checklist"). It is the card's
-   * own name, never a player, so `players` stays empty; such a row also says
-   * `noTeam` (a checklist card shows no team) unless a team cell names one.
-   */
-  subject?: string;
   /**
    * The subset the row belongs to: its "card set", "set", "subset" or
    * "insert" cell when the file has such a column and the cell is not
@@ -1031,17 +1023,14 @@ function parseLine(
   ) {
     return { reason: "No player or team after the number" };
   }
-  const subject =
-    players.length === 0 && teams.length === 0 ? checklistSubject(subjectOf(playerPart)) : undefined;
   return {
     number,
     players,
     teams,
     ...(noNumber ? { noNumber: true as const } : {}),
-    ...(claims.noTeam || subject ? { noTeam: true as const } : {}),
+    ...(claims.noTeam ? { noTeam: true as const } : {}),
     ...claims.fields,
     ...(variationName !== undefined ? { variationName } : {}),
-    ...(subject ? { subject } : {}),
   };
 }
 
@@ -1323,7 +1312,6 @@ function rowFromColumns(
   let numberCell = "";
   let subset = "";
   let notAPerson = false;
-  let subject: string | undefined;
   let noTeam = false;
   let prospect = false;
   const claimedTeams: string[] = [];
@@ -1353,7 +1341,6 @@ function rowFromColumns(
       // a long cell is not split a second time.
       if (named.length === 0 && cell.trim() !== "" && isNotAPerson(subjectOf(cell))) {
         notAPerson = true;
-        subject ??= checklistSubject(subjectOf(cell));
       }
     } else if (column === "lastName") {
       lastNames.push(cell);
@@ -1372,10 +1359,8 @@ function rowFromColumns(
   for (let i = 0; i < Math.max(lastNames.length, firstNames.length); i++) {
     const name = personName(firstNames[i] ?? "", lastNames[i] ?? "");
     if (name === "") continue;
-    if (isNotAPerson(name)) {
-      notAPerson = true;
-      subject ??= checklistSubject(name);
-    } else players.push(name);
+    if (isNotAPerson(name)) notAPerson = true;
+    else players.push(name);
   }
   if (numberCell !== "" && readsAsTitle(numberCell, setYear)) return { reason: LOOKS_LIKE_A_TITLE };
   if (!number) {
@@ -1387,17 +1372,15 @@ function rowFromColumns(
   if (players.length === 0 && teams.length === 0 && !notAPerson && !claims.noTeam) {
     return { reason: "No player or team on this line" };
   }
-  const checklistName = players.length === 0 && teams.length === 0 ? subject : undefined;
   return {
     row: {
       number,
       players,
       teams,
       ...(noNumber ? { noNumber: true as const } : {}),
-      ...(claims.noTeam || checklistName ? { noTeam: true as const } : {}),
+      ...(claims.noTeam ? { noTeam: true as const } : {}),
       ...claims.fields,
       ...(variationName !== undefined ? { variationName } : {}),
-      ...(checklistName ? { subject: checklistName } : {}),
     },
     subsetCell: subset,
   };
