@@ -3,7 +3,7 @@
  * only say whether they agree; a tie stays unmatched (rule 8).
  */
 import { describe, expect, test } from "vitest";
-import { NUMBERS_DIFFER_FACTOR, pairNamesFirst } from "./pair-names-first";
+import { NAMES_UNCONFIRMED_FACTOR, NUMBERS_DIFFER_FACTOR, pairNamesFirst } from "./pair-names-first";
 import { rosterKey } from "../entities/normalize-name";
 
 const item = (number: string, ...names: string[]) => ({ names, number });
@@ -183,7 +183,7 @@ describe("pairNamesFirst: a roster is not a cameo", () => {
 });
 
 describe("pairNamesFirst: T2, numbers on what has no name counterpart", () => {
-  test("a misspelling falls through to the number, at confidence 1", () => {
+  test("a misspelling falls through to the number, below 1", () => {
     const r = pairNamesFirst([item("7", "Jon Smyth")], [item("7", "John Smith")]);
     // Collector 9: a number-only pair whose names disagree is not certain.
     expect(r.pairs).toEqual([
@@ -194,6 +194,36 @@ describe("pairNamesFirst: T2, numbers on what has no name counterpart", () => {
   test("a side that names no one is not a names disagreement", () => {
     const r = pairNamesFirst([item("9")], [item("9", "Mike Trout")]);
     expect(r.pairs[0].namesDisagree).toBeUndefined();
+  });
+
+  test("a pair made on the number because one side has no name key scores below 1 (NEO-640)", () => {
+    // Names lead, numbers confirm (rule 7): here the name never confirmed it.
+    expect(NAMES_UNCONFIRMED_FACTOR).toBeLessThan(1);
+    for (const [l, r] of [
+      [item("9"), item("9", "Mike Trout")],
+      [item("9", "Mike Trout"), item("9")],
+      [item("9"), item("9")],
+    ]) {
+      const { pairs } = pairNamesFirst([l], [r]);
+      expect(pairs).toHaveLength(1);
+      expect(pairs[0]).toMatchObject({ by: "number", numbersAgree: true, confidence: NAMES_UNCONFIRMED_FACTOR });
+      expect(pairs[0].confidence).toBeLessThan(1);
+    }
+  });
+
+  test("a number pair is never at 1, wherever it is made (case-folded, prefix stripped)", () => {
+    const r = pairNamesFirst([item("1a"), item("BCP-3")], [item("1A"), item("3")], { prefix: "BCP-" });
+    expect(r.pairs.map((p) => [p.by, p.confidence])).toEqual([
+      ["number", NAMES_UNCONFIRMED_FACTOR],
+      ["number", NAMES_UNCONFIRMED_FACTOR],
+    ]);
+  });
+
+  test("a name pair is still 1 when the names and the numbers agree", () => {
+    expect(pairNamesFirst([item("9", "Mike Trout")], [item("9", "Mike Trout")]).pairs[0]).toMatchObject({
+      by: "name",
+      confidence: 1,
+    });
   });
 
   test("a number repeated on either side pins nothing down", () => {

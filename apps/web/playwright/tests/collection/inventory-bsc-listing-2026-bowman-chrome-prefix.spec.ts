@@ -86,7 +86,7 @@ import { BSC_PATH, bscFault } from "../../support/bscFake";
 import { removeBscSignIn, saveBscSignIn } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectAfterMarketplace, expectStepWithSportLots } from "../../support/marketplace-wait";
-import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist } from "../../support/published-checklist";
+import { CHECKLISTS, settleChecklistFetch, usePublishersChecklist } from "../../support/published-checklist";
 import {
   columnOption,
   columnSearch,
@@ -256,11 +256,11 @@ async function buildFixture(page: Page, env: FlowEnv): Promise<void> {
     // card one by one; the bulk checklist itself is still a live BSC round trip.
     const facts = await usePublishersChecklist(page, CHECKLISTS.bowman2026Base);
     await syncChecklistButton(page).click();
-    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards
-    // opens with SportLots paused or live. The helper waits on it with
-    // `expectAfterMarketplace`, proves the teams line while it is open (the line is gone
-    // once the wizard takes over), keeps every card only one marketplace has, confirms.
-    await confirmChecklistMatchCards(page, { facts, what: "the Base fetch" });
+    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources. NEO-640: the file is
+    // BSC's own 200 cards, each paired by its number at 100%, so Match Cards is skipped; the
+    // helper waits on the fetch with `expectAfterMarketplace` and proves the kept line and the
+    // teams line in front of the wizard.
+    await settleChecklistFetch(page, env, { facts, what: "the Base fetch", lands: "review" });
     await expect(wizard).toBeVisible();
     // The names the catalogue does not know: added as new, in bulk, then any
     // team, league or pick step one at a time (the seed's walk).

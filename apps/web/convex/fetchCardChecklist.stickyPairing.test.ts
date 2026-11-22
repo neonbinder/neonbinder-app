@@ -287,6 +287,9 @@ describe("fetchCardChecklist — stored pairing survives a re-sync (NEO-137)", (
     expect(first.matched[0].platformData.sportlots?.ref).toBe(
       "#1 Cal Ripken Jr.",
     );
+    // The first pass is the names-first core's guess (NEO-640): the same
+    // player on both SL cards, so the number picks inside the player's group.
+    expect(first.matched[0].pairedBy).toBe("name");
 
     // The operator overrides it and commits the correct pairing.
     await asAdmin.action(api.selectorOptions.commitCardChecklist, {
@@ -320,6 +323,8 @@ describe("fetchCardChecklist — stored pairing survives a re-sync (NEO-137)", (
     );
     // A replayed operator decision is certain — it is not a fresh guess.
     expect(second.matched[0].confidence).toBe(1);
+    // NEO-640 — and it says so: the stored answer, not a fresh guess.
+    expect(second.matched[0].pairedBy).toBe("stored");
     // The sibling series' card is left unassigned, not silently absorbed.
     expect(second.slOnly.map((c) => c.platformData.sportlots?.ref)).toEqual([
       "#1 Cal Ripken Jr.",

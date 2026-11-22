@@ -51,7 +51,19 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../support/set-builder";
-import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist, type ChecklistFacts } from "../support/published-checklist";
+import {
+  CHECKLISTS,
+  checklistFetchProgress,
+  expectTeamsFromChecklist,
+  cancelCardFetchButton,
+  matchedKeptLine,
+  savedLine,
+  skippedSavedReason,
+  opensMatchCards,
+  usePublishersChecklist,
+  type ChecklistFacts,
+} from "../support/published-checklist";
+import type { FlowEnv } from "../support/env";
 import {
   addAsNewStep,
   advanceToSave,
@@ -106,12 +118,15 @@ async function expectBareStemOnly(pairing: Locator) {
 }
 
 /**
- * Fetch a variant's checklist and settle the card-pairing dialog: keep every
- * card only one marketplace has, then confirm. Waits are the caller's (the
- * Base and the insert checklists have different measured ceilings).
+ * Fetch a variant's checklist and settle it. NEO-640: every fetch starts on the progress line, and
+ * Match Cards opens only when a card needs the operator, which each file's measured fact says
+ * (`opensMatchCards`, never a race between the dialog and the kept line). Opened: keep every card
+ * only one marketplace has, then confirm. Skipped: the kept line says every card matched. Waits
+ * are the caller's (the Base and the insert checklists have different measured ceilings).
  */
 async function fetchChecklist(
   page: Page,
+  env: FlowEnv,
   facts: ChecklistFacts,
   { open, settle, inspect }: { open: number; settle: number; inspect?: (pairing: Locator) => Promise<void> },
 ) {
@@ -119,10 +134,36 @@ async function fetchChecklist(
   const wizard = reviewWizard(page);
   const saved = page.getByText(/Saved [0-9]+/);
 
+  if (inspect && !opensMatchCards(facts, env)) {
+    throw new Error("fetchChecklist: an inspect needs the Match Cards dialog, and this file's facts skip it.");
+  }
   await syncChecklistButton(page).click();
-  // NEO-496 (D10, NQ1): the uploaded checklist is a source of its own, so Match Cards opens on
-  // both branches: live it lines up BSC, SportLots and the checklist; with SportLots paused, BSC
-  // and the checklist (two sources, as two marketplaces always were).
+  if (!opensMatchCards(facts, env)) {
+    // Every card paired with its own row by number at 100% (the Future Stars file is BSC's own
+    // answers for the 20 cards): the run stays on its progress line and keeps every card itself.
+    const progress = checklistFetchProgress(page);
+    await expect(progress).toBeVisible();
+    await expect(cancelCardFetchButton(page)).toBeVisible();
+    await expect(progress).toBeHidden({ timeout: open });
+    // Saved at once, or (a career check, a teamless or retitled card) the tidy-up dialog, as on
+    // the opened path; nobody confirmed a Match Cards, so either one is the skip's proof.
+    await expect(wizard.or(saved).first()).toBeVisible({ timeout: settle });
+    if (await wizard.isVisible()) {
+      // Behind the wizard the line still says why no Match Cards came up.
+      await expect(matchedKeptLine(page, facts.rows)).toBeVisible();
+    } else {
+      // Saved at once: the line the save lands with says why, right after its count.
+      await expect(savedLine(page, facts.rows)).toContainText(skippedSavedReason(facts.rows));
+    }
+    await expectTeamsFromChecklist(page, facts);
+    // Paired with the landing just above (R2): the dialog never stood. By role: the saved line
+    // itself says "Match Cards".
+    await expect(pairing).toHaveCount(0);
+    return;
+  }
+  // NEO-496 (D10, NQ1): the uploaded checklist is a source of its own, so live it lines up BSC,
+  // SportLots and the checklist; with SportLots paused, BSC and the checklist (two sources). The
+  // Base's file leaves card #300 out, so #300 is a BSC-only card and the dialog opens for it.
   await expect(pairing).toBeVisible({ timeout: open });
   // The confirm button reads "Loading…" until every source has streamed in and the teams landed.
   const confirm = pairing.getByRole("button", { name: "Confirm card matches" });
@@ -376,7 +417,7 @@ test(
     // The captured checklist goes in before the Sync: the fetch then asks BSC for no card
     // the file answers (a seed with a card-listing call per card met BSC's 429).
     const facts = await usePublishersChecklist(page, CHECKLISTS.toppsChrome2024Base);
-    await fetchChecklist(page, facts, { open: 60_000, settle: 60_000, inspect: expectBareStemOnly });
+    await fetchChecklist(page, env, facts, { open: 60_000, settle: 60_000, inspect: expectBareStemOnly });
 
     // First run: confirm every new player/team/league the checklist names.
     // NEO-335: the wizard's dialog name starts "Tidy up" ("Tidy up 2024 Topps
@@ -408,7 +449,7 @@ test(
     // The seed's Future Stars checklist is BSC's own answers (the 20 cards), so the fetch asks BSC
     // for no card (D4): the BSC listing specs that read this set no longer depend on 20 live reads.
     const futureStars = await usePublishersChecklist(page, CHECKLISTS.futureStars2024);
-    await fetchChecklist(page, futureStars, { open: 90_000, settle: 90_000 });
+    await fetchChecklist(page, env, futureStars, { open: 90_000, settle: 90_000 });
     // Every Future Stars player is already known from Base: no NAMES review.
     // NEO-335: one wizard shape is legitimate here, NO NAMES and past-the-names
     // steps only: a card that would save with no team (a SportLots-only card

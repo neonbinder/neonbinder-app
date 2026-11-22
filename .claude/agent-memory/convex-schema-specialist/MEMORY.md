@@ -35,3 +35,4 @@
 - [Derived card field from an entity fact](derived-card-field-from-entity-fact.md) — settle at the link seam (id→doc param), compute pre-insert, follow-rule recompute off the live entity
 - [Retiring a features key](retiring-a-features-key.md) — every mint/copy point of a features key incl. backfillCardFeatures seed list; strip leaves sport rows
 - [Concurrent reads are batched](convex-concurrent-reads-are-batched.md) — Promise.all reads go to storage in batches (16 OSS); "system operations" error = 15 s syscall wall time
+- [Gate flags need a full union](gate-flags-need-a-full-union.md) — a fact that decides "skip the review" is a union on every row; absence = unknown = open

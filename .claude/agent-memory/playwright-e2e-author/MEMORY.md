@@ -170,6 +170,7 @@
 - [Hold a read to prove a wait line](patterns_hold_a_read_to_prove_a_wait_line.md) — slow results read = no dialog yet; no `.or()`; dialog line credits Confirm
 - [e2e-run tool in practice](patterns_e2e_run_tool_in_practice.md) — 180 s Bash auto-background vs 230 s slice, plant re-seeds, digest path/header quirks
 - [Pre-fix snapshot is the planted break](patterns_pre_fix_snapshot_is_the_planted_break.md) — bug-fix spec: serve the pre-fix commit for the red, the fix commit for green; reseed between
+- [Match Cards skip is a per-fixture fact](patterns_match_cards_skip_is_a_per_fixture_fact.md) — NEO-640: matchCards fact, progress group + Cancel card fetch, skip copy, absence by role
 - [Teams-step chip years, failed lookup](patterns_teams_step_chip_years_and_failed_lookup.md) — NEO-639: `Team · years — owner` off the pre-fill; vacuous `^Team — ` negatives; unscoped card-listing 503; wait for "Teams suggested"
 - [Fixer preselect on a custom-sport set](patterns_fixer_preselect_on_a_custom_sport_set.md) — NEO-639: admin-built careers, chip pressed state, Escape mid-walk, Space proves tie focus
 - [Re-seed right after a queued-lookup spec](patterns_reseed_right_after_a_queued_lookup_spec.md) — selectorOptions verify fails; seed standalone later, then plant --expect

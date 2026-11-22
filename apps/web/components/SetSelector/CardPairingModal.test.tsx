@@ -4850,3 +4850,71 @@ describe("CardPairingModal — mouse drag activation", () => {
     expect(rowFor(LABEL).className).toContain("opacity-40");
   });
 });
+
+/**
+ * NEO-640 (rule 7) — a BSC/SportLots pair made by NAME whose numbers differ is
+ * shown in Matched at a lower %, with ONE "Numbers differ" indication and the
+ * number picker that names each source's number (NEO-591; its own cases live
+ * in CardPairingModal.numbers.test.tsx). Pinned here for a marketplace pair:
+ * the indication is not doubled, and neither wire-only field reaches the
+ * strict commit validators from either half of an Unlink.
+ */
+describe("CardPairingModal — a BSC/SportLots name pair whose numbers differ (NEO-640)", () => {
+  const namePair = (): { card: PairingCard; confidence: number } => ({
+    card: { ...pairedCard("38", "Griffey"), sourceNumbers: { bsc: "38", sportlots: "250" } },
+    confidence: 0.9,
+  });
+
+  test("shows the lower % and a single Numbers differ indication, each number on the picker", () => {
+    renderModal({ autoMatched: [namePair()] });
+
+    expect(screen.getByText("90%")).toBeTruthy();
+    expect(screen.getAllByText("Numbers differ")).toHaveLength(1);
+    expect(screen.queryByText(/Numbers didn't match/)).toBeNull();
+    const picker = screen.getByRole("radiogroup", { name: "Number for #38" });
+    expect(picker.textContent).toContain("38");
+    expect(picker.textContent).toContain("250");
+  });
+
+  test("a pair whose numbers agree shows no indication", () => {
+    renderModal({ autoMatched: [{ card: pairedCard("38", "Griffey"), confidence: 1 }] });
+
+    expect(screen.queryByText("Numbers differ")).toBeNull();
+  });
+
+  test("Unlink removes the indication; both halves are back in their columns", () => {
+    renderModal({ autoMatched: [namePair()] });
+
+    fireEvent.click(screen.getByLabelText("Unlink #38 Griffey"));
+
+    expect(screen.queryByText("Numbers differ")).toBeNull();
+    expect(screen.getByLabelText(/^Select BSC card #38 Griffey/)).toBeTruthy();
+    // SportLots gets back the number it printed.
+    expect(screen.getByLabelText("Keep #250 Griffey as SportLots-only")).toBeTruthy();
+  });
+
+  test("Confirm hands on a card with no sourceNumbers", async () => {
+    const { onConfirm } = renderModal({ autoMatched: [namePair()] });
+
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
+    const cards = onConfirm.mock.calls[0][0].cards;
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).not.toHaveProperty("sourceNumbers");
+  });
+
+  test("Unlink then keeping both halves saves cards with no sourceNumbers either", async () => {
+    const { onConfirm } = renderModal({ autoMatched: [namePair()] });
+
+    fireEvent.click(screen.getByLabelText("Unlink #38 Griffey"));
+    fireEvent.click(screen.getByLabelText("Keep all BSC-only cards"));
+    fireEvent.click(screen.getByLabelText("Keep all SportLots-only cards"));
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
+    const cards = onConfirm.mock.calls[0][0].cards;
+    expect(cards).toHaveLength(2);
+    for (const card of cards) expect(card).not.toHaveProperty("sourceNumbers");
+  });
+});

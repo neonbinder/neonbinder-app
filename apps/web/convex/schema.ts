@@ -1410,6 +1410,22 @@ export const checklistConflictValidator = v.object({
 });
 
 /**
+ * NEO-640 — which lookup paired a matched row's BSC and SportLots halves:
+ * a stored link ("stored"), the cross-reference ("crossRef"), the variation
+ * rules ("variation"), the card number ("number") or the player/card name
+ * ("name"). Defined here, beside the table that stores it, so the schema's
+ * `checklistCandidates.pairedBy` and the fetch's wire shape cannot drift;
+ * `checklistCandidates.ts` imports it (and re-exports it for its callers).
+ */
+export const marketplacePairViaValidator = v.union(
+  v.literal("stored"),
+  v.literal("crossRef"),
+  v.literal("variation"),
+  v.literal("number"),
+  v.literal("name"),
+);
+
+/**
  * NEO-496 — a publisher-checklist row a fetched card was paired with on the
  * server, in the shape Match Cards lists a row (`ChecklistLinkRow`) plus the
  * name the row has as a card of its own (`checklistOnlyCard`). `teams` are
@@ -4139,6 +4155,13 @@ export default defineSchema({
     // Pairing confidence for a matched row; the modal surfaces a fuzzy match
     // differently from an exact one.
     confidence: v.optional(v.number()),
+    // NEO-640 — which lookup paired a matched row's two marketplace halves.
+    // Written on matched rows only; missing = written before NEO-640 (the
+    // client treats a missing value on a matched row as "needs the operator").
+    // A rule 7 name pair whose numbers differ is not told apart here: it is
+    // scored below 1 and carries `sourceNumbers`. `marketplacePairViaValidator`
+    // is defined above this table and shared with `checklistCandidates.ts`.
+    pairedBy: v.optional(marketplacePairViaValidator),
 
     // ── streaming ─────────────────────────────────────────────────────────
     // Card-number stem. A parent and its variations share one, and the whole

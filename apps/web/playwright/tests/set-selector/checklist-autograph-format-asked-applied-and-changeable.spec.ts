@@ -60,7 +60,7 @@ import type { Locator } from "@playwright/test";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { editCardButton } from "../../support/cards";
 import { expectStepWithSportLots } from "../../support/marketplace-wait";
-import { CHECKLISTS, confirmChecklistMatchCards, matchCardsDialog, usePublishersChecklist } from "../../support/published-checklist";
+import { CHECKLISTS, settleChecklistFetch, usePublishersChecklist } from "../../support/published-checklist";
 import {
   COLD_SYNC,
   columnHeading,
@@ -94,8 +94,6 @@ const INSERT = "Bowman Draft Nights Autographs";
 const CARD = "BDNA-KA"; // Kade Anderson, Seattle Mariners: AU + SN99
 const PLAYER = "Kade Anderson";
 const BOWMAN_DRAFT = { sport: "Baseball", year: "2025", manufacturer: "Bowman", set: "Bowman Draft" };
-/** A live BSC (+ SportLots) checklist round trip: the ceiling kept while SportLots is live (`expectStepWithSportLots`). */
-const CHECKLIST_FETCH = 120_000;
 /** The wizard opens behind the live lookups the batch queues. */
 const WIZARD_OPENS = 60_000;
 /** A live Wikidata round trip per unknown name, five-wide over a shared pool. */
@@ -169,18 +167,11 @@ test(
     const facts = await usePublishersChecklist(page, CHECKLISTS.bowmanDraftNightsAutographs2025);
     await syncChecklistButton(page).click();
 
-    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards
-    // opens with SportLots paused or live. The dialog OPENING is not the fetch FINISHING:
-    // Confirm reads "Loading…" and is inert until it resolves. Live SportLots keeps the old
-    // ceiling; paused, BSC alone under the fetch's wait line (`expectStepWithSportLots`).
-    const matchCards = matchCardsDialog(page);
-    await expectStepWithSportLots(page, matchCards.getByRole("button", { name: "Confirm card matches", disabled: false }), env, {
-      liveMs: CHECKLIST_FETCH,
-      what: "the insert checklist fetch",
-    });
-    await expectAccessible(page, { within: matchCards, label: "Match Cards dialog (Bowman Draft Nights Autographs)" });
-    // Proves the teams line while the dialog is open, keeps any card the file leaves out, confirms.
-    await confirmChecklistMatchCards(page, { facts, what: "the Bowman Draft Nights Autographs fetch" });
+    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources. NEO-640: the file is
+    // BSC's own five cards, each paired by its number at 100%, so Match Cards is skipped and the
+    // wizard below opens behind the kept line (`settleChecklistFetch` asserts both, one live BSC
+    // round trip under its wait line; the set has no SportLots side, so live is the same).
+    await settleChecklistFetch(page, env, { facts, what: "the Bowman Draft Nights Autographs fetch", lands: "review" });
 
     // ── STEP 4: the wizard opens, and (a) its Autographed cards step is asked ──
     // REQUIRED (R2): every card of this insert is tagged AU and the part has no

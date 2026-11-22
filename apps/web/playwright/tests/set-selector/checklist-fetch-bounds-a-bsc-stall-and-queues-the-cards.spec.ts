@@ -81,6 +81,8 @@ import { editCardButton } from "../../support/cards";
 import { bscLookupOutcome, expectAfterMarketplace, waitingOn } from "../../support/marketplace-wait";
 import {
   CHECKLISTS,
+  cancelCardFetchButton,
+  checklistFetchProgress,
   confirmChecklistMatchCards,
   matchCardsDialog,
   usePublishersChecklist,
@@ -102,10 +104,13 @@ const STALL_IDS = ["96f9a87adeb7d02c275e117ef10d569c", "9dba15716322d30fc94e4bd9
 const STALLED = STALL_IDS.length;
 /**
  * How long the fake holds the fetch's one catalogue read (`search/bulk-upload/results`): long enough
- * for the page's line (shown 1.5 s into a wait) to be seen on a slow client, under the read's own
- * 30 s timeout (BSC_CHECKLIST_FETCH_TIMEOUT_MS), so it is an answer, never a failure to the gate.
+ * for the page's line (shown 1.5 s into a wait) to be seen and for axe to read the page in both
+ * modes while the two-source progress line is up (NEO-640; the 429 spec holds its one-source page
+ * line the same 15 s for the same reason), under the read's own 30 s timeout
+ * (BSC_CHECKLIST_FETCH_TIMEOUT_MS), so it is an answer, never a failure to the gate. A fault hold,
+ * not a spec budget: every wait after it still credits only the seconds the wait line is up.
  */
-const HOLD_MS = 6_000;
+const HOLD_MS = 15_000;
 
 test(
   "Checklist fetch — a BSC stall on some cards ends within one wave: the fetch lands and the unanswered cards wait in the background queue, not in the operator's count (NEO-487)",
@@ -139,7 +144,13 @@ test(
       "no Waiting on BuySportsCards line while the catalogue read is held and Match Cards is not open yet",
     ).toBeVisible();
     await expect(matchCardsDialog(page)).toHaveCount(0);
-    // BSC plus the uploaded checklist are two sources (NEO-496), so the fetch opens Match Cards; the
+    // NEO-640: a two-source run starts on its progress line, with its Cancel, and no dialog: this
+    // held read is the one moment the state stands still long enough to read it whole (light and dark).
+    await expect(checklistFetchProgress(page)).toBeVisible();
+    await expect(cancelCardFetchButton(page)).toBeVisible();
+    await expectAccessible(page, { label: "Two-source checklist fetch on its progress line, BSC's read held" });
+    await expect(checklistFetchProgress(page), "the held read ended before axe finished: raise HOLD_MS").toBeVisible();
+    // BSC plus the uploaded checklist are two sources (NEO-496), and five cards have no row, so the fetch opens Match Cards; the
     // page's line stands down and the dialog carries the same line of its own (its `waitingSlot`),
     // shown 1.5 s after it mounts. The three hung cards hold the fetch for about ten seconds more (a
     // 5 s timeout, a pause, one retry), which outlasts that. So: the dialog (BSC's time credited by

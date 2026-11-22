@@ -12,6 +12,7 @@ import {
   checklistPairRevertValidator,
   sourceNumbersValidator,
   checklistPairedRowValidator,
+  marketplacePairViaValidator,
 } from "./schema";
 import { cardNumberStem } from "../lib/cards/variations";
 // NEO-251 security review: the same two bounds the write path enforces, applied
@@ -157,6 +158,10 @@ const playersConflictValidator = v.object({
   preferred: v.optional(v.union(v.literal("bsc"), v.literal("sportlots"))),
 });
 
+// NEO-640 — defined in the schema beside the table that stores it, and
+// re-exported for `fetchCardChecklist`'s reconcile.
+export { marketplacePairViaValidator };
+
 /** One candidate as the action hands it over. */
 const candidateInputValidator = v.object({
   cardNumber: v.string(),
@@ -208,6 +213,8 @@ const candidateInputValidator = v.object({
   numberMinted: v.optional(v.literal(true)),
   variationGroup: v.optional(v.string()),
   confidence: v.optional(v.number()),
+  // NEO-640 — see the schema note.
+  pairedBy: v.optional(marketplacePairViaValidator),
   /**
    * NEO-330 / NEO-341 — this card is waiting on a BSC team lookup the action
    * is about to run, so it is written `pending` and `resolveCandidateTeams`
@@ -1350,6 +1357,8 @@ export const getReadyCandidates = query({
         numberMinted: v.optional(v.literal(true)),
         variationGroup: v.optional(v.string()),
         confidence: v.optional(v.number()),
+        // NEO-640 — see the schema note.
+        pairedBy: v.optional(marketplacePairViaValidator),
         stem: v.string(),
         teamResolved: v.boolean(),
         // NEO-335 — see the schema note. Carried onto the preview card by
@@ -1415,6 +1424,7 @@ export const getReadyCandidates = query({
         numberMinted: r.numberMinted,
         variationGroup: r.variationGroup,
         confidence: r.confidence,
+        pairedBy: r.pairedBy,
         stem: r.stem,
         // Lets the row show "resolving team…" rather than an empty cell that
         // looks like "this card has no team".

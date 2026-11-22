@@ -90,6 +90,11 @@ export type ReadyCandidate = {
   rawTeamName?: string;
   /** NEO-478 — the published checklist disagrees; see `PairingCard.checklistConflict`. */
   checklistConflict?: ChecklistConflict;
+  /**
+   * NEO-640 — which lookup paired a matched row's two marketplace halves;
+   * missing on a matched row = written before NEO-640.
+   */
+  pairedBy?: "stored" | "crossRef" | "variation" | "number" | "name";
 };
 
 /**

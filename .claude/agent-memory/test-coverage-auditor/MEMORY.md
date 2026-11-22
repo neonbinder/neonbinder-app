@@ -32,3 +32,4 @@
 - [Deleted test file, surviving function](deleted-test-file-carries-surviving-function-tests.md) — map each deleted file's describes to functions still exported and untested
 - [Counter-removal port loses a control](counter-removal-port-loses-close-path.md) — ported specs drop sibling clicks; default-stamp specs miss BSC-answer path
 - [Merge-resolution copy audit](merge-resolution-copy-conflict-audit.md) — diff vs the other parent's removed expects; grep losing wording incl. support helpers; planted break for CSS-only fixes
+- [Skip-dialog fixture table](skip-dialog-fixture-table-unrun-branch-and-cancel-asserted-only.md) — unpaused-only branch keeps stale counts; new Cancel only asserted visible; axe for new landing

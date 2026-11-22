@@ -26,7 +26,7 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../../support/set-builder";
-import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist } from "../../support/published-checklist";
+import { CHECKLISTS, settleChecklistFetch, usePublishersChecklist } from "../../support/published-checklist";
 import {
   addAsNewPlayerButton,
   advanceToSave,
@@ -188,11 +188,12 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   const facts = await usePublishersChecklist(page, CHECKLISTS.dugoutArtistsProofs1996Series1);
   expect(facts.rows, "the captured file holds every one of Series 1's cards").toBe(SERIES_1_CARDS);
   await syncChecklistButton(page).click();
-  // NEO-496 (D10): a publisher's checklist is a source, so even one marketplace opens Match Cards.
-  // The helper waits for it (one live BSC round trip: our 7 s plus the time BSC is measured to take),
-  // asserts "Teams from your checklist" while it is open, keeps every BSC card and confirms. The
-  // Save step below still counts all 110 cards ("Save 110 cards?"), which is what Keep-all proves.
-  await confirmChecklistMatchCards(page, { facts, what: "the solo fetch of Series 1" });
+  // NEO-496 (D10): a publisher's checklist is a source, so one marketplace and the file are two.
+  // NEO-640: the file is BSC's own 110 cards, each paired by its number at 100%, so Match Cards is
+  // skipped: the helper asserts the progress line, then the wizard with the kept line and
+  // "Teams from your checklist" in front of it (one live BSC round trip: our 7 s plus BSC's). The
+  // Save step below still counts all 110 cards ("Save 110 cards?").
+  await settleChecklistFetch(page, env, { facts, what: "the solo fetch of Series 1", lands: "review" });
 
   // ── P3. Names first: the few the catalogue lacks are created as new ──
   // The queue behind the lookups is the batch-lookups ceiling `walkToPlayerRow` waits at (LOOKUPS).
