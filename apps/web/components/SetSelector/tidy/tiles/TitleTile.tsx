@@ -6,7 +6,6 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { Input } from "../../../primitives/Input";
 import { Textarea } from "../../../primitives/Textarea";
 import NeonButton from "../../../modules/NeonButton";
-import { titleMissesPlayer } from "../../../../lib/cards/title-names-player";
 import { oneLine } from "../../card-titles";
 import {
   ASPECT_VALUE_MAX,
@@ -84,7 +83,7 @@ export default function TitleTile(props: TidyTileProps) {
   return <TitleTileBody key={props.row._id} {...props} />;
 }
 
-function TitleTileBody({ row, attention, context, leafId, leafCards, setName }: TidyTileProps) {
+function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileProps) {
   const updateCard = useMutation(api.selectorOptions.updateCard);
   const applySetNameToTitles = useMutation(api.tidyCards.applySetNameToTitles);
   const applyVariation = useMutation(api.tidyCards.applyVariation);
@@ -95,18 +94,9 @@ function TitleTileBody({ row, attention, context, leafId, leafCards, setName }: 
   const over = attention.items.some((i) => i.kind === "titleOverLimit");
   const cut = attention.items.some((i) => i.kind === "titleCut");
   const variationOver = attention.items.some((i) => i.kind === "variationOverLimit");
-  // NEO-645 — a card that names a player whose title carries none. Waits for the
-  // card's context (an answered "not a player" must not flash blue first).
-  const printedPlayers = useMemo((): string[] => {
-    if (!context) return [];
-    if ((row.playerIds?.length ?? 0) > 0) return context.players.map((p) => p.name);
-    const rows = context.names.filter((n) => n.kind === "player");
-    if (rows.length > 0) {
-      return rows.filter((n) => n.row?.answer?.kind !== "notEntity").map((n) => n.printed);
-    }
-    return [...(row.pendingPlayerNames ?? []), row.cardName ?? ""];
-  }, [context, row.playerIds, row.pendingPlayerNames, row.cardName]);
-  const playerMissing = titleMissesPlayer(stored, printedPlayers);
+  // NEO-645 — a card that names a player whose title carries none. One rule,
+  // read from the derivation, so this tile, the badge and the walk agree.
+  const playerMissing = attention.items.some((i) => i.kind === "titleNoPlayer");
   const level: TidyTileLevel = over
     ? "fix"
     : cut || variationOver || playerMissing

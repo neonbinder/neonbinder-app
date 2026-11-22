@@ -56,6 +56,7 @@ import {
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
+import { TIDY_CHECKS_MAX } from "./features/cardAttention";
 import {
   tidyLookupStatusValidator,
   tidyNameAnswerValidator,
@@ -96,9 +97,6 @@ import { sortTeamYears } from "../lib/players/team-tenure";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
 import { PLAYER_DESCRIPTION_MAX_TEAMS } from "../lib/players/player-description";
 import type { RunResult } from "@convex-dev/workpool";
-
-/** Most `tidyChecks` kept on one card (the newest win). */
-export const TIDY_CHECKS_MAX = 32;
 
 /** Longest printed name accepted, in characters. Same bound as the schema. */
 export const MAX_TIDY_NAME_LENGTH = 120;
@@ -234,7 +232,7 @@ function cleanName(raw: string): string {
   return name;
 }
 
-async function readRow(
+export async function readRow(
   ctx: Pick<MutationCtx, "db">,
   scopeId: Id<"selectorOptions">,
   kind: "player" | "team",
@@ -249,7 +247,7 @@ async function readRow(
 }
 
 /** The card, its printed row for the name, the answering scope and the name row. */
-async function resolveName(
+export async function resolveName(
   ctx: MutationCtx,
   cardId: Id<"cardChecklist">,
   kind: "player" | "team",
@@ -605,79 +603,100 @@ export const createPlayer = mutation({
   handler: async (ctx, args) => {
     const userId = await requireAdmin(ctx);
     const target = await resolveName(ctx, args.cardId, "player", args.name);
-    const { row, scopeId, card } = target;
-    if (row.answer) {
-      throw new ConvexError("This name already has an answer. Change it first.");
-    }
-    const name = args.name.trim();
-    if (name.length > MAX_PLAYER_NAME_LENGTH) {
-      throw new ConvexError(
-        `A player name is ${name.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
-      );
-    }
-    // NEO-463: a one-word name that is part of a fuller-named player is refused
-    // unless the operator confirmed a one-name player. Nothing is written first.
-    await assertNotNameFragment(ctx, name, row.sportId, args.oneNamePlayer);
-    const excluded = normalizeExcludedCareerTeamNames(args.excludedCareerTeamNames ?? []);
-
-    const enrichment = row.enrichment;
-    const teamYearByKey = new Map<
-      string,
-      { teamId: Id<"teams">; fromYear: number; toYear?: number }
-    >();
-    for (const ct of enrichment?.careerTeams ?? []) {
-      // NEO-212: a team the operator unticked is never matched.
-      if (excluded.has(normalizeEntityName(ct.name))) continue;
-      // Match only (NEO-236): a stint at a team nobody reviewed is dropped, not invented.
-      const { teamId } = await resolveTeamForSetYear(ctx, row.sportId, ct.name, ct.fromYear);
-      if (!teamId) continue;
-      teamYearByKey.set(`${teamId}|${ct.fromYear}`, {
-        teamId,
-        fromYear: ct.fromYear,
-        ...(ct.toYear !== undefined ? { toYear: ct.toYear } : {}),
-      });
-    }
-    const teamYears = sortTeamYears(Array.from(teamYearByKey.values()));
-    const playerId = await ctx.db.insert("players", {
-      name,
-      nameNormalized: normalizeEntityName(name),
-      sportId: row.sportId,
-      createdByUserId: userId,
-      lastUpdated: Date.now(),
-      ...(teamYears.length ? { teamYears } : {}),
-      ...(enrichment?.isHallOfFame !== undefined ? { isHallOfFame: enrichment.isHallOfFame } : {}),
-      // NEO-254: the lookup's birthYear is deliberately not written. It is what
-      // tells two same-name people apart, and a Wikidata year for a name the
-      // operator just said is NEW would be the previous person's.
-      ...(enrichment?.wikidataId ? { externalIds: { wikidataId: enrichment.wikidataId } } : {}),
-    });
-    console.log(
-      JSON.stringify({ msg: "tidy_player_created", playerId, sportId: row.sportId, userId }),
-    );
-    if (args.addSetSport) {
-      const setSportId = await findSportForSelectorOption(ctx, scopeId);
-      const created = await ctx.db.get(playerId);
-      if (created && setSportId && created.sportId !== setSportId) {
-        await addPlayerSport(ctx, created, setSportId);
-      }
-    }
-    const result = await applyAnswer(ctx, userId, target, {
-      kind: "linkPlayer",
-      playerId,
-      ...(args.addSetSport ? { addSetSport: true as const } : {}),
-    });
-    // Only THIS card shows the new player's career as blue.
-    const fresh = await ctx.db.get(card._id);
-    if (fresh) {
-      const checks = [...(fresh.tidyChecks ?? [])];
-      if (!checks.some((c) => c.kind === "newPlayerCareer" && c.playerId === playerId)) {
-        checks.push({ kind: "newPlayerCareer", playerId });
-        await ctx.db.patch(card._id, { tidyChecks: checks.slice(-TIDY_CHECKS_MAX) });
-      }
-    }
-    return { playerId, answerGen: result.answerGen };
+    return createPlayerOnTarget(ctx, userId, target, args);
   },
 });
+
+/**
+ * The body of Add as new player, once the name is resolved to a card, its printed
+ * row and its name row. `createPlayer` and the bulk "Add all new players"
+ * (`tidyNewPlayers`) both end here, so a player added in bulk is created, matched
+ * to career teams, sported and answered exactly as one added from its card.
+ * Every refusal happens before the first write.
+ */
+export async function createPlayerOnTarget(
+  ctx: MutationCtx,
+  userId: string,
+  target: Awaited<ReturnType<typeof resolveName>>,
+  args: {
+    name: string;
+    oneNamePlayer?: true;
+    addSetSport?: true;
+    excludedCareerTeamNames?: string[];
+  },
+): Promise<{ playerId: Id<"players">; answerGen: number }> {
+  const { row, scopeId, card } = target;
+  if (row.answer) {
+    throw new ConvexError("This name already has an answer. Change it first.");
+  }
+  const name = args.name.trim();
+  if (name.length > MAX_PLAYER_NAME_LENGTH) {
+    throw new ConvexError(
+      `A player name is ${name.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+    );
+  }
+  // NEO-463: a one-word name that is part of a fuller-named player is refused
+  // unless the operator confirmed a one-name player. Nothing is written first.
+  await assertNotNameFragment(ctx, name, row.sportId, args.oneNamePlayer);
+  const excluded = normalizeExcludedCareerTeamNames(args.excludedCareerTeamNames ?? []);
+
+  const enrichment = row.enrichment;
+  const teamYearByKey = new Map<
+    string,
+    { teamId: Id<"teams">; fromYear: number; toYear?: number }
+  >();
+  for (const ct of enrichment?.careerTeams ?? []) {
+    // NEO-212: a team the operator unticked is never matched.
+    if (excluded.has(normalizeEntityName(ct.name))) continue;
+    // Match only (NEO-236): a stint at a team nobody reviewed is dropped, not invented.
+    const { teamId } = await resolveTeamForSetYear(ctx, row.sportId, ct.name, ct.fromYear);
+    if (!teamId) continue;
+    teamYearByKey.set(`${teamId}|${ct.fromYear}`, {
+      teamId,
+      fromYear: ct.fromYear,
+      ...(ct.toYear !== undefined ? { toYear: ct.toYear } : {}),
+    });
+  }
+  const teamYears = sortTeamYears(Array.from(teamYearByKey.values()));
+  const playerId = await ctx.db.insert("players", {
+    name,
+    nameNormalized: normalizeEntityName(name),
+    sportId: row.sportId,
+    createdByUserId: userId,
+    lastUpdated: Date.now(),
+    ...(teamYears.length ? { teamYears } : {}),
+    ...(enrichment?.isHallOfFame !== undefined ? { isHallOfFame: enrichment.isHallOfFame } : {}),
+    // NEO-254: the lookup's birthYear is deliberately not written. It is what
+    // tells two same-name people apart, and a Wikidata year for a name the
+    // operator just said is NEW would be the previous person's.
+    ...(enrichment?.wikidataId ? { externalIds: { wikidataId: enrichment.wikidataId } } : {}),
+  });
+  console.log(
+    JSON.stringify({ msg: "tidy_player_created", playerId, sportId: row.sportId, userId }),
+  );
+  if (args.addSetSport) {
+    const setSportId = await findSportForSelectorOption(ctx, scopeId);
+    const created = await ctx.db.get(playerId);
+    if (created && setSportId && created.sportId !== setSportId) {
+      await addPlayerSport(ctx, created, setSportId);
+    }
+  }
+  const result = await applyAnswer(ctx, userId, target, {
+    kind: "linkPlayer",
+    playerId,
+    ...(args.addSetSport ? { addSetSport: true as const } : {}),
+  });
+  // Only THIS card shows the new player's career as blue.
+  const fresh = await ctx.db.get(card._id);
+  if (fresh) {
+    const checks = [...(fresh.tidyChecks ?? [])];
+    if (!checks.some((c) => c.kind === "newPlayerCareer" && c.playerId === playerId)) {
+      checks.push({ kind: "newPlayerCareer", playerId });
+      await ctx.db.patch(card._id, { tidyChecks: checks.slice(-TIDY_CHECKS_MAX) });
+    }
+  }
+  return { playerId, answerGen: result.answerGen };
+}
 
 // ─── fan-out ────────────────────────────────────────────────────────────────
 

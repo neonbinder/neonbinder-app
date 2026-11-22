@@ -3,7 +3,7 @@
  * Regenerate, the inline set-name panel with its live preview, the variation
  * trim, and the purple notes.
  */
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../../convex/_generated/api", () => ({
@@ -24,6 +24,7 @@ vi.mock("convex/react", () => ({
 
 import { AnsweredProvider } from "../answered";
 import TitleTile from "./TitleTile";
+import { deriveCardAttention } from "../../../../convex/features/cardAttention";
 import { assessListingTitle } from "../../../../convex/features/generateListing";
 import type { TidyAttention, TidyRow, TidyTileProps } from "../tile-types";
 
@@ -429,53 +430,48 @@ describe("TitleTile variation on a title in trouble (NEO-645 S8)", () => {
 });
 
 describe("TitleTile: a player name with no player in the title (NEO-645 S6)", () => {
-  const ctx = (over: Record<string, unknown> = {}) =>
-    ({ cardId: "c1", names: [], players: [], playersMore: false, teams: [], linkedFor: [], ...over }) as unknown as TidyTileProps["context"];
   const NOBODY = "2024 Topps Chrome Update #USC118 RC Rookie";
+  const noPlayer = { level: "check", kind: "titleNoPlayer", key: "noPlayer:x" };
+  const blue = (...items: Array<Record<string, unknown>>) =>
+    ({ level: "check", items }) as unknown as TidyAttention;
+  const levelOf = () => screen.getByRole("group", { name: "Listing title" }).getAttribute("data-tidy-level");
 
-  it("goes blue and says so when the card names a player the title does not carry", () => {
-    renderTile(cardOf("c1", { listingTitle: NOBODY }), none, undefined, undefined, ctx());
-    expect(screen.getByRole("group", { name: "Listing title" }).getAttribute("data-tidy-level")).toBe("check");
+  it("goes blue and says so when the card's attention carries titleNoPlayer", () => {
+    renderTile(cardOf("c1", { listingTitle: NOBODY }), blue(noPlayer));
+    expect(levelOf()).toBe("check");
     expect(screen.getByText("The title has no player. This card names one, so check it.")).toBeTruthy();
   });
 
-  it("stays plain when the title names the player", () => {
-    renderTile(cardOf("c1"), none, undefined, undefined, ctx());
-    expect(screen.getByRole("group", { name: "Listing title" }).getAttribute("data-tidy-level")).toBe("plain");
+  it("stays plain without the item", () => {
+    renderTile(cardOf("c1"), none);
+    expect(levelOf()).toBe("plain");
     expect(screen.queryByText(/has no player/)).toBeNull();
   });
 
-  it("waits for the card's context, so an answered 'not a player' never flashes blue", () => {
-    renderTile(cardOf("c1", { listingTitle: NOBODY }), none, undefined, undefined, undefined);
-    expect(screen.getByRole("group", { name: "Listing title" }).getAttribute("data-tidy-level")).toBe("plain");
-  });
-
-  it("is not blue for a name the operator answered 'not a player'", () => {
-    const named = {
-      kind: "player",
-      nameNormalized: "padres",
-      printed: "Padres",
-      order: 0,
-      cardOverride: false,
-      scopeId: "leaf-1",
-      row: { name: "Padres", sportId: "s", status: "ready", answer: { kind: "notEntity", by: "operator" } },
-      printedOn: null,
-    };
-    renderTile(cardOf("c1", { cardName: "Padres", listingTitle: NOBODY }), none, undefined, undefined, ctx({ names: [named] }));
-    expect(screen.getByRole("group", { name: "Listing title" }).getAttribute("data-tidy-level")).toBe("plain");
-  });
-
-  it("checks a linked player against the title too", () => {
-    const players = [{ playerId: "p1", name: "Aaron Judge", sportId: "s", stints: [], stintsMore: false }];
-    renderTile(cardOf("c1", { playerIds: ["p1"], listingTitle: NOBODY }), none, undefined, undefined, ctx({ players }));
-    expect(screen.getByRole("group", { name: "Listing title" }).getAttribute("data-tidy-level")).toBe("check");
-    renderTile(cardOf("c2", { playerIds: ["p1"] }), none, undefined, undefined, ctx({ players }));
-    expect(screen.getAllByRole("group", { name: "Listing title" })[1].getAttribute("data-tidy-level")).toBe("plain");
+  it("agrees with the derivation on the same row, linked or pending", () => {
+    const linked = cardOf("c1", {
+      playerIds: ["p1"],
+      playerLinks: [{ playerId: "p1", nameOnCard: "Aaron Judge" }],
+      listingTitle: NOBODY,
+    });
+    renderTile(linked, deriveCardAttention(linked as never) as unknown as TidyAttention);
+    expect(levelOf()).toBe("check");
+    cleanup();
+    const said = cardOf("c2", {
+      playerIds: ["p1"],
+      playerLinks: [{ playerId: "p1", nameOnCard: "Aaron Judge" }],
+    });
+    renderTile(said, deriveCardAttention(said as never) as unknown as TidyAttention);
+    expect(levelOf()).toBe("plain");
   });
 
   it("is still pink, not blue, when the title is over the limit", () => {
-    renderTile(cardOf("c1", { listingTitle: LONG.replace("Aaron Judge", "Somebody Else") }), attn({ level: "fix", kind: "titleOverLimit" }), undefined, undefined, ctx());
-    expect(screen.getByRole("group", { name: "Listing title" }).getAttribute("data-tidy-level")).toBe("fix");
+    renderTile(
+      cardOf("c1", { listingTitle: LONG.replace("Aaron Judge", "Somebody Else") }),
+      attn({ level: "fix", kind: "titleOverLimit" }, noPlayer),
+    );
+    expect(levelOf()).toBe("fix");
+    expect(screen.queryByText(/has no player/)).toBeNull();
   });
 });
 

@@ -77,6 +77,7 @@ export const TIDY_ATTENTION_LABELS: Record<TidyAttentionKind, string> = {
   careerGap: "team is missing from the player's career",
   titleCut: "listing title was cut short",
   variationOverLimit: "variation text is over the 65-character limit",
+  titleNoPlayer: "listing title has no player in it",
 };
 
 /** The reason text for one item. Falls back for a kind a newer deploy added. */

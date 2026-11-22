@@ -14,7 +14,19 @@ vi.mock("../../../convex/_generated/api", () => ({
   api: {
     tidyNames: { lookupsPending: "lookupsPending" },
     tidyCards: { cardContext: "cardContext", markReviewed: "markReviewed" },
+    tidyNewPlayers: { newPlayerNames: "newPlayerNames", addNewPlayers: "addNewPlayers" },
   },
+}));
+
+// "Add all new players" asks the server on demand; the walk's own tests offer nobody
+// (its control has its own test file).
+const { convexQuery } = vi.hoisted(() => ({
+  convexQuery: vi.fn(
+    async (): Promise<{
+      names: Array<{ name: string; cardNumbers: string[]; moreCards: boolean }>;
+      more: boolean;
+    }> => ({ names: [], more: false }),
+  ),
 }));
 
 const markReviewed = vi.fn();
@@ -41,6 +53,7 @@ vi.mock("convex/react", () => ({
     return undefined;
   },
   useMutation: (ref: string) => (ref === "markReviewed" ? markReviewed : vi.fn()),
+  useConvex: () => ({ query: convexQuery }),
 }));
 
 vi.mock("./TidyCardFace", () => ({ default: () => <div data-testid="face" /> }));
@@ -646,5 +659,81 @@ describe("handing focus back when the walk closes", () => {
     expect(document.activeElement).toBe(pill);
     pill.remove();
     sync.remove();
+  });
+});
+
+describe("Add all new players, in the walk's header area (decision 32)", () => {
+  const offered = (...names: string[]) => ({
+    names: names.map((name, i) => ({ name, cardNumbers: [String(i + 1)], moreCards: false })),
+    more: false,
+  });
+
+  beforeEach(() => {
+    convexQuery.mockReset();
+    convexQuery.mockResolvedValue({ names: [], more: false });
+  });
+
+  it("is not there when fewer than two names are offered", async () => {
+    convexQuery.mockResolvedValue(offered("Quinn Rookie"));
+    mount([pink("a", "1")]);
+    await screen.findByTestId("tile-player");
+    await waitFor(() => expect(convexQuery).toHaveBeenCalled());
+    await nextFrame();
+    expect(screen.queryByRole("button", { name: /^Add all/ })).toBeNull();
+  });
+
+  it("shows above the card for two or more, and asks the server about this checklist", async () => {
+    convexQuery.mockResolvedValue(offered("Quinn Rookie", "Abe Rookie"));
+    mount([pink("a", "1")]);
+    const control = await screen.findByRole("button", { name: "Add all 2 new players" });
+    expect(convexQuery).toHaveBeenCalledWith("newPlayerNames", { leafId: LEAF });
+    // Header area: before the first tile in the page.
+    const tile = screen.getByTestId("tile-sources");
+    expect(control.compareDocumentPosition(tile) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("Esc closes its confirm first, and only then means Save for later", async () => {
+    convexQuery.mockResolvedValue(offered("Quinn Rookie", "Abe Rookie"));
+    const { onClose } = mount([pink("a", "1")]);
+    fireEvent.click(await screen.findByRole("button", { name: "Add all 2 new players" }));
+    const group = await screen.findByRole("group", { name: "New players to add" });
+    await nextFrame();
+    fireEvent.keyDown(document.activeElement ?? group, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("group", { name: "New players to add" })).toBeNull());
+    expect(onClose).not.toHaveBeenCalled();
+    await nextFrame();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("Enter with the confirm open is not Save & next", async () => {
+    convexQuery.mockResolvedValue(offered("Quinn Rookie", "Abe Rookie"));
+    mount([blue("a", "1")]);
+    fireEvent.click(await screen.findByRole("button", { name: "Add all 2 new players" }));
+    await screen.findByRole("group", { name: "New players to add" });
+    await nextFrame();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Enter" });
+    expect(markReviewed).not.toHaveBeenCalled();
+  });
+
+  it("asks again when a card's waiting names change", async () => {
+    convexQuery.mockResolvedValue(offered("Quinn Rookie", "Abe Rookie"));
+    const first = [pink("a", "1", { pendingPlayerNames: ["Quinn Rookie", "Abe Rookie"] })];
+    const { rerender } = mount(first);
+    await screen.findByRole("button", { name: "Add all 2 new players" });
+    const calls = convexQuery.mock.calls.length;
+    rerender(
+      <MemoryRouter initialEntries={["/?tidy=a"]}>
+        <UrlProbe />
+        <TidyUpWalk
+          leafId={LEAF}
+          setName="2024 Topps Chrome"
+          title="Tidy up 2024 Topps Chrome"
+          cards={[pink("a", "1", { pendingPlayerNames: ["Abe Rookie"] })]}
+          onClose={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(convexQuery.mock.calls.length).toBeGreaterThan(calls));
   });
 });

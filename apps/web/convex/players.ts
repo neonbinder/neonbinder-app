@@ -3238,6 +3238,46 @@ export const nearMatches = query({
   },
 });
 
+/**
+ * NEO-645 (S2) — the players in a sport whose name is a near spelling of `name`
+ * (`nearSpellingDistance`), unranked. The search half of `didYouMean`, shared
+ * with the bulk "Add all new players" check so the two never disagree about
+ * whether a name has a near match. `name` is already trimmed and within
+ * `MAX_PLAYER_NAME_LENGTH`; the caller bounds it before any read.
+ */
+export async function nearSpelledPlayers(
+  ctx: QueryCtx | MutationCtx,
+  name: string,
+  sportId: Id<"selectorOptions">,
+): Promise<Array<{ doc: Doc<"players">; distance: number }>> {
+  const tokens = nameTokens(name);
+  if (tokens.length === 0) return [];
+
+  const terms = new Set<string>([name]);
+  if (tokens.length >= 2) {
+    const first = tokens[0];
+    const last = tokens[tokens.length - 1];
+    const middle = tokens.slice(0, -1).join(" ");
+    if (last.length >= 4) terms.add(`${middle} ${last.slice(0, 3)}`);
+    if (first.length >= 4) terms.add(`${last} ${first.slice(0, 3)}`);
+  }
+  const found = new Map<Id<"players">, Doc<"players">>();
+  for (const term of terms) {
+    const hits = await ctx.db
+      .query("players")
+      .withSearchIndex("search_name", (q) => q.search("name", term).eq("sportId", sportId))
+      .take(DID_YOU_MEAN_LEG_READ);
+    for (const hit of hits) found.set(hit._id, hit);
+  }
+
+  const near: Array<{ doc: Doc<"players">; distance: number }> = [];
+  for (const doc of found.values()) {
+    const distance = nearSpellingDistance(name, doc.name);
+    if (distance !== null) near.push({ doc, distance });
+  }
+  return near;
+}
+
 /** NEO-645 (S2) — how many "Did you mean" players the Player tile offers. */
 export const DID_YOU_MEAN_LIMIT = 3;
 /** Search hits read per leg; three legs, so at most 3x this many rows are scored. */
@@ -3280,33 +3320,14 @@ export const didYouMean = query({
   ),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
+    // Bounded before any work: `clampSearchQuery` truncates, so the check on its
+    // result below can never see an over-long name. Nothing storable is longer
+    // than `MAX_PLAYER_NAME_LENGTH`, so nothing that long can be misspelled
+    // into a stored player.
+    if (args.name.trim().length > MAX_PLAYER_NAME_LENGTH) return [];
     const name = clampSearchQuery(args.name).trim();
-    if (!name || name.length > MAX_PLAYER_NAME_LENGTH) return [];
-    const tokens = nameTokens(name);
-    if (tokens.length === 0) return [];
-
-    const terms = new Set<string>([name]);
-    if (tokens.length >= 2) {
-      const first = tokens[0];
-      const last = tokens[tokens.length - 1];
-      const middle = tokens.slice(0, -1).join(" ");
-      if (last.length >= 4) terms.add(`${middle} ${last.slice(0, 3)}`);
-      if (first.length >= 4) terms.add(`${last} ${first.slice(0, 3)}`);
-    }
-    const found = new Map<Id<"players">, Doc<"players">>();
-    for (const term of terms) {
-      const hits = await ctx.db
-        .query("players")
-        .withSearchIndex("search_name", (q) => q.search("name", term).eq("sportId", args.sportId))
-        .take(DID_YOU_MEAN_LEG_READ);
-      for (const hit of hits) found.set(hit._id, hit);
-    }
-
-    const near: Array<{ doc: Doc<"players">; distance: number }> = [];
-    for (const doc of found.values()) {
-      const distance = nearSpellingDistance(name, doc.name);
-      if (distance !== null) near.push({ doc, distance });
-    }
+    if (!name) return [];
+    const near = await nearSpelledPlayers(ctx, name, args.sportId);
     if (near.length === 0) return [];
 
     const facts = await cardRankFacts(ctx, args.cardId);

@@ -50,9 +50,9 @@ describe("the parser keeps a checklist card's subject", () => {
 describe("the server re-check and the checklist-only card", () => {
   test("the subject survives the re-check, cleaned", () => {
     const { rows } = checkPublishedChecklist({
-      rows: [{ number: "7", players: [], teams: [], noTeam: true, subject: "  Check​list  " }],
+      rows: [{ number: "7", players: [], teams: [], noTeam: true, subject: "  Team​ Checklist  " }],
     });
-    expect(rows[0]).toMatchObject({ number: "7", subject: "Check list", noTeam: true });
+    expect(rows[0]).toMatchObject({ number: "7", subject: "Team Checklist", noTeam: true });
   });
 
   test("the row with no marketplace card is a card named 'Checklist' with the No Team answer", () => {

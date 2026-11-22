@@ -16,6 +16,7 @@ import { rowHasNoNumber } from "../../lib/checklists/match-published-checklist";
 import { isNoClaimTeamText, isNoTeamText } from "../../lib/checklists/no-team";
 import { readProspectCell } from "../../lib/checklists/prospect";
 import { mixedProspectClaim } from "../../lib/checklists/prospect-team-text";
+import { checklistSubject } from "../../lib/checklists/checklist-subject";
 import { MAX_VARIATION_NAME } from "../../lib/checklists/parse-published-checklist";
 import { normalizeEntityName } from "../../lib/entities/normalize-name";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../features/cardAttention";
@@ -60,7 +61,8 @@ export const publishedChecklistRowValidator = v.object({
   // `MAX_VARIATION_NAME` is refused by the re-check below.
   variationName: v.optional(v.string()),
   // NEO-645 (S3) — the printed subject of a checklist card ("Checklist"), kept
-  // as the card's own name. Same cleaning as the variation note; its own bound.
+  // as the card's own name. Same cleaning as the variation note; its own bound,
+  // and only a checklist's own subject survives the re-check (`checklistSubject`).
   subject: v.optional(v.string()),
   // The parser's subset label (a file's "set" / "insert" column). The
   // client chooses rows by it; the fetch never reads it and drops it in
@@ -168,6 +170,11 @@ export function checkPublishedChecklist(
     if (subject.length > MAX_PLAYER_NAME_LENGTH) {
       throw new ConvexError(`${where} has a name over ${MAX_PLAYER_NAME_LENGTH} characters.`);
     }
+    // The subject becomes the card's name, so only a checklist's own is kept
+    // ("Checklist", "Team Checklist 1-100": the parser's `checklistSubject`).
+    // Anything else, whatever a client sent, is dropped, not refused: the row
+    // still stands, with no subject.
+    const keptSubject = checklistSubject(subject);
     const clean = (names: string[], max: number, unit: string) => {
       if (names.length > MAX_PUBLISHED_ROW_NAMES) {
         throw new ConvexError(
@@ -243,7 +250,7 @@ export function checkPublishedChecklist(
       ...(prospect ? { prospect: true } : {}),
       ...(prospectClaimedTeams ? { prospectClaimedTeams } : {}),
       ...(variationName ? { variationName } : {}),
-      ...(subject ? { subject } : {}),
+      ...(keptSubject ? { subject: keptSubject } : {}),
     };
   });
   return { rows };

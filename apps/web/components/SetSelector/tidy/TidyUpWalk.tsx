@@ -28,6 +28,7 @@ import {
 } from "../card-attention";
 import type { CardChecklistRow } from "../card-checklist-row";
 import { AnsweredProvider } from "./answered";
+import AddAllNewPlayers from "./AddAllNewPlayers";
 import { InlineStackProvider, useCloseTopInlinePart, useInlineStackOpen } from "./inline-stack";
 import type { VariantKind } from "../../../app/collection/final/data/types";
 import TidyCardFace from "./TidyCardFace";
@@ -220,6 +221,13 @@ function WalkDialog({
   const pending = useQuery(api.tidyNames.lookupsPending, { scopeId: leafId });
   const pendingKeys = useMemo(() => pendingLookupKeys(pending), [pending]);
   const order = useMemo(() => walkOrder(cards, pendingKeys), [cards, pendingKeys]);
+  // Everything that can change who "Add all new players" offers: the names still
+  // waiting on a card, and the lookups still running.
+  const newPlayersKey = useMemo(() => {
+    const names = new Set<string>();
+    for (const c of cards) for (const n of c.pendingPlayerNames ?? []) names.add(n);
+    return `${[...names].sort().join("\u001f")}\u001e${[...pendingKeys].sort().join("\u001f")}`;
+  }, [cards, pendingKeys]);
   const rowsById = useMemo(() => new Map(cards.map((c) => [c._id as string, c])), [cards]);
   const awaitingLookup = useMemo(() => cards.filter(isAwaitingTeamLookup).length, [cards]);
   // The end screen's lookup line must not say "nothing for you to do" while cards still need a person.
@@ -526,6 +534,9 @@ function WalkDialog({
                       : ""
                   : ""}
               </p>
+              <div className="mb-3 empty:hidden">
+                <AddAllNewPlayers leafId={leafId} refreshKey={newPlayersKey} />
+              </div>
               {isDone ? (
                 <div
                   ref={headerRef}

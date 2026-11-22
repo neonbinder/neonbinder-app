@@ -91,6 +91,7 @@
 
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../../convex/features/cardAttention";
 import { HOBBY_MARKER_PATTERN } from "../cards/print-run-markers";
+import { checklistSubject } from "./checklist-subject";
 import { isNoClaimTeamText, isNoTeamText, NO_TEAM_AND_A_TEAM } from "./no-team";
 import { bracketedNotesEnd, matchBrackets, readProspectCell } from "./prospect";
 import { mixedProspectClaim } from "./prospect-team-text";
@@ -594,19 +595,6 @@ const NOT_A_PERSON_SHAPES: readonly RegExp[] = [
   /^team leaders\b/i,
   /\bteam leaders$/i,
 ];
-
-/**
- * NEO-645 (S3) — the printed subject of a checklist card ("Checklist",
- * "Checklist 1-100", "Team Checklist"), kept as the card's own name. Other
- * subjects that are not a person ("Team Card", "Mets TC", "Team Leaders") keep
- * dropping out as before: they name a team or a group, not the checklist.
- */
-const MAX_SUBJECT_LENGTH = 120;
-function checklistSubject(subject: string): string | undefined {
-  const folded = subject.replace(/\s+/g, " ").trim();
-  if (folded === "" || folded.length > MAX_SUBJECT_LENGTH) return undefined;
-  return /^(team )?checklist\b/i.test(folded) ? folded : undefined;
-}
 
 function isNotAPerson(name: string): boolean {
   const folded = name.replace(/\s+/g, " ").trim().toLowerCase();

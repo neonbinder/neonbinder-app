@@ -1206,7 +1206,15 @@ describe("NEO-645 — a refused Tidy Up write persists nothing", () => {
     const t = convexTest(schema, modules);
     const seeded = await t.run(async (ctx) => {
       const w = await seedTidyWorld(ctx);
-      await nameRow(ctx, { scopeId: w.base, sportId: w.sport, kind: "player", name: "Rookie Newguy" });
+      // Looked up and found nothing: offerable to "Add all new players", so a
+      // refused call has a real player to have created.
+      await nameRow(ctx, {
+        scopeId: w.base,
+        sportId: w.sport,
+        kind: "player",
+        name: "Rookie Newguy",
+        over: { lookupGen: 1, lookupRequestedAt: 1 },
+      });
       await nameRow(ctx, { scopeId: w.base, sportId: w.sport, kind: "team", name: "Pads" });
       const cardId = await printCard(ctx, w, {
         number: "1",
@@ -1279,6 +1287,14 @@ describe("NEO-645 — a refused Tidy Up write persists nothing", () => {
           cardId: c.cardId,
           name: "Brand New Club",
           sportId: c.w.sport,
+        }),
+    ],
+    [
+      "tidyNewPlayers.addNewPlayers",
+      (c, as) =>
+        as().mutation(api.tidyNewPlayers.addNewPlayers, {
+          leafId: c.w.base,
+          names: ["Rookie Newguy"],
         }),
     ],
   ];

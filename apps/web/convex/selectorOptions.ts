@@ -23018,9 +23018,11 @@ export const commitCardChecklistChunk = internalMutation({
     defaultWritesPerCard: v.optional(v.number()),
     // NEO-645 — which of the names this chunk's cards print have a `tidyNames`
     // row (`kind|nameNormalized`), read once by the action for the whole commit
-    // (`tidyNames.namesWithRows`). Present: the chunk trusts it and reads no
-    // name row of its own (a point read per name was one query each, ~760 for a
-    // 554-card commit). Absent: it point-reads each name, as before.
+    // (`tidyNames.namesWithRows`). Present: a name it lists is trusted as indexed
+    // and costs no read (a point read per name was one query each, ~760 for a
+    // 554-card commit). A name it does NOT list is point-read once per chunk,
+    // because the list is older than the chunk and a row may have been born
+    // since (`tidyCommit.nameRowRace.test.ts`). Absent: every name is point-read.
     namesWithRows: v.optional(v.array(v.string())),
   },
   returns: v.object({
@@ -23203,11 +23205,19 @@ export const commitCardChecklistChunk = internalMutation({
     // NEO-645 — the printed-name index for this chunk's cards. A name is indexed
     // only when it has a `tidyNames` row (the gate made one for every name the
     // review had to settle); one point read per distinct name per chunk.
+    //
+    // `namesWithRows` is the action's list, read BEFORE the chunks ran, so it is
+    // trusted for what it says IS indexed (no read) and never for what it says
+    // is not: a name row born since (an operator answering in the walk while the
+    // commit runs, an earlier chunk's lookup) would otherwise be missed, leaving
+    // the card with no printed-name row and its answer's fan-out nobody to reach.
+    // A name the list lacks costs one point read per distinct name per chunk,
+    // memoised, which `COMMIT_CHUNK_TIDY_OPS_PER_CARD` is sized for.
     const nameRowCache = new Map<string, boolean>();
     const namesWithRows = args.namesWithRows ? new Set(args.namesWithRows) : undefined;
     const hasNameRow = async (kind: "player" | "team", key: string): Promise<boolean> => {
       const cacheKey = `${kind}|${key}`;
-      if (namesWithRows) return namesWithRows.has(cacheKey);
+      if (namesWithRows?.has(cacheKey)) return true;
       const known = nameRowCache.get(cacheKey);
       if (known !== undefined) return known;
       const row = await ctx.db

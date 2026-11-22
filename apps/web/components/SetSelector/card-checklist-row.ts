@@ -18,6 +18,8 @@ export type CardChecklistRow = {
   cardNumber: string;
   cardName: string;
   playerIds?: Array<Id<"players">>;
+  /** NEO-254: the name each linked player was printed with. Read for the title-has-no-player check. */
+  playerLinks?: Array<{ playerId: Id<"players">; nameOnCard: string }>;
   teamOnCardIds?: Array<Id<"teams">>;
   teamCheckDoneAt?: number;
   /**

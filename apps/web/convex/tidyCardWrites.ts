@@ -40,7 +40,7 @@ import {
 } from "./storedCardTitle";
 import { refreshedListingDescription } from "./cardDescriptionRefresh";
 import { generatedTitleTruncatedFlag } from "./features/listingInputs";
-import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
+import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS, TIDY_CHECKS_MAX } from "./features/cardAttention";
 import { queueRetitledCardNow } from "./listingTitleRequeue";
 import { createSportNoTeamReader } from "./sportTeamless";
 import {
@@ -51,9 +51,6 @@ import {
 } from "./teamFillOnAnswer";
 import { noTeamCardVerdict, stampNoTeam } from "./lib/selectorTeams";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
-
-/** `tidyNames.TIDY_CHECKS_MAX`, copied: that module imports this one. */
-const TIDY_CHECKS_CAP = 32;
 
 type Card = Doc<"cardChecklist">;
 export type StoredAnswer = Infer<typeof tidyNameAnswerValidator>;
@@ -386,7 +383,7 @@ export async function writeNameChange(
     patch.tidyChecks = [
       ...(patch.tidyChecks ?? card.tidyChecks ?? []).filter((c) => c.kind !== "teamFill"),
       teamFillCheck,
-    ].slice(-TIDY_CHECKS_CAP);
+    ].slice(-TIDY_CHECKS_MAX);
   }
   const next: Card = { ...card, ...patch } as Card;
 

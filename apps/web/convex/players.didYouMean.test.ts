@@ -8,7 +8,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import { normalizePlayerName } from "./players";
+import { MAX_PLAYER_NAME_LENGTH, normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
 import { insertTestCard } from "../lib/testing/card-row";
 import { cancelScheduled } from "../lib/testing/drain-scheduled";
@@ -171,6 +171,23 @@ describe("players.didYouMean", () => {
     expect(
       await t.withIdentity(ADMIN).query(api.players.didYouMean, { cardId, name: "  ", sportId: s.sportId }),
     ).toEqual([]);
+  });
+
+  test("a name longer than a storable one answers nothing, before any search", async () => {
+    const t = newT();
+    const s = await setup(t);
+    await player(t, s.sportId, "Jackson Holliday");
+    const cardId = await card(t, s);
+    const long = `Jackson Holiday ${"y".repeat(MAX_PLAYER_NAME_LENGTH)}`;
+    expect(long.length).toBeGreaterThan(MAX_PLAYER_NAME_LENGTH);
+    expect(
+      await t.withIdentity(ADMIN).query(api.players.didYouMean, { cardId, name: long, sportId: s.sportId }),
+    ).toEqual([]);
+    // Spaces around a storable name are not part of it.
+    const padded = `  Jackson Holiday${" ".repeat(MAX_PLAYER_NAME_LENGTH)}`;
+    expect(
+      (await t.withIdentity(ADMIN).query(api.players.didYouMean, { cardId, name: padded, sportId: s.sportId })).length,
+    ).toBe(1);
   });
 });
 

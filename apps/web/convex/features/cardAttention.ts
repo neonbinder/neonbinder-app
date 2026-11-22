@@ -31,6 +31,9 @@ import { titleAttentionItems } from "./listingInputs";
 // NEO-645: the autograph rule reads NB's own vocabulary (attribute token and
 // format list). Both live in a module that is as browser-safe as this one.
 import { AUTOGRAPH_FORMATS, carriesAutographToken } from "./deriveCardFeatures";
+// NEO-645: "does the title say the player?" is one pure helper, read here and by
+// the Listing title tile through this derivation, so the two cannot disagree.
+import { titleMissesPlayer } from "../../lib/cards/title-names-player";
 
 /**
  * One thing a card still needs from a human.
@@ -176,6 +179,12 @@ export type AttentionCardRow = {
    * absent) does not.
    */
   features?: Readonly<Record<string, string>>;
+  /**
+   * NEO-645 — the name each linked player was printed with
+   * (`cardChecklist.playerLinks`). Read only by `titleNoPlayer`, for the names
+   * the card says; the canonical player name is not on the row.
+   */
+  playerLinks?: ReadonlyArray<{ readonly nameOnCard: string }>;
   /** NEO-645 — fields on which the sources still disagree. See the schema. */
   sourceDisagreements?: readonly TidyDisagreement[];
   /** NEO-645 — facts stored where they change. See the schema. */
@@ -368,6 +377,13 @@ export function isAwaitingTeamLookup(row: AttentionCardRow): boolean {
 export const MAX_CARD_TEAMS = 8;
 
 /**
+ * NEO-645 — the most `tidyChecks` kept on one card (the newest win). One
+ * constant for every writer (`tidyNames`, `tidyCardWrites`), kept here beside
+ * the other card caps because this module imports nothing of theirs.
+ */
+export const TIDY_CHECKS_MAX = 32;
+
+/**
  * NEO-220 — the hard cap on how many players one card can be LINKED to.
  *
  * Deliberately much wider than `MAX_CARD_TEAMS`: a card is never printed for
@@ -441,7 +457,9 @@ export type TidyAttentionItem =
   // The generated title's core was cut to fit ("Left out where today's wizard asks").
   | { level: "check"; kind: "titleCut"; key: string }
   // The variation is over the item-specific value cap.
-  | { level: "check"; kind: "variationOverLimit"; length: number; key: string };
+  | { level: "check"; kind: "variationOverLimit"; length: number; key: string }
+  // The card names a player and the stored title carries none (`titleMissesPlayer`).
+  | { level: "check"; kind: "titleNoPlayer"; key: string };
 
 export type TidyAttentionKind = TidyAttentionItem["kind"];
 
@@ -497,6 +515,39 @@ export function tidyReviewedKeyPicked(
   value: readonly string[],
 ): string {
   return `picked:${field}:${tidyHash(value.join("\u001f"))}`;
+}
+
+/** `noPlayer:<hash(title)>` — the title with no player in it; a new title re-raises it. */
+export function tidyReviewedKeyNoPlayer(listingTitle: string): string {
+  return `noPlayer:${tidyHash(listingTitle)}`;
+}
+
+/**
+ * NEO-645 — the player names this card says, from the row alone: the name each
+ * linked player was printed with, plus any name still waiting for an answer.
+ * A card with no link and no pending name (a name ruled "not a player", a card
+ * about a team) says none, and a title cannot miss a player it never named.
+ */
+export function cardSaysPlayerNames(
+  row: Pick<AttentionCardRow, "playerLinks" | "pendingPlayerNames">,
+): string[] {
+  return [
+    ...(row.playerLinks ?? []).map((l) => l.nameOnCard),
+    ...(row.pendingPlayerNames ?? []),
+  ].filter((n) => n.trim().length > 0);
+}
+
+/**
+ * NEO-645 — the card names a player but its stored title carries none, so a
+ * buyer searching for the player would never find it. No stored title is not a
+ * title to check. The Listing title tile reads this through the derivation.
+ */
+export function titleLacksPlayer(
+  row: Pick<AttentionCardRow, "playerLinks" | "pendingPlayerNames" | "listingTitle">,
+): boolean {
+  const title = row.listingTitle ?? "";
+  if (title.trim().length === 0) return false;
+  return titleMissesPlayer(title, cardSaysPlayerNames(row));
 }
 
 /**
@@ -608,6 +659,13 @@ function allTidyItems(row: AttentionCardRow): TidyAttentionItem[] {
         key: tidyReviewedKeyVariation(row.cardVariation ?? ""),
       });
     }
+  }
+  if (titleLacksPlayer(row)) {
+    items.push({
+      level: "check",
+      kind: "titleNoPlayer",
+      key: tidyReviewedKeyNoPlayer(row.listingTitle ?? ""),
+    });
   }
   return items;
 }

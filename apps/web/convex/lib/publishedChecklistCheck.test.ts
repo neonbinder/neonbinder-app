@@ -46,3 +46,48 @@ describe("checkPublishedChecklist — names sent per row", () => {
     expect(performance.now() - started).toBeLessThan(500);
   });
 });
+
+describe("checkPublishedChecklist — the subject becomes the card's name (NEO-645 S3)", () => {
+  const withSubject = (subject: string) => ({ rows: [{ ...row([]), subject }] });
+  const subjectOf = (subject: string) => checkPublishedChecklist(withSubject(subject))!.rows[0].subject;
+
+  test.each([
+    ["Checklist", "Checklist"],
+    ["Checklist 1-100", "Checklist 1-100"],
+    ["Team Checklist", "Team Checklist"],
+    ["  team   CHECKLIST  3 ", "team CHECKLIST 3"],
+    ["Checklist​ 1\u0007-100", "Checklist 1 -100"],
+  ])("keeps a checklist's own subject %j as %j", (sent, kept) => {
+    expect(subjectOf(sent)).toBe(kept);
+  });
+
+  test.each([
+    "Aaron Judge",
+    "Team Leaders",
+    "Mets TC",
+    "Royals Team Card",
+    "Checklistmaster",
+    "Not a Checklist",
+    "",
+    "   ",
+  ])("drops %j: the row stands, with no subject", (sent) => {
+    const checked = checkPublishedChecklist(withSubject(sent))!;
+    expect(checked.rows).toEqual([{ number: "1", players: [], teams: [] }]);
+    expect("subject" in checked.rows[0]).toBe(false);
+  });
+
+  test("a row with no subject keeps none", () => {
+    expect(checkPublishedChecklist({ rows: [row([])] })!.rows[0]).not.toHaveProperty("subject");
+  });
+
+  test("still refuses a subject over the name cap, before the shape is read", () => {
+    expect(() => subjectOf(`Checklist ${"x".repeat(200)}`)).toThrow(ConvexError);
+  });
+
+  test("the parser and the server share one predicate", async () => {
+    const { checklistSubject } = await import("../../lib/checklists/checklist-subject");
+    for (const s of ["Checklist", "Team Checklist 2", "Aaron Judge", "Mets TC", ""]) {
+      expect(subjectOf(s)).toBe(checklistSubject(s));
+    }
+  });
+});

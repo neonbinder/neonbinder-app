@@ -149,18 +149,54 @@ export function TidyNote({ children }: { children: ReactNode }) {
 export type ApplyCounts = { applied: number; skipped?: number };
 
 /**
+ * What the counts count. Cards by default ("Applied to 4 cards."); the bulk
+ * "Add all new players" counts players ("Added 12 players.").
+ */
+export type ApplyCountsWords = {
+  /** Before the number: "Applied to" or "Added". */
+  lead: string;
+  one: string;
+  many: string;
+  /** When nothing changed. */
+  none: string;
+};
+const CARD_WORDS: ApplyCountsWords = {
+  lead: "Applied to",
+  one: "card",
+  many: "cards",
+  none: "No cards changed.",
+};
+/** The bulk "Add all new players" counts players. */
+export const PLAYER_WORDS: ApplyCountsWords = {
+  lead: "Added",
+  one: "player",
+  many: "players",
+  none: "No players added.",
+};
+
+/**
  * The line an Apply-to-all leaves behind. No counts (`undefined`: the writes are
  * scheduled pages, so nobody knows yet) reads "Applied."; none changed reads
  * "No cards changed."; otherwise the count, and what was left as it was.
  */
-export function applyOutcomeText(result: void | ApplyCounts): string {
+export function applyOutcomeText(
+  result: void | ApplyCounts,
+  words: ApplyCountsWords = CARD_WORDS,
+): string {
   if (!result) return "Applied.";
   const { applied, skipped = 0 } = result;
-  if (applied === 0) return "No cards changed.";
-  const done = `Applied to ${applied} ${applied === 1 ? "card" : "cards"}.`;
+  if (applied === 0) return words.none;
+  const done = `${words.lead} ${applied} ${applied === 1 ? words.one : words.many}.`;
   if (skipped === 0) return done;
   return `${done} ${skipped} left as ${skipped === 1 ? "it was" : "they were"}.`;
 }
+
+/**
+ * The dashed blue look of an Apply-to-all control, for the controls that offer
+ * more than one card or name at a time. One string, so they never drift apart.
+ */
+export const DASHED_APPLY_CLASS =
+  "focus-outline hit-area-24 max-w-full rounded-[7px] border-[1.5px] border-dashed border-neon-blue-text bg-transparent px-2.5 py-1 text-left text-xs font-medium text-neon-blue-text wrap-anywhere hover:bg-neon-blue/10 aria-disabled:cursor-wait aria-disabled:opacity-60";
 
 /**
  * "Answer, then Apply to all": a dashed blue button that offers this card's
@@ -235,7 +271,7 @@ export function ApplyToAllButton({
           type="button"
           onClick={() => void apply()}
           aria-disabled={busy || count < 1 || undefined}
-          className="focus-outline hit-area-24 max-w-full rounded-[7px] border-[1.5px] border-dashed border-neon-blue-text bg-transparent px-2.5 py-1 text-left text-xs font-medium text-neon-blue-text wrap-anywhere hover:bg-neon-blue/10 aria-disabled:cursor-wait aria-disabled:opacity-60"
+          className={DASHED_APPLY_CLASS}
         >
           {count >= 1 ? label : (pressedLabel ?? label)}
         </button>
