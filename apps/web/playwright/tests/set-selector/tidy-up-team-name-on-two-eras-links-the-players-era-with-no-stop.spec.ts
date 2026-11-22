@@ -129,7 +129,7 @@ test(
     await expect(oldRow.getByText(OLD, { exact: true })).toBeVisible();
     await expect(oldRow.getByRole("note")).toHaveText(/^Linked for you/);
     await expect(
-      oldRow.getByRole("button", { name: new RegExp(`^Change( team)? ${escapeRe(OLD)}$`), disabled: false }),
+      oldRow.getByRole("button", { name: new RegExp(`^Change team ${escapeRe(OLD)}$`), disabled: false }),
     ).toBeVisible();
     // Negative, read against it: nothing asks about that name (no era choice, no "Not a team"),
     // and the year's own pick, the newer team, is nowhere on the tile.

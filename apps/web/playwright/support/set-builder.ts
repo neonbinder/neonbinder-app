@@ -339,9 +339,17 @@ export async function drillToSet(page: Page, env: FlowEnv, target: DrillTarget =
   });
 }
 
-/** The card checklist's fetch control: "Fetch from Marketplaces" when empty, "Refresh" once loaded. */
+/**
+ * The card checklist's fetch control, in any state. It has no aria-label: its
+ * visible words are its accessible name, and they change with the state
+ * ("Fetch from Marketplaces" when empty, "Fetching..." and "Saving..." while
+ * busy, "Refresh" once loaded). A spec that needs one state asserts that exact
+ * name itself. Contract: a locator, nothing waited for.
+ */
+export const SYNC_CHECKLIST_NAME = /^(Fetch from Marketplaces|Fetching\.\.\.|Saving\.\.\.|Refresh)$/;
+
 export function syncChecklistButton(page: Page): Locator {
-  return page.getByRole("button", { name: "Sync card checklist" });
+  return page.getByRole("button", { name: SYNC_CHECKLIST_NAME });
 }
 
 /**

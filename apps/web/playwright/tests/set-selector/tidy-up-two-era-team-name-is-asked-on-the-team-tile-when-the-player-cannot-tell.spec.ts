@@ -86,7 +86,7 @@ async function syncAndExpectTheTeamAsked(
   // Change), the tile pink and Save & next held while it is.
   await expect(row.getByText(/isn't linked to a team yet\.$/)).toHaveCount(0);
   await expect(row.getByRole("note")).toHaveCount(0);
-  await expect(row.getByRole("button", { name: /^Change( team)?/ })).toHaveCount(0);
+  await expect(row.getByRole("button", { name: /^Change team/ })).toHaveCount(0);
   await expect(pinkTile(page, "Team")).toHaveCount(1);
   await expect(tidyTile(page, "Team")).toHaveAccessibleDescription(/To fix/);
   await expect(mustFixLine(page)).toBeVisible();
@@ -108,7 +108,7 @@ async function untickRemember(row: Locator, printed: string): Promise<void> {
  */
 async function expectPickedAndFinish(page: Page, row: Locator, picked: string): Promise<void> {
   await expect(row.getByText(picked, { exact: true })).toBeVisible();
-  await expect(row.getByRole("button", { name: /^Change( team)?/, disabled: false })).toBeVisible();
+  await expect(row.getByRole("button", { name: /^Change team/, disabled: false })).toBeVisible();
   await expect(row.getByText(/^Which team: /)).toHaveCount(0);
   await expect(row.getByRole("note")).toHaveCount(0);
   await expect(pinkTile(page, "Team")).toHaveCount(0);

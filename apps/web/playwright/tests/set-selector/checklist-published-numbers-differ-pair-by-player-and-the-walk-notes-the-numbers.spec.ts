@@ -489,8 +489,8 @@ test(
         await expect(says.getByRole("listitem").filter({ hasText: /^BSC/ })).toContainText("Rhett Lowder");
         await expect(says.getByRole("listitem").filter({ hasText: /^Checklist/ })).toContainText("Rhett Lowdr");
         await expect(disagree.getByRole("status")).toHaveText("Went with “Rhett Lowder”, they're already in your binder.");
-        // The checklist's spelling is one press away (name contains the visible text: a11y renames).
-        await expect(disagree.getByRole("button", { name: /Use “Rhett Lowdr” instead/ })).toBeVisible();
+        // The checklist's spelling is one press away (the button is named by its visible text).
+        await expect(disagree.getByRole("button", { name: "Use “Rhett Lowdr” instead", exact: true })).toBeVisible();
         await expect(pinkTile(page, "Sources disagree")).toHaveCount(0);
         await expectAccessible(page, { within: walk, label: "Tidy Up walk, NB's pick between two spellings" });
       } else {
@@ -807,7 +807,7 @@ async function linkClubOnTheWalk(page: Page): Promise<void> {
   // Empty and focused, the combobox lists the row's near matches by label: the era is in the name.
   await page.getByRole("option", { name: /^Oakland Athletics .*1968.2024/ }).click();
   await expect(row.getByText("Oakland Athletics", { exact: true })).toBeVisible();
-  await expect(row.getByRole("button", { name: /^Change( team)?( .+)?$/ })).toBeVisible();
+  await expect(row.getByRole("button", { name: /^Change team( .+)?$/ })).toBeVisible();
   await expect(row.getByRole("checkbox")).toHaveCount(0);
   await expect(pinkTile(page, "Team")).toHaveCount(0);
 }

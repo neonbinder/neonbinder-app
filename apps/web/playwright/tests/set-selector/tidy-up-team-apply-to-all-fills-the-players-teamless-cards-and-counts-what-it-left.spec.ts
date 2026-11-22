@@ -19,8 +19,7 @@
 //   6. Read back in each card's drawer: #1, #2, #3 hold the team; #4 and #5 hold none.
 //
 // R2: each walk move is proved by the card that lands and what it shows; every negative sits
-// beside a positive. Coming a11y renames are matched by tolerant regexes ("Change" / "Change
-// team"; an Apply button that stays on the page after it is pressed).
+// beside a positive. The Apply button stays on the page after it is pressed (it keeps focus).
 //
 // FIXTURE (SET-REGISTRY.md, the `ata`/`atb` prefixes; R7a): a per-attempt sport `ata<token>` with
 // year 2026, brand Topps and ONE set `atb<token>` with `Insert` › `Base`, all hand-made with no
@@ -106,7 +105,7 @@ test(
     await expect(teamTile.getByRole("button", { name: new RegExp(`^${escapeRe(TEAM)}$`), pressed: true })).toBeVisible();
     await teamTile.getByRole("button", { name: "Save team", exact: true, disabled: false }).click();
     await expect(pinkTile(page, "Team"), "the team landed on #1").toHaveCount(0);
-    await expect(teamGroup(TEAM).getByRole("button", { name: /^Change( team)?( .+)?$/ })).toBeVisible();
+    await expect(teamGroup(TEAM).getByRole("button", { name: /^Change team( .+)?$/ })).toBeVisible();
     // #2, #3 and #5 are offered; #4 (its cell names another team) is not.
     await expect(applyButton).toHaveText(`Apply to all 3 other ${PLAYER} cards`);
     await expectAccessible(page, { within: walk, label: "Tidy Up walk, Team tile offering Apply to all" });

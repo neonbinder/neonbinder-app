@@ -383,8 +383,8 @@ test(
         await expect(column("BSC")).toContainText(PROSPECT.team);
         await expect(column("Checklist")).toContainText(PROSPECT.checklistSide);
         await expect(disagree.getByRole("status")).toHaveText(`Went with “${PROSPECT.team}”, they're already in your binder.`);
-        // The source button's name contains its visible text (tolerant of the coming a11y renames).
-        await expect(disagree.getByRole("button", { name: new RegExp(`Use “${escapeRe(PROSPECT.checklistSide)}” instead`) })).toBeVisible();
+        // The source button is named by its visible text.
+        await expect(disagree.getByRole("button", { name: new RegExp(`^Use “${escapeRe(PROSPECT.checklistSide)}” instead$`) })).toBeVisible();
         await expectAccessible(page, { within: walk, label: "Tidy Up walk, NB's pick against a Prospect (X) checklist team" });
         // Keeping the marketplace's side is NB's pick: Save & next accepts it when nothing else is
         // pink; a card with a name still waiting is skipped, the team already standing.

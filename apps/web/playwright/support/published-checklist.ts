@@ -1,6 +1,6 @@
 /**
  * NEO-478 / NEO-482: the publisher's checklist, uploaded through the Set
- * Builder's "Add the official checklist" dialog before Sync card checklist.
+ * Builder's "Add the official checklist" dialog before the checklist fetch.
  *
  * A checklist with a team beside each card means a fetch asks BuySportsCards
  * for nothing per card (D4): the specs that used to make one `card-listing` call
@@ -364,7 +364,7 @@ export function nearNamePair(
   return { score: pair.nameScore, confidence: pair.confidence, numbersAgree: pair.numbersAgree };
 }
 
-/** The button beside "Sync card checklist". Contract: a locator, nothing waited for. */
+/** The button beside the card checklist's fetch button (`syncChecklistButton`). Contract: a locator, nothing waited for. */
 export function publishersChecklistButton(page: Page): Locator {
   return page.getByRole("button", { name: "Add the official checklist" });
 }
@@ -520,7 +520,7 @@ export function matchCardsDialog(page: Page): Locator {
  * waits are 7 s of our own time plus the seconds the screen says it is waiting
  * on BSC (`expectAfterMarketplace`).
  *
- * Contract: ENTRY Sync card checklist has just been pressed with a checklist in
+ * Contract: ENTRY the fetch button (`syncChecklistButton`) has just been pressed with a checklist in
  * play (pasted, or the leaf's sections of the set's stored checklist). EXIT the
  * dialog was confirmed and is gone; the wizard (or the saved line) is the
  * caller's to wait for. With `facts`, the "Teams from your checklist: N of M

@@ -119,7 +119,7 @@ test(
     const team = tidyTile(page, "Team");
     const row = team.getByRole("group", { name: `Team ${CURRENT}`, exact: true });
     await expect(row.getByText(CURRENT, { exact: true })).toBeVisible();
-    await expect(row.getByRole("button", { name: /^Change( team)?/, disabled: false })).toBeVisible();
+    await expect(row.getByRole("button", { name: /^Change team/, disabled: false })).toBeVisible();
     // Negatives, read against it: nothing asked about the name, no "Linked for you" (the year's own
     // pick is silent), the past era nowhere on the tile, and the tile not pink.
     await expect(team.getByText(/^Which team: /)).toHaveCount(0);

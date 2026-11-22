@@ -11,7 +11,6 @@ import {
   columnSearch,
   columnSelection,
   setBuilderReady,
-  syncChecklistButton,
   type Column,
 } from "../../support/set-builder";
 
@@ -48,7 +47,7 @@ test(
       await expect(page.getByRole("button", { name: /Re-map Base/ })).toBeVisible();
       const edit = page.getByRole("button", { name: "Edit attributes" });
       await expect(edit).toBeVisible();
-      await expect(syncChecklistButton(page)).toHaveText(/Refresh/);
+      await expect(page.getByRole("button", { name: "Refresh", exact: true })).toBeVisible();
       await expect(edit).toBeFocused();
       await page.keyboard.press("Enter");
       await expect(page.getByRole("button", { name: "Hide attributes" })).toBeVisible();

@@ -138,3 +138,4 @@
 - [Parallel-build specs tidy the base (J3)](patterns_parallel_build_specs_must_tidy_the_base_j3.md) — no Save for later before a build; tidyForTheParallelBuild; titles door waits behind the walk
 - [Need-you pill is not a team-lookup proof](patterns_need_you_pill_is_not_a_team_lookup_proof.md) — NEO-645: pill counts unlinked players; read mark reasons per row; Q1-A fill leaves the queue
 - [Tile state lost when card context arrives](patterns_tile_state_lost_when_card_context_arrives.md) — NEO-645: search opened right after a card opens closes itself; probe ms, report, temp copy
+- [State-named button: helper regex](patterns_state_named_button_helper_regex.md) — label-in-name button: anchored all-states regex in the helper, exact text per state in specs

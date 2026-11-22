@@ -5,7 +5,7 @@
 //
 // ONE FEATURE (NEO-333, R1): a BSC team value that names two clubs ("Boston Red Sox, Detroit
 // Tigers") becomes TWO team links, never one combined team. Proved on live data through the
-// operator's own path (Sync card checklist -> Match Cards -> Confirm saves -> the walk):
+// operator's own path (Fetch from Marketplaces -> Match Cards -> Confirm saves -> the walk):
 //   (a) nothing asks about a comma-joined team. If the walk opens (a card needs a person: an
 //       autograph format, a title, a name), every card it shows is read: no Team tile holds a
 //       group named for a comma-joined value, and neither half of PDA-WW's value is ever asked
@@ -206,7 +206,7 @@ test(
           if (await club(CLUBS[0]).isVisible()) {
             await expect(club(CLUBS[1])).toBeVisible();
             for (const name of CLUBS) {
-              await expect(club(name).getByRole("button", { name: /^Change( team)?( .+)?$/ })).toBeVisible();
+              await expect(club(name).getByRole("button", { name: /^Change team( .+)?$/ })).toBeVisible();
             }
             await expect(pinkTile(page, "Team"), "two linked clubs leave nothing to fix on the Team tile").toHaveCount(0);
             await expectAccessible(page, { within: walk, label: "Tidy Up walk on PDA-WW, two clubs on the Team tile" });

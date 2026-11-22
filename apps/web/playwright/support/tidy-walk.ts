@@ -65,10 +65,9 @@ const NOT_A_PLAYER = /^Not a player \(checklist, team card, stadium\)( .+)?$/;
 /** "Not a team", plus " <printed name>" on a card with more than one team name. */
 const NOT_A_TEAM = /^Not a team( .+)?$/;
 /** An answered player row's Change ("Change player", or "Change player <printed name>" on a multi-name card). */
-// Tolerant of the pre-26cea34c "Change" / "Change <printed>" until every Vite serves the rename.
-const CHANGE_PLAYER = /^Change( player)?( .+)?$/;
+const CHANGE_PLAYER = /^Change player( .+)?$/;
 /** An answered team row's Change ("Change team", or "Change team <printed name>" on a multi-name card). */
-const CHANGE_TEAM = /^Change( team)?( .+)?$/;
+const CHANGE_TEAM = /^Change team( .+)?$/;
 
 /** The open walk. Contract: a locator, nothing waited for. */
 export function tidyWalk(page: Page): Locator {
@@ -91,10 +90,7 @@ export function tidyFooterButton(page: Page, name: keyof typeof TIDY_FOOTER, { u
 
 /** One tile of the open card, by its heading. Contract: a locator, nothing waited for. */
 export function tidyTile(page: Page, name: TidyTileName): Locator {
-  // A `group` since 26cea34c; the `region` alternative keeps a build from before it working
-  // (a running snapshot), and goes once every build is past it.
-  const walk = tidyWalk(page);
-  return walk.getByRole("group", { name, exact: true }).or(walk.getByRole("region", { name, exact: true }));
+  return tidyWalk(page).getByRole("group", { name, exact: true });
 }
 
 /**

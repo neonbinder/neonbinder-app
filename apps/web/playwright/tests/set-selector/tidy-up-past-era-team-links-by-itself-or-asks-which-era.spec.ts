@@ -61,9 +61,9 @@ function eraLink(scope: Locator, full: string, era: string): Locator {
   return scope.getByRole("button", { name: new RegExp(`^[^\\p{L}]*Link to ${escapeRe(`${full} · ${era}`)}$`, "u") });
 }
 
-/** The answered row's Change ("Change", becoming "Change team"). */
+/** The answered row's "Change team". */
 function changeTeam(scope: Locator): Locator {
-  return scope.getByRole("button", { name: /^Change( team)?$/, disabled: false });
+  return scope.getByRole("button", { name: /^Change team$/, disabled: false });
 }
 
 test(

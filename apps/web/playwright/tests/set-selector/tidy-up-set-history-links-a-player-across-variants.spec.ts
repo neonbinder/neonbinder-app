@@ -148,8 +148,8 @@ const CHECKLIST_OF: Readonly<Record<string, ChecklistName | undefined>> = {
 const LIVE_BSC_FETCH = 60_000;
 /** The purple notes (tidy/parts/copy.ts `linkedForText`). */
 const SET_HISTORY_NOTE = "Linked for you: another card in this set is already linked to them";
-/** An answered row's Change ("Change", "Change player", "Change player <name>" on a multi-name card). */
-const CHANGE_PLAYER = /^Change( player)?( .+)?$/;
+/** An answered row's Change ("Change player", or "Change player <name>" on a multi-name card). */
+const CHANGE_PLAYER = /^Change player( .+)?$/;
 const NOT_A_PLAYER = /^Not a player \(checklist, team card, stadium\)( .+)?$/;
 
 /** The Player tile's row for `name` on the open card. Contract: a locator, nothing waited for. */
