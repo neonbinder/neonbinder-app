@@ -47,7 +47,23 @@ vi.mock("./TidyCardFace", () => ({ default: () => <div data-testid="face" /> }))
 vi.mock("./tiles/SourcesDisagreeTile", () => ({ default: () => <div data-testid="tile-sources" /> }));
 vi.mock("./tiles/PlayerTile", () => ({ default: () => <div data-testid="tile-player" /> }));
 vi.mock("./tiles/CareerTile", () => ({ default: () => <div data-testid="tile-career" /> }));
-vi.mock("./tiles/TeamTile", () => ({ default: () => <div data-testid="tile-team" /> }));
+vi.mock("./tiles/TeamTile", () => ({
+  // The shape of "No team on this card": the pressed button leaves the page.
+  default: function TeamTile() {
+    const [answered, setAnswered] = useState(false);
+    return (
+      <div data-testid="tile-team">
+        {answered ? (
+          <p>No team on this card: saved</p>
+        ) : (
+          <button type="button" onClick={() => setAnswered(true)}>
+            No team on this card
+          </button>
+        )}
+      </div>
+    );
+  },
+}));
 vi.mock("./tiles/AutographTile", () => ({ default: () => <div data-testid="tile-autograph" /> }));
 vi.mock("./tiles/MoreAboutTile", () => ({ default: () => <div data-testid="tile-more" /> }));
 vi.mock("./tiles/TitleTile", async () => {
@@ -284,6 +300,80 @@ describe("the keys", () => {
     expect(onClose).not.toHaveBeenCalled();
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+/** One animation frame, inside act, so the walk's focus repair has run. */
+const nextFrame = () =>
+  act(async () => {
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+  });
+
+describe("focus", () => {
+  it("lands on the card header when a card opens", async () => {
+    mount([blue("a", "1")]);
+    await screen.findByText("1 to check");
+    await nextFrame();
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement?.textContent).toContain("#1");
+  });
+
+  it("moves to the next card's header after Save & next", async () => {
+    mount([blue("a", "1"), blue("b", "2")]);
+    await screen.findByText("1 to check");
+    await nextFrame();
+    fireEvent.click(button("Save & next (Enter)"));
+    await waitFor(() => expect(url()).toContain("tidy=b"));
+    await nextFrame();
+    expect(document.activeElement?.textContent).toContain("#2");
+  });
+
+  it("returns to the dialog when an answer unmounts the focused button, and Enter then saves", async () => {
+    // Pink for the team, answered on the tile: the card is saveable once the
+    // stub's answer lands, so use a blue card (nothing pink) for the Enter.
+    mount([blue("a", "1"), blue("b", "2")]);
+    const answer = await screen.findByRole("button", { name: "No team on this card" });
+    await nextFrame();
+    act(() => answer.focus());
+    expect(document.activeElement).toBe(answer);
+
+    fireEvent.click(answer);
+    // The pressed button is gone; the browser would leave focus on <body>.
+    expect(screen.queryByRole("button", { name: "No team on this card" })).toBeNull();
+    await nextFrame();
+
+    const dialog = screen.getByRole("dialog");
+    expect(document.activeElement).not.toBe(document.body);
+    expect(dialog.contains(document.activeElement)).toBe(true);
+
+    fireEvent.keyDown(document.activeElement as Element, { key: "Enter" });
+    await waitFor(() => expect(markReviewed).toHaveBeenCalledTimes(1));
+  });
+
+  it("Esc still means Save for later after the focused button unmounts", async () => {
+    const { onClose } = mount([blue("a", "1")]);
+    const answer = await screen.findByRole("button", { name: "No team on this card" });
+    await nextFrame();
+    act(() => answer.focus());
+    fireEvent.click(answer);
+    await nextFrame();
+    fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not take focus from a field being typed in", async () => {
+    mount([blue("a", "1")]);
+    const answer = await screen.findByRole("button", { name: "No team on this card" });
+    await nextFrame();
+    const field = document.createElement("input");
+    field.setAttribute("aria-label", "A field on the card");
+    screen.getByTestId("tile-title").appendChild(field);
+    act(() => field.focus());
+    fireEvent.click(answer);
+    await nextFrame();
+    expect(document.activeElement).toBe(field);
   });
 });
 

@@ -14,6 +14,7 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { inertBackground } from "@/lib/dom/inert-background";
+import { isEditableTarget } from "@/lib/dom/is-editable-target";
 import NeonButton from "../../modules/NeonButton";
 import WizardChrome from "../WizardChrome";
 import {
@@ -349,9 +350,54 @@ function WalkDialog({
   // session nobody asked for.
   useEffect(() => {
     if (!currentId && !isDone) return;
-    const id = requestAnimationFrame(() => headerRef.current?.focus({ preventScroll: true }));
+    const id = requestAnimationFrame(() => {
+      // The card changed, so the field the operator was in (if any) belonged
+      // to the card that just left; one still on the page is a field of this
+      // card that someone is already typing in. Leave that one alone.
+      const active = document.activeElement;
+      if (active && panelRef.current?.contains(active) && isEditableTarget(active)) return;
+      headerRef.current?.focus({ preventScroll: true });
+    });
     return () => cancelAnimationFrame(id);
   }, [currentId, isDone]);
+
+  // Focus that is lost inside the walk comes back to the walk. A tile answer
+  // (No team on this card, Looks right, a picked chip) can unmount the very
+  // button that was pressed; the browser then drops focus to <body>, outside
+  // the dialog's key handler, and Enter and Esc go nowhere. Watch the panel
+  // for changes and, one frame after the dust settles, put focus on the card
+  // header (`tabIndex=-1`, the same place a new card starts). Only a LOST
+  // focus is repaired: while focus is on any live element (a field being
+  // typed in, a control that took it itself) nothing moves.
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel || typeof MutationObserver === "undefined") return;
+    let frame = 0;
+    const settle = () => {
+      frame = 0;
+      const active = document.activeElement;
+      const lost =
+        !active ||
+        active === document.body ||
+        active === document.documentElement ||
+        (active instanceof HTMLElement && active.matches(":disabled"));
+      if (!lost || !panel.isConnected) return;
+      (headerRef.current ?? panel).focus({ preventScroll: true });
+    };
+    const observer = new MutationObserver(() => {
+      if (frame === 0) frame = requestAnimationFrame(settle);
+    });
+    observer.observe(panel, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["disabled"],
+    });
+    return () => {
+      observer.disconnect();
+      if (frame !== 0) cancelAnimationFrame(frame);
+    };
+  }, []);
 
   const playerNames = context?.players.map((p) => p.nameOnCard ?? p.name);
   const headerLine = current ? cardHeaderLine(current, playerNames) : "";
