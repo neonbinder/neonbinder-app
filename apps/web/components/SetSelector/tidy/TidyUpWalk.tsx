@@ -23,6 +23,7 @@ import {
   currentReviewKeys,
   deriveCardAttention,
   isAwaitingTeamLookup,
+  needsTidyUp,
   teamLookupStatusLine,
 } from "../card-attention";
 import type { CardChecklistRow } from "../card-checklist-row";
@@ -221,6 +222,8 @@ function WalkDialog({
   const order = useMemo(() => walkOrder(cards, pendingKeys), [cards, pendingKeys]);
   const rowsById = useMemo(() => new Map(cards.map((c) => [c._id as string, c])), [cards]);
   const awaitingLookup = useMemo(() => cards.filter(isAwaitingTeamLookup).length, [cards]);
+  // The end screen's lookup line must not say "nothing for you to do" while cards still need a person.
+  const needYouCount = useMemo(() => cards.filter((c) => needsTidyUp(c)).length, [cards]);
 
   const current: CardChecklistRow | undefined =
     location.kind === "card" ? rowsById.get(location.cardId) : undefined;
@@ -538,7 +541,7 @@ function WalkDialog({
                   )}
                   {awaitingLookup > 0 && (
                     <p id={doneLookupId} className="text-sm text-ink-2">
-                      {teamLookupStatusLine(awaitingLookup)}
+                      {teamLookupStatusLine(awaitingLookup, needYouCount)}
                     </p>
                   )}
                 </div>

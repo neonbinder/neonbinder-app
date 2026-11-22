@@ -56,6 +56,7 @@ import { useSearchParams } from "react-router";
 import { api } from "../../convex/_generated/api";
 import { ALL_BRANDS_VIEW, type ManufacturerSelection } from "./all-brands-view";
 import type { SelectorLevel } from "./selector-sync-feedback";
+import { liveSearchParams, noteSearchWrite, settleSearchWrite } from "./live-search-params";
 import { TIDY_PARAM } from "./tidy/useTidyWalkUrl";
 
 /**
@@ -371,6 +372,7 @@ export function useDrillUrlState(): DrillUrlState {
       searchParams,
       setSearchParams,
     };
+    settleSearchWrite(searchParams);
   });
 
   /**
@@ -385,8 +387,11 @@ export function useDrillUrlState(): DrillUrlState {
       pruneFrom?: number,
     ) => {
       const { path: next } = canonicalPrefix(nextRaw);
-      const { searchParams: params, setSearchParams: setParams } =
+      const { searchParams: rendered, setSearchParams: setParams } =
         latest.current;
+      // NEO-645: build on the URL a walk write has just asked for (`?tidy=`),
+      // not the one last rendered, or this write undoes it.
+      const params = liveSearchParams(rendered);
       const serialized = serializeDrillPath(next, params);
       // NEO-645: the Tidy Up walk (`?tidy=`) belongs to the checklist it was
       // opened on. A write that moves the drill (anywhere else, a delete, a
@@ -406,6 +411,7 @@ export function useDrillUrlState(): DrillUrlState {
         );
         setTruncatedOnLoad(false);
         if (serialized.toString() === params.toString()) return;
+        noteSearchWrite(serialized);
         setParams(serialized, { replace: mode === "replace" });
       });
     },

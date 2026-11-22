@@ -3654,7 +3654,7 @@ export default function CardChecklist({
                 aria-hidden="true"
                 className="h-2 w-2 shrink-0 rounded-full bg-neon-blue-text shadow-[0_0_8px_rgb(0_194_255/var(--glow))] motion-safe:animate-pulse"
               />
-              <span>{teamLookupStatusLine(shownLookupCount)}</span>
+              <span>{teamLookupStatusLine(shownLookupCount, attentionCount)}</span>
             </span>
           )}
         </p>

@@ -42,6 +42,7 @@
  */
 import { useCallback, useLayoutEffect, useMemo, useRef } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router";
+import { liveSearchParams, noteSearchWrite, settleSearchWrite } from "../live-search-params";
 
 /** The query-string key. */
 export const TIDY_PARAM = "tidy";
@@ -125,25 +126,32 @@ export function useTidyWalkUrl(): TidyWalkUrl {
   const latest = useRef({ searchParams, setSearchParams, navigate, depth });
   useLayoutEffect(() => {
     latest.current = { searchParams, setSearchParams, navigate, depth };
+    settleSearchWrite(searchParams);
   });
 
   const write = useCallback(
     (value: string | null, mode: "push" | "replace", from?: string | null) => {
-      const { searchParams: params, setSearchParams: set, depth: here } = latest.current;
+      const { searchParams: rendered, setSearchParams: set, depth: here } = latest.current;
+      // Build on the URL a drill write has just asked for, not the one last rendered.
+      const params = liveSearchParams(rendered);
       // A push is one entry deeper than this one; a replace stays where it is.
       const next = here === undefined ? undefined : mode === "push" ? here + 1 : here;
       const state: TidyState | undefined =
         from || next !== undefined
           ? { ...(from ? { tidyFrom: from } : {}), ...(next !== undefined ? { tidyDepth: next } : {}) }
           : undefined;
-      set(withTidyParam(params, value), { replace: mode === "replace", state });
+      const nextParams = withTidyParam(params, value);
+      noteSearchWrite(nextParams);
+      set(nextParams, { replace: mode === "replace", state });
     },
     [],
   );
 
   const open = useCallback(() => {
-    const { searchParams: params, setSearchParams: set } = latest.current;
-    set(withTidyParam(params, TIDY_FIRST), { state: { tidyDepth: 0 } satisfies TidyState });
+    const { searchParams: rendered, setSearchParams: set } = latest.current;
+    const next = withTidyParam(liveSearchParams(rendered), TIDY_FIRST);
+    noteSearchWrite(next);
+    set(next, { state: { tidyDepth: 0 } satisfies TidyState });
   }, []);
   const goToCard = useCallback(
     (cardId: string, from: string | null) => write(cardId, "push", from),

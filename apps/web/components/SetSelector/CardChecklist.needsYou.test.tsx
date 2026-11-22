@@ -427,13 +427,13 @@ describe("CardChecklist — 'Still looking up teams' while the background lookup
   /** The always-mounted region; `textContent` is "" while idle. */
   const lookupRegion = () =>
     document.querySelector<HTMLElement>('[role="status"][data-team-lookup-status]');
-  const lookupLine = (count: number) =>
+  const lookupLine = (count: number, nothingToDo = true) =>
     screen
       .getAllByRole("status")
       .find(
         (el) =>
           el.textContent ===
-          `Still looking up teams for ${count} ${count === 1 ? "card" : "cards"}. Nothing for you to do yet.`,
+          `Still looking up teams for ${count} ${count === 1 ? "card" : "cards"}.${nothingToDo ? " Nothing for you to do yet." : ""}`,
       );
   /** The lane gave up on it: stamped done, no team, the operator's now. */
   const gaveUp = (n: number) => ({
@@ -473,6 +473,19 @@ describe("CardChecklist — 'Still looking up teams' while the background lookup
     state.cards = [awaitingLookup(1), awaitingLookup(2), teamless(3)];
     render(ui());
     expect(pill("1 needs you")).toBeTruthy();
+    // NEO-645: "Nothing for you to do yet." would contradict the pill beside it.
+    expect(lookupLine(2, false)).toBeTruthy();
+    expect(lookupLine(2)).toBeUndefined();
+    expect(lookupRegion()!.textContent).not.toMatch(/Nothing for you to do/);
+  });
+
+  it("brings 'Nothing for you to do yet.' back once the pill is gone", () => {
+    state.cards = [awaitingLookup(1), awaitingLookup(2), teamless(3)];
+    const { rerender } = render(ui());
+    expect(lookupLine(2, false)).toBeTruthy();
+    state.cards = [awaitingLookup(1), awaitingLookup(2), settled(3)];
+    rerender(ui());
+    expect(queryPill()).toBeNull();
     expect(lookupLine(2)).toBeTruthy();
   });
 
@@ -558,7 +571,7 @@ describe("CardChecklist — 'Still looking up teams' while the background lookup
   it("stands down while the walker is open: its done line says the same sentence", () => {
     state.cards = [awaitingLookup(1), awaitingLookup(2), teamless(3)];
     render(ui());
-    expect(lookupLine(2)).toBeTruthy();
+    expect(lookupLine(2, false)).toBeTruthy();
     fireEvent.click(pill());
     expect(screen.getByRole("dialog", { name: "Walker stand-in" })).toBeTruthy();
     expect(lookupRegion()!.textContent).toBe("");

@@ -12,7 +12,7 @@ import TeamFillChips from "../parts/TeamFillChips";
 import TeamNameRow from "../parts/TeamNameRow";
 import { useTidyWrite } from "../parts/tidy-write";
 import TidyTile, { ApplyToAllButton, TidyNote } from "../TidyTile";
-import type { TidyRow, TidyTileProps } from "../tile-types";
+import type { TidyCardContext, TidyRow, TidyTileProps } from "../tile-types";
 
 /**
  * Cards "Apply to all" proposes in one call. Keep in step with
@@ -21,6 +21,14 @@ import type { TidyRow, TidyTileProps } from "../tile-types";
  * it is sent regardless.
  */
 const APPLY_PROPOSE_MAX = 100;
+
+/** What the tile reads from the card's context before the context has loaded: nothing. */
+const NO_CONTEXT_YET = {
+  names: [],
+  players: [],
+  teams: [],
+  linkedFor: [],
+} as unknown as NonNullable<TidyCardContext>;
 
 /**
  * NEO-645 — tile 5, Team.
@@ -82,17 +90,20 @@ export default function TeamTile({ row, context, attention, leafId, sportId, lea
   const confirmedNone = teamsOnCard.length === 0 && row.teamNoneConfirmedAt !== undefined;
 
   if (context === null) return null;
-  if (context === undefined) {
-    return nameOpen || teamsOnCard.length > 0 ? (
-      <TidyTile heading="Team" level="waiting" waitingText="Looking at this card" />
-    ) : noTeam ? (
-      <TidyTile heading="Team" level="fix">
-        <TeamFillChips row={row} sportId={sportId} leafId={leafId} players={[]} write={write} />
-      </TidyTile>
-    ) : null;
+  // While the card's context loads, a card whose NAME is open or that already
+  // has a team only waits; a card with no team still shows its chips, which
+  // need nothing from the context. Those go through the same tree as the loaded
+  // tile (an empty context), not a tree of their own: a chips component that is
+  // the lone child of the tile while loading, then one of several once the
+  // context arrives, is mounted again, and the "Other team…" search that was
+  // open closes with the teams already chosen dropped.
+  if (context === undefined && (nameOpen || teamsOnCard.length > 0)) {
+    return <TidyTile heading="Team" level="waiting" waitingText="Looking at this card" />;
   }
+  if (context === undefined && !noTeam) return null;
+  const ctx = context ?? NO_CONTEXT_YET;
 
-  const teamNames = context.names.filter((n) => n.kind === "team");
+  const teamNames = ctx.names.filter((n) => n.kind === "team");
   if (teamNames.length === 0 && teamsOnCard.length === 0 && !noTeam && !confirmedNone) return null;
 
   const answeredTeamIds = new Set<string>(
@@ -100,9 +111,9 @@ export default function TeamTile({ row, context, attention, leafId, sportId, lea
   );
   // Teams the card carries that no name row stands behind: the exact single
   // match (D6: no row) and teams picked by hand.
-  const unrowed = context.teams.filter((t) => t.onCard && !answeredTeamIds.has(t.teamId));
+  const unrowed = ctx.teams.filter((t) => t.onCard && !answeredTeamIds.has(t.teamId));
   const reasonOf = (teamId: string) =>
-    context.linkedFor.find((l) => l.kind === "team" && l.teamId === teamId)?.reason;
+    ctx.linkedFor.find((l) => l.kind === "team" && l.teamId === teamId)?.reason;
   const fill = teamFillOf(row);
   const multi = teamNames.length > 1;
   const open = nameOpen || noTeam;
@@ -131,7 +142,7 @@ export default function TeamTile({ row, context, attention, leafId, sportId, lea
     playerId && sourceTeamId
       ? leafCards.filter((c) => proposesTeam(c, row._id, playerId)).slice(0, APPLY_PROPOSE_MAX)
       : [];
-  const playerName = context.players.find((p) => p.playerId === playerId)?.name;
+  const playerName = ctx.players.find((p) => p.playerId === playerId)?.name;
 
   return (
     <TidyTile heading="Team" level={open ? "fix" : "plain"}>
@@ -146,7 +157,7 @@ export default function TeamTile({ row, context, attention, leafId, sportId, lea
           key={`${name.kind}|${name.nameNormalized}`}
           row={row}
           name={name}
-          context={context}
+          context={ctx}
           setSportId={sportId}
           leafId={leafId}
           multi={multi}
@@ -168,7 +179,7 @@ export default function TeamTile({ row, context, attention, leafId, sportId, lea
               <TidyNote>
                 {teamLinkedForText(
                   reason,
-                  context.players.find((p) => p.stints.some((s) => s.teamId === team.teamId))?.name,
+                  ctx.players.find((p) => p.stints.some((s) => s.teamId === team.teamId))?.name,
                 )}
               </TidyNote>
             )}
@@ -197,7 +208,7 @@ export default function TeamTile({ row, context, attention, leafId, sportId, lea
           row={row}
           sportId={sportId}
           leafId={leafId}
-          players={context.players}
+          players={ctx.players}
           write={write}
         />
       )}

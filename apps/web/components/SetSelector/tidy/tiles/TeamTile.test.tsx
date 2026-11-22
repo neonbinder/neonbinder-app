@@ -587,6 +587,64 @@ describe("TeamTile", () => {
       expect(chip.getAttribute("aria-pressed")).toBe("true");
     });
 
+    it("keeps an open Other team… search and the teams picked in it when the card's context arrives", async () => {
+      queryResults["cardChecklist.suggestedTeamsForCard"] = [];
+      queryResults["teams.getManyByIds"] = [
+        { _id: "team-9", name: "Orioles", location: "Baltimore", leagueId: "l-mlb", yearsActive: { from: 1954 } },
+      ];
+      queryResults["leagues.list"] = [{ _id: "l-mlb", name: "Major League Baseball", abbreviation: "MLB" }];
+      const props = (ctx: TidyCardContext | undefined): TidyTileProps => ({
+        row: row(),
+        context: ctx,
+        attention: { level: "fix", items },
+        leafId: "leaf-1" as never,
+        sportId: SPORT as never,
+        leafCards: [],
+        setName: "Set",
+      });
+      const tree = (ctx: TidyCardContext | undefined) => (
+        <AnsweredProvider value={() => {}}>
+          <TeamTile {...props(ctx)} />
+        </AnsweredProvider>
+      );
+      // The context query has not answered: the chips are the tile's only child.
+      const { rerender } = render(tree(undefined));
+      await click(screen.getByRole("button", { name: "Other team…" }));
+      const pick = screen.getByRole("button", { name: "Pick a team" });
+      await click(pick);
+      const chip = screen.getByRole("button", { name: /Baltimore Orioles/ });
+      // Then it does: the same chips now sit among the tile's other children.
+      rerender(tree(ctx()));
+      expect(screen.getByRole("button", { name: /Baltimore Orioles/ })).toBe(chip);
+      expect(chip.isConnected).toBe(true);
+      expect(chip.getAttribute("aria-pressed")).toBe("true");
+      await click(screen.getByRole("button", { name: "Save team" }));
+      expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({ id: CARD, teamOnCardIds: ["team-9"] });
+    });
+
+    it("keeps the Other team… search itself open across the same switch", async () => {
+      queryResults["cardChecklist.suggestedTeamsForCard"] = [];
+      const props = (ctx: TidyCardContext | undefined): TidyTileProps => ({
+        row: row(),
+        context: ctx,
+        attention: { level: "fix", items },
+        leafId: "leaf-1" as never,
+        sportId: SPORT as never,
+        leafCards: [],
+        setName: "Set",
+      });
+      const tree = (ctx: TidyCardContext | undefined) => (
+        <AnsweredProvider value={() => {}}>
+          <TeamTile {...props(ctx)} />
+        </AnsweredProvider>
+      );
+      const { rerender } = render(tree(undefined));
+      await click(screen.getByRole("button", { name: "Other team…" }));
+      const pick = screen.getByRole("button", { name: "Pick a team" });
+      rerender(tree(ctx()));
+      expect(screen.getByRole("button", { name: "Pick a team" })).toBe(pick);
+    });
+
     it("'Other team…' adds a searched team to the choice", async () => {
       queryResults["cardChecklist.suggestedTeamsForCard"] = [];
       renderTile({ row: row(), ctx: ctx(), items });

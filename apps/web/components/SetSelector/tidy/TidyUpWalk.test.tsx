@@ -516,8 +516,23 @@ describe("the end screen", () => {
       platformData: { bsc: { ref: "r" } },
     } as unknown as CardChecklistRow;
     mount([pink("a", "1"), waiting], { search: "?tidy=done" });
-    expect(await screen.findByText("Still looking up teams for 1 card. Nothing for you to do yet.")).toBeTruthy();
+    // A pink card still needs the operator, so the line does not say there is nothing to do.
+    expect(await screen.findByText("Still looking up teams for 1 card.")).toBeTruthy();
+    expect(screen.queryByText(/Nothing for you to do yet/)).toBeNull();
     expect(screen.queryByText(/skipped/)).toBeNull();
+  });
+
+  it("keeps 'Nothing for you to do yet.' when no card needs the operator", async () => {
+    const waiting = {
+      _id: "w",
+      cardNumber: "9",
+      cardName: "X",
+      playerIds: ["p1"],
+      teamOnCardIds: [],
+      platformData: { bsc: { ref: "r" } },
+    } as unknown as CardChecklistRow;
+    mount([waiting], { search: "?tidy=done" });
+    expect(await screen.findByText("Still looking up teams for 1 card. Nothing for you to do yet.")).toBeTruthy();
   });
 
   it("holds one status line for the whole sitting, empty until the end screen says something", async () => {

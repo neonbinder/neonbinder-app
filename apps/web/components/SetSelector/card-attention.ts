@@ -38,11 +38,16 @@ export function stillLookingUpTeams(count: number): string {
 /**
  * PR 451 (NEO-487) — the checklist's status line while any of the set's cards
  * wait on the background team lookup. The second sentence is the point of
- * the line: there is nothing to press. A card the lookup gives up on becomes
- * the operator's through the attention count, not through this line.
+ * the line: there is nothing to press. NEO-645: only while nothing else needs
+ * the operator. With cards on the "N need you" pill the sentence would
+ * contradict it, so the line is the lookup count alone. A card the lookup
+ * gives up on becomes the operator's through the attention count, not through
+ * this line.
  */
-export function teamLookupStatusLine(count: number): string {
-  return `${stillLookingUpTeams(count)} Nothing for you to do yet.`;
+export function teamLookupStatusLine(count: number, needYouCount = 0): string {
+  return needYouCount > 0
+    ? stillLookingUpTeams(count)
+    : `${stillLookingUpTeams(count)} Nothing for you to do yet.`;
 }
 
 /**
