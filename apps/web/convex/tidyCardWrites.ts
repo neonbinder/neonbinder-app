@@ -344,9 +344,9 @@ export async function writeNameChange(
     cardMayTakeFill(card, fields)
   ) {
     const filled = await planFillOnAnswer(ctx, card, fields.playerIds, cache.fill);
-    if (filled && filled.length > 0) {
-      fields = { ...fields, teamOnCardIds: filled };
-      teamFillCheck = { kind: "teamFill", teamIds: filled, reason: "career" };
+    if (filled && filled.teamIds.length > 0) {
+      fields = { ...fields, teamOnCardIds: filled.teamIds };
+      teamFillCheck = { kind: "teamFill", teamIds: filled.teamIds, reason: filled.reason };
     }
   }
   const playersChanged =

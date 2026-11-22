@@ -1,10 +1,10 @@
 /**
  * NEO-645 — the bulk writers of `tidyCards.ts`:
  *
- *   - `applyTeamToPlayerCards`: the guarded "Apply to all" on the Team tile. A
- *     card takes the team only when NOTHING on it names or rules out a team
- *     (rule 8: a data claim holds back a guess) AND `careerTeamVerdict` gives
- *     exactly that one team for the card's year;
+ *   - `applyTeamToPlayerCards`: "Apply to all" on the Team tile, main's wizard
+ *     line: a card takes the answer when it is under the same checklist, on the
+ *     same line (the same player set and claim key) and still teamless. There
+ *     is no career test;
  *   - `applyVariation`: compare-and-set on `cardVariation === from`;
  *   - `applySetNameToTitles`: the NEO-637 rules, server-side.
  */
@@ -125,16 +125,38 @@ const applyTeam = (
   t: T,
   tw: TeamWorld,
   cardIds: Array<Id<"cardChecklist">>,
-  over: { sourceCardId?: Id<"cardChecklist">; teamId?: Id<"teams"> } = {},
+  over: { sourceCardId?: Id<"cardChecklist">; teamIds?: Array<Id<"teams">> } = {},
 ) =>
   t.withIdentity(ADMIN).mutation(api.tidyCards.applyTeamToPlayerCards, {
     sourceCardId: over.sourceCardId ?? tw.source,
-    teamId: over.teamId ?? tw.w.padres,
+    teamIds: over.teamIds ?? [tw.w.padres],
     cardIds,
   });
 
-describe("applyTeamToPlayerCards — a card takes the team only when nothing names a team and the career gives exactly it", () => {
-  test("a teamless card of the same player, in a year the career gives that one team, is written", async () => {
+/** A card of two players (and the source of a two-player line, when given teams). */
+const twoPlayerCard = (
+  t: T,
+  tw: TeamWorld,
+  n: string,
+  extra: Record<string, unknown> = {},
+  order: "mr" | "rm" = "mr",
+) => {
+  const ids = order === "mr" ? [tw.merrill, tw.other] : [tw.other, tw.merrill];
+  const names = { [tw.merrill]: "Jackson Merrill", [tw.other]: "Somebody Else" } as Record<string, string>;
+  return t.run((ctx) =>
+    printCard(ctx, tw.w, {
+      number: n,
+      extra: {
+        playerIds: ids,
+        playerLinks: ids.map((playerId) => ({ playerId, nameOnCard: names[playerId] })),
+        ...extra,
+      },
+    }),
+  );
+};
+
+describe("applyTeamToPlayerCards — the answer goes to the card's line (main's wizard grouping): same player set, same claim key, still teamless", () => {
+  test("a teamless card of the same player, under the same checklist, is written", async () => {
     const t = newT();
     const tw = await teamWorld(t);
     const ok = await merrillCard(t, tw, "2");
@@ -164,7 +186,7 @@ describe("applyTeamToPlayerCards — a card takes the team only when nothing nam
     expect((await card(t, typed))!.listingTitle).toBe("Hand typed");
   });
 
-  test("a traded player (two teams in the card's year) is refused", async () => {
+  test("there is no career test: a traded player's card, and a team his career never gave, take the operator's answer", async () => {
     const t = newT();
     const tw = await teamWorld(t);
     const traded = await t.run((ctx) =>
@@ -173,7 +195,6 @@ describe("applyTeamToPlayerCards — a card takes the team only when nothing nam
         extra: { playerIds: [tw.trader], playerLinks: [{ playerId: tw.trader, nameOnCard: "Trade Deadline" }] },
       }),
     );
-    // The source must be the same player for the guard to look at the card at all.
     const src = await t.run((ctx) =>
       printCard(ctx, tw.w, {
         number: "5",
@@ -184,34 +205,24 @@ describe("applyTeamToPlayerCards — a card takes the team only when nothing nam
         },
       }),
     );
-    const out = await applyTeam(t, tw, [traded], { sourceCardId: src });
-    expect(out).toEqual({ applied: 0, skipped: 1 });
-    expect((await card(t, traded))!.teamOnCardIds).toBeUndefined();
+    expect(await applyTeam(t, tw, [traded], { sourceCardId: src })).toEqual({ applied: 1, skipped: 0 });
+    expect((await card(t, traded))!.teamOnCardIds).toEqual([tw.w.padres]);
+    // Merrill never played for the Mets in 2024; the source says Mets, so the line takes Mets.
+    await t.run((ctx) => ctx.db.patch(tw.source, { teamOnCardIds: [tw.w.mets] }));
+    const ok = await merrillCard(t, tw, "6");
+    expect(await applyTeam(t, tw, [ok], { teamIds: [tw.w.mets] })).toEqual({ applied: 1, skipped: 0 });
+    expect((await card(t, ok))!.teamOnCardIds).toEqual([tw.w.mets]);
   });
 
-  test("a card in a year the career gives ANOTHER team is refused (the fill rule, not the career-gap rule)", async () => {
+  test("a card under another checklist is never on the line", async () => {
     const t = newT();
     const tw = await teamWorld(t);
-    const in2022 = await merrillCard(t, tw, "6", {}, tw.leaf2022);
-    const out = await applyTeam(t, tw, [in2022]);
-    expect(out).toEqual({ applied: 0, skipped: 1 });
-    expect((await card(t, in2022))!.teamOnCardIds).toBeUndefined();
+    const elsewhere = await merrillCard(t, tw, "7", {}, tw.leaf2022);
+    expect(await applyTeam(t, tw, [elsewhere])).toEqual({ applied: 0, skipped: 1 });
+    expect((await card(t, elsewhere))!.teamOnCardIds).toBeUndefined();
   });
 
-  test("applying a team the career does not give for that year is refused, whatever the source card says", async () => {
-    const t = newT();
-    const tw = await teamWorld(t);
-    const src = await t.run((ctx) =>
-      ctx.db.patch(tw.source, { teamOnCardIds: [tw.w.mets] }),
-    );
-    expect(src).toBeNull();
-    const ok = await merrillCard(t, tw, "2");
-    // 2024: the career gives the Padres; the Mets is not what it gives.
-    const out = await applyTeam(t, tw, [ok], { teamId: tw.w.mets });
-    expect(out).toEqual({ applied: 0, skipped: 1 });
-  });
-
-  test("a different player on the card is refused", async () => {
+  test("a different player set is a different line", async () => {
     const t = newT();
     const tw = await teamWorld(t);
     const someoneElse = await t.run((ctx) =>
@@ -220,20 +231,37 @@ describe("applyTeamToPlayerCards — a card takes the team only when nothing nam
         extra: { playerIds: [tw.other], playerLinks: [{ playerId: tw.other, nameOnCard: "Somebody Else" }] },
       }),
     );
-    expect(await applyTeam(t, tw, [someoneElse])).toEqual({ applied: 0, skipped: 1 });
+    // A card with an extra player is another set too.
+    const withExtra = await twoPlayerCard(t, tw, "8");
+    expect(await applyTeam(t, tw, [someoneElse, withExtra])).toEqual({ applied: 0, skipped: 2 });
   });
 
-  test("a multi-player card is refused", async () => {
+  test("a multi-player line: every card with the same set takes every team, whatever the player order", async () => {
     const t = newT();
     const tw = await teamWorld(t);
-    const two = await merrillCard(t, tw, "8", {
-      playerIds: [tw.merrill, tw.other],
-      playerLinks: [
-        { playerId: tw.merrill, nameOnCard: "Jackson Merrill" },
-        { playerId: tw.other, nameOnCard: "Somebody Else" },
-      ],
+    const src = await twoPlayerCard(t, tw, "50", { teamOnCardIds: [tw.w.padres, tw.w.mets] });
+    const same = await twoPlayerCard(t, tw, "51");
+    const reordered = await twoPlayerCard(t, tw, "52", {}, "rm");
+    const solo = await merrillCard(t, tw, "53");
+    const out = await applyTeam(t, tw, [same, reordered, solo], {
+      sourceCardId: src,
+      teamIds: [tw.w.padres, tw.w.mets],
     });
-    expect(await applyTeam(t, tw, [two])).toEqual({ applied: 0, skipped: 1 });
+    expect(out).toEqual({ applied: 2, skipped: 1 });
+    expect((await card(t, same))!.teamOnCardIds).toEqual([tw.w.padres, tw.w.mets]);
+    expect((await card(t, reordered))!.teamOnCardIds).toEqual([tw.w.padres, tw.w.mets]);
+    expect((await card(t, solo))!.teamOnCardIds).toBeUndefined();
+  });
+
+  test("the cards with nobody on them share one line, whatever their claims", async () => {
+    const t = newT();
+    const tw = await teamWorld(t);
+    const bare = (n: string, extra: Record<string, unknown> = {}) =>
+      t.run((ctx) => printCard(ctx, tw.w, { number: n, extra }));
+    const src = await bare("60", { teamOnCardIds: [tw.w.padres] });
+    const plain = await bare("61");
+    const named = await bare("62", { bscTeamName: "League Leaders" });
+    expect(await applyTeam(t, tw, [plain, named], { sourceCardId: src })).toEqual({ applied: 2, skipped: 0 });
   });
 
   test("a card with a player name still pending is refused", async () => {
@@ -243,7 +271,7 @@ describe("applyTeamToPlayerCards — a card takes the team only when nothing nam
     expect(await applyTeam(t, tw, [pending])).toEqual({ applied: 0, skipped: 1 });
   });
 
-  test("rule 8: a card that already carries a team keeps it", async () => {
+  test("a card that already carries a team keeps it", async () => {
     const t = newT();
     const tw = await teamWorld(t);
     const hasTeam = await merrillCard(t, tw, "10", { teamOnCardIds: [tw.w.mets] });
@@ -251,7 +279,7 @@ describe("applyTeamToPlayerCards — a card takes the team only when nothing nam
     expect((await card(t, hasTeam))!.teamOnCardIds).toEqual([tw.w.mets]);
   });
 
-  test("rule 8: a team name pending on the card (the listing named one) is refused", async () => {
+  test("a team name pending on the card is refused", async () => {
     const t = newT();
     const tw = await teamWorld(t);
     const pending = await merrillCard(t, tw, "11", { pendingTeamNames: ["Padrez"] });
@@ -259,15 +287,7 @@ describe("applyTeamToPlayerCards — a card takes the team only when nothing nam
     expect((await card(t, pending))!.teamOnCardIds).toBeUndefined();
   });
 
-  test("rule 8: a source-named team that matched nothing (bscTeamName) is refused", async () => {
-    const t = newT();
-    const tw = await teamWorld(t);
-    const named = await merrillCard(t, tw, "12", { bscTeamName: "Some Other Club" });
-    expect(await applyTeam(t, tw, [named])).toEqual({ applied: 0, skipped: 1 });
-    expect((await card(t, named))!.teamOnCardIds).toBeUndefined();
-  });
-
-  test("rule 8: a teams disagreement between the sources, settled or not, is refused", async () => {
+  test("a teams disagreement between the sources, settled or not, is refused", async () => {
     const t = newT();
     const tw = await teamWorld(t);
     const entry = {
@@ -284,7 +304,7 @@ describe("applyTeamToPlayerCards — a card takes the team only when nothing nam
     expect(await applyTeam(t, tw, [unsettled, settled])).toEqual({ applied: 0, skipped: 2 });
   });
 
-  test("rule 8: a card the operator stamped No Team is refused", async () => {
+  test("a card the operator stamped No Team is refused", async () => {
     const t = newT();
     const tw = await teamWorld(t);
     const none = await merrillCard(t, tw, "15", {
@@ -295,48 +315,67 @@ describe("applyTeamToPlayerCards — a card takes the team only when nothing nam
     expect((await card(t, none))!.teamOnCardIds).toBeUndefined();
   });
 
-  test("rule 8: a card the publisher checklist answered (teamCheckOutcome checklist) is refused", async () => {
-    const t = newT();
-    const tw = await teamWorld(t);
-    const claimed = await merrillCard(t, tw, "16", {
-      teamCheckDoneAt: WORLD_NOW,
-      teamCheckOutcome: "checklist",
+  describe("the claim key: a card under a claim shares a line only with cards under the SAME claim (rule 8)", () => {
+    test("a listing's team name is a claim of its own: a card with another name, or none, is another line", async () => {
+      const t = newT();
+      const tw = await teamWorld(t);
+      await t.run((ctx) => ctx.db.patch(tw.source, { bscTeamName: "Some Club" }));
+      const same = await merrillCard(t, tw, "12", { bscTeamName: "  SOME   club " });
+      const other = await merrillCard(t, tw, "16", { bscTeamName: "Some Other Club" });
+      const none = await merrillCard(t, tw, "17");
+      expect(await applyTeam(t, tw, [same, other, none])).toEqual({ applied: 1, skipped: 2 });
+      expect((await card(t, same))!.teamOnCardIds).toEqual([tw.w.padres]);
+      expect((await card(t, other))!.teamOnCardIds).toBeUndefined();
+      expect((await card(t, none))!.teamOnCardIds).toBeUndefined();
     });
-    expect(await applyTeam(t, tw, [claimed])).toEqual({ applied: 0, skipped: 1 });
+
+    test("a card with a listing claim is never on an unclaimed source's line", async () => {
+      const t = newT();
+      const tw = await teamWorld(t);
+      const named = await merrillCard(t, tw, "18", { bscTeamName: "Elsewhere" });
+      expect(await applyTeam(t, tw, [named])).toEqual({ applied: 0, skipped: 1 });
+    });
+
+    test("a card the publisher checklist answered shares a line only with cards it answered too", async () => {
+      const t = newT();
+      const tw = await teamWorld(t);
+      const claimed = await merrillCard(t, tw, "19", { teamCheckDoneAt: WORLD_NOW, teamCheckOutcome: "checklist" });
+      expect(await applyTeam(t, tw, [claimed])).toEqual({ applied: 0, skipped: 1 });
+      await t.run((ctx) =>
+        ctx.db.patch(tw.source, { teamCheckDoneAt: WORLD_NOW, teamCheckOutcome: "checklist" }),
+      );
+      const plain = await merrillCard(t, tw, "20");
+      expect(await applyTeam(t, tw, [claimed, plain])).toEqual({ applied: 1, skipped: 1 });
+      expect((await card(t, claimed))!.teamOnCardIds).toEqual([tw.w.padres]);
+    });
+
+    test("a lookup that never answered is not a claim: a card whose team check gave up is on the plain line", async () => {
+      const t = newT();
+      const tw = await teamWorld(t);
+      const gaveUp = await merrillCard(t, tw, "21", { teamCheckDoneAt: WORLD_NOW, teamCheckOutcome: "gaveUp" });
+      expect(await applyTeam(t, tw, [gaveUp])).toEqual({ applied: 1, skipped: 0 });
+      expect((await card(t, gaveUp))!.teamOnCardIds).toEqual([tw.w.padres]);
+    });
   });
 
-  test("a lookup that never answered is not a claim: a card whose team check gave up is still written", async () => {
+  test("a set whose own team default is No Team takes the operator's answer too (the default only holds back guesses)", async () => {
     const t = newT();
     const tw = await teamWorld(t);
-    const gaveUp = await merrillCard(t, tw, "17", {
-      teamCheckDoneAt: WORLD_NOW,
-      teamCheckOutcome: "gaveUp",
-    });
-    expect(await applyTeam(t, tw, [gaveUp])).toEqual({ applied: 1, skipped: 0 });
-    expect((await card(t, gaveUp))!.teamOnCardIds).toEqual([tw.w.padres]);
-  });
-
-  test("NEO-639 (decision A): no card of a set whose own team default is No Team takes the fill", async () => {
-    const t = newT();
-    const tw = await teamWorld(t);
-    const teamless = await merrillCard(t, tw, "18");
+    const teamless = await merrillCard(t, tw, "22");
     await t.run((ctx) =>
       ctx.db.patch(tw.w.base, { noTeamDefault: { setAt: WORLD_NOW, setByUserId: "op" } }),
     );
-    expect(await applyTeam(t, tw, [teamless])).toEqual({ applied: 0, skipped: 1 });
-    expect((await card(t, teamless))!.teamOnCardIds).toBeUndefined();
-    // The same card, once the set no longer says No Team, is written.
-    await t.run((ctx) => ctx.db.patch(tw.w.base, { noTeamDefault: undefined }));
     expect(await applyTeam(t, tw, [teamless])).toEqual({ applied: 1, skipped: 0 });
+    expect((await card(t, teamless))!.teamOnCardIds).toEqual([tw.w.padres]);
   });
 
-  test("a mixed batch writes only the cards that pass, and counts the rest", async () => {
+  test("a mixed batch writes only the cards on the line, and counts the rest", async () => {
     const t = newT();
     const tw = await teamWorld(t);
-    const good1 = await merrillCard(t, tw, "20");
-    const good2 = await merrillCard(t, tw, "21");
-    const named = await merrillCard(t, tw, "22", { bscTeamName: "Elsewhere" });
-    const gone = await merrillCard(t, tw, "23");
+    const good1 = await merrillCard(t, tw, "23");
+    const good2 = await merrillCard(t, tw, "24");
+    const named = await merrillCard(t, tw, "25", { bscTeamName: "Elsewhere" });
+    const gone = await merrillCard(t, tw, "26");
     await t.run((ctx) => ctx.db.delete(gone));
     const out = await applyTeam(t, tw, [good1, good2, named, gone, tw.source, good1]);
     expect(out).toEqual({ applied: 2, skipped: 2 });
@@ -344,12 +383,14 @@ describe("applyTeamToPlayerCards — a card takes the team only when nothing nam
     expect((await card(t, named))!.teamOnCardIds).toBeUndefined();
   });
 
-  test("the source card must carry the team (and be a one-player card) first", async () => {
+  test("the source card must carry every team it is applied for", async () => {
     const t = newT();
     const tw = await teamWorld(t);
     const bare = await merrillCard(t, tw, "30");
     await expect(applyTeam(t, tw, [], { sourceCardId: bare })).rejects.toThrow(/team first/);
-    await expect(applyTeam(t, tw, [], { teamId: tw.w.mets })).rejects.toThrow(/team first/);
+    await expect(applyTeam(t, tw, [], { teamIds: [tw.w.mets] })).rejects.toThrow(/team first/);
+    await expect(applyTeam(t, tw, [], { teamIds: [tw.w.padres, tw.w.mets] })).rejects.toThrow(/team first/);
+    await expect(applyTeam(t, tw, [], { teamIds: [] })).rejects.toThrow(/between 1 and/);
   });
 
   test("more than 100 cards is refused and nothing is written", async () => {
@@ -391,7 +432,7 @@ describe("applyTeamToPlayerCards — a card takes the team only when nothing nam
     expect(out).toEqual({ applied: total, skipped: 0 });
     expect((await card(t, ids[0]))!.teamOnCardIds).toEqual([tw.w.padres]);
     expect((await card(t, ids[total - 1]))!.teamOnCardIds).toBeUndefined();
-    // Between the call and the page, a source named a team on the last card.
+    // Between the call and the page, a source named a team on the last card: another line now.
     await t.run((ctx) => ctx.db.patch(ids[total - 1], { bscTeamName: "Late Claim" }));
     await drainScheduled(t);
     expect((await card(t, ids[total - 2]))!.teamOnCardIds).toEqual([tw.w.padres]);
@@ -404,8 +445,9 @@ describe("applyTeamToPlayerCards — a card takes the team only when nothing nam
     const ok = await merrillCard(t, tw, "40");
     const named = await merrillCard(t, tw, "41", { pendingTeamNames: ["X"] });
     const out = await t.mutation(internal.tidyCards.applyTeamPage, {
-      playerId: tw.merrill,
-      teamId: tw.w.padres,
+      leafId: tw.w.base,
+      lineKey: `players:${tw.merrill}`,
+      teamIds: [tw.w.padres],
       cardIds: [ok, named],
       userId: "op",
     });
@@ -415,7 +457,7 @@ describe("applyTeamToPlayerCards — a card takes the team only when nothing nam
   test("refuses a signed-out caller and a non-admin", async () => {
     const t = newT();
     const tw = await teamWorld(t);
-    const args = { sourceCardId: tw.source, teamId: tw.w.padres, cardIds: [] };
+    const args = { sourceCardId: tw.source, teamIds: [tw.w.padres], cardIds: [] };
     await expect(t.mutation(api.tidyCards.applyTeamToPlayerCards, args)).rejects.toThrow(/Not authenticated/);
     await expect(t.withIdentity(MEMBER).mutation(api.tidyCards.applyTeamToPlayerCards, args)).rejects.toThrow(
       /Admin access required/,

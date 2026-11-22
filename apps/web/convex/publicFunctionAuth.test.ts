@@ -4273,8 +4273,17 @@ describe("NEO-645: the Tidy Up surface is admin-gated", () => {
       (t, s) =>
         t.mutation(api.tidyCards.applyTeamToPlayerCards, {
           sourceCardId: s.cardId,
-          teamId: s.teamId,
+          teamIds: [s.teamId],
           cardIds: [s.cardId],
+        }),
+    ],
+    [
+      "tidyCards.keepCareerGap",
+      (t, s) =>
+        t.mutation(api.tidyCards.keepCareerGap, {
+          cardId: s.cardId,
+          playerId: s.playerId,
+          teamId: s.teamId,
         }),
     ],
     [

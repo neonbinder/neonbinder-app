@@ -8,7 +8,8 @@
  *   - `markReviewed`           REAL. "Seen" for blue; refuses while pink remains.
  *   - `pickSourceValue`        Sources disagree: use one value (this card, or the
  *                              cards with the same disagreement).
- *   - `applyTeamToPlayerCards` the guarded "Apply to all" on the Team tile.
+ *   - `keepCareerGap`          "Keep as is" on a career gap (the default is Add to career).
+ *   - `applyTeamToPlayerCards` "Apply to all" on the Team tile: the answer goes to its line.
  *   - `applyVariation`         Apply a corrected variation to the cards that share it.
  *   - `applySetNameToTitles`   "Shorten the set name for every card".
  *
@@ -47,9 +48,11 @@ import {
   resolveScopeLeaf,
 } from "./cardPrintedNames";
 import {
+  MAX_CARD_TEAMS,
   TIDY_REVIEWED_KEY_MAX_LENGTH,
   TIDY_REVIEWED_MAX_KEYS,
   currentReviewKeys,
+  tidyReviewedKeyCareerGap,
   deriveCardAttention,
 } from "./features/cardAttention";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
@@ -69,9 +72,10 @@ import {
   writeNameChange,
   type NameWriteCache,
 } from "./tidyCardWrites";
-import { careerVerdictFor, newCareerVerdictCache, type CareerVerdictCache } from "./lib/careerVerdict";
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
-import { teamDefaultOf } from "./lib/selectorTeams";
+import { isTeamlessOnLine, teamLineKey } from "./lib/teamLine";
+import { defaultGapStint } from "./lib/careerGapStint";
+import { appendCareerStintsImpl } from "./players";
 import { queueRetitledCardNow } from "./listingTitleRequeue";
 import { recheckCareerGaps } from "./tidyCareerGap";
 import { listingInputsForStoredCard } from "./storedCardTitle";
@@ -416,6 +420,11 @@ export const cardContext = query({
  *   title, no link rows (the NEO-203 baseVersion must not move for a review).
  * - Idempotent; replaces the previous list (a key whose value changed drops out
  *   and its item re-raises).
+ * - A career gap among the keys that `keepCareerGap` has not kept is ANSWERED
+ *   here with main's default, "Add to career": `players.addStint`'s writer adds
+ *   the stint from the set's year (`defaultGapStint`), the card's gap is
+ *   re-checked, and the key is stored as seen. A year the career will not hold
+ *   leaves the gap in place and seen.
  *
  * Returns the keys that were stored.
  */
@@ -437,15 +446,81 @@ export const markReviewed = mutation({
         `A seen-key is at most ${TIDY_REVIEWED_KEY_MAX_LENGTH} characters.`,
       );
     }
-    const card = await ctx.db.get(args.cardId);
+    let card = await ctx.db.get(args.cardId);
     if (!card) throw new Error("Card not found");
-    if (deriveCardAttention(card).level === "fix") {
+    const attention = deriveCardAttention(card);
+    if (attention.level === "fix") {
       throw new ConvexError("Fix the pink items first.");
+    }
+    // A career gap the operator did not keep (`keepCareerGap` stores that key
+    // as seen at once) takes main's default answer, "Add to career": the stint
+    // from the set's year goes to the player, as the wizard's one Next did.
+    const offered = new Set(args.keys);
+    const gaps = attention.items.flatMap((i) =>
+      i.kind === "careerGap" && offered.has(i.key) ? [i] : [],
+    );
+    if (gaps.length > 0) {
+      const setYear = await findSetYearForSelectorOption(ctx, card.selectorOptionId);
+      if (setYear !== undefined) {
+        for (const gap of gaps) {
+          try {
+            const result = await appendCareerStintsImpl(ctx, [
+              {
+                playerId: gap.playerId as Id<"players">,
+                teamId: gap.teamId as Id<"teams">,
+                ...defaultGapStint(setYear),
+              },
+            ]);
+            if (result.added + result.existing > 0) {
+              const fresh = await ctx.db.get(card._id);
+              if (fresh) await recheckCareerGaps(ctx, fresh, gap.playerId as Id<"players">);
+              await ctx.scheduler.runAfter(0, internal.tidyCards.recheckCareerGapPage, {
+                leafId: card.selectorOptionId,
+                playerId: gap.playerId as Id<"players">,
+                cursor: null,
+              });
+            }
+          } catch {
+            // A year the career will not hold: the gap stays, and is seen.
+          }
+        }
+        card = (await ctx.db.get(card._id)) ?? card;
+      }
     }
     const current = new Set(currentReviewKeys(card));
     const keys = [...new Set(args.keys)].filter((k) => current.has(k));
     await ctx.db.patch(card._id, { tidyReviewed: { at: Date.now(), keys } });
     return { keys };
+  },
+});
+
+/**
+ * "Keep as is" on a career gap: the operator's explicit way out of the default
+ * "Add to career" (`markReviewed`). Stores the gap's key as seen, and nothing
+ * else: no stint, no `lastUpdated`. A gap the card does not carry is refused.
+ */
+export const keepCareerGap = mutation({
+  args: {
+    cardId: v.id("cardChecklist"),
+    playerId: v.id("players"),
+    teamId: v.id("teams"),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const card = await ctx.db.get(args.cardId);
+    if (!card) throw new ConvexError("That card is gone. Refresh and try again.");
+    const key = tidyReviewedKeyCareerGap(args.playerId, args.teamId);
+    const open = deriveCardAttention(card).items.some(
+      (i) => i.kind === "careerGap" && i.key === key,
+    );
+    if (!open) return null;
+    const kept = card.tidyReviewed?.keys ?? [];
+    if (kept.includes(key)) return null;
+    await ctx.db.patch(card._id, {
+      tidyReviewed: { at: Date.now(), keys: [...kept, key].slice(-TIDY_REVIEWED_MAX_KEYS) },
+    });
+    return null;
   },
 });
 
@@ -612,23 +687,27 @@ export const pickSourceValuePage = internalMutation({
 });
 
 /**
- * The guarded "Apply to all" on the Team tile.
+ * "Apply to all" on the Team tile: the answer the operator just gave one card,
+ * offered to the rest of its LINE (main's Tidy Up wizard, `teams-on-cards.ts`).
  *
- * ## Contract (rule 8: a data claim holds back a guess)
+ * ## Contract
  *
- * The server checks EVERY card in `cardIds` (at most `MAX_APPLY_CARDS`) and
- * skips and counts any it refuses. A card is written only when ALL hold:
- *  - it carries exactly one player, the same player as `sourceCardId`;
- *  - it has no teams, no pending team names, no `bscTeamName`, no checklist
- *    claim, no unsettled or chosen teams disagreement, and no No-team stamp,
- *    and its set's own team default is not "No Team" (NEO-639, decision A);
- *  - `careerTeamVerdict` / `stintCoversWindow` (`lib/teamFill.ts`) over the
- *    player's stints gives EXACTLY `teamId` for that card's year (this is the
- *    fill rule, not the career-gap rule).
- * The source card must already carry `teamId`. A traded player's other-team
- * card, a multi-player card and a card a source named a team for are skipped.
+ * A line is one player SET plus one claim key (`lib/teamLine`: the listing's
+ * team name when it printed one, and "the publisher's checklist settled the
+ * team"). The server checks EVERY card in `cardIds` (at most `MAX_APPLY_CARDS`)
+ * and skips and counts any it refuses. A card is written only when ALL hold:
+ *  - it is under the same checklist (leaf) as `sourceCardId`, and on the same
+ *    line (`teamLineKey`), a multi-player set included;
+ *  - nobody is waiting on it and it has no team: no pending player or team
+ *    names, no "No team" stamp, no teams disagreement between the sources
+ *    (`isTeamlessOnLine`).
+ * There is NO career test: the operator's answer is the evidence, as it was for
+ * a wizard line, and a set whose own default is "No Team" takes it too (that
+ * default only holds back what NB guesses, never what the operator says).
+ * The source card must already carry every team in `teamIds`: the call is
+ * "copy what is on that card", never a team the operator did not give it.
  *
- * Written cards get `teamOnCardIds: [teamId]` through the one writer
+ * Written cards get `teamOnCardIds: teamIds` through the one writer
  * (`syncCardTeamLinks`, which settles the card's league) and a regenerated
  * generated title; `lastUpdated` bumps. The first `APPLY_PAGE_SIZE` accepted
  * cards are written in the call; the rest by scheduled pages.
@@ -638,7 +717,7 @@ export const pickSourceValuePage = internalMutation({
 export const applyTeamToPlayerCards = mutation({
   args: {
     sourceCardId: v.id("cardChecklist"),
-    teamId: v.id("teams"),
+    teamIds: v.array(v.id("teams")),
     cardIds: v.array(v.id("cardChecklist")),
   },
   returns: v.object({ applied: v.number(), skipped: v.number() }),
@@ -648,30 +727,32 @@ export const applyTeamToPlayerCards = mutation({
     if (ids.length > MAX_APPLY_CARDS) {
       throw new ConvexError(`At most ${MAX_APPLY_CARDS} cards can be changed at once.`);
     }
+    const teamIds = [...new Set(args.teamIds)];
+    if (teamIds.length === 0 || teamIds.length > MAX_CARD_TEAMS) {
+      throw new ConvexError(`A card carries between 1 and ${MAX_CARD_TEAMS} teams.`);
+    }
     const source = await ctx.db.get(args.sourceCardId);
     if (!source) throw new ConvexError("That card is gone. Refresh and try again.");
-    const playerId = source.playerIds?.length === 1 ? source.playerIds[0] : undefined;
-    if (!playerId || !(source.teamOnCardIds ?? []).includes(args.teamId)) {
+    const onSource = new Set<string>(source.teamOnCardIds ?? []);
+    if (!teamIds.every((id) => onSource.has(id))) {
       throw new ConvexError("Give this card the team first.");
     }
-    const facts = newTeamFillFacts();
+    const line = { leafId: source.selectorOptionId, lineKey: teamLineKey(source) };
     const accepted: Array<Id<"cardChecklist">> = [];
     for (const id of ids) {
       const card = await ctx.db.get(id);
-      if (card && (await cardTakesTeamFill(ctx, card, playerId, args.teamId, facts))) {
-        accepted.push(id);
-      }
+      if (card && cardTakesLineTeams(card, line)) accepted.push(id);
     }
     const cache = newNameWriteCache(ctx);
     const now = accepted.slice(0, APPLY_PAGE_SIZE);
     for (const id of now) {
       const card = await ctx.db.get(id);
-      if (card) await writeTeamFill(ctx, card, args.teamId, cache, userId);
+      if (card) await writeTeamFill(ctx, card, teamIds, cache, userId);
     }
     for (let at = APPLY_PAGE_SIZE; at < accepted.length; at += APPLY_PAGE_SIZE) {
       await ctx.scheduler.runAfter(0, internal.tidyCards.applyTeamPage, {
-        playerId,
-        teamId: args.teamId,
+        ...line,
+        teamIds,
         cardIds: accepted.slice(at, at + APPLY_PAGE_SIZE),
         userId,
       });
@@ -680,115 +761,50 @@ export const applyTeamToPlayerCards = mutation({
   },
 });
 
-/** Per-call reads `cardTakesTeamFill` shares across cards. */
-type TeamFillFacts = {
-  /** By leaf id: the set's own team default is "No Team" (NEO-639 decision A). */
-  noTeamLeaf: Map<string, boolean>;
-  stints: Map<string, Array<{ key: string; fromYear?: number; toYear?: number }>>;
-  years: Map<string, number | undefined>;
-  /** The set's leagues and the career teams' ranks (`lib/careerVerdict`). */
-  verdict: CareerVerdictCache;
-};
-const newTeamFillFacts = (): TeamFillFacts => ({
-  noTeamLeaf: new Map(),
-  stints: new Map(),
-  years: new Map(),
-  verdict: newCareerVerdictCache(),
-});
+/** The line an Apply-to-all answer belongs to: the checklist and `teamLineKey`. */
+type TeamLine = { leafId: Id<"selectorOptions">; lineKey: string };
 
 /**
- * Rule 8 for the guarded Apply-to-all: a card takes the team only when NOTHING
- * on it names or rules out a team (a source's name, "No team", or the
- * checklist's own answer) and the player's own career gives exactly
- * this team for the card's year. Pure reads; the write is `writeTeamFill`.
+ * Whether a card takes its line's answer: under the same checklist, on the same
+ * line, and still waiting for a team. Pure: every field is on the card.
  */
-export async function cardTakesTeamFill(
-  ctx: MutationCtx,
-  card: Doc<"cardChecklist">,
-  playerId: Id<"players">,
-  teamId: Id<"teams">,
-  facts: TeamFillFacts,
-): Promise<boolean> {
-  if ((card.playerIds ?? []).length !== 1 || card.playerIds?.[0] !== playerId) return false;
-  if ((card.pendingPlayerNames ?? []).length > 0) return false;
-  if ((card.teamOnCardIds ?? []).length > 0 || (card.pendingTeamNames ?? []).length > 0) {
-    return false;
-  }
-  if (card.bscTeamName) return false;
-  if (card.teamNoneConfirmedAt !== undefined) return false;
-  // The publisher checklist answered this card's team (teamless, or a team that
-  // did not land): a data claim, so nothing is guessed over it (rule 8).
-  if (card.teamCheckOutcome === "checklist") return false;
-  if ((card.sourceDisagreements ?? []).some((d) => d.field === "teams")) return false;
-
-  const leafKey = card.selectorOptionId as string;
-  // NEO-639 (decision A): the set's own "No Team" has answered for every card, so
-  // no card of it takes a team the career suggests.
-  if (!facts.noTeamLeaf.has(leafKey)) {
-    facts.noTeamLeaf.set(
-      leafKey,
-      teamDefaultOf(await ctx.db.get(card.selectorOptionId)).kind === "noTeam",
-    );
-  }
-  if (facts.noTeamLeaf.get(leafKey)) return false;
-  if (!facts.years.has(leafKey)) {
-    facts.years.set(leafKey, await findSetYearForSelectorOption(ctx, card.selectorOptionId));
-  }
-  const year = facts.years.get(leafKey);
-  if (year === undefined) return false;
-
-  const playerKey = playerId as string;
-  if (!facts.stints.has(playerKey)) {
-    const player = await ctx.db.get(playerId);
-    facts.stints.set(
-      playerKey,
-      (player?.teamYears ?? []).map((t) => ({
-        key: t.teamId as string,
-        ...(t.fromYear !== undefined ? { fromYear: t.fromYear } : {}),
-        ...(t.toYear !== undefined ? { toYear: t.toYear } : {}),
-      })),
-    );
-  }
-  // NEO-569 — the same ranked, sport-checked verdict the tile and the commit read.
-  const { verdict } = await careerVerdictFor(ctx, facts.verdict, {
-    stints: facts.stints.get(playerKey)!,
-    year,
-    currentYear: new Date().getFullYear(),
-    selectorOptionId: card.selectorOptionId,
-    sportId: card.sportId,
-  });
-  return verdict.answer?.key === (teamId as string);
+export function cardTakesLineTeams(card: Doc<"cardChecklist">, line: TeamLine): boolean {
+  return (
+    card.selectorOptionId === line.leafId &&
+    teamLineKey(card) === line.lineKey &&
+    isTeamlessOnLine(card)
+  );
 }
 
 async function writeTeamFill(
   ctx: MutationCtx,
   card: Doc<"cardChecklist">,
-  teamId: Id<"teams">,
+  teamIds: Array<Id<"teams">>,
   cache: NameWriteCache,
   userId: string,
 ): Promise<void> {
   const fields = nameFieldsOf(card);
-  fields.teamOnCardIds = [teamId];
+  fields.teamOnCardIds = teamIds;
   await writeNameChange(ctx, card, fields, cache, userId);
 }
 
 /** One scheduled page of `applyTeamToPlayerCards`; every card is re-checked. */
 export const applyTeamPage = internalMutation({
   args: {
-    playerId: v.id("players"),
-    teamId: v.id("teams"),
+    leafId: v.id("selectorOptions"),
+    lineKey: v.string(),
+    teamIds: v.array(v.id("teams")),
     cardIds: v.array(v.id("cardChecklist")),
     userId: v.string(),
   },
   returns: v.object({ applied: v.number(), skipped: v.number() }),
   handler: async (ctx, args) => {
-    const facts = newTeamFillFacts();
     const cache = newNameWriteCache(ctx);
     let applied = 0;
     for (const id of args.cardIds) {
       const card = await ctx.db.get(id);
-      if (card && (await cardTakesTeamFill(ctx, card, args.playerId, args.teamId, facts))) {
-        await writeTeamFill(ctx, card, args.teamId, cache, args.userId);
+      if (card && cardTakesLineTeams(card, args)) {
+        await writeTeamFill(ctx, card, args.teamIds, cache, args.userId);
         applied += 1;
       }
     }

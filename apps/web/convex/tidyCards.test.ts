@@ -14,6 +14,7 @@ import { normalizeEntityName } from "../lib/entities/normalize-name";
 import { syncCardPrintedNames } from "./cardPrintedNames";
 import {
   tidyReviewedKeyCareer,
+  tidyReviewedKeyCareerGap,
   tidyReviewedKeyCut,
   tidyReviewedKeyVariation,
 } from "./features/cardAttention";
@@ -466,6 +467,79 @@ describe("tidyCards.markReviewed", () => {
       .withIdentity(ADMIN)
       .mutation(api.tidyCards.markReviewed, { cardId: id, keys: [tidyReviewedKeyCareer(merrill)] });
     expect(res.keys).toEqual([tidyReviewedKeyCareer(merrill)]);
+  });
+
+  describe("a career gap (A8/B16): Save & next adds it to the career, 'Keep as is' does not", () => {
+    // Merrill played for the Mets 2020-2023; the set is 2024, so a Mets card is a gap.
+    async function gapCard(t: T) {
+      return t.run(async (ctx) => {
+        const s = await seedBase(ctx);
+        const id = await s.card("1", {
+          playerIds: [s.merrill],
+          teamOnCardIds: [s.mets],
+          tidyChecks: [{ kind: "careerGap", playerId: s.merrill, teamId: s.mets }],
+        });
+        return { id, merrill: s.merrill, mets: s.mets };
+      });
+    }
+    const playedFor2024 = async (t: T, playerId: Id<"players">, teamId: Id<"teams">) => {
+      const p = await t.run((ctx) => ctx.db.get(playerId));
+      return (p?.teamYears ?? []).some(
+        (y: { teamId: Id<"teams">; fromYear?: number; toYear?: number }) => y.teamId === teamId && (y.fromYear ?? 0) <= 2024 && (y.toYear ?? 9999) >= 2024,
+      );
+    };
+
+    test("the gap's key, sent as seen without an explicit keep, adds the stint from the set's year and clears the gap", async () => {
+      const t = convexTest(schema, modules);
+      const { id, merrill, mets } = await gapCard(t);
+      expect(await playedFor2024(t, merrill, mets)).toBe(false);
+      await t
+        .withIdentity(ADMIN)
+        .mutation(api.tidyCards.markReviewed, { cardId: id, keys: [tidyReviewedKeyCareerGap(merrill, mets)] });
+      expect(await playedFor2024(t, merrill, mets)).toBe(true);
+      const row = await t.run((ctx) => ctx.db.get(id));
+      expect((row?.tidyChecks ?? []).some((c) => c.kind === "careerGap")).toBe(false);
+    });
+
+    test("'Keep as is' stores the key at once, and a later Save & next leaves the career alone", async () => {
+      const t = convexTest(schema, modules);
+      const { id, merrill, mets } = await gapCard(t);
+      const key = tidyReviewedKeyCareerGap(merrill, mets);
+      await t.withIdentity(ADMIN).mutation(api.tidyCards.keepCareerGap, { cardId: id, playerId: merrill, teamId: mets });
+      expect((await t.run((ctx) => ctx.db.get(id)))!.tidyReviewed!.keys).toEqual([key]);
+      // Asking again changes nothing.
+      await t.withIdentity(ADMIN).mutation(api.tidyCards.keepCareerGap, { cardId: id, playerId: merrill, teamId: mets });
+      expect((await t.run((ctx) => ctx.db.get(id)))!.tidyReviewed!.keys).toEqual([key]);
+      await t.withIdentity(ADMIN).mutation(api.tidyCards.markReviewed, { cardId: id, keys: [] });
+      expect(await playedFor2024(t, merrill, mets)).toBe(false);
+      // The gap stays on the card, seen.
+      expect(((await t.run((ctx) => ctx.db.get(id)))?.tidyChecks ?? []).some((c) => c.kind === "careerGap")).toBe(true);
+    });
+
+    test("a gap whose key was not sent is not touched", async () => {
+      const t = convexTest(schema, modules);
+      const { id, merrill, mets } = await gapCard(t);
+      await t.withIdentity(ADMIN).mutation(api.tidyCards.markReviewed, { cardId: id, keys: [] });
+      expect(await playedFor2024(t, merrill, mets)).toBe(false);
+    });
+
+    test("keepCareerGap on a gap that is not on the card stores nothing", async () => {
+      const t = convexTest(schema, modules);
+      const { id, merrill, mets } = await gapCard(t);
+      const other = await t.run(async (ctx) => (await ctx.db.query("teams").collect()).find((x) => x._id !== mets)!._id);
+      await t.withIdentity(ADMIN).mutation(api.tidyCards.keepCareerGap, { cardId: id, playerId: merrill, teamId: other });
+      expect((await t.run((ctx) => ctx.db.get(id)))!.tidyReviewed).toBeUndefined();
+    });
+
+    test("keepCareerGap is for an admin", async () => {
+      const t = convexTest(schema, modules);
+      const { id, merrill, mets } = await gapCard(t);
+      const args = { cardId: id, playerId: merrill, teamId: mets };
+      await expect(t.mutation(api.tidyCards.keepCareerGap, args)).rejects.toThrow();
+      await expect(t.withIdentity(MEMBER).mutation(api.tidyCards.keepCareerGap, args)).rejects.toThrow(
+        /admin access required/i,
+      );
+    });
   });
 
   test("caps the keys and refuses a signed-out caller and a non-admin", async () => {
