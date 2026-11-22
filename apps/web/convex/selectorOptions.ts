@@ -323,7 +323,7 @@ import {
 } from "./cardLeague";
 import { collectedCardIds, countCollectors, removeCardRow } from "./cardRowDelete";
 import { mergeCollectorCounts, type CollectorCount } from "../lib/collection/collectors";
-import { newRowSubtreeCounts, createCardCountLedger } from "./cardCounts";
+import { newRowSubtreeCounts, createCardCountLedger, recountCards, RECOUNT_MAX } from "./cardCounts";
 import { titleForStoredCard } from "./storedCardTitle";
 import {
   patchNamesDescriptionFacts,
@@ -23038,7 +23038,9 @@ export const commitCardChecklistChunk = internalMutation({
     // makes is the leaf row's card counts (and the chain above it), which the
     // ledger flush patches. Set: the chunk leaves that flush to its caller,
     // reporting how many cards it inserted (`insertedCardCount`), and the caller
-    // lands the sum once (`commitCardChecklistLandCounts`). Absent: the chunk
+    // lands the counts once (`commitCardChecklistLandCounts`, a recount of the
+    // leaf's real cards, so a landing that failed is repaired by the next one).
+    // Absent: the chunk
     // flushes its own counts, exactly as it always did (the single-chunk commit,
     // a commit whose chunks run one after another, and every direct caller).
     deferCardCounts: v.optional(v.boolean()),
@@ -24036,6 +24038,13 @@ export const commitCardChecklistChunk = internalMutation({
     // caller: it is the one write every chunk would make to the SAME documents
     // (the leaf row, and the rows above it for the subtree counts).
     if (args.deferCardCounts) {
+      // The caller lands only the leaf's counts. A ledger write for any other
+      // row would be dropped without a trace, so a future one fails loudly.
+      if (countLedger.holdsDeltasBeyond(args.selectorOptionId)) {
+        throw new Error(
+          "commitCardChecklistChunk: deferCardCounts cannot defer a count change for a row other than the leaf",
+        );
+      }
       const landed = countLedger.deltaFor(args.selectorOptionId);
       return {
         storedIds,
@@ -24102,23 +24111,57 @@ export function chunksMayRunTogether(
  * The chunks that run side by side each insert cards under the same leaf row,
  * and the count flush is the one write all of them would make to the SAME
  * documents (the leaf row, and the rows above it for the subtree counts and
- * `hasCards`). So the action sums what its chunks report and calls this once,
- * after the wave, with the same ledger the chunk would have flushed: the same
- * deltas, the same `lastCardAt` stamp, the same recount when a count is absent.
- * Called for the chunks that DID commit even when a sibling failed, so a
- * partial commit is counted exactly as a sequential one is.
+ * `hasCards`). So the action calls this once, after the wave, and the landing
+ * is IDEMPOTENT rather than delta-based: it recounts the leaf's real cards and
+ * moves the leaf (and, through the same ledger, every ancestor) by the
+ * difference between the stored counts and the real ones.
+ *
+ * Why not "the inserted count": the cards and their counts are two
+ * transactions now. If this mutation throws, or the action logs it and drops it
+ * after a sibling chunk failed, the rows are in and the counts are not, and a
+ * re-run adopts those rows as updates (it inserts nothing, so it would land
+ * nothing). A delta can never repair that; a recount does, on the next run,
+ * whether or not the run inserted anything. The action therefore calls it
+ * every time it ran its chunks together, including with 0 inserts.
+ *
+ * Cost: the leaf read, one indexed range read of at most `RECOUNT_MAX + 1`
+ * (10,001) of the leaf's cards (the bound every ledger recount already
+ * accepts; a commit is at most `MAX_CARDS_PER_COMMIT`, 5,000, and a set's
+ * leaf holds about one checklist), and the ledger's flush of the leaf and its
+ * ancestors (one read and at most one patch per row, seven levels). A leaf
+ * past the bound cannot be recounted, here or by the backfill; it falls back
+ * to the caller's inserted counts, as the old landing did.
  */
 export const commitCardChecklistLandCounts = internalMutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
+    // Only the fallback for a leaf too big to recount; the recount decides otherwise.
     insertedCardCount: v.number(),
     insertedBaseCardCount: v.number(),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    if (args.insertedCardCount <= 0 && args.insertedBaseCardCount <= 0) return null;
+    const leaf = await ctx.db.get(args.selectorOptionId);
+    if (!leaf) return null;
     const ledger = createCardCountLedger();
-    ledger.add(args.selectorOptionId, args.insertedCardCount, args.insertedBaseCardCount);
+    const counted = await recountCards(ctx, args.selectorOptionId);
+    if (counted) {
+      // An absent stored count reads as 0: the flush then recounts it in place.
+      ledger.add(
+        args.selectorOptionId,
+        counted.cardCount - (leaf.cardCount ?? 0),
+        counted.nonVariationCardCount - (leaf.nonVariationCardCount ?? 0),
+      );
+    } else {
+      console.warn(
+        JSON.stringify({
+          msg: "commit_card_counts_recount_skipped",
+          selectorOptionId: args.selectorOptionId,
+          limit: RECOUNT_MAX,
+        }),
+      );
+      ledger.add(args.selectorOptionId, args.insertedCardCount, args.insertedBaseCardCount);
+    }
     await ledger.flush(ctx);
     return null;
   },
@@ -27933,8 +27976,9 @@ export const commitCardChecklist = action({
      *    else — except the card counts on the leaf row and the rows above it,
      *    which every chunk would patch. That flush is the one shared write, and
      *    `deferCardCounts` takes it out: each chunk reports how many cards it
-     *    inserted and `commitCardChecklistLandCounts` lands the sum once, after
-     *    the wave. A card's `sku` patch and a team-link league patch are on the
+     *    inserted and `commitCardChecklistLandCounts` recounts the leaf and lands
+     *    the difference once, after the wave (idempotent: a landing that failed
+     *    is repaired by the next commit's, even one that inserts nothing). A card's `sku` patch and a team-link league patch are on the
      *    card the chunk just inserted. Pinned by `commitCardChecklist.parallelChunks.test.ts`.
      *  - READS. A chunk reads the leaf row and the rows above it (slots, sport,
      *    year, defaults), teams, players, leagues and the `tidyNames` index, and
@@ -28026,7 +28070,11 @@ export const commitCardChecklist = action({
         insertedBaseCards += result.insertedBaseCardCount ?? 0;
       });
     }
-    if (runTogether && insertedCards + insertedBaseCards > 0) {
+    if (runTogether) {
+      // NEO-645 — the landing recounts the leaf's real cards, so it runs whenever
+      // the chunks ran together: after a re-run that inserted nothing it repairs
+      // counts an earlier run's landing lost, and it writes nothing when they
+      // are already right.
       const landCounts = () =>
         phase("card counts", () =>
           ctx.runMutation(internal.selectorOptions.commitCardChecklistLandCounts, {
@@ -28036,8 +28084,9 @@ export const commitCardChecklist = action({
           }),
         );
       if (failures.length > 0) {
-        // The first chunk's failure is the one to report; a count that could not
-        // land is logged (ids and counts only) and left to the repair backfill.
+        // The first chunk's failure is the one to report. A landing that could
+        // not run is logged (ids and counts only); the next commit's landing
+        // recounts the leaf, so nothing is lost.
         await landCounts().catch((error) =>
           console.error(
             JSON.stringify({

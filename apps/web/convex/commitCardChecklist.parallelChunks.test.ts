@@ -42,6 +42,7 @@ import {
   COMMIT_CHUNK_PARALLEL_CALLS,
   commitChunkSize,
 } from "./selectorOptions";
+import { CardCountLedger } from "./cardCounts";
 import { ENQUEUE_PAGE } from "./tidyNames";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import { seedTidyWorld } from "../lib/testing/tidy-world";
@@ -259,6 +260,29 @@ describe("a chunk run beside its siblings writes nothing they read or write", ()
     expect(preexistingWritten()).toContain(w.base);
     const leaf = await t.run((ctx) => ctx.db.get(w.base));
     expect(leaf?.cardCount).toBe(5);
+  });
+
+  test("a deferred chunk whose ledger holds a change for a row other than the leaf throws instead of dropping it", async () => {
+    const t = convexTest(schema, modules);
+    live.push(t);
+    const w = await seed(t);
+    // Stand in for a future ledger write the deferral does not know about: each new card
+    // also moves the leaf's parent set.
+    vi.spyOn(CardCountLedger.prototype, "addCard").mockImplementation(function (this: CardCountLedger, card) {
+      this.add(card.selectorOptionId, 1, 1);
+      this.add(w.set, 1, 1);
+    });
+    const args = {
+      selectorOptionId: w.base,
+      sportValue: "Baseball",
+      setNameValue: "Chrome",
+      cards: [chunkCard("1", 0)],
+    };
+    await expect(runChunk(t, { ...args, deferCardCounts: true })).rejects.toThrow(
+      /cannot defer a count change for a row other than the leaf/,
+    );
+    // Not deferred, the same ledger flushes itself: nothing is lost, so nothing throws.
+    await expect(runChunk(t, args)).resolves.toBeDefined();
   });
 
   test("an update chunk patches only the cards it was handed and reads them by id, not the whole set", async () => {
@@ -561,6 +585,71 @@ describe("landing the counts", () => {
     expect(leaf?.cardCount).toBe(0);
     expect(leaf?.lastCardAt).toBeUndefined();
   });
+
+  test("the landing recounts: whatever the caller reports, the leaf and its ancestors end at the real count", async () => {
+    const t = convexTest(schema, modules);
+    live.push(t);
+    const w = await seed(t);
+    // Rows in, counts never landed: leaf and set read 0, the checklist holds 12 (3 variations).
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 12; i++) {
+        await insertTestCard(ctx, plainCard(w.base, i));
+      }
+    });
+    const rows = await t.run((ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", w.base))
+        .collect(),
+    );
+    await t.run(async (ctx) => {
+      for (const row of rows.slice(0, 3)) await ctx.db.patch(row._id, { variationOfCardId: rows[3]._id });
+    });
+    const land = (insertedCardCount: number) =>
+      t.mutation(internal.selectorOptions.commitCardChecklistLandCounts, {
+        selectorOptionId: w.base,
+        insertedCardCount,
+        insertedBaseCardCount: insertedCardCount,
+      });
+    // A re-run that inserted nothing still repairs.
+    await land(0);
+    const expected = { cardCount: 12, nonVariationCardCount: 9 };
+    expect(await t.run((ctx) => ctx.db.get(w.base))).toMatchObject(expected);
+    expect(await t.run((ctx) => ctx.db.get(w.set))).toMatchObject({
+      subtreeCardCount: 12,
+      subtreeNonVariationCardCount: 9,
+    });
+    // Idempotent: landing again, with a lying report, moves nothing.
+    await land(40);
+    expect(await t.run((ctx) => ctx.db.get(w.base))).toMatchObject(expected);
+    expect(await t.run((ctx) => ctx.db.get(w.set))).toMatchObject({
+      subtreeCardCount: 12,
+      subtreeNonVariationCardCount: 9,
+    });
+  });
+
+  test("a leaf that reads higher than its cards is brought down, with the rows above it", async () => {
+    const t = convexTest(schema, modules);
+    live.push(t);
+    const w = await seed(t);
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 4; i++) {
+        await insertTestCard(ctx, plainCard(w.base, i));
+      }
+      await ctx.db.patch(w.base, { cardCount: 9, nonVariationCardCount: 9 });
+      await ctx.db.patch(w.set, { subtreeCardCount: 9, subtreeNonVariationCardCount: 9 });
+    });
+    await t.mutation(internal.selectorOptions.commitCardChecklistLandCounts, {
+      selectorOptionId: w.base,
+      insertedCardCount: 0,
+      insertedBaseCardCount: 0,
+    });
+    expect(await t.run((ctx) => ctx.db.get(w.base))).toMatchObject({ cardCount: 4, nonVariationCardCount: 4 });
+    expect(await t.run((ctx) => ctx.db.get(w.set))).toMatchObject({
+      subtreeCardCount: 4,
+      subtreeNonVariationCardCount: 4,
+    });
+  });
 });
 
 // ─── adversarial pass (NEO-645) ──────────────────────────────────────────────
@@ -579,6 +668,16 @@ async function truth(t: T, leaf: Id<"selectorOptions">) {
   });
 }
 
+const plainCard = (leaf: Id<"selectorOptions">, i: number) => ({
+  selectorOptionId: leaf,
+  cardNumber: String(i + 1),
+  cardName: `Card ${i + 1}`,
+  listingTitle: `Card ${i + 1}`,
+  platformData: {},
+  sortOrder: i,
+  lastUpdated: 1,
+});
+
 const MANY = CHUNK * 2 + 5;
 const distinct = (n: number) => Array.from({ length: n }, (_, i) => wireCard(String(1000 + i)));
 const commitAll = (t: T, w: { base: Id<"selectorOptions">; sport: Id<"selectorOptions"> }, cards: unknown[]) =>
@@ -589,9 +688,8 @@ const commitAll = (t: T, w: { base: Id<"selectorOptions">; sport: Id<"selectorOp
   });
 
 describe("a commit whose count landing fails", () => {
-  // KNOWN BUG (NEO-645 adversarial pass), pinned with test.fails so the gate stays green:
-  // delete `.fails` when the product is fixed. Rows landed but their counts never did; a re-run adopts the rows as updates (delta 0), so the leaf stays at 0.
-  test.fails("every chunk landed but the landing threw: a re-run still leaves the leaf and its ancestors at the real count", async () => {
+  // Rows landed but their counts did not; a re-run adopts the rows as updates (it inserts nothing), so only a RECOUNT landing repairs the leaf.
+  test("every chunk landed but the landing threw: a re-run still leaves the leaf and its ancestors at the real count", async () => {
     const t = convexTest(schema, modules);
     live.push(t);
     const w = await seed(t);
@@ -614,9 +712,8 @@ describe("a commit whose count landing fails", () => {
     expect(set).toMatchObject({ subtreeCardCount: MANY, subtreeNonVariationCardCount: MANY });
   });
 
-  // KNOWN BUG (NEO-645 adversarial pass), pinned with test.fails so the gate stays green:
-  // delete `.fails` when the product is fixed. The logged-and-dropped landing loses the counts of the chunks that did land.
-  test.fails("a partial failure whose landing also fails: the retry counts the cards that landed exactly once", async () => {
+  // The logged-and-dropped landing must not lose the counts of the chunks that did land: the retry's landing recounts them.
+  test("a partial failure whose landing also fails: the retry counts the cards that landed exactly once", async () => {
     const t = convexTest(schema, modules);
     live.push(t);
     const w = await seed(t);
@@ -668,20 +765,25 @@ describe("a mixed insert and update commit counts the tree once", () => {
     expect(sport?.hasCards).toBe(true);
   });
 
-  test("a commit that only updates lands no counts and leaves the totals alone", async () => {
+  test("a commit that only updates still lands (a recount), writes nothing new, and leaves the totals alone", async () => {
     const t = convexTest(schema, modules);
     live.push(t);
     const w = await seed(t);
     const cards = distinct(MANY);
     await commitAll(t, w, cards);
+    const before = await t.run((ctx) => ctx.db.get(w.base));
     const landCalls = vi.spyOn(
       commitCardChecklistLandCounts as unknown as Handler<unknown, unknown>,
       "_handler",
     );
     await commitAll(t, w, cards);
-    expect(landCalls).not.toHaveBeenCalled();
+    // The landing runs whenever the chunks ran together, so a lost landing is repaired
+    // by a re-run that inserts nothing; here the counts are right and it changes nothing.
+    expect(landCalls).toHaveBeenCalledTimes(1);
+    expect(landCalls.mock.calls[0][1]).toMatchObject({ insertedCardCount: 0, insertedBaseCardCount: 0 });
     const leaf = await t.run((ctx) => ctx.db.get(w.base));
     expect(leaf?.cardCount).toBe(MANY);
+    expect(leaf?.lastCardAt).toBe(before?.lastCardAt);
   });
 });
 
@@ -795,9 +897,8 @@ describe("the lookup enqueue is scheduled, not awaited", () => {
     expect(await scheduledEnqueues(t)).toHaveLength(1);
   });
 
-  // KNOWN BUG (NEO-645 adversarial pass), pinned with test.fails so the gate stays green:
-  // delete `.fails` when the product is fixed. `enqueuePendingLookups` re-reads the same first ENQUEUE_PAGE pending rows (they stay pending after lookupGen is stamped), so names past the first page are never queued.
-  test.fails("the scheduled enqueue queues every pending name across pages, and a second run queues none twice", async () => {
+  // A queued row stays `pending`, so the walk needs a real cursor: a `.take()` re-read page one and never reached the rest.
+  test("the scheduled enqueue queues every pending name across pages, and a second run queues none twice", async () => {
     const t = convexTest(schema, modules);
     live.push(t);
     const w = await seed(t);
@@ -815,15 +916,29 @@ describe("the lookup enqueue is scheduled, not awaited", () => {
         } as never);
       }
     });
-    let queued = 0;
-    // The page reschedules itself while a full page was queued; walk it by hand.
-    for (let pass = 0; pass < 5; pass++) {
-      queued += await t.mutation(internal.tidyNames.enqueuePendingLookups, { scopeId: w.base });
-    }
+    // One page per call; each call schedules the next with the cursor it ended on.
+    // Walk that chain by hand (draining it would reach the unregistered wikidata pool).
+    const walk = async () => {
+      let sum = 0;
+      let calls = 0;
+      let args: { scopeId: Id<"selectorOptions">; cursor?: string } | undefined = { scopeId: w.base };
+      while (args && calls < 10) {
+        const known = (await scheduledEnqueues(t)).length;
+        sum += await t.mutation(internal.tidyNames.enqueuePendingLookups, args);
+        calls++;
+        const after = await scheduledEnqueues(t);
+        args = after.length > known ? (after[after.length - 1].args[0] as typeof args) : undefined;
+      }
+      return { sum, calls };
+    };
+    const first = await walk();
+    const queued = first.sum;
+    // 2 full pages and a part page: three calls, and the walk ends by itself.
+    expect(first.calls).toBe(3);
     expect(queued).toBe(total);
     const rows = await t.run((ctx) => ctx.db.query("tidyNames").collect());
     expect(rows.every((r) => r.lookupGen === 1)).toBe(true);
-    // Idempotent: a retry finds nothing left to queue.
-    expect(await t.mutation(internal.tidyNames.enqueuePendingLookups, { scopeId: w.base })).toBe(0);
+    // Idempotent: a second walk finds nothing left to queue, on every page.
+    expect((await walk()).sum).toBe(0);
   });
 });

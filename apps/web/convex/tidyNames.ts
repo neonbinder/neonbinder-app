@@ -1201,18 +1201,24 @@ export const sweepStaleLookups = internalMutation({
  * After the commit finalizes (schema doc 4b): enqueue the lookup of every
  * pending row in the scope that has not been enqueued (`lookupGen` 0). The gate
  * wrote them at gen 0 so the pool never patches a row the prelude is reading.
- * One page per call; reschedules itself until none are left.
+ *
+ * One page per call, walked with a real cursor (NEO-645). A queued row STAYS
+ * `pending` (the lookup answers it later), so a `.take()` of the index re-read
+ * the same first page every time and a scope with 217 pending names queued 100.
+ * The cursor moves past a page whether or not its rows were queued, and the
+ * function reschedules itself with the cursor until the walk is done, so every
+ * pending name is queued exactly once and a second walk queues none.
  */
 export const enqueuePendingLookups = internalMutation({
-  args: { scopeId: v.id("selectorOptions") },
+  args: { scopeId: v.id("selectorOptions"), cursor: v.optional(v.string()) },
   returns: v.number(),
   handler: async (ctx, args) => {
-    const rows = await ctx.db
+    const page = await ctx.db
       .query("tidyNames")
       .withIndex("by_scope_status", (q) => q.eq("scopeId", args.scopeId).eq("status", "pending"))
-      .take(ENQUEUE_PAGE);
+      .paginate({ numItems: ENQUEUE_PAGE, cursor: args.cursor ?? null });
     const items: Array<{ rowId: Id<"tidyNames">; gen: number }> = [];
-    for (const row of rows) {
+    for (const row of page.page) {
       if ((row.lookupGen ?? 0) > 0) continue;
       await ctx.db.patch(row._id, { lookupGen: 1, lookupRequestedAt: Date.now() });
       items.push({ rowId: row._id, gen: 1 });
@@ -1220,8 +1226,11 @@ export const enqueuePendingLookups = internalMutation({
     if (items.length > 0) {
       await ctx.scheduler.runAfter(0, internal.wikidataPool.enqueueTidyNameLookups, { items });
     }
-    if (rows.length === ENQUEUE_PAGE && items.length > 0) {
-      await ctx.scheduler.runAfter(0, internal.tidyNames.enqueuePendingLookups, args);
+    if (!page.isDone) {
+      await ctx.scheduler.runAfter(0, internal.tidyNames.enqueuePendingLookups, {
+        scopeId: args.scopeId,
+        cursor: page.continueCursor,
+      });
     }
     return items.length;
   },

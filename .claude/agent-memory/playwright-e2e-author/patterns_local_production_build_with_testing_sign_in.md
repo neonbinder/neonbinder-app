@@ -37,3 +37,5 @@ production bundle that the specs can still sign in to.
 
 **Why:** NEO-645's walk URL race showed only on CI's production build; this
 setup reproduced the red locally on the pre-fix commit and cleared it on the fix.
+
+**Never move the hook into `vite.config.ts`:** the testing sign-in hook into `vite preview` lives only in the scratch script; putting it in `vite.config.ts` would ship the testing sign-in in a build path.
