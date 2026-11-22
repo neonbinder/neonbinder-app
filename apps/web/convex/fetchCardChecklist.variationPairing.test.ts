@@ -19,6 +19,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+import { VARIATION_LABEL_CONFIDENCE } from "../lib/cards/variations";
 
 type Card = {
   cardNumber: string;
@@ -303,6 +304,44 @@ describe("fetchCardChecklist — SportLots reuses card numbers (NEO-189)", () =>
     expect(byBscRef.get("bsc-11c")?.pairedBy).toBe("variation");
     expect(res.bscOnly).toHaveLength(0);
     expect(res.slOnly).toHaveLength(0);
+  });
+
+  test("a variation paired by its label alone scores below 1, so Match Cards shows its % (NEO-640)", async () => {
+    const t = convexTest(schema, modules);
+    const insertId = await seedTree(t);
+    heritage11();
+
+    await t.withIdentity(ADMIN).action(
+      api.selectorOptions.fetchCardChecklist,
+      { selectorOptionId: insertId },
+    );
+    const res = await buckets(t, insertId);
+
+    for (const ref of ["bsc-11b", "bsc-11c"]) {
+      const c = res.matched.find((m) => m.platformData.bsc?.ref === ref);
+      expect(c?.pairedBy).toBe("variation");
+      expect(c?.confidence).toBe(VARIATION_LABEL_CONFIDENCE);
+      expect(c?.confidence).toBeLessThan(1);
+    }
+  });
+
+  test("a variation BSC's own SportLots cross-reference names stays at 1: a link, not a label guess", async () => {
+    const t = convexTest(schema, modules);
+    const insertId = await seedTree(t);
+    heritage11();
+    // BSC says which SL row its Action variation is; the label is not consulted.
+    mockState.slCards[1].sportlotsRef = "sl-action";
+    mockState.bscCards[1].sportlotsRef = "sl-action";
+
+    await t.withIdentity(ADMIN).action(
+      api.selectorOptions.fetchCardChecklist,
+      { selectorOptionId: insertId },
+    );
+    const res = await buckets(t, insertId);
+
+    const c = res.matched.find((m) => m.platformData.bsc?.ref === "bsc-11b");
+    expect(c?.pairedBy).toBe("crossRef");
+    expect(c?.confidence).toBe(1);
   });
 
   test("the BASE card pairs with SL's base row, never with one of its variations", async () => {

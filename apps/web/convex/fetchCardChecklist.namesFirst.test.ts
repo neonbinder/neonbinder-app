@@ -23,6 +23,7 @@ import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 import { normalizeTeamName } from "./teams";
+import { NAMES_UNCONFIRMED_FACTOR } from "../lib/cards/pair-names-first";
 
 type Card = {
   cardNumber: string;
@@ -266,6 +267,23 @@ describe("BSC against SportLots: names first, numbers confirm", () => {
     // ride along so Match Cards can offer either (Jason 2026-11-18).
     expect(matched[0].confidence).toBe(1);
     expect(matched[0].sourceNumbers).toEqual({ bsc: "38", sportlots: "38a" });
+  });
+
+  test("a pair made on the number because BSC names no player scores below 1 (NEO-640)", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedTree(t);
+    mockState.bscCards = [
+      { cardNumber: "12", cardName: "", platformRef: "bsc-12", sourceBscSetSlug: "base" },
+    ];
+    mockState.slCards = [sl("12", "Mike Trout")];
+
+    await fetchSet(t, leafId);
+    const { matched } = await buckets(t, leafId);
+
+    expect(matched).toHaveLength(1);
+    expect(matched[0].pairedBy).toBe("number");
+    expect(matched[0].confidence).toBe(NAMES_UNCONFIRMED_FACTOR);
+    expect(matched[0].confidence).toBeLessThan(1);
   });
 
   test("numbers printed alike carry no sourceNumbers and a confidence of 1", async () => {

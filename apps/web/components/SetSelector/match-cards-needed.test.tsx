@@ -11,6 +11,8 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { NAMES_UNCONFIRMED_FACTOR } from "../../lib/cards/pair-names-first";
+import { VARIATION_LABEL_CONFIDENCE } from "../../lib/cards/variations";
 import {
   isFullConfidence,
   matchCardsNeeded,
@@ -22,13 +24,13 @@ const BOTH: FetchSource[] = ["bsc", "sportlots"];
 const BSC_CHECKLIST: FetchSource[] = ["bsc", "checklist"];
 const ALL_THREE: FetchSource[] = ["bsc", "sportlots", "checklist"];
 
-/** A BSC + SportLots pair, paired by number, at full confidence (no number choice pending). */
+/** A BSC + SportLots pair, paired by name (same roster, numbers agree), at full confidence (no number choice pending). */
 const pair = (over: Partial<MatchCandidate> = {}): MatchCandidate => ({
   cardNumber: "1",
   cardName: "Solo One",
   bucket: "matched",
   confidence: 1,
-  pairedBy: "number",
+  pairedBy: "name",
   platformData: { bsc: { ref: "bsc-1" }, sportlots: { ref: "sl-1" } },
   ...over,
 });
@@ -103,12 +105,37 @@ describe("matchCardsNeeded — two marketplaces", () => {
     expect(matchCardsNeeded([], BOTH)).toBe(false);
   });
 
-  it.each(["stored", "crossRef", "number", "variation"] as const)(
-    "a full-confidence pair paired by %s is Matched at 100% and skips",
+  it.each(["stored", "crossRef"] as const)(
+    "a full-confidence pair paired by the id link %s is Matched at 100% and skips",
     (pairedBy) => {
       expect(matchCardsNeeded([pair({ pairedBy })], BOTH)).toBe(false);
     },
   );
+
+  // NEO-640 (Jason, 2026-11-21): a pair the name never confirmed, and a
+  // variation paired by its label alone, are no longer 100%. The server stamps
+  // these constants; the predicate reads the stamp, not `pairedBy`.
+  it("a pair made on the number alone, with no name to confirm it, shows its % and opens", () => {
+    expect(NAMES_UNCONFIRMED_FACTOR).toBeLessThan(1);
+    const c = pair({ pairedBy: "number", confidence: NAMES_UNCONFIRMED_FACTOR });
+    expect(isFullConfidence(c.confidence)).toBe(false);
+    expect(matchCardsNeeded([c], BOTH)).toBe(true);
+    expect(matchCardsNeeded([c, pair({ cardNumber: "2" })], BOTH)).toBe(true);
+  });
+
+  it("a variation paired by its label alone shows its % and opens", () => {
+    expect(VARIATION_LABEL_CONFIDENCE).toBeLessThan(1);
+    const c = pair({
+      pairedBy: "variation",
+      confidence: VARIATION_LABEL_CONFIDENCE,
+      cardVariation: "Action",
+      isVariation: true,
+    });
+    expect(isFullConfidence(c.confidence)).toBe(false);
+    expect(matchCardsNeeded([c], BOTH)).toBe(true);
+    expect(matchCardsNeeded([c], ALL_THREE)).toBe(true);
+    expect(matchCardsNeeded([linkedPair({ ...c })], ALL_THREE)).toBe(true);
+  });
 
   it("a matched row with no pairedBy is unknown and opens (a row written before the field)", () => {
     const { pairedBy: _omit, ...unstamped } = pair();

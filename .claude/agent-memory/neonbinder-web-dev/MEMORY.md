@@ -300,3 +300,4 @@
 - [Render-phase open needs batch in state](reference_render_phase_open_needs_batch_in_state_and_fixture_batch_ids.md) — NEO-640 early open: previousBatchId in state; pre-streamed test fixtures never trip it; matched w/o pairedBy opens
 - [Names-first core: a name pair at 1 is clean](reference_names_first_core_makes_a_name_pair_at_one_clean.md) — skip predicate reads confidence + sourceNumbers, not pairedBy "name"; D2 duplicate-number tie vs main test
 - [Compiler memoization error points at unrelated callback](reference_compiler_memoization_error_points_at_unrelated_callback.md) — bisect your hunks; a new render-scope object breaks old useCallbacks
+- [Pair confidence is server-stamped](reference_pair_confidence_stamped_by_server_fixtures_must_match.md) — clean-pair fixtures: pairedBy name/stored/crossRef at 1; number/variation pairs are 0.9 (NEO-640)

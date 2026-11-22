@@ -7615,7 +7615,7 @@ describe("CardChecklist — the Sync wait line (NEO-487)", () => {
 describe("CardChecklist — Match Cards opens only when a card needs the operator (NEO-640)", () => {
   let resolveFetch: (value: unknown) => void;
 
-  /** A BSC + SportLots pair paired by number, teamed: nothing for the operator. */
+  /** A BSC + SportLots pair paired by name (same roster, numbers agree), teamed: nothing for the operator. */
   const cleanPair = (n: string, player: string) => ({
     cardNumber: n,
     cardName: player,
@@ -7623,7 +7623,7 @@ describe("CardChecklist — Match Cards opens only when a card needs the operato
     teams: ["Cincinnati Reds"],
     bucket: "matched" as const,
     confidence: 1,
-    pairedBy: "number" as const,
+    pairedBy: "name" as const,
     platformData: { bsc: { ref: `bsc-${n}` }, sportlots: { ref: `sl-${n}` } },
   });
   /** The same pair paired by name with differing numbers: needs the operator. */

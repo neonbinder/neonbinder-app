@@ -59,6 +59,15 @@ describe("matchPublishedChecklist: the exactly-one guard", () => {
     expect(r.matches[0]).toMatchObject({ cardIndex: 2, rowIndex: 0 });
   });
 
+  test("a number pair with no name to confirm it carries no confidence: the checklist link is unchanged by NEO-640", () => {
+    // The core scores a number-only pair below 1, but a checklist link reads a
+    // confidence only off a name pair (numbers differ) or a near name.
+    const r = matchPublishedChecklist([card("4")], [row("4", ["A"])]);
+    expect(r.matches).toHaveLength(1);
+    expect(r.matches[0]).toMatchObject({ cardIndex: 0, rowIndex: 0, via: "number" });
+    expect(r.matches[0]).not.toHaveProperty("confidence");
+  });
+
   test("compares numbers as written on the card, ignoring #, No., spaces and case", () => {
     expect(normalizeChecklistNumber("#12")).toBe("12");
     expect(normalizeChecklistNumber("No. 12")).toBe("12");

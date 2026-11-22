@@ -59,7 +59,9 @@
  * Same roster with the numbers agreeing: 1. Same roster with the numbers
  * differing: `NUMBERS_DIFFER_FACTOR` (0.9). A near name: its score, times
  * `NUMBERS_DIFFER_FACTOR` when the numbers differ. A pair made by number
- * alone: 1.
+ * alone: `NAMES_UNCONFIRMED_FACTOR` (0.9), whether the names disagree or one
+ * side has no name to confirm it (NEO-640; the numbers agree, so the name is
+ * the missing half of rule 7's "names first, numbers confirm").
  */
 
 import {
@@ -77,6 +79,19 @@ import { normalizeEntityName, rosterKey } from "../entities/normalize-name";
 
 /** What a pair's confidence is multiplied by when its numbers differ. */
 export const NUMBERS_DIFFER_FACTOR = 0.9;
+
+/**
+ * NEO-640 (Jason, 2026-11-21: "no, some lower percent") — what a pair made on
+ * the number alone scores when the name never confirmed it: both sides name
+ * players and the rosters differ, or one side has no name key at all. Names
+ * lead and numbers confirm (rule 7); a number-only pair has half the evidence,
+ * so it is shown in Match Cards with the amber % and opens the dialog instead
+ * of being skipped. 0.9 on purpose: the same weight as a name pair whose
+ * numbers differ (`NUMBERS_DIFFER_FACTOR`), the other "one half of the evidence
+ * is missing" case, so one reading of the % covers both. The checklist matcher
+ * reads no confidence off a number pair, so its links are unchanged.
+ */
+export const NAMES_UNCONFIRMED_FACTOR = 0.9;
 
 export type NamesFirstItem = {
   /** The players (or whatever the roster is) as the source prints them. */
@@ -129,7 +144,8 @@ export type NamesFirstPair = {
   /**
    * `number` pairs only: both sides name players and the rosters differ. The
    * caller shows the disagreement (the checklist matcher reads it as
-   * `conflict.players`); `confidence` stays 1, a number-only pair's.
+   * `conflict.players`); `confidence` is `NAMES_UNCONFIRMED_FACTOR`, as for
+   * every number-only pair.
    */
   namesDisagree?: true;
   /** `nearName` only: the Jaro-Winkler score. */
@@ -295,15 +311,14 @@ function pairKind<T extends NamesFirstItem>(
       return;
     }
     const namesDisagree = by === "number" && l.key !== "" && r.key !== "" && l.key !== r.key;
-    // A number-only pair is certain of the number, not of the card: when the
-    // names disagree it is no better than a pair whose numbers differ.
+    // A number-only pair is certain of the number, not of the card: the name
+    // never confirmed it, whether the names disagree or one side has none, so
+    // it scores below 1 (NEO-640).
     const base =
       by === "nearName"
         ? (score ?? 0)
         : by === "number"
-          ? namesDisagree
-            ? NUMBERS_DIFFER_FACTOR
-            : 1
+          ? NAMES_UNCONFIRMED_FACTOR
           : numbersAgree
             ? 1
             : NUMBERS_DIFFER_FACTOR;

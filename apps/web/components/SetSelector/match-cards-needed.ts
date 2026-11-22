@@ -70,9 +70,11 @@ export function isFullConfidence(confidence: number | undefined): boolean {
  *    already scores a pair by what the sources agree on: the same roster with
  *    the numbers agreeing is 1, the same roster with the numbers differing or
  *    missing 0.9, a near name its score (times 0.9 when the numbers differ),
- *    and a number-only pair whose names disagree 0.9. So a "name" pair at 100%
- *    is one both the names and the numbers confirm, and the % is the whole
- *    answer; nothing here re-derives it;
+ *    and a number-only pair 0.9 (the names disagree, or one side has none).
+ *    A variation paired by its label alone (`pairedBy: "variation"`) is 0.9
+ *    too; only an identity LINK (`stored`, `crossRef`) stays 1. So a pair at
+ *    100% is one the names (or a link) and the numbers confirm, and the % is
+ *    the whole answer; nothing here re-derives it;
  *  - no number choice pending: a card carrying `sourceNumbers` shows the
  *    number picker, with the rule's pick preselected (rule 7: an automatic
  *    number choice is the default, never final), so it opens the dialog;

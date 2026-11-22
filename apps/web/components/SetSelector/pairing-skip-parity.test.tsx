@@ -26,7 +26,7 @@ const pair = (
   teams: ["Cincinnati Reds"],
   bucket: "matched",
   confidence: 1,
-  pairedBy: "number",
+  pairedBy: "name",
   teamLookup: "checklist",
   platformData: {
     bsc: { ref: `bsc-${n}`, setId: "2024-topps" },
@@ -41,7 +41,9 @@ const CLEAN: MatchCandidate[] = [
   pair("1", "Elly De La Cruz", { pairedBy: "stored", attributes: ["Rookie"], isRookie: true }),
   pair("2", "Hunter Greene", { pairedBy: "crossRef", printRun: 199 }),
   pair("3", "Spencer Steer", {
-    pairedBy: "variation",
+    // A variation paired by its label alone is below 1 now (NEO-640) and would
+    // open the dialog, so this clean batch carries one a name paired.
+    pairedBy: "name",
     cardVariation: "Photo Variation",
     isVariation: true,
     rawTeamName: "Reds",

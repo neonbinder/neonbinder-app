@@ -91,6 +91,7 @@ import {
   cardNumberStem,
   resolveVariationParents,
   suggestVariationPairings,
+  VARIATION_LABEL_CONFIDENCE,
 } from "../lib/cards/variations";
 import {
   cardNumbersAgree,
@@ -17844,7 +17845,8 @@ export const fetchCardChecklist = action({
       //     name (Jaro-Winkler at `PLAYER_NAME_AUTO_LINK`). A variation pairs
       //     only with a variation. A tie on either side leaves the cards
       //     unmatched for the operator (rule 8), and each pair carries the
-      //     core's confidence (0.9 when the numbers differ).
+      //     core's confidence (0.9 when the numbers differ or only the number
+      //     paired them).
       //
       //     SportLots' own roster is read when it has one, else the card's
       //     name (which is the player on a SportLots listing).
@@ -17930,13 +17932,18 @@ export const fetchCardChecklist = action({
             : ("name" as const)
           : identityVia;
 
-        // Confidence: an identity hit (the operator's stored pairing, BSC's
-        // own SportLots cross-reference, a variation's label) is certain; a
-        // names-first pair carries the core's confidence (1 for the same
-        // roster or a unique number with the numbers agreeing, 0.9 when they
-        // differ, the name score for a near name). Surfaced so the operator
-        // can see which pairings deserve a second look.
-        const pairConfidence = sl ? (corePairConfidence ?? 1) : 0;
+        // Confidence: an identity hit that is a LINK (the operator's stored
+        // pairing, BSC's own SportLots cross-reference) is certain; a
+        // variation matched by its label alone is not (NEO-640,
+        // `VARIATION_LABEL_CONFIDENCE`); a names-first pair carries the core's
+        // confidence (1 for the same roster with the numbers agreeing, 0.9
+        // when they differ or when only the number paired it, the name score
+        // for a near name). Surfaced so the operator can see which pairings
+        // deserve a second look.
+        const pairConfidence = sl
+          ? (corePairConfidence ??
+            (identityVia === "variation" ? VARIATION_LABEL_CONFIDENCE : 1))
+          : 0;
         if (sl) claimedSlRefs.add(slClaimKey(sl));
 
         // NEO-591 — the number the card carries. An identity pair keeps BSC's
