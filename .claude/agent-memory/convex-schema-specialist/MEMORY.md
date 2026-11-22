@@ -35,3 +35,5 @@
 - [Derived card field from an entity fact](derived-card-field-from-entity-fact.md) — settle at the link seam (id→doc param), compute pre-insert, follow-rule recompute off the live entity
 - [Retiring a features key](retiring-a-features-key.md) — every mint/copy point of a features key incl. backfillCardFeatures seed list; strip leaves sport rows
 - [Concurrent reads are batched](convex-concurrent-reads-are-batched.md) — Promise.all reads go to storage in batches (16 OSS); "system operations" error = 15 s syscall wall time
+- [Removing a human pause exposes races](removing-a-human-pause-exposes-races.md) — no wizard between stage and commit: runAfter continuations and pool lookups now race the commit
+- [NEO-645 tidyNames schema](project_neo645_tidy_names_schema.md) — per-leaf name answers + cardPrintedNames fan-out index; CAS fan-out, order field, no lastUpdated bump
