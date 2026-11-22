@@ -104,3 +104,4 @@
 - [One fake host pin for both marketplaces](reference_one_fake_host_pin_shared_by_both_marketplaces.md) — share isFakeServiceHost/signForFake; fake switch keyed on request not config validity; strict echo guard
 - [Gate key = rate-limit domain, one value](reference_gate_key_is_the_rate_limit_domain_one_value.md) — key + x-nb-fake-ns from one helper; queuedBy on lane items; defer per-ns blocks; lib helper avoids testing.ts cycle
 - [Convex return record keys must be ASCII](reference_convex_return_record_keys_must_be_ascii.md) — accented record key fails the return validator; return {key, entry}[] and rebuild with jq
+- [convexTest under adapters/ needs a re-keyed glob](reference_convex_test_in_adapters_dir_needs_rekeyed_glob.md) — map ../x to ./x and ./y to ./adapters/y, or "Could not find module"

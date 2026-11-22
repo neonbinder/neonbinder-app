@@ -770,8 +770,14 @@ function StintsPanel({
       added = { teamId: entry.teamId, label: entry.name, ...years };
     } else {
       const key = nameSearchKey(entry.name);
-      const batch = env.batchTeams.find((t) => nameSearchKey(t.label) === key);
-      if (batch) added = { teamName: batch.teamName, label: batch.label, ...years };
+      // Rule 8: a tie is never given to the first candidate. Two batch teams
+      // that read as the same label are not a unique match, so nothing is
+      // added, exactly as when none matched.
+      const matches = env.batchTeams.filter((t) => nameSearchKey(t.label) === key);
+      if (matches.length === 1) {
+        const batch = matches[0];
+        added = { teamName: batch.teamName, label: batch.label, ...years };
+      }
     }
     if (!added) return;
     onChange(editing ? replaceStint(stints, editing, added) : withStint(stints, added));

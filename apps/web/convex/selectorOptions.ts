@@ -350,7 +350,7 @@ import {
 } from "./teams";
 // NEO-253: the shared normalisation core, imported rather than transcribed —
 // this file used to carry two separate hand copies of it.
-import { normalizeEntityName, rosterKey } from "../lib/entities/normalize-name";
+import { normalizeEntityName, rosterCompareKey } from "../lib/entities/normalize-name";
 // NEO-591: the one names-first pairing core, shared with the publisher
 // checklist matcher (lib/checklists/match-published-checklist.ts).
 import { pairNamesFirst } from "../lib/cards/pair-names-first";
@@ -18149,7 +18149,7 @@ export const fetchCardChecklist = action({
           storedByStem.set(stem, set);
         }
         const rosterOf = (c: ReconciledCard): string =>
-          rosterKey(c.players?.length ? c.players : c.cardName ? [c.cardName] : []);
+          rosterCompareKey(c.players?.length ? c.players : c.cardName ? [c.cardName] : []);
         // Unmatched variations by side, then stem, for the other-side check.
         // `unmatchedBscCards` are BSC-only (`unmatched: "sl"`);
         // `unmatchedSlCards` are SportLots-only (`unmatched: "bsc"`).

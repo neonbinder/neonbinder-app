@@ -100,7 +100,7 @@ BuySportsCards alone for the whole run:
 | Set | Variant types provisioned | Provisioned by |
 |---|---|---|
 | Baseball → 2024 → Topps → Topps Chrome | `Base` (full checklist), `Insert` → "Future Stars" (~20 cards), `Parallel` → "Gold Wave Refractors" (300 cards, BUILT FROM BASE since NEO-321 — copies of Base's cards linked to Gold Wave's own BSC + SportLots cards) | `tests/setup.spec.ts`; **sole writer** of the cards of the base parallels its two runs build before Stop (the first two buildable rows under `Parallel`, in the type's child order — measured first: `Sepia Refractors`; NEO-496's second run skips the first, blocked by the spec's own collection copy): `tests/set-selector/base-parallels-build-from-section.spec.ts` (NEO-321, NEO-496) — see "2024 Topps Chrome › Parallel — the base-parallel build". Approved: Jason, 2026-10-04; two parallels (NEO-496): Jason, 2026-11-12 |
-| Baseball → 2024 → Topps → Topps Stars of MLB Network | `Base` (10 cards on BSC) — variant types synced and Base MAPPED (BSC-only under a SportLots pause, so it reads unmapped), checklist deliberately EMPTY (the read-only wizard fixture) | `tests/setup.spec.ts`; read by `checklist-wizard-back-to-matching-resumes-decisions`, `checklist-wizard-career-team-entry` and `checklist-wizard-link-to-existing-player` through `fetchChecklistToWizard`'s default, and by `sport-no-teams-bsc-no-team-answer-saves-no-team` (NEO-426) with its own file (card 1 left to BSC), each exiting Cancel → Discard. ✅ **Approved by Jason 2026-11-09** (NEO-475, replacing Topps Big League); the fourth reader **approved by Jason 2026-11-19** (NEO-426: "Do both the MLB Network and the Onit sets") — see "Topps Stars of MLB Network" |
+| Baseball → 2024 → Topps → Topps Stars of MLB Network | `Base` (10 cards on BSC) — variant types synced and Base MAPPED (BSC-only under a SportLots pause, so it reads unmapped), checklist deliberately EMPTY (the read-only wizard fixture) | `tests/setup.spec.ts`; read by `checklist-wizard-back-to-matching-resumes-decisions`, `checklist-wizard-career-team-entry` and `checklist-wizard-link-to-existing-player` through `fetchChecklistToWizard`'s default, and by `sport-no-teams-bsc-no-team-answer-saves-no-team` (NEO-426) with its own file (card 1 left to BSC), and by `checklist-junk-and-accent-names-pair-as-the-same-player` (NEO-643) with its own in-memory file (two names respelled, one checklist-only row), each exiting Cancel → Discard (or Cancel with nothing decided). ✅ **Approved by Jason 2026-11-09** (NEO-475, replacing Topps Big League); the fourth reader **approved by Jason 2026-11-19** (NEO-426: "Do both the MLB Network and the Onit sets"); the fifth (NEO-643) under rule 1 (served by the fake, nothing new recorded) — see "Topps Stars of MLB Network" |
 | Baseball → 2024 → Topps → Topps Big League | none since NEO-475 — RETIRED as a fixture (310 cards; every wizard fetch read them all from BSC) | was `tests/setup.spec.ts` and the read-only wizard flows; no flow touches it now |
 | Baseball → 2024 → BBM → BBM Rookie Edition Premium | `Base` — 36 cards (RP01-RP36), variant types synced and fetched in-flow, never committed (NOT pre-synced). The `BBM` brand row is a known brand (`convex/knownBrands.ts`) the seed's year-wide 2024 Sets sync mints, and the set is filed under it by name | `tests/set-selector/checklist-wizard-same-name-pick-step.spec.ts` — **sole reader** (Cancel → Discard); writes one global `players` row, `Shuya Yamada` b. 1851. ✅ **Approved by Jason 2026-11-09** (NEO-475, replacing Topps Chrome NPB) — see "BBM Rookie Edition Premium" |
 | Baseball → 2024 → Topps → Topps Chrome NPB | none since NEO-475 — RETIRED as a fixture (216 cards) | was `tests/set-selector/checklist-wizard-same-name-pick-step.spec.ts`; no flow touches it now |
@@ -2142,7 +2142,9 @@ per run; CI reseeds every run. A LOCAL re-run needs a fresh seed.
 `checklist-wizard-career-team-entry` and
 `checklist-wizard-link-to-existing-player`. A fourth reader,
 `sport-no-teams-bsc-no-team-answer-saves-no-team` (NEO-426, approved by Jason
-2026-11-19), fetches it with its own file (below). It replaced Topps Big League
+2026-11-19), fetches it with its own file (below), and a fifth,
+`checklist-junk-and-accent-names-pair-as-the-same-player` (NEO-643), with its
+own in-memory file (below). It replaced Topps Big League
 (section below, now history): 10 BSC cards per fetch instead of 310. The flows'
 assertions are unchanged; nothing in them was Big League-specific.
 
@@ -2158,7 +2160,7 @@ assertions are unchanged; nothing in them was Big League-specific.
 
 The rules of the Big League section below carry over unchanged:
 **NOTHING MAY EVER COMMIT THIS SET'S CHECKLIST** (a commit makes its names
-known and the wizard would open on nothing), and the set has **four
+known and the wizard would open on nothing), and the set has **five
 readers and ZERO writers**, each exiting Cancel → Discard. No other flow may
 commit a checklist carrying the six names above either.
 
@@ -2177,6 +2179,28 @@ Cancel → Discard; nothing is committed.
 | what it asserts | the names lead straight to `Ready to save` (no `Cards with no team`), and the Save note reads `Lauren Shehadi saves with No Team. E2E Test Sport <w> has no teams. ...` |
 | the flag | the worker's custom sport is marked "No teams in this sport" for the spec's length, never a shared sport (marking Baseball would change every parallel spec's cards). Turned off by the body and, on a red, by the `afterEach` on a second page |
 | measured | own deployment, SportLots paused, 2026-11-19: 26 s desktop, 24 s mobile. Seven name rows (Chris Young's pick step and six unknown names), Shehadi's row presented last (it waits on her card's BSC lookup) |
+
+#### The fifth reader: junk and accents in a checklist's names (NEO-643)
+
+`checklist-junk-and-accent-names-pair-as-the-same-player` proves that a checklist
+name written with BSC's backslash for an accent (`Mark DeR\osa`), or with an
+accent the card lacks (`Harold Reynólds`), pairs its card in Match Cards at 100%
+with no name picker, and that a checklist-only row naming a catalogue player that
+way (`Sh\ohei Ohtani`) reads, and is kept, as `Shohei Ohtani` and adds no name to
+the wizard. Registered under rule 1: the fake already serves the set and the spec
+adds no BSC request.
+
+| | |
+| -- | -- |
+| file | built in memory from `2024-topps-stars-of-mlb-network-base`: all 10 rows (so BSC is asked for no card), #3 and #5 respelled, plus row `11` Shohei Ohtani (`No Team`), which BSC does not list |
+| Match Cards | `Matched (10)`, `BSC only (0)`, `Checklist only (1)`; the matched toggle reads `Collapse matched cards` with no conflict clause |
+| the walk | Ohtani's row KEPT, Confirm; the wizard is asked the set's own seven names (`Skip remaining names (7)`: the six unknown people and Chris Young's pick step); nothing decided, Cancel (no Discard question) |
+| measured | own deployment, SportLots paused, 2026-11-21: desktop 13-15 s |
+
+Why not the 2026 Donruss Signature Series insert (the brief's first choice): its
+sole writer commits it in-pass, so a reader there would see an empty or a
+committed set depending on shard order, and a file covering fewer than its 14
+cards asks BSC live for each card it leaves out.
 
 ### Topps Big League — the entity-review wizard fixture (NEO-248) — RETIRED by NEO-475
 

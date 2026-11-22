@@ -302,5 +302,6 @@
 - [Names-first core: a name pair at 1 is clean](reference_names_first_core_makes_a_name_pair_at_one_clean.md) — skip predicate reads confidence + sourceNumbers, not pairedBy "name"; D2 duplicate-number tie vs main test
 - [Compiler memoization error points at unrelated callback](reference_compiler_memoization_error_points_at_unrelated_callback.md) — bisect your hunks; a new render-scope object breaks old useCallbacks
 - [Pair confidence is server-stamped](reference_pair_confidence_stamped_by_server_fixtures_must_match.md) — clean-pair fixtures: pairedBy name/stored/crossRef at 1; number/variation pairs are 0.9 (NEO-640)
+- [Stored key vs comparison key split](feedback_stored_key_vs_comparison_key_split.md) — a name-rule change goes in an explicit comparison step, never the stored-key fold; prove stored keys vs origin/main by fuzz
 - [Optional result field: omit when empty](reference_optional_result_field_omit_when_empty.md) — always-present [] reds toEqual pins in convex tests; spread only when non-empty
 - [Mixed preselect: focus the open question](pattern_mixed_preselect_focus_goes_to_the_open_question.md) — some ticked, one tied: focus its chip by ref, not Save; heading names both

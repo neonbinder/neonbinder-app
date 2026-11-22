@@ -169,6 +169,32 @@ describe("the gate", () => {
   });
 });
 
+describe("NEO-643: team and league names are cleansed on the way in", () => {
+  test("a stray backslash and soft hyphen never reach a stored team, its location or its aliases", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    await seedSport(t);
+    const res = await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: [
+        {
+          key: "mx",
+          location: "Le\\on",
+          name: "Mex\u00adico Diablos",
+          aliases: ["Diab\\los"],
+        },
+      ],
+    });
+    expect(res.results[0].status).toBe("created");
+    const rows = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(rows).toHaveLength(1);
+    expect(rows[0].name).toBe("Mexico Diablos");
+    expect(rows[0].location).toBe("Leon");
+    expect(rows[0].aliases).toEqual(["Diablos"]);
+  });
+});
+
 describe("create writes aliases through the one index writer, no enrichment", () => {
   test("first run creates with aliases, teams.aliases + teamAliases both land, no scheduled work", async () => {
     armed();
