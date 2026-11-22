@@ -646,3 +646,25 @@ export async function walkAnsweringEverything(
   await expect(endScreen(page), `the walk did not end within ${maxCards} cards`).toBeVisible();
   return tally;
 }
+
+/**
+ * NEO-645 (J3): an insert's parallels (or a Base's) are built only once no card
+ * of the checklist they copy has a pink name item: sources that disagree, a
+ * player name or a team name still waiting. A spec whose subject is the build
+ * walks the open walk the way the old wizard's save did (`walkAnsweringEverything`:
+ * it fails by name on a player or team name it could not answer), proves that
+ * no card it skipped still disagrees with itself (a skipped teamless card,
+ * autograph or title does not hold a build), and closes the walk with Done.
+ *
+ * Contract: ENTRY the walk is open. EXIT the walk is gone, and nothing on the
+ * checklist holds its parallels back. Returns the tally.
+ */
+export async function tidyForTheParallelBuild(
+  page: Page,
+  options: Parameters<typeof walkAnsweringEverything>[1] = {},
+): Promise<WalkTally> {
+  const tally = await walkAnsweringEverything(page, options);
+  expect(tally.skippedFor["Sources disagree"] ?? 0, "cards skipped with sources that disagree hold the parallel build (J3)").toBe(0);
+  await finishTidyWalk(page);
+  return tally;
+}
