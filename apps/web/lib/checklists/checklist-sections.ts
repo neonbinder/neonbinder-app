@@ -90,7 +90,11 @@ export function checklistSectionKey(name: string): string {
   return sectionKeyOf(name);
 }
 
-/** A section name as stored: control characters gone, spacing collapsed. */
+/**
+ * A section name as stored: control characters gone, spacing collapsed. Not
+ * cleansed like an entity name: a section name is a stored link key
+ * (`sectionKeyOf`) and NEO-643 has no backfill.
+ */
 export function cleanSectionName(name: string): string {
   // eslint-disable-next-line no-control-regex
   return name.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim();

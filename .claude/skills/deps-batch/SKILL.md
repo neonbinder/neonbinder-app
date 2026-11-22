@@ -324,7 +324,7 @@ Once approved: `/pr-queue join <NEO-###>`. Do not push until the turn comes.
 **`MERGE_QUEUE=true` (GitHub merge queue):** there is no turn. Once approved,
 push the branch (`git push -u origin "$BR"`) and open the PR as below (PR body
 unchanged), let the cheap PR checks pass, then `gh pr merge <PR> --squash` to
-enqueue and follow it with `pr-watch --queue <PR>` (the `pr-queue` skill's
+enqueue and follow it with the background queue-follow command in the monorepo `CLAUDE.md` (merge queue, step 6) (the `pr-queue` skill's
 GitHub-queue flow: `MERGED` goes to `/pr-close`, `EJECTED` is a red to triage,
 fix and re-enqueue; further pushes are free). A bump that fails in the queue is
 dropped and parked per step 4, never debugged inside the queue. Step 9 is

@@ -161,6 +161,29 @@ async function expectNoSideEffects(t: T) {
   expect(await scheduled(t)).toEqual([]);
 }
 
+describe("NEO-643: dataset names are cleansed on the way in", () => {
+  test("a stray backslash and soft hyphen are gone from the player and its aliases, and the key is the clean name's", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    await fixture(t);
+    const e = await epoch();
+    const out = await load(t, e, [
+      {
+        key: "a",
+        name: "Wilmer R\\ios",
+        birthYear: 1990,
+        aliases: ["W. R\\ios", "Will\u00adie Rios"],
+      },
+    ]);
+    expect(out.results[0].status).toBe("created");
+    const rows = await allPlayers(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].name).toBe("Wilmer Rios");
+    expect(rows[0].nameNormalized).toBe(normalizePlayerName("Wilmer Ríos"));
+    expect(rows[0].aliases ?? []).toEqual(["W. Rios", "Willie Rios"]);
+  });
+});
+
 describe("the gate", () => {
   test("upsertPlayers unarmed refuses even with the right confirm, and writes nothing", async () => {
     const t = convexTest(schema, modules);

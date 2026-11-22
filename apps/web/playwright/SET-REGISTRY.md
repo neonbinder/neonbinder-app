@@ -2170,6 +2170,34 @@ cards per fetch instead of 310.
 **No other flow may commit a checklist carrying the six names above**: a commit
 makes them known, and this spec's walk would open on nothing new.
 
+#### The fifth reader: junk and accents in a checklist's names (NEO-643)
+
+`checklist-junk-and-accent-names-pair-as-the-same-player` proves that a checklist
+name written with BSC's backslash for an accent (`Mark DeR\osa`), or with an
+accent the card lacks (`Harold Reynólds`), pairs its card in Match Cards at 100%
+with no name picker, and that a checklist-only row naming a catalogue player that
+way (`Sh\ohei Ohtani`) reads, and is kept, as `Shohei Ohtani` and adds no name to
+the wizard. Registered under rule 1: the fake already serves the set and the spec
+adds no BSC request.
+
+> **NEO-645 merge note.** Written against the retired wizard (it imports
+> `support/wizard`); it must be ported to the walk by the E2E author before it
+> can run on the NEO-645 branch. The walk commits on Match Cards' Confirm, so it
+> also can no longer be a read-only reader of this set (see the sole-writer rule
+> above).
+
+| | |
+| -- | -- |
+| file | built in memory from `2024-topps-stars-of-mlb-network-base`: all 10 rows (so BSC is asked for no card), #3 and #5 respelled, plus row `11` Shohei Ohtani (`No Team`), which BSC does not list |
+| Match Cards | `Matched (10)`, `BSC only (0)`, `Checklist only (1)`; the matched toggle reads `Collapse matched cards` with no conflict clause |
+| the walk | Ohtani's row KEPT, Confirm; the wizard is asked the set's own seven names (`Skip remaining names (7)`: the six unknown people and Chris Young's pick step); nothing decided, Cancel (no Discard question) |
+| measured | own deployment, SportLots paused, 2026-11-21: desktop 13-15 s |
+
+Why not the 2026 Donruss Signature Series insert (the brief's first choice): its
+sole writer commits it in-pass, so a reader there would see an empty or a
+committed set depending on shard order, and a file covering fewer than its 14
+cards asks BSC live for each card it leaves out.
+
 ### Topps Big League — the entity-review wizard fixture (NEO-248) — RETIRED by NEO-475
 
 > **History.** No flow reads this set since NEO-475 (2026-11-09): the three

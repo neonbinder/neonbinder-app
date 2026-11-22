@@ -95,7 +95,7 @@ describe("parsePublishedChecklist — the published line format", () => {
   });
 
   it("reads CRLF and a leading BOM", () => {
-    const out = parsePublishedChecklist("﻿1 A Player - Team A\r\n2 B Player - Team B");
+    const out = parsePublishedChecklist("\uFEFF1 A Player - Team A\r\n2 B Player - Team B");
     expect(out.rows.map((r) => r.number)).toEqual(["1", "2"]);
   });
 });
@@ -173,6 +173,16 @@ describe("parsePublishedChecklist — CSV and TSV with a header", () => {
     expect(out.rows).toEqual([
       { number: "60", players: ["Rhett Lowder"], teams: ["Cincinnati Reds"] },
     ]);
+  });
+
+  it("NEO-643: BSC's backslash for an accent is cleansed out of the player, team and variation note", () => {
+    const out = parsePublishedChecklist(
+      "Card Number,Player,Team\n12,Wilmer R\\ios (Photo Var\\iation),Le\\on Mex\u00adico",
+    );
+    expect(out.format).toBe("csv");
+    expect(out.rows[0].players).toEqual(["Wilmer Rios"]);
+    expect(out.rows[0].teams).toEqual(["Leon Mexico"]);
+    expect(out.rows[0].variationName).toBe("Photo Variation");
   });
 
   it("detects tsv and accepts alternate spellings (Card No., Names, Club)", () => {

@@ -113,13 +113,25 @@ describe("variationNameOf: bounds", () => {
       "Judge (Photo\u202e Varia\u200ftion\u2066 x\u2069\u2028two\u2029 \u200e\u202a\u202b\u202c\u202d)",
     )!;
     expect(/[\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/.test(name)).toBe(false);
-    expect(name).toBe("Photo Varia tion x two");
+    // NEO-643: the bidi marks are format characters, deleted inside a word
+    // (cleanseExternalName), not spaced; the separators U+2028/2029 still are.
+    expect(name).toBe("Photo Variation x two");
   });
 
   it("strips U+061C, the zero-width characters and the byte-order mark too", () => {
     const name = variationNameOf("Judge (Photo\u061c Throw\u200bback\u200c x\u200d y\ufeff z)")!;
     expect(/[\u061c\u200b-\u200d\ufeff]/.test(name)).toBe(false);
-    expect(name).toBe("Photo Throw back x y z");
+    // NEO-643: U+200B-U+200D and the BOM are deleted, not spaced
+    // (cleanseExternalName), so "Throw\u200bback" is "Throwback".
+    expect(name).toBe("Photo Throwback x y z");
+  });
+
+  it("a real space beside a bidi or zero-width mark stays the separator", () => {
+    for (const mark of ["‏", "‎", "‮", "​", "﻿", "؜"]) {
+      expect(variationNameOf(`Judge (Photo ${mark} variation)`), mark).toBe("Photo variation");
+      expect(variationNameOf(`Judge (Photo${mark} variation)`), mark).toBe("Photo variation");
+      expect(variationNameOf(`Judge (Photo ${mark}variation)`), mark).toBe("Photo variation");
+    }
   });
 
   it("looks at only the first few bracket groups", () => {

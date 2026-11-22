@@ -12,7 +12,6 @@ import {
   boundParsedNames,
   splitMarketplacePlayerNames,
   splitMarketplaceTeamNames,
-  stripZeroWidth,
 } from "./marketplaceNames";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../features/cardAttention";
 import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
@@ -125,9 +124,18 @@ describe("splitMarketplaceNames: tidying", () => {
     expect(splitMarketplaceTeamNames("\u200B\uFEFF")).toEqual({ names: [], unrepresentable: false });
   });
 
-  test("stripZeroWidth removes only the zero-width characters", () => {
-    expect(stripZeroWidth("Bod\u200Bø/Glimt\uFEFF")).toBe("Bodø/Glimt");
-    expect(stripZeroWidth("Korea, South")).toBe("Korea, South");
+  test("NEO-643: BSC's backslash accent stand-in and the soft hyphen are deleted from each part", () => {
+    expect(splitMarketplacePlayerNames("Wilmer R\\ios, Jos\u00ADe Ram\\irez").names).toEqual([
+      "Wilmer Rios",
+      "Jose Ramirez",
+    ]);
+    // Teams keep their own separator rules; the part is cleansed all the same.
+    expect(splitMarketplaceTeamNames("Bod\u200B\u00F8/Glimt, Le\\on").names).toEqual([
+      "Bod\u00F8/Glimt",
+      "Leon",
+    ]);
+    // A part that is only junk is an empty part.
+    expect(splitMarketplaceTeamNames("\\, \u00AD").names).toEqual([]);
   });
 
   test("a fullwidth comma is NOT a separator (documented limit: the value stays whole)", () => {

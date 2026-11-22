@@ -631,3 +631,47 @@ describe("resolveChecklistEntities: unknown vs ambiguous names (NEO-254), now na
     expect([...resolved.unknownPlayers].sort()).toEqual(["Bob Allen", "Daulton Varsho"]);
   });
 });
+
+describe("upsertFromGatePage cleanses incoming names (NEO-643, was startBatch's cleanse)", () => {
+  /**
+   * BSC writes "Wilmer R\ios" for Ríos. The row must be stored (and shown) as
+   * "Wilmer Rios", keyed the same as a clean spelling, and a re-call that sends
+   * the backslash form again must find the SAME row rather than add a second.
+   */
+  test("a backslash or soft hyphen never reaches a stored row, and a re-call keeps one row", async () => {
+    const t = newT();
+    const w = await seed(t);
+    await upsert(t, w, [
+      { kind: "player", name: "Wilmer R\\ios", sportId: w.baseball },
+      { kind: "player", name: "  Mike​   Trout ", sportId: w.baseball },
+      { kind: "team", name: "Le\\on Mex­ico", sportId: w.baseball },
+    ]);
+    const first = await rows(t);
+    expect(first.map((r) => r.name).sort()).toEqual(["Leon Mexico", "Mike Trout", "Wilmer Rios"]);
+
+    await upsert(t, w, [
+      { kind: "player", name: "Wilmer Rios", sportId: w.baseball },
+      { kind: "player", name: "Mike Trout", sportId: w.baseball },
+      { kind: "team", name: "Leon Mexico", sportId: w.baseball },
+    ]);
+    const after = await rows(t);
+    expect(after.map((r) => r._id).sort()).toEqual(first.map((r) => r._id).sort());
+  });
+
+  test("a name that NFC lengthens past the bound is refused by length, never by echo, and nothing is written", async () => {
+    const t = newT();
+    const w = await seed(t);
+    // 100 characters raw, 200 once composed: U+0958 composes to two characters.
+    const long = "क़".repeat(100);
+    expect(long.length).toBeLessThanOrEqual(120);
+    for (const kind of ["player", "team"] as const) {
+      const attempt = upsert(t, w, [{ kind, name: long, sportId: w.baseball }]);
+      await expect(attempt).rejects.toThrow(/once cleansed; the limit is 120/);
+      await expect(attempt).rejects.not.toThrow(/क़/);
+    }
+    expect(await rows(t)).toHaveLength(0);
+    // At the bound exactly is fine.
+    await upsert(t, w, [{ kind: "player", name: "A".repeat(120), sportId: w.baseball }]);
+    expect(await rows(t)).toHaveLength(1);
+  });
+});

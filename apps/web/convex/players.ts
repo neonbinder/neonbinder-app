@@ -75,9 +75,11 @@ import {
 // NEO-253: the one normalisation of an entity name, shared with teams,
 // leagues, the commit prelude and the browser-side review wizard.
 import {
+  entityNameCompareReadings,
   entityNameQueryReadings,
   normalizeEntityName,
 } from "../lib/entities/normalize-name";
+import { storedNameMatchesTyped } from "../lib/entities/name-search";
 // NEO-296: the bound on the batch id -> row read, with the op arithmetic.
 import { readManyByIds } from "./lib/batchIdReads";
 // NEO-592: bounded concurrency for independent reads inside one query.
@@ -2830,14 +2832,16 @@ export const search = query({
         return args.sportId ? search.eq("sportId", args.sportId) : search;
       })
       .take(limit);
-    const readings = entityNameQueryReadings(term);
+    // NEO-643 — a hyphen is a space in typed text: "smith jo" finds a stored
+    // "smith-jones", whose key keeps the hyphen inside its token, so the key's
+    // tokens are split on the hyphen here (the key itself is untouched). Main's
+    // own reading of the typed text rides along (`storedNameMatchesTyped`), so
+    // typing a stored "J-P Arencibia" in full still finds it.
+    const readings = entityNameCompareReadings(term);
+    const storedReadings = entityNameQueryReadings(term);
     /** Every typed token is the prefix of one of the name's tokens. */
-    const matchesEveryToken = (nameNormalized: string) => {
-      const nameTokens = nameNormalized.split(" ");
-      return readings.some(
-        (tokens) => tokens.length > 0 && tokens.every((t) => nameTokens.some((n) => n.startsWith(t))),
-      );
-    };
+    const matchesEveryToken = (nameNormalized: string) =>
+      storedNameMatchesTyped(nameNormalized, readings, storedReadings);
 
     /*
      * NEO-313 — a multi-sport member of THIS sport is a player of this sport.
@@ -2852,7 +2856,7 @@ export const search = query({
      * read; nothing here looks at another sport.
      *
      * NEO-322 — under either reading of the typed text
-     * (`entityNameQueryReadings`), so "J. T. R", one keystroke short of
+     * (`entityNameCompareReadings`), so "J. T. R", one keystroke short of
      * "J. T. Re", still finds "jt realmuto" instead of looking for "jtr".
      */
     /*
@@ -2871,7 +2875,7 @@ export const search = query({
      * is left. So the person typed in full is never pushed out by namesakes.
      */
     const memberDocs: Doc<"players">[] = [];
-    if (args.sportId && readings[0].length > 0) {
+    if (args.sportId && (readings[0].length > 0 || storedReadings[0].length > 0)) {
       const members = await ctx.db
         .query("playerSports")
         .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId!))

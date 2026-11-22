@@ -69,7 +69,11 @@ import {
 import { splitTeamName, teamFullName } from "../lib/teams/team-name";
 // NEO-330: the one definition of "this team matches what was typed", shared
 // with Team Management's own one-character filter.
-import { teamFilterReadings, teamMatchesFilter } from "../lib/teams/team-filter";
+import {
+  teamFilterReadings,
+  teamMatchesFilter,
+  teamSearchReadings,
+} from "../lib/teams/team-filter";
 import { clampSearchQuery } from "./lib/searchQueryClamp";
 // NEO-331: the picker's set-context tiers — pure, shared with tests.
 import { rankTeamsForContext } from "../lib/teams/team-rank";
@@ -2512,7 +2516,13 @@ export const searchForManagement = query({
     // Bounded before anything reads it — see `clampSearchQuery`.
     const typed = clampSearchQuery(args.query);
     const readings = teamFilterReadings(typed);
-    if (readings.length === 0) return { teams: [], truncated: false };
+    // NEO-643 — main's own reading of the typed text (a hyphen stays inside its
+    // word) is kept beside the comparison one, so no team main returned is
+    // dropped: a stored "K-C Royals" typed in full is still found.
+    const storedReadings = teamSearchReadings(typed);
+    if (readings.length === 0 && storedReadings.length === 0) {
+      return { teams: [], truncated: false };
+    }
 
     const inLeague = (team: Doc<"teams">) =>
       args.leagueId === undefined
@@ -2551,8 +2561,12 @@ export const searchForManagement = query({
     // One search per reading, in order, and the second only if the first kept
     // nothing: "N. C. S" joins to "ncs", which starts no word in "nc state",
     // and is re-asked as "nc s" (NEO-322, as in `search`).
+    //
+    // NEO-643 — the index holds `nameNormalized` as stored (a hyphen inside its
+    // word), so it is asked with the stored reading; `readings`, which reads a
+    // hyphen as a space, is what a hit must then satisfy.
     let keptByName = 0;
-    for (const reading of readings) {
+    for (const reading of storedReadings) {
       if (keptByName > 0) break;
       const hits = await ctx.db
         .query("teams")
@@ -2561,7 +2575,7 @@ export const searchForManagement = query({
         )
         .take(TEAM_MANAGEMENT_SEARCH_SCAN);
       for (const team of hits) {
-        if (!teamMatchesFilter(team, readings)) continue;
+        if (!teamMatchesFilter(team, readings, storedReadings)) continue;
         const before = matched.length;
         keep(team);
         keptByName += matched.length - before;

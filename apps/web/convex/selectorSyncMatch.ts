@@ -59,6 +59,8 @@ import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
 import { sportConfigDefaultsFor } from "./sportConfig";
 // NEO-334 — one word, one variant type: the rename door's sibling guard reads
 // the same singular/plural rule the custom-add door does.
+import { cleanseExternalName } from "../lib/entities/cleanse-name";
+import { dashesToSpaces } from "../lib/entities/normalize-name";
 import { sameTitleWord, sameWordSiblingMessage } from "./variantRole";
 
 export type { PlatformSide } from "./platformSlots";
@@ -110,9 +112,10 @@ export function valuesDeepEqual(a: unknown, b: unknown): boolean {
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
- * The single fold used by tier 2, by the sibling-clash check, by
+ * The single fold used by the sibling-clash check, by
  * `declinedUpstreamLabels`, and by the suggestions query's "does the
- * marketplace label differ from NB's name?" test.
+ * marketplace label differ from NB's name?" test. Sync's name tier compares
+ * through the wider `nameTierKey` instead (below).
  *
  * Deliberately `toLowerCase().trim()` — exactly what both stores have always
  * keyed on — and deliberately NOT `nameKey` from lib/cards/card-name.ts.
@@ -120,12 +123,35 @@ export function valuesDeepEqual(a: unknown, b: unknown): boolean {
  * names but would newly fold apart-by-design siblings like "Gold /50" and
  * "Gold 50" into one row here, silently merging two parallels.
  *
- * One fold, used everywhere, is the point: a name the matcher treats as equal
- * must be a name the clash check refuses and the suggestions query calls
- * unchanged, or the three disagree about what a rename even is.
+ * This is the STORED key: the sibling-clash check, `declinedUpstreamLabels`
+ * and the suggestions query compare names through it, so it must not change
+ * under rows already written. It is therefore narrower than the sync name
+ * tier's `nameTierKey`, which also folds accents, junk characters and dashes.
+ * Two names the tier reads as equal ("Topps-Chrome" and "Topps Chrome", a
+ * stored "B\eisbol" and "Beisbol") can differ here, so the clash check does
+ * not refuse them as siblings. That is safe: when two sibling rows meet in the
+ * tier they become `nameSharedBySiblings`, and sync withholds the new ids for
+ * the operator to place. It never attaches an id to either row on a guess.
  */
 export function selectorValueKey(value: string): string {
   return value.toLowerCase().trim();
+}
+
+/**
+ * NEO-643 — the name tier's comparison key: the value as an incoming label is
+ * now stored (`cleanseExternalName`), lower-cased. Incoming labels are
+ * cleansed at ingest and stored rows are NOT backfilled, so a stored
+ * "B\eisbol", a decomposed accent or a double space would never equal its
+ * cleansed upstream label under `selectorValueKey` alone, and sync would mint
+ * a twin instead of attaching the second marketplace id. The tier compares
+ * both sides through this, and ONLY the tier. A dash reads as a space
+ * ("Topps-Chrome" = "Topps Chrome", Jason 2026-11-21), like every other name
+ * key. `selectorValueKey` itself, the sibling-clash check and
+ * `declinedUpstreamLabels` (stored keys) are unchanged.
+ */
+function nameTierKey(value: string): string {
+  // A dash is a space, here as in every other name key (Jason, 2026-11-21).
+  return dashesToSpaces(cleanseExternalName(value).toLowerCase()).replace(/\s+/g, " ").trim();
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -941,7 +967,7 @@ export function planSelectorSync<TId extends string>(args: {
   };
   for (const row of existing) {
     byRowId.set(row._id, row);
-    const key = selectorValueKey(row.value);
+    const key = nameTierKey(row.value);
     const bucket = byKey.get(key);
     if (bucket) bucket.push(row);
     else byKey.set(key, [row]);
@@ -1128,7 +1154,26 @@ export function planSelectorSync<TId extends string>(args: {
   // behind it. Counted over the items that reach this pass carrying an id (an
   // id-less item is withheld below whatever the count says when a namesake
   // exists), excluding operator-promoted `identityOnly` lines.
-  const sameNameRule = args.sameName;
+  // NEO-643: the rule sees both sides cleansed and with their dashes read as
+  // spaces, like the keyed index below ("Rated-Rookie" = "Rated Rookie").
+  //
+  // A dash must never change a title's kind (`variantRole.ts`: "Base",
+  // "Insert(s)" and "Parallel(s)" are read from the title). Only a dash
+  // BETWEEN characters folds. A dash at an edge is left as the cleansed text
+  // has it, because folding it would let the rule's trim turn "Base-" into the
+  // word "Base" and attach the Base type's id to a row that is not the Base.
+  // Mid-title dashes cannot make a kind word: each is one whole word, so
+  // "Base-Set" becomes "Base Set", which is no kind, and so does every
+  // other dashed title.
+  const foldForRule = (raw: string): string => {
+    const cleansed = cleanseExternalName(raw);
+    const folded = dashesToSpaces(cleansed);
+    return folded.trim().length === cleansed.trim().length ? folded : cleansed;
+  };
+  const sameNameRuleArg = args.sameName;
+  const sameNameRule = sameNameRuleArg
+    ? (a: string, b: string) => sameNameRuleArg(foldForRule(a), foldForRule(b))
+    : undefined;
   const incomingByKey = new Map<string, number>();
   /** NEO-334 — the id-carrying items counted above, for the `sameName` scan. */
   const countedValues: string[] = [];
@@ -1150,12 +1195,12 @@ export function planSelectorSync<TId extends string>(args: {
   const reachingByKey = new Map<string, number>();
   for (let i = 0; i < items.length; i++) {
     if (outcomes[i]) continue;
-    const reachingKey = selectorValueKey(items[i].value);
+    const reachingKey = nameTierKey(items[i].value);
     reachingByKey.set(reachingKey, (reachingByKey.get(reachingKey) ?? 0) + 1);
     if (items[i].identityOnly) continue;
     allValues.push(items[i].value);
     if (!PLATFORM_SIDES.some((s) => items[i].ids[s])) continue;
-    const key = selectorValueKey(items[i].value);
+    const key = nameTierKey(items[i].value);
     incomingByKey.set(key, (incomingByKey.get(key) ?? 0) + 1);
     countedValues.push(items[i].value);
   }
@@ -1163,17 +1208,17 @@ export function planSelectorSync<TId extends string>(args: {
   const namesakesOf = (value: string): Array<MatchableRow<TId>> =>
     sameNameRule
       ? existing.filter((row) => sameNameRule(row.value, value))
-      : (byKey.get(selectorValueKey(value)) ?? []);
+      : (byKey.get(nameTierKey(value)) ?? []);
   /** Incoming items, counted above, that carry this name (or its word). */
   const incomingNamed = (value: string): number =>
     sameNameRule
       ? countedValues.filter((other) => sameNameRule(other, value)).length
-      : (incomingByKey.get(selectorValueKey(value)) ?? 0);
+      : (incomingByKey.get(nameTierKey(value)) ?? 0);
   /** NEO-334 — the no-namesake twin count: id-less items too, under the rule. */
   const incomingNamedAny = (value: string): number =>
     sameNameRule
       ? allValues.filter((other) => sameNameRule(other, value)).length
-      : (incomingByKey.get(selectorValueKey(value)) ?? 0);
+      : (incomingByKey.get(nameTierKey(value)) ?? 0);
   for (let i = 0; i < items.length; i++) {
     if (outcomes[i]) continue;
     const item = items[i];
@@ -1195,12 +1240,12 @@ export function planSelectorSync<TId extends string>(args: {
           // NEO-496 — a checklist section made its own set: inserted unless
           // its name is already a sibling's or another line's. Exact name
           // only (the store's own fold), as the insert would collide on it.
-          const namesakes = byKey.get(selectorValueKey(item.value)) ?? [];
+          const namesakes = byKey.get(nameTierKey(item.value)) ?? [];
           if (namesakes.length > 0) {
             withheld = "id-less checklist line names an existing row";
             sibling = { reason: "nameTakenBySibling", rowIds: namesakes.map((r) => r._id) };
             ambiguities.push({ item: item.value, reason: withheld });
-          } else if ((reachingByKey.get(selectorValueKey(item.value)) ?? 0) > 1) {
+          } else if ((reachingByKey.get(nameTierKey(item.value)) ?? 0) > 1) {
             withheld = "id-less checklist line shares its name with another line";
             sibling = { reason: "nameSharedInBatch", rowIds: [] };
             ambiguities.push({ item: item.value, reason: withheld });

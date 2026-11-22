@@ -17,6 +17,7 @@ import { isNoClaimTeamText, isNoTeamText } from "../../lib/checklists/no-team";
 import { readProspectCell } from "../../lib/checklists/prospect";
 import { mixedProspectClaim } from "../../lib/checklists/prospect-team-text";
 import { MAX_VARIATION_NAME } from "../../lib/checklists/parse-published-checklist";
+import { cleanseExternalName } from "../../lib/entities/cleanse-name";
 import { normalizeEntityName } from "../../lib/entities/normalize-name";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../features/cardAttention";
 import type { publishedChecklistStoredRowValidator } from "../schema";
@@ -149,10 +150,12 @@ export function checkPublishedChecklist(
     // characters out (a name never carries one; the set is the parser's own:
     // U+061C, U+200B-200F, U+2028/2029, U+202A-202E, U+2066-2069, U+FEFF), whitespace
     // folded, its own bound (not a player's).
-    const variationName = (row.variationName ?? "")
-      .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
+    const variationName = cleanseExternalName(
+      cleanseExternalName(row.variationName ?? "").replace(
+        /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g,
+        " ",
+      ),
+    );
     if (variationName.length > MAX_VARIATION_NAME) {
       throw new ConvexError(
         `${where} has a variation name over ${MAX_VARIATION_NAME} characters.`,
@@ -164,7 +167,9 @@ export function checkPublishedChecklist(
           `${where} sends ${names.length} ${unit} names; the limit is ${MAX_PUBLISHED_ROW_NAMES}.`,
         );
       }
-      const kept = names.map((n) => n.trim()).filter(Boolean);
+      // NEO-643: the server-side backstop for the client's cleansing. A name is
+      // stored the way `cleanseExternalName` writes it, whatever the caller sent.
+      const kept = names.map((n) => cleanseExternalName(n)).filter(Boolean);
       if (kept.length > max) {
         throw new ConvexError(`${where} names ${kept.length} ${unit}s; the limit is ${max}.`);
       }

@@ -63,6 +63,7 @@ import { heavyPreprocessPool } from "./placeholderHeavyPool";
 import { readEscalationHints } from "./lib/preprocessBaseline";
 import { PLACEHOLDER_MAX_ENTRY_INDEX } from "./lib/placeholderObjects";
 import { parseCropBox } from "./lib/photoEdit";
+import { cleanseExternalName } from "../lib/entities/cleanse-name";
 import { pendingPhotoEditValidator } from "./schema";
 import {
   rejectedSummaryValidator,
@@ -1560,6 +1561,24 @@ function asStringArray(value: unknown): string[] | undefined {
 }
 
 /**
+ * NEO-643 — `asString` for a NAME the service read off a card (the team): the
+ * shared `cleanseExternalName` first, so a stray backslash or zero-width
+ * character in the OCR text never reaches a stored row; undefined when
+ * nothing is left.
+ */
+function asNameString(value: unknown): string | undefined {
+  const name = asString(value);
+  if (name === undefined) return undefined;
+  return cleanseExternalName(name) || undefined;
+}
+
+/** NEO-643 — `asStringArray` for player names, each cleansed; ones left empty drop. */
+function asNameArray(value: unknown): string[] | undefined {
+  const names = asStringArray(value);
+  return names?.map((n) => cleanseExternalName(n)).filter((n) => n.length > 0);
+}
+
+/**
  * A dHash is 16 lowercase hex characters (64 bits). Anything else is dropped
  * rather than stored: pairing's same-side collision check compares hashes by
  * Hamming distance, and a malformed hash would not fail loudly — it would
@@ -1587,8 +1606,8 @@ function imageFieldsFromResult(returnValue: unknown): Partial<Doc<"placeholderIm
     // `body.player` is deliberately not stored: the service derives it as
     // `players[0]`, so a column for it could only ever be a copy that goes
     // stale. Readers take `players[0]` themselves.
-    players: asStringArray(body.players),
-    team: asString(body.team),
+    players: asNameArray(body.players),
+    team: asNameString(body.team),
     cardNumber: asString(body.card_number),
     side: asString(body.side),
     rotationDegrees: asNumber(body.rotation_degrees),
@@ -1621,8 +1640,8 @@ export function readFieldsFromResult(returnValue: unknown): {
   if (!returnValue || typeof returnValue !== "object") return {};
   const body = returnValue as Record<string, unknown>;
   return {
-    players: asStringArray(body.players),
-    team: asString(body.team),
+    players: asNameArray(body.players),
+    team: asNameString(body.team),
     cardNumber: asString(body.card_number),
     side: asString(body.side),
     textCount: asNumber(body.text_count),

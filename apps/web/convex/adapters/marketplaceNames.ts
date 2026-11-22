@@ -28,9 +28,12 @@
  *
  * ## What the splitter does, in order
  *
- * 1. Strip zero-width characters (U+200B–U+200D, U+FEFF), split on the
- *    separator, collapse whitespace, trim each part, drop empty parts (a
- *    trailing comma, a doubled separator).
+ * 1. Split on the separator, then cleanse each part with
+ *    `cleanseExternalName` (NEO-643: BSC's backslash stand-in for an accent,
+ *    the soft hyphen and zero-width characters are deleted; whitespace is
+ *    collapsed and the part trimmed), and drop empty parts (a trailing comma, a
+ *    doubled separator). None of the junk characters is a separator, so
+ *    cleansing before or after the split reads the same.
  * 2. Re-attach a generational suffix. A part that is ONLY `Jr`/`Sr`/`II`/
  *    `III`/`IV` (period optional, any case) belongs to the name before it:
  *    "Ken Griffey, Jr., Mike Trout" is two names, the first "Ken Griffey Jr.".
@@ -45,6 +48,7 @@
  * adapters (and anything in the default runtime) can import it.
  */
 
+import { cleanseExternalName } from "../../lib/entities/cleanse-name";
 import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../features/cardAttention";
 
@@ -63,18 +67,6 @@ export const TEAM_NAME_SEPARATOR = /,/;
  * NEO-333 stored-data report flags exactly what this splitter re-attaches.
  */
 export const GENERATIONAL_SUFFIX_ONLY = /^(?:jr|sr|ii|iii|iv)\.?$/i;
-
-/** Zero-width space, non-joiner, joiner and the BOM / zero-width no-break space. */
-const ZERO_WIDTH = /[\u200B-\u200D\uFEFF]/g;
-
-/**
- * Remove zero-width characters from a marketplace value. Applied by the
- * splitter, and by the BSC adapter to the raw team string it hands on for the
- * whole-name match, so both forms of one value agree.
- */
-export function stripZeroWidth(raw: string): string {
-  return raw.replace(ZERO_WIDTH, "");
-}
 
 /** What a split produced, plus whether anything was dropped or refused. */
 export type SplitMarketplaceNames = {
@@ -162,13 +154,13 @@ export function splitMarketplaceNames(
   limit: number,
   separator: RegExp,
 ): SplitMarketplaceNames {
-  // Zero-width characters first: invisible, so "Mike Trout\u200B" and
-  // "Mike Trout" would otherwise be two names that read the same (trim does
-  // not remove U+200B), and a part of nothing but a zero-width space would
-  // survive the empty check.
-  const parts = stripZeroWidth(raw)
+  // Each part is cleansed: invisible junk would otherwise make "Mike Trout\u200B"
+  // and "Mike Trout" two names that read the same (trim does not remove
+  // U+200B), a part of nothing but a zero-width space would survive the empty
+  // check, and BSC's "Wilmer R\ios" would be stored with its backslash.
+  const parts = raw
     .split(separator)
-    .map((p) => p.replace(/\s+/g, " ").trim())
+    .map(cleanseExternalName)
     .filter(Boolean);
 
   const joined: string[] = [];

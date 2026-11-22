@@ -32,6 +32,9 @@ import { sortTeamYears } from "../../lib/players/team-tenure";
 // below is where an EXTERNAL string first becomes something we call an id, so
 // it is the right place to decide whether it is one.
 import { isWikidataQid } from "../../lib/players/wikidata-id";
+// NEO-643 — a label Wikidata hands back is cleansed before it is written into
+// enrichment. QIDs, IRIs and page titles are keys and never pass through it.
+import { cleanseExternalName } from "../../lib/entities/cleanse-name";
 // NEO-236: every outward-facing lookup (ESPN's displayName, Wikidata's label)
 // is keyed on the COMPOSED full name, never on the stored nickname.
 import { teamFullName } from "../../lib/teams/team-name";
@@ -573,9 +576,9 @@ const LABEL_SERVICE = `SERVICE wikibase:label { bd:serviceParam wikibase:languag
  * instead of a `Create Q1215892` pill.
  */
 function labelValue(binding?: SparqlBinding): string | undefined {
-  const value = binding?.value;
-  if (value === undefined) return undefined;
-  return isWikidataQid(value) ? undefined : value;
+  if (binding?.value === undefined) return undefined;
+  const value = cleanseExternalName(binding.value);
+  return !value || isWikidataQid(value) ? undefined : value;
 }
 
 /**
@@ -1413,6 +1416,8 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
     // guard against a malformed response, not an expected branch.
     const teamWdId = row.team ? qidFromIri(row.team.value) : undefined;
     if (row.team && row.teamLabel && teamWdId) {
+      // NEO-643: the label is a name NB will store and show; cleansed once.
+      const teamLabel = cleanseExternalName(row.teamLabel.value);
       const stintKey = `${teamWdId}|${row.start?.value ?? ""}|${row.end?.value ?? ""}`;
       const teamSportQid = row.teamSport ? qidFromIri(row.teamSport.value) : undefined;
       if (
@@ -1423,7 +1428,7 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
         if (!parkedOutsideSport.has(stintKey)) {
           parkedOutsideSport.set(stintKey, {
             teamWdId,
-            teamLabel: row.teamLabel.value,
+            teamLabel,
             // `membershipIsOutsidePlayerSport` answered true, so it is a QID.
             teamSportQid: teamSportQid as string,
           });
@@ -1442,7 +1447,8 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
         // NEO-235: hoisted ABOVE the dated/undated split — an unlabelled team
         // is unusable in `undatedCareerTeams` for exactly the same reason it is
         // unusable as a stint (the operator would be shown "Q127635").
-        const labelLooksLikeQid = isWikidataQid(row.teamLabel.value);
+        // A label with nothing left after the cleanse is no label at all.
+        const labelLooksLikeQid = !teamLabel || isWikidataQid(teamLabel);
         if (labelLooksLikeQid) {
           // NEO-208: structured for the same reason as the no-match log
           // above — `name` is operator input.
@@ -1461,7 +1467,7 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
           const match = classifyMembership({ start: row.start, end: row.end });
           if (match?.kind === "stint") {
             careerTeams.push({
-              name: row.teamLabel.value,
+              name: teamLabel,
               fromYear: match.fromYear,
               toYear: match.toYear,
               // NEO-236: `teamWdId` is already proven non-null by the guard
@@ -1469,7 +1475,7 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
               wikidataId: teamWdId,
             });
           } else if (match?.kind === "undated") {
-            undatedByTeamQid.set(teamWdId, row.teamLabel.value);
+            undatedByTeamQid.set(teamWdId, teamLabel);
           }
         }
       }
@@ -1487,7 +1493,11 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
     // keep the first non-empty answer. Guarded on "still undefined" rather
     // than assigned unconditionally so a later row (where an OPTIONAL happened
     // to bind nothing) cannot blank a value an earlier row supplied.
-    if (description === undefined && row.descr?.value) description = row.descr.value;
+    if (description === undefined && row.descr?.value) {
+      // NEO-643: display text. An all-junk description stays undefined so a
+      // later row can still supply one.
+      description = cleanseExternalName(row.descr.value) || undefined;
+    }
     if (birthYear === undefined) birthYear = yearFromBinding(row.dob);
     if (enwikiTitle === undefined && row.title?.value) enwikiTitle = row.title.value;
   }
@@ -2661,7 +2671,9 @@ export async function lookupLeagueEnrichmentLive(
 
   return {
     wikidataId: qid,
-    abbreviation: row?.shortName?.value,
+    abbreviation: row?.shortName?.value
+      ? cleanseExternalName(row.shortName.value) || undefined
+      : undefined,
     yearsActive: fromYear !== undefined ? { from: fromYear, to: toYear } : undefined,
     country: labelValue(row?.countryLabel),
   };

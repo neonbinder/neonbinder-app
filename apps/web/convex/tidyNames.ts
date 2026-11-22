@@ -94,6 +94,7 @@ import { findSportForSelectorOption } from "./cardChecklist";
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { resolveTeamForSetYear } from "./lib/teamRow";
 import { sortTeamYears } from "../lib/players/team-tenure";
+import { cleanseExternalName } from "../lib/entities/cleanse-name";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
 import { PLAYER_DESCRIPTION_MAX_TEAMS } from "../lib/players/player-description";
 import type { RunResult } from "@convex-dev/workpool";
@@ -629,7 +630,10 @@ export async function createPlayerOnTarget(
   if (row.answer) {
     throw new ConvexError("This name already has an answer. Change it first.");
   }
-  const name = args.name.trim();
+  // NEO-643 (career-check's `cleanNewPlayerName`, ported): the name a new player
+  // is stored under is cleansed (stray backslash, soft hyphen, zero-width and
+  // other invisible characters gone, whitespace collapsed) like every external name.
+  const name = cleanseExternalName(args.name);
   if (name.length > MAX_PLAYER_NAME_LENGTH) {
     throw new ConvexError(
       `A player name is ${name.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
@@ -1234,6 +1238,28 @@ export const enqueuePendingLookups = internalMutation({
 // ─── the gate's upsert ──────────────────────────────────────────────────────
 
 /**
+ * NEO-643 (startBatch's cleanse, ported) — every name the gate hands in is
+ * cleansed (`cleanseExternalName`: BSC's "R\ios" for Ríos, soft hyphens,
+ * zero-width characters) before it is keyed, stored or shown. The caller
+ * refuses a name longer than `MAX_PLAYER_NAME_LENGTH` on the RAW text, but
+ * cleansing composes to NFC, which can lengthen a string (U+0958 composes to
+ * two characters), so the bound is applied again to what is about to be stored.
+ * Refused by length and position, never by echoing the name, and before the
+ * first write. Idempotent, so a re-called page converges on the same rows.
+ */
+export function cleansedGateNames(items: ReadonlyArray<{ kind: string; name: string }>): string[] {
+  return items.map((item, index) => {
+    const name = cleanseExternalName(item.name);
+    if (name.length > MAX_PLAYER_NAME_LENGTH) {
+      throw new Error(
+        `upsertFromGatePage: the ${item.kind} name at index ${index} is ${name.length} characters once cleansed; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+      );
+    }
+    return name;
+  });
+}
+
+/**
  * The review gate writes its facts as rows (schema doc 4a). Idempotent and
  * convergent, so the driving action re-calls with the remainder when the budget
  * runs out and a re-fetch converges on the same rows:
@@ -1261,10 +1287,11 @@ export const upsertFromGatePage = internalMutation({
     const setYear = await findSetYearForSelectorOption(ctx, args.scopeId);
     ops += 1;
     let processed = 0;
-    for (const item of args.items) {
+    const cleansed = cleansedGateNames(args.items);
+    for (const [index, item] of args.items.entries()) {
       if (ops >= GATE_UPSERT_OPS && processed > 0) break;
       processed += 1;
-      const name = item.name.trim().slice(0, MAX_TIDY_NAME_LENGTH);
+      const name = cleansed[index].slice(0, MAX_TIDY_NAME_LENGTH);
       const key = normalizeEntityName(name);
       if (!key) continue;
       const existing = await readRow(ctx, args.scopeId, item.kind, key);

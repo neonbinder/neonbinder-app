@@ -90,7 +90,7 @@ const verdict = (r) => {
 test("pull_request: every allow-list shape is inert", () => {
   const files = [
     ".claude/agent-memory/devops-automator/x.md",
-    ".claude/skills/pr-watch/SKILL.md",
+    ".claude/skills/pr-close/SKILL.md",
     "docs/operations/runbook.md",
     "docs/img/a.png",
     "CLAUDE.md",

@@ -636,3 +636,19 @@ describe("tidyNames.createPlayer — NEO-313: the player is created under the ro
     expect(player.alsoSportIds).toEqual([s.sportId]);
   });
 });
+
+describe("tidyNames.createPlayer cleanses the name it stores (NEO-643, was career-check's cleanNewPlayerName)", () => {
+  test("a backslash, soft hyphen, zero-width or stray space never reaches the player's name", async () => {
+    const t = newT();
+    const s = await openCard(t, "Wilmer Rios");
+    const { playerId } = await create(t, s.card._id, "Wilmer R\\ios");
+    const player = (await playerRow(t, playerId))!;
+    expect(player.name).toBe("Wilmer Rios");
+    expect(player.nameNormalized).toBe(normalizeEntityName("Wilmer Rios"));
+
+    const t2 = newT();
+    const s2 = await openCard(t2, "Luis Rodriguez");
+    const { playerId: id2 } = await create(t2, s2.card._id, "Lu­is ‎  Rodriguez");
+    expect((await playerRow(t2, id2))!.name).toBe("Luis Rodriguez");
+  });
+});
