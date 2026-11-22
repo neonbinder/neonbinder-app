@@ -3,11 +3,17 @@
 // R1: listing length limits. The card drawer refuses a title over 80 and warns
 // on a variation over 65; the card then waits in the Tidy Up walk (NEO-645),
 // where its "Listing title" tile shows the 80 meter, keeps a regenerated title
-// that cannot fit in an editor that refuses it, and trims the variation.
+// that cannot fit in an editor that refuses it, and trims the variation, then
+// offers the trim to the other cards with the same variation ("Apply to the 2
+// cards with the same variation" -> "Applied to 2 cards."). A card whose title
+// was typed by hand takes the trim and keeps its typed title (NEO-645: only the
+// variation is compared, and a typed title is never regenerated).
 //
 // Fixture: a per-worker hand-made set (R7a, `tlf-` in SET-REGISTRY.md) with
-// one card. Desktop and mobile: one spec; the only branch is the phone's
-// wrapping check (NEO-535), keyed on `isMobile`.
+// three cards: #101 (the one the drawer checks are made on), #102 (generated
+// title) and #103 (title typed by hand), all with the same over-long variation
+// and the same minted team. Desktop and mobile: one spec; the only branch is
+// the phone's wrapping check (NEO-535), keyed on `isMobile`.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom } from "../../support/set-builder";
 import { expectNoOverCapLook, expectOverCapLook } from "../../support/theme";
@@ -18,6 +24,7 @@ import {
   needsYouPill,
   openTidyWalk,
   saveAndNext,
+  tidyCardHeader,
   tidyFooterButton,
   tidyTile,
   tidyUpName,
@@ -48,6 +55,14 @@ test(
     const drawer = page.getByRole("dialog", { name: /^Card #/ });
     const generated = new RegExp(`^2024 Topps .*#${num} ${team} Baseball$`);
     const variationText = "Gold Refractor Image Variation Wearing Sunglasses Holding Bat In Dugout";
+    // What the trim saves: 65 characters, the trailing space dropped.
+    const trimmed = variationText.slice(0, 65).trimEnd();
+    const generatedSibling = { num: "102", name: `TitleCapB${env.ATTEMPT_TOKEN}` };
+    const typedSibling = { num: "103", name: `TitleCapC${env.ATTEMPT_TOKEN}` };
+    const typedTitle = `Typed by hand ${env.ATTEMPT_TOKEN} 103`;
+    const siblingEdit = (n: string) => page.getByRole("button", { name: new RegExp(`^Edit card ${n}(, .*)?$`) });
+    const siblingMark = (n: string) =>
+      page.getByRole("img", { name: new RegExp(`^Card ${n}(, [^:]+)? (needs attention|is worth a check): `) });
 
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
@@ -205,12 +220,48 @@ test(
     await page.getByRole("button", { name: "Done editing card" }).click();
     await expect(cardName).toBeHidden();
 
+    // ── Two more cards with the same over-long variation, for the trim's Apply to all ──
+    // Each takes the existing minted team in the form (a teamless card would be pink), then its
+    // variation in the drawer; #103's title is then typed by hand.
+    for (const sibling of [generatedSibling, typedSibling]) {
+      await page.getByRole("button", { name: "Open add card form" }).click();
+      await page.getByRole("textbox", { name: "Card number" }).fill(sibling.num);
+      await cardName.fill(sibling.name);
+      await page.getByRole("button", { name: "Add team" }).click();
+      await page.getByRole("textbox", { name: "Search teams" }).fill(team);
+      await page.getByRole("option", { name: new RegExp(`^Add ${team}( · .*)?$`) }).click();
+      await expect(page.getByRole("button", { name: `Remove team ${team}` })).toBeVisible();
+      await cardName.click();
+      await expect(page.getByRole("textbox", { name: "Search teams" })).toBeHidden();
+      await page.getByRole("button", { name: "Submit new card" }).click();
+      await siblingEdit(sibling.num).click();
+      await expect(variation).toBeVisible();
+      await variation.fill(variationText);
+      await variation.press("Enter");
+      await expect(variation).toHaveValue(variationText);
+      if (sibling === typedSibling) {
+        await cardTitle.fill(typedTitle);
+        await cardTitle.press("Enter");
+        await expect(cardTitle).toHaveValue(typedTitle);
+      }
+      await page.getByRole("button", { name: "Done editing card" }).click();
+      await expect(cardName).toBeHidden();
+    }
+    // Read back from the stored cards: the variation landed on both, and #103 kept its typed title.
+    for (const sibling of [generatedSibling, typedSibling]) {
+      await siblingEdit(sibling.num).click();
+      await expect(variation).toHaveValue(variationText);
+      await expect(cardTitle).toHaveValue(sibling === typedSibling ? typedTitle : new RegExp(`#${sibling.num} ${team} Baseball$`));
+      await page.getByRole("button", { name: "Done editing card" }).click();
+      await expect(cardName).toBeHidden();
+    }
+
     // The row carries the blue mark, and the checklist counts the card.
     await expect(attentionBadge).toBeVisible();
-    // The header's pill (NEO-335): singular for one card, and its visible text
-    // is its accessible name, so the exact name is the exact count. Blue only,
-    // so no ", N to fix".
-    await expect(needsYouPill(page)).toHaveAccessibleName("1 needs you");
+    // The header's pill (NEO-335): its visible text is its accessible name, so
+    // the exact name is the exact count (all three cards, for the variation).
+    // Blue only, so no ", N to fix".
+    await expect(needsYouPill(page)).toHaveAccessibleName("3 need you");
     await expectAccessible(page, { label: "Checklist with a worth-a-check mark for an over-long variation" });
 
     // ── NEO-645: the walk, opened by hand from the pill ──
@@ -219,7 +270,9 @@ test(
     // The listing title does not: under an Insert type a row called Base is an
     // ordinary insert (NEO-609), so its name stays in the title like any level's.
     await openTidyWalk(page, { title: tidyUpName({ year: "2024", set }) });
-    await expectCardsLeft(page, 1);
+    // Walk order is the card number: #101 first, of the three (the header names the variation).
+    await expect(tidyCardHeader(page, `#${num} · ${variationText} · TitleCap${env.ATTEMPT_TOKEN}`)).toBeVisible();
+    await expectCardsLeft(page, 3);
     const walk = tidyWalk(page);
     const titleTile = tidyTile(page, "Listing title");
     // Blue (should check), not pink: the stored title fits, only the variation is over.
@@ -293,12 +346,21 @@ test(
     await expectNoOverCapLook(trim);
     await titleTile.getByRole("button", { name: "Save variation", exact: true }).click();
     await expect(trim).toHaveValue(variationText.slice(0, 65));
-    // The only card on the checklist: no other card has the same variation to offer the trim to.
-    await expect(titleTile.getByRole("button", { name: /^Apply to the .* with the same variation$/ })).toHaveCount(0);
+    // ── Apply to all: the trim offered to the two other cards with the same variation ──
+    // The hand-typed title on #103 is no reason to leave it out: only the variation is compared.
+    const applyTrim = titleTile.getByRole("button", { name: "Apply to the 2 cards with the same variation", exact: true });
+    await applyTrim.click();
+    const applied = titleTile.getByRole("status").filter({ hasText: /^(Applying…|Applied|No cards changed)/ });
+    await expect(applied).toHaveText("Applied to 2 cards.");
+    await expect(titleTile.getByText(/left as (it was|they were)/)).toHaveCount(0);
 
-    // ── Save & next: the card's blue is seen and the walk ends ──
+    // ── Save & next: #101's blue is seen and the walk ends. The trim was the only thing #102 and
+    // #103 needed, so Apply to all took both out of the walk (it counted three cards above):
+    // the end screen counts the one card fixed here ──
     await saveAndNext(page);
     await expect(walk.getByText("All tidy. Nothing on this checklist needs you.", { exact: true })).toBeVisible();
+    await expectCardsLeft(page, 0);
+    await expect(walk.getByText("1 card fixed, 0 skipped. Totally rad.", { exact: true })).toBeVisible();
     await expectAccessible(page, { within: walk, label: "Tidy Up walk, all tidy" });
     // The walk's place is in the address: Back steps to the card, Forward to the end again.
     await page.goBack();
@@ -317,8 +379,19 @@ test(
     // marks blue seen, so the gone mark alone would not prove it).
     await edit.click();
     // (The save trims: the 65th character is a space.)
-    await expect(variation).toHaveValue(variationText.slice(0, 65).trimEnd());
+    await expect(variation).toHaveValue(trimmed);
     await page.getByRole("button", { name: "Done editing card" }).click();
     await expect(cardName).toBeHidden();
+    // Apply to all wrote both siblings: the trimmed variation on each, #102's title still the
+    // generated one, #103's typed title left as it was. Neither carries a mark (each beside its row).
+    for (const sibling of [generatedSibling, typedSibling]) {
+      await expect(siblingEdit(sibling.num)).toBeVisible();
+      await expect(siblingMark(sibling.num)).toHaveCount(0);
+      await siblingEdit(sibling.num).click();
+      await expect(variation).toHaveValue(trimmed);
+      await expect(cardTitle).toHaveValue(sibling === typedSibling ? typedTitle : new RegExp(`#${sibling.num} ${team} Baseball$`));
+      await page.getByRole("button", { name: "Done editing card" }).click();
+      await expect(cardName).toBeHidden();
+    }
   },
 );

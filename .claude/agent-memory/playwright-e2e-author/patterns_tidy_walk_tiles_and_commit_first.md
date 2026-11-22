@@ -195,3 +195,23 @@ that must not write a real set, there is no pre-save exit any more: give it its 
 - **A real set whose commit would build parallels** keeps its "never committed" claim by leaving
   through Match Cards' "Cancel card matching" + `^Discard [0-9]+ pairings?$`; drop the walk proof
   there and say which spec covers the tile.
+
+## Title with no player, team search details, variation Apply to all (NEO-645 titleNoPlayer specs)
+
+- **`titleNoPlayer` fixture:** quick-add card LINKED to a catalogue player in the form's PlayerPicker
+  ("Add a player to the new card" -> option `Add George Brett`), its own minted team (no pink), then
+  the title typed in the drawer without the surname. Badge "is worth a check: listing title has no
+  player in it", pill "1 needs you", tile "To check" with "The title has no player. This card names
+  one, so check it." Counter: the surname in CAPITALS in a typed title is no item (whole word, case
+  folded). Quick-add never writes `careerGap` (only the fetch commit does), so a 2024 set is fine.
+- **Team search hits describe themselves:** the option's name stays `Link to <team>`; the league and
+  era ("MLB · 1913–present" for the seeded New York Yankees) is its accessible DESCRIPTION. Pick one
+  of several same-name rows with `.filter({ hasText: detail })`, assert `toHaveAccessibleDescription`;
+  a minted team (no league, no years) describes itself `""`. The chosen chip's name gets ` · <detail>`.
+- **The walk header carries the variation:** `#<n> · <variation> · <card name>`.
+- **Variation Apply to all skips only on the VARIATION** (compare-and-set), and the client proposes
+  only cards whose live variation still matches, so "N left as it was" is not reachable from the UI.
+  A card with a hand-typed title is APPLIED (variation trimmed) and keeps its typed title. After the
+  trim the siblings may need nothing and leave the walk: the end screen comes straight after.
+- **`npx convex data <table>` reads at most ~8000 rows, newest first**: old reference rows (MLB clubs)
+  are out of reach; let a run tell you the seeded text instead.
