@@ -7,9 +7,12 @@
 // long enough that every title has to leave something out (NEO-609: a whole team, the
 // number or a first name sends a card to the step), so the wizard opens its "Card
 // titles" step and its "Set name in titles" box, and the box and per-card edits are
-// proved there, then read back off the stored cards. NEO-618: the box reaches every
-// title that left something out (a team or a number, not only a first name) whenever
-// the box version fits.
+// proved there, then read back off the stored cards. NEO-618 / NEO-637: the box reaches every
+// title that left something out (a team or a number, not only a first name), i.e. every
+// title that shows the "Left out to fit" line, and a title the operator wrote too: one that
+// shows the line keeps its words with the new set name in place of the old, one that does
+// not is left as typed, and one that shows the line without the set name in it is rebuilt
+// (the box says so). Escape in the box takes the whole edit back.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectAfterMarketplace } from "../../support/marketplace-wait";
 import {
@@ -91,6 +94,18 @@ async function expectBulkWalkDone(page: Page): Promise<void> {
 //                        the team fits as its nickname (NEO-606), the sport kept
 // and #76 Todd Hollandsworth, past the 50 drawn, runs over 80 after every cut (81): the
 // step counts it as still running long until the box makes it fit.
+// NEO-637, the titles the operator writes (computed the same way):
+//   #3  Ryan Klesko      typed BEFORE the box, holding the set name: "Klesko #3" after the
+//                        description, 77, so it still leaves out "Ryan" and the team (the
+//                        line shows); every box edit swaps the set name inside it and keeps
+//                        "Klesko #3"
+//   #5  Barry Larkin     typed AFTER the box, with every word back (team before the number):
+//                        no line, so the next box edit leaves it exactly as typed
+//   #8  Don Mattingly    OWN_TITLE, typed after the box: the line shows (the team) and neither
+//                        the box text nor the description is in it, so the next box edit
+//                        rebuilds it and the box says "1 title you wrote was rebuilt."
+// The second box edit is NEXT_BOX, a shorter prefix of SHORT_BOX, so #5's text (which holds
+// SHORT_BOX) still reads as naming the set: it shows no line before or after.
 const SERIES_1_CARDS = 110;
 /** The step draws this many title rows (`TITLE_ROWS_SHOWN`) and counts the rest. */
 const TITLE_ROWS_SHOWN = 50;
@@ -113,6 +128,19 @@ const THOME_BOXED = `${SHORT_BOX} Jim Thome #6 Cleveland Indians`;
 // What the operator types over #8's generated title: first past the cap, then their own.
 const OVER_TITLE = `${LONG_DESCRIPTION} Don Mattingly #8 New York Yankees`;
 const OWN_TITLE = "1996 Score Artists Proofs Don Mattingly #8 My Own Title";
+/** NEO-637 — the second box edit: SHORT_BOX trimmed again (28 characters). */
+const NEXT_BOX = "1996 Score Dugout Collection";
+/** NEO-637 — #3 as the operator types it before the box: the set name kept, "Ryan" and the team out. */
+const KLESKO_OWN = (setName: string) => `${setName} Klesko #3`;
+/** NEO-637 — #5 as the operator types it after the box: every word, the team before the number. */
+const LARKIN_OWN = `${SHORT_BOX} Barry Larkin Cincinnati Reds #5`;
+/** #8 rebuilt under NEXT_BOX: the generated title, everything back, the sport too. */
+const MATTINGLY_NEXT = `${NEXT_BOX} Don Mattingly #8 New York Yankees Baseball`;
+/** #12 under NEXT_BOX (untouched, it follows the box): the team whole, the sport kept. */
+const DAULTON_NEXT = `${NEXT_BOX} Darren Daulton #12 Philadelphia Phillies Baseball`;
+/** NEO-637 — the box's lead, pinned here (one spec pins it). */
+const SHORT_LEAD =
+  "Set name hogging the title? Trim it here and every title that left something out gets it, ones you wrote included.";
 
 async function openScoreInserts(page: Page, env: Parameters<typeof drillToSet>[1]) {
   await drillToSet(page, env, { year: "1996", manufacturer: "Score", set: "Score", createManufacturer: true });
@@ -150,6 +178,11 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   expect(LONG_DESCRIPTION, "the description is 67 characters").toHaveLength(67);
   expect(SHORT_BOX, "the box text is 43 characters").toHaveLength(43);
   expect([BECKER_BUILT.length, THOME_BUILT.length, BECKER_BOXED.length, THOME_BOXED.length]).toEqual([79, 80, 74, 74]);
+  // NEO-637: every title the operator writes fits, and NEXT_BOX is a prefix of SHORT_BOX.
+  expect([KLESKO_OWN(LONG_DESCRIPTION).length, LARKIN_OWN.length, MATTINGLY_NEXT.length, DAULTON_NEXT.length]).toEqual([
+    77, 75, 71, 78,
+  ]);
+  expect(SHORT_BOX.startsWith(`${NEXT_BOX} `), "NEXT_BOX trims SHORT_BOX").toBe(true);
 
   // ── P2. Fetch with the publisher's checklist uploaded first, BSC alone ──
   const facts = await usePublishersChecklist(page, CHECKLISTS.dugoutArtistsProofs1996Series1);
@@ -218,6 +251,21 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await expect(titles).toHaveCount(TITLE_ROWS_SHOWN);
   await expect(wizard.getByText(`And ${SERIES_1_CARDS - TITLE_ROWS_SHOWN} more, saved as generated.`, { exact: true })).toBeVisible();
   await expectAccessible(page, { within: wizard, label: "Card titles step, every title left something out (SportLots paused)" });
+  // NEO-637: the box's lead says which titles it reaches, the operator's own among them.
+  await expect(wizard.getByText(SHORT_LEAD, { exact: true })).toBeVisible();
+  await expect(box).toHaveAccessibleDescription(new RegExp(escapeRe(SHORT_LEAD)));
+
+  // ── P4b (NEO-637). A title typed by hand BEFORE the box, holding the set name ──
+  // #3 keeps the description and the number and drops "Ryan" (the team is out too), so the
+  // yellow line still shows under the operator's own text.
+  const useGenerated = (number: number) =>
+    wizard.getByRole("button", { name: new RegExp(`^Use generated title for #${number} `) });
+  await expect(title(3)).toHaveValue(`${LONG_DESCRIPTION} Ryan Klesko`);
+  await title(3).fill(KLESKO_OWN(LONG_DESCRIPTION));
+  await title(3).press("Enter");
+  await expect(useGenerated(3)).toBeVisible();
+  await expect(title(3)).toHaveValue(KLESKO_OWN(LONG_DESCRIPTION));
+  await expect(title(3)).toHaveAccessibleDescription(/Left out to fit: .*Ryan/);
 
   // NEO-606: a box typed past 80 is refused in place, on the wizard's own surface: the box is
   // invalid, the refusal is an alert, and no title takes it. Axe reads it in both modes while
@@ -230,6 +278,8 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await expect(boxRefusal).toHaveText("Set name in titles tops out at 80 characters.");
   await expect(box).toHaveAttribute("aria-invalid", "true");
   await expect(title(12)).toHaveValue(`${LONG_DESCRIPTION} Daulton #12`);
+  // A refused box is no set name: the operator's own title is not touched either.
+  await expect(title(3)).toHaveValue(KLESKO_OWN(LONG_DESCRIPTION));
   await expectAccessible(page, { within: wizard, label: "Card titles step, Set name in titles over 80 refused" });
 
   // ── P5. Trim the box: every title that left something out takes it (NEO-618) ──
@@ -246,12 +296,20 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await expect(title(12)).toHaveValue(DAULTON_BOXED);
   await expect(title(12)).not.toHaveAccessibleDescription(/Left out to fit/);
   // NEO-618: #2 fit with its full name and lost its team and number, and #6 fit and lost
-  // only its team. A Tidy Up cut is enough for the box when the box version fits: both
-  // open with the box text and get back everything they left out.
+  // only its team. A title that left anything out takes the box (NEO-637: the line shows
+  // under it): both open with the box text and get back everything they left out.
   await expect(title(2)).toHaveValue(BECKER_BOXED);
   await expect(title(2)).not.toHaveAccessibleDescription(/Left out to fit/);
   await expect(title(6)).toHaveValue(THOME_BOXED);
   await expect(title(6)).not.toHaveAccessibleDescription(/Left out to fit/);
+  // NEO-637: #3's own title showed the line, so it took the box too, as a swap: the old set
+  // name inside it is now the box text, and "Klesko #3" is kept as typed (still the
+  // operator's: "Use generated title" is offered, and nothing was rebuilt).
+  await expect(title(3)).toHaveValue(KLESKO_OWN(SHORT_BOX));
+  await expect(title(3)).toHaveAccessibleDescription(/Left out to fit: .*Ryan/);
+  await expect(useGenerated(3)).toBeVisible();
+  await expect(box).toHaveAccessibleDescription(/Every title fits now\./);
+  await expect(box).not.toHaveAccessibleDescription(/rebuilt/);
   // The list itself never moved under the edit.
   await expect(titles).toHaveCount(TITLE_ROWS_SHOWN);
   await expectAccessible(page, { within: wizard, label: "Card titles step, every title fits (SportLots paused)" });
@@ -277,6 +335,59 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await expect(title(8)).toHaveValue(OWN_TITLE);
   // The box did not take #12's edit away: a hand edit is per card.
   await expect(title(12)).toHaveValue(DAULTON_BOXED);
+  // NEO-637: #5's own title holds every word (the box text, the full name, the team, the
+  // number), so no line shows under it.
+  await title(5).fill(LARKIN_OWN);
+  await title(5).press("Enter");
+  await expect(useGenerated(5)).toBeVisible();
+  await expect(title(5)).toHaveValue(LARKIN_OWN);
+  await expect(title(5)).not.toHaveAccessibleDescription(/Left out to fit/);
+  // #8's own title shows the line (its team, and the set words it no longer says).
+  await expect(title(8)).toHaveAccessibleDescription(/Left out to fit: .*New York Yankees/);
+
+  // ── P6b (NEO-637). Trim the box again: who takes it, and Escape takes it all back ──
+  // Escape's undo point is the box's text when it takes focus (SHORT_BOX). The operator
+  // trims the way a person does, one Backspace at a time from the end (" Artists Proofs",
+  // 15 characters), so every title is held to the rule at every keystroke, not only at
+  // the last text.
+  const trimmed = SHORT_BOX.slice(NEXT_BOX.length);
+  expect(trimmed).toBe(" Artists Proofs");
+  await box.focus();
+  await box.press("End");
+  for (let i = 0; i < trimmed.length; i++) await box.press("Backspace");
+  await expect(box).toHaveValue(NEXT_BOX);
+  await box.press("Enter");
+  // A title the builder made follows the box: #12 (it left something out before any box).
+  await expect(title(12)).toHaveValue(DAULTON_NEXT);
+  // #3's own title showed the line: the set name inside it is swapped again, "Klesko #3" kept.
+  await expect(title(3)).toHaveValue(KLESKO_OWN(NEXT_BOX));
+  await expect(useGenerated(3)).toBeVisible();
+  // #5's own title showed no line: it is left exactly as typed, and is still the operator's.
+  await expect(title(5)).toHaveValue(LARKIN_OWN);
+  await expect(useGenerated(5)).toBeVisible();
+  await expect(title(5)).not.toHaveAccessibleDescription(/Left out to fit/);
+  // #8's own title showed the line but held no set name to swap: it is rebuilt from the
+  // box (no longer the operator's), and the box's status says one of theirs was.
+  await expect(title(8)).toHaveValue(MATTINGLY_NEXT);
+  await expect(useGenerated(8)).toHaveCount(0);
+  await expect(box).toHaveAccessibleDescription(/Every title fits now\. 1 title you wrote was rebuilt\./);
+  await expect(wizard.getByText("1 title you wrote was rebuilt.")).toBeVisible();
+  await expect(titles).toHaveCount(TITLE_ROWS_SHOWN);
+  await expectAccessible(page, { within: wizard, label: "Card titles step, the box trimmed again, one title you wrote rebuilt" });
+  // Escape in the box takes the whole edit back: the box text, the swapped set name in
+  // #3, #8's own words, and #12's title from SHORT_BOX. #5 never moved.
+  await box.press("Escape");
+  await expect(box).toHaveValue(SHORT_BOX);
+  await expect(title(3)).toHaveValue(KLESKO_OWN(SHORT_BOX));
+  await expect(title(8)).toHaveValue(OWN_TITLE);
+  await expect(useGenerated(8)).toBeVisible();
+  await expect(title(12)).toHaveValue(DAULTON_BOXED);
+  await expect(title(5)).toHaveValue(LARKIN_OWN);
+  // Settled again, nothing of theirs stands rebuilt.
+  await box.press("Enter");
+  await expect(box).toHaveAccessibleDescription(/\b43\/80\b/);
+  await expect(box).toHaveAccessibleDescription(/Every title fits now\./);
+  await expect(box).not.toHaveAccessibleDescription(/rebuilt/);
 
   // ── P7. Save: the Save step is a later step, and Enter on it commits ──
   await expectWizardStep(page, STEP_SUBTITLE.titles);
@@ -314,9 +425,17 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await openCard(12);
   await expect(cardTitle).toHaveValue(DAULTON_BOXED);
   await closeCard();
-  // #8: the title the operator typed.
+  // #8: the title the operator typed (rebuilt by the second box edit, given back by Escape).
   await openCard(8);
   await expect(cardTitle).toHaveValue(OWN_TITLE);
+  await closeCard();
+  // NEO-637: #3, the operator's own words with the box text as its set name, as the step
+  // showed; #5, the operator's own title, exactly as typed.
+  await openCard(3);
+  await expect(cardTitle).toHaveValue(KLESKO_OWN(SHORT_BOX));
+  await closeCard();
+  await openCard(5);
+  await expect(cardTitle).toHaveValue(LARKIN_OWN);
   await closeCard();
   // #2 and #6 (NEO-618): they fit but left a team (and #2 its number) out, so the commit
   // built them from the box too, as the step showed.

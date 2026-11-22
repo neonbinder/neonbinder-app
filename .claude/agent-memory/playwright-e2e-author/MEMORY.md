@@ -125,3 +125,4 @@
 - [Teams-step chip years, failed lookup](patterns_teams_step_chip_years_and_failed_lookup.md) — NEO-639: `Team · years — owner` off the pre-fill; vacuous `^Team — ` negatives; unscoped card-listing 503; wait for "Teams suggested"
 - [Fixer preselect on a custom-sport set](patterns_fixer_preselect_on_a_custom_sport_set.md) — NEO-639: admin-built careers, chip pressed state, Escape mid-walk, Space proves tie focus
 - [Re-seed right after a queued-lookup spec](patterns_reseed_right_after_a_queued_lookup_spec.md) — selectorOptions verify fails; seed standalone later, then plant --expect
+- [Type a live-rewrite box by keystrokes](patterns_type_a_live_rewrite_box_by_keystrokes.md) — fill() is one change; Backspace exposes intermediate box texts that flip per-row rules (NEO-637)

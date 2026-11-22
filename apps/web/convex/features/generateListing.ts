@@ -42,15 +42,14 @@
  *    (rows 1-3) comes back only when
  *    no real token (rows 9+) is still out. The number may come back without
  *    its "#" when that is the only way it fits.
- * 5. Still over 80 after the whole list, or still needing Tidy Up (a Tidy Up
- *    cut the refill could not undo; NEO-618): when the set has box text ("Set
- *    name in titles", `setShortName`), build again from it and rerun the
- *    list. Over 80, the box version is taken whatever it comes to; needing
- *    Tidy Up, only when the box version fits. Still over: STOP. The over-cap
- *    title is returned as it stands (`fits: false`), the card is flagged `titleOverLimit` by its length, and
- *    the operator fixes it in the Card titles dialog. Description words are
- *    never cut: a title that drops "Dugout Collection" is a title for a
- *    different card.
+ * 5. The result is over 80, or leaves something out ("Left out to fit":
+ *    `leftOutOfTitle` is not empty, NEO-637): when the set has box text ("Set name in
+ *    titles", `setShortName`), build again from it and rerun the list; that
+ *    version is the title, whatever it comes to. Still over 80: STOP. The
+ *    over-cap title is returned as it stands (`fits: false`), the card is
+ *    flagged `titleOverLimit` by its length, and the operator fixes it in the
+ *    Card titles dialog. Description words are never cut: a title that drops
+ *    "Dugout Collection" is a title for a different card.
  *
  * Never cut: year, maker, set words, insert name, parallel name, players'
  * surnames, `/N`. Removing only the "#" is never reported as left out.
@@ -138,9 +137,8 @@ export type ListingCardInputs = {
    * NEO-535 — the set's box text ("Set name in titles"): the WHOLE set
    * description (year, maker, set, insert, parallel) as the operator typed it.
    * Used verbatim, nothing prepended, and only when the builder's own title
-   * is over the cap or still needs Tidy Up (a whole team, the number, SP,
-   * RELIC, a first name, RC or AUTO cut) and the box version fits (see
-   * `assessListingTitle`). The chain reading (`titleChainFacts`) has already
+   * leaves something out ("Left out to fit": `leftOutOfTitle` is not empty)
+   * or is over the cap; see `assessListingTitle`. The chain reading (`titleChainFacts`) has already
    * appended the insert's and parallel's names when the value sits above them.
    */
   setShortName?: string;
@@ -1203,31 +1201,31 @@ function cutToFit(
  * NEO-535 — the listing title, and what it had to give up.
  *
  * The builder's title comes first. The box text ("Set name in titles",
- * `setShortName`) replaces the builder's description only when:
+ * `setShortName`) replaces the builder's description when the builder's
+ * title shows the yellow "Left out to fit" line, that is when
+ * `leftOutOfTitle(inputs, builder.title)` is not empty (NEO-637, Jason
+ * 2026-11-21; it replaces NEO-618's "Tidy Up and the boxed version fits"). The
+ * box follows the rule the Card titles dialog's line follows, so a title that
+ * says nothing was left out is not touched, and one that says something was
+ * takes the box whatever the boxed version comes to (an over-cap boxed title
+ * is the one returned: it is the text the operator chose and will edit).
  *
- *   (a) the builder's title is still over the cap after every cut, or
- *   (b) the builder's title needs Tidy Up (`tidyUp`: a Tidy Up cut is still
- *       out after the refill, a first name included) and the box version
- *       fits (NEO-618, Jason 2026-11-19; NEO-535 asked for a first name
- *       saved, which was one Tidy Up cut among several).
+ * One more case, from NEO-535, which the line cannot see: a title still over
+ * the cap after every cut. A card with nothing left to cut (one-word player,
+ * no team or number) is over the cap because the description alone is too
+ * long, so nothing is "left out"; that is the case the box exists for.
  *
- * Never on a title that fits with nothing Tidy Up cut, and never when the
- * box version does not fit while the builder's does. The rule lives here so the
- * pre-save Card titles step, the insert and Regenerate cannot disagree.
- * When the box version is over the cap too, it is the one returned: it is
- * the text the operator chose and will edit.
+ * The rule lives here so the pre-save Card titles step, the insert and
+ * Regenerate cannot disagree.
  */
 export function assessListingTitle(inputs: ListingCardInputs): ListingTitleAssessment {
   const builder = cutToFit(inputs, builderDescriptionParts(inputs));
   let chosen = builder;
   let boxUsed = false;
   const box = inputs.setShortName?.trim();
-  if (box && (!builder.fits || builder.tidyUp)) {
-    const boxed = cutToFit(inputs, boxDescriptionParts(box));
-    if (!builder.fits || boxed.fits) {
-      chosen = boxed;
-      boxUsed = true;
-    }
+  if (box && (!builder.fits || leftOutOfTitle(inputs, builder.title).length > 0)) {
+    chosen = cutToFit(inputs, boxDescriptionParts(box));
+    boxUsed = true;
   }
   const firstNameLost = chosen.firstNamesLost > 0;
   return {
