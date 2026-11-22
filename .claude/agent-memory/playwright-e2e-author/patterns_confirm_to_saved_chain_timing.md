@@ -21,6 +21,14 @@ How to time it: take the Confirm `Click` and the `Saved` expect's start/end from
 `executionTime` covers its children; the gaps between actions are client round trips. Prove the
 request is the spec's by its log lines (`setYear`, `pairs`/`conflicts` counts, chunk writes).
 
+Locally, `npx convex logs --jsonl --success > file` in the background while the spec runs gives
+the same Completion events (`timestamp` = end, `executionTime`, `requestId`, `parentExecutionId`).
+After the parallel-chunk commit (8c01c347) the 554-card chain measured 3.8 s server-side
+(commit 1.8 s; 5 chunks started together, 0.44-0.64 s each). Tell the two commit paths apart by
+their children: the parallel wave ends in one `commitCardChecklistLandCounts` call; the sequential
+fallback (sortOrder ties, e.g. a checklist numbering two series the same) has none and its chunks
+start back to back.
+
 Verdict shape: our own write over the 7 s budget is a product performance finding to report with
 these numbers; never raise the budget (GUIDE hard rule 3 needs the owner's sign-off).
 
