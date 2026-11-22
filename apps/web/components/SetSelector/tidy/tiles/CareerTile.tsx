@@ -17,8 +17,10 @@ import type { TidyTileProps } from "../tile-types";
  *
  * Stints live on the PLAYER (`players.teamYears`), never on a card: "Add to
  * career" and the New team form's "Create team and add stint" write to the
- * player through `players.addStint`. "Not now" and "Keep as is" write nothing;
- * Save & next marks the card's blue items seen. A wrong team on the card is
+ * player through `players.addStint`. A career gap's default is main's: Save &
+ * next with the gap still open adds the stint from the set's year, then marks
+ * it seen. "Keep as is" is the explicit way out and writes nothing to the
+ * player (`tidyCards.keepCareerGap` stores it). A wrong team on the card is
  * Change on the Team tile.
  */
 export default function CareerTile({ row, context, attention, leafId }: TidyTileProps) {

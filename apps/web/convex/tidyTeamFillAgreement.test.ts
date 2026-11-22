@@ -1,9 +1,10 @@
 /**
  * NEO-645 (S4, collector item 7) — the Team tile and the commit use ONE career
  * verdict. For a teamless card, the team `commitCardChecklist` writes at save is
- * exactly the team `cardChecklist.suggestedTeamsForCard` preselects, and a card
- * the commit left teamless opens with nothing preselected (a tie in the window
- * is offered whole, every chip with its years).
+ * exactly the team the tile preselects (main's wizard rule: the wizard's own
+ * `cardChecklist.teamSuggestionsForPreview`, read through `buildTeamLine`), and a
+ * card the commit left teamless opens with nothing preselected (a tie in the
+ * window is offered whole, every chip with its years).
  *
  * Shapes (the set is 2024 unless noted; the window is the set year and the one
  * before):
@@ -27,8 +28,8 @@ import { CARDS_PER_COMMIT_CHUNK, commitCardChecklistChunk } from "./selectorOpti
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import { addPlayer, addTeam, printCard, seedTidyWorld } from "../lib/testing/tidy-world";
 import { careerVerdictFor, newCareerVerdictCache } from "./lib/careerVerdict";
-import { cardTakesTeamFill } from "./tidyCards";
 import { newFillReadCache, planFillOnAnswer } from "./teamFillOnAnswer";
+import { buildTeamLine, type PlayerEvidence } from "../components/SetSelector/tidy/parts/team-line";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -50,6 +51,32 @@ afterEach(async () => {
   }
   vi.unstubAllGlobals();
 });
+
+/**
+ * What the Team tile offers a card: main's wizard query for its players, decided
+ * by the tile's own builder. `preselected` is the pre-fill, `offered` every chip.
+ */
+async function tileOf(
+  t: T,
+  card: { _id: Id<"cardChecklist">; selectorOptionId: Id<"selectorOptions">; playerIds?: Id<"players">[] },
+) {
+  // The card the commit already filled is read as the teamless card it was: a card
+  // is never evidence about itself.
+  await t.run((ctx) => ctx.db.patch(card._id, { teamOnCardIds: undefined }));
+  const playerIds = [...new Set(card.playerIds ?? [])];
+  const res = await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+    selectorOptionId: card.selectorOptionId,
+    players: playerIds.map((playerId) => ({ playerId })),
+  });
+  const evidence = new Map<string, PlayerEvidence>(playerIds.map((id, i) => [id, res.players[i]]));
+  const line = buildTeamLine({ playerIds, evidence, batchSets: [], held: null, setYear: res.setYear });
+  return {
+    preselected: line.suggestion,
+    offered: line.options.map((o) => o.teamId),
+    uncoveredSetYear: line.uncoveredSetYear,
+    line,
+  };
+}
 
 type Stint = { team: "A" | "B"; fromYear?: number; toYear?: number };
 
@@ -110,14 +137,11 @@ async function commitOne(opts: {
       .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", world.w.base))
       .first(),
   );
-  const tile = await t
-    .withIdentity(ADMIN)
-    .query(api.cardChecklist.suggestedTeamsForCard, { cardId: card!._id });
+  const tile = await tileOf(t, card!);
   return { world, card: card!, tile };
 }
 
-const preselected = (tile: Array<{ teamId: Id<"teams">; inSetYear: boolean }>) =>
-  tile.filter((s) => s.inSetYear).map((s) => s.teamId);
+const preselected = (tile: { preselected: Array<Id<"teams">> }) => tile.preselected;
 
 describe("NEO-639: a missing lookup is not a claim; the set's own No Team is", () => {
   const oneTeam: Stint[] = [{ team: "B", fromYear: 2024 }];
@@ -157,7 +181,7 @@ describe("the tile preselects exactly what the commit writes", () => {
     });
     expect(card.teamOnCardIds ?? []).toEqual([]);
     expect(card.tidyChecks?.some((c) => c.kind === "teamFill") ?? false).toBe(false);
-    expect(tile.map((s) => s.teamId).sort()).toEqual([world.a, world.b].sort());
+    expect([...tile.offered].sort()).toEqual([world.a, world.b].sort());
     expect(preselected(tile)).toEqual([]);
   });
 
@@ -170,7 +194,7 @@ describe("the tile preselects exactly what the commit writes", () => {
       ],
     });
     expect(card.teamOnCardIds ?? []).toEqual([]);
-    expect(tile.map((s) => s.teamId).sort()).toEqual([world.a, world.b].sort());
+    expect([...tile.offered].sort()).toEqual([world.a, world.b].sort());
     expect(preselected(tile)).toEqual([]);
   });
 
@@ -183,7 +207,7 @@ describe("the tile preselects exactly what the commit writes", () => {
       ],
     });
     expect(card.teamOnCardIds ?? []).toEqual([]);
-    expect(tile).toHaveLength(2);
+    expect(tile.offered).toHaveLength(2);
     expect(preselected(tile)).toEqual([]);
   });
 
@@ -212,8 +236,8 @@ describe("the tile preselects exactly what the commit writes", () => {
       stints: [{ team: "A", fromYear: 2010, toYear: 2022 }],
     });
     expect(card.teamOnCardIds ?? []).toEqual([]);
-    expect(tile.map((s) => s.teamId)).toEqual([world.a]);
-    expect(tile[0].uncoveredSetYear).toBe(2024);
+    expect(tile.offered).toEqual([world.a]);
+    expect(tile.uncoveredSetYear).toBe(2024);
     expect(preselected(tile)).toEqual([]);
   });
 });
@@ -283,9 +307,7 @@ describe("the set's leagues break a window tie", () => {
         .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", world.w.base))
         .first(),
     ))!;
-    const tile = await t
-      .withIdentity(ADMIN)
-      .query(api.cardChecklist.suggestedTeamsForCard, { cardId: card._id });
+    const tile = await tileOf(t, card);
     return { t, world, card, tile };
   }
 
@@ -293,37 +315,23 @@ describe("the set's leagues break a window tie", () => {
     const { world, card, tile } = await seedTie({ setLeagues: "college" });
     expect(card.teamOnCardIds).toEqual([world.badgers]);
     expect(preselected(tile)).toEqual([world.badgers]);
-    expect(tile.map((s) => s.teamId)).toEqual([world.badgers, world.express]);
+    expect(tile.offered).toEqual([world.badgers, world.express]);
   });
 
-  test("the answer-time fill and Apply-to-all read the same ranked verdict", async () => {
+  test("the answer-time fill reads the same ranked verdict", async () => {
     const { t, world, card } = await seedTie({ setLeagues: "college" });
     const planned = await t.run(async (ctx) => {
       const bare = (await ctx.db.get(card._id))!;
       return planFillOnAnswer(ctx, bare, [world.player], newFillReadCache());
     });
-    expect(planned).toEqual([world.badgers]);
-    const takes = await t.run(async (ctx) => {
-      const bare = (await ctx.db.get(card._id))!;
-      const stripped = { ...bare, teamOnCardIds: [], teamNoneConfirmedAt: undefined };
-      const read = async (teamId: Id<"teams">) =>
-        cardTakesTeamFill(
-          ctx,
-          stripped,
-          world.player,
-          teamId,
-          { noTeamLeaf: new Map(), stints: new Map(), years: new Map(), verdict: newCareerVerdictCache() },
-        );
-      return { badgers: await read(world.badgers), express: await read(world.express) };
-    });
-    expect(takes).toEqual({ badgers: true, express: false });
+    expect(planned).toEqual({ teamIds: [world.badgers], reason: "career" });
   });
 
   test("a set with no league: a tie stays a tie (nothing written, none preselected)", async () => {
     const { card, tile } = await seedTie({ setLeagues: "none" });
     expect(card.teamOnCardIds ?? []).toEqual([]);
     expect(preselected(tile)).toEqual([]);
-    expect(tile).toHaveLength(2);
+    expect(tile.offered).toHaveLength(2);
   });
 
   test("a set in both leagues: both rank best, so still a tie", async () => {
@@ -381,9 +389,7 @@ describe("a team of another sport is not a team", () => {
         .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", world.w.base))
         .first(),
     ))!;
-    const tile = await t
-      .withIdentity(ADMIN)
-      .query(api.cardChecklist.suggestedTeamsForCard, { cardId: card._id });
+    const tile = await tileOf(t, card);
     expect(card.teamOnCardIds).toEqual([world.baseTeam]);
     expect(preselected(tile)).toEqual([world.baseTeam]);
   });
@@ -422,22 +428,24 @@ describe("a career longer than the read cap offers only teams that passed the ch
       const card = await printCard(ctx, w, { number: "1", extra: { playerIds: [player] } });
       return { w, teams, twentyFifth, card };
     });
-    const tile = await t
-      .withIdentity(ADMIN)
-      .query(api.cardChecklist.suggestedTeamsForCard, { cardId: world.card });
+    const tile = await tileOf(t, (await t.run((ctx) => ctx.db.get(world.card)))!);
     return { world, tile };
   }
 
-  test("the 25th career team is another sport's: the first 24 are offered, the 25th is not", async () => {
+  // Main's wizard offers at most six teams from one player's career
+  // (`TEAM_SUGGESTION_MAX_CANDIDATES`), longest stint first.
+  test("the 25th career team is another sport's: a card offers at most six, and never that one", async () => {
     const { world, tile } = await longCareer("otherSport");
-    expect(tile.map((s) => s.teamId).sort()).toEqual([...world.teams].sort());
-    expect(tile.map((s) => s.teamId)).not.toContain(world.twentyFifth);
+    expect(tile.offered).toHaveLength(6);
+    expect(tile.offered.every((id) => world.teams.includes(id))).toBe(true);
+    expect(tile.offered).not.toContain(world.twentyFifth);
     expect(preselected(tile)).toEqual([]);
   });
 
-  test("the 25th career team is gone: the first 24 are offered, nothing dangles", async () => {
+  test("the 25th career team is gone: a card offers at most six, nothing dangles", async () => {
     const { world, tile } = await longCareer("gone");
-    expect(tile.map((s) => s.teamId).sort()).toEqual([...world.teams].sort());
+    expect(tile.offered).toHaveLength(6);
+    expect(tile.offered.every((id) => world.teams.includes(id))).toBe(true);
   });
 
   // The same read serves a card whose set has no year: its career is offered whole.
@@ -465,10 +473,8 @@ describe("a career longer than the read cap offers only teams that passed the ch
       const card = await printCard(ctx, w, { number: "1", extra: { playerIds: [player] } });
       return { royals, chiefs, ghosts, card };
     });
-    const tile = await t
-      .withIdentity(ADMIN)
-      .query(api.cardChecklist.suggestedTeamsForCard, { cardId: world.card });
-    expect(tile.map((s) => s.teamId)).toEqual([world.royals]);
+    const tile = await tileOf(t, (await t.run((ctx) => ctx.db.get(world.card)))!);
+    expect(tile.offered).toEqual([world.royals]);
     expect(preselected(tile)).toEqual([]);
   });
 

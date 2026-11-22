@@ -3,16 +3,19 @@ import { CheckIcon } from "@heroicons/react/16/solid";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
-import { MAX_CARD_TEAMS } from "../../../../convex/features/cardAttention";
+import { MAX_CARD_TEAMS, teamFillOf } from "../../../../convex/features/cardAttention";
+import { idSetKey } from "../../../../convex/lib/teamFill";
 import { leagueShortName, teamDetailLine } from "../../../../lib/teams/team-detail";
+import { teamOptionLabel } from "../../../../lib/teams/team-era";
 import { teamFullName } from "../../../../lib/teams/team-name";
 import NeonButton from "../../../modules/NeonButton";
 import EntityLinkSearch from "../../EntityLinkSearch";
 import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
 import type { TidyCardContext, TidyRow } from "../tile-types";
-import { careerHeading, marketplaceHeading, mergedStintYears, outcomeHeading, playedHere } from "./copy";
+import { careerHeading, chipYearsText, marketplaceHeading, outcomeHeading, playedHere } from "./copy";
 import InlineNewTeam from "./InlineNewTeam";
+import { buildTeamLine, type PlayerEvidence, type TeamHold } from "./team-line";
 import type { TidyWrite } from "./tidy-write";
 
 type ContextPlayer = NonNullable<TidyCardContext>["players"][number];
@@ -21,32 +24,31 @@ type TeamChip = {
   teamId: Id<"teams">;
   label: string;
   playerNames: string[];
-  inSetYear: boolean;
-  /** A player's window holds several teams and nothing breaks the tie (NEO-639). */
-  tie?: boolean;
 };
+
+/** `teamSuggestionsForPreview` answers for at most this many players; a card has a handful. */
+const EVIDENCE_MAX_PLAYERS = 32;
 
 /**
  * NEO-645 — a card with NO team: the chips, the search, New team, and "No team
  * on this card".
  *
- * Lifted from the retired `MissingTeamFixer` (NEO-330 / NEO-345), with its
- * pre-fill rules intact:
+ * The chips are main's Tidy Up wizard's, rule for rule (`team-line.ts`):
  *
- *  - The listing's team (`bscTeamName`) is the listing's CLAIM, shown as the
- *    rows NB holds under that name. It is never written as NB data.
- *  - A career chip is preselected only when the pre-fill criteria give exactly
- *    that team (`suggestedTeamsForCard`'s `inSetYear`: the commit's own verdict,
- *    one team in the set year and the year before for every player on the
- *    card), and never when the listing names a team the career does not (rule 8:
- *    a data claim holds back a guess). A lookup that failed or never ran is not
- *    a claim (NEO-639): with no listing name, the career pre-fills as usual.
- *  - NEO-639 (decision A): under the set's own "No Team" (`setNoTeam`) the
- *    career is offered and never preselected: the set has answered for every
- *    card, and a guess does not overrule it.
+ *  - The tiers: the checklist's other cards with the same player set and a team
+ *    (batch), then, per player, his stored cards and his career window
+ *    (`cardChecklist.teamSuggestionsForPreview`, the wizard's own query). Every
+ *    player must answer for anything to be preselected.
+ *  - A data claim holds the guess back (rule 8): the listing naming a team
+ *    (`bscTeamName`), the publisher's checklist settling the card
+ *    (`teamCheckOutcome: "checklist"`), or the set's own "No Team" (`setNoTeam`,
+ *    NEO-639 decision A). Nothing is preselected over a claim, even when the
+ *    career agrees with it; the listing's NB teams are offered first, then the
+ *    evidence's teams. A lookup that failed or never ran is not a claim.
  *  - A chip that is not preselected carries the players' years with that team
- *    (every dated stint, merged), so the operator can choose. The label follows
- *    the pre-fill, never the current pick, so a toggle never changes it.
+ *    ("2024–present"; the player's name only when several are on the card). The
+ *    label follows the pre-fill, never the current pick, so a toggle never
+ *    changes it.
  *
  * Nothing is written until Save (`updateCard`, which sets the teams on the card
  * through the one writer) or "No team on this card" (`confirmCardNoTeam`).
@@ -56,6 +58,7 @@ export default function TeamFillChips({
   sportId,
   leafId,
   players,
+  leafCards,
   write,
   setNoTeam = false,
 }: {
@@ -63,11 +66,34 @@ export default function TeamFillChips({
   sportId: Id<"selectorOptions"> | undefined;
   leafId: Id<"selectorOptions">;
   players: readonly ContextPlayer[];
+  /** The whole checklist: the batch tier reads the other cards of this player set. */
+  leafCards: readonly TidyRow[];
   write: TidyWrite;
   /** The set's own team default is "No Team" (NEO-639 decision A). */
   setNoTeam?: boolean;
 }) {
-  const suggestions = useQuery(api.cardChecklist.suggestedTeamsForCard, { cardId: row._id });
+  const playerIds = useMemo(
+    () => [...new Set<string>(row.playerIds ?? [])].slice(0, EVIDENCE_MAX_PLAYERS),
+    [row.playerIds],
+  );
+  const evidenceRes = useQuery(
+    api.cardChecklist.teamSuggestionsForPreview,
+    playerIds.length > 0
+      ? {
+          selectorOptionId: leafId,
+          players: playerIds.map((playerId) => ({ playerId: playerId as Id<"players"> })),
+        }
+      : "skip",
+  );
+  const evidence = useMemo(
+    () =>
+      evidenceRes
+        ? new Map<string, PlayerEvidence>(
+            playerIds.flatMap((id, i) => (evidenceRes.players[i] ? [[id, evidenceRes.players[i]] as const] : [])),
+          )
+        : undefined,
+    [evidenceRes, playerIds],
+  );
   const bscName = row.bscTeamName?.trim() ?? "";
   const bscLookedUp = bscName !== "" && sportId !== undefined;
   const bscEras = useQuery(
@@ -97,67 +123,94 @@ export default function TeamFillChips({
   const createdRef = useRef(false);
   useInlinePart(searchOpen, closeSearch, searchScopeRef);
 
-  const careerByTeam = useMemo(() => {
-    const byTeam = new Map<string, TeamChip>();
-    for (const s of suggestions ?? []) {
-      const existing = byTeam.get(s.teamId as string);
-      if (existing) {
-        if (!existing.playerNames.includes(s.playerName)) existing.playerNames.push(s.playerName);
-        existing.inSetYear = existing.inSetYear || s.inSetYear;
-        if (s.tieInWindow) existing.tie = true;
-      } else {
-        byTeam.set(s.teamId as string, {
-          teamId: s.teamId,
-          label: s.label,
-          playerNames: [s.playerName],
-          inSetYear: s.inSetYear,
-          ...(s.tieInWindow ? { tie: true } : {}),
-        });
-      }
+  // Batch: the distinct team sets the checklist's OTHER cards of this player set carry.
+  const batchSets = useMemo(() => {
+    if (playerIds.length === 0) return [];
+    const key = idSetKey(playerIds);
+    const sets = new Map<string, Array<Id<"teams">>>();
+    for (const card of leafCards) {
+      if (card._id === row._id) continue;
+      const teams = card.teamOnCardIds ?? [];
+      // A team NB filled itself is a guess, never evidence for the next card.
+      if (teams.length === 0 || teamFillOf(card) || idSetKey(card.playerIds ?? []) !== key) continue;
+      const teamKey = idSetKey(teams);
+      if (!sets.has(teamKey)) sets.set(teamKey, [...new Set(teams)]);
     }
-    return byTeam;
-  }, [suggestions]);
-  const uncoveredSetYear = (suggestions ?? []).find((s) => s.uncoveredSetYear !== undefined)
-    ?.uncoveredSetYear;
+    return [...sets.values()];
+  }, [leafCards, playerIds, row._id]);
 
+  // The claim standing on the card, if any (rule 8). A failed lookup is none.
+  const held: TeamHold | null = setNoTeam
+    ? "setNoTeam"
+    : bscName !== ""
+      ? "listing"
+      : row.teamCheckOutcome === "checklist"
+        ? "checklist"
+        : null;
+  const line = useMemo(
+    () =>
+      buildTeamLine({
+        playerIds,
+        evidence,
+        batchSets,
+        held,
+        setYear: evidenceRes?.setYear ?? null,
+      }),
+    [playerIds, evidence, batchSets, held, evidenceRes?.setYear],
+  );
+
+  // Teams a chip names that the server's evidence did not (batch), plus every
+  // chip's row, so two chips of one name can be told apart by era.
+  const optionIds = useMemo(() => line.options.map((o) => o.teamId), [line.options]);
   const marketplaceChips = useMemo<TeamChip[]>(
     () =>
-      (bscLookedUp ? (bscEras ?? []) : []).map((era) => {
-        const career = careerByTeam.get(era._id as string);
-        return {
-          teamId: era._id,
-          label: era.label,
-          playerNames: career?.playerNames ?? [],
-          inSetYear: career?.inSetYear ?? false,
-        };
-      }),
-    [bscLookedUp, bscEras, careerByTeam],
+      (bscLookedUp ? (bscEras ?? []) : []).map((era) => ({
+        teamId: era._id,
+        label: era.label,
+        playerNames: [],
+      })),
+    [bscLookedUp, bscEras],
   );
   const marketplaceIds = useMemo(
     () => new Set<string>(marketplaceChips.map((c) => c.teamId as string)),
     [marketplaceChips],
   );
-  const careerChips = useMemo(
-    () => [...careerByTeam.values()].filter((c) => !marketplaceIds.has(c.teamId as string)),
-    [careerByTeam, marketplaceIds],
+  const optionRows = useQuery(
+    api.teams.getManyByIds,
+    optionIds.length > 0 ? { ids: [...optionIds].sort() } : "skip",
   );
+  const playerNameById = useMemo(
+    () => new Map(players.map((p) => [p.playerId as string, p.name] as const)),
+    [players],
+  );
+  const careerChips = useMemo<TeamChip[]>(() => {
+    const rows = new Map((optionRows ?? []).map((t) => [t._id as string, t] as const));
+    const chips = line.options
+      .filter((o) => !marketplaceIds.has(o.teamId as string))
+      .map((o) => {
+        const row = rows.get(o.teamId as string);
+        return {
+          teamId: o.teamId,
+          name: o.name ?? (row ? teamFullName(row) : "Team"),
+          era: row?.yearsActive,
+          playerNames: o.playerIds.flatMap((id) => playerNameById.get(id) ?? []),
+        };
+      });
+    const count = new Map<string, number>();
+    for (const c of chips) count.set(c.name, (count.get(c.name) ?? 0) + 1);
+    return chips.map((c) => ({
+      teamId: c.teamId,
+      label: (count.get(c.name) ?? 0) > 1 ? teamOptionLabel(c.name, c.era) : c.name,
+      playerNames: c.playerNames,
+    }));
+  }, [line.options, optionRows, marketplaceIds, playerNameById]);
 
-  // The pre-fill rule. Only a stint covering the set's year, never against a
-  // team the listing named.
-  const setYearTeamIds = useMemo(
-    () => [...careerByTeam.values()].filter((c) => c.inSetYear).map((c) => c.teamId),
-    [careerByTeam],
-  );
-  const bscDisagrees =
-    bscName !== "" && setYearTeamIds.some((id) => !marketplaceIds.has(id as string));
-  // The server asks a card with a tied player as a whole: nothing preselected.
-  // Read here too, so the heading's promise and the pre-fill cannot part ways.
-  const anyTie = useMemo(() => [...careerByTeam.values()].some((c) => c.tie), [careerByTeam]);
+  // The pre-fill. Only what the tiers give, never against a standing claim.
   const preselect = useMemo(
-    () => (bscDisagrees || setNoTeam || anyTie ? [] : setYearTeamIds.slice(0, MAX_CARD_TEAMS)),
-    [bscDisagrees, setNoTeam, anyTie, setYearTeamIds],
+    () => line.suggestion.slice(0, MAX_CARD_TEAMS),
+    [line.suggestion],
   );
-  const ready = suggestions !== undefined && bscSettled;
+  const ready = !line.loading && bscSettled;
 
   // Untouched, the chosen teams ARE the pre-fill; the first press makes them the operator's.
   const chosen = useMemo(() => teamIds ?? (ready ? preselect : []), [teamIds, ready, preselect]);
@@ -180,16 +233,15 @@ export default function TeamFillChips({
     extraIds.length > 0 && sportId ? { sportId } : "skip",
   );
 
-  // The players' years with a team: every player with a dated stint there, by
-  // name, in card order ("Johnny Bench 1967–1983; Pete Rose 1963–1978"), each
-  // one's stints merged. Empty when nobody on the card has one.
+  // The players' years with a team, as main's wizard printed them: one player's
+  // bare, several players' named, only those with a dated stint there.
   const yearsWith = (teamId: Id<"teams">): string =>
-    players
-      .flatMap((p) => {
-        const years = mergedStintYears(p.stints.filter((s) => s.teamId === teamId));
-        return years ? [`${p.name} ${years}`] : [];
-      })
-      .join("; ");
+    chipYearsText(
+      playerIds.map((id, i) => ({
+        name: playerNameById.get(id) ?? "Player",
+        stints: (evidenceRes?.players[i]?.stints ?? []).filter((s) => s.teamId === teamId),
+      })),
+    );
 
   const toggle = (teamId: Id<"teams">) => {
     if (chosenSet.has(teamId as string)) setTeamIds(chosen.filter((id) => id !== teamId));
@@ -266,7 +318,7 @@ export default function TeamFillChips({
     );
   };
 
-  /** "Jimmie Foxx played here" when it is preselected; the player's years when it is not. */
+  /** "Jimmie Foxx played here" when it is preselected; the players' years when it is not. */
   const chipSuffix = (chip: TeamChip): string | undefined => {
     const years = yearsWith(chip.teamId);
     if (preselect.includes(chip.teamId)) {
@@ -283,11 +335,7 @@ export default function TeamFillChips({
       {marketplaceChips.length > 0 && (
         <div className="grid gap-1">
           <p id={`fill-listing-${row._id}`} className="text-xs text-ink-2">
-            {marketplaceHeading(
-              bscName,
-              marketplaceChips.length,
-              marketplaceChips.some((c) => preselect.includes(c.teamId)),
-            )}
+            {marketplaceHeading(bscName, marketplaceChips.length)}
           </p>
           <ul className="flex flex-wrap gap-1.5" aria-labelledby={`fill-listing-${row._id}`}>
             {marketplaceChips.map((chip) =>
@@ -300,12 +348,14 @@ export default function TeamFillChips({
       {careerChips.length > 0 && (
         <div className="grid gap-1">
           <p id={`fill-career-${row._id}`} className="text-xs text-ink-2">
-            {careerHeading(
-              careerChips.some((c) => c.inSetYear),
-              bscDisagrees,
-              uncoveredSetYear,
-              { tie: anyTie, setNoTeam },
-            )}
+            {careerHeading(preselect.length > 0, {
+              tie: line.tie,
+              ...(line.uncoveredSetYear !== undefined ? { uncoveredSetYear: line.uncoveredSetYear } : {}),
+              noYear: line.noYear,
+              disagree: line.disagree,
+              held: line.held,
+              otherCards: line.source === "otherCards",
+            })}
           </p>
           <ul className="flex flex-wrap gap-1.5" aria-labelledby={`fill-career-${row._id}`}>
             {careerChips.map((chip) =>
@@ -337,8 +387,7 @@ export default function TeamFillChips({
                 teamId: id,
                 label: team ? teamFullName(team) : "Team",
                 playerNames: [],
-                inSetYear: false,
-              },
+                },
               { suffix: detail || undefined },
             );
           })}

@@ -1,8 +1,9 @@
-import { useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
+import { defaultGapStint } from "../../../../convex/lib/careerGapStint";
 import NeonButton from "../../../modules/NeonButton";
+import { useAnswered } from "../answered";
 import type { TidyCardContext, TidyRow } from "../tile-types";
 import AddStintEntry from "./AddStintEntry";
 import { NO_CAREER_TEXT, careerLineText, noStintText } from "./copy";
@@ -15,10 +16,12 @@ type Ctx = NonNullable<TidyCardContext>;
  * team this card shows (`careerGap`, blue). Never a stop: the card's team is
  * not wrong, the career may just be short.
  *
- * "Add to career" writes the stint to the PLAYER now (`players.addStint`, from
- * the set's year); "Keep as is" is the operator's acknowledgement that nothing
- * is wrong. It writes nothing of its own: Save & next marks the card's blue
- * items seen (`tidyCards.markReviewed`). A wrong team is Change on the Team
+ * The default is main's: "Add to career". Save & next with the gap still open
+ * adds the stint from the set's year (`tidyCards.markReviewed`, the same stint
+ * "Add to career" writes: `defaultGapStint`) and marks it seen. "Add to career"
+ * writes it to the PLAYER now (`players.addStint`); "Keep as is" is the
+ * operator's explicit way out and is stored at once (`tidyCards.keepCareerGap`),
+ * so Save & next leaves the career alone. A wrong team is Change on the Team
  * tile, never here.
  */
 export default function CareerGapRow({
@@ -41,7 +44,8 @@ export default function CareerGapRow({
   write: TidyWrite;
 }) {
   const addStint = useMutation(api.players.addStint);
-  const [kept, setKept] = useState(false);
+  const keepCareerGap = useMutation(api.tidyCards.keepCareerGap);
+  const answered = useAnswered();
   const player = context.players.find((p) => p.playerId === playerId);
   const team = context.teams.find((t) => t.teamId === teamId);
   if (!player) return null;
@@ -50,8 +54,8 @@ export default function CareerGapRow({
   const suffix = multi ? ` for ${player.name}` : "";
   const disabled = write.busy ? true : undefined;
 
-  const add = (stint: { teamId: Id<"teams">; fromYear: number; toYear?: number }) =>
-    write.run(
+  const add = async (stint: { teamId: Id<"teams">; fromYear: number; toYear?: number }): Promise<boolean> => {
+    const ok = await write.run(
       () =>
         addStint({
           playerId: player.playerId,
@@ -62,6 +66,21 @@ export default function CareerGapRow({
         }),
       "Couldn't add that stint. Try again.",
     );
+    if (ok) answered();
+    return ok;
+  };
+  const keep = async () => {
+    const ok = await write.run(
+      () =>
+        keepCareerGap({
+          cardId: row._id,
+          playerId: player.playerId,
+          teamId: teamId as Id<"teams">,
+        }),
+      "Couldn't keep that. Try again.",
+    );
+    if (ok) answered();
+  };
 
   return (
     <div role="group" aria-label={`Career ${player.name}`} className="grid gap-1.5">
@@ -82,13 +101,16 @@ export default function CareerGapRow({
           {player.stintsMore && <li className="text-xs text-ink-3">and more</li>}
         </ul>
       )}
+      {setYear !== undefined && (
+        <p className="text-xs text-ink-2">Save &amp; next adds it to the career.</p>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         {setYear !== undefined && (
           <NeonButton
             size="1"
             aria-label={`Add to career${suffix}`}
             aria-disabled={disabled}
-            onClick={() => void add({ teamId: teamId as Id<"teams">, fromYear: setYear })}
+            onClick={() => void add({ teamId: teamId as Id<"teams">, ...defaultGapStint(setYear) })}
           >
             Add to career
           </NeonButton>
@@ -96,10 +118,10 @@ export default function CareerGapRow({
         <NeonButton
           size="1"
           variant="secondary"
-          outline={!kept}
-          aria-pressed={kept}
+          outline
           aria-label={`Keep as is${suffix}`}
-          onClick={() => setKept((k) => !k)}
+          aria-disabled={disabled}
+          onClick={() => void keep()}
         >
           Keep as is
         </NeonButton>

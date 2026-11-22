@@ -97,30 +97,41 @@ function Chips({ onAnswered = () => {}, row = {} }: { onAnswered?: () => void; r
   return (
     <AnsweredProvider value={onAnswered}>
       <TeamFillChips
-        row={{ _id: "c1", cardNumber: "1", cardName: "X", ...row } as unknown as TidyRow}
+        row={{ _id: "c1", cardNumber: "1", cardName: "X", playerIds: ["player-1"], ...row } as unknown as TidyRow}
         sportId={"sport-1" as never}
         leafId={"leaf-1" as never}
-        players={[]}
+        players={[{ playerId: "player-1", name: "Jackson Merrill", sportId: "sport-1", stints: [], stintsMore: false }] as never}
+        leafCards={[]}
         write={write}
       />
     </AnsweredProvider>
   );
 }
 
-const suggestion = (teamId: string, label: string, inSetYear: boolean) => ({
-  teamId,
-  label,
-  playerName: "Jackson Merrill",
-  inSetYear,
+/** main's wizard query, for one player: Padres answer, Mariners offered beside them. */
+const evidence = () => ({
+  setYear: 2024,
+  sportId: "sport-1",
+  setLeagueIds: [],
+  setLeagueId: null,
+  teamNames: [],
+  players: [
+    {
+      playerId: "player-1",
+      answer: { tier: "career", teams: [{ teamId: "t1", name: "San Diego Padres" }] },
+      candidates: [
+        { teamId: "t1", name: "San Diego Padres" },
+        { teamId: "t2", name: "Seattle Mariners" },
+      ],
+      stints: [{ teamId: "t2", fromYear: 2015, toYear: 2019 }],
+    },
+  ],
 });
 
 beforeEach(() => {
   for (const k of Object.keys(queryResults)) delete queryResults[k];
   for (const k of Object.keys(mutations)) delete mutations[k];
-  queryResults["cardChecklist.suggestedTeamsForCard"] = [
-    suggestion("t1", "San Diego Padres", true),
-    suggestion("t2", "Seattle Mariners", false),
-  ];
+  queryResults["cardChecklist.teamSuggestionsForPreview"] = evidence();
 });
 
 describe("TeamFillChips", () => {

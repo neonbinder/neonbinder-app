@@ -71,14 +71,6 @@ export function teamLinkedForText(reason: LinkedForReason, playerName?: string):
   return who ? `Linked for you: ${who} played here` : "Linked for you: a player on this card played here";
 }
 
-/**
- * NEO-645 (S3a): the purple note on a player name NB ruled out itself, because
- * the same card prints it as its team. The card says so; the operator can
- * still change it.
- */
-export const NOT_A_PLAYER_SAME_AS_TEAM_NOTE =
-  "Ruled out for you: this card prints the same name as its team";
-
 /** The purple note on a player "Add all new players" created, when Wikidata gave no career. */
 export function newPlayerNoCareerText(
   playerName: string | undefined,
@@ -138,10 +130,10 @@ export function playedHere(playerNames: string[]): string {
 
 /**
  * The line over the listing's chips. Never names the marketplace: "the
- * listing" (Jason, 2026-10-11).
+ * listing" (Jason, 2026-10-11). The listing's own name holds every pre-fill
+ * back (invariant 8), so these teams are offered, never selected.
  */
-export function marketplaceHeading(listingName: string, rowCount: number, agreed: boolean): string {
-  if (agreed) return `The listing names “${listingName}” and the career agrees.`;
+export function marketplaceHeading(listingName: string, rowCount: number): string {
   if (rowCount > 1) {
     return `The listing names “${listingName}”, and ${rowCount} teams share that name. Pick the one on the card.`;
   }
@@ -163,58 +155,76 @@ export function outcomeHeading(outcome: TeamCheckOutcome | undefined, hasHint: b
 }
 
 /**
- * What else decides the line over the career chips (NEO-639).
+ * What decides the line over the career chips (NEO-639; main's wizard rules).
  *
  *  - `tie`: a player's window holds more than one team and no rule breaks the
  *    tie, so nothing is preselected;
- *  - `setNoTeam`: the set's own team default is "No Team", so a career team is
- *    offered and never preselected over the set's answer.
+ *  - `uncoveredSetYear`: no stint covers the set's year; the whole career is offered;
+ *  - `noYear`: the set has no year, so the whole career is offered;
+ *  - `disagree`: the player's other cards (a checklist's, or his stored ones) name
+ *    more than one team and the search stopped there;
+ *  - `held`: a claim stands, so what the rules would fill is only offered. The
+ *    set's own "No Team", the listing naming a team, or the publisher's
+ *    checklist settling the card's team;
+ *  - `otherCards`: the answer came from the player's other cards, not his career.
  */
-export type CareerHeadingFacts = { tie?: boolean; setNoTeam?: boolean };
+export type CareerHeadingFacts = {
+  tie?: boolean;
+  uncoveredSetYear?: number;
+  noYear?: boolean;
+  disagree?: boolean;
+  held?: "setNoTeam" | "listing" | "checklist" | null;
+  otherCards?: boolean;
+};
 
 /**
  * The line over the career chips. Precedence, first that holds: the whole
- * career because no stint covers the year; a tie in the window (the server's
- * own verdict, whatever else is in the year: nothing is preselected for it),
- * which the set's No Team outranks, since that answer holds for every card;
- * then no year at all; then, for a team that is in the window, the listing
- * disagreeing, the set's No Team, and last the plain "Suggested". Each line
- * promises only what the tile does.
+ * career because no stint covers the year; a tie in the window, which the set's
+ * No Team outranks, since that answer holds for every card; the other cards
+ * disagreeing; no year at all; then a standing claim; then, for a pre-filled
+ * team, where it came from. Each line promises only what the tile does.
  */
-export function careerHeading(
-  inSetYear: boolean,
-  listingDisagrees: boolean,
-  uncoveredSetYear?: number,
-  facts: CareerHeadingFacts = {},
-): string {
-  if (!inSetYear && uncoveredSetYear !== undefined) {
-    return `No ${uncoveredSetYear} team on file. Here's the whole career, so pick the one on the card.`;
+export function careerHeading(prefilled: boolean, facts: CareerHeadingFacts = {}): string {
+  const from = facts.otherCards ? "From the player's other cards" : "From the career";
+  if (!prefilled && facts.uncoveredSetYear !== undefined) {
+    return `No ${facts.uncoveredSetYear} team on file. Here's the whole career, so pick the one on the card.`;
   }
   if (facts.tie) {
-    return facts.setNoTeam ? SET_NO_TEAM_HEADING : TIE_HEADING;
+    return facts.held === "setNoTeam" ? SET_NO_TEAM_HEADING : TIE_HEADING;
   }
-  if (!inSetYear) {
+  if (!prefilled && facts.disagree) {
+    return facts.held === "setNoTeam"
+      ? SET_NO_TEAM_HEADING
+      : "The player's other cards name different teams, so pick the one on the card.";
+  }
+  if (!prefilled && facts.noYear) {
     return "No year on this set. Here's the whole career, so pick the one on the card.";
   }
-  if (listingDisagrees) {
-    return "From the career. The listing names a different team, so pick the one on the card.";
+  if (facts.held === "listing") return `${from}. The listing names a team, so pick the one on the card.`;
+  if (facts.held === "checklist") {
+    return `${from}. The official checklist settled the team, so pick the one on the card.`;
   }
-  if (facts.setNoTeam) return SET_NO_TEAM_HEADING;
-  return "Suggested from career history.";
+  if (facts.held === "setNoTeam") {
+    return `${from}. This set says No Team, so pick one only if it's on the card.`;
+  }
+  if (prefilled) {
+    return facts.otherCards ? "Suggested from the player's other cards." : "Suggested from career history.";
+  }
+  return "Pick the one on the card.";
 }
 
 const TIE_HEADING = "From the career. More than one team that season, so pick the one on the card.";
 const SET_NO_TEAM_HEADING = "From the career. This set says No Team, so pick one only if it's on the card.";
 
 /**
- * NEO-639 — one player's years with one team, as a chip prints them. Several
- * stints at the team merge where they overlap or touch ("2015–2017" and
- * "2018–2019" read "2015–2019"), oldest first, separate spans joined ", ". Each
- * span reads as `stintYears` does: "2024–" when open, "2026" for one season. An
- * undated stint prints nothing; an end before its start (bad data) reads as the
- * years between the two, never as nothing.
+ * NEO-639 — one player's years with one team, as a chip prints them (main's
+ * `stintYearsText`): "2024–2026"; "2026" for one season; "2024–present" for an
+ * open stint; several stints merged where they overlap or touch, oldest first,
+ * joined ", " ("2015–2017, 2021–present"). Empty when there is no dated stint.
+ * A stint whose end is before its start (bad data) reads as the years between
+ * the two, never as nothing. Chips only: career lines read `stintYears`.
  */
-export function mergedStintYears(stints: ReadonlyArray<{ fromYear?: number; toYear?: number }>): string {
+export function stintYearsText(stints: ReadonlyArray<{ fromYear?: number; toYear?: number }>): string {
   const spans: Array<{ from: number; to: number }> = [];
   for (const s of stints) {
     if (s.fromYear === undefined || !Number.isFinite(s.fromYear)) continue;
@@ -234,9 +244,26 @@ export function mergedStintYears(stints: ReadonlyArray<{ fromYear?: number; toYe
   }
   return merged
     .map(({ from, to }) =>
-      stintYears({ fromYear: from, ...(to === Number.POSITIVE_INFINITY ? {} : { toYear: to }) }),
+      to === Number.POSITIVE_INFINITY ? `${from}–present` : to === from ? `${from}` : `${from}–${to}`,
     )
     .join(", ");
+}
+
+/**
+ * The years one chip prints for the card's players: one player's years bare,
+ * several players' named, only those with a dated stint there, in card order
+ * ("Johnny Bench 1967–1983; Pete Rose 1963–1978"). Empty when nobody has one.
+ */
+export function chipYearsText(
+  players: ReadonlyArray<{ name: string; stints: ReadonlyArray<{ fromYear?: number; toYear?: number }> }>,
+): string {
+  if (players.length === 1) return stintYearsText(players[0].stints);
+  return players
+    .flatMap(({ name, stints }) => {
+      const years = stintYearsText(stints);
+      return years ? [`${name} ${years}`] : [];
+    })
+    .join("; ");
 }
 
 // ── The Career tile (ported from career-check.ts, NEO-591) ──

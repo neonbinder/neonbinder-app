@@ -7,16 +7,17 @@ import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import {
   careerHeading,
+  chipYearsText,
   newPlayerNoCareerText,
   linkedForText,
   teamLinkedForText,
   marketplaceHeading,
-  mergedStintYears,
   noStintText,
   outcomeHeading,
   playedHere,
   preselectReasonLine,
   stintYears,
+  stintYearsText,
   teamFillText,
 } from "./copy";
 import { printedOnText } from "./printed-on";
@@ -56,82 +57,116 @@ describe("copy", () => {
     expect(stintYears({})).toBe("");
   });
 
-  describe("mergedStintYears (NEO-639): the years a chip prints", () => {
+  describe("stintYearsText (A15, main's format): the years a chip prints", () => {
     it("no dated stint prints nothing", () => {
-      expect(mergedStintYears([])).toBe("");
-      expect(mergedStintYears([{}, { toYear: 2020 }])).toBe("");
+      expect(stintYearsText([])).toBe("");
+      expect(stintYearsText([{}, { toYear: 2020 }])).toBe("");
     });
 
-    it("a closed stint prints its span; one season prints one year; an open stint runs on", () => {
-      expect(mergedStintYears([{ fromYear: 2024, toYear: 2026 }])).toBe("2024–2026");
-      expect(mergedStintYears([{ fromYear: 2026, toYear: 2026 }])).toBe("2026");
-      expect(mergedStintYears([{ fromYear: 2024 }])).toBe("2024–");
+    it("a closed stint prints its span; one season prints one year; an open stint runs to present", () => {
+      expect(stintYearsText([{ fromYear: 2024, toYear: 2026 }])).toBe("2024–2026");
+      expect(stintYearsText([{ fromYear: 2026, toYear: 2026 }])).toBe("2026");
+      expect(stintYearsText([{ fromYear: 2024 }])).toBe("2024–present");
     });
 
     it("overlapping stints and stints that touch (next season) merge into one span", () => {
-      expect(mergedStintYears([{ fromYear: 2015, toYear: 2018 }, { fromYear: 2017, toYear: 2020 }])).toBe("2015–2020");
-      expect(mergedStintYears([{ fromYear: 2015, toYear: 2017 }, { fromYear: 2018, toYear: 2019 }])).toBe("2015–2019");
+      expect(stintYearsText([{ fromYear: 2015, toYear: 2018 }, { fromYear: 2017, toYear: 2020 }])).toBe("2015–2020");
+      expect(stintYearsText([{ fromYear: 2015, toYear: 2017 }, { fromYear: 2018, toYear: 2019 }])).toBe("2015–2019");
     });
 
     it("separate spans print oldest first, joined by a comma, whatever order they arrive in", () => {
       expect(
-        mergedStintYears([{ fromYear: 2021, toYear: 2022 }, { fromYear: 2015, toYear: 2017 }]),
+        stintYearsText([{ fromYear: 2021, toYear: 2022 }, { fromYear: 2015, toYear: 2017 }]),
       ).toBe("2015–2017, 2021–2022");
     });
 
     it("an open stint swallows a later closed one", () => {
-      expect(mergedStintYears([{ fromYear: 2020 }, { fromYear: 2022, toYear: 2023 }])).toBe("2020–");
+      expect(stintYearsText([{ fromYear: 2020 }, { fromYear: 2022, toYear: 2023 }])).toBe("2020–present");
     });
 
     it("an end before its start (bad data) still prints the years between them", () => {
-      expect(mergedStintYears([{ fromYear: 2020, toYear: 2018 }])).toBe("2018–2020");
+      expect(stintYearsText([{ fromYear: 2020, toYear: 2018 }])).toBe("2018–2020");
     });
 
     it("a stint with a non-finite year is ignored, never printed as NaN", () => {
-      expect(mergedStintYears([{ fromYear: Number.NaN }, { fromYear: 2020, toYear: Number.NaN }])).toBe("");
+      expect(stintYearsText([{ fromYear: Number.NaN }, { fromYear: 2020, toYear: Number.NaN }])).toBe("");
     });
   });
 
-  describe("careerHeading (NEO-639)", () => {
+  describe("chipYearsText (A15): no name prefix with one player", () => {
+    it("one player: the years bare", () => {
+      expect(chipYearsText([{ name: "Jackson Merrill", stints: [{ fromYear: 2024 }] }])).toBe("2024–present");
+    });
+
+    it("several players: each with a dated stint, named, in card order; one with none is skipped", () => {
+      expect(
+        chipYearsText([
+          { name: "Jackson Merrill", stints: [{ fromYear: 2024 }] },
+          { name: "No Years", stints: [{}] },
+          { name: "Somebody Else", stints: [{ fromYear: 2019, toYear: 2021 }] },
+        ]),
+      ).toBe("Jackson Merrill 2024–present; Somebody Else 2019–2021");
+    });
+
+    it("nobody with a dated stint prints nothing", () => {
+      expect(chipYearsText([{ name: "A", stints: [] }])).toBe("");
+      expect(chipYearsText([{ name: "A", stints: [] }, { name: "B", stints: [{}] }])).toBe("");
+    });
+  });
+
+  describe("careerHeading (NEO-639, main's wizard order)", () => {
+    const TIE = "From the career. More than one team that season, so pick the one on the card.";
+    const NO_TEAM = "From the career. This set says No Team, so pick one only if it's on the card.";
+
     it("a tie in the window says so; it is not 'no year on this set'", () => {
-      expect(careerHeading(false, false, undefined, { tie: true })).toBe(
-        "From the career. More than one team that season, so pick the one on the card.",
-      );
-      expect(careerHeading(false, false, undefined)).toBe(
+      expect(careerHeading(false, { tie: true })).toBe(TIE);
+      expect(careerHeading(false, { noYear: true })).toBe(
         "No year on this set. Here's the whole career, so pick the one on the card.",
       );
     });
 
     it("a career with nothing in the year still says so first, even beside a tie", () => {
-      expect(careerHeading(false, false, 2025, { tie: true })).toBe(
+      expect(careerHeading(false, { uncoveredSetYear: 2025, tie: true })).toBe(
         "No 2025 team on file. Here's the whole career, so pick the one on the card.",
       );
     });
 
     it("a tie shows its line even when a chip is in the set year, so the heading never falls through", () => {
-      expect(careerHeading(true, false, undefined, { tie: true })).toBe(
-        "From the career. More than one team that season, so pick the one on the card.",
-      );
-      expect(careerHeading(true, false, undefined, { tie: false })).toBe("Suggested from career history.");
+      expect(careerHeading(true, { tie: true })).toBe(TIE);
+      expect(careerHeading(true, { tie: false })).toBe("Suggested from career history.");
     });
 
     it("the set's No Team outranks a tie, in the year or out of it", () => {
-      const noTeam = "From the career. This set says No Team, so pick one only if it's on the card.";
-      expect(careerHeading(false, false, undefined, { tie: true, setNoTeam: true })).toBe(noTeam);
-      expect(careerHeading(true, false, undefined, { tie: true, setNoTeam: true })).toBe(noTeam);
+      expect(careerHeading(false, { tie: true, held: "setNoTeam" })).toBe(NO_TEAM);
+      expect(careerHeading(true, { tie: true, held: "setNoTeam" })).toBe(NO_TEAM);
     });
 
     it("the set's No Team says the team is offered, not picked", () => {
-      expect(careerHeading(true, false, undefined, { setNoTeam: true })).toBe(
-        "From the career. This set says No Team, so pick one only if it's on the card.",
+      expect(careerHeading(false, { held: "setNoTeam" })).toBe(NO_TEAM);
+    });
+
+    it("a listing that names a team, or a checklist that settled it, holds the pick back (B7, B8)", () => {
+      expect(careerHeading(false, { held: "listing" })).toBe(
+        "From the career. The listing names a team, so pick the one on the card.",
+      );
+      expect(careerHeading(false, { held: "checklist" })).toBe(
+        "From the career. The official checklist settled the team, so pick the one on the card.",
+      );
+      expect(careerHeading(false, { held: "listing", otherCards: true })).toBe(
+        "From the player's other cards. The listing names a team, so pick the one on the card.",
       );
     });
 
-    it("the listing disagreeing outranks the set's No Team; a plain suggestion has neither", () => {
-      expect(careerHeading(true, true, undefined, { setNoTeam: true })).toBe(
-        "From the career. The listing names a different team, so pick the one on the card.",
+    it("the player's other cards disagreeing says so", () => {
+      expect(careerHeading(false, { disagree: true })).toBe(
+        "The player's other cards name different teams, so pick the one on the card.",
       );
-      expect(careerHeading(true, false)).toBe("Suggested from career history.");
+    });
+
+    it("a prefill names where it came from; nothing to say falls back to a plain ask", () => {
+      expect(careerHeading(true)).toBe("Suggested from career history.");
+      expect(careerHeading(true, { otherCards: true })).toBe("Suggested from the player's other cards.");
+      expect(careerHeading(false)).toBe("Pick the one on the card.");
     });
   });
 
@@ -159,15 +194,12 @@ describe("copy", () => {
     expect(playedHere(["A"])).toBe("A played here");
     expect(playedHere(["A", "B"])).toBe("A & B played here");
     expect(playedHere(["A", "B", "C"])).toBe("A, B & C played here");
-    expect(marketplaceHeading("Padres", 1, false)).toBe("The listing names “Padres”. Pick it if it matches the card.");
-    expect(marketplaceHeading("Padres", 2, false)).toBe(
+    expect(marketplaceHeading("Padres", 1)).toBe("The listing names “Padres”. Pick it if it matches the card.");
+    expect(marketplaceHeading("Padres", 2)).toBe(
       "The listing names “Padres”, and 2 teams share that name. Pick the one on the card.",
     );
-    expect(marketplaceHeading("Padres", 1, true)).toBe("The listing names “Padres” and the career agrees.");
     expect(outcomeHeading("answered", false)).toMatch(/^The listing has no team/);
     expect(outcomeHeading("answered", true)).toBeNull();
-    expect(careerHeading(true, false)).toBe("Suggested from career history.");
-    expect(careerHeading(false, false)).toBe("No year on this set. Here's the whole career, so pick the one on the card.");
   });
 });
 

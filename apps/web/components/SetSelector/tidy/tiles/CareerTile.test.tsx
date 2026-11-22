@@ -1,11 +1,12 @@
 /**
  * NEO-645 tile 4, "Career": blue, only while the card has a career gap or a new
  * player's Wikidata career. Stints are written to the PLAYER ("Add to career",
- * "Create team and add stint", "Add stints to {player}", "+ Add stint");
- * "Keep as is" and "Not now" write nothing.
+ * "Create team and add stint", "Add stints to {player}", "+ Add stint").
+ * "Keep as is" writes nothing to the player: it is stored on the card at once
+ * (`tidyCards.keepCareerGap`), so Save & next leaves the career alone.
  */
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../../convex/_generated/api", () => ({
   api: new Proxy(
@@ -57,6 +58,7 @@ vi.mock("../../NewTeamForm", async (importOriginal) => ({
   ),
 }));
 
+import { AnsweredProvider } from "../answered";
 import CareerTile from "./CareerTile";
 import type { TidyAttention, TidyCardContext, TidyRow, TidyTileProps } from "../tile-types";
 
@@ -148,24 +150,98 @@ describe("CareerTile", () => {
       expect(screen.getByText("No career on file yet.")).toBeTruthy();
     });
 
-    it("'Add to career' writes the card's team to the PLAYER from the set's year", async () => {
-      renderTile([gapItem]);
-      await click(screen.getByRole("button", { name: "Add to career" }));
-      expect(mutation("players.addStint")).toHaveBeenCalledWith({
-        playerId: "player-1",
-        teamId: "team-pad",
-        fromYear: 2024,
-        cardId: CARD,
+    describe("'Add to career' writes the card's team to the PLAYER from the set's year (A8, main's default stint)", () => {
+      beforeEach(() => vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-06-01T12:00:00Z") }));
+      afterEach(() => vi.useRealTimers());
+
+      it("a set from a past year: that one season, 2024–2024", async () => {
+        renderTile([gapItem]);
+        await click(screen.getByRole("button", { name: "Add to career" }));
+        expect(mutation("players.addStint")).toHaveBeenCalledWith({
+          playerId: "player-1",
+          teamId: "team-pad",
+          fromYear: 2024,
+          toYear: 2024,
+          cardId: CARD,
+        });
+      });
+
+      it("a set from this year, or later: an open stint, 'present' (the player's current team)", async () => {
+        queryResults["selectorOptions.getAncestorChain"] = [{ _id: "y", level: "year", value: "2026" }];
+        renderTile([gapItem]);
+        await click(screen.getByRole("button", { name: "Add to career" }));
+        expect(mutation("players.addStint")).toHaveBeenCalledWith({
+          playerId: "player-1",
+          teamId: "team-pad",
+          fromYear: 2026,
+          cardId: CARD,
+        });
+      });
+
+      it("tells the walk it was answered, once the stint lands", async () => {
+        const onAnswered = vi.fn();
+        const props: TidyTileProps = {
+          row: card(),
+          context: context(),
+          attention: { level: "check", items: [gapItem] },
+          leafId: "leaf-1" as never,
+          sportId: SPORT as never,
+          leafCards: [],
+          setName: "Set",
+        };
+        render(
+          <AnsweredProvider value={onAnswered}>
+            <CareerTile {...props} />
+          </AnsweredProvider>,
+        );
+        await click(screen.getByRole("button", { name: "Add to career" }));
+        expect(onAnswered).toHaveBeenCalledTimes(1);
       });
     });
 
-    it("'Keep as is' writes nothing, and reads as chosen", async () => {
+    it("says what Save & next will do while the gap is open, when the set's year is known (A8)", () => {
       renderTile([gapItem]);
-      const keep = screen.getByRole("button", { name: "Keep as is" });
-      expect(keep.getAttribute("aria-pressed")).toBe("false");
-      await click(keep);
-      expect(keep.getAttribute("aria-pressed")).toBe("true");
-      expect(Object.values(mutations).every((m) => m.mock.calls.length === 0)).toBe(true);
+      expect(screen.getByText("Save & next adds it to the career.")).toBeTruthy();
+    });
+
+    it("says nothing of it when the set has no year: there is no stint to add", () => {
+      queryResults["selectorOptions.getAncestorChain"] = [{ _id: "y", level: "year", value: "Unknown" }];
+      renderTile([gapItem]);
+      expect(screen.queryByText(/Save & next adds it/)).toBeNull();
+      expect(screen.queryByRole("button", { name: "Add to career" })).toBeNull();
+    });
+
+    it("'Keep as is' is the explicit way out: stored at once, writes nothing to the player", async () => {
+      renderTile([gapItem]);
+      await click(screen.getByRole("button", { name: "Keep as is" }));
+      expect(mutation("tidyCards.keepCareerGap")).toHaveBeenCalledWith({
+        cardId: CARD,
+        playerId: "player-1",
+        teamId: "team-pad",
+      });
+      expect(mutation("players.addStint")).not.toHaveBeenCalled();
+    });
+
+    it("a refused 'Keep as is' shows inline and does not tell the walk", async () => {
+      mutation("tidyCards.keepCareerGap").mockRejectedValueOnce(new Error("Server Error"));
+      const onAnswered = vi.fn();
+      const props: TidyTileProps = {
+        row: card(),
+        context: context(),
+        attention: { level: "check", items: [gapItem] },
+        leafId: "leaf-1" as never,
+        sportId: SPORT as never,
+        leafCards: [],
+        setName: "Set",
+      };
+      render(
+        <AnsweredProvider value={onAnswered}>
+          <CareerTile {...props} />
+        </AnsweredProvider>,
+      );
+      await click(screen.getByRole("button", { name: "Keep as is" }));
+      expect(screen.getByRole("alert").textContent).toBe("Couldn't keep that. Try again.");
+      expect(onAnswered).not.toHaveBeenCalled();
     });
 
     it("'+ Add stint' adds a team NB holds, with its years", async () => {

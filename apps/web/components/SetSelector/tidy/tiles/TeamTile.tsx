@@ -3,6 +3,7 @@ import { useMutation } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
 import { MAX_CARD_TEAMS, teamFillOf } from "../../../../convex/features/cardAttention";
+import { isTeamlessOnLine, teamLineKey } from "../../../../convex/lib/teamLine";
 import NeonButton from "../../../modules/NeonButton";
 import EntityLinkSearch from "../../EntityLinkSearch";
 import { useAnswered } from "../answered";
@@ -45,14 +46,15 @@ const NO_CONTEXT_YET = {
  * Waits (`level="waiting"`) while a TEAMS disagreement is unsettled: the
  * spelling decides which name this tile asks about.
  *
- * "Apply to all" (answer, then offer it to the player's other teamless cards)
- * is guarded twice. The client only PROPOSES the cards that look alike from the
- * checklist it holds; `tidyCards.applyTeamToPlayerCards` re-checks every one
- * (same single player, no team claim from any source, the career names exactly
- * this team for that card's year) and skips the rest. Under the set's own "No Team"
- * (`setNoTeam`, NEO-639 decision A) it is not offered at all: the server takes no
- * card of such a set, and the chips preselect nothing. Rule 8: a data claim
- * holds back a guess, so a card a source named a team for is never proposed.
+ * "Apply to all" (answer, then offer it to the card's LINE) is main's wizard
+ * grouping: one line per player set plus claim key (`convex/lib/teamLine`), so
+ * every teamless card under this checklist with the same players and the same
+ * listing claim takes the answer, a multi-player card included, with no career
+ * test (the operator's answer is the evidence). The client PROPOSES the cards on
+ * the line from the checklist it holds; `tidyCards.applyTeamToPlayerCards`
+ * re-checks every one and skips the rest. A set's own "No Team" (`setNoTeam`,
+ * NEO-639 decision A) holds back what NB guesses, never an answer the operator
+ * gives, so the button is offered there too.
  */
 export default function TeamTile({
   row,
@@ -145,16 +147,14 @@ export default function TeamTile({
     return saveTeams([...new Set([...teamsOnCard, id])]);
   };
 
-  // "Apply to all": the client proposes, the server checks.
-  const playerId = row.playerIds?.length === 1 ? row.playerIds[0] : undefined;
-  const sourceTeamId = teamsOnCard.length === 1 && !open ? teamsOnCard[0] : undefined;
+  // "Apply to all": the client proposes the card's line, the server checks.
+  const sourceTeamIds = teamsOnCard.length > 0 && !open ? teamsOnCard : [];
+  const lineKey = teamLineKey(row);
   const proposed =
-    // Under the set's own "No Team" the server takes no card (NEO-639 decision A),
-    // so none is offered: the count stays honest.
-    playerId && sourceTeamId && !setNoTeam
-      ? leafCards.filter((c) => proposesTeam(c, row._id, playerId)).slice(0, APPLY_PROPOSE_MAX)
+    sourceTeamIds.length > 0
+      ? leafCards.filter((c) => proposesTeam(c, row._id, lineKey)).slice(0, APPLY_PROPOSE_MAX)
       : [];
-  const playerName = ctx.players.find((p) => p.playerId === playerId)?.name;
+  const who = ctx.players.map((p) => p.name).join(" & ");
 
   return (
     <TidyTile heading="Team" level={open ? "fix" : "plain"}>
@@ -222,6 +222,7 @@ export default function TeamTile({
           leafId={leafId}
           players={ctx.players}
           write={write}
+          leafCards={leafCards}
           setNoTeam={setNoTeam}
         />
       )}
@@ -250,18 +251,14 @@ export default function TeamTile({
             >
               {teamsOnCard.length === 0 ? "+ Add team" : "+ Another team"}
             </NeonButton>
-            {sourceTeamId && playerName && !setNoTeam && (
+            {sourceTeamIds.length > 0 && (
               <ApplyToAllButton
                 count={proposed.length}
-                label={
-                  proposed.length === 1
-                    ? `Apply to the other ${playerName} card`
-                    : `Apply to all ${proposed.length} other ${playerName} cards`
-                }
+                label={applyLabel(proposed.length, who)}
                 onApply={async () => {
                   return await applyTeamToPlayerCards({
                     sourceCardId: row._id,
-                    teamId: sourceTeamId,
+                    teamIds: sourceTeamIds,
                     cardIds: proposed.map((c) => c._id),
                   });
                 }}
@@ -274,30 +271,20 @@ export default function TeamTile({
   );
 }
 
+/** "Apply to the other Jimmie Foxx card" / "Apply to all 4 other Johnny Bench & Pete Rose cards". */
+function applyLabel(count: number, who: string): string {
+  if (who === "") {
+    return count === 1 ? "Apply to the other card with no player" : `Apply to all ${count} other cards with no player`;
+  }
+  return count === 1 ? `Apply to the other ${who} card` : `Apply to all ${count} other ${who} cards`;
+}
+
 /**
- * Whether a checklist card is worth PROPOSING for "Apply to all": the same one
- * player, no team on it and no source's claim about one. The server decides
- * (it also reads the player's stints against that card's year); this keeps the
- * button from offering cards the server is certain to refuse, and keeps its
- * count honest about what could be written.
- *
- * Every test here is `tidyCards.cardTakesTeamFill`'s, read the same way: a
- * pending name counts by its LENGTH (a blank entry still refuses), the listing's
- * team by truthiness (whitespace is still a claim). Keep it in step. The one
- * test it cannot repeat is the career's verdict for the set's year: the server
- * alone holds the player's whole career, so a card it refuses for that reason
- * is counted in "left as it was".
+ * Whether a checklist card is worth PROPOSING for "Apply to all": on the open
+ * card's line (the same player set and claim key) and still waiting for a team.
+ * The server decides again (`tidyCards.cardTakesLineTeams`, the same two reads);
+ * this keeps the button's count honest about what could be written.
  */
-function proposesTeam(card: TidyRow, openCardId: Id<"cardChecklist">, playerId: Id<"players">): boolean {
-  if (card._id === openCardId) return false;
-  if ((card.playerIds?.length ?? 0) !== 1 || card.playerIds?.[0] !== playerId) return false;
-  // A second name on the card that nobody has answered yet: the server refuses it.
-  if ((card.pendingPlayerNames ?? []).length > 0) return false;
-  if ((card.teamOnCardIds?.length ?? 0) > 0) return false;
-  if ((card.pendingTeamNames ?? []).length > 0) return false;
-  if (card.bscTeamName) return false;
-  if (card.teamNoneConfirmedAt !== undefined) return false;
-  if (card.teamCheckOutcome === "checklist") return false;
-  if ((card.sourceDisagreements ?? []).some((d) => d.field === "teams")) return false;
-  return true;
+function proposesTeam(card: TidyRow, openCardId: Id<"cardChecklist">, lineKey: string): boolean {
+  return card._id !== openCardId && teamLineKey(card) === lineKey && isTeamlessOnLine(card);
 }
