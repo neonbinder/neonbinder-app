@@ -130,3 +130,4 @@
 - [Probe the rest of a spent fresh-only run](patterns_probe_the_rest_of_a_spent_fresh_only_run.md) — red after commit, no reseed: throwaway probe reopens the walk by the pill, then rm
 - [Career tile fixtures](patterns_career_tile_fixtures.md) — NEO-645: gap only at commit for a pre-made player; recorded Wikidata careers; probe names read-only; --output wiped per run
 - [Career-team link fixture + counter-fixture proof](patterns_career_team_link_fixture_and_counter_fixture_proof.md) — NEO-490 6b on a hand-made sport (2020, stints 2010/2024); spec-only counter-fixture when a plant is barred
+- [Set-history link with no walk stop](patterns_set_history_link_with_no_walk_stop.md) — notes render only in walk tiles: one clean card + one blue-gap card; fixture-flip red

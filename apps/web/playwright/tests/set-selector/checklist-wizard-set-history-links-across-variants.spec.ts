@@ -32,7 +32,7 @@
 //      linked for you. Give it a look before you save.") with its Decided line
 //      and Change, and saves on Confirm. Team set history, where it still applies
 //      (a name no other row settles), is proved by
-//      checklist-wizard-set-history-links-a-team.
+//      tidy-up-set-history-links-a-printed-team-with-no-stop.
 // Then STAR's player page lists exactly his two cards as Baseball guest cards.
 //   6. Prior year (rule E1): in Baseball -> 2009 -> Topps -> Topps, the insert
 //      Career Best Jumbo Jerseys is fetched and Rickie Weeks, its one unknown

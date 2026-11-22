@@ -190,34 +190,6 @@ export const RECORDED_NO_MATCH_NAMES = {
       "Suncorp Super Netball",
     ],
   },
-  "checklist-wizard-career-team-entry:league": {
-    kind: "league",
-    sportQid: BASEBALL,
-    names: [
-      "Netball Superleague", "ANZ Premiership", "Bandyallsvenskan", "Currie Cup",
-      "Nicky Rackard Cup", "Lory Meagher Cup", "Tailteann Cup", "Hogan Cup",
-      "Deodhar Trophy", "Rachael Heyhoe Flint Trophy", "Charlotte Edwards Cup",
-      "Sigerson Cup",
-    ],
-  },
-  "checklist-wizard-career-team-entry:first-team": {
-    kind: "team",
-    sportQid: BASEBALL,
-    names: [
-      "Ballygunner", "Kilmallock", "Cuala", "Sixmilebridge", "Clarinbridge",
-      "Portumna", "Slaughtneil", "Toomevara", "Patrickswell", "Kiltormer", "Athenry",
-      "Birr",
-    ],
-  },
-  "checklist-wizard-career-team-entry:second-team": {
-    kind: "team",
-    sportQid: BASEBALL,
-    names: [
-      "Ballyea", "Newtownshandrum", "Cushendall", "Loughgiel", "Ballycran",
-      "Portaferry", "Crossmaglen", "Kilcoo", "Corofin", "Mullinalaghta", "Kilmacud",
-      "Ballyboden",
-    ],
-  },
   "checklist-one-marketplace-match-cards-keeps-every-card": {
     kind: "team",
     sportQid: HOCKEY,
@@ -225,15 +197,6 @@ export const RECORDED_NO_MATCH_NAMES = {
       "Castlehaven", "Craughwell", "Loughrea", "Mullinavat", "Dicksboro",
       "Tullaroan", "Thomastown", "Mooncoin", "Templetuohy", "Borrisoleigh",
       "Kiladangan", "Roscrea",
-    ],
-  },
-  "checklist-wizard-career-team-commits": {
-    kind: "team",
-    sportQid: HOCKEY,
-    names: [
-      "Cappawhite", "Moycarkey", "Nenagh", "Lismore", "Dungarvan", "Fourmilewater",
-      "Kilruane", "Clonoulty", "Ballinderreen", "Dunloy", "Ballyhale",
-      "Carrickshock",
     ],
   },
 } as const satisfies Record<
