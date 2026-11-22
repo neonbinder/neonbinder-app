@@ -287,3 +287,28 @@ export async function resolveScopeLeaf(
   const leaf = await ctx.db.get(row.scopeId);
   return leaf ? row.scopeId : cardLeafId;
 }
+
+/** Printed rows one re-key of a name may follow (rekeyEntityNames refuses more). */
+export const REKEY_PRINTED_MAX = 500;
+
+/**
+ * Re-key a name's printed rows: every `(scopeId, kind, from)` row becomes
+ * `(scopeId, kind, to)`. Used only by `rekeyEntityNames` when it rewrites a
+ * `tidyNames` key, so the index still finds the cards that printed the name.
+ * Returns how many rows moved, or `null` (and writes nothing) when the name has
+ * more than `REKEY_PRINTED_MAX` printers, which the caller refuses.
+ */
+export async function rekeyPrintedNames(
+  ctx: Pick<MutationCtx, "db">,
+  key: { scopeId: Id<"selectorOptions">; kind: PrintedNameKind; from: string; to: string },
+): Promise<number | null> {
+  const rows = await ctx.db
+    .query("cardPrintedNames")
+    .withIndex("by_scope_kind_name", (q) =>
+      q.eq("scopeId", key.scopeId).eq("kind", key.kind).eq("nameNormalized", key.from),
+    )
+    .take(REKEY_PRINTED_MAX + 1);
+  if (rows.length > REKEY_PRINTED_MAX) return null;
+  for (const row of rows) await ctx.db.patch(row._id, { nameNormalized: key.to });
+  return rows.length;
+}

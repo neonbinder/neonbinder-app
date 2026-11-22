@@ -54,6 +54,7 @@ import {
 } from "./cardSecondaryPlayers";
 import { newStoredCardReadCache } from "./storedCardTitle";
 import { MAX_CARD_PLAYERS } from "./features/cardAttention";
+import { syncCardPrintedNames, type DesiredPrintedName } from "./cardPrintedNames";
 import {
   planCardPlayerDefaults,
   type CardPlayerFacts,
@@ -152,6 +153,23 @@ export type NewCardRow = {
    */
   cameos?: ReadonlyArray<BornCameo>;
   carried?: CarriedCardFields;
+  /**
+   * NEO-645 — the names this card printed, as `cardPrintedNames` rows (one per
+   * name that has a `tidyNames` row), written through the one writer in the
+   * same transaction as the card. REQUIRED, so a caller cannot mint a card
+   * whose printed names go unindexed (`cardPrintedNames.pin.test.ts` pins it).
+   * Pass `[]` for a card that printed none. A parallel copy passes its source
+   * card's rows, keeping the source row's `scopeId`.
+   */
+  printedNames: ReadonlyArray<DesiredPrintedName>;
+  /**
+   * NEO-645 — review state a SOURCE card is born with, spread onto the row only
+   * when present. A parallel copy never passes them: they are the source card's
+   * review state, and copying them would make every parallel show blue.
+   */
+  sourceDisagreements?: Doc<"cardChecklist">["sourceDisagreements"];
+  sourceNumbers?: Doc<"cardChecklist">["sourceNumbers"];
+  tidyChecks?: Doc<"cardChecklist">["tidyChecks"];
   /**
    * NEO-312 — the features map to merge the card's observed facts ONTO,
    * instead of `set.inheritedFeatures`. A parallel copy passes
@@ -425,6 +443,12 @@ export function buildCardRowForInsert(
     // NEO-528 round 3 — provenance, only when true (absent on every other
     // card, so their rows are exactly what they were).
     ...(card.listingNamedPlayer === true ? { listingNamedPlayer: true as const } : {}),
+    // NEO-645 — a source card's review state; absent on every other row.
+    ...(card.sourceDisagreements && card.sourceDisagreements.length > 0
+      ? { sourceDisagreements: card.sourceDisagreements }
+      : {}),
+    ...(card.sourceNumbers ? { sourceNumbers: card.sourceNumbers } : {}),
+    ...(card.tidyChecks && card.tidyChecks.length > 0 ? { tidyChecks: card.tidyChecks } : {}),
     ...(card.pendingTeamNames.length
       ? { pendingTeamNames: card.pendingTeamNames }
       : {}),
@@ -569,6 +593,11 @@ export async function insertCardRow(
     const names = newStoredCardReadCache();
     for (const cameo of card.cameos ?? []) names.players.set(cameo.playerId as string, cameo.name);
     await bornSecondaryPlayers(ctx, id, row, names);
+  }
+  // NEO-645 — the card's printed names, through the one writer. `fresh`: the
+  // card was inserted a line ago, so there is nothing to diff against.
+  if (card.printedNames.length > 0) {
+    await syncCardPrintedNames(ctx, { _id: id }, card.printedNames, { fresh: true });
   }
   ledger.addCard(row);
   if (!card.keepSku) {

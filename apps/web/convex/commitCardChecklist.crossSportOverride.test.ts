@@ -15,6 +15,7 @@
  * commitCardChecklist.entityReview.test.ts, which this file sits beside.
  */
 
+import { insertAsTidyName } from "../lib/testing/tidy-review-row";
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
@@ -122,7 +123,7 @@ async function insertLinkRow(
   },
 ) {
   return t.run(async (ctx) =>
-    ctx.db.insert("entityReviewQueue", {
+    insertAsTidyName(ctx, {
       selectorOptionId: opts.selectorOptionId,
       batchId: opts.batchId,
       createdByUserId: "user_review_001",
@@ -208,7 +209,7 @@ describe("NEO-313: commit's cross-sport override, and its security fix", () => {
     const { variantTypeId } = await seedBaseballSet(t);
     const football = await seedSport(t, "Football");
     await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewQueue", {
+      insertAsTidyName(ctx, {
         selectorOptionId: variantTypeId,
         batchId: "b1",
         createdByUserId: "user_review_001",

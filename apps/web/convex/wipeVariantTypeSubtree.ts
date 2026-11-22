@@ -280,20 +280,17 @@ export const SUBTREE_REFERENCE_GRAPH = {
     fields: ["selectorOptionId"],
     handling: "rows keyed on a subtree row deleted",
   },
-  // NEO-645. W1a (the schema slice) only DECLARES these two tables; nothing
-  // writes them yet, so there is nothing to delete. W1b wires the deletes
-  // (the card's rows with the card through `removeCardRow`; the leaf's name
-  // rows with the leaf), adds both to WIPED_TABLES and the count validators,
-  // and rewrites these two entries to say so.
+  // NEO-645 — the Tidy Up walk's per-leaf name answers and the per-card printed
+  // names they key on.
   cardPrintedNames: {
     fields: ["cardChecklistId", "scopeId"],
     handling:
-      "NEO-645 (declared in W1a, wired in W1b): rows are deleted with their card; a surviving card whose scope leaf was wiped (a parallel copy outside the subtree) keeps its row and readers fall back to the card's own leaf",
+      "NEO-645 a card's printed names are deleted with the card in removeCardRow (never a separate pass). A surviving card whose scope leaf was wiped (a parallel copy outside the subtree) keeps its row, and readers fall back to the card's own leaf (resolveScopeLeaf)",
   },
   tidyNames: {
     fields: ["scopeId", "sportId"],
     handling:
-      "NEO-645 (declared in W1a, wired in W1b): rows keyed on a subtree row deleted; sportId is sport-level",
+      "NEO-645 rows keyed on a subtree row deleted, counted with the operator's rulings (holds.skips); sportId is sport-level",
   },
   checklistNameResolutions: {
     fields: ["selectorOptionId", "sportId"],
@@ -359,6 +356,10 @@ export const WIPED_TABLES = [
   "entityReviewQueue",
   "checklistCandidates",
   "entityReviewSkips",
+  // NEO-645 — a wiped leaf's name answers; the card's printed names go with the
+  // card, through removeCardRow.
+  "tidyNames",
+  "cardPrintedNames",
   "selectorSyncStatus",
   // NEO-496 — a wiped row's checklist-section links, deleted with the row.
   "publishedChecklistLinks",
@@ -687,6 +688,7 @@ const tableCountsValidator = v.object({
   entityReviewQueue: v.number(),
   checklistCandidates: v.number(),
   entityReviewSkips: v.number(),
+  tidyNames: v.number(),
   selectorSyncStatus: v.number(),
 });
 
@@ -702,6 +704,7 @@ type TableCounts = {
   entityReviewQueue: number;
   checklistCandidates: number;
   entityReviewSkips: number;
+  tidyNames: number;
   selectorSyncStatus: number;
 };
 
@@ -713,6 +716,7 @@ function zeroCounts(): TableCounts {
     entityReviewQueue: 0,
     checklistCandidates: 0,
     entityReviewSkips: 0,
+    tidyNames: 0,
     selectorSyncStatus: 0,
   };
 }
@@ -913,12 +917,14 @@ const refTableValidator = v.union(
   v.literal("entityReviewQueue"),
   v.literal("checklistCandidates"),
   v.literal("entityReviewSkips"),
+  v.literal("tidyNames"),
   v.literal("cardCrossListings"),
 );
 type RefTable =
   | "entityReviewQueue"
   | "checklistCandidates"
   | "entityReviewSkips"
+  | "tidyNames"
   | "cardCrossListings";
 
 const crossInValidator = v.object({
@@ -938,6 +944,7 @@ export const surveyNodeRefs = internalQuery({
       entityReviewQueue: v.number(),
       checklistCandidates: v.number(),
       entityReviewSkips: v.number(),
+      tidyNames: v.number(),
       crossIn: v.array(crossInValidator),
       selectorSyncStatus: v.number(),
       saturated: v.array(refTableValidator),
@@ -972,6 +979,11 @@ export const surveyNodeRefs = internalQuery({
         )
         .take(limit);
       if (skips.length === limit) saturated.push("entityReviewSkips");
+      const names = await ctx.db
+        .query("tidyNames")
+        .withIndex("by_scope_kind_name", (q) => q.eq("scopeId", nodeId))
+        .take(limit);
+      if (names.length === limit) saturated.push("tidyNames");
       const crossIn = await ctx.db
         .query("cardCrossListings")
         .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", nodeId))
@@ -992,6 +1004,7 @@ export const surveyNodeRefs = internalQuery({
         entityReviewQueue: queue.length,
         checklistCandidates: candidates.length,
         entityReviewSkips: skips.length,
+        tidyNames: names.length,
         crossIn: crossIn.map((link) => ({
           id: link._id,
           cardId: link.cardChecklistId,
@@ -1055,6 +1068,18 @@ export const countRefsPage = internalQuery({
           .withIndex("by_selector_option_and_kind_and_name", (q) =>
             q.eq("selectorOptionId", nodeId),
           )
+          .paginate(opts);
+        return {
+          count: page.page.length,
+          crossIn: [],
+          isDone: page.isDone,
+          continueCursor: page.continueCursor,
+        };
+      }
+      case "tidyNames": {
+        const page = await ctx.db
+          .query("tidyNames")
+          .withIndex("by_scope_kind_name", (q) => q.eq("scopeId", nodeId))
           .paginate(opts);
         return {
           count: page.page.length,
@@ -1367,6 +1392,7 @@ export const wipeNodeRefsPage = internalMutation({
     entityReviewQueue: v.number(),
     checklistCandidates: v.number(),
     entityReviewSkips: v.number(),
+    tidyNames: v.number(),
     cardCrossListings: v.number(),
     selectorSyncStatus: v.number(),
     hasMore: v.boolean(),
@@ -1496,6 +1522,14 @@ export const wipeNodeRefsPage = internalMutation({
           .take(n),
       (id) => ctx.db.delete(id),
     );
+    const names = await drain(
+      (n) =>
+        ctx.db
+          .query("tidyNames")
+          .withIndex("by_scope_kind_name", (q) => q.eq("scopeId", nodeId))
+          .take(n),
+      (id) => ctx.db.delete(id),
+    );
     const crossIn = await drain(
       (n) =>
         ctx.db
@@ -1526,6 +1560,7 @@ export const wipeNodeRefsPage = internalMutation({
     logDeleted(args.variantTypeId, "entityReviewQueue", ids(queueDeleted));
     logDeleted(args.variantTypeId, "checklistCandidates", ids(candidates));
     logDeleted(args.variantTypeId, "entityReviewSkips", ids(skips));
+    logDeleted(args.variantTypeId, "tidyNames", ids(names));
     logDeleted(args.variantTypeId, "cardCrossListings", ids(crossIn));
     logDeleted(args.variantTypeId, "selectorSyncStatus", ids(statuses));
 
@@ -1533,6 +1568,7 @@ export const wipeNodeRefsPage = internalMutation({
       entityReviewQueue: queueDeleted.length,
       checklistCandidates: candidates.length,
       entityReviewSkips: skips.length,
+      tidyNames: names.length,
       cardCrossListings: crossIn.length,
       selectorSyncStatus: statuses.length,
       hasMore,
@@ -1602,6 +1638,10 @@ export const deleteEmptyNodes = internalMutation({
           .withIndex("by_selector_option_and_kind_and_name", (q) =>
             q.eq("selectorOptionId", nodeId),
           )
+          .first()) ??
+        (await ctx.db
+          .query("tidyNames")
+          .withIndex("by_scope_kind_name", (q) => q.eq("scopeId", nodeId))
           .first()) ??
         (await ctx.db
           .query("cardCrossListings")
@@ -1968,6 +2008,7 @@ async function survey(
       entityReviewQueue: number;
       checklistCandidates: number;
       entityReviewSkips: number;
+      tidyNames: number;
       crossIn: Array<{
         id: Id<"cardCrossListings">;
         cardId: Id<"cardChecklist">;
@@ -1983,6 +2024,7 @@ async function survey(
         entityReviewQueue: probe.entityReviewQueue,
         checklistCandidates: probe.checklistCandidates,
         entityReviewSkips: probe.entityReviewSkips,
+        tidyNames: probe.tidyNames,
         cardCrossListings: probe.crossIn.length,
       };
       let crossIn = probe.crossIn;
@@ -2011,7 +2053,7 @@ async function survey(
       }
       holds.reviewQueue += counted.entityReviewQueue;
       holds.candidates += counted.checklistCandidates;
-      holds.skips += counted.entityReviewSkips;
+      holds.skips += counted.entityReviewSkips + counted.tidyNames;
       holds.syncStatus += probe.selectorSyncStatus;
       for (const link of crossIn) {
         // A junction whose card is also going was counted on the card's row.
@@ -2021,6 +2063,7 @@ async function survey(
       totals.entityReviewQueue += counted.entityReviewQueue;
       totals.checklistCandidates += counted.checklistCandidates;
       totals.entityReviewSkips += counted.entityReviewSkips;
+      totals.tidyNames += counted.tidyNames;
       totals.selectorSyncStatus += probe.selectorSyncStatus;
     }
   }
@@ -2114,6 +2157,7 @@ async function applyWipe(
           entityReviewQueue: number;
           checklistCandidates: number;
           entityReviewSkips: number;
+          tidyNames: number;
           cardCrossListings: number;
           selectorSyncStatus: number;
           hasMore: boolean;
@@ -2124,12 +2168,14 @@ async function applyWipe(
         deleted.entityReviewQueue += page.entityReviewQueue;
         deleted.checklistCandidates += page.checklistCandidates;
         deleted.entityReviewSkips += page.entityReviewSkips;
+        deleted.tidyNames += page.tidyNames;
         deleted.cardCrossListings += page.cardCrossListings;
         deleted.selectorSyncStatus += page.selectorSyncStatus;
         const worked =
           page.entityReviewQueue +
             page.checklistCandidates +
             page.entityReviewSkips +
+            page.tidyNames +
             page.cardCrossListings +
             page.selectorSyncStatus >
           0;

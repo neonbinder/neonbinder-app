@@ -135,7 +135,8 @@ import {
   stampNoTeam,
   teamDefaultOf,
 } from "./lib/selectorTeams";
-import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
+import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS, deriveCardAttention } from "./features/cardAttention";
+import { listCardPrintedNames } from "./cardPrintedNames";
 import {
   cardKey,
   linkCardsToSide,
@@ -339,6 +340,14 @@ export const BLOCKED_IDS_UNREACHABLE =
 // NEO-321 — "the insert" became a neutral phrase: a base parallel is built
 // from the Base, not an insert.
 // NEO-321 (audit N1) — the two size sentences now cover the byte cap too.
+/**
+ * NEO-645 (J3, Q4) — the checklist a parallel is built from still has cards that
+ * need fixing (a name waiting to be linked, a missing autograph format, a team to
+ * choose). A parallel copies its source, so it is built once the source is
+ * tidy. Checked here, before anything is deleted or fetched.
+ */
+export const BLOCKED_SOURCE_NOT_TIDY =
+  "the checklist it's built from still has cards that need fixing — tidy those up first";
 export const BLOCKED_TOO_MANY_CARDS =
   "the checklist it's built from is bigger than one build can copy (more than 5,000 cards, or too much card data)";
 export const BLOCKED_PARALLEL_TOO_MANY_CARDS =
@@ -1386,6 +1395,21 @@ async function cardPage(
 }
 
 /**
+ * NEO-645 (J3) — a source card the parallel build must not copy yet: one with a
+ * pink item about WHICH names it carries (sources that disagree, a player or
+ * team name still waiting for an answer). A teamless card is also pink, but it
+ * is not refused here: the parallel's own Set Team fills a teamless copy
+ * (NEO-556), so "no team yet" is the build's input, not a reason to stop.
+ */
+function isUntidyForCopy(row: Doc<"cardChecklist">): boolean {
+  return deriveCardAttention(row).items.some(
+    (item) =>
+      item.level === "fix" &&
+      (item.kind === "sourcesDisagree" || item.kind === "playerName" || item.kind === "teamName"),
+  );
+}
+
+/**
  * One page of the source row's cards (an insert's, or the Base's), reduced to
  * what the link key reads. Paged across transactions and bounded by rows and
  * bytes (NEO-321 audit N1); the action sums the pages against
@@ -1397,7 +1421,9 @@ export const loadInsertCardsForLink = internalQuery({
     cursor: v.union(v.string(), v.null()),
   },
   returns: v.object({
-    cards: v.array(linkableCardValidator),
+    cards: v.array(
+      v.object({ ...linkableCardValidator.fields, pink: v.optional(v.literal(true)) }),
+    ),
     ...cardPageFields,
   }),
   handler: async (ctx, args) => {
@@ -1405,6 +1431,8 @@ export const loadInsertCardsForLink = internalQuery({
     return {
       cards: page.page.map((row) => ({
         ...linkableOf(row),
+        // NEO-645 (J3) — from the row alone, no extra read.
+        ...(isUntidyForCopy(row) ? { pink: true as const } : {}),
         ...(row.variationOfCardId
           ? { variationOfCardId: row.variationOfCardId }
           : {}),
@@ -2030,7 +2058,21 @@ export const insertParallelCardsPage = internalMutation({
           ? stampNoTeam(parallelNoTeam.setByUserId, Date.now())
           : undefined;
 
+      // NEO-645 — the copy prints what its source prints, so the source's
+      // printed-name rows carry over with their `scopeId` (the SOURCE leaf's:
+      // the answer a name was given there), spelling, order and override. The
+      // review state (`tidyChecks`, `tidyReviewed`, `sourceDisagreements`,
+      // `sourceNumbers`) does NOT travel: it is the source card's own.
+      const sourcePrinted = await listCardPrintedNames(ctx, source._id);
       const card: NewCardRow = {
+        printedNames: sourcePrinted.map((row) => ({
+          kind: row.kind,
+          scopeId: row.scopeId,
+          nameNormalized: row.nameNormalized,
+          printed: row.printed,
+          order: row.order,
+          ...(row.cardOverride ? { cardOverride: true as const } : {}),
+        })),
         selectorOptionId: args.parallelId,
         cardNumber: source.cardNumber,
         cardName: source.cardName,
@@ -2141,7 +2183,8 @@ export const insertParallelCardsPage = internalMutation({
         (copy.keepSku ? 1 : 2) +
         (born.playerIds?.length ?? 0) +
         (teamOnCardIds?.length ?? 0) +
-        born.cameos.length;
+        born.cameos.length +
+        sourcePrinted.length;
       newIdOf.set(source._id, newId);
       created.push({ from: source._id, to: newId });
       if (
@@ -2462,6 +2505,9 @@ export const buildParallelChecklist = action({
       }),
     );
     if (insertCards.overLimit) return blocked(BLOCKED_TOO_MANY_CARDS);
+    // NEO-645 (J3, Q4) — the server's half of "build the parallels once the base
+    // is complete" (the client gate is the other half).
+    if (insertCards.cards.some((c) => c.pink === true)) return blocked(BLOCKED_SOURCE_NOT_TIDY);
 
     // ── 3. fetch every side before anything is touched ──────────────────────
     // NEO-321 follow-up — every side ends in exactly one log line,

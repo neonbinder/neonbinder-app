@@ -2407,6 +2407,111 @@ export async function runEntityReviewLookupImpl(
 }
 
 /**
+ * NEO-645 — one `tidyNames` row's Wikidata lookup, the work item that replaced
+ * `runEntityReviewLookup` for the per-card Tidy Up walk.
+ *
+ * Same contract as `runEntityReviewLookupImpl` (NEO-99/294/301): the LOOKUP is
+ * caught and decided as a payload, the WRITE is outside the catch under
+ * `runWithOccRetry`, an unreachable Wikidata writes nothing and throws so the
+ * pool retries, and a team's partial ESPN answer is written `ready` before the
+ * retry throw. What differs:
+ *
+ *  - the row is read through `tidyNames.getForLookup`, which also returns the
+ *    `lookupGen` the enqueue carried; `tidyNames.applyLookupResult` drops the
+ *    write when the row's generation or sport moved on (a sport switch or a
+ *    second request asked a different question) or when it was answered;
+ *  - only the keys `tidyNameEnrichmentValidator` stores survive
+ *    (`pickEnrichment`); a lookup field with no column is dropped, never a
+ *    runtime refusal on every function that returns the row;
+ *  - a league has no row here: Tidy Up never stages one.
+ *
+ * Ids, kinds and counts only in logs, never the name.
+ */
+export async function runTidyNameLookupImpl(
+  ctx: EntityReviewLookupCtx,
+  args: { tidyNameId: Id<"tidyNames">; gen: number },
+  occRetry: OccRetryOptions = {},
+): Promise<null> {
+  const row = await ctx.runQuery(internal.tidyNames.getForLookup, { id: args.tidyNameId });
+  if (!row) return null;
+  // A newer request owns this row now.
+  if (row.lookupGen !== args.gen) return null;
+
+  let payload: { status: "ready" | "error"; enrichment?: Record<string, unknown> };
+  const trace = newLookupTrace();
+  try {
+    const sportCtx = await ctx.runQuery(internal.selectorOptions.getSportEnrichmentContext, {
+      sportId: row.sportId,
+    });
+    const result = !sportCtx
+      ? null
+      : row.kind === "player"
+        ? await lookupPlayerEnrichment(row.name, sportCtx, trace)
+        : await lookupTeamEnrichment(row.name, sportCtx, undefined, trace);
+    payload = result
+      ? { status: "ready", enrichment: reviewEnrichmentFor(row.kind, result) }
+      : { status: "error" };
+    if (!result && !trace.unavailable) {
+      console.log(
+        JSON.stringify({
+          msg: "tidy_name_lookup_no_match",
+          tidyNameId: args.tidyNameId,
+          kind: row.kind,
+          sportContext: Boolean(sportCtx),
+        }),
+      );
+    }
+  } catch (error) {
+    console.error(`[tidy-name-lookup] lookup for ${args.tidyNameId} failed:`, error);
+    payload = { status: "error" };
+  }
+
+  const writePartialThenRetry =
+    trace.unavailable && row.kind === "team" && payload.status === "ready";
+  if (trace.unavailable && !writePartialThenRetry) {
+    throwIfUnavailable(row.kind, args.tidyNameId, trace);
+  }
+
+  try {
+    await runWithOccRetry(
+      () =>
+        ctx.runMutation(internal.tidyNames.applyLookupResult, {
+          id: args.tidyNameId,
+          gen: args.gen,
+          status: payload.status,
+          ...(payload.enrichment ? { enrichment: payload.enrichment } : {}),
+          sportId: row.sportId,
+        }),
+      occRetry,
+    );
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        msg: "tidy_name_lookup_write_failed",
+        tidyNameId: args.tidyNameId,
+        kind: row.kind,
+        attempted: payload.status,
+        occConflict: isOccConflict(error),
+        attempts: occRetry.attempts ?? OCC_RETRY_ATTEMPTS,
+      }),
+    );
+    if (writePartialThenRetry) throwIfUnavailable(row.kind, args.tidyNameId, trace);
+    throw new NonRetryableError(
+      error instanceof Error ? error.message : String(error),
+      { cause: error },
+    );
+  }
+  if (writePartialThenRetry) throwIfUnavailable(row.kind, args.tidyNameId, trace);
+  return null;
+}
+
+export const runTidyNameLookup = internalAction({
+  args: { tidyNameId: v.id("tidyNames"), gen: v.number() },
+  returns: v.null(),
+  handler: async (ctx, args): Promise<null> => runTidyNameLookupImpl(ctx, args),
+});
+
+/**
  * NEO-240 — what a league lookup can answer.
  *
  * `wikidataId` is non-optional: this whole object only exists once a QID

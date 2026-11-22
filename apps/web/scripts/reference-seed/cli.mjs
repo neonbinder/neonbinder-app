@@ -89,6 +89,13 @@ export class RefusedError extends Error {}
  */
 export const SELECTOR_DEPENDANT_TABLES = [
   "slSetReviews",
+  // NEO-645 — a name's answer (`tidyNames`: scopeId, sportId) and each card's
+  // printed names (`cardPrintedNames`: scopeId). Drained by the reset
+  // (`resetTidyNamesBatch`, `resetCardPrintedNamesBatch`), before the selector
+  // rows: unlike `entityReviewSkips`, an answer links players and teams the
+  // reset deletes, so a surviving one would auto-apply in the next run.
+  "tidyNames",
+  "cardPrintedNames",
   // NEO-358 — transient per-column sync notices (parentId); drained by the
   // reset since a stale "could not be reached" notice outlived one on dev.
   "selectorSyncStatus",
@@ -143,17 +150,8 @@ export const SELECTOR_DEPENDANT_TABLES = [
   "publishedChecklists",
   "publishedChecklistLinks",
 ];
-// NEO-645 — "tidyNames" (a name's answer: scopeId, sportId) and
-// "cardPrintedNames" (each card's printed names: scopeId) are UNDRAINED only
-// until W1b adds their reset steps (`resetTidyNamesBatch`,
-// `resetCardPrintedNamesBatch`). They MUST then move to
-// SELECTOR_DEPENDANT_TABLES above: unlike `entityReviewSkips`, an answer names
-// players and teams the reset deletes, so a surviving one would auto-apply in
-// the next run. Nothing writes either table before then.
 export const SELECTOR_DEPENDANT_UNDRAINED_TABLES = [
   "entityReviewSkips",
-  "tidyNames",
-  "cardPrintedNames",
 ];
 const COUNTED_DEPENDANT_TABLES = [...SELECTOR_DEPENDANT_TABLES, ...SELECTOR_DEPENDANT_UNDRAINED_TABLES];
 

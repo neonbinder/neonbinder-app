@@ -92,8 +92,8 @@ describe("NEO-645: only cardPrintedNames.ts writes or reads the printed-names ta
     expect(writer).toContain("ctx.db.patch(id, patch)");
     // Deletes: the diff's own, and the whole-card delete.
     expect(src.match(/ctx\.db\.delete\(/g) ?? []).toHaveLength(2);
-    // Patches: the diff's only.
-    expect(src.match(/ctx\.db\.patch\(/g) ?? []).toHaveLength(1);
+    // Patches: the diff's, and the re-key of a name's rows (`rekeyPrintedNames`).
+    expect(src.match(/ctx\.db\.patch\(/g) ?? []).toHaveLength(2);
   });
 
   test("the table is declared once, with the two indexes the readers use", () => {
@@ -103,5 +103,38 @@ describe("NEO-645: only cardPrintedNames.ts writes or reads the printed-names ta
     const decl = schema.slice(at, at + 3000);
     expect(decl).toContain('.index("by_scope_kind_name", ["scopeId", "kind", "nameNormalized"])');
     expect(decl).toContain('.index("by_card", ["cardChecklistId"])');
+  });
+
+  test("every writer of a card's pending names reaches the printed-name index", () => {
+    // The files that write `pendingPlayerNames` / `pendingTeamNames`, and the
+    // call each one makes so the printed-name rows follow the names.
+    const writers: Record<string, RegExp> = {
+      "selectorOptions.ts": /syncCardPrintedNames\(|indexTypedNames\(|reconcilePrintedAfterEdit\(|rescopePrintedNames\(/,
+      "cardRowCreate.ts": /syncCardPrintedNames\(/,
+      "tidyPickSource.ts": /syncCardPrintedNames\(/,
+      "tidyTypedNames.ts": /syncCardPrintedNames\(/,
+      "tidyMigrations.ts": /syncCardPrintedNames\(/,
+      "tidyNames.ts": /syncCardPrintedNames\(|writeNameChange\(/,
+      "tidyCards.ts": /syncCardPrintedNames\(|writeNameChange\(|applyPickToCard\(/,
+    };
+    // Writers that only REMOVE a pending name that a printed row already
+    // records (the answer links it; the printed row stays so the answer can be
+    // changed back): `tidyCardWrites.writeNameChange`.
+    const linkOnly = ["tidyCardWrites.ts"];
+    for (const [file, calls] of Object.entries(writers)) {
+      const src = readFileSync(join(CONVEX_DIR, file), "utf8");
+      expect(src, file).toMatch(calls);
+    }
+    // And no other module patches a card's pending names: a new writer must
+    // join the list above (and reach the index), not slip in beside it.
+    const offenders: string[] = [];
+    for (const file of sourceFiles(CONVEX_DIR)) {
+      const base = file.slice(file.lastIndexOf("/") + 1);
+      if (base in writers || linkOnly.includes(base)) continue;
+      const src = readFileSync(file, "utf8");
+      const patches = src.match(/db\.patch\([^;]{0,600}?pending(Player|Team)Names/g) ?? [];
+      if (patches.length > 0) offenders.push(base);
+    }
+    expect(offenders).toEqual([]);
   });
 });

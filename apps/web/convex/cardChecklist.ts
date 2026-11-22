@@ -85,6 +85,7 @@ import { noTeamCardVerdict, stampNoTeam, teamDefaultOf } from "./lib/selectorTea
 // NEO-426 — a teamless sport is one more reason to stamp "No team".
 import { createSportNoTeamReader } from "./sportTeamless";
 import { queuedByField } from "./lib/bscGateKey";
+import { isRuledOutName } from "./tidySkips";
 
 /**
  * Walk up the parent chain from a cardChecklist's selectorOption to
@@ -639,16 +640,9 @@ async function findSkippedTeamNameKeys(
     const key = normalizeEntityName(name);
     if (!key || asked.has(key)) continue;
     asked.add(key);
-    const row = await ctx.db
-      .query("entityReviewSkips")
-      .withIndex("by_selector_option_and_kind_and_name", (q) =>
-        q
-          .eq("selectorOptionId", selectorOptionId)
-          .eq("kind", "team")
-          .eq("nameNormalized", key),
-      )
-      .first();
-    if (row) skipped.add(key);
+    // NEO-645 — a ruling is an `entityReviewSkips` row (before the deploy) or a
+    // `tidyNames` notEntity answer (after it).
+    if (await isRuledOutName(ctx, selectorOptionId, "team", key)) skipped.add(key);
   }
   return skipped;
 }

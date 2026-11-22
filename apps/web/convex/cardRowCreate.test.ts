@@ -52,6 +52,7 @@ function baseCard(overrides: Partial<NewCardRow> = {}): NewCardRow {
     pendingTeamNames: [],
     sortOrder: 0,
     playerNames: ["Ken Griffey Jr."],
+    printedNames: [],
     ...overrides,
   };
 }

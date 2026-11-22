@@ -33,6 +33,7 @@
  * and `commitCardChecklist.entityReview.test.ts`'s own fixture shapes.
  */
 
+import { insertAsTidyName } from "../lib/testing/tidy-review-row";
 import { convexTest } from "convex-test";
 import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -590,7 +591,7 @@ describe("NEO-284: saveAsAlias links the alias only when the commit actually lan
     });
 
     const rowId = await t.run((ctx) =>
-      ctx.db.insert("entityReviewQueue", {
+      insertAsTidyName(ctx, {
         selectorOptionId: variantTypeId,
         batchId: "batch-save-alias-commit",
         createdByUserId: ADMIN_IDENTITY.subject,
@@ -1026,7 +1027,7 @@ describe("NEO-284 S1 at commit: the two commit-time alias writers drop another t
     // would hand LSU's own name to Auburn and lock LSU out of its own edits.
     for (const [name, batchRow] of [["LSU Tigers", "a"], ["War Eagle", "b"]] as const) {
       await t.run((ctx) =>
-        ctx.db.insert("entityReviewQueue", {
+        insertAsTidyName(ctx, {
           selectorOptionId: variantTypeId,
           batchId: "batch-s1-commit",
           createdByUserId: ADMIN_IDENTITY.subject,
@@ -1200,7 +1201,7 @@ describe("NEO-602: commit-time alias writers follow the years when a string is a
       yearsActive: { from: 1958 },
     });
     await t.run((ctx) =>
-      ctx.db.insert("entityReviewQueue", {
+      insertAsTidyName(ctx, {
         selectorOptionId: variantTypeId,
         batchId: "batch-602-remember",
         createdByUserId: ADMIN_IDENTITY.subject,
@@ -1243,7 +1244,7 @@ describe("NEO-602: commit-time alias writers follow the years when a string is a
       yearsActive: { from: 1950, to: 1960 },
     });
     await t.run((ctx) =>
-      ctx.db.insert("entityReviewQueue", {
+      insertAsTidyName(ctx, {
         selectorOptionId: variantTypeId,
         batchId: "batch-602-remember-overlap",
         createdByUserId: ADMIN_IDENTITY.subject,

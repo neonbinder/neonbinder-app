@@ -302,3 +302,5 @@
 - [Extracting fields from a drawer keeps the lint override list](reference_extracting_fields_from_a_drawer_keeps_the_lint_override_list.md) — add the new file to per-file eslint overrides; hooks stay unconditional, gate JSX only
 - [Proxy api mock, live-region waits](reference_proxy_api_mock_and_live_region_waits.md) — component tests: Proxy `api` returning "module.fn"; findByText for announced lead-ins; derive pre-fill in render, not an effect
 - [Retire a flow: stand-in mock first](reference_retire_a_flow_by_deleting_its_tests_after_a_stand_in_mock.md) — stand-in the replacement, JSON-report failures by describe, script-delete retired `it(` blocks
+- [Swap a storage layer with a pseudo-row adapter](reference_swap_a_storage_layer_with_a_pseudo_row_adapter.md) — read new rows in the OLD shape; shim old test seeds; shim throws on retired shapes
+- [Pin regexes match planner inputs](reference_pin_regexes_match_plan_inputs_not_just_writes.md) — rename planner keys, do not loosen source-slice pins

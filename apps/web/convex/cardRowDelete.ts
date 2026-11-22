@@ -12,7 +12,8 @@
  *   3. its variation children are PROMOTED, not deleted (NEO-189);
  *   4. its derived player index rows (NEO-313, `cardPlayerLinks`);
  *   5. its derived team index rows (NEO-358, `cardTeamLinks`), and its
- *      also-pictured player index rows (NEO-528, `cardSecondaryPlayerLinks`);
+ *      also-pictured player index rows (NEO-528, `cardSecondaryPlayerLinks`),
+ *      and its printed-name index rows (NEO-645, `cardPrintedNames`);
  *   6. collectors' WANTS of it (NEO-359, `collectionWants.by_card`): deleted,
  *      never a refusal. A want is a wish, not a holding. Up to
  *      `WANT_SWEEP_BATCH` go in the caller's transaction, each owner's Want
@@ -38,6 +39,7 @@
  * module deletes a card.
  */
 
+import { deleteCardPrintedNames } from "./cardPrintedNames";
 import { ConvexError } from "convex/values";
 import { internal } from "./_generated/api";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
@@ -252,6 +254,8 @@ export async function removeCardRow(
   const teamLinkIds = await deleteCardTeamLinks(ctx, card._id);
   //    and the also-pictured player index (NEO-528)
   const secondaryLinkIds = await deleteCardSecondaryPlayerLinks(ctx, card._id);
+  //    and the printed-name index (NEO-645)
+  await deleteCardPrintedNames(ctx, card._id);
   // 6. collectors' wants of it: deleted, never a refusal (NEO-359)
   const wants = await sweepCardWants(ctx, card._id);
   if (wants.hasMore) {

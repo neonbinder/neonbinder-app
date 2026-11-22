@@ -12,37 +12,90 @@
  *   - `requestLookup`   "Add as new player anyway": ask Wikidata now.
  *   - `lookupsPending`  a small subscribed read: which names are still looking.
  *
- * ## STATUS: signatures first
+ * and the INTERNAL machinery behind them:
  *
- * This is the first slice (W1a): the validators, the auth gate and the
- * contracts below are final, so the tile builders can code against them. The
- * mutations throw "not implemented yet" after the admin gate; `lookupsPending`
- * is real. W1b implements the mutations to the contracts in their doc
- * comments. A mutation that throws leaves nothing written.
+ *   - `upsertFromGatePage`   the review gate writes its facts (auto-links, set
+ *                            history picks, preselects, same-name choices, team
+ *                            candidates) as rows BEFORE the commit (schema doc
+ *                            4a). Driven page by page from the action.
+ *   - `fanOut*`              an answer reaches every card in its scope: paged,
+ *                            compare-and-set, stops when the answer is replaced.
+ *   - `enqueuePendingLookups` after the commit finalizes (schema doc 4b).
+ *   - `applyLookupResult` / `backstopLookupRowImpl` / `sweepStaleLookups`
+ *                            the Wikidata side, gated by `lookupGen`.
  *
- * ## Conventions every mutation here follows
+ * ## Conventions every public mutation here follows
  *
  *  - `requireAdmin` first.
  *  - The scope is NEVER an argument. Each mutation takes the open `cardId` and
  *    the printed `name`; the server finds the card's `cardPrintedNames` row for
  *    (kind, normalised name) and reads the scope off it (falling back to the
- *    card's own leaf when the scope leaf is gone: decision Q3). A client that
- *    named a scope could answer a name in a leaf it never opened.
- *  - Strings are capped (`MAX_TIDY_NAME_LENGTH`) and arrays are capped; an
- *    over-cap argument is a `ConvexError` naming the LIMIT, never the value.
- *  - A marketplace name never appears in an error message. Errors name the
- *    kind ("player", "team"), counts and limits only.
- *  - Refusals the operator can act on are `ConvexError`s with a plain-language
- *    string; client bugs are plain `Error`s for the log.
+ *    card's own leaf when the scope leaf is gone: decision Q3).
+ *  - Strings are capped (`MAX_TIDY_NAME_LENGTH`). An over-cap argument is a
+ *    `ConvexError` naming the LIMIT, never the value.
+ *  - A marketplace name never appears in an error message.
  *  - Answers are NB data: `by` is set by the server ("operator" here; "auto"
- *    is written only by the gate from NB's own rows). A client cannot say
- *    "auto".
+ *    is written only by the gate from NB's own rows).
+ *
+ * ## Fan-out cost
+ *
+ * See the measurement note on `FAN_OUT_PAGE_SIZE` and the page doc on `fanOutPage`.
  */
 
-import { ConvexError, v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { ConvexError, v, type Infer } from "convex/values";
+import {
+  internalAction,
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+  type MutationCtx,
+} from "./_generated/server";
+import { internal } from "./_generated/api";
+import type { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
-import { tidyNameKindValidator } from "./schema";
+import {
+  tidyLookupStatusValidator,
+  tidyNameAnswerValidator,
+  tidyNameEnrichmentValidator,
+  tidyNameKindValidator,
+} from "./schema";
+import {
+  listCardPrintedNames,
+  listPrintersOfName,
+  pagePrintersOfName,
+  resolveScopeLeaf,
+} from "./cardPrintedNames";
+import {
+  nameFieldsOf,
+  newNameWriteCache,
+  planNameChange,
+  unlinkedBeforeCount,
+  writeNameChange,
+  type NameChange,
+  type NameWriteCache,
+  type PrintedRef,
+} from "./tidyCardWrites";
+import {
+  addPlayerSport,
+  assertNotNameFragment,
+  buildExistingPlayerCandidates,
+  buildExistingPlayerCandidatesForIds,
+  MAX_CANDIDATES_FOR_IDS,
+  MAX_PLAYER_NAME_LENGTH,
+  playerBelongsToSport,
+} from "./players";
+import { rememberAliasesOnTeam } from "./rememberTeamAliases";
+import { findSportForSelectorOption } from "./cardChecklist";
+import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
+import { resolveTeamForSetYear } from "./lib/teamRow";
+import { sortTeamYears } from "../lib/players/team-tenure";
+import { normalizeEntityName } from "../lib/entities/normalize-name";
+import { PLAYER_DESCRIPTION_MAX_TEAMS } from "../lib/players/player-description";
+import type { RunResult } from "@convex-dev/workpool";
+
+/** Most `tidyChecks` kept on one card (the newest win). */
+export const TIDY_CHECKS_MAX = 32;
 
 /** Longest printed name accepted, in characters. Same bound as the schema. */
 export const MAX_TIDY_NAME_LENGTH = 120;
@@ -55,17 +108,42 @@ export const MAX_TIDY_NAME_LENGTH = 120;
  */
 export const LOOKUPS_PENDING_RETURN_MAX = 256;
 
+/** Printed cards one fan-out page reads and writes. Do not shrink: more pages
+ *  re-run every subscribed `getCardChecklist` more often. */
+export const FAN_OUT_PAGE_SIZE = 50;
+
+/*
+ * What one fan-out card costs, MEASURED by `tidyNames.fanOut.test.ts` (a counting
+ * Proxy over `ctx.db`, a page of `FAN_OUT_PAGE_SIZE` printers each linking a
+ * player, the page cache warm, the card in a leaf with no league):
+ *
+ *   per page   250 database calls, 152 documents read, 98 written
+ *   per card   about 5.1 calls (3.1 documents read, 2 written), so about 10
+ *              operations counting each call, read and write once
+ *
+ * A page of 50 is therefore about 500 operations (a team link adds the league
+ * settle, about 3 more a card, so about 650): comfortably inside the ~900-op
+ * band, with room for the per-leaf cache fills (6 reads per distinct leaf). The
+ * old estimate of 12 a card (the constant this replaces) was a modelled upper
+ * bound, not a measurement. Do not shrink the page: more pages re-run every
+ * subscribed `getCardChecklist` more often.
+ */
+
+/** The gate's budget per `upsertFromGatePage` call (same as the old startBatch). */
+export const GATE_UPSERT_OPS = 800;
+/** Stale-lookup sweep: age a pending row to error after this long. */
+export const LOOKUP_STALE_MS = 30 * 60 * 1000;
+export const LOOKUP_SWEEP_CHUNK = 100;
+/** Rows one `enqueuePendingLookups` page reads. */
+export const ENQUEUE_PAGE = 100;
+
+/** Per-name gate charge, as `startBatch` (NEO-294). */
+const NAME_LOOKUP_OPS_BASE = 3;
+const NAME_LOOKUP_OPS_EXTRA = 16 * (PLAYER_DESCRIPTION_MAX_TEAMS + 1);
+
 /**
  * What the operator answered, as the tiles send it. `by` is absent on purpose:
- * the server records "operator". The stored shape is `tidyNameAnswerValidator`.
- *
- *  - `linkPlayer`: link the name to this existing player. `addSetSport: true`
- *    also adds the SET's sport to the player's sports (NEO-313), meaningful
- *    only on a row switched to another sport.
- *  - `linkTeam`: link the name to this existing team. `saveAsAlias: true`
- *    remembers the printed spelling as an alias of the team (NEO-284).
- *  - `notEntity`: "Not a player" / "Not a team".
- *  - `clear`: undo the answer (Change). Not a stored arm.
+ * the server records "operator".
  */
 export const tidyAnswerInputValidator = v.union(
   v.object({
@@ -82,138 +160,607 @@ export const tidyAnswerInputValidator = v.union(
   v.object({ kind: v.literal("clear") }),
 );
 
-function notImplemented(fn: string): never {
-  throw new ConvexError(`${fn} is not implemented yet`);
+/** What a fan-out applies to a card. Mirrors `NameChange` as a validator. */
+const changeValidator = v.union(
+  v.object({ kind: v.literal("linkPlayer"), playerId: v.id("players") }),
+  v.object({ kind: v.literal("linkTeam"), teamId: v.id("teams") }),
+  v.object({ kind: v.literal("notEntity") }),
+  v.object({ kind: v.literal("restore") }),
+);
+
+const originValidator = v.union(
+  v.literal("setHistory"),
+  v.literal("hallOfFame"),
+  v.literal("careerTeam"),
+);
+
+/** One name the gate established a fact about. See `upsertFromGatePage`. */
+export const gateItemValidator = v.object({
+  kind: tidyNameKindValidator,
+  name: v.string(),
+  /** The sport the question is asked in (an auto-linked player's HOME sport). */
+  sportId: v.id("selectorOptions"),
+  /** The caller proved no player of this name exists (NEO-296). */
+  noExistingMatch: v.optional(v.literal(true)),
+  /** The gate answers the name: rule A / D / 6b / F. */
+  auto: v.optional(
+    v.object({
+      playerId: v.optional(v.id("players")),
+      teamId: v.optional(v.id("teams")),
+      origin: originValidator,
+      /** History player first, then in-sport rivals; built into candidates when 2+. */
+      candidatePlayerIds: v.optional(v.array(v.id("players"))),
+    }),
+  ),
+  /** The set's history links the name to 2+ players: a choice, no lookup. */
+  historyPlayerIds: v.optional(v.array(v.id("players"))),
+  /** Rule E: an obvious candidate the operator still confirms. */
+  preselect: v.optional(
+    v.object({
+      playerId: v.id("players"),
+      sportId: v.id("selectorOptions"),
+      sportValue: v.string(),
+      reason: v.union(v.literal("priorYearProduct"), v.literal("onlyNamesake")),
+    }),
+  ),
+  /** NEO-602: the rows a team name reached. Display only. */
+  candidateTeamIds: v.optional(v.array(v.id("teams"))),
+  /** NEO-591: the candidates are places. */
+  candidatePlace: v.optional(v.literal(true)),
+});
+export type GateItem = Infer<typeof gateItemValidator>;
+
+type Answer = Infer<typeof tidyNameAnswerValidator>;
+type Enrichment = Infer<typeof tidyNameEnrichmentValidator>;
+
+// ─── helpers ────────────────────────────────────────────────────────────────
+
+function cleanName(raw: string): string {
+  const name = raw.trim();
+  if (name.length === 0) throw new ConvexError("A name is required.");
+  if (name.length > MAX_TIDY_NAME_LENGTH) {
+    throw new ConvexError(
+      `A name is ${name.length} characters; the limit is ${MAX_TIDY_NAME_LENGTH}.`,
+    );
+  }
+  return name;
+}
+
+async function readRow(
+  ctx: Pick<MutationCtx, "db">,
+  scopeId: Id<"selectorOptions">,
+  kind: "player" | "team",
+  nameNormalized: string,
+): Promise<Doc<"tidyNames"> | null> {
+  return ctx.db
+    .query("tidyNames")
+    .withIndex("by_scope_kind_name", (q) =>
+      q.eq("scopeId", scopeId).eq("kind", kind).eq("nameNormalized", nameNormalized),
+    )
+    .first();
+}
+
+/** The card, its printed row for the name, the answering scope and the name row. */
+async function resolveName(
+  ctx: MutationCtx,
+  cardId: Id<"cardChecklist">,
+  kind: "player" | "team",
+  rawName: string,
+) {
+  const name = cleanName(rawName);
+  const key = normalizeEntityName(name);
+  if (!key) throw new ConvexError("A name is required.");
+  const card = await ctx.db.get(cardId);
+  if (!card) throw new ConvexError("That card is gone. Refresh and try again.");
+  const printedRows = await listCardPrintedNames(ctx, card._id);
+  const printed = printedRows.find((p) => p.kind === kind && p.nameNormalized === key);
+  if (!printed) throw new ConvexError("That name isn't on this card.");
+  const scopeId = await resolveScopeLeaf(ctx, printed, card.selectorOptionId);
+  const row = await readRow(ctx, scopeId, kind, key);
+  if (!row) throw new ConvexError("That name has nothing to answer.");
+  return { card, printed, printedRows, scopeId, row, key };
+}
+
+function sameAnswer(a: Answer | undefined, b: Answer): boolean {
+  if (!a || a.kind !== b.kind || a.by !== b.by) return false;
+  if (a.kind === "linkPlayer" && b.kind === "linkPlayer") {
+    return a.playerId === b.playerId && !!a.addSetSport === !!b.addSetSport;
+  }
+  if (a.kind === "linkTeam" && b.kind === "linkTeam") {
+    return a.teamId === b.teamId && !!a.saveAsAlias === !!b.saveAsAlias;
+  }
+  return a.kind === "notEntity";
+}
+
+function changeOf(answer: Answer | undefined): NameChange {
+  if (!answer) return { kind: "restore" };
+  if (answer.kind === "linkPlayer") return { kind: "linkPlayer", playerId: answer.playerId };
+  if (answer.kind === "linkTeam") return { kind: "linkTeam", teamId: answer.teamId };
+  return { kind: "notEntity" };
+}
+
+/** Whitelist a lookup result down to what `tidyNameEnrichmentValidator` stores. */
+export function pickEnrichment(raw: Record<string, unknown> | undefined): Enrichment | undefined {
+  if (!raw) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const key of [
+    "wikidataId",
+    "undatedCareerTeams",
+    "isHallOfFame",
+    "description",
+    "birthYear",
+    "enwikiTitle",
+    "existingCandidates",
+    "preselect",
+    "league",
+    "leagueWikidataId",
+    "location",
+    "yearsActive",
+    "colors",
+    "espnId",
+  ]) {
+    if (raw[key] !== undefined) out[key] = raw[key];
+  }
+  const careers = raw.careerTeams;
+  if (Array.isArray(careers)) {
+    out.careerTeams = careers.slice(0, 64).map((c: Record<string, unknown>) => ({
+      name: c.name,
+      fromYear: c.fromYear,
+      ...(c.toYear !== undefined ? { toYear: c.toYear } : {}),
+      ...(c.wikidataId !== undefined ? { wikidataId: c.wikidataId } : {}),
+    }));
+  }
+  return out as Enrichment;
+}
+
+const isSameNameChoice = (e: Enrichment | undefined) =>
+  (e?.existingCandidates?.length ?? 0) > 0;
+/** A same-name choice or a preselect waits for the operator before any lookup (NEO-332/424). */
+export const awaitsOperatorBeforeLookup = (e: Enrichment | undefined) =>
+  isSameNameChoice(e) || e?.preselect !== undefined;
+
+/**
+ * The name row for a printed name, born if it has none: `ready` with its
+ * same-name candidates when the name is a choice (NEO-332), otherwise `pending`
+ * at generation 0 so `enqueuePendingLookups` asks Wikidata AFTER the write that
+ * made it commits (schema doc 4b). Used by the writers that meet a name outside
+ * the gate (`tidyCards.pickSourceValue`).
+ */
+export async function ensureTidyNameRow(
+  ctx: MutationCtx,
+  args: {
+    scopeId: Id<"selectorOptions">;
+    kind: "player" | "team";
+    name: string;
+    sportId: Id<"selectorOptions">;
+    setYear: number | undefined;
+  },
+): Promise<Doc<"tidyNames">> {
+  const name = args.name.trim().slice(0, MAX_TIDY_NAME_LENGTH);
+  const key = normalizeEntityName(name);
+  const existing = await readRow(ctx, args.scopeId, args.kind, key);
+  if (existing) return existing;
+  const candidates =
+    args.kind === "player"
+      ? await buildExistingPlayerCandidates(ctx, name, args.sportId, { cardYear: args.setYear })
+      : [];
+  const choice = candidates.length > 0;
+  const id = await ctx.db.insert("tidyNames", {
+    scopeId: args.scopeId,
+    kind: args.kind,
+    nameNormalized: key,
+    name,
+    sportId: args.sportId,
+    status: choice ? "ready" : "pending",
+    ...(choice
+      ? { enrichment: { existingCandidates: candidates } }
+      : { lookupGen: 0, lookupRequestedAt: Date.now() }),
+  });
+  return (await ctx.db.get(id))!;
+}
+
+// ─── answerName ─────────────────────────────────────────────────────────────
+
+/**
+ * The shared answer write: the row, its side effects, the open card, the
+ * scheduled fan-out. `answerName` and `createPlayer` both end here, so a
+ * created player is answered exactly as a linked one.
+ */
+async function applyAnswer(
+  ctx: MutationCtx,
+  userId: string,
+  target: Awaited<ReturnType<typeof resolveName>>,
+  input: Infer<typeof tidyAnswerInputValidator>,
+): Promise<{ answerGen: number; fanOutScheduled: boolean }> {
+  const { card, printed, printedRows, scopeId, row, key } = target;
+  const kind = row.kind;
+  let stored: Answer | undefined;
+  let sportPatch: Id<"selectorOptions"> | undefined;
+
+  if (input.kind === "linkPlayer") {
+    if (kind !== "player") throw new ConvexError("That answer is for a player name.");
+    const player = await ctx.db.get(input.playerId);
+    if (!player) throw new ConvexError("That player is gone. Pick them again.");
+    const offered =
+      row.enrichment?.preselect?.playerId === player._id ||
+      (row.enrichment?.existingCandidates ?? []).some((c) => c.playerId === player._id);
+    if (offered) {
+      // D7: a link to what the row itself offered may be in another sport; the
+      // row's question follows the player's home sport.
+      if (player.sportId !== row.sportId) sportPatch = player.sportId;
+    } else if (!(await playerBelongsToSport(ctx, player, row.sportId))) {
+      throw new ConvexError("That player isn't in this sport.");
+    }
+    if (input.addSetSport) {
+      const setSportId = await findSportForSelectorOption(ctx, scopeId);
+      if (setSportId && player.sportId !== setSportId) {
+        await addPlayerSport(ctx, player, setSportId);
+      }
+    }
+    stored = {
+      kind: "linkPlayer",
+      playerId: player._id,
+      by: "operator",
+      ...(input.addSetSport ? { addSetSport: true as const } : {}),
+    };
+  } else if (input.kind === "linkTeam") {
+    if (kind !== "team") throw new ConvexError("That answer is for a team name.");
+    const team = await ctx.db.get(input.teamId);
+    if (!team) throw new ConvexError("That team is gone. Pick it again.");
+    if (team.sportId !== row.sportId) throw new ConvexError("That team isn't in this sport.");
+    if (input.saveAsAlias) {
+      await rememberAliasesOnTeam(ctx, team, [printed.printed], "tidyNames.answerName");
+    }
+    stored = {
+      kind: "linkTeam",
+      teamId: team._id,
+      by: "operator",
+      ...(input.saveAsAlias ? { saveAsAlias: true as const } : {}),
+    };
+  } else if (input.kind === "notEntity") {
+    stored = { kind: "notEntity", by: "operator" };
+  } else {
+    stored = undefined; // clear
+  }
+
+  const unchanged =
+    stored === undefined ? row.answer === undefined : sameAnswer(row.answer, stored);
+  const prev = row.answer;
+  let answerGen = row.answerGen ?? 0;
+  if (!unchanged) {
+    answerGen += 1;
+    const patch: Partial<Doc<"tidyNames">> = {
+      answer: stored,
+      answerGen,
+      answeredByUserId: stored ? userId : undefined,
+      answeredAt: stored ? Date.now() : undefined,
+      ...(sportPatch ? { sportId: sportPatch } : {}),
+    };
+    // Changing an auto answer back keeps the old pick as the preselect (item 15).
+    if (stored === undefined && prev?.kind === "linkPlayer" && prev.by === "auto") {
+      const player = await ctx.db.get(prev.playerId);
+      const sport = player ? await ctx.db.get(player.sportId) : null;
+      if (player && sport) {
+        patch.enrichment = {
+          ...(row.enrichment ?? {}),
+          preselect: {
+            playerId: player._id,
+            name: player.name,
+            sportId: player.sportId,
+            sportValue: sport.value,
+            reason: prev.autoReason ?? "setHistory",
+          },
+        };
+      }
+    }
+    await ctx.db.patch(row._id, patch);
+  }
+
+  // The open card, in this transaction.
+  const ref: PrintedRef = {
+    kind,
+    nameNormalized: key,
+    printed: printed.printed,
+    order: printed.order,
+  };
+  const change = changeOf(stored);
+  const plan = planNameChange(card, ref, change, "any", {
+    unlinkedBefore: unlinkedBeforeCount(card, printedRows, ref),
+    previousAnswer: prev,
+  });
+  if (plan.status === "skipped") {
+    throw new ConvexError("This card can't carry any more of those.");
+  }
+  if (plan.status === "changed") {
+    await writeNameChange(ctx, card, plan.fields, newNameWriteCache(ctx), userId);
+  }
+
+  let fanOutScheduled = false;
+  if (!unchanged) {
+    const printers = await listPrintersOfName(
+      ctx,
+      { scopeId, kind, nameNormalized: key },
+      2,
+    );
+    if (printers.some((p) => p.cardChecklistId !== card._id)) {
+      await ctx.scheduler.runAfter(0, internal.tidyNames.fanOut, {
+        scopeId,
+        kind,
+        nameNormalized: key,
+        gen: answerGen,
+        ...(prev ? { fromAnswer: prev } : {}),
+        change,
+        openCardId: card._id,
+        userId,
+      });
+      fanOutScheduled = true;
+    }
+  }
+  return { answerGen, fanOutScheduled };
 }
 
 /**
  * Answer a printed name for every card in its scope.
  *
- * ## Contract
- *
- * 1. Resolve the scope from the open card's printed row for
- *    (`kind`, `normalizeEntityName(name)`). No printed row on this card is a
- *    client bug (an exact single match has no row, D6; its Change goes through
- *    `updateCard`, which sets `cardOverride`).
- * 2. Validate the answer against the row: a `linkPlayer` player must exist and
- *    belong to the row's `sportId` (`playerBelongsToSport`), except a link to
- *    the row's `preselect` or an `existingCandidates` id, which may be in
- *    another sport and RE-POINTS the row's `sportId` to the player's home sport
- *    (D7). A typed link stays sport-checked. A `linkTeam` team must exist and
- *    be in the row's sport. A kind/answer mismatch (a player id on a team row)
- *    is refused. `saveAsAlias` is refused on a player row; `addSetSport` on a
- *    team row (they name an intent the write would drop).
- * 3. Write the row: `answer` (by "operator"), `answerGen` + 1,
- *    `answeredByUserId`, `answeredAt`. `clear` removes the answer and bumps
- *    `answerGen`; an operator answer is replaced by a new operator answer; an
- *    `auto` answer is kept until the operator answers again (item 15), and
- *    `clear` of an auto answer leaves the row unanswered with its
- *    `preselect.reason` so Change shows the old pick as the primary.
- * 4. Side effects in the SAME transaction: `saveAsAlias` writes the alias
- *    through `normalizeTeamAliasList` + `syncTeamAliases` (never removed by a
- *    later Change; Team Management removes it); `addSetSport` runs
- *    `syncPlayerSports`. Recorded on the answer for audit.
- * 5. Patch the OPEN card in the same transaction: `playerIds` +
- *    `playerLinks` at the printed position (`cardPrintedNames.order`) or
- *    `teamOnCardIds`; the name leaves `pendingPlayerNames` / `pendingTeamNames`
- *    on a link and goes back on a clear; `notEntity` removes the name from
- *    pending AND from the generated title (`storedCardTitle`), and `clear`
- *    restores it. The title follows `updateCard`'s link rule. The card's index
- *    rows go through their one writers (`syncCardPlayerLinks`,
- *    `syncCardTeamLinks`, `syncCardPrintedNames`). The teamless-sport default
- *    is re-run on a card that just lost its last pending player name (item 14).
- *    These writes bump `lastUpdated` (content changed under an open review).
- * 6. Schedule the fan-out when other cards printed the name: a paged internal
- *    action (shape of `cascadeAutographFormat`) over
- *    `cardPrintedNames.by_scope_kind_name`, 50 cards a page, which SKIPS
- *    `cardOverride` rows and any card whose current state for the name is not
- *    what the previous answer produced (compare-and-set), and STOPS when the
- *    row's `answerGen` no longer matches the job's.
- *
- * Idempotent: the same answer twice writes nothing the second time.
- *
- * Returns the new `answerGen` and whether a fan-out was scheduled.
+ * The open card is patched in this transaction; other cards that printed the
+ * name are written by the scheduled `fanOut` (50 a page, compare-and-set,
+ * skipping `cardOverride`, stopping when `answerGen` moves on). Idempotent:
+ * the same answer twice writes nothing the second time.
  */
 export const answerName = mutation({
   args: {
-    /** The open card. The scope is read from its printed row, never sent. */
     cardId: v.id("cardChecklist"),
     kind: tidyNameKindValidator,
-    /** The spelling the card printed (any case; matched normalised). */
     name: v.string(),
     answer: tidyAnswerInputValidator,
   },
-  returns: v.object({
-    answerGen: v.number(),
-    fanOutScheduled: v.boolean(),
-  }),
-  handler: async (ctx, _args) => {
-    await requireAdmin(ctx);
-    return notImplemented("tidyNames.answerName");
+  returns: v.object({ answerGen: v.number(), fanOutScheduled: v.boolean() }),
+  handler: async (ctx, args) => {
+    const userId = await requireAdmin(ctx);
+    const target = await resolveName(ctx, args.cardId, args.kind, args.name);
+    return applyAnswer(ctx, userId, target, args.answer);
   },
 });
 
 /**
- * Add as new player.
+ * Add as new player. Creates the player from the row's lookup (career teams
+ * matched, never created: NEO-236), then answers exactly as a link would, and
+ * records `newPlayerCareer` on THIS card only.
  *
- * ## Contract
- *
- * 1. Scope and row as in `answerName`. The row must be unanswered.
- * 2. `players.findOrCreate`'s insert path (internal helper, not the public
- *    mutation) with the row's sport, its Wikidata fields (`wikidataId`,
- *    `birthYear`, `isHallOfFame`) and the row's `enrichment` career. A
- *    one-word name that clashes with a fuller-named player is refused with
- *    `PLAYER_NAME_FRAGMENT` unless `oneNamePlayer: true` (NEO-463,
- *    `assertNotNameFragment`).
- * 3. Then exactly `answerName({ linkPlayer })` with `by: "operator"`: the
- *    answer, the open-card patch and the scheduled fan-out. There is no stored
- *    "create" answer.
- * 4. Append `{ kind: "newPlayerCareer", playerId }` to the OPEN card's
- *    `tidyChecks` (the player was created on THIS card, so only this card shows
- *    the career as blue).
- *
- * Returns the player and the answer's `answerGen`.
+ * `addSetSport` (additive): the player is created in the row's sport and also
+ * plays the set's (NEO-313).
  */
 export const createPlayer = mutation({
   args: {
     cardId: v.id("cardChecklist"),
-    /** The spelling to create the player under; matched to the card's printed names. */
     name: v.string(),
-    /** NEO-463: confirm a one-word name is a one-name player. */
     oneNamePlayer: v.optional(v.literal(true)),
+    addSetSport: v.optional(v.literal(true)),
   },
-  returns: v.object({
-    playerId: v.id("players"),
-    answerGen: v.number(),
-  }),
-  handler: async (ctx, _args) => {
-    await requireAdmin(ctx);
-    return notImplemented("tidyNames.createPlayer");
+  returns: v.object({ playerId: v.id("players"), answerGen: v.number() }),
+  handler: async (ctx, args) => {
+    const userId = await requireAdmin(ctx);
+    const target = await resolveName(ctx, args.cardId, "player", args.name);
+    const { row, scopeId, card } = target;
+    if (row.answer) {
+      throw new ConvexError("This name already has an answer. Change it first.");
+    }
+    const name = args.name.trim();
+    if (name.length > MAX_PLAYER_NAME_LENGTH) {
+      throw new ConvexError(
+        `A player name is ${name.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+      );
+    }
+    // NEO-463: a one-word name that is part of a fuller-named player is refused
+    // unless the operator confirmed a one-name player. Nothing is written first.
+    await assertNotNameFragment(ctx, name, row.sportId, args.oneNamePlayer);
+
+    const enrichment = row.enrichment;
+    const teamYearByKey = new Map<
+      string,
+      { teamId: Id<"teams">; fromYear: number; toYear?: number }
+    >();
+    for (const ct of enrichment?.careerTeams ?? []) {
+      // Match only (NEO-236): a stint at a team nobody reviewed is dropped, not invented.
+      const { teamId } = await resolveTeamForSetYear(ctx, row.sportId, ct.name, ct.fromYear);
+      if (!teamId) continue;
+      teamYearByKey.set(`${teamId}|${ct.fromYear}`, {
+        teamId,
+        fromYear: ct.fromYear,
+        ...(ct.toYear !== undefined ? { toYear: ct.toYear } : {}),
+      });
+    }
+    const teamYears = sortTeamYears(Array.from(teamYearByKey.values()));
+    const playerId = await ctx.db.insert("players", {
+      name,
+      nameNormalized: normalizeEntityName(name),
+      sportId: row.sportId,
+      createdByUserId: userId,
+      lastUpdated: Date.now(),
+      ...(teamYears.length ? { teamYears } : {}),
+      ...(enrichment?.isHallOfFame !== undefined ? { isHallOfFame: enrichment.isHallOfFame } : {}),
+      // NEO-254: the lookup's birthYear is deliberately not written. It is what
+      // tells two same-name people apart, and a Wikidata year for a name the
+      // operator just said is NEW would be the previous person's.
+      ...(enrichment?.wikidataId ? { externalIds: { wikidataId: enrichment.wikidataId } } : {}),
+    });
+    console.log(
+      JSON.stringify({ msg: "tidy_player_created", playerId, sportId: row.sportId, userId }),
+    );
+    if (args.addSetSport) {
+      const setSportId = await findSportForSelectorOption(ctx, scopeId);
+      const created = await ctx.db.get(playerId);
+      if (created && setSportId && created.sportId !== setSportId) {
+        await addPlayerSport(ctx, created, setSportId);
+      }
+    }
+    const result = await applyAnswer(ctx, userId, target, {
+      kind: "linkPlayer",
+      playerId,
+      ...(args.addSetSport ? { addSetSport: true as const } : {}),
+    });
+    // Only THIS card shows the new player's career as blue.
+    const fresh = await ctx.db.get(card._id);
+    if (fresh) {
+      const checks = [...(fresh.tidyChecks ?? [])];
+      if (!checks.some((c) => c.kind === "newPlayerCareer" && c.playerId === playerId)) {
+        checks.push({ kind: "newPlayerCareer", playerId });
+        await ctx.db.patch(card._id, { tidyChecks: checks.slice(-TIDY_CHECKS_MAX) });
+      }
+    }
+    return { playerId, answerGen: result.answerGen };
   },
 });
 
+// ─── fan-out ────────────────────────────────────────────────────────────────
+
+const fanOutArgs = {
+  scopeId: v.id("selectorOptions"),
+  kind: tidyNameKindValidator,
+  nameNormalized: v.string(),
+  gen: v.number(),
+  fromAnswer: v.optional(tidyNameAnswerValidator),
+  change: changeValidator,
+  openCardId: v.id("cardChecklist"),
+  userId: v.string(),
+};
+
+export type FanOutPageArgs = {
+  scopeId: Id<"selectorOptions">;
+  kind: "player" | "team";
+  nameNormalized: string;
+  gen: number;
+  fromAnswer?: Answer;
+  change: NameChange;
+  openCardId: Id<"cardChecklist">;
+  userId: string;
+  cursor: string | null;
+};
+
 /**
- * The Sport chip: ask the question in another sport.
+ * One page of the fan-out. Exported as a plain function so a test can hand it
+ * a counting `ctx` (the per-card measurement below `FAN_OUT_PAGE_SIZE`).
  *
- * Ported from `entityReviewQueue.switchRowSport` (NEO-313).
- *
- * ## Contract
- *
- * - Refused on an answered row (clear the answer first: it was made about the
- *   old sport) and when `sportId` is not a sport-level row.
- * - Re-points the row's `sportId`, clears the lookup's `enrichment`, bumps
- *   `lookupGen` and sets `lookupRequestedAt`, then re-enqueues the Wikidata
- *   lookup under the new sport, UNLESS the name is a same-name choice there
- *   (NEO-332: the row settles `ready` with its candidates and waits for
- *   Add as new player, exactly as at the gate).
- * - Switching to the sport the row already has is a no-op. Switching back to
- *   the set's sport is the same operation.
- * - Player and team rows both switch. A team row re-reads `candidateTeamIds`
- *   in the new sport (NEO-602); a player row re-looks-up.
- * - An in-flight lookup for the old sport is dropped by its `lookupGen`.
- *
- * Nothing is stored beyond the row: the next set that prints the name asks
- * again in its own sport.
+ * Stops (`stale`) when the row is gone or its `answerGen` is not the job's: a
+ * newer answer has its own job. Each card is re-read and re-checked
+ * (compare-and-set against `fromAnswer`), and a `cardOverride` printed row is
+ * never touched.
+ */
+export async function fanOutPageImpl(
+  ctx: MutationCtx,
+  args: FanOutPageArgs,
+  cache: NameWriteCache = newNameWriteCache(ctx),
+): Promise<{
+  done: boolean;
+  stale: boolean;
+  cursor: string | null;
+  applied: number;
+  skipped: number;
+}> {
+  const row = await readRow(ctx, args.scopeId, args.kind, args.nameNormalized);
+  if (!row || (row.answerGen ?? 0) !== args.gen) {
+    return { done: true, stale: true, cursor: null, applied: 0, skipped: 0 };
+  }
+  const page = await pagePrintersOfName(
+    ctx,
+    { scopeId: args.scopeId, kind: args.kind, nameNormalized: args.nameNormalized },
+    { numItems: FAN_OUT_PAGE_SIZE, cursor: args.cursor },
+  );
+  let applied = 0;
+  let skipped = 0;
+  for (const printed of page.page) {
+    if (printed.cardOverride || printed.cardChecklistId === args.openCardId) {
+      skipped += printed.cardOverride ? 1 : 0;
+      continue;
+    }
+    const card = await ctx.db.get(printed.cardChecklistId);
+    if (!card) continue;
+    const ref: PrintedRef = {
+      kind: args.kind,
+      nameNormalized: args.nameNormalized,
+      printed: printed.printed,
+      order: printed.order,
+    };
+    const rows =
+      args.change.kind === "linkPlayer" ? await listCardPrintedNames(ctx, card._id) : [];
+    const plan = planNameChange(
+      card,
+      ref,
+      args.change,
+      { answer: args.fromAnswer },
+      { unlinkedBefore: unlinkedBeforeCount(card, rows, ref), previousAnswer: args.fromAnswer },
+    );
+    if (plan.status === "changed") {
+      await writeNameChange(ctx, card, plan.fields, cache, args.userId);
+      applied += 1;
+    } else {
+      skipped += 1;
+    }
+  }
+  return {
+    done: page.isDone,
+    stale: false,
+    cursor: page.isDone ? null : page.continueCursor,
+    applied,
+    skipped,
+  };
+}
+
+export const fanOutPage = internalMutation({
+  args: { ...fanOutArgs, cursor: v.union(v.string(), v.null()) },
+  returns: v.object({
+    done: v.boolean(),
+    stale: v.boolean(),
+    cursor: v.union(v.string(), v.null()),
+    applied: v.number(),
+    skipped: v.number(),
+  }),
+  handler: async (ctx, args) => fanOutPageImpl(ctx, args),
+});
+
+const FAN_OUT_MAX_PAGES = 400;
+
+/** Drives the pages (the shape of `cascadeAutographFormat`). */
+export const fanOut = internalAction({
+  args: fanOutArgs,
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    let cursor: string | null = null;
+    for (let i = 0; i < FAN_OUT_MAX_PAGES; i++) {
+      const res: { done: boolean; stale: boolean; cursor: string | null } =
+        await ctx.runMutation(internal.tidyNames.fanOutPage, { ...args, cursor });
+      if (res.done) return null;
+      if (res.cursor === cursor) throw new Error("tidyNames.fanOut: cursor did not advance");
+      cursor = res.cursor;
+    }
+    throw new Error(`tidyNames.fanOut: did not finish within ${FAN_OUT_MAX_PAGES} pages`);
+  },
+});
+
+// ─── sport, lookups ─────────────────────────────────────────────────────────
+
+/** Bump the generation and ask the pool for a lookup, after this write. */
+async function scheduleLookup(
+  ctx: MutationCtx,
+  row: Doc<"tidyNames">,
+  patch: Partial<Doc<"tidyNames">>,
+): Promise<void> {
+  const gen = (row.lookupGen ?? 0) + 1;
+  await ctx.db.patch(row._id, {
+    ...patch,
+    status: "pending",
+    lookupGen: gen,
+    lookupRequestedAt: Date.now(),
+  });
+  await ctx.scheduler.runAfter(0, internal.wikidataPool.enqueueTidyNameLookups, {
+    items: [{ rowId: row._id, gen }],
+  });
+}
+
+/**
+ * The Sport chip (NEO-313). Re-points the row's sport, clears its lookup and
+ * asks again under the new sport, unless the name is a same-name choice there
+ * (NEO-332). An answered row is refused: the answer was about the old sport.
  */
 export const setNameSport = mutation({
   args: {
@@ -223,29 +770,38 @@ export const setNameSport = mutation({
     sportId: v.id("selectorOptions"),
   },
   returns: v.null(),
-  handler: async (ctx, _args) => {
+  handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    return notImplemented("tidyNames.setNameSport");
+    const { row, scopeId } = await resolveName(ctx, args.cardId, args.kind, args.name);
+    if (row.answer) throw new ConvexError("Change this answer before changing the sport.");
+    const sport = await ctx.db.get(args.sportId);
+    if (!sport || sport.level !== "sport") throw new ConvexError("Pick a sport.");
+    if (row.sportId === args.sportId) return null;
+
+    const born =
+      row.kind === "player"
+        ? await buildExistingPlayerCandidates(ctx, row.name, args.sportId, {
+            cardYear: await findSetYearForSelectorOption(ctx, scopeId),
+          })
+        : [];
+    const enrichment: Enrichment | undefined =
+      born.length > 0 ? { existingCandidates: born } : undefined;
+    if (row.kind === "player" && isSameNameChoice(enrichment)) {
+      await ctx.db.patch(row._id, {
+        sportId: args.sportId,
+        status: "ready",
+        enrichment,
+        lookupGen: (row.lookupGen ?? 0) + 1,
+        lookupRequestedAt: Date.now(),
+      });
+      return null;
+    }
+    await scheduleLookup(ctx, row, { sportId: args.sportId, enrichment });
+    return null;
   },
 });
 
-/**
- * "Add as new player anyway": ask Wikidata about a name now.
- *
- * Ported from `entityReviewQueue.requestPlayerLookup`.
- *
- * ## Contract
- *
- * - Player rows only; refused on a team row and on an answered row.
- * - A name born `ready` (a same-name choice, or a preselect: no lookup yet)
- *   becomes `pending`: bump `lookupGen`, set `lookupRequestedAt`, enqueue the
- *   pooled lookup (`wikidataPool`), whose result must carry the same
- *   `lookupGen` to be applied.
- * - A row already looked up (or already looking) is a no-op: the tile shows the
- *   lookup it has.
- * - The lookup lands on the open card's tile through `cardContext`; no
- *   acknowledgement is waited on.
- */
+/** "Add as new player anyway": ask Wikidata about a name that was born `ready`. */
 export const requestLookup = mutation({
   args: {
     cardId: v.id("cardChecklist"),
@@ -253,43 +809,34 @@ export const requestLookup = mutation({
     name: v.string(),
   },
   returns: v.null(),
-  handler: async (ctx, _args) => {
+  handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    return notImplemented("tidyNames.requestLookup");
+    if (args.kind !== "player") throw new ConvexError("Only a player name has a lookup to ask for.");
+    const { row } = await resolveName(ctx, args.cardId, "player", args.name);
+    if (row.answer) throw new ConvexError("Change this answer before looking it up.");
+    // Already looked up (or looking): the tile shows what it has.
+    const awaits =
+      row.status === "ready" &&
+      awaitsOperatorBeforeLookup(row.enrichment) &&
+      row.enrichment?.wikidataId === undefined;
+    if (!awaits) return null;
+    await scheduleLookup(ctx, row, {});
+    return null;
   },
 });
 
-/**
- * The names in a scope whose Wikidata lookup has not finished. REAL.
- *
- * The walk subscribes to this only while it is open, with the open card's
- * scope. A card's tiles stay skeletons (and the card stays out of the walk)
- * while one of ITS pending names is in this list. Parallel copies: a pending
- * name on a copy is scoped to its source leaf, so this query, called with the
- * copy's own leaf, misses it and the copy sorts as ready. The tiles are still
- * right (`tidyCards.cardContext` reads by the printed row's scope). Accepted.
- *
- * One `by_scope_status` range, at most `LOOKUPS_PENDING_RETURN_MAX + 1` small
- * documents; `more` says there were more than were returned.
- */
+/** The names in a scope whose Wikidata lookup has not finished. */
 export const lookupsPending = query({
   args: { scopeId: v.id("selectorOptions") },
   returns: v.object({
-    names: v.array(
-      v.object({
-        kind: tidyNameKindValidator,
-        nameNormalized: v.string(),
-      }),
-    ),
+    names: v.array(v.object({ kind: tidyNameKindValidator, nameNormalized: v.string() })),
     more: v.boolean(),
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
     const rows = await ctx.db
       .query("tidyNames")
-      .withIndex("by_scope_status", (q) =>
-        q.eq("scopeId", args.scopeId).eq("status", "pending"),
-      )
+      .withIndex("by_scope_status", (q) => q.eq("scopeId", args.scopeId).eq("status", "pending"))
       .take(LOOKUPS_PENDING_RETURN_MAX + 1);
     return {
       names: rows
@@ -299,3 +846,308 @@ export const lookupsPending = query({
     };
   },
 });
+
+// ─── the Wikidata side ──────────────────────────────────────────────────────
+
+/** What the lookup action reads. Null when the row is gone or answered. */
+export const getForLookup = internalQuery({
+  args: { id: v.id("tidyNames") },
+  returns: v.union(
+    v.null(),
+    v.object({
+      kind: tidyNameKindValidator,
+      name: v.string(),
+      sportId: v.id("selectorOptions"),
+      status: tidyLookupStatusValidator,
+      lookupGen: v.number(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const row = await ctx.db.get(args.id);
+    if (!row) return null;
+    return {
+      kind: row.kind,
+      name: row.name,
+      sportId: row.sportId,
+      status: row.status,
+      lookupGen: row.lookupGen ?? 0,
+    };
+  },
+});
+
+/**
+ * A lookup result lands. Dropped when the row is gone, answered (nothing reads
+ * the enrichment any more), asking another question (`gen` or `sportId`
+ * moved), or when an error would downgrade a team's partial ESPN answer.
+ */
+export const applyLookupResult = internalMutation({
+  args: {
+    id: v.id("tidyNames"),
+    gen: v.number(),
+    status: v.union(v.literal("ready"), v.literal("error")),
+    enrichment: v.optional(v.any()),
+    sportId: v.optional(v.id("selectorOptions")),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const row = await ctx.db.get(args.id);
+    if (!row || row.answer) return null;
+    if ((row.lookupGen ?? 0) !== args.gen) return null;
+    if (args.sportId !== undefined && args.sportId !== row.sportId) return null;
+    const incoming = pickEnrichment(args.enrichment as Record<string, unknown> | undefined);
+    const priorTeam = row.kind === "team" && row.status === "ready" ? row.enrichment : undefined;
+    if (priorTeam && args.status === "error") return null;
+
+    const liveCandidates =
+      row.kind === "player"
+        ? await buildExistingPlayerCandidates(ctx, row.name, row.sportId, {
+            cardYear: await findSetYearForSelectorOption(ctx, row.scopeId),
+          })
+        : [];
+    // What the GATE put on the row survives the lookup: history candidates
+    // (stamped `sportValue`, not re-derivable from the name index) lead, the
+    // live ones follow, and the preselect is carried over (NEO-424).
+    const history = (row.enrichment?.existingCandidates ?? []).filter(
+      (c) => c.sportValue !== undefined,
+    );
+    const historyIds = new Set(history.map((c) => c.playerId as string));
+    const existingCandidates = [
+      ...history,
+      ...liveCandidates.filter((c) => !historyIds.has(c.playerId as string)),
+    ];
+    const preselect = row.kind === "player" ? row.enrichment?.preselect : undefined;
+    let looked: Enrichment | undefined;
+    if (existingCandidates.length > 0) looked = { ...(incoming ?? {}), existingCandidates };
+    else if (priorTeam && incoming) looked = overlay(priorTeam, incoming);
+    else looked = incoming;
+    const enrichment = preselect ? { ...(looked ?? {}), preselect } : looked;
+    await ctx.db.patch(args.id, { status: args.status, enrichment });
+    return null;
+  },
+});
+
+/** A later team lookup over the partial answer already on the row (NEO-301). */
+function overlay(prior: Enrichment, next: Enrichment): Enrichment {
+  const merged: Record<string, unknown> = { ...prior };
+  for (const [key, value] of Object.entries(next)) if (value !== undefined) merged[key] = value;
+  if (prior.colors || next.colors) merged.colors = { ...(prior.colors ?? {}), ...(next.colors ?? {}) };
+  return merged as Enrichment;
+}
+
+/**
+ * The workpool completion backstop: a row can never be stranded on `pending`.
+ * A plain function so tests can drive it without mounting the component.
+ */
+export async function backstopLookupRowImpl(
+  ctx: MutationCtx,
+  context: { tidyNameId: Id<"tidyNames">; gen: number },
+  result: RunResult,
+): Promise<null> {
+  const row = await ctx.db.get(context.tidyNameId);
+  if (!row) return null;
+  if (row.status !== "pending" || row.answer) return null;
+  if ((row.lookupGen ?? 0) !== context.gen) return null;
+  console.warn(
+    JSON.stringify({
+      msg: "tidy_name_lookup_backstopped",
+      rowId: row._id,
+      resultKind: result.kind,
+    }),
+  );
+  await ctx.db.patch(row._id, { status: "error" });
+  return null;
+}
+
+/** Cron: age pending rows past `LOOKUP_STALE_MS` (from the request time) to error. */
+export const sweepStaleLookups = internalMutation({
+  args: {},
+  returns: v.object({ aged: v.number(), done: v.boolean() }),
+  handler: async (ctx) => {
+    const cutoff = Date.now() - LOOKUP_STALE_MS;
+    const stale = await ctx.db
+      .query("tidyNames")
+      .withIndex("by_status_requested", (q) =>
+        q.eq("status", "pending").lt("lookupRequestedAt", cutoff),
+      )
+      .take(LOOKUP_SWEEP_CHUNK);
+    for (const row of stale) await ctx.db.patch(row._id, { status: "error" });
+    const done = stale.length < LOOKUP_SWEEP_CHUNK;
+    if (!done) await ctx.scheduler.runAfter(0, internal.tidyNames.sweepStaleLookups, {});
+    return { aged: stale.length, done };
+  },
+});
+
+/**
+ * After the commit finalizes (schema doc 4b): enqueue the lookup of every
+ * pending row in the scope that has not been enqueued (`lookupGen` 0). The gate
+ * wrote them at gen 0 so the pool never patches a row the prelude is reading.
+ * One page per call; reschedules itself until none are left.
+ */
+export const enqueuePendingLookups = internalMutation({
+  args: { scopeId: v.id("selectorOptions") },
+  returns: v.number(),
+  handler: async (ctx, args) => {
+    const rows = await ctx.db
+      .query("tidyNames")
+      .withIndex("by_scope_status", (q) => q.eq("scopeId", args.scopeId).eq("status", "pending"))
+      .take(ENQUEUE_PAGE);
+    const items: Array<{ rowId: Id<"tidyNames">; gen: number }> = [];
+    for (const row of rows) {
+      if ((row.lookupGen ?? 0) > 0) continue;
+      await ctx.db.patch(row._id, { lookupGen: 1, lookupRequestedAt: Date.now() });
+      items.push({ rowId: row._id, gen: 1 });
+    }
+    if (items.length > 0) {
+      await ctx.scheduler.runAfter(0, internal.wikidataPool.enqueueTidyNameLookups, { items });
+    }
+    if (rows.length === ENQUEUE_PAGE && items.length > 0) {
+      await ctx.scheduler.runAfter(0, internal.tidyNames.enqueuePendingLookups, args);
+    }
+    return items.length;
+  },
+});
+
+// ─── the gate's upsert ──────────────────────────────────────────────────────
+
+/**
+ * The review gate writes its facts as rows (schema doc 4a). Idempotent and
+ * convergent, so the driving action re-calls with the remainder when the budget
+ * runs out and a re-fetch converges on the same rows:
+ *
+ *  - an OPERATOR answer is never touched;
+ *  - an `auto` answer is replaced with the fresh fact, or cleared when the gate
+ *    no longer has one;
+ *  - an unanswered row still `pending` is left alone; otherwise its preselect,
+ *    candidates and team candidates are refreshed;
+ *  - a new row is born `pending` (lookup enqueued AFTER the commit), or `ready`
+ *    with no lookup when a same-name choice, a history choice, a preselect or
+ *    an auto answer decides it (NEO-332/424).
+ *
+ * Returns how many leading items it processed (the action passes the rest on)
+ * and the ops it spent.
+ */
+export const upsertFromGatePage = internalMutation({
+  args: {
+    scopeId: v.id("selectorOptions"),
+    items: v.array(gateItemValidator),
+  },
+  returns: v.object({ processed: v.number(), ops: v.number() }),
+  handler: async (ctx, args) => {
+    let ops = 0;
+    const setYear = await findSetYearForSelectorOption(ctx, args.scopeId);
+    ops += 1;
+    let processed = 0;
+    for (const item of args.items) {
+      if (ops >= GATE_UPSERT_OPS && processed > 0) break;
+      processed += 1;
+      const name = item.name.trim().slice(0, MAX_TIDY_NAME_LENGTH);
+      const key = normalizeEntityName(name);
+      if (!key) continue;
+      const existing = await readRow(ctx, args.scopeId, item.kind, key);
+      ops += 1;
+
+      // The fact the gate states for this name.
+      let answer: Answer | undefined;
+      let enrichment: Enrichment | undefined;
+      let awaitsChoice = false;
+      const auto = item.auto;
+      if (auto && item.kind === "player" && auto.playerId) {
+        answer = { kind: "linkPlayer", playerId: auto.playerId, by: "auto", autoReason: auto.origin };
+        const ids = [
+          auto.playerId,
+          ...(auto.candidatePlayerIds ?? []).filter((id) => id !== auto.playerId),
+        ];
+        if (ids.length >= 2) {
+          const built = await buildExistingPlayerCandidatesForIds(ctx, ids, {
+            name,
+            cardYear: setYear,
+          });
+          ops += Math.min(new Set(ids).size, MAX_CANDIDATES_FOR_IDS) * (2 + PLAYER_DESCRIPTION_MAX_TEAMS);
+          if (built.length >= 2) enrichment = { existingCandidates: built };
+        }
+      } else if (
+        auto &&
+        item.kind === "team" &&
+        auto.teamId &&
+        (auto.origin === "setHistory" || auto.origin === "careerTeam")
+      ) {
+        answer = { kind: "linkTeam", teamId: auto.teamId, by: "auto", autoReason: auto.origin };
+      } else if (item.kind === "player") {
+        if ((item.historyPlayerIds?.length ?? 0) > 0) {
+          const built = await buildExistingPlayerCandidatesForIds(ctx, item.historyPlayerIds!, {
+            name,
+            cardYear: setYear,
+          });
+          ops += Math.min(new Set(item.historyPlayerIds).size, MAX_CANDIDATES_FOR_IDS) * (2 + PLAYER_DESCRIPTION_MAX_TEAMS);
+          if (built.length > 0) enrichment = { existingCandidates: built };
+        }
+        if (!enrichment && !item.noExistingMatch) {
+          const live = await buildExistingPlayerCandidates(ctx, name, item.sportId, {
+            cardYear: setYear,
+          });
+          ops += NAME_LOOKUP_OPS_BASE + (live.length > 0 ? NAME_LOOKUP_OPS_EXTRA : 0);
+          if (live.length > 0) enrichment = { existingCandidates: live };
+        }
+        if (item.preselect) {
+          enrichment = {
+            ...(enrichment ?? {}),
+            preselect: { ...item.preselect, name },
+          };
+        }
+        awaitsChoice = awaitsOperatorBeforeLookup(enrichment);
+      }
+
+      if (existing) {
+        if (existing.answer && existing.answer.by !== "auto") continue;
+        if (existing.answer?.by === "auto" || existing.answer === undefined) {
+          const patch: Partial<Doc<"tidyNames">> = {};
+          if (answer) {
+            if (!sameAnswer(existing.answer, answer)) {
+              patch.answer = answer;
+              patch.answerGen = (existing.answerGen ?? 0) + 1;
+              patch.answeredAt = Date.now();
+              patch.sportId = item.sportId;
+            }
+          } else if (existing.answer) {
+            patch.answer = undefined;
+            patch.answerGen = (existing.answerGen ?? 0) + 1;
+          }
+          // An unanswered row still looking is left alone; a settled one is refreshed.
+          if (!existing.answer && existing.status !== "pending") {
+            if (enrichment) patch.enrichment = enrichment;
+            if (item.candidateTeamIds) patch.candidateTeamIds = item.candidateTeamIds;
+            if (item.candidatePlace) patch.candidatePlace = true;
+          }
+          if (answer && enrichment) patch.enrichment = enrichment;
+          if (Object.keys(patch).length > 0) {
+            await ctx.db.patch(existing._id, patch);
+            ops += 1;
+          }
+        }
+        continue;
+      }
+
+      await ctx.db.insert("tidyNames", {
+        scopeId: args.scopeId,
+        kind: item.kind,
+        nameNormalized: key,
+        name,
+        sportId: item.sportId,
+        // Born ready when the gate answers it or the operator must choose first.
+        status: answer || awaitsChoice ? "ready" : "pending",
+        ...(answer || awaitsChoice ? {} : { lookupGen: 0, lookupRequestedAt: Date.now() }),
+        ...(enrichment ? { enrichment } : {}),
+        ...(item.candidateTeamIds && item.candidateTeamIds.length > 0
+          ? { candidateTeamIds: item.candidateTeamIds }
+          : {}),
+        ...(item.candidatePlace ? { candidatePlace: true as const } : {}),
+        ...(answer ? { answer, answerGen: 1, answeredAt: Date.now() } : {}),
+      });
+      ops += 1;
+    }
+    return { processed, ops };
+  },
+});
+
+/** Every answer in a scope, for the gate and the prelude: one prefix range. */
+export const PRELUDE_ANSWER_READ_MAX = 1001;

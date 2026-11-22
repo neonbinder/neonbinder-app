@@ -4352,10 +4352,8 @@ describe("NEO-555: the fake eBay test controls are locked like the other testing
  * NEO-645 — the One-card Tidy Up surface. Every function is admin-only
  * (`requireAdmin`): the tiles run on the set builder, which sits behind the
  * same gate as `updateCard` and `entityReviewQueue`. The mutations are
- * contract-only in the first slice (W1a): they must refuse a signed-out caller
- * and a non-admin BEFORE anything else, and an admin reaches the body (which
- * throws "not implemented yet" and writes nothing). W1b replaces the throw with
- * the implementation; the two refusals here keep holding.
+ * real since W1b: they refuse a signed-out caller and a non-admin BEFORE anything
+ * else, and an admin reaches the body.
  */
 describe("NEO-645: the Tidy Up surface is admin-gated", () => {
   async function seedTidy(t: ReturnType<typeof convexTest>) {
@@ -4496,23 +4494,19 @@ describe("NEO-645: the Tidy Up surface is admin-gated", () => {
     await expect(call(t.withIdentity(SIGNED_IN), s)).rejects.toThrow(/admin access required/i);
   });
 
-  test.each(calls.filter(([name]) => !["tidyNames.lookupsPending", "tidyCards.cardContext", "tidyCards.markReviewed"].includes(name)))(
-    "%s is contract-only: an admin reaches the body, which writes nothing",
-    async (_name, call) => {
-      const t = convexTest(schema, modules);
-      const s = await seedTidy(t);
-      await expect(call(t.withIdentity(ADMIN), s)).rejects.toThrow(/not implemented yet/);
-      const counts = await t.run(async (ctx) => ({
-        names: (await ctx.db.query("tidyNames").collect()).length,
-        printed: (await ctx.db.query("cardPrintedNames").collect()).length,
-        card: await ctx.db.get(s.cardId),
-        player: await ctx.db.get(s.playerId),
-      }));
-      expect(counts.names).toBe(0);
-      expect(counts.printed).toBe(0);
-      expect(counts.card!.lastUpdated).toBe(1_700_000_000_000);
-      expect(counts.card!.tidyReviewed).toBeUndefined();
-      expect(counts.player!.teamYears).toBeUndefined();
-    },
-  );
+  // W1b made every body real. This pins only the gate: an admin gets past
+  // `requireAdmin` (the body then answers on its own terms: a result, or a
+  // refusal about the seeded card, never an auth error). What each body does is
+  // pinned in its own test file.
+  test.each(calls)("%s lets an admin past the gate", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const s = await seedTidy(t);
+    let message = "";
+    try {
+      await call(t.withIdentity(ADMIN), s);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).not.toMatch(/Not authenticated|admin access required/i);
+  });
 });

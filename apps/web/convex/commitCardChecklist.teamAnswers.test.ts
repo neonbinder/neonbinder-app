@@ -20,6 +20,7 @@
  * cancelled before the test ends.
  */
 
+import { insertAsTidyName } from "../lib/testing/tidy-review-row";
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -219,7 +220,7 @@ async function skipTeamName(
   },
 ) {
   await t.run(async (ctx) =>
-    ctx.db.insert("entityReviewQueue", {
+    insertAsTidyName(ctx, {
       selectorOptionId: opts.selectorOptionId,
       batchId: opts.batchId,
       createdByUserId: ADMIN_IDENTITY.subject,
@@ -1483,7 +1484,7 @@ describe("commitCardChecklist — an answered team NAME fills an existing teamle
     const { sportId, leafId } = await firstSync(t);
     const batchId = "batch-staged-team";
     await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewQueue", {
+      insertAsTidyName(ctx, {
         selectorOptionId: leafId,
         batchId,
         createdByUserId: ADMIN_IDENTITY.subject,

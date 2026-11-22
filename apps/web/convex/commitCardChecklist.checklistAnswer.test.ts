@@ -199,24 +199,35 @@ describe("commitCardChecklist: an open checklistConflict", () => {
     [what]: { marketplace: ["A"], checklist: ["B"] },
   });
 
+  // NEO-645: the commit no longer refuses a card carrying a checklist
+  // disagreement. It saves the card and STORES the disagreement
+  // (`sourceDisagreements`) for the Tidy Up walk to settle: the field holds
+  // nothing until a value is chosen, and the card is pink until then.
   test.each(["players", "teams"] as const)(
-    "refuses a card still carrying a %s disagreement, naming the card, and writes nothing",
+    "saves a card still carrying a %s disagreement, with the disagreement stored and the field held",
     async (what) => {
       const t = convexTest(schema, modules);
       const { sportId, leafId } = await seedTree(t);
 
-      await expect(
-        t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
-          selectorOptionId: leafId,
-          sportId,
-          cards: [
-            card({ cardNumber: "1", bscRef: "B1" }),
-            card({ cardNumber: "7", bscRef: "B7", checklistConflict: conflictOf(what) }),
-          ],
-        }),
-      ).rejects.toThrow(/card #7 still carries an unsettled checklist disagreement/);
+      await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: leafId,
+        sportId,
+        cards: [
+          card({ cardNumber: "1", bscRef: "B1" }),
+          card({ cardNumber: "7", bscRef: "B7", checklistConflict: conflictOf(what) }),
+        ],
+      });
 
-      expect(await allRows(t, leafId)).toEqual([]);
+      const rows = await allRows(t, leafId);
+      expect(rows.map((r) => r.cardNumber).sort()).toEqual(["1", "7"]);
+      const seven = rows.find((r) => r.cardNumber === "7")!;
+      expect(seven.sourceDisagreements).toHaveLength(1);
+      expect(seven.sourceDisagreements![0].field).toBe(what);
+      const values = seven.sourceDisagreements![0].values.map((v) => v.value.join("|"));
+      expect(values.sort()).toEqual(["A", "B"]);
+      // Unsettled: nothing is written for the disagreeing field, and no chosen value.
+      expect(seven.sourceDisagreements![0].chosen).toBeUndefined();
+      expect(rows.find((r) => r.cardNumber === "1")!.sourceDisagreements).toBeUndefined();
       await settle(t);
     },
   );

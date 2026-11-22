@@ -20,6 +20,7 @@
  * is asserted in `lib/players/career-span.test.ts`.
  */
 
+import { insertAsTidyName } from "../lib/testing/tidy-review-row";
 import { convexTest } from "convex-test";
 import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -466,7 +467,7 @@ describe("NEO-254: the commit prelude narrows on the card's year too", () => {
     ]);
 
     await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewQueue", {
+      insertAsTidyName(ctx, {
         selectorOptionId: ids.variantTypeId,
         batchId: "batch-1",
         createdByUserId: ADMIN_IDENTITY.subject,
@@ -499,7 +500,7 @@ describe("NEO-254: the commit prelude narrows on the card's year too", () => {
     ]);
 
     await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewQueue", {
+      insertAsTidyName(ctx, {
         selectorOptionId: ids.variantTypeId,
         batchId: "batch-1",
         createdByUserId: ADMIN_IDENTITY.subject,
@@ -1585,7 +1586,7 @@ describe("NEO-424: the commit prelude applies the Hall of Fame tie-break to a na
     await insertFamer(t, ids.sportId, true);
     const operatorsPick = await insertFamer(t, ids.sportId, false);
     await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewQueue", {
+      insertAsTidyName(ctx, {
         selectorOptionId: ids.variantTypeId,
         batchId: "batch-hof",
         createdByUserId: ADMIN_IDENTITY.subject,

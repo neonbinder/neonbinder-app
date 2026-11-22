@@ -28,11 +28,13 @@
  * convex/entityReviewQueue.test.ts.
  */
 
+import { normalizeEntityName } from "../lib/entities/normalize-name";
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
-import { Id } from "./_generated/dataModel";
+import { Id, type Doc } from "./_generated/dataModel";
+import { tidyRowAsReviewRow } from "./lib/tidyAnswerDecisions";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import {
   MAX_CARD_NUMBER_LENGTH,
@@ -143,6 +145,16 @@ function makeCard(overrides: Partial<{
   };
 }
 
+/**
+ * NEO-645 — the gate's name rows, read the way the commit prelude reads them:
+ * the old queue shape (`decision`, `enrichment`, `status`), built from the
+ * `tidyNames` row's answer.
+ */
+async function queueRowsOf(ctx: { db: { query: (t: "tidyNames") => { collect: () => Promise<Doc<"tidyNames">[]> } } }) {
+  return (await ctx.db.query("tidyNames").collect()).map((row) => tidyRowAsReviewRow(row));
+}
+
+
 async function insertReviewRow(
   t: ReturnType<typeof convexTest>,
   opts: {
@@ -177,16 +189,37 @@ async function insertReviewRow(
     enrichment?: Record<string, unknown>;
   },
 ) {
+  // NEO-645 — the review decision is a `tidyNames` row's answer: link ->
+  // linkPlayer / linkTeam, skip -> notEntity. "create" no longer exists at
+  // commit (the operator's "Add as new player" creates the player when it is
+  // pressed, `tidyNames.createPlayer`); the tests of that decision were ported
+  // to tidyNames.createPlayer.test.ts and a call here with one is a mistake.
+  if (opts.decision.action === "create") {
+    throw new Error("a 'create' decision is retired: use tidyNames.createPlayer");
+  }
+  const decision = opts.decision;
+  const answer =
+    decision.action === "skip"
+      ? ({ kind: "notEntity", by: "operator" } as const)
+      : opts.kind === "player"
+        ? ({
+            kind: "linkPlayer",
+            playerId: decision.linkedPlayerId!,
+            by: "operator",
+          } as const)
+        : ({ kind: "linkTeam", teamId: decision.linkedTeamId!, by: "operator" } as const);
   return t.run(async (ctx) =>
-    ctx.db.insert("entityReviewQueue", {
-      selectorOptionId: opts.selectorOptionId,
-      batchId: opts.batchId,
-      createdByUserId: "user_review_001",
+    ctx.db.insert("tidyNames", {
+      scopeId: opts.selectorOptionId,
       kind: opts.kind,
+      nameNormalized: normalizeEntityName(opts.name),
       name: opts.name,
       sportId: opts.sportId,
       status: "ready",
-      decision: opts.decision,
+      answer,
+      answerGen: 1,
+      answeredByUserId: "user_review_001",
+      answeredAt: Date.now(),
       ...(opts.enrichment ? { enrichment: opts.enrichment as never } : {}),
     }),
   );
@@ -729,7 +762,10 @@ describe("commitCardChecklist: post-commit batch cleanup", () => {
 
 /** Every `entityReviewSkips` row, for asserting the whole table at once. */
 async function allSkips(t: ReturnType<typeof convexTest>) {
-  return t.run(async (ctx) => ctx.db.query("entityReviewSkips").collect());
+  // NEO-645: a ruling is a `tidyNames` row answered "not an entity".
+  return t.run(async (ctx) =>
+    (await ctx.db.query("tidyNames").collect()).filter((r) => r.answer?.kind === "notEntity"),
+  );
 }
 
 describe("commitCardChecklist: 'skip' decision creates nothing, links nothing, and records the name", () => {
@@ -779,17 +815,13 @@ describe("commitCardChecklist: 'skip' decision creates nothing, links nothing, a
     // The durable record, scoped to this set.
     const skips = await allSkips(t);
     expect(skips).toHaveLength(1);
-    expect(skips[0].selectorOptionId).toBe(variantTypeId);
+    expect(skips[0].scopeId).toBe(variantTypeId);
     expect(skips[0].kind).toBe("player");
     expect(skips[0].name).toBe("CHECKLIST");
     expect(skips[0].nameNormalized).toBe("checklist");
-    expect(skips[0].skippedByUserId).toBe(ADMIN_IDENTITY.subject);
-    expect(skips[0].skippedAt).toBeGreaterThan(0);
-    // NEO-212 security review: the commit that produced the skip is recorded
-    // alongside it. It is the audit handle `entityReviewSkips.listForSet`
-    // returns in place of `skippedByUserId`, so a suppressed name can be traced
-    // back to a review session without shipping an operator id to the client.
-    expect(skips[0].batchId).toBe("batch-1");
+    // NEO-645: the ruling is the name row's answer, who made it and when stay on it.
+    expect(skips[0].answeredByUserId).toBeTruthy();
+    expect(skips[0].answeredAt).toBeGreaterThan(0);
   });
 
   test("a team 'skip' creates no team and records under kind 'team'", async () => {
@@ -834,7 +866,7 @@ describe("commitCardChecklist: 'skip' decision creates nothing, links nothing, a
     expect(skips[0].nameNormalized).toBe("acme by sponsored");
   });
 
-  test("the batch's entityReviewQueue rows are deleted after a skip-only commit, same as create/link", async () => {
+  test("a skip-only commit leaves the ruling in place: it is the set's answer, not a batch's throwaway (NEO-645)", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
@@ -855,57 +887,36 @@ describe("commitCardChecklist: 'skip' decision creates nothing, links nothing, a
       batchId: "batch-1",
     });
 
-    // A skipped row is as consumed as a created one — leaving it would let a
-    // re-fetch resume the dead batch (see startBatch's docstring).
-    expect(await t.run(async (ctx) => ctx.db.get(rowId))).toBeNull();
+    // The answer outlives the commit, so the next fetch of the set still
+    // finds the name ruled out.
+    expect((await t.run(async (ctx) => ctx.db.get(rowId)))?.answer?.kind).toBe("notEntity");
   });
 
-  test("re-skipping the same name on the same set UPSERTS — one row, refreshed skippedAt", async () => {
+  test("committing twice over one ruling leaves ONE row, still ruled out (NEO-645)", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
-    const commitSkip = async (batchId: string) => {
-      await insertReviewRow(t, {
-        selectorOptionId: variantTypeId,
-        sportId,
-        batchId,
-        kind: "player",
-        name: "CHECKLIST",
-        decision: { action: "skip" },
-      });
-      await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "CHECKLIST",
+      decision: { action: "skip" },
+    });
+    const commit = () =>
+      asAdmin.action(api.selectorOptions.commitCardChecklist, {
         selectorOptionId: variantTypeId,
         sportId,
         cards: [makeCard({ cardNumber: "1", cardName: "Card", players: ["CHECKLIST"] })],
-        batchId,
       });
-    };
-
-    await commitSkip("batch-1");
-    const [first] = await allSkips(t);
-    expect(first.batchId).toBe("batch-1");
-
-    // Two commits inside one test can land on the same millisecond, which
-    // would make "skippedAt moved forward" unfalsifiable. Backdate the stored
-    // row so the second commit's patch is unambiguously observable — the
-    // assertion under test is that the row was PATCHED, not re-inserted.
-    await t.run(async (ctx) => ctx.db.patch(first._id, { skippedAt: 0 }));
-
-    await commitSkip("batch-2");
+    await commit();
+    await commit();
 
     const skips = await allSkips(t);
-    // One row, not two — the index key is (selectorOptionId, kind,
-    // nameNormalized), and a second commit must refresh it rather than
-    // accumulate a row per commit forever.
     expect(skips).toHaveLength(1);
-    expect(skips[0]._id).toBe(first._id);
-    expect(skips[0].skippedAt).toBeGreaterThan(0);
-    // NEO-212 security review: `batchId` moves forward with the other two
-    // audit fields. The row records who most recently stood behind the skip
-    // and in which session — pointing at the first batch while naming the
-    // second commit's operator would describe a session that never happened.
-    expect(skips[0].batchId).toBe("batch-2");
+    expect(skips[0].answer?.kind).toBe("notEntity");
   });
 
   test("skips are PER SET — the same name skipped on one selectorOption leaves another set's row alone", async () => {
@@ -935,8 +946,8 @@ describe("commitCardChecklist: 'skip' decision creates nothing, links nothing, a
     // "Chase" is a sponsor logo on this issue and a shortstop on the next — a
     // global skip list would let one operator's call on one set silently
     // suppress a real player everywhere.
-    expect(skips[0].selectorOptionId).toBe(variantTypeId);
-    expect(skips[0].selectorOptionId).not.toBe(otherVariantTypeId);
+    expect(skips[0].scopeId).toBe(variantTypeId);
+    expect(skips[0].scopeId).not.toBe(otherVariantTypeId);
   });
 });
 
@@ -985,11 +996,9 @@ describe("resolveChecklistEntities: a name skipped for this set is not enqueued 
     // not an open question at all.
     expect(resolved.unknownPlayers).toEqual(["Mike Trout"]);
 
-    const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
-      selectorOptionId: variantTypeId,
-      batchId: resolved.batchId!,
-    });
-    expect(rows.map((r) => r.name)).toEqual(["Mike Trout"]);
+    // The ruled-out name keeps its answer; the new one is a second, open row.
+    const rows = await t.run(async (ctx) => queueRowsOf(ctx));
+    expect(rows.filter((r) => !r.decision).map((r) => r.name)).toEqual(["Mike Trout"]);
   });
 
   test("the SAME name on a DIFFERENT set is still enqueued — the skip is per-set", async () => {
@@ -1021,7 +1030,12 @@ describe("resolveChecklistEntities: a name skipped for this set is not enqueued 
 
     // Sponsor logo on one issue, shortstop on the next.
     expect(resolved.unknownPlayers).toEqual(["Chase"]);
-    expect(resolved.batchId).toBeTruthy();
+    // ...and a row of its own in the OTHER set (the ruling is per set).
+    const otherRows = (await t.run(async (ctx) => ctx.db.query("tidyNames").collect())).filter(
+      (r) => r.scopeId === otherVariantTypeId,
+    );
+    expect(otherRows).toHaveLength(1);
+    expect(otherRows[0].answer).toBeUndefined();
   });
 
   test("a skip on a name does not suppress the SAME name reviewed as the other kind", async () => {
@@ -2620,7 +2634,7 @@ describe("resolveChecklistEntities: an open batch is reconciled even when nothin
 
     expect(resolved.batchId).toBeUndefined();
     expect(
-      await t.run(async (ctx) => ctx.db.query("entityReviewQueue").collect()),
+      await t.run(async (ctx) => queueRowsOf(ctx)),
     ).toHaveLength(0);
   });
 });
@@ -2875,7 +2889,7 @@ describe("NEO-254: resolveChecklistEntities enqueues an ambiguous name for revie
     expect(resolved.batchId).toBeDefined();
 
     const rows = await t.run(async (ctx) =>
-      ctx.db.query("entityReviewQueue").collect(),
+      queueRowsOf(ctx),
     );
     expect(rows).toHaveLength(1);
     expect(rows[0].name).toBe("Bob Allen");
@@ -2909,7 +2923,7 @@ describe("NEO-254: resolveChecklistEntities enqueues an ambiguous name for revie
     expect(resolved.unknownPlayers).toEqual([]);
     expect(resolved.batchId).toBeUndefined();
     expect(
-      await t.run(async (ctx) => ctx.db.query("entityReviewQueue").collect()),
+      await t.run(async (ctx) => queueRowsOf(ctx)),
     ).toHaveLength(0);
   });
 
@@ -2927,7 +2941,7 @@ describe("NEO-254: resolveChecklistEntities enqueues an ambiguous name for revie
     });
 
     const rows = await t.run(async (ctx) =>
-      ctx.db.query("entityReviewQueue").collect(),
+      queueRowsOf(ctx),
     );
     expect(rows).toHaveLength(1);
     expect(rows[0].enrichment).toBeUndefined();
@@ -2963,7 +2977,7 @@ describe("NEO-332: resolveChecklistEntities reports the names that are a pick, n
     expect(resolved.ambiguousPlayers).toEqual(["Bob Allen"]);
     expect(resolved.batchId).toBeDefined();
     const rows = await t.run(async (ctx) =>
-      ctx.db.query("entityReviewQueue").collect(),
+      queueRowsOf(ctx),
     );
     expect(rows.map((r) => r.name)).toEqual(["Bob Allen"]);
   });
@@ -4296,7 +4310,7 @@ describe("NEO-307: the review gate lets a card show a team's past", () => {
     expect(resolved.unknownTeams).toEqual([]);
     expect(resolved.batchId).toBeUndefined();
     expect(
-      await t.run(async (ctx) => ctx.db.query("entityReviewQueue").collect()),
+      await t.run(async (ctx) => queueRowsOf(ctx)),
     ).toHaveLength(0);
   });
 
@@ -4362,7 +4376,7 @@ describe("NEO-307: the review gate lets a card show a team's past", () => {
 
     expect(resolved.unknownTeams).toEqual(["Brooklyn Dodgers"]);
     const rows = await t.run(async (ctx) =>
-      ctx.db.query("entityReviewQueue").collect(),
+      queueRowsOf(ctx),
     );
     expect(rows.map((row) => [row.kind, row.name])).toEqual([
       ["team", "Brooklyn Dodgers"],

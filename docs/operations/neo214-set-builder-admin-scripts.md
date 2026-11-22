@@ -30,6 +30,8 @@ now**, by hand, like any other taxonomy row.
 | `cardCrossListings` | the junction rows linking a card to other sets it appears under (NEO-21) |
 | `entityReviewQueue` | every staged entity-review row, in every batch — an unfinished wizard's unknown player/team/league names (NEO-294) |
 | `checklistCandidates` | every staged candidate card of an unfinished checklist review (NEO-294) |
+| `cardPrintedNames` | each card's printed-name index (NEO-645), drained before the cards it names |
+| `tidyNames` | every Tidy Up name answer and lookup (NEO-645); an answer links players and teams the reset deletes, so none survives |
 | `players` | every player row, including career history and Wikidata enrichment |
 | `playerAliases` | the alias index behind those players (NEO-254) |
 | `teams` | every team row, including colours (NEO-91/NEO-147) |
@@ -98,6 +100,7 @@ On success it prints the per-table counts:
 ```json
 {
   "cardChecklistDeleted": 412,
+  "cardPrintedNamesDeleted": 0,
   "cardPlayerLinksDeleted": 530,
   "cardTeamLinksDeleted": 398,
   "checklistCandidatesDeleted": 0,
@@ -121,6 +124,7 @@ On success it prints the per-table counts:
   "slSetReviewsDeleted": 2,
   "teamAliasesDeleted": 9,
   "teamsDeleted": 76,
+  "tidyNamesDeleted": 0,
   "complete": true
 }
 ```

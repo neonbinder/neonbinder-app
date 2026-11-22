@@ -37,7 +37,8 @@
  */
 
 import { ConvexError, v, type Infer } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query, type MutationCtx } from "./_generated/server";
+import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
 import {
@@ -59,6 +60,29 @@ import {
 } from "./features/cardAttention";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
 import { teamFullName } from "../lib/teams/team-name";
+import {
+  applyPickToCard,
+  cleanPickNames,
+  entryFor,
+  sameDisagreement,
+  sameValue,
+} from "./tidyPickSource";
+import {
+  newNameWriteCache,
+  nameFieldsOf,
+  regenerateTitleFields,
+  writeNameChange,
+  type NameWriteCache,
+} from "./tidyCardWrites";
+import { careerTeamVerdict } from "./lib/teamFill";
+import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
+import { queueRetitledCardNow } from "./listingTitleRequeue";
+import { recheckCareerGaps } from "./tidyCareerGap";
+import { listingInputsForStoredCard } from "./storedCardTitle";
+import { generatedTitleTruncatedFlag } from "./features/listingInputs";
+import { assessListingTitle } from "./features/generateListing";
+import { retitleForSetName } from "./features/setNameInTitles";
+import { LISTING_SHORT_NAME_LEVELS, normalizeListingShortName } from "./listingShortName";
 
 /** The most cards one bulk apply can name. */
 export const MAX_APPLY_CARDS = 100;
@@ -74,10 +98,6 @@ export const CONTEXT_MAX_TEAMS = 16;
 /** "Printed on #1, #17": how many card numbers are shown, and how many are counted. */
 export const CONTEXT_PRINTED_ON_SHOWN = 8;
 export const CONTEXT_PRINTED_ON_COUNTED = 50;
-
-function notImplemented(fn: string): never {
-  throw new ConvexError(`${fn} is not implemented yet`);
-}
 
 // ─── cardContext ────────────────────────────────────────────────────────────
 
@@ -471,9 +491,103 @@ export const pickSourceValue = mutation({
     scheduled: v.number(),
     refused: v.number(),
   }),
-  handler: async (ctx, _args) => {
-    await requireAdmin(ctx);
-    return notImplemented("tidyCards.pickSourceValue");
+  handler: async (ctx, args) => {
+    const userId = await requireAdmin(ctx);
+    if (args.value.length > MAX_PICK_NAMES) {
+      throw new ConvexError(`A value holds at most ${MAX_PICK_NAMES} names.`);
+    }
+    const names = cleanPickNames(args.value);
+    if (args.typed && names.length === 0) throw new ConvexError("Type a name to use.");
+    const others = [...new Set(args.cardIds ?? [])].filter((id) => id !== args.cardId);
+    if (others.length > MAX_APPLY_CARDS) {
+      throw new ConvexError(`At most ${MAX_APPLY_CARDS} cards can be changed at once.`);
+    }
+    const card = await ctx.db.get(args.cardId);
+    if (!card) throw new ConvexError("That card is gone. Refresh and try again.");
+    const found = entryFor(card, args.field);
+    if (!found) throw new ConvexError("That card has nothing to pick.");
+    if (!args.typed && !found.entry.values.some((o) => sameValue(o.value, names))) {
+      throw new ConvexError("That isn't one of the values the sources gave.");
+    }
+    const cache = newNameWriteCache(ctx);
+    const result = await applyPickToCard(ctx, card, {
+      field: args.field,
+      names,
+      typed: args.typed === true,
+      userId,
+      cache,
+    });
+
+    // The same disagreement on other cards: checked per card, never assumed.
+    const accepted: Array<Id<"cardChecklist">> = [];
+    let refused = 0;
+    for (const id of others) {
+      const other = await ctx.db.get(id);
+      const theirs = other ? entryFor(other, args.field) : undefined;
+      if (other && theirs && !theirs.entry.chosen && sameDisagreement(found.entry, theirs.entry)) {
+        accepted.push(id);
+      } else refused += 1;
+    }
+    for (let at = 0; at < accepted.length; at += APPLY_PAGE_SIZE) {
+      await ctx.scheduler.runAfter(0, internal.tidyCards.pickSourceValuePage, {
+        field: args.field,
+        value: names,
+        typed: args.typed,
+        cardIds: accepted.slice(at, at + APPLY_PAGE_SIZE),
+        userId,
+        leafId: card.selectorOptionId,
+      });
+    }
+    // Lookups for the names this left pending go out after the write commits.
+    if (result.pending) {
+      await ctx.scheduler.runAfter(0, internal.tidyNames.enqueuePendingLookups, {
+        scopeId: card.selectorOptionId,
+      });
+    }
+    return { applied: 1, scheduled: accepted.length, refused };
+  },
+});
+
+/** One scheduled page of `pickSourceValue`'s "apply to the same disagreement". */
+export const pickSourceValuePage = internalMutation({
+  args: {
+    field: v.union(v.literal("players"), v.literal("teams")),
+    value: v.array(v.string()),
+    typed: v.optional(v.literal(true)),
+    cardIds: v.array(v.id("cardChecklist")),
+    userId: v.string(),
+    leafId: v.id("selectorOptions"),
+  },
+  returns: v.object({ applied: v.number(), refused: v.number() }),
+  handler: async (ctx, args) => {
+    const cache = newNameWriteCache(ctx);
+    let applied = 0;
+    let refused = 0;
+    let pending = false;
+    for (const id of args.cardIds) {
+      const card = await ctx.db.get(id);
+      const found = card ? entryFor(card, args.field) : undefined;
+      // Compare-and-set: a card chosen or edited since the call is left alone.
+      if (!card || !found || found.entry.chosen) {
+        refused += 1;
+        continue;
+      }
+      const r = await applyPickToCard(ctx, card, {
+        field: args.field,
+        names: args.value,
+        typed: args.typed === true,
+        userId: args.userId,
+        cache,
+      });
+      pending = pending || r.pending;
+      applied += 1;
+    }
+    if (pending) {
+      await ctx.scheduler.runAfter(0, internal.tidyNames.enqueuePendingLookups, {
+        scopeId: args.leafId,
+      });
+    }
+    return { applied, refused };
   },
 });
 
@@ -507,9 +621,132 @@ export const applyTeamToPlayerCards = mutation({
     cardIds: v.array(v.id("cardChecklist")),
   },
   returns: v.object({ applied: v.number(), skipped: v.number() }),
-  handler: async (ctx, _args) => {
-    await requireAdmin(ctx);
-    return notImplemented("tidyCards.applyTeamToPlayerCards");
+  handler: async (ctx, args) => {
+    const userId = await requireAdmin(ctx);
+    const ids = [...new Set(args.cardIds)].filter((id) => id !== args.sourceCardId);
+    if (ids.length > MAX_APPLY_CARDS) {
+      throw new ConvexError(`At most ${MAX_APPLY_CARDS} cards can be changed at once.`);
+    }
+    const source = await ctx.db.get(args.sourceCardId);
+    if (!source) throw new ConvexError("That card is gone. Refresh and try again.");
+    const playerId = source.playerIds?.length === 1 ? source.playerIds[0] : undefined;
+    if (!playerId || !(source.teamOnCardIds ?? []).includes(args.teamId)) {
+      throw new ConvexError("Give this card the team first.");
+    }
+    const facts = newTeamFillFacts();
+    const accepted: Array<Id<"cardChecklist">> = [];
+    for (const id of ids) {
+      const card = await ctx.db.get(id);
+      if (card && (await cardTakesTeamFill(ctx, card, playerId, args.teamId, facts))) {
+        accepted.push(id);
+      }
+    }
+    const cache = newNameWriteCache(ctx);
+    const now = accepted.slice(0, APPLY_PAGE_SIZE);
+    for (const id of now) {
+      const card = await ctx.db.get(id);
+      if (card) await writeTeamFill(ctx, card, args.teamId, cache, userId);
+    }
+    for (let at = APPLY_PAGE_SIZE; at < accepted.length; at += APPLY_PAGE_SIZE) {
+      await ctx.scheduler.runAfter(0, internal.tidyCards.applyTeamPage, {
+        playerId,
+        teamId: args.teamId,
+        cardIds: accepted.slice(at, at + APPLY_PAGE_SIZE),
+        userId,
+      });
+    }
+    return { applied: accepted.length, skipped: ids.length - accepted.length };
+  },
+});
+
+/** Per-call reads `cardTakesTeamFill` shares across cards. */
+type TeamFillFacts = {
+  stints: Map<string, Array<{ key: string; fromYear?: number; toYear?: number }>>;
+  years: Map<string, number | undefined>;
+};
+const newTeamFillFacts = (): TeamFillFacts => ({ stints: new Map(), years: new Map() });
+
+/**
+ * Rule 8 for the guarded Apply-to-all: a card takes the team only when NOTHING
+ * on it names or rules out a team and the player's own career gives exactly
+ * this team for the card's year. Pure reads; the write is `writeTeamFill`.
+ */
+export async function cardTakesTeamFill(
+  ctx: MutationCtx,
+  card: Doc<"cardChecklist">,
+  playerId: Id<"players">,
+  teamId: Id<"teams">,
+  facts: TeamFillFacts,
+): Promise<boolean> {
+  if ((card.playerIds ?? []).length !== 1 || card.playerIds?.[0] !== playerId) return false;
+  if ((card.pendingPlayerNames ?? []).length > 0) return false;
+  if ((card.teamOnCardIds ?? []).length > 0 || (card.pendingTeamNames ?? []).length > 0) {
+    return false;
+  }
+  if (card.bscTeamName) return false;
+  if (card.teamNoneConfirmedAt !== undefined) return false;
+  if ((card.sourceDisagreements ?? []).some((d) => d.field === "teams")) return false;
+
+  const leafKey = card.selectorOptionId as string;
+  if (!facts.years.has(leafKey)) {
+    facts.years.set(leafKey, await findSetYearForSelectorOption(ctx, card.selectorOptionId));
+  }
+  const year = facts.years.get(leafKey);
+  if (year === undefined) return false;
+
+  const playerKey = playerId as string;
+  if (!facts.stints.has(playerKey)) {
+    const player = await ctx.db.get(playerId);
+    facts.stints.set(
+      playerKey,
+      (player?.teamYears ?? []).map((t) => ({
+        key: t.teamId as string,
+        ...(t.fromYear !== undefined ? { fromYear: t.fromYear } : {}),
+        ...(t.toYear !== undefined ? { toYear: t.toYear } : {}),
+      })),
+    );
+  }
+  const verdict = careerTeamVerdict({
+    stints: facts.stints.get(playerKey)!,
+    year,
+    currentYear: new Date().getFullYear(),
+  });
+  return verdict.answer?.key === (teamId as string);
+}
+
+async function writeTeamFill(
+  ctx: MutationCtx,
+  card: Doc<"cardChecklist">,
+  teamId: Id<"teams">,
+  cache: NameWriteCache,
+  userId: string,
+): Promise<void> {
+  const fields = nameFieldsOf(card);
+  fields.teamOnCardIds = [teamId];
+  await writeNameChange(ctx, card, fields, cache, userId);
+}
+
+/** One scheduled page of `applyTeamToPlayerCards`; every card is re-checked. */
+export const applyTeamPage = internalMutation({
+  args: {
+    playerId: v.id("players"),
+    teamId: v.id("teams"),
+    cardIds: v.array(v.id("cardChecklist")),
+    userId: v.string(),
+  },
+  returns: v.object({ applied: v.number(), skipped: v.number() }),
+  handler: async (ctx, args) => {
+    const facts = newTeamFillFacts();
+    const cache = newNameWriteCache(ctx);
+    let applied = 0;
+    for (const id of args.cardIds) {
+      const card = await ctx.db.get(id);
+      if (card && (await cardTakesTeamFill(ctx, card, args.playerId, args.teamId, facts))) {
+        await writeTeamFill(ctx, card, args.teamId, cache, args.userId);
+        applied += 1;
+      }
+    }
+    return { applied, skipped: args.cardIds.length - applied };
   },
 });
 
@@ -535,9 +772,76 @@ export const applyVariation = mutation({
     to: v.string(),
   },
   returns: v.object({ applied: v.number(), skipped: v.number() }),
-  handler: async (ctx, _args) => {
+  handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    return notImplemented("tidyCards.applyVariation");
+    const from = args.from.trim();
+    const to = args.to.trim();
+    if (!from) throw new ConvexError("There is no variation to change.");
+    if (to.length > MAX_VARIATION_LENGTH) {
+      throw new ConvexError(
+        `A variation is ${to.length} characters; the limit is ${MAX_VARIATION_LENGTH}.`,
+      );
+    }
+    const ids = [...new Set(args.cardIds)];
+    if (ids.length > MAX_APPLY_CARDS) {
+      throw new ConvexError(`At most ${MAX_APPLY_CARDS} cards can be changed at once.`);
+    }
+    const accepted: Array<Id<"cardChecklist">> = [];
+    for (const id of ids) {
+      const card = await ctx.db.get(id);
+      if (card && (card.cardVariation ?? "").trim() === from) accepted.push(id);
+    }
+    const cache = newNameWriteCache(ctx);
+    for (const id of accepted.slice(0, APPLY_PAGE_SIZE)) {
+      const card = await ctx.db.get(id);
+      if (card) await writeVariation(ctx, card, from, to, cache);
+    }
+    for (let at = APPLY_PAGE_SIZE; at < accepted.length; at += APPLY_PAGE_SIZE) {
+      await ctx.scheduler.runAfter(0, internal.tidyCards.applyVariationPage, {
+        cardIds: accepted.slice(at, at + APPLY_PAGE_SIZE),
+        from,
+        to,
+      });
+    }
+    return { applied: accepted.length, skipped: ids.length - accepted.length };
+  },
+});
+
+/** The longest variation `applyVariation` writes. */
+export const MAX_VARIATION_LENGTH = 200;
+
+async function writeVariation(
+  ctx: MutationCtx,
+  card: Doc<"cardChecklist">,
+  from: string,
+  to: string,
+  cache: NameWriteCache,
+): Promise<boolean> {
+  // Compare-and-set: a card edited since is left alone.
+  if ((card.cardVariation ?? "").trim() !== from) return false;
+  const patch: Partial<Doc<"cardChecklist">> = { cardVariation: to === "" ? undefined : to };
+  const { titleChanged } = await regenerateTitleFields(ctx, card, patch, cache);
+  await ctx.db.patch(card._id, { ...patch, lastUpdated: Date.now() });
+  if (titleChanged) await queueRetitledCardNow(ctx, card._id);
+  return true;
+}
+
+/** One scheduled page of `applyVariation`; every card is re-checked. */
+export const applyVariationPage = internalMutation({
+  args: {
+    cardIds: v.array(v.id("cardChecklist")),
+    from: v.string(),
+    to: v.string(),
+  },
+  returns: v.object({ applied: v.number(), skipped: v.number() }),
+  handler: async (ctx, args) => {
+    const cache = newNameWriteCache(ctx);
+    let applied = 0;
+    for (const id of args.cardIds) {
+      const card = await ctx.db.get(id);
+      if (card && (await writeVariation(ctx, card, args.from, args.to, cache))) applied += 1;
+    }
+    return { applied, skipped: args.cardIds.length - applied };
   },
 });
 
@@ -569,8 +873,137 @@ export const applySetNameToTitles = mutation({
     openCardRetitled: v.boolean(),
     scheduled: v.boolean(),
   }),
-  handler: async (ctx, _args) => {
+  handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    return notImplemented("tidyCards.applySetNameToTitles");
+    const leaf = await ctx.db.get(args.leafId);
+    if (!leaf) throw new ConvexError("That row is gone. Refresh and try again.");
+    if (!LISTING_SHORT_NAME_LEVELS.has(leaf.level)) {
+      throw new ConvexError("A short name goes on a set or a part of one.");
+    }
+    const card = await ctx.db.get(args.cardId);
+    if (!card || card.selectorOptionId !== args.leafId) {
+      throw new ConvexError("That card isn't in this checklist.");
+    }
+    const next = normalizeListingShortName(args.listingShortName);
+    const old = leaf.metadata?.listingShortName;
+    if ((old ?? undefined) === next) return { openCardRetitled: false, scheduled: false };
+
+    const metadata = { ...(leaf.metadata ?? {}) };
+    if (next) metadata.listingShortName = next;
+    else delete metadata.listingShortName;
+    await ctx.db.patch(args.leafId, {
+      metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+      lastUpdated: Date.now(),
+    });
+
+    const cache = newNameWriteCache(ctx);
+    const openCardRetitled = await retitleCardForSetName(ctx, card, old, next, cache);
+    await ctx.scheduler.runAfter(0, internal.tidyCards.retitleLeafPage, {
+      leafId: args.leafId,
+      oldShortName: old,
+      newShortName: next,
+      cursor: null,
+    });
+    return { openCardRetitled, scheduled: true };
+  },
+});
+
+/** Cards one scheduled retitle page writes. */
+export const RETITLE_PAGE_SIZE = 100;
+
+/**
+ * One card's title under a changed set name (the NEO-637 rules, in
+ * `features/setNameInTitles.ts`): a generated title is rebuilt, a hand edit that
+ * shows "Left out" has the set name swapped, any other hand edit stays.
+ */
+async function retitleCardForSetName(
+  ctx: MutationCtx,
+  card: Doc<"cardChecklist">,
+  oldShortName: string | undefined,
+  newShortName: string | undefined,
+  cache: NameWriteCache,
+): Promise<boolean> {
+  const { inputs } = await listingInputsForStoredCard(ctx, card, cache.titles);
+  const decision = retitleForSetName({
+    storedTitle: card.listingTitle,
+    inputsAfter: inputs,
+    oldShortName,
+    newShortName,
+  });
+  if (decision.kind === "leave") return false;
+  const patch: Partial<Doc<"cardChecklist">> =
+    decision.kind === "generated"
+      ? {
+          listingTitle: decision.title,
+          listingTitleTruncated: generatedTitleTruncatedFlag(assessListingTitle(inputs)),
+        }
+      : { listingTitle: decision.title };
+  await ctx.db.patch(card._id, { ...patch, lastUpdated: Date.now() });
+  await queueRetitledCardNow(ctx, card._id);
+  return true;
+}
+
+/** One scheduled page of `applySetNameToTitles`, over the leaf's cards in sort order. */
+export const retitleLeafPage = internalMutation({
+  args: {
+    leafId: v.id("selectorOptions"),
+    oldShortName: v.optional(v.string()),
+    newShortName: v.optional(v.string()),
+    cursor: v.union(v.string(), v.null()),
+  },
+  returns: v.object({ retitled: v.number(), done: v.boolean() }),
+  handler: async (ctx, args) => {
+    const page = await ctx.db
+      .query("cardChecklist")
+      .withIndex("by_selector_option_and_sort", (q) => q.eq("selectorOptionId", args.leafId))
+      .paginate({ numItems: RETITLE_PAGE_SIZE, cursor: args.cursor });
+    const cache = newNameWriteCache(ctx);
+    let retitled = 0;
+    for (const card of page.page) {
+      if (await retitleCardForSetName(ctx, card, args.oldShortName, args.newShortName, cache)) {
+        retitled += 1;
+      }
+    }
+    if (!page.isDone) {
+      await ctx.scheduler.runAfter(0, internal.tidyCards.retitleLeafPage, {
+        ...args,
+        cursor: page.continueCursor,
+      });
+    }
+    return { retitled, done: page.isDone };
+  },
+});
+
+/** Cards one `recheckCareerGapPage` reads. */
+export const CAREER_RECHECK_PAGE_SIZE = 100;
+
+/**
+ * After Add to career: drop the careerGap check from the leaf's OTHER cards of
+ * the player the new stint now covers. A page of the leaf's cards in sort order,
+ * scheduling the next. `tidyChecks` writes never bump `lastUpdated`.
+ */
+export const recheckCareerGapPage = internalMutation({
+  args: {
+    leafId: v.id("selectorOptions"),
+    playerId: v.id("players"),
+    cursor: v.union(v.string(), v.null()),
+  },
+  returns: v.object({ cleared: v.number(), done: v.boolean() }),
+  handler: async (ctx, args) => {
+    const page = await ctx.db
+      .query("cardChecklist")
+      .withIndex("by_selector_option_and_sort", (q) => q.eq("selectorOptionId", args.leafId))
+      .paginate({ numItems: CAREER_RECHECK_PAGE_SIZE, cursor: args.cursor });
+    let cleared = 0;
+    for (const card of page.page) {
+      cleared += await recheckCareerGaps(ctx, card, args.playerId);
+    }
+    if (!page.isDone) {
+      await ctx.scheduler.runAfter(0, internal.tidyCards.recheckCareerGapPage, {
+        ...args,
+        cursor: page.continueCursor,
+      });
+    }
+    return { cleared, done: page.isDone };
   },
 });

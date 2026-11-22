@@ -248,6 +248,7 @@ describe("every writer lands the true counts", () => {
       pendingTeamNames: [],
       sortOrder: 0,
       playerNames: [],
+      printedNames: [],
       ...extra,
     });
     await t.run(async (ctx) => {
@@ -886,6 +887,7 @@ describe("lastCardAt (NEO-532)", () => {
           pendingTeamNames: [],
           sortOrder: 0,
           playerNames: [],
+          printedNames: [],
         },
         { sportValue: "Baseball", setNameValue: "Chrome" },
         { sport: async () => s.sport },

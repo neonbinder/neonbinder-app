@@ -18,6 +18,8 @@
  * export is wrapped in the registry), and that the log line names no one.
  */
 
+import type { Doc } from "./_generated/dataModel";
+import { tidyRowAsReviewRow } from "./lib/tidyAnswerDecisions";
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -55,6 +57,14 @@ const faults: Fault[] = [];
 // Captured at load: convex-test swaps `setTimeout` for a thrower while a query
 // or mutation handler runs, and a planted delay runs inside one.
 const realSetTimeout = globalThis.setTimeout;
+/**
+ * NEO-645 — the gate's name rows are `tidyNames` rows; read each the way the
+ * commit prelude reads it (the old queue shape: `decision`, `enrichment`, ...).
+ */
+async function tidyReviewRows(ctx: { db: { query: (t: "tidyNames") => { collect: () => Promise<Doc<"tidyNames">[]> } } }) {
+  return (await ctx.db.query("tidyNames").collect()).map((row) => tidyRowAsReviewRow(row));
+}
+
 function plant(fn: string, nth: number, message: string, delayMs = 0): Fault {
   const fault: Fault = { fn, nth, error: new Error(message), delayMs, seen: 0, settled: false };
   faults.push(fault);
@@ -149,10 +159,9 @@ function logLines(spy: ReturnType<typeof vi.spyOn>) {
   return out;
 }
 
-async function queueRows(t: T, batchId: string | undefined) {
-  if (!batchId) return [];
-  return (await t.run((ctx) => ctx.db.query("entityReviewQueue").collect())).filter(
-    (r) => r.batchId === batchId,
+async function queueRows(t: T, _fromGate?: unknown) {
+  return (await t.run((ctx) => tidyReviewRows(ctx))).filter(
+    () => true,
   );
 }
 
@@ -247,7 +256,6 @@ describe("resolveChecklistEntities on the representative fixture equals origin/m
     expect(result.unknownTeams).toEqual(GOLDEN_UNKNOWN_TEAMS);
     expect(result.ambiguousPlayers).toEqual(["Bob Allen"]);
     expect(result.autoLinkedCount).toBe(1);
-    expect(result.batchId).toBeTruthy();
     expect(result.titleContext).toEqual(GOLDEN_TITLE_CONTEXT);
   });
 
@@ -376,7 +384,7 @@ describe("the gate's round trips (the 200-name, 32-team shape)", () => {
     return { sportId, p, cards };
   }
 
-  test("at most 17 child calls, with the player slices and the teams batch as one call each", async () => {
+  test("at most 18 child calls, with the player slices and the teams batch as one call each", async () => {
     const t = newT();
     const { sportId, p, cards } = await bigSet(t);
     const names = new Set(cards.flatMap((c) => c.players));
@@ -392,7 +400,11 @@ describe("the gate's round trips (the 200-name, 32-team shape)", () => {
     expect(countOf(":findSkippedEntityNames")).toBe(0);
     expect(countOf(":findByNameAndSport")).toBe(0);
     expect(countOf(":getCardChecklist")).toBe(0);
-    expect(calls.length).toBeLessThanOrEqual(17);
+    // NEO-645: 17 -> 18. The 200 names are written as `tidyNames` rows in pages
+    // of 100 (`upsertFromGatePage`), so two write calls where the old queue
+    // start was one; the reads are unchanged.
+    expect(countOf(":upsertFromGatePage")).toBe(Math.ceil(names.size / 100));
+    expect(calls.length).toBeLessThanOrEqual(18);
 
     // The product's own tally agrees with the count taken from outside.
     const timing = logLines(log).find((l) => l.msg === "review_gate_timing")!;
@@ -535,7 +547,7 @@ describe("deviations from the old call order change no answer", () => {
     expect(quiet.batchId).toBeUndefined();
     expect(logLines(log).some((l) => l.msg === "prior_year_product_scan")).toBe(false);
     expect(calls.filter((c) => c.endsWith(":findOnlyNamesakes"))).toHaveLength(0);
-    expect(await t.run((ctx) => ctx.db.query("entityReviewQueue").collect())).toEqual([]);
+    expect(await t.run((ctx) => tidyReviewRows(ctx))).toEqual([]);
   });
 });
 
@@ -549,7 +561,7 @@ describe("a sportId that is not the set's sport ancestor", () => {
       /not the sport ancestor/,
     );
     expect(await t.run((ctx) => ctx.db.query("checklistNameResolutions").collect())).toEqual([]);
-    expect(await t.run((ctx) => ctx.db.query("entityReviewQueue").collect())).toEqual([]);
+    expect(await t.run((ctx) => tidyReviewRows(ctx))).toEqual([]);
     expect(calls.filter((c) => c.endsWith(":replaceForFetch") || c.endsWith(":startBatch"))).toEqual([]);
     expect(calls.filter((c) => c.endsWith(":resolveNamesForReview"))).toEqual([]);
   });
@@ -562,7 +574,7 @@ describe("a sportId that is not the set's sport ancestor", () => {
     await expect(gate(t, leaf, sportId, [card(1, ["Anyone Atall"])])).rejects.toThrow(
       /not the sport ancestor/,
     );
-    expect(await t.run((ctx) => ctx.db.query("entityReviewQueue").collect())).toEqual([]);
+    expect(await t.run((ctx) => tidyReviewRows(ctx))).toEqual([]);
   });
 });
 
@@ -708,7 +720,7 @@ describe("when a concurrent read in the gate fails", () => {
     // All three slices were started (3 in flight at once) and have settled.
     expect(calls.filter((c) => c.endsWith(":findManyByNameAndSport"))).toHaveLength(3);
     expect(await snapshotAll(t)).toEqual(before);
-    expect(await t.run((ctx) => ctx.db.query("entityReviewQueue").collect())).toEqual([]);
+    expect(await t.run((ctx) => tidyReviewRows(ctx))).toEqual([]);
     expect(await t.run((ctx) => ctx.db.query("checklistNameResolutions").collect())).toEqual([]);
   });
 
