@@ -13,6 +13,7 @@ import { teamLinkedForText } from "./copy";
 import InlineNewTeam, { teamLookupCarryOf } from "./InlineNewTeam";
 import { printedOnText } from "./printed-on";
 import TeamCandidates, { type TeamCandidate } from "./TeamCandidates";
+import { orderCandidateTeams } from "./team-candidates";
 import type { TidyWrite } from "./tidy-write";
 
 type Ctx = NonNullable<TidyCardContext>;
@@ -178,17 +179,23 @@ function UnansweredTeamName({
     if (candidateIds.length < 2) return [];
     const leagueById = new Map((leagues ?? []).map((l) => [l._id as string, l.abbreviation ?? l.name]));
     const rowById = new Map((candidateRows ?? []).map((t) => [t._id as string, t]));
-    return candidateIds.map((id) => {
+    const rows = candidateIds.map((id) => {
       const team = rowById.get(id);
       return {
-        teamId: id,
+        id,
         fullName: team ? teamFullName(team) : queryName,
-        era: team ? eraLabel(team.yearsActive) : "",
-        ...(team?.leagueId && leagueById.get(team.leagueId)
-          ? { league: leagueById.get(team.leagueId) }
-          : {}),
+        ...(team?.yearsActive ? { yearsActive: team.yearsActive } : {}),
+        candidate: {
+          teamId: id,
+          fullName: team ? teamFullName(team) : queryName,
+          era: team ? eraLabel(team.yearsActive) : "",
+          ...(team?.leagueId && leagueById.get(team.leagueId)
+            ? { league: leagueById.get(team.leagueId) }
+            : {}),
+        } satisfies TeamCandidate,
       };
     });
+    return orderCandidateTeams(rows).map((r) => r.candidate);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- candidateIds is read through nameRow
   }, [nameRow?.candidateTeamIds, candidateRows, leagues]);
   const candidateStep = candidateIds.length >= 2;

@@ -245,6 +245,35 @@ describe("TeamTile", () => {
       expect(mutation("tidyNames.answerName")).toHaveBeenCalledTimes(1);
     });
 
+    it("lists the candidates newest era first, not in candidateTeamIds order, undated last", () => {
+      queryResults["teams.nearMatches"] = [];
+      queryResults["teams.getManyByIds"] = [
+        { _id: "t-undated", name: "Athletics", location: "Oakland" },
+        { _id: "t-old", name: "Athletics", location: "Oakland", yearsActive: { from: 1968, to: 2024 } },
+        { _id: "t-new", name: "Athletics", yearsActive: { from: 2025 } },
+      ];
+      renderTile({
+        ctx: context({
+          names: [
+            teamName({
+              row: {
+                name: "Athletics",
+                sportId: SPORT,
+                status: "ready",
+                candidateTeamIds: ["t-undated", "t-old", "t-new"],
+              },
+            }),
+          ],
+        }),
+      });
+      const links = screen.getAllByRole("button", { name: /^Link to / });
+      expect(links.map((b) => b.textContent)).toEqual([
+        "Link to Athletics · 2025–present",
+        "Link to Oakland Athletics · 1968–2024",
+        "Link to Oakland Athletics",
+      ]);
+    });
+
     it("holds '+ New team' until the near matches answer, and says why", async () => {
       renderTile();
       expect(screen.getByText("Checking for teams by that name…").getAttribute("role")).toBe("status");
