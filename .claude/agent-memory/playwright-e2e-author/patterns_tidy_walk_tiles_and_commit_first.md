@@ -76,7 +76,9 @@ that must not write a real set, there is no pre-save exit any more: give it its 
   the spec's.
 - **Over-80 set name:** a 100-char unbroken set name makes every generated title pink; the tile
   opens in edit mode ("Card title for #<n>"). "Shorten the set name for every card" opens
-  "Set name in titles" (focused); the title BOX's value follows each typed name (assert with two
+  "Set name in titles" (focused) prefilled with the stored short name, else the builder's own
+  description ("<year> <brand> <row name>", capped at 80), never the bare set name; Escape keeps
+  nothing (reopen shows the prefill again). The title BOX's value follows each typed name (assert with two
   fills); "Save and apply to all N cards" -> status "Set name saved. The other cards' titles are
   updating." and the others are retitled by a scheduled page before the walk reaches them.
 

@@ -11,8 +11,8 @@
 // titles" that retitles every card by the NEO-637 rules (server-side since NEO-645): a generated
 // title is rebuilt with it, a typed title that still leaves something out gets the new set name in
 // place of the old, and a typed title that leaves something out with no set name in it is
-// rebuilt. The stored titles are read back; the two that fail on the NEO-645 build (#3's swap and
-// #12's stale "cut short" flag) are asserted LAST, in P9, so everything else is proved first.
+// rebuilt. The stored titles are read back; #3's swap into a typed title and #12 losing its "cut
+// short" flag (both red on an earlier NEO-645 build, fixed since) are asserted LAST, in P9.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectAfterMarketplace } from "../../support/marketplace-wait";
 import {
@@ -232,6 +232,9 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await expect(shorten).toHaveAttribute("aria-expanded", "true");
   const box = titleTile.getByRole("textbox", { name: "Set name in titles", exact: true });
   await expect(box).toBeFocused();
+  // It opens on what the titles say now: the builder's description of the set (the year, the
+  // brand and the renamed insert, capped at 80), never the set row's bare name ("Score").
+  await expect(box).toHaveValue(LONG_DESCRIPTION);
   await box.fill(SHORT_BOX);
   // The card's title follows the box as it is typed (nothing saved yet): #12 has its first name
   // back, opening with the box text verbatim, and its team fits as the nickname (NEO-606).
@@ -242,8 +245,10 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await expect(box).toBeHidden();
   await expect(shorten).toBeFocused();
   await expect(shownTitle(`${LONG_DESCRIPTION} Daulton #12`)).toBeVisible();
-  // Again, and this time saved for every card of the checklist.
+  // Again, and this time saved for every card of the checklist. The box opens on the description
+  // again: the Escape kept nothing of the typed text.
   await shorten.click();
+  await expect(box).toHaveValue(LONG_DESCRIPTION);
   await box.fill(SHORT_BOX);
   await titleTile.getByRole("button", { name: `Save and apply to all ${SERIES_1_CARDS} cards`, exact: true }).click();
   await expect(titleTile.getByText("Set name saved. The other cards' titles are updating.", { exact: true })).toBeVisible();
@@ -311,7 +316,7 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await expect(columnOption(page, "Inserts", LONG_INSERT)).toBeVisible();
   await expect(page.getByRole("heading", { name: `Attributes for ${LONG_INSERT}` })).toBeHidden();
 
-  // ── P9 (LAST: two product findings of the NEO-645 run, asserted as correct) ──
+  // ── P9 (LAST: two findings of an earlier NEO-645 run, fixed since and kept as regressions) ──
   // NEO-637: a typed title that still leaves something out (#3 left out "Ryan" and the team) takes
   // the set name in place of the description it holds, its own words kept (the pre-walk version of
   // this spec proved it). The row opens with the checklist at its end, so the card is brought up
