@@ -123,3 +123,54 @@
 - [Name-fold specs on a discard-only fixtu…](patterns_name_fold_specs_on_a_discard_only_fixture.md) — NEO-643: full-row CSV, toggle conflict cl…
 - [Key-chain change vs the reference seed](patterns_key_chain_change_vs_reference_seed.md) — seed imports old nameNormalized; known na…
 - [Type a live-rewrite box by keystrokes](patterns_type_a_live_rewrite_box_by_keystrokes.md) — fill() is one change; Backspace exposes i…
+- [Local run backend, Vite, previews](patterns_local_run_backend_and_vite.md) — function-spec check, one Vite per worktree, CI seed resets
+- [BSC budget rules and the SportLots helper](patterns_bsc_budget_rules_and_sportlots_helper.md) — rules 1-3, expectStepWithSportLots, TSV mis-match trap
+- [NEO-574 career check step](patterns_career_check_step_neo574.md) — handles, prefill, 6b staging; NEO-591 default Add + keepEveryCareerLine, line-scoped names
+- [Planted break in convex/ code](reference_planted_break_on_convex_code.md) — linked-worktree copy named like the ticket; script pushes it; frozen wrapper
+- [Console check from traces + Vite log](patterns_console_check_from_traces_and_vite_log.md) — --trace=on outside repo, scan JSONL; Vite 8 forwards client console; baseline = PostHog+Clerk warns
+- [Set League and card League specs](patterns_set_league_and_card_league_specs.md) — NEO-569 handles, born-with-MLB needs real sport, noLeague dashboard Report scoping
+- [Near-match absence proved by the same locator](patterns_near_match_absence_proved_by_the_same_locator.md) — NEO-578: pin row count, flip query so the locator matches; admin add form = minted route
+- [Set-level No Team spec shape](patterns_set_no_team_spec_shape.md) — NEO-556: pressed-role toggles, cascade replaces the save toast, run ledger handles, badge proves teamless
+- [Leaf Vivid: a real unlicensed set](patterns_leaf_vivid_real_unlicensed_set.md) — NEO-556: find a set via year-wide sync, Proof type, held cards, parallel copies
+- [Stale batch masks a lookup loss](patterns_dialog_seed_from_stale_batch_masks_a_lookup_loss.md) — Match Cards drops lookup outcomes of pending rows; local green, CI 35 on the lane
+- [Attributes panel header needs the open panel](patterns_attributes_panel_header_controls_need_the_open_panel.md) — NEO-569: shut = title+toggle only; open before Rename/Delete/breadcrumb/Set actions
+- [NEO-591 Prospect and Onyx specs](reference_neo591_prospect_and_onyx_specs.md) — Prospect (X) = printed team, in-memory CSV edit, place cells (players decide, "Which team:"), relink, TL conflict
+- [Checklist facts run the product matcher](patterns_checklist_facts_run_the_product_matcher.md) — import parser+matcher, ChecklistEdits, number-picker/one-%/stem/sibling handles
+- [Team Management era/alias specs](patterns_team_management_era_alias_specs.md) — re-filter after reload (axe on 10k rows), row/status/alert handles, alias holder trips Create again
+- [Copy absence keys on the refusal clause](patterns_copy_absence_keys_on_the_refusal_clause.md) — NEO-602: toHaveCount(0) on a shared phrase trips on a new allowed-state statement
+- [Same-name team eras unprovable on a card](patterns_same_name_team_eras_unprovable_on_a_card.md) — NEO-602: chip/sub-line print no era; alias-held other era makes the drawer an era proof
+- [Stuck "still looking up": check returns validators](patterns_stuck_looking_up_check_returns_validators.md) — NEO-602: lookup threw ReturnsValidationError on new row fields; read Convex logs first
+- [Pick List title bands; probe a query first](patterns_pick_list_title_bands_and_probing_a_query.md) — NEO-590: band by rowheader; absence regex; row order; year gate is client-side; --identity probe
+- [Seeding a review state for screenshots](patterns_seeding_a_review_state_for_screenshots.md) — scratchpad script over /testing hops; titleSports probe; colorScheme only under System
+- [Dashboard Out the Door handles](patterns_dashboard_out_the_door_handles.md) — region/article "eBay order #<no>" (hash, unlike Sales), count line, hidden lines, goto+goBack gates
+- [Over-cap field look + team city fixtures](patterns_over_cap_field_look_and_team_city_fixtures.md) — NEO-606: aria-invalid titles only, expectOverCapLook pink, city-cut fixture arithmetic, split catalogue teams
+- [Inline refusal alerts: where to prove them](patterns_inline_refusal_alerts_in_match_cards_and_titles_step.md) — rename vs roster (SL-only) vs titles-step box
+- [Admin group writes and the failure reset](patterns_admin_group_writes_and_the_failure_reset.md) — NEO-592: own set for group-wide admin close; reset local opt-in, order proof, no-retry tags
+- [Action idle between child calls](patterns_action_stall_between_child_calls.md) — group convex-logs by requestId; token→gate gap ~0.03 s healthy; 2-source fetch has no wait line pre-dialog
+- [Window vs rest exec medians; eBay policy timeouts](patterns_window_vs_rest_exec_medians.md) — loaded deployment vs slow code; getOptedInPrograms timeout lines
+- [Find one card among NNO cards](patterns_find_one_card_among_nno_cards.md) — drawer Next/Previous card walk by Card name; wizard Skip aria-label gives the name; clear a flag you flip on a global row
+- [Cross-sport player resurfaces on re-sync](pattern_cross_sport_player_resurfaces_on_resync.md) — a player created under another sport comes back as a "New player" row on re-sync (gate is set-sport-scoped); a teams-only re-sync spec must account for him
+- [Wizard progress bar and Decided count](patterns_wizard_progress_bar_and_decided_count.md) — NEO-467: no Step x of y; subtitle via progress bar, row skip going, Decided (N) for "exactly one"
+- [Survey fake-BSC recordings for a fixture](reference_survey_fake_bsc_recordings_for_a_fixture.md) — join results to card-listing teamName, check names per sport in the bundle
+- [Teamless sport spec, review batch cleanup](patterns_teamless_sport_spec_and_review_batch_cleanup.md) — NEO-426 handles; team rows first; re-paste + Sync resumes a batch; Skip remaining (N); real-set career check
+- [Plant product breaks in a HEAD snapshot](patterns_plant_product_breaks_in_a_head_snapshot.md) — another Vite serves the worktree: plant/restore in the snapshot, cmp vs HEAD, own worker
+- [Planted break collides with a sibling plant](patterns_planted_break_collides_with_a_sibling_plant.md) — baseline red = sibling mid-plant; git diff HEAD first; restore by reversing, not cp
+- [red-run.mjs and client-wire.log](patterns_red_run_script_and_client_wire_log.md) — NEO-398: per red try triage, --attempt, artifact guards, untrusted output, listener fakes
+- [Injected orders ship up front](patterns_injected_orders_ship_up_front.md) — SHIPPED/FULFILLED keeps the Pick List clean; Convex error $-anchor trap; Switch by keyboard
+- [aria-hidden glyph breaks exact text](patterns_aria_hidden_glyph_breaks_exact_text.md) — Match Cards "⚠ " warnings; ^-anchored negatives vacuous; twin rows "row N of M" = column
+- [Template literal \b is backspace](patterns_template_literal_backslash_b.md) — new RegExp(`…\b`) never matches; write \\b; grep before a run
+- [Both projects locally: worker swap vs reseed](patterns_both_projects_locally_worker_index_vs_reseed.md) — recorded-player specs take a new WORKER_INDEX; sole-writer set specs need agent-convex --seed
+- [Insert vs parallel views; unchanged Regenerate](patterns_insert_vs_parallel_views_and_unchanged_regenerate.md) — Back to unpick a parallel; prove no-op Regenerate by live chips
+- [Note under a toggle; eBay aspects unassertable](patterns_note_under_a_toggle_and_ebay_aspects.md) — toHaveAccessibleDescription links the note; no hop/UI reads eBay aspects
+- [Post-name Next held then gone](patterns_post_name_next_held_then_gone.md) — NEO-574 career step: wait for usable Next/Save/autograph, press disabled:false only
+- [Second variant needs a re-drill](patterns_second_variant_needs_a_redrill.md) — openVariant skips the create confirm while a checklist is open; use drillToCustom again
+- [Duplicate key owner via captureOwnerStack](patterns_find_a_duplicate_key_owner_with_captureownerstack.md) — Vite-log "same key", no stack: snapshot main.tsx probe, served-file line = colliding element
+- [Axe cost, options() and resultTypes](patterns_axe_cost_options_and_result_types.md) — options() replaces withTags; rules ~10% of a big call; owner rule, scope later states
+- [Prove a list overflows its scroller](patterns_prove_a_list_overflows_its_scroller.md) — last row scrolled in view, first row not in viewport; no CSS, no evaluate
+- [Hold a read to prove a wait line](patterns_hold_a_read_to_prove_a_wait_line.md) — slow results read = no dialog yet; no `.or()`; dialog line credits Confirm
+- [e2e-run tool in practice](patterns_e2e_run_tool_in_practice.md) — 180 s Bash auto-background vs 230 s slice, plant re-seeds, digest path/header quirks
+- [Pre-fix snapshot is the planted break](patterns_pre_fix_snapshot_is_the_planted_break.md) — bug-fix spec: serve the pre-fix commit for the red, the fix commit for green; reseed between
+- [Teams-step chip years, failed lookup](patterns_teams_step_chip_years_and_failed_lookup.md) — NEO-639: `Team · years — owner` off the pre-fill; vacuous `^Team — ` negatives; unscoped card-listing 503; wait for "Teams suggested"
+- [Fixer preselect on a custom-sport set](patterns_fixer_preselect_on_a_custom_sport_set.md) — NEO-639: admin-built careers, chip pressed state, Escape mid-walk, Space proves tie focus
+- [Re-seed right after a queued-lookup spec](patterns_reseed_right_after_a_queued_lookup_spec.md) — selectorOptions verify fails; seed standalone later, then plant --expect
+- [Type a live-rewrite box by keystrokes](patterns_type_a_live_rewrite_box_by_keystrokes.md) — fill() is one change; Backspace exposes intermediate box texts that flip per-row rules (NEO-637)

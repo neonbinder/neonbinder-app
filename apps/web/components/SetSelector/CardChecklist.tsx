@@ -4459,6 +4459,9 @@ export default function CardChecklist({
           cards={cards}
           sportId={ancestorSportId}
           contextOptionId={variantId}
+          // NEO-639 (decision A): under the set's own "No Team" the team
+          // fixer offers careers and preselects none, like the Teams step.
+          setNoTeam={setTeamDefaultKind(variantRow) === "noTeam"}
           // a11y: the durable restore target, because the control that opened
           // this may not survive the sitting — the pill unmounts at
           // `attentionCount === 0`, which is exactly the state the walker is
@@ -4625,6 +4628,9 @@ export default function CardChecklist({
           // NEO-556: a "No Team" default counts too — the hint then points
           // at the answer already given rather than at setting one.
           hasSetTeam={setTeamDefaultKind(variantRow) !== "none"}
+          // NEO-639 (decision A): under the set's own "No Team", the teams
+          // step offers each line's teams and pre-fills none.
+          setNoTeam={setTeamDefaultKind(variantRow) === "noTeam"}
           // NEO-497: "Tidy up 2024 Topps Chrome", not "this set".
           title={tidyTitle}
           // NEO-221 (D6): the whole account of what Confirm is about to do,

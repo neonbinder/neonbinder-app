@@ -299,3 +299,5 @@
 - [Box rule: yellow line OR over cap](reference_box_rule_is_the_yellow_line_over_cap_stays.md) — NEO-637: box used when title leaves something out or is over 80; hand edits swapped in CardTitlesStep.changeShort
 - [Stand down on mounted, not phase](reference_stand_down_on_mounted_not_on_phase.md) — page element duplicated by a dialog keys on the dialog being mounted/open, not the phase before it (NEO-624)
 - [Stored key vs comparison key split](feedback_stored_key_vs_comparison_key_split.md) — a name-rule change goes in an explicit comparison step, never the stored-key fold; prove stored keys vs origin/main by fuzz
+- [Optional result field: omit when empty](reference_optional_result_field_omit_when_empty.md) — always-present [] reds toEqual pins in convex tests; spread only when non-empty
+- [Mixed preselect: focus the open question](pattern_mixed_preselect_focus_goes_to_the_open_question.md) — some ticked, one tied: focus its chip by ref, not Save; heading names both

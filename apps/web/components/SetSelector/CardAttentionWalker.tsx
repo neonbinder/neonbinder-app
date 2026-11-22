@@ -143,6 +143,7 @@ export default function CardAttentionWalker({
   cards,
   sportId,
   contextOptionId,
+  setNoTeam = false,
   onClose,
   restoreFocusRef,
   title,
@@ -161,6 +162,11 @@ export default function CardAttentionWalker({
    * team picker can order candidates by the set's league and year.
    */
   contextOptionId?: Id<"selectorOptions">;
+  /**
+   * NEO-639 (decision A): the checklist's own team default is "No Team", so
+   * the team fixer preselects nothing. See `AttentionSetContext.setNoTeam`.
+   */
+  setNoTeam?: boolean;
   /** Escape, the Close button, and the all-clear step all end here. Nothing is lost. */
   onClose: () => void;
   /**
@@ -199,11 +205,12 @@ export default function CardAttentionWalker({
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeBtnRef = useRef<HTMLButtonElement | null>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
-  // One object per (sport, set) pair, not per render — a fresh literal on the
-  // Provider would re-render every consumer on each walker render.
+  // One object per (sport, set, default) triple, not per render — a fresh
+  // literal on the Provider would re-render every consumer on each walker
+  // render.
   const setContext = useMemo(
-    () => ({ sportId, contextOptionId }),
-    [sportId, contextOptionId],
+    () => ({ sportId, contextOptionId, setNoTeam }),
+    [sportId, contextOptionId, setNoTeam],
   );
 
   // NEO-335: walk order, then card number — see `attentionWalkRank`. The rank

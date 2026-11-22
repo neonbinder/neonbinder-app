@@ -1,9 +1,12 @@
 // NEO-552 (R1): when BuySportsCards pushes back with a 429 on the per-card team
 // lookup of a checklist fetch, the fetch meets the cooldown at once: it lands inside
 // the budget with no "Waiting on BuySportsCards" line, asks BSC for no further card,
-// guesses no team (invariant 8), and after the save every card the lookup owed waits
-// in the background queue ("Still looking up teams for N cards. Nothing for you to do
-// yet."), none of them put to the operator.
+// and after the save every card the lookup owed and NB's own rules did not settle
+// waits in the background queue ("Still looking up teams for N cards. Nothing for you
+// to do yet."), none of them put to the operator. A lookup that never answered is
+// missing data, not a claim (invariant 8, NEO-639): it holds no pre-fill back, so the
+// cards NB's own rules settle (a stored player with one team in [setYear-1, setYear])
+// come up pre-filled and, saved with that team, are never queued.
 //
 // HOW THE 429 IS MADE. BuySportsCards is the fake (services/fake-bsc), so a spec asks
 // it to misbehave: `bscFake.setFaults` puts a 429 with a Retry-After on the first
@@ -19,10 +22,14 @@
 // live suite could only hit by luck.
 //
 // WHY THE RULE IS NOT UNLIMITED (audit, NEO-552). An unlimited 429 would answer an extra
-// ask with another 429, and the count below would read 32 either way. With the rule spent
-// after the first wave, a card asked after the 429 is answered from its recording, becomes
-// an answered card and drops the queued count below 32 (and shows "N need you"): that is
-// how "asks BSC for no further card" is proved. It needs the set's card-listing answers
+// ask with another 429, and the count below would read the same either way. With the rule
+// spent after the first wave, a card asked after the 429 is answered from its recording,
+// becomes an answered card and drops the queued count below CARDS - PREFILLED (and shows
+// "N need you"): that is how "asks BSC for no further card" is proved. The pre-fill does
+// not blur it (NEO-639): an extra ask answered for one of the pre-filled cards would carry
+// the listing's team, a name claim, so that card's chip would not be preselected and the
+// pressed-chip asserts in step 2 fail; answered for any other card, it leaves the queue,
+// and the count reads below CARDS - PREFILLED. It needs the set's card-listing answers
 // recorded (the recorder run for this set covers all 32 cards); an extra ask for a card
 // with no recording would be a failed lookup, queue like the rest, and show only as a
 // miss in the fake's report. If the product's wave size changes, this spec goes red on
@@ -44,14 +51,17 @@
 //      (`expectAfterMarketplace`, which credits the held read), and once it has, no
 //      "Waiting on BuySportsCards" line is up: a cooldown does not hold a call, it ends
 //      the lookup.
-//   2. Every name is skipped, so the wizard reaches "Cards with no team" (every card
-//      is listed there: not one has a BSC pre-fill to confirm).
-//   3. After the save the checklist's status line names ALL of the set's cards as
-//      waiting in the queue, in the product's words, and the amber "N need you" pill
-//      is absent: nothing is the operator's yet. The rule covers only the first wave, so
-//      a card asked after the 429 would have been answered and the count would read
-//      less than all 32: the count is the product's own stop. Axe runs on the saved
-//      checklist with the status line showing.
+//   2. Every name is skipped, so the wizard reaches "Cards with no team" (no card has
+//      a BSC team). Once the section's own status reads its loaded words ("Teams
+//      suggested", not "Checking teams…"; Next is not held while it loads), exactly the
+//      PREFILLED cards' chips are preselected, each by name: NB's rules, not BSC, filled
+//      them, because a lookup that never answered holds nothing back (NEO-639).
+//   3. After the save the checklist's status line names every card but the PREFILLED
+//      ones as waiting in the queue, in the product's words, and the amber "N need you"
+//      pill is absent: nothing is the operator's yet. The rule covers only the first
+//      wave, so a card asked after the 429 would have been answered and the count would
+//      read less than CARDS - PREFILLED: the count is the product's own stop. Axe runs on
+//      the saved checklist with the status line showing.
 //
 // FIXTURE (SET-REGISTRY.md -> "Hockey -> 1995 -> Dayton Bombers ECHL"; approved by
 // Jason on 2026-11-14, R7a): SOLE WRITER of that set
@@ -59,7 +69,8 @@
 // commits the checklist), so a re-run on the same seed fails at "No cards in this
 // checklist yet." by name, and so does CI's retry of a red that came after the commit:
 // read the FIRST attempt's error (GUIDE Gotchas, "Fresh-only specs"). Every name is
-// skipped: no player and no team is minted.
+// skipped: no player and no team is minted. The set has no set-level team (NEO-556) on
+// purpose: one would settle every card and leave nothing to queue.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { BSC_PATH, bscFault } from "../../support/bscFake";
 import { matchCardsDialog } from "../../support/published-checklist";
@@ -71,6 +82,21 @@ import { advanceToSave, confirmSaveButton, openOneMarketplaceSetBase, reviewWiza
 const SET = "Dayton Bombers ECHL";
 /** The set's card count on BSC (SET-REGISTRY.md measurement). */
 const CARDS = 32;
+/**
+ * The Teams step's lines NB's own rules pre-fill although no lookup answered (NEO-639): a
+ * seed player the career rules settle (exactly one team covering [1994, 1995], or the
+ * legend rule's one-team career in the set's league; teams-on-cards.ts, "The career
+ * window"). #7 Kevin Brown, #9 and #P2 Sergei Kharin (one line), #16 Mike Murray, measured
+ * on a fresh seed 2026-11-21. Chip name `<team> — <owner>`: a pre-filled chip carries no
+ * years, and a player's cards share one line, owner `<name>, N cards`.
+ */
+const PREFILLED_LINES: ReadonlyArray<{ team: string; owner: string }> = [
+  { team: "Los Angeles Kings", owner: "Kevin Brown" },
+  { team: "Winnipeg Jets", owner: "Sergei Kharin, 2 cards" },
+  { team: "Philadelphia Flyers", owner: "Mike Murray" },
+];
+/** The cards those lines cover (#7, #9, #P2, #16): saved with their team, so never queued. */
+const PREFILLED = 4;
 /** The team lookup's wave size (BSC_TEAM_LOOKUP_CONCURRENCY): the 429s cover exactly the first wave. */
 const WAVE = 10;
 /** Long enough that the window outlasts the spec: the lane must not get a turn before the assert. */
@@ -83,7 +109,7 @@ const RETRY_AFTER_S = 90;
 const HOLD_MS = 15_000;
 
 test(
-  "Checklist fetch — a BSC 429 on the team lookup opens the cooldown: the fetch lands at once, no team is guessed, and every card waits in the background queue (NEO-552)",
+  "Checklist fetch — a BSC 429 on the team lookup opens the cooldown: the fetch lands at once, only NB's own rules pre-fill a team, and every other card waits in the background queue (NEO-552, NEO-639)",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env, bscFake }) => {
     await signIn("/set-selector");
@@ -116,16 +142,34 @@ test(
     const wizard = reviewWizard(page);
     await expect(wizard).toBeVisible();
 
-    // ── 2. Every name skipped; the teams step lists the cards, none pre-filled ──
+    // ── 2. Every name skipped; the teams step pre-fills only what NB's own rules settle ──
     const skipRemaining = wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ });
     const next = wizard.getByRole("button", { name: "Next (Enter)", exact: true });
     await expect(skipRemaining.or(next).first()).toBeVisible();
     if (await skipRemaining.isVisible()) await skipRemaining.click();
     await expect(next).toBeVisible();
     await expect(wizard.getByText("Cards with no team", { exact: true })).toBeVisible();
+    // Next is not held while the section loads its suggestions, so wait for its one status
+    // (sr-only, TeamsOnCardsSection) to read its loaded words before reading or saving a line.
+    await expect(
+      wizard.getByRole("status").filter({ hasText: /^(Checking teams…|Teams suggested)$/ }),
+      "the Teams section never finished loading its suggestions",
+    ).toHaveText("Teams suggested");
+    // The pre-filled lines, by name: a missing lookup held none of them back (NEO-639).
+    for (const { team, owner } of PREFILLED_LINES) {
+      await expect(
+        wizard.getByRole("radio", { name: `${team} — ${owner}`, exact: true }),
+        `${owner}'s line is not pre-filled with ${team}: the pre-fill changed (NEO-639)`,
+      ).toBeChecked();
+    }
+    // And no other line: every other card stays on "Leave for later" (R2 pair with the above).
+    await expect(
+      wizard.getByRole("radio", { name: /^(?!Leave for later — |No team on this card — )/, checked: true }),
+      `the pre-fill covers more or fewer than the ${PREFILLED_LINES.length} lines above`,
+    ).toHaveCount(PREFILLED_LINES.length);
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, Cards with no team after a BSC 429" });
 
-    // ── 3. Save: every card waits in the queue; none is the operator's ──
+    // ── 3. Save: every card but the pre-filled ones waits in the queue; none is the operator's ──
     await advanceToSave(page);
     await confirmSaveButton(page).click();
     await expect(page.getByText(new RegExp(`Saved ${CARDS} cards`))).toBeVisible();
@@ -133,12 +177,16 @@ test(
     // The set's cards are on screen, so what follows is read off a live checklist.
     await expect(editCardButton(page, "1")).toBeVisible();
     // The queue's own words (a status line; its number moves at most every 5 s, so the first value
-    // after the save is the full count). All CARDS: the 429 ended the lookup before any card was
-    // answered, and nothing it owed was guessed. The rule was spent after the first wave, so a
-    // card asked afterwards would have been answered and this count would be lower.
+    // after the save is the full count). CARDS - PREFILLED: the 429 ended the lookup before any card
+    // was answered, and a card saved with its pre-filled team is never queued (NEO-639). The rule
+    // was spent after the first wave, so a card asked afterwards would have been answered and this
+    // count would be lower.
+    const queued = CARDS - PREFILLED;
     await expect(
-      page.getByRole("status").filter({ hasText: new RegExp(`^Still looking up teams for ${CARDS} cards\\. Nothing for you to do yet\\.`) }),
-      `the status line does not say all ${CARDS} cards wait: BSC was asked for a card after the 429 (the rule covers only the first ${WAVE} requests)`,
+      page.getByRole("status").filter({ hasText: new RegExp(`^Still looking up teams for ${queued} cards\\. Nothing for you to do yet\\.`) }),
+      `the status line does not say ${queued} cards wait (${CARDS} less the ${PREFILLED} pre-filled): ` +
+        `lower means BSC was asked for a card after the 429 (the rule covers only the first ${WAVE} requests); ` +
+        `higher means the pre-fill changed and a pre-filled card was queued`,
     ).toBeVisible();
     // Nothing is the operator's yet: the "N need you" pill is rendered only while some card needs them.
     await expect(page.getByRole("button", { name: /need[s]? you$/ })).toHaveCount(0);

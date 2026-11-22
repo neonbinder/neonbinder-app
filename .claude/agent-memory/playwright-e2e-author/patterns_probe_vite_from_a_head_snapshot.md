@@ -43,3 +43,12 @@ lists only `vite.config.ts`. A spec's `finally` cleanup shows in the failure PNG
 (the screenshot comes after `finally`), which proves cleanup-on-red for free.
 
 Related: [[local-vite-serves-one-worktree]]
+
+NEO-639: `e2e-run run` refuses a snapshot Vite on its port ("in use by a process that is
+not this worktree's Vite"). With the snapshot up on the ticket port, `e2e-run seed` still
+works (reset + setup + bootstrap go through it; with NO Vite up its setup reds), then run
+the spec with `npx playwright test --project=e2e|e2e-mobile --no-deps --retries=0 --output
+<scratchpad>` from the worktree, `.env.local` sourced, `APP_URL`/`WORKER_INDEX`/`PAUSED_PLATFORMS`
+set. Signature that sent us there: a sibling builder editing-and-reverting product files
+(`git status` clean on them, mtimes seconds old) made "Could not Fast Refresh" invalidations
+remount CardChecklist mid-spec, dropping the uploaded checklist chip before Sync.
