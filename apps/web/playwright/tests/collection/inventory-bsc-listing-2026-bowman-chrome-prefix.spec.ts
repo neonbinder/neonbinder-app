@@ -97,7 +97,7 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../../support/set-builder";
-import { addAsNewStep, advanceToSave, answerStepAsNew, awaitLookupsSettled, confirmSaveButton, reviewWizard } from "../../support/wizard";
+import { needsYouPill, openTidyWalk, settleWalkAfterCommit, tidyForTheParallelBuild, tidyWalk } from "../../support/tidy-walk";
 
 const SPORT = "Football";
 const YEAR = "2026";
@@ -130,7 +130,7 @@ const BSC = "BuySportsCards";
  * 7 s of our own time plus the seconds the screen says it is "Waiting on
  * BuySportsCards...", capped at 180 s, the measured wait in the report. It
  * replaces the flat 60 s this spec used to give them (Jason: if BSC took n
- * seconds the step gets n + 7 s, never a flat bump). The wizard's steps and our
+ * seconds the step gets n + 7 s, never a flat bump). The Tidy Up walk's answers and our
  * own save are NeonBinder answering a user and keep the 7 s default.
  */
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -238,7 +238,6 @@ async function clearCommonPrice(page: Page, checklist: Locator, was: string): Pr
  * state either way.
  */
 async function buildFixture(page: Page, env: FlowEnv): Promise<void> {
-  const wizard = reviewWizard(page);
   const noCards = page.getByText("No cards in this checklist yet.");
   const someCard = page.getByText(/^#[0-9]/).first();
 
@@ -259,37 +258,24 @@ async function buildFixture(page: Page, env: FlowEnv): Promise<void> {
     // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards
     // opens with SportLots paused or live. The helper waits on it with
     // `expectAfterMarketplace`, proves the teams line while it is open (the line is gone
-    // once the wizard takes over), keeps every card only one marketplace has, confirms.
+    // once the save lands), keeps every card only one marketplace has, confirms.
     await confirmChecklistMatchCards(page, { facts, what: "the Base fetch" });
-    await expect(wizard).toBeVisible();
-    // The names the catalogue does not know: added as new, in bulk, then any
-    // team, league or pick step one at a time (the seed's walk).
-    await wizard.getByRole("button", { name: /^Add remaining players as new/ }).click();
-    // A row whose lookup is still in flight is not presented, so the walk below
-    // would read a step that is about to move: settle the batch's lookups first
-    // (the footer's "N still looking up" goes), as the other wizard walks do.
-    await awaitLookupsSettled(page);
-    const pickStep = wizard.getByRole("heading", { level: 3, name: /^Which .* is this\?$/ });
-    const namesDone = wizard.getByRole("button", { name: /^Next \(Enter\)$|Confirm & Save/ });
-    const firstCandidate = wizard
-      .getByRole("list", { name: "Players already filed under this name" })
-      .getByRole("button", { name: /^Link to / })
-      .first();
-    for (let i = 0; i < 40; i++) {
-      await expect(addAsNewStep(page).or(pickStep).or(namesDone).first()).toBeVisible();
-      if (await namesDone.isVisible()) break;
-      if (await pickStep.isVisible()) {
-        const step = ((await pickStep.textContent()) ?? "").trim();
-        await firstCandidate.click();
-        await expect(wizard.getByRole("heading", { level: 3, name: step, exact: true })).toBeHidden();
-      } else {
-        await answerStepAsNew(page);
-      }
-    }
-    await advanceToSave(page);
-    await confirmSaveButton(page).click();
-    await expect(page.getByText(/Saved [0-9]+ cards/)).toBeVisible();
+    // NEO-645: Confirm saves the cards (our own write, 7 s), and the Tidy Up walk opens on its
+    // own: the 2026 rookies are names the catalogue does not know yet.
+    const saved = page.getByText(/Saved [1-9][0-9]* cards\./).first();
+    await expect(saved).toBeVisible();
+    expect(await settleWalkAfterCommit(page, saved), "Base's rookies need a person, so the walk opened").toBe(true);
+    // J3: Chrome is built from Base, so Base's names are answered first (below).
   }
+  await expect(someCard).toBeVisible();
+  // J3: "Build from Base" is refused while a Base card has a name waiting. The walk answers
+  // them as the seed's walk did (new players and teams, a same-name pick's top candidate). It is
+  // open after a fresh save; a rerun that adopts the tree reopens it from the "N need you" pill
+  // when a Base card still needs a person, and has nothing to walk otherwise (the pill counts
+  // the same rows the list shows, so it is settled with them).
+  if (!(await tidyWalk(page).isVisible()) && (await needsYouPill(page).isVisible())) await openTidyWalk(page);
+  if (await tidyWalk(page).isVisible()) await tidyForTheParallelBuild(page);
+  await expect(tidyWalk(page)).toBeHidden();
   await expect(someCard).toBeVisible();
 
   // --- Parallel -> Chrome ---

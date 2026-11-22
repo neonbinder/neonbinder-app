@@ -135,3 +135,4 @@
 - [Team fill career-tier fixture](patterns_team_fill_career_tier_fixture.md) — Q1-A fill visible via 70-char team; tile chips read set year, commit [y-1,y]: both negative stints cover y
 - [Team-era specs on the walk](patterns_team_era_specs_on_the_walk.md) — NEO-602 auto link off the walk; dual printed team / careerGap keep it on; tile per branch; one-value counters
 - [Team Apply to all fixture](patterns_team_apply_to_all_fixture.md) — client proposes/server checks career; skip only via a two-name card; in-walk new player + inline team + stint
+- [Parallel-build specs tidy the base (J3)](patterns_parallel_build_specs_must_tidy_the_base_j3.md) — no Save for later before a build; tidyForTheParallelBuild; titles door waits behind the walk
