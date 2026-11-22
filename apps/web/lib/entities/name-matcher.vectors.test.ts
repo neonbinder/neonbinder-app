@@ -61,6 +61,16 @@ const MUST_MATCH: Array<[string, string, string]> = [
   ["full-width letters", "\uFF2Dike Trout", "Mike Trout"],
   ["ligature", "\uFB01nn Wolfhard", "Finn Wolfhard"],
   ["a control character is a space", "Mike\u0000Trout", "Mike Trout"],
+  // NEO-643, Jason 2026-11-21: a hyphen matches a space, everywhere.
+  ["a hyphen against a space", "Smith-Jones", "Smith Jones"],
+  ["a hyphenated place against its spaced form", "Wilkes-Barre", "Wilkes Barre"],
+  ["a hyphenated set name against its spaced form", "Topps-Chrome", "Topps Chrome"],
+  ["a spaced hyphen against a space", "Smith - Jones", "Smith Jones"],
+  ["a non-breaking hyphen against a space", "Smith\u2011Jones", "Smith Jones"],
+  ["an en dash against a space", "Smith\u2013Jones", "Smith Jones"],
+  ["a figure dash against a hyphen", "Smith\u2012Jones", "Smith-Jones"],
+  ["a hyphen between initials joins them", "J-P Arencibia", "JP Arencibia"],
+  ["a hyphen between initials against dotted initials", "J-P Arencibia", "J.P. Arencibia"],
 ];
 
 const MUST_STAY_APART: Array<[string, string, string]> = [
@@ -72,6 +82,7 @@ const MUST_STAY_APART: Array<[string, string, string]> = [
   ["a question mark is not a letter", "R?os", "Rios"],
   ["a caret is a separator, not junk", "Ri^os", "Rios"],
   ["a slash is a separator, not junk", "Ri/os", "Rios"],
+  ["a hyphen is a space, not a deletion", "Smith-Jones", "Smithjones"],
 ];
 
 describe("one name matcher: names that must match", () => {
@@ -111,6 +122,24 @@ describe("one name matcher: a backslash is deleted, not turned into a space", ()
     expect(nameKey("Smith\\Jones")).toBe("smithjones");
     expect(checklistNameKey("Smith\\Jones")).toBe("smithjones");
     expect(ladderPlayerName("Smith\\Jones")).toBe("smithjones");
+  });
+});
+
+describe("one name matcher: a hyphen is a space (NEO-643)", () => {
+  test("Smith-Jones keys as two words in every key", () => {
+    expect(normalizeEntityName("Smith-Jones")).toBe("jones smith");
+    expect(normalizeOrderedEntityName("Smith-Jones")).toBe("smith jones");
+    expect(rosterKey(["Smith-Jones"])).toBe("jones smith");
+    expect(nameKey("Smith-Jones")).toBe("smith jones");
+    expect(checklistNameKey("Smith-Jones")).toBe("smith jones");
+    expect(ladderPlayerName("Smith-Jones")).toBe("smith jones");
+  });
+
+  test("a hyphen between single letters joins them like any initials", () => {
+    expect(normalizeOrderedEntityName("J-P Arencibia")).toBe("jp arencibia");
+    expect(normalizeOrderedEntityName("J-P Arencibia")).toBe(normalizeOrderedEntityName("J.P. Arencibia"));
+    // A lone letter beside a word is not a run: "A-Rod" is two tokens.
+    expect(normalizeOrderedEntityName("A-Rod")).toBe("a rod");
   });
 });
 
@@ -173,6 +202,14 @@ describe("one name matcher: set labels in computeMatches", () => {
     expect(r.unmatchedBsc).toEqual([]);
     expect(r.unmatchedSl).toEqual([]);
     expect(normalizeOrderedEntityName(bsc)).toBe(normalizeOrderedEntityName(sl));
+  });
+
+  test("a hyphenated label pairs with its spaced label at confidence 1", () => {
+    const r = computeMatches([item("Topps-Chrome")], [item("Topps Chrome")]);
+    expect(r.autoMatched).toHaveLength(1);
+    expect(r.autoMatched[0].confidence).toBe(1);
+    expect(r.unmatchedBsc).toEqual([]);
+    expect(r.unmatchedSl).toEqual([]);
   });
 
   test("a zero-width character label pairs with the clean label", () => {

@@ -68,9 +68,12 @@ describe("normalizeEntityName", () => {
     expect(normalizeEntityName("Green Bay (Packers)")).toBe("bay green packers");
   });
 
-  test("keeps hyphens, so a hyphenated name stays one token", () => {
+  test("NEO-643: a hyphen is a space, so a hyphenated name is the spaced name", () => {
     expect(normalizeEntityName("Wilkes-Barre Barons")).toBe(
-      "barons wilkes-barre",
+      "barons barre wilkes",
+    );
+    expect(normalizeEntityName("Wilkes-Barre Barons")).toBe(
+      normalizeEntityName("Wilkes Barre Barons"),
     );
   });
 

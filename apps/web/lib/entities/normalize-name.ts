@@ -84,6 +84,28 @@
  * fixed by hand, renaming each with the inline edit. The rule above still
  * stands for any other change to this chain.
  *
+ * ### The NEO-643 reversal: a hyphen is a space, so every hyphenated key changes
+ *
+ * Until NEO-643 the hyphen was a key character on purpose, so "Wilkes-Barre"
+ * stayed one token and "Smith-Jones" never equalled "Smith Jones". Jason,
+ * 2026-11-21, ruled the opposite, everywhere: "a hyphen matches a space".
+ * "Smith-Jones" = "Smith Jones", "Wilkes-Barre" = "Wilkes Barre", "Topps-Chrome"
+ * = "Topps Chrome". Every dash (`DASHES`) is now turned into a space inside
+ * `foldNameText`, the one fold, so `normalizeEntityName`,
+ * `normalizeOrderedEntityName`, `rosterKey`, the pairing ladder, the card-name
+ * comparison, the checklist name key, the selector name tier, the set
+ * reconciliation fold and every typeahead filter agree without a line of their
+ * own. A consequence worth knowing: a hyphen between two single letters joins
+ * them like any other initials ("J-P Arencibia" keys as "jp arencibia", the
+ * same as "J.P. Arencibia"), because the dash is gone before `joinInitialRuns`
+ * looks at the tokens.
+ *
+ * Unlike the junk-character change above, this one moves STORED keys: every
+ * `players`, `teams` and `leagues` `nameNormalized` (and the
+ * `entityReviewSkips` / `entityReviewQueue` keys built from the same function)
+ * that contains a hyphen is now stale. The re-key pass above is the fix, as
+ * always.
+ *
  * ## What is deliberately NOT normalised here
  *
  * A letter with no canonical decomposition survives the fold and is then
@@ -107,10 +129,30 @@ const COMBINING_MARKS = /[\u0300-\u036f]/g;
 const DROPPED_PUNCTUATION = /[.,'"`’]/g;
 
 /**
- * Everything else that is not a key character becomes a separator. Note the
- * hyphen is INSIDE the class, so "Wilkes-Barre" stays one token.
+ * Everything else that is not a key character becomes a separator. The hyphen
+ * is NOT in the class (it used to be, so "Wilkes-Barre" stayed one token):
+ * `foldNameText` has already turned every dash into a space (NEO-643), so none
+ * reaches this point.
  */
-const NON_KEY_CHARS = /[^a-z0-9\s-]/g;
+const NON_KEY_CHARS = /[^a-z0-9\s]/g;
+
+/**
+ * NEO-643 — every dash: the hyphen-minus, the hyphen U+2010, the non-breaking
+ * hyphen U+2011, the figure dash U+2012, the en and em dashes, the horizontal
+ * bar, the minus sign U+2212, and the small and full-width forms U+FE58,
+ * U+FE63 and U+FF0D. Listed in full so a caller that does not run NFKD
+ * (`dashesToSpaces` on its own) sees the same set `foldNameText` does.
+ */
+const DASHES = /[-\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g;
+
+/**
+ * NEO-643 — each dash becomes a space (not collapsed, not trimmed). Exported
+ * for the one comparison that does not use `foldNameText` (the selector name
+ * tier keeps accents), so a hyphen means the same thing there.
+ */
+export function dashesToSpaces(raw: string): string {
+  return raw.replace(DASHES, " ");
+}
 
 /**
  * Trademark signs. NFKD would spell them out ("™" becomes "TM"), gluing the
@@ -136,16 +178,22 @@ const TRADEMARK_SIGNS = /[\u2120\u2122]/g;
  * different people, and a replacement character is a lost letter we cannot
  * name.
  *
- * Pure ASCII without a backslash, a backtick or a control character is
+ * Every dash is a word separator here, not just in the keys (NEO-643, Jason
+ * 2026-11-21; see the module note): "Smith-Jones" folds to "smith jones".
+ * Because this is the one fold every matcher, search filter and comparison
+ * starts from, they all agree.
+ *
+ * Pure ASCII without a backslash, a backtick, a dash or a control character is
  * unchanged apart from case (NFKD is the identity on ASCII), which keeps every
- * existing unaccented key.
+ * existing unaccented, unhyphenated key.
  */
 export function foldNameText(raw: string): string {
   return stripNameJunk(raw)
     .replace(TRADEMARK_SIGNS, " ")
     .normalize("NFKD")
     .replace(COMBINING_MARKS, "")
-    .toLowerCase();
+    .toLowerCase()
+    .replace(DASHES, " ");
 }
 
 /**

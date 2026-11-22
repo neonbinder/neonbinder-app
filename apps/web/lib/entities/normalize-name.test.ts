@@ -39,8 +39,16 @@ describe("foldDiacritics", () => {
   test("is the identity on lowercase ASCII", () => {
     // The property that lets the fold be inserted ahead of the old chain
     // without changing a single existing unaccented key.
-    for (const s of ["mike trout", "o'neal, shaquille", "wilkes-barre", "..."]) {
+    for (const s of ["mike trout", "o'neal, shaquille", "wilkes barre", "..."]) {
       expect(foldDiacritics(s)).toBe(s);
+    }
+  });
+
+  test("NEO-643: every dash folds to a space, the compatibility forms included", () => {
+    // Hyphen-minus, hyphen, non-breaking hyphen, figure dash, en and em dash,
+    // horizontal bar, minus sign, and the small and full-width forms.
+    for (const dash of ["-", "\u2010", "\u2011", "\u2012", "\u2013", "\u2014", "\u2015", "\u2212", "\uFE58", "\uFE63", "\uFF0D"]) {
+      expect(foldDiacritics(`Wilkes${dash}Barre`)).toBe("wilkes barre");
     }
   });
 
@@ -94,10 +102,16 @@ describe("normalizeEntityName — the players/teams dedup key", () => {
     expect(normalizeEntityName("Green Bay (Packers)")).toBe("bay green packers");
   });
 
-  test("keeps hyphens, so a hyphenated name stays one token", () => {
+  test("NEO-643: a hyphen is a space, so a hyphenated name is the spaced name", () => {
     expect(normalizeEntityName("Wilkes-Barre Barons")).toBe(
-      "barons wilkes-barre",
+      "barons barre wilkes",
     );
+    expect(normalizeEntityName("Wilkes-Barre")).toBe(normalizeEntityName("Wilkes Barre"));
+    expect(normalizeEntityName("Smith-Jones")).toBe(normalizeEntityName("Smith Jones"));
+    expect(normalizeEntityName("Smith - Jones")).toBe(normalizeEntityName("Smith Jones"));
+    expect(normalizeEntityName("Smith\u2011Jones")).toBe(normalizeEntityName("Smith Jones"));
+    expect(normalizeEntityName("Smith\u2013Jones")).toBe(normalizeEntityName("Smith Jones"));
+    expect(normalizeEntityName("Smith\u2012Jones")).toBe(normalizeEntityName("Smith Jones"));
   });
 
   test("a punctuation-only name normalises to the empty key", () => {
@@ -211,7 +225,9 @@ describe("initials — NEO-322", () => {
     expect(ordered("N. H. L.")).toBe("nhl");
     expect(ordered("N. H. L.")).toBe(ordered("NHL"));
     expect(ordered("Class A")).toBe("class a");
-    expect(ordered("Division I-A")).toBe("division i-a");
+    // A hyphen is a space (NEO-643), so the two letters join like any initials.
+    expect(ordered("Division I-A")).toBe("division ia");
+    expect(ordered("Division I-A")).toBe(ordered("Division I A"));
     expect(ordered("Liga MX")).toBe("liga mx");
   });
 });

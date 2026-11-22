@@ -244,6 +244,7 @@ describe("planSelectorSync name tier — NEO-643, stored rows are not backfilled
     expect(selectorValueKey("B\\eisbol")).not.toBe(selectorValueKey("Beisbol"));
     expect(selectorValueKey("Re\u0301my")).not.toBe(selectorValueKey("R\u00E9my"));
     expect(selectorValueKey("Topps  Chrome")).not.toBe(selectorValueKey("Topps Chrome"));
+    expect(selectorValueKey("Topps-Chrome")).not.toBe(selectorValueKey("Topps Chrome"));
   });
 
   test.each([
@@ -252,6 +253,11 @@ describe("planSelectorSync name tier — NEO-643, stored rows are not backfilled
     ["a stored double space", "Topps  Chrome", "Topps Chrome"],
     ["a stored zero-width space", "Top\u200Bps", "Topps"],
     ["a stored soft hyphen, cased differently", "Top\u00ADps", "TOPPS"],
+    // NEO-643, Jason 2026-11-21: a hyphen matches a space everywhere.
+    ["a stored hyphen against an incoming space", "Topps-Chrome", "Topps Chrome"],
+    ["a stored space against an incoming hyphen", "Topps Chrome", "Topps-Chrome"],
+    ["a stored en dash against an incoming hyphen", "Topps\u2013Chrome", "Topps-Chrome"],
+    ["a stored spaced hyphen against an incoming space", "Topps - Chrome", "Topps Chrome"],
   ])("%s still name-matches the cleansed incoming label and attaches the id", (_why, stored, incoming) => {
     const a = row("a", stored);
     const plan = planSelectorSync({
@@ -268,6 +274,14 @@ describe("planSelectorSync name tier — NEO-643, stored rows are not backfilled
       items: [item("Beisbol", { bsc: "bsc-1" })],
     });
     expect(plan.outcomes[0]).toEqual({ kind: "matched", existingId: "a", tier: 2 });
+  });
+
+  test("exactly-one guard: a hyphen twin and a spaced twin already stored are withheld", () => {
+    const plan = planSelectorSync({
+      existing: [row("a", "Topps-Chrome"), row("b", "Topps Chrome")],
+      items: [item("Topps Chrome", { bsc: "bsc-1" })],
+    });
+    expect(plan.outcomes[0].kind).toBe("withheld");
   });
 
   test("exactly-one guard, existing side: two stored rows that fold together are withheld", () => {

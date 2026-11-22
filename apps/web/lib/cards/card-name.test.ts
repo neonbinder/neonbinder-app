@@ -31,9 +31,10 @@ describe("nameKey — fold spelling, keep meaning", () => {
     expect(nameKey("Wilmer R\\ios")).toBe("wilmer rios");
   });
 
-  test("NEO-643: it is the ordered entity key, so initials join and a hyphen stays", () => {
+  test("NEO-643: it is the ordered entity key, so initials join and a hyphen is a space", () => {
     expect(nameKey("C.J. Kayfus")).toBe(nameKey("C. J. Kayfus"));
-    expect(nameKey("Jean-Luc Picard")).toBe("jean-luc picard");
+    expect(nameKey("Jean-Luc Picard")).toBe("jean luc picard");
+    expect(nameKey("Smith-Jones")).toBe(nameKey("Smith Jones"));
   });
 
   test("punctuation and casing fold", () => {

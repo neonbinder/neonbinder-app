@@ -60,6 +60,7 @@ import { sportConfigDefaultsFor } from "./sportConfig";
 // NEO-334 — one word, one variant type: the rename door's sibling guard reads
 // the same singular/plural rule the custom-add door does.
 import { cleanseExternalName } from "../lib/entities/cleanse-name";
+import { dashesToSpaces } from "../lib/entities/normalize-name";
 import { sameTitleWord, sameWordSiblingMessage } from "./variantRole";
 
 export type { PlatformSide } from "./platformSlots";
@@ -136,11 +137,14 @@ export function selectorValueKey(value: string): string {
  * "B\eisbol", a decomposed accent or a double space would never equal its
  * cleansed upstream label under `selectorValueKey` alone, and sync would mint
  * a twin instead of attaching the second marketplace id. The tier compares
- * both sides through this, and ONLY the tier: `selectorValueKey` itself, the
- * sibling-clash check and `declinedUpstreamLabels` (stored keys) are unchanged.
+ * both sides through this, and ONLY the tier. A dash reads as a space
+ * ("Topps-Chrome" = "Topps Chrome", Jason 2026-11-21), like every other name
+ * key. `selectorValueKey` itself, the sibling-clash check and
+ * `declinedUpstreamLabels` (stored keys) are unchanged.
  */
 function nameTierKey(value: string): string {
-  return cleanseExternalName(value).toLowerCase();
+  // A dash is a space, here as in every other name key (Jason, 2026-11-21).
+  return dashesToSpaces(cleanseExternalName(value).toLowerCase()).replace(/\s+/g, " ").trim();
 }
 
 // ───────────────────────────────────────────────────────────────────────────

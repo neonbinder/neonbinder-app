@@ -39,9 +39,9 @@ describe("ladderPlayerName", () => {
   test.each([
     ["P. Mahomes", "p mahomes"],
     ["Shaquille O'Neal", "shaquille oneal"],
-    // The shared reading keeps a hyphen inside a token (the ladder used to
-    // delete it): "Jean-Luc" is one first name either way it is spelled.
-    ["Jean-Luc Picard", "jean-luc picard"],
+    // The shared reading turns a hyphen into a space (NEO-643; the ladder used
+    // to delete it, fusing "Jean-Luc" into "jeanluc").
+    ["Jean-Luc Picard", "jean luc picard"],
     ["C. J. Kayfus", "cj kayfus"],
     ["C.J. Kayfus", "cj kayfus"],
   ])("strips punctuation the way the identity key does: %s", (raw, expected) => {
