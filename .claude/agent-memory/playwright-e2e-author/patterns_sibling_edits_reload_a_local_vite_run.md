@@ -9,7 +9,7 @@ In a shared worktree another agent's edits (even `*.test.tsx` under `app/`, or a
 
 Also: never create a scratch spec inside `playwright/tests/` mid-run for the same reason; make it between runs and delete it.
 
-Related: [[patterns_local_vite_serves_one_worktree]], [[feedback_never_diagnose_timing_first]].
+Related: [[patterns_local_run_backend_and_vite]], never diagnose timing first (GUIDE).
 
 Pick List / Sales eBay specs (NEO-520): the toggle of a title-only eBay line is named `Pulled <title>, not in NB, eBay <order>` even though no "Not in NB" chip renders; a no-title line is `Unmatched sale, eBay <order>`. A `has:` filter built from a locator scoped to the same group never matches (GUIDE has/hasNot gotcha); build it with `pickRow`.
 

@@ -108,7 +108,7 @@ the failure screenshot and `error-context.md`:
 - `CardChecklistItem`: `Confirm?` still rendered after the confirm click
   (`handleDelete` only flips it back after `await deleteCard`);
 - `commitCardChecklist: finalize failed — Your request timed out performing too
-  many system operations.` in the wizard's error card: Convex's per-mutation
+  many system operations.` in the commit's error text: Convex's per-mutation
   system-operation time budget tripped by the finalize phase under load;
 - `RenameEntityControl`: the input is `aria-disabled` while saving; an enabled one
   means saving is FALSE (the keypress never reached `commit()`), a different class.
@@ -144,7 +144,7 @@ step across runs of the same branch:
   identical across runs.
 - **A big query**: `Confirm card matches` to the `Review Changes` dialog
   (`diffChecklistAgainstExisting` over 220 rows). Healthy 0.33 s.
-- **The entity-lookup drain**: the first "still looking up" going away per wizard
+- **The entity-lookup drain**: the first "Checking for players by that name…" / "still looking up" going away per walk
   spec. Healthy 1-26 s; a bad window puts six shards at 47-110 s at once.
 
 Take per-step durations from the Playwright report / JUnit timings of the runs
@@ -250,24 +250,20 @@ no retry. Report it; never work around it in the spec.
 
 See also feedback never diagnose timing first.
 
-## Wizard save wait is a commit headroom ruler
+## Commit save wait is a headroom ruler
 
-`Confirm & Save` -> `Saved N cards` on a ~300-card set (the one-marketplace wizard
-specs) is a 4-phase client-driven commit: prelude, 150-card chunks, finalize pages
-(rows walk, then the review-row drain), then `discardCandidates`, and only then
-the banner. Healthy it is about 3.5 s end to end from a laptop (server mutation
-time under 3 s), so the 7 s budget leaves only ~2x headroom: any load window that
-slows heavy writes 1.5-2x on a shared preview trips it on one shard while the
-other project's pass is green.
+Match Cards' `Confirm` -> `Saved N cards` on a ~300-card set (the one-marketplace specs; commit-first since
+NEO-645, the walk opens after the line) is a multi-phase client-driven commit: prelude, 150-card chunks, finalize
+pages, then `discardCandidates`, and only then the saved line. Healthy it was about 3.5 s end to end from a laptop
+(server mutation time under 3 s; measured before NEO-645, re-measure), so the 7 s budget leaves only ~2x headroom:
+any load window that slows heavy writes 1.5-2x on a shared preview trips it on one shard while the other
+project's pass is green.
 
 Reading the failure artifacts of such a red:
-- `error-context.md` shows the dialog still `Saving...` on the "Save N cards?"
-  step with `Decided (N)` present and the banner still "Kept all N cards..."; no
-  `Commit failed:` text means the commit had not thrown.
-- The failure PNG can be taken a moment LATER and show the wizard at "Step 1 of N,
-  Looking up 0 more names": that is not a reset. The finalize review-phase page has
-  drained the batch's review rows under the still-open wizard, so it re-derives
-  from nothing. It proves the commit was alive in its last phase.
+- `error-context.md` shows Match Cards still saving (the confirm in its busy state) and the banner still
+  "Kept all N cards..."; no `Commit failed:` text means the commit had not thrown.
+- The failure PNG can be taken a moment LATER than the stall: a later phase may already be draining rows under
+  the still-open dialog, which proves the commit was alive in its last phase.
 - Cards already listed behind the dialog ("Cards (300)") mean the chunks landed.
 
 Proof order: the other project's pass of the same spec (green, same shard cost),

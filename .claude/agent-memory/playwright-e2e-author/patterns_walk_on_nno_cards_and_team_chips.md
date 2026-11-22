@@ -35,5 +35,5 @@ Learned rewriting the Roanoke (all `NNO`) and 1996 Score title specs onto the Ti
 
 **Why:** NEO-645 Roanoke rewrite, 2026-11-22: a skip proof that compared `#NNO` lines failed on the
 first skip after a fresh-only commit. **How to apply:** any walk spec on NNO cards, or one that
-reads a no-team card's pre-fill. Related: [[patterns-tidy-walk-tiles-and-commit-first]],
-[[patterns-probe-the-rest-of-a-spent-fresh-only-run]].
+reads a no-team card's pre-fill. Related: [[patterns_tidy_walk_tiles_and_commit_first]],
+[[patterns_probe_the_rest_of_a_spent_fresh_only_run]].

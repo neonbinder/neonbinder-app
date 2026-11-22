@@ -26,4 +26,4 @@ no names has no skeleton), and nothing perceivable marks the context's arrival.
 
 **Why:** NEO-645 attention-walker rewrite, 2026-11-22; two of three runs red on the first pick.
 **How to apply:** any walk spec that presses a tile control right after a card opens and finds the
-control's panel gone. Related: [[patterns-tidy-walk-tiles-and-commit-first]].
+control's panel gone. Related: [[patterns_tidy_walk_tiles_and_commit_first]].

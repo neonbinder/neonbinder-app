@@ -25,4 +25,4 @@ that need fixing — tidy those up first".
 
 **Why:** NEO-645 rewrites of bowman-insert-grouping and the BSC Chrome-prefix listing spec,
 2026-11-22. **How to apply:** any spec that saves a checklist and then expects its parallels
-built. Related: [[patterns-tidy-walk-tiles-and-commit-first]], [[patterns-match-cards-specs-after-commit-first]].
+built. Related: [[patterns_tidy_walk_tiles_and_commit_first]], [[patterns_match_cards_specs_after_commit_first]].

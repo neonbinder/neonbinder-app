@@ -33,4 +33,4 @@ person" in the wizard does not release it). Default CAMEOS are added either way.
 - A parallel built from Base copies the hold-back and the cameo (Printing Plates: only the Base numbers
   the plate's BSC list has, 43 of 75; its attributes heading reads `<name> (Insert)`).
 
-Related: [[hand-made-rows-cannot-reach-the-commit-path]], [[capture-checklist-slug-probe]]
+Related: [[reference_hand_made_rows_cannot_reach_the_commit_path]], [[patterns_pick_a_fixture_name_from_bsc_facets_and_the_resolver]]

@@ -23,4 +23,4 @@ Client-only plants (served by a private Vite) that prove the walk helpers fail, 
   plant-test a helper whose only real callers are setup or fresh-only real-set specs; `rm` it after.
 
 **How to apply:** reuse these plants when the helpers change; revert by exact reverse edit, then
-`git diff --stat -- apps/web/components apps/web/src` must be empty. See [[patterns-tidy-walk-tiles-and-commit-first]].
+`git diff --stat -- apps/web/components apps/web/src` must be empty. See [[patterns_tidy_walk_tiles_and_commit_first]].

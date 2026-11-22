@@ -31,6 +31,6 @@ stays `Create player <name>` while only CLOSE matches exist (it becomes
 `Open …` / `Create player … anyway` only on an exact one).
 
 **Why:** a negative assert passes on a dead page or a wrong locator
-([[negative-asserts-pass-on-a-dead-page]]); this agent may not push functions
+([[patterns_negative_asserts_pass_on_a_dead_page]]); this agent may not push functions
 ([[patterns_planted_red_for_server_side_behaviour]]).
 **How to apply:** any spec asserting something is LEFT OUT of a ranked list.

@@ -37,4 +37,4 @@ the parallel build and a real fetch.
 **Why:** the earlier note (NEO-528) predates NEO-496 D10 and led specs to think a real set
 was needed. **How to apply:** before proposing a real set for a commit-path proof, try a
 hand-made set plus a leaf checklist.
-Related: [[patterns_cameo_specs_and_sorted_binder_pages]], [[checklist-is-a-match-cards-source]], [[patterns_checklist_is_a_match_cards_source]]
+Related: [[patterns_cameo_specs_and_sorted_binder_pages]], [[patterns_checklist_is_a_match_cards_source]], [[patterns_checklist_is_a_match_cards_source]]

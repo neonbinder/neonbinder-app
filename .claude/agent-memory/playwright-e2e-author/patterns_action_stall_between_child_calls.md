@@ -28,4 +28,4 @@ no "Waiting on BuySportsCards" line can show.
 **How to apply:** open the artifact first (screenshot + error-context), then
 run the requestId gap check before blaming BSC, slow reads (NEO-594) or the
 commit (NEO-599). Compare against the same check on an earlier green run's
-logs. See [[never-diagnose-timing-first]].
+logs. See never diagnose timing first (GUIDE).

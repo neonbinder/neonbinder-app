@@ -30,4 +30,4 @@ the tool's current code before relying on any line here; some may be fixed.
   run.lock). Any `run` creates the folder.
 
 **Why:** these cost time or misled the first live run. **How to apply:** any
-agent driving e2e-run from the Bash tool. Related: [[patterns-local-run-backend-and-vite]].
+agent driving e2e-run from the Bash tool. Related: [[patterns_local_run_backend_and_vite]].

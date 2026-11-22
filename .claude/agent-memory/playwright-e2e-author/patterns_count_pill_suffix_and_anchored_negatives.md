@@ -22,4 +22,4 @@ specs (bowman parallels, level-type-name cut) until a grep caught them.
 
 **How to apply:** when a label that specs anchor on changes shape, grep for the anchored form
 (`you$`, `exact: true`) and fix the negatives first; they never go red on their own.
-Related: [[negative-asserts-pass-on-a-dead-page]].
+Related: [[patterns_negative_asserts_pass_on_a_dead_page]].

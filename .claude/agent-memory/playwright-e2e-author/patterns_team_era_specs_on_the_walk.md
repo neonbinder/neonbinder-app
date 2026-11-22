@@ -43,5 +43,5 @@ sentence ("We've got 2 teams by that name. Pick the one on this card."), combobo
 teams", checkbox `Remember “<printed>” as a name for this team`. Stints: `addCareerStint`
 (support/players.ts) after `createTeamInCareerEditor`.
 
-Related: [[patterns-career-team-link-fixture-and-counter-fixture-proof]],
-[[same-name-team-eras-unprovable-on-a-card]], [[patterns-tidy-walk-tiles-and-commit-first]].
+Related: [[patterns_career_team_link_fixture_and_counter_fixture_proof]],
+[[patterns_same_name_team_eras_unprovable_on_a_card]], [[patterns_tidy_walk_tiles_and_commit_first]].

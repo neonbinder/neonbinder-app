@@ -23,4 +23,4 @@ the same short word on the same screen (e.g. an admin page's "Refresh" is a
 different route, so no clash). Transitional `.or()` / optional-word regexes
 added for a rename (`/^Change( team)?/`) are removed once every build serves
 the new name; tighten to the product's exact string. See
-[[patterns-tidy-walk-tiles-and-commit-first]].
+[[patterns_tidy_walk_tiles_and_commit_first]].

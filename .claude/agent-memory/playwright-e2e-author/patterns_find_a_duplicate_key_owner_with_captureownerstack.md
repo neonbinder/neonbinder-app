@@ -11,7 +11,7 @@ log nor a trace's console event carries a component stack (React 19 puts it in
 `console.createTask`, not the arguments). The key alone (a Convex id) does not
 tell you the table either: id prefixes do not map cleanly to tables.
 
-Find the owner in the HEAD snapshot only ([[probe-vite-from-a-head-snapshot]]),
+Find the owner in the HEAD snapshot only ([[patterns_probe_vite_from_a_head_snapshot]]),
 never in the worktree:
 
 1. Bucket the log lines by minute and match them to specs by working backwards
@@ -32,5 +32,5 @@ never in the worktree:
 
 Seen on NEO-591 after the NEO-602 merge: the team step rendered `TeamStepContext`
 and `TeamMatchSearch` as siblings in one fragment, both `key={current._id}`
-([[sibling-keyed-on-the-same-row-id-is-a-key-collision]]). Report it as a product
+(sibling keyed on the same row id is a key collision). Report it as a product
 finding. Specs stay green, so do not touch a spec for it.

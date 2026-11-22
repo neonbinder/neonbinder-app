@@ -11,4 +11,4 @@ metadata:
 - **How to see the shape of a run** (temp spec, deleted after): `page.on("websocket")` then `framereceived` counting `"teamResolved":false` / `true` with the batchId, and `framesent` containing `commitCardChecklist` counting `"teamLookup":"answered"`. A stale frame (`ready=44`, old batchId) between the cancel and the next Sync click means the masked shape; `answered=0` in the commit frame is the CI shape. `Emulation.setCPUThrottlingRate` (8x) and a 1.5 s card-listing delay did NOT reproduce it (the stale batch still seeded the dialog); skipping the first fetch does, deterministically.
 - **Fixture arithmetic worth keeping**: a Proof family of 44 cards, one claimed by the pasted row, needs 43 lookups; the cap leaves 3 for the lane even when everything works. The lane drains one card about every 2.1 s on the fake (pass 1 of an idle lane), so 35 cards is about 75 s and a 7 s assertion cannot wait it out: that is a product finding, not a budget.
 
-Related: [[patterns-leaf-vivid-real-unlicensed-set]], [[patterns-set-no-team-spec-shape]]
+Related: [[patterns_leaf_vivid_real_unlicensed_set]], [[patterns_set_no_team_spec_shape]]

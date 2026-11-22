@@ -25,4 +25,4 @@ metadata:
   byte-exact (`cp` backup + `cmp`). Each must go red at the assertion it guards.
 - macOS has no `timeout` binary; run Playwright directly with the Bash tool's timeout.
 
-**How to apply:** walk specs on a per-attempt hand-made sport ([[patterns-tidy-walk-spec-on-a-per-attempt-sport]]).
+**How to apply:** walk specs on a per-attempt hand-made sport ([[patterns_tidy_walk_spec_on_a_per_attempt_sport]]).

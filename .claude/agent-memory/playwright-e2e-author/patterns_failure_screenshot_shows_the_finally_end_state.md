@@ -22,4 +22,4 @@ NEO-426).
   when proving cleanup-on-red, check the database or log the leftovers from a
   planted run (a cleanup that silently failed once left a set behind, NEO-426).
 
-Related: [[patterns-finally-cleanup-without-an-isvisible-branch]]
+Related: [[patterns_finally_cleanup_without_an_isvisible_branch]]

@@ -12,16 +12,16 @@
 - [Flake forensics](reference_flake_runtime_forensics.md) — runtime proof for an intermittent flake
 - [Retire custom flow](reference_neo239_retire_custom_flow_impact.md) — NEO-239 isCustom retirement impact
 - [One-marketplace surfaces](reference_neo255_one_marketplace_surfaces.md) — what a one-marketplace sync shows
-- [Team alias fixture](reference_neo284_team_alias_fixture.md) — one-sided Rickwood fixture (NEO-284)
+- [Team link remembers name](reference_neo284_team_alias_fixture.md) — New Haven Ravens fixture, alias read-back
 - [Placeholder pair count](reference_placeholder_pair_count_forensics.md) — wrong "N pairs ready to print"
 - [SportLots twin names](reference_sportlots_twin_names_and_public_search.md) — NEO-325 shared name, two ids
 - [Team picker ranking](reference_neo331_team_picker_ranking.md) — 4 tiers; zero-write proof
 - [Same-text search legs](patterns_convex_same_text_search_legs_go_stale.md) — two search reads go stale
 - [Variant type title](reference_neo334_sub_variants_column_is_role_gated.md) — Base/Insert/Parallel by exact title
 - [Record fixture lookups](patterns_record_a_fixture_sets_lookups.md) — add Wikidata lookups to the recording
-- [Missing-team fixer](reference_reaching_the_missing_team_fixer.md) — hand-added card on a catalogue set
-- [Same-name player pick](reference_same_name_player_panel.md) — "Which <name> is this?" locators
-- [Teams on cards](reference_neo335_teams_on_cards_section.md) — NEO-335 teams line, "N need you" pill
+- [Team tile, hand-added card](reference_team_tile_on_a_hand_added_card.md) — whole-career chips, nothing preselected
+- [Same-name player pick](reference_same_name_player_panel.md) — Player tile pick list locators
+- [Need-you pill, set name](reference_neo335_teams_on_cards_section.md) — pill, badge, drawer Next card, shortener
 - [Quick-add PlayerPicker](reference_quick_add_player_picker.md) — create/pick handles; drawer chip proof
 - [Conflict pills](patterns_pairing_conflict_pills_are_bare_values.md) — bare values; preselect still asks
 - [Prove a theme](patterns_prove_a_theme_by_painted_colour.md) — toHaveCSS on banner and heading
@@ -64,7 +64,7 @@
 - [Reseed, fresh-only](patterns_rerun_a_fresh_only_spec_without_a_reseed.md) — restore spec; reset except reference seed
 - [Parallel titles dialog](patterns_parallel_titles_dialog_specs.md) — engineered names, sr-only status
 - [NEO-535 specs](patterns_neo535_description_walker_and_regenerate_specs.md) — stale text, walker order, plants
-- [Bulk busy label](patterns_bulk_walk_busy_label_toBeHidden_is_vacuous.md) — wait for "(0)", not label gone
+- [Bulk busy label](patterns_bulk_walk_busy_label_toBeHidden_is_vacuous.md) — wait for "Added N players.", not label gone
 - [Fast pool ceiling](patterns_shared_fast_pool_read_ceiling.md) — FAST_READ_CEILING, no fast-vs-heavy spec
 - [Adopting specs reseed](pattern_adopting_specs_need_reseed_for_planted_break.md) — failed reseed = silent green
 - [Vite from HEAD snapshot](patterns_probe_vite_from_a_head_snapshot.md) — builders' edits HMR-crash a worktree Vite
@@ -99,7 +99,7 @@
 - [Find one NNO card](patterns_find_one_card_among_nno_cards.md) — drawer Next/Previous by Card name
 - [Cross-sport resurface](pattern_cross_sport_player_resurfaces_on_resync.md) — New player row on re-sync
 - [Fake-BSC recordings](reference_survey_fake_bsc_recordings_for_a_fixture.md) — join results to teamName
-- [Teamless sport](patterns_teamless_sport_spec_and_review_batch_cleanup.md) — NEO-426 handles; real-set career check
+- [Teamless sport](patterns_teamless_sport_spec_and_review_batch_cleanup.md) — NEO-426 helpers, fixture, proofs
 - [Plant in HEAD snapshot](patterns_plant_product_breaks_in_a_head_snapshot.md) — plant/restore, cmp vs HEAD
 - [Sibling plant collision](patterns_planted_break_collides_with_a_sibling_plant.md) — baseline red = sibling mid-plant
 - [red-run.mjs](patterns_red_run_script_and_client_wire_log.md) — per-try triage, wire log

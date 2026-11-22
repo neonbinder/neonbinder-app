@@ -11,8 +11,8 @@ without a re-seed: pass a different `WORKER_INDEX` (8 desktop, 9 mobile, 10/11 f
 a planted-break or recheck run). Locally 3-11 all fall back to `TEST_EMAIL`, so it
 is the same user; run `bootstrap` for the new index first.
 
-A spec that commits a SHARED registry set (e.g. `checklist-wizard-link-team-saves-alias`,
-via `fetchOneMarketplaceSetChecklistToWizard`) does NOT separate by worker: its
+A spec that commits a SHARED registry set (e.g. `tidy-up-team-link-remembers-the-name`,
+via `fetchOneMarketplaceSetChecklistToTidyWalk`) does NOT separate by worker: its
 second run fails at `No cards in this checklist yet.` (the precondition, by
 name). That red is the documented "re-seed first", not a product bug: re-run
 `agent-convex.sh --seed`, then `setup` and `bootstrap`, then the mobile run.
@@ -22,4 +22,4 @@ WORKER_INDEX, the sole-writer one failed on its precondition.
 **How to apply:** before a two-project local batch, sort the specs: player-name-only
 ones take a worker swap; any spec in SET-REGISTRY's sole-writer list needs the re-seed,
 so run those first on mobile after a re-seed, or budget the ~6 min re-seed.
-Related: [[patterns-rerun-a-fresh-only-spec-without-a-reseed]].
+Related: [[patterns_rerun_a_fresh_only_spec_without_a_reseed]].

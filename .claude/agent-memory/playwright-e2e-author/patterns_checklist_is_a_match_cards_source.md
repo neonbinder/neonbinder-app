@@ -20,10 +20,9 @@ What that means for specs:
   `support/published-checklist.ts` waits, proves the teams line, keeps every
   marketplace single, keeps no checklist-only row, confirms.
 - "Teams from your checklist: N of M cards" is on the page while Match Cards
-  is open; after Confirm into the wizard it is gone until the saved line
-  repeats it. Assert it before Confirm.
-- After Confirm the pairing session is parked: the wizard offers "Back to
-  Match Cards" on a BSC + checklist fetch too.
+  is open; after Confirm it is gone until the saved line repeats it. Assert it
+  before Confirm. Confirm SAVES the cards (commit-first, NEO-645) and the Tidy
+  up walk opens after; there is no way back into Match Cards from the walk.
 - The checklist column heading is "Checklist only (n)" (was "Your checklist
   (n to link)" / "(all linked!)"); every row found: "Every checklist row
   found its card."
@@ -43,9 +42,9 @@ What that means for specs:
   cards" before asserting a chip or its "Unlink card ... from checklist row"
   button. Unlinking a one-marketplace server pair puts the card on the keep
   shelf ("Keeping (n)") and the row back in "Checklist only (n)".
-- Keeping a card in Match Cards is not a wizard decision: Cancel in a wizard
-  with nothing decided leaves at once ("Fetch cancelled — no cards saved."),
-  with no "Discard N decisions?" confirm, so `cancelAndDiscard` would go red.
+- Keeping a card in Match Cards is a pre-save choice, not a stored decision:
+  its Cancel is the pre-save exit ([[patterns_match_cards_specs_after_commit_first]]);
+  there is no review batch to discard afterwards.
 
 - Match Cards' pick controls are `role="radio"` with `aria-checked` inside the
   radiogroups "Pick a BSC card to link" / "Pick a checklist row to link"
@@ -85,8 +84,8 @@ nothing and pre-link the name pairs as suggestions. Since NEO-496 the dialog
 opens either way with Keep controls (no solo mode). Equal counts with ONE
 misspelled name: the server pairs it too, by a near name (a "Checklist #n" chip
 plus a "Name match NN%" chip in the collapsed Matched list). Linking a pair
-whose spellings differ makes the wizard open on "Checklist says otherwise"
-FIRST (`expectChecklistDisagreementFirst`, `pickDisagreementSide`, then Next).
+whose spellings differ raises a pink "Sources disagree" tile on that card
+(`takeSourceSide(page, "Checklist" | "BSC" | "SportLots")` answers every entry from the side's column).
 Match Cards "Cancel" with decisions made opens a "Discard N pairing?" confirm;
 click "Discard N pairing" too. Derive counts from the CSV through
 `nameFallbackFacts`, never hard-code.

@@ -9,7 +9,7 @@ metadata:
   repeats a word already in the title, case-folded: set `tlf<token>` + team `TLF<token>`
   gives a title with no team. Keep a spec's minted set and team prefixes distinct
   (`tlfset<token>` vs `TLF<token>`). Probe with the bundled generator
-  ([[title-fixture-arithmetic]]) before blaming the product.
+  ([[patterns_title_fixture_arithmetic]]) before blaming the product.
 - **Worker index changes title arithmetic.** ATTEMPT_ID/TOKEN are 2 chars longer on
   workers 10-11 than CI's 0-7, so a fixture near the 80 cap drops the sport locally and
   not in CI. Size fixtures for the longest worker, or pad to a fixed length.

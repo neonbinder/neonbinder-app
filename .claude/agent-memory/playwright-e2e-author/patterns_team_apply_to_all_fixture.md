@@ -28,4 +28,4 @@ open card has ONE team and is not pink. Two filters:
   after a press (it re-offers any card still proposed), so assert it by a regex, not a label.
 - Proven able to fail with a spec-only counter-fixture (stint 2010-2011: "No cards changed.").
 
-Related: [[patterns-tidy-walk-spec-on-a-per-attempt-sport]], [[patterns-career-tile-fixtures]].
+Related: [[patterns_tidy_walk_spec_on_a_per_attempt_sport]], [[patterns_career_tile_fixtures]].

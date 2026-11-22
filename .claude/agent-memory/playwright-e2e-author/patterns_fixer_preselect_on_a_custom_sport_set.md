@@ -27,4 +27,4 @@ that links `Add <player>` in the PlayerPicker. Quick-add never fills a team, so 
 **Why:** rewrite of the retired walker's fixer spec onto the walk (2026-11-22), green first run.
 **How to apply:** any Team-tile pre-fill spec. Prove it with one-value spec-only counter copies
 (`w<n>counter-*.spec.ts`, rm after) when the Vite is shared. Related:
-[[patterns_set_no_team_spec_shape]], [[patterns-team-fill-career-tier-fixture]].
+[[patterns_set_no_team_spec_shape]], [[patterns_team_fill_career_tier_fixture]].

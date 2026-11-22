@@ -25,4 +25,4 @@ Old team-lookup specs asserted `CARDS - M need you` or no pill; both are wrong n
 
 **Why:** NEO-645 BSC stall / 429 spec rewrites, 2026-11-22. **How to apply:** any spec that
 proves a card waits on the background team lookup, or counts the pill after a fetch.
-Related: [[patterns-tidy-walk-tiles-and-commit-first]], [[patterns-match-cards-specs-after-commit-first]].
+Related: [[patterns_tidy_walk_tiles_and_commit_first]], [[patterns_match_cards_specs_after_commit_first]].

@@ -6,7 +6,7 @@ metadata:
 ---
 
 **Loaded deployment vs slow code (NEO-592 run, brand-unknown mobile red).** After
-the requestId gap check ([[action-stall-between-child-calls]]) finds no idle gap,
+the requestId gap check ([[patterns_action_stall_between_child_calls]]) finds no idle gap,
 compare each child mutation's `executionTime` median inside the 10-15 s failure
 window against the same function's median over the rest of the shard log. A
 year-wide Sets sync (`syncSetsAcrossManufacturers`: one `ensureBrandRow` per

@@ -32,4 +32,4 @@ Rewriting a multi-fetch Match Cards spec onto the NEO-645 walk (Confirm saves):
 
 **Why:** NEO-645 numbers-differ and team-leader rewrites, 2026-11-22. **How to apply:** any spec
 whose old flow cancelled between Match Cards and the save, or reads a source disagreement.
-Related: [[patterns-tidy-walk-tiles-and-commit-first]], [[patterns-probe-the-rest-of-a-spent-fresh-only-run]].
+Related: [[patterns_tidy_walk_tiles_and_commit_first]], [[patterns_probe_the_rest_of_a_spent_fresh_only_run]].

@@ -25,4 +25,4 @@ no stop of its own.
   preselected, years otherwise.
 
 **How to apply:** any Q1-A or pre-fill spec; read the tile's chip source before choosing stint years.
-Related: [[patterns-set-history-link-with-no-walk-stop]], [[patterns-tidy-walk-spec-on-a-per-attempt-sport]].
+Related: [[patterns_set_history_link_with_no_walk_stop]], [[patterns_tidy_walk_spec_on_a_per_attempt_sport]].

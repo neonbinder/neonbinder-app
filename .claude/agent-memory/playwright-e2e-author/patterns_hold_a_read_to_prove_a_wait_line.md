@@ -15,4 +15,4 @@ A wait-line proof that accepts "the page line OR the dialog's sentence" passed a
 - Read "the screen said nothing" off the trace's screencast frames: frames are written only when the screen changes, so a gap between the click's frame and the dialog's frame is time with nothing new on screen.
 
 **Why:** NEO-628 audit of the NEO-624 fix; the held read also exposed that the page line stands down for a two-source run before the dialog exists (6.5 s with only "Fetching...").
-**How to apply:** any spec proving a marketplace wait line. Related: [[fake-bsc-faults-and-the-call-gate]], [[patterns-dialog-seed-from-stale-batch-masks-a-lookup-loss]].
+**How to apply:** any spec proving a marketplace wait line. Related: [[patterns_fake_bsc_faults_and_the_call_gate]], [[patterns_dialog_seed_from_stale_batch_masks_a_lookup_loss]].

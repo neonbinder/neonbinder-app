@@ -25,4 +25,4 @@ For a spec whose old wizard loop pressed "Skip <name> — not a person" / "not a
   --limit 8000 --format jsonl` (limit must stay at or under the server cap) proves which branch ran.
 
 **Why:** NEO-645 every-card-player/cameo rewrites, 2026-11-22. **How to apply:** any rewrite of a
-"rule names out" wizard spec. Related: [[patterns-tidy-walk-tiles-and-commit-first]].
+"rule names out" wizard spec. Related: [[patterns_tidy_walk_tiles_and_commit_first]].

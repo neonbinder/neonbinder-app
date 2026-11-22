@@ -26,4 +26,4 @@ PostHog "already initialized" and Clerk "development keys" lines. Anything else 
 **Why:** the coordinator asks for a console check at release time; the trace route
 covers every spec in the one run that also proves pass/fail, on both projects.
 **How to apply:** add `--trace=on` to the final run's command; scan; `rm -rf` the
-output dir before handing back. Related: [[sibling-edits-reload-a-local-vite-run]].
+output dir before handing back. Related: [[patterns_sibling_edits_reload_a_local_vite_run]].

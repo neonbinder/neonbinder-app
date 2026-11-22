@@ -30,4 +30,4 @@ then `rm` the copy. It proves the spec tells the rule's two outcomes apart.
 **Answered name rows drop the name from the card header:** after "Not a player" the header need
 not say `#1 · <name>`; locate a card by `^#<n>( · .+)?$` across an answer.
 
-Related: [[patterns-tidy-walk-spec-on-a-per-attempt-sport]], [[patterns-tidy-walk-tiles-and-commit-first]].
+Related: [[patterns_tidy_walk_spec_on_a_per_attempt_sport]], [[patterns_tidy_walk_tiles_and_commit_first]].
