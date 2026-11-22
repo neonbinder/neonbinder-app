@@ -441,13 +441,14 @@ test(
         .filter({ hasText: "New England Patriots" });
       await skipUntil(page, sixSays, { maxCards: SET_CARDS });
       // The checklist's side says, in words, that the card shows no team (the retired wizard read
-      // "No team on the card"), and offers that side by those words.
+      // "No team on the card"), and offers that side in plain words, unquoted ("Use no team
+      // instead"; a named value stays quoted, “Padres”).
       await expect(column("Checklist")).toContainText(/No team/i);
-      const useNoTeam = disagree.getByRole("button", { name: /Use “No team[^”]*” instead/i });
+      const useNoTeam = disagree.getByRole("button", { name: "Use no team instead", exact: true });
       await expect(useNoTeam).toBeVisible();
       await expectAccessible(page, { within: walk, label: "Tidy Up walk, a No Team claim against a team-leader card's team" });
       await useNoTeam.click();
-      await expect(disagree.getByRole("status")).toHaveText(/^Using “No team[^”]*” \(Checklist\)$/i);
+      await expect(disagree.getByRole("status")).toHaveText("Using no team (Checklist)");
       await saveForLater(page);
 
       // The checklist's side was taken: #6a (still named for its team, the TC rule) shows no team

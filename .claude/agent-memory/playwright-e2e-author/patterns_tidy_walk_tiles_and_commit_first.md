@@ -68,6 +68,10 @@ that must not write a real set, there is no pre-save exit any more: give it its 
   "Type the player name yourself"; Esc closes only the field and refocuses the button; its submit
   is "Use this player name"), then status `Using “<value>” (<source label>)` and "Change the
   player name".
+- **An empty side is unquoted:** a source with no value reads "No team on the card" in its column,
+  but the button and status say it plainly: "Use no team instead", "Using no team (Checklist)"
+  (a named value keeps its curly quotes). An NB-preferred pick reads "Went with “X”, they're
+  already in your binder."
 - **A pick writes the PLAYER, not "Card name".** The card name keeps the commit's (Match Cards
   preselected) spelling; read a pick back from the drawer's "Title built from" chips and the
   stored "Card title", never the Card name box.
