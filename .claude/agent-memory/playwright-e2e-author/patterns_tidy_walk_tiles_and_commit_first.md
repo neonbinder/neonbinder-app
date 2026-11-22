@@ -131,3 +131,20 @@ that must not write a real set, there is no pre-save exit any more: give it its 
 - **Done replaces the `?tidy=done` entry**: browser Back from the checklist afterwards REOPENS the
   walk on its last card. A column Back/Forward check placed after a walk lands in the walk; put
   it before the fetch, or prove Back inside the walk (end screen -> last card -> Forward).
+
+## Autograph radiogroup and "Did you mean" on the Player tile (NEO-645 autograph + S2 specs)
+
+- **Autograph radios save on an arrow** and are `aria-disabled` while the write runs: before
+  the next key, wait for `getByRole("radio", { name, checked: true, disabled: false })`, or a
+  quick second arrow is dropped by the busy guard while focus still moves. Enter on a radio is
+  the radio's (useTidyKeys `ownsEnter`), never Save & next; it hands focus to Save & next when
+  nothing else is pink. "Apply to all N autographed cards" counts the whole leaf; its status
+  reads "Applied." (the cascade is scheduled; read other cards back in the drawer, 7 s).
+- **Outline vs primary is provable by paint:** an outline NeonButton computes
+  `background-color: rgba(0, 0, 0, 0)` (`--nb-fill: transparent`); assert `toHaveCSS` for the
+  outline and `not.toHaveCSS` for the filled one, and pair it with the same control painted the
+  other way on a counter card. Reading order of a row's buttons: `row.getByRole("button").allInnerTexts()`.
+- **"Did you mean" fixture:** one player `Jackson Holliday<token>` with a stint at the card's team
+  covering the year on a hand-made sport; print one letter dropped (suggestion) and three letters
+  changed in the surname (none: the limit is 2 edits on >= 12-char names). Counter-fixture: the
+  player three letters off the printed name, the spec goes red at the suggestion.
