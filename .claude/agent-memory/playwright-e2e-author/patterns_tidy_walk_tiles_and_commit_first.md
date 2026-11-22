@@ -160,3 +160,19 @@ that must not write a real set, there is no pre-save exit any more: give it its 
   covering the year on a hand-made sport; print one letter dropped (suggestion) and three letters
   changed in the surname (none: the limit is 2 edits on >= 12-char names). Counter-fixture: the
   player three letters off the printed name, the spec goes red at the suggestion.
+
+## A parse spec on the walk (NEO-645 set-checklist-pdf rewrites)
+
+- **Checklist-only fetch, every name new:** "Saved N cards." then the walk opens by itself; reach
+  one printed name with `skipUntil(page, tidyTile(page, "Player").getByRole("group", { name:
+  "Player <printed>", exact: true }), { maxCards: N })`, assert the header (`#NNO · <printed>`),
+  then Save for later; the pill reads "N need you". The checklist is Virtuoso, so a row-name check
+  for one NNO card among dozens is not reliable: prove the name in the walk instead.
+- **After a walk, re-drill instead of Back** (`drillToCustom` does its own `page.goto`): each card
+  the walk showed is a history entry, so a goBack chain lands in the walk. Put the column's
+  Back/Forward proof BEFORE the Sync.
+- **Spec-only counter-fixture on a shared Vite:** a temp copy with the expected name flipped (the
+  printed "last first" order) goes red at `skipUntil`; delete it after the run.
+- **A real set whose commit would build parallels** keeps its "never committed" claim by leaving
+  through Match Cards' "Cancel card matching" + `^Discard [0-9]+ pairings?$`; drop the walk proof
+  there and say which spec covers the tile.

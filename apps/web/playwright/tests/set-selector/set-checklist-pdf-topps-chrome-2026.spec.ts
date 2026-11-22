@@ -29,18 +29,21 @@
 //      (NEO-625: an accented marketplace id once failed the Save before it
 //      was sent); Save, and Exposé is a row of the Inserts column.
 //   4. The token set's fetch is checklist-only: no marketplace, so no Match
-//      Cards; it keeps the 3 cards and, every name being on the catalogue,
-//      commits them straight away (no wizard), with no marketplace link, the
-//      teams from the checklist and the clubs without their marks. Proved, its
-//      cards and row are deleted there and then.
+//      Cards; it keeps the 3 cards and commits them, and every name and team
+//      being on the catalogue, no card needs a person, so the Tidy Up walk
+//      stays shut (NEO-645); no marketplace link, the teams from the
+//      checklist and the clubs without their marks. Proved, its cards and row
+//      are deleted there and then.
 //   5. Future Stars' fetch has two sources, so Match Cards opens: FS-9 is
 //      matched by name with its "Checklist #109" chip and a percentage, and its
 //      two spellings are one name picker (BSC's preselected, the checklist's
 //      "· your checklist"), FS-10
-//      is BSC-only and is kept, no checklist row is left. Confirm, the picker
-//      untouched, reaches the
-//      wizard on "Checklist says otherwise" (Skenns vs Skenes); Cancel (nothing
-//      is decided yet, so it leaves at once) saves nothing.
+//      is BSC-only and is kept, no checklist row is left. Confirm would SAVE
+//      the cards now (NEO-645: the walk opens after the commit), so the fetch
+//      leaves through Match Cards' own Cancel: the keep makes it ask "Discard
+//      N pairings?", and Discard saves nothing. The walk's side of Skenns vs
+//      Skenes (its "Sources disagree" tile) is proved by the specs that commit
+//      a published checklist, not on this set.
 //   6. Clean up: Back through the picks to the set, then Remove checklist.
 //
 // FIXTURE (SET-REGISTRY.md -> "Baseball -> 2026 -> Topps Chrome"): Baseball >
@@ -49,7 +52,8 @@
 // left in place, the run-start reset is its cleanup); FRESH-ONLY (R7a): the Inserts column is
 // synced and Future Stars linked by the first run, so a re-run fails at the
 // "Upload checklist" precondition by name: re-seed first. Never commits a card
-// of Future Stars (its commit would build the grouped parallels too).
+// of Future Stars (its commit would build the grouped parallels too): its
+// fetch is cancelled in Match Cards, the one exit before the save (NEO-645).
 //
 // Not a hand-rolled drill by choice (R9): the helpers drill a Base or a brand's
 // set; this set sits under the year's Unknown brand, reached through the pinned
@@ -69,7 +73,7 @@ import {
 } from "../../support/set-builder";
 import { confirmDeleteCardButton, deleteCardButton, editCardButton } from "../../support/cards";
 import { matchCardsDialog, nearNamePair, removeSetChecklistUnderAllBrands } from "../../support/published-checklist";
-import { expectChecklistDisagreementFirst, reviewWizard } from "../../support/wizard";
+import { settleWalkAfterCommit } from "../../support/tidy-walk";
 import { buildToppsPdf } from "../../fixtures/checklists/build-fixtures.mjs";
 
 const SET = "Topps Chrome";
@@ -273,15 +277,17 @@ test(
       await syncChecklistButton(page).click();
       // No marketplace is attached, so nothing is asked of one and nothing is matched: the fetch
       // keeps the three rows ("Kept all 3 cards from your checklist. Nothing to match, no
-      // marketplace attached.") and, every name being on the catalogue, the commit goes straight
-      // through, its "Saved" line replacing the kept one. Both lines are this fetch's (the set was
+      // marketplace attached.") and commits them (NEO-645: every fetch saves before any walk), its
+      // "Saved" line replacing the kept one. Both lines are this fetch's (the set was
       // empty a step ago), so either is the sync point; the saved line, exactly, is the proof.
       const kept = page.getByText("Kept all 3 cards from your checklist. Nothing to match, no marketplace attached.");
       const saved = page.getByText("Saved 3 cards. Teams from your checklist: 3 of 3 cards.", { exact: true });
       await expect(kept.or(saved).first()).toBeVisible();
       await expect(saved).toBeVisible();
       await expect(matchCardsDialog(page)).toHaveCount(0);
-      await expect(reviewWizard(page)).toHaveCount(0);
+      // NEO-645: the cards are saved before the walk would open, and none needs a person (each
+      // name and team is the catalogue's), so the walk stays shut and no "N need you" pill shows.
+      expect(await settleWalkAfterCommit(page, saved), "no card of the token set needs a person").toBe(false);
 
       for (const number of ["1", "2", "NNO"]) await expect(editCardButton(page, number)).toBeVisible();
       await expect(editCardButton(page, "1")).toHaveAccessibleName("Edit card 1, Colt Keith");
@@ -366,16 +372,20 @@ test(
       await benge.click();
       await expect(matchCards.getByRole("heading", { name: "BSC only (0)" })).toBeVisible();
       await expect(matchCards.getByRole("heading", { name: "Keeping (1)" })).toBeVisible();
-      await matchCards.getByRole("button", { name: "Confirm card matches" }).click();
+      // NEO-645: Confirm saves the cards (and a Future Stars commit builds its parallels), so the
+      // fetch leaves through Match Cards' own Cancel, the one exit before the save. The keep is the
+      // operator's work, so Cancel asks first (NEO-220), and Discard writes nothing. (Its count is
+      // every edit the dialog holds, the keep among them; not pinned here.)
+      await matchCards.getByRole("button", { name: "Cancel card matching", exact: true }).click();
+      const discard = page.getByRole("button", { name: /^Discard [0-9]+ pairings?$/ });
+      await expect(discard).toBeVisible();
+      await expect(
+        page.getByText("Closing throws away every link, keep and name choice on this screen. No cards have been saved."),
+      ).toBeVisible();
+      await discard.click();
       await expect(matchCards).toBeHidden();
-      // The checklist's "Paul Skenns" against the card's "Paul Skenes": the operator decides.
-      await expectChecklistDisagreementFirst(page);
-      await expectAccessible(page, { within: reviewWizard(page), label: "Wizard opens on the checklist disagreement" });
-      // Nothing was decided in the wizard (Match Cards' keep is not a wizard decision), so Cancel
-      // leaves at once, with no "Discard N decisions?" to answer, and saves nothing.
-      await reviewWizard(page).getByRole("button", { name: "Cancel (Esc)" }).click();
-      await expect(page.getByText("Fetch cancelled — no cards saved.")).toBeVisible();
-      await expect(reviewWizard(page)).toBeHidden();
+      await expect(discard).toBeHidden();
+      await expect(page.getByText("Sync cancelled — no cards saved.")).toBeVisible();
       await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
 
       // ══ 6. CLEAN UP: Back to the set itself, whose panel holds the checklist ══
