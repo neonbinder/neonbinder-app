@@ -28,7 +28,7 @@
 // reason a seed met BSC's 429). The seed is therefore NOT the live proof for
 // per-card lookups: those are `checklist-bsc-team-enrichment` (card #300),
 // `checklist-fetch-bounds-a-bsc-stall-and-queues-the-cards` and
-// `checklist-published-upload-skips-bsc-and-asks-on-disagreement`. The Insert and
+// `checklist-published-upload-skips-bsc-and-asks-on-the-sources-disagree-tile`. The Insert and
 // the Gold Wave build stay live syncs.
 //
 // R5 exempts the seed as a class: every wait below is the flow's own measured

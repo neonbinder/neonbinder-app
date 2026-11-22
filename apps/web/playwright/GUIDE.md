@@ -774,7 +774,7 @@ otherwise". So the seed asks BSC for the bulk checklist and for ONE card, and
 **setup is no longer the live proof for per-card team lookups.** The live proofs
 are `checklist-bsc-team-enrichment` (card #300), the stall spec
 (`checklist-fetch-bounds-a-bsc-stall-and-queues-the-cards`) and the upload spec
-(`checklist-published-upload-skips-bsc-and-asks-on-disagreement`). Do not read a
+(`checklist-published-upload-skips-bsc-and-asks-on-the-sources-disagree-tile`). Do not read a
 green seed as evidence that a per-card BSC lookup works. The Future Stars insert
 uploads its own file too (20 cards, `fixtures/checklists/2024-topps-chrome-insert-future-stars.csv`);
 the Gold Wave build is a copy of Base's cards and asks BSC for nothing per card.

@@ -54,3 +54,22 @@ that must not write a real set, there is no pre-save exit any more: give it its 
   listing title was cut short" (pink is "needs attention: …"). A 45-char team fit and stayed clean.
 - **Planting a break needs a Vite nobody else is using**: a plant hot-reloads product code, so on a
   shared snapshot Vite it would red every other author's run. Hand the plant back instead.
+
+## Sources disagree and the set-name shortener (NEO-645 published-upload and long-set-name specs)
+
+- **Sources disagree tile:** list "What each source says: Player name", one listitem per source
+  whose textContent starts with its label ("BSC…", "Checklist…"; the differing letters are a `<u>`,
+  so use `toContainText`). Buttons `Use “<value>”`, "Type another…" (opens textbox "Type the
+  player name yourself"; Esc closes only the field and refocuses the button), then status
+  `Using “<value>” (<source label>)` and "Change the player name".
+- **A pick writes the PLAYER, not "Card name".** The card name keeps the commit's (Match Cards
+  preselected) spelling; read a pick back from the drawer's "Title built from" chips and the
+  stored "Card title", never the Card name box.
+- **Walk order is (ready, number):** visit every card in a loop bounded by the set's size, read
+  the number off `tidyCardIdentity(page)` line 0 (`/^#(\S+)/`), and Skip the ones that are not
+  the spec's.
+- **Over-80 set name:** a 100-char unbroken set name makes every generated title pink; the tile
+  opens in edit mode ("Card title for #<n>"). "Shorten the set name for every card" opens
+  "Set name in titles" (focused); the title BOX's value follows each typed name (assert with two
+  fills); "Save and apply to all N cards" -> status "Set name saved. The other cards' titles are
+  updating." and the others are retitled by a scheduled page before the walk reaches them.

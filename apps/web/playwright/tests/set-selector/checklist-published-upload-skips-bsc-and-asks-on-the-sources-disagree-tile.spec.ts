@@ -4,7 +4,8 @@
 // with the marketplace instead of settling it silently (rule 7: a number that
 // matches but a player that does not is a likely misread, never settled). And
 // (NEO-591, names first) where the checklist cannot say which row is the card,
-// it pairs neither and leaves the card to BSC alone.
+// it pairs neither and leaves the card to BSC alone. NEO-645: the asking is the
+// per-card Tidy Up walk's "Sources disagree" tile, after the cards are saved.
 //
 // The flow, as the operator lives it, on a small BSC-only set:
 //   1. Paste the checklist in the published line format ("<number> <player> -
@@ -26,26 +27,26 @@
 //      with one name picker ("Name for #2": BSC's spelling preselected, the
 //      checklist's "· your checklist"), and the Matched toggle counts the two;
 //      they are left untouched. The helper keeps the card and leaves the rows.
-//   3. A preselect is no answer, so the review wizard OPENS on "Checklist says otherwise" (it comes before any
-//      name step): one group per disagreement ("Disagreement on #2", "#4"), each
-//      with "Keep the marketplace's" and "Use the checklist's" radios. Next is held
-//      ("Pick a side on every card first", after a blocked press) until both have a side; the bulk name
-//      links are hidden there; Back from the first name step ("Back to previous
-//      step") returns to it. "Keep the marketplace's on all" answers both at
-//      once, then #2 is changed to the checklist's spelling on its own: #2 takes
-//      the checklist's and #4 the marketplace's, so each side lands on a card and
-//      both are read back.
+//   3. NEO-645: Confirm SAVES the cards ("Saved N cards."), then the walk opens.
+//      A preselect is no answer, so #2 and #4 each open on a PINK "Sources
+//      disagree" tile: its list "What each source says: Player name" shows BSC's
+//      spelling and the checklist's, Save & next is held with the "N to fix"
+//      line, and "Type another…" opens "Type the player name yourself" (Esc
+//      closes it, nothing written). #2 takes the checklist's spelling ("Use
+//      “<typo>”" -> "Using “<typo>” (Checklist)") and #4 the marketplace's, so
+//      each side lands on a card; the tile stops being pink, and with no other
+//      card holding the same disagreement no "Apply to the N cards with the same
+//      disagreement" is offered. Every other card is skipped (its names are not
+//      this spec's), so the end screen counts them skipped.
 //   4. D2 (Jason, 2026-11-10): card #6, which no row could be pinned to, is
 //      looked up on BSC for just that card. Proof from the user's side:
 //      the "17 of 18" line (the other 17 took the checklist's answer, so BSC was
-//      asked for no card but #6), the invented team on #6's two rows is never
-//      offered as a New Team step, and the saved card #6 carries its own name and
-//      not that team. NOT provable from the screen: that BSC's own team
-//      then landed on #6. Every name is skipped, so BSC's team (a team NB does
-//      not know) is skipped with them, and the teams step names no marketplace
-//      value for a grouped card; that needs a team created in the wizard, which is
-//      a shared row this spec does not mint. The backend's own log line for the
-//      fetch ("calls":1 for 18 cards) is what shows BSC was asked once.
+//      asked for no card but #6), card #6 has no Sources disagree tile and the
+//      invented team on #6's two rows is never shown in the walk, and the saved
+//      card #6 carries its own name and not that team. NOT provable from the
+//      screen: that BSC's own team then landed on #6 (it is a name NB does not
+//      know, left for the operator). The backend's own log line for the fetch
+//      ("calls":1 for 18 cards) is what shows BSC was asked once.
 //
 // BEFORE THE REAL PASTE the dialog is shown three things that are not the checklist:
 //   * a paste that reads as no card: the count's status says "Nothing reads as a
@@ -65,15 +66,16 @@
 // the flow below. No plain Sync follows the Remove: that would ask BSC for each of
 // the 18 cards live.
 //
-// FIXTURE (SET-REGISTRY.md -> "Hockey -> 1995 -> Oklahoma City Blazers CHL",
-// PROPOSED, needs Jason's approval): SOLE WRITER of that set (BSC only, 18 cards,
-// reached through the All Brands view); FRESH-ONLY, it commits the checklist, so
-// a re-run on the same seed fails at "No cards in this checklist yet." by name.
-// Every name is skipped, so no player or team is minted.
+// FIXTURE (SET-REGISTRY.md -> "Hockey -> 1995 -> Oklahoma City Blazers CHL"):
+// SOLE WRITER of that set (BSC only, 18 cards, reached through the All Brands
+// view); FRESH-ONLY, it commits the checklist, so a re-run on the same seed fails
+// at "No cards in this checklist yet." by name. Every name is left unanswered
+// (skipped in the walk), so no player or team is minted; the two picks write
+// only the picked spellings as pending names on #2 and #4.
 //
 // Desktop and mobile: one spec, no branch (role and label locators; click()
-// scrolls). Axe runs in light and dark on the dialog's preview and on the
-// disagreement step.
+// scrolls). Axe runs in light and dark on the dialog's preview, Match Cards and
+// the walk's pink Sources disagree tile.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { editCardButton, escapeRe } from "../../support/cards";
 import { expectAfterMarketplace } from "../../support/marketplace-wait";
@@ -88,18 +90,19 @@ import {
   publishersChecklistDialog,
 } from "../../support/published-checklist";
 import { setBuilderReady, syncChecklistButton } from "../../support/set-builder";
+import { openOneMarketplaceSetBase } from "../../support/wizard";
 import {
-  advanceToSave,
-  confirmSaveButton,
-  checklistDisagreementHeading,
-  disagreementOn,
-  expectChecklistDisagreementFirst,
-  openOneMarketplaceSetBase,
-  reviewWizard,
-  pickASideFirst,
-  pickDisagreementSide,
-  pickSideForAllCards,
-} from "../../support/wizard";
+  expectCardSettled,
+  finishTidyWalk,
+  mustFixLine,
+  pinkTile,
+  settleWalkAfterCommit,
+  skipCard,
+  tidyCardIdentity,
+  tidyFooterButton,
+  tidyTile,
+  tidyWalk,
+} from "../../support/tidy-walk";
 
 const SET = "Oklahoma City Blazers CHL";
 /** The dialog's own words for a paste that reads as no card, a Use with nothing to use, and a Use with no subset ticked. */
@@ -123,7 +126,7 @@ function misspell(name: string): string {
 }
 
 test(
-  "Checklist — a pasted publisher's checklist gives a fetch its teams without asking BSC per card, lists what it could not read, and asks where it disagrees with the marketplace (NEO-478)",
+  "Checklist — a pasted publisher's checklist gives a fetch its teams without asking BSC per card, lists what it could not read, and asks on the Tidy Up walk where it disagrees with the marketplace (NEO-478, NEO-645)",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     const bogusTeam = `Dup${env.ATTEMPT_TOKEN}`;
@@ -330,85 +333,107 @@ test(
     await expectAccessible(page, { within: matchCards, label: "Match Cards with BSC and a pasted checklist" });
     // Keeps the card no row could be pinned to (#6), leaves its two rows, and confirms.
     await confirmChecklistMatchCards(page, { what: "the Oklahoma City Blazers fetch" });
-    const wizard = reviewWizard(page);
-    await expect(wizard).toBeVisible();
 
-    // ── 3. The step that asks comes first, one group per disagreement ──
-    await expectChecklistDisagreementFirst(page);
-    const onTwo = disagreementOn(page, "2");
-    const onFour = disagreementOn(page, "4");
-    await expect(onTwo).toBeVisible();
-    await expect(onFour).toBeVisible();
-    // Card #6 is a repeated number, not a disagreement: the checklist cannot speak for it.
-    await expect(disagreementOn(page, "6")).toHaveCount(0);
-    await expectAccessible(page, { within: wizard, label: "Entity review wizard, Checklist says otherwise" });
-    // Each group shows both spellings, so the operator sees what each side says.
-    await expect(onTwo.getByText(typoTwo).first()).toBeVisible();
-    await expect(onTwo.getByText(two.player).first()).toBeVisible();
-    // Next is held until every card has a side: Enter on it is refused with a status (shown
-    // only after the blocked press), and the next pick replaces it. (Focus arrives on the
-    // first card's radio, where Enter picks it, so the press is made from Next itself.)
-    const next = wizard.getByRole("button", { name: "Next (Enter)", exact: true });
-    await next.focus();
-    await page.keyboard.press("Enter");
-    await expect(pickASideFirst(page)).toBeVisible();
-    await expect(checklistDisagreementHeading(page)).toBeVisible();
-    await pickDisagreementSide(page, "2", "Use the checklist's");
-    await expect(page.getByText("Picked 1 of 2 cards").first()).toBeVisible();
-    await expect(pickASideFirst(page)).toBeHidden();
-    // The bulk answer sets every card at once (it overrides #2's pick), and each card can be changed on its own.
-    await pickSideForAllCards(page, "Keep the marketplace's", ["2", "4"]);
-    await expect(page.getByText("Picked 2 of 2 cards. All answered — hit Next!").first()).toBeVisible();
-    await pickDisagreementSide(page, "2", "Use the checklist's");
-    await expect(onFour.getByRole("radio", { name: "Keep the marketplace's", exact: true })).toBeChecked();
-    await expect(page.getByText("Picked 2 of 2 cards. All answered — hit Next!").first()).toBeVisible();
-
-    // On to the name steps (every name skipped), then Back lands on this step with both picks kept.
-    await next.click();
-    await expect(checklistDisagreementHeading(page)).toBeHidden();
-    await wizard.getByRole("button", { name: "Back to previous step" }).click();
-    await expect(checklistDisagreementHeading(page)).toBeVisible();
-    await expect(onTwo.getByRole("radio", { name: "Use the checklist's", exact: true })).toBeChecked();
-    await expect(onFour.getByRole("radio", { name: "Keep the marketplace's", exact: true })).toBeChecked();
-    await next.click();
-    await expect(checklistDisagreementHeading(page)).toBeHidden();
-    const skipRemaining = wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ });
-    await expect(skipRemaining.or(next).first()).toBeVisible();
-    if (await skipRemaining.isVisible()) await skipRemaining.click();
-
-    // ── 4. D2: the repeated number's card was asked of BSC; the invented team was never offered ──
-    await advanceToSave(page);
-    await expect(wizard.getByText(bogusTeam)).toHaveCount(0);
-    await expect(confirmSaveButton(page)).toBeVisible();
-    await confirmSaveButton(page).click();
-    await expect(page.getByText(/Saved [0-9]+ cards/)).toBeVisible();
-    await expect(wizard).toBeHidden();
+    // ── 3. NEO-645: the cards are saved first, then the walk asks on each disagreeing card ──
+    const saved = page.getByText(/Saved [0-9]+ cards/).first();
+    await expect(saved).toBeVisible();
+    expect(await settleWalkAfterCommit(page, saved), "two cards disagree with the checklist, so the walk opens").toBe(true);
+    const walk = tidyWalk(page);
+    const disagree = tidyTile(page, "Sources disagree");
+    const says = disagree.getByRole("list", { name: "What each source says: Player name", exact: true });
+    // Each source's column: its label, then its value (the differing letters underlined).
+    const column = (source: "BSC" | "Checklist") => says.getByRole("listitem").filter({ hasText: new RegExp(`^${source}`) });
+    // #2 takes the checklist's spelling, #4 keeps the marketplace's: each side lands on a card.
+    const picks: Record<string, { marketplace: string; checklist: string; use: string; from: "BSC" | "Checklist" }> = {
+      "2": { marketplace: two.player, checklist: typoTwo, use: typoTwo, from: "Checklist" },
+      "4": { marketplace: four.player, checklist: typoFour, use: four.player, from: "BSC" },
+    };
+    const seen: string[] = [];
+    // The walk's order is (ready, number), not fixed: every card is visited, bounded by the set's size.
+    for (let i = 0; i <= rows.length; i++) {
+      const done = tidyFooterButton(page, "done");
+      await expect(tidyTile(page, "More about this card").or(done).first()).toBeVisible();
+      if (await done.isVisible()) break;
+      await expectCardSettled(page);
+      const identity = await tidyCardIdentity(page).allTextContents();
+      const number = /^#(\S+)/.exec(identity[0] ?? "")?.[1] ?? "";
+      expect(number, `the open card reads its number (${identity.join(" | ")})`).not.toBe("");
+      seen.push(number);
+      const pick = picks[number];
+      if (pick) {
+        // Pink: the tile asks, with both spellings side by side.
+        await expect(disagree).toHaveAccessibleDescription("To fix");
+        await expect(says.getByRole("listitem")).toHaveCount(2);
+        await expect(column("BSC")).toContainText(pick.marketplace);
+        await expect(column("Checklist")).toContainText(pick.checklist);
+        // Pink holds the card: Save & next is refused and the footer says why.
+        await expect(tidyFooterButton(page, "saveAndNext")).toBeDisabled();
+        await expect(mustFixLine(page)).toBeVisible();
+        if (seen.filter((n) => picks[n]).length === 1) {
+          await expectAccessible(page, { within: walk, label: "Tidy Up walk, a pink Sources disagree tile" });
+          // "Type another…" opens a field of its own; Esc closes the field (not the walk) and writes nothing.
+          const typeAnother = disagree.getByRole("button", { name: "Type another…", exact: true });
+          await typeAnother.click();
+          const typed = disagree.getByRole("textbox", { name: "Type the player name yourself", exact: true });
+          await expect(typed).toBeFocused();
+          await expect(typeAnother).toHaveAttribute("aria-expanded", "true");
+          await typed.press("Escape");
+          await expect(typed).toHaveCount(0);
+          await expect(typeAnother).toBeFocused();
+          await expect(walk).toBeVisible();
+          await expect(disagree).toHaveAccessibleDescription("To fix");
+        }
+        await disagree.getByRole("button", { name: `Use “${pick.use}”`, exact: true }).click();
+        await expect(disagree.getByRole("status").filter({ hasText: `Using “${pick.use}” (${pick.from})` })).toBeVisible();
+        await expect(disagree.getByRole("button", { name: "Change the player name", exact: true })).toBeVisible();
+        await expect(pinkTile(page, "Sources disagree")).toHaveCount(0);
+        // No other card holds this disagreement, so there is nothing to apply it to.
+        await expect(disagree.getByRole("button", { name: /^Apply to the [0-9]+ cards? with the same disagreement$/ })).toHaveCount(0);
+      } else {
+        // Every other card's sources agree (#6 never paired a row, so the checklist cannot disagree with it).
+        await expect(disagree).toHaveCount(0);
+      }
+      // D2: the invented team on #6's two unpaired rows is never put to the operator.
+      if (number === "6") await expect(walk.getByText(bogusTeam)).toHaveCount(0);
+      // Its names are not this spec's: skipped, nothing written.
+      await skipCard(page);
+    }
+    expect(seen, "the walk showed both disagreeing cards").toEqual(expect.arrayContaining(["2", "4"]));
+    // Every card shown was skipped, and the end screen counts them.
+    await expect(
+      walk.getByText(`${seen.length} ${seen.length === 1 ? "card" : "cards"} skipped, not ready to list`, { exact: true }),
+    ).toBeVisible();
+    await finishTidyWalk(page);
     // The result line stays on screen after the save too.
     await expect(page.getByText("Teams from your checklist: 17 of 18 cards").first()).toBeVisible();
 
-    // ── 5. Each side landed on its card; the repeated number's card kept its own name and no invented team ──
+    // ── 4. Each side landed on its card; the repeated number's card kept its own name and no invented team ──
     // A fresh load of the set (the commit leaves its virtualised list at the first
     // streamed batch); the picker reopens on every visit while SportLots is unmapped.
     await openOneMarketplaceSetBase(page, env, { set: SET });
     const drawer = page.getByRole("dialog");
     const cardName = drawer.getByRole("textbox", { name: "Card name" });
+    const cardTitle = drawer.getByRole("textbox", { name: "Card title", exact: true });
+    const builtFrom = drawer.getByRole("list", { name: "Title built from" }).getByRole("listitem");
     // The list opens where its first streamed batch left it (#9 here), so each card is found by
-    // its name in the search box, as a collector would.
+    // its player in the search box, as a collector would.
     const search = page.getByRole("searchbox", { name: "Search cards" });
-    await search.fill(typoTwo);
-    await editCardButton(page, "2").click();
-    await expect(cardName).toHaveValue(typoTwo);
-    await drawer.getByRole("button", { name: "Done editing card" }).click();
-    await expect(cardName).toBeHidden();
-    await search.fill(four.player);
-    await editCardButton(page, "4").click();
-    await expect(cardName).toHaveValue(four.player);
-    await drawer.getByRole("button", { name: "Done editing card" }).click();
-    await expect(cardName).toBeHidden();
+    // A pick writes the card's PLAYER (and regenerates its generated title), never the other
+    // source's spelling: read back from the title's own chips and the stored title.
+    for (const [n, picked, other] of [["2", typoTwo, two.player], ["4", four.player, typoFour]] as const) {
+      await search.fill(picked);
+      await editCardButton(page, n).click();
+      await expect(cardTitle).toHaveValue(new RegExp(`\\b${escapeRe(picked)} #${n}\\b`));
+      await expect(builtFrom.filter({ hasText: picked })).toHaveCount(1);
+      await expect(builtFrom.filter({ hasText: other })).toHaveCount(0);
+      await drawer.getByRole("button", { name: "Done editing card" }).click();
+      await expect(cardTitle).toBeHidden();
+    }
     await search.fill(six.player);
     await editCardButton(page, "6").click();
     await expect(cardName).toHaveValue(six.player);
     await expect(drawer.getByRole("button", { name: `Remove team ${bogusTeam}` })).toHaveCount(0);
+    await expect(builtFrom.filter({ hasText: bogusTeam })).toHaveCount(0);
     await drawer.getByRole("button", { name: "Done editing card" }).click();
     await expect(cardName).toBeHidden();
   },

@@ -37,7 +37,7 @@
 // from the parallel back to the insert with Back and checks the insert's view
 // is the one showing (house rule).
 //
-// R3 - `tidy-up-title-names-the-insert-and-parallel` owns the Tidy Up dialog's
+// R3 - `tidy-up-long-set-name-shortened-for-every-card-title` owns the Tidy Up walk's
 // name for a parallel; `card-title-uses-short-name-for-titles` owns the cut
 // order and "Set name in titles". This spec owns the switch alone.
 //

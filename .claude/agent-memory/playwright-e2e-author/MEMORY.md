@@ -124,6 +124,6 @@
 - [e2e-run tool in practice](patterns_e2e_run_tool_in_practice.md) — 180 s Bash auto-background vs 230 s slice, plant re-seeds, digest path/header quirks
 - [Pre-fix snapshot is the planted break](patterns_pre_fix_snapshot_is_the_planted_break.md) — bug-fix spec: serve the pre-fix commit for the red, the fix commit for green; reseed between
 - [Type a live-rewrite box by keystrokes](patterns_type_a_live_rewrite_box_by_keystrokes.md) — fill() is one change; Backspace exposes intermediate box texts that flip per-row rules (NEO-637)
-- [Tidy walk tiles, commit first](patterns_tidy_walk_tiles_and_commit_first.md) — NEO-645: tile=region, pink=description "To fix"; save lands before the walk; no cancel-unsaved; keys via header click; blue = long-team title cut
+- [Tidy walk tiles, commit first](patterns_tidy_walk_tiles_and_commit_first.md) — NEO-645: tile=region, pink=description "To fix"; save lands before the walk; no cancel-unsaved; keys via header click; blue = long-team title cut; disagree tile + set-name shortener handles
 - [Resume a fresh-only walk spec via the pill](patterns_resume_a_fresh_only_walk_spec_through_the_pill.md) — red inside the walk after Skips: snapshot-only copy reopens via "N need you"; chained `has` skips every card
 - [Title repeat rule, worker-11 arithmetic, shared snapshot results](patterns_title_repeat_of_set_name_and_shared_snapshot_results.md) — distinct set/team prefixes; size for worker 11; --exclude results + own --output
