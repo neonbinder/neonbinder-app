@@ -402,6 +402,38 @@ describe("a career longer than the read cap offers only teams that passed the ch
     expect(tile.map((s) => s.teamId).sort()).toEqual([...world.teams].sort());
   });
 
+  // The same read serves a card whose set has no year: its career is offered whole.
+  test("a set with no year offers the career's teams, never another sport's or a gone one", async () => {
+    const t = convexTest(schema, modules);
+    live.push(t);
+    const world = await t.run(async (ctx) => {
+      const w = await seedTidyWorld(ctx, { year: "Unknown" });
+      const football = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Football",
+        platformData: {},
+        children: [],
+        lastUpdated: 1,
+      });
+      const royals = await addTeam(ctx, w, "Kansas City", "Royals");
+      const chiefs = await addTeam(ctx, { sport: football }, "Kansas City", "Chiefs");
+      const ghosts = await addTeam(ctx, w, "Vanished", "Ghosts");
+      await ctx.db.delete(ghosts);
+      const player = await addPlayer(ctx, w, "Bo Jackson", [
+        { teamId: royals, fromYear: 1986, toYear: 1990 },
+        { teamId: chiefs, fromYear: 1987, toYear: 1990 },
+        { teamId: ghosts, fromYear: 1991, toYear: 1991 },
+      ]);
+      const card = await printCard(ctx, w, { number: "1", extra: { playerIds: [player] } });
+      return { royals, chiefs, ghosts, card };
+    });
+    const tile = await t
+      .withIdentity(ADMIN)
+      .query(api.cardChecklist.suggestedTeamsForCard, { cardId: world.card });
+    expect(tile.map((s) => s.teamId)).toEqual([world.royals]);
+    expect(preselected(tile)).toEqual([]);
+  });
+
   test("careerVerdictFor leaves a team past the cap out of the stints and candidates", async () => {
     const t = convexTest(schema, modules);
     live.push(t);

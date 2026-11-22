@@ -79,6 +79,14 @@ export function teamLinkedForText(reason: LinkedForReason, playerName?: string):
 export const NOT_A_PLAYER_SAME_AS_TEAM_NOTE =
   "Ruled out for you: this card prints the same name as its team";
 
+/** The purple note on a player "Add all new players" created, when Wikidata gave no career. */
+export function newPlayerNoCareerText(playerName: string | undefined, several: boolean): string {
+  const who = playerName?.trim();
+  return several && who
+    ? `New player ${who}, no career from Wikidata`
+    : "New player, no career from Wikidata";
+}
+
 /** The Q1-A purple note on a card whose team the commit filled in. */
 export function teamFillText(reason: "otherCards" | "career"): string {
   return reason === "career"

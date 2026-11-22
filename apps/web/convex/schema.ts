@@ -1566,6 +1566,11 @@ export const tidyTeamFillReasonValidator = v.union(
  *    not a [Y-1, Y] window). Blue.
  *  - newPlayerCareer: the player was created on this card; check the career
  *    Wikidata proposed. Blue, only on the card where the player was created.
+ *  - newPlayerNoCareer: the player was created by "Add all new players" and
+ *    Wikidata gave no career. NOTE-ONLY (a purple note on the Player tile),
+ *    never blue, never counted in the pill or the walk: a hundred rookies with
+ *    no career are not a hundred stops. A career Wikidata did give keeps the
+ *    blue `newPlayerCareer`.
  *  - teamFill: the commit wrote these teams itself from strict pre-fill
  *    evidence. NOTE-ONLY, never blue and never a stop; cleared when the team
  *    is changed by hand.
@@ -1577,6 +1582,7 @@ export const tidyCheckValidator = v.union(
     teamId: v.id("teams"),
   }),
   v.object({ kind: v.literal("newPlayerCareer"), playerId: v.id("players") }),
+  v.object({ kind: v.literal("newPlayerNoCareer"), playerId: v.id("players") }),
   v.object({
     kind: v.literal("teamFill"),
     teamIds: v.array(v.id("teams")),

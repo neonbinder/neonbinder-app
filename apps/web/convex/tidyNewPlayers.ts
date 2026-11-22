@@ -216,7 +216,7 @@ async function addOne(
   const target = await resolveName(ctx, anchor.cardChecklistId, "player", anchor.printed);
   // Re-read through the target: the same row, now proven to be on that card.
   if (target.scopeId !== scopeId || !rowIsOfferable(target.row)) return false;
-  await createPlayerOnTarget(ctx, userId, target, { name: anchor.printed });
+  await createPlayerOnTarget(ctx, userId, target, { name: anchor.printed, bulk: true });
   return true;
 }
 

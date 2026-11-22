@@ -2,13 +2,13 @@ import { useRef, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
-import { MAX_CARD_PLAYERS } from "../../../../convex/features/cardAttention";
+import { MAX_CARD_PLAYERS, newPlayerNoCareerOf } from "../../../../convex/features/cardAttention";
 import NeonButton from "../../../modules/NeonButton";
 import EntityLinkSearch from "../../EntityLinkSearch";
 import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
 import PlayerNameRow, { PlayerSummary, type ContextPlayer } from "../parts/PlayerNameRow";
-import { linkedForText } from "../parts/copy";
+import { linkedForText, newPlayerNoCareerText } from "../parts/copy";
 import { useTidyWrite } from "../parts/tidy-write";
 import TidyTile, { TidyNote } from "../TidyTile";
 import type { TidyTileProps } from "../tile-types";
@@ -103,6 +103,8 @@ export default function PlayerTile({ row, context, attention, sportId }: TidyTil
   const sportForSearch =
     playerNames.find((n) => n.row)?.row?.sportId ?? context.players[0]?.sportId ?? sportId;
   const atCap = (row.playerIds?.length ?? 0) >= MAX_CARD_PLAYERS;
+  // Players "Add all new players" created with no Wikidata career: a note, not a stop.
+  const noCareerIds = newPlayerNoCareerOf(row);
 
   const savePlayers = (next: Array<Id<"players">>) =>
     write.run(async () => {
@@ -177,6 +179,12 @@ export default function PlayerTile({ row, context, attention, sportId }: TidyTil
           </div>
         );
       })}
+
+      {noCareerIds.map((playerId) => (
+        <TidyNote key={`no-career:${playerId}`}>
+          {newPlayerNoCareerText(playerById.get(playerId)?.name, multi)}
+        </TidyNote>
+      ))}
 
       {searchFor && sportForSearch ? (
         <div ref={searchScopeRef}>

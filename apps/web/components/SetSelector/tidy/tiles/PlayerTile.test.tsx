@@ -405,6 +405,23 @@ describe("PlayerTile", () => {
     expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({ id: CARD, playerIds: ["player-9"] });
   });
 
+  it("a player Add all new players made with no Wikidata career carries a purple note, and the tile stays plain", () => {
+    renderTile({
+      row: card({
+        playerIds: ["player-1"],
+        tidyChecks: [{ kind: "newPlayerNoCareer", playerId: "player-1" }],
+      } as never),
+      items: [],
+      ctx: context({
+        players: [{ playerId: "player-1", name: "Quinn Rookie", sportId: SPORT, stints: [], stintsMore: false }],
+        linkedFor: [{ kind: "player", playerId: "player-1", reason: "exact" }],
+      }),
+    });
+    const note = screen.getByText("New player, no career from Wikidata");
+    expect(note.getAttribute("role")).toBe("note");
+    expect(screen.getByRole("group", { name: "Player" }).getAttribute("data-tidy-level")).toBe("plain");
+  });
+
   it("'+ Another player' adds one to the card, and is hidden while a name is unanswered", async () => {
     const linked = {
       row: card({ playerIds: ["player-1"] }),

@@ -1626,9 +1626,22 @@ export const suggestedTeamsForCard = query({
       // it is the one team the career has (`careerTeamVerdict`'s own rule).
       const dated = stints.filter((s) => s.fromYear !== undefined);
       if (year === undefined) {
+        // No set year: the career is offered whole, as choices. The same read
+        // the verdict makes (`careerVerdictFor`) takes out a team of another
+        // sport and a gone one, and leaves out one past its read cap, so a chip
+        // is never a team that failed those checks.
+        const { stints: checked } = await careerVerdictFor(ctx, verdictCache, {
+          stints,
+          year: undefined,
+          currentYear: thisYear,
+          selectorOptionId: row.selectorOptionId,
+          sportId,
+        });
         plans.push({
           player,
-          teamIds: [...new Set(dated.map((s) => s.key as Id<"teams">))],
+          teamIds: [
+            ...new Set(checked.filter((s) => s.fromYear !== undefined).map((s) => s.key as Id<"teams">)),
+          ],
           answered: false,
         });
         continue;

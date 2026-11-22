@@ -23,6 +23,7 @@ import {
   NEW_PLAYERS_PAGE_SIZE,
 } from "./tidyNewPlayers";
 import { normalizePlayerName } from "./players";
+import { deriveCardAttention, newPlayerNoCareerOf } from "./features/cardAttention";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
 import { addPlayer, nameRow, printCard, seedTidyWorld, type TidyWorld } from "../lib/testing/tidy-world";
@@ -304,6 +305,73 @@ describe("addNewPlayers — the write", () => {
     const fanned = (await card(t, second))!;
     expect(anchor.tidyChecks).toContainEqual({ kind: "newPlayerCareer", playerId: quinn._id });
     expect(fanned.tidyChecks ?? []).not.toContainEqual({ kind: "newPlayerCareer", playerId: quinn._id });
+  });
+
+  test("no career from Wikidata: a purple note on the anchor card, not a blue check, so it is no stop", async () => {
+    const t = newT();
+    const w = await world(t);
+    const first = (await seedName(t, w, "Quinn Rookie", {
+      number: "1",
+      over: { enrichment: { wikidataId: "Q42", isHallOfFame: false, careerTeams: [] } },
+    }))!;
+    const second = await t.run((ctx) =>
+      printCard(ctx, w, { number: "2", printed: [{ kind: "player", name: "Quinn Rookie" }] }),
+    );
+    await add(t, w, ["Quinn Rookie"]);
+    await drainScheduled(t);
+    const quinn = (await players(t)).find((p) => p.name === "Quinn Rookie")!;
+    const anchor = (await card(t, first))!;
+    const fanned = (await card(t, second))!;
+    expect(anchor.tidyChecks).toEqual([{ kind: "newPlayerNoCareer", playerId: quinn._id }]);
+    expect(fanned.tidyChecks ?? []).toEqual([]);
+    // The note is the Player tile's; nothing on either card is an attention item.
+    expect(newPlayerNoCareerOf(anchor)).toEqual([quinn._id]);
+    expect(newPlayerNoCareerOf(fanned)).toEqual([]);
+    expect(deriveCardAttention(anchor as never)).toEqual(
+      deriveCardAttention({ ...anchor, tidyChecks: undefined } as never),
+    );
+    expect(deriveCardAttention(anchor as never).items.map((i) => i.kind)).not.toContain("newPlayerCareer");
+  });
+
+  test("a player with no lookup answer at all is a note too (nothing Wikidata gave is left to review)", async () => {
+    const t = newT();
+    const w = await world(t);
+    const first = (await seedName(t, w, "Quinn Rookie", { number: "1" }))!;
+    await add(t, w, ["Quinn Rookie"]);
+    const anchor = (await card(t, first))!;
+    expect(anchor.tidyChecks?.map((c) => c.kind)).toEqual(["newPlayerNoCareer"]);
+    expect(deriveCardAttention(anchor as never)).toEqual(
+      deriveCardAttention({ ...anchor, tidyChecks: undefined } as never),
+    );
+  });
+
+  test("many bulk-added rookies with no career (paged) raise no Career check", async () => {
+    const t = newT();
+    const w = await world(t);
+    const names = distinctNames(NEW_PLAYERS_PAGE_SIZE * 2 + 3);
+    const ids: Array<Id<"cardChecklist">> = [];
+    for (const [i, name] of names.entries()) {
+      ids.push((await seedName(t, w, name, { number: String(i + 1) }))!);
+    }
+    await add(t, w, names);
+    await drainScheduled(t);
+    const cards = await Promise.all(ids.map((id) => card(t, id)));
+    expect(cards.every((c) => (c!.playerIds ?? []).length === 1)).toBe(true);
+    // The fixture cards have no team and no stored title, so they are stops for
+    // those reasons alone; the new players add none.
+    const careerChecks = cards.filter((c) =>
+      deriveCardAttention(c as never).items.some((i) => i.kind === "newPlayerCareer"),
+    );
+    expect(careerChecks).toHaveLength(0);
+    expect(cards.every((c) => c!.tidyChecks?.[0]?.kind === "newPlayerNoCareer")).toBe(true);
+  });
+
+  test("a note never outlives its player on the card", () => {
+    const row = {
+      tidyChecks: [{ kind: "newPlayerNoCareer" as const, playerId: "p1" }],
+      playerIds: ["p2"],
+    };
+    expect(newPlayerNoCareerOf(row as never)).toEqual([]);
   });
 
   test("a name that stopped qualifying since the list is skipped and counted, and nothing is created for it", async () => {
