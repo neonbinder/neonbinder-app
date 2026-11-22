@@ -36,3 +36,21 @@ The NEO-645 walk (`support/tidy-walk.ts`) replaced the entity-review wizard and 
 
 **How to apply:** use `tidy-walk.ts` helpers; never re-derive tile levels from colour; for a spec
 that must not write a real set, there is no pre-save exit any more: give it its own set.
+
+## Driving the walk by keys, and a blue card on a hand-made set (NEO-645 walk spec)
+
+- **Keys reach the walk only from inside the card.** Enter/Esc are the dialog root's `onKeyDown`;
+  after a tile answer the pressed button may unmount and focus falls to `body`, where Enter does
+  nothing (a vacuous "held" pass). Click the card's header line (`tidyCardHeader`, a `tabIndex=-1`
+  div) first: focus lands on the card outside any control, where Enter = Save & next, Esc = Save
+  for later. Prove "Enter held while pink" by the NEXT move: Skip right after it must land on the
+  second card, not the third.
+- **A pasted `?tidy=` and the sitting.** The sitting (`passed`, sessionStorage per tab) survives a
+  `page.goto`; a bad id falls back to the first card NOT passed. Press the pill (new sitting) before
+  any deep-link proof, or the fallback lands past a skipped card and proves nothing.
+- **Blue on a hand-made card = a whole-team title cut.** A card with no linked player keeps its card
+  name OUT of the title ("2024 Topps <set> Base #3 <team>"), so pad a one-token team to ~70 chars:
+  it never fits, the title without it always does, and the badge reads "Card <n> is worth a check:
+  listing title was cut short" (pink is "needs attention: …"). A 45-char team fit and stayed clean.
+- **Planting a break needs a Vite nobody else is using**: a plant hot-reloads product code, so on a
+  shared snapshot Vite it would red every other author's run. Hand the plant back instead.

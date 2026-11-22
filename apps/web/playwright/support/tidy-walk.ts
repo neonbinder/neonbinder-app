@@ -105,6 +105,15 @@ export function mustFixLine(page: Page): Locator {
   return tidyWalk(page).getByText(/^[0-9]+ to fix before this card can save\. Skip it and it can't be listed until it's fixed\.$/);
 }
 
+/**
+ * The open card's header line, whole ("#38b · Image Variation · Mike Trout").
+ * Clicking it puts focus on the card outside any control, where Enter is Save
+ * & next and Escape is Save for later. Contract: a locator, nothing waited for.
+ */
+export function tidyCardHeader(page: Page, line: string): Locator {
+  return tidyWalk(page).getByText(line, { exact: true });
+}
+
 /** The end screen's own control. */
 function endScreen(page: Page): Locator {
   return tidyFooterButton(page, "done");
@@ -224,6 +233,15 @@ export async function finishTidyWalk(page: Page): Promise<void> {
  */
 function cardIdentity(page: Page): Locator {
   return tidyWalk(page).getByText(/^#\S+( · .+)?$/);
+}
+
+/**
+ * The open card's "#…" lines (`cardIdentity`), for a spec that proves a move by
+ * hand, e.g. the browser's Back returning to the card it read: read them with
+ * `allTextContents`, then assert `toHaveText(before)`.
+ */
+export function tidyCardIdentity(page: Page): Locator {
+  return cardIdentity(page);
 }
 
 /**

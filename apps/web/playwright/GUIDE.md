@@ -34,7 +34,7 @@ Reference specs that show the patterns below:
 | `tests/home/landing-smoke.spec.ts` | signed-out page, reachability as the assertion |
 | `tests/set-selector/admin-missing-both-shows-warning.spec.ts` | dedicated `account=`, role-scoped asserts, `toBeHidden` |
 | `tests/set-selector/topps-chrome-add-feature.spec.ts` | the drill helper, a genuine "is it open?" branch |
-| `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` | entity-review wizard, minted names |
+| `tests/set-selector/tidy-up-team-link-remembers-the-name.spec.ts` | the Tidy Up walk's Team tile, minted names, Back through the walk |
 | `tests/labels/scan-visibility.spec.ts` | scoping to one list item; hidden-then-shown text |
 | `tests/admin/player-live-wikidata-enrichment.spec.ts` | a link whose name carries sr-only text; a sanctioned long wait |
 
