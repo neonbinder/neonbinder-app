@@ -53,6 +53,7 @@ vi.mock("../../EntityLinkSearch", () => ({
 
 import { AnsweredProvider } from "../answered";
 import PlayerTile from "./PlayerTile";
+import { WRAP_LABEL_CLASS } from "../TidyTile";
 import type { TidyAttentionItem } from "../../../../convex/features/cardAttention";
 import type { TidyAttention, TidyCardContext, TidyRow, TidyTileProps } from "../tile-types";
 
@@ -727,5 +728,137 @@ describe("PlayerTile: a name ruled out because it is the card's team (NEO-645 S3
   it("an operator's own 'Not a player' carries no note", () => {
     render({ kind: "notEntity", by: "operator" });
     expect(screen.queryByRole("note")).toBeNull();
+  });
+});
+
+describe("PlayerTile: one filled button per tile, and long labels wrap (NEO-645 audit)", () => {
+  /** A NeonButton is filled when its paint is not the clear outline fill. */
+  const isFilled = (el: HTMLElement) => {
+    const fill = el.style.getPropertyValue("--nb-fill");
+    return fill !== "" && fill !== "transparent";
+  };
+  const filledNames = () =>
+    screen
+      .getAllByRole("button")
+      .filter(isFilled)
+      .map((b) => b.getAttribute("aria-label") ?? b.textContent);
+  const wraps = (el: HTMLElement) => {
+    for (const token of WRAP_LABEL_CLASS.split(" ")) expect(el.className).toContain(token);
+  };
+
+  const holiday = (name = "Jackson Holiday", order = 0) =>
+    printedName({
+      nameNormalized: name.toLowerCase(),
+      printed: name,
+      order,
+      row: nameRow({ name }),
+    });
+  const near = (id: string, name: string) => ({ _id: id, name, distance: 1, teamName: "Baltimore Orioles", fromYear: 2024 });
+  const exact = { _id: "player-6", name: "Kendry Morales", confidence: "exact", birthYear: 1983 };
+  const setHistory = {
+    playerId: "player-5",
+    name: "Kendry Morales",
+    sportId: SPORT,
+    sportValue: "Football",
+    reason: "setHistory" as const,
+  };
+  const morales = (preselect?: Record<string, unknown>) =>
+    printedName({
+      nameNormalized: "kendry morales",
+      printed: "Kendry Morales",
+      row: nameRow({ name: "Kendry Morales", ...(preselect ? { enrichment: { preselect } } : {}) }),
+    });
+  const renderOne = (ctxName: ReturnType<typeof printedName>) =>
+    renderTile({
+      row: card({ pendingPlayerNames: [ctxName.printed] }),
+      ctx: context({ names: [ctxName] }),
+      items: [{ level: "fix", kind: "playerName", names: [ctxName.printed] }],
+    });
+
+  it("a name with nothing on file: Add as new player is the one filled button, the rest are outlines", () => {
+    queryResults["players.nearMatches"] = [];
+    renderTile();
+    expect(filledNames()).toEqual(["Add as new player"]);
+    // Link to existing… is a blue outline now, not a blue fill.
+    const linkExisting = screen.getByRole("button", { name: "Link to existing…" });
+    expect(isFilled(linkExisting)).toBe(false);
+    expect(linkExisting.style.getPropertyValue("--nb-edge")).not.toBe("transparent");
+  });
+
+  it("an exact single match leads, ahead of Add as new player anyway", () => {
+    queryResults["players.nearMatches"] = [exact];
+    renderOne(morales());
+    expect(filledNames()).toEqual(["Link to Kendry Morales"]);
+  });
+
+  it("the suggestion leads the exact link when both show; the exact link is an outline", () => {
+    queryResults["players.nearMatches"] = [exact];
+    renderOne(morales(setHistory));
+    expect(filledNames()).toEqual(["Link to Kendry Morales (Football)"]);
+    expect(isFilled(screen.getByRole("button", { name: "Link to Kendry Morales" }))).toBe(false);
+  });
+
+  it("with near spellings, only the first Did you mean is filled; Add as new player is an outline", () => {
+    queryResults["players.nearMatches"] = [];
+    queryResults["players.didYouMean"] = [near("player-7", "Jackson Holliday"), near("player-8", "Jackson Hollidae")];
+    renderOne(holiday());
+    expect(filledNames()).toEqual(["Did you mean Jackson Holliday (Baltimore Orioles 2024–)?"]);
+    expect(isFilled(screen.getByRole("button", { name: "Add as new player" }))).toBe(false);
+  });
+
+  it("two unanswered names: only the first row carries a filled button", () => {
+    queryResults["players.nearMatches"] = [];
+    renderTile({
+      ctx: context({ names: [holiday("Jackson Merrill", 0), holiday("Juan Soto", 1)] }),
+    });
+    expect(filledNames()).toEqual(["Add as new player Jackson Merrill"]);
+    expect(isFilled(screen.getByRole("button", { name: "Add as new player Juan Soto" }))).toBe(false);
+  });
+
+  it("an answered first name hands the filled button to the next row", () => {
+    queryResults["players.nearMatches"] = [];
+    renderTile({
+      ctx: context({
+        names: [
+          printedName({ row: nameRow({ answer: { kind: "notEntity" } }) }),
+          holiday("Juan Soto", 1),
+        ],
+      }),
+    });
+    expect(filledNames()).toEqual(["Add as new player Juan Soto"]);
+  });
+
+  it("the buttons whose labels are a name or a long sentence wrap inside the button", () => {
+    queryResults["players.nearMatches"] = [exact];
+    renderOne(morales(setHistory));
+    wraps(screen.getByRole("button", { name: "Link to Kendry Morales (Football)" }));
+    wraps(screen.getByRole("button", { name: "Link to Kendry Morales" }));
+    wraps(screen.getByRole("button", { name: "Not a player (checklist, team card, stadium)" }));
+  });
+
+  it("a Did you mean button wraps too", () => {
+    queryResults["players.nearMatches"] = [];
+    queryResults["players.didYouMean"] = [near("player-7", "Jackson Holliday")];
+    renderOne(holiday());
+    wraps(screen.getByRole("button", { name: /^Did you mean Jackson Holliday/ }));
+  });
+
+  it("the suggestion's reason sits in a plain panel with an icon, not a side rail", () => {
+    queryResults["players.nearMatches"] = [];
+    renderOne(morales(setHistory));
+    const reason = screen.getByText(
+      "Another card in this set is already linked to Kendry Morales (Football). Same one?",
+    );
+    const panel = reason.parentElement!;
+    expect(panel.className).toContain("bg-raised-deep");
+    expect(panel.className).not.toContain("border-l-4");
+    expect(panel.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("the cross-sport box says it once in its label, with no always-on line under it", () => {
+    queryResults["players.nearMatches"] = [];
+    renderTile({ ctx: context({ names: [printedName({ row: nameRow({ sportId: "sport-2" }) })] }) });
+    expect(screen.getByRole("checkbox", { name: /^Also add / })).toBeTruthy();
+    expect(screen.queryByText(/one-off appearance/)).toBeNull();
   });
 });

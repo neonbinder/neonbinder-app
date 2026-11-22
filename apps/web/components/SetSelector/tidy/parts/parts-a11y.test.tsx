@@ -139,9 +139,25 @@ describe("TeamFillChips", () => {
 
   it("keeps the limit message in a live region that is on the page from the start", () => {
     render(<Chips />);
-    const status = screen.getAllByRole("status").find((el) => el.className.includes("text-neon-blue-text"));
+    const status = screen
+      .getAllByRole("status")
+      .find((el) => el.className.includes("text-ink-2") && el.className.includes("empty:hidden"));
     expect(status).toBeTruthy();
     expect(status?.textContent).toBe("");
+  });
+
+  it("reads its headings, status and chip suffixes in the quiet ink, not link blue", () => {
+    const { container } = render(<Chips />);
+    // The line over the career chips, and the played-here suffix on a chip.
+    const heading = container.querySelector<HTMLElement>('p[id^="fill-career-"]');
+    expect(heading?.className).toContain("text-ink-2");
+    const suffix = screen.getByRole("button", { name: /San Diego Padres/ }).querySelector("span");
+    expect(suffix?.className).toContain("text-ink-2");
+    // Blue stays on hover only: no resting text in the chips' area is blue.
+    const resting = Array.from(container.querySelectorAll<HTMLElement>("p, li span")).filter((el) =>
+      el.className.split(/\s+/).includes("text-neon-blue-text"),
+    );
+    expect(resting).toHaveLength(0);
   });
 
   it("Save team is an answer: the walk is told once it lands", async () => {

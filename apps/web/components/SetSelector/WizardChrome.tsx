@@ -49,9 +49,10 @@ import { useState, type ReactNode } from "react";
  *   a new screen says its name ("New team", "Ready to save") once. The host
  *   keeps this header mounted across steps, which is what lets the text
  *   change inside one region instead of arriving with a new one.
- * The subtitle row has a fixed minimum height whatever it says, so the body
- * below the header never moves between steps (the NEO-110 rule the wizard's
- * footer already lives by).
+ * The subtitle row has a fixed minimum height whatever it says, and whether or
+ * not its `aside` control is showing, so the body below the header never moves
+ * between steps (the NEO-110 rule the wizard's footer already lives by). Its
+ * side padding is the body's (`px-5`), so title and cards share one left edge.
  */
 
 /** The title while the set's names are still loading, or none is known. */
@@ -177,6 +178,12 @@ export interface WizardChromeProps {
   title?: string;
   /** Id for the title, so the host dialog can be `aria-labelledby` it. */
   titleId?: string;
+  /**
+   * One control that sits at the end of the subtitle row ("Add all 12 new
+   * players"). The row keeps room for it whether or not it is there, so a
+   * control that appears late moves nothing under the header.
+   */
+  aside?: ReactNode;
   /** Anything the host needs under the subtitle row. */
   children?: ReactNode;
 }
@@ -193,6 +200,7 @@ export default function WizardChrome({
   subtitle,
   title = WIZARD_TITLE,
   titleId,
+  aside,
   children,
 }: WizardChromeProps) {
   const target = progressFraction(done, planned);
@@ -212,7 +220,7 @@ export default function WizardChrome({
 
   return (
     <header className="shrink-0">
-      <div className="px-6 pt-4 pb-3">
+      <div className="px-5 pt-4 pb-3">
         {/* A long set name wraps in balanced lines; `wrap-anywhere` breaks a
             single unbroken word. Past three lines it is clamped VISUALLY
             only: the text stays whole, so the heading's accessible name (and
@@ -225,9 +233,13 @@ export default function WizardChrome({
         >
           {title}
         </h2>
-        <p role="status" className="mt-0.5 min-h-5 text-sm text-ink-3">
-          {subtitle}
-        </p>
+        {/* 28px: the height of the `aside`'s dashed control, so it never changes this row. */}
+        <div className="mt-0.5 flex min-h-7 flex-wrap items-center justify-between gap-x-3 gap-y-1">
+          <p role="status" className="min-w-0 text-sm text-ink-3">
+            {subtitle}
+          </p>
+          {aside}
+        </div>
         {children}
       </div>
       <div

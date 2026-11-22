@@ -20,7 +20,7 @@ import { useTitlePreview } from "../../useTitlePreview";
 import { SOURCES_WITH_CHECKLIST, SOURCE_KEYS } from "../../reconciliation-sources";
 import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
-import TidyTile, { ApplyToAllButton, TidyNote, type TidyTileLevel } from "../TidyTile";
+import TidyTile, { ApplyToAllButton, TidyNote, WRAP_LABEL_CLASS, type TidyTileLevel } from "../TidyTile";
 import type { TidyTileProps } from "../tile-types";
 
 /**
@@ -348,14 +348,11 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
         {preview.confirming ? "Regenerate again to replace the title you have typed." : ""}
       </p>
 
-      {cut &&
-        !state.over &&
-        (leftOut.length > 0 ? (
-          <p className="text-sm text-ink-2 wrap-anywhere">Left out to fit: {leftOut.join(", ")}</p>
-        ) : (
-          <p className="text-sm text-ink-2">Auto title was cut short — rewrite it</p>
-        ))}
-      {!cut && !state.over && leftOut.length > 0 && (
+      {cut && !state.over && leftOut.length === 0 && (
+        <p className="text-sm text-ink-2">Auto title was cut short. Rewrite it.</p>
+      )}
+      {/* One form, cut or not: the purple note. */}
+      {!state.over && leftOut.length > 0 && (
         <TidyNote>Left out to fit: {leftOut.join(", ")}</TidyNote>
       )}
       {mismatched && <TidyNote>Numbers didn't match: {mismatched}</TidyNote>}
@@ -393,7 +390,7 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
           outline
           size="1"
           type="button"
-          aria-label={preview.loading ? "Regenerate card title — rebuilding" : "Regenerate card title"}
+          aria-label={preview.loading ? "Regenerate card title, rebuilding" : "Regenerate card title"}
           aria-disabled={preview.loading || busy || undefined}
           onClick={() => preview.request(editing && text !== stored)}
         >
@@ -405,6 +402,7 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
           outline
           size="1"
           type="button"
+          className={WRAP_LABEL_CLASS}
           aria-expanded={shortening}
           aria-controls={shortening ? `${uid}-set-name` : undefined}
           onClick={() => {
@@ -432,7 +430,7 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
         <div
           ref={setNamePanelRef}
           id={`${uid}-set-name`}
-          className="grid gap-2 rounded-lg border border-rule bg-raised-deep p-2.5"
+          className="grid gap-2 rounded-lg border border-rule-strong bg-raised-deep p-2.5"
         >
           <p className="text-xs font-medium text-ink">Set name in titles</p>
           <Input

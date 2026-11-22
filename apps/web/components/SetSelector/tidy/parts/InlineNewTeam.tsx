@@ -18,6 +18,7 @@ import NewTeamForm, {
   type NewTeamDraft,
 } from "../../NewTeamForm";
 import { useInlinePart } from "../inline-stack";
+import { WRAP_LABEL_CLASS } from "../TidyTile";
 import { aliasHolderSentence } from "./copy";
 
 /**
@@ -284,7 +285,7 @@ export default function InlineNewTeam({
       ref={formRef}
       role="group"
       aria-label={`New team: ${initialName.trim() || "unnamed"}`}
-      className="grid gap-2 rounded-lg border border-rule bg-raised-deep p-2.5"
+      className="grid gap-2 rounded-lg border border-rule-strong bg-raised-deep p-2.5"
     >
       <p className="text-xs font-medium text-ink">
         New team{initialName.trim() ? `: ${initialName.trim()}` : ""}
@@ -350,7 +351,7 @@ export default function InlineNewTeam({
                 <NeonButton
                   key={holder.id}
                   size="1"
-                  className="h-auto min-h-6 max-w-full py-1 wrap-anywhere"
+                  className={WRAP_LABEL_CLASS}
                   aria-disabled={busy ? true : undefined}
                   onClick={() => {
                     if (busy) return;

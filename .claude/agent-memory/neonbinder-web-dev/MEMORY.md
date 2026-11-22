@@ -309,3 +309,4 @@
 - [Tidy walk answer focus belongs to the walk](project_tidy_walk_answer_focus_belongs_to_the_walk.md) — tiles call useAnswered(); walk lands on Save & next / next pink tile; opener restore only on Cancel/Esc
 - [Key hints hide on coarse pointers](reference_key_hint_hides_on_coarse_pointers_via_hintedlabel.md) — HintedLabel sr-onlys (Esc)/(Enter); drop aria-label to satisfy label-in-name, regex lookups
 - [Tile and commit share one verdict](reference_tile_and_commit_share_one_verdict.md) — client preselect and server write call one pure fn; one test drives both; goldens/pins updated on purpose
+- [Radix size-1 button does not wrap](reference_radix_button_size1_does_not_wrap_long_labels.md) — 24px fixed height, no wrap; data-driven labels overflow phones; use h-auto min-h-6 max-w-full wrap-anywhere

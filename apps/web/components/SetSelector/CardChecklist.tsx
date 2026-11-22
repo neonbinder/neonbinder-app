@@ -45,6 +45,7 @@ import { resetSitting } from "./tidy/walk-order";
 import { tidyUpTitleFromChain } from "./WizardChrome";
 import {
   blocksParallelBuild,
+  deriveCardAttention,
   isAwaitingTeamLookup,
   needsTidyUp,
   teamLookupStatusLine,
@@ -551,8 +552,15 @@ const NO_HAYSTACK: CardSearchHaystack = {
 export const QUICK_ADD_NO_TEAM_FROM_SET_HINT =
   "From the set. Pick a team, or press No Team to turn it off.";
 
-function needsYouLabel(count: number): string {
-  return count === 1 ? "1 needs you" : `${count} need you`;
+/**
+ * "5 need you" with nothing to fix; "5 need you · 2 to fix" when some of them
+ * block listing (pink). The pill stays one amber tone, so the split rides in
+ * the text, which is also its accessible name. "N need you" is always the
+ * start, so a reader and a spec find the count first.
+ */
+export function needsYouLabel(count: number, toFix = 0): string {
+  const head = count === 1 ? "1 needs you" : `${count} need you`;
+  return toFix > 0 ? `${head} · ${toFix} to fix` : head;
 }
 
 /**
@@ -2296,6 +2304,12 @@ export default function CardChecklist({
     () => (cards ?? []).filter((c) => needsTidyUp(c)).length,
     [cards],
   );
+  // Of those, the cards with something pink on them (cannot be listed yet):
+  // the pill says how many, so a checklist of mere checks reads differently.
+  const attentionToFix = useMemo(
+    () => (cards ?? []).filter((c) => deriveCardAttention(c).level === "fix").length,
+    [cards],
+  );
   /**
    * NEO-535 — a parallel's cards whose stored title still fails (over 80, or
    * cut short), off the same live subscription: the Card titles door beside
@@ -3561,7 +3575,7 @@ export default function CardChecklist({
                 aria-describedby={editsHeld ? heldDescribedBy : undefined}
                 aria-haspopup="dialog"
               >
-                {needsYouLabel(attentionCount)}
+                {needsYouLabel(attentionCount, attentionToFix)}
               </SetRowActionButton>
             )}
             {/* NEO-535 — a parallel's Card titles: every copy whose title

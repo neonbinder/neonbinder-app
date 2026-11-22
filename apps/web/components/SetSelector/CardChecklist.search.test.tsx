@@ -298,7 +298,7 @@ describe("CardChecklist — search (NEO-343)", () => {
     ];
     render(ui());
     // The set-level pill counts the same two.
-    expect(screen.getByRole("button", { name: "2 need you" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "2 need you · 2 to fix" })).toBeTruthy();
 
     type("Attention");
     expect(shownNumbers()).toEqual(["16a", "60"]);

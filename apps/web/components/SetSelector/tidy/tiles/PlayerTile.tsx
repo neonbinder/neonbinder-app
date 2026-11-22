@@ -94,6 +94,11 @@ export default function PlayerTile({ row, context, attention, sportId }: TidyTil
     context.linkedFor.find((l) => l.kind === "player" && l.playerId === playerId)?.reason;
 
   const open = attention.items.some((i) => i.kind === "playerName");
+  // The tile's one filled button belongs to its first unanswered name.
+  const leadName = playerNames.find((n) => {
+    const kind = n.row?.answer?.kind;
+    return kind !== "notEntity" && kind !== "linkPlayer";
+  });
   const multi = rowCount > 1;
   const sportForSearch =
     playerNames.find((n) => n.row)?.row?.sportId ?? context.players[0]?.sportId ?? sportId;
@@ -136,6 +141,7 @@ export default function PlayerTile({ row, context, attention, sportId }: TidyTil
             reason={linkedId ? reasonOf(linkedId) : undefined}
             setSportId={sportId}
             multi={multi}
+            lead={name === leadName}
             write={write}
           />
         );

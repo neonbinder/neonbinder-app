@@ -228,7 +228,7 @@ export default function TeamFillChips({
           {/* The chosen mark that is not a colour (SC 1.4.1); aria-pressed says it to a reader. */}
           {on && <CheckIcon aria-hidden="true" className="h-3 w-3 shrink-0" />}
           {chip.label}
-          {opts.suffix && <span className="text-neon-blue-text">{opts.suffix}</span>}
+          {opts.suffix && <span className="text-ink-2">{opts.suffix}</span>}
         </button>
       </li>
     );
@@ -250,7 +250,7 @@ export default function TeamFillChips({
 
       {marketplaceChips.length > 0 && (
         <div className="grid gap-1">
-          <p id={`fill-listing-${row._id}`} className="text-xs text-neon-blue-text">
+          <p id={`fill-listing-${row._id}`} className="text-xs text-ink-2">
             {marketplaceHeading(
               bscName,
               marketplaceChips.length,
@@ -267,7 +267,7 @@ export default function TeamFillChips({
 
       {careerChips.length > 0 && (
         <div className="grid gap-1">
-          <p id={`fill-career-${row._id}`} className="text-xs text-neon-blue-text">
+          <p id={`fill-career-${row._id}`} className="text-xs text-ink-2">
             {careerHeading(
               careerChips.some((c) => c.inSetYear),
               bscDisagrees,
@@ -314,7 +314,7 @@ export default function TeamFillChips({
 
       {/* Mounted for the life of the chips, so reaching the limit is a change to a
           live region already in the page, and a card that opens at it says nothing. */}
-      <p role="status" className="text-xs text-neon-blue-text empty:hidden">
+      <p role="status" className="text-xs text-ink-2 empty:hidden">
         {atCap ? `That is the limit of ${MAX_CARD_TEAMS} teams on one card. Remove one to add another.` : ""}
       </p>
 

@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from "react";
+import { QuestionMarkCircleIcon } from "@heroicons/react/16/solid";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
@@ -14,7 +15,7 @@ import NameFragmentPanel, {
 } from "../../NameFragmentPanel";
 import { PLAYER_AMBIGUITY_SCAN_LIMIT } from "../../../../lib/players/name-limits";
 import type { TidyCardContext, TidyRow } from "../tile-types";
-import { TidyNote } from "../TidyTile";
+import { TidyNote, WRAP_LABEL_CLASS } from "../TidyTile";
 import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
 import {
@@ -90,6 +91,7 @@ export default function PlayerNameRow({
   reason,
   setSportId,
   multi,
+  lead = true,
   write,
 }: {
   row: TidyRow;
@@ -99,6 +101,12 @@ export default function PlayerNameRow({
   setSportId: Id<"selectorOptions"> | undefined;
   /** More than one name on the card: controls carry the name so no two read alike. */
   multi: boolean;
+  /**
+   * This row may carry the tile's one filled button. A tile has at most one
+   * (the first unanswered row's best answer); every other row's answers are
+   * outlines, so a card with three names does not shout three times.
+   */
+  lead?: boolean;
   write: TidyWrite;
 }) {
   const answer = name.row?.answer;
@@ -177,6 +185,7 @@ export default function PlayerNameRow({
       name={name}
       setSportId={setSportId}
       multi={multi}
+      lead={lead}
       write={write}
       wrapRef={wrapRef}
     />
@@ -188,6 +197,7 @@ function UnansweredPlayerName({
   name,
   setSportId,
   multi,
+  lead,
   write,
   wrapRef,
 }: {
@@ -195,6 +205,7 @@ function UnansweredPlayerName({
   name: ContextName;
   setSportId: Id<"selectorOptions"> | undefined;
   multi: boolean;
+  lead: boolean;
   write: TidyWrite;
   wrapRef: React.RefObject<HTMLDivElement | null>;
 }) {
@@ -388,14 +399,33 @@ function UnansweredPlayerName({
   const printedOn = printedOnText(name.printedOn);
   const disabled = write.busy ? true : undefined;
 
+  // One filled button per tile (the walk's own rule: the best answer leads,
+  // everything else is an outline). In this order, and only on the lead row:
+  // the suggested link, the exact link, the first "Did you mean", Add as new.
+  const leadAction: "preselect" | "exact" | "didYouMean" | "create" | null = !lead
+    ? null
+    : showPreselect && preselect
+      ? "preselect"
+      : showExact && exactSingle
+        ? "exact"
+        : nearSpellings.length > 0
+          ? "didYouMean"
+          : creating
+            ? "create"
+            : null;
+  /** The filled green button, or a blue outline. */
+  const tone = (filled: boolean) =>
+    filled ? ({} as const) : ({ variant: "secondary", outline: true } as const);
+
   return (
     <div ref={wrapRef} role="group" aria-label={`Player ${name.printed}`} className="grid gap-2">
       {printedOn && <p className="text-xs text-ink-3 wrap-anywhere">{printedOn}</p>}
 
       {showPreselect && preselect && !linkOpen && (
-        <p className="border-l-4 border-l-selection pl-3 text-sm text-ink-2 wrap-anywhere">
-          {preselectReasonLine(preselect)}
-        </p>
+        <div className="flex items-start gap-2 rounded-md bg-raised-deep px-2.5 py-1.5">
+          <QuestionMarkCircleIcon aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-ink-3" />
+          <p className="min-w-0 text-sm text-ink-2 wrap-anywhere">{preselectReasonLine(preselect)}</p>
+        </div>
       )}
 
       {pickStep && !linkOpen && (
@@ -449,23 +479,20 @@ function UnansweredPlayerName({
       {!linkOpen && <NearMatchPanel kind="player" matches={panelMatches} busy={write.busy} onPick={(id) => void link(id)} />}
 
       {crossSport && (
-        <div className="grid gap-0.5">
-          <label className="flex min-h-6 items-center gap-2 text-xs text-ink-2">
-            <input
-              type="checkbox"
-              checked={addSetSport}
-              aria-disabled={write.busy || undefined}
-              onChange={(e) => {
-                if (write.busy) return;
-                setAddSetSport(e.target.checked);
-              }}
-              aria-label={`Also add ${setSportValue ?? "the set's sport"} to their sports${suffix}`}
-              className="h-6 w-6 shrink-0 rounded accent-neon-green-text focus-outline aria-disabled:cursor-not-allowed aria-disabled:opacity-60"
-            />
-            <span>{`Also add ${setSportValue ?? "the set's sport"} to their sports`}</span>
-          </label>
-          <p className="pl-8 text-xs text-ink-3">Leave it off for a one-off appearance in this set.</p>
-        </div>
+        <label className="flex min-h-6 items-center gap-2 text-xs text-ink-2">
+          <input
+            type="checkbox"
+            checked={addSetSport}
+            aria-disabled={write.busy || undefined}
+            onChange={(e) => {
+              if (write.busy) return;
+              setAddSetSport(e.target.checked);
+            }}
+            aria-label={`Also add ${setSportValue ?? "the set's sport"} to their sports${suffix}`}
+            className="h-6 w-6 shrink-0 rounded accent-neon-green-text focus-outline aria-disabled:cursor-not-allowed aria-disabled:opacity-60"
+          />
+          <span>{`Also add ${setSportValue ?? "the set's sport"} to their sports`}</span>
+        </label>
       )}
 
       {linkOpen ? (
@@ -484,6 +511,8 @@ function UnansweredPlayerName({
           {showPreselect && preselect && (
             <NeonButton
               size="1"
+              {...tone(leadAction === "preselect")}
+              className={WRAP_LABEL_CLASS}
               aria-label={`Link to ${preselect.name} (${preselect.sportValue})${suffix}`}
               aria-disabled={disabled}
               onClick={() => void link(preselect.playerId)}
@@ -494,6 +523,8 @@ function UnansweredPlayerName({
           {showExact && exactSingle && (
             <NeonButton
               size="1"
+              {...tone(leadAction === "exact")}
+              className={WRAP_LABEL_CLASS}
               aria-label={`Link to ${exactSingle.name}${suffix}`}
               aria-disabled={disabled}
               onClick={() => void link(exactSingle._id)}
@@ -501,12 +532,14 @@ function UnansweredPlayerName({
               {`Link to ${exactSingle.name}`}
             </NeonButton>
           )}
-          {nearSpellings.map((near) => {
+          {nearSpellings.map((near, index) => {
             const label = didYouMeanLabel(near);
             return (
               <NeonButton
                 key={near._id}
                 size="1"
+                {...tone(leadAction === "didYouMean" && index === 0)}
+                className={WRAP_LABEL_CLASS}
                 aria-label={`${label}${suffix}`}
                 aria-disabled={disabled}
                 onClick={() => void link(near._id)}
@@ -530,8 +563,8 @@ function UnansweredPlayerName({
           {creating && (
             <NeonButton
               size="1"
-              outline={nearSpellings.length > 0 ? true : undefined}
-              variant={nearSpellings.length > 0 ? "secondary" : undefined}
+              {...tone(leadAction === "create")}
+              className={WRAP_LABEL_CLASS}
               aria-label={`${fragmentStep ? ONE_NAME_PLAYER_LABEL : "Add as new player"}${suffix}`}
               aria-disabled={disabled || checking ? true : undefined}
               onClick={() => void create(fragmentStep)}
@@ -543,6 +576,7 @@ function UnansweredPlayerName({
             ref={linkButtonRef}
             size="1"
             variant="secondary"
+            outline
             aria-label={`Link to existing…${suffix}`}
             aria-disabled={disabled}
             onClick={() => setLinkOpen(true)}
@@ -553,6 +587,7 @@ function UnansweredPlayerName({
             size="1"
             variant="negative"
             outline
+            className={WRAP_LABEL_CLASS}
             aria-label={`Not a player (checklist, team card, stadium)${suffix}`}
             aria-disabled={disabled}
             onClick={() => void notAPlayer()}

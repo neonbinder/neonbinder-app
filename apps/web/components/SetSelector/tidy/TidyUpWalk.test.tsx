@@ -119,7 +119,7 @@ vi.mock("./tiles/TitleTile", async () => {
   };
 });
 
-import TidyUpWalk, { mustFixLine } from "./TidyUpWalk";
+import TidyUpWalk, { mustFixLine, reviewSkippedLabel } from "./TidyUpWalk";
 import { resetSitting } from "./walk-order";
 import { currentReviewKeys, deriveCardAttention } from "../card-attention";
 import type { CardChecklistRow } from "../card-checklist-row";
@@ -623,6 +623,78 @@ describe("the end screen", () => {
   });
 });
 
+describe("the end screen: Review the skipped (NEO-645 audit)", () => {
+  const skipAll = async (cards: CardChecklistRow[]) => {
+    mount(cards);
+    await waitFor(() => expect(url()).toBe(`?tidy=${cards[0]._id}`));
+    for (let i = 0; i < cards.length; i++) fireEvent.click(button("Skip: not ready to list"));
+    await waitFor(() => expect(url()).toBe("?tidy=done"));
+  };
+
+  it("words the button by how many were skipped", () => {
+    expect(reviewSkippedLabel(1)).toBe("Review the skipped card");
+    expect(reviewSkippedLabel(2)).toBe("Review the 2 skipped");
+    expect(reviewSkippedLabel(31)).toBe("Review the 31 skipped");
+  });
+
+  it("is beside Done when cards were skipped, after Back and before Done in the footer", async () => {
+    await skipAll([pink("a", "1"), pink("b", "2")]);
+    const review = button("Review the 2 skipped");
+    const done = button("Done (Esc)");
+    expect(review.compareDocumentPosition(done) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(review.parentElement).toBe(done.parentElement);
+  });
+
+  it("is not there when nothing was skipped", async () => {
+    mount([], { search: "?tidy=done" });
+    await screen.findByText("All tidy. Nothing on this checklist needs you.");
+    expect(screen.queryByRole("button", { name: /^Review the/ })).toBeNull();
+  });
+
+  it("goes back to the first skipped card, in walk order, as a history step, and offers them all again", async () => {
+    await skipAll([pink("a", "1"), pink("b", "2"), pink("c", "3")]);
+    expect(screen.getByText("3 cards skipped, not ready to list")).toBeTruthy();
+    fireEvent.click(button("Review the 3 skipped"));
+    await waitFor(() => expect(url()).toBe("?tidy=a"));
+    // Offered again: the bar and the count start over for the skipped ones.
+    expect(screen.getByText("3 cards left")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Review the/ })).toBeNull();
+    // Skipping through them again lands on the end screen with the same count.
+    for (let i = 0; i < 3; i++) fireEvent.click(button("Skip: not ready to list"));
+    await waitFor(() => expect(url()).toBe("?tidy=done"));
+    expect(screen.getByText("3 cards skipped, not ready to list")).toBeTruthy();
+  });
+
+  it("brings back only the skipped ones: a card that was fixed stays counted as fixed", async () => {
+    const cards = [blue("a", "1"), pink("b", "2")];
+    const tree = (rows: CardChecklistRow[]) => (
+      <MemoryRouter initialEntries={["/?tidy=first"]}>
+        <UrlProbe />
+        <TidyUpWalk
+          leafId={LEAF}
+          setName="2024 Topps Chrome"
+          title="Tidy up 2024 Topps Chrome"
+          cards={rows}
+          onClose={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+    const view = render(tree(cards));
+    await waitFor(() => expect(url()).toBe("?tidy=a"));
+    fireEvent.click(button("Save & next (Enter)"));
+    await waitFor(() => expect(url()).toBe("?tidy=b"));
+    view.rerender(tree([{ ...blue("a", "1"), listingTitleTruncated: false } as CardChecklistRow, cards[1]]));
+    fireEvent.click(button("Skip: not ready to list"));
+    await waitFor(() => expect(url()).toBe("?tidy=done"));
+    fireEvent.click(button("Review the skipped card"));
+    await waitFor(() => expect(url()).toBe("?tidy=b"));
+    expect(screen.getByText("1 card left")).toBeTruthy();
+    fireEvent.click(button("Skip: not ready to list"));
+    await waitFor(() => expect(url()).toBe("?tidy=done"));
+    expect(await screen.findByText("1 card fixed, 1 skipped.")).toBeTruthy();
+  });
+});
+
 describe("handing focus back when the walk closes", () => {
   it("asks for the target at close time: the pill when it is there then, else Sync", async () => {
     const sync = document.createElement("button");
@@ -737,3 +809,80 @@ describe("Add all new players, in the walk's header area (decision 32)", () => {
     await waitFor(() => expect(convexQuery.mock.calls.length).toBeGreaterThan(calls));
   });
 });
+
+describe("Add all new players, in the walk's chrome (NEO-645 audit)", () => {
+  const offered = (...names: string[]) => ({
+    names: names.map((name, i) => ({ name, cardNumbers: [String(i + 1)], moreCards: false })),
+    more: false,
+  });
+
+  beforeEach(() => {
+    convexQuery.mockReset();
+    convexQuery.mockResolvedValue({ names: [], more: false });
+  });
+
+  it("the control is on the title bar, in the header above the progress bar, not in the scrolling area", async () => {
+    convexQuery.mockResolvedValue(offered("Quinn Rookie", "Abe Rookie"));
+    mount([pink("a", "1")]);
+    const control = await screen.findByRole("button", { name: "Add all 2 new players" });
+    const header = control.closest("header");
+    expect(header).not.toBeNull();
+    expect(header?.querySelector('[role="progressbar"]')).not.toBeNull();
+    // On the same row as the subtitle ("1 card left"), which keeps its room.
+    const subtitle = screen.getByText("1 card left");
+    expect(subtitle.parentElement).toBe(control.closest("div.flex.min-h-7"));
+  });
+
+  it("the row it sits in is the same height with or without the control, so nothing moves when it settles", async () => {
+    mount([pink("a", "1")]);
+    await screen.findByTestId("tile-player");
+    const before = screen.getByText("1 card left").parentElement!;
+    expect(before.className).toContain("min-h-7");
+    expect(screen.queryByRole("button", { name: /^Add all/ })).toBeNull();
+  });
+
+  it("its confirm opens at the top of the scrolling area, under the chrome, and is what the control controls", async () => {
+    convexQuery.mockResolvedValue(offered("Quinn Rookie", "Abe Rookie"));
+    mount([pink("a", "1")]);
+    const control = await screen.findByRole("button", { name: "Add all 2 new players" });
+    fireEvent.click(control);
+    const group = await screen.findByRole("group", { name: "New players to add" });
+    expect(control.getAttribute("aria-expanded")).toBe("true");
+    expect(control.getAttribute("aria-controls")).toBe(group.id);
+    expect(group.closest("header")).toBeNull();
+    // Before the card's first tile; the dialog still holds both.
+    const tile = screen.getByTestId("tile-sources");
+    expect(group.compareDocumentPosition(tile) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("dialog").contains(group)).toBe(true);
+    expect(screen.getByRole("dialog").contains(control)).toBe(true);
+  });
+});
+
+describe("the walk's own surface (NEO-645 audit)", () => {
+  it("marks its panel so a coarse pointer gets size-2 buttons there and only there", async () => {
+    mount([pink("a", "1")]);
+    await screen.findByTestId("tile-player");
+    const panel = screen.getByRole("dialog").firstElementChild as HTMLElement;
+    expect(panel.className).toContain("tidy-walk");
+  });
+
+  it("the programmatic focus targets show the house focus ring, not none", async () => {
+    mount([pink("a", "1")], { search: "?tidy=a" });
+    await screen.findByTestId("tile-player");
+    await nextFrame();
+    const header = document.activeElement as HTMLElement;
+    expect(header.getAttribute("role")).toBe("group");
+    expect(header.className).toContain("focus-outline");
+    expect(header.className).not.toContain("outline-none");
+  });
+
+  it("the end screen's focus group does too", async () => {
+    mount([], { search: "?tidy=done" });
+    await screen.findByText("All tidy. Nothing on this checklist needs you.");
+    await nextFrame();
+    const group = document.activeElement as HTMLElement;
+    expect(group.className).toContain("focus-outline");
+    expect(group.className).not.toContain("outline-none");
+  });
+});
+

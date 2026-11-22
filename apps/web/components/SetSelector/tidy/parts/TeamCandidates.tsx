@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
+import { QuestionMarkCircleIcon } from "@heroicons/react/16/solid";
 import type { Id } from "../../../../convex/_generated/dataModel";
 import NeonButton from "../../../modules/NeonButton";
+import { WRAP_LABEL_CLASS } from "../TidyTile";
 
 /**
  * NEO-645 — "We've got 3 teams by that name": the team rows a printed name
@@ -97,18 +99,18 @@ export default function TeamCandidates({
   );
 
   return (
-    <div
-      className={
-        hasCandidates
-          ? "grid gap-2 rounded-md border border-neon-blue-text/40 border-l-4 border-l-selection bg-neon-blue/5 p-3"
-          : "contents"
-      }
-    >
+    <div className={hasCandidates ? "grid gap-2 rounded-md bg-raised-deep p-3" : "contents"}>
       {/* One wrapper for the whole life of the row, so the intro's live region
-          is already mounted, empty, when the candidates arrive. */}
-      <p role="status" className="text-sm text-ink-2 empty:hidden">
-        {intro}
-      </p>
+          is already mounted, empty, when the candidates arrive. The icon
+          shows with the words, never alone. */}
+      <div className={intro ? "flex items-start gap-2" : "contents"}>
+        {intro && (
+          <QuestionMarkCircleIcon aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-ink-3" />
+        )}
+        <p role="status" className="min-w-0 text-sm text-ink-2 empty:hidden">
+          {intro}
+        </p>
+      </div>
       {hasCandidates && (
         <ul
           role="list"
@@ -125,8 +127,8 @@ export default function TeamCandidates({
                 variant="secondary"
                 outline
                 // A long label wraps inside the button instead of running out
-                // of the tile. `min-h-6 py-1` is the same 24px on one line.
-                className="h-auto min-h-6 max-w-full py-1 text-left wrap-anywhere"
+                // of the tile (`WRAP_LABEL_CLASS`).
+                className={WRAP_LABEL_CLASS}
                 aria-disabled={disabled ? true : undefined}
                 onClick={() => {
                   if (disabled) return;

@@ -8,6 +8,7 @@ import { UNKNOWN_TEAM_AMBIGUOUS } from "../../CareerTeamEntry";
 import UndatedCareerTeams from "../../UndatedCareerTeams";
 import { useInlinePart } from "../inline-stack";
 import type { TidyCardContext, TidyRow } from "../tile-types";
+import { WRAP_LABEL_CLASS } from "../TidyTile";
 import AddStintEntry from "./AddStintEntry";
 import { careerLineText } from "./copy";
 import InlineNewTeam, { teamLookupCarryOf, type TeamLookupCarry } from "./InlineNewTeam";
@@ -313,6 +314,7 @@ export default function NewPlayerCareerRow({
         {addable.length > 0 && (
           <NeonButton
             size="1"
+            className={WRAP_LABEL_CLASS}
             aria-label={`Add stints to ${player.name}`}
             aria-disabled={disabled}
             onClick={() => void addAll()}

@@ -3,8 +3,8 @@
  * the row until `cardContext` lands, then from its names.
  */
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
-import TidyCardFace from "./TidyCardFace";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import TidyCardFace, { SHORT_VIEWPORT } from "./TidyCardFace";
 import type { TidyCardContext, TidyRow } from "./tile-types";
 
 const row = {
@@ -43,3 +43,46 @@ describe("TidyCardFace", () => {
     expect(document.querySelector("input[type=file]")).toBeNull();
   });
 });
+
+describe("TidyCardFace size", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const stubShort = (short: boolean) => {
+    const asked: string[] = [];
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn((query: string) => {
+        asked.push(query);
+        return {
+          matches: short && query === SHORT_VIEWPORT,
+          media: query,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+        };
+      }),
+    );
+    return asked;
+  };
+
+  const faceWidth = () => (screen.getByRole("img") as HTMLElement).style.width;
+
+  it("draws the medium card on a tall window", () => {
+    stubShort(false);
+    render(<TidyCardFace row={row} context={context} />);
+    expect(faceWidth()).toBe("9rem");
+  });
+
+  it("draws the small card when the window is short, so the tiles get the room", () => {
+    const asked = stubShort(true);
+    render(<TidyCardFace row={row} context={context} />);
+    expect(faceWidth()).toBe("5.5rem");
+    expect(asked).toContain("(max-height: 720px)");
+  });
+
+  it("draws the medium card where there is no matchMedia to ask", () => {
+    vi.stubGlobal("matchMedia", undefined);
+    render(<TidyCardFace row={row} context={context} />);
+    expect(faceWidth()).toBe("9rem");
+  });
+});
+

@@ -7,7 +7,7 @@ import NeonButton from "../../../modules/NeonButton";
 import { SOURCES_WITH_CHECKLIST, SOURCE_KEYS, type SourceKey } from "../../reconciliation-sources";
 import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
-import TidyTile, { ApplyToAllButton, type TidyTileLevel } from "../TidyTile";
+import TidyTile, { ApplyToAllButton, WRAP_LABEL_CLASS, type TidyTileLevel } from "../TidyTile";
 import type { TidyTileProps } from "../tile-types";
 import type { TidyDisagreement as RowDisagreement } from "../../../../convex/features/cardAttention";
 
@@ -261,7 +261,7 @@ function DisagreementEntry({
           return (
             <li
               key={source}
-              className="grid min-w-0 content-start gap-0.5 rounded-md border border-rule bg-raised-deep px-2 py-1.5 text-sm text-ink"
+              className="grid min-w-0 content-start gap-0.5 rounded-md border border-rule-strong bg-raised-deep px-2 py-1.5 text-sm text-ink"
             >
               <span className="text-xs text-ink-3">{sourceLabel(source)}</span>
               <span className="min-w-0 wrap-anywhere">
@@ -319,6 +319,7 @@ function DisagreementEntry({
                 outline
                 size="1"
                 type="button"
+                className={WRAP_LABEL_CLASS}
                 aria-disabled={busy || undefined}
                 onClick={() => void pick(v.value, false)}
               >
@@ -334,6 +335,7 @@ function DisagreementEntry({
               outline
               size="1"
               type="button"
+              className={WRAP_LABEL_CLASS}
               aria-disabled={busy || undefined}
               onClick={() => void pick(v.value, false)}
             >

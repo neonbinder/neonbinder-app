@@ -8,6 +8,7 @@ import NeonButton from "../../../modules/NeonButton";
 import { TeamMatchSearch } from "../../../entities/TeamMatchSearch";
 import SportSwitch from "../../SportSwitch";
 import type { TidyCardContext, TidyRow } from "../tile-types";
+import { WRAP_LABEL_CLASS } from "../TidyTile";
 import { useAnswered } from "../answered";
 import { teamLinkedForText } from "./copy";
 import InlineNewTeam, { teamLookupCarryOf } from "./InlineNewTeam";
@@ -335,6 +336,7 @@ function UnansweredTeamName({
           {exactSingle && (
             <NeonButton
               size="1"
+              className={WRAP_LABEL_CLASS}
               aria-label={`Link to ${teamOptionLabel(exactSingle.name, exactSingle.yearsActive)}${suffix}`}
               aria-disabled={disabled}
               onClick={() => void link(exactSingle._id)}

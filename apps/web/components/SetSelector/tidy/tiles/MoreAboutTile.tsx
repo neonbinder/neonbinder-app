@@ -1,5 +1,6 @@
 import { useId, useState } from "react";
 import { useQuery } from "convex/react";
+import { ChevronDownIcon } from "@heroicons/react/16/solid";
 import { api } from "../../../../convex/_generated/api";
 import NeonButton from "../../../modules/NeonButton";
 import {
@@ -20,7 +21,7 @@ import type { TidyTileProps } from "../tile-types";
  * on the drawn card, so those sections are not here (`MORE_ABOUT_SECTIONS`).
  *
  * The disclosure keeps one label, "Card fields"; `aria-expanded` says whether the
- * fields are showing.
+ * fields are showing, and its chevron turns over with it.
  *
  * The fields mount only while open, so a collapsed tile subscribes to nothing
  * and holds no second copy of a control the walk already shows.
@@ -44,6 +45,13 @@ export default function MoreAboutTile({ row, leafId, sportId }: TidyTileProps) {
           onClick={() => setOpen((v) => !v)}
         >
           Card fields
+          {/* Turns over when the fields open; still under reduced motion. The
+              name stays "Card fields", `aria-expanded` says the state. */}
+          <ChevronDownIcon
+            aria-hidden="true"
+            data-open={open}
+            className="h-3.5 w-3.5 shrink-0 motion-safe:transition-transform motion-safe:duration-150 data-[open=true]:rotate-180"
+          />
         </NeonButton>
       }
     >

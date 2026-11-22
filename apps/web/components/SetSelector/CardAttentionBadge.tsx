@@ -1,3 +1,4 @@
+import { ExclamationTriangleIcon, EyeIcon } from "@heroicons/react/16/solid";
 import { tidyItemLabel } from "./card-attention";
 import type { TidyAttention } from "./tidy/tile-types";
 
@@ -9,17 +10,18 @@ import type { TidyAttention } from "./tidy/tile-types";
  * Deliberately one glyph, not a word. The grid is up to 908 rows of
  * `#123 · Card Name · team · badges · Edit Del`, and every horizontal pixel
  * already belongs to something; a "Needs attention" pill would push the
- * platform badges into a second line on narrow columns. So the mark is an
- * amber `!` in a fixed 20px disc, and the *words* live in its accessible name
- * and tooltip, where they can be as long as they need to be.
+ * platform badges into a second line on narrow columns. So the mark is one
+ * small icon in a fixed 20px disc, and the *words* live in its accessible
+ * name and tooltip, where they can be as long as they need to be.
  *
  * NEO-645: two levels, the Tidy Up walk's own colours. Pink is "to fix": the
  * card cannot be listed until it is answered. Blue is "to check": a stop for
  * review that never blocks. (This was amber before the walk had levels; amber
  * said "a person is needed" and nothing about how much.) Both are an outlined
  * disc in the row's own reserved slot, so neither reads as one of the row's
- * attribute badges. Colour is never the only carrier: the accessible name and
- * the tooltip say which level it is.
+ * attribute badges. Colour is never the only carrier: the icon is the tile's own
+ * (a warning triangle for "to fix", an eye for "to check"), so the two differ
+ * by shape, and the accessible name and the tooltip say which level it is.
  *
  * ## Why it renders inside a caller-reserved slot
  *
@@ -63,6 +65,7 @@ export default function CardAttentionBadge({
   // operator should hear all of them.
   const reasons = attention.items.map(tidyItemLabel).join("; ");
   const fix = attention.level === "fix";
+  const Icon = fix ? ExclamationTriangleIcon : EyeIcon;
   return (
     <span
       role="img"
@@ -71,16 +74,16 @@ export default function CardAttentionBadge({
           ? `Card ${cardIdentity} needs attention: ${reasons}`
           : `Card ${cardIdentity} is worth a check: ${reasons}`
       }
-      title={fix ? `Needs attention — ${reasons}` : `Worth a check — ${reasons}`}
+      title={fix ? `Needs attention: ${reasons}` : `Worth a check: ${reasons}`}
       // a11y (1.4.3 / 1.4.11): the `-text` roles are the neon hues' text-role
       // tokens, which clear 3:1 on the tile wash in both modes (TidyTile).
       className={
         fix
-          ? "inline-flex h-5 w-5 items-center justify-center rounded-full border border-neon-pink-text bg-wash-pink text-[11px] font-bold text-neon-pink-text"
-          : "inline-flex h-5 w-5 items-center justify-center rounded-full border border-neon-blue-text bg-wash-blue text-[11px] font-bold text-neon-blue-text"
+          ? "inline-flex h-5 w-5 items-center justify-center rounded-full border border-neon-pink-text bg-wash-pink text-neon-pink-text"
+          : "inline-flex h-5 w-5 items-center justify-center rounded-full border border-neon-blue-text bg-wash-blue text-neon-blue-text"
       }
     >
-      <span aria-hidden="true">!</span>
+      <Icon aria-hidden="true" className="h-3 w-3" />
     </span>
   );
 }

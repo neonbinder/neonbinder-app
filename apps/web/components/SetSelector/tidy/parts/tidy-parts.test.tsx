@@ -63,7 +63,7 @@ describe("copy", () => {
   it("the career gap line never invents a year", () => {
     expect(noStintText("San Diego Padres", 2024)).toBe("No San Diego Padres in the career by 2024.");
     expect(noStintText("San Diego Padres", undefined)).toBe("No San Diego Padres in the career.");
-    expect(noStintText(undefined, 2024)).toBe("This team isn’t in the career by 2024.");
+    expect(noStintText(undefined, 2024)).toBe("This team isn't in the career by 2024.");
   });
 
   it("chip lines name full names and never the marketplace", () => {
@@ -78,7 +78,7 @@ describe("copy", () => {
     expect(outcomeHeading("answered", false)).toMatch(/^The listing has no team/);
     expect(outcomeHeading("answered", true)).toBeNull();
     expect(careerHeading(true, false)).toBe("Suggested from career history.");
-    expect(careerHeading(false, false)).toBe("No year on this set. Here’s the whole career, so pick the one on the card.");
+    expect(careerHeading(false, false)).toBe("No year on this set. Here's the whole career, so pick the one on the card.");
   });
 });
 

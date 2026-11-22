@@ -217,7 +217,7 @@ describe("CardChecklist — the Fix card titles door (NEO-535)", () => {
       const line = screen.getAllByRole("status").find((n) => /^Saved 1 title/.test(n.textContent ?? ""));
       expect(line).toBeTruthy();
       await waitFor(() =>
-        expect(document.activeElement).toBe(screen.getByRole("button", { name: "1 needs you" })),
+        expect(document.activeElement).toBe(screen.getByRole("button", { name: "1 needs you · 1 to fix" })),
       );
     });
 

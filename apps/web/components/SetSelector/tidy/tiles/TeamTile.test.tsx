@@ -170,6 +170,10 @@ describe("TeamTile", () => {
       ];
       renderTile();
       expect(screen.getByRole("group", { name: "Team" }).getAttribute("data-tidy-level")).toBe("fix");
+      // A team's name and years are data: the label wraps inside the button.
+      expect(screen.getByRole("button", { name: "Link to San Diego Padres · 1969–present" }).className).toContain(
+        "wrap-anywhere",
+      );
       await click(screen.getByRole("button", { name: "Link to San Diego Padres · 1969–present" }));
       expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
         cardId: CARD,
@@ -243,6 +247,30 @@ describe("TeamTile", () => {
       expect(new Set(links.map((b) => b.getAttribute("aria-label") ?? b.textContent)).size).toBe(2);
       await click(links[0]);
       expect(mutation("tidyNames.answerName")).toHaveBeenCalledTimes(1);
+    });
+
+    it("the candidates sit in a plain recessed panel with an icon, not a side rail, and wrap their long labels", async () => {
+      queryResults["teams.nearMatches"] = [];
+      queryResults["teams.getManyByIds"] = [
+        { _id: "t-new", name: "Padres", location: "San Diego", yearsActive: { from: 1969 } },
+        { _id: "t-old", name: "Padres", location: "San Diego", yearsActive: { from: 1936, to: 1968 } },
+      ];
+      renderTile({
+        ctx: context({
+          names: [teamName({ row: { name: "Padres", sportId: SPORT, status: "ready", candidateTeamIds: ["t-new", "t-old"] } })],
+        }),
+      });
+      const intro = await screen.findByText("We've got 2 teams by that name. Pick the one on this card.");
+      const panel = screen.getByRole("list", { name: /We've got 2 teams/ }).parentElement!;
+      expect(panel.className).toContain("bg-raised-deep");
+      expect(panel.className).not.toContain("border-l-4");
+      // The icon is beside the words, and only with them.
+      expect(intro.parentElement?.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+      for (const link of screen.getAllByRole("button", { name: /^Link to San Diego Padres/ })) {
+        for (const token of ["h-auto", "min-h-6", "max-w-full", "py-1", "text-left", "wrap-anywhere"]) {
+          expect(link.className).toContain(token);
+        }
+      }
     });
 
     it("lists the candidates newest era first, not in candidateTeamIds order, undated last", () => {
@@ -504,7 +532,7 @@ describe("TeamTile", () => {
         expect(chip.getAttribute("aria-pressed")).toBe("false");
       }
       expect(screen.getByRole("button", { name: /Philadelphia Athletics · Jimmie Foxx 1925–1935/ })).toBeTruthy();
-      expect(screen.getByText("No 2025 team on file. Here’s the whole career, so pick the one on the card.")).toBeTruthy();
+      expect(screen.getByText("No 2025 team on file. Here's the whole career, so pick the one on the card.")).toBeTruthy();
       // Nothing chosen: there is nothing to save, so there is no Save button at all.
       expect(screen.queryByRole("button", { name: /^Save teams?$/ })).toBeNull();
       expect(mutation("selectorOptions.updateCard")).not.toHaveBeenCalled();
@@ -540,7 +568,7 @@ describe("TeamTile", () => {
       ];
       renderTile({ row: card({ playerIds: ["player-1"], teamCheckOutcome: "gaveUp" }), ctx: ctx(), items });
       expect(screen.getByRole("button", { name: /Boston Red Sox/ }).getAttribute("aria-pressed")).toBe("true");
-      expect(screen.getByText("We couldn’t get a team from the listing for this card. Pick the one on the card.")).toBeTruthy();
+      expect(screen.getByText("We couldn't get a team from the listing for this card. Pick the one on the card.")).toBeTruthy();
     });
 
     it("'No team on this card' records the answer", async () => {

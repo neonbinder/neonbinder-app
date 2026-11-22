@@ -4,7 +4,7 @@
  */
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import TidyTile, { ApplyToAllButton, TidyNote } from "./TidyTile";
+import TidyTile, { ApplyToAllButton, TidyNote, WRAP_LABEL_CLASS } from "./TidyTile";
 
 describe("TidyTile", () => {
   it("is a labelled group with an h3, and says its level in text", () => {
@@ -69,6 +69,30 @@ describe("TidyTile", () => {
     expect(screen.getByText("Waiting").className).toContain("sr-only");
     expect(screen.queryByRole("button", { name: "Never shown" })).toBeNull();
     expect(screen.queryByText("aside")).toBeNull();
+  });
+
+  it("plain and waiting tiles take the strong rule; pink and blue glow in dark only (through --glow)", () => {
+    const { rerender } = render(<TidyTile heading="Player" level="plain" />);
+    expect(screen.getByRole("group", { name: "Player" }).className).toContain("border-rule-strong");
+    rerender(<TidyTile heading="Player" level="waiting" />);
+    expect(screen.getByRole("group", { name: "Player" }).className).toContain("border-rule-strong");
+    // No glow on the quiet ones.
+    expect(screen.getByRole("group", { name: "Player" }).className).not.toContain("shadow-");
+
+    // The halo's strength is the theme's `--glow` (1 in dark, 0 on paper), so
+    // light mode paints nothing; the tile's colour edge is unchanged.
+    for (const [level, rgb] of [
+      ["fix", "255_46_154"],
+      ["check", "0_194_255"],
+    ] as const) {
+      rerender(<TidyTile heading="Player" level={level} />);
+      const cls = screen.getByRole("group", { name: "Player" }).className;
+      expect(cls).toContain(`shadow-[0_0_14px_rgb(${rgb}/calc(0.4*var(--glow)))]`);
+    }
+  });
+
+  it("exports one wrap class for size-1 buttons with long or interpolated labels", () => {
+    expect(WRAP_LABEL_CLASS).toBe("h-auto min-h-6 max-w-full py-1 text-left wrap-anywhere");
   });
 
   it("shows the aside beside the heading", () => {

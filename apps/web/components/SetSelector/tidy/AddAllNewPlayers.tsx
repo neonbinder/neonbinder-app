@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useConvex, useMutation } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
@@ -7,7 +8,7 @@ import { useInlinePart } from "./inline-stack";
 import { DASHED_APPLY_CLASS, PLAYER_WORDS, applyOutcomeText } from "./TidyTile";
 
 /**
- * NEO-645 (decision 32) — "Add all N new players", at the top of the walk.
+ * NEO-645 (decision 32) — "Add all N new players", on the walk's title bar.
  *
  * The old wizard had "Add remaining players as new". Without it a set with a
  * hundred new rookies is a hundred per-card answers. The server offers only the
@@ -17,9 +18,15 @@ import { DASHED_APPLY_CLASS, PLAYER_WORDS, applyOutcomeText } from "./TidyTile";
  *
  * ## One screen of its own, inline
  *
- * The dashed control opens a confirm in place (not a dialog on top of the
- * walk): the names, each with the card numbers that print it, in a scrolling
- * list, then "Add N players" and "Cancel". Esc closes it (the walk's inline
+ * The dashed control sits in the walk's chrome (`WizardChrome`'s `aside`, a row
+ * whose height is always reserved), so it appears and goes without moving a
+ * card, whenever the offer settles. It opens a confirm in place (not a dialog
+ * on top of the walk): the names, each with the card numbers that print it, in
+ * a scrolling list, then "Add N players" and "Cancel". The confirm is tall, so
+ * it does not push the walk's chrome down: with a `panelHost` it is drawn into
+ * that element at the top of the walk's scrolling area (the operator pressed
+ * the button, so room being made is no surprise); without one it opens right
+ * under the control. Esc closes it (the walk's inline
  * stack, so it never reads as Save for later). Enter confirms only on the
  * confirm button itself; focus opens on the list, so a second Enter after
  * opening never writes a hundred players. The result is the house counts line
@@ -51,6 +58,7 @@ export function cardNumbersText(entry: Pick<Offered, "cardNumbers" | "moreCards"
 export default function AddAllNewPlayers({
   leafId,
   refreshKey,
+  panelHost,
 }: {
   leafId: Id<"selectorOptions">;
   /**
@@ -59,6 +67,11 @@ export default function AddAllNewPlayers({
    * asks the server again.
    */
   refreshKey: string;
+  /**
+   * Where the confirm is drawn (the walk's scrolling area). Nothing, or an
+   * element that is not mounted yet: it opens inline, under the control.
+   */
+  panelHost?: HTMLElement | null;
 }) {
   const convex = useConvex();
   const addNewPlayers = useMutation(api.tidyNewPlayers.addNewPlayers);
@@ -152,6 +165,65 @@ export default function AddAllNewPlayers({
   const showControl = count >= 2 || open || busy || outcome !== null;
   if (!showControl) return null;
 
+  const panel = open && (
+    <div
+      ref={panelRef}
+      id={panelId}
+      role="group"
+      aria-labelledby={headingId}
+      className="grid min-w-0 gap-2 rounded-[10px] border border-rule-strong bg-raised px-3.5 py-3"
+    >
+      <h3 id={headingId} className="text-sm font-semibold text-ink">
+        New players to add
+      </h3>
+      <p className="text-xs text-ink-2">
+        None of these is in NeonBinder yet. Each becomes a player, linked on every card that
+        prints the name.
+      </p>
+      <ul
+        ref={listRef}
+        // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a scrolling list must be reachable by keyboard
+        tabIndex={0}
+        aria-label="Names to add"
+        className="focus-outline grid max-h-44 gap-1 overflow-y-auto rounded-md border border-rule-strong px-2.5 py-2 text-sm"
+      >
+        {names.map((entry) => (
+          <li key={entry.name} className="flex min-w-0 flex-wrap items-baseline gap-x-2 wrap-anywhere">
+            <span className="font-medium text-ink">{entry.name}</span>
+            <span className="text-xs text-ink-3">{cardNumbersText(entry)}</span>
+          </li>
+        ))}
+      </ul>
+      <div className="flex flex-wrap items-center gap-2" aria-busy={busy || undefined}>
+        <NeonButton
+          type="button"
+          size="1"
+          aria-label={`Add ${plural(count, "player", "players")}`}
+          aria-disabled={busy || undefined}
+          onClick={() => void confirm()}
+        >
+          {`Add ${plural(count, "player", "players")}`}
+        </NeonButton>
+        <NeonButton
+          type="button"
+          size="1"
+          variant="negative"
+          outline
+          aria-label="Cancel adding new players"
+          aria-disabled={busy || undefined}
+          onClick={() => {
+            if (!busy) close();
+          }}
+        >
+          Cancel
+        </NeonButton>
+        <span role="alert" className="text-xs text-neon-pink-text empty:hidden">
+          {failed ? "Didn't add the players, try again." : null}
+        </span>
+      </div>
+    </div>
+  );
+
   return (
     <div className="grid min-w-0 gap-2">
       <span className="inline-flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
@@ -175,65 +247,7 @@ export default function AddAllNewPlayers({
           {busy ? "Adding…" : outcome}
         </span>
       </span>
-
-      {open && (
-        <div
-          ref={panelRef}
-          id={panelId}
-          role="group"
-          aria-labelledby={headingId}
-          className="grid min-w-0 gap-2 rounded-[10px] border border-rule bg-raised px-3.5 py-3"
-        >
-          <h3 id={headingId} className="text-sm font-semibold text-ink">
-            New players to add
-          </h3>
-          <p className="text-xs text-ink-2">
-            None of these is in NeonBinder yet. Each becomes a player, linked on every card that
-            prints the name.
-          </p>
-          <ul
-            ref={listRef}
-            // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a scrolling list must be reachable by keyboard
-            tabIndex={0}
-            aria-label="Names to add"
-            className="focus-outline grid max-h-44 gap-1 overflow-y-auto rounded-md border border-rule px-2.5 py-2 text-sm"
-          >
-            {names.map((entry) => (
-              <li key={entry.name} className="flex min-w-0 flex-wrap items-baseline gap-x-2 wrap-anywhere">
-                <span className="font-medium text-ink">{entry.name}</span>
-                <span className="text-xs text-ink-3">{cardNumbersText(entry)}</span>
-              </li>
-            ))}
-          </ul>
-          <div className="flex flex-wrap items-center gap-2" aria-busy={busy || undefined}>
-            <NeonButton
-              type="button"
-              size="1"
-              aria-label={`Add ${plural(count, "player", "players")}`}
-              aria-disabled={busy || undefined}
-              onClick={() => void confirm()}
-            >
-              {`Add ${plural(count, "player", "players")}`}
-            </NeonButton>
-            <NeonButton
-              type="button"
-              size="1"
-              variant="negative"
-              outline
-              aria-label="Cancel adding new players"
-              aria-disabled={busy || undefined}
-              onClick={() => {
-                if (!busy) close();
-              }}
-            >
-              Cancel
-            </NeonButton>
-            <span role="alert" className="text-xs text-neon-pink-text empty:hidden">
-              {failed ? "Didn't add the players, try again." : null}
-            </span>
-          </div>
-        </div>
-      )}
+      {panel && (panelHost ? createPortal(panel, panelHost) : panel)}
     </div>
   );
 }

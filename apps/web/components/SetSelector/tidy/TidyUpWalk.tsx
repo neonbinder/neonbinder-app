@@ -107,6 +107,11 @@ export const TIDY_SAVE_LABEL = "Save & next (Enter)";
 export const TIDY_DONE_LABEL = "Done (Esc)";
 export const TIDY_SAVE_FAILED = "Didn't save, try again";
 
+/** The end screen's way back to the cards it skipped: "Review the 3 skipped". */
+export function reviewSkippedLabel(skipped: number): string {
+  return skipped === 1 ? "Review the skipped card" : `Review the ${skipped} skipped`;
+}
+
 /** "3 to fix before this card can save. Skip it and it can't be listed until it's fixed." */
 export function mustFixLine(fix: number): string {
   return `${fix} to fix before this card can save. Skip it and it can't be listed until it's fixed.`;
@@ -196,6 +201,10 @@ function WalkDialog({
   const statusId = useId();
   const url = useTidyWalkUrl();
   const { location, canStepBack, goToCard, showCard, showDone, finish, stepBack } = url;
+
+  // Where "Add all N new players" draws its confirm: the top of the scrolling
+  // area. State, not a ref, so the control re-renders once the element exists.
+  const [addAllHost, setAddAllHost] = useState<HTMLDivElement | null>(null);
 
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -317,6 +326,26 @@ function WalkDialog({
       setSaving(false);
       advance(cardId);
     });
+  };
+
+  // The skipped cards (passed, and still flagged), in walk order.
+  const skippedIds = useMemo(() => {
+    const passedSet = new Set(passed);
+    return order.filter(({ row }) => passedSet.has(row._id)).map(({ row }) => row._id as string);
+  }, [order, passed]);
+
+  /**
+   * End screen → "Review the N skipped": the skipped cards are offered again,
+   * starting at the first of them. They leave `passed` (the cards that were
+   * fixed stay there, so the tally still counts them) and the walk moves to the
+   * first: a push, so Back from there is the end screen again.
+   */
+  const reviewSkipped = () => {
+    const first = skippedIds[0];
+    if (!first) return;
+    const back = new Set(skippedIds);
+    setPassed((prev) => prev.filter((id) => !back.has(id)));
+    goToCard(first, null);
   };
 
   const skip = () => {
@@ -505,7 +534,7 @@ function WalkDialog({
           <div
             ref={panelRef}
             tabIndex={-1}
-            className="flex h-dvh w-full max-w-[45rem] flex-col bg-raised-deep outline-none sm:h-[min(52rem,calc(100dvh-2rem))] sm:rounded-lg sm:border sm:border-rule-strong sm:shadow-xl sm:shadow-offset"
+            className="tidy-walk flex h-dvh w-full max-w-[45rem] flex-col bg-raised-deep outline-none sm:h-[min(52rem,calc(100dvh-2rem))] sm:rounded-lg sm:border sm:border-rule-strong sm:shadow-xl sm:shadow-offset"
           >
             <WizardChrome
               titleId={titleId}
@@ -513,6 +542,13 @@ function WalkDialog({
               done={passed.length}
               planned={planned}
               subtitle={subtitle}
+              aside={
+                <AddAllNewPlayers
+                  leafId={leafId}
+                  refreshKey={newPlayersKey}
+                  panelHost={addAllHost}
+                />
+              }
             />
 
             <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
@@ -534,16 +570,16 @@ function WalkDialog({
                       : ""
                   : ""}
               </p>
-              <div className="mb-3 empty:hidden">
-                <AddAllNewPlayers leafId={leafId} refreshKey={newPlayersKey} />
-              </div>
+              {/* The confirm of "Add all N new players" (its control is in the
+                  chrome above) is drawn here while it is open; empty, it takes no room. */}
+              <div ref={setAddAllHost} className="mb-3 empty:hidden" />
               {isDone ? (
                 <div
                   ref={headerRef}
                   tabIndex={-1}
                   role="group"
                   aria-labelledby={`${doneLineId} ${doneTallyId} ${doneLookupId}`}
-                  className="grid gap-2 outline-none"
+                  className="focus-outline grid gap-2"
                 >
                   {passed.length > 0 && (
                     <p id={doneTallyId} className="text-sm text-ink">
@@ -572,7 +608,7 @@ function WalkDialog({
                       tabIndex={-1}
                       role="group"
                       aria-labelledby={headerLineId}
-                      className="grid min-w-0 gap-1 outline-none"
+                      className="focus-outline grid min-w-0 gap-1"
                     >
                       <p id={headerLineId} className="text-lg font-semibold text-ink wrap-anywhere">
                         <span className="whitespace-nowrap">{header?.number}</span>
@@ -624,9 +660,16 @@ function WalkDialog({
                   {TIDY_BACK_LABEL}
                 </NeonButton>
                 {isDone ? (
-                  <NeonButton type="button" onClick={onClose}>
-                    <HintedLabel label={TIDY_DONE_LABEL} />
-                  </NeonButton>
+                  <>
+                    {skippedIds.length > 0 && (
+                      <NeonButton type="button" variant="secondary" onClick={reviewSkipped}>
+                        {reviewSkippedLabel(skippedIds.length)}
+                      </NeonButton>
+                    )}
+                    <NeonButton type="button" onClick={onClose}>
+                      <HintedLabel label={TIDY_DONE_LABEL} />
+                    </NeonButton>
+                  </>
                 ) : (
                   <>
                     <NeonButton

@@ -36,11 +36,17 @@ const LEVEL_TEXT: Record<TidyTileLevel, string | null> = {
   waiting: "Waiting",
 };
 
+/**
+ * Pink and blue tiles glow in dark, the mock's 14px neon halo. `--glow`
+ * (app/theme.css) is 1 where neon is lit and 0 on paper, so light mode gets
+ * no shadow at all. Outside the box only: nothing is drawn under the tile's
+ * own text, so contrast is unchanged.
+ */
 const LEVEL_CLASS: Record<TidyTileLevel, string> = {
-  fix: "border-2 border-neon-pink-text bg-wash-pink",
-  check: "border-2 border-neon-blue-text bg-wash-blue",
-  plain: "border border-rule bg-raised",
-  waiting: "border-[1.5px] border-dashed border-rule bg-transparent",
+  fix: "border-2 border-neon-pink-text bg-wash-pink shadow-[0_0_14px_rgb(255_46_154/calc(0.4*var(--glow)))]",
+  check: "border-2 border-neon-blue-text bg-wash-blue shadow-[0_0_14px_rgb(0_194_255/calc(0.4*var(--glow)))]",
+  plain: "border border-rule-strong bg-raised",
+  waiting: "border-[1.5px] border-dashed border-rule-strong bg-transparent",
 };
 
 /** The shape beside the word, so "to fix" and "to check" differ without colour. */
@@ -197,6 +203,15 @@ export function applyOutcomeText(
  */
 export const DASHED_APPLY_CLASS =
   "focus-outline hit-area-24 max-w-full rounded-[7px] border-[1.5px] border-dashed border-neon-blue-text bg-transparent px-2.5 py-1 text-left text-xs font-medium text-neon-blue-text wrap-anywhere hover:bg-neon-blue/10 aria-disabled:cursor-wait aria-disabled:opacity-60";
+
+/**
+ * A size-1 `NeonButton` whose label is data (a player or team name, a pasted
+ * value) or runs past about 35 characters: Radix fixes size 1 at 24px high and
+ * `flex-shrink: 0`, so such a label runs out of a phone-width tile. This lets
+ * it wrap inside the button instead (`min-h-6 py-1` is the same 24px on one
+ * line). One string, so the buttons never drift apart.
+ */
+export const WRAP_LABEL_CLASS = "h-auto min-h-6 max-w-full py-1 text-left wrap-anywhere";
 
 /**
  * "Answer, then Apply to all": a dashed blue button that offers this card's

@@ -136,13 +136,13 @@ export function marketplaceHeading(listingName: string, rowCount: number, agreed
 /** The card's case, from the background team check's recorded outcome. */
 export function outcomeHeading(outcome: TeamCheckOutcome | undefined, hasHint: boolean): string | null {
   if (outcome === "checklist" && !hasHint) {
-    return "The official checklist skips the team on this one. Pick the one on the card, or say there isn’t one.";
+    return "The official checklist skips the team on this one. Pick the one on the card, or say there isn't one.";
   }
   if (outcome === "gaveUp") {
-    return "We couldn’t get a team from the listing for this card. Pick the one on the card.";
+    return "We couldn't get a team from the listing for this card. Pick the one on the card.";
   }
   if (outcome === "answered" && !hasHint) {
-    return "The listing has no team for this card. Pick the one on the card, or say there isn’t one.";
+    return "The listing has no team for this card. Pick the one on the card, or say there isn't one.";
   }
   return null;
 }
@@ -155,8 +155,8 @@ export function careerHeading(
 ): string {
   if (!inSetYear) {
     return uncoveredSetYear !== undefined
-      ? `No ${uncoveredSetYear} team on file. Here’s the whole career, so pick the one on the card.`
-      : "No year on this set. Here’s the whole career, so pick the one on the card.";
+      ? `No ${uncoveredSetYear} team on file. Here's the whole career, so pick the one on the card.`
+      : "No year on this set. Here's the whole career, so pick the one on the card.";
   }
   if (listingDisagrees) {
     return "From the career. The listing names a different team, so pick the one on the card.";
@@ -172,8 +172,8 @@ export function careerHeading(
  */
 export function noStintText(team: string | undefined, year: number | undefined): string {
   const who = team ?? "This team";
-  if (year === undefined) return team ? `No ${who} in the career.` : "This team isn’t in the career.";
-  return team ? `No ${who} in the career by ${year}.` : `This team isn’t in the career by ${year}.`;
+  if (year === undefined) return team ? `No ${who} in the career.` : "This team isn't in the career.";
+  return team ? `No ${who} in the career by ${year}.` : `This team isn't in the career by ${year}.`;
 }
 
 /** A player with no stints at all: there is nothing to compare the team with. */

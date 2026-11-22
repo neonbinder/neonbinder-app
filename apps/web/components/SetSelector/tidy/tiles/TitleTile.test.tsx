@@ -24,6 +24,7 @@ vi.mock("convex/react", () => ({
 
 import { AnsweredProvider } from "../answered";
 import TitleTile from "./TitleTile";
+import { WRAP_LABEL_CLASS } from "../TidyTile";
 import { deriveCardAttention } from "../../../../convex/features/cardAttention";
 import { assessListingTitle } from "../../../../convex/features/generateListing";
 import type { TidyAttention, TidyRow, TidyTileProps } from "../tile-types";
@@ -484,5 +485,50 @@ describe("TitleTile purple notes", () => {
   it("says nothing when every source agrees", () => {
     renderTile(cardOf("c1", { sourceNumbers: { bsc: "USC118", checklist: "USC118" } }));
     expect(screen.queryByRole("note")).toBeNull();
+  });
+});
+
+describe("TitleTile words and wrapping (NEO-645 audit)", () => {
+  const cut = { level: "check", items: [{ level: "check", kind: "titleCut", key: "cut:1" }] } as unknown as TidyAttention;
+
+  it("says 'Auto title was cut short. Rewrite it.' with a full stop, never a dash, when nothing is named as left out", () => {
+    renderTile(cardOf("c1"), cut);
+    expect(screen.getByText("Auto title was cut short. Rewrite it.")).toBeTruthy();
+    expect(screen.queryByText(/—/)).toBeNull();
+    expect(screen.queryByRole("note")).toBeNull();
+  });
+
+  it("'Left out to fit' is the purple note whether or not the title was cut", () => {
+    previewResult = { title: SHORT, coreFits: true, dropped: [], inputs: { ...inputs, teamNames: ["Seattle Mariners"] } };
+    const { unmount } = renderTile(cardOf("c1"), cut);
+    const cutNote = screen.getByRole("note");
+    expect(cutNote.textContent).toBe("Left out to fit: Seattle Mariners");
+    expect(cutNote.className).toContain("text-neon-purple-text");
+    // With the note naming what went, the generic sentence is not said too.
+    expect(screen.queryByText(/Auto title was cut short/)).toBeNull();
+    unmount();
+
+    renderTile(cardOf("c2"));
+    const plainNote = screen.getByRole("note");
+    expect(plainNote.textContent).toBe("Left out to fit: Seattle Mariners");
+    expect(plainNote.className).toBe(cutNote.className);
+  });
+
+  it("the long 'Shorten the set name for every card' button wraps inside itself", () => {
+    renderTile(cardOf("c1"));
+    const shorten = screen.getByRole("button", { name: "Shorten the set name for every card" });
+    for (const token of WRAP_LABEL_CLASS.split(" ")) expect(shorten.className).toContain(token);
+  });
+
+  it("Regenerate's name has no dash", () => {
+    renderTile(cardOf("c1"));
+    expect(screen.getByRole("button", { name: "Regenerate card title" })).toBeTruthy();
+  });
+
+  it("the set-name panel's edge is the strong rule", () => {
+    renderTile(cardOf("c1"));
+    fireEvent.click(screen.getByRole("button", { name: "Shorten the set name for every card" }));
+    const panel = screen.getByLabelText("Set name in titles").closest("div")!;
+    expect(panel.className).toContain("border-rule-strong");
   });
 });

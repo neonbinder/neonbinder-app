@@ -273,3 +273,50 @@ describe("cardNumbersText", () => {
     expect(cardNumbersText({ cardNumbers: ["4"], moreCards: true })).toBe("#4 and more");
   });
 });
+
+describe("AddAllNewPlayers — the confirm's host (NEO-645 audit)", () => {
+  function Hosted({ host }: { host: HTMLElement | null }) {
+    return (
+      <InlineStackProvider>
+        <AddAllNewPlayers leafId={LEAF} refreshKey="k1" panelHost={host} />
+      </InlineStackProvider>
+    );
+  }
+
+  it("draws the confirm into the host element, while the control stays where it was put", async () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const { container } = render(<Hosted host={host} />);
+    await settle();
+    fireEvent.click(trigger());
+    await act(async () => void (await vi.advanceTimersByTimeAsync(20)));
+    const group = screen.getByRole("group", { name: "New players to add" });
+    expect(host.contains(group)).toBe(true);
+    expect(container.contains(group)).toBe(false);
+    expect(container.contains(trigger())).toBe(true);
+    // The control still names what it controls, across the two places.
+    expect(trigger().getAttribute("aria-controls")).toBe(group.id);
+    // Closing takes the confirm out of the host again, which leaves it empty.
+    fireEvent.click(screen.getByRole("button", { name: "Cancel adding new players" }));
+    expect(host.childElementCount).toBe(0);
+    host.remove();
+  });
+
+  it("with no host yet, opens right under the control as before", async () => {
+    const { container } = render(<Hosted host={null} />);
+    await settle();
+    fireEvent.click(trigger());
+    await act(async () => void (await vi.advanceTimersByTimeAsync(20)));
+    expect(container.contains(screen.getByRole("group", { name: "New players to add" }))).toBe(true);
+  });
+
+  it("its confirm and list take the strong edge", async () => {
+    render(<Hosted host={null} />);
+    await settle();
+    fireEvent.click(trigger());
+    await act(async () => void (await vi.advanceTimersByTimeAsync(20)));
+    expect(screen.getByRole("group", { name: "New players to add" }).className).toContain("border-rule-strong");
+    expect(screen.getByRole("list", { name: "Names to add" }).className).toContain("border-rule-strong");
+  });
+});
+

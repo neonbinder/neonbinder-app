@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { useMediaQuery } from "../../../src/hooks/useMediaQuery";
 import CardFace from "../../../app/collection/prototypes/_shared/CardFace";
 import { finishForVariant } from "../../../app/collection/final/data/finish";
 import type {
@@ -7,6 +8,9 @@ import type {
   VariantKind,
 } from "../../../app/collection/final/data/types";
 import type { TidyCardContext, TidyRow } from "./tile-types";
+
+/** Windows at most this tall draw the small card (`CardFace` `sm`). */
+export const SHORT_VIEWPORT = "(max-height: 720px)";
 
 /**
  * NEO-645 callout 1 — the drawn card at the top of the walk.
@@ -105,5 +109,9 @@ export default function TidyCardFace({
     .filter(Boolean)
     .join(", ");
 
-  return <CardFace model={model} size="md" photo={photo} label={label} />;
+  // A short window (a phone on its side, a laptop with the dock up) cannot
+  // spare the full-size card: the tiles are what the operator came for.
+  const short = useMediaQuery(SHORT_VIEWPORT);
+
+  return <CardFace model={model} size={short ? "sm" : "md"} photo={photo} label={label} />;
 }

@@ -337,3 +337,18 @@ describe("SourcesDisagreeTile", () => {
     expect(screen.getByText("Team name")).toBeTruthy();
   });
 });
+
+describe("SourcesDisagreeTile wrapping and edges (NEO-645 audit)", () => {
+  it("the 'Use “…”' buttons wrap their data-length labels, and each source cell has the strong edge", () => {
+    renderTile(UNCHOSEN);
+    for (const name of ["Use “Jackson Merril”", "Use “Jackson Merrill”"]) {
+      const button = screen.getByRole("button", { name });
+      for (const token of ["h-auto", "min-h-6", "max-w-full", "py-1", "text-left", "wrap-anywhere"]) {
+        expect(button.className).toContain(token);
+      }
+    }
+    const cells = within(screen.getByRole("list", { name: /What each source says/ })).getAllByRole("listitem");
+    for (const cell of cells) expect(cell.className).toContain("border-rule-strong");
+  });
+});
+

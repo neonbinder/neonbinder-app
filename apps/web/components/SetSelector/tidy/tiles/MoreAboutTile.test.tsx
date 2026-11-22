@@ -97,4 +97,20 @@ describe("MoreAboutTile", () => {
     expect(screen.queryByLabelText("Card name")).toBeNull();
     expect(screen.getByRole("button", { name: "Card fields" }).getAttribute("aria-expanded")).toBe("false");
   });
+
+  it("has a chevron that turns over with the fields, still named 'Card fields', and turns without motion only when allowed", () => {
+    render(<MoreAboutTile {...props} />);
+    const toggle = screen.getByRole("button", { name: "Card fields" });
+    const chevron = toggle.querySelector("svg")!;
+    // Decoration: hidden from a reader, so the name stays exactly "Card fields".
+    expect(chevron.getAttribute("aria-hidden")).toBe("true");
+    expect(chevron.getAttribute("data-open")).toBe("false");
+    // The turn is a transition that only runs when motion is welcome.
+    expect(chevron.getAttribute("class")).toContain("motion-safe:transition-transform");
+    expect(chevron.getAttribute("class")).toContain("data-[open=true]:rotate-180");
+    fireEvent.click(toggle);
+    expect(screen.getByRole("button", { name: "Card fields" }).querySelector("svg")?.getAttribute("data-open")).toBe(
+      "true",
+    );
+  });
 });
