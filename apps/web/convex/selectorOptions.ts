@@ -427,7 +427,10 @@ import {
   checklistPairedRowValidator,
   selectorOptionFields,
   selectorOptionLevelValidator,
+  sourceDisagreementValidator,
   sourceNumbersValidator,
+  tidyCheckValidator,
+  tidyReviewedValidator,
 } from "./schema";
 // NEO-334 — a variant type's title IS its kind (Base, Insert, Parallel). The
 // insert/parallel reading of a row beneath one is derived from that kind at
@@ -3267,6 +3270,14 @@ export const getCardChecklist = query({
       isCustom: v.optional(v.boolean()),
       pendingPlayerNames: v.optional(v.array(v.string())),
       pendingTeamNames: v.optional(v.array(v.string())),
+      // NEO-645: the One-card Tidy Up review state (see schema.ts). Listed
+      // because this validator is STRICT: a row carrying any of the four would
+      // otherwise fail the whole checklist with `Object contains extra field`.
+      // The shapes are the exported schema validators, never hand copies.
+      sourceDisagreements: v.optional(v.array(sourceDisagreementValidator)),
+      sourceNumbers: v.optional(sourceNumbersValidator),
+      tidyChecks: v.optional(v.array(tidyCheckValidator)),
+      tidyReviewed: v.optional(tidyReviewedValidator),
       features: featuresValidator,
       // NEO-91: cross-marketplace SKU (see convex/sku.ts).
       sku: v.optional(v.string()),

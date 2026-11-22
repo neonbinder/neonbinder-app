@@ -4324,6 +4324,61 @@ export const appendCareerStints = internalMutation({
   },
 });
 
+/**
+ * NEO-645 — Add to career: append ONE stint to a player from the career tile
+ * (and the inline New team form, whose `findOrCreate` result is the `teamId`).
+ *
+ * The public, operator-facing wrapper over `appendCareerStints` (which stays
+ * the internal writer of `players.teamYears`).
+ *
+ * ## STATUS: signature first (NEO-645 W1a)
+ *
+ * The validators, the admin gate and this contract are final; the body throws
+ * "not implemented yet" and writes nothing. W1b implements it.
+ *
+ * ## Contract
+ *
+ * - `requireAdmin`. Years are held to the bounds every other writer holds
+ *   (`assertCareerStintYears`).
+ * - Additive and idempotent, exactly as `appendCareerStints`: a stint whose
+ *   `(teamId, fromYear)` the player already has is left alone and reported as
+ *   `existing`; nothing existing is edited or removed. The merged list is stored
+ *   in the one canonical order (`sortTeamYears`) and stays within
+ *   `MAX_PLAYER_TEAM_YEARS`. A team in a sport the player does not belong to, or
+ *   a missing player or team, is `skipped`, never written.
+ * - Then re-check the `careerGap` of the OPEN card (`cardId`): when the new
+ *   stint now covers the card's team by the card's year (`careerCoversCardTeam`,
+ *   J2: today's rule, not a [Y-1, Y] window) the card's `{ kind: "careerGap" }`
+ *   check for this (player, team) is removed from `tidyChecks`. Then schedule the
+ *   same re-check for the leaf's OTHER single-player cards for that player.
+ * - `tidyChecks` writes never bump the card's `lastUpdated`. The player row's
+ *   `lastUpdated` does bump (a career changed).
+ * - NEO-307: a team creation that would clash with another team's alias is the
+ *   caller's job (`teams.findOrCreate` returns the holder to link); the
+ *   `teamId` here is always an existing row.
+ *
+ * Returns the `appendCareerStints` counts.
+ */
+export const addStint = mutation({
+  args: {
+    playerId: v.id("players"),
+    teamId: v.id("teams"),
+    fromYear: v.number(),
+    toYear: v.optional(v.number()),
+    /** The open card; its `careerGap` check is re-evaluated after the write. */
+    cardId: v.id("cardChecklist"),
+  },
+  returns: v.object({
+    added: v.number(),
+    existing: v.number(),
+    skipped: v.number(),
+  }),
+  handler: async (ctx, _args) => {
+    await requireAdmin(ctx);
+    throw new ConvexError("players.addStint is not implemented yet");
+  },
+});
+
 // ===========================================================================
 // NEO-591 — the career check's "New player named X": the commit-side piece
 // that mints the player the operator said a card's printed name really means.

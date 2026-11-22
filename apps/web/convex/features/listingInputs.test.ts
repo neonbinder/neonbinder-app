@@ -4,7 +4,7 @@
  *
  * The parity block is the point of the module: the SAME card, assessed the way
  * the step assesses it before save and then born through
- * `buildCardRowForInsert` and read back through `deriveCardAttention`, must
+ * `buildCardRowForInsert` and read back through `deriveLegacyCardAttention`, must
  * come to the same title and the same title kinds. If the two ever drift, the
  * step asks about cards the walker will not flag (or the reverse).
  */
@@ -12,7 +12,7 @@
 import { describe, expect, test } from "vitest";
 import type { Id } from "../_generated/dataModel";
 import { buildCardRowForInsert, type NewCardRow } from "../cardRowCreate";
-import { deriveCardAttention } from "./cardAttention";
+import { deriveLegacyCardAttention } from "./cardAttention";
 import {
   assessNewCardListing,
   checkShortNameAnswer,
@@ -180,7 +180,7 @@ describe("listingInputs — the pre-save step and the insert agree (parity)", ()
       teamNames: c.teamNames,
     });
     const built = buildCardRowForInsert(newCardRow(c), c.set, NOW);
-    const after = deriveCardAttention(built.row).filter((i) => TITLE_KINDS.has(i.kind));
+    const after = deriveLegacyCardAttention(built.row).filter((i) => TITLE_KINDS.has(i.kind));
 
     expect(built.row.listingTitle).toBe(before.assessment.title);
     expect(after).toEqual(before.items);
@@ -228,7 +228,7 @@ describe("the stored variation is the trimmed one (NEO-335 adversarial pass)", (
   });
 });
 
-describe("titleAttentionItems — the rules deriveCardAttention had, unchanged", () => {
+describe("titleAttentionItems — the rules deriveLegacyCardAttention had, unchanged", () => {
   test("over the cap wins over truncated: one thing to say", () => {
     expect(
       titleAttentionItems({ listingTitle: "x".repeat(LISTING_TITLE_MAX + 4), listingTitleTruncated: true }),
@@ -248,9 +248,9 @@ describe("titleAttentionItems — the rules deriveCardAttention had, unchanged",
     ]);
   });
 
-  test("deriveCardAttention keeps the same order: title kinds before unreviewedName", () => {
+  test("deriveLegacyCardAttention keeps the same order: title kinds before unreviewedName", () => {
     expect(
-      deriveCardAttention({
+      deriveLegacyCardAttention({
         teamOnCardIds: ["t1"],
         listingTitleTruncated: true,
         cardVariation: "v".repeat(ASPECT_VALUE_MAX + 1),

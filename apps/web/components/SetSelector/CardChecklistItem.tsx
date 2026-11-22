@@ -6,7 +6,7 @@ import { userFacingMessage } from "../../lib/errors/user-facing-message";
 import { teamFullName } from "../../lib/teams/team-name";
 import type { Id } from "../../convex/_generated/dataModel";
 import CardAttentionBadge from "./CardAttentionBadge";
-import { deriveCardAttention } from "./card-attention";
+import { deriveLegacyCardAttention } from "./card-attention";
 import { NO_TEAM_TEXT } from "./team-picker-labels";
 
 type CardChecklistItemProps = {
@@ -321,7 +321,7 @@ export default function CardChecklistItem({
   // run per row inside the virtualized list (three field reads), and deriving
   // it here rather than accepting it as a prop keeps the rule in exactly one
   // place for the row, the header count, the filter and the walker.
-  const attention = deriveCardAttention(card);
+  const attention = deriveLegacyCardAttention(card);
 
   // NEO-272 — HOW A ROW NAMES ITSELF TO A SCREEN READER, in one place.
   //

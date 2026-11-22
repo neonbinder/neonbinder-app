@@ -908,7 +908,7 @@ describe("updateCard printRun — boundary values beyond the basic sweep", () =>
 describe("updateCard pending-name arguments (NEO-221)", () => {
   test("an EMPTY array clears the field rather than storing []", async () => {
     // "None" is the ABSENCE of the field everywhere else that writes these two
-    // (addCustomCard, the commit chunk), and `deriveCardAttention` reads `[]`
+    // (addCustomCard, the commit chunk), and `deriveLegacyCardAttention` reads `[]`
     // and absent identically — but a stored `[]` would still be a second
     // spelling of the same state for every future reader to get wrong.
     const { asAdmin, cardId } = await seed();

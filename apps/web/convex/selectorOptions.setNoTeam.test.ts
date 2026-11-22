@@ -26,7 +26,7 @@ import schema from "./schema";
 import { Doc, Id } from "./_generated/dataModel";
 import { teamRowFields } from "./lib/teamRow";
 import { insertTestCard } from "../lib/testing/card-row";
-import { deriveCardAttention } from "./features/cardAttention";
+import { deriveLegacyCardAttention } from "./features/cardAttention";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import {
   CARD_NO_TEAM_WITH_TEAMS_REFUSAL,
@@ -519,7 +519,7 @@ describe("NEO-556 addCustomCard", () => {
     expect(card!.teamNoneConfirmedAt).toBeUndefined();
     expect(card!.teamNoneConfirmedByUserId).toBeUndefined();
     expect(card!.teamOnCardIds ?? []).toEqual([]);
-    expect(deriveCardAttention(card!).map((i) => i.kind)).toContain("missingTeam");
+    expect(deriveLegacyCardAttention(card!).map((i) => i.kind)).toContain("missingTeam");
   });
 
   test("teamNone false never turns off a set-level TEAM: under a team leaf the card still takes it", async () => {
@@ -894,7 +894,7 @@ describe("NEO-556 updateCard teamNone", () => {
     // Nothing else moved: the listing text never named "No Team".
     expect(undone!.listingTitle).toBe(stamped!.listingTitle);
     expect(undone!.listingDescription).toBe(stamped!.listingDescription);
-    expect(deriveCardAttention(undone!).map((i) => i.kind)).toContain("missingTeam");
+    expect(deriveLegacyCardAttention(undone!).map((i) => i.kind)).toContain("missingTeam");
   });
 
   test("teamNone false on a card that is not stamped writes nothing; absent leaves a stamp alone", async () => {

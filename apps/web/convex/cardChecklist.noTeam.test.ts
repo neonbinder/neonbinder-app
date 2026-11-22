@@ -23,7 +23,7 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import { normalizeTeamName } from "./teams";
 import { normalizePlayerName } from "./players";
-import { deriveCardAttention, MAX_CARD_TEAMS } from "./features/cardAttention";
+import { deriveLegacyCardAttention, MAX_CARD_TEAMS } from "./features/cardAttention";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { insertTestCard } from "../lib/testing/card-row";
@@ -1087,7 +1087,7 @@ describe("addCustomCard — team ids (NEO-208)", () => {
   });
 
   test("a card born linked needs no attention — which is the whole point", async () => {
-    // `deriveCardAttention` is unchanged by this ticket; what changed is that
+    // `deriveLegacyCardAttention` is unchanged by this ticket; what changed is that
     // the quick-add path now satisfies its FIRST clause (a real team) instead
     // of its pending-name clause. Asserted through the derivation so the two
     // halves of NEO-208 are pinned together: a linked card is not badged, and
@@ -1105,7 +1105,7 @@ describe("addCustomCard — team ids (NEO-208)", () => {
     });
 
     const row = await getCard(t, cardId);
-    expect(deriveCardAttention(row!)).toEqual([]);
+    expect(deriveLegacyCardAttention(row!)).toEqual([]);
   });
 
   test("sends neither field and the card is correctly left needing a team", async () => {
@@ -1122,7 +1122,7 @@ describe("addCustomCard — team ids (NEO-208)", () => {
     const row = await getCard(t, cardId);
     expect(row!.teamOnCardIds).toBeUndefined();
     expect(row!.pendingTeamNames).toBeUndefined();
-    expect(deriveCardAttention(row!)).toEqual([{ kind: "missingTeam" }]);
+    expect(deriveLegacyCardAttention(row!)).toEqual([{ kind: "missingTeam" }]);
   });
 
   test("rejects an id that resolves to no team, and writes NO card at all", async () => {
@@ -1286,7 +1286,7 @@ describe("addCustomCard — team ids (NEO-208)", () => {
     // unchanged. NEO-221 gave the state its own item instead: the card names a
     // team it does not link to, which is real work left, and the walker's
     // fixer can now finish it. Exactly one item, not two.
-    expect(deriveCardAttention(row!)).toEqual([
+    expect(deriveLegacyCardAttention(row!)).toEqual([
       { kind: "unreviewedName", names: ["New York Yankees"] },
     ]);
   });
@@ -1411,7 +1411,7 @@ describe("addCustomCard — teamOnCardIds edge shapes", () => {
     const row = await getCard(t, cardId);
     expect(row!.teamOnCardIds).toBeUndefined();
     expect(row!.pendingTeamNames).toBeUndefined();
-    expect(deriveCardAttention(row!)).toEqual([{ kind: "missingTeam" }]);
+    expect(deriveLegacyCardAttention(row!)).toEqual([{ kind: "missingTeam" }]);
   });
 
   test("a chain with no sport: addCustomCard refuses the card (NEO-363); updateCard on a card already there accepts ANY team id", async () => {
@@ -1544,7 +1544,7 @@ describe("updateCard — pendingTeamNames clear semantics (NEO-208)", () => {
   });
 });
 
-describe("deriveCardAttention — a stale row carrying BOTH fields (NEO-208)", () => {
+describe("deriveLegacyCardAttention — a stale row carrying BOTH fields (NEO-208)", () => {
   test("a card with teamOnCardIds AND a leftover pendingTeamNames is not flagged", async () => {
     // This shape is reachable today: `updateCard` only clears
     // `pendingTeamNames` when a NON-EMPTY `teamOnCardIds` write goes through
@@ -1561,7 +1561,7 @@ describe("deriveCardAttention — a stale row carrying BOTH fields (NEO-208)", (
     );
 
     const row = await getCard(t, cardId);
-    expect(deriveCardAttention(row!)).toEqual([]);
+    expect(deriveLegacyCardAttention(row!)).toEqual([]);
   });
 });
 

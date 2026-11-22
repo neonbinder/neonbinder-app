@@ -4924,7 +4924,7 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
 //
 // The defect: a typed name went to `addCustomCard.players` →
 // `pendingPlayerNames`, so the card was born NAMING a player it did not link
-// to — which `deriveCardAttention` badges as an `unreviewedName`, sending the
+// to — which `deriveLegacyCardAttention` badges as an `unreviewedName`, sending the
 // attention walker to ask the operator about a player they had just typed in.
 // Picked ids make the card born LINKED, and a linked card starts answered.
 //
@@ -5895,7 +5895,7 @@ describe("CardChecklist — NEO-221 D12: names nobody reviewed", () => {
   /**
    * The attention count and the walker's fixer, end to end through the parent.
    *
-   * DEPENDS ON WP-C: `deriveCardAttention` has to know the `unreviewedName`
+   * DEPENDS ON WP-C: `deriveLegacyCardAttention` has to know the `unreviewedName`
    * kind before a row carrying `pendingPlayerNames` is counted at all, and
    * `updateCard` has to accept the pending arrays before the fixer's write can
    * clear them. That is why the plan lands C and D together.

@@ -113,7 +113,7 @@ vi.mock("./PlayerPicker", () => ({ default: () => null }));
 
 import CardAttentionWalker, { walkDoneLine, walkProgress } from "./CardAttentionWalker";
 import { LISTING_TITLE_MAX } from "../../convex/features/listingLimits";
-import { deriveCardAttention, needsAttention } from "./card-attention";
+import { deriveLegacyCardAttention, needsAttention } from "./card-attention";
 import {
   attentionFixers,
   attentionWalkRank,
@@ -187,9 +187,9 @@ beforeEach(() => {
 // The derived rule
 // ---------------------------------------------------------------------------
 
-describe("deriveCardAttention", () => {
+describe("deriveLegacyCardAttention", () => {
   it("flags a BSC-linked card whose lookup ran, found no team, and nobody has answered", () => {
-    expect(deriveCardAttention(needsTeamRow())).toEqual([{ kind: "missingTeam" }]);
+    expect(deriveLegacyCardAttention(needsTeamRow())).toEqual([{ kind: "missingTeam" }]);
   });
 
   it("does NOT flag a BSC-linked card whose lookup has not run yet", () => {
@@ -197,7 +197,7 @@ describe("deriveCardAttention", () => {
     // freshly-synced 900-card set is minutes from finished. Badging every BSC
     // card during the drain would flood the checklist with items that resolve
     // themselves and train the operator to ignore the badge.
-    expect(deriveCardAttention({ ...needsTeamRow(), teamCheckDoneAt: undefined })).toEqual(
+    expect(deriveLegacyCardAttention({ ...needsTeamRow(), teamCheckDoneAt: undefined })).toEqual(
       [],
     );
   });
@@ -215,7 +215,7 @@ describe("deriveCardAttention", () => {
       cardNumber: "301",
       cardName: "Hand-added Card",
     };
-    expect(deriveCardAttention(handAdded)).toEqual([{ kind: "missingTeam" }]);
+    expect(deriveLegacyCardAttention(handAdded)).toEqual([{ kind: "missingTeam" }]);
     expect(needsAttention(handAdded)).toBe(true);
   });
 
@@ -301,8 +301,8 @@ describe("attentionFixers registry", () => {
     // Both kinds are registered (to different components), so this is not the
     // "skip past what nothing can fix" case above — it is the tie-break rule
     // itself: `pickAttentionFixer` takes the first item its registry knows,
-    // in the order `deriveCardAttention` produced them, never a fixed
-    // priority between kinds. `deriveCardAttention` happens to push
+    // in the order `deriveLegacyCardAttention` produced them, never a fixed
+    // priority between kinds. `deriveLegacyCardAttention` happens to push
     // `missingTeam` before the title kinds (see cardAttention.ts), so this
     // pins the CONSEQUENCE of that ordering as observed through the registry,
     // not the ordering itself (which is cardAttention.test.ts's job).
@@ -314,7 +314,7 @@ describe("attentionFixers registry", () => {
     expect(first.item).toEqual({ kind: "missingTeam" });
     expect(first.Fixer).toBe(attentionFixers.missingTeam);
 
-    // Reversing the array (not a real `deriveCardAttention` output today, but
+    // Reversing the array (not a real `deriveLegacyCardAttention` output today, but
     // the registry itself must not hard-code which kind "wins" — a fixer
     // module reordering a future item list must change this outcome too)
     // proves the choice tracks ARRAY ORDER, not a kind name comparison.
@@ -328,7 +328,7 @@ describe("attentionFixers registry", () => {
   });
 
   it("end to end: a REAL row missing a team with an over-limit title routes to MissingTeamFixer first", () => {
-    // Not a hand-built item array — the actual `deriveCardAttention` output
+    // Not a hand-built item array — the actual `deriveLegacyCardAttention` output
     // for one row, fed straight into `pickAttentionFixer`. This is the case
     // the walker itself hits: a fresh custom card with no team yet, whose
     // operator also pasted an over-length title before saving.
@@ -337,7 +337,7 @@ describe("attentionFixers registry", () => {
       platformData: {},
       listingTitle: "x".repeat(94),
     };
-    const items = deriveCardAttention(row);
+    const items = deriveLegacyCardAttention(row);
     expect(items.map((i) => i.kind)).toEqual(["missingTeam", "titleOverLimit"]);
 
     const { item, Fixer } = pickAttentionFixer(items);
@@ -1014,9 +1014,9 @@ describe("attentionWalkRank (NEO-335)", () => {
   });
 
   it("ranks a card by the question it will be ASKED, not the earliest kind it carries", () => {
-    // `deriveCardAttention` lists an unlinked name after a title, so this card
+    // `deriveLegacyCardAttention` lists an unlinked name after a title, so this card
     // presents TitleFixer — and must walk with the titles, not the names.
-    const items = deriveCardAttention({
+    const items = deriveLegacyCardAttention({
       teamOnCardIds: ["team-1" as unknown as Id<"teams">],
       listingTitle: "x".repeat(94),
       pendingPlayerNames: ["Somebody"],

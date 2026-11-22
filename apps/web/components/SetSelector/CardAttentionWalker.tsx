@@ -5,7 +5,7 @@ import { Theme } from "@radix-ui/themes";
 import type { Id } from "../../convex/_generated/dataModel";
 import { compareCardNumbers } from "@/lib/cards/card-number";
 import NeonButton from "../modules/NeonButton";
-import { deriveCardAttention, stillLookingUpTeams } from "./card-attention";
+import { deriveLegacyCardAttention, stillLookingUpTeams } from "./card-attention";
 import WizardChrome from "./WizardChrome";
 import {
   AttentionSportContext,
@@ -211,7 +211,7 @@ export default function CardAttentionWalker({
   const attentionCards = useMemo(
     () =>
       cards
-        .map((card) => ({ card, items: deriveCardAttention(card) }))
+        .map((card) => ({ card, items: deriveLegacyCardAttention(card) }))
         .filter(({ items }) => items.length > 0)
         .map(({ card, items }) => ({ card, rank: attentionWalkRank(items) }))
         .sort(
@@ -281,7 +281,7 @@ export default function CardAttentionWalker({
   const current =
     remaining.find((c) => (c._id as string) === pinnedId) ?? remaining[0] ?? null;
 
-  const items = current ? deriveCardAttention(current) : [];
+  const items = current ? deriveLegacyCardAttention(current) : [];
   // The FIRST item whose kind is registered — not simply items[0]. A card
   // flagged for a kind this bundle does not know about plus one it does must
   // still be fixable for the one it does.

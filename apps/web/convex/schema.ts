@@ -1484,6 +1484,226 @@ export const sourceNumbersValidator = v.object({
   checklist: v.optional(v.string()),
 });
 
+// ── NEO-645: One-card Tidy Up ───────────────────────────────────────────────
+//
+// Every shared validator below is exported and imported by `getCardChecklist`,
+// `tidyNames.ts`, `tidyCards.ts` and `cardPrintedNames.ts`. No hand copies:
+// `entityReviewQueue` kept its own copies of the enrichment and decision
+// validators, and the strict-returns memory records that as a past source of
+// drift.
+
+/**
+ * NEO-645 — which source printed a value, as a LABEL for the Sources-disagree
+ * tile. The same slot keys `sourceNumbersValidator` uses. A closed union, and
+ * widening it for a new source is additive. Keys are labels only: no rule may
+ * prefer a source by key (product invariant 4).
+ */
+export const sourceKeyValidator = v.union(
+  v.literal("bsc"),
+  v.literal("sportlots"),
+  v.literal("checklist"),
+);
+
+/**
+ * NEO-645 — one field on which the sources still disagree AFTER parsing
+ * through the shared name matcher ("Judge / Soto" and "Judge | Soto" are one
+ * value, Acuña and Acuna are one value; those are never stored).
+ *
+ * While `chosen` is absent the field holds nothing: no links and no pending
+ * names, which is what keeps the losing side out of the walk. `chosen.by` is
+ * "nb" when NB's own rows decided (exactly one value is already in NB), and
+ * "operator" when a person picked; `typed` marks a value the operator typed
+ * rather than picked.
+ *
+ * Bounds, enforced by the writer (the validator cannot): at most 3 values per
+ * field, at most MAX_CARD_PLAYERS (20) / MAX_CARD_TEAMS (8) names per value,
+ * each name at most 120 characters, and `getConvexSize(sourceDisagreements)`
+ * at most 4096 bytes. The array lands on rows `getCardChecklist` reads for the
+ * whole leaf, so an uncapped worst case (about 43 KB a card) would pass the
+ * 16 MiB query read limit on a 900-card leaf.
+ */
+export const sourceDisagreementValidator = v.object({
+  field: v.union(v.literal("players"), v.literal("teams")),
+  values: v.array(
+    v.object({
+      value: v.array(v.string()),
+      sources: v.array(sourceKeyValidator),
+    }),
+  ),
+  chosen: v.optional(
+    v.object({
+      value: v.array(v.string()),
+      by: v.union(v.literal("nb"), v.literal("operator")),
+      typed: v.optional(v.literal(true)),
+    }),
+  ),
+});
+
+/**
+ * NEO-645 — why the commit wrote a team onto a card that would otherwise have
+ * saved teamless (Jason, 2026-11-21, Q1 = A): "otherCards" is the same player's
+ * team on other cards (this batch, or the set's stored cards); "career" is the
+ * one team his career window gives. Copy only; no rule keys on it.
+ */
+export const tidyTeamFillReasonValidator = v.union(
+  v.literal("otherCards"),
+  v.literal("career"),
+);
+
+/**
+ * NEO-645 — a fact the tiles need that cannot be derived from the card row
+ * alone, stored where it changes (at commit, on a link, on Add to career, and
+ * when a player is created) so `deriveCardAttention` stays a pure function of
+ * the row (D3).
+ *
+ *  - careerGap: single-player card whose player has no stint covering the
+ *    card's team by the card's year (`careerCoversCardTeam`, J2: today's rule,
+ *    not a [Y-1, Y] window). Blue.
+ *  - newPlayerCareer: the player was created on this card; check the career
+ *    Wikidata proposed. Blue, only on the card where the player was created.
+ *  - teamFill: the commit wrote these teams itself from strict pre-fill
+ *    evidence. NOTE-ONLY, never blue and never a stop; cleared when the team
+ *    is changed by hand.
+ */
+export const tidyCheckValidator = v.union(
+  v.object({
+    kind: v.literal("careerGap"),
+    playerId: v.id("players"),
+    teamId: v.id("teams"),
+  }),
+  v.object({ kind: v.literal("newPlayerCareer"), playerId: v.id("players") }),
+  v.object({
+    kind: v.literal("teamFill"),
+    teamIds: v.array(v.id("teams")),
+    reason: tidyTeamFillReasonValidator,
+  }),
+);
+
+/**
+ * NEO-645 — "seen", for blue. A blue item is suppressed while its fingerprint
+ * key is in `keys` (at most 16 keys, each at most 64 characters). Keys hash
+ * their values (`features/cardAttention.ts` `tidyReviewedKey*`), so the client
+ * and `tidyCards.markReviewed` produce identical keys. Writing it must NOT
+ * bump `lastUpdated`, which is the NEO-203 baseVersion.
+ */
+export const tidyReviewedValidator = v.object({
+  at: v.number(),
+  keys: v.array(v.string()),
+});
+
+/** NEO-645 — what a `tidyNames` row names. */
+export const tidyNameKindValidator = v.union(v.literal("player"), v.literal("team"));
+
+/** NEO-645 — the Wikidata lookup state of a name row. */
+export const tidyLookupStatusValidator = v.union(
+  v.literal("pending"),
+  v.literal("ready"),
+  v.literal("error"),
+);
+
+/**
+ * NEO-645 — the lookup's payload on a name row. Lifted from
+ * `entityReviewQueue.enrichment`. Dropped: `source` (careerTeamOf/leagueOf,
+ * career-team and league staging go), every `decision` arm, league-only
+ * `abbreviation`, and the stored `teamContext`/`playerContext` (now live from
+ * `cardPrintedNames`). `careerTeams` is held to 64 entries by the writer.
+ */
+export const tidyNameEnrichmentValidator = v.object({
+  wikidataId: v.optional(v.string()),
+  careerTeams: v.optional(
+    v.array(
+      v.object({
+        name: v.string(),
+        fromYear: v.number(),
+        toYear: v.optional(v.number()),
+        wikidataId: v.optional(v.string()),
+      }),
+    ),
+  ),
+  undatedCareerTeams: v.optional(v.array(v.string())),
+  isHallOfFame: v.optional(v.boolean()),
+  description: v.optional(v.string()),
+  birthYear: v.optional(v.number()),
+  enwikiTitle: v.optional(v.string()),
+  existingCandidates: v.optional(
+    v.array(
+      v.object({
+        playerId: v.id("players"),
+        name: v.string(),
+        birthYear: v.optional(v.number()),
+        careerSummary: v.string(),
+        activeInSetYear: v.optional(v.boolean()),
+        matchedAlias: v.optional(v.string()),
+        sportValue: v.optional(v.string()),
+      }),
+    ),
+  ),
+  preselect: v.optional(
+    v.object({
+      playerId: v.id("players"),
+      name: v.string(),
+      sportId: v.id("selectorOptions"),
+      sportValue: v.string(),
+      reason: v.union(
+        v.literal("priorYearProduct"),
+        v.literal("onlyNamesake"),
+        v.literal("setHistory"),
+        v.literal("hallOfFame"),
+        v.literal("careerTeam"),
+      ),
+    }),
+  ),
+  league: v.optional(v.string()),
+  leagueWikidataId: v.optional(v.string()),
+  location: v.optional(v.string()),
+  yearsActive: v.optional(v.object({ from: v.number(), to: v.optional(v.number()) })),
+  colors: v.optional(
+    v.object({ primary: v.optional(v.string()), secondary: v.optional(v.string()) }),
+  ),
+  espnId: v.optional(v.string()),
+});
+
+/** NEO-645 — why an auto-link was made (a player's reasons). */
+export const tidyPlayerAutoReasonValidator = v.union(
+  v.literal("setHistory"),
+  v.literal("hallOfFame"),
+  v.literal("careerTeam"),
+);
+
+/** NEO-645 — why an auto-link was made (a team's reasons). */
+export const tidyTeamAutoReasonValidator = v.union(
+  v.literal("setHistory"),
+  v.literal("careerTeam"),
+);
+
+/**
+ * NEO-645 — what a name was answered with. A three-arm union rather than
+ * `{link, playerId|teamId}`, so a row can never carry both ids. There is no
+ * "create" arm: Add as new player creates the player and stores `linkPlayer`
+ * with `by: "operator"`. Clearing an answer is an `answerName` argument, not a
+ * stored arm.
+ *
+ * `addSetSport` and `saveAsAlias` are AUDIT: the sport row / alias was already
+ * written at answer time.
+ */
+export const tidyNameAnswerValidator = v.union(
+  v.object({
+    kind: v.literal("linkPlayer"),
+    playerId: v.id("players"),
+    by: v.union(v.literal("operator"), v.literal("auto")),
+    autoReason: v.optional(tidyPlayerAutoReasonValidator),
+    addSetSport: v.optional(v.literal(true)),
+  }),
+  v.object({
+    kind: v.literal("linkTeam"),
+    teamId: v.id("teams"),
+    by: v.union(v.literal("operator"), v.literal("auto")),
+    autoReason: v.optional(tidyTeamAutoReasonValidator),
+    saveAsAlias: v.optional(v.literal(true)),
+  }),
+  v.object({ kind: v.literal("notEntity"), by: v.literal("operator") }),
+);
+
 /**
  * NEO-335 / PR 451 — how a card's fetch-time team answer was reached:
  * "answered" (BSC replied), "failed" (the BSC call failed), "checklist" (the
@@ -2384,6 +2604,23 @@ export default defineSchema({
     // re-prompt for the same player).
     pendingPlayerNames: v.optional(v.array(v.string())),
     pendingTeamNames: v.optional(v.array(v.string())),
+    // ── NEO-645: One-card Tidy Up review state ───────────────────────────────
+    //
+    // All four optional and all additive. Parallel copies do NOT carry any of
+    // them: they are review state of the source card, and carrying them would
+    // make every parallel show blue. See the validators above `sourceKeyValidator`.
+    //
+    // Fields on which the sources still disagree after parsing. Written only on
+    // NEW rows (D4: a re-synced row keeps NB's data, NEO-203). While a
+    // disagreement has no `chosen`, the field holds nothing.
+    sourceDisagreements: v.optional(v.array(sourceDisagreementValidator)),
+    // What each source numbered the card, for the "Numbers didn't match" note.
+    // The commit used to accept this and drop it.
+    sourceNumbers: v.optional(sourceNumbersValidator),
+    // Facts the tiles need that the row cannot derive; stored where they change.
+    tidyChecks: v.optional(v.array(tidyCheckValidator)),
+    // "Seen" for blue. Writing it does not bump `lastUpdated`.
+    tidyReviewed: v.optional(tidyReviewedValidator),
     // NEO-24: per-card override of marketplace-agnostic feature map. Inherits
     // merged ancestor `selectorOptions.features` at card-creation time
     // (`commitCardChecklist`). Subsequent edits via `setSelectorOptionFeature`
@@ -3962,6 +4199,110 @@ export default defineSchema({
       "kind",
       "nameNormalized",
     ]),
+
+  /**
+   * ── NEO-645: the name rows of One-card Tidy Up ───────────────────────────
+   *
+   * Replaces `entityReviewQueue` (a per-fetch, per-user batch) and absorbs
+   * `entityReviewSkips` (a skip is a `notEntity` answer). One row per
+   * (scopeId, kind, nameNormalized); shared across operators, because an
+   * answer is a fact about the set's data, exactly as a skip always was.
+   *
+   * `scopeId` is the leaf that PRINTED the name (D2). Do not widen it to the
+   * set: per-leaf is the safety property ("Chase" is a sponsor on one insert
+   * and a shortstop on the next). Parallel copies take their source leaf's
+   * scope; set history still auto-links across the set's leaves when cards
+   * are written.
+   *
+   * An exact single NB match gets NO row (D6): its "Linked for you" note is
+   * read live. Rows exist for names that are pending, auto-answered, or
+   * `notEntity`, so a set that needs no walk writes about none.
+   *
+   * No uniqueness index: uniqueness comes from OCC on the point read of
+   * `by_scope_kind_name` (a phantom insert conflicts). Readers use `.first()`.
+   *
+   * `lookupGen` follows the workpool-cancel pattern: bumped on every
+   * `requestLookup` / `setNameSport`, and a pool result must match it.
+   * `answerGen` is bumped per answer; fan-out pages stop on a mismatch.
+   * The stale sweep reads `lookupRequestedAt`, not `_creationTime`: a row born
+   * `ready` and asked to look up later must not be aged to `error` at once.
+   */
+  tidyNames: defineTable({
+    scopeId: v.id("selectorOptions"),
+    kind: tidyNameKindValidator,
+    // `normalizeEntityName` (lib/entities/normalize-name.ts), the key players,
+    // teams and skips already use. Q2: NEO-643's cleanse helper replaces it
+    // when it lands.
+    nameNormalized: v.string(),
+    // First-seen trimmed spelling, at most 120 characters.
+    name: v.string(),
+    // The sport the question is asked in; `setNameSport` re-points it.
+    sportId: v.id("selectorOptions"),
+    status: tidyLookupStatusValidator,
+    lookupGen: v.optional(v.number()),
+    lookupRequestedAt: v.optional(v.number()),
+    enrichment: v.optional(tidyNameEnrichmentValidator),
+    // NEO-602 rows the name reached at the gate. Display only.
+    candidateTeamIds: v.optional(v.array(v.id("teams"))),
+    // NEO-591 place candidates.
+    candidatePlace: v.optional(v.literal(true)),
+    answer: v.optional(tidyNameAnswerValidator),
+    answerGen: v.optional(v.number()),
+    answeredByUserId: v.optional(v.string()),
+    answeredAt: v.optional(v.number()),
+  })
+    // The point upsert and the answer read; its `[scopeId]` prefix is the
+    // gate's and prelude's one-range answer read and the delete/wipe sweep.
+    .index("by_scope_kind_name", ["scopeId", "kind", "nameNormalized"])
+    // `lookupsPending({scopeId})`: eq(scope).eq("pending").
+    .index("by_scope_status", ["scopeId", "status"])
+    // The stale-lookup sweep: eq("pending").lt(lookupRequestedAt, cutoff).
+    .index("by_status_requested", ["status", "lookupRequestedAt"]),
+
+  /**
+   * ── NEO-645: the names each card PRINTED, flat and indexable ─────────────
+   *
+   * Pending names are array members on the card (`pendingPlayerNames`,
+   * `pendingTeamNames`), which Convex cannot index, so "every card in this
+   * scope that printed this name" had no index: an answer would scan the leaf
+   * plus every parallel leaf (about 900 x 11 card reads). This table is that
+   * index, and it keeps the printed record after a name is answered, so an
+   * answer can be changed back.
+   *
+   * DERIVED from the card, never authored. `syncCardPrintedNames` in
+   * convex/cardPrintedNames.ts is the ONE writer, and
+   * `cardPrintedNames.pin.test.ts` greps for any other. Rows exist only for
+   * names that have a `tidyNames` row (pending, auto-answered, notEntity).
+   *
+   * `scopeId` is the scope the NAME is answered in, which for a parallel copy
+   * is its SOURCE leaf, not the copy's own. A copy of a copy keeps the root
+   * scope. When the scope leaf is gone (a wipe), readers fall back to the
+   * card's own leaf (Q3); nothing re-scopes at write time.
+   *
+   * `order` is required: when a pending name is linked later, the link must
+   * land at the printed position, or the `playerIds` = `playerLinks` order
+   * invariant and multi-player titles break.
+   *
+   * `cardOverride`: the operator changed THIS card's link on its own (Change,
+   * + Another player); a fan-out never overwrites it.
+   */
+  cardPrintedNames: defineTable({
+    cardChecklistId: v.id("cardChecklist"),
+    scopeId: v.id("selectorOptions"),
+    kind: tidyNameKindValidator,
+    nameNormalized: v.string(),
+    // This card's own spelling, at most 120 characters.
+    printed: v.string(),
+    // Position among the card's printed names of this kind.
+    order: v.number(),
+    cardOverride: v.optional(v.literal(true)),
+  })
+    // The fan-out page, the live "Printed on #1, #17" note, and the leaf
+    // delete sweep (its `[scopeId]` prefix).
+    .index("by_scope_kind_name", ["scopeId", "kind", "nameNormalized"])
+    // `cardContext`, the single writer's diff, `removeCardRow`, and copying
+    // rows to parallel copies.
+    .index("by_card", ["cardChecklistId"]),
 
   // NEO-402 — a checklist fetch's player names that matched exactly one NB
   // player, kept so the commit that follows does not look each one up again.

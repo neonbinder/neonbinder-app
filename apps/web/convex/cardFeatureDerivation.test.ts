@@ -240,7 +240,7 @@ describe("addCustomCard generates listingTitle/listingDescription (NEO-24/71-74)
   // NEO-101 — the packed title, on the hand-add path. A custom card has no
   // `teamOnCardIds` yet: the team the operator typed sits in
   // `pendingTeamNames` until a sync resolves it, and that pending name is
-  // already treated as an answer everywhere else (see `deriveCardAttention`),
+  // already treated as an answer everywhere else (see `deriveLegacyCardAttention`),
   // so it is what the title says. The sport comes from the ancestor walk that
   // also resolves the set name — one pass, not two.
   test("a custom card's typed team and its sport reach the generated title", async () => {

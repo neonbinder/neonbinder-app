@@ -42,7 +42,7 @@ import {
   BSC_TEAM_CHECK_RETRY_DELAYS_MS,
   BSC_TEAM_LOOKUP_MAX_ATTEMPTS,
 } from "./adapters/buysportscards";
-import { deriveCardAttention } from "./features/cardAttention";
+import { deriveLegacyCardAttention } from "./features/cardAttention";
 import { insertTestCard } from "../lib/testing/card-row";
 import { captureBscTeamLane, runBscTeamLane } from "../lib/testing/bsc-team-lane";
 
@@ -577,7 +577,7 @@ describe("the bscTeamPool lane — bounded retry, then the operator (NEO-330, PR
     // NEO-345: and WHY — so a later re-ask can find it.
     expect(card.teamCheckOutcome).toBe("gaveUp");
     expect(card.bscTeamName).toBe("New York Yankees");
-    expect(deriveCardAttention(card)).toContainEqual({ kind: "missingTeam" });
+    expect(deriveLegacyCardAttention(card)).toContainEqual({ kind: "missingTeam" });
 
     expect(warnLines.filter((l) => l.includes("bsc_team_check_retry_scheduled"))).toHaveLength(
       BSC_TEAM_CHECK_MAX_PASSES - 1,
@@ -617,7 +617,7 @@ describe("the bscTeamPool lane — bounded retry, then the operator (NEO-330, PR
 
     const card = (await getCard(t, cardId))!;
     expect(card.teamCheckDoneAt).toBeUndefined();
-    expect(deriveCardAttention(card)).not.toContainEqual({ kind: "missingTeam" });
+    expect(deriveLegacyCardAttention(card)).not.toContainEqual({ kind: "missingTeam" });
   });
 
   test("a transient failure that succeeds on a later pass links BSC's team and is never given up", async () => {

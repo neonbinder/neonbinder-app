@@ -14,7 +14,7 @@ import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import { ASPECT_VALUE_MAX, LISTING_TITLE_MAX } from "./features/listingLimits";
-import { deriveCardAttention } from "./features/cardAttention";
+import { deriveLegacyCardAttention } from "./features/cardAttention";
 import { LISTING_TITLE_KEPT_MAX } from "./features/listingInputs";
 
 beforeEach(() => {
@@ -131,7 +131,7 @@ async function settle(t: T) {
 }
 
 const attention = (row: Doc<"cardChecklist">) =>
-  deriveCardAttention(row as unknown as Parameters<typeof deriveCardAttention>[0]).map((i) => i.kind);
+  deriveLegacyCardAttention(row as unknown as Parameters<typeof deriveLegacyCardAttention>[0]).map((i) => i.kind);
 
 describe("listingTitle — the cap at 80 / 81, measured after the trim", () => {
   test("exactly 80 is stored verbatim and the stored row raises nothing", async () => {
@@ -203,7 +203,7 @@ describe("listingTitle — the cap at 80 / 81, measured after the trim", () => {
 
   test("the title is held to the cap the same way the stored-row attention rule reads it (UTF-16 length)", async () => {
     // An astral character is two UTF-16 units. The commit and
-    // deriveCardAttention both use `.length`, so what the commit accepts the
+    // deriveLegacyCardAttention both use `.length`, so what the commit accepts the
     // walker never flags: 40 of them (80 units) fit, 41 (82) are refused.
     const t = convexTest(schema, modules);
     const ids = await seedTree(t);

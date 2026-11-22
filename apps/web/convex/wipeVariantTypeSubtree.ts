@@ -280,6 +280,21 @@ export const SUBTREE_REFERENCE_GRAPH = {
     fields: ["selectorOptionId"],
     handling: "rows keyed on a subtree row deleted",
   },
+  // NEO-645. W1a (the schema slice) only DECLARES these two tables; nothing
+  // writes them yet, so there is nothing to delete. W1b wires the deletes
+  // (the card's rows with the card through `removeCardRow`; the leaf's name
+  // rows with the leaf), adds both to WIPED_TABLES and the count validators,
+  // and rewrites these two entries to say so.
+  cardPrintedNames: {
+    fields: ["cardChecklistId", "scopeId"],
+    handling:
+      "NEO-645 (declared in W1a, wired in W1b): rows are deleted with their card; a surviving card whose scope leaf was wiped (a parallel copy outside the subtree) keeps its row and readers fall back to the card's own leaf",
+  },
+  tidyNames: {
+    fields: ["scopeId", "sportId"],
+    handling:
+      "NEO-645 (declared in W1a, wired in W1b): rows keyed on a subtree row deleted; sportId is sport-level",
+  },
   checklistNameResolutions: {
     fields: ["selectorOptionId", "sportId"],
     handling:

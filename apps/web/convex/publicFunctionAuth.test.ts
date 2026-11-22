@@ -4347,3 +4347,172 @@ describe("NEO-555: the fake eBay test controls are locked like the other testing
     await expect(call(convexTest(schema, modules).withIdentity(SIGNED_IN))).rejects.toThrow(/does not talk to the fake eBay/);
   });
 });
+
+/**
+ * NEO-645 — the One-card Tidy Up surface. Every function is admin-only
+ * (`requireAdmin`): the tiles run on the set builder, which sits behind the
+ * same gate as `updateCard` and `entityReviewQueue`. The mutations are
+ * contract-only in the first slice (W1a): they must refuse a signed-out caller
+ * and a non-admin BEFORE anything else, and an admin reaches the body (which
+ * throws "not implemented yet" and writes nothing). W1b replaces the throw with
+ * the implementation; the two refusals here keep holding.
+ */
+describe("NEO-645: the Tidy Up surface is admin-gated", () => {
+  async function seedTidy(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      const leafId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        parentId: sportId,
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      const cardId = await insertTestCard(ctx, {
+        selectorOptionId: leafId,
+        cardNumber: "1",
+        cardName: "One",
+        platformData: {},
+        sortOrder: 1,
+        lastUpdated: 1_700_000_000_000,
+      });
+      const playerId = await ctx.db.insert("players", {
+        name: "Doc Gooden",
+        nameNormalized: "doc gooden",
+        sportId,
+        lastUpdated: 1_700_000_000_000,
+      });
+      const teamId = await ctx.db.insert("teams", {
+        name: "Mets",
+        nameNormalized: "mets",
+        sportId,
+        lastUpdated: 1_700_000_000_000,
+      });
+      return { sportId, leafId, cardId, playerId, teamId };
+    });
+  }
+
+  type Seed = Awaited<ReturnType<typeof seedTidy>>;
+  const calls: Array<[string, (t: ReturnType<typeof convexTest>, s: Seed) => Promise<unknown>]> = [
+    [
+      "tidyNames.answerName",
+      (t, s) =>
+        t.mutation(api.tidyNames.answerName, {
+          cardId: s.cardId,
+          kind: "player",
+          name: "Doc Gooden",
+          answer: { kind: "linkPlayer", playerId: s.playerId },
+        }),
+    ],
+    [
+      "tidyNames.createPlayer",
+      (t, s) => t.mutation(api.tidyNames.createPlayer, { cardId: s.cardId, name: "Doc Gooden" }),
+    ],
+    [
+      "tidyNames.setNameSport",
+      (t, s) =>
+        t.mutation(api.tidyNames.setNameSport, {
+          cardId: s.cardId,
+          kind: "player",
+          name: "Doc Gooden",
+          sportId: s.sportId,
+        }),
+    ],
+    [
+      "tidyNames.requestLookup",
+      (t, s) =>
+        t.mutation(api.tidyNames.requestLookup, {
+          cardId: s.cardId,
+          kind: "player",
+          name: "Doc Gooden",
+        }),
+    ],
+    ["tidyNames.lookupsPending", (t, s) => t.query(api.tidyNames.lookupsPending, { scopeId: s.leafId })],
+    ["tidyCards.cardContext", (t, s) => t.query(api.tidyCards.cardContext, { cardId: s.cardId })],
+    [
+      "tidyCards.markReviewed",
+      (t, s) => t.mutation(api.tidyCards.markReviewed, { cardId: s.cardId, keys: [] }),
+    ],
+    [
+      "tidyCards.pickSourceValue",
+      (t, s) =>
+        t.mutation(api.tidyCards.pickSourceValue, {
+          cardId: s.cardId,
+          field: "players",
+          value: ["Doc Gooden"],
+        }),
+    ],
+    [
+      "tidyCards.applyTeamToPlayerCards",
+      (t, s) =>
+        t.mutation(api.tidyCards.applyTeamToPlayerCards, {
+          sourceCardId: s.cardId,
+          teamId: s.teamId,
+          cardIds: [s.cardId],
+        }),
+    ],
+    [
+      "tidyCards.applyVariation",
+      (t, s) =>
+        t.mutation(api.tidyCards.applyVariation, { cardIds: [s.cardId], from: "A", to: "B" }),
+    ],
+    [
+      "tidyCards.applySetNameToTitles",
+      (t, s) =>
+        t.mutation(api.tidyCards.applySetNameToTitles, {
+          leafId: s.leafId,
+          cardId: s.cardId,
+          listingShortName: "Chrome",
+        }),
+    ],
+    [
+      "players.addStint",
+      (t, s) =>
+        t.mutation(api.players.addStint, {
+          playerId: s.playerId,
+          teamId: s.teamId,
+          fromYear: 1985,
+          cardId: s.cardId,
+        }),
+    ],
+  ];
+
+  test.each(calls)("%s refuses a signed-out caller", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const s = await seedTidy(t);
+    await expect(call(t, s)).rejects.toThrow(/Not authenticated/);
+  });
+
+  test.each(calls)("%s refuses a signed-in non-admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const s = await seedTidy(t);
+    await expect(call(t.withIdentity(SIGNED_IN), s)).rejects.toThrow(/admin access required/i);
+  });
+
+  test.each(calls.filter(([name]) => !["tidyNames.lookupsPending", "tidyCards.cardContext", "tidyCards.markReviewed"].includes(name)))(
+    "%s is contract-only: an admin reaches the body, which writes nothing",
+    async (_name, call) => {
+      const t = convexTest(schema, modules);
+      const s = await seedTidy(t);
+      await expect(call(t.withIdentity(ADMIN), s)).rejects.toThrow(/not implemented yet/);
+      const counts = await t.run(async (ctx) => ({
+        names: (await ctx.db.query("tidyNames").collect()).length,
+        printed: (await ctx.db.query("cardPrintedNames").collect()).length,
+        card: await ctx.db.get(s.cardId),
+        player: await ctx.db.get(s.playerId),
+      }));
+      expect(counts.names).toBe(0);
+      expect(counts.printed).toBe(0);
+      expect(counts.card!.lastUpdated).toBe(1_700_000_000_000);
+      expect(counts.card!.tidyReviewed).toBeUndefined();
+      expect(counts.player!.teamYears).toBeUndefined();
+    },
+  );
+});

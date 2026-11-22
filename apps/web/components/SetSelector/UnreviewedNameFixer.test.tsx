@@ -104,7 +104,7 @@ function renderFixer(
       <UnreviewedNameFixer
         row={row}
         // The component derives the names it renders from the ROW, not from
-        // this payload — `deriveCardAttention` builds the item's `names` from
+        // this payload — `deriveLegacyCardAttention` builds the item's `names` from
         // the same two fields, so the row is the original and the item a
         // projection of it. Passing an empty list is what pins that.
         items={[]}

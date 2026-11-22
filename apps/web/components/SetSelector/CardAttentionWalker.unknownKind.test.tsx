@@ -50,7 +50,7 @@ vi.mock("convex/react", () => ({
 // only the attention rule itself is replaced.
 vi.mock("./card-attention", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./card-attention")>()),
-  deriveCardAttention: () => [{ kind: "somethingFromTheFuture" }],
+  deriveLegacyCardAttention: () => [{ kind: "somethingFromTheFuture" }],
   needsAttention: () => true,
   attentionItemLabel: () => "needs something this app version cannot do",
   ATTENTION_LABELS: {},

@@ -9,7 +9,7 @@
  *
  * The defect this closes: the quick-add form sent `players: [typedName]`,
  * which landed in `pendingPlayerNames` — a name the card CARRIED while linking
- * to nothing. `deriveCardAttention` then badged the row `unreviewedName` and
+ * to nothing. `deriveLegacyCardAttention` then badged the row `unreviewedName` and
  * sent the attention walker to ask the operator for a player they had just
  * typed in. Real ids from a `PlayerPicker` mean the card starts answered.
  *
@@ -25,7 +25,7 @@ import { api } from "./_generated/api";
 import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
 import {
-  deriveCardAttention,
+  deriveLegacyCardAttention,
   MAX_CARD_PLAYERS,
 } from "./features/cardAttention";
 import schema from "./schema";
@@ -136,7 +136,7 @@ describe("addCustomCard — player ids (NEO-220)", () => {
   });
 
   test("a card born linked carries no unreviewedName — which is the whole point", async () => {
-    // `deriveCardAttention` is unchanged by this ticket. What changed is that
+    // `deriveLegacyCardAttention` is unchanged by this ticket. What changed is that
     // the quick-add path now satisfies its `playerIds` clause instead of
     // parking a name in `pendingPlayerNames` that the same rule then badges.
     // Asserted through the derivation so the two halves of NEO-220 are pinned
@@ -165,7 +165,7 @@ describe("addCustomCard — player ids (NEO-220)", () => {
     });
 
     const row = await getCard(t, cardId);
-    expect(deriveCardAttention(row!)).toEqual([]);
+    expect(deriveLegacyCardAttention(row!)).toEqual([]);
   });
 
   test("the SAME card written the OLD way IS badged — the before/after in one pair", async () => {
@@ -193,7 +193,7 @@ describe("addCustomCard — player ids (NEO-220)", () => {
     });
 
     const row = await getCard(t, cardId);
-    expect(deriveCardAttention(row!)).toEqual([
+    expect(deriveLegacyCardAttention(row!)).toEqual([
       { kind: "unreviewedName", names: ["Aaron Judge"] },
     ]);
   });
@@ -465,7 +465,7 @@ describe("addCustomCard — the legacy `players` name array", () => {
     const row = await getCard(t, cardId);
     expect(row!.playerIds).toEqual([judge]);
     expect(row!.pendingPlayerNames).toBeUndefined();
-    expect(deriveCardAttention(row!)).not.toContainEqual(
+    expect(deriveLegacyCardAttention(row!)).not.toContainEqual(
       expect.objectContaining({ kind: "unreviewedName" }),
     );
   });

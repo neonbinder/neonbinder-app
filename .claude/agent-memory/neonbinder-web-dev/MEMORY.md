@@ -298,3 +298,4 @@
 - [Wizard plan waits on teamless-sport mock](reference_wizard_plan_waits_on_teamless_sport_mock.md) — test useQuery mock must answer listTeamlessSportIds or the bar stays 0; how to port a new step onto trackSteps
 - [Box rule: yellow line OR over cap](reference_box_rule_is_the_yellow_line_over_cap_stays.md) — NEO-637: box used when title leaves something out or is over 80; hand edits swapped in CardTitlesStep.changeShort
 - [Stand down on mounted, not phase](reference_stand_down_on_mounted_not_on_phase.md) — page element duplicated by a dialog keys on the dialog being mounted/open, not the phase before it (NEO-624)
+- [BSD sed has no \b](reference_bsd_sed_has_no_word_boundary.md) — macOS sed ignores \b so a bulk rename silently no-ops; python re.sub; keep a Legacy-named old body when a shared fn changes shape
