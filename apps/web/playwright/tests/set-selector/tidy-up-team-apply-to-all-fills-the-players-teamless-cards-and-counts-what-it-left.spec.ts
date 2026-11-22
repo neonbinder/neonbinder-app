@@ -1,19 +1,23 @@
 // NEO-645 (R1): on the Tidy Up walk's Team tile, "Apply to all" offers a card's team to the same
 // player's other teamless cards; the server writes it only where the player's career names that
 // team for the set's year and nothing on the card names or rules out a team, and the status line
-// says how many cards took it and how many were left as they were.
+// says how many cards took it ("No cards changed." when the server refused them all).
 //
 // The operator meets it like this, on ONE player printed on five cards:
 //   1. #1 opens the walk with the player still a name. "Add as new player" answers it on every card
 //      that prints it. #1's Team tile stays pink (blank cell: no team).
-//   2. A team made on #1's tile ("+ New team", then Save team) puts the offer up: "Apply to all 3
-//      other <player> cards". #4 is NOT offered: its team cell names another team (rule 8, a data
-//      claim holds back a guess), so it is never proposed. #5 IS offered: it prints the player and a
-//      second, still-unknown person, and only the server knows to leave it alone.
+//   2. A team made on #1's tile ("+ New team", then Save team) puts the offer up: "Apply to all 2
+//      other <player> cards" (#2 and #3). #4 is NOT offered: its team cell names another team
+//      (rule 8, a data claim holds back a guess). #5 is NOT offered either: it prints the player and
+//      a second, still-unknown person, which the server always refuses, so the offer leaves it out
+//      and its count stays honest (decision 28, the collector pass's "honest Apply to all").
 //   3. Pressed before the player's career holds the team, the server refuses every card: "No cards
 //      changed." (the client proposes, the server checks the career).
 //   4. "+ Add stint" on #1's Career tile puts the team in the player's career from the set's year.
-//      Pressed again: "Applied to 2 cards. 1 left as it was." (#2 and #3 took it; #5 did not).
+//      Pressed again: "Applied to 2 cards." (#2 and #3 took it).
+//      The "M left as it was" tail is now reached only by a card that changes between the offer and
+//      the press (decision 28); no UI step stages that race, so the tile's unit test
+//      (TeamTile.test.tsx, applyOutcomeText) holds that line, and STEP 3 proves the server's refusal.
 //   5. The walk: Save & next from #1 lands on #4 (#2 and #3 have nothing left and drop out), whose
 //      claimed team still stops it; Skip lands on #5, still pink for its second name and its team.
 //   6. Read back in each card's drawer: #1, #2, #3 hold the team; #4 and #5 hold none.
@@ -50,7 +54,7 @@ import {
 const YEAR = "2026";
 
 test(
-  "Tidy Up — Apply to all on the Team tile fills the player's other teamless cards where his career names the team, leaves a claimed or still-unsettled card alone, and says how many it left",
+  "Tidy Up — Apply to all on the Team tile fills the player's other teamless cards where his career names the team, leaves a claimed or still-unsettled card out of the offer, and counts the cards it changed",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     const T = env.ATTEMPT_TOKEN;
@@ -106,15 +110,16 @@ test(
     await teamTile.getByRole("button", { name: "Save team", exact: true, disabled: false }).click();
     await expect(pinkTile(page, "Team"), "the team landed on #1").toHaveCount(0);
     await expect(teamGroup(TEAM).getByRole("button", { name: /^Change team( .+)?$/ })).toBeVisible();
-    // #2, #3 and #5 are offered; #4 (its cell names another team) is not.
-    await expect(applyButton).toHaveText(`Apply to all 3 other ${PLAYER} cards`);
+    // #2 and #3 are offered; #4 (its cell names another team) and #5 (a second name nobody has
+    // answered) are not.
+    await expect(applyButton).toHaveText(`Apply to all 2 other ${PLAYER} cards`);
     await expectAccessible(page, { within: walk, label: "Tidy Up walk, Team tile offering Apply to all" });
 
     // ── STEP 3: the server checks the career, not the client's offer ──
     await applyButton.click();
     await expect(teamTile.getByText("No cards changed.", { exact: true })).toBeVisible();
-    // Nothing was written, so the same three cards are still offered.
-    await expect(applyButton).toHaveText(`Apply to all 3 other ${PLAYER} cards`);
+    // Nothing was written, so the same two cards are still offered.
+    await expect(applyButton).toHaveText(`Apply to all 2 other ${PLAYER} cards`);
 
     // ── STEP 4: the team joins the player's career from the set's year, then Apply ──
     const career = tidyTile(page, "Career").getByRole("group", { name: `Career ${PLAYER}`, exact: true });
@@ -130,7 +135,7 @@ test(
     await expect(career.getByRole("button", { name: `+ Add stint for ${PLAYER}`, exact: true })).toBeVisible();
 
     await applyButton.click();
-    const outcome = teamTile.getByText("Applied to 2 cards. 1 left as it was.", { exact: true });
+    const outcome = teamTile.getByText("Applied to 2 cards.", { exact: true });
     await expect(outcome).toBeVisible();
     await expect(teamTile.getByText("No cards changed.", { exact: true })).toHaveCount(0);
     // The button stays beside its line (holding focus), whatever it offers now.
@@ -146,13 +151,13 @@ test(
     await expect(teamGroup(CLAIMED)).toBeVisible();
     await expect(teamGroup(TEAM)).toHaveCount(0);
     await skipCard(page);
-    // #5: the second person is still a name, and its team was left as it was.
+    // #5: the second person is still a name, and it was never offered the team.
     await expect(header("5")).toBeVisible();
     await expect(pinkTile(page, "Player")).toHaveCount(1);
     await expect(tidyTile(page, "Player").getByRole("group", { name: new RegExp(`^Player ${escapeRe(SECOND)}( |$)`) })).toBeVisible();
     await expect(pinkTile(page, "Team")).toHaveCount(1);
     await expect(teamGroup(TEAM)).toHaveCount(0);
-    await expectAccessible(page, { within: walk, label: "Tidy Up walk, a card Apply to all left as it was" });
+    await expectAccessible(page, { within: walk, label: "Tidy Up walk, a card Apply to all did not offer" });
     // Navigation lives in the URL: Back is #4 again, Forward #5.
     await page.goBack();
     await expect(header("4")).toBeVisible();

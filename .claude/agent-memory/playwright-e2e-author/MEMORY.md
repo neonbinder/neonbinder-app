@@ -130,7 +130,7 @@
 - [Match Cards after commit-first](patterns_match_cards_specs_after_commit_first.md) — Cancel is the pre-save exit
 - [Team fill tier](patterns_team_fill_career_tier_fixture.md) — 70-char team; negative stints
 - [Team-era on the walk](patterns_team_era_specs_on_the_walk.md) — NEO-602 auto link vs keep
-- [Team Apply to all](patterns_team_apply_to_all_fixture.md) — two-name card, in-walk new player
+- [Team Apply to all](patterns_team_apply_to_all_fixture.md) — two-name card not offered; skip tail UI-unreachable
 - [J3 base tidy](patterns_parallel_build_specs_must_tidy_the_base_j3.md) — tidyForTheParallelBuild
 - [Need-you pill](patterns_need_you_pill_is_not_a_team_lookup_proof.md) — counts unlinked players
 - [Tile state lost](patterns_tile_state_lost_when_card_context_arrives.md) — search opened early closes itself
@@ -143,3 +143,4 @@
 - [StrictMode masks single-run effect bugs](patterns_strictmode_masks_single_invocation_effect_bugs.md) — local dev double effects hide a write a later effect undoes; CI prod build sticks
 - [Local prod build + sign-in](patterns_local_production_build_with_testing_sign_in.md) — vite preview lacks /api/auth/testing; hook it in
 - [Players row: sport + year](patterns_players_admin_row_needs_sport_and_born_year.md) — cross-sport namesakes; scope row regex by sport
+- [Confirm-to-Saved chain](patterns_confirm_to_saved_chain_timing.md) — big real set: pairs + resolve + commit in one 7 s window
