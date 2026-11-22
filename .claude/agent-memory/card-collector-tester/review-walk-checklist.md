@@ -16,3 +16,12 @@ Checks that found real problems when reviewing a per-card walk (One-Card Tidy Up
 
 **Why:** these were the high-frequency friction points for 300-600 card builds with rookie-heavy inserts.
 **How to apply:** run this list first on any walker, wizard or bulk-review plan. See [[hobby-vernacular-and-team-livery-in-ui]].
+
+Found live on the built walk (2026-11-22 pass):
+
+- Answer, then press Enter: after a tile answer unmounts its buttons, focus often lands on the answer's own "Change". Enter then reopens or undoes the answer instead of Save & next. Test "click an answer, press Enter" on every tile type, not just Enter from the card header.
+- A one-letter misspelling must surface the NB player it is close to (same team, same year) on the tile itself. "X is new to NeonBinder" with only Add as new player in green invites a duplicate player.
+- Search results that are only names (three identical "Baltimore Orioles") can't be picked; every option needs league + years, as the player search already shows.
+- Cards the parser already recognised (a team card whose name is its team, a "Checklist" row) should answer themselves (Not a player / No team), or they become a stop on every team card of a flagship set.
+- Read the Listing title tile as a dealer would: a title that keeps filler ("Base Insert", "Baseball") while it leaves out the player or the team, or a card with no player at all that is not pink.
+- Count stops per set: of 9 pasted rows, 4 were stops, and 3 of those could have answered themselves.

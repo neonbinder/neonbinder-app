@@ -56,6 +56,8 @@ import { refreshedListingDescription } from "./cardDescriptionRefresh";
 // (the commit prelude's `norm`). A skip lookup keyed any other way would miss.
 import { normalizeEntityName } from "../lib/entities/normalize-name";
 import {
+  careerTeamVerdict,
+  stintCoversWindow,
   suggestTeamsForPlayer,
   teamPreferenceRank,
   UNRANKED,
@@ -1479,7 +1481,14 @@ export const confirmCardNoTeam = mutation({
  * difference between a suggestion they can judge and a guess. (NEO-330: this
  * used to keep only the first player, so a shared chip named one of them.)
  *
- * ## `inSetYear` — what the fixer may preselect (NEO-330)
+ * ## `inSetYear` — what the tile may preselect (NEO-330, NEO-645 S4)
+ *
+ * NEO-645: the window and the verdict are the commit's own (see
+ * `careerTeamVerdict`), not the set year alone. Every team in the window is
+ * offered; one is preselected only when the commit would have written it, so
+ * a card the commit left teamless never opens with a team the commit
+ * refused. A tie is offered whole and preselects nothing. The rest of this
+ * section is the NEO-330 history it replaces.
  *
  * The career fallback above is a list of everywhere the player ever played,
  * and it used to arrive preselected with focus on Save: one Enter wrote Jimmie
@@ -1519,9 +1528,12 @@ export const suggestedTeamsForCard = query({
       /** Which player on the card this team came from. */
       playerName: v.string(),
       /**
-       * NEO-330: a stint covering the set year produced this. False for the
-       * whole-career fallback and for a set with no resolvable year — the
-       * fixer preselects only `true`.
+       * NEO-645 (S4): the pre-fill criteria give exactly this team — the SAME
+       * verdict the commit's fill reads (`careerTeamVerdict`: one team in the
+       * set year and the year before, every player on the card answering).
+       * The tile preselects only `true`. False for a tie in the window, the
+       * whole-career fallback and a set with no resolvable year (the name is
+       * kept from NEO-330; it is not "a stint covers the set year" any more).
        */
       inSetYear: v.boolean(),
       /**
@@ -1567,68 +1579,112 @@ export const suggestedTeamsForCard = query({
     };
     const teamTextById = new Map<string, { name: string; label: string } | null>();
 
-    const collect = async (
-      inYear: (fromYear: number, toYear?: number) => boolean,
-      inSetYear: boolean,
-      uncoveredSetYear?: number,
-    ): Promise<Array<Suggestion>> => {
-      const out: Array<Suggestion> = [];
-      for (const player of players) {
-        // Per player: two stints at one team are one suggestion, but a team
-        // two players share is one suggestion EACH (the fixer folds them).
-        const seenTeamIds = new Set<string>();
-        for (const entry of player.teamYears ?? []) {
-          // NEO-285 — an undated stint (a college with no years) says nothing
-          // about which team the player was on in a card's season.
-          if (entry.fromYear === undefined) continue;
-          if (!inYear(entry.fromYear, entry.toYear)) continue;
-          if (seenTeamIds.has(entry.teamId)) continue;
-          if (!teamTextById.has(entry.teamId)) {
-            const team = await ctx.db.get(entry.teamId);
-            if (!team) {
-              teamTextById.set(entry.teamId, null);
-            } else {
-              // NEO-236: the FULL name. This chip is a suggestion an operator
-              // judges at a glance, and "Padres" does not say which Padres.
-              const name = teamFullName(team);
-              // NEO-330: counted to two, never listed — the label only needs
-              // to know whether this name is shared.
-              const sameName = await findTeamsByFullName(ctx, team.sportId, name, 2);
-              teamTextById.set(entry.teamId, {
-                name,
-                label: sameName.length > 1 ? teamOptionLabel(name, team.yearsActive) : name,
-              });
-            }
-          }
-          const text = teamTextById.get(entry.teamId);
-          if (!text || !text.name) continue; // never suggest a blank chip
-          seenTeamIds.add(entry.teamId);
-          out.push({
-            teamId: entry.teamId,
-            name: text.name,
-            label: text.label,
-            source: "career",
-            playerName: player.name,
-            inSetYear,
-            ...(uncoveredSetYear !== undefined ? { uncoveredSetYear } : {}),
+    /** One chip's text, read once per team. `null`: a team that cannot be offered. */
+    const textOfTeam = async (teamId: Id<"teams">): Promise<{ name: string; label: string } | null> => {
+      if (!teamTextById.has(teamId)) {
+        const team = await ctx.db.get(teamId);
+        if (!team) {
+          teamTextById.set(teamId, null);
+        } else {
+          // NEO-236: the FULL name. This chip is a suggestion an operator
+          // judges at a glance, and "Padres" does not say which Padres.
+          const name = teamFullName(team);
+          // NEO-330: counted to two, never listed — the label only needs
+          // to know whether this name is shared.
+          const sameName = await findTeamsByFullName(ctx, team.sportId, name, 2);
+          teamTextById.set(teamId, {
+            name,
+            label: sameName.length > 1 ? teamOptionLabel(name, team.yearsActive) : name,
           });
         }
       }
-      return out;
+      const text = teamTextById.get(teamId) ?? null;
+      return text && text.name ? text : null; // never suggest a blank chip
     };
 
-    const wholeCareer = () => true;
-    if (year === undefined) return collect(wholeCareer, false);
+    // NEO-645 (S4) — ONE verdict for the tile and the commit. The commit's
+    // career fill is `careerTeamVerdict` over the set year AND the year before
+    // (a set's year is not its season); this reads the same verdict, so a chip
+    // is preselected exactly when the commit would have written that team, and
+    // a tie (two teams in the window) is offered whole and preselects nothing.
+    // Offered chips are every team in the window, one per player per team.
+    type PlayerPlan = {
+      player: Doc<"players">;
+      teamIds: Array<Id<"teams">>;
+      answered: boolean;
+      uncoveredSetYear?: number;
+    };
+    const plans: PlayerPlan[] = [];
+    for (const player of players) {
+      const stints = (player.teamYears ?? []).map((entry) => ({
+        key: entry.teamId as string,
+        ...(entry.fromYear !== undefined ? { fromYear: entry.fromYear } : {}),
+        ...(entry.toYear !== undefined ? { toYear: entry.toYear } : {}),
+      }));
+      // NEO-285 — an undated stint says nothing about a card's season, unless
+      // it is the one team the career has (`careerTeamVerdict`'s own rule).
+      const dated = stints.filter((s) => s.fromYear !== undefined);
+      if (year === undefined) {
+        plans.push({
+          player,
+          teamIds: [...new Set(dated.map((s) => s.key as Id<"teams">))],
+          answered: false,
+        });
+        continue;
+      }
+      const verdict = careerTeamVerdict({ stints, year, currentYear: thisYear });
+      const windowKeys = [
+        ...new Set(
+          dated
+            .filter((s) => stintCoversWindow({ fromYear: s.fromYear!, toYear: s.toYear }, year))
+            .map((s) => s.key),
+        ),
+      ];
+      if (verdict.answer) {
+        plans.push({
+          player,
+          teamIds: [verdict.answer.key as Id<"teams">, ...(verdict.candidates as Array<Id<"teams">>)],
+          answered: true,
+        });
+      } else if (windowKeys.length > 0) {
+        // A tie in the window: every team in it, none chosen.
+        plans.push({ player, teamIds: windowKeys as Array<Id<"teams">>, answered: false });
+      } else {
+        // Nothing covers the window: the retired-player case. The career is
+        // offered whole, as choices, never as an answer.
+        plans.push({
+          player,
+          teamIds: [...new Set(dated.map((s) => s.key as Id<"teams">))],
+          answered: false,
+          uncoveredSetYear: year,
+        });
+      }
+    }
+    // A card preselects only when EVERY player on it has exactly one team and
+    // the union fits the card (`planCardFill`'s own rule); one player's answer
+    // never fills a combo card for the rest.
+    const answerTeams = new Set<string>();
+    for (const plan of plans) if (plan.answered) answerTeams.add(plan.teamIds[0] as string);
+    const preselects =
+      plans.length > 0 && plans.every((plan) => plan.answered) && answerTeams.size <= MAX_CARD_TEAMS;
 
-    const filtered = await collect(
-      (fromYear, toYear) => fromYear <= year && year <= (toYear ?? thisYear),
-      true,
-    );
-    if (filtered.length > 0) return filtered;
-    // Nothing covers the set year: the retired-player case (see "when it lets
-    // go" above). Offer the career rather than an empty fixer — as choices,
-    // never as an answer (`inSetYear: false`).
-    return collect(wholeCareer, false, year);
+    const out: Array<Suggestion> = [];
+    for (const plan of plans) {
+      for (const [i, teamId] of plan.teamIds.entries()) {
+        const text = await textOfTeam(teamId);
+        if (!text) continue;
+        out.push({
+          teamId,
+          name: text.name,
+          label: text.label,
+          source: "career",
+          playerName: plan.player.name,
+          inSetYear: preselects && plan.answered && i === 0,
+          ...(plan.uncoveredSetYear !== undefined ? { uncoveredSetYear: plan.uncoveredSetYear } : {}),
+        });
+      }
+    }
+    return out;
   },
 });
 

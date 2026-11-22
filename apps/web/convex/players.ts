@@ -30,6 +30,9 @@ import {
 } from "./lib/careerCoverage";
 import { findTeamsByFullName } from "./lib/teamRow";
 import { teamFullName } from "../lib/teams/team-name";
+import { nearSpellingDistance } from "../lib/players/near-spelling";
+import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
+import { stintCoversWindow } from "./lib/teamFill";
 // NEO-254 — the card-year narrowing. Pure and shared with the unit tests; see
 // that module for why the span is min-from..max-to and why an unknown span is
 // never a reason to exclude a candidate.
@@ -2811,16 +2814,27 @@ export const search = query({
     query: v.string(),
     sportId: v.optional(v.id("selectorOptions")),
     limit: v.optional(v.number()),
+    /**
+     * NEO-645 (S2) — the card the operator is tidying. Admin only. The results
+     * are ranked for it: a player with a stint on one of the card's teams
+     * covering the card's year first, then one on a card team, then one who
+     * played that year. The search itself is unchanged; only the order moves.
+     */
+    contextCardId: v.optional(v.id("cardChecklist")),
   },
   returns: v.array(playerSearchResultValidator),
   handler: async (ctx, args) => {
     if (!(await getCurrentUserId(ctx))) return [];
+    if (args.contextCardId) await requireAdmin(ctx);
 
     // NEO-330 — bounded before the search index sees it (`clampSearchQuery`).
     const term = clampSearchQuery(args.query).trim();
     if (!term) return [];
 
     const limit = clampLimit(args.limit, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT);
+    // A ranked search reads a fuller window, so the card's own team's player is
+    // not cut before he is ranked.
+    const window = args.contextCardId ? SEARCH_MAX_LIMIT : limit;
 
     const homeDocs = await ctx.db
       .query("players")
@@ -2828,7 +2842,7 @@ export const search = query({
         const search = q.search("name", term);
         return args.sportId ? search.eq("sportId", args.sportId) : search;
       })
-      .take(limit);
+      .take(window);
     const readings = entityNameQueryReadings(term);
     /** Every typed token is the prefix of one of the name's tokens. */
     const matchesEveryToken = (nameNormalized: string) => {
@@ -2887,11 +2901,20 @@ export const search = query({
       }
     }
     const full = (doc: Doc<"players">) => matchesEveryToken(doc.nameNormalized);
-    const docs = [
+    let docs = [
       ...homeDocs.filter(full),
       ...memberDocs,
       ...homeDocs.filter((doc) => !full(doc)),
-    ].slice(0, limit);
+    ];
+    if (args.contextCardId) {
+      const facts = await cardRankFacts(ctx, args.contextCardId);
+      // A stable sort: ties keep the order above (typed in full first).
+      docs = docs
+        .map((doc, order) => ({ doc, order, rank: playerCardRank(doc.teamYears, facts) }))
+        .sort((a, b) => a.rank - b.rank || a.order - b.order)
+        .map((x) => x.doc);
+    }
+    docs = docs.slice(0, limit);
 
     const sportValueById = new Map<string, string>();
     const teamById = new Map<string, Doc<"teams"> | null>();
@@ -2943,6 +2966,39 @@ export const search = query({
     return out;
   },
 });
+
+/**
+ * NEO-645 (S2) — what a card says about WHO its player plays for: the teams
+ * already on it and its set's year. Ranks a candidate list; decides nothing.
+ */
+type CardRankFacts = { teamIds: ReadonlySet<string>; year: number | undefined };
+
+async function cardRankFacts(ctx: QueryCtx, cardId: Id<"cardChecklist">): Promise<CardRankFacts> {
+  const card = await ctx.db.get(cardId);
+  if (!card) return { teamIds: new Set(), year: undefined };
+  return {
+    teamIds: new Set((card.teamOnCardIds ?? []) as string[]),
+    year: await findSetYearForSelectorOption(ctx, card.selectorOptionId),
+  };
+}
+
+/**
+ * 0: a stint on one of the card's teams that covers the card's year (the set
+ * year or the one before, as the team fill reads it); 1: a stint on a card
+ * team; 2: played in the card's year; 3: nothing on the card helps.
+ */
+function playerCardRank(teamYears: Doc<"players">["teamYears"], facts: CardRankFacts): number {
+  let best = 3;
+  for (const stint of teamYears ?? []) {
+    const covers =
+      facts.year !== undefined &&
+      stint.fromYear !== undefined &&
+      stintCoversWindow({ fromYear: stint.fromYear, toYear: stint.toYear }, facts.year);
+    const onCard = facts.teamIds.has(stint.teamId as string);
+    best = Math.min(best, onCard && covers ? 0 : onCard ? 1 : covers ? 2 : 3);
+  }
+  return best;
+}
 
 /**
  * NEO-313 — how many multi-sport members of one sport `search` reads to match
@@ -3179,6 +3235,114 @@ export const nearMatches = query({
       });
     }
     return results;
+  },
+});
+
+/** NEO-645 (S2) — how many "Did you mean" players the Player tile offers. */
+export const DID_YOU_MEAN_LIMIT = 3;
+/** Search hits read per leg; three legs, so at most 3x this many rows are scored. */
+const DID_YOU_MEAN_LEG_READ = 10;
+
+/**
+ * NEO-645 (S2) — "Did you mean …": players on file in this sport whose name is
+ * a near spelling of a printed one (`nearSpellingDistance`: at most two edits,
+ * fewer for a short name), best first for THIS card. Never links anything; the
+ * operator presses the button, which is a pick like any other.
+ *
+ * Candidates come from three search-index reads in the sport: the printed name
+ * as typed, the same with its surname cut to a prefix (a late misspelling still
+ * shares "Hol" with "Holliday", and the index prefix-matches its last term),
+ * and the surname first with the first name cut (a misspelled first name). The
+ * distance rule then keeps only the near ones. A name that folds to the printed
+ * one exactly is an exact match, which the tile already offers, so is left out.
+ *
+ * Ordered by the card (`playerCardRank`): a stint on one of the card's teams
+ * covering its year first, then distance, then name. Each result carries the
+ * stint that earned it its place (the card's team, else the year, else the
+ * latest) so the button can say who this is.
+ */
+export const didYouMean = query({
+  args: {
+    cardId: v.id("cardChecklist"),
+    name: v.string(),
+    sportId: v.id("selectorOptions"),
+  },
+  returns: v.array(
+    v.object({
+      _id: v.id("players"),
+      name: v.string(),
+      distance: v.number(),
+      birthYear: v.optional(v.number()),
+      teamName: v.optional(v.string()),
+      fromYear: v.optional(v.number()),
+      toYear: v.optional(v.number()),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const name = clampSearchQuery(args.name).trim();
+    if (!name || name.length > MAX_PLAYER_NAME_LENGTH) return [];
+    const tokens = nameTokens(name);
+    if (tokens.length === 0) return [];
+
+    const terms = new Set<string>([name]);
+    if (tokens.length >= 2) {
+      const first = tokens[0];
+      const last = tokens[tokens.length - 1];
+      const middle = tokens.slice(0, -1).join(" ");
+      if (last.length >= 4) terms.add(`${middle} ${last.slice(0, 3)}`);
+      if (first.length >= 4) terms.add(`${last} ${first.slice(0, 3)}`);
+    }
+    const found = new Map<Id<"players">, Doc<"players">>();
+    for (const term of terms) {
+      const hits = await ctx.db
+        .query("players")
+        .withSearchIndex("search_name", (q) => q.search("name", term).eq("sportId", args.sportId))
+        .take(DID_YOU_MEAN_LEG_READ);
+      for (const hit of hits) found.set(hit._id, hit);
+    }
+
+    const near: Array<{ doc: Doc<"players">; distance: number }> = [];
+    for (const doc of found.values()) {
+      const distance = nearSpellingDistance(name, doc.name);
+      if (distance !== null) near.push({ doc, distance });
+    }
+    if (near.length === 0) return [];
+
+    const facts = await cardRankFacts(ctx, args.cardId);
+    const ranked = near
+      .map((n) => ({ ...n, rank: playerCardRank(n.doc.teamYears, facts) }))
+      .sort(
+        (a, b) =>
+          a.rank - b.rank || a.distance - b.distance || a.doc.name.localeCompare(b.doc.name),
+      )
+      .slice(0, DID_YOU_MEAN_LIMIT);
+
+    const out = [];
+    for (const { doc, distance } of ranked) {
+      const stints = doc.teamYears ?? [];
+      const covers = (s: (typeof stints)[number]) =>
+        facts.year !== undefined &&
+        s.fromYear !== undefined &&
+        stintCoversWindow({ fromYear: s.fromYear, toYear: s.toYear }, facts.year);
+      const shown =
+        stints.find((s) => facts.teamIds.has(s.teamId as string) && covers(s)) ??
+        stints.find((s) => facts.teamIds.has(s.teamId as string)) ??
+        stints.find(covers) ??
+        sortTeamYears(stints.filter((s) => s.fromYear !== undefined)).at(-1) ??
+        stints[0];
+      const team = shown ? await ctx.db.get(shown.teamId) : null;
+      out.push({
+        _id: doc._id,
+        name: doc.name,
+        distance,
+        ...(doc.birthYear !== undefined ? { birthYear: doc.birthYear } : {}),
+        ...(team ? { teamName: teamFullName(team) } : {}),
+        ...(team && shown?.fromYear !== undefined ? { fromYear: shown.fromYear } : {}),
+        ...(team && shown?.toYear !== undefined ? { toYear: shown.toYear } : {}),
+      });
+    }
+    return out;
   },
 });
 

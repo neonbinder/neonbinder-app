@@ -24,11 +24,8 @@ import type { Id } from "./_generated/dataModel";
 
 type Reader = Pick<QueryCtx, "db">;
 
-/**
- * Is `name` ruled out in this leaf's scope, in either home? One point read on
- * each index.
- */
-export async function isRuledOutName(
+/** Is `name` ruled out in the `tidyNames` home alone? One point read. */
+export async function isTidyRuledOutName(
   ctx: Reader,
   scopeId: Id<"selectorOptions">,
   kind: "player" | "team",
@@ -40,7 +37,20 @@ export async function isRuledOutName(
       q.eq("scopeId", scopeId).eq("kind", kind).eq("nameNormalized", nameNormalized),
     )
     .first();
-  if (tidy?.answer?.kind === "notEntity") return true;
+  return tidy?.answer?.kind === "notEntity";
+}
+
+/**
+ * Is `name` ruled out in this leaf's scope, in either home? One point read on
+ * each index.
+ */
+export async function isRuledOutName(
+  ctx: Reader,
+  scopeId: Id<"selectorOptions">,
+  kind: "player" | "team",
+  nameNormalized: string,
+): Promise<boolean> {
+  if (await isTidyRuledOutName(ctx, scopeId, kind, nameNormalized)) return true;
   const legacy = await ctx.db
     .query("entityReviewSkips")
     .withIndex("by_selector_option_and_kind_and_name", (q) =>

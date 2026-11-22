@@ -128,6 +128,7 @@ function withoutSubset(row: PublishedChecklistRow): ChecklistSectionRow {
   if (row.prospect) out.prospect = true;
   if (row.prospectClaimedTeams) out.prospectClaimedTeams = row.prospectClaimedTeams;
   if (row.variationName) out.variationName = row.variationName;
+  if (row.subject) out.subject = row.subject;
   return out;
 }
 

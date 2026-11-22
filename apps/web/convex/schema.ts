@@ -1368,6 +1368,9 @@ export const publishedChecklistStoredRowValidator = v.object({
   // control characters (`checkPublishedChecklist`). Becomes the variation
   // name of a card created from the row.
   variationName: v.optional(v.string()),
+  // NEO-645 (S3) — a checklist card's printed subject ("Checklist"): the
+  // card's own name when no marketplace card pairs with the row.
+  subject: v.optional(v.string()),
 });
 /** NEO-496 — a publisher checklist's life: uploading → ready → retired, or uploading → retired. */
 export const publishedChecklistStatusValidator = v.union(
@@ -1703,7 +1706,16 @@ export const tidyNameAnswerValidator = v.union(
     autoReason: v.optional(tidyTeamAutoReasonValidator),
     saveAsAlias: v.optional(v.literal(true)),
   }),
-  v.object({ kind: v.literal("notEntity"), by: v.literal("operator") }),
+  v.object({
+    kind: v.literal("notEntity"),
+    by: v.union(v.literal("operator"), v.literal("auto")),
+    /**
+     * NEO-645 (S3a): why NB ruled the name out itself. "sameAsTeam": a card
+     * prints the name as its player AND as its team (a team card), so it is the
+     * team's name and not a person's. Changeable on the tile like any answer.
+     */
+    autoReason: v.optional(v.literal("sameAsTeam")),
+  }),
 );
 
 /**

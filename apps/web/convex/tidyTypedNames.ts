@@ -27,6 +27,7 @@ import {
 } from "./cardPrintedNames";
 import { ensureTidyNameRow, MAX_TIDY_NAME_LENGTH } from "./tidyNames";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
+import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 
 type NameFields = Pick<
   Doc<"cardChecklist">,
@@ -104,7 +105,10 @@ export async function reconcilePrintedAfterEdit(
       : {}),
   }));
   let created = false;
-  const setYear = undefined;
+  // The set's year, read once and only when a typed name needs a row: the name
+  // row's same-name candidates are ranked by it, as for a born card.
+  let setYear: number | undefined;
+  let yearRead = false;
   for (const [kind, pending, changed] of [
     ["player", after.pendingPlayerNames, playersChanged],
     ["team", after.pendingTeamNames, teamsChanged],
@@ -114,6 +118,10 @@ export async function reconcilePrintedAfterEdit(
       const name = printed.trim().slice(0, MAX_TIDY_NAME_LENGTH);
       const key = normalizeEntityName(name);
       if (!key || desired.some((d) => d.kind === kind && d.nameNormalized === key)) continue;
+      if (!yearRead) {
+        setYear = await findSetYearForSelectorOption(ctx, after.selectorOptionId);
+        yearRead = true;
+      }
       await ensureTidyNameRow(ctx, {
         scopeId: after.selectorOptionId,
         kind,

@@ -206,6 +206,11 @@ export const gateItemValidator = v.object({
       reason: v.union(v.literal("priorYearProduct"), v.literal("onlyNamesake")),
     }),
   ),
+  /**
+   * NEO-645 (S3a): a card prints this PLAYER name as its own team's name too (a
+   * team card), so the gate answers it "Not a player" itself.
+   */
+  notEntityAuto: v.optional(v.literal("sameAsTeam")),
   /** NEO-602: the rows a team name reached. Display only. */
   candidateTeamIds: v.optional(v.array(v.id("teams"))),
   /** NEO-591: the candidates are places. */
@@ -1235,7 +1240,10 @@ export const upsertFromGatePage = internalMutation({
       let enrichment: Enrichment | undefined;
       let awaitsChoice = false;
       const auto = item.auto;
-      if (auto && item.kind === "player" && auto.playerId) {
+      if (item.notEntityAuto && item.kind === "player") {
+        // A team card's own name: not a person. Operator answers win below.
+        answer = { kind: "notEntity", by: "auto", autoReason: item.notEntityAuto };
+      } else if (auto && item.kind === "player" && auto.playerId) {
         answer = { kind: "linkPlayer", playerId: auto.playerId, by: "auto", autoReason: auto.origin };
         const ids = [
           auto.playerId,
@@ -1330,6 +1338,26 @@ export const upsertFromGatePage = internalMutation({
       ops += 1;
     }
     return { processed, ops };
+  },
+});
+
+/**
+ * NEO-645 — every `kind|nameNormalized` that has a name row in a scope: the
+ * commit chunk's "is this printed name indexed" answer, read once per commit
+ * instead of once per name per chunk. `null` when the scope holds more rows
+ * than one read can prove a negative over (the chunk then point-reads).
+ */
+export const NAMES_WITH_ROWS_MAX = 2000;
+export const namesWithRows = internalQuery({
+  args: { scopeId: v.id("selectorOptions") },
+  returns: v.union(v.array(v.string()), v.null()),
+  handler: async (ctx, args) => {
+    const rows = await ctx.db
+      .query("tidyNames")
+      .withIndex("by_scope_kind_name", (q) => q.eq("scopeId", args.scopeId))
+      .take(NAMES_WITH_ROWS_MAX + 1);
+    if (rows.length > NAMES_WITH_ROWS_MAX) return null;
+    return rows.map((row) => `${row.kind}|${row.nameNormalized}`);
   },
 });
 

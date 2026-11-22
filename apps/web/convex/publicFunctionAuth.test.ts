@@ -949,6 +949,32 @@ describe("NEO-569: the set and card League surface is admin-gated, and its casca
     await expect(call(t)).rejects.toThrow();
   });
 
+  test("players.didYouMean refuses a signed-in non-admin and a signed-out caller, and answers an admin (NEO-645)", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const cardId = await t.run(async (ctx) =>
+      insertTestCard(ctx, {
+        selectorOptionId: sportId,
+        cardNumber: "1",
+        cardName: "Card",
+        sortOrder: 0,
+        platformData: {},
+        lastUpdated: 1,
+      }),
+    );
+    const args = { cardId, name: "Jackson Holiday", sportId };
+    await expect(t.query(api.players.didYouMean, args)).rejects.toThrow();
+    await expect(t.withIdentity(SIGNED_IN).query(api.players.didYouMean, args)).rejects.toThrow();
+    await expect(t.withIdentity(ADMIN).query(api.players.didYouMean, args)).resolves.toEqual([]);
+    // The card-ranked search is the admin's: the context card is refused to anyone else.
+    await expect(
+      t.withIdentity(SIGNED_IN).query(api.players.search, { query: "Jackson", sportId, contextCardId: cardId }),
+    ).rejects.toThrow();
+    await expect(
+      t.withIdentity(ADMIN).query(api.players.search, { query: "Jackson", sportId, contextCardId: cardId }),
+    ).resolves.toEqual([]);
+  });
+
   test("the set-league and team-league cascades are declared internalMutation", () => {
     const src = readFileSync(join(__dirname, "cardLeague.ts"), "utf8");
     for (const name of ["cascadeSetLeagues", "recomputeTeamCards"]) {

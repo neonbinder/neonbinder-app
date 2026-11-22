@@ -154,6 +154,13 @@ export type PublishedChecklistRow = {
    */
   variationName?: string;
   /**
+   * NEO-645 (S3): the row's printed subject when it is the checklist card
+   * itself ("Checklist", "Checklist 1-100", "Team Checklist"). It is the card's
+   * own name, never a player, so `players` stays empty; such a row also says
+   * `noTeam` (a checklist card shows no team) unless a team cell names one.
+   */
+  subject?: string;
+  /**
    * The subset the row belongs to: its "card set", "set", "subset" or
    * "insert" cell when the file has such a column and the cell is not
    * blank, else the latest section heading above it (NEO-496: a single
@@ -587,6 +594,19 @@ const NOT_A_PERSON_SHAPES: readonly RegExp[] = [
   /^team leaders\b/i,
   /\bteam leaders$/i,
 ];
+
+/**
+ * NEO-645 (S3) — the printed subject of a checklist card ("Checklist",
+ * "Checklist 1-100", "Team Checklist"), kept as the card's own name. Other
+ * subjects that are not a person ("Team Card", "Mets TC", "Team Leaders") keep
+ * dropping out as before: they name a team or a group, not the checklist.
+ */
+const MAX_SUBJECT_LENGTH = 120;
+function checklistSubject(subject: string): string | undefined {
+  const folded = subject.replace(/\s+/g, " ").trim();
+  if (folded === "" || folded.length > MAX_SUBJECT_LENGTH) return undefined;
+  return /^(team )?checklist\b/i.test(folded) ? folded : undefined;
+}
 
 function isNotAPerson(name: string): boolean {
   const folded = name.replace(/\s+/g, " ").trim().toLowerCase();
@@ -1023,14 +1043,17 @@ function parseLine(
   ) {
     return { reason: "No player or team after the number" };
   }
+  const subject =
+    players.length === 0 && teams.length === 0 ? checklistSubject(subjectOf(playerPart)) : undefined;
   return {
     number,
     players,
     teams,
     ...(noNumber ? { noNumber: true as const } : {}),
-    ...(claims.noTeam ? { noTeam: true as const } : {}),
+    ...(claims.noTeam || subject ? { noTeam: true as const } : {}),
     ...claims.fields,
     ...(variationName !== undefined ? { variationName } : {}),
+    ...(subject ? { subject } : {}),
   };
 }
 
@@ -1312,6 +1335,7 @@ function rowFromColumns(
   let numberCell = "";
   let subset = "";
   let notAPerson = false;
+  let subject: string | undefined;
   let noTeam = false;
   let prospect = false;
   const claimedTeams: string[] = [];
@@ -1341,6 +1365,7 @@ function rowFromColumns(
       // a long cell is not split a second time.
       if (named.length === 0 && cell.trim() !== "" && isNotAPerson(subjectOf(cell))) {
         notAPerson = true;
+        subject ??= checklistSubject(subjectOf(cell));
       }
     } else if (column === "lastName") {
       lastNames.push(cell);
@@ -1359,8 +1384,10 @@ function rowFromColumns(
   for (let i = 0; i < Math.max(lastNames.length, firstNames.length); i++) {
     const name = personName(firstNames[i] ?? "", lastNames[i] ?? "");
     if (name === "") continue;
-    if (isNotAPerson(name)) notAPerson = true;
-    else players.push(name);
+    if (isNotAPerson(name)) {
+      notAPerson = true;
+      subject ??= checklistSubject(name);
+    } else players.push(name);
   }
   if (numberCell !== "" && readsAsTitle(numberCell, setYear)) return { reason: LOOKS_LIKE_A_TITLE };
   if (!number) {
@@ -1372,15 +1399,17 @@ function rowFromColumns(
   if (players.length === 0 && teams.length === 0 && !notAPerson && !claims.noTeam) {
     return { reason: "No player or team on this line" };
   }
+  const checklistName = players.length === 0 && teams.length === 0 ? subject : undefined;
   return {
     row: {
       number,
       players,
       teams,
       ...(noNumber ? { noNumber: true as const } : {}),
-      ...(claims.noTeam ? { noTeam: true as const } : {}),
+      ...(claims.noTeam || checklistName ? { noTeam: true as const } : {}),
       ...claims.fields,
       ...(variationName !== undefined ? { variationName } : {}),
+      ...(checklistName ? { subject: checklistName } : {}),
     },
     subsetCell: subset,
   };

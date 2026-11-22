@@ -22,6 +22,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import { MAX_APPLY_CARDS, MAX_PICK_NAMES } from "./tidyCards";
+import { deriveCardAttention } from "./features/cardAttention";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
 import {
@@ -311,6 +312,55 @@ describe("pickSourceValue — titles and lastUpdated", () => {
     const c = (await card(t, open))!;
     expect(c.sourceDisagreements?.[0].chosen).toEqual({ value: [], by: "operator" });
     expect(c.lastUpdated).toBe(WORLD_NOW);
+  });
+});
+
+describe("pickSourceValue — an empty teams value is the No-team answer", () => {
+  const noTeamEntry = () => teamsEntry(["San Diego Padres"], []);
+
+  test("taking the source that names nobody stamps No team on the card (it is not left asking for a team)", async () => {
+    const t = newT();
+    const { w } = await setup(t);
+    const open = await t.run((ctx) =>
+      printCard(ctx, w, { number: "9", extra: { sourceDisagreements: [noTeamEntry()] } }),
+    );
+    await pick(t, open, [], { field: "teams" });
+    const c = (await card(t, open))!;
+    expect(c.teamNoneConfirmedAt).toBeTypeOf("number");
+    expect(c.teamNoneConfirmedByUserId).toBeTruthy();
+    expect(c.teamOnCardIds).toBeUndefined();
+    expect(c.pendingTeamNames).toBeUndefined();
+    // The stamp is what "no team on this card yet" reads: the card is not pink for it.
+    expect(deriveCardAttention(c).items.some((i) => i.kind === "noTeam")).toBe(false);
+    // And still no bump of the baseVersion for the stamp alone.
+    expect(c.lastUpdated).toBe(WORLD_NOW);
+  });
+
+  test("Apply to the cards with the same disagreement stamps each of them (the scheduled pages)", async () => {
+    const t = newT();
+    const { w } = await setup(t);
+    const [open, other] = await t.run(async (ctx) => [
+      await printCard(ctx, w, { number: "9", extra: { sourceDisagreements: [noTeamEntry()] } }),
+      await printCard(ctx, w, { number: "10", extra: { sourceDisagreements: [noTeamEntry()] } }),
+    ]);
+    await pick(t, open, [], { field: "teams", cardIds: [other] });
+    await drainScheduled(t);
+    expect((await card(t, other))!.teamNoneConfirmedAt).toBeTypeOf("number");
+    expect((await card(t, open))!.teamNoneConfirmedAt).toBeTypeOf("number");
+  });
+
+  test("taking a value that names a team retires a No-team stamp an earlier pick left", async () => {
+    const t = newT();
+    const { w } = await setup(t);
+    const open = await t.run((ctx) =>
+      printCard(ctx, w, { number: "9", extra: { sourceDisagreements: [noTeamEntry()] } }),
+    );
+    await pick(t, open, [], { field: "teams" });
+    expect((await card(t, open))!.teamNoneConfirmedAt).toBeTypeOf("number");
+    await pick(t, open, ["San Diego Padres"], { field: "teams" });
+    const c = (await card(t, open))!;
+    expect(c.teamNoneConfirmedAt).toBeUndefined();
+    expect(c.teamOnCardIds?.length).toBe(1);
   });
 });
 

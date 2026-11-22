@@ -854,7 +854,7 @@ describe("suggestedTeamsForCard", () => {
     ).toEqual([]);
   });
 
-  test("a player with no career teamYears contributes nothing, while a co-player on the same card still suggests theirs", async () => {
+  test("a player with no career teamYears contributes nothing; the co-player's team is offered but NOT preselected (the commit fills a combo card only when every player answers)", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { sportId, leafId } = await seedTree(t, { season: "2024" });
@@ -879,7 +879,7 @@ describe("suggestedTeamsForCard", () => {
         label: "Arizona Diamondbacks",
         source: "career",
         playerName: "Corbin Carroll",
-        inSetYear: true,
+        inSetYear: false,
       },
     ]);
   });

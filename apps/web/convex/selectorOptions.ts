@@ -332,7 +332,7 @@ import {
 } from "./cardDescriptionRefresh";
 import { queueRetitledCardNow } from "./listingTitleRequeue";
 import { rememberAliasesOnTeam } from "./rememberTeamAliases";
-import { isRuledOutName, tidyRuledOutKeys } from "./tidySkips";
+import { isRuledOutName, isTidyRuledOutName, tidyRuledOutKeys } from "./tidySkips";
 import { tidyRowAsReviewRow } from "./lib/tidyAnswerDecisions";
 import type { GateItem } from "./tidyNames";
 
@@ -456,7 +456,7 @@ import {
 } from "./features/teamFillOnCommit";
 import { indexTypedNames, reconcilePrintedAfterEdit } from "./tidyTypedNames";
 import { syncCardPrintedNames, listCardPrintedNames, type DesiredPrintedName } from "./cardPrintedNames";
-import { computeCoverage } from "./lib/careerCoverageFacts";
+import { computeCoverage, newCoverageMemo } from "./lib/careerCoverageFacts";
 import { careerTeamVerdict } from "./lib/teamFill";
 // NEO-334 — a variant type's title IS its kind (Base, Insert, Parallel). The
 // insert/parallel reading of a row beneath one is derived from that kind at
@@ -1316,6 +1316,13 @@ function hasMarketplaceRef(card: {
 export const SKIPPED_NAME_LOOKUP_PAGE = 300;
 
 /**
+ * NEO-645 — how many `tidyNames` rows of one scope the commit prelude reads in
+ * one prefix range to know which names are ruled out. Past it the prelude falls
+ * back to a point read per name.
+ */
+export const PRELUDE_RULED_OUT_READ_MAX = 1000;
+
+/**
  * NEO-212 — which of these candidate names has an operator already ruled "not
  * a person / not a team" for this set?
  *
@@ -2085,6 +2092,13 @@ async function resolveUnknownsAndStartBatch(
      */
     cardTeamNamesByPlayer?: Map<string, string[]>;
     /**
+     * NEO-645 (S3a) — player names a card prints as its own team's name too (a
+     * team card, "New York Yankees, New York Yankees"). They are not people:
+     * the gate answers each "Not a player" itself (an auto `notEntity`, changed
+     * on the tile like any answer), and they are neither looked up nor asked.
+     */
+    sameAsTeamPlayerNames?: string[];
+    /**
      * NEO-490 — the players printed on each card naming a team, keyed by the
      * NORMALIZED team name (see `addCardPlayerNames`). NEO-602: read for
      * EVERY printed team name, not just the ones the year left open. When
@@ -2179,7 +2193,14 @@ async function resolveUnknownsAndStartBatch(
     if (!teamByNorm.has(norm)) teamByNorm.set(norm, trimmed);
   };
 
-  for (const p of args.additionalPlayerNames ?? []) addPlayer(p);
+  // NEO-645 (S3a) — a team card's own name is ruled out by the gate itself, so
+  // it is not a name to resolve, look up or ask about.
+  const sameAsTeamKeys = new Set(
+    (args.sameAsTeamPlayerNames ?? []).map((p) => normalizeEntityName(p)),
+  );
+  for (const p of args.additionalPlayerNames ?? []) {
+    if (!sameAsTeamKeys.has(normalizeEntityName(p))) addPlayer(p);
+  }
   for (const t of args.additionalTeamNames ?? []) addTeam(t);
 
   // Custom cards (added via addCustomCard) can declare pending player /
@@ -3099,6 +3120,20 @@ async function resolveUnknownsAndStartBatch(
           ? { candidatePlayerIds: link.candidatePlayerIds }
           : {}),
       },
+    });
+  }
+  // NEO-645 (S3a) — the team cards' own names, answered "Not a player" here.
+  // An operator's earlier answer on the row wins (`upsertFromGatePage`).
+  const sameAsTeamSeen = new Set<string>();
+  for (const name of args.sameAsTeamPlayerNames ?? []) {
+    const key = normalizeEntityName(name);
+    if (!key || sameAsTeamSeen.has(key)) continue;
+    sameAsTeamSeen.add(key);
+    gateItems.push({
+      kind: "player",
+      name: name.trim(),
+      sportId: args.sportId,
+      notEntityAuto: "sameAsTeam",
     });
   }
   // NEO-645 (schema doc 4) — a name that sits only on the sides of an
@@ -16310,6 +16345,14 @@ function rowVariationName(row: object): string | undefined {
   return trimmed ? trimmed.slice(0, MAX_LABEL_LENGTH) : undefined;
 }
 
+/** NEO-645 (S3) — a checklist card's printed subject ("Checklist"), when the row kept one. */
+function rowSubject(row: object): string | undefined {
+  const subject = (row as { subject?: unknown }).subject;
+  if (typeof subject !== "string") return undefined;
+  const trimmed = subject.trim();
+  return trimmed ? trimmed.slice(0, MAX_LABEL_LENGTH) : undefined;
+}
+
 /** NEO-591 (variations) — the letters a minted variation number may take, in order. */
 const MINT_LETTERS = "bcdefghijklmnopqrstuvwxyz";
 
@@ -16545,7 +16588,11 @@ export function checklistOnlyCard(
   const number = row.number.trim();
   return {
     cardNumber: number,
-    cardName: players.length > 0 ? players.join(" / ") : `Card #${number || "NNO"}`,
+    // NEO-645 (S3): a checklist card keeps the printed word as its name.
+    cardName:
+      players.length > 0
+        ? players.join(" / ")
+        : rowSubject(row) ?? `Card #${number || "NNO"}`,
     ...(players.length > 0 ? { players } : {}),
     ...(applied.answered && applied.teams
       ? { teams: applied.teams, teamLookup: "checklist" as const }
@@ -19186,9 +19233,15 @@ export const resolveChecklistEntities = action({
     // NEO-602 — and each player's own cards (number, printed team), for the
     // same-name pick step.
     const cardsByPlayer: CardsByPlayer = new Map();
+    // NEO-645 (S3a) — the player names a card prints as its own team's name.
+    const sameAsTeamPlayerNames: string[] = [];
     for (const c of args.cards) {
       const teamsOnCard = cardTeamNames(c);
+      const teamKeys = new Set(teamsOnCard.map((t) => normalizeEntityName(t)));
       for (const p of c.players ?? []) {
+        if (teamKeys.has(normalizeEntityName(p)) && normalizeEntityName(p) !== "") {
+          sameAsTeamPlayerNames.push(p);
+        }
         additionalPlayerNames.push(p);
         addCardTeamNames(cardTeamNamesByPlayer, p, teamsOnCard);
         addCardForPlayer(cardsByPlayer, p, teamsOnCard, c.cardNumber);
@@ -19286,6 +19339,7 @@ export const resolveChecklistEntities = action({
       resolvedNames,
       prelude,
       timing,
+      ...(sameAsTeamPlayerNames.length > 0 ? { sameAsTeamPlayerNames } : {}),
     });
     // NEO-335 — after the gate, from the gate's own answers.
     // NEO-426 — and, beside it (they read independent rows, so they are asked
@@ -19377,14 +19431,18 @@ const COMMIT_CHUNK_OPS_PER_CARD = 6;
  * carried before it timed out at 712.
  */
 const COMMIT_CHUNK_LEAGUE_OPS_PER_CARD = 1;
+/** NEO-645 — stored-evidence read slices the commit action runs at once. */
+const STORED_TEAM_EVIDENCE_PARALLEL_CALLS = 8;
 /**
  * NEO-645 — what a NEW card costs the commit for the Tidy Up walk, charged on
  * top of the rest: a printed-name row per name that has a `tidyNames` row (one
- * read, memoised per chunk, and one insert), and the career-gap coverage read
- * (a player, a team or two). Ceiling, not average: 150 cards at 9 + 8 = 17
- * would be 2,550 operations, so the chunk holds about 79 cards instead.
+ * insert; whether a name has one is read once per commit), and the career-gap coverage read
+ * (a player, a team or two). Measured on a 554-card commit (convex-test, reads +
+ * index ranges + writes per chunk): about 10-11.5 operations per card, 5 of
+ * them these, so the chunk holds 112 cards (5 chunks, where 8 gave 90 and 7
+ * chunks) at about 1,300 operations, inside the ~1,800 that strains.
  */
-const COMMIT_CHUNK_TIDY_OPS_PER_CARD = 8;
+const COMMIT_CHUNK_TIDY_OPS_PER_CARD = 5;
 export const COMMIT_CHUNK_OP_BUDGET =
   CARDS_PER_COMMIT_CHUNK * (COMMIT_CHUNK_OPS_PER_CARD + COMMIT_CHUNK_LEAGUE_OPS_PER_CARD + 2);
 
@@ -20532,9 +20590,21 @@ export const commitCardChecklistPrelude = internalMutation({
         );
       }
       if (storedSkipKeys.has(`${kind}:${nameNormalized}`)) return true;
-      // NEO-645 — the `tidyNames` home of the same ruling.
-      return isRuledOutName(ctx, args.selectorOptionId, kind, nameNormalized);
+      // NEO-645 — the `tidyNames` home of the same ruling. One prefix read of
+      // the scope's name rows serves every name of the call (a point read per
+      // name was two index queries each, ~1,300 for a 554-card commit); a scope
+      // with more rows than one read can prove a negative over falls back to
+      // the point read of the `tidyNames` home alone (the legacy home was read
+      // in full above).
+      if (tidyRuledOutSet === undefined) {
+        const keys = await tidyRuledOutKeys(ctx, args.selectorOptionId, PRELUDE_RULED_OUT_READ_MAX);
+        tidyRuledOutSet = keys === null ? null : new Set(keys);
+      }
+      if (tidyRuledOutSet !== null) return tidyRuledOutSet.has(`${kind}:${nameNormalized}`);
+      return isTidyRuledOutName(ctx, args.selectorOptionId, kind, nameNormalized);
     };
+    // undefined = not read yet; null = the scope has too many rows to prefix-read.
+    let tidyRuledOutSet: Set<string> | null | undefined;
 
     // ── NEO-212: make every skip durable, in THIS transaction ───────────────
     //
@@ -22686,6 +22756,29 @@ function settleCardTeamAnswer(a: {
  * NEO-645 — the names a card prints for one kind, in print order: trimmed,
  * blanks and repeats (by key) dropped, cut at the kind's per-card cap.
  */
+/**
+ * NEO-645 — of the names these cards print, the `kind|nameNormalized` keys that
+ * have a `tidyNames` row (`known`), for the chunk's `namesWithRows`.
+ */
+function namesWithRowsOf(
+  cards: ReadonlyArray<{ printedPlayers?: string[]; printedTeams?: string[] }>,
+  known: ReadonlySet<string>,
+): string[] {
+  const out = new Set<string>();
+  for (const card of cards) {
+    for (const [kind, names] of [
+      ["player", card.printedPlayers],
+      ["team", card.printedTeams],
+    ] as const) {
+      for (const printed of names ?? []) {
+        const key = `${kind}|${normalizeEntityName(printed)}`;
+        if (known.has(key)) out.add(key);
+      }
+    }
+  }
+  return [...out];
+}
+
 function printedList(raw: ReadonlyArray<string> | undefined, cap: number): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -22923,6 +23016,12 @@ export const commitCardChecklistChunk = internalMutation({
     // than `commitChunkDefaultAllowance` of them, so defaults widened after
     // the sizing cannot push it past its budget.
     defaultWritesPerCard: v.optional(v.number()),
+    // NEO-645 — which of the names this chunk's cards print have a `tidyNames`
+    // row (`kind|nameNormalized`), read once by the action for the whole commit
+    // (`tidyNames.namesWithRows`). Present: the chunk trusts it and reads no
+    // name row of its own (a point read per name was one query each, ~760 for a
+    // 554-card commit). Absent: it point-reads each name, as before.
+    namesWithRows: v.optional(v.array(v.string())),
   },
   returns: v.object({
     storedIds: v.array(v.id("cardChecklist")),
@@ -23105,8 +23204,10 @@ export const commitCardChecklistChunk = internalMutation({
     // only when it has a `tidyNames` row (the gate made one for every name the
     // review had to settle); one point read per distinct name per chunk.
     const nameRowCache = new Map<string, boolean>();
+    const namesWithRows = args.namesWithRows ? new Set(args.namesWithRows) : undefined;
     const hasNameRow = async (kind: "player" | "team", key: string): Promise<boolean> => {
       const cacheKey = `${kind}|${key}`;
+      if (namesWithRows) return namesWithRows.has(cacheKey);
       const known = nameRowCache.get(cacheKey);
       if (known !== undefined) return known;
       const row = await ctx.db
@@ -23173,6 +23274,7 @@ export const commitCardChecklistChunk = internalMutation({
       return (await fillTeamRow(teamId)) ? teamId : undefined;
     };
     const coverageMemo = new Map<string, boolean>();
+    const coverageReads = newCoverageMemo();
     /** careerGap checks for a one-player card whose printed teams the career does not cover. */
     const careerGapChecks = async (
       playerId: Id<"players">,
@@ -23187,6 +23289,7 @@ export const commitCardChecklistChunk = internalMutation({
           sportId,
           setYear: year,
           pairs: fresh.map((teamId) => ({ playerId, teamId })),
+          memo: coverageReads,
         });
         answers.forEach((a, i) => coverageMemo.set(`${playerId}|${fresh[i]}`, a.covered));
       }
@@ -27586,13 +27689,26 @@ export const commitCardChecklist = action({
     }
     const storedByPlayer = new Map<string, StoredTeamEvidence<Id<"players">, Id<"teams">>>();
     const wanted = [...storedWanted];
+    // Reads only, so the slices run side by side (a blank-team checklist asks
+    // about every player: 554 cards is 35 slices of ~800 reads each, and one
+    // after another that is what a Confirm waits on).
+    const evidenceSlices: Array<Id<"players">[]> = [];
     for (let at = 0; at < wanted.length; at += STORED_TEAM_EVIDENCE_PLAYERS_PER_CALL) {
-      const found = await ctx.runQuery(internal.cardChecklist.storedTeamEvidence, {
-        selectorOptionId: args.selectorOptionId,
-        // (Not a `cardChecklist` write: the args of a read, named for the pin.)
-        askAbout: wanted.slice(at, at + STORED_TEAM_EVIDENCE_PLAYERS_PER_CALL),
-      });
-      for (const entry of found) storedByPlayer.set(entry.playerId as string, entry);
+      evidenceSlices.push(wanted.slice(at, at + STORED_TEAM_EVIDENCE_PLAYERS_PER_CALL));
+    }
+    for (let at = 0; at < evidenceSlices.length; at += STORED_TEAM_EVIDENCE_PARALLEL_CALLS) {
+      const batch = await Promise.all(
+        evidenceSlices.slice(at, at + STORED_TEAM_EVIDENCE_PARALLEL_CALLS).map((askAbout) =>
+          ctx.runQuery(internal.cardChecklist.storedTeamEvidence, {
+            selectorOptionId: args.selectorOptionId,
+            // (Not a `cardChecklist` write: the args of a read, named for the pin.)
+            askAbout,
+          }),
+        ),
+      );
+      for (const found of batch) {
+        for (const entry of found) storedByPlayer.set(entry.playerId as string, entry);
+      }
     }
     const chunkCards = chunkCardsRaw.map((entry, i) => {
       const fill = batchFills.get(i);
@@ -27645,6 +27761,15 @@ export const commitCardChecklist = action({
         : 0;
     const chunkSize = commitChunkSize(defaultWritesPerCard + COMMIT_CHUNK_TIDY_OPS_PER_CARD);
     const chunkCount = Math.ceil(chunkCards.length / chunkSize);
+    // NEO-645 — which printed names have a `tidyNames` row: one read for the
+    // whole commit, so no chunk reads a name row per name. `null` (more rows
+    // than one read can prove a negative over) leaves each chunk to point-read.
+    const scopeNameKeys: Set<string> | null =
+      chunkCards.length > 0
+        ? await ctx
+            .runQuery(internal.tidyNames.namesWithRows, { scopeId: args.selectorOptionId })
+            .then((keys) => (keys === null ? null : new Set(keys)))
+        : null;
     for (let start = 0; start < chunkCards.length; start += chunkSize) {
       const slice = chunkCards.slice(start, start + chunkSize);
       const index = Math.floor(start / chunkSize) + 1;
@@ -27680,6 +27805,9 @@ export const commitCardChecklist = action({
             operatorUserId,
             // NEO-528 round 3 — what this chunk was sized for.
             defaultWritesPerCard,
+            ...(scopeNameKeys
+              ? { namesWithRows: namesWithRowsOf(slice.map(({ card }) => card), scopeNameKeys) }
+              : {}),
           }),
       );
       // The chunk returns one stored id per card it was given, in order.

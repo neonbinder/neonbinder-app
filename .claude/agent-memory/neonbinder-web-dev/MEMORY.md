@@ -308,3 +308,4 @@
 - [Apply result outlives its offer](reference_apply_result_must_outlive_the_offer_it_empties.md) — key the outcome on count at press time; also purple-text dark contrast fix
 - [Tidy walk answer focus belongs to the walk](project_tidy_walk_answer_focus_belongs_to_the_walk.md) — tiles call useAnswered(); walk lands on Save & next / next pink tile; opener restore only on Cancel/Esc
 - [Key hints hide on coarse pointers](reference_key_hint_hides_on_coarse_pointers_via_hintedlabel.md) — HintedLabel sr-onlys (Esc)/(Enter); drop aria-label to satisfy label-in-name, regex lookups
+- [Tile and commit share one verdict](reference_tile_and_commit_share_one_verdict.md) — client preselect and server write call one pure fn; one test drives both; goldens/pins updated on purpose

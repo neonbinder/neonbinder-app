@@ -45,6 +45,7 @@ import {
 import { ensureTidyNameRow, MAX_TIDY_NAME_LENGTH } from "./tidyNames";
 import { sameNamePlayers } from "./players";
 import { resolveTeamForSetYear } from "./lib/teamRow";
+import { stampNoTeam } from "./lib/selectorTeams";
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
 import { nameKey } from "../lib/cards/card-name";
@@ -299,14 +300,33 @@ export async function applyPickToCard(
   // The stamp first, alone: on its own it must not bump `lastUpdated`. A card
   // name that follows the pick is content, so it does (the NEO-203 baseVersion).
   const cardName = pickedCardName(card, found.entry, args.names);
+  // A teams value that names nobody ("No Team") IS the No-team answer: the
+  // operator took the source's own claim that this card has no team, so the card
+  // is stamped the way "No team on this card" stamps it and is not asked again.
+  // Taking a value that names a team retires a stamp an earlier pick left.
+  // The operator is the server-resolved caller of the pick, never a client value.
+  const operatorId = args.userId;
+  const noTeamStamp: Partial<Doc<"cardChecklist">> =
+    kind !== "team"
+      ? {}
+      : args.names.length === 0
+        ? stampNoTeam(operatorId, Date.now())
+        : card.teamNoneConfirmedAt !== undefined
+          ? {
+              teamNoneConfirmedAt: undefined,
+              teamNoneConfirmedByUserId: undefined,
+            }
+          : {};
   await ctx.db.patch(card._id, {
     sourceDisagreements: entries,
+    ...noTeamStamp,
     ...(cardName !== undefined ? { cardName, lastUpdated: Date.now() } : {}),
   });
   if (changed) {
     const stamped = {
       ...card,
       sourceDisagreements: entries,
+      ...noTeamStamp,
       ...(cardName !== undefined ? { cardName } : {}),
     } as Doc<"cardChecklist">;
     await writeNameChange(ctx, stamped, fields, args.cache, args.userId);

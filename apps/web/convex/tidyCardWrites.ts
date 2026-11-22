@@ -43,8 +43,17 @@ import { generatedTitleTruncatedFlag } from "./features/listingInputs";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import { queueRetitledCardNow } from "./listingTitleRequeue";
 import { createSportNoTeamReader } from "./sportTeamless";
+import {
+  cardMayTakeFill,
+  newFillReadCache,
+  planFillOnAnswer,
+  type FillReadCache,
+} from "./teamFillOnAnswer";
 import { noTeamCardVerdict, stampNoTeam } from "./lib/selectorTeams";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
+
+/** `tidyNames.TIDY_CHECKS_MAX`, copied: that module imports this one. */
+const TIDY_CHECKS_CAP = 32;
 
 type Card = Doc<"cardChecklist">;
 export type StoredAnswer = Infer<typeof tidyNameAnswerValidator>;
@@ -258,6 +267,8 @@ export type NameWriteCache = {
   titles: StoredCardReadCache;
   league: CardLeagueCache;
   sportNoTeam: ReturnType<typeof createSportNoTeamReader>;
+  /** NEO-645 — the career reads the team fill shares across a page's cards. */
+  fill: FillReadCache;
 };
 
 export function newNameWriteCache(ctx: Pick<MutationCtx, "db">): NameWriteCache {
@@ -265,6 +276,7 @@ export function newNameWriteCache(ctx: Pick<MutationCtx, "db">): NameWriteCache 
     titles: newStoredCardReadCache(),
     league: newCardLeagueCache(),
     sportNoTeam: createSportNoTeamReader(ctx),
+    fill: newFillReadCache(),
   };
 }
 
@@ -325,6 +337,21 @@ export async function writeNameChange(
   cache: NameWriteCache,
   operatorUserId: string | undefined,
 ): Promise<{ titleChanged: boolean }> {
+  // NEO-645 (Q1 = A) — a card that has just lost its last pending player name
+  // gets the commit's team fill, with the commit's verdict and rule 8: a card
+  // the commit could not offer it to (the name was still pending) is not left
+  // to stop on the Team tile when the career gives exactly one team.
+  let teamFillCheck: Extract<NonNullable<Card["tidyChecks"]>[number], { kind: "teamFill" }> | undefined;
+  if (
+    (card.pendingPlayerNames?.length ?? 0) > 0 &&
+    cardMayTakeFill(card, fields)
+  ) {
+    const filled = await planFillOnAnswer(ctx, card, fields.playerIds, cache.fill);
+    if (filled && filled.length > 0) {
+      fields = { ...fields, teamOnCardIds: filled };
+      teamFillCheck = { kind: "teamFill", teamIds: filled, reason: "career" };
+    }
+  }
   const playersChanged =
     !sameList(card.playerIds ?? [], fields.playerIds) ||
     !sameList(
@@ -352,6 +379,14 @@ export async function writeNameChange(
   if (teamsChanged && (card.tidyChecks ?? []).some((c) => c.kind === "teamFill")) {
     const kept = (card.tidyChecks ?? []).filter((c) => c.kind !== "teamFill");
     patch.tidyChecks = kept.length > 0 ? kept : undefined;
+  }
+  // The note of the fill this call just made (after the clearing above, which
+  // is about a team changed by hand).
+  if (teamFillCheck) {
+    patch.tidyChecks = [
+      ...(patch.tidyChecks ?? card.tidyChecks ?? []).filter((c) => c.kind !== "teamFill"),
+      teamFillCheck,
+    ].slice(-TIDY_CHECKS_CAP);
   }
   const next: Card = { ...card, ...patch } as Card;
 

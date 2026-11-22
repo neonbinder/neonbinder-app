@@ -715,9 +715,19 @@ describe("parsePublishedChecklist — collector review S3: counts and subjects t
       ].join("\n"),
     );
     expect(out.skipped).toEqual([]);
-    expect(out.rows).toEqual(
-      ["1", "2", "3", "4", "5", "6", "7"].map((number) => ({ number, players: [], teams: [] })),
-    );
+    // NEO-645 (S3b): a "Checklist" row keeps the printed word as the card's own
+    // name and says No Team (a checklist card shows no team). The team cards and
+    // team leaders name a team or a group, so they keep neither.
+    const checklist = { players: [], teams: [], noTeam: true };
+    expect(out.rows).toEqual([
+      { number: "1", ...checklist, subject: "Checklist 1-100" },
+      { number: "2", players: [], teams: [] },
+      { number: "3", players: [], teams: [] },
+      { number: "4", players: [], teams: [] },
+      { number: "5", players: [], teams: [] },
+      { number: "6", players: [], teams: [] },
+      { number: "7", ...checklist, subject: "Checklist" },
+    ]);
   });
 
   it("a not-a-person subject keeps the team after the dash, still with no player", () => {
@@ -730,7 +740,7 @@ describe("parsePublishedChecklist — collector review S3: counts and subjects t
     expect(out.skipped).toEqual([]);
     expect(out.rows).toEqual([
       { number: "34", players: [], teams: [] },
-      { number: "35", players: [], teams: [] },
+      { number: "35", players: [], teams: [], noTeam: true, subject: "Checklist 1-100" },
     ]);
   });
 

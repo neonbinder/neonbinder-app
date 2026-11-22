@@ -218,6 +218,10 @@ const GOLDEN_QUEUE: Array<[string, string, string, string | null, string | null,
   ["team", "Pending Team Tie Home", "pending", null, null, 0],
   ["team", "Pending Team Z", "pending", null, null, 0],
   ["team", "St. Louis Browns", "ready", "careerTeam", null, 0],
+  // NEO-645 (S3a): the one deliberate departure from origin/main. A card that
+  // prints "Dual Name" as its player AND its team is a team card, so the gate
+  // answers the player name "Not a player" itself (a ready row, no lookup).
+  ["player", "Dual Name", "ready", null, null, 0],
 ];
 const GOLDEN_TITLE_CONTEXT = {
   manufacturerBrandUnknown: false,
@@ -314,8 +318,13 @@ describe("resolveChecklistEntities on the representative fixture equals origin/m
     const sportId = await node(t, { level: "sport", value: "Baseball" });
     const p = await product(t, sportId, { year: "2024" });
     await skipRow(t, p.insert, "team", "Mirror Name");
-    const result = await gate(t, p.insert, sportId, [card(1, ["Mirror Name"], ["Mirror Name"])]);
-    expect(result.unknownPlayers).toEqual(["Mirror Name"]);
+    // Two cards: the name as a person on one, as a team on the other. (On ONE
+    // card it is a team card's own name and is ruled out as a player: S3a.)
+    const result = await gate(t, p.insert, sportId, [
+      card(1, ["Mirror Name"], []),
+      card(2, ["Someone Else"], ["Mirror Name"]),
+    ]);
+    expect(result.unknownPlayers).toContain("Mirror Name");
     expect(result.unknownTeams).toEqual([]);
   });
 });

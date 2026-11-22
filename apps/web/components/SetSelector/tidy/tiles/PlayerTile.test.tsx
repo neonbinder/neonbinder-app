@@ -33,8 +33,12 @@ vi.mock("convex/react", () => ({
   useConvex: () => ({ query: vi.fn() }),
 }));
 
+const linkSearchProps: Array<Record<string, unknown>> = [];
 vi.mock("../../EntityLinkSearch", () => ({
-  default: ({ kind, onSelect, onCancel }: { kind: string; onSelect: (id: string, n: string) => void; onCancel: () => void }) => (
+  default: (props: { kind: string; onSelect: (id: string, n: string) => void; onCancel: () => void }) => {
+    linkSearchProps.push(props);
+    const { kind, onSelect, onCancel } = props;
+    return (
     <div>
       <button type="button" onClick={() => onSelect("player-9", "Someone")}>
         {`Pick a ${kind}`}
@@ -43,7 +47,8 @@ vi.mock("../../EntityLinkSearch", () => ({
         Cancel linking
       </button>
     </div>
-  ),
+    );
+  },
 }));
 
 import { AnsweredProvider } from "../answered";
@@ -114,6 +119,7 @@ function renderTile(
 }
 
 beforeEach(() => {
+  linkSearchProps.length = 0;
   for (const k of Object.keys(queryResults)) delete queryResults[k];
   for (const k of Object.keys(mutations)) delete mutations[k];
   queryResults["players.nameFragmentCheck"] = { isFragment: false };
@@ -547,5 +553,179 @@ describe("PlayerTile", () => {
       expect(screen.getByRole("button", { name: "Change player Jackson Merrill" }).textContent).toBe("Change player");
       expect(screen.getByRole("button", { name: "Change player Juan Soto" })).toBeTruthy();
     });
+  });
+});
+
+describe("PlayerTile: a near spelling (NEO-645 S2)", () => {
+  const near = {
+    _id: "player-7",
+    name: "Jackson Holliday",
+    distance: 1,
+    teamName: "Baltimore Orioles",
+    fromYear: 2024,
+  };
+  const holiday = () =>
+    context({
+      names: [
+        printedName({
+          nameNormalized: "holiday jackson",
+          printed: "Jackson Holiday",
+          row: nameRow({ name: "Jackson Holiday" }),
+        }),
+      ],
+    });
+  const renderHoliday = () =>
+    renderTile({
+      row: card({ pendingPlayerNames: ["Jackson Holiday"] }),
+      ctx: holiday(),
+      items: [{ level: "fix", kind: "playerName", names: ["Jackson Holiday"] }],
+    });
+
+  it("offers 'Did you mean {name} ({team} {years})?' above Add as new player, which goes quiet", () => {
+    queryResults["players.nearMatches"] = [];
+    queryResults["players.didYouMean"] = [near];
+    renderHoliday();
+    const buttons = screen.getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent);
+    const didYouMean = "Did you mean Jackson Holliday (Baltimore Orioles 2024–)?";
+    expect(screen.getByRole("button", { name: didYouMean })).toBeTruthy();
+    expect(buttons.indexOf(didYouMean)).toBeLessThan(buttons.indexOf("Add as new player"));
+    // Not the green primary any more: the outline paint (a clear fill), as
+    // 'Add as new player anyway' has.
+    const add = screen.getByRole("button", { name: "Add as new player" });
+    expect(add.style.getPropertyValue("--nb-fill")).toBe("transparent");
+  });
+
+  it("pressing it links the player like a pick, and links nothing before that", async () => {
+    queryResults["players.nearMatches"] = [];
+    queryResults["players.didYouMean"] = [near];
+    renderHoliday();
+    expect(mutation("tidyNames.answerName")).not.toHaveBeenCalled();
+    expect(mutation("tidyNames.createPlayer")).not.toHaveBeenCalled();
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Did you mean Jackson Holliday (Baltimore Orioles 2024–)?" })),
+    );
+    expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
+      cardId: CARD,
+      kind: "player",
+      name: "Jackson Holiday",
+      answer: { kind: "linkPlayer", playerId: "player-7" },
+    });
+  });
+
+  it("with nothing near, 'Add as new player' stays the primary and no suggestion shows", () => {
+    queryResults["players.nearMatches"] = [];
+    queryResults["players.didYouMean"] = [];
+    renderHoliday();
+    expect(screen.queryByRole("button", { name: /^Did you mean/ })).toBeNull();
+    const add = screen.getByRole("button", { name: "Add as new player" });
+    expect(add.style.getPropertyValue("--nb-fill")).not.toBe("transparent");
+  });
+
+  it("a near player with no stint on file reads without the parentheses", () => {
+    queryResults["players.nearMatches"] = [];
+    queryResults["players.didYouMean"] = [{ _id: "player-8", name: "Jackson Holliday", distance: 1 }];
+    renderHoliday();
+    expect(screen.getByRole("button", { name: "Did you mean Jackson Holliday?" })).toBeTruthy();
+  });
+
+  it("'Link to existing…' opens its search with the printed name typed, ranked for this card", async () => {
+    queryResults["players.nearMatches"] = [];
+    queryResults["players.didYouMean"] = [];
+    renderHoliday();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Link to existing…" })));
+    const props = linkSearchProps[linkSearchProps.length - 1];
+    expect(props.initialQuery).toBe("Jackson Holiday");
+    expect(props.contextCardId).toBe(CARD);
+  });
+});
+
+describe("PlayerTile: the set-history suggestion leads (NEO-645 item 8)", () => {
+  const sethistory = {
+    playerId: "player-5",
+    name: "Kendry Morales",
+    sportId: SPORT,
+    sportValue: "Football",
+    reason: "setHistory" as const,
+  };
+  const morales = (preselect: Record<string, unknown>) =>
+    context({
+      names: [
+        printedName({
+          nameNormalized: "kendry morales",
+          printed: "Kendry Morales",
+          row: nameRow({ name: "Kendry Morales", enrichment: { preselect } }),
+        }),
+      ],
+    });
+  const renderMorales = (preselect: Record<string, unknown>) =>
+    renderTile({
+      row: card({ pendingPlayerNames: ["Kendry Morales"] }),
+      ctx: morales(preselect),
+      items: [{ level: "fix", kind: "playerName", names: ["Kendry Morales"] }],
+    });
+  const line = "Another card in this set is already linked to Kendry Morales (Football). Same one?";
+
+  it("shows the line and its link when there is no namesake", () => {
+    queryResults["players.nearMatches"] = [];
+    renderMorales(sethistory);
+    expect(screen.getByText(line)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Link to Kendry Morales (Football)" })).toBeTruthy();
+  });
+
+  it("still shows it, first, when an exact namesake is on file; his plain link follows", () => {
+    queryResults["players.nearMatches"] = [
+      { _id: "player-6", name: "Kendry Morales", confidence: "exact", birthYear: 1983 },
+    ];
+    renderMorales(sethistory);
+    expect(screen.getByText(line)).toBeTruthy();
+    const names = screen.getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent);
+    const lead = names.indexOf("Link to Kendry Morales (Football)");
+    const plain = names.indexOf("Link to Kendry Morales");
+    expect(lead).toBeGreaterThanOrEqual(0);
+    expect(plain).toBeGreaterThan(lead);
+  });
+
+  it("the plain-exact behaviour is untouched for any other reason: the suggestion stays hidden", () => {
+    queryResults["players.nearMatches"] = [
+      { _id: "player-6", name: "Kendry Morales", confidence: "exact", birthYear: 1983 },
+    ];
+    renderMorales({ ...sethistory, reason: "onlyNamesake" });
+    expect(screen.queryByText(/Same one\?/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Link to Kendry Morales" })).toBeTruthy();
+  });
+});
+
+describe("PlayerTile: a name ruled out because it is the card's team (NEO-645 S3a)", () => {
+  const ruledOut = (answer: Record<string, unknown>) =>
+    context({
+      names: [
+        printedName({
+          nameNormalized: "new york yankees",
+          printed: "New York Yankees",
+          row: nameRow({ name: "New York Yankees", answer }),
+        }),
+      ],
+    });
+  const render = (answer: Record<string, unknown>) =>
+    renderTile({ row: card({ pendingPlayerNames: [] }), ctx: ruledOut(answer), items: [] });
+
+  it("says it is not a player, carries the purple note, and Change player undoes it", async () => {
+    render({ kind: "notEntity", by: "auto", autoReason: "sameAsTeam" });
+    expect(screen.getByText("is not a player.", { exact: false })).toBeTruthy();
+    expect(screen.getByRole("note").textContent).toBe(
+      "Ruled out for you: this card prints the same name as its team",
+    );
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Change player" })));
+    expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
+      cardId: CARD,
+      kind: "player",
+      name: "New York Yankees",
+      answer: { kind: "clear" },
+    });
+  });
+
+  it("an operator's own 'Not a player' carries no note", () => {
+    render({ kind: "notEntity", by: "operator" });
+    expect(screen.queryByRole("note")).toBeNull();
   });
 });
