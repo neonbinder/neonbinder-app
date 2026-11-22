@@ -587,7 +587,7 @@ export async function passCareerCheck(page: Page): Promise<void> {
  * Save). Every career line is answered "Keep as is" first
  * (`keepEveryCareerLine`; NEO-591: its default, "Add to career", writes the
  * card's team to the player's career); every teams line stays on its default
- * ("Leave for later").
+ * (its pre-fill when NB's rules settle one, else "Leave for later").
  * For a spec whose feature is a LATER step (the titles step) and which reads
  * where it is from the subtitle; a spec that only needs Save calls
  * `advanceToSave`.

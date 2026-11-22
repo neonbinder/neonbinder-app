@@ -27,3 +27,12 @@ once the chip gains " · years". Write absences as `^Team( · [^—]+)? — `.
   right after the exact "N need you" pill (the pill alone cannot tell: queued cards are not
   in it). Related: [[patterns_fake_bsc_faults_and_the_call_gate]],
   [[patterns_copy_absence_keys_on_the_refusal_clause]].
+
+**Read the Teams step only once it has loaded.** Next is NOT held while the section fetches
+its suggestions; its one sr-only status reads `Checking teams…` then `Teams suggested` (empty
+when nothing was asked). Gate: `wizard.getByRole("status").filter({ hasText:
+/^(Checking teams…|Teams suggested)$/ })` → `toHaveText("Teams suggested")`. Pressing Next
+earlier saves lines on "Leave for later" that the pre-fill would have filled, so a queued count
+reads high. Count preselected team chips with `getByRole("radio", { name: /^(?!Leave for later
+— |No team on this card — )/, checked: true })`. On a no-set-team BSC fixture whose lookup
+failed, seed players still pre-fill (NEO-639): measure which on a fresh seed, never assume none.
