@@ -61,7 +61,7 @@
 // grid one column instead of two). STEP 3 asserts that one difference with
 // `isMobile`; nothing else branches.
 //
-// R3 - `checklist-title-length-limits-and-fixer` owns the 80-character refusal
+// R3 - `checklist-title-length-refused-and-trimmed-on-the-listing-title-tile` owns the 80-character refusal
 // of a TYPED title and the variation cap; `inserts-1996-score-one-nb-set-two-
 // bsc-sources` drives the wizard's "Set name in titles" box on a real fetch.
 // This spec owns the cut order through Regenerate, the drawer's note, the

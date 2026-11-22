@@ -1,22 +1,49 @@
 // Origin: .maestro/flows/set-selector/checklist-title-length-limits-and-fixer.yaml (Maestro suite retired in NEO-341; see git history)
+//
+// R1: listing length limits. The card drawer refuses a title over 80 and warns
+// on a variation over 65; the card then waits in the Tidy Up walk (NEO-645),
+// where its "Listing title" tile shows the 80 meter, keeps a regenerated title
+// that cannot fit in an editor that refuses it, and trims the variation.
+//
+// Fixture: a per-worker hand-made set (R7a, `tlf-` in SET-REGISTRY.md) with
+// one card. Desktop and mobile: one spec; the only branch is the phone's
+// wrapping check (NEO-535), keyed on `isMobile`.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom } from "../../support/set-builder";
 import { tidyUpName } from "../../support/wizard";
 import { expectNoOverCapLook, expectOverCapLook } from "../../support/theme";
+import {
+  expectCardsLeft,
+  finishTidyWalk,
+  mustFixLine,
+  needsYouPill,
+  openTidyWalk,
+  saveAndNext,
+  tidyFooterButton,
+  tidyTile,
+  tidyWalk,
+} from "../../support/tidy-walk";
 
 test(
-  "Listing length limits — an over-long card title is refused, and an over-long variation is walked to a fix",
+  "Listing length limits — an over-long card title is refused, and the Tidy Up walk's Listing title tile meters, regenerates and trims it",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env, isMobile }) => {
     const id = env.ATTEMPT_ID;
-    const num = `101-${id}`;
+    // Short single-token names (R7a, `tlf` in SET-REGISTRY.md): the whole generated title,
+    // sport included, fits 80 on every worker (11 runs the longest ATTEMPT_TOKEN), so
+    // nothing but the variation below is ever left out. The set is per attempt, so
+    // its one card can carry a plain number.
+    const num = "101";
     const team = `TLF${env.ATTEMPT_TOKEN}`;
-    const set = `tlf-${env.WORKER_INDEX}-${id}`;
+    // `tlfset`, never `tlf` + the token: a set name equal to the team's (TLF + the token,
+    // case-folded) is a repeat the generator leaves out of the title.
+    const set = `tlfset${env.ATTEMPT_TOKEN}`;
     const edit = page.getByRole("button", { name: new RegExp(`^Edit card ${num}(, .*)?$`) });
     const cardName = page.getByRole("textbox", { name: "Card name" });
     const cardTitle = page.getByRole("textbox", { name: "Card title", exact: true });
+    // NEO-645: an over-long variation is BLUE (worth a check), never pink: the row's mark says so.
     const attentionBadge = page.getByRole("img", {
-      name: new RegExp(`^Card ${num}(, .*)? needs attention: variation text is over the 65-character limit$`),
+      name: new RegExp(`^Card ${num}(, .*)? is worth a check: (.*; )?variation text is over the 65-character limit(; .*)?$`),
     });
     const drawer = page.getByRole("dialog", { name: /^Card #/ });
     const generated = new RegExp(`^2024 Topps .*#${num} ${team} Baseball$`);
@@ -178,105 +205,119 @@ test(
     await page.getByRole("button", { name: "Done editing card" }).click();
     await expect(cardName).toBeHidden();
 
-    // The row carries an attention badge, and the checklist counts it.
+    // The row carries the blue mark, and the checklist counts the card.
     await expect(attentionBadge).toBeVisible();
-    // The header's amber pill (NEO-335): singular for one card, and its visible
-    // text is its accessible name, so the exact name is the exact count.
-    const pill = page.getByRole("button", { name: "1 needs you", exact: true });
-    await expect(pill).toBeVisible();
-    await expectAccessible(page, { label: "Checklist with an attention badge for an over-long variation" });
+    // The header's pill (NEO-335): singular for one card, and its visible text
+    // is its accessible name, so the exact name is the exact count.
+    await expect(needsYouPill(page)).toHaveAccessibleName("1 needs you");
+    await expectAccessible(page, { label: "Checklist with a worth-a-check mark for an over-long variation" });
 
-    // ── Walk it to a fix: opened by hand from the pill (the walker never opens itself) ──
-    await pill.click();
+    // ── NEO-645: the walk, opened by hand from the pill ──
     // NEO-497: named for the checklist it tidies (year and set; the checklist is
-    // the Base row under Insert, and the walker's name drops a trailing "Base").
+    // the Base row under Insert, and the walk's name drops a trailing "Base").
     // The listing title does not: under an Insert type a row called Base is an
     // ordinary insert (NEO-609), so its name stays in the title like any level's.
-    const fixer = page.getByRole("dialog", { name: tidyUpName({ year: "2024", set }), exact: true });
-    await expect(fixer).toBeVisible();
-    // The walker and the wizard share title and header; its own Skip control
-    // says which this is, and the subtitle names the question (also the
-    // progress bar's value text since NEO-467). That this card is the sitting's
-    // only one is proved by Save going straight to All clear below.
-    await expect(fixer.getByRole("button", { name: `Skip for now, card ${num}` })).toBeVisible();
-    await expect(fixer.getByRole("progressbar", { name: "Wizard progress" })).toHaveAttribute(
-      "aria-valuetext",
-      "Card titles",
-    );
-    await expect(fixer.getByText("Card titles", { exact: true })).toBeVisible();
-    await expect(fixer.getByText("variation text is over the 65-character limit")).toBeVisible();
-    await expect(fixer.getByRole("textbox", { name: `Card title for #${num}` })).toHaveValue(generated);
-    // NEO-606: the walker's variation box is pink while it is past 65 (advice,
-    // never invalid), and lets go the moment it is trimmed to 65 (below).
-    const fixerVariation = fixer.getByRole("textbox", { name: `Card variation for #${num}` });
-    const fixerVariationNote = fixer.getByText(/a marketplace that caps this field will reject the value/);
-    await expect(fixerVariation).toHaveValue(variationText);
-    await expectOverCapLook(fixerVariation, fixerVariationNote);
-    await expect(fixerVariation).not.toHaveAttribute("aria-invalid", "true");
-    await expectAccessible(page, { within: fixer, label: "Attention walker, over-long variation" });
+    await openTidyWalk(page, { title: tidyUpName({ year: "2024", set }) });
+    await expectCardsLeft(page, 1);
+    const walk = tidyWalk(page);
+    const titleTile = tidyTile(page, "Listing title");
+    // Blue (should check), not pink: the stored title fits, only the variation is over.
+    await expect(titleTile).toHaveAccessibleDescription("To check");
+    // A title that fits is shown as text with its meter, not opened for editing.
+    const shownTitle = titleTile.getByText(generated);
+    await expect(shownTitle).toBeVisible();
+    const stored = (await shownTitle.textContent()) ?? "";
+    expect(stored.length, "the stored title fits the 80 cap").toBeLessThanOrEqual(80);
+    await expect(titleTile.getByText(`${stored.length}/80`, { exact: true })).toBeVisible();
+    const titleBox = titleTile.getByRole("textbox", { name: `Card title for #${num}`, exact: true });
+    await expect(titleBox).toHaveCount(0);
+    await expect(titleTile.getByRole("button", { name: "Edit card title", exact: true })).toBeVisible();
+    // What the stored title left out (NEO-535), read off the tile.
+    const leftOut = titleTile.getByText(`Left out to fit: ${variationText}`, { exact: true });
+    await expect(leftOut).toBeVisible();
+    // The variation over 65 gets its trim editor, pink with its note (advice, never invalid).
+    const trim = titleTile.getByRole("textbox", { name: "Trim the variation", exact: true });
+    const trimNote = titleTile.getByText(/a marketplace that caps this field will reject the value/);
+    await expect(trim).toHaveValue(variationText);
+    await expectOverCapLook(trim, trimNote);
+    await expect(trim).not.toHaveAttribute("aria-invalid", "true");
+    // Blue never holds the card: Save & next is usable and no "to fix" line shows (R2).
+    await expect(tidyFooterButton(page, "saveAndNext", { usable: true })).toBeVisible();
+    await expect(mustFixLine(page)).toHaveCount(0);
+    await expectAccessible(page, { within: walk, label: "Tidy Up walk, Listing title tile with an over-long variation" });
 
-    // NEO-609: the variation is never cut, nor is the row's own name "Base" (an
-    // ordinary insert's name here). Regenerate builds the title with the saved
-    // variation in hand and makes every other cut (the type name, the team, the
-    // number, the sport), and with the 71-character variation it is still over
-    // 80 (about 100 characters, by the set name's length), so it is
-    // kept over the cap and says so. The "Left out to fit" note is read from
-    // the field's text and waits until the text fits: typed back to the stored
-    // title (which lacks the variation), the note names the variation, and the
-    // variation typed back in takes it off again. Regenerate asks twice over
-    // typed text.
-    const fixerTitle = fixer.getByRole("textbox", { name: `Card title for #${num}` });
-    const fixerRegenerate = fixer.getByRole("button", { name: "Regenerate card title" });
-    const fixerLeftOut = fixer.getByText(/^Left out to fit: /);
-    const fixerTooLong = fixer.getByText(
-      "Too long to list as-is. Trim it here, or shorten the set name for the whole row.",
-      { exact: true },
-    );
+    // ── Regenerate: the variation is never cut (NEO-609), so the rebuilt title is
+    // over 80. It is kept in an editor that refuses it, pink, with its meter
+    // saying how far over; nothing is saved. ──
+    const regenerateOnTile = titleTile.getByRole("button", { name: "Regenerate card title", exact: true });
     const regeneratedOver = `2024 Topps ${set} Base ${variationText}`;
-    const stored = await fixerTitle.inputValue();
-    await fixerRegenerate.click();
-    await expect(fixerTitle).toHaveValue(regeneratedOver);
-    // What the rebuilt title was built from stays on show beside it.
-    await expect(fixer.getByRole("list", { name: "Title built from" })).toBeVisible();
-    await expect(fixerTitle).toHaveAttribute("aria-invalid", "true");
-    await expect(fixerTooLong).toBeVisible();
-    await expect(fixerLeftOut).toHaveCount(0);
-    await expectAccessible(page, { within: fixer, label: "Attention walker, regenerated title kept over 80 by its variation" });
-    await fixerTitle.fill(stored);
-    await expect(fixerTitle).not.toHaveAttribute("aria-invalid", "true");
-    await expect(fixerLeftOut).toHaveText(`Left out to fit: ${variationText}`);
-    // A line break typed or pasted reads as a space (one line, NEO-535).
-    await fixerTitle.fill(`${stored}\n${variationText}`);
-    await expect(fixerTitle).toHaveValue(`${stored} ${variationText}`);
-    await expect(fixerLeftOut).toHaveCount(0);
-    await fixerRegenerate.click();
-    await expect(fixer.getByText("Regenerate again to replace the title you have typed.")).toBeVisible();
-    await fixerRegenerate.click();
-    await expect(fixerTitle).toHaveValue(regeneratedOver);
-    // Over the cap, the walker will not save: the stored title goes back in.
-    await fixerTitle.fill(stored);
-    await expect(fixerLeftOut).toHaveText(`Left out to fit: ${variationText}`);
+    expect(regeneratedOver.length, "the fixture's rebuilt title is over the cap").toBeGreaterThan(80);
+    const overLine = titleTile.getByText("Over the limit, so it opens ready to edit.", { exact: true });
+    await regenerateOnTile.click();
+    await expect(titleBox).toHaveValue(regeneratedOver);
+    await expect(titleBox).toHaveAttribute("aria-invalid", "true");
+    await expect(overLine).toBeVisible();
+    await expect(titleTile.getByText(`${regeneratedOver.length}/80`, { exact: true })).toBeVisible();
+    await expect(titleTile.getByText(`${regeneratedOver.length - 80} over`, { exact: true })).toBeVisible();
+    await expect(titleTile.getByRole("button", { name: "Save title", exact: true })).toBeDisabled();
+    await expectAccessible(page, { within: walk, label: "Tidy Up walk, regenerated title kept over 80 by its variation" });
 
-    await expect(fixer.getByRole("button", { name: /Save \(Enter\)/ })).toBeVisible();
-    // Trimmed to 65, the variation fits: the note and the pink go.
-    await fixerVariation.fill(variationText.slice(0, 65));
-    await expect(fixerVariationNote).toBeHidden();
-    await expect(fixer.getByRole("button", { name: /Save \(Enter\)/ })).toBeVisible();
-    await expectNoOverCapLook(fixerVariation);
-    await fixerVariation.clear();
-    await expect(fixerVariationNote).toBeHidden();
-    await fixer.getByRole("button", { name: /Save \(Enter\)/ }).click();
+    // Typed back to the stored title, it fits and says so; the note names what was left out.
+    await titleBox.fill(stored);
+    await expect(titleBox).not.toHaveAttribute("aria-invalid", "true");
+    await expect(titleTile.getByText("Fits now. Enter saves it.", { exact: true })).toBeVisible();
+    await expect(overLine).toHaveCount(0);
+    await expect(leftOut).toBeVisible();
+    // A line break typed or pasted reads as a space (one line, NEO-535), and puts it back over.
+    await titleBox.fill(`${stored}\n${variationText}`);
+    await expect(titleBox).toHaveValue(`${stored} ${variationText}`);
+    await expect(overLine).toBeVisible();
+    // Regenerate over typed text asks once more first.
+    await regenerateOnTile.click();
+    await expect(titleTile.getByText("Regenerate again to replace the title you have typed.", { exact: true })).toBeVisible();
+    await expect(titleBox).toHaveValue(`${stored} ${variationText}`);
+    await regenerateOnTile.click();
+    await expect(titleBox).toHaveValue(regeneratedOver);
+    // The stored title back in, Enter saves it and the editor closes.
+    await titleBox.fill(stored);
+    await titleBox.press("Enter");
+    await expect(titleBox).toHaveCount(0);
+    await expect(titleTile.getByRole("button", { name: "Edit card title", exact: true })).toBeVisible();
+    await expect(shownTitle).toHaveText(stored);
 
-    await expect(fixer.getByText(/All clear.*nothing on this checklist needs attention/)).toBeVisible();
-    // No "fixed" count any more (NEO-335 Phase 2): the walker has left the card,
-    // and that the save WROTE is proved on the grid below, where the badge is gone.
-    await expect(fixer.getByRole("button", { name: `Skip for now, card ${num}` })).toBeHidden();
-    await expectAccessible(page, { within: fixer, label: "Attention walker, all clear" });
-    await fixer.getByRole("button", { name: /Done \(Esc\)/ }).click();
-    await expect(fixer).toBeHidden();
+    // ── The variation trimmed to 65: the note and the pink go, and it saves ──
+    await trim.fill(variationText.slice(0, 65));
+    await expect(trimNote).toHaveCount(0);
+    await expect(titleTile.getByText("65/65", { exact: true })).toBeVisible();
+    await expectNoOverCapLook(trim);
+    await titleTile.getByRole("button", { name: "Save variation", exact: true }).click();
+    await expect(trim).toHaveValue(variationText.slice(0, 65));
+    // The only card on the checklist: no other card has the same variation to offer the trim to.
+    await expect(titleTile.getByRole("button", { name: /^Apply to the .* with the same variation$/ })).toHaveCount(0);
 
-    await expect(attentionBadge).toBeHidden();
-    await expect(page.getByRole("button", { name: /^[0-9]+ needs? you$/ })).toBeHidden();
+    // ── Save & next: the card's blue is seen and the walk ends ──
+    await saveAndNext(page);
+    await expect(walk.getByText("All tidy. Nothing on this checklist needs you.", { exact: true })).toBeVisible();
+    await expectAccessible(page, { within: walk, label: "Tidy Up walk, all tidy" });
+    // The walk's place is in the address: Back steps to the card, Forward to the end again.
+    await page.goBack();
+    await expect(page).toHaveURL(/[?&]tidy=(?!done)/);
+    await expect(titleTile).toBeVisible();
+    await expect(walk.getByText("All tidy. Nothing on this checklist needs you.", { exact: true })).toHaveCount(0);
+    await page.goForward();
+    await expect(walk.getByText("All tidy. Nothing on this checklist needs you.", { exact: true })).toBeVisible();
+    await finishTidyWalk(page);
+
+    // The save WROTE: the row's mark and the pill are gone, the card stays.
     await expect(page.getByText(`#${num}`, { exact: true })).toBeVisible();
+    await expect(attentionBadge).toHaveCount(0);
+    await expect(needsYouPill(page)).toHaveCount(0);
+    // Read back from the card, not the tile's draft: the trim was written (Save & next only
+    // marks blue seen, so the gone mark alone would not prove it).
+    await edit.click();
+    // (The save trims: the 65th character is a space.)
+    await expect(variation).toHaveValue(variationText.slice(0, 65).trimEnd());
+    await page.getByRole("button", { name: "Done editing card" }).click();
+    await expect(cardName).toBeHidden();
   },
 );
