@@ -176,6 +176,13 @@ export type AttentionSetContext = {
   sportId?: Id<"selectorOptions">;
   /** NEO-331: the checklist's own selectorOptions row (the set worked on). */
   contextOptionId?: Id<"selectorOptions">;
+  /**
+   * NEO-639 (decision A): the checklist's own team default is "No Team"
+   * (`setTeamDefaultKind(row) === "noTeam"`). The set has answered for every
+   * card, so a fixer offers a career team but never preselects one over it —
+   * the same rule the wizard's Teams step follows.
+   */
+  setNoTeam?: boolean;
 };
 
 export const AttentionSportContext = createContext<AttentionSetContext>({});
@@ -186,6 +193,10 @@ export function useAttentionSportId(): Id<"selectorOptions"> | undefined {
 
 export function useAttentionContextOptionId(): Id<"selectorOptions"> | undefined {
   return useContext(AttentionSportContext).contextOptionId;
+}
+
+export function useAttentionSetNoTeam(): boolean {
+  return useContext(AttentionSportContext).setNoTeam === true;
 }
 
 /**

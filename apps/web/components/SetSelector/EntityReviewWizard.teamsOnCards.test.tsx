@@ -221,6 +221,22 @@ describe("TeamsOnCardsSection on the wizard's teams step", () => {
     expect(lastAnswers(onTeamAnswersChange)).toEqual([{ teams: ["Reds"] }, undefined]);
   });
 
+  it("NEO-639: under the set's own No Team (setNoTeam) the same line is offered with the player's years, not pre-filled", () => {
+    const { onTeamAnswersChange } = renderWizard(
+      [{ cardNumber: "1", cardName: "Rookie Card", players: ["Rookie Guy"] }],
+      { setNoTeam: true },
+    );
+    const group = screen.getByRole("radiogroup", { name: "Team for Rookie Guy" });
+    const reds = within(group).getByRole("radio", {
+      name: "Cincinnati Reds · 1984–present — Rookie Guy",
+    });
+    expect(reds.getAttribute("aria-checked")).toBe("false");
+    expect(
+      within(group).getByRole("radio", { name: "Leave for later — Rookie Guy" }).getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(lastAnswers(onTeamAnswersChange)).toEqual([undefined]);
+  });
+
   it("asks the server about known players; a tie stays unselected and defaults to later", () => {
     serverAnswer = (p) =>
       p.name === "Johnny Bench"

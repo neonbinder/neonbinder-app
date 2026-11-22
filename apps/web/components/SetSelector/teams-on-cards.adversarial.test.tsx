@@ -2,10 +2,11 @@
  * NEO-335 Phase 2 — adversarial pass over `teams-on-cards.ts`.
  *
  * Product invariant 8 is the target: a listing-named team that NB could not
- * resolve (and the operator has not ruled "not a team"), or a failed lookup,
- * holds back EVERY pre-fill — batch, stored, career, preference, multi-player
- * union — and a name ruled "not a team" holds back none. Then the caps and the
- * per-card override.
+ * resolve (and the operator has not ruled "not a team") holds back EVERY
+ * pre-fill — batch, stored, career, preference, multi-player union — and a
+ * name ruled "not a team" holds back none. A failed lookup is missing data,
+ * not a claim (NEO-639): it holds back nothing on its own. Then the caps and
+ * the per-card override.
  *
  * `.test.tsx` because `.test.ts` is not collected under components/.
  */
@@ -105,22 +106,22 @@ function build(
 const BENCH = "name:bench johnny";
 const labels = (g: TeamsGroup) => g.refs.map((r) => r.label);
 
-describe("invariant 8 — a lookup that failed blocks EVERY pre-fill", () => {
+describe("invariant 8 (NEO-639) — a failed lookup is missing data, so EVERY pre-fill still runs", () => {
   const failed = (n: string, players: string[], teams?: string[]) =>
     card(n, players, teams, { teamLookup: "failed" });
 
-  test("a sibling's resolving team (batch) is offered, not pre-filled", () => {
+  test("a sibling's resolving team (batch) pre-fills the failed card", () => {
     const groups = build(
       [failed("1", ["Johnny Bench"]), card("2", ["Johnny Bench"], ["Reds"])],
       [],
       {},
     );
-    expect(groups[0].suggestion).toBeNull();
+    expect(groups[0].suggestion).toEqual(["name:reds"]);
     expect(labels(groups[0])).toEqual(["Reds"]);
-    expect(teamAnswersByCard(groups, {}, 2)).toEqual([undefined, undefined]);
+    expect(defaultChoice(groups[0])).toEqual({ kind: "teams", refKeys: ["name:reds"] });
   });
 
-  test("a created player's one-team career is offered, not pre-filled", () => {
+  test("a created player's one-team career pre-fills the failed card", () => {
     const rows = [
       row({
         kind: "player",
@@ -130,40 +131,47 @@ describe("invariant 8 — a lookup that failed blocks EVERY pre-fill", () => {
       }),
     ];
     const groups = build([failed("1", ["Rookie Guy"])], rows, {}, { setYear: 2025 });
-    expect(groups[0].suggestion).toBeNull();
+    expect(groups[0].suggestion).toEqual(["name:reds"]);
     expect(labels(groups[0])).toEqual(["Reds"]);
   });
 
-  test("a two-player union that would have pre-filled is held back as choices", () => {
+  test("a two-player union pre-fills both teams", () => {
     const cards = [failed("1", ["A Player", "B Player"])];
     const [a, b] = evidenceRequests(cards, []);
     const groups = build(cards, [], {
       [a.key]: answered(st(REDS, "Cincinnati Reds")),
       [b.key]: answered(st(YANKEES, "New York Yankees")),
     });
-    expect(groups[0].suggestion).toBeNull();
-    expect(labels(groups[0])).toEqual(["Cincinnati Reds", "New York Yankees"]);
-    expect(defaultChoice(groups[0])).toEqual({ kind: "later" });
+    expect(groups[0].suggestion).toEqual([teamIdKey(REDS), teamIdKey(YANKEES)]);
+    expect(answerForChoice(groups[0], defaultChoice(groups[0]))).toEqual({
+      teamIds: [REDS, YANKEES],
+    });
   });
 
-  test("a preferred-in-window answer is held back too (the rank breaks no tie here)", () => {
+  test("a preferred-in-window answer pre-fills, and the lower-ranked team stays an unselected choice", () => {
     const groups = build([failed("1", ["Johnny Bench"])], [], {
       [BENCH]: {
         answer: { tier: "preferredInWindow", teams: [st(REDS, "Cincinnati Reds", 0)] },
         candidates: [st(PHILLIES, "Philadelphia Phillies", 2)],
       },
     });
-    expect(groups[0].suggestion).toBeNull();
+    expect(groups[0].suggestion).toEqual([teamIdKey(REDS)]);
     expect(labels(groups[0])).toEqual(["Cincinnati Reds", "Philadelphia Phillies"]);
   });
 
-  test("a card with no players at all is held by it too (nothing to pre-fill, but the flag travels)", () => {
-    const groups = build([failed("1", [])]);
-    expect(groups[0].lookupFailed).toBe(true);
+  test("a failed card with no players shares the one no-players line with an answered one", () => {
+    const groups = build([
+      failed("1", []),
+      card("2", [], undefined, { teamLookup: "answered" }),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].cards.map((c) => c.index)).toEqual([0, 1]);
     expect(groups[0].suggestion).toBeNull();
+    // The flag that once travelled with the line is gone, not just false.
+    expect("lookupFailed" in groups[0]).toBe(false);
   });
 
-  test("failed beside answered for the same player: two lines, only the answered one pre-fills", () => {
+  test("failed beside answered for the same player: ONE line, pre-filled for every card", () => {
     const groups = build(
       [
         failed("1", ["Johnny Bench"]),
@@ -173,17 +181,50 @@ describe("invariant 8 — a lookup that failed blocks EVERY pre-fill", () => {
       [],
       { [BENCH]: answered(st(REDS, "Cincinnati Reds")) },
     );
-    expect(groups).toHaveLength(2);
-    expect(groups[0].cards.map((c) => c.index)).toEqual([0, 2]);
-    expect(groups[1].suggestion).not.toBeNull();
+    expect(groups).toHaveLength(1);
+    expect(groups[0].cards.map((c) => c.index)).toEqual([0, 1, 2]);
+    expect(groups[0].suggestion).toEqual([teamIdKey(REDS)]);
+    expect(teamAnswersByCard(groups, {}, 3)).toEqual([
+      { teamIds: [REDS] },
+      { teamIds: [REDS] },
+      { teamIds: [REDS] },
+    ]);
   });
 
   test("a lookup that ANSWERED with nothing (no team printed) is no claim: the pre-fill stands", () => {
     const groups = build([card("1", ["Johnny Bench"], undefined, { teamLookup: "answered" })], [], {
       [BENCH]: answered(st(REDS, "Cincinnati Reds")),
     });
-    expect(groups[0].lookupFailed).toBe(false);
     expect(groups[0].suggestion).toEqual([teamIdKey(REDS)]);
+  });
+
+  test("failed AND an unruled listed name: the listed name still holds the pre-fill back", () => {
+    const groups = build(
+      [failed("1", ["Johnny Bench"], ["Bulls"])],
+      [unruled("Bulls")],
+      { [BENCH]: answered(st(REDS, "Cincinnati Reds")) },
+    );
+    expect(groups[0].listedNames).toEqual(["Bulls"]);
+    expect(groups[0].suggestion).toBeNull();
+    expect(labels(groups[0])).toEqual(["Cincinnati Reds"]);
+    expect(defaultChoice(groups[0])).toEqual({ kind: "later" });
+  });
+
+  test("failed beside a checklist claim for the same player: two lines, the checklist one held back", () => {
+    const groups = build(
+      [
+        failed("1", ["Johnny Bench"]),
+        card("2", ["Johnny Bench"], ["Team Card"], { teamLookup: "checklist" }),
+      ],
+      [skipped("Team Card")],
+      { [BENCH]: answered(st(REDS, "Cincinnati Reds")) },
+    );
+    expect(groups).toHaveLength(2);
+    expect(groups[0].cards.map((c) => c.index)).toEqual([0]);
+    expect(groups[0].suggestion).toEqual([teamIdKey(REDS)]);
+    expect(groups[1].checklistClaim).toBe(true);
+    expect(groups[1].suggestion).toBeNull();
+    expect(teamAnswersByCard(groups, {}, 2)).toEqual([{ teamIds: [REDS] }, undefined]);
   });
 });
 

@@ -73,19 +73,31 @@ export { MAX_CARD_TEAMS };
  * gets his career unselected, longest stint first. Choices are ordered by
  * that preference rank, which never hides a team and never forces a pick.
  *
- * ## A listing's team claim holds the guess back (invariant 8)
+ * ## A data claim holds the guess back; missing data does not (invariant 8)
  *
- * "A data claim holds back a guess; it never makes one." A card in the
- * section whose listing printed a team name NB could not resolve and the
- * operator has NOT ruled on, or whose team lookup FAILED (the listing may
- * name a team we never heard), gets NO pre-fill from any rule — batch,
- * stored rows, career, preference. The line comes up on "Leave for later";
- * the listed name is SHOWN (`listedNames`), the existing NB teams it names
- * are offered first as choices (`teamNameEvidence`), and the evidence's
- * teams follow as unselected choices. The listing's string itself is never
- * written as NB data: a chip is always an existing team (by id), a team
- * staged in this wizard, or one the operator found or created with
- * "Other team…".
+ * "A data claim holds back a guess; it never makes one." Three things hold a
+ * line's pre-fill back, so it gets NONE from any rule — batch, stored rows,
+ * career, preference — and comes up on "Leave for later" with every team
+ * offered unselected:
+ *  - the listing printed a team name NB could not resolve and the operator
+ *    has NOT ruled on. The listed name is SHOWN (`listedNames`), the existing
+ *    NB teams it names are offered first as choices (`teamNameEvidence`), and
+ *    the evidence's teams follow;
+ *  - the operator's published checklist settled the card's team
+ *    (`teamLookup: "checklist"`, NEO-478);
+ *  - the node's own default is a set-level "No Team" (`setNoTeam`, NEO-639
+ *    decision A): a card under it reaches this step only because the commit
+ *    will not stamp it, and the set's answer is not overruled by a guess.
+ *
+ * A lookup that never answered (`teamLookup: "failed"`: the call failed, or
+ * the fetch stopped asking past its cap) is NOT a claim (NEO-639). The data
+ * is missing, so nothing stands to hold back: the card gets the normal
+ * pre-fill from NB's own evidence, and shares a line with the answered cards
+ * of the same player. The operator still confirms every line before the save.
+ *
+ * The listing's string itself is never written as NB data: a chip is always
+ * an existing team (by id), a team staged in this wizard, or one the
+ * operator found or created with "Other team…".
  *
  * A name the operator ruled "not a team" (its step skipped) in this sitting
  * is no longer a claim (Jason, NEO-335 Phase 2): the operator has already
@@ -93,9 +105,24 @@ export { MAX_CARD_TEAMS };
  * falls back to the normal rules. The same holds for a name an EARLIER save
  * of this set skipped: the set's skip records are that answer, kept.
  *
- * Never a guess: a tie stays unselected, and a card number is never a key —
- * a card is identified by its POSITION in the preview, which is the only
- * identity it has until it is saved (product invariant 7).
+ * Never a guess: a tie stays unselected, a lone chip is selected only when
+ * it IS the pre-fill (never for being alone), and a card number is never a
+ * key — a card is identified by its POSITION in the preview, which is the
+ * only identity it has until it is saved (product invariant 7).
+ *
+ * ## The years on a chip (NEO-639)
+ *
+ * Every chip that is NOT part of the line's pre-fill (`suggestion`) carries
+ * the player's years with that team (`TeamRef.years`, `stintYearsText`), so
+ * two unselected choices can be told apart. Decided by the DEFAULT, not the
+ * operator's current pick, so a label never changes under a toggle. One
+ * player: "2024–2026" (stints at one team merged when they overlap or touch,
+ * oldest first, joined ", "; one season "2026"; an open stint
+ * "2024–present"). Several: "Johnny Bench 1967–1983; Pete Rose 1963–1978",
+ * only the players with a dated stint there, in line order. No years on a
+ * team no player on the line has a dated stint at, an "Other team…" pick, or
+ * the no-players line. Sources: a created player's own career
+ * (`createdStints`), a linked or known player's `stints` from the server.
  *
  * ## A teamless sport is a default, never a block (NEO-426)
  *
@@ -163,11 +190,15 @@ export interface PreviewCardForTeams {
   newPlayerByName?: ReadonlyArray<{ name: string; ref: string }>;
   /**
    * How the fetch-time team lookup for this card ended. "failed" means the
-   * listing's answer never arrived, so no rule may guess a team for it
-   * (invariant 8): the operator picks. NEO-478 "checklist" means the
-   * operator's published checklist settled the team — a data claim on the
-   * same terms: no rule may fill a different team over it. With no team
-   * strings, "checklist" means the checklist said "No Team" (NEO-489,
+   * listing's answer never arrived (the call failed, or the fetch stopped
+   * asking past its cap): the data is missing, which is NOT a claim
+   * (invariant 8, NEO-639), so the Teams step pre-fills it from NB's own
+   * evidence like any other card and the operator confirms. The teamless-sport
+   * and set "No Team" stamps still wait for an ended lookup
+   * (`lookupHasEnded`, `setDefaultSettlesNewRow`). NEO-478 "checklist" means
+   * the operator's published checklist settled the team — a data claim: no
+   * rule may fill a different team over it. With no team strings,
+   * "checklist" means the checklist said "No Team" (NEO-489,
    * `checklistClaimsNoTeam`).
    */
   teamLookup?: TeamLookupOutcome;
@@ -231,10 +262,23 @@ export interface ServerTeam {
   rank?: number;
 }
 
+/** One dated career stint, as the server sends it (NEO-639). */
+export interface ServerStint {
+  teamId: Id<"teams">;
+  fromYear: number;
+  toYear?: number;
+}
+
 /** One player's evidence from `teamSuggestionsForPreview`. */
 export interface ServerPlayerEvidence {
   answer: { tier: string; teams: ServerTeam[] } | null;
   candidates: ServerTeam[];
+  /**
+   * NEO-639 — the player's dated stints, for the years a chip prints
+   * (matched to chips by `teamIdKey`). Absent from an older server, and for a
+   * name that found no one: no years, nothing else changes.
+   */
+  stints?: ServerStint[];
 }
 
 /** A player the server is asked about. `key` is what its evidence is filed under. */
@@ -270,6 +314,13 @@ export interface TeamRef {
   name?: string;
   /** C2b preference, for ordering. Absent = 2. */
   rank?: number;
+  /**
+   * NEO-639 — the line's players' years with this team ("2024–2026", or
+   * "Johnny Bench 1967–1983; Pete Rose 1963–1978"), shown beside the label.
+   * Set only on a chip OUTSIDE the line's `suggestion`, and only when someone
+   * on the line has a dated stint there. See the header's "The years on a chip".
+   */
+  years?: string;
 }
 
 /** Cards that share a player set (and a listing claim) share evidence, so they share one line. */
@@ -290,8 +341,6 @@ export interface TeamsGroup {
    * and the operator has not ruled "not a team". Shown, never written.
    */
   listedNames: string[];
-  /** Invariant 8 — the listing's team lookup failed for these cards. */
-  lookupFailed: boolean;
   /**
    * NEO-478, invariant 8 — the operator's published checklist is where these
    * cards' teams came from (`teamLookup: "checklist"`), so nothing is
@@ -1257,6 +1306,99 @@ function byRank(refs: TeamRef[]): TeamRef[] {
     .map(({ ref }) => ref);
 }
 
+/** One dated stint, for the years a chip prints. */
+export type StintYears = { fromYear: number; toYear?: number };
+
+/**
+ * NEO-639 — one player's years with one team, as a chip prints them:
+ * "2024–2026"; "2026" for one season; "2024–present" for an open stint (the
+ * house `eraLabel` wording); several stints merged where they overlap or
+ * touch, oldest first, joined ", " ("2015–2017, 2021–present"). Empty when
+ * there is no dated stint. Pure; a stint whose end is before its start (bad
+ * data) reads as the years between the two, never as nothing.
+ */
+export function stintYearsText(stints: ReadonlyArray<StintYears>): string {
+  const spans = stints
+    .filter(
+      (s) =>
+        Number.isFinite(s.fromYear) && (s.toYear === undefined || Number.isFinite(s.toYear)),
+    )
+    .map((s) =>
+      s.toYear === undefined
+        ? { from: s.fromYear, to: Number.POSITIVE_INFINITY }
+        : { from: Math.min(s.fromYear, s.toYear), to: Math.max(s.fromYear, s.toYear) },
+    )
+    .sort((a, b) => a.from - b.from || a.to - b.to);
+  const merged: Array<{ from: number; to: number }> = [];
+  for (const span of spans) {
+    const last = merged[merged.length - 1];
+    if (last && span.from <= last.to + 1) last.to = Math.max(last.to, span.to);
+    else merged.push({ ...span });
+  }
+  return merged
+    .map(({ from, to }) =>
+      to === Number.POSITIVE_INFINITY ? `${from}–present` : to === from ? `${from}` : `${from}–${to}`,
+    )
+    .join(", ");
+}
+
+/** A player's dated stints, by the ref key of the chip they would print on. */
+type StintsByRef = ReadonlyMap<string, StintYears[]>;
+
+function pushStint(out: Map<string, StintYears[]>, key: string, stint: StintYears): void {
+  const list = out.get(key);
+  if (list) list.push(stint);
+  else out.set(key, [stint]);
+}
+
+/** A created player's dated career (`createdStints`), keyed like his chips. */
+function createdStintsByRef(
+  row: TeamsReviewRow,
+  view: NamesView,
+  linkedTeamNameById: ReadonlyMap<string, string>,
+): StintsByRef {
+  const out = new Map<string, StintYears[]>();
+  for (const stint of createdStints(row)) {
+    const ref = refFromString(stint.name, view, linkedTeamNameById);
+    if (!ref) continue;
+    pushStint(out, ref.key, {
+      fromYear: stint.fromYear,
+      ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
+    });
+  }
+  return out;
+}
+
+/** A linked or known player's `stints` from the server, keyed by `teamIdKey`. */
+function serverStintsByRef(evidence: ServerPlayerEvidence | undefined): StintsByRef {
+  const out = new Map<string, StintYears[]>();
+  for (const stint of evidence?.stints ?? []) {
+    pushStint(out, teamIdKey(stint.teamId), {
+      fromYear: stint.fromYear,
+      ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * The years one chip prints for the line's players: one player's years bare,
+ * several players' named, only those with a dated stint there, in line order.
+ * Empty when nobody on the line has one.
+ */
+function chipYears(
+  key: string,
+  playerStints: ReadonlyArray<{ display: string; byRef: StintsByRef }>,
+): string {
+  if (playerStints.length === 1) return stintYearsText(playerStints[0].byRef.get(key) ?? []);
+  return playerStints
+    .flatMap(({ display, byRef }) => {
+      const years = stintYearsText(byRef.get(key) ?? []);
+      return years ? [`${display} ${years}`] : [];
+    })
+    .join("; ");
+}
+
 type PlayerVerdict = { answer: TeamRef[] | null; candidates: TeamRef[]; loading: boolean };
 
 interface RankContext {
@@ -1380,6 +1522,12 @@ export function buildTeamsGroups(input: {
   setLeagueIds?: readonly string[];
   /** Who the stored data says is on the cards — see `StoredPeople`. */
   people?: StoredPeople;
+  /**
+   * NEO-639 decision A — the node's own team default is a set-level "No
+   * Team" (`setTeamDefaultKind(...) === "noTeam"`). Every line is then held
+   * back like a data claim: its teams are offered, none pre-filled.
+   */
+  setNoTeam?: boolean;
 }): TeamsGroup[] {
   const { cards, rows, serverEvidence, setYear, linkedTeamNameById, currentYear, settled } =
     input;
@@ -1421,23 +1569,21 @@ export function buildTeamsGroups(input: {
     // got here — so unless the operator ruled it "not a team", it is a
     // listing's team claim (invariant 8).
     const listedNames = listedClaims(card, view);
-    const lookupFailed = card.teamLookup === "failed";
     // NEO-478 — a team the operator's published checklist settled is a data
-    // claim exactly like a failed lookup's: the card's team is the one its
-    // checklist row named, so no inference may fill another over it. A row
-    // whose team cell is blank makes no claim and never sets "checklist"
-    // (B1); one that says "No Team" never reaches this loop (NEO-489,
-    // `teamlessCardIndexes`).
+    // claim: the card's team is the one its checklist row named, so no
+    // inference may fill another over it. A row whose team cell is blank
+    // makes no claim and never sets "checklist" (B1); one that says "No
+    // Team" never reaches this loop (NEO-489, `teamlessCardIndexes`).
+    // A FAILED lookup is not a claim (NEO-639): it neither holds the line
+    // back nor splits it from the same player's answered cards.
     const checklistClaim = card.teamLookup === "checklist";
     const claimKey =
       (listedNames.length > 0 ? `|listed:${listedNames.map(norm).sort().join("|")}` : "") +
-      (lookupFailed ? "|lookup-failed" : "") +
       (checklistClaim ? "|checklist" : "");
     // No people → no player evidence at all, so every such card (a
     // checklist, a league leaders card, a highlight) shares ONE line, keyed
     // on having no players — never on a card's name. Its listing claims are
-    // pooled: nothing on it is pre-filled anyway, and each card can still
-    // take its own answer (C3).
+    // pooled: each card can still take its own answer (C3).
     const groupKey =
       players.length > 0
         ? `players:${playerSetKey(players)}${claimKey}`
@@ -1447,7 +1593,6 @@ export function buildTeamsGroups(input: {
     if (existing) {
       existing.cards.push(entry);
       if (groupKey === NO_PLAYERS_GROUP_KEY) {
-        existing.lookupFailed ||= lookupFailed;
         if (checklistClaim) existing.checklistClaim = true;
         for (const name of listedNames) {
           if (existing.listedNames.some((n) => norm(n) === norm(name))) continue;
@@ -1502,16 +1647,36 @@ export function buildTeamsGroups(input: {
         else listedRefs.push(...found.map(refFromServer));
       }
     }
-    if (listedNames.length > 0 || lookupFailed || checklistClaim) {
-      // A data claim holds the guess back: nothing is pre-selected, and the
-      // would-be pre-fill becomes one more choice.
+    if (listedNames.length > 0 || checklistClaim || input.setNoTeam) {
+      // A data claim (or the set's own "No Team", decision A) holds the
+      // guess back: nothing is pre-selected, and the would-be pre-fill
+      // becomes one more choice.
       choices = [...(suggestion ?? []), ...choices];
       suggestion = null;
     }
 
     const lead = suggestion ?? [];
+    const suggested = new Set(lead.map((r) => r.key));
+    // NEO-639 — every chip outside the pre-fill says the line's players'
+    // years with that team, from the default (never the current pick), so a
+    // label holds still under a toggle.
+    const playerStints = players.map((p) => ({
+      display: p.display,
+      byRef:
+        p.kind === "created"
+          ? createdStintsByRef(p.row, view, linkedTeamNameById)
+          : p.kind === "new"
+            ? // A new player has no career yet, so no years to print.
+              serverStintsByRef(undefined)
+            : serverStintsByRef(serverEvidence.get(p.request.key)),
+    }));
     const refs = dedupeRefs([...lead, ...listedRefs, ...byRank(choices)])
-      .slice(0, Math.max(TEAMS_SECTION_MAX_OPTIONS, lead.length));
+      .slice(0, Math.max(TEAMS_SECTION_MAX_OPTIONS, lead.length))
+      .map((ref) => {
+        if (suggested.has(ref.key) || playerStints.length === 0) return ref;
+        const years = chipYears(ref.key, playerStints);
+        return years ? { ...ref, years } : ref;
+      });
 
     groups.set(groupKey, {
       key: groupKey,
@@ -1521,7 +1686,6 @@ export function buildTeamsGroups(input: {
       refs,
       suggestion: suggestion && suggestion.length > 0 ? suggestion.map((r) => r.key) : null,
       listedNames: [...listedNames],
-      lookupFailed,
       ...(checklistClaim ? { checklistClaim: true } : {}),
       loading,
     });

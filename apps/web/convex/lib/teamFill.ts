@@ -87,8 +87,10 @@
  * Nothing here sees a card, so nothing here can see what a listing printed
  * on one. The per-card gate is the browser's: `teams-on-cards.ts` drops any
  * pre-fill on a card whose listing named a team NB could not resolve (or whose
- * lookup never answered), and shows these answers as unselected choices
- * there instead. A rule written here is a suggestion about a PLAYER; whether
+ * publisher checklist settled the team), and shows these answers as
+ * unselected choices there instead. A lookup that never answered is missing
+ * data, not a claim (invariant 8, NEO-639): such a card takes these answers
+ * as its pre-fill like any other. A rule written here is a suggestion about a PLAYER; whether
  * it may pre-fill a CARD is decided per card, where the listing is in view.
  *
  * ## What is deliberately NOT evidence

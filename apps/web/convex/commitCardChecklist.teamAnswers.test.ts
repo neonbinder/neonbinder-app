@@ -703,6 +703,30 @@ describe("commitCardChecklist — operator-chosen teamIds (NEO-335)", () => {
     expect(queued.has(rows.get("2")!._id)).toBe(false);
   });
 
+  test("NEO-639: a failed-lookup card saved with its pre-filled team is teamed and kept off the BSC lane; its untouched twin is queued", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const reds = await seedTeam(t, sportId, "Cincinnati Reds");
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [
+        // The Teams step pre-filled this one although its lookup failed.
+        card({ cardNumber: "1", bscRef: "B1", teamIds: [reds], teamLookup: "failed" }),
+        // The control: same lookup outcome, left for later.
+        card({ cardNumber: "2", bscRef: "B2", teamLookup: "failed" }),
+      ],
+    });
+
+    const rows = await rowsByNumber(t, leafId);
+    expect(rows.get("1")!.teamOnCardIds).toEqual([reds]);
+    expect(rows.get("2")!.teamOnCardIds).toBeUndefined();
+    const queued = await settle(t);
+    expect(queued.has(rows.get("1")!._id)).toBe(false);
+    expect(queued.has(rows.get("2")!._id)).toBe(true);
+  });
+
   test("another sport's team REFUSES the commit before anything is written", async () => {
     const t = convexTest(schema, modules);
     const { sportId, leafId } = await seedTree(t);
