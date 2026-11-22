@@ -23033,6 +23033,15 @@ export const commitCardChecklistChunk = internalMutation({
     // because the list is older than the chunk and a row may have been born
     // since (`tidyCommit.nameRowRace.test.ts`). Absent: every name is point-read.
     namesWithRows: v.optional(v.array(v.string())),
+    // NEO-645 — this chunk runs beside its siblings (`COMMIT_CHUNK_PARALLEL_CALLS`),
+    // so it must not write a document they read or write. The one such write it
+    // makes is the leaf row's card counts (and the chain above it), which the
+    // ledger flush patches. Set: the chunk leaves that flush to its caller,
+    // reporting how many cards it inserted (`insertedCardCount`), and the caller
+    // lands the sum once (`commitCardChecklistLandCounts`). Absent: the chunk
+    // flushes its own counts, exactly as it always did (the single-chunk commit,
+    // a commit whose chunks run one after another, and every direct caller).
+    deferCardCounts: v.optional(v.boolean()),
   },
   returns: v.object({
     storedIds: v.array(v.id("cardChecklist")),
@@ -23056,6 +23065,11 @@ export const commitCardChecklistChunk = internalMutation({
     // drops is one this commit stamped — which is why a COUNT is enough to
     // correct the action's total, and no name has to leave this mutation.
     droppedPendingNameCount: v.number(),
+    // NEO-645 — present only when `deferCardCounts` was set: the cards this
+    // chunk INSERTED (and, of them, the ones that are not variations), whose
+    // counts the caller still has to land.
+    insertedCardCount: v.optional(v.number()),
+    insertedBaseCardCount: v.optional(v.number()),
   }),
   handler: async (
     ctx,
@@ -23066,6 +23080,8 @@ export const commitCardChecklistChunk = internalMutation({
     staleDecisionIds: Array<Id<"cardChecklist">>;
     contentAppliedCount: number;
     droppedPendingNameCount: number;
+    insertedCardCount?: number;
+    insertedBaseCardCount?: number;
   }> => {
     // NEO-219 security condition 2 — fail closed on a row deleted mid-commit.
     //
@@ -23141,14 +23157,21 @@ export const commitCardChecklistChunk = internalMutation({
     // entirely when every card in the chunk is an insert (the first sync of a
     // set), which is the common case.
     const rowsById = new Map<string, Doc<"cardChecklist">>();
-    if (args.cards.some((c) => c.existingId)) {
-      const rows = await ctx.db
-        .query("cardChecklist")
-        .withIndex("by_selector_option", (q) =>
-          q.eq("selectorOptionId", args.selectorOptionId),
-        )
-        .collect();
-      for (const row of rows) rowsById.set(row._id, row);
+    {
+      // NEO-645 — each existing card by ITS id, not the whole checklist in one
+      // range read. The range put every card of the set in this transaction's
+      // read set, so a sibling chunk inserting or patching a card of the same
+      // set (they run side by side now) would have made this one retry, and a
+      // 554-card re-sync read 554 documents to patch ~110. A row of another
+      // set, or one that is gone, misses exactly as before (the id is a hint
+      // from the action's snapshot, never trusted).
+      const wantedIds = Array.from(
+        new Set(args.cards.flatMap((c) => (c.existingId ? [c.existingId] : []))),
+      );
+      for (const id of wantedIds) {
+        const row = await ctx.db.get(id);
+        if (row && row.selectorOptionId === args.selectorOptionId) rowsById.set(row._id, row);
+      }
     }
 
     /**
@@ -24009,6 +24032,21 @@ export const commitCardChecklistChunk = internalMutation({
       }
     }
 
+    // NEO-645 — a chunk that runs beside its siblings leaves the flush to the
+    // caller: it is the one write every chunk would make to the SAME documents
+    // (the leaf row, and the rows above it for the subtree counts).
+    if (args.deferCardCounts) {
+      const landed = countLedger.deltaFor(args.selectorOptionId);
+      return {
+        storedIds,
+        bscTeamEnrichmentIds,
+        staleDecisionIds,
+        contentAppliedCount,
+        droppedPendingNameCount,
+        insertedCardCount: landed.all,
+        insertedBaseCardCount: landed.nonVariation,
+      };
+    }
     await countLedger.flush(ctx);
 
     return {
@@ -24018,6 +24056,71 @@ export const commitCardChecklistChunk = internalMutation({
       contentAppliedCount,
       droppedPendingNameCount,
     };
+  },
+});
+/**
+ * NEO-645 — how many commit chunks the action runs at once.
+ *
+ * Chunks are independent transactions (the action's own `phase` retries each),
+ * and a first save of 554 cards is 5 of them at ~0.6 s each: back to back that
+ * is ~3.2 s of one Confirm, side by side it is about one chunk's time. The cap
+ * is the same as the read slices' (`STORED_TEAM_EVIDENCE_PARALLEL_CALLS`): a
+ * wave of 8 is ~900 cards, and a bigger set simply runs another wave.
+ */
+export const COMMIT_CHUNK_PARALLEL_CALLS = 8;
+
+/**
+ * NEO-645 — which chunks may run beside each other: `true` for a commit of more
+ * than one chunk in which no two chunks hold cards with the SAME `sortOrder`.
+ *
+ * The one thing the write order of two chunks changes is the creation order of
+ * their cards, and the checklist reads ties on `sortOrder` in creation order
+ * (`by_selector_option_and_sort` ends in `_creationTime`). Two cards share a
+ * `sortOrder` only when they share a card number (a checklist that numbers two
+ * series 1-110, 1996 Score's Artist's Proofs): in one chunk their order is the
+ * payload's, in two parallel chunks it would be whichever transaction began
+ * first. Such a commit runs its chunks one after another, as it always has.
+ */
+export function chunksMayRunTogether(
+  chunks: ReadonlyArray<ReadonlyArray<{ sortOrder: number }>>,
+): boolean {
+  if (chunks.length < 2) return false;
+  const chunkOf = new Map<number, number>();
+  for (const [index, chunk] of chunks.entries()) {
+    for (const { sortOrder } of chunk) {
+      const seen = chunkOf.get(sortOrder);
+      if (seen !== undefined && seen !== index) return false;
+      chunkOf.set(sortOrder, index);
+    }
+  }
+  return true;
+}
+
+/**
+ * NEO-645 — land the card counts of chunks that ran with `deferCardCounts`.
+ *
+ * The chunks that run side by side each insert cards under the same leaf row,
+ * and the count flush is the one write all of them would make to the SAME
+ * documents (the leaf row, and the rows above it for the subtree counts and
+ * `hasCards`). So the action sums what its chunks report and calls this once,
+ * after the wave, with the same ledger the chunk would have flushed: the same
+ * deltas, the same `lastCardAt` stamp, the same recount when a count is absent.
+ * Called for the chunks that DID commit even when a sibling failed, so a
+ * partial commit is counted exactly as a sequential one is.
+ */
+export const commitCardChecklistLandCounts = internalMutation({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    insertedCardCount: v.number(),
+    insertedBaseCardCount: v.number(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    if (args.insertedCardCount <= 0 && args.insertedBaseCardCount <= 0) return null;
+    const ledger = createCardCountLedger();
+    ledger.add(args.selectorOptionId, args.insertedCardCount, args.insertedBaseCardCount);
+    await ledger.flush(ctx);
+    return null;
   },
 });
 /**
@@ -27733,20 +27836,43 @@ export const commitCardChecklist = action({
     for (let at = 0; at < wanted.length; at += STORED_TEAM_EVIDENCE_PLAYERS_PER_CALL) {
       evidenceSlices.push(wanted.slice(at, at + STORED_TEAM_EVIDENCE_PLAYERS_PER_CALL));
     }
-    for (let at = 0; at < evidenceSlices.length; at += STORED_TEAM_EVIDENCE_PARALLEL_CALLS) {
-      const batch = await Promise.all(
-        evidenceSlices.slice(at, at + STORED_TEAM_EVIDENCE_PARALLEL_CALLS).map((askAbout) =>
-          ctx.runQuery(internal.cardChecklist.storedTeamEvidence, {
-            selectorOptionId: args.selectorOptionId,
-            // (Not a `cardChecklist` write: the args of a read, named for the pin.)
-            askAbout,
-          }),
-        ),
-      );
-      for (const found of batch) {
-        for (const entry of found) storedByPlayer.set(entry.playerId as string, entry);
+    const loadStoredEvidence = async (): Promise<void> => {
+      for (let at = 0; at < evidenceSlices.length; at += STORED_TEAM_EVIDENCE_PARALLEL_CALLS) {
+        const batch = await Promise.all(
+          evidenceSlices.slice(at, at + STORED_TEAM_EVIDENCE_PARALLEL_CALLS).map((askAbout) =>
+            ctx.runQuery(internal.cardChecklist.storedTeamEvidence, {
+              selectorOptionId: args.selectorOptionId,
+              // (Not a `cardChecklist` write: the args of a read, named for the pin.)
+              askAbout,
+            }),
+          ),
+        );
+        for (const found of batch) {
+          for (const entry of found) storedByPlayer.set(entry.playerId as string, entry);
+        }
       }
-    }
+    };
+    // NEO-645 — the two reads the chunks are sized and told by ask nothing of
+    // the evidence slices and nothing of each other, so they run in the same
+    // breath instead of one round trip each after them. Every answer is the same.
+    const [defaultWritesPerCard, scopeNameKeys] = await Promise.all([
+      // NEO-528 round 3 — fewer cards per chunk when the leaf's "Player on
+      // every card" defaults give each new card many index rows; 150 otherwise.
+      chunkCardsRaw.length > 0
+        ? ctx.runQuery(internal.selectorOptions.commitChunkDefaultWrites, {
+            selectorOptionId: args.selectorOptionId,
+          })
+        : Promise.resolve(0),
+      // NEO-645 — which printed names have a `tidyNames` row: one read for the
+      // whole commit, so no chunk reads a name row per name. `null` (more rows
+      // than one read can prove a negative over) leaves each chunk to point-read.
+      chunkCardsRaw.length > 0
+        ? ctx
+            .runQuery(internal.tidyNames.namesWithRows, { scopeId: args.selectorOptionId })
+            .then((keys): Set<string> | null => (keys === null ? null : new Set(keys)))
+        : Promise.resolve<Set<string> | null>(null),
+      loadStoredEvidence(),
+    ]);
     const chunkCards = chunkCardsRaw.map((entry, i) => {
       const fill = batchFills.get(i);
       if (fill) {
@@ -27788,37 +27914,63 @@ export const commitCardChecklist = action({
     // NEO-246 — names the chunks' `boundPendingNames` dropped. Subtracted from
     // `stampedUnreviewedNames.size` below.
     let droppedPendingNameCount = 0;
-    // NEO-528 round 3 — fewer cards per chunk when the leaf's "Player on
-    // every card" defaults give each new card many index rows; 150 otherwise.
-    const defaultWritesPerCard: number =
-      chunkCards.length > 0
-        ? await ctx.runQuery(internal.selectorOptions.commitChunkDefaultWrites, {
-            selectorOptionId: args.selectorOptionId,
-          })
-        : 0;
     const chunkSize = commitChunkSize(defaultWritesPerCard + COMMIT_CHUNK_TIDY_OPS_PER_CARD);
     const chunkCount = Math.ceil(chunkCards.length / chunkSize);
-    // NEO-645 — which printed names have a `tidyNames` row: one read for the
-    // whole commit, so no chunk reads a name row per name. `null` (more rows
-    // than one read can prove a negative over) leaves each chunk to point-read.
-    const scopeNameKeys: Set<string> | null =
-      chunkCards.length > 0
-        ? await ctx
-            .runQuery(internal.tidyNames.namesWithRows, { scopeId: args.selectorOptionId })
-            .then((keys) => (keys === null ? null : new Set(keys)))
-        : null;
-    for (let start = 0; start < chunkCards.length; start += chunkSize) {
-      const slice = chunkCards.slice(start, start + chunkSize);
-      const index = Math.floor(start / chunkSize) + 1;
-      const result: {
-        storedIds: Array<Id<"cardChecklist">>;
-        bscTeamEnrichmentIds: Array<Id<"cardChecklist">>;
-        staleDecisionIds: Array<Id<"cardChecklist">>;
-        contentAppliedCount: number;
-        droppedPendingNameCount: number;
-      } = await phase(
-        `chunk ${index}/${chunkCount} (cards ${start + 1}-${start + slice.length} of ${chunkCards.length})`,
-        () =>
+    const chunkSlices = Array.from({ length: chunkCount }, (_, at) =>
+      chunkCards.slice(at * chunkSize, (at + 1) * chunkSize),
+    );
+    /*
+     * ── NEO-645: the chunks run side by side ────────────────────────────────
+     *
+     * One Confirm waited on every chunk in turn (5 x ~0.6 s on a 554-card set).
+     * They are independent transactions, so a wave of them now runs at once
+     * (`COMMIT_CHUNK_PARALLEL_CALLS`). Safe because they write DISJOINT
+     * documents and read nothing a sibling writes:
+     *
+     *  - WRITES. Each chunk inserts its own cards and, for each, the card's own
+     *    index rows (`cardPlayerLinks`, `cardTeamLinks`, `cardSecondaryPlayerLinks`,
+     *    `cardPrintedNames`), patches only the cards it was handed, and nothing
+     *    else — except the card counts on the leaf row and the rows above it,
+     *    which every chunk would patch. That flush is the one shared write, and
+     *    `deferCardCounts` takes it out: each chunk reports how many cards it
+     *    inserted and `commitCardChecklistLandCounts` lands the sum once, after
+     *    the wave. A card's `sku` patch and a team-link league patch are on the
+     *    card the chunk just inserted. Pinned by `commitCardChecklist.parallelChunks.test.ts`.
+     *  - READS. A chunk reads the leaf row and the rows above it (slots, sport,
+     *    year, defaults), teams, players, leagues and the `tidyNames` index, and
+     *    nothing a chunk writes. It used to read the WHOLE checklist in one range
+     *    whenever a card in it was an update; that range now reads only the ids
+     *    it was handed, so a sibling's inserts cannot invalidate it.
+     *  - ORDER. The one thing the order of two chunks changes is the creation
+     *    order of their cards, which breaks ties on `sortOrder`, and two cards
+     *    tie only when they share a card number (1996 Score numbers two series
+     *    1-110). A commit with such a pair across two chunks runs its chunks one
+     *    after another, exactly as before (`chunksMayRunTogether`).
+     *
+     * A failed chunk does not cancel its siblings (a transaction cannot be
+     * recalled), so a wave is allowed to finish, the cards it did write are
+     * counted, and the first failure in chunk order is thrown with its own
+     * phase label. No later wave starts. A re-run adopts what landed, exactly
+     * as it does after a sequential commit that stopped at chunk N.
+     */
+    const runTogether = chunksMayRunTogether(chunkSlices.map((slice) => slice.map(({ card }) => card)));
+    const wave = runTogether ? COMMIT_CHUNK_PARALLEL_CALLS : 1;
+    let insertedCards = 0;
+    let insertedBaseCards = 0;
+    const runChunk = (at: number) => {
+      const slice = chunkSlices[at];
+      const start = at * chunkSize;
+      return phase(
+        `chunk ${at + 1}/${chunkCount} (cards ${start + 1}-${start + slice.length} of ${chunkCards.length})`,
+        (): Promise<{
+          storedIds: Array<Id<"cardChecklist">>;
+          bscTeamEnrichmentIds: Array<Id<"cardChecklist">>;
+          staleDecisionIds: Array<Id<"cardChecklist">>;
+          contentAppliedCount: number;
+          droppedPendingNameCount: number;
+          insertedCardCount?: number;
+          insertedBaseCardCount?: number;
+        }> =>
           ctx.runMutation(internal.selectorOptions.commitCardChecklistChunk, {
             selectorOptionId: args.selectorOptionId,
             cards: slice.map(({ card }) => card),
@@ -27845,17 +27997,62 @@ export const commitCardChecklist = action({
             ...(scopeNameKeys
               ? { namesWithRows: namesWithRowsOf(slice.map(({ card }) => card), scopeNameKeys) }
               : {}),
+            ...(runTogether ? { deferCardCounts: true } : {}),
           }),
       );
-      // The chunk returns one stored id per card it was given, in order.
-      slice.forEach(({ originalIndex }, i) => {
-        storedIdByIndex[originalIndex] = result.storedIds[i];
+    };
+    // The failures of the wave that failed, in chunk order (an array, so the
+    // closure below can fill it and the checks after the loop read it).
+    const failures: unknown[] = [];
+    for (let first = 0; first < chunkCount && failures.length === 0; first += wave) {
+      const at = Array.from({ length: Math.min(wave, chunkCount - first) }, (_, n) => first + n);
+      const outcomes = await Promise.allSettled(at.map(runChunk));
+      // In chunk order, whatever order they finished in.
+      outcomes.forEach((outcome, n) => {
+        if (outcome.status === "rejected") {
+          failures.push(outcome.reason);
+          return;
+        }
+        const result = outcome.value;
+        // The chunk returns one stored id per card it was given, in order.
+        chunkSlices[at[n]].forEach(({ originalIndex }, i) => {
+          storedIdByIndex[originalIndex] = result.storedIds[i];
+        });
+        bscTeamEnrichmentIds.push(...result.bscTeamEnrichmentIds);
+        staleDecisionIds.push(...result.staleDecisionIds);
+        contentAppliedCount += result.contentAppliedCount;
+        droppedPendingNameCount += result.droppedPendingNameCount;
+        insertedCards += result.insertedCardCount ?? 0;
+        insertedBaseCards += result.insertedBaseCardCount ?? 0;
       });
-      bscTeamEnrichmentIds.push(...result.bscTeamEnrichmentIds);
-      staleDecisionIds.push(...result.staleDecisionIds);
-      contentAppliedCount += result.contentAppliedCount;
-      droppedPendingNameCount += result.droppedPendingNameCount;
     }
+    if (runTogether && insertedCards + insertedBaseCards > 0) {
+      const landCounts = () =>
+        phase("card counts", () =>
+          ctx.runMutation(internal.selectorOptions.commitCardChecklistLandCounts, {
+            selectorOptionId: args.selectorOptionId,
+            insertedCardCount: insertedCards,
+            insertedBaseCardCount: insertedBaseCards,
+          }),
+        );
+      if (failures.length > 0) {
+        // The first chunk's failure is the one to report; a count that could not
+        // land is logged (ids and counts only) and left to the repair backfill.
+        await landCounts().catch((error) =>
+          console.error(
+            JSON.stringify({
+              msg: "commit_card_counts_not_landed",
+              selectorOptionId: args.selectorOptionId,
+              insertedCards,
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          ),
+        );
+      } else {
+        await landCounts();
+      }
+    }
+    if (failures.length > 0) throw failures[0];
 
     // ── NEO-189: which card varies which ────────────────────────────────────
     //
@@ -28088,11 +28285,14 @@ export const commitCardChecklist = action({
     // at generation 0, so the pool never patched one while the prelude read it.
     // The commit has landed; ask Wikidata about them now. One mutation per
     // page of rows, rescheduling itself until none is left.
-    await phase("enqueue name lookups", () =>
-      ctx.runMutation(internal.tidyNames.enqueuePendingLookups, {
-        scopeId: args.selectorOptionId,
-      }),
-    );
+    //
+    // SCHEDULED, not awaited: the Confirm that called this is waiting on the
+    // "Saved N cards." line, and the lookups are background work whose answers
+    // arrive minutes later (Tidy Up reads the rows live). Awaiting the first
+    // page cost the operator a mutation's round trip for nothing they see.
+    await ctx.scheduler.runAfter(0, internal.tidyNames.enqueuePendingLookups, {
+      scopeId: args.selectorOptionId,
+    });
 
     if (variationsLinked > 0 || variationLinks.unresolvedStems.length > 0) {
       console.log(

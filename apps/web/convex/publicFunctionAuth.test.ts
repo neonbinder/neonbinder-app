@@ -3296,6 +3296,9 @@ describe("PR 451 (NEO-487, NEO-478): the BSC wait, cooldown and team lane", () =
     ["players.ts", "createCareerNewPlayers", "internalMutation"],
     ["selectorOptions.ts", "validateCareerNewPlayers", "internalQuery"],
     ["selectorOptions.ts", "commitCardChecklistPrelude", "internalMutation"],
+    // NEO-645 — lands the card counts the commit's parallel chunks deferred; a
+    // public twin would let anyone inflate a row's counts.
+    ["selectorOptions.ts", "commitCardChecklistLandCounts", "internalMutation"],
     ["selectorOptions.ts", "resolveGateTeamNames", "internalQuery"],
     ["checklistCandidates.ts", "resolveTeamIdentities", "internalQuery"],
     ["adapters/buysportscards.ts", "runBscTeamCheckItem", "internalAction"],
