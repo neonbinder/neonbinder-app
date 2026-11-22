@@ -1,38 +1,31 @@
 ---
-name: teams-step-chip-years-and-failed-lookup
-description: NEO-639 - Teams-step chips outside the pre-fill carry stint years in their name; a failed BSC lookup is made with an unscoped card-listing 503 when the spec reads one card live; negatives keyed on "^Team — " go vacuous
+name: patterns_teams_step_chip_years_and_failed_lookup
+description: NEO-639 on the walk's Team tile - chip names carry the player and stint years, negatives keyed on a bare team name go vacuous; making a card's team lookup FAIL with an unscoped card-listing 503
 metadata:
   type: feedback
 ---
 
-Teams-step chip names (NEO-639): pre-filled chip `{Team} — {owner}`; any other chip where a
-player on the line has a DATED stint is `{Team} · {years} — {owner}` (en dash, `1994–1996`,
-`2026`, `2024–present`), visible text `{Team} · {years}` (`toHaveText` on an unchecked chip:
-no ✓ in it). No years on "Other team…" picks or the no-players line. Labels follow the
-DEFAULT, so checking the other chip does not rename it.
+**Chip names on the Team tile.** A career chip reads `<team> · <player> <from>–<to>` (en dash; `2024–present`;
+undated stints have no years) and, once pressed, `<team> · <player> played here`; the pre-fill ("Suggested from
+career history.") shows as already pressed. A pressed chip is a choice, not a write: `Save team` writes it
+([[reference_team_tile_on_a_hand_added_card]]). Pin the regex with the years (`1982.1996`) and the pressed variant
+by exact name.
 
-**Why:** an exact name pinned before NEO-639 breaks loudly, but a NEGATIVE like
-`getByRole("radio", { name: /^Team — / })).toHaveCount(0)` silently stops matching anything
-once the chip gains " · years". Write absences as `^Team( · [^—]+)? — `.
+**Why:** an exact name pinned before a chip-naming change breaks loudly, but a NEGATIVE like
+`getByRole("button", { name: /^Team · / })` silently stops matching anything once the name gains the player and
+years. Write absences against the full current shape, and read the positive first
+([[patterns_copy_absence_keys_on_the_refusal_clause]]).
 
 **How to apply:**
-- Sweep for `getByRole("radio"|"checkbox", { name: ... — ${owner} })` on Teams-step chips
-  whenever chip naming changes; check negatives first.
+- Sweep for chip-name regexes whenever chip naming changes; check negatives first.
 - To make a card's fetch-time team lookup FAIL: `bscFake.setFaults([bscFault.answersUnavailable(BSC_PATH.cardListing)])`
-  before Sync, `times` unset (the retry must fail too). No `cardId` is needed when the uploaded
-  checklist leaves exactly one card to BSC; one card = 2 gate failures (gate opens at 5).
-  `bscFake.clear()` before a later sync that needs the recorded answer.
+  before Sync, `times` unset (the retry must fail too). No `cardId` is needed when the uploaded checklist leaves
+  exactly one card to BSC; one card = 2 gate failures (gate opens at 5). `bscFake.clear()` before a later sync
+  that needs the recorded answer.
 - A failed-lookup card that saves WITH a team is not queued: prove it by
-  `getByRole("status").filter({ hasText: /Still looking up teams for/ })` → `toHaveCount(0)`
-  right after the exact "N need you" pill (the pill alone cannot tell: queued cards are not
-  in it). Related: [[patterns_fake_bsc_faults_and_the_call_gate]],
-  [[patterns_copy_absence_keys_on_the_refusal_clause]].
-
-**Read the Teams step only once it has loaded.** Next is NOT held while the section fetches
-its suggestions; its one sr-only status reads `Checking teams…` then `Teams suggested` (empty
-when nothing was asked). Gate: `wizard.getByRole("status").filter({ hasText:
-/^(Checking teams…|Teams suggested)$/ })` → `toHaveText("Teams suggested")`. Pressing Next
-earlier saves lines on "Leave for later" that the pre-fill would have filled, so a queued count
-reads high. Count preselected team chips with `getByRole("radio", { name: /^(?!Leave for later
-— |No team on this card — )/, checked: true })`. On a no-set-team BSC fixture whose lookup
-failed, seed players still pre-fill (NEO-639): measure which on a fresh seed, never assume none.
+  `getByRole("status").filter({ hasText: /Still looking up teams for/ })` → `toHaveCount(0)` right after the exact
+  "N need you" pill (the pill alone cannot tell: queued cards are not in it). Related:
+  [[patterns_fake_bsc_faults_and_the_call_gate]].
+- **Read a Team tile row only once it has loaded**: wait `Checking for teams by that name…` gone (and the tile's
+  skeleton, "Waiting") before counting pressed chips. On a no-set-team BSC fixture whose lookup failed, seed
+  players still pre-fill (NEO-639): measure which on a fresh seed, never assume none.

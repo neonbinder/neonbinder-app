@@ -6,9 +6,9 @@ metadata:
 ---
 
 A ranking rule in `players.nearMatches` (`rankPlayerCandidates`) is reachable
-two ways: the Tidy-up wizard's New Player step and `/admin/players`' add form.
-Both render `NearMatchPanel` (list `Possible player matches`). The wizard only
-opens from a real checklist fetch (real names, R7a), so a minted-name fixture
+two ways: the Tidy up walk's Player row and `/admin/players`' add form.
+Both render `NearMatchPanel` (list `Possible player matches`). The walk's Player rows only
+arise from a real fetch or a pasted checklist (real names, R7a), so a minted-name fixture
 (`W<token>`, `J. W<token>`, `Jonah W<token>` in `customSport(env)`) only works
 on the add form. Say so in the spec header; the coverage auditor accepts it.
 

@@ -49,8 +49,8 @@ after every cut (always), or to any Tidy Up title (a whole team, the number, SP,
 RELIC, a first name, RC or AUTO out) when the box version FITS. A title that fits
 with nothing Tidy Up cut ignores it. So under a short box, a fitting card that
 lost only its team changes too; fixtures written before NEO-618 that said "the
-box leaves a full-name card alone" are wrong now. In the wizard's Card titles
-step the box shows a PREFILL (the set's description) but its draft starts
+box leaves a full-name card alone" are wrong now. On the old Card titles step (measured pre-NEO-645; re-check on the walk's Listing title tile)
+the box showed a PREFILL (the set's description) but its draft started
 undefined: titles before the operator edits it are the builder's own.
 
 **Product moved under you:** rebundle gen.mjs after every product commit, and

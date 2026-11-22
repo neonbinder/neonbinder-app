@@ -23,8 +23,8 @@ the checklist's pill reads `<Name> · your checklist` (accessible name
 `<Name> · your checklist — use this name for <scope>`) only when no marketplace
 said that name (a shared name is one bare pill, so the count stays 2). The
 Matched toggle's `, N with a name conflict` counts these rows. Preselect is the
-card's own name; an UNTOUCHED preselect answers nothing, so the wizard still
-opens on "Checklist says otherwise" (a spec that wants the wizard step must not
+card's own name; an UNTOUCHED preselect answers nothing, so the card still
+gets the pink "Sources disagree" tile on the walk (a spec that wants that tile must not
 click a pill). The modal's difference test is `nameKey` (card name vs the row's
 players joined " / "), stricter than the server's `playersAgree` (which drops
 trailing SP/RC markers and accepts surnames): a pair the server calls agreeing

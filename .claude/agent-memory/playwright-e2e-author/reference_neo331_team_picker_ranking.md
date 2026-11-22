@@ -32,20 +32,17 @@ radiogroup of six pills (visible text Major/Minor/College/International/
 Independent/Other, no aria-label), nothing checked; `Add as New League`, the
 picker form's `Add league` and League Management's `Create league …` are
 `aria-disabled` until one is pressed (a press only focuses the group). Tap by
-text: `tapOn: "Minor"`. Drains use `set-selector/util-wizard-answer-step-as-new.yaml`
-(branch on copied button text).
+text: `tapOn: "Minor"`.
 
 **Trap 1 — no sport default; "MLB" by abbreviation.** Since ae04f64 an
-unanswered League leaves a team league-less (dialog, wizard commit, bulk
+unanswered League leaves a team league-less (dialog, commit, bulk
 load), so a flow that wants MLB PICKS it: `id: "League"` → type
 `Major League Baseb` → tap `Major League Baseball` → read back
 `id: League, text: Major League Baseball`. The row is the SEED's: on a
 reference-catalogue preview (NEO-330) the catalogue imports it (level Major,
 abbr MLB, aliases AL/NL/American League/National League; still the only MLB
-league); on a plain reset setup's Base wizard drain stages a New League step
-from the committed enrichment recording (P118 label, abbreviation "MLB"),
-presses Other, Confirm & Save writes it (`enrichLeague` in convex-logs right
-after Confirm & Save). No alias "MLB", so
+league). On a plain reset the league comes from the committed enrichment recording
+(P118 label, abbreviation "MLB"; `enrichLeague` in convex-logs). No alias "MLB", so
 `pickerContext` reaches it via the unique-abbreviation fallback (10c466b); a
 second league abbreviated MLB makes the fallback return nothing. Symptom of a
 miss: ranking round 1 reads Y, W, X, Z (tiers 1/3 empty).

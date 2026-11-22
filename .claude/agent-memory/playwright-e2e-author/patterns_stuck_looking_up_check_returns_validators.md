@@ -5,8 +5,8 @@ metadata:
   type: feedback
 ---
 
-When the entity-review wizard sits on "Looking up 1 more name…" / "1 still looking up
-— wait or skip" past every budget, read the deployment's Convex logs
+When a Player/Team row on the walk sits on "Checking for players by that name…" (or the end screen on
+"Still looking up teams for N cards…") past every budget, read the deployment's Convex logs
 (`npx convex logs --history 400`, read-only) for the lookup action
 (`adapters/wikidata:runEntityReviewLookup`, `worker:runBatch`). NEO-602 case: the
 schema gained optional row fields (`teamContext.cards`, `playerContext`) but
