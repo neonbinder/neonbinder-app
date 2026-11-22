@@ -71,7 +71,12 @@ describe("AutographTile", () => {
   ])("%s writes %s on this card", async (name, value) => {
     renderTile(card("c1"));
     await act(async () => fireEvent.click(screen.getByRole("radio", { name })));
-    expect(mockSetCardFeature).toHaveBeenCalledWith({ cardChecklistId: "c1", key: "autographed", value });
+    expect(mockSetCardFeature).toHaveBeenCalledWith({
+      cardChecklistId: "c1",
+      key: "autographed",
+      value,
+      regenerateListing: true,
+    });
   });
 
   it("an answered card is plain, shows the choice pressed, and offers all the autographed cards", async () => {
@@ -130,6 +135,7 @@ describe("AutographTile", () => {
         cardChecklistId: "c1",
         key: "autographed",
         value: "Sticker/Label",
+        regenerateListing: true,
       });
       await act(async () => fireEvent.keyDown(sticker, { key: "ArrowRight" }));
       expect(document.activeElement).toBe(on);
@@ -137,6 +143,7 @@ describe("AutographTile", () => {
         cardChecklistId: "c1",
         key: "autographed",
         value: "On Card",
+        regenerateListing: true,
       });
       await act(async () => fireEvent.keyDown(on, { key: "ArrowLeft" }));
       expect(document.activeElement).toBe(sticker);

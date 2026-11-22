@@ -276,7 +276,7 @@ describe("pickSourceValue — each name resolves the way the commit does", () =>
 });
 
 describe("pickSourceValue — titles and lastUpdated", () => {
-  test("a generated title is regenerated, a hand-typed one is left alone", async () => {
+  test("a generated title is regenerated, and a hand-typed one too (T4: always overwrite)", async () => {
     const t = newT();
     const { w, judge } = await setup(t);
     const [generated, typed] = await t.run(async (ctx) => {
@@ -290,7 +290,8 @@ describe("pickSourceValue — titles and lastUpdated", () => {
     await pick(t, generated, [JUDGE]);
     await pick(t, typed, [JUDGE]);
     expect((await card(t, generated))!.listingTitle).toContain("Judge");
-    expect((await card(t, typed))!.listingTitle).toBe("My own title");
+    expect((await card(t, typed))!.listingTitle).toContain("Judge");
+    expect((await card(t, typed))!.listingTitle).not.toBe("My own title");
     expect((await card(t, generated))!.playerIds).toEqual([judge]);
   });
 

@@ -14,7 +14,7 @@
  * (compare-and-set, `skipped`) or that nothing changes (`unchanged`).
  * `writeNameChange` applies a plan: the card patch, its index rows through
  * their one writers (`syncCardPlayerLinks`, `syncCardTeamLinks`), a rebuilt
- * generated title and description (a hand-typed one is kept), and the
+ * title and description (always rebuilt, a hand-typed one included: T4), and the
  * teamless-sport default (NEO-426) on a card that just lost its last pending
  * player name.
  *
@@ -23,7 +23,8 @@
  * Per card: 1 get, 1 patch, `syncCardPlayerLinks` (1 read + writes) or
  * `syncCardTeamLinks` (1 read + writes + league settle), the title read through
  * a shared cache (chain labels once per leaf, players and teams once per page),
- * `queueRetitledCardNow` (1 read) when the title moved.
+ * `queueRetitledCardNow` (1 read) when the title moved. The title and description
+ * are ALWAYS rebuilt (T4, `regenerateTitleFields`), one read of the card's facts.
  */
 
 import type { Infer } from "convex/values";
@@ -35,11 +36,9 @@ import { syncCardTeamLinks } from "./cardTeamLinks";
 import { newCardLeagueCache, type CardLeagueCache } from "./cardLeague";
 import {
   newStoredCardReadCache,
-  titleForStoredCard,
   type StoredCardReadCache,
 } from "./storedCardTitle";
-import { refreshedListingDescription } from "./cardDescriptionRefresh";
-import { generatedTitleTruncatedFlag } from "./features/listingInputs";
+import { rebuildListingText } from "./tidyListingText";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS, TIDY_CHECKS_MAX } from "./features/cardAttention";
 import { queueRetitledCardNow } from "./listingTitleRequeue";
 import { createSportNoTeamReader } from "./sportTeamless";
@@ -278,10 +277,9 @@ export function newNameWriteCache(ctx: Pick<MutationCtx, "db">): NameWriteCache 
 }
 
 /**
- * Text nobody typed follows the facts a patch changes; a typed title stays.
- * `patch` is the write about to land on `card`; the generated title (and its
- * truncated flag) and the builder's description are added to it when they move.
- * The caller patches, then calls `queueRetitledCardNow` when `titleChanged`.
+ * The title and description follow the facts, always (NEO-645 T4); see
+ * `rebuildListingText`, which holds the rule and is reachable from modules
+ * that must not import this one.
  */
 export async function regenerateTitleFields(
   ctx: MutationCtx,
@@ -289,36 +287,7 @@ export async function regenerateTitleFields(
   patch: Partial<Card>,
   cache: NameWriteCache,
 ): Promise<{ titleChanged: boolean }> {
-  const next: Card = { ...card, ...patch } as Card;
-  let titleChanged = false;
-  const before = await titleForStoredCard(ctx, card, cache.titles);
-  // A card born with a name still waiting stores the title the commit wrote,
-  // WITHOUT that name; `titleForStoredCard` reads a pending name as the
-  // fallback and so computes one WITH it. Either is the generated title (the
-  // commit's, or a regeneration's); only a title matching neither was typed.
-  let generated = card.listingTitle === before.title;
-  if (
-    !generated &&
-    ((card.pendingPlayerNames ?? []).length > 0 || (card.pendingTeamNames ?? []).length > 0)
-  ) {
-    const blank = await titleForStoredCard(
-      ctx,
-      { ...card, pendingPlayerNames: undefined, pendingTeamNames: undefined },
-      cache.titles,
-    );
-    generated = card.listingTitle === blank.title;
-  }
-  if (generated) {
-    const after = await titleForStoredCard(ctx, next, cache.titles);
-    if (after.title !== card.listingTitle) {
-      patch.listingTitle = after.title;
-      patch.listingTitleTruncated = generatedTitleTruncatedFlag(after);
-      titleChanged = true;
-    }
-  }
-  const description = await refreshedListingDescription(ctx, card, patch, cache.titles);
-  if (description !== undefined) patch.listingDescription = description;
-  return { titleChanged };
+  return await rebuildListingText(ctx, card, patch, cache.titles);
 }
 
 /**

@@ -8,11 +8,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ConvexError } from "convex/values";
 
 vi.mock("../../../../convex/_generated/api", () => ({
-  api: { tidyCards: { pickSourceValue: "tidyCards.pickSourceValue" } },
+  api: {
+    tidyCards: { pickSourceValue: "tidyCards.pickSourceValue" },
+    tidyCameo: { pickSourceAsCameo: "tidyCameo.pickSourceAsCameo" },
+  },
 }));
 const mockPick = vi.fn();
+const mockPickCameo = vi.fn();
 vi.mock("convex/react", () => ({
-  useMutation: (ref: string) => (ref === "tidyCards.pickSourceValue" ? mockPick : vi.fn()),
+  useMutation: (ref: string) =>
+    ref === "tidyCards.pickSourceValue"
+      ? mockPick
+      : ref === "tidyCameo.pickSourceAsCameo"
+        ? mockPickCameo
+        : vi.fn(),
 }));
 
 import { AnsweredProvider } from "../answered";
@@ -43,13 +52,19 @@ function renderTile(
   {
     attention,
     leafCards,
+    context,
     onAnswered = () => {},
-  }: { attention?: TidyAttention; leafCards?: TidyRow[]; onAnswered?: () => void } = {},
+  }: {
+    attention?: TidyAttention;
+    leafCards?: TidyRow[];
+    context?: unknown;
+    onAnswered?: () => void;
+  } = {},
 ) {
   const row = rowOf("card-1", d);
   const props: TidyTileProps = {
     row,
-    context: undefined,
+    context: context as TidyTileProps["context"],
     attention: attention ?? { level: d && !d.chosen ? "fix" : "none", items: [] },
     leafId: "leaf-1" as never,
     sportId: undefined,
@@ -66,6 +81,7 @@ function renderTile(
 beforeEach(() => {
   vi.clearAllMocks();
   mockPick.mockResolvedValue({ applied: 1, scheduled: 0, refused: 0 });
+  mockPickCameo.mockResolvedValue({ playerId: "player-1", name: "It Takes Two CPC" });
 });
 
 describe("SourcesDisagreeTile", () => {
@@ -328,3 +344,75 @@ describe("SourcesDisagreeTile wrapping and edges (NEO-645 audit)", () => {
   });
 });
 
+
+describe("the cameo shortcut (T3)", () => {
+  const CPC: RowDisagreement = {
+    field: "players",
+    values: [
+      { value: ["It Takes Two CPC"], sources: ["bsc"] },
+      { value: ["Francisco Lindor"], sources: ["checklist"] },
+    ],
+  };
+  const OFFER = { playerId: "player-1", surname: "Lindor", name: "It Takes Two CPC" };
+  const ctx = (cameoOffer?: typeof OFFER) => ({ cardId: "card-1", cameoOffer });
+  const LABEL = "“It Takes Two CPC”, Lindor as a cameo";
+
+  it("sits beside the Use buttons, named for the other side and the surname", () => {
+    renderTile(CPC, { context: ctx(OFFER) });
+    expect(screen.getByRole("button", { name: LABEL })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Use “It Takes Two CPC”" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Use “Francisco Lindor”" })).toBeTruthy();
+  });
+
+  it("is not there when the server offers nothing, or the context has not loaded", () => {
+    const none = renderTile(CPC, { context: ctx(undefined) });
+    expect(screen.queryByRole("button", { name: /as a cameo/ })).toBeNull();
+    none.unmount();
+    renderTile(CPC, { context: undefined });
+    expect(screen.queryByRole("button", { name: /as a cameo/ })).toBeNull();
+  });
+
+  it("is not there on a teams disagreement", () => {
+    renderTile(
+      {
+        field: "teams",
+        values: [
+          { value: ["Mets"], sources: ["bsc"] },
+          { value: ["Padres"], sources: ["checklist"] },
+        ],
+      },
+      { context: ctx(OFFER) },
+    );
+    expect(screen.queryByRole("button", { name: /as a cameo/ })).toBeNull();
+  });
+
+  it("is not there once the disagreement is settled, until Change", () => {
+    renderTile({ ...CPC, chosen: { value: ["It Takes Two CPC"], by: "operator" } }, { context: ctx(OFFER) });
+    expect(screen.queryByRole("button", { name: LABEL })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Change the player name" }));
+    expect(screen.getByRole("button", { name: LABEL })).toBeTruthy();
+  });
+
+  it("one click settles the card with one mutation and moves the walk on", async () => {
+    const onAnswered = vi.fn();
+    renderTile(CPC, { context: ctx(OFFER), onAnswered });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: LABEL }));
+    });
+    expect(mockPickCameo).toHaveBeenCalledTimes(1);
+    expect(mockPickCameo).toHaveBeenCalledWith({ cardId: "card-1" });
+    expect(mockPick).not.toHaveBeenCalled();
+    await waitFor(() => expect(onAnswered).toHaveBeenCalledTimes(1));
+  });
+
+  it("says what went wrong and does not move on when the write is refused", async () => {
+    mockPickCameo.mockRejectedValueOnce(new ConvexError("That card has no cameo to offer. Refresh and try again."));
+    const onAnswered = vi.fn();
+    renderTile(CPC, { context: ctx(OFFER), onAnswered });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: LABEL }));
+    });
+    expect((await screen.findByRole("alert")).textContent).toContain("no cameo to offer");
+    expect(onAnswered).not.toHaveBeenCalled();
+  });
+});

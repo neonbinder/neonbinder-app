@@ -4269,6 +4269,10 @@ describe("NEO-645: the Tidy Up surface is admin-gated", () => {
         }),
     ],
     [
+      "tidyCameo.pickSourceAsCameo",
+      (t, s) => t.mutation(api.tidyCameo.pickSourceAsCameo, { cardId: s.cardId }),
+    ],
+    [
       "tidyCards.applyTeamToPlayerCards",
       (t, s) =>
         t.mutation(api.tidyCards.applyTeamToPlayerCards, {

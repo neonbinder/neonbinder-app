@@ -423,7 +423,7 @@ describe("TitleTile variation", () => {
     renderTile(mine, attention, [mine, twin, other]);
     fireEvent.change(screen.getByLabelText("Trim the variation"), { target: { value: "Sunglasses" } });
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save variation" })));
-    expect(mockUpdateCard).toHaveBeenCalledWith({ id: "c1", cardVariation: "Sunglasses" });
+    expect(mockUpdateCard).toHaveBeenCalledWith({ id: "c1", cardVariation: "Sunglasses", regenerateListing: true });
     await act(async () =>
       fireEvent.click(screen.getByRole("button", { name: "Apply to the 1 card with the same variation" })),
     );

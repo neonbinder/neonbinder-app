@@ -28,6 +28,12 @@ import type { TidyDisagreement as RowDisagreement } from "../../../../convex/fea
  *
  * There is no "Not sure yet": a card cannot be listed without the answer.
  * Picks save as they are made (J1); the tile never navigates.
+ *
+ * T3 (Jason): when exactly one of two single names is exactly one NB player and
+ * the other is not a player ("It Takes Two CPC" against "Francisco Lindor"),
+ * one more button sits beside the "Use" ones: `“It Takes Two CPC”, Lindor as a
+ * cameo`. The server decides when it shows (`cardContext.cameoOffer`) and does
+ * the whole write in one mutation (`tidyCameo.pickSourceAsCameo`).
  */
 
 /** `tidyCards.MAX_APPLY_CARDS`, hand-copied: the server graph cannot be imported here. Keep in step. */
@@ -107,7 +113,7 @@ function diffParts(text: string, other: string): { head: string; mid: string; ta
   };
 }
 
-export default function SourcesDisagreeTile({ row, leafCards }: TidyTileProps) {
+export default function SourcesDisagreeTile({ row, leafCards, context }: TidyTileProps) {
   const entries = row.sourceDisagreements ?? [];
   if (entries.length === 0) return null;
 
@@ -123,6 +129,7 @@ export default function SourcesDisagreeTile({ row, leafCards }: TidyTileProps) {
             entry={entry}
             row={row}
             leafCards={leafCards}
+            cameoOffer={entry.field === "players" ? context?.cameoOffer : undefined}
             heading={entries.length > 1}
           />
         ))}
@@ -135,15 +142,19 @@ function DisagreementEntry({
   entry,
   row,
   leafCards,
+  cameoOffer,
   heading,
 }: {
   entry: RowDisagreement;
   row: TidyTileProps["row"];
   leafCards: TidyTileProps["leafCards"];
+  /** The server's offer to name the card for the non-player side and add the player as a cameo. */
+  cameoOffer: NonNullable<NonNullable<TidyTileProps["context"]>["cameoOffer"]> | undefined;
   /** Name the field above its columns (a card can disagree on two). */
   heading: boolean;
 }) {
   const pickSourceValue = useMutation(api.tidyCards.pickSourceValue);
+  const pickSourceAsCameo = useMutation(api.tidyCameo.pickSourceAsCameo);
   const uid = useId();
   const [changing, setChanging] = useState(false);
   const [typing, setTyping] = useState(false);
@@ -200,6 +211,23 @@ function DisagreementEntry({
         value: [...value],
         ...(isTyped ? { typed: true as const } : {}),
       });
+      setChanging(false);
+      setTyping(false);
+      setTyped("");
+      answered();
+    } catch (e) {
+      setError(userFacingMessage(e, "Didn't save, try again."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pickAsCameo = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await pickSourceAsCameo({ cardId: row._id });
       setChanging(false);
       setTyping(false);
       setTyped("");
@@ -319,6 +347,19 @@ function DisagreementEntry({
               {`Use ${quoted(v.value, entry.field)}`}
             </NeonButton>
           ))}
+        {choosing && cameoOffer && (
+          <NeonButton
+            variant="secondary"
+            outline
+            size="1"
+            type="button"
+            className={WRAP_LABEL_CLASS}
+            aria-disabled={busy || undefined}
+            onClick={() => void pickAsCameo()}
+          >
+            {`“${cameoOffer.name}”, ${cameoOffer.surname} as a cameo`}
+          </NeonButton>
+        )}
         {choosing && (
           <NeonButton
             ref={typeButtonRef}

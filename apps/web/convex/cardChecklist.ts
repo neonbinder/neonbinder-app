@@ -84,6 +84,7 @@ import {
 import { variantTypeKind } from "./variantRole";
 // NEO-556: the leaf's set-level "No Team", stamped once BSC answers with none.
 import { noTeamCardVerdict, stampNoTeam, teamDefaultOf } from "./lib/selectorTeams";
+import { regenerateListingNow } from "./tidyListingText";
 // NEO-426 — a teamless sport is one more reason to stamp "No team".
 import { createSportNoTeamReader } from "./sportTeamless";
 import { queuedByField } from "./lib/bscGateKey";
@@ -1415,7 +1416,14 @@ export const enqueueBscTeamBackfill = internalMutation({
  * open in another tab, turning an unrelated accepted diff stale.
  */
 export const confirmCardNoTeam = mutation({
-  args: { cardId: v.id("cardChecklist") },
+  args: {
+    cardId: v.id("cardChecklist"),
+    /**
+     * NEO-645 T4 — the Tidy Up walk's answer: rebuild the title and
+     * description from the card as it stands, always. Only the walk sends it.
+     */
+    regenerateListing: v.optional(v.literal(true)),
+  },
   returns: v.object({
     /** The row now carries a "no team" confirmation. */
     confirmed: v.boolean(),
@@ -1430,10 +1438,14 @@ export const confirmCardNoTeam = mutation({
     if (row.teamOnCardIds && row.teamOnCardIds.length > 0) {
       return { confirmed: false, stamped: false };
     }
-    if (row.teamNoneConfirmedAt) return { confirmed: true, stamped: false };
+    if (row.teamNoneConfirmedAt) {
+      if (args.regenerateListing) await regenerateListingNow(ctx, row._id);
+      return { confirmed: true, stamped: false };
+    }
 
     // NEO-556 — the one stamp builder every writer shares.
     await ctx.db.patch(row._id, stampNoTeam(userId, Date.now()));
+    if (args.regenerateListing) await regenerateListingNow(ctx, row._id);
     return { confirmed: true, stamped: true };
   },
 });

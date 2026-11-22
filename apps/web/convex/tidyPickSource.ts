@@ -20,7 +20,8 @@
  *      carries the printed name.
  *
  * Every write goes through `writeNameChange` (links, title, description, the
- * teamless default) and `syncCardPrintedNames` (the printed-name index).
+ * teamless default; a pick that moves no name still rebuilds the title and
+ * description, `regenerateListingNow`) and `syncCardPrintedNames` (the printed-name index).
  * `chosen` alone does not bump `lastUpdated` (the NEO-203 baseVersion); the
  * link writes it causes do, and so does a card name that follows the pick
  * (`pickedCardName`).
@@ -42,6 +43,7 @@ import {
   type NameFields,
   type NameWriteCache,
 } from "./tidyCardWrites";
+import { regenerateListingNow } from "./tidyListingText";
 import { ensureTidyNameRow, MAX_TIDY_NAME_LENGTH } from "./tidyNames";
 import { sameNamePlayers } from "./players";
 import { resolveTeamForSetYear } from "./lib/teamRow";
@@ -331,6 +333,10 @@ export async function applyPickToCard(
       ...(cardName !== undefined ? { cardName } : {}),
     } as Doc<"cardChecklist">;
     await writeNameChange(ctx, stamped, fields, args.cache, args.userId);
+  } else {
+    // No name moved (a stamp, or a card name that followed the pick), but the
+    // write still rebuilds the title and description (NEO-645 T4).
+    await regenerateListingNow(ctx, card._id, args.cache.titles);
   }
   await syncCardPrintedNames(ctx, card, desired);
   return { pending: anyPending, written: changed || cardName !== undefined };

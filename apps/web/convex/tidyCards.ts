@@ -78,6 +78,7 @@ import { defaultGapStint } from "./lib/careerGapStint";
 import { appendCareerStintsImpl } from "./players";
 import { queueRetitledCardNow } from "./listingTitleRequeue";
 import { recheckCareerGaps } from "./tidyCareerGap";
+import { cameoOfferFor, cameoOfferValidator } from "./tidyCameo";
 import { listingInputsForStoredCard } from "./storedCardTitle";
 import { retitleForSetName } from "./features/setNameInTitles";
 import { LISTING_SHORT_NAME_LEVELS, normalizeListingShortName } from "./listingShortName";
@@ -188,6 +189,11 @@ export const cardContextValidator = v.object({
   /** The card links more players than `players` holds. */
   playersMore: v.boolean(),
   teams: v.array(contextTeamValidator),
+  /**
+   * NEO-645 T3: the "Lindor as a cameo" shortcut the Sources disagree tile may
+   * offer (`tidyCameo.cameoOfferFor`); absent when it is not on offer.
+   */
+  cameoOffer: v.optional(cameoOfferValidator),
   linkedFor: v.array(
     v.union(
       v.object({
@@ -361,6 +367,9 @@ export const cardContext = query({
       }
     }
 
+    // ── the cameo shortcut (T3) ──
+    const cameoOffer = await cameoOfferFor(ctx, card);
+
     // ── teams ──
     const onCard = new Set<string>(card.teamOnCardIds ?? []);
     const candidates = new Set<string>();
@@ -394,6 +403,7 @@ export const cardContext = query({
       playersMore: playerIds.length > CONTEXT_MAX_PLAYERS,
       teams,
       linkedFor,
+      ...(cameoOffer ? { cameoOffer } : {}),
     };
   },
 });

@@ -80,6 +80,7 @@ import {
 } from "./cardSecondaryPlayers";
 import { listingNamesAPlayer } from "./lib/cardPlayerDefaults";
 import { newStoredCardReadCache } from "./storedCardTitle";
+import { rebuildListingText, regenerateListingNow } from "./tidyListingText";
 import { MAX_PARALLEL_GROUPING_ENTRIES } from "./parallelGroupingPlan";
 import { blockedSideFailed, sideMissingFromRun } from "./parallelChecklistBuild";
 import {
@@ -7674,6 +7675,15 @@ export const updateCard = mutation({
      * is not stamped. Absent does nothing.
      */
     teamNone: v.optional(v.boolean()),
+    /**
+     * NEO-645 T4 — the Tidy Up walk's save: rebuild the listing title and
+     * description from the card as this write leaves it, ALWAYS (a title the
+     * operator typed is overwritten; the walk does not track hand edits).
+     * Not stored. Only the walk sends it; the card panel's saves keep the
+     * typed-text rules above. A title or description sent in the same call
+     * is the operator's words for that field and is kept.
+     */
+    regenerateListing: v.optional(v.literal(true)),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -7696,6 +7706,7 @@ export const updateCard = mutation({
       playerNamesOnCard: _printedNames,
       teamNone: teamNoneArg,
       regenerateDescription,
+      regenerateListing,
       titleReviewed,
       leagueId: requestedLeagueId,
       ...updates
@@ -8024,6 +8035,43 @@ export const updateCard = mutation({
       if (Array.isArray(value) && value.length === 0) filtered[key] = undefined;
     }
 
+    // NEO-645 T4 — the walk's write rebuilds the title and description from
+    // the card as this write leaves it, whatever the stored text is. Runs on
+    // the final `filtered` (teams, players, names, features all settled), and
+    // skips a field the call itself sets.
+    let walkRetitled = false;
+    if (regenerateListing) {
+      const stored = await loadStoredCard();
+      // The facts only: whatever text this call or the "No Team" branch above
+      // put in `filtered` is replaced by the rebuild.
+      const {
+        listingTitle: _title,
+        listingTitleTruncated: _truncated,
+        listingDescription: _description,
+        ...facts
+      } = filtered as Partial<Doc<"cardChecklist">>;
+      const rebuilt: Partial<Doc<"cardChecklist">> = facts;
+      const { titleChanged: moved } = await rebuildListingText(
+        ctx,
+        stored,
+        rebuilt,
+        newStoredCardReadCache(),
+      );
+      if (typeof args.listingTitle !== "string") {
+        filtered.listingTitle = rebuilt.listingTitle ?? stored.listingTitle;
+        if (!titleReviewed) {
+          filtered.listingTitleTruncated =
+            "listingTitleTruncated" in rebuilt
+              ? rebuilt.listingTitleTruncated
+              : stored.listingTitleTruncated;
+        }
+        if (moved) walkRetitled = true;
+      }
+      if (args.listingDescription === undefined) {
+        filtered.listingDescription = rebuilt.listingDescription ?? stored.listingDescription;
+      }
+    }
+
     // NEO-535 — the description follows the facts. A write that changes a
     // fact the description carries rebuilds it, but only when the stored one
     // is what the builder made from the facts BEFORE this write (never a
@@ -8102,7 +8150,7 @@ export const updateCard = mutation({
     // a card with a page of copies or fewer, a scheduled paged chain beyond
     // that (`listingTitleRequeue`), so the save stays light however many
     // collectors hold the card.
-    if (titleChanged) {
+    if (titleChanged || walkRetitled) {
       await queueRetitledCardNow(ctx, id);
     }
     return null;
@@ -9628,6 +9676,12 @@ export const setCardFeature = mutation({
     cardChecklistId: v.id("cardChecklist"),
     key: v.string(),
     value: v.string(),
+    /**
+     * NEO-645 T4 — the Tidy Up walk's save: rebuild the title and description
+     * from the card as this write leaves it, always (a typed title is
+     * overwritten). Only the walk sends it.
+     */
+    regenerateListing: v.optional(v.literal(true)),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -9671,6 +9725,7 @@ export const setCardFeature = mutation({
       ...(listingDescription !== undefined ? { listingDescription } : {}),
       lastUpdated: Date.now(),
     });
+    if (args.regenerateListing) await regenerateListingNow(ctx, args.cardChecklistId);
     return null;
   },
 });

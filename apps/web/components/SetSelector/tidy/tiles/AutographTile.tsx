@@ -63,7 +63,12 @@ export default function AutographTile({ row, leafId, leafCards }: TidyTileProps)
     setBusy(true);
     setError(null);
     try {
-      await setCardFeature({ cardChecklistId: row._id, key: "autographed", value });
+      await setCardFeature({
+        cardChecklistId: row._id,
+        key: "autographed",
+        value,
+        regenerateListing: true,
+      });
       if (advance) answered();
     } catch (e) {
       setError(userFacingMessage(e, "Didn't save, try again."));

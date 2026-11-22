@@ -175,7 +175,7 @@ describe("applyTeamToPlayerCards — the answer goes to the card's line (main's 
     expect(links.map((l) => l.teamId)).toEqual([tw.w.padres]);
   });
 
-  test("a generated title takes the team; a hand-typed one is left alone", async () => {
+  test("a generated title takes the team, and so does a hand-typed one (T4: always overwrite)", async () => {
     const t = newT();
     const tw = await teamWorld(t);
     const generated = await merrillCard(t, tw, "2");
@@ -183,7 +183,8 @@ describe("applyTeamToPlayerCards — the answer goes to the card's line (main's 
     const typed = await merrillCard(t, tw, "3", { listingTitle: "Hand typed" });
     await applyTeam(t, tw, [generated, typed]);
     expect((await card(t, generated))!.listingTitle).toContain("Padres");
-    expect((await card(t, typed))!.listingTitle).toBe("Hand typed");
+    expect((await card(t, typed))!.listingTitle).toContain("Padres");
+    expect((await card(t, typed))!.listingTitle).not.toBe("Hand typed");
   });
 
   test("there is no career test: a traded player's card, and a team his career never gave, take the operator's answer", async () => {
@@ -526,7 +527,7 @@ describe("applyVariation — compare-and-set on cardVariation === from", () => {
     expect((await card(t, s.same))!.cardVariation).toBeUndefined();
   });
 
-  test("a generated title follows the new variation; a hand-typed one stays", async () => {
+  test("a generated title follows the new variation, and a hand-typed one is rebuilt too (T4)", async () => {
     const t = newT();
     const s = await setup(t);
     const typed = await s.mk("5", FROM, { listingTitle: "Typed title" });
@@ -535,7 +536,8 @@ describe("applyVariation — compare-and-set on cardVariation === from", () => {
     await apply(t, [s.same, typed]);
     expect((await card(t, s.same))!.listingTitle).toContain("Photo");
     expect((await card(t, s.same))!.listingTitle).not.toContain("Image");
-    expect((await card(t, typed))!.listingTitle).toBe("Typed title");
+    expect((await card(t, typed))!.listingTitle).toContain("Photo");
+    expect((await card(t, typed))!.listingTitle).not.toBe("Typed title");
   });
 
   test("a blank `from` has no variation to change; a `to` over the cap is refused naming the limit", async () => {

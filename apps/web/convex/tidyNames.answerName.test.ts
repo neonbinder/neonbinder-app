@@ -381,7 +381,7 @@ describe("answerName — Not a player takes the name off the card AND out of its
     }
   });
 
-  test("a hand-typed title is kept when the name leaves the card", async () => {
+  test("a hand-typed title is rebuilt when the name leaves the card (T4: always overwrite)", async () => {
     const t = newT();
     const w = await world(t);
     const id = await t.run((ctx) =>
@@ -397,7 +397,7 @@ describe("answerName — Not a player takes the name off the card AND out of its
       name: BO,
       answer: { kind: "notEntity" },
     });
-    expect((await card(t, id))!.listingTitle).toBe("My own title for card one");
+    expect((await card(t, id))!.listingTitle).toBe("Chrome Base #1 Baseball");
   });
 });
 

@@ -224,7 +224,7 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
     setVariationError(null);
     setVariationNote("");
     try {
-      await updateCard({ id: row._id, cardVariation: next });
+      await updateCard({ id: row._id, cardVariation: next, regenerateListing: true });
       setVariationSaved(next);
       setVariationNote("Variation saved.");
     } catch (e) {
