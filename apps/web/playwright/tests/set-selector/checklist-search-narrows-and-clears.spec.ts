@@ -17,7 +17,7 @@
 // nothing. The rows exist whether SportLots is live or paused (paused they are
 // BSC-only), so the spec needs no paused branch.
 //
-// R3: checklist-team-leader-cards-pair-and-picked-name-saves uses the search
+// R3: checklist-team-leader-cards-pair-and-the-walk-settles-the-checklist-team-claims uses the search
 // to reach two rows of a ~440-card set; this spec owns the control itself.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { editCardButton } from "../../support/cards";

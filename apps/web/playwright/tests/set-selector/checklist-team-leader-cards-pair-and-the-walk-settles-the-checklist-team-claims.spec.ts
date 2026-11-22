@@ -26,7 +26,7 @@
 // Base. SOLE WRITER of Football -> 2014; not self-cleaning (the run-start
 // reset is its cleanup). FRESH-ONLY: a re-run on the same seed finds the
 // checklist committed and fails at STEP 3's empty-checklist assert, by name.
-// Mints nothing: every review-wizard name is skipped.
+// Mints nothing: every name on the walk is skipped (Skip / Save for later write nothing).
 //
 // RE-DERIVE ON THE FIRST LIVE RUN (SportLots paused): the measurement below
 // predates names-first pairing (NEO-591), which changes how a checklist row
@@ -57,21 +57,28 @@
 // dialog and no name decision: the feature has no surface. The paused branch
 // proves the pause on the page, then (NEO-489) runs the one thing a one-marketplace
 // fetch of this set can still prove: a publisher's checklist that says "No Team" on
-// #6a, a team-leader card whose BSC bulk answer already names its team, raises the
-// wizard's "Checklist says otherwise" step with the checklist's side "No team on the
-// card"; taking the checklist's side saves #6a with no team and no "no team on this
-// card yet" badge. NEO-591: the same file prints #38a (the Chiefs' card) as the MIXED cell
+// #6a, a team-leader card whose BSC bulk answer already names its team. NEO-645: Match
+// Cards' Confirm SAVES the cards, and the per-card Tidy Up walk then shows the claim as a
+// "Sources disagree" item on #6a's "Team name": BSC's "New England Patriots" is an NB team
+// and No Team names nobody, so NB went with the Patriots (blue "To check", "Went with
+// “New England Patriots”, they're already in your binder."), and the checklist's side is
+// one press away. Taking it saves #6a with no team and no "no team on this card yet" badge.
+// NEO-591: the same file prints #38a (the Chiefs' card) as the MIXED cell
 // "Kansas City Chiefs / Prospect (Dallas Baptist)": the X of "Prospect (X)" is one of the
 // card's printed teams (Jason, 2026-11-19). Match Cards reads that row as printed, both
 // paired ("· Kansas City Chiefs / Prospect (Dallas Baptist)", in its Unlink control) and
 // unpaired on the checklist list after an Unlink (before 1a4def6c it read "Prospect (Kansas
 // City Chiefs / Dallas Baptist)"); linked back, the row is unchanged. The checklist names a
-// team BSC does not (Dallas Baptist), so the wizard asks "Checklist says otherwise" on #38a;
-// keeping the marketplace's side saves #38a with its own team AND as a Prospect Card (the
-// claim rides with every outcome). This is the only registered
+// team BSC does not (Dallas Baptist, no team on file), so #38a disagrees too: NB went with
+// the marketplace's Chiefs (blue), the checklist's "Kansas City Chiefs / Dallas Baptist" a
+// press away; Save & next accepts it, and #38a is saved with its own team AND as a Prospect
+// Card (the claim rides with every outcome). This is the only registered
 // set whose marketplace bulk answer carries a team, which is why both claims are
 // exercised here. Zero BSC calls: all 554 rows are answered by the file, and #6a and
 // #38a carry their teams from the bulk answer.
+// The walk visits the cards in its own order; every card but #6a and #38a is skipped (its
+// names are not this spec's: nothing is written), and #6a is skipped too the first time,
+// then answered last, from the checklist's "N need you" pill.
 // NEO-591 (variations), the same paused upload, two more edits to the file:
 //   STEM LINK: Julius Thomas is #9a and #9b on BSC (the same player twice). The file
 //     prints him once, as "9" (`STEM`: 9a renumbered, 9b dropped), so the one row
@@ -111,21 +118,25 @@ import {
   usePublishersChecklist,
 } from "../../support/published-checklist";
 import {
-  advanceToSave,
-  confirmSaveButton,
-  disagreementOn,
-  expectChecklistDisagreementFirst,
-  pickDisagreementSide,
-  reviewWizard,
-} from "../../support/wizard";
+  expectCardSettled,
+  mustFixLine,
+  openTidyWalk,
+  saveAndNext,
+  saveForLater,
+  settleWalkAfterCommit,
+  skipCard,
+  skipUntil,
+  tidyCardIdentity,
+  tidyFooterButton,
+  tidyTile,
+  tidyWalk,
+} from "../../support/tidy-walk";
 
 const FOOTBALL_2014 = { sport: "Football", year: "2014", manufacturer: "Topps" };
 /** One live BSC + SportLots round trip on a ~1,000-row two-sided fetch. */
 const CHECKLIST_FETCH = 120_000;
-/** The wizard opens behind the entity check's batch (live lookups). */
-const WIZARD_OPENS = 60_000;
-/** The bulk skip while the batch can still grow (checklist-one-marketplace-match-cards-keeps-every-card's ceiling). */
-const BATCH_GROWS = 60_000;
+/** The set's size: the walk can show at most every card once (a runaway guard, not a wait). */
+const SET_CARDS = 554;
 
 /**
  * NEO-591: the Chiefs' team-leader card, its file cell changed to a MIXED cell: its own club and a
@@ -138,8 +149,8 @@ const PROSPECT = {
   cell: "Kansas City Chiefs / Prospect (Dallas Baptist)",
   /** How the cell read before 1a4def6c: every team inside the bracket. Never shown now. */
   misread: "Prospect (Kansas City Chiefs / Dallas Baptist)",
-  /** The checklist's side of the wizard's "Checklist says otherwise" on #38a: both printed teams, joined by "and" (measured). */
-  checklistSide: "Kansas City Chiefs and Dallas Baptist",
+  /** The checklist's side of #38a's "Sources disagree" item: both printed teams, as the tile joins a value (" / "). */
+  checklistSide: "Kansas City Chiefs / Dallas Baptist",
 } as const;
 
 /**
@@ -185,7 +196,7 @@ test(
       await expectAccessible(page, { label: "2014 Topps Football Base, SportLots on pause" });
 
       // ── NEO-489, SportLots on pause: a checklist that says "No Team" on a card BSC gives a team ──
-      // With SportLots paused the fetch is BSC plus the checklist: Match Cards, then the review
+      // With SportLots paused the fetch is BSC plus the checklist: Match Cards, then the Tidy Up
       // wizard. This set is the one place the marketplace's OWN bulk answer carries a team (a
       // team-leader card, "New England Patriots TL", is its team: no other registered set has
       // one, see SET-REGISTRY.md), so it is where a No Team claim can disagree with a card that
@@ -333,65 +344,61 @@ test(
         facts: { ...claimed, matched: claimed.matched - 2 },
         what: "the paused 2014 Topps Football fetch",
       });
-      const pausedWizard = reviewWizard(page);
-      // The wizard opens behind the entity check's batch (live lookups), like the unpaused path's.
-      await expect(pausedWizard).toBeVisible({ timeout: WIZARD_OPENS });
+      // NEO-645: Confirm SAVED the cards; the walk opens on the cards that need a person.
+      const pausedSaved = page.getByText(/Saved [1-9][0-9]* cards\./).first();
+      expect(await settleWalkAfterCommit(page, pausedSaved), "#6a and #38a disagree with the checklist, so the walk opens").toBe(true);
+      const walk = tidyWalk(page);
+      const disagree = tidyTile(page, "Sources disagree");
+      const teamSays = disagree.getByRole("list", { name: "What each source says: Team name", exact: true });
+      const column = (source: "BSC" | "Checklist") => teamSays.getByRole("listitem").filter({ hasText: new RegExp(`^${source}`) });
+      // The walk's order is (ready, number), not fixed: every card it shows is read, the two this
+      // spec owns are checked, and every other card is skipped (nothing written). Bounded by the set.
+      const owned = new Set(["6a", PROSPECT.number]);
+      const met = new Set<string>();
+      for (let i = 0; i < SET_CARDS && met.size < owned.size; i++) {
+        const done = tidyFooterButton(page, "done");
+        await expect(tidyTile(page, "More about this card").or(done).first()).toBeVisible();
+        if (await done.isVisible()) break;
+        await expectCardSettled(page);
+        const identity = await tidyCardIdentity(page).allTextContents();
+        const number = /^#(\S+)/.exec(identity[0] ?? "")?.[1] ?? "";
+        expect(number, `the open card reads its number (${identity.join(" | ")})`).not.toBe("");
+        if (!owned.has(number)) {
+          await skipCard(page);
+          continue;
+        }
+        met.add(number);
+        // Both cards carry a team the bulk answer named and NB has on file, so NB went with it
+        // (blue: a check, never a stop) and the checklist's side is one press away.
+        await expect(disagree).toHaveAccessibleDescription(/To check/);
+        await expect(teamSays.getByRole("listitem")).toHaveCount(2);
+        if (number === "6a") {
+          await expect(column("BSC")).toContainText("New England Patriots");
+          await expect(disagree.getByRole("status")).toHaveText("Went with “New England Patriots”, they're already in your binder.");
+          // Answered last (below), from the pill: skipped now, nothing written.
+          await skipCard(page);
+          continue;
+        }
+        // #38a: X is one of the checklist's teams, so the checklist's side names both printed teams.
+        await expect(column("BSC")).toContainText(PROSPECT.team);
+        await expect(column("Checklist")).toContainText(PROSPECT.checklistSide);
+        await expect(disagree.getByRole("status")).toHaveText(`Went with “${PROSPECT.team}”, they're already in your binder.`);
+        // The source button's name contains its visible text (tolerant of the coming a11y renames).
+        await expect(disagree.getByRole("button", { name: new RegExp(`Use “${escapeRe(PROSPECT.checklistSide)}” instead`) })).toBeVisible();
+        await expectAccessible(page, { within: walk, label: "Tidy Up walk, NB's pick against a Prospect (X) checklist team" });
+        // Keeping the marketplace's side is NB's pick: Save & next accepts it when nothing else is
+        // pink; a card with a name still waiting is skipped, the team already standing.
+        const save = tidyFooterButton(page, "saveAndNext", { usable: true });
+        await expect(save.or(mustFixLine(page)).first()).toBeVisible();
+        if (await save.isVisible()) await saveAndNext(page);
+        else await skipCard(page);
+      }
+      expect([...met].sort(), "the walk showed both checklist claims").toEqual([...owned].sort());
+      await saveForLater(page);
 
-      // The step that asks comes first, with exactly one group: #6a. Marketplace first, then the
-      // checklist, each side's team: the card's own, and the checklist's claim in words.
-      await expectChecklistDisagreementFirst(page);
-      const onSix = disagreementOn(page, "6a");
-      await expect(onSix).toBeVisible();
-      await expect(pausedWizard.getByRole("radiogroup", { name: /^Disagreement on #/ })).toHaveCount(2);
-      await expect(onSix.getByRole("definition")).toHaveText(["New England Patriots", "No team on the card"]);
-      // NEO-591: X is one of the checklist's teams, so #38a disagrees (BSC names the Chiefs alone):
-      // the checklist's side shows both printed teams, never "No team on the card".
-      await expect(disagreementOn(page, PROSPECT.number).getByRole("definition")).toHaveText([
-        PROSPECT.team,
-        PROSPECT.checklistSide,
-      ]);
-      await expectAccessible(page, { within: pausedWizard, label: "Entity review wizard, a No Team claim and a Prospect (X) team against team-leader cards" });
-      await pickDisagreementSide(page, "6a", "Use the checklist's");
-      await pickDisagreementSide(page, PROSPECT.number, "Keep the marketplace's");
-
-      // The names are not this part's claim: skip them all (repeating while a Wikidata career
-      // history can still stage a row), then save.
-      const pausedNext = pausedWizard.getByRole("button", { name: "Next (Enter)", exact: true });
-      await pausedNext.click();
-      await expect(
-        pausedWizard.getByRole("heading", { level: 3, name: "Checklist says otherwise" }),
-      ).toBeHidden();
-      const pausedNamesDone = pausedNext.or(confirmSaveButton(page));
-      const pausedSkip = pausedWizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ });
-      await expect(async () => {
-        if (await pausedSkip.isVisible()) await pausedSkip.click();
-        await expect(pausedNamesDone).toBeVisible({ timeout: 7_000 });
-      }).toPass({ timeout: BATCH_GROWS });
-      await advanceToSave(page);
-      await confirmSaveButton(page).click();
-      await expect(page.getByText(/Saved [1-9][0-9]* cards?/)).toBeVisible();
-      await expect(pausedWizard).toBeHidden();
-
-      // The checklist's side was taken: #6a (still named for its team, the TC rule) shows no team
-      // at all. A fresh load of the set, #6a found by the checklist search ("6a" is a prefix
-      // match: #6a, not #16a). Where the claim was NOT taken, the card would carry its team
-      // linked (the team text twice, name and sub-line, as STEP 9 reads) or typed and
-      // unconfirmed; here it is the name alone, no team chip in the drawer, and no
-      // "no team on this card yet" badge, because the checklist's No Team is an answer.
+      // A fresh load of the set: what was stored, not the walk's echo.
       await drillToBaseVariant(page, env, { ...FOOTBALL_2014, set: "Topps" });
       const pausedSearch = page.getByRole("searchbox", { name: "Search cards" });
-      await pausedSearch.fill("6a");
-      await expect(page.getByText(/^1 of [0-9]+ cards$/)).toBeVisible();
-      const sixRow = page.getByRole("button", { name: /^Edit card 6a?, New England Patriots$/ });
-      await expect(sixRow).toBeVisible();
-      await expect(page.getByText(/New England Patriots \(unconfirmed\)/)).toHaveCount(0);
-      await expect(page.getByRole("img", { name: /^Card 6a?(, .*)? needs attention: no team on this card yet$/ })).toHaveCount(0);
-      await sixRow.click();
-      const sixDrawer = page.getByRole("dialog");
-      await expect(sixDrawer.getByText("Teams", { exact: true })).toBeVisible();
-      await expect(sixDrawer.getByRole("button", { name: /^Remove team / })).toHaveCount(0);
-      await sixDrawer.getByRole("button", { name: "Done editing card" }).click();
-      await expect(sixDrawer).toBeHidden();
 
       // NEO-591: #38a kept the marketplace's team and is a Prospect Card all the same.
       await pausedSearch.fill(PROSPECT.number);
@@ -423,6 +430,45 @@ test(
       await expect(siblingDrawer.getByRole("button", { name: "Clear variation parent", exact: true })).toBeVisible();
       await siblingDrawer.getByRole("button", { name: "Done editing card" }).click();
       await expect(siblingDrawer).toBeHidden();
+      await pausedSearch.fill("");
+
+      // ── #6a, last: the checklist's No Team is taken on the walk, from the "N need you" pill ──
+      // A new sitting starts on the first card; the walk skips (writing nothing) to #6a's item.
+      await openTidyWalk(page);
+      // Page-rooted through the helper (a `has` chained off another locator would never match).
+      const sixSays = tidyTile(page, "Sources disagree")
+        .getByRole("list", { name: "What each source says: Team name", exact: true })
+        .filter({ hasText: "New England Patriots" });
+      await skipUntil(page, sixSays, { maxCards: SET_CARDS });
+      // The checklist's side says, in words, that the card shows no team (the retired wizard read
+      // "No team on the card"), and offers that side by those words.
+      await expect(column("Checklist")).toContainText(/No team/i);
+      const useNoTeam = disagree.getByRole("button", { name: /Use “No team[^”]*” instead/i });
+      await expect(useNoTeam).toBeVisible();
+      await expectAccessible(page, { within: walk, label: "Tidy Up walk, a No Team claim against a team-leader card's team" });
+      await useNoTeam.click();
+      await expect(disagree.getByRole("status")).toHaveText(/^Using “No team[^”]*” \(Checklist\)$/i);
+      await saveForLater(page);
+
+      // The checklist's side was taken: #6a (still named for its team, the TC rule) shows no team
+      // at all. A fresh load of the set, #6a found by the checklist search ("6a" is a prefix
+      // match: #6a, not #16a). Where the claim was NOT taken, the card would carry its team
+      // linked (the team text twice, name and sub-line, as STEP 9 reads) or typed and
+      // unconfirmed; here it is the name alone, no team chip in the drawer, and no
+      // "no team on this card yet" badge, because the checklist's No Team is an answer.
+      await drillToBaseVariant(page, env, { ...FOOTBALL_2014, set: "Topps" });
+      await pausedSearch.fill("6a");
+      await expect(page.getByText(/^1 of [0-9]+ cards$/)).toBeVisible();
+      const sixRow = page.getByRole("button", { name: /^Edit card 6a?, New England Patriots$/ });
+      await expect(sixRow).toBeVisible();
+      await expect(page.getByText(/New England Patriots \(unconfirmed\)/)).toHaveCount(0);
+      await expect(page.getByRole("img", { name: /^Card 6a?(, .*)? needs attention: no team on this card yet$/ })).toHaveCount(0);
+      await sixRow.click();
+      const sixDrawer = page.getByRole("dialog");
+      await expect(sixDrawer.getByText("Teams", { exact: true })).toBeVisible();
+      await expect(sixDrawer.getByRole("button", { name: /^Remove team / })).toHaveCount(0);
+      await sixDrawer.getByRole("button", { name: "Done editing card" }).click();
+      await expect(sixDrawer).toBeHidden();
       return;
     }
 
@@ -576,34 +622,11 @@ test(
     await confirm.click();
     await expect(dialog).toBeHidden();
 
-    // Two legitimate shapes, named by this gate (R2): the review wizard (names
-    // the catalogue does not know — a team-leader card's team is also reported
-    // as a PLAYER, the TC rule — or only its teams / titles steps), or the
-    // direct commit. The wizard opens behind the entity check's live batch.
-    const wizard = reviewWizard(page);
-    const saved = page.getByText(/Saved [1-9][0-9]* cards?/);
-    await expect(wizard.or(saved).first()).toBeVisible({ timeout: WIZARD_OPENS });
-    if (await wizard.isVisible()) {
-      await expectAccessible(page, { within: wizard, label: "Tidy-up wizard, 2014 Topps Football" });
-      // The names are not this spec's claim: skip every one in one press,
-      // lookups included, creating nothing. The batch can still grow after the
-      // wizard opens (a Wikidata career history stages teams), leaving one row
-      // undecided, so the press repeats until the names-done footer shows.
-      const namesDone = wizard
-        .getByRole("button", { name: "Next (Enter)", exact: true })
-        .or(confirmSaveButton(page));
-      const skipRemaining = wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ });
-      await expect(async () => {
-        if (await skipRemaining.isVisible()) await skipRemaining.click();
-        await expect(namesDone).toBeVisible({ timeout: 7_000 });
-      }).toPass({ timeout: BATCH_GROWS });
-      // Teams and titles are not this spec's claim either: every line stays
-      // on its default.
-      await advanceToSave(page);
-      await confirmSaveButton(page).click();
-    }
-    // Both shapes end here: our own write, the 7 s bar.
-    await expect(saved).toBeVisible();
+    // NEO-645: Confirm SAVES the cards; a card that needs a person (a team-leader card's team is
+    // also reported as a PLAYER, the TC rule) opens the walk, and the names are not this spec's
+    // claim: Save for later closes it, writing nothing. Our own write, the 7 s bar.
+    const saved = page.getByText(/Saved [1-9][0-9]* cards?\./).first();
+    if (await settleWalkAfterCommit(page, saved)) await saveForLater(page);
 
     // ── STEP 8 (b): the saved name is the one the operator picked. Re-enter
     // the set so the checklist mounts fresh from what was stored (Base is

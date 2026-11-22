@@ -9,8 +9,9 @@
 //
 // BSC and an uploaded checklist are two sources (NEO-496, D10/NQ1), so every fetch
 // below opens Match Cards with Keep controls, as two marketplaces always did: a
-// card or row left in a column is discarded unless kept. Four parts, in the order
-// the operator would meet them:
+// card or row left in a column is discarded unless kept. NEO-645: Match Cards'
+// Confirm SAVES the cards, and the per-card Tidy Up walk opens afterwards on the
+// cards that need a person. Three parts, in the order the operator would meet them:
 //   PHASE A, 13 rows against 14 cards (Mike Lowell's row is left out). The
 //     fetch pairs the 13 names and applies their teams ("Teams from your
 //     checklist: 13 of 14 cards" while the dialog is open); Mike Lowell's card
@@ -20,28 +21,32 @@
 //     with BSC's letters preselected (letters over digits). One pair
 //     is unlinked by the Unlink inside its "Checklist #n" chip (the row returns
 //     to "Checklist only", the card waits on the keep shelf) and linked again by
-//     the buttons, which moves the pair back into Matched (NEO-591); Lowell is kept; Confirm takes the 13 teams to the wizard, and
-//     "Cards with no team" lists Mike Lowell ONLY. Back to Match Cards keeps the
-//     links and keeps. Nothing is committed: Cancel, Discard.
+//     the buttons, which moves the pair back into Matched (NEO-591); Lowell is
+//     kept. Nothing is saved: Cancel, Discard ("Sync cancelled — no cards saved.").
 //   PHASE A2, one name is misspelled (14 rows, row 11 reads "Rhett Lowdr").
 //     The fetch pairs all 14, Lowder by a near name: its chip reads the names'
 //     score lowered by the numbers-differ factor (0.9), computed by the
-//     product's own pairing core, not typed here; every source lines up. The two spellings are one
+//     product's own pairing core, not typed here; every source lines up and
+//     "Teams from your checklist: 14 of 14 cards" shows. The two spellings are one
 //     name picker on the row ("Name for #SIG-RL": BSC's preselected, the checklist's "· your
-//     checklist"), counted on the Matched toggle. The operator unlinks that pair
-//     and makes it again by the buttons (one Matched row again, no %, the same picker), and Confirms
-//     with the picker untouched; a preselect is no answer, so the wizard opens on "Checklist says otherwise" and the
-//     operator keeps the card's. No "Cards with no team" follows: all 14 reach
-//     the save. Nothing is committed: Cancel, Discard.
-//   PHASE B, the whole file (14 rows). The fetch pairs every row to its card
-//     by player; Match Cards says every card lines up and shows
-//     "Teams from your checklist: 14 of 14 cards" while open; no "Cards with no
-//     team" step. Panini writes "Oakland A's" for Jacob Wilson; NB holds no club
-//     of that name (the checklist's claim is never rewritten, rule 8), so the
-//     wizard asks, and the operator links it to the club the checklist means,
-//     Oakland Athletics (1968-2024), with the remember-box OFF so no alias is
-//     saved. Frank Thomas is two players on file; the Hall of Famer is linked and
-//     shown as a decided row. The save reads back: numbers stay SIG-xx, #SIG-BW is
+//     checklist"), counted on the Matched toggle; a name over 120 is refused where it is
+//     typed. The operator unlinks that pair and makes it again by the buttons (one Matched
+//     row again, no %, the same picker), and Confirms with the picker untouched: the 14
+//     cards are SAVED, with the checklist's teams.
+//   THE WALK (NEO-645), on the saved cards. "Numbers didn't match: BSC SIG-xx,
+//     Checklist n" is a purple NOTE on the Listing title tile of every card it shows,
+//     never a stop: a card left with nothing to fix saves with Save & next while the
+//     note is up. A preselect is no answer, so #SIG-RL carries the two spellings as a
+//     "Sources disagree" item; "Rhett Lowder" is already an NB player and "Rhett Lowdr"
+//     is not, so NB went with Lowder (blue "To check", "Went with “Rhett Lowder”,
+//     they're already in your binder.", the checklist's spelling a press away).
+//     Panini writes "Oakland A's" for Jacob Wilson; NB holds no club of that name (the
+//     checklist's claim is never rewritten, rule 8), so #SIG-JW's Team tile is pink,
+//     and the operator links it to the club the checklist means, Oakland Athletics
+//     (1968-2024), with the remember-box OFF so no alias is saved. No other card's
+//     Team tile is pink: every name pair brought its team. Frank Thomas is two players
+//     on file; the Hall of Famer is linked for you, said in a purple note when his
+//     card is on the walk. The save reads back: numbers stay SIG-xx, #SIG-BW is
 //     Kansas City Royals, #SIG-JW is Oakland Athletics.
 //   PHASE C (NEO-496 plan decision 4), the SET's own checklist in Panini's
 //     spreadsheet layout (an xlsx with the credit line above the header, built
@@ -50,7 +55,8 @@
 //     "Red"; Sync Inserts pairs "Donruss Ballpark Stars Signatures" with BSC's
 //     "Donruss Ballparks Stars Signatures" (near name); Unleashed's fetch leaves
 //     BSC's two football cards (SG-CO, SG-TB) unkept, keeps the file's two
-//     checklist-only rows with Keep all, and commits the file's 22;
+//     checklist-only rows with Keep all, and commits the file's 22 (its walk is
+//     left with Save for later, writing nothing);
 //     the same checklist as a CSV replaces it with Unleashed's 20 cards unchanged;
 //     Remove.
 //
@@ -59,14 +65,12 @@
 // known-brands list mints it; it sat under Unknown before) > Insert > Retro 1997
 // Donruss Signature Series Autographs, BSC only (SportLots is paused), and, in
 // PHASE C, the set's Base, Parallel and Insert types (approved by Jason
-// 2026-11-11, Q8/N4). SOLE WRITER of the set; FRESH-ONLY (it commits in PHASE B
+// 2026-11-11, Q8/N4). SOLE WRITER of the set; FRESH-ONLY (it commits in PHASE A2
 // and C), so a re-run fails at "No cards in this checklist yet." by name:
-// re-seed first. In PHASES A-B every player and
-// club but Oakland A's is on the catalogue, so no player is minted; Oakland A's is the one name
-// the wizard looks up (a recorded no-match, answered at once), and that lookup queues in the
-// deployment-wide pool every shard shares, so the club step is waited for through
-// `awaitLookupsSettled` (a pending team is not a step yet; GUIDE, support/wizard.ts). PHASE C skips
-// every name Unleashed's wizard asks, so it mints nothing either.
+// re-seed first. In PHASES A-A2 every player and
+// club but Oakland A's is on the catalogue, so no player is minted; the walk writes only the
+// club link, an autograph format where a card asks for one, and "seen" marks (Save & next).
+// PHASE C leaves Unleashed's walk with Save for later, so it mints nothing either.
 //
 // Not a hand-rolled drill by choice (R9): the helpers drill a Base or a brand's
 // set; this set is an INSERT reached through the pinned All Brands view like the
@@ -77,6 +81,7 @@ import { expectAfterMarketplace, expectStepWithSportLots } from "../../support/m
 import {
   CHECKLISTS,
   checklistFacts,
+  checklistRows,
   type ChecklistRow,
   nearNamePair,
   publishersChecklistButton,
@@ -99,18 +104,20 @@ import {
 import { editCardButton } from "../../support/cards";
 import { buildDonrussCsv, buildDonrussXlsx } from "../../fixtures/checklists/build-fixtures.mjs";
 import {
-  advanceToSave,
-  awaitLookupsSettled,
-  cancelAndDiscard,
-  confirmSaveButton,
-  expectChecklistDisagreementFirst,
-  nextStepButton,
-  openDecidedList,
-  passCareerCheck,
-  pickDisagreementSide,
-  readBackDecision,
-  reviewWizard,
-} from "../../support/wizard";
+  answerPinkAutographTile,
+  expectCardSettled,
+  finishTidyWalk,
+  mustFixLine,
+  pinkTile,
+  saveAndNext,
+  saveForLater,
+  settleWalkAfterCommit,
+  skipCard,
+  tidyCardIdentity,
+  tidyFooterButton,
+  tidyTile,
+  tidyWalk,
+} from "../../support/tidy-walk";
 
 const INSERT = "Retro 1997 Donruss Signature Series Autographs";
 const SET = "Donruss";
@@ -249,7 +256,6 @@ test(
   "Published checklist — rows whose numbers match no card pair to the cards by player name, and the card's own player settles the club",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
-    const wizard = reviewWizard(page);
     const matchCards = page.getByRole("dialog", { name: /^Match Cards/ });
 
     await signIn("/set-selector");
@@ -258,15 +264,7 @@ test(
     // ── DRILL: the insert, through All Brands ──
     // The year, the Sets and the Variant Types are warm or sync from BSC on first use; the helper pays
     // those waits. Under paused SportLots the Insert column fills straight from BSC (no reconcile).
-    await drillToColdManufacturer(page, env, { sport: "Baseball", year: "2026", manufacturer: "All Brands" });
-    await expect(page.getByRole("listbox", { name: "Sets" })).toBeVisible();
-    await columnSearch(page, "Sets").fill("Donruss");
-    // The view reads each set's name, then its brand ("Donruss Donruss"); a bare
-    // "Donruss" text would also match the brand of "Donruss Elite" and the rest.
-    await page
-      .getByRole("listbox", { name: "Sets" })
-      .getByRole("option", { name: /^Donruss \S+$/ })
-      .click();
+    await openDonrussSet(page, env);
     await expectStepWithSportLots(page, columnOption(page, "Variant Types", "Insert"), env, {
       liveMs: VARIANT_TYPES_SYNC,
       what: "Variant Types row Insert",
@@ -360,52 +358,20 @@ test(
     await expect(matchCards.getByRole("heading", { name: "Keeping (0)" })).toBeVisible();
     await expect(matchCards.getByText(`Matched (${WITHOUT_LOWELL.paired})`)).toBeVisible();
     await expect(matchCards.getByRole("button", { name: /^Unlink card #SIG-FT Frank Thomas from checklist row / })).toBeVisible();
-    // Keep Mike Lowell's card, so all 14 go on to the wizard.
+    // Keep Mike Lowell's card: the keep shelf holds it.
     await lowellKeep.click();
     await expect(matchCards.getByRole("heading", { name: "BSC only (0)" })).toBeVisible();
     await expect(matchCards.getByRole("heading", { name: "Keeping (1)" })).toBeVisible();
 
-    // Confirm: the 13 linked rows' teams reach the wizard. It opens on Oakland A's (NB has no club of
-    // that name): the first question about a name.
-    await matchCards.getByRole("button", { name: "Confirm card matches" }).click();
+    // NEO-645: Confirm would SAVE these cards now, so PHASE A leaves without saving: Cancel asks
+    // to throw the links and the keep away (NEO-220), and Discard writes nothing.
+    await matchCards.getByRole("button", { name: "Cancel card matching", exact: true }).click();
+    const discard = page.getByRole("button", { name: /^Discard [0-9]+ pairings?$/ });
+    await expect(discard).toBeVisible();
+    await discard.click();
     await expect(matchCards).toBeHidden();
-    const clubStep = wizard.getByRole("heading", { level: 3, name: `New Team: ${CLUB}` });
-    // The club's lookup waits in the deployment-wide pool beside every other shard's batch, and a
-    // pending team is not presented, so the wizard shows "N still looking up" until it settles
-    // (`awaitLookupsSettled`, the house ceiling). The step itself then shows within the usual 7 s.
-    // Jason 2026-11-13 (NEO-496): wait for the batch's lookups before the club step; the shared
-    // Wikidata pool can hold a recorded miss ~9 s under CI load. (GUIDE hard rule 3.)
-    // R2: the settle wait is a negative that passes on a dead page, so it sits between two positive
-    // asserts: the wizard is up before it, the club step's heading is up after it.
-    const expectClubStep = async () => {
-      await expect(wizard).toBeVisible();
-      await awaitLookupsSettled(page);
-      await expect(clubStep).toBeVisible();
-    };
-    await expectClubStep();
-
-    // Back to Match Cards keeps every link and keep the operator made.
-    await wizard.getByRole("button", { name: "Back to Match Cards" }).click();
-    await expect(matchCards).toBeVisible();
-    await expect(matchCards.getByRole("heading", { name: "Checklist only (0)" })).toBeVisible();
-    await expect(matchCards.getByRole("heading", { name: "BSC only (0)" })).toBeVisible();
-    await matchCards.getByRole("button", { name: "Confirm card matches", disabled: false }).click();
-    await expectClubStep();
-
-    // Link the club to the one the checklist names, the 1968-2024 Oakland Athletics. Remember-box
-    // OFF first, while the combobox is closed: no alias is saved (PHASE B reads the decision back).
-    await answerClubStep(page);
-
-    // NEO-574: the catalogue's prospects here have no stint with their card's club by 2026, so a
-    // "Career check" comes first; it is not this spec's business (`passCareerCheck` answers every line "Keep as is", which writes nothing).
-    await passCareerCheck(page);
-    // "Cards with no team" holds Mike Lowell ONLY: the other 13 took their team from the checklist.
-    await expect(wizard.getByText("Cards with no team", { exact: true })).toBeVisible();
-    await expect(wizard.getByRole("radiogroup", { name: /^Team for / })).toHaveCount(1);
-    await expect(wizard.getByRole("radiogroup", { name: "Team for Mike Lowell" })).toBeVisible();
-    await expectAccessible(page, { within: wizard, label: "wizard after a two-source confirm" });
-    await cancelAndDiscard(page);
-    await expect(matchCards).toBeHidden();
+    await expect(page.getByText("Sync cancelled — no cards saved.")).toBeVisible();
+    await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
 
     // ══ PHASE A2: 14 rows, one misspelled, against 14 cards ══
     // The fetch pairs 13 names exactly and "Rhett Lowdr" to Rhett Lowder's card by a near name
@@ -426,6 +392,8 @@ test(
     await expect(matchCards.getByRole("button", { name: "Confirm card matches", disabled: false })).toBeVisible();
     await expect(matchCards.getByText(CHECKLIST_ALL_LINED_UP)).toBeVisible();
     await expect(matchCards.getByText(`Matched (${MIXED.cards})`)).toBeVisible();
+    // Every row paired (the near name too), so every card took its team from the file.
+    await expect(page.getByText(new RegExp(`Teams from your checklist: ${MIXED.matched} of ${MIXED.cards} cards`)).first()).toBeVisible();
     // Nothing is left in a column, so Matched opens expanded; its toggle counts the one name
     // difference (NEO-591: a marketplace-against-checklist spelling is a name conflict like any other).
     await expect(
@@ -477,68 +445,94 @@ test(
     await expect(lowder.getByText(/%$/)).toHaveCount(0);
     // The hand link offers the same picker, BSC's spelling preselected again.
     await expectLowderNames(lowder);
-    await matchCards.getByRole("button", { name: "Confirm card matches" }).click();
-    await expect(matchCards).toBeHidden();
-
-    // The pair reads "Rhett Lowder" on the card and "Rhett Lowdr" on the row. The picker was left
-    // untouched, and a preselect is no answer, so the wizard opens on its "Checklist says otherwise"
-    // step (a disagreement is asked, never settled silently). The operator keeps the marketplace's
-    // spelling.
-    await expectChecklistDisagreementFirst(page);
-    await pickDisagreementSide(page, "SIG-RL", "Keep the marketplace's");
-    await wizard.getByRole("button", { name: "Next (Enter)", exact: true }).click();
-
-    // Then the one club question, then no "Cards with no team": all 14 cards took their team from the
-    // checklist, and all 14 reach the save.
-    await expectClubStep();
-    await answerClubStep(page);
-    // Past the career check (NEO-574), the step that is up is not the teams step.
-    await passCareerCheck(page);
-    await expect(wizard.getByText("Cards with no team", { exact: true })).toBeHidden();
-    await advanceToSave(page);
-    await expect(wizard.getByText(`Save ${MIXED.cards} cards?`)).toBeVisible();
-    await cancelAndDiscard(page);
-    await expect(matchCards).toBeHidden();
-
-    // ══ PHASE B: 14 rows against 14 cards ══
-    await page.getByRole("button", { name: "Remove the official checklist" }).click();
-    await expect(publishersChecklistChip(page, MIXED.rows)).toBeHidden();
-    await expect(publishersChecklistButton(page)).toBeVisible();
-    expect(WHOLE.paired).toBe(WHOLE.cards);
-    expect(WHOLE.matched).toBe(WHOLE.cards);
-    await usePublishersChecklist(page, CHECKLISTS.signatureSeries2026);
-    await syncChecklistButton(page).click();
-
-    // The fetch pairs every row to its card by player. Two sources, so Match Cards
-    // still opens (NQ1), with nothing left in any column; the line says what the checklist gave.
-    await expectAfterMarketplace(page, matchCards, { platform: "BuySportsCards", what: "Match Cards for the whole checklist" });
-    await expect(matchCards.getByRole("button", { name: "Confirm card matches", disabled: false })).toBeVisible();
-    await expect(matchCards.getByText(CHECKLIST_ALL_LINED_UP)).toBeVisible();
-    await expect(matchCards.getByText(`Matched (${WHOLE.cards})`)).toBeVisible();
-    await expect(page.getByText(new RegExp(`Teams from your checklist: ${WHOLE.matched} of ${WHOLE.cards} cards`)).first()).toBeVisible();
     await expectAccessible(page, { within: matchCards, label: "Match Cards dialog, every card lined up" });
+
+    // NEO-645: Confirm SAVES the 14 cards (the picker untouched), with the file's teams said on the
+    // line they land with; the walk then opens on the cards that need a person.
     await matchCards.getByRole("button", { name: "Confirm card matches" }).click();
     await expect(matchCards).toBeHidden();
-    await expect(wizard).toBeVisible();
+    const saved = page
+      .getByText(new RegExp(`Saved ${MIXED.cards} cards\\. .*Teams from your checklist: ${MIXED.matched} of ${MIXED.cards} cards`))
+      .first();
+    expect(await settleWalkAfterCommit(page, saved), "Oakland A's is no club on file, so the walk opens").toBe(true);
 
-    // Frank Thomas: two on file, the Hall of Famer is linked and shown as a decided row.
-    const decided = await openDecidedList(page);
-    await expect(decided.getByRole("listitem").filter({ hasText: "Frank Thomas" })).toContainText(
-      "Linked to Frank Thomas · the Hall of Famer",
+    // ══ THE WALK: the numbers are a note, the club is linked, the spelling NB chose is shown ══
+    const walk = tidyWalk(page);
+    // The file's number for each card, by the card's BSC number (Rhett Lowdr's row is #11 too).
+    const fileNumber = new Map(checklistRows(CHECKLISTS.signatureSeries2026MisspelledLowder).map((r) => [bscNumber(r), r.number]));
+    const seen: string[] = [];
+    let savedWithTheNote = 0;
+    // The walk's order is (ready, number), not fixed: visit every card it shows, bounded by the set's size.
+    for (let i = 0; i <= MIXED.cards; i++) {
+      const done = tidyFooterButton(page, "done");
+      await expect(tidyTile(page, "More about this card").or(done).first()).toBeVisible();
+      if (await done.isVisible()) break;
+      await expectCardSettled(page);
+      const identity = await tidyCardIdentity(page).allTextContents();
+      const number = /^#(\S+)/.exec(identity[0] ?? "")?.[1] ?? "";
+      expect(fileNumber.has(number), `the open card is one of the 14 (${identity.join(" | ")})`).toBe(true);
+      seen.push(number);
+
+      // Rule 7: names paired these cards while the numbers differ. The walk says so as a purple note
+      // on the Listing title tile, each source's number by its label; the card keeps BSC's letters.
+      const numbersNote = tidyTile(page, "Listing title").getByRole("note").filter({ hasText: /^Numbers didn't match: / });
+      await expect(numbersNote).toHaveText(`Numbers didn't match: BSC ${number}, Checklist ${fileNumber.get(number)}`);
+      if (seen.length === 1) await expectAccessible(page, { within: walk, label: "Tidy Up walk, a card with a numbers-didn't-match note" });
+
+      const disagree = tidyTile(page, "Sources disagree");
+      if (number === "SIG-RL") {
+        // The untouched picker is no answer: both spellings ride on the card. NB knows Rhett Lowder
+        // and not "Rhett Lowdr", so it went with Lowder and asks only for a check (blue, not pink).
+        await expect(disagree).toHaveAccessibleDescription(/To check/);
+        const says = disagree.getByRole("list", { name: "What each source says: Player name", exact: true });
+        await expect(says.getByRole("listitem")).toHaveCount(2);
+        await expect(says.getByRole("listitem").filter({ hasText: /^BSC/ })).toContainText("Rhett Lowder");
+        await expect(says.getByRole("listitem").filter({ hasText: /^Checklist/ })).toContainText("Rhett Lowdr");
+        await expect(disagree.getByRole("status")).toHaveText("Went with “Rhett Lowder”, they're already in your binder.");
+        // The checklist's spelling is one press away (name contains the visible text: a11y renames).
+        await expect(disagree.getByRole("button", { name: /Use “Rhett Lowdr” instead/ })).toBeVisible();
+        await expect(pinkTile(page, "Sources disagree")).toHaveCount(0);
+        await expectAccessible(page, { within: walk, label: "Tidy Up walk, NB's pick between two spellings" });
+      } else {
+        // Every other card's names agree across the sources.
+        await expect(disagree).toHaveCount(0);
+      }
+
+      if (number === "SIG-JW") {
+        await linkClubOnTheWalk(page);
+      } else {
+        // Every name pair brought its team from the file: no other Team tile asks.
+        await expect(pinkTile(page, "Team")).toHaveCount(0);
+      }
+
+      if (number === "SIG-FT") {
+        // Two Frank Thomases on file: the Hall of Famer was linked without asking, and the tile says why.
+        await expect(tidyTile(page, "Player").getByRole("note").filter({ hasText: /^Linked for you/ })).toHaveText(
+          "Linked for you: none of the others on file played that year, but this one is in the Hall of Fame",
+        );
+      }
+
+      // An autograph insert: a card that asks how it is signed gets an answer (the old wizard's
+      // required step). Then a card with nothing pink saves; the numbers note never holds it.
+      await answerPinkAutographTile(page);
+      const save = tidyFooterButton(page, "saveAndNext", { usable: true });
+      await expect(save.or(mustFixLine(page)).first()).toBeVisible();
+      if (await save.isVisible()) {
+        await expect(numbersNote).toBeVisible();
+        await saveAndNext(page);
+        savedWithTheNote++;
+      } else {
+        await skipCard(page);
+      }
+    }
+    await expect(tidyFooterButton(page, "done"), "the walk ended within the set's 14 cards").toBeVisible();
+    // R2: the two cards the walk must ask about were on it, and the note held no card back.
+    expect(seen, "the walk showed #SIG-RL (two spellings) and #SIG-JW (an unknown club)").toEqual(
+      expect.arrayContaining(["SIG-RL", "SIG-JW"]),
     );
-
-    await expectClubStep();
-    await answerClubStep(page);
-    // Every card has its team, so the walk goes straight past the teams step (past the career
-    // check first, NEO-574: the step that is up is then not the teams step).
-    await passCareerCheck(page);
-    await expect(wizard.getByText("Cards with no team", { exact: true })).toBeHidden();
-    await advanceToSave(page);
-    await expect(wizard.getByText(`Save ${WHOLE.cards} cards?`)).toBeVisible();
-    await confirmSaveButton(page).click();
-    await expect(
-      page.getByText(new RegExp(`Saved ${WHOLE.cards} cards\\. .*Teams from your checklist: ${WHOLE.matched} of ${WHOLE.cards} cards`)).first(),
-    ).toBeVisible();
+    expect(savedWithTheNote, "a card saved with Save & next while its numbers note was up").toBeGreaterThan(0);
+    test.info().annotations.push({ type: "walk", description: `cards on the walk: ${seen.join(", ")}; saved with the note: ${savedWithTheNote}` });
+    await finishTidyWalk(page);
 
     // ── READ BACK: the saved cards ──
     // Card numbers stay the marketplace's (a name pairing never rewrites one), found by number the way
@@ -554,15 +548,11 @@ test(
     await expect(page.getByText(/^Oakland Athletics( · .*)?$/)).toBeVisible();
     await expectAccessible(page, { label: "Signature Series checklist, saved by player name" });
     // ══ PHASE C: the set's own checklist, in Panini's spreadsheet ══
-    // NEO-496 (plan decision 4). Uploaded on the SET once PHASE B has committed, so the Inserts
+    // NEO-496 (plan decision 4). Uploaded on the SET once PHASE A2 has committed, so the Inserts
     // column above was filled by BSC alone, and every sync from here on reads the file too.
-    // The drill lives in the URL and Back steps through it (re-picking the selected set would keep
-    // the insert below it): Back once is the Insert type with its column open, Back again the set.
-    await page.goBack();
-    await expect(columnSelection(page, "Variant Types", "Insert")).toBeVisible();
-    await expect(columnOption(page, "Inserts", INSERT)).toBeVisible();
-    await page.goBack();
-    await expect(columnOption(page, "Variant Types", "Insert")).toBeVisible();
+    // Back would step into the walk's own history now (each card it showed is an address), so the
+    // set is reached by a fresh drill; C6 below proves Back through the drill.
+    await openDonrussSet(page, env);
     await openAttributesPanel(page);
     const panel = page.getByRole("region", { name: "Official checklist" });
     await expect(panel.getByText(/^Got the official checklist\?/)).toBeVisible();
@@ -705,16 +695,11 @@ test(
       // Left unkept: confirming discards the football cards and saves the kept rows.
       await matchCards.getByRole("button", { name: "Confirm card matches" }).click();
       await expect(matchCards).toBeHidden();
-      // The wizard: every name is skipped (no player or team is minted), then Save. The 20 paired cards
-      // and the 2 kept rows save (22); neither football card is among them.
-      await expect(wizard).toBeVisible();
-      const skipRemaining = wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ });
-      await expect(skipRemaining.or(nextStepButton(page)).or(confirmSaveButton(page)).first()).toBeVisible();
-      if (await skipRemaining.isVisible()) await skipRemaining.click();
-      await advanceToSave(page);
-      await expect(wizard.getByText(`Save ${UNLEASHED_ROWS} cards?`)).toBeVisible();
-      await confirmSaveButton(page).click();
-      await expect(page.getByText(new RegExp(`Saved ${UNLEASHED_ROWS} cards`)).first()).toBeVisible();
+      // NEO-645: Confirm SAVES the 20 paired cards and the 2 kept rows (22); neither football card is
+      // among them. A card that needs a person opens the walk; Save for later closes it writing
+      // nothing, so no player or team is minted.
+      const savedUnleashed = page.getByText(new RegExp(`Saved ${UNLEASHED_ROWS} cards\\.`)).first();
+      if (await settleWalkAfterCommit(page, savedUnleashed)) await saveForLater(page);
       await expect(editCardButton(page, "1")).toBeVisible();
       await expect(page.getByRole("button", { name: /^Edit card SG-(CO|TB)(, .*)?$/ })).toHaveCount(0);
       // The two kept rows are cards of their own, found by number the way a collector would.
@@ -725,17 +710,8 @@ test(
       await search.fill("");
 
       // ── C5. Replace with the same checklist as a plain CSV: nothing changes ──
-      // Back through the picks to the set (Unleashed -> the Insert type -> Parallel -> Base -> the set),
-      // each step the view it was.
-      await page.goBack();
-      await expect(columnSelection(page, "Variant Types", "Insert")).toBeVisible();
-      await expect(columnOption(page, "Inserts", UNLEASHED)).toBeVisible();
-      await page.goBack();
-      await expect(columnSelection(page, "Variant Types", "Parallel")).toBeVisible();
-      await page.goBack();
-      await expect(columnSelection(page, "Variant Types", "Base")).toBeVisible();
-      await page.goBack();
-      await expect(columnOption(page, "Variant Types", "Insert")).toBeVisible();
+      // To the set by a fresh drill: an opened walk left an address of its own behind Unleashed's.
+      await openDonrussSet(page, env);
       await openAttributesPanel(page);
       await panel.getByLabel("Replace checklist").setInputFiles({
         name: "2026-donruss-baseball-checklist.csv",
@@ -788,28 +764,50 @@ test(
 );
 
 /**
- * The "New Team: Oakland A's" step, answered as an operator who knows the club: Link to existing,
- * the 1968-2024 Oakland Athletics (the club the checklist names; the 2025-on "Athletics" row is
- * not), the remember-box unticked so no alias is saved. Reads the decision back: a link with no
- * "remembered as" tail.
+ * Baseball > 2026 > All Brands > the Donruss set, by a drill from wherever the page is. The view
+ * reads each set's name, then its brand ("Donruss Donruss"); a bare "Donruss" text would also match
+ * the brand of "Donruss Elite" and the rest, so the option is matched whole.
  *
- * Contract: ENTRY the wizard is on the "New Team: Oakland A's" step. EXIT that name is decided and
- * the wizard has moved on (its decision read back, then resumed).
+ * Contract: ENTRY signed in, anywhere. EXIT the set is picked and its Variant Types are listed (or
+ * still syncing from BSC: the caller waits on the row it needs).
  */
-async function answerClubStep(page: Page): Promise<void> {
-  const wizard = reviewWizard(page);
-  const remember = wizard.getByRole("checkbox", { name: `Remember “${CLUB}” as a name for this team` });
-  // NEO-591: the box is held (disabled, unticked) while the step's place lookup runs, then settles:
-  // ticked, since "Oakland A's" is no place. Untick the SETTLED box: `uncheck()` on the held one
-  // would return at once (already unticked) and the default would tick it again afterwards.
-  await expect(remember).toBeEnabled();
+async function openDonrussSet(page: Page, env: Parameters<typeof drillToColdManufacturer>[1]): Promise<void> {
+  await drillToColdManufacturer(page, env, { sport: "Baseball", year: "2026", manufacturer: "All Brands" });
+  await expect(page.getByRole("listbox", { name: "Sets" })).toBeVisible();
+  await columnSearch(page, "Sets").fill("Donruss");
+  await page
+    .getByRole("listbox", { name: "Sets" })
+    .getByRole("option", { name: /^Donruss \S+$/ })
+    .click();
+}
+
+/**
+ * #SIG-JW's pink Team tile on the walk, answered as an operator who knows the club: the "Oakland
+ * A's" row is linked to the 1968-2024 Oakland Athletics (the club the checklist names; the 2025-on
+ * "Athletics" row is not) from "Search all teams", with the remember-box unticked so no alias is
+ * saved. The link saves as it is made (J1).
+ *
+ * Contract: ENTRY a settled card whose Team tile asks about "Oakland A's". EXIT the row reads linked
+ * (the club's name and a Change), and the Team tile is no longer pink.
+ */
+async function linkClubOnTheWalk(page: Page): Promise<void> {
+  await expect(pinkTile(page, "Team"), "the club no one has on file holds the Team tile").toHaveCount(1);
+  const row = tidyTile(page, "Team").getByRole("group", { name: `Team ${CLUB}`, exact: true });
+  await expect(row.getByText(`“${CLUB}” isn't linked to a team yet.`)).toBeVisible();
+  await expect(row.getByText("Checking for teams by that name…")).toHaveCount(0);
+  // NEO-591: the box is held (aria-disabled) until the row's near matches land, then settles ticked,
+  // since "Oakland A's" is no place. Untick the SETTLED box: unticking the held one would be undone
+  // by the default afterwards.
+  const remember = row.getByRole("checkbox", { name: `Remember “${CLUB}” as a name for this team`, disabled: false });
   await expect(remember).toBeChecked();
   await remember.uncheck();
   await expect(remember).not.toBeChecked();
-  await wizard.getByRole("combobox", { name: "Search all teams" }).click();
-  // Empty and focused, the combobox lists the step's near matches by label: the era is in the name.
+  await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk, a club the checklist names that NB has not" });
+  await row.getByRole("combobox", { name: "Search all teams" }).click();
+  // Empty and focused, the combobox lists the row's near matches by label: the era is in the name.
   await page.getByRole("option", { name: /^Oakland Athletics .*1968.2024/ }).click();
-  await expect(wizard.getByRole("heading", { level: 3, name: `New Team: ${CLUB}` })).toBeHidden();
-  const panel = await readBackDecision(page, /^Linked to Oakland Athletics(?!.*remembered as)/, { resume: true });
-  await expect(panel).toBeHidden();
+  await expect(row.getByText("Oakland Athletics", { exact: true })).toBeVisible();
+  await expect(row.getByRole("button", { name: /^Change( team)?( .+)?$/ })).toBeVisible();
+  await expect(row.getByRole("checkbox")).toHaveCount(0);
+  await expect(pinkTile(page, "Team")).toHaveCount(0);
 }

@@ -97,7 +97,7 @@ const P = "Dan Marino";
 /**
  * The fetch's wizard can keep staging names (each unknown name's lookup) while
  * "Skip remaining names" is pressed: the bulk skip is repeated until every name
- * is decided (`checklist-team-leader-cards-pair-and-picked-name-saves`' ceiling).
+ * is decided (`checklist-team-leader-cards-pair-and-the-walk-settles-the-checklist-team-claims`' ceiling).
  */
 const BATCH_GROWS = 60_000;
 /** The wizard opens behind the entity check's batch (live lookups; the same spec's ceiling). */
