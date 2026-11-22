@@ -664,3 +664,112 @@ export async function tidyForTheParallelBuild(
   await finishTidyWalk(page);
   return tally;
 }
+
+// ── ruling names out, and taking one source's side ───────────────────────────
+
+/**
+ * Answer every open row of the open card's Player tile "Not a player" (a
+ * storyline caption, a team card's title), except the printed names in
+ * `keep`. Each answer reaches every card in the scope that prints the name.
+ * Contract: ENTRY a settled card. EXIT every row not kept reads answered (its
+ * Change is up). Returns the printed names it ruled out, in order. `maxRows` is
+ * a runaway guard.
+ */
+export async function ruleOutOpenPlayerRows(
+  page: Page,
+  { keep = [], maxRows = 8 }: { keep?: readonly string[]; maxRows?: number } = {},
+): Promise<string[]> {
+  const kept = new Set(keep.map((n) => `Player ${n}`));
+  const ruledOut: string[] = [];
+  for (let i = 0; i < maxRows; i++) {
+    let rowName: string | undefined;
+    for (const row of await openPlayerRows(page).all()) {
+      const name = (await row.getAttribute("aria-label")) ?? "";
+      if (!kept.has(name)) {
+        rowName = name;
+        break;
+      }
+    }
+    if (rowName === undefined) break;
+    const row = tidyTile(page, "Player").getByRole("group", { name: rowName, exact: true });
+    await row.getByRole("button", { name: NOT_A_PLAYER, disabled: false }).click();
+    await expectPlayerRowAnswered(page, rowName);
+    await expect(row.getByText(/ is not a player\.$/), `"${rowName}" reads not a player`).toBeVisible();
+    ruledOut.push(rowName.replace(/^Player /, ""));
+  }
+  return ruledOut;
+}
+
+/**
+ * Answer every open printed team name of the open card "Not a team". Contract:
+ * ENTRY a settled card. EXIT no team name is waiting. Returns the printed names.
+ */
+export async function ruleOutOpenTeamRows(page: Page, { maxRows = 8 }: { maxRows?: number } = {}): Promise<string[]> {
+  const ruledOut: string[] = [];
+  for (let i = 0; i < maxRows; i++) {
+    const rows = openTeamRows(page);
+    if ((await rows.count()) === 0) break;
+    const rowName = (await rows.first().getAttribute("aria-label")) ?? "";
+    const row = tidyTile(page, "Team").getByRole("group", { name: rowName, exact: true });
+    await row.getByRole("button", { name: NOT_A_TEAM, disabled: false }).click();
+    await expect(row.getByRole("button", { name: CHANGE_TEAM }), `"${rowName}" was answered`).toBeVisible();
+    await expect(row.getByText(/ is not a team\.$/), `"${rowName}" reads not a team`).toBeVisible();
+    ruledOut.push(rowName.replace(/^Team /, ""));
+  }
+  await expect(openTeamRows(page)).toHaveCount(0);
+  return ruledOut;
+}
+
+/**
+ * On a PINK "Sources disagree" tile, take `source`'s side ("Checklist", "BSC",
+ * "SportLots") in every unsettled entry: its column's value is read off the
+ * "What each source says: …" list and its `Use “<value>”` button pressed. An
+ * entry NeonBinder already decided (blue, `Use “…” instead`) is left as it is.
+ * Contract: ENTRY a settled card. EXIT the tile is not pink (an entry `source`
+ * did not name fails here, by name). Returns how many entries were answered.
+ */
+export async function takeSourceSide(page: Page, source: "Checklist" | "BSC" | "SportLots"): Promise<number> {
+  if ((await pinkTile(page, "Sources disagree").count()) === 0) return 0;
+  // The whole tile, not the pink filter: it stops matching that the moment its last entry is answered.
+  const tile = tidyTile(page, "Sources disagree");
+  let answered = 0;
+  for (const list of await tile.getByRole("list", { name: /^What each source says: / }).all()) {
+    const field = ((await list.getAttribute("aria-label")) ?? "").replace(/^What each source says: /, "");
+    const text = ((await list.getByRole("listitem").filter({ hasText: new RegExp(`^${source}`) }).first().textContent()) ?? "")
+      .replace(new RegExp(`^${source}`), "")
+      .replace(/In NeonBinder$/, "")
+      .trim();
+    const none = field === "Team name" ? "No team on the card" : "No player on the card";
+    const said = text === none ? `no ${field === "Team name" ? "team" : "player"}` : `“${text}”`;
+    const use = `Use ${said}`;
+    const button = tile.getByRole("button", { name: use, exact: true, disabled: false });
+    // A settled entry offers only "… instead" (NB's pick) or its Change: nothing to press.
+    if ((await button.count()) === 0) continue;
+    await button.click();
+    await expect(tile.getByRole("status").filter({ hasText: `Using ${said}` }), `${source}'s ${field} was taken`).toBeVisible();
+    answered++;
+  }
+  await expect(pinkTile(page, "Sources disagree"), `every disagreement took ${source}'s side`).toHaveCount(0);
+  return answered;
+}
+
+// ── "Add all N new players" (NEO-645 decision 32) ────────────────────────────
+
+/**
+ * The walk's dashed "Add all N new players" control (or "Add the first N new
+ * players" when the server cut the list). It is shown only while two or more
+ * names qualify, after the names' lookups finish and a settled read asks the
+ * server, so wait for it with a web-first assert. Contract: a locator.
+ */
+export function addAllNewPlayersTrigger(page: Page, n: number): Locator {
+  return tidyWalk(page).getByRole("button", { name: `Add all ${n} new players`, exact: true });
+}
+
+/**
+ * The trigger's inline confirm: the group "New players to add", holding the
+ * list "Names to add" and the buttons "Add N players" / "Cancel adding new
+ * players". Contract: a locator, nothing waited for.
+ */
+export function newPlayersToAdd(page: Page): Locator {
+  return tidyWalk(page).getByRole("group", { name: "New players to add", exact: true });
+}

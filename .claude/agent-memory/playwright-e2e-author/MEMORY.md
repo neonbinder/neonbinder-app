@@ -139,3 +139,5 @@
 - [Need-you pill is not a team-lookup proof](patterns_need_you_pill_is_not_a_team_lookup_proof.md) — NEO-645: pill counts unlinked players; read mark reasons per row; Q1-A fill leaves the queue
 - [Tile state lost when card context arrives](patterns_tile_state_lost_when_card_context_arrives.md) — NEO-645: search opened right after a card opens closes itself; probe ms, report, temp copy
 - [State-named button: helper regex](patterns_state_named_button_helper_regex.md) — label-in-name button: anchored all-states regex in the helper, exact text per state in specs
+- [Rule-out walk and source side](patterns_rule_out_walk_and_source_side.md) — Not a player/team loops with keep, Checklist side by its column text, J3 after the end
+- [Name lookup status, same-name fixtures](patterns_name_lookup_status_and_same_name_fixtures.md) — NEO-645: one namesake auto-links (two to stop); no-match can be status error; ariaSnapshot probe
