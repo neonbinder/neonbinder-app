@@ -2448,10 +2448,19 @@ export async function runTidyNameLookupImpl(
       : row.kind === "player"
         ? await lookupPlayerEnrichment(row.name, sportCtx, trace)
         : await lookupTeamEnrichment(row.name, sportCtx, undefined, trace);
+    // A lookup that FINISHED and found nothing (Wikidata answered with no
+    // match, or the sport has no Wikidata mapping so nothing was asked) is
+    // `ready` with no enrichment: the answer is "nothing to enrich", which is
+    // not a failure, and "Add all new players" works from exactly that row. A
+    // lookup that could not complete (a transport failure, an unreadable
+    // answer, a thrown error) stays `error`, and is never offered.
+    const failed = trace.transportFailed || trace.unavailable;
     payload = result
       ? { status: "ready", enrichment: reviewEnrichmentFor(row.kind, result) }
-      : { status: "error" };
-    if (!result && !trace.unavailable) {
+      : failed
+        ? { status: "error" }
+        : { status: "ready" };
+    if (!result && !failed) {
       console.log(
         JSON.stringify({
           msg: "tidy_name_lookup_no_match",

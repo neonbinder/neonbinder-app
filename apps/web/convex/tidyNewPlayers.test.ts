@@ -11,8 +11,10 @@
  */
 
 import { convexTest } from "convex-test";
-import { afterEach, describe, expect, test } from "vitest";
-import { api } from "./_generated/api";
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
+import { api, internal } from "./_generated/api";
+import { __setEmptySearchReaskBackoffForTests } from "./adapters/wikidata";
+import { backstopLookupRowImpl } from "./tidyNames";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
@@ -435,6 +437,95 @@ describe("addNewPlayers and newPlayerNames — who may call", () => {
     await expect(
       t.withIdentity(MEMBER).query(api.tidyNewPlayers.newPlayerNames, { leafId: w.base }),
     ).rejects.toThrow(/admin access required/i);
+    expect(await players(t)).toEqual([]);
+  });
+});
+
+// ─── the row the lookup itself writes ───────────────────────────────────────
+//
+// Every test above hand-builds a `ready` row. These drive the real
+// `runTidyNameLookup` action, so what the list sees is what the lookup stored:
+// a finished miss is offerable, a failure is not.
+
+describe("newPlayerNames — rows written by the lookup", () => {
+  beforeAll(() => __setEmptySearchReaskBackoffForTests(0));
+  afterAll(() => __setEmptySearchReaskBackoffForTests(undefined));
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  const jsonResponse = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+
+  /** A pending row, as the gate leaves it once the pool has been asked (generation 1). */
+  async function pendingName(t: T, w: TidyWorld, name = "Quinn Rookie") {
+    return t.run(async (ctx) => {
+      const id = await nameRow(ctx, {
+        scopeId: w.base,
+        sportId: w.sport,
+        kind: "player",
+        name,
+        over: { status: "pending", lookupGen: 1, lookupRequestedAt: Date.now() },
+      });
+      await printCard(ctx, w, { number: "1", printed: [{ kind: "player", name }] });
+      return id;
+    });
+  }
+  const lookup = (t: T, id: Id<"tidyNames">) =>
+    t.action(internal.adapters.wikidata.runTidyNameLookup, { tidyNameId: id, gen: 1 });
+  const mapSport = (t: T, w: TidyWorld) =>
+    t.run((ctx) => ctx.db.patch(w.sport, { sportConfig: { wikidata: { sportQid: "Q5369" } } }));
+
+  test("a name Wikidata has no match for is offered", async () => {
+    const t = newT();
+    const w = await world(t);
+    await mapSport(t, w);
+    vi.stubGlobal("fetch", (async () => jsonResponse({ results: { bindings: [] } })) as unknown as typeof fetch);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const id = await pendingName(t, w);
+    await lookup(t, id);
+    const row = (await t.run((ctx) => ctx.db.get(id)))!;
+    expect(row.status).toBe("ready");
+    expect(row.enrichment).toBeUndefined();
+    expect(await listed(t, w)).toEqual(["Quinn Rookie"]);
+  });
+
+  test("a name in a sport with no Wikidata mapping is offered, and Wikidata is never asked", async () => {
+    const t = newT();
+    const w = await world(t);
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const id = await pendingName(t, w);
+    await lookup(t, id);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(((await t.run((ctx) => ctx.db.get(id)))!).status).toBe("ready");
+    expect(await listed(t, w)).toEqual(["Quinn Rookie"]);
+  });
+
+  test("a name whose lookup could not finish is not offered, and adding it is refused", async () => {
+    const t = newT();
+    const w = await world(t);
+    await mapSport(t, w);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    // A 400 is written as `error` by the lookup itself.
+    vi.stubGlobal("fetch", (async () => jsonResponse({}, 400)) as unknown as typeof fetch);
+    const refused = await pendingName(t, w, "Quinn Rookie");
+    await lookup(t, refused);
+    expect(((await t.run((ctx) => ctx.db.get(refused)))!).status).toBe("error");
+
+    // An unreachable Wikidata throws for the pool's retry and writes nothing: the
+    // row is still pending until the pool's backstop ages it to `error`.
+    vi.stubGlobal("fetch", (async () => jsonResponse({}, 503)) as unknown as typeof fetch);
+    const down = await pendingName(t, w, "Abe Rookie");
+    await expect(lookup(t, down)).rejects.toThrow();
+    expect(((await t.run((ctx) => ctx.db.get(down)))!).status).toBe("pending");
+    await t.run((ctx) => backstopLookupRowImpl(ctx, { tidyNameId: down, gen: 1 }, { kind: "failed" } as never));
+    expect(((await t.run((ctx) => ctx.db.get(down)))!).status).toBe("error");
+
+    expect(await listed(t, w)).toEqual([]);
+    expect(await add(t, w, ["Quinn Rookie", "Abe Rookie"])).toEqual({ created: 0, skipped: 2 });
     expect(await players(t)).toEqual([]);
   });
 });

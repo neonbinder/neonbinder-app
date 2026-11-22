@@ -33,8 +33,12 @@
  * Wikidata ambiguity: the lookup writes a match only when it is exactly one
  * person, and nothing at all when the name is ambiguous or unknown, so a row
  * that is `ready` with a match, or with none, is what "Add as new player" works
- * from today. There is no further state to exclude; a row whose lookup is still
- * `pending` or errored is not eligible.
+ * from today. A lookup that FINISHED and found nothing (no match, or a sport
+ * with no Wikidata mapping) is stored `ready` with no enrichment
+ * (`runTidyNameLookupImpl`), which is exactly the new rookie this button is
+ * for. There is no further state to exclude; a row whose lookup is still
+ * `pending`, or `error` (a lookup that could not complete: network,
+ * unavailable, timeout), is not eligible.
  *
  * ## Cost
  *
