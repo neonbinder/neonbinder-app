@@ -48,36 +48,43 @@
 //      timeout, a short pause, one retry), all of it BSC's: a stall retried card
 //      by card would blow the budget with our own time. The result line then says the
 //      checklist supplied the teams of 21 cards ("Teams from your checklist").
-//   2. Every name is skipped, so the wizard's "Cards with no team" step lists the
-//      whole set (it cannot tell a stalled card from an answered one whose team
-//      name was skipped); the spec only proves the step is reached.
+//   2. Confirm saves the cards (NEO-645: "Saved 26 cards."); the Tidy Up walk opens
+//      after the save when a card needs a person, and is closed at once with "Save
+//      for later (Esc)", which writes nothing. No name is answered.
 //   (A stalled card reaches the operator from the background lane only after
 //   about 6 minutes, so the spec asserts the queued state, never the give-up.)
-//   3. After the save the split is on the checklist: the 23 cards that have an
-//      answer (21 from the checklist and the 2 BSC answered live; their team name
-//      was skipped, so they end teamless) are the operator's, "23 need you", and
-//      the 3 it did not answer are not in that count: they wait in the queue, and
-//      the checklist says so in its own words, "Still looking up teams for 3
-//      cards. Nothing for you to do yet." (a status line; its number moves at
-//      most every 5 s, so the first value after the save is the full three). The
-//      "23" is also the proof of the two live answers: had either met a BSC 429
-//      or an open cooldown it would wait in the queue too, and the line would
-//      say 4 (or 5) cards. NEO-489 (Jason, 2026-11-11): that is a pass, not a
-//      red. The spec reads M off the line (3 to 5), asserts exactly 26 - M need
-//      you, and annotates which branch ran (`bsc-lookup`). A missing line is the
-//      only red. Both are positives; neither can be read off a dead page. Axe runs on the
-//      saved checklist with the status line showing.
+//   3. After the save the split is on the checklist, card by card. NEO-645: the
+//      "N need you" pill counts every card with anything pink, and a card whose
+//      player name NB does not know is pink for that name whether or not its team
+//      is still being looked up, so the pill is no longer a count of team answers
+//      (25 on the first run: a stalled card whose player NB knows is the only one
+//      left out). The team side is what this spec is about, so it is read off each
+//      row's attention mark ("Card <n>, <name> needs attention: <reasons>"):
+//      - the 3 stalled cards (#1-#3) wait in the queue: their rows are on screen
+//        and no mark of theirs names a team reason ("team name not yet linked",
+//        "no team on this card yet");
+//      - an answered card is the operator's for its team: #4 (from the checklist)
+//        names the team reason;
+//      - the checklist says so in its own words, "Still looking up teams for 3
+//        cards. Nothing for you to do yet." (a status line; its number moves at
+//        most every 5 s, so the first value after the save is the full three).
+//      M on that line is also the proof of the two live answers: had either met a
+//      BSC 429 or an open cooldown it would wait in the queue too, and the line
+//      would say 4 (or 5) cards. NEO-489 (Jason, 2026-11-11): that is a pass, not
+//      a red. The spec reads M off the line (3 to 5) and annotates which branch ran
+//      (`bsc-lookup`). A missing line is the only red. Axe runs on the saved
+//      checklist with the status line showing.
 //
 // FIXTURE (SET-REGISTRY.md -> "Hockey -> 1995 -> Halifax Mooseheads QMJHL",
 // one of the registered spares, needs Jason's approval to take): SOLE WRITER of
 // that set (BSC only, 26 cards, reached through the All Brands view); FRESH-ONLY (it commits the
 // checklist), so a re-run on the same seed fails at "No cards in this checklist
 // yet." by name, and so does CI's retry of a red that came after the commit: read the
-// FIRST attempt's error (GUIDE Gotchas, "Fresh-only specs"). Every name is skipped: no
-// player and no team is minted.
+// FIRST attempt's error (GUIDE Gotchas, "Fresh-only specs"). No name is answered (the
+// walk is closed with Save for later): no player and no team is minted.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { BSC_PATH, bscFault } from "../../support/bscFake";
-import { editCardButton } from "../../support/cards";
+import { cardAttentionMark, editCardButton } from "../../support/cards";
 import { bscLookupOutcome, expectAfterMarketplace, waitingOn } from "../../support/marketplace-wait";
 import {
   CHECKLISTS,
@@ -86,12 +93,8 @@ import {
   usePublishersChecklist,
 } from "../../support/published-checklist";
 import { setBuilderReady, syncChecklistButton } from "../../support/set-builder";
-import {
-  advanceToSave,
-  confirmSaveButton,
-  openOneMarketplaceSetBase,
-  reviewWizard,
-} from "../../support/wizard";
+import { saveForLater, settleWalkAfterCommit } from "../../support/tidy-walk";
+import { openOneMarketplaceSetBase } from "../../support/wizard";
 
 const SET = "Halifax Mooseheads QMJHL";
 /** The set's card count on BSC. */
@@ -106,6 +109,8 @@ const STALLED = STALL_IDS.length;
  * 30 s timeout (BSC_CHECKLIST_FETCH_TIMEOUT_MS), so it is an answer, never a failure to the gate.
  */
 const HOLD_MS = 6_000;
+/** The attention reasons that put a card's TEAM to the operator (`TIDY_ATTENTION_LABELS`). */
+const TEAM_REASON = "team name not yet linked|no team on this card yet";
 
 test(
   "Checklist fetch — a BSC stall on some cards ends within one wave: the fetch lands and the unanswered cards wait in the background queue, not in the operator's count (NEO-487)",
@@ -162,23 +167,13 @@ test(
     await confirmChecklistMatchCards(page, { facts, what: "the Halifax fetch" });
     // The fetch was handed on, so the wait line is gone (a positive, the dialog's confirm, came first).
     await expect(waitingOn(page, "BuySportsCards")).toHaveCount(0);
-    const wizard = reviewWizard(page);
-    await expect(wizard).toBeVisible();
 
-    // ── 2. Every name skipped; the teams step is reached ──
-    const skipRemaining = wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ });
-    const next = wizard.getByRole("button", { name: "Next (Enter)", exact: true });
-    await expect(skipRemaining.or(next).first()).toBeVisible();
-    if (await skipRemaining.isVisible()) await skipRemaining.click();
-    await expect(next).toBeVisible();
-    await expect(wizard.getByText("Cards with no team", { exact: true })).toBeVisible();
-    await expectAccessible(page, { within: wizard, label: "Entity review wizard, Cards with no team after a BSC stall" });
+    // ── 2. Confirm saved the cards (NEO-645); the walk, if it opened, is closed unanswered ──
+    // Save for later writes nothing, so every name stays as the save left it.
+    const saved = page.getByText(new RegExp(`Saved ${CARDS} cards`));
+    if (await settleWalkAfterCommit(page, saved)) await saveForLater(page);
 
-    // ── 3. Save: the answered cards are the operator's, the three unanswered wait in the background ──
-    await advanceToSave(page);
-    await confirmSaveButton(page).click();
-    await expect(page.getByText(new RegExp(`Saved ${CARDS} cards`))).toBeVisible();
-    await expect(wizard).toBeHidden();
+    // ── 3. The answered cards are the operator's, the three unanswered wait in the background ──
     // The set's cards are on screen, so what follows is read off a live checklist.
     await expect(editCardButton(page, "1")).toBeVisible();
     // The queue's own words: the status line names the cards that wait, and says it is not the operator's yet.
@@ -190,19 +185,22 @@ test(
     ).toBeVisible();
     // NEO-489 (Jason, 2026-11-11: a BSC 429 or an open cooldown on a live card is a pass). The three
     // stalled cards always wait. The two live lookups (#24, #25) wait too when BSC rate-limits them
-    // or its cooldown is open, so M is 3 (both answered) up to 5 (neither). Whatever M is, the
-    // cards BSC DID answer end teamless and are the operator's, exactly CARDS - M.
-    // The line and the button are read TOGETHER and retried together: the queue drains while the
-    // page is open, so a count read once and a button asserted a moment later could straddle a
-    // drain and disagree about the same instant. Each pass reads M, then asserts 26 - M need you
-    // (a count that is not CARDS - M fails by its number). Exact, positive.
+    // or its cooldown is open, so M is 3 (both answered) up to 5 (neither).
     let queued = 0;
     await expect(async () => {
       queued = Number((((await lookupStatus.textContent({ timeout: 1_000 })) ?? "").match(/for ([0-9]+) cards?/) ?? [])[1]);
       expect(queued, "the stalled cards plus at most the two live ones wait in the queue").toBeGreaterThanOrEqual(STALLED);
       expect(queued, "the stalled cards plus at most the two live ones wait in the queue").toBeLessThanOrEqual(STALLED + 2);
-      await expect(page.getByRole("button", { name: `${CARDS - queued} need you`, exact: true })).toBeVisible({ timeout: 1_000 });
     }).toPass({ timeout: 7_000 });
+    // NEO-645: the team side, card by card (the pill also counts unlinked player names; see the
+    // header). A stalled card waits: its row is up (positive) and no mark of its names a team reason.
+    // A stalled card gives up only after about 6 minutes, so this holds for the rest of the spec.
+    for (const n of ["1", "2", "3"]) {
+      await expect(editCardButton(page, n)).toBeVisible();
+      await expect(cardAttentionMark(page, n, TEAM_REASON), `stalled card #${n} was put to the operator for its team`).toHaveCount(0);
+    }
+    // An answered card's team is the operator's: #4, whose team came from the checklist, says so.
+    await expect(cardAttentionMark(page, "4", TEAM_REASON), "answered card #4 does not ask for its team").toBeVisible();
     bscLookupOutcome(queued === STALLED ? "answered" : "cooldown", `Halifax #24, #25 (${queued} cards waiting)`);
     await expectAccessible(page, { label: "Halifax checklist saved, the unanswered cards waiting in the background" });
   },

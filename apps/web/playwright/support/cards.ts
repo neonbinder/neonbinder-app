@@ -27,6 +27,20 @@ export function editCardButton(page: Page, cardNumber: string): Locator {
   return page.getByRole("button", { name: new RegExp(`^Edit card ${escapeRe(cardNumber)}(, .*)?$`) });
 }
 
+/**
+ * NEO-645: a checklist row's attention mark (`role="img"`), whose name is "Card <n>[, <name>]
+ * needs attention: <reasons>" (pink) or "… is worth a check: <reasons>" (blue), the reasons
+ * joined by "; ". `reason` (a regex SOURCE, e.g. "team name not yet linked|no team on this
+ * card yet") narrows it to a mark that names one of those reasons. A row with no mark has
+ * none: pair a `toHaveCount(0)` with the row's `editCardButton` being visible.
+ */
+export function cardAttentionMark(page: Page, cardNumber: string, reason?: string): Locator {
+  const reasons = reason === undefined ? "" : `(.*; )?(${reason})(;|$)`;
+  return page.getByRole("img", {
+    name: new RegExp(`^Card ${escapeRe(cardNumber)}(, [^:]+)? (needs attention|is worth a check): ${reasons}`),
+  });
+}
+
 export function deleteCardButton(page: Page, cardNumber: string): Locator {
   return page.getByRole("button", { name: new RegExp(`^Delete card ${escapeRe(cardNumber)}(, .*)?$`) });
 }
