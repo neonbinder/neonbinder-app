@@ -81,6 +81,7 @@ import { bscLookupOutcome, expectAfterMarketplace, expectStepWithSportLots } fro
 import { recordedNoMatchName } from "../../support/recorded-names";
 import {
   CHECKLISTS,
+  cancelCardFetchButton,
   checklistFetchProgress,
   confirmChecklistMatchCards,
   expectTeamsFromChecklist,
@@ -272,7 +273,7 @@ test(
     // NEO-640: every run with two or more sources starts on the progress line, no dialog yet; the
     // dialog opens only once a streamed card turns out to need the operator.
     await expect(checklistFetchProgress(page)).toBeVisible();
-    await expect(page.getByRole("button", { name: "Cancel checklist fetch" })).toBeVisible();
+    await expect(cancelCardFetchButton(page)).toBeVisible();
 
     // NEO-496 (D10, NQ1): ONE marketplace plus the publisher's checklist are TWO sources, and the
     // card the file leaves out needs the operator, so the fetch opens Match Cards.

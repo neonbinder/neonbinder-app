@@ -81,6 +81,7 @@ import { editCardButton } from "../../support/cards";
 import { bscLookupOutcome, expectAfterMarketplace, waitingOn } from "../../support/marketplace-wait";
 import {
   CHECKLISTS,
+  cancelCardFetchButton,
   checklistFetchProgress,
   confirmChecklistMatchCards,
   matchCardsDialog,
@@ -146,7 +147,7 @@ test(
     // NEO-640: a two-source run starts on its progress line, with its Cancel, and no dialog: this
     // held read is the one moment the state stands still long enough to read it whole (light and dark).
     await expect(checklistFetchProgress(page)).toBeVisible();
-    await expect(page.getByRole("button", { name: "Cancel checklist fetch" })).toBeVisible();
+    await expect(cancelCardFetchButton(page)).toBeVisible();
     await expectAccessible(page, { label: "Two-source checklist fetch on its progress line, BSC's read held" });
     await expect(checklistFetchProgress(page), "the held read ended before axe finished: raise HOLD_MS").toBeVisible();
     // BSC plus the uploaded checklist are two sources (NEO-496), and five cards have no row, so the fetch opens Match Cards; the

@@ -274,11 +274,12 @@ test(
       // No marketplace is attached, so nothing is asked of one and nothing is matched: the fetch
       // keeps the three rows ("Kept all 3 cards from your checklist. Nothing to match, no
       // marketplace attached.") and, every name being on the catalogue, the commit goes straight
-      // through. NEO-640: the "Saved" line that replaces the kept one says the kept sentence again,
-      // so the saved line is the sync point and the proof; its sentences are read one by one.
+      // through. NEO-640: the "Saved" line that replaces the kept one says why nothing was matched,
+      // right after its count, so the saved line is the sync point and the proof; its sentences are
+      // read one by one.
       const saved = savedLine(page, 3);
       await expect(saved).toBeVisible();
-      await expect(saved).toContainText("Kept all 3 cards from your checklist. Nothing to match, no marketplace attached.");
+      await expect(saved).toContainText(/^Saved 3 cards\. Only your checklist was in play, so there was nothing to match\./);
       await expect(saved).toContainText("Teams from your checklist: 3 of 3 cards.");
       await expect(matchCardsDialog(page)).toHaveCount(0);
       await expect(reviewWizard(page)).toHaveCount(0);

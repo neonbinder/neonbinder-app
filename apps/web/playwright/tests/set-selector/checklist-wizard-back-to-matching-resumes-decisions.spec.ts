@@ -67,8 +67,9 @@ test(
     await expect(wizard).toBeHidden();
     const dialog = matchCardsDialog(page);
     await expect(dialog).toBeVisible();
-    // Focus goes into the dialog (its Cancel), not left behind on the wizard that just closed.
-    await expect(dialog.getByRole("button", { name: "Cancel card matching" })).toBeFocused();
+    // Focus goes to the dialog itself, named for what it matches (the Base), NEO-640, not left
+    // behind on the wizard that just closed.
+    await expect(page.getByRole("dialog", { name: "Match Cards — Base", exact: true })).toBeFocused();
     const confirmMatches = dialog.getByRole("button", { name: "Confirm card matches", disabled: false });
     await expect(confirmMatches).toBeVisible();
     if (skipped) {

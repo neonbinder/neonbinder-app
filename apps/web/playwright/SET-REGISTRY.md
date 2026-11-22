@@ -834,6 +834,14 @@ read-only: unlink / link / choose-name are all `CardPairingModal` reducer state,
 and the flow still exits through Cancel, which discards the candidate batch
 without touching `cardChecklist`.
 
+Since NEO-640 both branches sync. FS-20's row is left out of the uploaded
+file, so the card with no row opens Match Cards (BSC and the file with
+SportLots paused, all three live), focus lands on the dialog, and Cancel →
+Discard writes nothing; the paused branch then syncs once more with the fake
+holding BSC's catalogue read for this worker and presses "Cancel card fetch"
+on the progress line: no dialog, no save, Sync usable again. Both cancel, so
+the flow is still read-only.
+
 It should stay the ONLY flow that fetches this set. **Do not add a second Future
 Stars fetcher; extend this flow instead.**
 
@@ -1219,7 +1227,7 @@ orders a spec injects, and the price sits in the free Cards under $20 slot.
 | none writes | the set's cards, players, teams or variants. They are **sole writers of a marketplace seller account's rows for this insert**, never of NB's catalogue: R7a holds the set read-only for them as for every other consumer |
 | the cards | the first rows in checklist order (two for BSC, three for eBay; the refusals spec the 4th and 5th), read off the quantity fields' names, so the choice follows the seed. The BSC spec's binder card (2c) is the LAST ordinary row of the Collection checklist, asserted to be neither box card. eBay's third card is boxed without a photo to prove the held-back reason and is never listed. eBay's first card's photos are a scanned pair (`public/placeholder-fixtures/01-vorkle-front.jpg` and `02-vorkle-back.jpg`) dropped into an Add cards run into the box and saved onto that card (picked by hand with "Wrong card? Find it": the scan's number and player mean nothing in Future Stars); the second card's is `fixtures/intake/03-bowe-front.jpg`, attached through the card drawer's Photos box |
 | writer | the BSC spec is the **sole writer among specs** of every BSC quantity for this insert, and the eBay listing spec of the first three cards' eBay listings (the refusals spec of the 4th and 5th). Since NEO-552 (BuySportsCards) and NEO-555 (eBay) both marketplaces are the fake: every worker has a seller of its own on each, so no seller is shared between workers, PRs or sessions, and no start-clean pass runs (the pass's reset clears the fake). Within one worker the specs run one after another, so the eBay listing spec and the refusals spec never list side by side on that worker's seller, and they box different cards. The BSC spec is the only spec that **starts syncing on BSC** (`listing=on`) or touches a worker's BSC sign-in outside `credentials-lifecycle` (its own `new-profile` account) and the bootstrap, besides `inventory-bsc-listing-2026-bowman-chrome-prefix`. eBay is connected (`sites=ebay` or the consent page) by the eBay listing spec, the refusals spec, `profile/ebay-connect-and-setup` (on the worker's isolated `new-profile` account and its `alt` seller, no card listed), `ebay-return-and-errors` (no card listed) and the over-80 pair (their own `ebt` set); each ends disconnected. NEO-535: `inventory-ebay-listing-title-over-80-is-held-then-requeued` holds a card with a 99-character title back, never listed, then queued again; `inventory-ebay-listing-title-over-80-lists-once-shortened` lists it once shortened. Both on the hand-made `ebt` set, not on Future Stars. The BSC and eBay specs run in the ordinary shards (any worker), on both projects (the refusals spec desktop only), once per pass on separate seeds |
-| reads | the set's other consumers read it and write nothing: `checklist-search-narrows-and-clears` (types into its search) and `checklist-pairing-dialog-cancel` (syncs it with FS-20's row left out of the file, so Match Cards opens (NEO-640), and Cancels, "The one sanctioned read-only visitor"). They can run in another shard while a listing spec lists: neither writes a card, and a marketplace quantity is per seller account, not per set. A spec added later must not save a BSC sign-in through the Profile form or pass `listing=on` to the seed hop, and must not leave cards in a box, or a worker still syncing would put them on real BSC |
+| reads | the set's other consumers read it and write nothing: `checklist-search-narrows-and-clears` (types into its search) and `checklist-pairing-dialog-cancel` (syncs it with FS-20's row left out of the file, so Match Cards opens with SportLots paused or live (NEO-640), and Cancels; paused, it then syncs once more with BSC's catalogue read held on the fake and presses the progress line's "Cancel card fetch"; "The one sanctioned read-only visitor"). They can run in another shard while a listing spec lists: neither writes a card, and a marketplace quantity is per seller account, not per set. A spec added later must not save a BSC sign-in through the Profile form or pass `listing=on` to the seed hop, and must not leave cards in a box, or a worker still syncing would put them on real BSC |
 | end state | BSC: **connected and NOT syncing (Profile reads "Not syncing.")**; eBay: **NOT connected** (Profile -> Credentials -> eBay offers Connect, the product's Disconnect having withdrawn every live listing). For both: the box deleted, the common price cleared, and **every OTHER box the worker had (Unsorted included) left in-person** (opened and unchecked before listing starts, asserted, never turned back on, since that would re-queue their cards; the Up for Trade pile is not a box that lists). The afterEach runs on a pass too: on a failure BSC's first zeroes the touched rows (empties the box, Sync, walks it to rest, "0 listed"), removes a binder copy left behind, clears the price, then removes the sign-in and saves it again WITHOUT `listing=on`; eBay's closes the scan run, clears the price, then disconnects. The fake seller's policies, location and withdrawn items stay in the fake's memory until the pass's reset |
 | re-runs | **safe to re-run on the same seed**: the minted box differs per attempt, every count ends at 0, syncing is stopped or eBay disconnected. A re-run's first steps need the account "Not syncing." / eBay not connected, which the previous run's hook (or the bootstrap's reseed) guarantees |
 | cron | the 15-minute order poll can run a set's sync before a press (NEO-433), and can store an injected order before the spec's own `pollNow`; every spec holds either order to a hard end state (see their headers). The poll is never waited for, and the account stops listing before each spec ends |
@@ -1439,9 +1447,17 @@ not change; none of them can express the =1 half.
    hundreds of cards, which this flow then has to review and commit. **The flow
    therefore does not assert the inline progress line at all**, says so in its
    header, and leaves that line to the `soloProgressMessage` unit tests. It
-   also does not assert `Cancel checklist fetch`, which lives and dies in the
-   same window. The sentence does not begin with `Match Cards` or `Saved <n>`,
-   so it collides with nothing.
+   also does not assert its Cancel, which lives and dies in the same window.
+   The sentence does not begin with `Match Cards` or `Saved <n>`, so it
+   collides with nothing.
+   > **NEO-640 (2026-11-21), superseded for this spec:** with the checklist
+   > uploaded the run has two sources and starts on the two-source progress
+   > line, a group named "Fetching from BSC and your checklist…" (the ticking
+   > count is aria-hidden), which stands until the dialog opens; the spec
+   > asserts the line and its "Cancel card fetch" right after the press, and
+   > that the line is gone once Confirm unlocks. A press of that Cancel is
+   > proved by `checklist-pairing-dialog-cancel`, on a fetch whose BSC read the
+   > fake holds.
 10. **Measured cost.** Against the 600s per-flow kill in `run-e2e-queue.sh`, on
     a cold preview: drill to the year ~30s (SportLots years + manufacturers),
     Sets column ~20s, variant types ~15s, base picker ~8s, checklist fetch
@@ -3699,7 +3715,7 @@ pass); every name is skipped, so no player or team is minted.
 | spec | set | cards | role |
 |---|---|---|---|
 | `checklist-published-upload-skips-bsc-and-asks-on-disagreement` (NEO-478) | Hockey > 1995 > Unknown (All Brands) > **Oklahoma City Blazers CHL** > Base | 18 (numbered 1-18, one club) | sole writer; commits after asking on two disagreements; card #6's repeated number is looked up on BSC (D2) |
-| `checklist-fetch-bounds-a-bsc-stall-and-queues-the-cards` (NEO-487) | Hockey > 1995 > Unknown (All Brands) > **Halifax Mooseheads QMJHL** > Base (a spare listed above) | 26 (cards 1-25 and one `NNO`) | sole writer; hangs the three card ids in the spec's header on the fake BSC through `bscFake` (NEO-552) and holds the catalogue read (`search/bulk-upload/results`) for 6 s first, an answer under its 30 s timeout (NEO-628); the call gate those hangs open is this worker's own against the fake (NEO-628), so it runs in an ordinary shard |
+| `checklist-fetch-bounds-a-bsc-stall-and-queues-the-cards` (NEO-487) | Hockey > 1995 > Unknown (All Brands) > **Halifax Mooseheads QMJHL** > Base (a spare listed above) | 26 (cards 1-25 and one `NNO`) | sole writer; hangs the three card ids in the spec's header on the fake BSC through `bscFake` (NEO-552) and holds the catalogue read (`search/bulk-upload/results`) for 15 s first (NEO-640: axe reads the two-source progress line in both modes while it is held), an answer under its 30 s timeout (NEO-628); the call gate those hangs open is this worker's own against the fake (NEO-628), so it runs in an ordinary shard |
 | `checklist-fetch-bsc-429-cooldown-holds-the-cards-back-and-queues-them` (NEO-552) | Hockey > 1995 > Unknown (All Brands) > **Dayton Bombers ECHL** > Base (a spare listed above) | 32 (numbered) | **Approved by Jason, 2026-11-14 (R7a)**. Sole writer is this spec; fresh-only; the first 10 card-listing requests (one lookup wave) answered 429 by the fake, then the rule is spent, so a card asked after the 429 would be answered from its recording and lower the queued count; the catalogue read is held 15 s first, an answer under its 30 s timeout, so the page's wait line shows (NEO-628); no publisher's checklist uploaded; needs all 32 card-listing answers recorded; the call gate the 429 opens is this worker's own against the fake (NEO-628), so it runs in an ordinary shard |
 
 Oklahoma City Blazers CHL is not one of the listed spares: it is proposed as a

@@ -35,7 +35,7 @@ import { expect, type Locator, type Page } from "@playwright/test";
 import { expectAccessible } from "./fixtures";
 import type { FlowEnv } from "./env";
 import { expectAfterMarketplace, expectStepWithSportLots } from "./marketplace-wait";
-import { CHECKLISTS, settleChecklistFetch, usePublishersChecklist, type ChecklistName, type ChecklistRow } from "./published-checklist";
+import { CHECKLISTS, matchCardsDialog, settleChecklistFetch, usePublishersChecklist, type ChecklistName, type ChecklistRow } from "./published-checklist";
 import {
   columnHeading,
   columnOption,
@@ -668,7 +668,7 @@ export async function fetchChecklistToWizard(
     // teams line is asserted either way (on the dialog's page, or beside the kept line).
     await settleChecklistFetch(page, env, { facts, what: "the fetch of the Base checklist", lands: "review" });
   } else if (!env.SL_PAUSED) {
-    await expect(page.getByText(/Match Cards/).first()).toBeVisible({ timeout: FETCH });
+    await expect(matchCardsDialog(page)).toBeVisible({ timeout: FETCH });
     // The button reads "Loading…" (aria-disabled) while cards still stream in;
     // wait for the usable one (the flow's "^Confirm$" text).
     const ready = page.getByRole("button", { name: "Confirm card matches", disabled: false });
@@ -682,7 +682,8 @@ export async function fetchChecklistToWizard(
       platform: "BuySportsCards",
       what: "the solo fetch's kept-cards line",
     });
-    await expect(page.getByText(/Match Cards/)).toBeHidden();
+    // By role, never by text: a line on the page may name Match Cards.
+    await expect(matchCardsDialog(page)).toHaveCount(0);
     await expect(confirmMatches).toBeHidden();
   }
   // Live, the wizard opens after the pairing's Confirm (a live SportLots + BSC round trip's

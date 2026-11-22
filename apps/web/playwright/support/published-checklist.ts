@@ -23,6 +23,7 @@ import { expect, type Locator, type Page } from "@playwright/test";
 import { parsePublishedChecklist, type PublishedChecklistRow } from "../../lib/checklists/parse-published-checklist";
 import { matchPublishedChecklist, type ChecklistMatchResult } from "../../lib/checklists/match-published-checklist";
 import { pairNamesFirst } from "../../lib/cards/pair-names-first";
+import { expectAccessible } from "./fixtures";
 import { expectAfterMarketplace } from "./marketplace-wait";
 import type { FlowEnv } from "./env";
 import { columnSearch, drillToColdManufacturer, escapeRe, openAttributesPanel } from "./set-builder";
@@ -642,35 +643,51 @@ export async function confirmChecklistMatchCards(
 }
 
 /**
- * NEO-640: the line every fetch with two or more sources starts on, a status naming them
- * ("Fetching from BSC and your checklist…", then "N of M cards ready."), with its Cancel
- * ("Cancel checklist fetch"). Contract: a locator, nothing waited for.
+ * NEO-640: the line every fetch with two or more sources starts on: a group named by its status
+ * ("Fetching from BSC and your checklist…"; no count in any status), a counter for the eye only
+ * (" N of M cards ready.", aria-hidden: read it with `getByText`), and its Cancel ("Cancel card
+ * fetch", shown as "Cancel"). Contract: a locator, nothing waited for.
  */
 export function checklistFetchProgress(page: Page): Locator {
-  return page.getByRole("status").filter({ hasText: /^Fetching from BSC and your checklist…/ });
+  return page.getByRole("group", { name: /^Fetching from BSC and your checklist…/ });
+}
+
+/** NEO-640: the progress line's one control. Contract: a locator, nothing waited for. */
+export function cancelCardFetchButton(page: Page): Locator {
+  return checklistFetchProgress(page).getByRole("button", { name: "Cancel card fetch" });
 }
 
 /**
- * NEO-640: the line a skipped Match Cards leaves, "Kept all N cards. Every card matched across BSC
- * and your checklist." ("Kept the 1 card. It matched across …" for one). A skip is only ever BSC and
- * the file (`MATCH_CARDS`: a set with a SportLots side is written to open live). The line goes on
- * with the paused sentence and the teams line, so only its start is pinned. Contract: a locator.
+ * NEO-640: the line a skipped Match Cards leaves before the save, "All N cards matched across BSC
+ * and your checklist. No Match Cards needed, totally clean." ("The 1 card matched across …" for
+ * one). A skip is only ever BSC and the file (`MATCH_CARDS`: a set with a SportLots side is written
+ * to open live). The line goes on with the paused sentence and the teams line, so only its start is
+ * pinned. Contract: a locator, nothing waited for.
  */
 export function matchedKeptLine(page: Page, cards: number): Locator {
   return page.getByText(new RegExp(`^${escapeRe(matchedKeptSentence(cards))}`)).filter({ visible: true });
 }
 
-/** NEO-640: the kept sentence itself, as `matchedKeptLine` and the saved line carry it. */
+/** NEO-640: the kept sentence itself (`matchedKeptLine`). */
 export function matchedKeptSentence(cards: number): string {
   return cards === 1
-    ? "Kept the 1 card. It matched across BSC and your checklist."
-    : `Kept all ${cards} cards. Every card matched across BSC and your checklist.`;
+    ? "The 1 card matched across BSC and your checklist. No Match Cards needed, totally clean."
+    : `All ${cards} cards matched across BSC and your checklist. No Match Cards needed, totally clean.`;
 }
 
 /**
- * The line a save lands with, "Saved N cards." and whatever the run says after it (the kept
- * sentence on a skipped run, the teams line). Only its start is pinned: the sentences after it are
- * asserted one by one (`toContainText`). Contract: a locator, nothing waited for.
+ * NEO-640: why Match Cards sat out, as the saved line says it right after "Saved N cards." (ahead
+ * of any caveat and the teams line). It names the dialog, so the dialog's absence is asserted by
+ * its role, never by text.
+ */
+export function skippedSavedReason(cards: number): string {
+  return `BSC and your checklist agreed on ${cards === 1 ? "it" : "every one"}, so Match Cards sat this one out.`;
+}
+
+/**
+ * The line a save lands with, "Saved N cards." ("Saved 1 card.") and whatever the run says after
+ * it (why Match Cards sat out, caveats, the teams line). Only its start is pinned: the sentences
+ * after it are asserted one by one (`toContainText`). Contract: a locator, nothing waited for.
  */
 export function savedLine(page: Page, cards: number): Locator {
   return page.getByText(new RegExp(`^Saved ${cards} cards?\\.`)).filter({ visible: true });
@@ -681,13 +698,12 @@ export function savedLine(page: Page, cards: number): Locator {
  * starts on the progress line (with its Cancel), and when the fetch ends the line goes with no
  * dialog standing. Where it lands is the caller's `lands`, which the fixture decides:
  *  - `"review"`: names (or teams, titles, a career check) are left to settle, so the tidy-up
- *    dialog opens, and the kept line ("Kept all N cards. Every card matched across BSC and your
- *    checklist.", N the file's rows: on a skip each row is exactly one card) stays in front of
- *    it with the teams line;
- *  - `"saved"`: nothing is left to ask, so the cards are saved at once, and the line the save
- *    lands with starts "Saved N cards." and says the kept sentence again (the kept line itself is
- *    on screen only for the write, so it is read off the saved line);
+ *    dialog opens, and the kept line (`matchedKeptSentence`, N the file's rows: on a skip each row
+ *    is exactly one card) stays in front of it with the teams line;
+ *  - `"saved"`: nothing is left to ask, so the cards are saved at once, and the saved line says
+ *    why Match Cards sat out (`skippedSavedReason`) right after its count;
  *  - `"either"`: whichever of the two comes, read as above.
+ * The landing is then read by axe in light and dark (the state the skip leaves behind).
  *
  * Contract: ENTRY Sync card checklist has just been pressed with `facts`' file in play and
  * `opensMatchCards` false. EXIT the tidy-up dialog is open (`"review"`) or the saved line is up.
@@ -698,24 +714,28 @@ export async function expectMatchCardsSkipped(
 ): Promise<void> {
   const progress = checklistFetchProgress(page);
   await expect(progress, `the progress line of ${what}`).toBeVisible();
-  // A sibling of the status line, not inside it: the run's one control.
-  await expect(page.getByRole("button", { name: "Cancel checklist fetch" })).toBeVisible();
+  await expect(cancelCardFetchButton(page)).toBeVisible();
   // One live BSC round trip, under its own "Waiting on BuySportsCards" line (NEO-487).
   await expectAfterMarketplace(page, progress, { platform: "BuySportsCards", what: `the end of ${what}`, state: "hidden" });
   const review = page.getByRole("dialog", { name: /^Tidy up / });
   const saved = savedLine(page, facts.rows);
   // Our own queueing once the fetch has landed (measured 1.3 s at most, #487): the standard 7 s.
   if (lands === "either") await expect(review.or(saved).first()).toBeVisible();
-  if (lands === "review" || (lands === "either" && (await review.isVisible()))) {
+  const reviewed = lands === "review" || (lands === "either" && (await review.isVisible()));
+  if (reviewed) {
     await expect(review).toBeVisible();
     await expect(matchedKeptLine(page, facts.rows)).toBeVisible();
   } else {
     await expect(saved).toBeVisible();
-    await expect(saved).toContainText(matchedKeptSentence(facts.rows));
+    await expect(saved).toContainText(new RegExp(`^Saved ${facts.rows} cards?\\. ${escapeRe(skippedSavedReason(facts.rows))}`));
   }
   await expectTeamsFromChecklist(page, facts);
-  // Paired with the landing just above (R2): the dialog never stood, and nobody confirmed one.
+  // Paired with the landing just above (R2): the dialog never stood, and nobody confirmed one. By
+  // role: the saved line itself says "Match Cards".
   await expect(matchCardsDialog(page)).toHaveCount(0);
+  await expectAccessible(page, {
+    label: reviewed ? `${what}: skipped Match Cards, kept line before the tidy-up` : `${what}: skipped Match Cards, saved`,
+  });
 }
 
 /**

@@ -55,9 +55,10 @@ import {
   CHECKLISTS,
   checklistFetchProgress,
   expectTeamsFromChecklist,
+  cancelCardFetchButton,
   matchedKeptLine,
-  matchedKeptSentence,
   savedLine,
+  skippedSavedReason,
   opensMatchCards,
   usePublishersChecklist,
   type ChecklistFacts,
@@ -142,7 +143,7 @@ async function fetchChecklist(
     // answers for the 20 cards): the run stays on its progress line and keeps every card itself.
     const progress = checklistFetchProgress(page);
     await expect(progress).toBeVisible();
-    await expect(page.getByRole("button", { name: "Cancel checklist fetch" })).toBeVisible();
+    await expect(cancelCardFetchButton(page)).toBeVisible();
     await expect(progress).toBeHidden({ timeout: open });
     // Saved at once, or (a career check, a teamless or retitled card) the tidy-up dialog, as on
     // the opened path; nobody confirmed a Match Cards, so either one is the skip's proof.
@@ -151,11 +152,12 @@ async function fetchChecklist(
       // Behind the wizard the line still says why no Match Cards came up.
       await expect(matchedKeptLine(page, facts.rows)).toBeVisible();
     } else {
-      // Saved at once: the line the save lands with says it again.
-      await expect(savedLine(page, facts.rows)).toContainText(matchedKeptSentence(facts.rows));
+      // Saved at once: the line the save lands with says why, right after its count.
+      await expect(savedLine(page, facts.rows)).toContainText(skippedSavedReason(facts.rows));
     }
     await expectTeamsFromChecklist(page, facts);
-    // Paired with the landing just above (R2): the dialog never stood.
+    // Paired with the landing just above (R2): the dialog never stood. By role: the saved line
+    // itself says "Match Cards".
     await expect(pairing).toHaveCount(0);
     return;
   }

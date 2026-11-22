@@ -410,11 +410,18 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   file, never typed. Captured with `tools/capture-bsc-checklist-teams.mjs`
   (SET-REGISTRY.md, "Published-checklist fixtures").
   **Match Cards opens or not by the file's fact (NEO-640).** Every fetch with two
-  or more sources starts on the progress line ("Fetching from BSC and your
-  checklist…", Cancel "Cancel checklist fetch"); the dialog opens only when a
-  card needs the operator, and a run with every card Matched at 100% skips it
-  ("Kept all N cards. Every card matched across BSC and your checklist.", said
-  again on the saved line when nothing is left to review). Each file in
+  or more sources starts on the progress line (`checklistFetchProgress`: a
+  group named by its status, "Fetching from BSC and your checklist…"; the
+  ticking " N of M cards ready." is aria-hidden, so read it with `getByText`;
+  its Cancel is "Cancel card fetch", `cancelCardFetchButton`); the dialog opens
+  only when a card needs the operator, with focus on the dialog itself
+  ("Match Cards — <set>"). A run with every card Matched at 100% skips it: the
+  line before the save reads "All N cards matched across BSC and your
+  checklist. No Match Cards needed, totally clean." (`matchedKeptSentence`),
+  and the saved line says why right after its count, "Saved N cards. BSC and
+  your checklist agreed on every one, so Match Cards sat this one out."
+  (`skippedSavedReason`). That line names Match Cards, so assert the dialog's
+  absence by role (`matchCardsDialog`), never by text. Each file in
   `CHECKLISTS` carries `matchCards: { paused, live }` (`MATCH_CARDS`); a full
   capture skips, a file with a row left out, a tie or the publisher's own numbers
   opens, and an edit to the rows (appended, dropped, renumbered, split) opens.
