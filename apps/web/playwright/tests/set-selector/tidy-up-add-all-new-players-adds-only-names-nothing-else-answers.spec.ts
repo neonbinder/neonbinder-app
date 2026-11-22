@@ -17,12 +17,15 @@
 //   3. Esc closes only the confirm (the walk stays open, nothing written) and puts focus back on
 //      the trigger.
 //   4. Reopen, "Add 3 players": the status beside the trigger reads "Added 3 players.". Every
-//      card printing those names has its player; #4 (Ulric's second card) leaves the walk, and
-//      the card each player was made on (#1, #2, #3) stays BLUE with the new player's Career
-//      check, as per-card "Add as new player" leaves it (plan: `newPlayerCareer`, only on the
-//      card where the player was created). Four cards left.
-//   5. Blue never holds: Save & next on #1, #2, #3 lands on #5; #4 is never shown, and #5's
-//      Player tile is still pink.
+//      card printing those names has its player, and only #5 is left ("1 card left"). A player
+//      the bulk add makes with no career from Wikidata (every name here: a hand-made sport has no
+//      Wikidata mapping) leaves a PURPLE note on the card it was made on, "New player, no career
+//      from Wikidata", never the blue Career check a per-card "Add as new player" leaves (f47956cb,
+//      `newPlayerNoCareer`: a hundred rookies must not be a hundred stops). So #1-#4 all leave the
+//      walk. #1 (Ulric's anchor) stays on screen as the open card: its Player tile is plain, it
+//      carries the note, and nothing on it is to check or to fix.
+//   5. Save & next on #1 lands straight on #5: #2, #3 and #4 (all answered) are never shown, and
+//      #5's Player tile is still pink.
 //   6. Save for later; the checklist's pill counts the one card, pink ("1 needs you, 1 to fix"). Players admin lists each new name
 //      once in this sport, and the on-file name twice, as before (no third one was made).
 //
@@ -150,28 +153,33 @@ test(
     await add.click();
     await expect(walk.getByRole("status").filter({ hasText: /^Added 3 players\.$/ })).toBeVisible();
     await expect(confirm).toHaveCount(0);
-    // #4 (Ulric's second card) leaves the walk: linked, nothing to check. #1-#3 stay, each BLUE
-    // with the new player's Career check (the card a player is made on, as per-card "Add as new
-    // player" does); #5 stays pink.
-    await expectCardsLeft(page, 4);
+    // Every new name is answered, and a bulk-made player with no Wikidata career is a purple note,
+    // not a stop: #1-#4 leave the walk, only #5 is left.
+    await expectCardsLeft(page, 1);
+    // #1 (Ulric's anchor, where he was made) is still the open card: plain, with the note.
     await expect(walk.getByText(`#1 · ${NEW[0]}`, { exact: true })).toBeVisible();
+    await expectCardSettled(page);
+    await expect(pinkTile(page, "Player"), `#1's player ${NEW[0]} was added`).toHaveCount(0);
+    await expect(
+      tidyTile(page, "Player").getByRole("group", { name: `Player ${NEW[0]}`, exact: true }).getByRole("button", { name: /^Change player( .+)?$/ }),
+    ).toBeVisible();
+    await expect(
+      tidyTile(page, "Player").getByRole("note").filter({ hasText: /^New player, no career from Wikidata$/ }),
+      `#1 is where ${NEW[0]} was made with no Wikidata career: a purple note`,
+    ).toBeVisible();
+    // A note never stops a card: no blue Career check (the per-card add's), nothing to check or fix.
+    await expect(
+      tidyTile(page, "Career").filter({ has: page.getByText("To check", { exact: true }) }),
+      "a bulk-made player with no career leaves no blue Career check",
+    ).toHaveCount(0);
+    await expect(walk.getByText(/^[0-9]+ to (check|fix)$/)).toHaveCount(0);
 
-    // ── STEP 5: each new player's card is blue, never held; Save & next lands on #5 without #4 ──
-    for (const [i, name] of NEW.entries()) {
-      await expect(walk.getByText(`#${i + 1} · ${name}`, { exact: true })).toBeVisible();
-      await expectCardSettled(page);
-      await expect(pinkTile(page, "Player"), `#${i + 1}'s player was added`).toHaveCount(0);
-      await expect(
-        tidyTile(page, "Player").getByRole("group", { name: `Player ${name}`, exact: true }).getByRole("button", { name: /^Change player( .+)?$/ }),
-      ).toBeVisible();
-      await expect(tidyTile(page, "Career"), `#${i + 1} is where ${name} was made: a Career check`).toHaveAccessibleDescription(/To check/);
-      await expect(walk.getByText("1 to check", { exact: true })).toBeVisible();
-      await expect(walk.getByText(/^[0-9]+ to fix$/)).toHaveCount(0);
-      await expectCardsLeft(page, 4 - i);
-      await saveAndNext(page);
-    }
+    // ── STEP 5: Save & next from #1 lands straight on #5; #2, #3 and #4 were answered by the add ──
+    await saveAndNext(page);
     await expect(walk.getByText(`#5 · ${ON_FILE}`, { exact: true })).toBeVisible();
-    await expect(walk.getByText(`#4 · ${NEW[0]}`, { exact: true }), "#4 was answered by the add").toHaveCount(0);
+    for (const shown of [`#2 · ${NEW[1]}`, `#3 · ${NEW[2]}`, `#4 · ${NEW[0]}`]) {
+      await expect(walk.getByText(shown, { exact: true }), `${shown} was answered by the add`).toHaveCount(0);
+    }
     await expectCardSettled(page);
     await expect(pinkTile(page, "Player"), "the name a player on file answers to still stops").toHaveCount(1);
     await expect(

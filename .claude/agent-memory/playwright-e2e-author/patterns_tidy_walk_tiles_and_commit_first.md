@@ -128,6 +128,11 @@ that must not write a real set, there is no pre-save exit any more: give it its 
   An unpressed chip reads `<team> · <player> <from>–<to>`; only a PRESELECTED one reads `· <player>
   played here`. Prove "nothing picked" by `pressed: true` count 0 in that list plus no `^Save teams?$`
   button (it mounts with the first pressed chip). A pressed chip is a choice: tile still "To fix".
+- **The one-team legend rule beats "no stint covers the year"** (`oneTeamCareerInLeague`, shared
+  verdict `convex/lib/careerVerdict.ts`): a retired player with ONE career team whose league is in
+  the set's leagues (a hand-made row under a real sport inherits the sport's league) is PRESELECTED
+  under "Suggested from career history." (`· <player> played here`). The whole-career-unpicked list
+  needs a multi-team career, or a set league list that does not rank the team.
 - **Quick-add card header names the linked player** (`#851 · George Brett`), not the card name: a
   free proof the PlayerPicker link landed.
 - **Fetch-or-adopt specs:** the rewritten commit/walk code runs only when the set is still empty, so
@@ -152,10 +157,15 @@ that must not write a real set, there is no pre-save exit any more: give it its 
 
 ## "Add all N new players" and "Review the N skipped" (NEO-645 w8)
 
-- **A created player leaves a BLUE Career check on the card it was made on** (`newPlayerCareer`),
-  per-card add and bulk "Add all" alike. A name printed on #1 and #4 keeps #1 in the walk (blue,
-  "1 to check") and drops #4. Count the walk as (first card per new name) + the still-pink cards;
-  blue never holds Save & next.
+- **A per-card created player leaves a BLUE Career check on the card it was made on**
+  (`newPlayerCareer`). A BULK "Add all" player with no Wikidata career leaves a PURPLE note
+  instead (`newPlayerNoCareer`, role `note` in the Player tile: "New player, no career from
+  Wikidata", "New player <name>, …" on a multi-player card), so every card the add answered
+  leaves the walk. The open card stays ON SCREEN after it leaves the order (the walk reads it from
+  all rows), so assert its note there, then Save & next goes to the next card still in the order.
+  "N cards left" counts only cards still in the order.
+- **The checklist's "Still looking up teams for N cards." drops its second sentence** ("Nothing for
+  you to do yet.") while the "N need you" pill has cards (`teamLookupStatusLine`); anchor `\.$`.
 - The Add-all trigger and its "Added N players." status sit in the walk's header (inside the
   dialog); after the add the trigger keeps its old label, aria-disabled.
 - **"Review the N skipped"** (end screen, footer) lands on the first skipped card; the cards being
