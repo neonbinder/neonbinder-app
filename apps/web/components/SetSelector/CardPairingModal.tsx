@@ -57,6 +57,9 @@ import {
   type ChecklistConflict,
   type TeamLookupOutcome,
 } from "./checklist-conflict";
+// NEO-640: one definition of "full confidence" with the predicate that decides
+// whether this dialog opens at all.
+import { isFullConfidence } from "./match-cards-needed";
 // NEO-490 — the publisher's checklist as a third source: the name pairing the
 // server uses (so a suggestion here is the server's own rule), the merge of
 // the server's per-link answers, and the dialog's one-line row text.
@@ -3243,7 +3246,7 @@ export function serverChecklistChipText(link: NonNullable<PairingCard["checklist
       : "On checklist",
     printed: number || undefined,
     percent:
-      link.via !== "stem" && link.confidence !== undefined && link.confidence < 1
+      link.via !== "stem" && link.confidence !== undefined && !isFullConfidence(link.confidence)
         ? `${Math.round(link.confidence * 100)}%`
         : null,
   };
@@ -3539,8 +3542,8 @@ export default function CardPairingModal({
    *
    * That capture is correct the FIRST time this opens (a plain click, nothing
    * unmounts in between). It is not reliable when `CardChecklist` reopens this
-   * same modal via the entity wizard's "Back to matching": that click unmounts
-   * the wizard (removing whatever had focus — the "Back to matching" button
+   * same modal via the entity wizard's "Back to Match Cards": that click unmounts
+   * the wizard (removing whatever had focus — the "Back to Match Cards" button
    * itself) in the same state update that flips `isOpen` back to true, so by
    * the time this component's mount effect runs, the browser has already
    * blurred to `<body>` — capturing that "restores" focus to nowhere. Mirrors
@@ -3832,7 +3835,6 @@ export default function CardPairingModal({
   // inside, and a keyboard user had to Tab through the whole page behind the
   // dialog to reach it (WCAG 2.4.3 / 4.1.2).
   const dialogRef = useRef<HTMLDivElement | null>(null);
-  const cancelBtnRef = useRef<HTMLButtonElement | null>(null);
   const bscFilterRef = useRef<HTMLInputElement | null>(null);
   const slFilterRef = useRef<HTMLInputElement | null>(null);
   const matchedToggleRef = useRef<HTMLButtonElement | null>(null);
@@ -3847,7 +3849,15 @@ export default function CardPairingModal({
     // document.activeElement capture when the prop is absent.
     const restoreTarget = restoreFocusRef?.current;
     triggerRef.current = restoreTarget ?? (document.activeElement as HTMLElement | null);
-    const id = requestAnimationFrame(() => cancelBtnRef.current?.focus());
+    // The dialog itself, not Cancel (NEO-640). On a session with nothing
+    // linked, kept or renamed, Cancel closes WITHOUT asking (`requestClose`),
+    // and this dialog now opens mid-stream or on a "Back to Match Cards": a
+    // moment the operator did not pick, possibly with an Enter still on its
+    // way. Focus on the destructive button would turn that keystroke into a
+    // discard. The container is named by the heading (aria-labelledby), so
+    // opening announces "Match Cards — <set>, dialog"; one Tab reaches the
+    // first control.
+    const id = requestAnimationFrame(() => dialogRef.current?.focus());
     return () => {
       cancelAnimationFrame(id);
       triggerRef.current?.focus?.();
@@ -4839,7 +4849,7 @@ export default function CardPairingModal({
                     // The % is shown once: here when the pair is scored below
                     // 100, else inside the checklist chip.
                     const shown = shownConfidence(m);
-                    const amberShown = shown > 0 && shown < 1;
+                    const amberShown = shown > 0 && !isFullConfidence(shown);
                     const chipSaysPercent =
                       !!m.card.checklistLink &&
                       serverChecklistChipText(m.card.checklistLink).percent !== null;
@@ -5392,11 +5402,16 @@ export default function CardPairingModal({
   return createPortal(
     <Theme>
       <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4 focus-visible:outline-2 focus-visible:-outline-offset-4 focus-visible:outline-focus"
         role="dialog"
         aria-modal="true"
         aria-labelledby="card-pairing-heading"
         ref={dialogRef}
+        // A programmatic focus target (the open effect above): out of the tab
+        // order, with its own ring drawn inside the viewport edge, because the
+        // box is the whole screen and a ring outside it would be off-screen
+        // (WCAG 2.4.7).
+        tabIndex={-1}
         onKeyDown={(e) => {
           if (e.key === "Escape") {
             // NEO-220: the discard confirm owns Escape while it is open. It is
@@ -5431,6 +5446,14 @@ export default function CardPairingModal({
           if (focusable.length === 0) return;
           const first = focusable[0];
           const last = focusable[focusable.length - 1];
+          // Focus parked on the dialog itself (the open effect): Shift+Tab
+          // from here would walk out to the page behind, so it wraps to the
+          // last control; plain Tab already lands on the first.
+          if (e.shiftKey && document.activeElement === root) {
+            e.preventDefault();
+            last.focus();
+            return;
+          }
           if (e.shiftKey && document.activeElement === first) {
             e.preventDefault();
             last.focus();

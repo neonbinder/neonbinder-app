@@ -91,6 +91,7 @@ import {
   cardNumberStem,
   resolveVariationParents,
   suggestVariationPairings,
+  VARIATION_LABEL_CONFIDENCE,
 } from "../lib/cards/variations";
 import {
   cardNumbersAgree,
@@ -412,6 +413,7 @@ import {
   MAX_PLACE_TEXTS_PER_QUERY,
   MAX_SOURCE_NUMBER_LENGTH,
   MAX_TEAM_IDENTITY_TEXTS,
+  type marketplacePairViaValidator,
 } from "./checklistCandidates";
 import { checklistClaimText } from "../lib/checklists/prospect-team-text";
 import {
@@ -17939,6 +17941,9 @@ export const fetchCardChecklist = action({
       const autoMatchedCards: Array<{
         card: ReconciledCard;
         confidence: number;
+        // NEO-640 — kept here, off `ReconciledCard` and `PairingCard`: it
+        // rides to the client on the candidate row only.
+        pairedBy?: Infer<typeof marketplacePairViaValidator>;
       }> = [];
       const unmatchedBscCards: ReconciledCard[] = [];
       const unmatchedSlCards: ReconciledCard[] = [];
@@ -17978,16 +17983,29 @@ export const fetchCardChecklist = action({
         const storedSlRef = bsc.platformRef
           ? storedSlRefByBscRef.get(bsc.platformRef)
           : undefined;
-        const sl: typeof slCards[0] | undefined =
-          (storedSlRef && slByPlatformRef.get(storedSlRef))
-          || (bsc.sportlotsRef && slByRef.get(bsc.sportlotsRef))
+        type Via = Infer<typeof marketplacePairViaValidator>;
+        type Lookup = readonly [() => typeof slCards[0] | undefined, Via];
+        const lookups: Lookup[] = [
+          [() => (storedSlRef ? slByPlatformRef.get(storedSlRef) : undefined), "stored"],
+          [() => (bsc.sportlotsRef ? slByRef.get(bsc.sportlotsRef) : undefined), "crossRef"],
           // NEO-189: a variation's counterpart, matched by label above. Ranks
           // below the operator's stored answer and BSC's own cross-reference.
-          || (bsc.platformRef ? slVariationPairByBscRef.get(bsc.platformRef) : undefined)
-          || undefined;
-        const fromStoredPairing =
-          storedSlRef !== undefined && slByPlatformRef.has(storedSlRef);
-        return { sl, fromStoredPairing };
+          [
+            () => (bsc.platformRef ? slVariationPairByBscRef.get(bsc.platformRef) : undefined),
+            "variation",
+          ],
+        ];
+        let sl: typeof slCards[0] | undefined;
+        let via: Via | undefined;
+        for (const [lookup, how] of lookups) {
+          const found = lookup();
+          if (found) {
+            sl = found;
+            via = how;
+            break;
+          }
+        }
+        return { sl, via };
       });
 
       // 1b. NEO-591 — what no identity answer took, paired NAMES FIRST with the
@@ -17998,12 +18016,18 @@ export const fetchCardChecklist = action({
       //     name (Jaro-Winkler at `PLAYER_NAME_AUTO_LINK`). A variation pairs
       //     only with a variation. A tie on either side leaves the cards
       //     unmatched for the operator (rule 8), and each pair carries the
-      //     core's confidence (0.9 when the numbers differ).
+      //     core's confidence (0.9 when the numbers differ or only the number
+      //     paired them).
       //
       //     SportLots' own roster is read when it has one, else the card's
       //     name (which is the player on a SportLots listing).
       const identityClaimed = new Set<string>();
       for (const { sl } of identitySlOf) if (sl) identityClaimed.add(slClaimKey(sl));
+      // NEO-591 — the cards the core left in a TIE (a number or a player that
+      // fits more than one card on the other side). Step 3a never pre-keeps or
+      // mints for one: a tie is the operator's to pair (rule 8).
+      const tiedBscIndices = new Set<number>();
+      const tiedSlClaimKeys = new Set<string>();
       const bscLeft: number[] = [];
       for (let i = 0; i < bscCards.length; i++) if (!identitySlOf[i].sl) bscLeft.push(i);
       const slLeft: number[] = [];
@@ -18015,13 +18039,13 @@ export const fetchCardChecklist = action({
       // 3a), by its own stem against a PAIRED parent.
       const namePairByBscIndex = new Map<
         number,
-        { sl: typeof slCards[0]; confidence: number; numbersAgree: boolean }
+        {
+          sl: typeof slCards[0];
+          confidence: number;
+          numbersAgree: boolean;
+          by: "name" | "number" | "nearName";
+        }
       >();
-      // NEO-591 — the cards the core left in a TIE (a number or a player that
-      // fits more than one card on the other side). Step 3a never pre-keeps or
-      // mints for one: a tie is the operator's to pair (rule 8).
-      const tiedBscIndices = new Set<number>();
-      const tiedSlClaimKeys = new Set<string>();
       if (bscLeft.length > 0 && slLeft.length > 0) {
         const pairing = pairNamesFirst(
           bscLeft.map((i) => ({
@@ -18047,13 +18071,14 @@ export const fetchCardChecklist = action({
             sl: slCards[slLeft[p.rightIndex]],
             confidence: p.confidence,
             numbersAgree: p.numbersAgree,
+            by: p.by,
           });
         }
       }
 
       // 1c. Walk BSC, attach matching SL data
       for (const [bscIndex, bsc] of bscCards.entries()) {
-        const { fromStoredPairing } = identitySlOf[bscIndex];
+        const { via: identityVia } = identitySlOf[bscIndex];
         let sl = identitySlOf[bscIndex].sl;
 
         // 2. The names-first pair from 1b, if this card has one.
@@ -18065,14 +18090,31 @@ export const fetchCardChecklist = action({
           corePairConfidence = namePair.confidence;
           numbersAgree = namePair.numbersAgree;
         }
+        // NEO-640 — which lookup paired the two halves, kept on the candidate
+        // row so the client knows whether a pair was settled by an id or only
+        // guessed. Only a card with a SportLots half has one. A pair the core
+        // made by the same roster or a near name reads "name"; the core's
+        // number-alone pair reads "number". A name pair whose numbers differ
+        // already scores lower (`NUMBERS_DIFFER_FACTOR`) and carries both
+        // numbers on `sourceNumbers`: that is rule 7's note, not a second field.
+        const pairedBy = namePair
+          ? namePair.by === "number"
+            ? ("number" as const)
+            : ("name" as const)
+          : identityVia;
 
-        // Confidence: an identity hit (the operator's stored pairing, BSC's
-        // own SportLots cross-reference, a variation's label) is certain; a
-        // names-first pair carries the core's confidence (1 for the same
-        // roster or a unique number with the numbers agreeing, 0.9 when they
-        // differ, the name score for a near name). Surfaced so the operator
-        // can see which pairings deserve a second look.
-        const pairConfidence = sl ? (corePairConfidence ?? 1) : 0;
+        // Confidence: an identity hit that is a LINK (the operator's stored
+        // pairing, BSC's own SportLots cross-reference) is certain; a
+        // variation matched by its label alone is not (NEO-640,
+        // `VARIATION_LABEL_CONFIDENCE`); a names-first pair carries the core's
+        // confidence (1 for the same roster with the numbers agreeing, 0.9
+        // when they differ or when only the number paired it, the name score
+        // for a near name). Surfaced so the operator can see which pairings
+        // deserve a second look.
+        const pairConfidence = sl
+          ? (corePairConfidence ??
+            (identityVia === "variation" ? VARIATION_LABEL_CONFIDENCE : 1))
+          : 0;
         if (sl) claimedSlRefs.add(slClaimKey(sl));
 
         // NEO-591 — the number the card carries. An identity pair keeps BSC's
@@ -18189,8 +18231,15 @@ export const fetchCardChecklist = action({
         };
         out.push(candidate);
         if (tiedBscIndices.has(bscIndex)) tiedCards.add(candidate);
-        if (sl) autoMatchedCards.push({ card: candidate, confidence: pairConfidence });
-        else unmatchedBscCards.push(candidate);
+        if (sl) {
+          autoMatchedCards.push({
+            card: candidate,
+            confidence: pairConfidence,
+            ...(pairedBy ? { pairedBy } : {}),
+          });
+        } else {
+          unmatchedBscCards.push(candidate);
+        }
       }
 
       // 3. SL cards no BSC card claimed. These are NOT turned into NB cards
@@ -18773,6 +18822,7 @@ export const fetchCardChecklist = action({
         card: ReconciledCard,
         bucket: "matched" | "bscOnly" | "slOnly" | "checklistOnly",
         confidence?: number,
+        pairedBy?: Infer<typeof marketplacePairViaValidator>,
       ) => ({
         cardNumber: card.cardNumber,
         cardName: card.cardName,
@@ -18810,6 +18860,8 @@ export const fetchCardChecklist = action({
           ? { checklistLink: checklistLinkByCard.get(card)! }
           : {}),
         confidence,
+        // NEO-640 — matched rows only; see the schema note.
+        ...(pairedBy ? { pairedBy } : {}),
         // NEO-341 — see `awaitingTeam` above.
         teamPending: awaitingTeam.has(card),
       });
@@ -18821,7 +18873,7 @@ export const fetchCardChecklist = action({
           userId: adminUserId,
           candidates: [
             ...autoMatchedCards.map((m) =>
-              toCandidate(m.card, "matched", m.confidence),
+              toCandidate(m.card, "matched", m.confidence, m.pairedBy),
             ),
             ...unmatchedBscCards.map((c) => toCandidate(c, "bscOnly")),
             ...unmatchedSlCards.map((c) => toCandidate(c, "slOnly")),

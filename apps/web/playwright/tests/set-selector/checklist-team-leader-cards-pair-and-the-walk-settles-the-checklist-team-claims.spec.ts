@@ -192,7 +192,7 @@ test(
     if (env.SL_PAUSED) {
       // No dialog, so no name decision to prove: the operator is told why.
       await expect(page.getByText("SportLots is on pause.")).toBeVisible();
-      await expect(page.getByText(/Match Cards/)).toBeHidden();
+      await expect(matchCardsDialog(page)).toHaveCount(0);
       await expectAccessible(page, { label: "2014 Topps Football Base, SportLots on pause" });
 
       // ── NEO-489, SportLots on pause: a checklist that says "No Team" on a card BSC gives a team ──

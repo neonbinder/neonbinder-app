@@ -311,6 +311,10 @@
 - [Tile and commit share one verdict](reference_tile_and_commit_share_one_verdict.md) — client preselect and server write call one pure fn; one test drives both; goldens/pins updated on purpose
 - [Radix size-1 button does not wrap](reference_radix_button_size1_does_not_wrap_long_labels.md) — 24px fixed height, no wrap; data-driven labels overflow phones; use h-auto min-h-6 max-w-full wrap-anywhere
 - [Open card then paged pass double-applies](reference_open_card_then_paged_pass_double_applies.md) — skip the in-call card in the scheduled pages; one helper for the shared career verdict
+- [Render-phase open needs batch in state](reference_render_phase_open_needs_batch_in_state_and_fixture_batch_ids.md) — NEO-640 early open: previousBatchId in state; pre-streamed test fixtures never trip it; matched w/o pairedBy opens
+- [Names-first core: a name pair at 1 is clean](reference_names_first_core_makes_a_name_pair_at_one_clean.md) — skip predicate reads confidence + sourceNumbers, not pairedBy "name"; D2 duplicate-number tie vs main test
+- [Compiler memoization error points at unrelated callback](reference_compiler_memoization_error_points_at_unrelated_callback.md) — bisect your hunks; a new render-scope object breaks old useCallbacks
+- [Pair confidence is server-stamped](reference_pair_confidence_stamped_by_server_fixtures_must_match.md) — clean-pair fixtures: pairedBy name/stored/crossRef at 1; number/variation pairs are 0.9 (NEO-640)
 - [Stored key vs comparison key split](feedback_stored_key_vs_comparison_key_split.md) — a name-rule change goes in an explicit comparison step, never the stored-key fold; prove stored keys vs origin/main by fuzz
 - [Optional result field: omit when empty](reference_optional_result_field_omit_when_empty.md) — always-present [] reds toEqual pins in convex tests; spread only when non-empty
 - [Mixed preselect: focus the open question](pattern_mixed_preselect_focus_goes_to_the_open_question.md) — some ticked, one tied: focus its chip by ref, not Save; heading names both

@@ -414,6 +414,27 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   one by one; N in `Teams from your checklist: N of M cards` is read off the
   file, never typed. Captured with `tools/capture-bsc-checklist-teams.mjs`
   (SET-REGISTRY.md, "Published-checklist fixtures").
+  **Match Cards opens or not by the file's fact (NEO-640).** Every fetch with two
+  or more sources starts on the progress line (`checklistFetchProgress`: a
+  group named by its status, "Fetching from BSC and your checklist…"; the
+  ticking " N of M cards ready." is aria-hidden, so read it with `getByText`;
+  its Cancel is "Cancel card fetch", `cancelCardFetchButton`); the dialog opens
+  only when a card needs the operator, with focus on the dialog itself
+  ("Match Cards — <set>"). A run with every card Matched at 100% skips it: the
+  line before the save reads "All N cards matched across BSC and your
+  checklist. No Match Cards needed, totally clean." (`matchedKeptSentence`),
+  and the saved line says why right after its count, "Saved N cards. BSC and
+  your checklist agreed on every one, so Match Cards sat this one out."
+  (`skippedSavedReason`). That line names Match Cards, so assert the dialog's
+  absence by role (`matchCardsDialog`), never by text. Each file in
+  `CHECKLISTS` carries `matchCards: { paused, live }` (`MATCH_CARDS`); a full
+  capture skips, a file with a row left out, a tie or the publisher's own numbers
+  opens, and an edit to the rows (appended, dropped, renumbered, split) opens.
+  Settle a fetch with `settleChecklistFetch(page, env, { facts, what, lands })`
+  (`lands`: `"review"`, `"saved"` or `"either"` for where a skip goes), which
+  branches on `opensMatchCards(facts, env)`, never on an `.or()` between the
+  dialog and the kept line. A new file gets its entry from a run, checked
+  against `checklistMatch` (the product's matcher over the file and BSC's cards).
 - `support/bypass-proxy.mjs`: CI-only proxy that injects the preview's
   deployment-protection header and `x-vercel-skip-toolbar` (NEO-548: Vercel's
   preview toolbar otherwise covers controls on the phone viewport); started by
@@ -1144,8 +1165,9 @@ skipped: no SportLots ids on this path."; the base picker's SportLots pane
 shows "SportLots wasn't asked: <set> has no SportLots link."; checklist fetches take the
 one-marketplace path ("Kept all N cards from BSC. Nothing to match, no other
 marketplace attached.") unless a publisher's checklist is in play (pasted, or
-the set's stored one): BSC plus the checklist are two sources, so Match Cards
-opens even paused (NEO-496; `confirmChecklistMatchCards`).
+the set's stored one): BSC plus the checklist are two sources even paused
+(NEO-496), and Match Cards opens when a card needs the operator, by the file's
+fact (NEO-640; `settleChecklistFetch`).
 Paused branches below Years assert THAT state, never the paused sentence.
 Consequences for drills: the Manufacturers column holds only the pinned "All
 Brands" view entry on a fresh deployment (see `SET-REGISTRY.md` -> "When
