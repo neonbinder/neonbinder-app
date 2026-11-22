@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useState } from "react";
 import type { Id } from "../../../../convex/_generated/dataModel";
 import NeonButton from "../../../modules/NeonButton";
 
@@ -95,7 +95,6 @@ export default function TeamCandidates({
   const intro = useAnnouncedText(
     hasCandidates ? candidatesIntro(candidates.length, fromPlace ? printedName : undefined) : "",
   );
-  const introId = useId();
 
   return (
     <div
@@ -107,11 +106,18 @@ export default function TeamCandidates({
     >
       {/* One wrapper for the whole life of the row, so the intro's live region
           is already mounted, empty, when the candidates arrive. */}
-      <p id={introId} role="status" className="text-sm text-ink-2 empty:hidden">
+      <p role="status" className="text-sm text-ink-2 empty:hidden">
         {intro}
       </p>
       {hasCandidates && (
-        <ul role="list" aria-labelledby={introId} className="flex flex-col items-start gap-1.5">
+        <ul
+          role="list"
+          // The name is the same sentence the lead-in says, but computed here, so
+          // the list is named from its first render (the lead-in's live region
+          // fills a beat later, on purpose).
+          aria-label={candidatesIntro(candidates.length, fromPlace ? printedName : undefined)}
+          className="flex flex-col items-start gap-1.5"
+        >
           {candidates.map((candidate, index) => (
             <li key={candidate.teamId} className="max-w-full">
               <NeonButton

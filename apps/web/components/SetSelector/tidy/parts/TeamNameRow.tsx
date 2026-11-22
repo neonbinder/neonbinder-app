@@ -193,6 +193,9 @@ function UnansweredTeamName({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- candidateIds is read through nameRow
   }, [nameRow?.candidateTeamIds, candidateRows, leagues]);
   const candidateStep = candidateIds.length >= 2;
+  // "+ New team" waits for the near-match answer: an exact match turns it into
+  // a link, and a created team can't be taken back.
+  const checking = rowSportId !== undefined && nearMatches === undefined;
 
   const matches = nearMatches;
   const exactRows = (matches ?? []).filter((m) => m.confidence === "exact");
@@ -284,6 +287,12 @@ function UnansweredTeamName({
         </TeamMatchSearch>
       )}
 
+      {/* Mounted for the whole life of the row, so the sentence is a change to a
+          live region that is already in the page. */}
+      <p role="status" className="text-xs italic text-ink-3 empty:hidden">
+        {checking && !newOpen ? "Checking for teams by that name…" : null}
+      </p>
+
       {newOpen && rowSportId ? (
         <InlineNewTeam
           formKey={`team:${name.nameNormalized}`}
@@ -327,8 +336,11 @@ function UnansweredTeamName({
             size="1"
             variant="secondary"
             aria-label={`+ New team${suffix}`}
-            aria-disabled={disabled}
-            onClick={() => setNewOpen(true)}
+            aria-disabled={disabled || checking ? true : undefined}
+            onClick={() => {
+              if (checking) return;
+              setNewOpen(true);
+            }}
           >
             + New team
           </NeonButton>

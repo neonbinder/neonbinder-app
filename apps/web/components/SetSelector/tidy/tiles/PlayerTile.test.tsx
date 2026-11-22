@@ -110,6 +110,7 @@ function renderTile(
 beforeEach(() => {
   for (const k of Object.keys(queryResults)) delete queryResults[k];
   for (const k of Object.keys(mutations)) delete mutations[k];
+  queryResults["players.nameFragmentCheck"] = { isFragment: false };
 });
 
 describe("PlayerTile", () => {
@@ -156,6 +157,28 @@ describe("PlayerTile", () => {
     queryResults["players.nearMatches"] = [];
     renderTile();
     expect(screen.queryByText("Possible matches")).toBeNull();
+  });
+
+  it.each([
+    ["near matches", "players.nearMatches"],
+    ["the fragment check", "players.nameFragmentCheck"],
+  ])("holds 'Add as new player' until %s has answered", async (_label, pending) => {
+    queryResults["players.nearMatches"] = [];
+    delete queryResults[pending];
+    renderTile();
+    expect(screen.getByText("Checking for players by that name…").getAttribute("role")).toBe("status");
+    expect(screen.queryByText("“Jackson Merrill” is new to NeonBinder.")).toBeNull();
+    const add = screen.getByRole("button", { name: "Add as new player" });
+    expect(add.getAttribute("aria-disabled")).toBe("true");
+    await act(async () => fireEvent.click(add));
+    expect(mutation("tidyNames.createPlayer")).not.toHaveBeenCalled();
+  });
+
+  it("says nothing about checking once both answered", () => {
+    queryResults["players.nearMatches"] = [];
+    renderTile();
+    expect(screen.queryByText("Checking for players by that name…")).toBeNull();
+    expect(screen.getByRole("button", { name: "Add as new player" }).getAttribute("aria-disabled")).toBeNull();
   });
 
   it("'Add as new player' creates the player from this card's printed name", async () => {

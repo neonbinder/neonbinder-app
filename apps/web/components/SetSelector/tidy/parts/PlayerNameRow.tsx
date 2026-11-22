@@ -264,6 +264,10 @@ function UnansweredPlayerName({
       !(pickStep && sameNameCandidates.some((c) => c.playerId === m._id)),
   );
   const creating = !pickStep && !showPreselect && !showExact;
+  // Nothing is created until both lookups have answered: either can still turn
+  // "new" into a link, a same-name pick or the fragment question, and a created
+  // player can't be taken back.
+  const checking = rowSportId !== undefined && (nearMatches === undefined || fragmentCheck === undefined);
 
   const link = (playerId: string) =>
     write.run(
@@ -284,7 +288,7 @@ function UnansweredPlayerName({
     );
 
   const create = (oneNamePlayer: boolean) =>
-    write.run(
+    checking ? Promise.resolve(false) : write.run(
       () =>
         createPlayer({
           cardId: row._id,
@@ -355,7 +359,13 @@ function UnansweredPlayerName({
         </p>
       )}
 
-      {creating && !linkOpen && (
+      {/* Mounted for the whole life of the row, so the sentence is a change to a
+          live region that is already in the page. */}
+      <p role="status" className="text-xs italic text-ink-3 empty:hidden">
+        {creating && !linkOpen && checking ? "Checking for players by that name…" : null}
+      </p>
+
+      {creating && !linkOpen && !checking && (
         <div className="grid gap-1">
           <p className="text-sm text-ink wrap-anywhere">{`“${queryName}” is new to NeonBinder.`}</p>
           <WikidataBlock status={status} enrichment={enrichment} />
@@ -440,7 +450,7 @@ function UnansweredPlayerName({
             <NeonButton
               size="1"
               aria-label={`${fragmentStep ? ONE_NAME_PLAYER_LABEL : "Add as new player"}${suffix}`}
-              aria-disabled={disabled}
+              aria-disabled={disabled || checking ? true : undefined}
               onClick={() => void create(fragmentStep)}
             >
               {fragmentStep ? ONE_NAME_PLAYER_LABEL : "Add as new player"}

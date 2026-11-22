@@ -211,6 +211,36 @@ describe("TeamTile", () => {
       expect(mutation("tidyNames.answerName")).toHaveBeenCalledTimes(1);
     });
 
+    it("holds '+ New team' until the near matches answer, and says why", async () => {
+      renderTile();
+      expect(screen.getByText("Checking for teams by that name…").getAttribute("role")).toBe("status");
+      const add = screen.getByRole("button", { name: "+ New team" });
+      expect(add.getAttribute("aria-disabled")).toBe("true");
+      await click(add);
+      expect(screen.queryByRole("group", { name: "New team: Padres" })).toBeNull();
+    });
+
+    it("says nothing about checking once the near matches answered", () => {
+      queryResults["teams.nearMatches"] = [];
+      renderTile();
+      expect(screen.queryByText("Checking for teams by that name…")).toBeNull();
+      expect(screen.getByRole("button", { name: "+ New team" }).getAttribute("aria-disabled")).toBeNull();
+    });
+
+    it("the candidates list is named from its first render", () => {
+      queryResults["teams.nearMatches"] = [];
+      queryResults["teams.getManyByIds"] = [
+        { _id: "t-new", name: "Padres", location: "San Diego", yearsActive: { from: 1969 } },
+        { _id: "t-old", name: "Padres", location: "San Diego", yearsActive: { from: 1936, to: 1968 } },
+      ];
+      renderTile({
+        ctx: context({
+          names: [teamName({ row: { name: "Padres", sportId: SPORT, status: "ready", candidateTeamIds: ["t-new", "t-old"] } })],
+        }),
+      });
+      expect(screen.getByRole("list", { name: "We've got 2 teams by that name. Pick the one on this card." })).toBeTruthy();
+    });
+
     it("'Not a team' answers notEntity for the name", async () => {
       queryResults["teams.nearMatches"] = [];
       renderTile();
