@@ -13,6 +13,7 @@ import {
   teamLinkedForText,
   marketplaceHeading,
   noStintText,
+  noteworthyReason,
   outcomeHeading,
   playedHere,
   preselectReasonLine,
@@ -25,12 +26,20 @@ import { errorMessage, useTidyWrite } from "./tidy-write";
 
 describe("copy", () => {
   it("says why a name was linked for the operator, in the approved words", () => {
-    expect(linkedForText("exact")).toBe("Linked for you: exact name, plays in this set's sport");
     expect(linkedForText("setHistory")).toBe("Linked for you: another card in this set is already linked to them");
     expect(linkedForText("hallOfFame")).toBe(
       "Linked for you: none of the others on file played that year, but this one is in the Hall of Fame",
     );
     expect(linkedForText("careerTeam")).toBe("Linked for you: the only one on file who played for this card's team");
+  });
+
+  it("T1: only a judgement call earns a purple note; the plain exact match (or any reason this build does not know) earns none", () => {
+    expect(noteworthyReason("setHistory")).toBe("setHistory");
+    expect(noteworthyReason("hallOfFame")).toBe("hallOfFame");
+    expect(noteworthyReason("careerTeam")).toBe("careerTeam");
+    expect(noteworthyReason("exact")).toBeUndefined();
+    expect(noteworthyReason("somethingNew")).toBeUndefined();
+    expect(noteworthyReason(undefined)).toBeUndefined();
   });
 
   it("a team row's 'Linked for you' note is about the team, never a player's wording", () => {

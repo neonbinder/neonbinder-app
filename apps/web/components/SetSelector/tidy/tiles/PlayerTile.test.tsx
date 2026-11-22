@@ -353,7 +353,7 @@ describe("PlayerTile", () => {
     expect(screen.getByRole("button", { name: "Add as new player anyway" })).toBeTruthy();
   });
 
-  it("a linked name is plain, says why it was linked, and Change clears the answer", async () => {
+  it("a linked name is plain, says why it was linked, and Edit clears the answer", async () => {
     renderTile({
       row: card({ playerIds: ["player-1"] }),
       items: [],
@@ -381,7 +381,7 @@ describe("PlayerTile", () => {
     expect(screen.getByRole("group", { name: "Player" }).getAttribute("data-tidy-level")).toBe("plain");
     expect(screen.getByText("Linked for you: another card in this set is already linked to them")).toBeTruthy();
     expect(screen.getByText(/b\. 2003/)).toBeTruthy();
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Change player" })));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Edit Jackson Merrill" })));
     expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
       cardId: CARD,
       kind: "player",
@@ -390,7 +390,23 @@ describe("PlayerTile", () => {
     });
   });
 
-  it("an exact link with no name row says 'exact' from the live read, and Change edits this card only", async () => {
+  it("T1: an exact link with no name row carries no purple note, and Edit changes this card only", async () => {
+    renderTile({
+      row: card({ playerIds: ["player-1"] }),
+      items: [],
+      ctx: context({
+        players: [{ playerId: "player-1", name: "Jackson Merrill", sportId: SPORT, stints: [], stintsMore: false }],
+        linkedFor: [],
+      }),
+    });
+    expect(screen.queryByText(/Linked for you/)).toBeNull();
+    expect(screen.queryByRole("note")).toBeNull();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Edit Jackson Merrill" })));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Pick a player" })));
+    expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({ id: CARD, playerIds: ["player-9"] });
+  });
+
+  it("T1: a reason this build calls plain ('exact', from an older server) draws no note either", () => {
     renderTile({
       row: card({ playerIds: ["player-1"] }),
       items: [],
@@ -399,10 +415,52 @@ describe("PlayerTile", () => {
         linkedFor: [{ kind: "player", playerId: "player-1", reason: "exact" }],
       }),
     });
-    expect(screen.getByText("Linked for you: exact name, plays in this set's sport")).toBeTruthy();
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Change player" })));
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Pick a player" })));
-    expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({ id: CARD, playerIds: ["player-9"] });
+    expect(screen.queryByRole("note")).toBeNull();
+  });
+
+  it.each([
+    ["setHistory", "Linked for you: another card in this set is already linked to them"],
+    ["hallOfFame", "Linked for you: none of the others on file played that year, but this one is in the Hall of Fame"],
+    ["careerTeam", "Linked for you: the only one on file who played for this card's team"],
+  ])("T1: the %s judgement call keeps its purple note on a link with no name row", (reason, text) => {
+    renderTile({
+      row: card({ playerIds: ["player-1"] }),
+      items: [],
+      ctx: context({
+        players: [{ playerId: "player-1", name: "Jackson Merrill", sportId: SPORT, stints: [], stintsMore: false }],
+        linkedFor: [{ kind: "player", playerId: "player-1", reason }],
+      }),
+    });
+    expect(screen.getByRole("note").textContent).toBe(text);
+  });
+
+  it("T2: each linked name ends its line with one small Edit, named 'Edit <name>'; no Change player row remains", () => {
+    renderTile({
+      row: card({ playerIds: ["player-1", "player-2"] }),
+      items: [],
+      ctx: context({
+        players: [
+          { playerId: "player-1", name: "Freddy Peralta", birthYear: 1996, sportId: SPORT, stints: [], stintsMore: false },
+          { playerId: "player-2", name: "Jesus Luzardo", birthYear: 1997, sportId: SPORT, stints: [], stintsMore: false },
+        ],
+      }),
+    });
+    for (const who of ["Freddy Peralta", "Jesus Luzardo"]) {
+      const edit = screen.getByRole("button", { name: `Edit ${who}` });
+      expect(edit.textContent).toBe("Edit");
+      // WCAG 2.5.3: the accessible name holds the visible word.
+      expect(edit.getAttribute("aria-label")).toContain(edit.textContent!);
+      // The button is the LAST thing on the same line as the name, and the line may wrap.
+      const line = edit.parentElement as HTMLElement;
+      expect(line.lastElementChild).toBe(edit);
+      expect(line.textContent).toContain(who);
+      expect(line.className).toContain("flex-wrap");
+    }
+    expect(screen.queryByRole("button", { name: /^Change/ })).toBeNull();
+    // One "+ Another player" and one "+ Cameo" at the bottom, in that order.
+    const adds = screen.getAllByRole("button").map((b) => b.textContent);
+    expect(adds.filter((t) => t === "+ Another player")).toHaveLength(1);
+    expect(adds.slice(-2)).toEqual(["+ Another player", "+ Cameo"]);
   });
 
   it("a player Add all new players made with no Wikidata career carries a purple note, and the tile stays plain", () => {
@@ -516,17 +574,17 @@ describe("PlayerTile", () => {
       });
     const linkedRow = () => card({ playerIds: ["player-1"] });
 
-    it("'Change' is 'Change player' to a reader and on the screen", () => {
+    it("'Edit' is 'Edit <name>' to a reader, so the name holds the visible word", () => {
       renderTile({ row: linkedRow(), items: [], ctx: linkedCtx() });
-      const change = screen.getByRole("button", { name: "Change player" });
-      expect(change.textContent).toBe("Change player");
-      expect(change.getAttribute("aria-label")).toBeNull();
+      const change = screen.getByRole("button", { name: "Edit Jackson Merrill" });
+      expect(change.textContent).toBe("Edit");
+      expect(change.getAttribute("aria-label")).toBe("Edit Jackson Merrill");
     });
 
     it("a pick is an answer: the walk is told, and focus is not sent back to the opener", async () => {
       const onAnswered = vi.fn();
       renderTile({ row: linkedRow(), items: [], ctx: linkedCtx(), onAnswered });
-      const change = screen.getByRole("button", { name: "Change player" });
+      const change = screen.getByRole("button", { name: "Edit Jackson Merrill" });
       change.focus();
       fireEvent.click(change);
       const pick = screen.getByRole("button", { name: "Pick a player" });
@@ -534,13 +592,13 @@ describe("PlayerTile", () => {
       await act(async () => fireEvent.click(pick));
       expect(onAnswered).toHaveBeenCalledTimes(1);
       await new Promise((r) => requestAnimationFrame(() => r(null)));
-      expect(document.activeElement).not.toBe(screen.getByRole("button", { name: "Change player" }));
+      expect(document.activeElement).not.toBe(screen.getByRole("button", { name: "Edit Jackson Merrill" }));
     });
 
-    it("Cancel gives focus back to the Change that opened the search", async () => {
+    it("Cancel gives focus back to the Edit that opened the search", async () => {
       const onAnswered = vi.fn();
       renderTile({ row: linkedRow(), items: [], ctx: linkedCtx(), onAnswered });
-      const change = screen.getByRole("button", { name: "Change player" });
+      const change = screen.getByRole("button", { name: "Edit Jackson Merrill" });
       change.focus();
       fireEvent.click(change);
       fireEvent.click(screen.getByRole("button", { name: "Cancel linking" }));
@@ -579,7 +637,7 @@ describe("PlayerTile", () => {
       expect(onAnswered).toHaveBeenCalledTimes(1);
     });
 
-    it("on a card with two names, Change carries the name so the two do not read alike", () => {
+    it("on a card with two names, Edit carries the name so the two do not read alike", () => {
       const ctx = context({
         names: [
           printedName({
@@ -595,8 +653,8 @@ describe("PlayerTile", () => {
         players: [{ playerId: "player-1", name: "Jackson Merrill", sportId: SPORT, stints: [], stintsMore: false }],
       });
       renderTile({ row: linkedRow(), items: [], ctx });
-      expect(screen.getByRole("button", { name: "Change player Jackson Merrill" }).textContent).toBe("Change player");
-      expect(screen.getByRole("button", { name: "Change player Juan Soto" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Edit Jackson Merrill" }).textContent).toBe("Edit");
+      expect(screen.getByRole("button", { name: "Edit Juan Soto" }).textContent).toBe("Edit");
     });
   });
 });
@@ -817,5 +875,180 @@ describe("PlayerTile: one filled button per tile, and long labels wrap (NEO-645 
     renderTile({ ctx: context({ names: [printedName({ row: nameRow({ sportId: "sport-2" }) })] }) });
     expect(screen.getByRole("checkbox", { name: /^Also add / })).toBeTruthy();
     expect(screen.queryByText(/one-off appearance/)).toBeNull();
+  });
+});
+
+describe("PlayerTile: cameos (T5)", () => {
+  const merrill = { playerId: "player-1", name: "Jackson Merrill", sportId: SPORT, stints: [], stintsMore: false };
+  const cameoTile = (cameos: Array<{ playerId: string; name: string }>, over: Record<string, unknown> = {}) =>
+    renderTile({
+      row: card({ playerIds: ["player-1"], secondaryPlayerIds: cameos.map((c) => c.playerId) }),
+      items: [],
+      ctx: context({ players: [merrill], cameos, ...over }),
+    });
+
+  it("'+ Cameo' sits beside '+ Another player' and adds the pick through the attributes panel's own mutation", async () => {
+    cameoTile([]);
+    const add = screen.getByRole("button", { name: "+ Another player" });
+    const cameo = screen.getByRole("button", { name: "+ Cameo" });
+    expect(add.parentElement).toBe(cameo.parentElement);
+    await act(async () => fireEvent.click(cameo));
+    // The same player picker as "+ Another player".
+    expect(linkSearchProps.at(-1)?.kind).toBe("player");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Pick a player" })));
+    expect(mutation("cardSecondaryPlayers.setSecondaryPlayers")).toHaveBeenCalledWith({
+      cardId: CARD,
+      playerIds: ["player-9"],
+      regenerateListing: true,
+    });
+    // A cameo is not a player: the card's players are untouched.
+    expect(mutation("selectorOptions.updateCard")).not.toHaveBeenCalled();
+  });
+
+  it("lists each cameo as a row, 'Francisco Lindor · cameo' with its own Edit", () => {
+    cameoTile([
+      { playerId: "player-5", name: "Francisco Lindor" },
+      { playerId: "player-6", name: "Juan Soto" },
+    ]);
+    const row = screen.getByRole("group", { name: "Cameo Francisco Lindor" });
+    expect(row.textContent).toBe("Francisco Lindor · cameoEdit");
+    const edit = screen.getByRole("button", { name: "Edit cameo Francisco Lindor" });
+    expect(edit.textContent).toBe("Edit");
+    expect(row.contains(edit)).toBe(true);
+    expect(screen.getByRole("button", { name: "Edit cameo Juan Soto" })).toBeTruthy();
+    // Players and cameos are not mixed: Merrill is a player row, not a cameo.
+    expect(screen.queryByRole("group", { name: "Cameo Jackson Merrill" })).toBeNull();
+  });
+
+  it("Edit on a cameo swaps it for the pick, keeping the others in order", async () => {
+    cameoTile([
+      { playerId: "player-5", name: "Francisco Lindor" },
+      { playerId: "player-6", name: "Juan Soto" },
+    ]);
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Edit cameo Francisco Lindor" })));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Pick a player" })));
+    expect(mutation("cardSecondaryPlayers.setSecondaryPlayers")).toHaveBeenCalledWith({
+      cardId: CARD,
+      playerIds: ["player-9", "player-6"],
+      regenerateListing: true,
+    });
+  });
+
+  it("Edit on a cameo can remove it", async () => {
+    cameoTile([
+      { playerId: "player-5", name: "Francisco Lindor" },
+      { playerId: "player-6", name: "Juan Soto" },
+    ]);
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Edit cameo Juan Soto" })));
+    const remove = screen.getByRole("button", { name: "Remove cameo Juan Soto" });
+    expect(remove.textContent).toBe("Remove cameo");
+    await act(async () => fireEvent.click(remove));
+    expect(mutation("cardSecondaryPlayers.setSecondaryPlayers")).toHaveBeenCalledWith({
+      cardId: CARD,
+      playerIds: ["player-5"],
+      regenerateListing: true,
+    });
+  });
+
+  it("Remove is offered only while a cameo is open, never on '+ Cameo'", async () => {
+    cameoTile([{ playerId: "player-5", name: "Francisco Lindor" }]);
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "+ Cameo" })));
+    expect(screen.queryByRole("button", { name: /^Remove cameo/ })).toBeNull();
+  });
+
+  it("a card's own player picked as a cameo is refused beside the pick, nothing written", async () => {
+    // The mocked search picks "player-9": make that the card's own player.
+    renderTile({
+      row: card({ playerIds: ["player-9"] }),
+      items: [],
+      ctx: context({ players: [{ ...merrill, playerId: "player-9" }], cameos: [] }),
+    });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "+ Cameo" })));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Pick a player" })));
+    expect(screen.getByRole("alert").textContent).toBe("They're already this card's player. No cameo needed.");
+    expect(mutation("cardSecondaryPlayers.setSecondaryPlayers")).not.toHaveBeenCalled();
+  });
+
+  it("a cameo made a player leaves the cameos in the same write (as the attributes panel does)", async () => {
+    cameoTile([{ playerId: "player-9", name: "Someone" }]);
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "+ Another player" })));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Pick a player" })));
+    expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
+      id: CARD,
+      playerIds: ["player-1", "player-9"],
+    });
+    expect(mutation("cardSecondaryPlayers.setSecondaryPlayers")).toHaveBeenCalledWith({
+      cardId: CARD,
+      playerIds: [],
+      regenerateListing: true,
+    });
+  });
+
+  it("a card with only cameos still shows the tile with its rows", () => {
+    renderTile({
+      row: card({ secondaryPlayerIds: ["player-5"] }),
+      items: [],
+      ctx: context({ cameos: [{ playerId: "player-5", name: "Francisco Lindor" }] }),
+    });
+    expect(screen.getByRole("group", { name: "Cameo Francisco Lindor" })).toBeTruthy();
+  });
+
+  it("a cameo write that is refused says so and leaves the picker open", async () => {
+    cameoTile([]);
+    mutation("cardSecondaryPlayers.setSecondaryPlayers").mockRejectedValueOnce(new Error("Server Error"));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "+ Cameo" })));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Pick a player" })));
+    expect(screen.getByRole("alert").textContent).toBe("Couldn't save that cameo. Try again.");
+    expect(screen.getByRole("button", { name: "Pick a player" })).toBeTruthy();
+  });
+
+  it("Cancel on '+ Cameo' returns focus to that button, which was gone while the search was open", async () => {
+    cameoTile([{ playerId: "player-5", name: "Francisco Lindor" }]);
+    const cameo = screen.getByRole("button", { name: "+ Cameo" });
+    cameo.focus();
+    fireEvent.click(cameo);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel linking" }));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "+ Cameo" })));
+  });
+
+  it("the buttons are named so no two read alike", () => {
+    cameoTile([{ playerId: "player-5", name: "Francisco Lindor" }]);
+    const names = screen.getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent);
+    expect(new Set(names).size).toBe(names.length);
+    expect(names).toEqual([
+      "Edit Jackson Merrill",
+      "Edit cameo Francisco Lindor",
+      "+ Another player",
+      "+ Cameo",
+    ]);
+  });
+});
+
+describe("PlayerTile: accessibility (T2, T5, T6)", () => {
+  it("names every control, leaves no id on one, and has no axe violation the DOM can show (light and dark)", async () => {
+    const axe = (await import("axe-core")).default;
+    for (const mode of ["light", "dark"] as const) {
+      document.documentElement.setAttribute("data-theme", mode);
+      const { container, unmount } = renderTile({
+        row: card({ playerIds: ["player-1"], secondaryPlayerIds: ["player-5"] }),
+        items: [{ level: "check", kind: "playerName", names: [] }] as never,
+        ctx: context({
+          players: [{ playerId: "player-1", name: "Jackson Merrill", birthYear: 2003, sportId: SPORT, stints: [], stintsMore: false }],
+          cameos: [{ playerId: "player-5", name: "Francisco Lindor" }],
+          linkedFor: [{ kind: "player", playerId: "player-1", reason: "careerTeam" }],
+        }),
+      });
+      for (const b of container.querySelectorAll("button")) {
+        expect(b.id).toBe("");
+        expect((b.getAttribute("aria-label") ?? b.textContent ?? "").trim().length).toBeGreaterThan(0);
+      }
+      // happy-dom has no layout, so contrast and target-size are the E2E suite's; the rest holds here.
+      const result = await axe.run(container, {
+        rules: { "color-contrast": { enabled: false }, "target-size": { enabled: false }, region: { enabled: false } },
+      });
+      expect(result.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.html).join(" | ")}`)).toEqual([]);
+      unmount();
+    }
+    document.documentElement.removeAttribute("data-theme");
   });
 });

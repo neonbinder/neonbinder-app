@@ -224,12 +224,14 @@ describe("opening", () => {
     await waitFor(() => expect(url()).toBe("?tidy=done"));
   });
 
-  it("names the dialog, counts the cards left and prints the header and the tally", async () => {
+  it("names the dialog, counts the cards left and prints the header; the pink count lives in the footer line only", async () => {
     mount([pink("a", "38b", { cardVariation: "Image Variation" }), blue("b", "40")]);
     await screen.findByRole("group", { name: "#38b · Image Variation · Mike Trout" });
     expect(screen.getByRole("dialog", { name: "Tidy up 2024 Topps Chrome" })).toBeTruthy();
     expect(screen.getByText("2 cards left")).toBeTruthy();
-    expect(screen.getByText("1 to fix")).toBeTruthy();
+    // T7: no "1 to fix" under the header; the footer's status line says it (and describes Save).
+    expect(screen.queryByText("1 to fix")).toBeNull();
+    expect(screen.getByText(/^1 to fix before this card can save\./)).toBeTruthy();
     expect(screen.getByTestId("face")).toBeTruthy();
   });
 
@@ -365,7 +367,7 @@ describe("the footer", () => {
     const line = document.getElementById(group.getAttribute("aria-labelledby")!) as HTMLElement;
     expect(group.getAttribute("tabindex")).toBe("-1");
     expect(line.textContent).toBe("#38b · Image Variation · Mike Trout");
-    expect(group.textContent).toContain("1 to fix");
+    expect(group.textContent).not.toContain("to fix");
   });
 
   it("keeps the card number on one line: 'FS-3' never wraps to '#FS-' over '3'", async () => {

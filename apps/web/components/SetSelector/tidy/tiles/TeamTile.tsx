@@ -8,7 +8,8 @@ import NeonButton from "../../../modules/NeonButton";
 import EntityLinkSearch from "../../EntityLinkSearch";
 import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
-import { teamFillText, teamLinkedForText } from "../parts/copy";
+import EditLine from "../parts/EditLine";
+import { noteworthyReason, teamFillText, teamLinkedForText } from "../parts/copy";
 import TeamFillChips from "../parts/TeamFillChips";
 import TeamNameRow from "../parts/TeamNameRow";
 import { useTidyWrite } from "../parts/tidy-write";
@@ -40,8 +41,8 @@ const NO_CONTEXT_YET = {
  *    a search with "Remember … as a name", New team, "Not a team";
  *  - a card with no team and no "No team on this card" answer (pink): career
  *    and listing chips, Other team…, New team, "No team on this card";
- *  - nothing to ask: the card's team, a purple note when the commit filled it
- *    in, Change and "+ Another team".
+ *  - nothing to ask: the card's team with Edit at the end of its line, a purple
+ *    note when the commit filled it in or NB made a judgement, and "+ Another team".
  *
  * Waits (`level="waiting"`) while a TEAMS disagreement is unsettled: the
  * spelling decides which name this tile asks about.
@@ -178,7 +179,7 @@ export default function TeamTile({
       ))}
 
       {unrowed.map((team) => {
-        const reason = reasonOf(team.teamId);
+        const note = noteworthyReason(reasonOf(team.teamId));
         return (
           <div
             key={team.teamId}
@@ -186,27 +187,22 @@ export default function TeamTile({
             aria-label={`Team ${team.name}`}
             className="grid gap-1.5"
           >
-            <p className="text-sm font-medium text-ink wrap-anywhere">{team.name}</p>
-            {reason && (
+            <EditLine
+              editLabel={`Edit ${team.name}`}
+              busy={write.busy}
+              onEdit={(opener) => openSearch({ kind: "change", teamId: team.teamId }, opener)}
+              textClass="text-sm font-medium text-ink"
+            >
+              {team.name}
+            </EditLine>
+            {note && (
               <TidyNote>
                 {teamLinkedForText(
-                  reason,
+                  note,
                   ctx.players.find((p) => p.stints.some((s) => s.teamId === team.teamId))?.name,
                 )}
               </TidyNote>
             )}
-            <div className="flex flex-wrap gap-2">
-              <NeonButton
-                size="1"
-                variant="secondary"
-                outline
-                aria-label={unrowed.length > 1 || multi ? `Change team ${team.name}` : undefined}
-                aria-disabled={write.busy ? true : undefined}
-                onClick={(e) => openSearch({ kind: "change", teamId: team.teamId }, e.currentTarget)}
-              >
-                Change team
-              </NeonButton>
-            </div>
           </div>
         );
       })}

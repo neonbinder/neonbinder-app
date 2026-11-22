@@ -8,9 +8,10 @@ import NeonButton from "../../../modules/NeonButton";
 import { TeamMatchSearch } from "../../../entities/TeamMatchSearch";
 import SportSwitch from "../../SportSwitch";
 import type { TidyCardContext, TidyRow } from "../tile-types";
-import { WRAP_LABEL_CLASS } from "../TidyTile";
+import { TidyNote, WRAP_LABEL_CLASS } from "../TidyTile";
 import { useAnswered } from "../answered";
-import { teamLinkedForText } from "./copy";
+import EditLine from "./EditLine";
+import { noteworthyReason, teamLinkedForText } from "./copy";
 import InlineNewTeam, { teamLookupCarryOf } from "./InlineNewTeam";
 import { printedOnText } from "./printed-on";
 import TeamCandidates, { type TeamCandidate } from "./TeamCandidates";
@@ -26,9 +27,9 @@ export type ContextName = Ctx["names"][number];
  *  - unanswered (pink): the rows the name could mean, a search over every team
  *    ("Remember it as a name for this team" included), the inline New team
  *    form, "Not a team" and the Sport chip;
- *  - linked (by us or by the operator): the team, a note saying why when we
- *    linked it, and Change;
- *  - "Not a team": said so, and Change.
+ *  - linked (by us or by the operator): the team with Edit at the end of its
+ *    line, and a note saying why when NB made a judgement;
+ *  - "Not a team": said so, and Edit.
  *
  * Every answer is `tidyNames.answerName`, scoped by the server to the leaf that
  * printed the name. A listing's name is never written as NB data: it only finds
@@ -54,7 +55,6 @@ export default function TeamNameRow({
   const answer = name.row?.answer;
   const answerName = useMutation(api.tidyNames.answerName);
 
-  const suffix = multi ? ` ${name.printed}` : "";
   const clear = () =>
     write.run(
       () =>
@@ -66,13 +66,19 @@ export default function TeamNameRow({
     const team =
       answer.kind === "linkTeam" ? context.teams.find((t) => t.teamId === answer.teamId) : undefined;
     const linkedTeamId = answer.kind === "linkTeam" ? answer.teamId : undefined;
-    const reason =
+    const note = noteworthyReason(
       answer.kind === "linkTeam"
         ? context.linkedFor.find((l) => l.kind === "team" && l.teamId === answer.teamId)?.reason
-        : undefined;
+        : undefined,
+    );
     return (
       <div role="group" aria-label={`Team ${name.printed}`} className="grid gap-1.5">
-        <p className="text-sm text-ink-2 wrap-anywhere">
+        <EditLine
+          editLabel={`Edit ${answer.kind === "linkTeam" ? (team?.name ?? name.printed) : name.printed}`}
+          busy={write.busy}
+          onEdit={() => void clear()}
+          textClass="text-sm text-ink-2"
+        >
           {answer.kind === "notEntity" ? (
             <>
               <span className="font-medium text-ink">{name.printed}</span> is not a team.
@@ -80,30 +86,15 @@ export default function TeamNameRow({
           ) : (
             <span className="font-medium text-ink">{team?.name ?? name.printed}</span>
           )}
-        </p>
-        {reason && (
-          <p
-            role="note"
-            className="w-fit max-w-full rounded-md border border-neon-purple-text/60 bg-neon-purple/10 px-2 py-0.5 text-xs text-neon-purple-text wrap-anywhere"
-          >
+        </EditLine>
+        {note && (
+          <TidyNote>
             {teamLinkedForText(
-              reason,
+              note,
               context.players.find((p) => p.stints.some((s) => s.teamId === linkedTeamId))?.name,
             )}
-          </p>
+          </TidyNote>
         )}
-        <div className="flex flex-wrap gap-2">
-          <NeonButton
-            size="1"
-            variant="secondary"
-            outline
-            aria-label={multi ? `Change team${suffix}` : undefined}
-            aria-disabled={write.busy ? true : undefined}
-            onClick={() => void clear()}
-          >
-            Change team
-          </NeonButton>
-        </div>
       </div>
     );
   }

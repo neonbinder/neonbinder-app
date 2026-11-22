@@ -54,7 +54,6 @@ import {
   pendingLookupKeys,
   previousCardId,
   saveSitting,
-  tallyText,
   walkOrder,
   withPassed,
   withShown,
@@ -545,7 +544,6 @@ function WalkDialog({
 
   const playerNames = context?.players.map((p) => p.nameOnCard ?? p.name);
   const header = current ? cardHeaderParts(current, playerNames) : null;
-  const tally = attention ? tallyText(attention) : "";
 
   const tileProps: TidyTileProps | null =
     current && attention
@@ -569,7 +567,7 @@ function WalkDialog({
           <div
             ref={panelRef}
             tabIndex={-1}
-            className="tidy-walk flex h-dvh w-full max-w-[45rem] flex-col bg-raised-deep outline-none sm:h-[min(52rem,calc(100dvh-2rem))] sm:rounded-lg sm:border sm:border-rule-strong sm:shadow-xl sm:shadow-offset"
+            className="tidy-walk flex h-dvh w-full max-w-[45rem] flex-col bg-raised-deep outline-none sm:h-[calc(100dvh-2rem)] sm:rounded-lg sm:border sm:border-rule-strong sm:shadow-xl sm:shadow-offset"
           >
             <WizardChrome
               titleId={titleId}
@@ -649,18 +647,8 @@ function WalkDialog({
                         <span className="whitespace-nowrap">{header?.number}</span>
                         {header?.rest ? ` · ${header.rest}` : ""}
                       </p>
-                      {tally && (
-                        <p className="text-sm">
-                          {pinkCount > 0 && (
-                            <span className="text-neon-pink-text">{pinkCount} to fix</span>
-                          )}
-                          {pinkCount > 0 && checkCount > 0 && (
-                            <span className="text-ink-3">{" · "}</span>
-                          )}
-                          {checkCount > 0 && (
-                            <span className="text-neon-blue-text">{checkCount} to check</span>
-                          )}
-                        </p>
+                      {checkCount > 0 && (
+                        <p className="text-sm text-neon-blue-text">{checkCount} to check</p>
                       )}
                     </div>
                   </div>

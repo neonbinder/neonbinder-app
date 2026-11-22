@@ -20,20 +20,26 @@ describe("TidyTile", () => {
     expect(section.className).toContain("border-neon-pink-text");
   });
 
-  it("writes the level beside the heading with a shape that is not a colour, and says it once", () => {
+  it("shows a shape that is not a colour and says the level to a screen reader only, once (T6)", () => {
     const { rerender } = render(<TidyTile heading="Player" level="fix" />);
     const fix = screen.getByRole("group", { name: "Player" });
-    // The visible word is what describes the tile: one place, no sr-only twin.
-    const label = screen.getByText("To fix");
-    expect(label.className).not.toContain("sr-only");
+    // The word is spoken, never drawn: pink and blue say it by themselves.
+    const word = screen.getByText("To fix");
+    expect(word.className).toContain("sr-only");
+    const label = word.parentElement as HTMLElement;
     expect(label.className).toContain("text-neon-pink-text");
     expect(label.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+    // The tile is described by the spoken word, in one place.
     expect(fix.getAttribute("aria-describedby")).toBe(label.id);
     expect(screen.getAllByText("To fix")).toHaveLength(1);
+    // Nothing visible spells the word: the icon is the only thing drawn.
+    expect(Array.from(label.childNodes).filter((n) => n.nodeType === Node.TEXT_NODE)).toHaveLength(0);
     const fixShape = label.querySelector("svg")?.innerHTML;
 
     rerender(<TidyTile heading="Player" level="check" />);
-    const check = screen.getByText("To check");
+    const checkWord = screen.getByText("To check");
+    expect(checkWord.className).toContain("sr-only");
+    const check = checkWord.parentElement as HTMLElement;
     expect(check.className).toContain("text-neon-blue-text");
     expect(screen.getByRole("group", { name: "Player" }).getAttribute("aria-describedby")).toBe(check.id);
     // Fix and check carry different shapes.

@@ -111,7 +111,7 @@ async function seedBase(ctx: Ctx) {
       lastUpdated: NOW,
       ...extra,
     });
-  return { sport, base, padres, mets, merrill, card };
+  return { sport, base, padres, mets, merrill, card, player };
 }
 
 describe("tidyCards.cardContext — reads", () => {
@@ -126,7 +126,7 @@ describe("tidyCards.cardContext — reads", () => {
     expect(await t.withIdentity(ADMIN).query(api.tidyCards.cardContext, { cardId: id })).toBeNull();
   });
 
-  test("a linked player comes back with his stints; the exact-name link is 'Linked for you'", async () => {
+  test("a linked player comes back with his stints; an exact-name link carries no 'Linked for you' note", async () => {
     const t = convexTest(schema, modules);
     const { id, merrill, padres, mets } = await t.run(async (ctx) => {
       const s = await seedBase(ctx);
@@ -153,9 +153,30 @@ describe("tidyCards.cardContext — reads", () => {
       },
     ]);
     expect(ctxView!.playersMore).toBe(false);
-    expect(ctxView!.linkedFor).toEqual([{ kind: "player", playerId: merrill, reason: "exact" }]);
+    // The base case (one player of that exact name) is not worth a purple note.
+    expect(ctxView!.linkedFor).toEqual([]);
+    expect(ctxView!.cameos).toEqual([]);
     expect(ctxView!.teams).toEqual([
       { teamId: padres, name: "San Diego Padres", onCard: true, candidate: false },
+    ]);
+  });
+
+  test("the card's cameos come back by name, in the card's order", async () => {
+    const t = convexTest(schema, modules);
+    const { id, lindor, soto } = await t.run(async (ctx) => {
+      const s = await seedBase(ctx);
+      const lindor = await s.player("Francisco Lindor");
+      const soto = await s.player("Juan Soto");
+      const id = await s.card("52", {
+        playerIds: [s.merrill],
+        secondaryPlayerIds: [lindor, soto],
+      });
+      return { id, lindor, soto };
+    });
+    const view = await t.withIdentity(ADMIN).query(api.tidyCards.cardContext, { cardId: id });
+    expect(view!.cameos).toEqual([
+      { playerId: lindor, name: "Francisco Lindor" },
+      { playerId: soto, name: "Juan Soto" },
     ]);
   });
 

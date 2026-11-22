@@ -12,6 +12,7 @@ import TeamPicker from "./TeamPicker";
 import { NO_TEAM_LABELS } from "./team-picker-labels";
 import PlayerPicker from "./PlayerPicker";
 import {
+  ALREADY_A_PLAYER_MESSAGE,
   ALSO_ON_THIS_CARD_HEADING,
   ALSO_PICTURED_PICKER_LABELS,
 } from "./player-picker-labels";
@@ -159,8 +160,7 @@ const PRINT_RUN_MESSAGE =
  */
 export const ALSO_PICTURED_HINT =
   "Anyone on the card besides its main player: a teammate in the photo, a name on a team leaders card, the star a Profiles card is about. Smart binders can count these as cameos.";
-export const ALREADY_A_PLAYER_MESSAGE =
-  "They're already this card's player. No cameo needed.";
+export { ALREADY_A_PLAYER_MESSAGE };
 export const ALSO_PICTURED_SAVED = `Saved ${ALSO_ON_THIS_CARD_HEADING}`;
 export const ALSO_PICTURED_MOVED_TO_PLAYERS = `Saved Players and moved them out of ${ALSO_ON_THIS_CARD_HEADING}`;
 const ALSO_PICTURED_SAVE_FAILED = `Couldn't save ${ALSO_ON_THIS_CARD_HEADING}. Give it another go.`;

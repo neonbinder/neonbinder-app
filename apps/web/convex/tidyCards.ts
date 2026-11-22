@@ -48,6 +48,7 @@ import {
   resolveScopeLeaf,
 } from "./cardPrintedNames";
 import {
+  MAX_CARD_PLAYERS,
   MAX_CARD_TEAMS,
   TIDY_REVIEWED_KEY_MAX_LENGTH,
   TIDY_REVIEWED_MAX_KEYS,
@@ -174,9 +175,12 @@ export const contextTeamValidator = v.object({
   candidate: v.boolean(),
 });
 
-/** Why a name was linked without the operator ("Linked for you"). */
+/**
+ * Why a name was linked without the operator ("Linked for you"). Only links NB
+ * made a judgement on are reported: an exact single match is the base case and
+ * carries no note (Jason, 2026-11-22).
+ */
 export const linkedForReasonValidator = v.union(
-  v.literal("exact"),
   v.literal("setHistory"),
   v.literal("hallOfFame"),
   v.literal("careerTeam"),
@@ -188,6 +192,12 @@ export const cardContextValidator = v.object({
   players: v.array(contextPlayerValidator),
   /** The card links more players than `players` holds. */
   playersMore: v.boolean(),
+  /**
+   * The players PICTURED on the card ("Also on this card", NEO-528
+   * `secondaryPlayerIds`), name only: the Player tile lists them as cameo rows.
+   * At most `MAX_CARD_PLAYERS`; one the catalogue no longer has is left out.
+   */
+  cameos: v.array(v.object({ playerId: v.id("players"), name: v.string() })),
   teams: v.array(contextTeamValidator),
   /**
    * NEO-645 T3: the "Lindor as a cameo" shortcut the Sources disagree tile may
@@ -234,9 +244,9 @@ export const cardContextValidator = v.object({
  *
  * `linkedFor`: the "Linked for you" note. A player whose name row carries an
  * `auto` answer reports its `autoReason`; a linked player with NO name row
- * whose normalised name equals what the card printed reports `exact` (D6: an
- * exact single match gets no row, so the note is read live). An operator's own
- * answer is not "for you" and reports nothing.
+ * whose normalised name equals what the card printed is an exact single match
+ * (D6: it gets no row) and reports nothing: the base case is not a note. An
+ * operator's own answer is not "for you" and reports nothing either.
  *
  * Returns null when the card is gone.
  */
@@ -356,15 +366,22 @@ export const cardContext = query({
 
       // "Linked for you".
       const printedKey = normalizeEntityName(nameOnCard ?? player.name);
-      const row = rowOf.get(`player|${printedKey}`);
-      const answer = row?.answer;
-      if (answer?.kind === "linkPlayer" && answer.playerId === playerId) {
-        if (answer.by === "auto" && answer.autoReason) {
-          linkedFor.push({ kind: "player", playerId, reason: answer.autoReason });
-        }
-      } else if (!row && player.nameNormalized === printedKey) {
-        linkedFor.push({ kind: "player", playerId, reason: "exact" });
+      const answer = rowOf.get(`player|${printedKey}`)?.answer;
+      if (
+        answer?.kind === "linkPlayer" &&
+        answer.playerId === playerId &&
+        answer.by === "auto" &&
+        answer.autoReason
+      ) {
+        linkedFor.push({ kind: "player", playerId, reason: answer.autoReason });
       }
+    }
+
+    // ── cameos (NEO-528 "Also on this card") ──
+    const cameos: Array<Infer<typeof cardContextValidator>["cameos"][number]> = [];
+    for (const playerId of (card.secondaryPlayerIds ?? []).slice(0, MAX_CARD_PLAYERS)) {
+      const player = await ctx.db.get(playerId);
+      if (player) cameos.push({ playerId, name: player.name });
     }
 
     // ── the cameo shortcut (T3) ──
@@ -401,6 +418,7 @@ export const cardContext = query({
       names,
       players,
       playersMore: playerIds.length > CONTEXT_MAX_PLAYERS,
+      cameos,
       teams,
       linkedFor,
       ...(cameoOffer ? { cameoOffer } : {}),

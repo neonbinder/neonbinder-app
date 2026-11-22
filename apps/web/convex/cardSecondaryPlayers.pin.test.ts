@@ -206,6 +206,10 @@ describe("NEO-528: the cameo list stays out of everything that reads a card's ow
         // description name its cameos, read here once for every title and
         // description path (Regenerate, the refresh, the backfill).
         "storedCardTitle.ts",
+        // NEO-645 (T5): the Tidy Up walk's Player tile lists a card's cameos by
+        // name, read-only through `cardContext`; every cameo write still goes
+        // through `setSecondaryPlayers`.
+        "tidyCards.ts",
       ].sort(),
     );
   });

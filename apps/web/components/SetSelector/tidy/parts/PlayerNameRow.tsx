@@ -18,11 +18,12 @@ import type { TidyCardContext, TidyRow } from "../tile-types";
 import { TidyNote, WRAP_LABEL_CLASS } from "../TidyTile";
 import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
+import EditLine from "./EditLine";
 import {
   linkedForText,
+  noteworthyReason,
   preselectReasonLine,
   stintYears,
-  type LinkedForReason,
 } from "./copy";
 import { printedOnText } from "./printed-on";
 import type { TidyWrite } from "./tidy-write";
@@ -64,9 +65,9 @@ export function PlayerSummary({
  * One printed player name on the open card, in whatever state it is in:
  *
  *  - unanswered (pink): the question, with every way to answer it inline;
- *  - linked, by us ("Linked for you") or by the operator: the player, a note
- *    saying why, and Change;
- *  - "Not a player": said so, and Change.
+ *  - linked, by us ("Linked for you") or by the operator: the player with Edit
+ *    at the end of its line, and a note saying why when NB made a judgement;
+ *  - "Not a player": said so, and Edit.
  *
  * Every answer is `tidyNames.answerName` / `createPlayer`, scoped by the server
  * to the leaf that printed the name; this component never names a scope.
@@ -84,7 +85,8 @@ export default function PlayerNameRow({
   row: TidyRow;
   name: ContextName;
   linked: ContextPlayer | undefined;
-  reason: LinkedForReason | undefined;
+  /** The server's "Linked for you" reason, if any; only a judgement call is noted. */
+  reason: string | undefined;
   setSportId: Id<"selectorOptions"> | undefined;
   /** More than one name on the card: controls carry the name so no two read alike. */
   multi: boolean;
@@ -101,7 +103,7 @@ export default function PlayerNameRow({
   const wrapRef = useRef<HTMLDivElement | null>(null);
 
   // When the answer lands the question unmounts under the operator's focus. The
-  // walk moves it on (`useAnswered`): never to this row's Change, where one more
+  // walk moves it on (`useAnswered`): never to this row's Edit, where one more
   // Enter would undo the answer.
 
   const clear = () =>
@@ -116,26 +118,19 @@ export default function PlayerNameRow({
       "Couldn't change that answer. Try again.",
     );
 
-  const suffix = multi ? ` ${name.printed}` : "";
+  const note = noteworthyReason(reason);
 
   if (answer?.kind === "notEntity") {
     return (
       <div ref={wrapRef} role="group" aria-label={`Player ${name.printed}`} className="grid gap-1.5">
-        <p className="text-sm text-ink-2 wrap-anywhere">
+        <EditLine
+          editLabel={`Edit ${name.printed}`}
+          busy={write.busy}
+          onEdit={() => void clear()}
+          textClass="text-sm text-ink-2"
+        >
           <span className="font-medium text-ink">{name.printed}</span> is not a player.
-        </p>
-        <div className="flex flex-wrap gap-2">
-          <NeonButton
-            size="1"
-            variant="secondary"
-            outline
-            aria-label={multi ? `Change player${suffix}` : undefined}
-            aria-disabled={write.busy ? true : undefined}
-            onClick={() => void clear()}
-          >
-            Change player
-          </NeonButton>
-        </div>
+        </EditLine>
       </div>
     );
   }
@@ -143,22 +138,14 @@ export default function PlayerNameRow({
   if (answer?.kind === "linkPlayer") {
     return (
       <div ref={wrapRef} role="group" aria-label={`Player ${name.printed}`} className="grid gap-1.5">
-        <p className="text-sm">
+        <EditLine
+          editLabel={`Edit ${linked?.name ?? name.printed}`}
+          busy={write.busy}
+          onEdit={() => void clear()}
+        >
           <PlayerSummary player={linked} fallbackName={name.printed} />
-        </p>
-        {reason && <TidyNote>{linkedForText(reason)}</TidyNote>}
-        <div className="flex flex-wrap gap-2">
-          <NeonButton
-            size="1"
-            variant="secondary"
-            outline
-            aria-label={multi ? `Change player${suffix}` : undefined}
-            aria-disabled={write.busy ? true : undefined}
-            onClick={() => void clear()}
-          >
-            Change player
-          </NeonButton>
-        </div>
+        </EditLine>
+        {note && <TidyNote>{linkedForText(note)}</TidyNote>}
       </div>
     );
   }

@@ -16,12 +16,13 @@ import { ExclamationTriangleIcon, EyeIcon } from "@heroicons/react/16/solid";
  *             disagreement, a lookup) so it renders no controls and runs
  *             nothing until it can.
  *
- * Colour is never the only carrier. "To fix" and "To check" are written
- * beside the heading, each behind its own shape (a warning triangle, an eye),
- * and the tile is described by that visible word, so a colour-blind operator
- * and a screen reader get it too, and it is read once. A waiting tile has no
- * label to see (its dashed edge and its line say it), so "Waiting" is spoken
- * text only.
+ * Colour is never the only carrier. Pink and blue each show their own shape
+ * beside the heading (a warning triangle, an eye) and say "To fix" / "To check"
+ * to a screen reader only: the words are not drawn, because that is what pink
+ * and blue mean (Jason, 2026-11-22), and the shape keeps the meaning off colour
+ * alone (WCAG 1.4.1). The tile is described by that spoken word, so it is read
+ * once. A waiting tile has no shape to see (its dashed edge and its line say
+ * it), so "Waiting" is spoken text only.
  *
  * Roles, not palette steps: the edge and the heading use the neon `-text`
  * roles (they pass 3:1 on the tile in both modes), the wash is the
@@ -107,10 +108,10 @@ export default function TidyTile({
           {Icon && visible ? (
             <span
               id={levelId}
-              className={`inline-flex items-center gap-1 text-xs font-medium ${LEVEL_LABEL_CLASS[visible]}`}
+              className={`inline-flex items-center ${LEVEL_LABEL_CLASS[visible]}`}
             >
               <Icon aria-hidden="true" className="h-3.5 w-3.5 shrink-0 self-center" />
-              {levelText}
+              <span className="sr-only">{levelText}</span>
             </span>
           ) : levelText ? (
             <span id={levelId} className="sr-only">

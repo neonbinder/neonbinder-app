@@ -43,13 +43,32 @@ export function preselectReasonLine(preselect: PreselectLike): string {
   }
 }
 
-/** Why NeonBinder linked a name without being asked: the purple "Linked for you" note. */
-export type LinkedForReason = "exact" | "setHistory" | "hallOfFame" | "careerTeam";
+/**
+ * Why NeonBinder linked a name without being asked: the purple "Linked for you"
+ * note. Only links where NB made a judgement are noted. The plain exact match
+ * (one player of that exact name, in the set's sport) is the base case and says
+ * nothing: purple is for what an admin would want a second look at (Jason,
+ * 2026-11-22).
+ */
+export type LinkedForReason = "setHistory" | "hallOfFame" | "careerTeam";
+
+const NOTEWORTHY_REASONS: ReadonlySet<string> = new Set<LinkedForReason>([
+  "setHistory",
+  "hallOfFame",
+  "careerTeam",
+]);
+
+/**
+ * The reason a row's note is drawn for, or undefined for no note. Takes the
+ * server's word as a string so a reason this build does not know (an older
+ * server's plain "exact") reads as no note rather than an empty purple pill.
+ */
+export function noteworthyReason(reason: string | undefined): LinkedForReason | undefined {
+  return reason !== undefined && NOTEWORTHY_REASONS.has(reason) ? (reason as LinkedForReason) : undefined;
+}
 
 export function linkedForText(reason: LinkedForReason): string {
   switch (reason) {
-    case "exact":
-      return "Linked for you: exact name, plays in this set's sport";
     case "setHistory":
       return "Linked for you: another card in this set is already linked to them";
     case "hallOfFame":

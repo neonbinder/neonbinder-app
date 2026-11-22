@@ -449,7 +449,7 @@ describe("TeamTile", () => {
         ...extra,
       });
 
-    it("a team we linked says why, is plain, and Change clears the answer", async () => {
+    it("a team we linked says why, is plain, and Edit clears the answer", async () => {
       renderTile({
         row: card({ teamOnCardIds: ["team-7"] }),
         items: [],
@@ -474,7 +474,7 @@ describe("TeamTile", () => {
       // The team row's own words: the player row's "the only one on file…" is about a person.
       expect(screen.getByText("Linked for you: Jackson Merrill played here")).toBeTruthy();
       expect(screen.queryByText(/only one on file/)).toBeNull();
-      await click(screen.getByRole("button", { name: "Change team" }));
+      await click(screen.getByRole("button", { name: "Edit San Diego Padres" }));
       expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
         cardId: CARD,
         kind: "team",
@@ -483,14 +483,14 @@ describe("TeamTile", () => {
       });
     });
 
-    it("'Not a team' reads as answered and Change brings the question back", async () => {
+    it("'Not a team' reads as answered and Edit brings the question back", async () => {
       renderTile({
         row: card(),
         items: [],
         ctx: linked({ kind: "notEntity", by: "operator" }, { teams: [] }),
       });
       expect(screen.getByText("is not a team.")).toBeTruthy();
-      await click(screen.getByRole("button", { name: "Change team" }));
+      await click(screen.getByRole("button", { name: "Edit Padres" }));
       expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith(
         expect.objectContaining({ answer: { kind: "clear" } }),
       );
@@ -990,9 +990,9 @@ describe("TeamTile", () => {
       expect(screen.queryByText(/Team filled from/)).toBeNull();
     });
 
-    it("Change swaps the team on this card only", async () => {
+    it("Edit swaps the team on this card only", async () => {
       renderTile(base());
-      await click(screen.getByRole("button", { name: "Change team" }));
+      await click(screen.getByRole("button", { name: "Edit San Diego Padres" }));
       await click(screen.getByRole("button", { name: "Pick a team" }));
       expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({ id: CARD, teamOnCardIds: ["team-9"] });
     });
@@ -1170,7 +1170,7 @@ describe("TeamTile", () => {
         renderTile({ ...b, leafCards: [b.row, sibling("c2"), sibling("c3")], setNoTeam: true });
         await click(screen.getByRole("button", { name: "Apply to all 2 other Jackson Merrill cards" }));
         expect(applied()).toHaveBeenCalledWith({ sourceCardId: CARD, teamIds: ["team-7"], cardIds: ["c2", "c3"] });
-        expect(screen.getByRole("button", { name: "Change team" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Edit San Diego Padres" })).toBeTruthy();
       });
 
       it("a single card reads in the singular", () => {
@@ -1200,17 +1200,41 @@ describe("TeamTile", () => {
       }),
     });
 
-    it("'Change' is 'Change team' on the screen and to a reader", () => {
+    it("T1: a team link with no name row keeps its purple note only for a judgement call", () => {
+      const withReason = (reason: string) => {
+        const b = base();
+        return renderTile({
+          ...b,
+          ctx: { ...b.ctx, linkedFor: [{ kind: "team", teamId: "team-7", reason }] } as never,
+        });
+      };
+      const { unmount } = withReason("setHistory");
+      expect(screen.getByRole("note").textContent).toBe(
+        "Linked for you: another card in this set is already linked to them",
+      );
+      unmount();
+      withReason("exact");
+      expect(screen.queryByRole("note")).toBeNull();
+    });
+
+    it("T2: 'Edit' is 'Edit <team>' to a reader, so the name holds the visible word, at the end of the team's line", () => {
       renderTile(base());
-      const change = screen.getByRole("button", { name: "Change team" });
-      expect(change.textContent).toBe("Change team");
-      expect(change.getAttribute("aria-label")).toBeNull();
+      const change = screen.getByRole("button", { name: "Edit San Diego Padres" });
+      expect(change.textContent).toBe("Edit");
+      expect(change.getAttribute("aria-label")).toBe("Edit San Diego Padres");
+      const line = change.parentElement as HTMLElement;
+      expect(line.lastElementChild).toBe(change);
+      expect(line.className).toContain("flex-wrap");
+      expect(line.textContent).toBe("San Diego PadresEdit");
+      // No "Change team" row, and the one "+ Another team" stays at the bottom.
+      expect(screen.queryByRole("button", { name: /^Change/ })).toBeNull();
+      expect(screen.getAllByRole("button", { name: "+ Another team" })).toHaveLength(1);
     });
 
     it("a pick is an answer: the walk is told, focus is not sent back to the opener", async () => {
       const onAnswered = vi.fn();
       renderTile({ ...base(), onAnswered });
-      const change = screen.getByRole("button", { name: "Change team" });
+      const change = screen.getByRole("button", { name: "Edit San Diego Padres" });
       change.focus();
       await click(change);
       const pick = screen.getByRole("button", { name: "Pick a team" });
@@ -1218,7 +1242,7 @@ describe("TeamTile", () => {
       await click(pick);
       expect(onAnswered).toHaveBeenCalledTimes(1);
       await new Promise((r) => requestAnimationFrame(() => r(null)));
-      expect(document.activeElement).not.toBe(screen.getByRole("button", { name: "Change team" }));
+      expect(document.activeElement).not.toBe(screen.getByRole("button", { name: "Edit San Diego Padres" }));
     });
 
     it("Cancel gives focus back to the control that opened the search, and tells the walk nothing", async () => {
