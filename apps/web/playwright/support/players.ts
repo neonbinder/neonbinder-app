@@ -73,3 +73,83 @@ export async function addPlayerByHand(page: Page, name: string, sport: string): 
   await expect(page.getByText(`Added ${name}`)).toBeVisible();
   await expect(page.getByText(`Sport: ${sport}`).first()).toBeVisible();
 }
+
+/** One team for `createTeamInCareerEditor`. */
+export interface CareerEditorTeam {
+  /** A single token nothing on file answers to yet; the dialog opens as "New team: <search>". */
+  search: string;
+  /** The team's NAME when it differs from `search` (the dialog's Name is retyped). */
+  name?: string;
+  location?: string;
+  from?: string;
+  to?: string;
+  /** Typed into "New team aliases (optional)". */
+  aliases?: string;
+  /**
+   * NEO-602: the label ("<full name> · <era>") of a team that already wears this
+   * team's full name as an alias, in an era that does not overlap. The dialog
+   * then says so and asks for Create a second time.
+   */
+  aliasHeldBy?: string;
+}
+
+/**
+ * In the open player's career editor (/admin/players, a player's detail panel):
+ * make a team through "Add team" and the New Team dialog, then take its chip
+ * off again, so the team exists and the player has NO stint on it (the chip is
+ * a pick; only "Add stint" plus the player's Save writes a stint). Returns the
+ * team's full name ("<location> <name>"). Teams are never looked up on
+ * creation, so nothing here waits on a lookup.
+ *
+ * Contract: ENTRY a player's detail panel is open. EXIT the team is made (its
+ * chip appeared) and the chip is gone again.
+ */
+export async function createTeamInCareerEditor(page: Page, team: CareerEditorTeam): Promise<string> {
+  const name = team.name ?? team.search;
+  const full = team.location ? `${team.location} ${name}` : name;
+  await page.getByRole("button", { name: "Add team" }).click();
+  const search = page.getByRole("textbox", { name: "Search teams" });
+  await search.fill(team.search);
+  await expect(page.getByText("No matches.")).toBeVisible();
+  await search.press("Enter");
+  const dialog = page.getByRole("dialog", { name: `New team: ${team.search}` });
+  await expect(dialog).toBeVisible();
+  if (team.name !== undefined) await dialog.getByRole("textbox", { name: "New team name" }).fill(team.name);
+  if (team.location !== undefined) {
+    await dialog.getByRole("textbox", { name: "New team location (optional)" }).fill(team.location);
+  }
+  if (team.from !== undefined) await dialog.getByLabel("New team active from (optional)").fill(team.from);
+  if (team.to !== undefined) await dialog.getByLabel("New team active to").fill(team.to);
+  if (team.aliases !== undefined) {
+    await dialog.getByRole("textbox", { name: "New team aliases (optional)" }).fill(team.aliases);
+  }
+  const create = dialog.getByRole("button", { name: `Create team ${full}` });
+  await create.click();
+  if (team.aliasHeldBy !== undefined) {
+    // The name is already answered to, by another era's alias: the dialog says which team, and
+    // the second Create makes this one (admin-teams-two-eras proves that step on its own).
+    await expect(
+      dialog.getByRole("alert").filter({
+        hasText: `${team.aliasHeldBy} already answers to this name as an alias. This team's years don't overlap, so Create again to add it as its own team.`,
+      }),
+    ).toBeVisible();
+    await create.click();
+  }
+  await expect(dialog).toBeHidden();
+  const chip = teamChip(page, full);
+  await expect(chip, `${full} was made and picked`).toBeVisible();
+  await chip.click();
+  await expect(chip, `${full}'s chip came off, so the player has no stint on it`).toBeHidden();
+  return full;
+}
+
+/**
+ * A team chip ("Remove team <full name>": the career editor's and the card
+ * drawer's). Anchored on the whole name, so `Ath<token>` never matches `Loc<token>
+ * Ath<token>`; a decorative glyph either side of the words is allowed (team chips
+ * are gaining a check glyph).
+ */
+export function teamChip(scope: Page | Locator, full: string): Locator {
+  const escaped = full.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return scope.getByRole("button", { name: new RegExp(`^[^\\p{L}\\p{N}]*Remove team ${escaped}[^\\p{L}\\p{N}]*$`, "u") });
+}
