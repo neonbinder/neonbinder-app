@@ -4432,6 +4432,19 @@ describe("NEO-645: the Tidy Up surface is admin-gated", () => {
           name: "Doc Gooden",
         }),
     ],
+    [
+      "tidyNames.requestTeamLookup",
+      (t, s) =>
+        t.mutation(api.tidyNames.requestTeamLookup, {
+          cardId: s.cardId,
+          name: "Binghamton Mets",
+          sportId: s.sportId,
+        }),
+    ],
+    [
+      "tidyNames.teamLookup",
+      (t, s) => t.query(api.tidyNames.teamLookup, { cardId: s.cardId, name: "Binghamton Mets" }),
+    ],
     ["tidyNames.lookupsPending", (t, s) => t.query(api.tidyNames.lookupsPending, { scopeId: s.leafId })],
     ["tidyCards.cardContext", (t, s) => t.query(api.tidyCards.cardContext, { cardId: s.cardId })],
     [

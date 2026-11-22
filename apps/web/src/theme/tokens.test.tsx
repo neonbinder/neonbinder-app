@@ -10,6 +10,7 @@ import {
   contrastRatio,
   cssColorToHex,
   SURFACE_ROLES,
+  surfaceHex,
   TEXT_NEVER_ON,
   tokenHex,
   TOKENS,
@@ -423,4 +424,35 @@ describe("shadow-offset's hairline (Jason, 2026-10-22)", () => {
     expect(selectors.length).toBeGreaterThan(0);
     expect(selectors.filter((l) => !l.includes('[data-theme="light"]'))).toEqual([]);
   });
+});
+
+/**
+ * NEO-645: `TidyNote` paints `text-neon-purple-text` on `bg-neon-purple/10`, and
+ * it sits inside the walk's tiles (the panel, a tile's own blue or pink wash, or
+ * the plain raised card). axe flagged it in dark at 4.2:1; the role is held to
+ * 4.5:1 on every one of those grounds, in both modes.
+ */
+describe("the purple note reads on every tile ground", () => {
+  const rgb = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  const over = (top: string, alpha: number, ground: string) => {
+    const t = rgb(top);
+    const g = rgb(ground);
+    return `#${t.map((c, i) => Math.round(alpha * c + (1 - alpha) * g[i]).toString(16).padStart(2, "0")).join("")}`;
+  };
+  const fills = { blue: "#00c2ff", pink: "#ff2e9a" } as const;
+
+  for (const mode of ["dark", "light"] as const) {
+    const panel = surfaceHex("raised-deep", mode);
+    const grounds: Record<string, string> = {
+      "plain tile": surfaceHex("raised", mode),
+      "blue tile": mode === "dark" ? over(fills.blue, 0.1, panel) : "#ffffff",
+      "pink tile": mode === "dark" ? over(fills.pink, 0.1, panel) : "#ffffff",
+    };
+    for (const [name, ground] of Object.entries(grounds)) {
+      it(`${mode}: on the ${name}`, () => {
+        const note = over(tokenHex("neon-purple", mode), 0.1, ground);
+        expect(contrastRatio(tokenHex("neon-purple-text", mode), note)).toBeGreaterThanOrEqual(4.5);
+      });
+    }
+  }
 });

@@ -248,7 +248,7 @@ export const TOKENS: Record<ThemeMode, Record<TokenRole, string>> = {
     "neon-yellow-text": "#ffe600",
     "neon-orange-text": "#ff9e00",
     "neon-teal-text": "#00e5c0",
-    "neon-purple-text": "#b56bff",
+    "neon-purple-text": "#bf80ff",
     "notice-info-ink": "oklch(88.2% 0.059 254.128)",
     "notice-warn-ink": "oklch(87.9% 0.169 91.605)",
     "notice-danger-ink": "var(--neon-pink-text)",

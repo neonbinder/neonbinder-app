@@ -304,3 +304,5 @@
 - [Retire a flow: stand-in mock first](reference_retire_a_flow_by_deleting_its_tests_after_a_stand_in_mock.md) — stand-in the replacement, JSON-report failures by describe, script-delete retired `it(` blocks
 - [Swap a storage layer with a pseudo-row adapter](reference_swap_a_storage_layer_with_a_pseudo_row_adapter.md) — read new rows in the OLD shape; shim old test seeds; shim throws on retired shapes
 - [Pin regexes match planner inputs](reference_pin_regexes_match_plan_inputs_not_just_writes.md) — rename planner keys, do not loosen source-slice pins
+- [New Team form shows the suggestion as the answer](reference_new_team_form_shows_suggestion_as_answer_server_must_write_it.md) — host must forward it via findOrCreate enrichment or the shown league is lost
+- [Apply result outlives its offer](reference_apply_result_must_outlive_the_offer_it_empties.md) — key the outcome on count at press time; also purple-text dark contrast fix

@@ -188,13 +188,22 @@ describe("SourcesDisagreeTile", () => {
       expect(screen.queryByRole("button", { name: /Apply to the/ })).toBeNull();
     });
 
-    it("says how many cards the server left alone", async () => {
+    it("says how many cards the server applied and how many it left alone", async () => {
+      mockPick.mockResolvedValueOnce({ applied: 1, scheduled: 3, refused: 1 });
+      renderTile(CHOSEN, { leafCards: [rowOf("card-1", CHOSEN), rowOf("card-2", UNCHOSEN)] });
+      await act(async () =>
+        fireEvent.click(screen.getByRole("button", { name: "Apply to the 1 card with the same disagreement" })),
+      );
+      expect(screen.getByText("Applied to 3 cards. 1 left as it was.")).toBeTruthy();
+    });
+
+    it("says no cards changed when the server accepted none", async () => {
       mockPick.mockResolvedValueOnce({ applied: 1, scheduled: 0, refused: 1 });
       renderTile(CHOSEN, { leafCards: [rowOf("card-1", CHOSEN), rowOf("card-2", UNCHOSEN)] });
       await act(async () =>
         fireEvent.click(screen.getByRole("button", { name: "Apply to the 1 card with the same disagreement" })),
       );
-      expect(screen.getByText("1 card no longer matched and was left as it was.")).toBeTruthy();
+      expect(screen.getByText("No cards changed.")).toBeTruthy();
     });
   });
 

@@ -117,13 +117,32 @@ export function TidyNote({ children }: { children: ReactNode }) {
   );
 }
 
+/** What a bulk apply reports when the server counted: cards changed, cards left as they were. */
+export type ApplyCounts = { applied: number; skipped?: number };
+
+/**
+ * The line an Apply-to-all leaves behind. No counts (`undefined`: the writes are
+ * scheduled pages, so nobody knows yet) reads "Applied."; none changed reads
+ * "No cards changed."; otherwise the count, and what was left as it was.
+ */
+export function applyOutcomeText(result: void | ApplyCounts): string {
+  if (!result) return "Applied.";
+  const { applied, skipped = 0 } = result;
+  if (applied === 0) return "No cards changed.";
+  const done = `Applied to ${applied} ${applied === 1 ? "card" : "cards"}.`;
+  if (skipped === 0) return done;
+  return `${done} ${skipped} left as ${skipped === 1 ? "it was" : "they were"}.`;
+}
+
 /**
  * "Answer, then Apply to all": a dashed blue button that offers this card's
  * answer to every card it fits. `label` is the whole visible text
  * ("Apply to all 12 autographed cards"); `count` is how many cards it offers
- * to, and the button is not rendered for fewer than one. The server re-checks
- * every card (the client only proposes), so a refusal is the caller's to
- * report; a thrown error is shown here, inline, so the operator can retry.
+ * to, and the button is not rendered for fewer than one (its result stays, so
+ * "Applied to 3 cards." survives the offer emptying). The server re-checks every
+ * card (the client only proposes); its `{applied, skipped}` is the line shown
+ * beside the button. A thrown error is shown here, inline, so the operator can
+ * retry.
  */
 export function ApplyToAllButton({
   count,
@@ -132,20 +151,24 @@ export function ApplyToAllButton({
 }: {
   count: number;
   label: string;
-  /** Resolve to `{applied}` when the server counts the cards it changed; 0 reads "No cards changed.". */
-  onApply: () => Promise<void | { applied: number }>;
+  /**
+   * Resolve to the server's `{applied, skipped}` so the line says how many cards
+   * changed and how many were left as they were; resolve to nothing when the
+   * count is not known yet (scheduled pages) and it reads "Applied.".
+   */
+  onApply: () => Promise<void | ApplyCounts>;
 }) {
   const [busy, setBusy] = useState(false);
-  // The last outcome, tied to the offer it answered: a new offer (the label or
-  // count moved) is a new question, so an old result stops showing by itself.
-  const [outcome, setOutcome] = useState<{
-    offer: string;
-    kind: "done" | "none" | "failed";
-  } | null>(null);
-  const offer = `${label}\u0000${count}`;
-  const failed = outcome?.offer === offer && outcome.kind === "failed";
-  const done = outcome?.offer === offer && outcome.kind === "done";
-  const none = outcome?.offer === offer && outcome.kind === "none";
+  // The last outcome, tied to the offer it answered: `at` is how many cards were
+  // on offer when it was pressed. The apply itself shrinks the offer (the cards
+  // now fit, so they stop being offered), so a smaller count keeps the result on
+  // screen; a LARGER one is a new question and the old result stops showing.
+  const [outcome, setOutcome] = useState<
+    { at: number; kind: "done"; text: string } | { at: number; kind: "failed" } | null
+  >(null);
+  const current = outcome !== null && count <= outcome.at ? outcome : null;
+  const failed = current?.kind === "failed";
+  const doneText = current?.kind === "done" ? current.text : null;
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -154,7 +177,7 @@ export function ApplyToAllButton({
     };
   }, []);
 
-  if (count < 1) return null;
+  if (count < 1 && current === null && !busy) return null;
 
   const apply = async () => {
     if (busy) return;
@@ -162,10 +185,9 @@ export function ApplyToAllButton({
     setOutcome(null);
     try {
       const result = await onApply();
-      const nothing = result !== undefined && result.applied === 0;
-      if (alive.current) setOutcome({ offer, kind: nothing ? "none" : "done" });
+      if (alive.current) setOutcome({ at: count, kind: "done", text: applyOutcomeText(result) });
     } catch {
-      if (alive.current) setOutcome({ offer, kind: "failed" });
+      if (alive.current) setOutcome({ at: count, kind: "failed" });
     } finally {
       if (alive.current) setBusy(false);
     }
@@ -173,16 +195,18 @@ export function ApplyToAllButton({
 
   return (
     <span className="inline-flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-      <button
-        type="button"
-        onClick={() => void apply()}
-        aria-disabled={busy || undefined}
-        className="focus-outline hit-area-24 max-w-full rounded-[7px] border-[1.5px] border-dashed border-neon-blue-text bg-transparent px-2.5 py-1 text-left text-xs font-medium text-neon-blue-text wrap-anywhere hover:bg-neon-blue/10 aria-disabled:cursor-wait aria-disabled:opacity-60"
-      >
-        {label}
-      </button>
+      {count >= 1 && (
+        <button
+          type="button"
+          onClick={() => void apply()}
+          aria-disabled={busy || undefined}
+          className="focus-outline hit-area-24 max-w-full rounded-[7px] border-[1.5px] border-dashed border-neon-blue-text bg-transparent px-2.5 py-1 text-left text-xs font-medium text-neon-blue-text wrap-anywhere hover:bg-neon-blue/10 aria-disabled:cursor-wait aria-disabled:opacity-60"
+        >
+          {label}
+        </button>
+      )}
       <span role="status" className="text-xs text-ink-2 empty:hidden">
-        {busy ? "Applying…" : done ? "Applied." : none ? "No cards changed." : null}
+        {busy ? "Applying…" : doneText}
       </span>
       <span role="alert" className="text-xs text-neon-pink-text empty:hidden">
         {failed ? "Didn't apply, try again." : null}

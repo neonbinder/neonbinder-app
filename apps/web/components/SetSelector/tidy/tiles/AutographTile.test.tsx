@@ -79,6 +79,8 @@ describe("AutographTile", () => {
       fireEvent.click(screen.getByRole("button", { name: "Apply to all 3 autographed cards" })),
     );
     expect(mockSetAutographFormat).toHaveBeenCalledWith({ selectorOptionId: "leaf-1", value: "On Card" });
+    // The cascade runs in scheduled pages, so the server has no count to give.
+    expect(screen.getByText("Applied.")).toBeTruthy();
   });
 
   it("offers no apply-to-all when this is the only autographed card", () => {

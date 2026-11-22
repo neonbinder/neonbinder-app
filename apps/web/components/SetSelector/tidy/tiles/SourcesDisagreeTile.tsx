@@ -133,7 +133,6 @@ function DisagreementEntry({
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [refused, setRefused] = useState(0);
   const typedRef = useRef<HTMLInputElement | null>(null);
   const typeButtonRef = useRef<HTMLButtonElement | null>(null);
 
@@ -165,7 +164,6 @@ function DisagreementEntry({
     if (busy) return;
     setBusy(true);
     setError(null);
-    setRefused(0);
     try {
       await pickSourceValue({
         cardId: row._id,
@@ -185,14 +183,16 @@ function DisagreementEntry({
 
   const applyToSame = async () => {
     if (!chosen) return;
-    const result: { refused: number } = await pickSourceValue({
+    const result = await pickSourceValue({
       cardId: row._id,
       field: entry.field,
       value: [...chosen.value],
       ...(chosen.typed ? { typed: true as const } : {}),
       cardIds: candidates.map((c) => c._id),
     });
-    setRefused(result.refused);
+    // The open card was written by the pick itself; the others are the cards
+    // the server accepted (written by scheduled pages) and the ones it refused.
+    return { applied: result.scheduled, skipped: result.refused };
   };
 
   const submitTyped = () => {
@@ -365,11 +365,6 @@ function DisagreementEntry({
         </div>
       )}
 
-      {refused > 0 && (
-        <p role="status" className="text-xs text-ink-2">
-          {`${refused} ${refused === 1 ? "card" : "cards"} no longer matched and ${refused === 1 ? "was" : "were"} left as ${refused === 1 ? "it was" : "they were"}.`}
-        </p>
-      )}
       <p role="alert" className="text-xs text-neon-pink-text empty:hidden">
         {error}
       </p>

@@ -10,7 +10,7 @@ import { useInlinePart } from "../inline-stack";
 import type { TidyCardContext, TidyRow } from "../tile-types";
 import AddStintEntry from "./AddStintEntry";
 import { careerLineText } from "./copy";
-import InlineNewTeam from "./InlineNewTeam";
+import InlineNewTeam, { teamLookupCarryOf, type TeamLookupCarry } from "./InlineNewTeam";
 import type { TidyWrite } from "./tidy-write";
 
 type Ctx = NonNullable<TidyCardContext>;
@@ -70,7 +70,42 @@ export default function NewPlayerCareerRow({
   const [undatedError, setUndatedError] = useState<string | null>(null);
   useInlinePart(undatedOpen, () => {});
 
+  // NEO-645: the team the operator is making gets the same lookup a printed team
+  // name gets (league, colours, era, location, ESPN id), asked when the form
+  // opens. Assistive: the form never waits on it, and a failed ask is not shown.
+  const requestTeamLookup = useMutation(api.tidyNames.requestTeamLookup);
+  const [askFailedFor, setAskFailedFor] = useState<string | null>(null);
+  const lookupName = newTeamFor?.name;
+  const lookupSportId = player?.sportId;
+  const cardId = row._id;
+  useEffect(() => {
+    if (!lookupName || !lookupSportId) return;
+    void requestTeamLookup({ cardId, name: lookupName, sportId: lookupSportId }).catch(() =>
+      setAskFailedFor(lookupName),
+    );
+  }, [cardId, lookupName, lookupSportId, requestTeamLookup]);
+  const teamLookup = useQuery(
+    api.tidyNames.teamLookup,
+    lookupName ? { cardId, name: lookupName } : "skip",
+  );
+
   if (!player) return null;
+
+  /** What the New team form is given from the lookup, plus Wikidata's own id for this stint's team. */
+  const lookupProps = (entry: CareerEntry) => {
+    const found = teamLookup?.status === "ready" ? teamLookup.enrichment : undefined;
+    const carry: TeamLookupCarry | undefined = teamLookupCarryOf({
+      ...(found ?? {}),
+      ...(entry.wikidataId ? { wikidataId: entry.wikidataId } : {}),
+    });
+    return {
+      espnLocation: found?.location,
+      leagueSuggestion: found?.league,
+      carry,
+      lookupStatus:
+        askFailedFor === entry.name ? ("error" as const) : (teamLookup?.status ?? ("pending" as const)),
+    };
+  };
 
   const keyOf = (e: CareerEntry) => `${e.name}|${e.fromYear}|${e.toYear ?? ""}`;
   const onPlayer = (teamId: string, fromYear: number) =>
@@ -202,7 +237,7 @@ export default function NewPlayerCareerRow({
                       formKey={`career:${player.playerId}:${key}`}
                       sportId={player.sportId}
                       initialName={e.name}
-                      carry={e.wikidataId ? { wikidataId: e.wikidataId } : undefined}
+                      {...lookupProps(e)}
                       neededBy={player.name}
                       createLabel="Create team and add stint"
                       createAriaLabel={(full, creating) =>
@@ -249,6 +284,7 @@ export default function NewPlayerCareerRow({
           formKey={`career:${player.playerId}:undated:${newTeamFor.name}`}
           sportId={player.sportId}
           initialName={newTeamFor.name}
+          {...lookupProps(newTeamFor)}
           neededBy={player.name}
           createLabel="Create team and add stint"
           createAriaLabel={(full, creating) =>

@@ -577,6 +577,18 @@ describe("TeamTile", () => {
         });
       });
 
+      it.each([
+        [{ applied: 2, skipped: 0 }, "Applied to 2 cards."],
+        [{ applied: 1, skipped: 1 }, "Applied to 1 card. 1 left as it was."],
+        [{ applied: 0, skipped: 2 }, "No cards changed."],
+      ])("shows the server's %j as %j", async (result, text) => {
+        mutation("tidyCards.applyTeamToPlayerCards").mockResolvedValue(result);
+        const b = base();
+        renderTile({ ...b, leafCards: [b.row, sibling("c2"), sibling("c3")] });
+        await click(screen.getByRole("button", { name: "Apply to all 2 other Jackson Merrill cards" }));
+        expect(screen.getByText(text)).toBeTruthy();
+      });
+
       it("is not offered with nothing to apply to, on a two-player card, or with two teams", () => {
         const b = base();
         const { unmount } = renderTile({ ...b, leafCards: [b.row] });

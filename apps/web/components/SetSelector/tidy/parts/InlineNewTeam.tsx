@@ -94,6 +94,7 @@ export default function InlineNewTeam({
   espnLocation,
   leagueSuggestion,
   carry,
+  lookupStatus,
   neededBy,
   createLabel,
   createAriaLabel,
@@ -112,6 +113,11 @@ export default function InlineNewTeam({
   leagueSuggestion?: string;
   /** The rest of the lookup's answer, kept on the new team (see `TeamLookupCarry`). */
   carry?: TeamLookupCarry;
+  /**
+   * A lookup for this team is under way (`pending`) or has landed. Only said, never
+   * waited on: create is never held for it. Omit when no lookup was asked for.
+   */
+  lookupStatus?: "pending" | "ready" | "error";
   /** "Needed by: Mike Trout": why the form is open, when it was not asked for directly. */
   neededBy?: string;
   /** The visible words of the create button: "Create team" / "Create team and add stint". */
@@ -132,6 +138,14 @@ export default function InlineNewTeam({
   );
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The location a lookup returns after the form opened pre-fills it, until the
+  // operator has typed something of their own (a late answer never overwrites them).
+  const [touched, setTouched] = useState(false);
+  const [prefilledLocation, setPrefilledLocation] = useState(espnLocation);
+  if (prefilledLocation !== espnLocation) {
+    setPrefilledLocation(espnLocation);
+    if (!touched) setDraft(newTeamPrefill({ name: initialName, location: espnLocation }));
+  }
   const errorId = useId();
   const nameInputRef = useRef<HTMLInputElement | null>(null);
   const createButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -280,6 +294,7 @@ export default function InlineNewTeam({
           // A refusal described the values that were in the boxes; the next
           // keystroke makes it stale.
           setError(null);
+          setTouched(true);
           setDraft((prev) => ({ ...prev, ...patch }));
         }}
         leagueSuggestion={leagueSuggestion}
@@ -317,6 +332,12 @@ export default function InlineNewTeam({
         disabled={busy}
         onSubmit={() => void create()}
       />
+
+      {lookupStatus !== undefined && (
+        <p role="status" className="text-xs italic text-ink-3 empty:hidden">
+          {lookupStatus === "pending" ? "Checking for team details…" : null}
+        </p>
+      )}
 
       {clash && (
         <div className="grid gap-2 rounded-md border border-neon-pink-text/40 bg-neon-pink/10 p-2.5">

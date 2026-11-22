@@ -75,6 +75,9 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
   const [error, setError] = useState<string | null>(null);
   const [overByKeystroke, setOverByKeystroke] = useState(false);
   const [fitsNow, setFitsNow] = useState(false);
+  // The operator has typed in the title box themselves: their words stay, and a
+  // set-name preview stops replacing them.
+  const [typedOwn, setTypedOwn] = useState(false);
   const titleRef = useRef<HTMLTextAreaElement | null>(null);
   const editButtonRef = useRef<HTMLButtonElement | null>(null);
   const editing = draft !== null;
@@ -84,6 +87,7 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
     setDraft(null);
     setOpenedByOperator(false);
     setFitsNow(false);
+    setTypedOwn(false);
     requestAnimationFrame(() => editButtonRef.current?.focus());
   };
   // An editor that opened itself (over the cap) does not own Esc until the
@@ -106,6 +110,7 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
         setDraft(null);
         setOpenedByOperator(false);
         setFitsNow(false);
+        setTypedOwn(false);
         return true;
       } catch (e) {
         setError(userFacingMessage(e, "Didn't save, try again."));
@@ -122,21 +127,13 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
       setDraft(title);
       setFitsNow(false);
       setOverByKeystroke(false);
+      setTypedOwn(false);
       void saveTitle(title, true);
     },
     [saveTitle],
   );
   const preview = useTitlePreview(row._id, applyGenerated);
   const previewData = useQuery(api.selectorOptions.previewListingTitle, { cardId: row._id });
-
-  const changeTitle = (next: string) => {
-    const wasOver = titleLengthState(text.length, LISTING_TITLE_MAX, true).over;
-    const nowOver = titleLengthState(next.length, LISTING_TITLE_MAX, true).over;
-    setOverByKeystroke(nowOver && (wasOver ? overByKeystroke : true));
-    if (nowOver) setFitsNow(false);
-    else if (wasOver) setFitsNow(true);
-    setDraft(next);
-  };
 
   // ── the set name ──────────────────────────────────────────────────────
   const [shortening, setShortening] = useState(false);
@@ -215,9 +212,22 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
   );
 
   // ── what to say about the title ───────────────────────────────────────
-  const shown = livePreviewTitle ?? text;
+  // While the set name is being shortened, the title (the box too, when it is
+  // open) shows this card with the new set name as it is typed, until the
+  // operator types a title of their own.
+  const shown = livePreviewTitle !== null && !typedOwn ? livePreviewTitle : text;
   const state = titleLengthState(shown.length, LISTING_TITLE_MAX, true);
   const leftOut = useMemo(() => preview.leftOutOf(text), [preview, text]);
+
+  const changeTitle = (next: string) => {
+    const wasOver = titleLengthState(shown.length, LISTING_TITLE_MAX, true).over;
+    const nowOver = titleLengthState(next.length, LISTING_TITLE_MAX, true).over;
+    setOverByKeystroke(nowOver && (wasOver ? overByKeystroke : true));
+    if (nowOver) setFitsNow(false);
+    else if (wasOver) setFitsNow(true);
+    setTypedOwn(true);
+    setDraft(next);
+  };
   const titleAlertId = `${uid}-title-limit`;
   const variationAlertId = `${uid}-variation-limit`;
   const nbNumbers = row.sourceNumbers;
@@ -244,7 +254,7 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
           bare
           ref={titleRef}
           rows={2}
-          value={text}
+          value={shown}
           onChange={(e) => {
             changeTitle(oneLine(e.target.value));
             preview.cancelConfirm();
@@ -253,7 +263,7 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               e.preventDefault();
-              void saveTitle(text);
+              void saveTitle(shown);
             } else if (e.key === "Escape") {
               e.preventDefault();
               e.stopPropagation();
@@ -304,8 +314,8 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
             variant="primary"
             size="1"
             type="button"
-            aria-disabled={busy || state.over || !text.trim() || undefined}
-            onClick={() => void saveTitle(text)}
+            aria-disabled={busy || state.over || !shown.trim() || undefined}
+            onClick={() => void saveTitle(shown)}
           >
             {busy ? "Saving…" : "Save title"}
           </NeonButton>
@@ -466,13 +476,13 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
               <ApplyToAllButton
                 count={sameVariation.length}
                 label={`Apply to the ${plural(sameVariation.length, "card", "cards")} with the same variation`}
-                onApply={async () => {
-                  await applyVariation({
+                onApply={() =>
+                  applyVariation({
                     cardIds: sameVariation.map((c) => c._id),
                     from: variationFrom,
                     to: variationSaved,
-                  });
-                }}
+                  })
+                }
               />
             )}
           </div>

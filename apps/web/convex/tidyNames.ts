@@ -50,6 +50,7 @@ import {
   mutation,
   query,
   type MutationCtx,
+  type QueryCtx,
 } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -897,6 +898,90 @@ export const requestLookup = mutation({
     if (!awaits) return null;
     await scheduleLookup(ctx, row, {});
     return null;
+  },
+});
+
+/**
+ * The scope a card's name lookups live in: where its printed names are
+ * answered (a parallel copy keeps its source leaf), else its own leaf.
+ */
+async function lookupScopeOf(
+  ctx: Pick<QueryCtx, "db">,
+  card: Doc<"cardChecklist">,
+): Promise<Id<"selectorOptions">> {
+  const [first] = await listCardPrintedNames(ctx, card._id);
+  return first ? resolveScopeLeaf(ctx, first, card.selectorOptionId) : card.selectorOptionId;
+}
+
+/**
+ * NEO-645 — ask for a team lookup by name, for a team that is NOT printed on the
+ * card: a Wikidata career team the operator is about to create from the Career
+ * tile. It is the same `tidyNames` team row, lookup and pool lane a printed team
+ * name uses (league, colours, era, location, ESPN id), so the New team form can
+ * be pre-filled the way a printed name's is.
+ *
+ * Assistive and free of side effects on the card: the row is never answered and
+ * nothing reads it but `teamLookup`. An existing row (a printed team of the same
+ * name, or an earlier ask) is reused and never looked up again.
+ */
+export const requestTeamLookup = mutation({
+  args: {
+    cardId: v.id("cardChecklist"),
+    name: v.string(),
+    sportId: v.id("selectorOptions"),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const name = cleanName(args.name);
+    const card = await ctx.db.get(args.cardId);
+    if (!card) throw new ConvexError("That card is gone. Refresh and try again.");
+    const sport = await ctx.db.get(args.sportId);
+    if (!sport || sport.level !== "sport") throw new ConvexError("Pick a sport.");
+    const scopeId = await lookupScopeOf(ctx, card);
+    const key = normalizeEntityName(name);
+    if (!key) throw new ConvexError("A name is required.");
+    const before = await readRow(ctx, scopeId, "team", key);
+    if (before) return null;
+    const row = await ensureTidyNameRow(ctx, {
+      scopeId,
+      kind: "team",
+      name,
+      sportId: args.sportId,
+      setYear: undefined,
+    });
+    await scheduleLookup(ctx, row, {});
+    return null;
+  },
+});
+
+/** What the team lookup for `name` has found, for the New team form. Null: none asked for. */
+export const teamLookup = query({
+  args: { cardId: v.id("cardChecklist"), name: v.string() },
+  returns: v.union(
+    v.null(),
+    v.object({
+      status: tidyLookupStatusValidator,
+      enrichment: v.optional(tidyNameEnrichmentValidator),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const name = args.name.trim();
+    if (name.length === 0 || name.length > MAX_TIDY_NAME_LENGTH) return null;
+    const key = normalizeEntityName(name);
+    if (!key) return null;
+    const card = await ctx.db.get(args.cardId);
+    if (!card) return null;
+    const scopeId = await lookupScopeOf(ctx, card);
+    const row = await ctx.db
+      .query("tidyNames")
+      .withIndex("by_scope_kind_name", (q) =>
+        q.eq("scopeId", scopeId).eq("kind", "team").eq("nameNormalized", key),
+      )
+      .first();
+    if (!row) return null;
+    return { status: row.status, ...(row.enrichment ? { enrichment: row.enrichment } : {}) };
   },
 });
 

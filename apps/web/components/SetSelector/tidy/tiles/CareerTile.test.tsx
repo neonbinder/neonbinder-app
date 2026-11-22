@@ -286,6 +286,125 @@ describe("CareerTile", () => {
       expect(mutation("teams.findOrCreate").mock.calls[0][0]).not.toHaveProperty("enrichment");
     });
 
+    describe("the lookup for a team NB lacks (NEO-645)", () => {
+      const missions = {
+        careerTeams: [{ name: "San Antonio Missions", fromYear: 2023, toYear: 2023 }],
+      };
+      const open = async () => {
+        queryResults["teams.erasByNameAndSport"] = eras;
+        mutation("teams.findOrCreate").mockResolvedValue("team-mis");
+        renderTile([newItem], context({ names: [wikidataName(missions)] }));
+        await click(screen.getByRole("button", { name: "+ New team San Antonio Missions" }));
+      };
+
+      it("is asked for when the form opens, and says it is checking without holding create", async () => {
+        await open();
+        expect(mutation("tidyNames.requestTeamLookup")).toHaveBeenCalledWith({
+          cardId: CARD,
+          name: "San Antonio Missions",
+          sportId: SPORT,
+        });
+        expect(screen.getByText("Checking for team details…").getAttribute("role")).toBe("status");
+        await click(screen.getByRole("button", { name: "Submit new team form" }));
+        expect(mutation("teams.findOrCreate")).toHaveBeenCalled();
+        expect(mutation("players.addStint")).toHaveBeenCalled();
+      });
+
+      it("is not asked for before the form opens", () => {
+        queryResults["teams.erasByNameAndSport"] = eras;
+        renderTile([newItem], context({ names: [wikidataName(missions)] }));
+        expect(mutation("tidyNames.requestTeamLookup")).not.toHaveBeenCalled();
+      });
+
+      it("a result pre-fills the location and rides onto the new team", async () => {
+        queryResults["tidyNames.teamLookup"] = {
+          status: "ready",
+          enrichment: {
+            league: "Texas League",
+            location: "San Antonio",
+            colors: { primary: "#003DA5" },
+            espnId: "77",
+            yearsActive: { from: 1994 },
+          },
+        };
+        await open();
+        expect(screen.queryByText("Checking for team details…")).toBeNull();
+        await click(screen.getByRole("button", { name: "Submit new team form" }));
+        expect(mutation("teams.findOrCreate").mock.calls[0][0]).toMatchObject({
+          location: "San Antonio",
+          name: "Missions",
+          enrichment: {
+            league: "Texas League",
+            colors: { primary: "#003DA5" },
+            espnId: "77",
+            yearsActive: { from: 1994 },
+          },
+        });
+      });
+
+      it("a location that lands after the form opened pre-fills it, until the operator types", async () => {
+        const ctx = context({ names: [wikidataName(missions)] });
+        const element = () => (
+          <CareerTile
+            row={card()}
+            context={ctx}
+            attention={{ level: "check", items: [newItem] }}
+            leafId={"leaf-1" as never}
+            sportId={SPORT as never}
+            leafCards={[]}
+            setName="Set"
+          />
+        );
+        queryResults["teams.erasByNameAndSport"] = eras;
+        mutation("teams.findOrCreate").mockResolvedValue("team-mis");
+        const view = render(element());
+        await click(screen.getByRole("button", { name: "+ New team San Antonio Missions" }));
+        queryResults["tidyNames.teamLookup"] = { status: "ready", enrichment: { location: "San Antonio" } };
+        view.rerender(element());
+        await click(screen.getByRole("button", { name: "Submit new team form" }));
+        expect(mutation("teams.findOrCreate").mock.calls[0][0]).toMatchObject({
+          location: "San Antonio",
+          name: "Missions",
+        });
+      });
+
+      it("Wikidata's own id for the stint's team wins over the lookup's", async () => {
+        queryResults["tidyNames.teamLookup"] = { status: "ready", enrichment: { wikidataId: "Q1" } };
+        queryResults["teams.erasByNameAndSport"] = eras;
+        mutation("teams.findOrCreate").mockResolvedValue("team-mis");
+        renderTile(
+          [newItem],
+          context({
+            names: [
+              wikidataName({
+                careerTeams: [{ name: "San Antonio Missions", fromYear: 2023, toYear: 2023, wikidataId: "Q7414889" }],
+              }),
+            ],
+          }),
+        );
+        await click(screen.getByRole("button", { name: "+ New team San Antonio Missions" }));
+        await click(screen.getByRole("button", { name: "Submit new team form" }));
+        expect(mutation("teams.findOrCreate").mock.calls[0][0]).toMatchObject({
+          enrichment: { wikidataId: "Q7414889" },
+        });
+      });
+
+      it("a lookup that found nothing, or could not be asked for, stops saying it is checking", async () => {
+        queryResults["tidyNames.teamLookup"] = { status: "error" };
+        await open();
+        expect(screen.queryByText("Checking for team details…")).toBeNull();
+      });
+
+      it("a failed ask is silent and stops the status", async () => {
+        queryResults["teams.erasByNameAndSport"] = eras;
+        mutation("tidyNames.requestTeamLookup").mockRejectedValue(new Error("Server Error"));
+        renderTile([newItem], context({ names: [wikidataName(missions)] }));
+        await click(screen.getByRole("button", { name: "+ New team San Antonio Missions" }));
+        expect(screen.queryByText("Checking for team details…")).toBeNull();
+        expect(screen.queryByRole("alert")).toBeNull();
+      });
+    });
+
     it("'Not now' leaves the stint off and writes nothing", async () => {
       queryResults["teams.erasByNameAndSport"] = eras;
       renderTile([newItem], context({ names: [wikidataName(career)] }));

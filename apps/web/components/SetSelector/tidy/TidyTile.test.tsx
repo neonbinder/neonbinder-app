@@ -90,13 +90,30 @@ describe("ApplyToAllButton", () => {
     expect(onApply).toHaveBeenCalledTimes(2);
   });
 
-  it("says no cards changed when the server counted none, and applied when it counted some", async () => {
-    const onApply = vi.fn().mockResolvedValueOnce({ applied: 0 }).mockResolvedValueOnce({ applied: 2 });
-    render(<ApplyToAllButton count={2} label="Apply to all 2 cards" onApply={onApply} />);
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Apply to all 2 cards" })));
-    expect(screen.getByRole("status").textContent).toBe("No cards changed.");
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Apply to all 2 cards" })));
-    expect(screen.getByRole("status").textContent).toBe("Applied.");
+  it.each([
+    [{ applied: 0, skipped: 0 }, "No cards changed."],
+    [{ applied: 0, skipped: 3 }, "No cards changed."],
+    [{ applied: 1, skipped: 0 }, "Applied to 1 card."],
+    [{ applied: 5 }, "Applied to 5 cards."],
+    [{ applied: 5, skipped: 0 }, "Applied to 5 cards."],
+    [{ applied: 4, skipped: 1 }, "Applied to 4 cards. 1 left as it was."],
+    [{ applied: 1, skipped: 2 }, "Applied to 1 card. 2 left as they were."],
+    [undefined, "Applied."],
+  ])("reads the server's counts %j as %j", async (result, text) => {
+    const onApply = vi.fn().mockResolvedValue(result);
+    render(<ApplyToAllButton count={6} label="Apply to all 6 cards" onApply={onApply} />);
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Apply to all 6 cards" })));
+    expect(screen.getByRole("status").textContent).toBe(text);
+  });
+
+  it("keeps the result on screen when the apply itself empties the offer", async () => {
+    const onApply = vi.fn().mockResolvedValue({ applied: 3, skipped: 0 });
+    const { rerender } = render(<ApplyToAllButton count={3} label="Apply to all 3 cards" onApply={onApply} />);
+    await act(async () => fireEvent.click(screen.getByRole("button")));
+    // The three cards now fit, so they are no longer offered.
+    rerender(<ApplyToAllButton count={0} label="Apply to all 0 cards" onApply={onApply} />);
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("Applied to 3 cards.");
   });
 
   it("forgets an old result when the offer changes", async () => {

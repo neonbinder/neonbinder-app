@@ -387,3 +387,95 @@ function nameRow2(t: T, s: Awaited<ReturnType<typeof setup>>, name: string, requ
     }),
   );
 }
+
+// ─── a career team's lookup (NEO-645) ───────────────────────────────────────
+
+describe("requestTeamLookup / teamLookup: a team that is not printed on the card", () => {
+  const TEAM = "San Antonio Missions";
+  const ask = (t: T, cardId: Id<"cardChecklist">, sportId: Id<"selectorOptions">, name = TEAM) =>
+    t.withIdentity(ADMIN).mutation(api.tidyNames.requestTeamLookup, { cardId, name, sportId });
+  const read = (t: T, cardId: Id<"cardChecklist">, name = TEAM) =>
+    t.withIdentity(ADMIN).query(api.tidyNames.teamLookup, { cardId, name });
+  const teamRows = (t: T) =>
+    t.run((ctx) => ctx.db.query("tidyNames").collect().then((rows) => rows.filter((r) => r.kind === "team")));
+
+  test("births a pending team row in the card's scope and asks the pool under generation 1", async () => {
+    const t = newT();
+    const { w, open } = await setup(t);
+    expect(await read(t, open)).toBeNull();
+    await ask(t, open, w.sport);
+    const [row] = await teamRows(t);
+    expect(row.scopeId).toBe(w.base);
+    expect(row.nameNormalized).toBe(normalizeEntityName(TEAM));
+    expect(row.sportId).toBe(w.sport);
+    expect(row.status).toBe("pending");
+    expect(row.lookupGen).toBe(1);
+    expect(row.answer).toBeUndefined();
+    const scheduled = await scheduledLookups(t);
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0].args[0]).toEqual({ items: [{ rowId: row._id, gen: 1 }] });
+    expect(await read(t, open)).toEqual({ status: "pending" });
+  });
+
+  test("asking again, or for a printed team of the same name, reuses the row and looks nothing up", async () => {
+    const t = newT();
+    const { w, open } = await setup(t);
+    await ask(t, open, w.sport);
+    await ask(t, open, w.sport, "  san antonio MISSIONS ");
+    expect(await teamRows(t)).toHaveLength(1);
+    expect(await scheduledLookups(t)).toHaveLength(1);
+  });
+
+  test("a printed team of the same name already has its row: nothing new is born or looked up", async () => {
+    const t = newT();
+    const { w, open, rowId } = await setup(t, { status: "ready" }, "team");
+    await ask(t, open, w.sport, NAME);
+    expect(await teamRows(t)).toHaveLength(1);
+    expect(await scheduledLookups(t)).toEqual([]);
+    expect(await read(t, open, NAME)).toEqual({ status: "ready" });
+    expect((await rowById(t, rowId))!.lookupGen ?? 0).toBe(0);
+  });
+
+  test("a result that lands is what the form reads", async () => {
+    const t = newT();
+    const { w, open } = await setup(t);
+    await ask(t, open, w.sport);
+    const [row] = await teamRows(t);
+    await t.mutation(internal.tidyNames.applyLookupResult, {
+      id: row._id,
+      gen: 1,
+      status: "ready",
+      enrichment: { league: "Texas League", location: "San Antonio", colors: { primary: "#003DA5" }, espnId: "77" },
+      sportId: w.sport,
+    });
+    expect(await read(t, open)).toEqual({
+      status: "ready",
+      enrichment: { league: "Texas League", location: "San Antonio", colors: { primary: "#003DA5" }, espnId: "77" },
+    });
+  });
+
+  test("a card with no printed names falls back to its own leaf as the scope", async () => {
+    const t = newT();
+    const { w, card } = await t.run(async (ctx) => {
+      const w = await seedTidyWorld(ctx);
+      const card = await printCard(ctx, w, { number: "9", printed: [] });
+      return { w, card };
+    });
+    await ask(t, card, w.sport);
+    const [row] = await teamRows(t);
+    expect(row.scopeId).toBe(w.base);
+    expect(await read(t, card)).toEqual({ status: "pending" });
+  });
+
+  test("refuses a non-admin, a name that is too long, and a sportId that is not a sport", async () => {
+    const t = newT();
+    const { w, open } = await setup(t);
+    await expect(
+      t.withIdentity(MEMBER).mutation(api.tidyNames.requestTeamLookup, { cardId: open, name: TEAM, sportId: w.sport }),
+    ).rejects.toThrow();
+    await expect(t.withIdentity(MEMBER).query(api.tidyNames.teamLookup, { cardId: open, name: TEAM })).rejects.toThrow();
+    await expect(ask(t, open, w.sport, "X".repeat(121))).rejects.toThrow(/121 characters; the limit is 120/);
+    await expect(ask(t, open, w.base)).rejects.toThrow(/Pick a sport/);
+    expect(await teamRows(t)).toHaveLength(0);
+  });
+});

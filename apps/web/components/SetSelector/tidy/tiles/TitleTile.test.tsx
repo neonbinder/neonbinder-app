@@ -23,6 +23,7 @@ vi.mock("convex/react", () => ({
 }));
 
 import TitleTile from "./TitleTile";
+import { assessListingTitle } from "../../../../convex/features/generateListing";
 import type { TidyAttention, TidyRow, TidyTileProps } from "../tile-types";
 
 const LONG = "2024 Topps Chrome Update Aaron Judge #USC118 Refractor Rookie Card RC New York Yankees Baseball Auto";
@@ -167,6 +168,64 @@ describe("TitleTile set name for every card", () => {
     expect(screen.getByRole("button", { name: "Shorten the set name for every card" }).getAttribute("aria-expanded")).toBe("true");
   });
 
+  describe("over 80, the title box is the live preview", () => {
+    const longInputs = {
+      ...inputs,
+      setName: "Topps Chrome Update Series Extended Edition Collection",
+    };
+    const overRow = () => cardOf("c1", { listingTitle: LONG });
+    const overAttn = () => attn({ level: "fix", kind: "titleOverLimit" });
+    const typeSetName = (v: string) =>
+      fireEvent.change(screen.getByLabelText("Set name in titles"), { target: { value: v } });
+
+    it("the box follows the typed set name instead of staying on the old title", () => {
+      previewResult = { title: LONG, coreFits: false, dropped: [], inputs: longInputs };
+      renderTile(overRow(), overAttn());
+      expect(titleField().value).toBe(LONG);
+      open();
+      typeSetName("TC Update");
+      const next = assessListingTitle({ ...longInputs, setShortName: "TC Update" }).title;
+      expect(next).not.toBe(LONG);
+      expect(next).toContain("TC Update");
+      expect(titleField().value).toBe(next);
+      // Short enough now: the over-limit line is gone and Save title is open.
+      expect(screen.queryByText("Over the limit, so it opens ready to edit.")).toBeNull();
+      expect(screen.getByRole("button", { name: "Save title" }).getAttribute("aria-disabled")).toBeNull();
+      typeSetName("TC");
+      expect(titleField().value).toBe(assessListingTitle({ ...longInputs, setShortName: "TC" }).title);
+    });
+
+    it("a title the operator typed is theirs: the preview stops replacing it", () => {
+      previewResult = { title: LONG, coreFits: false, dropped: [], inputs: longInputs };
+      renderTile(overRow(), overAttn());
+      open();
+      fireEvent.change(titleField(), { target: { value: "My own title" } });
+      typeSetName("TC Update");
+      expect(titleField().value).toBe("My own title");
+    });
+
+    it("closing the set name puts the box back on the title it had", () => {
+      previewResult = { title: LONG, coreFits: false, dropped: [], inputs: longInputs };
+      renderTile(overRow(), overAttn());
+      open();
+      typeSetName("TC Update");
+      fireEvent.click(screen.getByRole("button", { name: "Cancel set name change" }));
+      expect(titleField().value).toBe(LONG);
+    });
+
+    it("Save title saves what the box shows", async () => {
+      previewResult = { title: LONG, coreFits: false, dropped: [], inputs: longInputs };
+      renderTile(overRow(), overAttn());
+      open();
+      typeSetName("TC Update");
+      const next = assessListingTitle({ ...longInputs, setShortName: "TC Update" }).title;
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Save title" }));
+      });
+      expect(mockUpdateCard).toHaveBeenCalledWith({ id: "c1", listingTitle: next });
+    });
+  });
+
   it("Save and apply to all N cards writes the name for this card's leaf", async () => {
     const leaf = [cardOf("c1"), cardOf("c2"), cardOf("c3")];
     renderTile(leaf[0], none, leaf);
@@ -221,6 +280,19 @@ describe("TitleTile variation", () => {
       fireEvent.click(screen.getByRole("button", { name: "Apply to the 1 card with the same variation" })),
     );
     expect(mockApplyVariation).toHaveBeenCalledWith({ cardIds: ["c2"], from: OVER, to: "Sunglasses" });
+    expect(screen.getByText("Applied to 1 card.")).toBeTruthy();
+  });
+
+  it("says how many variations the server changed and left alone", async () => {
+    mockApplyVariation.mockResolvedValueOnce({ applied: 1, skipped: 1 });
+    const mine = cardOf("c1", { cardVariation: OVER });
+    renderTile(mine, attention, [mine, cardOf("c2", { cardVariation: OVER }), cardOf("c3", { cardVariation: OVER })]);
+    fireEvent.change(screen.getByLabelText("Trim the variation"), { target: { value: "Sunglasses" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save variation" })));
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Apply to the 2 cards with the same variation" })),
+    );
+    expect(screen.getByText("Applied to 1 card. 1 left as it was.")).toBeTruthy();
   });
 });
 
