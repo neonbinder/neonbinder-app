@@ -130,6 +130,7 @@ import type * as lib_bscSheetPlan from "../lib/bscSheetPlan.js";
 import type * as lib_cardPlayerDefaults from "../lib/cardPlayerDefaults.js";
 import type * as lib_careerCoverage from "../lib/careerCoverage.js";
 import type * as lib_careerCoverageFacts from "../lib/careerCoverageFacts.js";
+import type * as lib_careerVerdict from "../lib/careerVerdict.js";
 import type * as lib_catalogView from "../lib/catalogView.js";
 import type * as lib_cloudRunAuth from "../lib/cloudRunAuth.js";
 import type * as lib_convexIdCodec from "../lib/convexIdCodec.js";
@@ -391,6 +392,7 @@ declare const fullApi: ApiFromModules<{
   "lib/cardPlayerDefaults": typeof lib_cardPlayerDefaults;
   "lib/careerCoverage": typeof lib_careerCoverage;
   "lib/careerCoverageFacts": typeof lib_careerCoverageFacts;
+  "lib/careerVerdict": typeof lib_careerVerdict;
   "lib/catalogView": typeof lib_catalogView;
   "lib/cloudRunAuth": typeof lib_cloudRunAuth;
   "lib/convexIdCodec": typeof lib_convexIdCodec;
