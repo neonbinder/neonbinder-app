@@ -38,3 +38,4 @@
 - [Removing a human pause exposes races](removing-a-human-pause-exposes-races.md) — no wizard between stage and commit: runAfter continuations and pool lookups now race the commit
 - [NEO-645 tidyNames schema](project_neo645_tidy_names_schema.md) — per-leaf name answers + cardPrintedNames fan-out index; CAS fan-out, order field, no lastUpdated bump
 - [Gate flags need a full union](gate-flags-need-a-full-union.md) — a fact that decides "skip the review" is a union on every row; absence = unknown = open
+- [Convex tests have no static gate](convex-tests-have-no-static-gate.md) — convex/*.test.ts escapes tsconfig + eslint; grep dead helpers/literals; branch-only literal removal order
