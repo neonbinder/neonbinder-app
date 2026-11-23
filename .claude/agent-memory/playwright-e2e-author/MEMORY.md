@@ -158,3 +158,4 @@
 - [Compute titles with tsx first](patterns_compute_titles_with_tsx_before_a_title_spec_runs.md) — assessListingTitle offline before a fresh-only title run; variation never cut, walk writes retitle
 - [Typed-title overwrite proof needs every word](typed-title-overwrite-proof-needs-every-word.md) — NEO-637 rebuilds a typed title missing words anyway; shorten twice on one card
 - [Checklist total, lib plants](patterns_checklist_total_and_lib_plants_reaching_convex.md) — "N of M cards" total; lib/ plant needs a convex/ touch
+- [Plant first, one-shot fixture](patterns_plant_first_on_a_one_shot_fresh_fixture.md) — consumed control: plant run, then pill probe; pill stale after a write
