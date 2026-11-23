@@ -88,7 +88,11 @@ describe("AutographTile", () => {
     await act(async () =>
       fireEvent.click(screen.getByRole("button", { name: "Apply to all 3 autographed cards" })),
     );
-    expect(mockSetAutographFormat).toHaveBeenCalledWith({ selectorOptionId: "leaf-1", value: "On Card" });
+    expect(mockSetAutographFormat).toHaveBeenCalledWith({
+      selectorOptionId: "leaf-1",
+      value: "On Card",
+      regenerateListing: true,
+    });
     // The cascade runs in scheduled pages, so the server has no count to give.
     expect(screen.getByText("Applied.")).toBeTruthy();
   });

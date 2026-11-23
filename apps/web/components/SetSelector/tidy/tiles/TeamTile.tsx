@@ -134,7 +134,7 @@ export default function TeamTile({
 
   const saveTeams = (next: Array<Id<"teams">>) =>
     write.run(async () => {
-      await updateCard({ id: row._id, teamOnCardIds: next });
+      await updateCard({ id: row._id, teamOnCardIds: next, regenerateListing: true });
       setSearchFor(null);
       answered();
     }, "Couldn't save that team. Try again.");

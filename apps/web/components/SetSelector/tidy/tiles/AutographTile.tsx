@@ -142,7 +142,11 @@ export default function AutographTile({ row, leafId, leafCards }: TidyTileProps)
             count={signed}
             label={`Apply to all ${signed} autographed cards`}
             onApply={async () => {
-              await setAutographFormat({ selectorOptionId: leafId, value: format });
+              await setAutographFormat({
+                selectorOptionId: leafId,
+                value: format,
+                regenerateListing: true,
+              });
             }}
           />
         )}

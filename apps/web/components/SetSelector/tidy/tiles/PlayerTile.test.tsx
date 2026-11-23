@@ -403,7 +403,11 @@ describe("PlayerTile", () => {
     expect(screen.queryByRole("note")).toBeNull();
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Edit Jackson Merrill" })));
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Pick a player" })));
-    expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({ id: CARD, playerIds: ["player-9"] });
+    expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
+      id: CARD,
+      playerIds: ["player-9"],
+      regenerateListing: true,
+    });
   });
 
   it("T1: a reason this build calls plain ('exact', from an older server) draws no note either", () => {
@@ -521,6 +525,7 @@ describe("PlayerTile", () => {
     expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
       id: CARD,
       playerIds: ["player-1", "player-9"],
+      regenerateListing: true,
     });
     unmount();
 
@@ -976,6 +981,7 @@ describe("PlayerTile: cameos (T5)", () => {
     expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
       id: CARD,
       playerIds: ["player-1", "player-9"],
+      regenerateListing: true,
     });
     expect(mutation("cardSecondaryPlayers.setSecondaryPlayers")).toHaveBeenCalledWith({
       cardId: CARD,

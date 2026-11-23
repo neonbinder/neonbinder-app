@@ -359,7 +359,12 @@ describe("TitleTile set name for every card", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Save and apply to all 3 cards" }));
     });
-    expect(mockApplySetName).toHaveBeenCalledWith({ leafId: "leaf-1", cardId: "c1", listingShortName: "TC Update" });
+    expect(mockApplySetName).toHaveBeenCalledWith({
+      leafId: "leaf-1",
+      cardId: "c1",
+      listingShortName: "TC Update",
+      regenerateListing: true,
+    });
     expect(screen.getByText("Set name saved. The other cards' titles are updating.")).toBeTruthy();
     expect(screen.queryByLabelText("Set name in titles")).toBeNull();
   });

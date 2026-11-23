@@ -10,7 +10,7 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import { deriveCardAttention } from "./features/cardAttention";
-import { cancelScheduled } from "../lib/testing/drain-scheduled";
+import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
 import { addPlayer, nameRow, printCard, seedTidyWorld } from "../lib/testing/tidy-world";
 
@@ -169,6 +169,22 @@ describe("when there is no button", () => {
     expect(await offer(t, card)).toBeUndefined();
   });
 
+  test("a near spelling of the player's own name is the same person, not a title", async () => {
+    const t = newT();
+    const { card } = await setup(t, entry(["Francisco Lindorr"], [LINDOR]));
+    expect(await offer(t, card)).toBeUndefined();
+    const merrill = await t.run(async (ctx) => {
+      const w = await seedTidyWorld(ctx);
+      await addPlayer(ctx, w, "Jackson Merrill");
+      return printCard(ctx, w, {
+        number: "1",
+        pendingPlayerNames: [],
+        extra: { sourceDisagreements: [entry(["Jackson Merril"], ["Jackson Merrill"])] },
+      });
+    });
+    expect(await offer(t, merrill)).toBeUndefined();
+  });
+
   test("a value of several names, or three values", async () => {
     const t = newT();
     const several = await setup(t, entry([CPC, "Someone Else"], [LINDOR]));
@@ -233,12 +249,21 @@ describe("pickSourceAsCameo", () => {
     expect(links.map((l) => l.playerId)).toEqual([lindor]);
     // 3. the disagreement is settled.
     expect(c.sourceDisagreements![0].chosen).toEqual({ value: [CPC], by: "operator" });
-    // 4. the card's own player stays empty; the picked name waits as a pending name.
+    // 4. the card's own player stays empty, and the picked name is answered
+    //    "not a player" in the same call: nothing is left pending.
     expect(c.playerIds).toBeUndefined();
-    expect(c.pendingPlayerNames).toEqual([CPC]);
-    // 5. the title and description are rebuilt, with the cameo in them.
+    expect(c.pendingPlayerNames).toBeUndefined();
+    const rows = await t.run((ctx) => ctx.db.query("tidyNames").collect());
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      nameNormalized: normalizeEntityName(CPC),
+      answer: { kind: "notEntity", by: "operator" },
+    });
+    // 5. the title and description are rebuilt, with the cameo in them and
+    //    without the ruled-out name.
     expect(c.listingTitle).not.toBe("Typed by hand");
     expect(c.listingTitle).toContain("Lindor");
+    expect(c.listingTitle).not.toContain(CPC);
     expect(c.listingDescription).toContain(LINDOR);
   });
 
@@ -251,13 +276,31 @@ describe("pickSourceAsCameo", () => {
     expect((await get(t, card))!.secondaryPlayerIds).toEqual([soto, lindor]);
   });
 
-  test("what the walk shows afterwards: only the pending name, as for any Use pick", async () => {
+  test("one click finishes the card: the cameo, no main player, and nothing to stop on", async () => {
     const t = newT();
-    const { card } = await setup(t);
+    const { card, lindor } = await setup(t);
     await t.withIdentity(ADMIN).mutation(api.tidyCameo.pickSourceAsCameo, { cardId: card });
-    const attention = deriveCardAttention((await get(t, card))!);
-    expect(attention.items.map((i) => i.kind)).toEqual(["playerName"]);
-    expect(attention.items[0]).toMatchObject({ level: "fix", names: [CPC] });
+    const c = (await get(t, card))!;
+    expect(c.playerIds).toBeUndefined();
+    expect(c.secondaryPlayerIds).toEqual([lindor]);
+    expect(deriveCardAttention(c).items).toEqual([]);
+  });
+
+  test("the not-a-player answer fans out to the other cards that print that exact name", async () => {
+    const t = newT();
+    const { card, w } = await setup(t);
+    const other = await t.run((ctx) =>
+      printCard(ctx, w, {
+        number: "8",
+        printed: [{ kind: "player", name: CPC }],
+        extra: { cardName: CPC },
+      }),
+    );
+    await t.withIdentity(ADMIN).mutation(api.tidyCameo.pickSourceAsCameo, { cardId: card });
+    await drainScheduled(t);
+    const o = (await get(t, other))!;
+    expect(o.pendingPlayerNames).toBeUndefined();
+    expect(o.playerIds).toBeUndefined();
   });
 
   test("answering the pending name 'not a player' leaves a card with no player and nothing to stop on", async () => {

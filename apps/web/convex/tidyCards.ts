@@ -958,6 +958,13 @@ export const applySetNameToTitles = mutation({
     /** The open card, patched in the call. */
     cardId: v.id("cardChecklist"),
     listingShortName: v.string(),
+    /**
+     * NEO-645 T4 — pressed from the walk: every card's title and description
+     * is rebuilt, a hand-typed title included (Jason: "always overwrite").
+     * Absent, the NEO-637 rules above keep a hand edit that does not show
+     * "Left out". Only the walk sends it.
+     */
+    regenerateListing: v.optional(v.literal(true)),
   },
   returns: v.object({
     openCardRetitled: v.boolean(),
@@ -994,13 +1001,15 @@ export const applySetNameToTitles = mutation({
     });
 
     const cache = newNameWriteCache(ctx);
-    const openCardRetitled = await retitleCardForSetName(ctx, card, old, next, cache);
+    const overwrite = args.regenerateListing === true;
+    const openCardRetitled = await retitleCardForSetName(ctx, card, old, next, cache, overwrite);
     await ctx.scheduler.runAfter(0, internal.tidyCards.retitleLeafPage, {
       leafId: args.leafId,
       oldShortName: old,
       newShortName: next,
       runId,
       cursor: null,
+      ...(overwrite ? { regenerateListing: true as const } : {}),
       // The open card was decided in this call. A second pass would read the
       // title this one wrote against the same old -> new pair: a swapped hand
       // edit no longer holds the old name, so it would be rebuilt.
@@ -1024,7 +1033,17 @@ async function retitleCardForSetName(
   oldShortName: string | undefined,
   newShortName: string | undefined,
   cache: NameWriteCache,
+  overwrite = false,
 ): Promise<boolean> {
+  if (overwrite) {
+    // The walk's save: the title is the generator's, whatever the stored one is.
+    const patch: Partial<Doc<"cardChecklist">> = {};
+    const { titleChanged } = await regenerateTitleFields(ctx, card, patch, cache);
+    if (Object.keys(patch).length === 0) return false;
+    await ctx.db.patch(card._id, { ...patch, lastUpdated: Date.now() });
+    if (titleChanged) await queueRetitledCardNow(ctx, card._id);
+    return titleChanged;
+  }
   const { inputs } = await listingInputsForStoredCard(ctx, card, cache.titles);
   const decision = retitleForSetName({
     storedTitle: card.listingTitle,
@@ -1057,6 +1076,8 @@ export const retitleLeafPage = internalMutation({
     cursor: v.union(v.string(), v.null()),
     /** The card `applySetNameToTitles` already decided; the pages skip it. */
     openCardId: v.optional(v.id("cardChecklist")),
+    /** NEO-645 T4: rebuild every title, a typed one included. */
+    regenerateListing: v.optional(v.literal(true)),
   },
   returns: v.object({ retitled: v.number(), done: v.boolean() }),
   handler: async (ctx, args) => {
@@ -1077,7 +1098,16 @@ export const retitleLeafPage = internalMutation({
     let retitled = 0;
     for (const card of page.page) {
       if (card._id === args.openCardId) continue;
-      if (await retitleCardForSetName(ctx, card, args.oldShortName, args.newShortName, cache)) {
+      if (
+        await retitleCardForSetName(
+          ctx,
+          card,
+          args.oldShortName,
+          args.newShortName,
+          cache,
+          args.regenerateListing === true,
+        )
+      ) {
         retitled += 1;
       }
     }

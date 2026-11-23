@@ -383,7 +383,7 @@ export async function ensureTidyNameRow(
  * scheduled fan-out. `answerName` and `createPlayer` both end here, so a
  * created player is answered exactly as a linked one.
  */
-async function applyAnswer(
+export async function applyAnswer(
   ctx: MutationCtx,
   userId: string,
   target: Awaited<ReturnType<typeof resolveName>>,

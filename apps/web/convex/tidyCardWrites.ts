@@ -39,6 +39,7 @@ import {
   type StoredCardReadCache,
 } from "./storedCardTitle";
 import { rebuildListingText } from "./tidyListingText";
+import { dropCameosNowPrimary, withoutPrimaryCameos } from "./cardSecondaryPlayers";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS, TIDY_CHECKS_MAX } from "./features/cardAttention";
 import { queueRetitledCardNow } from "./listingTitleRequeue";
 import { createSportNoTeamReader } from "./sportTeamless";
@@ -387,12 +388,20 @@ export async function writeNameChange(
     }
   }
 
-  // Text nobody typed follows the names; a typed title stays.
-  const { titleChanged } = await regenerateTitleFields(ctx, card, patch, cache);
+  // The listing text follows the names, always (T4). A player who has just
+  // become the card's own player is no longer a cameo, so the text is built
+  // without that cameo and the cameo is dropped below.
+  const textCard = withoutPrimaryCameos({
+    ...card,
+    playerIds: fields.playerIds,
+    playerLinks: fields.playerLinks,
+  });
+  const { titleChanged } = await regenerateTitleFields(ctx, textCard, patch, cache);
 
   await ctx.db.patch(card._id, { ...patch, lastUpdated: Date.now() });
   if (playersChanged) {
     await syncCardPlayerLinks(ctx, card._id, fields.playerIds, card.sportId);
+    await dropCameosNowPrimary(ctx, { ...card, ...patch } as Card, cache.titles);
   }
   if (teamsChanged) {
     await syncCardTeamLinks(ctx, card, fields.teamOnCardIds, { leagueCache: cache.league });

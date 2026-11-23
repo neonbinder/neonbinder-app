@@ -553,7 +553,11 @@ describe("TeamTile", () => {
       expect(pressed(/Boston Red Sox/)).toBe("true");
       expect(screen.getByText("Suggested from career history.")).toBeTruthy();
       await click(screen.getByRole("button", { name: "Save team" }));
-      expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({ id: CARD, teamOnCardIds: ["t-b"] });
+      expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
+        id: CARD,
+        teamOnCardIds: ["t-b"],
+        regenerateListing: true,
+      });
     });
 
     it("A12: nothing is pre-filled until the evidence has arrived", () => {
@@ -577,7 +581,11 @@ describe("TeamTile", () => {
       expect(mutation("selectorOptions.updateCard")).not.toHaveBeenCalled();
       await click(screen.getByRole("button", { name: /Boston Red Sox/ }));
       await click(screen.getByRole("button", { name: "Save team" }));
-      expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({ id: CARD, teamOnCardIds: ["t-b"] });
+      expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
+        id: CARD,
+        teamOnCardIds: ["t-b"],
+        regenerateListing: true,
+      });
     });
 
     it("A15: an open stint reads 'present', in main's format", () => {
@@ -637,7 +645,11 @@ describe("TeamTile", () => {
         expect(pressed(/Philadelphia Athletics/)).toBe("true");
         expect(screen.getByText("Suggested from the player's other cards.")).toBeTruthy();
         await click(screen.getByRole("button", { name: "Save team" }));
-        expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({ id: CARD, teamOnCardIds: ["t-a"] });
+        expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
+        id: CARD,
+        teamOnCardIds: ["t-a"],
+        regenerateListing: true,
+      });
       });
 
       it("two other cards that disagree stop the search: nothing preselected, the career does not speak", () => {
@@ -753,7 +765,11 @@ describe("TeamTile", () => {
         renderTile({ row: row(), ctx: ctx(), items });
         await click(screen.getByRole("button", { name: /Los Angeles Dodgers/ }));
         await click(screen.getByRole("button", { name: "Save team" }));
-        expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({ id: CARD, teamOnCardIds: ["t-b"] });
+        expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
+        id: CARD,
+        teamOnCardIds: ["t-b"],
+        regenerateListing: true,
+      });
       });
     });
 
@@ -830,7 +846,11 @@ describe("TeamTile", () => {
         renderTile({ row: row(), ctx: ctx(), items, setNoTeam: true });
         await click(screen.getByRole("button", { name: /Boston Red Sox/ }));
         await click(screen.getByRole("button", { name: "Save team" }));
-        expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({ id: CARD, teamOnCardIds: ["t-b"] });
+        expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
+        id: CARD,
+        teamOnCardIds: ["t-b"],
+        regenerateListing: true,
+      });
       });
 
       it("a set with a team default, or none, still preselects the same team", () => {
@@ -846,7 +866,10 @@ describe("TeamTile", () => {
       mutation("cardChecklist.confirmCardNoTeam").mockResolvedValue({ confirmed: true, stamped: true });
       renderTile({ row: row(), ctx: ctx(), items });
       await click(screen.getByRole("button", { name: "No team on this card" }));
-      expect(mutation("cardChecklist.confirmCardNoTeam")).toHaveBeenCalledWith({ cardId: CARD });
+      expect(mutation("cardChecklist.confirmCardNoTeam")).toHaveBeenCalledWith({
+        cardId: CARD,
+        regenerateListing: true,
+      });
     });
 
     it("says so when the card turned out to have teams", async () => {
@@ -915,7 +938,11 @@ describe("TeamTile", () => {
       expect(chip.isConnected).toBe(true);
       expect(chip.getAttribute("aria-pressed")).toBe("true");
       await click(screen.getByRole("button", { name: "Save team" }));
-      expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({ id: CARD, teamOnCardIds: ["team-9"] });
+      expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
+        id: CARD,
+        teamOnCardIds: ["team-9"],
+        regenerateListing: true,
+      });
     });
 
     it("keeps the Other team… search itself open across the same switch", async () => {
@@ -947,7 +974,11 @@ describe("TeamTile", () => {
       await click(screen.getByRole("button", { name: "Other team…" }));
       await click(screen.getByRole("button", { name: "Pick a team" }));
       await click(screen.getByRole("button", { name: "Save team" }));
-      expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({ id: CARD, teamOnCardIds: ["team-9"] });
+      expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
+        id: CARD,
+        teamOnCardIds: ["team-9"],
+        regenerateListing: true,
+      });
     });
   });
 
@@ -994,7 +1025,11 @@ describe("TeamTile", () => {
       renderTile(base());
       await click(screen.getByRole("button", { name: "Edit San Diego Padres" }));
       await click(screen.getByRole("button", { name: "Pick a team" }));
-      expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({ id: CARD, teamOnCardIds: ["team-9"] });
+      expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
+        id: CARD,
+        teamOnCardIds: ["team-9"],
+        regenerateListing: true,
+      });
     });
 
     it("'+ Another team' adds one", async () => {
@@ -1004,6 +1039,7 @@ describe("TeamTile", () => {
       expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
         id: CARD,
         teamOnCardIds: ["team-7", "team-9"],
+        regenerateListing: true,
       });
     });
 

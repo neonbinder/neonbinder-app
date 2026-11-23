@@ -76,7 +76,9 @@ import {
 import {
   bornSecondaryPlayerFields,
   bornSecondaryPlayers,
+  dropCameosNowPrimary,
   refreshedGeneratedDescription,
+  withoutPrimaryCameos,
 } from "./cardSecondaryPlayers";
 import { listingNamesAPlayer } from "./lib/cardPlayerDefaults";
 import { newStoredCardReadCache } from "./storedCardTitle";
@@ -8051,9 +8053,17 @@ export const updateCard = mutation({
         ...facts
       } = filtered as Partial<Doc<"cardChecklist">>;
       const rebuilt: Partial<Doc<"cardChecklist">> = facts;
+      // A player this write makes the card's own is no longer a cameo: the text
+      // is built without that cameo, and the cameo is dropped after the patch.
+      const textCard = withoutPrimaryCameos({
+        ...stored,
+        ...(Array.isArray(facts.playerIds)
+          ? { playerIds: facts.playerIds, playerLinks: facts.playerLinks }
+          : {}),
+      });
       const { titleChanged: moved } = await rebuildListingText(
         ctx,
-        stored,
+        textCard,
         rebuilt,
         newStoredCardReadCache(),
       );
@@ -8121,6 +8131,12 @@ export const updateCard = mutation({
         playerLinksIndexWrite.ids,
         playerLinksIndexWrite.sportId,
       );
+      // NEO-645 — the walk's player write: a cameo who is now the card's own
+      // player stops being one (the panel's own saves keep their rules).
+      if (regenerateListing) {
+        const after = await ctx.db.get(id);
+        if (after) await dropCameosNowPrimary(ctx, after);
+      }
     }
     // NEO-358 — the team → cards index follows a written `teamOnCardIds`
     // (validated and deduped above), emptied lists included.

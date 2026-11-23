@@ -13,8 +13,10 @@
  *   2. the player is added to "Also on this card" (NEO-528), through the
  *      cameo writer;
  *   3. the disagreement is settled (the pick stamps `chosen`);
- *   4. the card's own player stays empty (the picked name is not a player, so
- *      it is a pending name the Player tile asks about, as for any pick);
+ *   4. the card's own player stays empty, and the picked name is answered "not
+ *      a player" in the same call (`tidyNames.applyAnswer`, the answer the
+ *      Player tile's own button gives), so nothing is left to ask: the card has
+ *      its cameo, no main player and no stop from this tile;
  *   5. the title and description are rebuilt (T4), with the cameo in them.
  *
  * `cameoOfferFor` is the one reading of "when does the button show": the
@@ -29,18 +31,22 @@
  * "Not a player" is the strict reading: a ruled-out name, or a name nobody
  * answers to (no primary, sport or alias match). A name that might be a player
  * (an alias match, a tie, an unanswered lookup that found one) offers nothing.
+ * A name that is a near spelling of the player's own (`nearSpellingDistance`,
+ * the helper "Did you mean" and Add all use) is the same person misspelled,
+ * never a title, and offers nothing either.
  */
 
 import { ConvexError, v } from "convex/values";
 import { mutation, type MutationCtx, type QueryCtx } from "./_generated/server";
-import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
 import { sameNamePlayers } from "./players";
 import { applyPickToCard, entryFor } from "./tidyPickSource";
+import { applyAnswer, resolveName } from "./tidyNames";
 import { newNameWriteCache } from "./tidyCardWrites";
 import { addCardCameo, cameoIdsOf } from "./cardSecondaryPlayers";
 import { playerSurname } from "../lib/players/surname";
+import { nearSpellingDistance } from "../lib/players/near-spelling";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
 
 type Card = Doc<"cardChecklist">;
@@ -118,6 +124,9 @@ export async function cameoOfferFor(ctx: ReadCtx, card: Card): Promise<CameoOffe
   if (own.has(String(playerId))) return null;
   const player = await ctx.db.get(playerId);
   if (!player) return null;
+  // A near spelling of the player's own name is the same person misspelled
+  // ("Jackson Merril" against "Jackson Merrill"), not a title to name the card for.
+  if (nearSpellingDistance(name, player.name) !== null) return null;
   return { playerId, surname: playerSurname(player.name), name };
 }
 
@@ -153,11 +162,14 @@ export const pickSourceAsCameo = mutation({
       userId,
       cache,
     });
-    // The picked name is left pending: its lookup goes out after the write.
+    // The picked name is not a player: say so now, so the card is done in one
+    // click. The ordinary operator answer (`tidyNames.applyAnswer`), so it takes
+    // the name off the card, rebuilds the text and fans out to every card that
+    // prints this exact name. A name the pick did not leave pending (it was
+    // already ruled out) has nothing to answer.
     if (result.pending) {
-      await ctx.scheduler.runAfter(0, internal.tidyNames.enqueuePendingLookups, {
-        scopeId: card.selectorOptionId,
-      });
+      const target = await resolveName(ctx, card._id, "player", offer.name);
+      await applyAnswer(ctx, userId, target, { kind: "notEntity" });
     }
     return { playerId: offer.playerId, name: offer.name };
   },

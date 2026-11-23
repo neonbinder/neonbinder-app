@@ -180,6 +180,7 @@ describe("TeamFillChips", () => {
     expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
       id: "c1",
       teamOnCardIds: ["t1"],
+      regenerateListing: true,
     });
     expect(onAnswered).toHaveBeenCalledTimes(1);
   });

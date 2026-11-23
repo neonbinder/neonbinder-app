@@ -257,7 +257,7 @@ export default function TeamFillChips({
 
   const save = async () => {
     const ok = await write.run(
-      () => updateCard({ id: row._id, teamOnCardIds: chosen }),
+      () => updateCard({ id: row._id, teamOnCardIds: chosen, regenerateListing: true }),
       "Couldn't save those teams. Try again.",
     );
     if (ok) answered();
@@ -265,7 +265,7 @@ export default function TeamFillChips({
 
   const recordNoTeam = async () => {
     const ok = await write.run(async () => {
-      const result = await confirmCardNoTeam({ cardId: row._id });
+      const result = await confirmCardNoTeam({ cardId: row._id, regenerateListing: true });
       if (!result.confirmed) {
         throw new Error(
           "This card has teams now, or it is no longer on this checklist, so there's nothing to confirm.",

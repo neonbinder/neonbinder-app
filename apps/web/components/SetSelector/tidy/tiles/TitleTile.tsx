@@ -188,6 +188,7 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
         leafId,
         cardId: row._id,
         listingShortName: name,
+        regenerateListing: true,
       });
       setSetNameSaved(
         result.scheduled

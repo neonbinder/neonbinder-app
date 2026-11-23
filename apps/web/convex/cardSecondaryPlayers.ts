@@ -283,6 +283,44 @@ export function cameoIdsOf(card: Pick<CardRow, "secondaryPlayerIds">): Array<Id<
 }
 
 /**
+ * NEO-645 — a player is never both a card's own player and a cameo. `card`
+ * with every cameo that is now one of its players taken out (the same card
+ * object when there is none), for building listing text from a card whose
+ * players are about to change. Pure.
+ */
+export function withoutPrimaryCameos<
+  C extends Pick<CardRow, "secondaryPlayerIds" | "playerIds" | "playerLinks">,
+>(card: C): C {
+  const cameos = card.secondaryPlayerIds;
+  if (!cameos || cameos.length === 0) return card;
+  const primary = primaryPlayerIdsOf(card);
+  const kept = cameos.filter((id) => !primary.has(id as string));
+  if (kept.length === cameos.length) return card;
+  return { ...card, secondaryPlayerIds: kept.length > 0 ? kept : undefined };
+}
+
+/**
+ * Write what `withoutPrimaryCameos` says, through the writer (field and index
+ * rows). `card` is the card AS IT NOW READS, its players already written. The
+ * caller rebuilds the listing text itself (the walk's write does), so the
+ * description is left to it. A no-op, with no read, for a card with no cameo
+ * that is also its player.
+ */
+export async function dropCameosNowPrimary(
+  ctx: WriteCtx,
+  card: CardRow,
+  cache?: StoredCardReadCache,
+): Promise<{ changed: boolean }> {
+  if (withoutPrimaryCameos(card) === card) return { changed: false };
+  const result = await setCardSecondaryPlayers(ctx, card, card.secondaryPlayerIds ?? [], {
+    cache,
+    dropMissing: true,
+    description: "leave",
+  });
+  return { changed: result.changed };
+}
+
+/**
  * NEO-645 T3 — add ONE player to a card's cameos, keeping the ones it has,
  * through the writer. The caller rebuilds the listing text itself (the walk's
  * `regenerateListing`), so the description is left to it. A player already a

@@ -136,7 +136,7 @@ export default function PlayerTile({ row, context, attention, sportId }: TidyTil
 
   const savePlayers = (next: Array<Id<"players">>) =>
     write.run(async () => {
-      await updateCard({ id: row._id, playerIds: next });
+      await updateCard({ id: row._id, playerIds: next, regenerateListing: true });
       // Someone added as a player who was also a cameo is the card's subject
       // now, so they leave the cameos (the attributes panel does the same).
       const own = new Set<string>(next);
