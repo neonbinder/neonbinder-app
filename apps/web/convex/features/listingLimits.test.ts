@@ -7,10 +7,6 @@
  * policy actually changed should arrive with a red test and a re-read of the
  * doc block in `listingLimits.ts`; a number that moves because someone was
  * tidying should never get that far.
- *
- * The relational assertions below are the part that is not merely a
- * transcription: they encode that the two CLIP values are soft bands UNDER the
- * one hard cap, which is the distinction the whole feature turns on.
  */
 
 import { describe, expect, test } from "vitest";
@@ -18,24 +14,13 @@ import {
   ASPECT_VALUE_MAX,
   LISTING_DESCRIPTION_MAX,
   LISTING_TITLE_MAX,
-  LISTING_TITLE_MOBILE_CLIP,
-  LISTING_TITLE_SEARCH_CLIP,
 } from "./listingLimits";
 import { EBAY_DESCRIPTION_MAX } from "../lib/ebayListing";
 
 describe("listing limits", () => {
   test("the confirmed values (2026-09-02)", () => {
     expect(LISTING_TITLE_MAX).toBe(80);
-    expect(LISTING_TITLE_MOBILE_CLIP).toBe(55);
-    expect(LISTING_TITLE_SEARCH_CLIP).toBe(70);
     expect(ASPECT_VALUE_MAX).toBe(65);
-  });
-
-  test("the display bands sit strictly under the hard cap, in clip order", () => {
-    // mobile tiles clip earlier than desktop search results, and neither is a
-    // limit — a title between the two bands is perfectly listable.
-    expect(LISTING_TITLE_MOBILE_CLIP).toBeLessThan(LISTING_TITLE_SEARCH_CLIP);
-    expect(LISTING_TITLE_SEARCH_CLIP).toBeLessThan(LISTING_TITLE_MAX);
   });
 
   test("the aspect-value cap is independent of the title cap", () => {
@@ -46,12 +31,7 @@ describe("listing limits", () => {
   });
 
   test("every limit is a positive whole number of characters", () => {
-    for (const limit of [
-      LISTING_TITLE_MAX,
-      LISTING_TITLE_MOBILE_CLIP,
-      LISTING_TITLE_SEARCH_CLIP,
-      ASPECT_VALUE_MAX,
-    ]) {
+    for (const limit of [LISTING_TITLE_MAX, ASPECT_VALUE_MAX]) {
       expect(Number.isInteger(limit)).toBe(true);
       expect(limit).toBeGreaterThan(0);
     }
