@@ -351,3 +351,122 @@ describe("pickSourceAsCameo", () => {
     expect(c.cardName).toBe(LINDOR);
   });
 });
+
+// NEO-645 — a player a walk write makes the card's own is taken out of its cameos
+// in the same write; the title and description are built without the cameo.
+describe("a cameo who becomes the card's player stops being a cameo", () => {
+  const TYPED = "Typed by hand, out of date";
+
+  /** A card with the player as a cameo (field and index row) and a typed title. */
+  async function withCameo(t: T, values: Entry = entry([CPC], [LINDOR]), extra: Record<string, unknown> = {}) {
+    const s = await setup(t, values, { listingTitle: TYPED, ...extra });
+    await t.run(async (ctx) => {
+      await ctx.db.patch(s.card, { secondaryPlayerIds: [s.lindor] });
+      await ctx.db.insert("cardSecondaryPlayerLinks", {
+        cardChecklistId: s.card,
+        playerId: s.lindor,
+        sportId: s.w.sport,
+      });
+    });
+    return s;
+  }
+
+  const cameoRows = (t: T, cardId: Id<"cardChecklist">) =>
+    t.run((ctx) =>
+      ctx.db
+        .query("cardSecondaryPlayerLinks")
+        .withIndex("by_card", (q) => q.eq("cardChecklistId", cardId))
+        .collect(),
+    );
+
+  /** The title as the generator builds it for the card as stored now. */
+  async function expectRebuilt(t: T, cardId: Id<"cardChecklist">, lindor: Id<"players">) {
+    const c = (await get(t, cardId))!;
+    expect(c.playerIds).toEqual([lindor]);
+    expect(c.secondaryPlayerIds).toBeUndefined();
+    expect(await cameoRows(t, cardId)).toEqual([]);
+    expect(c.listingTitle).not.toBe(TYPED);
+    expect(c.listingTitle).toContain("Lindor");
+    // Named once, as the card's player; the description has no cameo line.
+    expect(c.listingTitle!.match(/Lindor/g)).toHaveLength(1);
+    expect(c.listingDescription).toContain(LINDOR);
+    expect(c.listingDescription).not.toContain("Cameo");
+    return c;
+  }
+
+  test("pickSourceValue taking the cameo's own name as the player", async () => {
+    const t = newT();
+    const { card, lindor } = await withCameo(t);
+    await t
+      .withIdentity(ADMIN)
+      .mutation(api.tidyCards.pickSourceValue, { cardId: card, field: "players", value: [LINDOR] });
+    await expectRebuilt(t, card, lindor);
+  });
+
+  test("answerName linking the card's printed name to the cameo", async () => {
+    const t = newT();
+    const { lindor, w } = await withCameo(t);
+    const card = await t.run(async (ctx) => {
+      await nameRow(ctx, {
+        scopeId: w.base,
+        sportId: w.sport,
+        kind: "player",
+        name: CPC,
+        over: { answerGen: 0 },
+      });
+      const id = await printCard(ctx, w, {
+        number: "9",
+        printed: [{ kind: "player", name: CPC }],
+        extra: { teamOnCardIds: [w.mets], listingTitle: TYPED, secondaryPlayerIds: [lindor] },
+      });
+      await ctx.db.insert("cardSecondaryPlayerLinks", {
+        cardChecklistId: id,
+        playerId: lindor,
+        sportId: w.sport,
+      });
+      return id;
+    });
+    await t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
+      cardId: card,
+      kind: "player",
+      name: CPC,
+      answer: { kind: "linkPlayer", playerId: lindor },
+    });
+    await drainScheduled(t);
+    await expectRebuilt(t, card, lindor);
+  });
+
+  test("updateCard with playerIds and the walk's flag", async () => {
+    const t = newT();
+    const { card, lindor } = await withCameo(t);
+    await t.withIdentity(ADMIN).mutation(api.selectorOptions.updateCard, {
+      id: card,
+      playerIds: [lindor],
+      regenerateListing: true,
+    });
+    await expectRebuilt(t, card, lindor);
+    // The player-links index follows the write (unchanged by the cameo drop).
+    const own = await t.run((ctx) =>
+      ctx.db
+        .query("cardPlayerLinks")
+        .withIndex("by_card", (q) => q.eq("cardChecklistId", card))
+        .collect(),
+    );
+    expect(own.map((r) => r.playerId)).toEqual([lindor]);
+  });
+
+  test("a cameo who is NOT the new player is kept", async () => {
+    const t = newT();
+    const { card, lindor, w } = await withCameo(t);
+    const soto = await t.run((ctx) => addPlayer(ctx, w, "Juan Soto"));
+    await t.withIdentity(ADMIN).mutation(api.selectorOptions.updateCard, {
+      id: card,
+      playerIds: [soto],
+      regenerateListing: true,
+    });
+    const c = (await get(t, card))!;
+    expect(c.playerIds).toEqual([soto]);
+    expect(c.secondaryPlayerIds).toEqual([lindor]);
+    expect((await cameoRows(t, card)).map((r) => r.playerId)).toEqual([lindor]);
+  });
+});

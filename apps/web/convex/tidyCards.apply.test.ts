@@ -667,6 +667,52 @@ describe("applySetNameToTitles — the three title cases", () => {
     expect((await card(t, s.generated))!.listingTitle?.startsWith(SHORT)).toBe(true);
   });
 
+  test("from the walk (regenerateListing): every title is rebuilt, a hand edit included, open card now and the rest by the pages", async () => {
+    const t = newT();
+    const s = await setup(t);
+    const walk = (cardId = s.open) =>
+      t.withIdentity(ADMIN).mutation(api.tidyCards.applySetNameToTitles, {
+        leafId: s.w.base,
+        cardId,
+        listingShortName: SHORT,
+        regenerateListing: true,
+      });
+    // The operator is standing on a card with a hand-typed title that shows no
+    // "Left out": without the flag it is kept, with it the generator's wins.
+    const typed = (await card(t, s.otherEdit))!.listingTitle;
+    expect(await walk(s.otherEdit)).toEqual({ openCardRetitled: true, scheduled: true });
+    const open = (await card(t, s.otherEdit))!;
+    expect(open.listingTitle).not.toBe(typed);
+    expect(open.listingTitle?.startsWith(SHORT)).toBe(true);
+    expect(open.listingTitle).toContain("Bo Jackson");
+    // The pages carry the flag to the other cards.
+    const [chain] = await chains(t);
+    expect(chain.regenerateListing).toBe(true);
+    await drainScheduled(t);
+    // A "Left out" hand edit is rebuilt whole, not swapped word for word.
+    const left = (await card(t, s.leftOut))!;
+    expect(left.listingTitle).not.toBe(`${SHORT} Jackson #3`);
+    expect(left.listingTitle?.startsWith(SHORT)).toBe(true);
+    expect(left.listingTitle).toContain("Bo Jackson");
+    expect((await card(t, s.generated))!.listingTitle?.startsWith(SHORT)).toBe(true);
+  });
+
+  test("without the flag the hand edits stay as typed (NEO-637), the open card's included", async () => {
+    const t = newT();
+    const s = await setup(t);
+    const typed = (await card(t, s.otherEdit))!.listingTitle;
+    const out = await apply(t, s, SHORT, s.otherEdit);
+    // Nothing for the open card to rebuild: its hand edit is kept, the leaf is
+    // still renamed and the pages still run (without the flag).
+    expect(out.openCardRetitled).toBe(false);
+    expect((await card(t, s.otherEdit))!.listingTitle).toBe(typed);
+    const [chain] = await chains(t);
+    expect(chain.regenerateListing).toBeUndefined();
+    await drainScheduled(t);
+    expect((await card(t, s.otherEdit))!.listingTitle).toBe(typed);
+    expect((await card(t, s.leftOut))!.listingTitle).toBe(`${SHORT} Jackson #3`);
+  });
+
   test("a second set name swaps the first one out of a hand edit again", async () => {
     const t = newT();
     const s = await setup(t);
