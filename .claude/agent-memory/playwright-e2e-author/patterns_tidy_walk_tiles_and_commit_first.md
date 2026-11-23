@@ -50,6 +50,14 @@ that must not write a real set, there is no pre-save exit any more: give it its 
   div) first: focus lands on the card outside any control, where Enter = Save & next, Esc = Save
   for later. Prove "Enter held while pink" by the NEXT move: Skip right after it must land on the
   second card, not the third.
+- **Focus is one rule now (NEO-645, b815e359), on every card shown AND after an answer:** the
+  first control of the first pink tile, else Save & next; the header only holds it while a pink
+  tile's controls are still mounting. Assert it with `toBeFocused()` on arrival, after Skip, Back
+  and browser Back (no header click needed for Enter on a nothing-pink card: Save & next already
+  has focus). A no-team, no-career Team tile's first control is "Other team…"; a nameless card
+  opens in the "Card name" box. Still click the header before an Enter meant as Save & next on a
+  PINK card (focus is on a tile control there). Plant: swap `focusWithoutOpening(first)` or
+  `saveRef.current.focus()` in `placeFocus` for the header focus; each half goes red alone.
 - **A pasted `?tidy=` and the sitting.** The sitting (`passed`, sessionStorage per tab) survives a
   `page.goto`; a bad id falls back to the first card NOT passed. Press the pill (new sitting) before
   any deep-link proof, or the fallback lands past a skipped card and proves nothing.

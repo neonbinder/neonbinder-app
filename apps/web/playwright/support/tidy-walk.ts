@@ -9,9 +9,12 @@
  *   - the walk opens by itself after a commit that left a card needing a
  *     person, or from the checklist's "N need you" pill (`openTidyWalk`);
  *   - one card at a time: a card face, a header line ("#38b · Image Variation
- *     · Mike Trout"), a tally ("3 to fix · 1 to check") and tiles, each a
- *     `group` named by its heading (`tidyTile`): "Sources disagree", "Player",
- *     "Career", "Team", "Autograph", "Listing title", "More about this card";
+ *     · Mike Trout"; no tally under it, NEO-645) and tiles, each a `group`
+ *     named by its heading (`tidyTile`): "Sources disagree", "Player", "Card
+ *     name", "Career", "Team", "Autograph", "Listing title", "More about this
+ *     card";
+ *   - focus, on every card shown and after a tile answer: the first control of
+ *     the first pink tile, else "Save & next (Enter)";
  *   - a tile's level is in its accessible DESCRIPTION, not its colour: "To fix"
  *     (pink, holds Save & next), "To check" (blue), "Waiting" (a skeleton), none
  *     (plain);

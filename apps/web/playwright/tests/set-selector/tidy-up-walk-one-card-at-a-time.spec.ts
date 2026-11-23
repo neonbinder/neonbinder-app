@@ -1,7 +1,7 @@
 // R1 - ONE feature (NEO-645): Tidy Up walks a checklist ONE CARD AT A TIME.
-// Each card shows its header ("#<n> · <name>"), a blue "1 to check" tally when
-// something is worth a check (a pink card's "to fix" count is the footer's status
-// line, NEO-645 C2), and the header says how many cards are left. The footer moves:
+// Each card shows its header ("#<n> · <name>") and no tally under it (a pink
+// card's "to fix" count is the footer's status line, NEO-645 C2; a blue tile says
+// "To check" itself), and the header says how many cards are left. The footer moves:
 //   * Save & next (Enter) is held while anything on the card is pink, and the
 //     status line says why ("1 to fix before this card can save. ...");
 //   * Save for later (Esc) closes the walk and writes nothing;
@@ -29,9 +29,16 @@
 // #2, which it could not if Enter had already moved the walk on. Every
 // negative (`toHaveCount(0)`, `toBeHidden`) sits beside a positive.
 //
-// Keys: the walk puts focus on the card's header as each card opens; after a
-// tile answer the spec clicks the header line (a mouse user's way back to the
-// card) so Enter and Escape reach the card, not a tile's control.
+// Focus (NEO-645, Jason 2026-11-23: "The focus should start with the first Error
+// and if there are no errors then focus should be on the green next button."):
+// whatever puts a card on screen (opening the walk, Skip, Save & next, Back, a
+// pasted link) and after a tile answer, focus is on the first control of the
+// first pink tile; with nothing pink, on "Save & next (Enter)". Here the pink
+// tile is Team, whose first control on a card with no team and no career is
+// "Other team…". After "No team on this card" focus is on Save & next, so Enter
+// there saves and moves on. Where the spec needs Enter or Escape to reach the
+// card and not the focused control, it clicks the header line first (a mouse
+// user's way back to the card).
 //
 // Fixture arithmetic for #3: a card's own name is always in its title (NEO-645;
 // "WalkC<token>" is no player's and no placeholder, and it is never cut, like a
@@ -106,6 +113,9 @@ test(
       page.getByRole("img", { name: new RegExp(`^Card ${escapeRe(n)}(, .*)? (needs attention|is worth a check): `) });
     const walk = tidyWalk(page);
     const title = tidyUpName({ year: "2024", set });
+    // The focus rule's two landings: the pink Team tile's first control, else Save & next.
+    const firstPinkControl = tidyTile(page, "Team").getByRole("button", { name: "Other team…", exact: true });
+    const saveAndNextButton = tidyFooterButton(page, "saveAndNext");
 
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
@@ -142,6 +152,8 @@ test(
     );
     // The first card of a sitting has nothing before it.
     await expect(tidyFooterButton(page, "back")).toHaveAttribute("aria-disabled", "true");
+    // Focus: opening on a pink card lands on the first pink control, not the header or Save & next.
+    await expect(firstPinkControl, "the walk opened with focus on the first pink control").toBeFocused();
     const idA = tidyParam(page);
     expect(idA, "the walk's position is in the address").not.toBe("");
     await expectAccessible(page, { within: walk, label: "Tidy Up walk on a card with something to fix" });
@@ -154,6 +166,7 @@ test(
     await expect(tidyCardHeader(page, header(cardB))).toBeVisible();
     await expectCardsLeft(page, 2);
     await expect(tidyFooterButton(page, "back", { usable: true })).toBeVisible();
+    await expect(firstPinkControl, "Skip landed on a pink card: focus on its first pink control").toBeFocused();
     const idB = tidyParam(page);
     expect(idB).not.toBe(idA);
 
@@ -201,13 +214,18 @@ test(
     await expect(pinkTile(page, "Team")).toHaveCount(0);
     await expect(mustFixLine(page)).toHaveCount(0);
     await expect(tidyFooterButton(page, "saveAndNext", { usable: true })).toBeVisible();
-    await tidyCardHeader(page, header(cardB)).click();
+    // The answer left nothing pink, so focus went on to Save & next: Enter there saves and moves on.
+    await expect(saveAndNextButton, "after the answer, focus is on Save & next").toBeFocused();
     await page.keyboard.press("Enter");
     await expect(tidyCardHeader(page, header(cardC))).toBeVisible();
     await expectCardSettled(page);
     // #3 is blue: something to check, nothing to fix, so Save & next is not held.
-    await expect(walk.getByText("1 to check", { exact: true })).toBeVisible();
     await expect(tidyTile(page, "Listing title")).toHaveAccessibleDescription("To check");
+    // No tally under the header (NEO-645): the tile's own "To check" is the only place it is said.
+    await expect(tidyCardHeader(page, header(cardC))).toBeVisible();
+    await expect(walk.getByText(/^[0-9]+ to check$/)).toHaveCount(0);
+    // Focus: a card with nothing pink lands on Save & next.
+    await expect(saveAndNextButton, "a card with nothing pink opens with focus on Save & next").toBeFocused();
     await expect(tidyFooterButton(page, "saveAndNext", { usable: true })).toBeVisible();
     await expect(mustFixLine(page)).toHaveCount(0);
     await expectCardsLeft(page, 1);
@@ -217,11 +235,14 @@ test(
     await page.goBack();
     await expect(tidyCardHeader(page, header(cardB))).toBeVisible();
     await expect(page).toHaveURL(new RegExp(`[?&]tidy=${escapeRe(idB)}(&|$)`));
+    // #2 is answered, nothing pink: the browser's Back lands focus on Save & next.
+    await expect(saveAndNextButton, "Back to a card with nothing pink: focus on Save & next").toBeFocused();
     await tidyFooterButton(page, "back", { usable: true }).click();
     await expect(tidyCardHeader(page, header(cardA))).toBeVisible();
     await expect(page).toHaveURL(new RegExp(`[?&]tidy=${escapeRe(idA)}(&|$)`));
     // #1 is still pink (Back is no answer); skipping it again goes past the answered #2.
     await expect(pinkTile(page, "Team")).toHaveCount(1);
+    await expect(firstPinkControl, "Back to a pink card: focus on its first pink control").toBeFocused();
     await skipCard(page);
     await expect(tidyCardHeader(page, header(cardC))).toBeVisible();
 

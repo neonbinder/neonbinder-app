@@ -10,16 +10,20 @@
 //   1. A two-row checklist is pasted and synced (checklist-only: no Match Cards). The walk opens by
 //      itself with ONE card left, #3 ("#3 · Card #3"): its only pink tile is Card name, the footer
 //      says "1 to fix…" and Save & next is held. The pill reads "1 needs you, 1 to fix": #4, the Team
-//      Card, needs nothing. The listing title has #3 and no "Checklist".
+//      Card, needs nothing. The listing title has #3 and no "Checklist"; its counter is a plain
+//      "N/80" with no "may clip in search" warning (NEO-645). Focus opens in the Card name box
+//      (the first control of the first pink tile; Jason, 2026-11-23: "The focus should start with
+//      the first Error").
 //      Axe, light and dark, on the plain pink tile.
 //   2. "Save name" with the box empty is refused ("Type what this card is, like Checklist or Team
 //      Card."), the box marked invalid and described by the refusal, and focus is back in the box
 //      (the button took it); typing clears the refusal; "Card #3" + Enter is refused the same way,
 //      and Enter saved in place (the walk is still on #3). Axe, light and dark.
-//   3. "Checklist" + Save name: the Card name tile is gone, the header reads "#3 · Checklist", nothing
-//      is pink, and the Listing title tile shows "…Checklist… #3". Save & next reaches the end screen
-//      ("1 card fixed, 0 skipped. Totally rad."). Back returns to #3, still answered; Forward to the
-//      end; Done.
+//   3. "Checklist" + Enter in the box: it saves in place (the walk is still on #3), the Card name tile
+//      is gone, the header reads "#3 · Checklist", nothing is pink, focus is on Save & next ("if there
+//      are no errors then focus should be on the green next button"), and the Listing title tile
+//      shows "…Checklist… #3". Save & next reaches the end screen ("1 card fixed, 0 skipped. Totally
+//      rad."). Back returns to #3, still answered, focus on Save & next; Forward to the end; Done.
 //   4. Read back from the stored cards: no pill, #3's drawer holds the name Checklist and a title
 //      carrying it, #4's the name Team Card and a title carrying it.
 //
@@ -106,6 +110,11 @@ test(
     await expect(listingTitle.getByText(/#3\b/)).toBeVisible();
     await expect(listingTitle.getByText(new RegExp(`\\b${ANSWER}\\b`))).toHaveCount(0);
     await expect(nameBox, "nothing refused yet, so the box points at no alert").toHaveAccessibleDescription("");
+    // Focus: the card opened on its one pink tile, so the operator is in the Card name box.
+    await expect(nameBox, "the walk opened with focus in the Card name box").toBeFocused();
+    // The counter is a plain N/80: no "may clip in search" band under the cap (NEO-645).
+    await expect(listingTitle.getByText(/^[0-9]+\/80$/)).toBeVisible();
+    await expect(listingTitle.getByText(/may clip/i)).toHaveCount(0);
     await expectAccessible(page, { within: walk, label: "Tidy Up walk, a pink Card name tile before any answer" });
 
     // ── STEP 2: a blank answer, then the placeholder itself, are refused ──
@@ -128,12 +137,18 @@ test(
     await expectAccessible(page, { within: walk, label: "Tidy Up walk, a pink Card name tile refusing a placeholder name" });
 
     // ── STEP 3: a real name clears the tile and goes into the listing title ──
+    // Enter in the box is Save name: it saves in place, and the walk does not move on.
+    const urlOnCard = page.url();
     await nameBox.fill(ANSWER);
-    await saveName.click();
+    await nameBox.press("Enter");
     await expect(cardName, "the name answered the card, so the tile is gone").toHaveCount(0);
     await expect(tidyCardHeader(page, `#3 · ${ANSWER}`), "the card is called what the operator typed").toBeVisible();
+    await expect(page, "Enter saved in place: the walk is still on #3").toHaveURL(urlOnCard);
+    await expect(tidyFooterButton(page, "done"), "not the end screen").toHaveCount(0);
     await expect(mustFixLine(page)).toHaveCount(0);
     await expect(saveUsable, "nothing on the card is pink").toBeVisible();
+    // Focus: nothing pink left, so it went on to Save & next.
+    await expect(saveUsable, "with nothing pink, focus is on Save & next").toBeFocused();
     // Rebuilt with the name after the levels and before the number (NEO-645 rule 4).
     await expect(listingTitle.getByText(TITLED(ANSWER))).toBeVisible();
     await saveAndNext(page);
@@ -145,6 +160,7 @@ test(
     await expectCardSettled(page);
     await expect(cardName).toHaveCount(0);
     await expect(listingTitle.getByText(TITLED(ANSWER))).toBeVisible();
+    await expect(saveUsable, "Back to a card with nothing pink: focus on Save & next").toBeFocused();
     await page.goForward();
     await expect(tidyFooterButton(page, "done"), "Forward returned to the end screen").toBeVisible();
     await finishTidyWalk(page);
