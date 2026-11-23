@@ -1,10 +1,9 @@
 /**
  * NEO-645 / NEO-569 — the career verdict, with the set's leagues in it.
  *
- * `teamFill.careerTeamVerdict` is the one rule every team fill reads: the Team
- * tile's chips (`cardChecklist.suggestedTeamsForCard`), the commit's fill
- * (`selectorOptions` chunk), the answer-time fill (`teamFillOnAnswer`) and the
- * guarded Apply-to-all (`tidyCards.cardTakesTeamFill`). On main the same rule
+ * `teamFill.careerTeamVerdict` is the one rule every team fill reads: the
+ * commit's fill (`selectorOptions` chunk) and the answer-time fill
+ * (`teamFillOnAnswer`). On main the same rule
  * ran inside `teamSuggestionsForPreview` with two inputs the walk's callers had
  * dropped:
  *

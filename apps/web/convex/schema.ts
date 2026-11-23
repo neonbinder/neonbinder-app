@@ -1368,9 +1368,6 @@ export const publishedChecklistStoredRowValidator = v.object({
   // control characters (`checkPublishedChecklist`). Becomes the variation
   // name of a card created from the row.
   variationName: v.optional(v.string()),
-  // NEO-645 (S3) — a checklist card's printed subject ("Checklist"): the
-  // card's own name when no marketplace card pairs with the row.
-  subject: v.optional(v.string()),
 });
 /** NEO-496 — a publisher checklist's life: uploading → ready → retired, or uploading → retired. */
 export const publishedChecklistStatusValidator = v.union(
@@ -1532,10 +1529,9 @@ export const sourceKeyValidator = v.union(
  * value, Acuña and Acuna are one value; those are never stored).
  *
  * While `chosen` is absent the field holds nothing: no links and no pending
- * names, which is what keeps the losing side out of the walk. `chosen.by` is
- * "nb" when NB's own rows decided (exactly one value is already in NB), and
- * "operator" when a person picked; `typed` marks a value the operator typed
- * rather than picked.
+ * names, which is what keeps the losing side out of the walk. NB never picks a
+ * side, so `chosen.by` is always "operator" (a person picked); `typed` marks a
+ * value the operator typed rather than picked.
  *
  * Bounds, enforced by the writer (the validator cannot): at most 3 values per
  * field, at most MAX_CARD_PLAYERS (20) / MAX_CARD_TEAMS (8) names per value,
@@ -1555,7 +1551,7 @@ export const sourceDisagreementValidator = v.object({
   chosen: v.optional(
     v.object({
       value: v.array(v.string()),
-      by: v.union(v.literal("nb"), v.literal("operator")),
+      by: v.literal("operator"),
       typed: v.optional(v.literal(true)),
     }),
   ),
@@ -1732,12 +1728,6 @@ export const tidyNameAnswerValidator = v.union(
   v.object({
     kind: v.literal("notEntity"),
     by: v.union(v.literal("operator"), v.literal("auto")),
-    /**
-     * NEO-645 (S3a): why NB ruled the name out itself. "sameAsTeam": a card
-     * prints the name as its player AND as its team (a team card), so it is the
-     * team's name and not a person's. Changeable on the tile like any answer.
-     */
-    autoReason: v.optional(v.literal("sameAsTeam")),
   }),
 );
 

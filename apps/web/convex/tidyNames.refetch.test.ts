@@ -352,7 +352,7 @@ describe("resetForRefetch (the step itself)", () => {
         sportId: w.sportId,
         status: "ready",
         enrichment: { wikidataId: "Q2" },
-        answer: { kind: "notEntity", by: "auto", autoReason: "sameAsTeam" },
+        answer: { kind: "notEntity", by: "auto" },
       });
     });
     await t.mutation(internal.tidyNames.resetForRefetch, { scopeId: w.variantTypeId, sportId: w.sportId });

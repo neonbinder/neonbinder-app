@@ -598,7 +598,7 @@ describe("getCardChecklist — the strict returns carry the four Tidy Up fields 
               { value: ["Jackson Merril"], sources: ["bsc", "sportlots"] },
               { value: ["Jackson Merrill"], sources: ["checklist"] },
             ],
-            chosen: { value: ["Jackson Merrill"], by: "nb" },
+            chosen: { value: ["Jackson Merrill"], by: "operator" },
           },
           {
             field: "teams",

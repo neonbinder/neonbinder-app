@@ -2039,37 +2039,6 @@ describe("NEO-335: the wizard's team suggestions are admin-gated", () => {
 });
 
 /**
- * NEO-645 — the Tidy Up walk's team chips read `cardChecklist.suggestedTeamsForCard`
- * (a card's players' careers). Admin-only; the answers (and a second pin of the
- * gate) live in `cardChecklist.noTeam.test.ts`, "is admin-gated". Pinned here
- * too, so the decision sits beside every other one.
- */
-describe("NEO-645: the card's team suggestions are admin-gated", () => {
-  test("cardChecklist.suggestedTeamsForCard refuses a signed-out caller and a non-admin, and answers an admin", async () => {
-    const t = convexTest(schema, modules);
-    const sportId = await seedSport(t);
-    const cardId = await t.run(async (ctx) =>
-      insertTestCard(ctx, {
-        selectorOptionId: sportId,
-        cardNumber: "1",
-        cardName: "Card",
-        platformData: {},
-        sortOrder: 0,
-        lastUpdated: 0,
-      }),
-    );
-    const args = { cardId };
-    await expect(t.query(api.cardChecklist.suggestedTeamsForCard, args)).rejects.toThrow();
-    await expect(
-      t.withIdentity(SIGNED_IN).query(api.cardChecklist.suggestedTeamsForCard, args),
-    ).rejects.toThrow();
-    await expect(
-      t.withIdentity(ADMIN).query(api.cardChecklist.suggestedTeamsForCard, args),
-    ).resolves.toEqual([]);
-  });
-});
-
-/**
  * NEO-345 — the leaf's autograph format. Public because the checklist header
  * prompt and the set attributes panel call it; admin-only like every other
  * set-side edit, and it schedules a cascade over the leaf's cards, so the

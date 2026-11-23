@@ -188,7 +188,7 @@ export type AttentionCardRow = {
 export type TidyDisagreement = {
   field: "players" | "teams";
   values: ReadonlyArray<{ value: readonly string[]; sources: readonly string[] }>;
-  chosen?: { value: readonly string[]; by: "nb" | "operator"; typed?: true };
+  chosen?: { value: readonly string[]; by: "operator"; typed?: true };
 };
 
 /**
@@ -500,19 +500,6 @@ export function tidyReviewedKeyCut(listingTitle: string): string {
 export function tidyReviewedKeyVariation(cardVariation: string): string {
   return `variation:${tidyHash(cardVariation.trim())}`;
 }
-/** `picked:<field>:<hash(value)>` — the value NB chose for a disagreement. */
-export function tidyReviewedKeyPicked(
-  field: "players" | "teams",
-  value: readonly string[],
-): string {
-  return `picked:${field}:${tidyHash(value.join("\u001f"))}`;
-}
-
-/** `noPlayer:<hash(title)>` — the title with no player in it; a new title re-raises it. */
-export function tidyReviewedKeyNoPlayer(listingTitle: string): string {
-  return `noPlayer:${tidyHash(listingTitle)}`;
-}
-
 /**
  * NEO-645 — everything this card has to say, before `tidyReviewed` is applied.
  * Order is the tiles' order: sources (2), players (3), career (4), team (5),

@@ -101,7 +101,6 @@ vi.mock("../../convex/_generated/api", () => ({
       findOrCreate: "players.findOrCreate",
     },
     cardChecklist: {
-      suggestedTeamsForCard: "cardChecklist.suggestedTeamsForCard",
       confirmCardNoTeam: "cardChecklist.confirmCardNoTeam",
     },
     // NEO-345: the header's "how are these autographs signed?" prompt.
@@ -339,9 +338,6 @@ vi.mock("convex/react", () => ({
     if (ref === "getAncestorChain") return state.ancestorChain;
     if (ref === "getReadyCandidates") return state.liveCandidates;
     if (ref === "getPausedPlatforms") return state.paused;
-    // NEO-102: the walker's fixer reads suggestions per card; [] keeps it
-    // resolved-but-empty, which is the "no career history" shape.
-    if (ref === "cardChecklist.suggestedTeamsForCard") return [];
     if (ref === "teams.getManyByIds") return state.teams;
     // NEO-331: the picker's candidate pool arrives ranked, as `{ team, tier }`.
     if (ref === "teams.pickerCandidates") {

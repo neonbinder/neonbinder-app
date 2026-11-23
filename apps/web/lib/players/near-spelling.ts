@@ -1,7 +1,8 @@
 /**
- * NEO-645 (S2) — "Did you mean …": which players on file are a misspelling of a
- * printed name. Pure; the server query (`players.didYouMean`) supplies the
- * candidates and the ranking facts, this decides who counts as near.
+ * NEO-645 (S2) — which players on file are a misspelling of a printed name.
+ * Pure: the caller supplies the candidates (`players.nearSpelledPlayers`, read
+ * by `tidyNewPlayers`, and `tidyCameo`'s cameo offer), this decides who counts
+ * as near.
  *
  * A candidate is near when, under the shared name fold (`entityNameTokens`:
  * accents, case, punctuation):

@@ -559,8 +559,8 @@ export const keepCareerGap = mutation({
  *
  * ## Contract
  *
- * - `field` names a `sourceDisagreements` entry on the card with no `chosen`
- *   (or a `chosen.by: "nb"` one, which Change flips). `value` is one of the
+ * - `field` names a `sourceDisagreements` entry on the card, with or without
+ *   a `chosen` (Change picks again). `value` is one of the
  *   entry's `values`, or a typed value (`typed: true`, the "Type another"
  *   control; then it is cleansed with the shared name matcher and must not be
  *   empty). Names are capped at `MAX_PICK_NAMES` of at most

@@ -22,8 +22,6 @@ import {
   tidyReviewedKeyCareer,
   tidyReviewedKeyCareerGap,
   tidyReviewedKeyCut,
-  tidyReviewedKeyNoPlayer,
-  tidyReviewedKeyPicked,
   tidyReviewedKeyVariation,
   type AttentionCardRow,
 } from "./cardAttention";
@@ -517,7 +515,6 @@ describe("the key helpers", () => {
       ),
       tidyReviewedKeyCut(longName),
       tidyReviewedKeyVariation(longName),
-      tidyReviewedKeyPicked("players", [longName, longName, longName, longName]),
     ];
     for (const k of keys) {
       expect(k.length).toBeLessThanOrEqual(TIDY_REVIEWED_KEY_MAX_LENGTH);
@@ -531,15 +528,6 @@ describe("the key helpers", () => {
     // Pinned: the client and the server share this function; a change here
     // would silently un-see every stored review.
     expect(tidyHash("abc")).toBe("1dtlchkfkb1");
-  });
-
-  test("the picked key is order- and value-sensitive", () => {
-    expect(tidyReviewedKeyPicked("players", ["A", "B"])).not.toBe(
-      tidyReviewedKeyPicked("players", ["B", "A"]),
-    );
-    expect(tidyReviewedKeyPicked("players", ["A"])).not.toBe(
-      tidyReviewedKeyPicked("teams", ["A"]),
-    );
   });
 
   test("the cap matches the schema doc (16 keys of at most 64 characters)", () => {

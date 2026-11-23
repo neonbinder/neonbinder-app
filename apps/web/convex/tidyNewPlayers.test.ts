@@ -163,8 +163,8 @@ describe("newPlayerNames — who is on the list", () => {
       }],
       ["the operator ruled it out as not a player", (t, w) =>
         seedName(t, w, NAME, { over: { answer: { kind: "notEntity", by: "operator" } } })],
-      ["NB ruled it out itself (same as its team)", (t, w) =>
-        seedName(t, w, NAME, { over: { answer: { kind: "notEntity", by: "auto", autoReason: "sameAsTeam" } } })],
+      ["it carries an automatic \"not a player\" answer", (t, w) =>
+        seedName(t, w, NAME, { over: { answer: { kind: "notEntity", by: "auto" } } })],
       ["its lookup is still pending", (t, w) => seedName(t, w, NAME, { over: { status: "pending" } })],
       ["its lookup errored", (t, w) => seedName(t, w, NAME, { over: { status: "error" } })],
       ["nobody has asked Wikidata about it (a migrated row)", (t, w) =>
