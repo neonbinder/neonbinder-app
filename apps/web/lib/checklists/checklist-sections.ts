@@ -132,6 +132,8 @@ function withoutSubset(row: PublishedChecklistRow): ChecklistSectionRow {
   if (row.prospect) out.prospect = true;
   if (row.prospectClaimedTeams) out.prospectClaimedTeams = row.prospectClaimedTeams;
   if (row.variationName) out.variationName = row.variationName;
+  // NEO-645: the subject of a row with no player is the card's name.
+  if (row.cardName) out.cardName = row.cardName;
   return out;
 }
 

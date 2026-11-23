@@ -64,6 +64,7 @@ vi.mock("./tiles/PlayerTile", () => ({
     </section>
   ),
 }));
+vi.mock("./tiles/CardNameTile", () => ({ default: () => <div data-testid="tile-card-name" /> }));
 vi.mock("./tiles/CareerTile", () => ({ default: () => <div data-testid="tile-career" /> }));
 vi.mock("./tiles/TeamTile", async () => {
   const { useAnswered } = await import("./answered");
@@ -233,6 +234,7 @@ describe("opening", () => {
     expect(ids).toEqual([
       "tile-sources",
       "tile-player",
+      "tile-card-name",
       "tile-career",
       "tile-team",
       "tile-autograph",

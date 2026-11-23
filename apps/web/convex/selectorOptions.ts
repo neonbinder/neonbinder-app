@@ -365,6 +365,7 @@ import { normalizeEntityName, rosterCompareKey } from "../lib/entities/normalize
 // NEO-591: the one names-first pairing core, shared with the publisher
 // checklist matcher (lib/checklists/match-published-checklist.ts).
 import { pairNamesFirst } from "../lib/cards/pair-names-first";
+import { placeholderCardName } from "../lib/cards/unnamed-card";
 // NEO-236: the team name split. `teamFullName` composes location + nickname
 // for every name that leaves this file; `teamRowFields`/`findTeamByFullName`
 // are the ONE place a team row's identity fields are derived and looked up.
@@ -16406,6 +16407,18 @@ function rowVariationName(row: object): string | undefined {
   return trimmed ? trimmed.slice(0, MAX_LABEL_LENGTH) : undefined;
 }
 
+/**
+ * NEO-645 — the name a checklist row gives a card with no player: the subject it
+ * printed ("Checklist", "Team Card"), trimmed. Read structurally, like
+ * `rowVariationName`, so a row stored before the field reads as none.
+ */
+function rowCardName(row: object): string | undefined {
+  const name = (row as { cardName?: unknown }).cardName;
+  if (typeof name !== "string") return undefined;
+  const trimmed = name.trim();
+  return trimmed ? trimmed : undefined;
+}
+
 /** NEO-591 (variations) — the letters a minted variation number may take, in order. */
 const MINT_LETTERS = "bcdefghijklmnopqrstuvwxyz";
 
@@ -16641,7 +16654,12 @@ export function checklistOnlyCard(
   const number = row.number.trim();
   return {
     cardNumber: number,
-    cardName: players.length > 0 ? players.join(" / ") : `Card #${number || "NNO"}`,
+    // NEO-645: a card with no player is named for what the row printed
+    // ("Checklist", "Team Card"); NB's own placeholder only when it printed none.
+    cardName:
+      players.length > 0
+        ? players.join(" / ")
+        : (rowCardName(row) ?? placeholderCardName(number)),
     ...(players.length > 0 ? { players } : {}),
     ...(applied.answered && applied.teams
       ? { teams: applied.teams, teamLookup: "checklist" as const }

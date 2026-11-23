@@ -3542,18 +3542,21 @@ exports[`golden — CSV fixtures > 1984-football-topps-base.csv: leaf and set pa
       ],
     },
     {
+      "cardName": "Checklist 1-132 CL",
       "noTeam": true,
       "number": "394",
       "players": [],
       "teams": [],
     },
     {
+      "cardName": "Checklist 133-264 CL",
       "noTeam": true,
       "number": "395",
       "players": [],
       "teams": [],
     },
     {
+      "cardName": "Checklist 265-396 CL",
       "noTeam": true,
       "number": "396",
       "players": [],

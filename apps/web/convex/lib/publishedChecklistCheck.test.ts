@@ -67,3 +67,25 @@ describe("checkPublishedChecklist — names sent per row", () => {
     expect(performance.now() - started).toBeLessThan(500);
   });
 });
+
+describe("checkPublishedChecklist — NEO-645 the subject a row with no player printed is the card's name", () => {
+  test("is kept, cleansed, on a row with no player; and never on a row with one", () => {
+    const checked = checkPublishedChecklist({
+      rows: [
+        { number: "1", players: [], teams: [], cardName: "Team\u200b  Ca\\rd" },
+        { number: "2", players: ["Mike Trout"], teams: [], cardName: "Team Card" },
+        { number: "3", players: [], teams: [] },
+        { number: "4", players: [], teams: [], cardName: "   " },
+      ],
+    })!;
+    expect(checked.rows.map((r) => r.cardName)).toEqual(["Team Card", undefined, undefined, undefined]);
+  });
+
+  test("a name over a player name's bound refuses the checklist, named by row position", () => {
+    expect(() =>
+      checkPublishedChecklist({
+        rows: [{ number: "1", players: [], teams: [], cardName: "x".repeat(121) }],
+      }),
+    ).toThrow(/card name over 120/);
+  });
+});

@@ -115,6 +115,16 @@ export type PublishedChecklistRow = {
   players: string[];
   teams: string[];
   /**
+   * NEO-645 (Jason, 2026-11-23: "A name for the card should be required, even
+   * if not a player"): the subject the line printed when it names no person
+   * ("Checklist", "Checklist 1-100", "Team Card", "Header Card", "Team
+   * Leaders", "Mets TC"), as printed, cleaned like a name. Such a subject is
+   * never a player, so `players` stays empty and nothing pairs by it; it is
+   * the card's own name (`cardChecklist.cardName`) when the row makes a card.
+   * Set only when `players` is empty. Never a marketplace value.
+   */
+  cardName?: string;
+  /**
    * The checklist prints no number on this card ("NNO"); `number` is "NNO".
    * The matcher pairs such a row by player only.
    */
@@ -603,6 +613,16 @@ function isNotAPerson(name: string): boolean {
   return NOT_A_PERSON_SHAPES.some((shape) => shape.test(trimmed));
 }
 
+/**
+ * The subject a cell prints when it names no person: the cell's own words,
+ * cleaned as a name is, or "" when the cell holds a person or nothing. The
+ * card's name when the card has no player (NEO-645).
+ */
+function notAPersonSubject(cell: string): string {
+  const subject = subjectOf(cell);
+  return subject !== "" && isNotAPerson(subject) ? subject : "";
+}
+
 /** At most one past `MAX_CARD_PLAYERS`: enough for `overLimit` to skip the row. */
 function playersFrom(cell: string): string[] {
   return splitNames(cleanNamePart(cell), true, (name) => !isNotAPerson(name), MAX_CARD_PLAYERS);
@@ -865,6 +885,9 @@ function overLimit(row: PublishedChecklistRow): string | null {
   if (row.teams.some((t) => t.length > PUBLISHED_CHECKLIST_MAX_NAME)) {
     return "A team name is too long";
   }
+  if (row.cardName !== undefined && row.cardName.length > PUBLISHED_CHECKLIST_MAX_NAME) {
+    return "A card name is too long";
+  }
   if (row.subset !== undefined && row.subset.length > PUBLISHED_CHECKLIST_MAX_NAME) {
     return "The section name is too long";
   }
@@ -1023,18 +1046,17 @@ function parseLine(
   };
   const claims = teamClaims(teams, read.noTeam, read.prospect, read.claimed);
   if (claims.conflict) return { reason: NO_TEAM_AND_A_TEAM };
-  if (
-    players.length === 0 &&
-    teams.length === 0 &&
-    !claims.noTeam &&
-    !isNotAPerson(subjectOf(playerPart))
-  ) {
+  // A line that names no person but prints a subject ("Checklist", "Team
+  // Card") keeps it as the card's name (NEO-645).
+  const subject = players.length === 0 ? notAPersonSubject(playerPart) : "";
+  if (players.length === 0 && teams.length === 0 && !claims.noTeam && subject === "") {
     return { reason: "No player or team after the number" };
   }
   return {
     number,
     players,
     teams,
+    ...(subject !== "" ? { cardName: subject } : {}),
     ...(noNumber ? { noNumber: true as const } : {}),
     ...(claims.noTeam ? { noTeam: true as const } : {}),
     ...claims.fields,
@@ -1319,7 +1341,8 @@ function rowFromColumns(
   }
   let numberCell = "";
   let subset = "";
-  let notAPerson = false;
+  // The first subject a name cell printed that is not a person (NEO-645).
+  let notAPerson = "";
   let noTeam = false;
   let prospect = false;
   const claimedTeams: string[] = [];
@@ -1347,8 +1370,8 @@ function rowFromColumns(
       // Read only when no player column names a person (a cell that names
       // one makes `players` non-empty, and the flag is then never read), so
       // a long cell is not split a second time.
-      if (named.length === 0 && cell.trim() !== "" && isNotAPerson(subjectOf(cell))) {
-        notAPerson = true;
+      if (named.length === 0 && cell.trim() !== "" && notAPerson === "") {
+        notAPerson = notAPersonSubject(cell);
       }
     } else if (column === "lastName") {
       lastNames.push(cell);
@@ -1367,7 +1390,7 @@ function rowFromColumns(
   for (let i = 0; i < Math.max(lastNames.length, firstNames.length); i++) {
     const name = personName(firstNames[i] ?? "", lastNames[i] ?? "");
     if (name === "") continue;
-    if (isNotAPerson(name)) notAPerson = true;
+    if (isNotAPerson(name)) notAPerson ||= name;
     else players.push(name);
   }
   if (numberCell !== "" && readsAsTitle(numberCell, setYear)) return { reason: LOOKS_LIKE_A_TITLE };
@@ -1377,7 +1400,7 @@ function rowFromColumns(
   // "No Team" beside a team, in one cell or across two team columns.
   const claims = teamClaims(teams, noTeam, prospect, claimedTeams);
   if (claims.conflict) return { reason: NO_TEAM_AND_A_TEAM };
-  if (players.length === 0 && teams.length === 0 && !notAPerson && !claims.noTeam) {
+  if (players.length === 0 && teams.length === 0 && notAPerson === "" && !claims.noTeam) {
     return { reason: "No player or team on this line" };
   }
   return {
@@ -1385,6 +1408,9 @@ function rowFromColumns(
       number,
       players,
       teams,
+      // A card with a player is named for the player; the subject stands in
+      // only where there is none (NEO-645).
+      ...(players.length === 0 && notAPerson !== "" ? { cardName: notAPerson } : {}),
       ...(noNumber ? { noNumber: true as const } : {}),
       ...(claims.noTeam ? { noTeam: true as const } : {}),
       ...claims.fields,

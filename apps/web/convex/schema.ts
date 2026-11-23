@@ -1368,6 +1368,12 @@ export const publishedChecklistStoredRowValidator = v.object({
   // control characters (`checkPublishedChecklist`). Becomes the variation
   // name of a card created from the row.
   variationName: v.optional(v.string()),
+  // NEO-645 — the subject a row printed that names no person ("Checklist",
+  // "Team Card", "Mets TC"), as printed and cleansed, for a row with no
+  // players. The card made from the row is named by it. Never a player and
+  // never read for pairing. At most `MAX_PLAYER_NAME_LENGTH` characters
+  // (`checkPublishedChecklist`).
+  cardName: v.optional(v.string()),
 });
 /** NEO-496 — a publisher checklist's life: uploading → ready → retired, or uploading → retired. */
 export const publishedChecklistStatusValidator = v.union(

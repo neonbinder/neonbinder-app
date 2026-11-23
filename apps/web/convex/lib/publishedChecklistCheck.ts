@@ -60,6 +60,10 @@ export const publishedChecklistRowValidator = v.object({
   // variation"). Control characters are stripped and a name over
   // `MAX_VARIATION_NAME` is refused by the re-check below.
   variationName: v.optional(v.string()),
+  // NEO-645 — the subject of a row that names no person ("Checklist", "Team
+  // Card"): the card's own name. Cleansed and bounded like a player name by the
+  // re-check below; kept only on a row with no players.
+  cardName: v.optional(v.string()),
   // The parser's subset label (a file's "set" / "insert" column). The
   // client chooses rows by it; the fetch never reads it and drops it in
   // `checkPublishedChecklist`. Accepted so a row is sent as parsed.
@@ -161,6 +165,13 @@ export function checkPublishedChecklist(
         `${where} has a variation name over ${MAX_VARIATION_NAME} characters.`,
       );
     }
+    // NEO-645 — the card's own name, for a row with no player. Cleansed as a
+    // name is (the parser already did; this is the backstop) and held to a
+    // name's bound.
+    const cardName = cleanseExternalName(row.cardName ?? "");
+    if (cardName.length > MAX_PLAYER_NAME_LENGTH) {
+      throw new ConvexError(`${where} has a card name over ${MAX_PLAYER_NAME_LENGTH} characters.`);
+    }
     const clean = (names: string[], max: number, unit: string) => {
       if (names.length > MAX_PUBLISHED_ROW_NAMES) {
         throw new ConvexError(
@@ -229,10 +240,14 @@ export function checkPublishedChecklist(
     if (noTeam && teams.length > 0) {
       throw new ConvexError(`${where} says No Team and names a team.`);
     }
+    const players = clean(row.players, MAX_CARD_PLAYERS, "player");
     return {
       number,
-      players: clean(row.players, MAX_CARD_PLAYERS, "player"),
+      players,
       teams,
+      // A card with a player is named for the player; the subject stands in
+      // only where there is none.
+      ...(cardName && players.length === 0 ? { cardName } : {}),
       ...(rowHasNoNumber({ number, noNumber: row.noNumber }) ? { noNumber: true } : {}),
       ...(noTeam ? { noTeam: true } : {}),
       ...(prospect ? { prospect: true } : {}),

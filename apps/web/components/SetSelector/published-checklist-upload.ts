@@ -76,6 +76,8 @@ function rowBytes(row: ChecklistSectionRow): number {
     // NEO-591 (variations): the checklist's note for a variation row is stored
     // too, so it counts toward the call's byte limit.
     ...(row.variationName ? { variationName: row.variationName } : {}),
+    // NEO-645: so is the subject of a row with no player (the card's name).
+    ...(row.cardName ? { cardName: row.cardName } : {}),
   });
 }
 

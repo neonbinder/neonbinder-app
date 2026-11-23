@@ -68,6 +68,7 @@ export function needsTidyUp(row: AttentionCardRow): boolean {
 export const TIDY_ATTENTION_LABELS: Record<TidyAttentionKind, string> = {
   sourcesDisagree: "the sources disagree",
   playerName: "player name not yet linked",
+  needsName: "needs a name",
   teamName: "team name not yet linked",
   noTeam: "no team on this card yet",
   autograph: "autograph format not set",

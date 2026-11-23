@@ -49,7 +49,10 @@ describe("parsePublishedChecklist — the published line format", () => {
 
   it("reads a Team Card as a team row with no player", () => {
     const out = parsePublishedChecklist("34 Team Card - Kansas City Royals");
-    expect(out.rows).toEqual([{ number: "34", players: [], teams: ["Kansas City Royals"] }]);
+    // NEO-645: the subject is the card's name, never a player.
+    expect(out.rows).toEqual([
+      { number: "34", players: [], teams: ["Kansas City Royals"], cardName: "Team Card" },
+    ]);
   });
 
   it("drops RC markers whether bare or bracketed, but keeps a name that merely contains rc", () => {
@@ -681,8 +684,9 @@ describe("parsePublishedChecklist — collector review S2: insert codes and NNO"
     expect(lines.skipped).toEqual([]);
     expect(lines.rows).toEqual([
       { number: "NNO", players: ["Mike Trout"], teams: ["Los Angeles Angels"], noNumber: true },
-      // Not a person: kept with no player, like a numbered header card.
-      { number: "NNO", players: [], teams: [], noNumber: true },
+      // Not a person: kept with no player, like a numbered header card, and
+      // named for what it printed (NEO-645).
+      { number: "NNO", players: [], teams: [], noNumber: true, cardName: "Header Card" },
       { number: "NNO", players: ["Shohei Ohtani"], teams: ["Los Angeles Dodgers"], noNumber: true },
     ]);
     const csv = parsePublishedChecklist("#,Player,Team\nNNO,Mike Trout,Los Angeles Angels\n7,Juan Soto,New York Mets");
@@ -712,36 +716,57 @@ describe("parsePublishedChecklist — collector review S3: counts and subjects t
     ]);
   });
 
-  it("keeps the number of a checklist, team card, TC or team leaders row but names no player", () => {
-    const out = parsePublishedChecklist(
-      [
-        "1 Checklist 1-100",
-        "2 Kansas City Royals Team",
-        "3 Royals Team Card",
-        "4 Mets TC",
-        "5 Team Leaders",
-        "6 AL Team Leaders",
-        "7 Checklist",
-      ].join("\n"),
-    );
+  it("keeps the number of a checklist, team card, TC or team leaders row, names no player, and keeps the subject as the card's name", () => {
+    const subjects = [
+      "Checklist 1-100",
+      "Kansas City Royals Team",
+      "Royals Team Card",
+      "Mets TC",
+      "Team Leaders",
+      "AL Team Leaders",
+      "Checklist",
+    ];
+    const out = parsePublishedChecklist(subjects.map((subject, i) => `${i + 1} ${subject}`).join("\n"));
     expect(out.skipped).toEqual([]);
     expect(out.rows).toEqual(
-      ["1", "2", "3", "4", "5", "6", "7"].map((number) => ({ number, players: [], teams: [] })),
+      subjects.map((cardName, i) => ({ number: String(i + 1), players: [], teams: [], cardName })),
     );
   });
 
-  it("a not-a-person subject keeps the team after the dash, still with no player", () => {
+  it("a not-a-person subject keeps the team after the dash, still with no player, and names the card", () => {
     const out = parsePublishedChecklist("34 Royals Team Card - Kansas City Royals");
-    expect(out.rows).toEqual([{ number: "34", players: [], teams: ["Kansas City Royals"] }]);
+    expect(out.rows).toEqual([
+      { number: "34", players: [], teams: ["Kansas City Royals"], cardName: "Royals Team Card" },
+    ]);
   });
 
-  it("a not-a-person subject in a CSV player cell keeps the row with no player", () => {
+  it("a not-a-person subject in a CSV player cell keeps the row with no player and names the card", () => {
     const out = parsePublishedChecklist("#,Player,Team\n34,Mets TC,\n35,Checklist 1-100,");
     expect(out.skipped).toEqual([]);
     expect(out.rows).toEqual([
-      { number: "34", players: [], teams: [] },
-      { number: "35", players: [], teams: [] },
+      { number: "34", players: [], teams: [], cardName: "Mets TC" },
+      { number: "35", players: [], teams: [], cardName: "Checklist 1-100" },
     ]);
+  });
+
+  it("a not-a-person subject in Last Name / First Name columns names the card", () => {
+    const out = parsePublishedChecklist("No.\tLast Name\tFirst Name\n9\tChecklist\t\n10\tTrout\tMike");
+    expect(out.skipped).toEqual([]);
+    expect(out.rows).toEqual([
+      { number: "9", players: [], teams: [], cardName: "Checklist" },
+      { number: "10", players: ["Mike Trout"], teams: [] },
+    ]);
+  });
+
+  it("a card with a person on it takes no card name from a not-a-person part beside them", () => {
+    const out = parsePublishedChecklist("12 Team Card / Mike Trout - Los Angeles Angels");
+    expect(out.rows).toEqual([{ number: "12", players: ["Mike Trout"], teams: ["Los Angeles Angels"] }]);
+  });
+
+  it("a subject past the name limit skips the line (the server would refuse the checklist)", () => {
+    const out = parsePublishedChecklist(`15 Checklist ${"x".repeat(130)}`);
+    expect(out.rows).toEqual([]);
+    expect(out.skipped.map((s) => s.reason)).toEqual(["A card name is too long"]);
   });
 
   it("a person whose name merely contains 'team' or 'checklist' is kept", () => {

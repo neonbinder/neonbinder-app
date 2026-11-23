@@ -28,6 +28,9 @@
 // NEO-335: the title/aspect rules live in `listingInputs.ts`, which is as
 // browser-safe as this module (pure features only, no server imports).
 import { titleAttentionItems } from "./listingInputs";
+// NEO-645: "does this card have a name?" is one pure helper, read here and by the
+// checklist reader that mints the placeholder, so the two cannot disagree.
+import { hasCardName } from "../../lib/cards/unnamed-card";
 // NEO-645: the autograph rule reads NB's own vocabulary (attribute token and
 // format list). Both live in a module that is as browser-safe as this one.
 import { AUTOGRAPH_FORMATS, carriesAutographToken } from "./deriveCardFeatures";
@@ -176,6 +179,12 @@ export type AttentionCardRow = {
    * absent) does not.
    */
   features?: Readonly<Record<string, string>>;
+  /**
+   * NEO-645 — the card's own name, read only by `needsName`: a card with no
+   * player must carry one. Absent on a fixture that does not say (then nothing
+   * is raised); a stored row always has the field.
+   */
+  cardName?: string;
   /** NEO-645 — fields on which the sources still disagree. See the schema. */
   sourceDisagreements?: readonly TidyDisagreement[];
   /** NEO-645 — facts stored where they change. See the schema. */
@@ -432,6 +441,8 @@ export type TidyAttentionItem =
   // `tidyNames` row has candidates, so it is covered. A multi-player card with
   // one name linked is still pink while another is pending.
   | { level: "fix"; kind: "playerName"; names: string[] }
+  // NEO-645 (Jason, 2026-11-23): no player and no name. A card always has one.
+  | { level: "fix"; kind: "needsName" }
   // `pendingTeamNames` is not empty (flips NEO-208's "pending counts as answered").
   | { level: "fix"; kind: "teamName"; names: string[] }
   // No team, no pending team name, no No-team stamp, not awaiting the team
@@ -501,7 +512,7 @@ export function tidyReviewedKeyVariation(cardVariation: string): string {
 }
 /**
  * NEO-645 — everything this card has to say, before `tidyReviewed` is applied.
- * Order is the tiles' order: sources (2), players (3), career (4), team (5),
+ * Order is the tiles' order: sources (2), players (3), name (3b), career (4), team (5),
  * autograph (6), title (7).
  */
 function allTidyItems(row: AttentionCardRow): TidyAttentionItem[] {
@@ -522,6 +533,19 @@ function allTidyItems(row: AttentionCardRow): TidyAttentionItem[] {
   const pendingPlayers = (row.pendingPlayerNames ?? []).filter((n) => n.trim().length > 0);
   if (pendingPlayers.length > 0) {
     items.push({ level: "fix", kind: "playerName", names: [...pendingPlayers] });
+  }
+
+  // 3b — Name (Jason, 2026-11-23: "there should always be a name associated
+  // with the card"). A card with nobody on it, and nobody waiting to be, names
+  // itself: "Team Card", "Checklist", whatever it is. NB's own placeholder
+  // ("Card #3") is no name. Never keyed on a marketplace's wording.
+  if (
+    playerIds.length === 0 &&
+    pendingPlayers.length === 0 &&
+    typeof row.cardName === "string" &&
+    !hasCardName(row.cardName)
+  ) {
+    items.push({ level: "fix", kind: "needsName" });
   }
 
   // 4 — Career. Both read STORED facts; the entity must still be on the card

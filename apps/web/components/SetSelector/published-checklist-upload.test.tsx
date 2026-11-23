@@ -77,6 +77,22 @@ describe("planChecklistBatches", () => {
     expect(batch.sections[0].rows[1].variationName).toBe("Photo variation");
   });
 
+  test("a no-player row's card name (NEO-645) is counted in the call's bytes and goes out with its row", () => {
+    const plain = row(1);
+    const named: ChecklistSectionRow = { ...row(2), players: [], cardName: "Team Card" };
+    const [batch] = planChecklistBatches([section("A", [plain, named])]);
+    const withName = storedRowBytes({
+      number: named.number,
+      players: [],
+      teams: named.teams,
+      noNumber: true,
+      noTeam: true,
+      cardName: "Team Card",
+    });
+    expect(batch.byteSize).toBe(sizeOf(plain) + withName);
+    expect(batch.sections[0].rows[1].cardName).toBe("Team Card");
+  });
+
   test("small sections share one call, ordinals start at 0", () => {
     const a = section("A", rowsOf(2));
     const b = section("B", rowsOf(3), "AUTOGRAPH");

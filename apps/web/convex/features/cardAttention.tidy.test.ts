@@ -16,6 +16,7 @@ import {
   TIDY_CHECKS_MAX,
   TIDY_REVIEWED_MAX_KEYS,
   currentReviewKeys,
+  blocksParallelBuild,
   deriveCardAttention,
   teamFillOf,
   tidyHash,
@@ -412,6 +413,74 @@ describe("deriveCardAttention — blue", () => {
         tidyChecks: [{ kind: "teamFill", teamIds: ["t1"], reason: "otherCards" }],
       }).items,
     ).toEqual([]);
+  });
+});
+
+describe("deriveCardAttention — a card always has a name (Jason, 2026-11-23)", () => {
+  const NAMELESS: AttentionCardRow = {
+    platformData: {},
+    teamOnCardIds: ["t1"],
+    cardName: "Card #3",
+    listingTitle: "2026 Topps Chrome #3 Baseball",
+  };
+
+  test("a card with no player and only NB's placeholder name is a pink 'needsName'", () => {
+    expect(deriveCardAttention(NAMELESS)).toEqual({
+      level: "fix",
+      items: [{ level: "fix", kind: "needsName" }],
+    });
+  });
+
+  test("a blank name is no name either", () => {
+    expect(kinds({ ...NAMELESS, cardName: "  " })).toEqual(["needsName"]);
+  });
+
+  test("a card whose name is 'Checklist' or 'Team Card' has one: nothing to ask", () => {
+    for (const cardName of ["Checklist", "Team Card", "Checklist 1-100"]) {
+      expect(deriveCardAttention({ ...NAMELESS, cardName })).toEqual({ level: "none", items: [] });
+    }
+  });
+
+  test("a card with a player is named for the player, whatever cardName holds", () => {
+    expect(kinds({ ...NAMELESS, playerIds: ["p1"] })).toEqual([]);
+  });
+
+  test("a card whose player name is waiting for an answer is named by it", () => {
+    expect(kinds({ ...NAMELESS, pendingPlayerNames: ["Mike Trout"] })).toEqual(["playerName"]);
+  });
+
+  test("a row that does not carry the name at all says nothing (older fixtures)", () => {
+    const { cardName: _unused, ...unknown } = NAMELESS;
+    expect(kinds(unknown)).toEqual([]);
+  });
+
+  test("it is pink, never reviewed away, and the card stays in the walk until it is named", () => {
+    const row: AttentionCardRow = { ...NAMELESS, tidyReviewed: { keys: ["anything"] } };
+    expect(level(row)).toBe("fix");
+    expect(level({ ...row, cardName: "Checklist" })).toBe("none");
+  });
+
+  test("it sits after the player item and before the team's", () => {
+    expect(
+      kinds({
+        platformData: {},
+        cardName: "Card #3",
+        pendingTeamNames: ["Padrez"],
+        sourceDisagreements: [
+          {
+            field: "teams",
+            values: [
+              { value: ["A"], sources: ["bsc"] },
+              { value: ["B"], sources: ["checklist"] },
+            ],
+          },
+        ],
+      }),
+    ).toEqual(["sourcesDisagree", "needsName", "teamName"]);
+  });
+
+  test("it does not hold a parallel build (only unanswered names do)", () => {
+    expect(blocksParallelBuild(NAMELESS)).toBe(false);
   });
 });
 

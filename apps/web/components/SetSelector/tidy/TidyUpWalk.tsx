@@ -33,6 +33,7 @@ import type { VariantKind } from "../../../app/collection/final/data/types";
 import TidyCardFace from "./TidyCardFace";
 import type { TidyTileProps } from "./tile-types";
 import AutographTile from "./tiles/AutographTile";
+import CardNameTile from "./tiles/CardNameTile";
 import CareerTile from "./tiles/CareerTile";
 import MoreAboutTile from "./tiles/MoreAboutTile";
 import PlayerTile from "./tiles/PlayerTile";
@@ -632,6 +633,7 @@ function WalkDialog({
                   </div>
                   <SourcesDisagreeTile {...tileProps} />
                   <PlayerTile {...tileProps} />
+                  <CardNameTile {...tileProps} />
                   <div className="ml-[18px] empty:hidden">
                     <CareerTile {...tileProps} />
                   </div>

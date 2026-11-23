@@ -113,7 +113,8 @@ describe("PublishedChecklistDialog", () => {
     expect(onUse).toHaveBeenCalledWith({
       rows: [
         { number: "60", players: ["Rhett Lowder"], teams: ["Cincinnati Reds"] },
-        { number: "34", players: [], teams: ["Kansas City Royals"] },
+        // NEO-645: a subject that is no person is the card's name.
+        { number: "34", players: [], teams: ["Kansas City Royals"], cardName: "Team Card" },
       ],
       text: PASTE,
       format: "lines",
