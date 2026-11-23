@@ -27,7 +27,10 @@
 //     set name for every card" writes the insert row's "Set name in titles"
 //     (the same value the Attributes panel shows, placeholder the builder's own
 //     description), and card C's title then opens with it VERBATIM, nothing
-//     prepended.
+//     prepended. That title fits only because the set name was shortened and
+//     leaves nothing out, so the tile is plain and says "Set name shortened to
+//     fit." in a purple note, never the blue "cut short" check (NEO-645, Jason
+//     2026-11-23).
 //   * /collection's "Find a card" finds card B by its number, a word only its
 //     DESCRIPTION holds now that the title dropped it.
 //   * NEO-606, teams (cut row 9): card D's team has a Location and a Name, and
@@ -40,7 +43,9 @@
 //     takes the box only when its own title would show the yellow line. Card F
 //     (card Q's shape) leaves nothing out and is stored with the builder's
 //     description; card G (card B's shape) would leave its number out, so it is
-//     stored from the box, the number back and no line.
+//     stored from the box, the number back and no line. Built from the box with
+//     nothing left out, card G carries no "listing title was cut short" in its
+//     checklist mark, while card B (its number left out) does (NEO-645).
 //
 // R2 - what makes it fail if the feature breaks:
 //   * Every title is a full-string match computed from the cut rules (below),
@@ -128,7 +133,7 @@
 // the search index splits off at the hyphen; no other card holds it.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToCustom, escapeRe, openAttributesPanel, setBuilderReady } from "../../support/set-builder";
-import { editCardButton } from "../../support/cards";
+import { cardAttentionMark, editCardButton } from "../../support/cards";
 import { goViaShell } from "../../support/collection";
 import { expectOverCapLook } from "../../support/theme";
 import {
@@ -431,11 +436,20 @@ test(
     await expect(pinkTile(page, "Listing title")).toHaveCount(0);
     await expect(walkTitle).toHaveCount(0);
     await expect(titleTile.getByRole("button", { name: "Edit title", exact: true })).toBeVisible();
+    // It fits only because the set name was shortened, with nothing left out: a
+    // purple note on a plain tile, never the blue "cut short" check.
+    const shortenedNote = titleTile.getByRole("note").filter({ hasText: /^Set name shortened to fit\.$/ });
+    await expect(shortenedNote).toBeVisible();
+    await expect(titleTile).not.toHaveAccessibleDescription(/To (check|fix)/);
+    await expect(titleTile.getByText("Auto title was cut short. Rewrite it.", { exact: true })).toHaveCount(0);
+    await expect(titleTile.getByRole("note").filter({ hasText: /^Left out to fit:/ })).toHaveCount(0);
+    await expectAccessible(page, { within: walk, label: "Tidy Up walk, a title that fits on the shortened set name" });
 
     // The card has no team: say so, and the card is done. The answer
     // regenerates the title (NEO-645 C7), which keeps the row's new set name.
     await answerPinkTeamTiles(page, { noTeam: "noTeamOnCard" });
     await expect(titleTile.getByText(titleCBox, { exact: true })).toBeVisible();
+    await expect(shortenedNote).toBeVisible();
     await saveAndNext(page);
     await expect(walk.getByText("All tidy. Nothing on this checklist needs you.", { exact: true })).toBeVisible();
     await finishTidyWalk(page);
@@ -505,6 +519,12 @@ test(
     await expectAccessible(page, { within: drawer, label: "Card drawer, a title that left something out takes the row's box" });
     await doneEditing.click();
     await expect(cardTitle).toBeHidden();
+    // Card G fits on the box with nothing left out: its mark (it has no team, so
+    // it has one) never says "cut short"; card B's, its number left out, does.
+    const cutShort = "listing title was cut short";
+    await expect(cardAttentionMark(page, numB, cutShort)).toBeVisible();
+    await expect(cardAttentionMark(page, numG)).toBeVisible();
+    await expect(cardAttentionMark(page, numG, cutShort)).toHaveCount(0);
 
     // ── STEP 7: the collector's search reads the description ──
     // Card B's title dropped its number; its description keeps it.

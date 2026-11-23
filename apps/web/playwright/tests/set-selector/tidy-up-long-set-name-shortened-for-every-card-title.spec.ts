@@ -14,14 +14,21 @@
 // the open card is retitled at once ("Set name saved. The other cards' titles
 // are updating.") and the other card on a schedule, so when the walk reaches
 // it, its tile is no longer pink and shows the short name without opening for
-// editing. NEO-645 C7, every walk write regenerates the card's title and
-// description, a hand-typed title included. On #901 a title typed in the tile
+// editing. NEO-645 (Jason, 2026-11-23): a title that fits only because the set
+// name was shortened, with nothing else left out, is no blue "cut short" check:
+// the tile stays plain and says "Set name shortened to fit." in a purple note
+// (#901 and #902, still in the walk for their pink Team tile). A third card,
+// #904, carries a 70-character team: even on the short name the team cannot
+// fit, so its title is still cut, and #904 is BLUE ("To check", "Left out to
+// fit: <team>", no purple set-name note). NEO-645 C7, every walk write
+// regenerates the card's title and description, a hand-typed title included. On #901 a title typed in the tile
 // is rebuilt by its team answer; typed again (holding every word, so the
 // NEO-637 rule outside the walk would keep it), a second "Shorten the set name"
 // rebuilds it with the newer name, and #902 is retitled with that one. Each
 // card's "No team on this card" is answered so the walk ends
-// "All tidy", the browser's Back/Forward step through the walk's address, and
-// the drawer reads the second card's stored title back.
+// "All tidy" (#904's blue check is marked seen by Save & next), the browser's
+// Back/Forward step through the walk's address, and the drawer reads the second
+// card's stored title back.
 //
 // The walk's name (NEO-497): an insert other than Base reads as its own name;
 // a parallel (a sub-variant under an insert) carries its insert's name first,
@@ -42,13 +49,21 @@
 // env.ATTEMPT_TOKEN: `tuplongset` + `x` padding + the token (set),
 // `tuphost<token>` (insert), `tupgold<token>` (its parallel) and the set's short
 // names `tupa<token>` / `tups<token>` / `tupb<token>`; the hand-typed titles
-// carry `tuptyped<token>`. Neither parallel name starts with the
+// carry `tuptyped<token>`; #904's team, made in the card form's New team
+// dialog, is `Tuptm<token>` padded with `x` to 70 characters (one token, no
+// Location, so it can only go whole).
+//
+// Fixture arithmetic (assessListingTitle, ATTEMPT_TOKEN 1 and 12 characters,
+// workers 0-11): on the short names #901/#902 read "<short> Tup<n><token>
+// #<n> <sport>", 35-58 characters, built from the set-name box with nothing
+// left out (the purple case); #904 with its team is 105-128, and without the
+// team (the only cut) 35-58 (the blue case). Neither parallel name starts with the
 // insert's, so the prefix rule is the only thing that can put the insert's name
 // in the walk's name. R9: drillToCustom for the set stop, then drillToCustomSet
 // to the Insert type; the grouping is the same Group Parallels move the
 // sub-variants spec makes.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { addCardViaForm, editCardButton, escapeRe } from "../../support/cards";
+import { addCardViaForm, createTeamInCardForm, editCardButton, escapeRe } from "../../support/cards";
 import type { Locator, Page } from "@playwright/test";
 import {
   addCustomEntry,
@@ -119,6 +134,8 @@ test(
     const SHORT = `tups${T}`;
     const SHORT2 = `tupb${T}`;
     const TYPED = `tuptyped${T}`;
+    const TEAM = `Tuptm${T}`.padEnd(70, "x");
+    expect(TEAM, "#904's team is 70 characters on every runner").toHaveLength(70);
     const year = "2026";
     /** A title naming `name` before card `#n`'s number (the set name leads, the number follows). */
     const titleWith = (name: string, n: string) => new RegExp(`\\b${escapeRe(name)}\\b.*#${n}\\b`);
@@ -153,16 +170,32 @@ test(
     await expect(grouping).toBeHidden();
     await expect(columnOption(page, "Parallels", PARALLEL)).toBeVisible();
 
-    // ── The insert's checklist: two cards, each titled over 80 by the set name ──
+    // ── The insert's checklist: three cards, each titled over 80 by the set name ──
     await addCardViaForm(page, { cardNumber: "901", playerName: `Tup901${T}` });
     await addCardViaForm(page, { cardNumber: "902", playerName: `Tup902${T}` });
-    await expect(needsYouPill(page)).toHaveAccessibleName("2 need you, 2 to fix");
+    await addCardViaForm(page, {
+      cardNumber: "904",
+      playerName: `Tup904${T}`,
+      beforeSubmit: () => createTeamInCardForm(page, TEAM),
+    });
+    await expect(needsYouPill(page)).toHaveAccessibleName("3 need you, 3 to fix");
     // The insert (not Base): its own name, no variant type word.
     await openTidyWalk(page, { title: tidyUpName({ year, set: SET, variant: HOST }) });
     await expectWalkNamed(page, tidyUpName({ year, set: SET, variant: HOST }));
-    await expectCardsLeft(page, 2);
+    await expectCardsLeft(page, 3);
     const walk = tidyWalk(page);
     const titleTile = tidyTile(page, "Listing title");
+    // The purple note of a title that fits only on the shortened set name, and the
+    // blue check's own words: a title that fits that way is never "cut short".
+    const shortenedNote = titleTile.getByRole("note").filter({ hasText: /^Set name shortened to fit\.$/ });
+    const cutShortLine = titleTile.getByText("Auto title was cut short. Rewrite it.", { exact: true });
+    /** The open card's title fits on the short name alone: plain tile, the purple note, no blue check. */
+    const expectFitsOnShortName = async () => {
+      await expect(shortenedNote).toBeVisible();
+      await expect(titleTile).not.toHaveAccessibleDescription(/To (check|fix)/);
+      await expect(cutShortLine).toHaveCount(0);
+      await expect(titleTile.getByRole("note").filter({ hasText: /^Left out to fit:/ })).toHaveCount(0);
+    };
     /** A title typed by hand in the open card's tile and saved: it fits and holds every word. */
     const typeOwnTitle = async (n: string, setName: string): Promise<string> => {
       const own = `${setName} Tup${n}${T} #${n} ${TYPED}`;
@@ -215,7 +248,7 @@ test(
     await expectAccessible(page, { within: walk, label: "Tidy Up walk, the set name being shortened" });
 
     // ── "Save and apply to all 2 cards": this card at once, the other on a schedule ──
-    await titleTile.getByRole("button", { name: "Save and apply to all 2 cards", exact: true }).click();
+    await titleTile.getByRole("button", { name: "Save and apply to all 3 cards", exact: true }).click();
     await expect(
       titleTile.getByRole("status").filter({ hasText: "Set name saved. The other cards' titles are updating." }),
     ).toBeVisible();
@@ -224,26 +257,33 @@ test(
     await expect(titleTile.getByText(titleWith(SHORT, "901"))).toBeVisible();
     await expect(titleTile.getByRole("button", { name: "Edit title", exact: true })).toBeVisible();
     await expect(pinkTile(page, "Listing title")).toHaveCount(0);
+    // It fits only because the set name was shortened: the purple note, not the blue check.
+    await expectFitsOnShortName();
+    await expectAccessible(page, { within: walk, label: "Tidy Up walk, a title that fits on the shortened set name" });
     // C7: a title typed by hand, then the card's other pink (no team) answered so
     // Save & next can take it. The answer regenerates the title over the typed
     // one, and it still opens with the short name.
+    // A typed title is not the generated one, so the note goes with it.
     await typeOwnTitle("901", SHORT);
+    await expect(shortenedNote).toHaveCount(0);
     await answerPinkTeamTiles(page, { noTeam: "noTeamOnCard" });
     await expect(titleTile.getByText(titleWith(SHORT, "901"))).toBeVisible();
     await expect(titleTile.getByText(TYPED)).toHaveCount(0);
     await expect(titleTile.getByText(longSet)).toHaveCount(0);
+    await expectFitsOnShortName();
     // C7: typed again, holding every word, then the set name shortened again from
     // the walk: the save rebuilds this card's title, the typed words gone.
     await typeOwnTitle("901", SHORT);
     await shorten.click();
     await expect(setNameBox).toBeFocused();
     await setNameBox.fill(SHORT2);
-    await titleTile.getByRole("button", { name: "Save and apply to all 2 cards", exact: true }).click();
+    await titleTile.getByRole("button", { name: "Save and apply to all 3 cards", exact: true }).click();
     await expect(
       titleTile.getByRole("status").filter({ hasText: "Set name saved. The other cards' titles are updating." }),
     ).toBeVisible();
     await expect(titleTile.getByText(titleWith(SHORT2, "901"))).toBeVisible();
     await expect(titleTile.getByText(TYPED)).toHaveCount(0);
+    await expectFitsOnShortName();
     await saveAndNext(page);
 
     // ── #902, retitled by the schedule: no longer pink, shown with the newer short name, not opened ──
@@ -252,14 +292,27 @@ test(
     await expect(titleTile.getByRole("textbox", { name: "Card title for #902", exact: true })).toHaveCount(0);
     await expect(titleTile.getByRole("button", { name: "Edit title", exact: true })).toBeVisible();
     await expect(titleTile.getByText(longSet)).toHaveCount(0);
+    await expectFitsOnShortName();
     await answerPinkTeamTiles(page, { noTeam: "noTeamOnCard" });
+    await saveAndNext(page);
+
+    // ── #904, retitled by the schedule: its team still does not fit, so it stays BLUE ──
+    const teamLeftOut = titleTile.getByRole("note").filter({ hasText: `Left out to fit: ${TEAM}` });
+    await expect(titleTile.getByText(titleWith(SHORT2, "904"))).toBeVisible();
+    await expect(titleTile).toHaveAccessibleDescription("To check");
+    await expect(teamLeftOut).toBeVisible();
+    await expect(shortenedNote).toHaveCount(0);
+    await expect(pinkTile(page, "Listing title")).toHaveCount(0);
+    await expect(titleTile.getByText(longSet)).toHaveCount(0);
+    await expectAccessible(page, { within: walk, label: "Tidy Up walk, a short-name title that still leaves the team out" });
+    // Blue never holds the card: Save & next marks it seen.
     await saveAndNext(page);
     const allTidy = walk.getByText("All tidy. Nothing on this checklist needs you.", { exact: true });
     await expect(allTidy).toBeVisible();
-    // The walk's place is in the address: Back steps to #902, Forward to the end again.
+    // The walk's place is in the address: Back steps to #904, Forward to the end again.
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tidy=(?!done)/);
-    await expect(titleTile.getByText(titleWith(SHORT2, "902"))).toBeVisible();
+    await expect(titleTile.getByText(titleWith(SHORT2, "904"))).toBeVisible();
     await expect(allTidy).toHaveCount(0);
     await page.goForward();
     await expect(allTidy).toBeVisible();
