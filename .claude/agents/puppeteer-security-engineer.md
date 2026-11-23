@@ -106,10 +106,14 @@ this service runs on and a stale shell node turns a green suite red — check
 >
 > **While iterating, gate only what you touched** (NEO-653; whole-app gates
 > ran ~700 times on NEO-645 and took up to 16 minutes each under parallel
-> load). Lint the changed files (`npx eslint <files>`) and run
-> `npx vitest related --run <files>`. Run the full `npm run lint`,
-> `npm run typecheck` and `npm run test:unit` **once**, at the end of the
-> assignment, piped through `tail -40`, and read only the failures.
+> load). In `apps/web`, lint the changed files (`npx eslint <files>`) and run
+> `npx vitest related --run <files>`; in `services/browser`, run
+> `node --test <changed test files>`. At the end of the assignment, run the
+> full fast gates above **once** for every package you touched (apps/web:
+> lint, typecheck, test:unit, build; services/browser: build && test), piped
+> through `tail -40`. If anything fails, rerun the failing file without
+> truncation. `vitest related` misses tests that load modules through
+> `import.meta.glob`, so the full run at the end is never optional.
 
 > **Memory holds patterns, not operations.** Save reusable repo knowledge
 > (a driver quirk, a house pattern, a gate that lies). Never save deployment
