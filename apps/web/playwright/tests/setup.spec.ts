@@ -51,7 +51,16 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../support/set-builder";
-import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist, type ChecklistFacts } from "../support/published-checklist";
+import {
+  CHECKLISTS,
+  expectTeamsFromChecklist,
+  opensMatchCards,
+  savedLine,
+  settleChecklistFetch,
+  usePublishersChecklist,
+  type ChecklistFacts,
+} from "../support/published-checklist";
+import type { FlowEnv } from "../support/env";
 import { finishTidyWalk, settleWalkAfterCommit, tidyWalk, walkAnsweringEverything } from "../support/tidy-walk";
 import type { Locator, Page } from "@playwright/test";
 
@@ -97,16 +106,19 @@ async function expectBareStemOnly(pairing: Locator) {
 }
 
 /**
- * Fetch a variant's checklist and settle the card-pairing dialog: keep every
- * card only one marketplace has, then confirm. Waits are the caller's (the
- * Base and the insert checklists have different measured ceilings).
+ * Fetch a variant's checklist and settle it. NEO-640: every fetch starts on the progress line, and
+ * Match Cards opens only when a card needs the operator, which each file's measured fact says
+ * (`opensMatchCards`, never a race between the dialog and the saved line). Opened: keep every card
+ * only one marketplace has, then confirm. Skipped: `settleChecklistFetch` reads the progress line
+ * going and the saved line saying why Match Cards sat out. Waits are the caller's (the Base and
+ * the insert checklists have different measured ceilings).
  *
- * NEO-645: Confirm commits the cards ("Saved N cards."); the Tidy Up walk opens
- * AFTER the save, when a card needs a person, and the caller walks it. Returns
- * the saved line.
+ * NEO-645: either way the cards are committed first ("Saved N cards."); the Tidy Up walk opens
+ * AFTER the save, when a card needs a person, and the caller walks it. Returns the saved line.
  */
 async function fetchChecklist(
   page: Page,
+  env: FlowEnv,
   facts: ChecklistFacts,
   {
     open,
@@ -118,10 +130,20 @@ async function fetchChecklist(
   const pairing = page.getByRole("dialog", { name: /^Match Cards/ });
   const saved = page.getByText(/Saved [0-9]+/);
 
+  if (inspect && !opensMatchCards(facts, env)) {
+    throw new Error("fetchChecklist: an inspect needs the Match Cards dialog, and this file's facts skip it.");
+  }
   await syncChecklistButton(page).click();
-  // NEO-496 (D10, NQ1): the uploaded checklist is a source of its own, so Match Cards opens on
-  // both branches: live it lines up BSC, SportLots and the checklist; with SportLots paused, BSC
-  // and the checklist (two sources, as two marketplaces always were).
+  if (!opensMatchCards(facts, env)) {
+    // Every card paired with its own row by number at 100% (the Future Stars file is BSC's own
+    // answers for the 20 cards): the run stays on its progress line, then saves every card with
+    // nobody confirming a Match Cards (NEO-645 C5: the save first, the walk after it).
+    await settleChecklistFetch(page, env, { facts, what: `the ${facts.rows}-row checklist fetch`, lands: "saved" });
+    return savedLine(page, facts.rows);
+  }
+  // NEO-496 (D10, NQ1): the uploaded checklist is a source of its own, so live it lines up BSC,
+  // SportLots and the checklist; with SportLots paused, BSC and the checklist (two sources). The
+  // Base's file leaves card #300 out, so #300 is a BSC-only card and the dialog opens for it.
   await expect(pairing).toBeVisible({ timeout: open });
   // The confirm button reads "Loading…" until every source has streamed in and the teams landed.
   const confirm = pairing.getByRole("button", { name: "Confirm card matches" });
@@ -346,7 +368,7 @@ test(
     // The captured checklist goes in before the Sync: the fetch then asks BSC for no card
     // the file answers (a seed with a card-listing call per card met BSC's 429).
     const facts = await usePublishersChecklist(page, CHECKLISTS.toppsChrome2024Base);
-    const savedBase = await fetchChecklist(page, facts, {
+    const savedBase = await fetchChecklist(page, env, facts, {
       open: 60_000,
       settle: 60_000,
       // The old wizard opened within 60 s and its save landed within 120 s.
@@ -383,7 +405,7 @@ test(
     // The seed's Future Stars checklist is BSC's own answers (the 20 cards), so the fetch asks BSC
     // for no card (D4): the BSC listing specs that read this set no longer depend on 20 live reads.
     const futureStars = await usePublishersChecklist(page, CHECKLISTS.futureStars2024);
-    const savedInsert = await fetchChecklist(page, futureStars, {
+    const savedInsert = await fetchChecklist(page, env, futureStars, {
       open: 90_000,
       settle: 90_000,
       // The old review opened within 90 s and its save landed within 120 s.
