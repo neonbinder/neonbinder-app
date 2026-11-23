@@ -28,7 +28,6 @@ import {
 } from "../card-attention";
 import type { CardChecklistRow } from "../card-checklist-row";
 import { AnsweredProvider } from "./answered";
-import AddAllNewPlayers from "./AddAllNewPlayers";
 import { InlineStackProvider, useCloseTopInlinePart, useInlineStackOpen } from "./inline-stack";
 import type { VariantKind } from "../../../app/collection/final/data/types";
 import TidyCardFace from "./TidyCardFace";
@@ -208,10 +207,6 @@ function WalkDialog({
   const url = useTidyWalkUrl();
   const { location, entryKey, canStepBack, goToCard, showCard, showDone, finish, stepBack } = url;
 
-  // Where "Add all N new players" draws its confirm: the top of the scrolling
-  // area. State, not a ref, so the control re-renders once the element exists.
-  const [addAllHost, setAddAllHost] = useState<HTMLDivElement | null>(null);
-
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const headerRef = useRef<HTMLDivElement | null>(null);
@@ -241,13 +236,6 @@ function WalkDialog({
   const pending = useQuery(api.tidyNames.lookupsPending, { scopeId: leafId });
   const pendingKeys = useMemo(() => pendingLookupKeys(pending), [pending]);
   const order = useMemo(() => walkOrder(cards, pendingKeys), [cards, pendingKeys]);
-  // Everything that can change who "Add all new players" offers: the names still
-  // waiting on a card, and the lookups still running.
-  const newPlayersKey = useMemo(() => {
-    const names = new Set<string>();
-    for (const c of cards) for (const n of c.pendingPlayerNames ?? []) names.add(n);
-    return `${[...names].sort().join("\u001f")}\u001e${[...pendingKeys].sort().join("\u001f")}`;
-  }, [cards, pendingKeys]);
   const rowsById = useMemo(() => new Map(cards.map((c) => [c._id as string, c])), [cards]);
   const awaitingLookup = useMemo(() => cards.filter(isAwaitingTeamLookup).length, [cards]);
   // The end screen's lookup line must not say "nothing for you to do" while cards still need a person.
@@ -575,13 +563,6 @@ function WalkDialog({
               done={openPassed.length}
               planned={planned}
               subtitle={subtitle}
-              aside={
-                <AddAllNewPlayers
-                  leafId={leafId}
-                  refreshKey={newPlayersKey}
-                  panelHost={addAllHost}
-                />
-              }
             />
 
             <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
@@ -603,9 +584,6 @@ function WalkDialog({
                       : ""
                   : ""}
               </p>
-              {/* The confirm of "Add all N new players" (its control is in the
-                  chrome above) is drawn here while it is open; empty, it takes no room. */}
-              <div ref={setAddAllHost} className="mb-3 empty:hidden" />
               {isDone ? (
                 <div
                   ref={headerRef}

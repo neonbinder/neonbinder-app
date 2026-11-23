@@ -644,8 +644,9 @@ export const QUICK_ADD_NO_TEAM_FROM_SET_HINT =
 
 /**
  * "5 need you" with nothing to fix; "5 need you, 2 to fix" when some of them
- * block listing (pink). The pill stays one amber tone, so the split rides in
- * the text, which is also its accessible name. "N need you" is always the
+ * block listing (pink). The pill takes the colour of the worst level present
+ * (pink when any card is to fix, otherwise blue), and the text, which is also
+ * its accessible name, carries the split. "N need you" is always the
  * start, so a reader and a spec find the count first.
  */
 export function needsYouLabel(count: number, toFix = 0): string {
@@ -3767,7 +3768,7 @@ export default function CardChecklist({
           </div>
         )}
 
-        {/* NEO-335 — the set-level attention row: ONE control, the amber
+        {/* NEO-335 — the set-level attention row: ONE control, the pink-or-blue
             "N need you" pill, which opens the walker. It replaced the filter
             chip, the set-wide Fill teams pill and the "Fix them one at a time"
             link: the walker already orders what is left (missing teams, then
@@ -3797,7 +3798,7 @@ export default function CardChecklist({
             {attentionCount > 0 && (
               <SetRowActionButton
                 ref={needsYouRef}
-                tone="attention"
+                tone={attentionToFix > 0 ? "fix" : "check"}
                 onActivate={openAttentionWalker}
                 disabled={editsHeld}
                 aria-describedby={editsHeld ? heldDescribedBy : undefined}

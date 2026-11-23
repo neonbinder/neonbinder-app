@@ -8,7 +8,6 @@ import { describe, expect, it } from "vitest";
 import {
   careerHeading,
   chipYearsText,
-  newPlayerNoCareerText,
   linkedForText,
   teamLinkedForText,
   marketplaceHeading,
@@ -177,14 +176,6 @@ describe("copy", () => {
       expect(careerHeading(true, { otherCards: true })).toBe("Suggested from the player's other cards.");
       expect(careerHeading(false)).toBe("Pick the one on the card.");
     });
-  });
-
-  it("a no-career note names its player, else its place on the card, so none repeat", () => {
-    expect(newPlayerNoCareerText("Quinn Rookie", false)).toBe("New player, no career from Wikidata");
-    expect(newPlayerNoCareerText("Quinn Rookie", true, 1)).toBe("New player Quinn Rookie, no career from Wikidata");
-    expect(newPlayerNoCareerText(undefined, true, 2)).toBe("New player 2, no career from Wikidata");
-    expect(newPlayerNoCareerText("  ", true, 3)).toBe("New player 3, no career from Wikidata");
-    expect(newPlayerNoCareerText(undefined, true)).toBe("New player, no career from Wikidata");
   });
 
   it("names a preselected player with the basis for it", () => {

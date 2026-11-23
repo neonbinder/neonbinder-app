@@ -5,7 +5,7 @@
  * "N cards need a team" Fill pill, and the "Fix them one at a time" link (plus
  * the post-commit banner's own call-to-action, pinned in CardChecklist.test.tsx).
  * Pinned here: what N counts (every attention kind, live), that it is the one
- * amber pill and the only control in its row, that its visible text is its
+ * pill (pink or blue by the worst level present) and the only control in its row, that its visible text is its
  * accessible name, that it opens the walker only when pressed (click or Enter),
  * that a build holding the checklist holds it too, and that the grid is never
  * filtered any more.
@@ -175,12 +175,13 @@ describe("CardChecklist — the one 'N need you' control (NEO-335)", () => {
     state.cards = [teamless(1), teamless(2), overLongTitle(3), unlinkedName(4), settled(5)];
   });
 
-  it("counts every attention kind, not only missing teams, and wears the amber attention pill", () => {
+  it("counts every attention kind, not only missing teams, and wears the pink pill when any card is to fix", () => {
     render(ui());
     const control = pill("4 need you, 4 to fix");
-    for (const cls of SET_ROW_ACTION_TONE_CLASSES.attention.split(" ")) {
+    for (const cls of SET_ROW_ACTION_TONE_CLASSES.fix.split(" ")) {
       expect(control.classList.contains(cls)).toBe(true);
     }
+    expect(control.classList.contains("bg-notice-warn-bg")).toBe(false);
     // SC 2.5.3: the visible text IS the name — no aria-label to drift from it.
     expect(control.getAttribute("aria-label")).toBeNull();
     expect(control.textContent).toBe("4 need you, 4 to fix");
@@ -235,6 +236,51 @@ describe("CardChecklist — the one 'N need you' control (NEO-335)", () => {
     ];
     render(ui());
     expect(pill("2 need you, 1 to fix")).toBeTruthy();
+  });
+
+  describe("the pill takes its colour from the worst level present (Jason, NEO-645)", () => {
+    const checkOnly = (n: number) => ({
+      ...settled(n),
+      playerIds: ["player-1"],
+      listingTitle: `2024 Topps Chrome #${n} Somebody`,
+      listingTitleTruncated: true,
+    });
+    const hasTone = (el: HTMLElement, tone: "fix" | "check") =>
+      SET_ROW_ACTION_TONE_CLASSES[tone].split(" ").every((c) => el.classList.contains(c));
+
+    it("is pink when any card is to fix, even beside cards that only need a check", () => {
+      state.cards = [checkOnly(1), checkOnly(2), teamless(3)];
+      render(ui());
+      const control = pill("3 need you, 1 to fix");
+      expect(hasTone(control, "fix")).toBe(true);
+      expect(hasTone(control, "check")).toBe(false);
+    });
+
+    it("is blue when every card that needs a person only needs a check", () => {
+      state.cards = [checkOnly(1), checkOnly(2), settled(3)];
+      render(ui());
+      const control = pill("2 need you");
+      expect(hasTone(control, "check")).toBe(true);
+      expect(hasTone(control, "fix")).toBe(false);
+      // Still not amber, and the words are unchanged.
+      expect(control.classList.contains("bg-notice-warn-bg")).toBe(false);
+      expect(control.textContent).toBe("2 need you");
+    });
+
+    it("is no pill at all when nothing needs a person", () => {
+      state.cards = [settled(1), settled(2)];
+      render(ui());
+      expect(queryPill()).toBeNull();
+    });
+
+    it("goes from blue to pink as soon as a to-fix card lands, without a remount", () => {
+      state.cards = [checkOnly(1)];
+      const { rerender } = render(ui());
+      expect(hasTone(pill("1 needs you"), "check")).toBe(true);
+      state.cards = [checkOnly(1), teamless(2)];
+      rerender(ui());
+      expect(hasTone(pill("2 need you, 1 to fix"), "fix")).toBe(true);
+    });
   });
 
   it("says the split in the pill's own text when some cards are to fix, and not when none are", () => {

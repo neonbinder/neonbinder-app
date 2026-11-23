@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
-import { MAX_CARD_PLAYERS, newPlayerNoCareerOf } from "../../../../convex/features/cardAttention";
+import { MAX_CARD_PLAYERS } from "../../../../convex/features/cardAttention";
 import NeonButton from "../../../modules/NeonButton";
 import EntityLinkSearch from "../../EntityLinkSearch";
 import { ALREADY_A_PLAYER_MESSAGE } from "../../player-picker-labels";
@@ -10,7 +10,7 @@ import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
 import EditLine from "../parts/EditLine";
 import PlayerNameRow, { PlayerSummary, type ContextPlayer } from "../parts/PlayerNameRow";
-import { linkedForText, newPlayerNoCareerText, noteworthyReason } from "../parts/copy";
+import { linkedForText, noteworthyReason } from "../parts/copy";
 import { useTidyWrite } from "../parts/tidy-write";
 import TidyTile, { TidyNote } from "../TidyTile";
 import type { TidyTileProps } from "../tile-types";
@@ -131,8 +131,6 @@ export default function PlayerTile({ row, context, attention, sportId }: TidyTil
     playerNames.find((n) => n.row)?.row?.sportId ?? context.players[0]?.sportId ?? sportId;
   const atCap = (row.playerIds?.length ?? 0) >= MAX_CARD_PLAYERS;
   const cameosAtCap = cameoIds.length >= MAX_CARD_PLAYERS;
-  // Players "Add all new players" created with no Wikidata career: a note, not a stop.
-  const noCareerIds = newPlayerNoCareerOf(row);
 
   const savePlayers = (next: Array<Id<"players">>) =>
     write.run(async () => {
@@ -251,12 +249,6 @@ export default function PlayerTile({ row, context, attention, sportId }: TidyTil
             <span className="text-ink-3">{" · cameo"}</span>
           </EditLine>
         </div>
-      ))}
-
-      {noCareerIds.map((playerId, i) => (
-        <TidyNote key={`no-career:${playerId}`}>
-          {newPlayerNoCareerText(playerById.get(playerId)?.name, multi, i + 1)}
-        </TidyNote>
       ))}
 
       {searchFor && sportForSearch ? (

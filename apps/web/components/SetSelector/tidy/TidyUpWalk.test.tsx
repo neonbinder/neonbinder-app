@@ -14,21 +14,12 @@ vi.mock("../../../convex/_generated/api", () => ({
   api: {
     tidyNames: { lookupsPending: "lookupsPending" },
     tidyCards: { cardContext: "cardContext", markReviewed: "markReviewed" },
-    tidyNewPlayers: { newPlayerNames: "newPlayerNames", addNewPlayers: "addNewPlayers" },
     drillPath: { resolveDrillPath: "resolveDrillPath" },
   },
 }));
 
-// "Add all new players" asks the server on demand; the walk's own tests offer nobody
-// (its control has its own test file).
-const { convexQuery } = vi.hoisted(() => ({
-  convexQuery: vi.fn(
-    async (): Promise<{
-      names: Array<{ name: string; cardNumbers: string[]; moreCards: boolean }>;
-      more: boolean;
-    }> => ({ names: [], more: false }),
-  ),
-}));
+// Nothing in the walk asks the server on demand; any call that does lands here.
+const { convexQuery } = vi.hoisted(() => ({ convexQuery: vi.fn(async (): Promise<unknown> => undefined) }));
 
 const markReviewed = vi.fn();
 let pendingLookups: { names: Array<{ kind: "player" | "team"; nameNormalized: string }>; more: boolean } = {
@@ -802,127 +793,22 @@ describe("handing focus back when the walk closes", () => {
   });
 });
 
-describe("Add all new players, in the walk's header area (decision 32)", () => {
-  const offered = (...names: string[]) => ({
-    names: names.map((name, i) => ({ name, cardNumbers: [String(i + 1)], moreCards: false })),
-    more: false,
-  });
+describe("no bulk Add all (Jason, 2026-11-22: remove that button)", () => {
+  beforeEach(() => convexQuery.mockClear());
 
-  beforeEach(() => {
-    convexQuery.mockReset();
-    convexQuery.mockResolvedValue({ names: [], more: false });
-  });
-
-  it("is not there when fewer than two names are offered", async () => {
-    convexQuery.mockResolvedValue(offered("Quinn Rookie"));
-    mount([pink("a", "1")]);
+  it("the walk's chrome carries no Add all control, and the walk asks the server for no new-player list", async () => {
+    mount([pink("a", "1", { pendingPlayerNames: ["Quinn Rookie", "Abe Rookie"] })]);
     await screen.findByTestId("tile-player");
-    await waitFor(() => expect(convexQuery).toHaveBeenCalled());
     await nextFrame();
-    expect(screen.queryByRole("button", { name: /^Add all/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Add (all|the first)/ })).toBeNull();
+    expect(screen.queryByRole("group", { name: "New players to add" })).toBeNull();
+    expect(convexQuery).not.toHaveBeenCalled();
   });
 
-  it("shows above the card for two or more, and asks the server about this checklist", async () => {
-    convexQuery.mockResolvedValue(offered("Quinn Rookie", "Abe Rookie"));
-    mount([pink("a", "1")]);
-    const control = await screen.findByRole("button", { name: "Add all 2 new players" });
-    expect(convexQuery).toHaveBeenCalledWith("newPlayerNames", { leafId: LEAF });
-    // Header area: before the first tile in the page.
-    const tile = screen.getByTestId("tile-sources");
-    expect(control.compareDocumentPosition(tile) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  });
-
-  it("Esc closes its confirm first, and only then means Save for later", async () => {
-    convexQuery.mockResolvedValue(offered("Quinn Rookie", "Abe Rookie"));
-    const { onClose } = mount([pink("a", "1")]);
-    fireEvent.click(await screen.findByRole("button", { name: "Add all 2 new players" }));
-    const group = await screen.findByRole("group", { name: "New players to add" });
-    await nextFrame();
-    fireEvent.keyDown(document.activeElement ?? group, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByRole("group", { name: "New players to add" })).toBeNull());
-    expect(onClose).not.toHaveBeenCalled();
-    await nextFrame();
-    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
-
-  it("Enter with the confirm open is not Save & next", async () => {
-    convexQuery.mockResolvedValue(offered("Quinn Rookie", "Abe Rookie"));
-    mount([blue("a", "1")]);
-    fireEvent.click(await screen.findByRole("button", { name: "Add all 2 new players" }));
-    await screen.findByRole("group", { name: "New players to add" });
-    await nextFrame();
-    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Enter" });
-    expect(markReviewed).not.toHaveBeenCalled();
-  });
-
-  it("asks again when a card's waiting names change", async () => {
-    convexQuery.mockResolvedValue(offered("Quinn Rookie", "Abe Rookie"));
-    const first = [pink("a", "1", { pendingPlayerNames: ["Quinn Rookie", "Abe Rookie"] })];
-    const { rerender } = mount(first);
-    await screen.findByRole("button", { name: "Add all 2 new players" });
-    const calls = convexQuery.mock.calls.length;
-    rerender(
-      <MemoryRouter initialEntries={["/?tidy=a"]}>
-        <UrlProbe />
-        <TidyUpWalk
-          leafId={LEAF}
-          setName="2024 Topps Chrome"
-          title="Tidy up 2024 Topps Chrome"
-          cards={[pink("a", "1", { pendingPlayerNames: ["Abe Rookie"] })]}
-          onClose={vi.fn()}
-        />
-      </MemoryRouter>,
-    );
-    await waitFor(() => expect(convexQuery.mock.calls.length).toBeGreaterThan(calls));
-  });
-});
-
-describe("Add all new players, in the walk's chrome (NEO-645 audit)", () => {
-  const offered = (...names: string[]) => ({
-    names: names.map((name, i) => ({ name, cardNumbers: [String(i + 1)], moreCards: false })),
-    more: false,
-  });
-
-  beforeEach(() => {
-    convexQuery.mockReset();
-    convexQuery.mockResolvedValue({ names: [], more: false });
-  });
-
-  it("the control is on the title bar, in the header above the progress bar, not in the scrolling area", async () => {
-    convexQuery.mockResolvedValue(offered("Quinn Rookie", "Abe Rookie"));
-    mount([pink("a", "1")]);
-    const control = await screen.findByRole("button", { name: "Add all 2 new players" });
-    const header = control.closest("header");
-    expect(header).not.toBeNull();
-    expect(header?.querySelector('[role="progressbar"]')).not.toBeNull();
-    // On the same row as the subtitle ("1 card left"), which keeps its room.
-    const subtitle = screen.getByText("1 card left");
-    expect(subtitle.parentElement).toBe(control.closest("div.flex.min-h-7"));
-  });
-
-  it("the row it sits in is the same height with or without the control, so nothing moves when it settles", async () => {
-    mount([pink("a", "1")]);
-    await screen.findByTestId("tile-player");
-    const before = screen.getByText("1 card left").parentElement!;
-    expect(before.className).toContain("min-h-7");
-    expect(screen.queryByRole("button", { name: /^Add all/ })).toBeNull();
-  });
-
-  it("its confirm opens at the top of the scrolling area, under the chrome, and is what the control controls", async () => {
-    convexQuery.mockResolvedValue(offered("Quinn Rookie", "Abe Rookie"));
-    mount([pink("a", "1")]);
-    const control = await screen.findByRole("button", { name: "Add all 2 new players" });
-    fireEvent.click(control);
-    const group = await screen.findByRole("group", { name: "New players to add" });
-    expect(control.getAttribute("aria-expanded")).toBe("true");
-    expect(control.getAttribute("aria-controls")).toBe(group.id);
-    expect(group.closest("header")).toBeNull();
-    // Before the card's first tile; the dialog still holds both.
-    const tile = screen.getByTestId("tile-sources");
-    expect(group.compareDocumentPosition(tile) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByRole("dialog").contains(group)).toBe(true);
-    expect(screen.getByRole("dialog").contains(control)).toBe(true);
+  it("the end screen carries none either", async () => {
+    mount([]);
+    await screen.findByRole("group");
+    expect(screen.queryByRole("button", { name: /^Add (all|the first)/ })).toBeNull();
   });
 });
 

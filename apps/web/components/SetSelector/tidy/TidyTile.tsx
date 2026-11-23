@@ -156,44 +156,15 @@ export function TidyNote({ children }: { children: ReactNode }) {
 export type ApplyCounts = { applied: number; skipped?: number };
 
 /**
- * What the counts count. Cards by default ("Applied to 4 cards."); the bulk
- * "Add all new players" counts players ("Added 12 players.").
- */
-export type ApplyCountsWords = {
-  /** Before the number: "Applied to" or "Added". */
-  lead: string;
-  one: string;
-  many: string;
-  /** When nothing changed. */
-  none: string;
-};
-const CARD_WORDS: ApplyCountsWords = {
-  lead: "Applied to",
-  one: "card",
-  many: "cards",
-  none: "No cards changed.",
-};
-/** The bulk "Add all new players" counts players. */
-export const PLAYER_WORDS: ApplyCountsWords = {
-  lead: "Added",
-  one: "player",
-  many: "players",
-  none: "No players added.",
-};
-
-/**
  * The line an Apply-to-all leaves behind. No counts (`undefined`: the writes are
  * scheduled pages, so nobody knows yet) reads "Applied."; none changed reads
  * "No cards changed."; otherwise the count, and what was left as it was.
  */
-export function applyOutcomeText(
-  result: void | ApplyCounts,
-  words: ApplyCountsWords = CARD_WORDS,
-): string {
+export function applyOutcomeText(result: void | ApplyCounts): string {
   if (!result) return "Applied.";
   const { applied, skipped = 0 } = result;
-  if (applied === 0) return words.none;
-  const done = `${words.lead} ${applied} ${applied === 1 ? words.one : words.many}.`;
+  if (applied === 0) return "No cards changed.";
+  const done = `Applied to ${applied} ${applied === 1 ? "card" : "cards"}.`;
   if (skipped === 0) return done;
   return `${done} ${skipped} left as ${skipped === 1 ? "it was" : "they were"}.`;
 }

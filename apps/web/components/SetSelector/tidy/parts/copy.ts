@@ -90,21 +90,6 @@ export function teamLinkedForText(reason: LinkedForReason, playerName?: string):
   return who ? `Linked for you: ${who} played here` : "Linked for you: a player on this card played here";
 }
 
-/** The purple note on a player "Add all new players" created, when Wikidata gave no career. */
-export function newPlayerNoCareerText(
-  playerName: string | undefined,
-  several: boolean,
-  ordinal?: number,
-): string {
-  const who = playerName?.trim();
-  if (!several) return "New player, no career from Wikidata";
-  // Several on one card: each note says whose it is, by name, or by place
-  // ("New player 2") when the name is missing, so no two notes read alike.
-  return who
-    ? `New player ${who}, no career from Wikidata`
-    : `New player${ordinal ? ` ${ordinal}` : ""}, no career from Wikidata`;
-}
-
 /** The Q1-A purple note on a card whose team the commit filled in. */
 export function teamFillText(reason: "otherCards" | "career"): string {
   return reason === "career"

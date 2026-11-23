@@ -190,20 +190,6 @@ describe("WizardChrome", () => {
     expect(padded.className).not.toContain("px-6");
   });
 
-  it("puts an aside at the end of the subtitle row, whose room is kept whether it is there or not", () => {
-    const { rerender } = render(<WizardChrome done={1} planned={2} subtitle="2 cards left" />);
-    const row = () => screen.getByRole("status").parentElement!;
-    expect(row().className).toContain("min-h-7");
-    rerender(
-      <WizardChrome done={1} planned={2} subtitle="2 cards left" aside={<button type="button">Add all 3 new players</button>} />,
-    );
-    const aside = screen.getByRole("button", { name: "Add all 3 new players" });
-    expect(row().contains(aside)).toBe(true);
-    expect(row().className).toContain("min-h-7");
-    // The aside is not inside the live subtitle, which would re-announce it with every change.
-    expect(screen.getByRole("status").contains(aside)).toBe(false);
-  });
-
   it("renders children under the subtitle row", () => {
     render(
       <WizardChrome done={1} planned={2} subtitle="Cards with no team">

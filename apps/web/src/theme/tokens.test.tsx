@@ -536,3 +536,45 @@ describe("the player search's highlighted row reads on its green wash", () => {
     }
   }
 });
+
+/**
+ * NEO-645: the checklist's "N need you" pill is pink or blue by the worst level
+ * present (`SetRowActionButton` tones `fix` and `check`). It sits on the
+ * checklist card (`bg-raised`): the pill's ground is the level's wash (10% of
+ * the fill over the card in dark, white in light) and its hover is the fill at
+ * 20% over the card. The words are `ink`, held to 4.5:1 on both. Dark pink
+ * text on that wash is only 4.17:1 (the wash lifts the card), so the level
+ * lives in the edge and the icon instead, held to 3:1 (SC 1.4.11) on the card
+ * and on both grounds.
+ */
+describe("the pink and blue 'N need you' pills read on the checklist card", () => {
+  const rgb = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  const over = (top: string, alpha: number, ground: string) => {
+    const t = rgb(top);
+    const g = rgb(ground);
+    return `#${t.map((c, i) => Math.round(alpha * c + (1 - alpha) * g[i]).toString(16).padStart(2, "0")).join("")}`;
+  };
+
+  for (const mode of ["dark", "light"] as const) {
+    const card = surfaceHex("raised", mode);
+    for (const level of ["pink", "blue"] as const) {
+      const fill = tokenHex(`neon-${level}`, mode);
+      const edge = tokenHex(`neon-${level}-text`, mode);
+      const grounds = {
+        resting: mode === "dark" ? over(fill, 0.1, card) : "#ffffff",
+        hover: over(fill, 0.2, card),
+      };
+      for (const [state, ground] of Object.entries(grounds)) {
+        it(`${mode} ${level}: the words read on the ${state} wash`, () => {
+          expect(contrastRatio(tokenHex("ink", mode), ground)).toBeGreaterThanOrEqual(4.5);
+        });
+        it(`${mode} ${level}: the icon reads on the ${state} wash`, () => {
+          expect(contrastRatio(edge, ground)).toBeGreaterThanOrEqual(3);
+        });
+      }
+      it(`${mode} ${level}: the edge reads against the card`, () => {
+        expect(contrastRatio(edge, card)).toBeGreaterThanOrEqual(3);
+      });
+    }
+  }
+});
