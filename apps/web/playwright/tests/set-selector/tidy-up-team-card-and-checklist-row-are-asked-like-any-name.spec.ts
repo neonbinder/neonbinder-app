@@ -15,8 +15,11 @@
 //      Player row printed on #1 and #5 (Not a player offered, no note) beside its new team name.
 //      "Not a player" answers it; Edit <name> brings the question back; "Not a player" again.
 //      Creating the team leaves nothing pink, and #5, the second team card, leaves the walk with
-//      #1: both answers reached it (three cards left). Its title says the club once: the card's
-//      name is the team's, so the team is not added again. Save & next.
+//      #1: both answers reached it (three cards left). The Team tile offers "+ Another team" and no
+//      "Apply to …": #1 has no player, so it is on no line to apply to (Jason, 2026-11-23: "not a
+//      good button"), though #3 is a second teamless card with no player that main's button would
+//      have offered it to. Its title says the club once: the card's name is the team's, so the team
+//      is not added again. Save & next.
 //   2. Counter-fixture #2 (a person under the same team) still asks; its team arrived from #1. Skip.
 //   3. #3, "Checklist", is a walk stop for its team alone: its header and title say "Checklist",
 //      no Player tile, no Card name tile, a pink Team tile with "No team on this card". The
@@ -147,6 +150,15 @@ test(
     // The fan-out: #5 prints the same name and team, so both answers settled it too. #1 and #5 are
     // out of the walk; #2, #3 and #4 are left.
     await expectCardsLeft(page, 3);
+    // No "Apply to all" on a card with no player (R2: paired with the sibling control the button
+    // would sit beside). #3 ("Checklist", no player, blank team) is still teamless, so the button
+    // main showed ("Apply to the other card with no player") would have offered #1's team to it.
+    await expect(teamTile.getByRole("group", { name: `Team ${CLUB}`, exact: true })).toBeVisible();
+    await expect(teamTile.getByRole("button", { name: "+ Another team", exact: true })).toBeVisible();
+    await expect(
+      teamTile.getByRole("button", { name: /^Apply to/ }),
+      "a card with no player offers no Apply to all",
+    ).toHaveCount(0);
     // The card's name is its title's subject, and the team it names is not said twice.
     await expect(
       titleLine(new RegExp(`^(?:(?!${CLUB}).)*${CLUB} #1(?:(?!${CLUB}).)*$`)),

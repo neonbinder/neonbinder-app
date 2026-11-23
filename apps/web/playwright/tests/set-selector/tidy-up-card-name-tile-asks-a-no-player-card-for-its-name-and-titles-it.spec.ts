@@ -11,9 +11,11 @@
 //      itself with ONE card left, #3 ("#3 · Card #3"): its only pink tile is Card name, the footer
 //      says "1 to fix…" and Save & next is held. The pill reads "1 needs you, 1 to fix": #4, the Team
 //      Card, needs nothing. The listing title has #3 and no "Checklist".
+//      Axe, light and dark, on the plain pink tile.
 //   2. "Save name" with the box empty is refused ("Type what this card is, like Checklist or Team
-//      Card."), the box marked invalid; typing clears the refusal; "Card #3" + Enter is refused the
-//      same way, and Enter saved in place (the walk is still on #3). Axe, light and dark.
+//      Card."), the box marked invalid and described by the refusal, and focus is back in the box
+//      (the button took it); typing clears the refusal; "Card #3" + Enter is refused the same way,
+//      and Enter saved in place (the walk is still on #3). Axe, light and dark.
 //   3. "Checklist" + Save name: the Card name tile is gone, the header reads "#3 · Checklist", nothing
 //      is pink, and the Listing title tile shows "…Checklist… #3". Save & next reaches the end screen
 //      ("1 card fixed, 0 skipped. Totally rad."). Back returns to #3, still answered; Forward to the
@@ -81,7 +83,8 @@ test(
     await expect(walk).toHaveAccessibleName(tidyUpName({ year: YEAR, set: SET }));
 
     const cardName = tidyTile(page, "Card name");
-    const nameBox = cardName.getByRole("textbox", { name: "Name for this card", exact: true });
+    // The box shares its name with the tile (both "Card name"), so it is read inside the tile.
+    const nameBox = cardName.getByRole("textbox", { name: "Card name", exact: true });
     const saveName = cardName.getByRole("button", { name: "Save name", exact: true });
     const refusal = cardName.getByRole("alert").filter({ hasText: REFUSAL });
     const listingTitle = tidyTile(page, "Listing title");
@@ -102,12 +105,16 @@ test(
     // The placeholder is no name: the title carries the number and not the answer to come.
     await expect(listingTitle.getByText(/#3\b/)).toBeVisible();
     await expect(listingTitle.getByText(new RegExp(`\\b${ANSWER}\\b`))).toHaveCount(0);
+    await expect(nameBox, "nothing refused yet, so the box points at no alert").toHaveAccessibleDescription("");
+    await expectAccessible(page, { within: walk, label: "Tidy Up walk, a pink Card name tile before any answer" });
 
     // ── STEP 2: a blank answer, then the placeholder itself, are refused ──
     await expect(nameBox).toHaveValue("");
     await saveName.click();
     await expect(refusal, "a blank name is refused").toBeVisible();
     await expect(nameBox).toHaveAttribute("aria-invalid", "true");
+    await expect(nameBox, "the refusal describes the box").toHaveAccessibleDescription(REFUSAL);
+    await expect(nameBox, "a refused save puts the operator back in the box").toBeFocused();
     await nameBox.fill("Card #3");
     await expect(nameBox).toHaveValue("Card #3");
     await expect(refusal, "typing clears the refusal").toHaveCount(0);

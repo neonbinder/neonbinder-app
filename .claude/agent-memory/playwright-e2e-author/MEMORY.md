@@ -165,3 +165,4 @@
 - [Walk keeps a cleared card](patterns_walk_keeps_a_card_that_clears_on_screen.md) — open card stays after its last stop clears; assert tile in place
 - [Plant the fix past a red](patterns_plant_the_missing_fix_to_validate_past_a_product_red.md) — product red mid-spec: plant the fix, unmatchable --expect, STAYED GREEN = tail passes
 - [Title plant, adopting spec](patterns_title_plant_on_an_adopting_sole_writer_spec.md) — drawer read-path plant; generator plant misses or poisons the seed
+- [Removed button, described field](patterns_removed_button_absence_and_described_field.md) — plant every client gate; describedby/focus asserts

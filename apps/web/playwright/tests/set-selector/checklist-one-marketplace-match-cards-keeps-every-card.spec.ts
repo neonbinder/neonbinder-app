@@ -574,7 +574,8 @@ test(
     await skipUntil(page, cardNameTile, { maxCards: FETCHED + 1 });
     await expect(cardFace(page)).toHaveAccessibleName(new RegExp(`^Card #${escapeRe(card)}(, |$)`));
     await expect(cardNameTile).toHaveAccessibleDescription(/To fix/);
-    const nameBox = cardNameTile.getByRole("textbox", { name: "Name for this card", exact: true });
+    // The box shares its name with the tile (both "Card name"), so it is read inside the tile.
+    const nameBox = cardNameTile.getByRole("textbox", { name: "Card name", exact: true });
     await expect(nameBox).toBeVisible();
     await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk, a card with no player asked for its name" });
     await nameBox.fill(HAND_CARD_NAME);
