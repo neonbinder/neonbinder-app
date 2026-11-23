@@ -20,6 +20,12 @@
 // fresh-only spec, so everything above is proved first): LIVE_PLAYER's no-team card pre-selects
 // the career team the set's leagues rank first.
 //
+// NEO-645, every card has a name: every card here is NNO and named for its player, so their
+// names (and titles) are the player's. The one card with no player is the one added by hand
+// with a number alone: stored as NB's "Card #<number>", which never goes into its title; the
+// walk asks it for a name on a pink "Card name" tile (STEP 10b), and the name given is stored and
+// put in its title ahead of the number (read back at the end).
+//
 // WRITES BEYOND THE CARDS, deliberately: ONE player (Chris Pollack, below), his two stints, and
 // TWO teams: the career club, a real one-word club from support/recorded-names.ts (NEO-413: a
 // Hockey no-match the catalogue does not hold), and `RXO<token>T`, a single search token per
@@ -108,6 +114,8 @@ const YEAR = "1995";
 const LIVE_PLAYER = "Chris Pollack";
 /** An NCAA hockey team of the reference catalogue ("Wisconsin" + "Badgers"), his second career stint. */
 const COLLEGE_TEAM = "Wisconsin Badgers";
+/** NEO-645: the name given, on the walk's "Card name" tile, to the hand-added card (STEP 10b). */
+const HAND_CARD_NAME = "Team Card";
 /**
  * The pill's whole name: "1 needs you, 1 to fix" / "N need you, N to fix". On this fixture every
  * counted card is pink at every read: until its name is answered it is a player-name item, and
@@ -516,6 +524,10 @@ test(
     await expectAccessible(page, { within: page.getByRole("dialog"), label: "Card detail drawer with an auto title" });
     await expect(title).not.toHaveValue(/Unknown/);
     await expect(title).not.toHaveValue(/All Brands/);
+    // NEO-645: a card added with a number alone is stored under NB's placeholder name, "Card
+    // #<number>" (no player, nothing printed), and that placeholder is no name: never in the title.
+    await expect(page.getByRole("dialog").getByRole("textbox", { name: "Card name", exact: true })).toHaveValue(`Card #${card}`);
+    await expect(title).not.toHaveValue(/Card #/);
 
     // ── STEP 9: the one team written in the walk is on its card, and no other card has one ──
     // The drawer opened above walks the checklist with "Next card" in its display order, and
@@ -553,6 +565,26 @@ test(
     expect(await settleWalkAfterCommit(page, resaved.first())).toBe(true);
     await expect(pill).toHaveAccessibleName(needYou(needing + 1));
     await expectCardsLeft(page, needing + 1);
+
+    // ── STEP 10b: the hand-added card is asked for a name, and the name goes into its title (NEO-645) ──
+    // Every card has a name. NB272 has no player and only NB's "Card #<number>" (STEP 8), so the
+    // walk shows it a pink "Card name" tile: a card made before the rule is asked like a new one.
+    // It is this run's own card (the set's sole writer), so the answer is a plain fixed name.
+    const cardNameTile = tidyWalk(page).getByRole("group", { name: "Card name", exact: true });
+    await skipUntil(page, cardNameTile, { maxCards: FETCHED + 1 });
+    await expect(cardFace(page)).toHaveAccessibleName(new RegExp(`^Card #${escapeRe(card)}(, |$)`));
+    await expect(cardNameTile).toHaveAccessibleDescription(/To fix/);
+    const nameBox = cardNameTile.getByRole("textbox", { name: "Name for this card", exact: true });
+    await expect(nameBox).toBeVisible();
+    await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk, a card with no player asked for its name" });
+    await nameBox.fill(HAND_CARD_NAME);
+    await cardNameTile.getByRole("button", { name: "Save name", exact: true }).click();
+    // The tile goes with the item; the face now reads the card by its name. The card has no team
+    // yet, so it is still a stop and still counted.
+    await expect(cardNameTile).toHaveCount(0);
+    await expect(cardFace(page)).toHaveAccessibleName(new RegExp(`^Card #${escapeRe(card)}, ${HAND_CARD_NAME}$`));
+    await expect(pinkTile(page, "Team")).toHaveCount(1);
+    await expect(pill).toHaveAccessibleName(needYou(needing + 1));
 
     // ── STEP 11 (LAST): LIVE_PLAYER's no-team card pre-selects the career team the set ranks first ──
     // The walk the re-sync opened is a new sitting, so his card comes up again with its Team tile
@@ -592,5 +624,16 @@ test(
     else await saveForLater(page);
     // NB272 joined the count at STEP 8 and his card left it: back to the commit's count.
     await expect(pill).toHaveAccessibleName(needYou(needing));
+
+    // NEO-645 read-back: the name given at STEP 10b is stored, and Save name rebuilt the title with
+    // it, after the levels and ahead of the number (no player or cameo stands between them).
+    await editCardButton(page, card).click();
+    const handDrawer = page.getByRole("dialog");
+    await expect(handDrawer.getByRole("textbox", { name: "Card name", exact: true })).toHaveValue(HAND_CARD_NAME);
+    await expect(handDrawer.getByRole("textbox", { name: "Card title" })).toHaveValue(
+      new RegExp(`${SET} (Base )?${HAND_CARD_NAME} #${escapeRe(card)}( |$)`),
+    );
+    await handDrawer.getByRole("button", { name: "Done editing card" }).click();
+    await expect(handDrawer).toBeHidden();
   },
 );

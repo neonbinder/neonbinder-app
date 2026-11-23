@@ -101,6 +101,10 @@
 //   BSC's per-card answers): 9a/9b one player, 95 one card, Kyle Long and Julius
 //   Thomas on no other row; `usePublishersChecklist` throws if an edited number is
 //   not on exactly one row.
+// NEO-645 (every card has a name, and a card's real name is always in its title): the
+// team-leader cards are named for their team and carry no linked player, so the paused branch's
+// read-backs check each title says the name once, after the levels and before the number:
+// #38a with its team (which the name already says, so not repeated), #6a with no team at all.
 // Exactly one of the two branches commits the set in a given seed.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { escapeRe } from "../../support/cards";
@@ -427,6 +431,11 @@ test(
       await prospectEdit.click();
       const prospectDrawer = page.getByRole("dialog", { name: `Card #${PROSPECT.number}` });
       await expect(prospectDrawer.getByRole("button", { name: /^Remove team / })).toHaveAccessibleName(`Remove team ${PROSPECT.team}`);
+      // NEO-645: a team-leader card's own name is in its title, after the levels and ahead of the
+      // number, and its team, which the name already says, is not said a second time.
+      const prospectTitle = prospectDrawer.getByRole("textbox", { name: "Card title" });
+      await expect(prospectTitle).toHaveValue(new RegExp(`(^| )${PROSPECT.card} #${PROSPECT.number}( |$)`));
+      await expect(prospectTitle).not.toHaveValue(new RegExp(`${PROSPECT.card}.*${PROSPECT.card}`));
       await prospectDrawer.getByRole("button", { name: "Show features editor" }).click();
       await expect(prospectDrawer.getByRole("button", { name: "Value for Prospect Card" })).toHaveAttribute("aria-pressed", "true");
       await prospectDrawer.getByRole("button", { name: "Done editing card" }).click();
@@ -489,6 +498,11 @@ test(
       const sixDrawer = page.getByRole("dialog");
       await expect(sixDrawer.getByText("Teams", { exact: true })).toBeVisible();
       await expect(sixDrawer.getByRole("button", { name: /^Remove team / })).toHaveCount(0);
+      // NEO-645: with no team at all, the card's name still leads its title (before, a team-leader
+      // card with no team and no linked player had no name in its title), said once, before the number.
+      const sixTitle = sixDrawer.getByRole("textbox", { name: "Card title" });
+      await expect(sixTitle).toHaveValue(/(^| )New England Patriots #6a?( |$)/);
+      await expect(sixTitle).not.toHaveValue(/New England Patriots.*New England Patriots/);
       await sixDrawer.getByRole("button", { name: "Done editing card" }).click();
       await expect(sixDrawer).toBeHidden();
       return;
