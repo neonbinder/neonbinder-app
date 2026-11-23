@@ -86,7 +86,7 @@ import { BSC_PATH, bscFault } from "../../support/bscFake";
 import { removeBscSignIn, saveBscSignIn } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectAfterMarketplace, expectStepWithSportLots } from "../../support/marketplace-wait";
-import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist } from "../../support/published-checklist";
+import { CHECKLISTS, savedLine, settleChecklistFetch, usePublishersChecklist } from "../../support/published-checklist";
 import {
   columnOption,
   columnSearch,
@@ -255,15 +255,14 @@ async function buildFixture(page: Page, env: FlowEnv): Promise<void> {
     // card one by one; the bulk checklist itself is still a live BSC round trip.
     const facts = await usePublishersChecklist(page, CHECKLISTS.bowman2026Base);
     await syncChecklistButton(page).click();
-    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards
-    // opens with SportLots paused or live. The helper waits on it with
-    // `expectAfterMarketplace`, proves the teams line while it is open (the line is gone
-    // once the save lands), keeps every card only one marketplace has, confirms.
-    await confirmChecklistMatchCards(page, { facts, what: "the Base fetch" });
-    // NEO-645: Confirm saves the cards (our own write, 7 s), and the Tidy Up walk opens on its
-    // own: the 2026 rookies are names the catalogue does not know yet.
-    const saved = page.getByText(/Saved [1-9][0-9]* cards\./).first();
-    await expect(saved).toBeVisible();
+    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources. NEO-640: the file is
+    // BSC's own 200 cards, each paired by its number at 100%, so Match Cards is skipped; the
+    // helper waits on the fetch with `expectAfterMarketplace` and proves the saved line with its
+    // reason and the teams line (it confirms the dialog instead, should the file's facts say it opens).
+    await settleChecklistFetch(page, env, { facts, what: "the Base fetch" });
+    // NEO-645 C5: the cards SAVE first, then the Tidy Up walk opens on its own: the 2026 rookies
+    // are names the catalogue does not know yet.
+    const saved = savedLine(page, facts.rows);
     expect(await settleWalkAfterCommit(page, saved), "Base's rookies need a person, so the walk opened").toBe(true);
     // J3: Chrome is built from Base, so Base's names are answered first (below).
   }
