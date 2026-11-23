@@ -279,8 +279,13 @@ export async function listingInputsForStoredCard(
     features,
   );
 
+  // NEO-645 — a card with no player and a cameo is titled by its own name,
+  // then the cameo (Jason, 2026-11-22). The generator decides; this only
+  // hands the name over for the cards the rule can reach.
+  const subjectName =
+    playerNames.length === 0 && cameoNames.length > 0 ? card.cardName.trim() : "";
   return {
-    inputs: { ...inputs, playerNames, teamNames },
+    inputs: { ...inputs, playerNames, teamNames, ...(subjectName ? { subjectName } : {}) },
     unresolved: {
       players: danglingPlayers,
       teams: danglingTeams,

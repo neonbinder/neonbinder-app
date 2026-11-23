@@ -100,6 +100,17 @@ export type ListingCardInputs = {
    * 81 go before them. The description states them on a line of their own.
    */
   cameoNames?: string[];
+  /**
+   * NEO-645 (Jason, 2026-11-22: "the title generation should use the name and
+   * then the cameo if it fits") — the card's own name, for a card that is not
+   * named for a player. Read ONLY when the card has no player of its own and
+   * at least one cameo (`subjectOf`): the name then stands in the player's
+   * place, the cameo(s) follow it, and a Base level's word is left out rather
+   * than say "Base" where the name goes. Never cut, like a surname. Any other
+   * card ignores it, so a non-player card with no cameo titles exactly as it
+   * always has.
+   */
+  subjectName?: string;
   /** Mirrors the year node's value verbatim — same field `features.season` holds. */
   year?: string;
   manufacturer?: string;
@@ -739,6 +750,8 @@ type TitleState = {
   players: Array<{ full: string; short?: string; firstOut: boolean }>;
   /** NEO-528 — the cameos, after the players; each whole name in or out. */
   cameos: Array<{ name: string; in: boolean }>;
+  /** NEO-645 — a non-player card's own name, ahead of its cameos. Never cut. */
+  subject?: string;
   number?: { text: string; mode: "hash" | "bare" | "out" };
   tail: TailToken[];
 };
@@ -753,6 +766,9 @@ function renderTitle(state: TitleState): string {
   const players = state.players.map((p) => (p.firstOut && p.short ? p.short : p.full));
   // NEO-528 — the people also pictured follow the card's own, in one run.
   for (const cameo of state.cameos) if (cameo.in) players.push(cameo.name);
+  // NEO-645 — a non-player card's own name stands where its player would, and
+  // the cameos follow it as a run of their own: no "&" joins a name to a person.
+  if (state.subject) out.push(state.subject);
   if (players.length > 0) out.push(players.join(" & "));
   if (state.number && state.number.mode !== "out") {
     out.push(state.number.mode === "hash" ? `#${state.number.text}` : state.number.text);
@@ -775,6 +791,36 @@ function renderTitle(state: TitleState): string {
   return out.filter(Boolean).join(" ") || "#";
 }
 
+/**
+ * NEO-645 — the name a card with no player of its own puts in the player's
+ * place: `subjectName`, when the card has at least one cameo that is not that
+ * same name. Undefined for every other card (a player on the card, no cameo,
+ * no name), so their titles do not move.
+ */
+function subjectOf(inputs: ListingCardInputs): string | undefined {
+  const name = inputs.subjectName?.trim();
+  if (!name || distinctNames(inputs.playerNames).length > 0) return undefined;
+  const lower = name.toLowerCase();
+  const cameos = distinctNames(inputs.cameoNames).filter((n) => n.toLowerCase() !== lower);
+  return cameos.length > 0 ? name : undefined;
+}
+
+/**
+ * NEO-645 — `parts` without the Base kind's words, for a title whose subject
+ * is a name: "Base" never stands where the name goes (Jason, 2026-11-22). A
+ * Base level and a Base type name leave the description; nothing else does.
+ */
+function withoutBase(parts: DescriptionParts): DescriptionParts {
+  return {
+    ...parts,
+    levels: parts.levels
+      .filter((level) => !level.base)
+      .map((level) =>
+        level.typeBase ? { ...level, typeName: undefined, typeBase: undefined } : level,
+      ),
+  };
+}
+
 /** The full title's state, before any cut, for one description. */
 function fullTitleState(inputs: ListingCardInputs, parts: DescriptionParts): {
   state: TitleState;
@@ -787,11 +833,13 @@ function fullTitleState(inputs: ListingCardInputs, parts: DescriptionParts): {
   }));
   const cardNumber = inputs.cardNumber?.trim();
   const own = new Set(players.map((p) => p.full.toLowerCase()));
+  const subject = subjectOf(inputs);
   const cameos = distinctNames(inputs.cameoNames)
-    .filter((name) => !own.has(name.toLowerCase()))
+    .filter((name) => !own.has(name.toLowerCase()) && name.toLowerCase() !== subject?.toLowerCase())
     .map((name) => ({ name, in: true }));
   const state: TitleState = {
-    parts,
+    parts: subject ? withoutBase(parts) : parts,
+    ...(subject ? { subject } : {}),
     levels: parts.levels.map((level) => ({
       abbreviated: false,
       typeIn: !!level.typeName,

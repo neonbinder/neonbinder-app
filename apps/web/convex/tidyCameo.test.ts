@@ -12,7 +12,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { deriveCardAttention } from "./features/cardAttention";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
-import { addPlayer, nameRow, printCard, seedTidyWorld } from "../lib/testing/tidy-world";
+import { addPlayer, addTeam, nameRow, printCard, seedTidyWorld } from "../lib/testing/tidy-world";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -259,11 +259,10 @@ describe("pickSourceAsCameo", () => {
       nameNormalized: normalizeEntityName(CPC),
       answer: { kind: "notEntity", by: "operator" },
     });
-    // 5. the title and description are rebuilt, with the cameo in them and
-    //    without the ruled-out name.
+    // 5. the title and description are rebuilt: the card's name where a
+    //    player's would go, the cameo after it (Jason, 2026-11-22).
     expect(c.listingTitle).not.toBe("Typed by hand");
-    expect(c.listingTitle).toContain("Lindor");
-    expect(c.listingTitle).not.toContain(CPC);
+    expect(c.listingTitle).toBe(`Chrome ${CPC} ${LINDOR} #7 New York Mets Baseball`);
     expect(c.listingDescription).toContain(LINDOR);
   });
 
@@ -318,9 +317,47 @@ describe("pickSourceAsCameo", () => {
     expect(c.pendingPlayerNames).toBeUndefined();
     expect(c.secondaryPlayerIds).toHaveLength(1);
     expect(deriveCardAttention(c).items).toEqual([]);
-    // The title still names the cameo, and no longer the ruled-out name.
-    expect(c.listingTitle).toContain("Lindor");
-    expect(c.listingTitle).not.toContain(CPC);
+    // The title is the card's name, then the cameo.
+    expect(c.listingTitle).toBe(`Chrome ${CPC} ${LINDOR} #7 New York Mets Baseball`);
+  });
+
+  describe("NEO-645: 2026 Topps #118, 'Hopping to It CPC' with Acuña as the cameo", () => {
+    const HOPPING = "Hopping to It CPC";
+    const ACUNA = "Ronald Acuña Jr.";
+    const run = async (withTeam: boolean) => {
+      const t = newT();
+      const card = await t.run(async (ctx) => {
+        const w = await seedTidyWorld(ctx, { year: "2026" });
+        await addPlayer(ctx, w, ACUNA);
+        const braves = await addTeam(ctx, w, "Atlanta", "Braves");
+        return printCard(ctx, w, {
+          number: "118",
+          pendingPlayerNames: [],
+          extra: {
+            cardName: ACUNA,
+            features: { season: "2026", manufacturer: "Topps" },
+            ...(withTeam ? { teamOnCardIds: [braves] } : {}),
+            sourceDisagreements: [entry([HOPPING], [ACUNA])],
+          },
+        });
+      });
+      await t.withIdentity(ADMIN).mutation(api.tidyCameo.pickSourceAsCameo, { cardId: card });
+      return (await get(t, card))!;
+    };
+
+    test("the name, then the cameo, when it fits", async () => {
+      const c = await run(false);
+      expect(c.cardName).toBe(HOPPING);
+      expect(c.playerIds).toBeUndefined();
+      expect(c.listingTitle).toBe("2026 Topps Chrome Hopping to It CPC Ronald Acuña Jr. #118 Baseball");
+    });
+
+    test("the cameo is the first thing left out when it does not, and the name stays", async () => {
+      const c = await run(true);
+      expect(c.listingTitle).toBe("2026 Topps Chrome Hopping to It CPC #118 Atlanta Braves Baseball");
+      expect(c.listingTitle!.length).toBeLessThanOrEqual(80);
+      expect(c.secondaryPlayerIds).toHaveLength(1);
+    });
   });
 
   test("refused when the server would not offer it; nothing is written", async () => {
