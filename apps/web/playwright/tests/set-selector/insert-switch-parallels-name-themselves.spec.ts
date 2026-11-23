@@ -52,9 +52,13 @@
 // `psnpurple<token>` in a title. The switch is turned off again before the end;
 // nothing is deleted (the set is this attempt's alone).
 //
-// Fixture length: "2026 Topps psn<T> psnpurple<T> psngold<T> <name> #<n>" is at
-// most 75 characters (ATTEMPT_TOKEN is 12 at most), so neither level's name is
-// ever near the 80-character cuts, and a level's own name is never cut anyway.
+// Fixture length: since NEO-645 the card's own name ("Ace", "Bo", "Cy": a name
+// with no player link) is in its title after the levels, so the longest one,
+// "2026 Topps psn<T> psnpurple<T> psngold<T> Bo #2", is at most 74 characters
+// without its quiet words (ATTEMPT_TOKEN is 12 at most). Those (the "Insert"
+// type word, then the sport) are all a long token's title gives up; a level's
+// own name is never cut, so every insert and parallel check below reads the
+// same at any token length.
 //
 // R9: the drill goes through drillToCustomSet; the rows are made with "+ Custom"
 // and grouped as `insert-sub-variants-column-only-when-it-has-some` groups them.

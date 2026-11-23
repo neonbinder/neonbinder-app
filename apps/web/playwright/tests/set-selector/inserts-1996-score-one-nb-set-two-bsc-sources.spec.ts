@@ -10,9 +10,10 @@
 // to fit"), takes titles typed by hand (one typed past 80 is refused in place), and "Shorten the
 // set name for every card" saves a "Set name in titles" that retitles every card. From the walk
 // that is a regeneration (NEO-645 C7): every title is rebuilt with the set name, the ones typed by
-// hand included. The stored titles are read back; #3's typed title rebuilt and #12 keeping its
-// "cut short" mark (main's cut flag: a title built on the set name is flagged) are asserted LAST,
-// in P9.
+// hand included. A title that fits only because the set name was shortened, with nothing else
+// left out, is no blue check: the tile says "Set name shortened to fit." in a purple note (NEO-645,
+// Jason 2026-11-23). The stored titles are read back; #3's typed title rebuilt and #12 with no
+// "cut short" mark are asserted LAST, in P9.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectAfterMarketplace } from "../../support/marketplace-wait";
 import {
@@ -257,10 +258,16 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await titleTile.getByRole("button", { name: `Save and apply to all ${SERIES_1_CARDS} cards`, exact: true }).click();
   await expect(titleTile.getByText("Set name saved. The other cards' titles are updating.", { exact: true })).toBeVisible();
   await expect(box).toBeHidden();
-  // #12's STORED title is the set name's now, and nothing is left out of it (STEP P9 reads, last,
-  // that it is still flagged as cut: main's flag counts the set name itself as a cut).
+  // #12's STORED title is the set name's now, and nothing is left out of it. It fits only because
+  // the set name was shortened, so it is no blue check: the tile is plain (no "To check") and says
+  // so in a purple note (NEO-645, Jason 2026-11-23). The walk keeps the open card on screen though
+  // it no longer needs a person; STEP P9 reads, last, that its checklist row carries no cut mark.
   await expect(shownTitle(DAULTON_BOXED)).toBeVisible();
   await expect(leftOut).toHaveCount(0);
+  const shortenedNote = titleTile.getByRole("note").filter({ hasText: /^Set name shortened to fit\.$/ });
+  await expect(shortenedNote).toBeVisible();
+  await expect(titleTile).not.toHaveAccessibleDescription(/To check/);
+  await expectAccessible(page, { within: tidyWalk(page), label: "Listing title tile, Set name shortened to fit (SportLots paused)" });
   await saveForLater(page);
 
   // ── P8. The stored cards carry the chosen titles ──
@@ -320,7 +327,7 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await expect(columnOption(page, "Inserts", LONG_INSERT)).toBeVisible();
   await expect(page.getByRole("heading", { name: `Attributes for ${LONG_INSERT}` })).toBeHidden();
 
-  // ── P9 (LAST: #3's typed title rebuilt, #12's "cut short" mark kept) ──
+  // ── P9 (LAST: #3's typed title rebuilt, #12 with no "cut short" mark) ──
   // NEO-645 C7: the set name saved from the walk regenerates every title, a typed one included, so
   // #3's "Klesko #3" (which still left out "Ryan" and the team) is the generated title under the set
   // name, nothing of the hand edit kept. The row opens with the checklist at its end, so the card is
@@ -333,13 +340,14 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await expect(cardTitle).toHaveValue(KLESKO_BOXED);
   await closeCard();
   // #12 under the set name leaves nothing out (its team fits as the nickname, NEO-606, and the tile
-  // lists nothing under "Left out to fit"), yet it is still "worth a check: listing title was cut
-  // short": production's flag (`generatedTitleTruncatedFlag`, `coreFits`) counts a title built on
-  // the set name as cut, whatever it left out, and the walk's rebuild stores it as every
-  // generated title is stored. Main's rule, kept by this flow ticket (NEO-645 C7).
+  // listed nothing under "Left out to fit"): the shortened set name is the only cut, so its row is
+  // not "worth a check: listing title was cut short" (NEO-645, Jason 2026-11-23:
+  // `titleFitsOnShortName` clears `generatedTitleTruncatedFlag`). Before that rule the walk's
+  // rebuild stored the flag on every title built on the set name. The row itself is on screen
+  // (the positive the absence is read beside).
   await search.fill("Daulton");
   await expect(editCardButton(page, "12")).toBeVisible();
-  await expect(cardAttentionMark(page, "12", "listing title was cut short")).toBeVisible();
+  await expect(cardAttentionMark(page, "12", "listing title was cut short")).toHaveCount(0);
 }
 
 test(
