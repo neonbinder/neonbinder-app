@@ -2130,6 +2130,9 @@ export const insertParallelCardsPage = internalMutation({
         teamNames: card.teamNames,
         teamSplits: card.teamSplits,
         cameoNames: born.cameos.map((c) => c.name),
+        // NEO-645 — the name `insertCardRow` titles the copy with.
+        cardName: card.cardName,
+        printedPlayerNames: (card.playerLinks ?? []).map((l) => l.nameOnCard),
       });
       let outcome: ParallelCopyTitle | undefined =
         assessment.fits && !assessment.tidyUp

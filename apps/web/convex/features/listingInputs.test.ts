@@ -201,6 +201,24 @@ describe("listingInputs — the pre-save step and the insert agree (parity)", ()
   });
 });
 
+describe("assessNewCardListing — the card's own name (NEO-645)", () => {
+  test("a named card with no player carries its name; a placeholder or the player's own name changes nothing", () => {
+    const names = { playerNames: [] as string[], teamNames: [] as string[] };
+    const plain = assessNewCardListing({ cardNumber: "7" }, SET, names).assessment.title;
+    const named = assessNewCardListing({ cardNumber: "7" }, SET, { ...names, cardName: "Team Card" });
+    expect(named.inputs.subjectName).toBe("Team Card");
+    expect(named.assessment.title).toContain("Team Card #7");
+    expect(
+      assessNewCardListing({ cardNumber: "7" }, SET, { ...names, cardName: "Card #7" }).assessment.title,
+    ).toBe(plain);
+    const withPlayer = { playerNames: ["Mike Trout"], teamNames: [] as string[] };
+    const asPlayer = assessNewCardListing({ cardNumber: "7" }, SET, withPlayer).assessment.title;
+    expect(
+      assessNewCardListing({ cardNumber: "7" }, SET, { ...withPlayer, cardName: "Mike Trout" }).assessment.title,
+    ).toBe(asPlayer);
+  });
+});
+
 describe("the stored variation is the trimmed one (NEO-335 adversarial pass)", () => {
   test("a padded variation is stored trimmed, and neither side flags it", () => {
     const padded = CASES.find((c) => c.card.cardNumber === "44b")!;

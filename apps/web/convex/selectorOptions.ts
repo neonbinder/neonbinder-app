@@ -365,7 +365,7 @@ import { normalizeEntityName, rosterCompareKey } from "../lib/entities/normalize
 // NEO-591: the one names-first pairing core, shared with the publisher
 // checklist matcher (lib/checklists/match-published-checklist.ts).
 import { pairNamesFirst } from "../lib/cards/pair-names-first";
-import { placeholderCardName } from "../lib/cards/unnamed-card";
+import { cardSubjectName, placeholderCardName } from "../lib/cards/unnamed-card";
 // NEO-236: the team name split. `teamFullName` composes location + nickname
 // for every name that leaves this file; `teamRowFields`/`findTeamByFullName`
 // are the ONE place a team row's identity fields are derived and looked up.
@@ -7373,6 +7373,16 @@ export const addCustomCard = mutation({
       },
       mergedFeatures,
     );
+    // NEO-645 — the card's own name is in its title whenever it has one (a
+    // quick-add "CapperB" with no player), through the one rule the commit and
+    // Regenerate use, so a born title and a regenerated one agree.
+    const subjectName = cardSubjectName({
+      cardName: args.cardName,
+      playerNames: listingInputs.playerNames,
+      printedPlayerNames: hasLinkedPlayers ? playerLinks.map((l) => l.nameOnCard) : [],
+      cameoNames,
+    });
+    if (subjectName) listingInputs.subjectName = subjectName;
     const listingTitle = assessListingTitle(listingInputs);
 
     // NEO-358 — the card's sport, stamped once at insert for the collector's

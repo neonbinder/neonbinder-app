@@ -32,6 +32,7 @@
  * Keep it that way: the SPA imports this file.
  */
 
+import { cardSubjectName } from "../../lib/cards/unnamed-card";
 import type { AttentionItem } from "./cardAttention";
 import type { Id } from "../_generated/dataModel";
 import {
@@ -426,6 +427,14 @@ export function assessNewCardListing(
     teamNames?: string[];
     teamSplits?: ListingTeamSplit[];
     cameoNames?: string[];
+    /**
+     * NEO-645 — the card's own name and the players' printed spellings: the
+     * title carries the name whenever it has one (`cardSubjectName`), as the
+     * born row and Regenerate title it. Omitted by a caller with no name to
+     * give; the assessment then reads as it always did.
+     */
+    cardName?: string;
+    printedPlayerNames?: string[];
   },
 ): {
   mergedFeatures: Record<string, string>;
@@ -435,6 +444,13 @@ export function assessNewCardListing(
 } {
   const mergedFeatures = mergeCardFeatures(card, set);
   const inputs = listingInputsForCard(card, set, names, mergedFeatures);
+  const subjectName = cardSubjectName({
+    cardName: names.cardName,
+    playerNames: names.playerNames,
+    printedPlayerNames: names.printedPlayerNames,
+    cameoNames: names.cameoNames,
+  });
+  if (subjectName) inputs.subjectName = subjectName;
   const assessment = assessListingTitle(inputs);
   return {
     mergedFeatures,

@@ -495,6 +495,34 @@ describe("addCustomCard — the listing title names the LINKED players", () => {
     expect(row!.listingTitle).toContain("Aaron Judge");
   });
 
+  test("NEO-645: a quick-add card with no player carries its own name in its title, as Regenerate would write it", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { leafId } = await seedTree(t);
+
+    const named = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: leafId,
+      cardNumber: "102",
+      cardName: "CapperB",
+    });
+    const row = await getCard(t, named);
+    expect(row!.listingTitle).toContain("CapperB");
+    // One rule: the born title and the one Regenerate offers are the same.
+    const preview = await asAdmin.query(api.selectorOptions.previewListingTitle, {
+      cardId: named,
+    });
+    expect(preview.title).toBe(row!.listingTitle);
+
+    // NB's own placeholder is no name, and a name that is the player says
+    // nothing the player does not.
+    const placeholder = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: leafId,
+      cardNumber: "103",
+      cardName: "Card #103",
+    });
+    expect((await getCard(t, placeholder))!.listingTitle).not.toContain("Card #");
+  });
+
   test("falls back to the pending names for an old-client write", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
