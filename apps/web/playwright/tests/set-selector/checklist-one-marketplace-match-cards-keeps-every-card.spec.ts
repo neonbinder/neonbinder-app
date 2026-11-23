@@ -627,6 +627,11 @@ test(
 
     // NEO-645 read-back: the name given at STEP 10b is stored, and Save name rebuilt the title with
     // it, after the levels and ahead of the number (no player or cameo stands between them).
+    // The card list is windowed (only the rows near its scroll position are mounted), and the walk
+    // closing leaves it wherever it was, so the card is found through the search box (as STEP 8
+    // does), not assumed on screen. Its number is a minted token: exactly one row.
+    await cardSearch.fill(card);
+    await expect(page.getByText(/^1 of [0-9]+ cards$/)).toBeVisible();
     await editCardButton(page, card).click();
     const handDrawer = page.getByRole("dialog");
     await expect(handDrawer.getByRole("textbox", { name: "Card name", exact: true })).toHaveValue(HAND_CARD_NAME);
@@ -635,5 +640,6 @@ test(
     );
     await handDrawer.getByRole("button", { name: "Done editing card" }).click();
     await expect(handDrawer).toBeHidden();
+    await cardSearch.fill("");
   },
 );
