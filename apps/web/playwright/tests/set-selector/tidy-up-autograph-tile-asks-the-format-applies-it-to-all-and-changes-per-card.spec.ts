@@ -37,7 +37,7 @@ import type { Locator } from "@playwright/test";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { editCardButton } from "../../support/cards";
 import { expectStepWithSportLots } from "../../support/marketplace-wait";
-import { CHECKLISTS, confirmChecklistMatchCards, matchCardsDialog, usePublishersChecklist } from "../../support/published-checklist";
+import { CHECKLISTS, savedLine, settleChecklistFetch, usePublishersChecklist } from "../../support/published-checklist";
 import {
   COLD_SYNC,
   columnHeading,
@@ -73,8 +73,6 @@ const PLAYERS: Readonly<Record<string, string>> = {
   "BDNA-XN": "Xavier Neyens",
 };
 const BOWMAN_DRAFT = { sport: "Baseball", year: "2025", manufacturer: "Bowman", set: "Bowman Draft" };
-/** A live BSC (+ SportLots) checklist round trip: the ceiling kept while SportLots is live (`expectStepWithSportLots`). */
-const CHECKLIST_FETCH = 120_000;
 
 const PILL = {
   onCard: /Value for Autographed: Auto \(On Card\)/,
@@ -141,22 +139,16 @@ test(
     const facts = await usePublishersChecklist(page, CHECKLISTS.bowmanDraftNightsAutographs2025);
     await syncChecklistButton(page).click();
 
-    // NEO-496: BSC plus the uploaded checklist are two sources, so Match Cards opens with
-    // SportLots paused or live. Live SportLots keeps the old ceiling; paused, BSC alone under the
-    // fetch's wait line (`expectStepWithSportLots`).
-    const matchCards = matchCardsDialog(page);
-    await expectStepWithSportLots(page, matchCards.getByRole("button", { name: "Confirm card matches", disabled: false }), env, {
-      liveMs: CHECKLIST_FETCH,
-      what: "the insert checklist fetch",
-    });
-    await expectAccessible(page, { within: matchCards, label: "Match Cards dialog (Bowman Draft Nights Autographs)" });
-    // Confirm SAVES the cards (NEO-645: commit first, walk second); our own write, the 7 s bar.
-    await confirmChecklistMatchCards(page, { facts, what: "the Bowman Draft Nights Autographs fetch" });
+    // NEO-496: BSC plus the uploaded checklist are two sources. NEO-640: the file is BSC's own five
+    // cards, each paired by its number at 100%, so Match Cards is skipped. The helper waits on the
+    // fetch (GUIDE R5's marketplace wait, measured time plus 7 s) and proves the saved line with its
+    // reason and the teams line. NEO-645 C5: the cards SAVE first; the walk opens after.
+    await settleChecklistFetch(page, env, { facts, what: "the Bowman Draft Nights Autographs fetch" });
 
     // ── STEP 4: (a) the walk opens, and its Autograph tile asks ──
     // REQUIRED (R2): every card is tagged AU and the part has no format, so every card is pink
     // and the walk always opens. A commit that did not see AU leaves nothing pink: fails here.
-    const opened = await settleWalkAfterCommit(page, page.getByText(/Saved 5 cards\./).first());
+    const opened = await settleWalkAfterCommit(page, savedLine(page, 5));
     expect(opened, "five AU cards with no autograph format open the walk").toBe(true);
     const walk = tidyWalk(page);
 

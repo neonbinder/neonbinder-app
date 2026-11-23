@@ -37,7 +37,7 @@
 //   the 29 BA- cards of fixtures/checklists/2026-bowman-insert-anime.csv) is
 //   in the comment at LONG_PARALLEL and CARRY_PARALLEL.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { expectAfterMarketplace, expectStepWithSportLots } from "../../support/marketplace-wait";
+import { expectAfterMarketplace } from "../../support/marketplace-wait";
 import {
   columnHeading,
   columnOption,
@@ -50,7 +50,7 @@ import {
   syncChecklistButton,
 } from "../../support/set-builder";
 import { editCardButton } from "../../support/cards";
-import { CHECKLISTS, confirmChecklistMatchCards, matchCardsDialog, usePublishersChecklist } from "../../support/published-checklist";
+import { CHECKLISTS, savedLine, settleChecklistFetch, usePublishersChecklist } from "../../support/published-checklist";
 import { needsYouPill, settleWalkAfterCommit, tidyForTheParallelBuild, tidyWalk } from "../../support/tidy-walk";
 import type { Page } from "@playwright/test";
 
@@ -267,25 +267,15 @@ test(
     const facts = await usePublishersChecklist(page, CHECKLISTS.bowmanAnime2026);
     await syncChecklistButton(page).click();
 
-    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards opens
-    // with SportLots paused or live. The cards come from BSC (and SportLots, paired, when it is
-    // live): GUIDE R5's marketplace wait, measured time plus 7 s, never a flat ceiling.
-    const matchCards = matchCardsDialog(page);
-    await expectAfterMarketplace(page, matchCards.getByRole("button", { name: "Confirm card matches", disabled: false }), {
-      platform: "BuySportsCards",
-      what: "the Anime fetch's Match Cards",
-    });
-    await expect(matchCards.getByRole("heading", { name: "Match Cards — Anime" })).toBeVisible();
-    await expectAccessible(page, { within: matchCards, label: "Match Cards dialog" });
-    // Proves the teams line while the dialog is open, keeps any card the file leaves out, confirms.
-    await confirmChecklistMatchCards(page, { facts, what: "the Anime fetch" });
+    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources. NEO-640: the file is
+    // BSC's own 36 cards, each paired by its number at 100%, so Match Cards is skipped with
+    // SportLots paused or live. The helper waits on the fetch (GUIDE R5's marketplace wait,
+    // measured time plus 7 s) and proves the saved line with its reason and the teams line.
+    await settleChecklistFetch(page, env, { facts, what: "the Anime fetch" });
 
-    // NEO-645: Confirm saves the cards, and the Tidy Up walk opens on its own when a
-    // card needs a person. Live, the save follows the pairing's Confirm (the flow's 60 s);
-    // paused, our own queueing, measured 1.8 s at most on the #487 merge-group run (GUIDE),
-    // the standard 7 s.
-    const saved = page.getByText(/Saved [1-9][0-9]* cards?\./).first();
-    await expectStepWithSportLots(page, saved, env, { liveMs: 60_000, what: "the Anime save", statusLine: false });
+    // NEO-645 C5: the cards SAVE first, then the Tidy Up walk opens on its own when a card needs
+    // a person.
+    const saved = savedLine(page, facts.rows);
     if (await settleWalkAfterCommit(page, saved)) {
       await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk after the Anime save" });
       // J3: the parallels copy Anime's cards, so they are built only once no card has a name
@@ -424,9 +414,9 @@ test(
     // the plain text where the door was, and the ticker's live line (exactly
     // one of them a status). A positive first: a negative passes on a page
     // that never drew (GUIDE, "negative asserts").
-    const savedLine = `Saved ${left} titles.`;
-    await expect(page.getByRole("status").filter({ hasText: savedLine })).toHaveCount(1);
-    await expect(page.getByText(savedLine)).toHaveCount(2);
+    const titlesSaved = `Saved ${left} titles.`;
+    await expect(page.getByRole("status").filter({ hasText: titlesSaved })).toHaveCount(1);
+    await expect(page.getByText(titlesSaved)).toHaveCount(2);
     await expect(builtLine).toBeVisible();
     await expect(builtLine).not.toContainText(fixClause);
     await expect(page.getByRole("button", { name: /^Fix [0-9]+ card titles?$/ })).toHaveCount(0);

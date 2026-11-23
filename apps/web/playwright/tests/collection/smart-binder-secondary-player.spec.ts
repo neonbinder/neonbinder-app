@@ -11,9 +11,9 @@
 //
 // The flow:
 // - The set builder (admin): the checklist is fetched and committed if it is
-//   still empty (the publisher's checklist uploaded first; Match Cards'
-//   Confirm saves it and the Tidy Up walk that opens is closed with "Save for
-//   later", answering nothing), or adopted as it is (a rerun on the same seed). Card #355's
+//   still empty (the publisher's checklist uploaded first; every card pairs at
+//   100%, so Match Cards sits out and the cards save first, and the Tidy Up
+//   walk that opens is closed with "Save for later", answering nothing), or adopted as it is (a rerun on the same seed). Card #355's
 //   drawer gets P under "Also on this card"; its own player stays.
 // - The collector marks #123 (P's own) and #355 Have in Main; #355's card
 //   detail lists P under "Also on this card" (Back closes the detail).
@@ -72,7 +72,7 @@ import { cameoPhrase as cameoWords, deleteBinder, holdInMain, openCollectorCheck
 import type { CollectorSet } from "../../support/collection";
 import type { FlowEnv } from "../../support/env";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { CHECKLISTS, checklistRows, confirmChecklistMatchCards, usePublishersChecklist } from "../../support/published-checklist";
+import { CHECKLISTS, checklistRows, savedLine, settleChecklistFetch, usePublishersChecklist } from "../../support/published-checklist";
 import { drillToBaseVariant, drillToColdManufacturer, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 import { saveForLater, settleWalkAfterCommit, tidyUpName, tidyWalk } from "../../support/tidy-walk";
 
@@ -103,7 +103,7 @@ const TEAM_LEADER_NUMBERS = checklistRows(CHECKLISTS.topps1984FootballBase)
  *
  * Its own fetch rather than `fetchChecklistToTidyWalk` (R9 divergence): that
  * helper's result line counts every row the file answers, while here the
- * team-leader cards are disagreements (Match Cards' teams line counts the rest).
+ * team-leader cards are disagreements (the saved line's teams count leaves them out).
  */
 async function ensureChecklist(page: Page, env: FlowEnv): Promise<void> {
   // No other spec opens Football 1984, so every column may sync itself: the
@@ -120,16 +120,19 @@ async function ensureChecklist(page: Page, env: FlowEnv): Promise<void> {
   // names its team or says No Team, so BSC is asked for no card one by one.
   const facts = await usePublishersChecklist(page, CHECKLISTS.topps1984FootballBase);
   await syncChecklistButton(page).click();
-  // NEO-496 (D10, NQ1): the uploaded checklist is a second source, so the fetch opens Match Cards on
-  // either branch (SportLots paused or not). The helper waits on it (7 s of ours plus BSC's), proves the
-  // teams line while it is open (the only time before the save), keeps any BSC-only card and confirms.
-  await confirmChecklistMatchCards(page, { facts: { ...facts, matched: facts.matched - TEAM_LEADER_NUMBERS.length }, what: "the empty checklist's fetch" });
-  // NEO-645: Confirm SAVES the cards (our own write, 7 s), and the per-card Tidy Up walk opens by
-  // itself when a card still needs a person (names the catalogue lacks, the team-leader cards'
-  // disagreements). None of that is this spec's claim: "Save for later" closes the walk and writes
-  // nothing, as the old wizard's "Skip remaining names" left every name unanswered.
-  const saved = page.getByText(/Saved [1-9][0-9]* cards\./).first();
-  await expect(saved).toBeVisible();
+  // NEO-496 (D10, NQ1): the uploaded checklist is a second source. NEO-640: the file is BSC's own
+  // 396 cards, each paired by its number at 100% (a team-leader card's club is a team disagreement,
+  // which the walk settles, not Match Cards), so Match Cards is skipped. The helper waits on the
+  // fetch (7 s of ours plus BSC's) and proves the saved line with its reason and the teams line.
+  await settleChecklistFetch(page, env, {
+    facts: { ...facts, matched: facts.matched - TEAM_LEADER_NUMBERS.length },
+    what: "the empty checklist's fetch",
+  });
+  // NEO-645 C5: the cards SAVE first, then the per-card Tidy Up walk opens by itself when a card
+  // still needs a person (names the catalogue lacks, the team-leader cards' disagreements). None of
+  // that is this spec's claim: "Save for later" closes the walk and writes nothing, as the old
+  // wizard's "Skip remaining names" left every name unanswered.
+  const saved = savedLine(page, facts.rows);
   if (await settleWalkAfterCommit(page, saved)) {
     await expect(tidyWalk(page)).toHaveAccessibleName(tidyUpName({ year: BUILD.year, set: BUILD.set }));
     await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk after the 1984 Topps Football fetch" });
