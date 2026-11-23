@@ -156,3 +156,4 @@
 - [Key-chain change vs the reference seed](patterns_key_chain_change_vs_reference_seed.md) — seed imports old nameNormalized; known na…
 - [Match Cards skip is a per-fixture fact](patterns_match_cards_skip_is_a_per_fixture_fact.md) — NEO-640: matchCards fact, progress group + Cancel card fetch, skip copy, absence by role
 - [Compute titles with tsx first](patterns_compute_titles_with_tsx_before_a_title_spec_runs.md) — assessListingTitle offline before a fresh-only title run; variation never cut, walk writes retitle
+- [Typed-title overwrite proof needs every word](typed-title-overwrite-proof-needs-every-word.md) — NEO-637 rebuilds a typed title missing words anyway; shorten twice on one card
