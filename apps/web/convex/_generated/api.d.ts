@@ -257,7 +257,6 @@ import type * as tidyCareerGap from "../tidyCareerGap.js";
 import type * as tidyListingText from "../tidyListingText.js";
 import type * as tidyMigrations from "../tidyMigrations.js";
 import type * as tidyNames from "../tidyNames.js";
-import type * as tidyNewPlayers from "../tidyNewPlayers.js";
 import type * as tidyPickSource from "../tidyPickSource.js";
 import type * as tidyRescope from "../tidyRescope.js";
 import type * as tidySkips from "../tidySkips.js";
@@ -523,7 +522,6 @@ declare const fullApi: ApiFromModules<{
   tidyListingText: typeof tidyListingText;
   tidyMigrations: typeof tidyMigrations;
   tidyNames: typeof tidyNames;
-  tidyNewPlayers: typeof tidyNewPlayers;
   tidyPickSource: typeof tidyPickSource;
   tidyRescope: typeof tidyRescope;
   tidySkips: typeof tidySkips;

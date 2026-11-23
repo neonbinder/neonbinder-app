@@ -4283,11 +4283,6 @@ describe("NEO-645: the Tidy Up surface is admin-gated", () => {
           cardId: s.cardId,
         }),
     ],
-    ["tidyNewPlayers.newPlayerNames", (t, s) => t.query(api.tidyNewPlayers.newPlayerNames, { leafId: s.leafId })],
-    [
-      "tidyNewPlayers.addNewPlayers",
-      (t, s) => t.mutation(api.tidyNewPlayers.addNewPlayers, { leafId: s.leafId, names: ["Rookie Newguy"] }),
-    ],
   ];
 
   test.each(calls)("%s refuses a signed-out caller", async (_name, call) => {

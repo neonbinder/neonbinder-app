@@ -5,9 +5,8 @@
  *
  * Every lookup that returned nothing was written `status: "error"`: a plain
  * Wikidata miss and a sport with no Wikidata mapping, the same as a network
- * failure. "Add all N new players" offers a name only when its lookup
- * FINISHED (`ready`), so it never offered a new rookie, the exact name it
- * exists for. The row now says which of the two it is:
+ * failure, so a new rookie's row read as a lookup that could not complete. The
+ * row now says which of the two it is:
  *
  *   - a lookup that finished and found nothing (Wikidata answered with no
  *     match, or the sport has no Wikidata mapping so nothing was asked) is

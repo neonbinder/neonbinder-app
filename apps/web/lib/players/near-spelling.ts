@@ -1,8 +1,6 @@
 /**
  * NEO-645 (S2) — which players on file are a misspelling of a printed name.
- * Pure: the caller supplies the candidates (`players.nearSpelledPlayers`, read
- * by `tidyNewPlayers`, and `tidyCameo`'s cameo offer), this decides who counts
- * as near.
+ * Pure: this decides who counts as near (`tidyCameo`'s cameo offer calls it).
  *
  * A candidate is near when, under the shared name fold (`entityNameTokens`:
  * accents, case, punctuation):

@@ -31,8 +31,8 @@
  * "Not a player" is the strict reading: a ruled-out name, or a name nobody
  * answers to (no primary, sport or alias match). A name that might be a player
  * (an alias match, a tie, an unanswered lookup that found one) offers nothing.
- * A name that is a near spelling of the player's own (`nearSpellingDistance`,
- * the helper "Did you mean" and Add all use) is the same person misspelled,
+ * A name that is a near spelling of the player's own (`nearSpellingDistance`)
+ * is the same person misspelled,
  * never a title, and offers nothing either.
  */
 

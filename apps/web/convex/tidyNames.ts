@@ -235,7 +235,7 @@ function cleanName(raw: string): string {
   return name;
 }
 
-export async function readRow(
+async function readRow(
   ctx: Pick<MutationCtx, "db">,
   scopeId: Id<"selectorOptions">,
   kind: "player" | "team",
@@ -612,12 +612,9 @@ export const createPlayer = mutation({
 
 /**
  * The body of Add as new player, once the name is resolved to a card, its printed
- * row and its name row. `createPlayer` and the bulk "Add all new players"
- * (`tidyNewPlayers`) both end here, so a player added in bulk is created, matched
- * to career teams, sported and answered exactly as one added from its card.
- * Every refusal happens before the first write.
+ * row and its name row. Every refusal happens before the first write.
  */
-export async function createPlayerOnTarget(
+async function createPlayerOnTarget(
   ctx: MutationCtx,
   userId: string,
   target: Awaited<ReturnType<typeof resolveName>>,
@@ -626,11 +623,6 @@ export async function createPlayerOnTarget(
     oneNamePlayer?: true;
     addSetSport?: true;
     excludedCareerTeamNames?: string[];
-    /**
-     * Created by "Add all new players". The operator is not on this card, so a
-     * player Wikidata gave no career for is a purple note, not a blue check.
-     */
-    bulk?: true;
   },
 ): Promise<{ playerId: Id<"players">; answerGen: number }> {
   const { row, scopeId, card } = target;
@@ -697,19 +689,12 @@ export async function createPlayerOnTarget(
     playerId,
     ...(args.addSetSport ? { addSetSport: true as const } : {}),
   });
-  // Only THIS card shows the new player's career as blue. A player added in bulk
-  // with no career from Wikidata is a purple note instead (near-universal for
-  // rookies; a hundred of them must not be a hundred stops). A career Wikidata
-  // did give stays blue: that one is worth a look.
-  const noCareer =
-    (enrichment?.careerTeams ?? []).length === 0 &&
-    (enrichment?.undatedCareerTeams ?? []).length === 0;
-  const kind = args.bulk && noCareer ? ("newPlayerNoCareer" as const) : ("newPlayerCareer" as const);
+  // Only THIS card shows the new player's career as blue.
   const fresh = await ctx.db.get(card._id);
   if (fresh) {
     const checks = [...(fresh.tidyChecks ?? [])];
-    if (!checks.some((c) => c.kind === kind && c.playerId === playerId)) {
-      checks.push({ kind, playerId });
+    if (!checks.some((c) => c.kind === "newPlayerCareer" && c.playerId === playerId)) {
+      checks.push({ kind: "newPlayerCareer", playerId });
       await ctx.db.patch(card._id, { tidyChecks: checks.slice(-TIDY_CHECKS_MAX) });
     }
   }

@@ -198,7 +198,6 @@ export type TidyDisagreement = {
 export type TidyCheck =
   | { kind: "careerGap"; playerId: string; teamId: string }
   | { kind: "newPlayerCareer"; playerId: string }
-  | { kind: "newPlayerNoCareer"; playerId: string }
   | { kind: "teamFill"; teamIds: readonly string[]; reason: "otherCards" | "career" };
 
 /**
@@ -664,23 +663,6 @@ export function currentReviewKeys(row: AttentionCardRow): string[] {
     if (item.level === "check" && !keys.includes(item.key)) keys.push(item.key);
   }
   return keys.slice(0, TIDY_REVIEWED_MAX_KEYS);
-}
-
-/**
- * The players this card carries that "Add all new players" created with no
- * Wikidata career: a purple note on the Player tile, never an attention item.
- */
-export function newPlayerNoCareerOf(
-  row: Pick<AttentionCardRow, "tidyChecks" | "playerIds">,
-): string[] {
-  const onCard = new Set<string>(row.playerIds ?? []);
-  const out: string[] = [];
-  for (const c of row.tidyChecks ?? []) {
-    if (c.kind === "newPlayerNoCareer" && onCard.has(c.playerId) && !out.includes(c.playerId)) {
-      out.push(c.playerId);
-    }
-  }
-  return out;
 }
 
 /** The commit's team-fill note on a card, when its teams are still the ones it wrote. */

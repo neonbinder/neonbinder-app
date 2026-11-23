@@ -30,7 +30,6 @@ import {
 } from "./lib/careerCoverage";
 import { findTeamsByFullName } from "./lib/teamRow";
 import { teamFullName } from "../lib/teams/team-name";
-import { nearSpellingDistance } from "../lib/players/near-spelling";
 // NEO-254 — the card-year narrowing. Pure and shared with the unit tests; see
 // that module for why the span is min-from..max-to and why an unknown span is
 // never a reason to exclude a candidate.
@@ -3186,50 +3185,6 @@ export const nearMatches = query({
     return results;
   },
 });
-
-/**
- * NEO-645 (S2) — the players in a sport whose name is a near spelling of `name`
- * (`nearSpellingDistance`), unranked. The bulk "Add all new players" check
- * (`tidyNewPlayers`) uses it to leave out a name that is a near spelling of a
- * player on file; nothing offers these to the operator as a pick. `name` is
- * already trimmed and within `MAX_PLAYER_NAME_LENGTH`; the caller bounds it
- * before any read.
- */
-export async function nearSpelledPlayers(
-  ctx: QueryCtx | MutationCtx,
-  name: string,
-  sportId: Id<"selectorOptions">,
-): Promise<Array<{ doc: Doc<"players">; distance: number }>> {
-  const tokens = nameTokens(name);
-  if (tokens.length === 0) return [];
-
-  const terms = new Set<string>([name]);
-  if (tokens.length >= 2) {
-    const first = tokens[0];
-    const last = tokens[tokens.length - 1];
-    const middle = tokens.slice(0, -1).join(" ");
-    if (last.length >= 4) terms.add(`${middle} ${last.slice(0, 3)}`);
-    if (first.length >= 4) terms.add(`${last} ${first.slice(0, 3)}`);
-  }
-  const found = new Map<Id<"players">, Doc<"players">>();
-  for (const term of terms) {
-    const hits = await ctx.db
-      .query("players")
-      .withSearchIndex("search_name", (q) => q.search("name", term).eq("sportId", sportId))
-      .take(NEAR_SPELLING_LEG_READ);
-    for (const hit of hits) found.set(hit._id, hit);
-  }
-
-  const near: Array<{ doc: Doc<"players">; distance: number }> = [];
-  for (const doc of found.values()) {
-    const distance = nearSpellingDistance(name, doc.name);
-    if (distance !== null) near.push({ doc, distance });
-  }
-  return near;
-}
-
-/** Search hits read per leg; three legs, so at most 3x this many rows are scored. */
-const NEAR_SPELLING_LEG_READ = 10;
 
 export const get = query({
   args: { id: v.id("players") },
