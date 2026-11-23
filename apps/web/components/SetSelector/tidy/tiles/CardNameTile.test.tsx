@@ -39,7 +39,7 @@ function renderTile(attention: TidyAttention = needsName, onAnswered: () => void
   );
 }
 
-const field = () => screen.getByRole("textbox", { name: "Name for this card" }) as HTMLInputElement;
+const field = () => screen.getByRole("textbox", { name: "Card name" }) as HTMLInputElement;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -103,6 +103,33 @@ describe("CardNameTile", () => {
     expect(screen.getByRole("alert").textContent).not.toBe("");
     fireEvent.change(field(), { target: { value: "C" } });
     expect(screen.getByRole("alert").textContent).toBe("");
+  });
+
+  it("a refused save from the button puts focus back in the field, and the field points at the alert", async () => {
+    renderTile();
+    expect(field().getAttribute("aria-required")).toBe("true");
+    expect(field().getAttribute("aria-describedby")).toBeNull();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save name" })));
+    expect(document.activeElement).toBe(field());
+    const alert = screen.getByRole("alert");
+    expect(field().getAttribute("aria-describedby")).toBe(alert.id);
+    expect(alert.id).not.toBe("");
+  });
+
+  it("Enter lets go of the field once the name is saved, as the button path does", async () => {
+    renderTile();
+    fireEvent.change(field(), { target: { value: "Checklist" } });
+    act(() => field().focus());
+    expect(document.activeElement).toBe(field());
+    await act(async () => fireEvent.keyDown(field(), { key: "Enter" }));
+    expect(document.activeElement).not.toBe(field());
+  });
+
+  it("an Enter that confirms an IME composition is not a save", async () => {
+    renderTile();
+    fireEvent.change(field(), { target: { value: "チェックリスト" } });
+    await act(async () => fireEvent.keyDown(field(), { key: "Enter", isComposing: true }));
+    expect(mockUpdateCard).not.toHaveBeenCalled();
   });
 
   it("holds a name to a player name's length", () => {

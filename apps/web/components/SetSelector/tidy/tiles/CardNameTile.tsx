@@ -1,4 +1,4 @@
-import { useRef, useState, type KeyboardEvent } from "react";
+import { useId, useRef, useState, type KeyboardEvent } from "react";
 import { useMutation } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import { MAX_PLAYER_NAME_LENGTH } from "../../../../lib/players/name-limits";
@@ -33,6 +33,7 @@ export default function CardNameTile({ row, attention }: TidyTileProps) {
   const [draft, setDraft] = useState("");
   const [refusal, setRefusal] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const alertId = useId();
 
   if (!attention.items.some((i) => i.kind === "needsName")) return null;
 
@@ -40,6 +41,8 @@ export default function CardNameTile({ row, attention }: TidyTileProps) {
     const name = draft.replace(/\s+/g, " ").trim();
     if (!hasCardName(name)) {
       setRefusal("Type what this card is, like Checklist or Team Card.");
+      // Back to the field, whichever control asked (the button took focus).
+      inputRef.current?.focus();
       return;
     }
     setRefusal(null);
@@ -47,11 +50,17 @@ export default function CardNameTile({ row, attention }: TidyTileProps) {
       () => updateCard({ id: row._id, cardName: name, regenerateListing: true }),
       "Couldn't save that name. Try again.",
     );
-    if (ok) answered();
+    if (ok) {
+      // Enter and the button land focus in the same place: the field lets go
+      // before the tile goes, so the walk's own focus handling takes over.
+      inputRef.current?.blur();
+      answered();
+    }
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key !== "Enter") return;
+    // An Enter that confirms an IME composition is not a save.
+    if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
     event.preventDefault();
     void save();
   };
@@ -76,8 +85,9 @@ export default function CardNameTile({ row, attention }: TidyTileProps) {
           readOnly={write.busy}
           aria-busy={write.busy || undefined}
           aria-invalid={error ? true : undefined}
-          aria-label="Name for this card"
-          placeholder="Checklist, Team Card…"
+          aria-required="true"
+          aria-describedby={error ? alertId : undefined}
+          aria-label="Card name"
           className="min-w-0 flex-1 p-1.5 text-sm"
         />
         <NeonButton
@@ -90,7 +100,7 @@ export default function CardNameTile({ row, attention }: TidyTileProps) {
           {write.busy ? "Saving…" : "Save name"}
         </NeonButton>
       </div>
-      <p role="alert" className="text-xs text-neon-pink-text empty:hidden">
+      <p id={alertId} role="alert" className="text-xs text-neon-pink-text empty:hidden">
         {error}
       </p>
     </TidyTile>
