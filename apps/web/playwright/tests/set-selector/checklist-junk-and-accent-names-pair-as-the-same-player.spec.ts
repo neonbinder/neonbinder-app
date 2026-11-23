@@ -22,7 +22,7 @@
 //   CHECKLIST ONLY: the row "Sh\ohei Ohtani" (#11, no BSC card) reads "Shohei
 //     Ohtani" and, kept, sits on the Keeping shelf under that clean name.
 //   CANCEL: Match Cards' Cancel discards the one keep; no card is saved, the
-//     Tidy Up walk never opens, and the checklist is still empty.
+//     Tidy Up walk never opens, and the checklist holds the cards it held before.
 //
 // NEO-645 (D2): the entry-review wizard is gone, and a walk on this set would
 // commit it. The old WIZARD half (the kept junk row reaches the catalogue's
@@ -30,16 +30,20 @@
 // convex/tidyNames.cleansedName.test.ts: a junk or accented printed name
 // answered once reaches its cleansed twin through the `tidyNames` fan-out.
 //
-// FIXTURE (SET-REGISTRY.md, "Topps Stars of MLB Network", one of its readers): the
-// read-only fixture, Baseball > 2024 > Topps > Topps Stars of MLB Network >
-// Base, 10 BSC cards, BSC only under a SportLots pause. Every reader exits
-// Cancel; nothing may commit it. Every one of the 10 cards has a row, so BSC is
-// asked for no card (GUIDE, "Checklist first"); the new row #11 is checklist-only
-// and costs no BSC call. The brief named the 2026 Donruss Signature Series
-// insert: its sole writer COMMITS it in-pass, so a reader there sees a committed
-// set or not depending on shard order, and a file covering fewer than its 14
-// cards asks BSC live per card; this set has neither problem.
+// FIXTURE (SET-REGISTRY.md, "Topps Stars of MLB Network", a reader beside its
+// sole writer): Baseball > 2024 > Topps > Topps Stars of MLB Network > Base, 10
+// BSC cards, BSC only under a SportLots pause. The writer
+// (sport-no-teams-bsc-no-team-answer-stamps-no-team-once-the-person-is-added)
+// COMMITS the set, so this spec meets it empty or with the writer's 10 cards,
+// depending on shard order. It reads the checklist's total before the fetch
+// (`checklistTotal`) and proves Cancel left it unchanged; Match Cards opens and
+// pairs the same way on both (measured on the committed set: 10 before, 10
+// after, Matched (10)). Every one of the 10 cards has a row, so BSC is asked for
+// no card (GUIDE, "Checklist first"); the new row #11 is checklist-only and
+// costs no BSC call. Nothing here writes, so it never spends the writer's
+// fresh-only seed.
 //
+import type { Page } from "@playwright/test";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectAfterMarketplace } from "../../support/marketplace-wait";
 import {
@@ -66,6 +70,27 @@ const OHTANI_ROW: ChecklistRow = { number: "11", player: OHTANI_JUNK, team: "No 
 
 /** One cell into CSV (quoted when it holds a comma or a quote). */
 const csvCell = (cell: string) => (/[",\n]/.test(cell) ? `"${cell.replace(/"/g, '""')}"` : cell);
+
+/**
+ * The checklist's card total as the page says it: 0 on the empty line, else M from the search
+ * line's "N of M cards" (any query prints the total; the field is cleared again after). The set's
+ * sole writer may have committed it earlier on this seed (shard order), so the spec reads the total
+ * instead of assuming the empty line.
+ */
+async function checklistTotal(page: Page): Promise<number> {
+  const empty = page.getByText("No cards in this checklist yet.", { exact: true });
+  const search = page.getByRole("searchbox", { name: "Search cards", exact: true });
+  await expect(empty.or(search)).toBeVisible();
+  if (await empty.isVisible()) return 0;
+  await search.fill(OHTANI);
+  const line = page.getByRole("search").getByRole("status").filter({ hasText: /^[0-9]+ of [0-9]+ cards?$/ });
+  await expect(line).toBeVisible();
+  const total = Number((await line.innerText()).match(/of ([0-9]+) cards?$/)?.[1]);
+  await search.fill("");
+  await expect(search).toHaveValue("");
+  await expect(line).toHaveCount(0);
+  return total;
+}
 
 /** The capture's rows with #3 and #5 respelled, then the checklist-only row. */
 function buildChecklist(): { csv: string; rows: number } {
@@ -101,8 +126,8 @@ test(
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
     await drillToBaseVariant(page, env, { set: SET });
-    // R2 precondition: the read-only fixture holds no cards (nothing may commit it).
-    await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
+    // The set's total before the fetch: 0 on a fresh seed, the writer's cards once it has run.
+    const cardsBefore = await checklistTotal(page);
 
     await usePastedChecklist(page, checklist.csv, checklist.rows);
     await syncChecklistButton(page).click();
@@ -165,7 +190,7 @@ test(
     await page.getByRole("button", { name: "Discard 1 pairing", exact: true }).click();
     await expect(matchCards).toBeHidden();
     await expect(page.getByText("Sync cancelled — no cards saved.")).toBeVisible();
-    await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
+    expect(await checklistTotal(page), "the cancelled fetch added no card").toBe(cardsBefore);
     await expect(tidyWalk(page), "a cancelled fetch opens no Tidy Up walk").toHaveCount(0);
   },
 );
