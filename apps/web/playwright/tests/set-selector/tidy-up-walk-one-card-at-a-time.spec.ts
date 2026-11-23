@@ -1,6 +1,7 @@
 // R1 - ONE feature (NEO-645): Tidy Up walks a checklist ONE CARD AT A TIME.
-// Each card shows its header ("#<n> · <name>") and its tally ("1 to fix" /
-// "1 to check"), and the header says how many cards are left. The footer moves:
+// Each card shows its header ("#<n> · <name>"), a blue "1 to check" tally when
+// something is worth a check (a pink card's "to fix" count is the footer's status
+// line, NEO-645 C2), and the header says how many cards are left. The footer moves:
 //   * Save & next (Enter) is held while anything on the card is pink, and the
 //     status line says why ("1 to fix before this card can save. ...");
 //   * Save for later (Esc) closes the walk and writes nothing;
@@ -126,10 +127,9 @@ test(
     await expect(blueBadge(cardC.number)).toBeVisible();
     await expect(needsYouPill(page)).toHaveText("3 need you, 2 to fix");
 
-    // ── #1, pink: the header, the tally, the count, and Save & next held ──
+    // ── #1, pink: the header, the count, Save & next held, and the footer's line says why ──
     await openTidyWalk(page, { title });
     await expect(tidyCardHeader(page, header(cardA))).toBeVisible();
-    await expect(walk.getByText("1 to fix", { exact: true })).toBeVisible();
     await expectCardsLeft(page, 3);
     await expect(tidyTile(page, "Team")).toHaveAccessibleDescription("To fix");
     await expect(tidyFooterButton(page, "saveAndNext")).toBeDisabled();
@@ -203,7 +203,6 @@ test(
     await expectCardSettled(page);
     // #3 is blue: something to check, nothing to fix, so Save & next is not held.
     await expect(walk.getByText("1 to check", { exact: true })).toBeVisible();
-    await expect(walk.getByText(/^[0-9]+ to fix$/)).toHaveCount(0);
     await expect(tidyTile(page, "Listing title")).toHaveAccessibleDescription("To check");
     await expect(tidyFooterButton(page, "saveAndNext", { usable: true })).toBeVisible();
     await expect(mustFixLine(page)).toHaveCount(0);

@@ -4,13 +4,15 @@
 //   1. a player with ONE team in the window (the set year and the year before): that chip is
 //      pressed ("<team> · <player> played here") under "Suggested from career history.";
 //   2. a player with TWO teams that season (a tie no rule breaks): neither chip is pressed, each
-//      shows the player's years with the team, under "From the career. More than one team that
+//      shows the player's years with the team (no name before them on a one-player card, NEO-645
+//      C8), under "From the career. More than one team that
 //      season, so pick the one on the card.";
 //   3. after the SET is saved as No Team (the "Mark N teamless cards No Team" offer is declined, so
 //      the cards stay teamless): the one-team player's chip is offered with his years and NOT
-//      pressed, under "From the career. This set says No Team, so pick one only if it's on the
-//      card.", and once the operator saves that team "Apply to all" is not offered (NEO-639
-//      decision A), where before the No Team the same save offered it.
+//      pressed, under "From the player's other cards. This set says No Team, so pick one only if
+//      it's on the card." (#961 holds the team by then), and once the operator saves that team "Apply to all" is still offered to the
+//      player's other teamless card (main's wizard, NEO-645 C8): the set's No Team holds back
+//      what NB guesses, never what the operator answers.
 // Replaces the retired attention walker's `checklist-missing-team-fixer-preselects-one-set-year-
 // team` (deleted in the NEO-639 merge); the walker's tie-focus check went with the walker (the
 // walk moves focus by its own rule, `useAnswered`, covered by its unit tests).
@@ -18,8 +20,8 @@
 // R2 - every negative beside a positive: claim 1's pressed chip beside Save team appearing and the
 // tile still pink (a preselect is not a write); claim 2's pressed count 0 beside both chips
 // visible unpressed with their years, and no Save team; claim 3's unpressed chip beside its list
-// heading, and "Apply to all" gone beside the saved team row, while card #964 (same player,
-// teamless) is still there to be offered, as #961's save proved before the No Team.
+// heading, and "Apply to the other <player> card" (#964, same player, teamless) beside the saved
+// team row, as #961's save offered #963 and #964 before the No Team.
 //
 // R3 - not here: the whole-career fallback when no stint covers the year
 // (`tidy-up-team-tile-offers-the-whole-career-unpicked-…`), Apply to all's writes and counts
@@ -95,8 +97,10 @@ test(
     const careerList = (heading: RegExp) => team.getByRole("list", { name: heading });
     const SUGGESTED = /^Suggested from career history\.$/;
     const TIED = /^From the career\. More than one team that season, so pick the one on the card\.$/;
-    const SET_SAYS_NO_TEAM = /^From the career\. This set says No Team, so pick one only if it.s on the card\.$/;
-    // A chip is a toggle; preselected it reads "· <player> played here", otherwise "· <player> <years>".
+    // #961 holds TEAM_A by then, so the offer's source is the player's other cards, not his career.
+    const SET_SAYS_NO_TEAM = /^From the player.s other cards\. This set says No Team, so pick one only if it.s on the card\.$/;
+    // A chip is a toggle; preselected it reads "· <player> played here", otherwise "· <years>" (one
+    // player on the card, so no name before the years; NEO-645 C8).
     const chip = (teamName: string, suffix: string, pressed: boolean) =>
       team.getByRole("button", { name: `${teamName} · ${suffix}`, exact: true, pressed });
     const saveTeam = team.getByRole("button", { name: /^Save teams?$/ });
@@ -173,7 +177,7 @@ test(
 
     // Saved, it offers itself to SOLO's other teamless cards (#963, #964): the counterpart of step 3.
     await saveTeam.click();
-    await expect(savedTeamRow(TEAM_A).getByRole("button", { name: /^Change team( .+)?$/ })).toBeVisible();
+    await expect(savedTeamRow(TEAM_A).getByRole("button", { name: `Edit ${TEAM_A}`, exact: true })).toBeVisible();
     await expect(suggested).toHaveCount(0);
     await expect(applyToAll).toHaveText(`Apply to all 2 other ${SOLO} cards`);
     await saveAndNext(page);
@@ -182,8 +186,8 @@ test(
     await expect(tidyCardHeader(page, `#962 · ${TIE}`)).toBeVisible();
     await expect(team).toHaveAccessibleDescription("To fix");
     const tied = careerList(TIED);
-    await expect(chip(TEAM_B, `${TIE} 2025–2027`, false)).toBeVisible();
-    await expect(chip(TEAM_C, `${TIE} 2026`, false)).toBeVisible();
+    await expect(chip(TEAM_B, "2025–2027", false)).toBeVisible();
+    await expect(chip(TEAM_C, "2026", false)).toBeVisible();
     await expect(tied.getByRole("button")).toHaveCount(2);
     await expect(tied.getByRole("button", { pressed: true })).toHaveCount(0);
     await expect(saveTeam).toHaveCount(0);
@@ -232,21 +236,22 @@ test(
     await expect(tidyCardHeader(page, `#963 · ${SOLO}`)).toBeVisible();
     await expect(team).toHaveAccessibleDescription("To fix");
     const underNoTeam = careerList(SET_SAYS_NO_TEAM);
-    await expect(chip(TEAM_A, `${SOLO} 2025–2027`, false)).toBeVisible();
+    await expect(chip(TEAM_A, "2025–2027", false)).toBeVisible();
     await expect(underNoTeam.getByRole("button")).toHaveCount(1);
     await expect(underNoTeam.getByRole("button", { pressed: true })).toHaveCount(0);
     await expect(saveTeam).toHaveCount(0);
     await expect(tidyFooterButton(page, "saveAndNext")).toBeDisabled();
     await expectAccessible(page, { within: team, label: "Tidy Up Team tile under a No Team set, nothing picked" });
 
-    // The operator takes the chip and saves it: the team lands, and "Apply to all" is NOT offered,
-    // though #964 (SOLO, teamless) is still there, as it was when #961's save offered it.
-    await chip(TEAM_A, `${SOLO} 2025–2027`, false).click();
-    await expect(chip(TEAM_A, `${SOLO} 2025–2027`, true)).toBeVisible();
+    // The operator takes the chip and saves it: the team lands, and the No Team set still offers
+    // the operator's answer to #964 (SOLO, teamless), the one card left on his line (NEO-645 C8).
+    // It is not pressed, so #964 stays teamless.
+    await chip(TEAM_A, "2025–2027", false).click();
+    await expect(chip(TEAM_A, "2025–2027", true)).toBeVisible();
     await saveTeam.click();
-    await expect(savedTeamRow(TEAM_A).getByRole("button", { name: /^Change team( .+)?$/ })).toBeVisible();
+    await expect(savedTeamRow(TEAM_A).getByRole("button", { name: `Edit ${TEAM_A}`, exact: true })).toBeVisible();
     await expect(team).not.toHaveAccessibleDescription("To fix");
-    await expect(applyToAll).toHaveCount(0);
+    await expect(applyToAll).toHaveText(`Apply to the other ${SOLO} card`);
     await expectAccessible(page, { within: team, label: "Tidy Up Team tile under a No Team set, team saved" });
     await saveForLater(page);
     await expect(cardAttentionMark(page, "964", "no team on this card yet")).toBeVisible();

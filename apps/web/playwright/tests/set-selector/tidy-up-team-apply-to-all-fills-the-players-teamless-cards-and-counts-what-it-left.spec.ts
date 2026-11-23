@@ -109,7 +109,7 @@ test(
     await expect(teamTile.getByRole("button", { name: new RegExp(`^${escapeRe(TEAM)}$`), pressed: true })).toBeVisible();
     await teamTile.getByRole("button", { name: "Save team", exact: true, disabled: false }).click();
     await expect(pinkTile(page, "Team"), "the team landed on #1").toHaveCount(0);
-    await expect(teamGroup(TEAM).getByRole("button", { name: /^Change team( .+)?$/ })).toBeVisible();
+    await expect(teamGroup(TEAM).getByRole("button", { name: `Edit ${TEAM}`, exact: true })).toBeVisible();
     // #2 and #3 are offered; #4 (its cell names another team) and #5 (a second name nobody has
     // answered) are not.
     await expect(applyButton).toHaveText(`Apply to all 2 other ${PLAYER} cards`);

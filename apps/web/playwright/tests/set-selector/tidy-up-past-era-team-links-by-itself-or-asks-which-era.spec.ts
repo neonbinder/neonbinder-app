@@ -61,9 +61,9 @@ function eraLink(scope: Locator, full: string, era: string): Locator {
   return scope.getByRole("button", { name: new RegExp(`^[^\\p{L}]*Link to ${escapeRe(`${full} · ${era}`)}$`, "u") });
 }
 
-/** The answered row's "Change team". */
+/** The answered row's "Edit <linked team>" (NEO-645 C1); cameo rows' "Edit cameo …" are not it. */
 function changeTeam(scope: Locator): Locator {
-  return scope.getByRole("button", { name: /^Change team$/, disabled: false });
+  return scope.getByRole("button", { name: /^Edit (?!cameo )/, disabled: false });
 }
 
 test(
@@ -132,7 +132,7 @@ test(
     const expectCard2LinkedByItself = async (p: Page) => {
       await expect(header2).toBeVisible();
       await expectCardSettled(p);
-      // Positive: the team is on the card, with Change offered.
+      // Positive: the team is on the card, with Edit offered.
       await expect(onceRow.getByText(ONCE, { exact: true })).toBeVisible();
       await expect(changeTeam(onceRow)).toBeVisible();
       // Negative: the tile asks nothing (not pink, no era choice, no "Not a team").
@@ -162,7 +162,7 @@ test(
     const earlier = eraLink(eras, PRINTED, "1901–1954");
     await expect(later).toBeVisible();
     await expect(earlier).toBeVisible();
-    // Negative: nothing linked it (no "Linked for you", no Change yet).
+    // Negative: nothing linked it (no "Linked for you", no Edit yet).
     await expect(team.getByRole("note")).toHaveCount(0);
     await expect(changeTeam(askedRow)).toHaveCount(0);
     await expectAccessible(page, { within: walk, label: "Tidy Up walk, which past era is this club" });

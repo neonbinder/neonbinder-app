@@ -179,7 +179,7 @@ test(
     const nickRow = team.getByRole("group", { name: `Team ${NICK}`, exact: true });
     await expect(nickRow.getByText(NICK_FULL, { exact: true })).toBeVisible();
     await expect(nickRow.getByRole("note")).toHaveText(SET_HISTORY_NOTE);
-    await expect(nickRow.getByRole("button", { name: /^Change team( .+)?$/ })).toBeVisible();
+    await expect(nickRow.getByRole("button", { name: `Edit ${NICK_FULL}`, exact: true })).toBeVisible();
     await expect(team.getByRole("button", { name: /^Not a team/ })).toHaveCount(0);
     // The one stop on this card is the blue career check (J2), never pink.
     const career = tidyTile(page, "Career");

@@ -1,7 +1,7 @@
 // ONE FEATURE (R1, NEO-602 on the NEO-645 Tidy Up walk): when a card's printed team name fits two
 // eras of a club, the card's PLAYER picks the era, not the set's year. The commit links the era he
 // played for with no stop, and the Team tile shows that link as NeonBinder's ("Linked for you"),
-// with Change offered.
+// with Edit offered.
 //
 // The Rickey Henderson case, minted: `Loc<token> Ath<token>` (1968–2024) holds the printed name as
 // its own, and `Ath<token>` (2025–present) wears it as an ALIAS. A 2025 set's year covers only the
@@ -125,12 +125,10 @@ test(
     const oldRow = team.getByRole("group", { name: `Team ${OLD}`, exact: true });
     const otherRow = team.getByRole("group", { name: `Team ${NOT_A_TEAM}`, exact: true });
     // Positive: the printed name is answered with the OLDER team, NeonBinder's link (the purple
-    // note), and the operator can Change it.
+    // note), and the operator can Edit it ("Edit <linked team>", NEO-645 C1).
     await expect(oldRow.getByText(OLD, { exact: true })).toBeVisible();
     await expect(oldRow.getByRole("note")).toHaveText(/^Linked for you/);
-    await expect(
-      oldRow.getByRole("button", { name: new RegExp(`^Change team ${escapeRe(OLD)}$`), disabled: false }),
-    ).toBeVisible();
+    await expect(oldRow.getByRole("button", { name: `Edit ${OLD}`, exact: true, disabled: false })).toBeVisible();
     // Negative, read against it: nothing asks about that name (no era choice, no "Not a team"),
     // and the year's own pick, the newer team, is nowhere on the tile.
     await expect(oldRow.getByText(/^Which team: /)).toHaveCount(0);

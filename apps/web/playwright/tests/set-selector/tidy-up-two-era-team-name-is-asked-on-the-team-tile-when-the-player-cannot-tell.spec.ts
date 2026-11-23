@@ -83,10 +83,10 @@ async function syncAndExpectTheTeamAsked(
   await expect(offered.nth(1)).toHaveAccessibleName(new RegExp(`^Link to ${escapeRe(o.printed)} · 1968.2024$`));
   await expect(row.getByRole("combobox", { name: "Search all teams" })).toBeVisible();
   // Negatives, read against it: not the new-team row, nothing linked for the operator (no note, no
-  // Change), the tile pink and Save & next held while it is.
+  // Edit: an answered row's "Edit <team>", NEO-645 C1), the tile pink and Save & next held while it is.
   await expect(row.getByText(/isn't linked to a team yet\.$/)).toHaveCount(0);
   await expect(row.getByRole("note")).toHaveCount(0);
-  await expect(row.getByRole("button", { name: /^Change team/ })).toHaveCount(0);
+  await expect(row.getByRole("button", { name: /^Edit (?!cameo )/ })).toHaveCount(0);
   await expect(pinkTile(page, "Team")).toHaveCount(1);
   await expect(tidyTile(page, "Team")).toHaveAccessibleDescription(/To fix/);
   await expect(mustFixLine(page)).toBeVisible();
@@ -103,12 +103,12 @@ async function untickRemember(row: Locator, printed: string): Promise<void> {
 }
 
 /**
- * The row is answered with `picked` by the operator: the team named, Change offered, no "Linked
+ * The row is answered with `picked` by the operator: the team named, its Edit offered, no "Linked
  * for you" note, nothing asked; the tile is no longer pink. Then Save & next to the end screen.
  */
 async function expectPickedAndFinish(page: Page, row: Locator, picked: string): Promise<void> {
   await expect(row.getByText(picked, { exact: true })).toBeVisible();
-  await expect(row.getByRole("button", { name: /^Change team/, disabled: false })).toBeVisible();
+  await expect(row.getByRole("button", { name: `Edit ${picked}`, exact: true, disabled: false })).toBeVisible();
   await expect(row.getByText(/^Which team: /)).toHaveCount(0);
   await expect(row.getByRole("note")).toHaveCount(0);
   await expect(pinkTile(page, "Team")).toHaveCount(0);

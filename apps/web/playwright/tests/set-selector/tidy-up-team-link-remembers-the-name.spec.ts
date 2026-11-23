@@ -117,7 +117,8 @@ test(
     const teamRow = tidyTile(page, "Team").getByRole("group", { name: `Team ${ROW}`, exact: true });
     const NOT_A_TEAM = /^Not a team( .+)?$/;
     const notATeam = teamRow.getByRole("button", { name: NOT_A_TEAM });
-    const change = teamRow.getByRole("button", { name: /^Change team( .+)?$/ });
+    // The answered row's Edit, named for the linked team (NEO-645 C1).
+    const change = teamRow.getByRole("button", { name: /^Edit (?!cameo )/ });
     // Eight of the nine cards print the club; Skip writes nothing, so any card before it is left as is.
     // (A `has` locator is relative to the row it filters, so it is rooted at the page.)
     await skipUntil(page, teamRow.filter({ has: page.getByRole("button", { name: NOT_A_TEAM }) }));
@@ -162,7 +163,7 @@ test(
     await expect(create).toBeEnabled();
     await expect(form.getByText(/already answers to this name as an alias, and /)).toHaveCount(0);
     await expect(holderLink).toHaveCount(0);
-    // Nothing was created: the form stands in for the row's buttons and the row has no Change.
+    // Nothing was created: the form stands in for the row's buttons and the row has no Edit.
     await expect(form).toBeVisible();
     await expect(change).toHaveCount(0);
     // Cancel closes the form (writes nothing): the row is back, still unanswered.

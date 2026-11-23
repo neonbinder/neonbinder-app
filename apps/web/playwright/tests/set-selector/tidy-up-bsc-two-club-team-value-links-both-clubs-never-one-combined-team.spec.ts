@@ -206,7 +206,8 @@ test(
           if (await club(CLUBS[0]).isVisible()) {
             await expect(club(CLUBS[1])).toBeVisible();
             for (const name of CLUBS) {
-              await expect(club(name).getByRole("button", { name: /^Change team( .+)?$/ })).toBeVisible();
+              // The answered row's Edit, named for NB's linked club (NEO-645 C1).
+              await expect(club(name).getByRole("button", { name: /^Edit (?!cameo )/ })).toBeVisible();
             }
             await expect(pinkTile(page, "Team"), "two linked clubs leave nothing to fix on the Team tile").toHaveCount(0);
             await expectAccessible(page, { within: walk, label: "Tidy Up walk on PDA-WW, two clubs on the Team tile" });
