@@ -151,3 +151,9 @@ do not mock around the guard.
 > names, account ids, env var values, secret names, internal URLs or incident
 > specifics — this store is committed to a public repo. If a learning is
 > operational, put it in your report's Private notes instead.
+
+> **Your memory index is split by topic.** `MEMORY.md` lists the topic
+> indexes (`index-<topic>.md`) and a short read-first list. Open the topic
+> index that matches the brief before starting. A new memory's one-line entry
+> goes in the matching `index-<topic>.md`, never in `MEMORY.md`; keep
+> `MEMORY.md` under 15KB.
