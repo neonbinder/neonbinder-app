@@ -121,6 +121,7 @@
 - [Reseed after queued lookups](patterns_reseed_right_after_a_queued_lookup_spec.md) — seed standalone later
 - [Live-rewrite box](patterns_type_a_live_rewrite_box_by_keystrokes.md) — Backspace exposes interim texts
 - [Tidy tiles, commit first](patterns_tidy_walk_tiles_and_commit_first.md) — NEO-645 tiles, fixtures, parse specs
+- [Chromium history cap](patterns_chromium_history_cap_breaks_long_walk_close.md) — 50 entries; go(-(depth+1)) close is a no-op after ~49 walk moves
 - [Resume via the pill](patterns_resume_a_fresh_only_walk_spec_through_the_pill.md) — "N need you" reopens the walk
 - [Title repeat rule](patterns_title_repeat_of_set_name_and_shared_snapshot_results.md) — distinct prefixes; worker-11 size
 - [Spent fresh-only run](patterns_probe_the_rest_of_a_spent_fresh_only_run.md) — throwaway probe reopens by pill
