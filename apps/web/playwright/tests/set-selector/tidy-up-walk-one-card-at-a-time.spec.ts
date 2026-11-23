@@ -33,13 +33,17 @@
 // tile answer the spec clicks the header line (a mouse user's way back to the
 // card) so Enter and Escape reach the card, not a tile's control.
 //
-// Fixture arithmetic for #3: a card with no player keeps its name out of the
-// title, so the title is "2024 Topps twk<token> Base #3 <team>" once the quiet
-// cuts (sport, type name) are gone. ATTEMPT_TOKEN is 1 to 12 characters, so
-// everything but the team is 22 to 34 characters: the 70-character team never
-// fits beside it (>= 93), and the title without it always does (<= 34). The
-// team has no Location, so it can only go whole: the Tidy Up cut (NEO-609),
-// "listing title was cut short".
+// Fixture arithmetic for #3: a card's own name is always in its title (NEO-645;
+// "WalkC<token>" is no player's and no placeholder, and it is never cut, like a
+// surname), so the full title is "2024 Topps twk<token> Base Insert WalkC<token>
+// #3 <team> Baseball". ATTEMPT_TOKEN is 1 to 12 characters, so the shortest core
+// the cut can leave (sport, type name and Base gone) is "2024 Topps twk<token>
+// WalkC<token> #3", 24 to 46 characters: the 70-character team never fits beside
+// it (>= 95), and the title without the team always does (computed offline with
+// `assessListingTitle`: 46 to 68 characters, nothing else dropped). The team has
+// no Location, so it can only go whole: the Tidy Up cut (NEO-609), "listing
+// title was cut short", never the purple set-name note (no set name was
+// shortened).
 //
 // Desktop and mobile - the walk is full-screen on a phone with the same
 // controls and names; nothing branches. axe (light and dark) on a pink card, a

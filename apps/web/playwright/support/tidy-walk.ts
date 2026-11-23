@@ -88,6 +88,7 @@ export const TIDY_FOOTER = {
 export type TidyTileName =
   | "Sources disagree"
   | "Player"
+  | "Card name"
   | "Career"
   | "Team"
   | "Autograph"

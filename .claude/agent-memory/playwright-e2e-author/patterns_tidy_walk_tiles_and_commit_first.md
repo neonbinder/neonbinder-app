@@ -53,10 +53,18 @@ that must not write a real set, there is no pre-save exit any more: give it its 
 - **A pasted `?tidy=` and the sitting.** The sitting (`passed`, sessionStorage per tab) survives a
   `page.goto`; a bad id falls back to the first card NOT passed. Press the pill (new sitting) before
   any deep-link proof, or the fallback lands past a skipped card and proves nothing.
-- **Blue on a hand-made card = a whole-team title cut.** A card with no linked player keeps its card
-  name OUT of the title ("2024 Topps <set> Base #3 <team>"), so pad a one-token team to ~70 chars:
-  it never fits, the title without it always does, and the badge reads "Card <n> is worth a check:
-  listing title was cut short" (pink is "needs attention: …"). A 45-char team fit and stayed clean.
+- **Blue on a hand-made card = a whole-team title cut.** Since 2026-11-23 a card's own name is
+  ALWAYS in its title, never cut ("2024 Topps <set> Base Insert <name> #3 <team> <sport>"; a
+  "Card #N" placeholder or a name that only repeats its players is left out; a team the name
+  already says is not added). Pad a one-token team to ~70 chars: it never fits beside the name,
+  the title without it always does, and the badge reads "Card <n> is worth a check: listing title
+  was cut short" (pink is "needs attention: …"). Re-run the offline `assessListingTitle` check
+  whenever the name rules move. A title that fits only on the set's short name is a purple note
+  ("Set name shortened to fit."), never blue, and never brings a card into the walk.
+- **Card name tile (no player, blank or "Card #N" name):** group "Card name", textbox "Name for
+  this card", button "Save name", refusal alert "Type what this card is, like Checklist or Team
+  Card."; a checklist's not-a-person subject ("Checklist", "Team Card") is stored as the card name,
+  so such a card is never asked and its header reads "#3 · Checklist".
 - **Planting a break needs a Vite nobody else is using**: a plant hot-reloads product code, so on a
   shared snapshot Vite it would red every other author's run. Hand the plant back instead.
 
