@@ -1,8 +1,9 @@
 // Origin: .maestro/flows/set-selector/checklist-one-marketplace-skips-match-dialog.yaml (Maestro suite retired in NEO-341; see git history)
 // A set with exactly ONE marketplace attached (BSC; SportLots carries no
 // 1995 Roanoke Express ECHL base) and the publisher's checklist: BSC and the
-// checklist are two sources (NEO-496, D10/NQ1), so Match Cards opens even with one
-// marketplace; the card the checklist leaves out is BSC's alone and is kept, so
+// checklist are two sources (NEO-496, D10/NQ1); the run starts on the progress line and
+// Match Cards opens because the card the checklist leaves out needs the operator
+// (NEO-640: a run with every card Matched at 100% would skip it). That card is BSC's alone and is kept, so
 // every fetched card is saved. The committed set lists them as "BSC only" and a
 // card added by hand titles itself from the set, not from "Unknown"/"All Brands".
 // (Renamed from checklist-one-marketplace-skips-match-dialog in NEO-496: with a
@@ -70,9 +71,12 @@ import { bscLookupOutcome, expectAfterMarketplace, expectStepWithSportLots } fro
 import { recordedNoMatchName } from "../../support/recorded-names";
 import {
   CHECKLISTS,
-  confirmChecklistMatchCards,
+  cancelCardFetchButton,
+  checklistFetchProgress,
   expectTeamsFromChecklist,
   matchCardsDialog,
+  opensMatchCards,
+  settleChecklistFetch,
   usePublishersChecklist,
 } from "../../support/published-checklist";
 import {
@@ -228,7 +232,7 @@ async function expectNoTeamChipsToTheEnd(page: Page, maxCards = 40): Promise<num
 }
 
 test(
-  "Checklist — a set with exactly ONE marketplace attached and its publisher's checklist opens Match Cards, keeps the card the checklist leaves out, and saves every fetched card",
+  "Checklist — a set with exactly ONE marketplace attached and its publisher's checklist starts on the progress line and opens Match Cards for the card the checklist leaves out, keeps it, and saves every fetched card",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     await signIn("/set-selector");
@@ -292,16 +296,25 @@ test(
     // The publisher's checklist, 24 of the 25 cards (LIVE_PLAYER's row left out), so BSC is
     // asked about ONE card and not 25 (NEO-489).
     const facts = await usePublishersChecklist(page, CHECKLISTS.roanokeExpress1995OneLive);
+    // NEO-640: a two-source run skips Match Cards only when every card is Matched at 100%; this
+    // file leaves a card out, so it must open (R2: the fixture's fact, stated before the fetch).
+    expect(opensMatchCards(facts, env), "Roanoke's one-live file leaves a card out, so Match Cards opens").toBe(true);
     await syncChecklistButton(page).click();
+    // NEO-640 (C5): every run with two or more sources starts on the progress line, no dialog yet;
+    // the dialog opens only once a streamed card turns out to need the operator.
+    await expect(checklistFetchProgress(page)).toBeVisible();
+    await expect(cancelCardFetchButton(page)).toBeVisible();
 
-    // NEO-496 (D10, NQ1): ONE marketplace plus the publisher's checklist are TWO sources, so the
-    // fetch opens Match Cards (before NEO-496 it skipped the dialog and kept every card itself).
+    // NEO-496 (D10, NQ1): ONE marketplace plus the publisher's checklist are TWO sources, and the
+    // card the file leaves out needs the operator, so the fetch opens Match Cards.
     // One live BSC round trip (the one lookup): 7 s of our own time plus however long BuySportsCards
     // held it (NEO-487), never a flat ceiling.
     const matchCards = matchCardsDialog(page);
     await expectAfterMarketplace(page, matchCards, { platform: "BuySportsCards", what: "Match Cards after the fetch" });
     const confirmMatches = matchCards.getByRole("button", { name: "Confirm card matches", disabled: false });
     await expectAfterMarketplace(page, confirmMatches, { platform: "BuySportsCards", what: "Confirm unlocked after the fetch" });
+    // The dialog took over from the progress line.
+    await expect(checklistFetchProgress(page)).toHaveCount(0);
     // The teams line is said while the dialog is open.
     await expectTeamsFromChecklist(page, facts);
     // Every row of the file pairs with its card by number; LIVE_PLAYER's card, the one the file
@@ -525,7 +538,9 @@ test(
     // an incoming name): "Skip changes" keeps NeonBinder's version.
     await usePublishersChecklist(page, CHECKLISTS.roanokeExpress1995OneLive);
     await syncChecklistButton(page).click();
-    await confirmChecklistMatchCards(page, { facts, what: "the re-sync" });
+    // A re-sync of the same file settles on the file's own measured fact (NEO-640): through Match
+    // Cards when it opens, past it to the saved line when every card matched.
+    await settleChecklistFetch(page, env, { facts, what: "the re-sync" });
     const skipChanges = page.getByRole("button", { name: "Skip reviewing changes and continue" });
     await expect(skipChanges).toBeVisible();
     await skipChanges.click();
@@ -554,10 +569,10 @@ test(
     await expect(teamChip(page, team)).toBeVisible();
     await expect(teamChip(page, COLLEGE_TEAM)).toHaveAttribute("aria-pressed", "true");
     await expect(teamChip(page, team)).toHaveAttribute("aria-pressed", "false");
-    // NEO-639: the chip the pre-fill passes over says his years with that club ("<team> · <player>
-    // 1994–1996"), so the two offered teams can be told apart; the pre-filled one says who played there.
-    await expect(teamChip(page, team)).toContainText("1994–1996");
-    await expect(teamChip(page, COLLEGE_TEAM)).toContainText(`${LIVE_PLAYER} played here`);
+    // NEO-639 (C8): the chip the pre-fill passes over says his years with that club, bare (one player
+    // on the card, so no name in front: "<team> · 1994–1996"), and the pre-filled one says who played there.
+    await expect(teamChip(page, team)).toHaveAccessibleName(`${team} · 1994–1996`);
+    await expect(teamChip(page, COLLEGE_TEAM)).toHaveAccessibleName(`${COLLEGE_TEAM} · ${LIVE_PLAYER} played here`);
     await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk, a league-ranked team pre-fill" });
     // The operator picks the club instead, and saves it: the card's last pink goes, and Save & next
     // (the career is only blue) moves on.

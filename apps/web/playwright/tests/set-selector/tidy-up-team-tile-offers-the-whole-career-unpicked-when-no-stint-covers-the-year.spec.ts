@@ -16,8 +16,9 @@
 // The flow: quick-add card #851 with the catalogue's Ozzie Smith and #852 with George Brett, both
 // with no team, so both are badged "no team on this card yet" at once (no marketplace ref, nothing
 // to wait for) and the pill reads "2 need you, 2 to fix". The pill opens the walk on #851: the Team
-// tile is pink, its career chips "San Diego Padres · Ozzie Smith 1978–1981" and "St. Louis Cardinals
-// · Ozzie Smith 1982–1996" are NOT pressed (a pressed chip would read "· Ozzie Smith played here"),
+// tile is pink, its career chips "San Diego Padres · 1978–1981" and "St. Louis Cardinals · 1982–1996"
+// are NOT pressed (one player's years carry no name prefix; a preselected chip would read "· Ozzie
+// Smith played here" instead),
 // there is no Save team, and Save & next is held. The chip pressed is a choice, not a write: Save
 // team appears, the tile stays pink and Save & next stays held. Save team writes it: the tile shows
 // the plain "Team St. Louis Cardinals" row and Save & next moves to #852, where Brett's one team is
@@ -58,7 +59,7 @@
 // `LegendCheck<token>` (different words from the set, so the title generator never drops one as a
 // repeat of the other).
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { drillToCustom, escapeRe, setBuilderReady } from "../../support/set-builder";
+import { drillToCustom, setBuilderReady } from "../../support/set-builder";
 import { addCardViaForm, confirmDeleteCardButton, deleteCardButton, editCardButton } from "../../support/cards";
 import { expectDrawerTeams } from "../../support/also-pictured";
 import {
@@ -107,12 +108,18 @@ test(
     const career = team.getByRole("list", {
       name: /^No 2024 team on file\. Here.s the whole career, so pick the one on the card\.$/,
     });
-    // Not preselected, so each chip carries the player's years with the team, not "played here".
+    // Not preselected, so each chip carries the player's years with the team, not "played here". One
+    // player on the card, so the years stand alone, with no name in front (NEO-639 chip copy).
     const chip = (pressed: boolean) =>
-      career.getByRole("button", { name: new RegExp(`^${escapeRe(TEAM)} · ${PLAYER} 1982.1996$`), pressed });
-    const otherChip = career.getByRole("button", { name: new RegExp(`^${escapeRe(OTHER_TEAM)} · ${PLAYER} 1978.1981$`) });
+      career.getByRole("button", { name: `${TEAM} · 1982–1996`, exact: true, pressed });
+    const otherChip = career.getByRole("button", { name: `${OTHER_TEAM} · 1978–1981`, exact: true });
     const saveTeam = team.getByRole("button", { name: /^Save teams?$/ });
     const savedRow = team.getByRole("group", { name: `Team ${TEAM}`, exact: true });
+    // The walk's Career tile. Neither catalogue player's card may carry a Career check here: Save &
+    // next ADDS an open gap's stint from the set's year (NEO-645 C8), which would write a 2024 stint
+    // onto a read-only catalogue player. Asserted absent before each Save & next, so a check that
+    // appears fails here by name instead of writing.
+    const careerCheck = tidyTile(page, "Career");
 
     /** Quick-add a card linked to a catalogue player, with its Team row left EMPTY. */
     const addCatalogueCard = (number: string, player: string, cardName: string) =>
@@ -181,6 +188,7 @@ test(
     await expect(career).toHaveCount(0);
     await expect(tidyFooterButton(page, "saveAndNext", { usable: true })).toBeVisible();
     await expect(mustFixLine(page)).toHaveCount(0);
+    await expect(careerCheck, "no Career check on the catalogue player's card for Save & next to write").toHaveCount(0);
     await saveAndNext(page);
 
     // ── STEP 6 (POSITIVE CONTROL): the one-team legend IS preselected; Save team writes it ──
@@ -196,6 +204,7 @@ test(
     await saveTeam.click();
     await expect(team.getByRole("group", { name: `Team ${LEGEND.team}`, exact: true })).toBeVisible();
     await expect(pinkTile(page, "Team")).toHaveCount(0);
+    await expect(careerCheck, "no Career check on the legend's card for Save & next to write").toHaveCount(0);
     await saveAndNext(page);
     await expect(walk.getByText("All tidy. Nothing on this checklist needs you.")).toBeVisible();
     await expectCardsLeft(page, 0);
