@@ -250,6 +250,47 @@ describe("a fetch forgets the Wikidata output of the last one (working state, ne
     expect(await t.mutation(internal.tidyNames.enqueuePendingLookups, { scopeId: w.variantTypeId })).toBe(0);
   });
 
+  test("a re-pended row nobody enqueued (the commit never ran its enqueue) is asked when its card opens, then ages if the pool never answers", async () => {
+    const t = newT();
+    const w = await seedLeaf(t);
+    await fetchSet(t, w, [PRINTED]);
+    const first = (await rowOf(t, PRINTED))!;
+    await t.run((ctx) =>
+      ctx.db.patch(first._id, { status: "ready", lookupGen: 1, enrichment: { wikidataId: "Q1", description: "x" } }),
+    );
+    // The refetch re-pends the row; its post-commit enqueue never happens (cancelled or failed).
+    await fetchSet(t, w, [PRINTED]);
+    await cancelScheduled(t);
+    const stuck = (await rowOf(t, PRINTED))!;
+    expect(stuck).toMatchObject({ status: "pending", lookupGen: 2 });
+    expect(stuck.lookupRequestedAt).toBeUndefined();
+
+    // Nothing ages it: it has no stamp.
+    const none = await t.mutation(internal.tidyNames.sweepStaleLookups, {});
+    expect(none.aged).toBe(0);
+    expect((await rowOf(t, PRINTED))!.status).toBe("pending");
+
+    // The walk opens its card: the server calls it never-looked and the ask goes out.
+    const card = await cardNumbered(t, w, "1");
+    const ctxView = await asAdmin(t).query(api.tidyCards.cardContext, { cardId: card._id });
+    expect(ctxView!.names.find((n) => n.printed === PRINTED)!.row!.neverLooked).toBe(true);
+    await asAdmin(t).mutation(api.tidyNames.requestLookup, { cardId: card._id, kind: "player", name: PRINTED });
+    const asked = (await rowOf(t, PRINTED))!;
+    expect(asked.status).toBe("pending");
+    expect(asked.lookupGen).toBe(3);
+    expect(asked.lookupRequestedAt).toBeDefined();
+    // A late enqueue does not ask twice, and asking again from the card is a no-op.
+    expect(await t.mutation(internal.tidyNames.enqueuePendingLookups, { scopeId: w.variantTypeId })).toBe(0);
+    await asAdmin(t).mutation(api.tidyNames.requestLookup, { cardId: card._id, kind: "player", name: PRINTED });
+    expect((await rowOf(t, PRINTED))!.lookupGen).toBe(3);
+
+    // The pool never answers: the stamp now ages it, so it never sticks.
+    await t.run((ctx) => ctx.db.patch(first._id, { lookupRequestedAt: Date.now() - 24 * 60 * 60 * 1000 }));
+    const swept = await t.mutation(internal.tidyNames.sweepStaleLookups, {});
+    expect(swept.aged).toBe(1);
+    expect((await rowOf(t, PRINTED))!.status).toBe("error");
+  });
+
   test("a Wikidata job still queued from before the reset is ignored, even after the row is asked again (no generation reuse)", async () => {
     const t = newT();
     const w = await seedLeaf(t);

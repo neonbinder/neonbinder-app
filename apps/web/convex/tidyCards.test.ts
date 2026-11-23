@@ -382,8 +382,11 @@ describe("tidyCards.cardContext — reads", () => {
         // Reset for a re-fetch: the generation only climbs, the stamp is gone, so
         // it is a name nobody has asked about.
         ["Reset", { lookupGen: 3 }],
-        // Not ready, or already answered or enriched: never "new" either.
-        ["Still Pending", { status: "pending" }],
+        // Enqueued and still looking: stamped, so not new.
+        ["Still Pending", { status: "pending", lookupGen: 1, lookupRequestedAt: NOW }],
+        // Re-opened by the gate and never enqueued (the commit may not have run): asked on open.
+        ["Reopened Pending", { status: "pending", lookupGen: 1 }],
+        // Already answered or enriched: never "new" either.
         ["Answered", { answer: { kind: "notEntity", by: "operator" } }],
       ];
       const c = await s.card("1", { pendingPlayerNames: rows.map(([n]) => n) });
@@ -412,6 +415,7 @@ describe("tidyCards.cardContext — reads", () => {
       "Finished Miss": false,
       "Asked Once": false,
       "Still Pending": false,
+      "Reopened Pending": true,
       Answered: false,
     });
   });

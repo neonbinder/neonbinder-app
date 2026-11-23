@@ -907,11 +907,15 @@ export const setNameSport = mutation({
 
 /**
  * A name row nobody has asked Wikidata about: born (or migrated: M2) `ready`
- * with nothing on it. A row whose lookup ran and found nothing has a
- * generation or a request time, so it is never asked twice from here.
+ * with nothing on it, or a `pending` row the gate re-opened that no
+ * `enqueuePendingLookups` has stamped. That second kind would otherwise stick
+ * if the commit that should have enqueued it was cancelled or failed: nothing
+ * else reads an unstamped `pending` row (`sweepStaleLookups` ages stamped ones
+ * only), so opening its card asks it. A row whose lookup ran and found nothing
+ * has a request time, so it is never asked twice from here.
  */
 export const neverLooked = (row: Doc<"tidyNames">): boolean =>
-  row.status === "ready" &&
+  (row.status === "ready" || row.status === "pending") &&
   !row.answer &&
   row.enrichment === undefined &&
   // A name the gate offered candidates for is a choice, not an unasked name.
