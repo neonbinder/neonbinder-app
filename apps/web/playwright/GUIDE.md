@@ -397,13 +397,21 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   it: `tidyWalk`, `tidyUpName`, `expectTidyWalkOpen`, `expectCardSettled`,
   `expectCardsLeft`, `needsYouPill`, `openTidyWalk`, `settleWalkAfterCommit`
   (after "Saved N cards.": did the walk open?), `tidyTile`, `pinkTile`,
-  `mustFixLine`, `tidyCardHeader`. Move: `saveAndNext`, `skipCard`,
+  `mustFixLine`, `tidyCardHeader`, `EDIT` (an answered row's `Edit <name>`
+  button name, cameo rows excluded; scope it to the row's group). Move:
+  `saveAndNext`, `skipCard`,
   `skipUntil`, `saveForLater`, `finishTidyWalk`. Answer tiles:
   `createPlayerOnOpenRow`, `createTeamOnOpenRow`, `answerPinkPlayerTiles`,
   `answerPinkTeamTiles`, `answerPinkAutographTile`, `ruleOutOpenPlayerRows`,
-  `ruleOutOpenTeamRows`, `takeSourceSide`. Whole
-  walks: `walkAnsweringEverything` (answers every pink Player and Team tile,
-  Save & next or Skip, returns a tally), `tidyForTheParallelBuild`. Fetch into
+  `ruleOutOpenTeamRows`, `takeSourceSide`. Career gaps: `keepOpenCareerGaps(page)`
+  answers every open gap on the card "Keep as is" (writes nothing), because
+  Save & next over an open Career gap writes a stint from the set's year to the
+  player. Whole walks: `walkAnsweringEverything` (answers every pink Player and
+  Team tile, Save & next or Skip, returns a `WalkTally`; its `career?: "keep" |
+  "add"` option defaults to `"keep"`, which keeps every open gap first and
+  counts them in `WalkTally.careerKept`; `"add"` leaves them for Save & next to
+  write, so never use it where the player is a catalogue player),
+  `tidyForTheParallelBuild`. Fetch into
   it: `fetchChecklistToTidyWalk`, `fetchOneMarketplaceSetChecklistToTidyWalk`
   (`openOneMarketplaceSetBase` is in `set-builder.ts`). Each contract is in its
   doc comment; see "The Tidy Up walk" under Gotchas.

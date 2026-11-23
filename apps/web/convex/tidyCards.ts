@@ -862,8 +862,9 @@ export const applyTeamPage = internalMutation({
  * For each card in `cardIds` (at most `MAX_APPLY_CARDS`): write
  * `cardVariation: to` only when the card's stored variation, trimmed, equals
  * `from` (compare-and-set: a card edited since is skipped and counted). `to`
- * is trimmed and capped like `updateCard`'s variation. A generated title is
- * regenerated; a hand-typed one is left alone. A `variation:` key in
+ * is trimmed and capped like `updateCard`'s variation. The title is always
+ * regenerated: the walk overwrites a hand-typed title too (Jason's decision,
+ * NEO-645). A `variation:` key in
  * `tidyReviewed` for the old value no longer matches, so a still-long new
  * value re-raises on its own.
  *
