@@ -77,6 +77,7 @@ import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { isTeamlessOnLine, teamLineKey } from "./lib/teamLine";
 import { defaultGapStint } from "./lib/careerGapStint";
 import { appendCareerStintsImpl } from "./players";
+import { assertCareerStintYears, maxCareerYear } from "../lib/players/career-years";
 import { queueRetitledCardNow } from "./listingTitleRequeue";
 import { recheckCareerGaps } from "./tidyCareerGap";
 import { cameoOfferFor, cameoOfferValidator } from "./tidyCameo";
@@ -490,13 +491,18 @@ export const markReviewed = mutation({
     if (gaps.length > 0) {
       const setYear = await findSetYearForSelectorOption(ctx, card.selectorOptionId);
       if (setYear !== undefined) {
-        for (const gap of gaps) {
-          try {
+        // A year the career will not hold (the set's year is outside the career
+        // bounds) leaves the gap in place, and seen. Tested BEFORE the write,
+        // so only that case is skipped: any other failure propagates, because
+        // Convex keeps the writes made before a caught throw.
+        const stint = defaultGapStint(setYear);
+        if (careerStintYearsHoldable(stint.fromYear, stint.toYear)) {
+          for (const gap of gaps) {
             const result = await appendCareerStintsImpl(ctx, [
               {
                 playerId: gap.playerId as Id<"players">,
                 teamId: gap.teamId as Id<"teams">,
-                ...defaultGapStint(setYear),
+                ...stint,
               },
             ]);
             if (result.added + result.existing > 0) {
@@ -508,8 +514,6 @@ export const markReviewed = mutation({
                 cursor: null,
               });
             }
-          } catch {
-            // A year the career will not hold: the gap stays, and is seen.
           }
         }
         card = (await ctx.db.get(card._id)) ?? card;
@@ -551,6 +555,16 @@ export const keepCareerGap = mutation({
     return null;
   },
 });
+
+/** `assertCareerStintYears` as a yes/no, so a caller can skip ONLY that case. */
+function careerStintYearsHoldable(fromYear: number, toYear: number | undefined): boolean {
+  try {
+    assertCareerStintYears(fromYear, toYear, maxCareerYear());
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 // ─── write mutations ────────────────────────────────────────────────────────
 

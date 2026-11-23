@@ -5,7 +5,7 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
@@ -18,6 +18,20 @@ import {
   tidyReviewedKeyCut,
   tidyReviewedKeyVariation,
 } from "./features/cardAttention";
+
+// One switch to make the career-gap re-check fail, to prove a failure that is
+// NOT "a year the career will not hold" is not swallowed by `markReviewed`.
+const gapRecheck = vi.hoisted(() => ({ fail: false }));
+vi.mock("./tidyCareerGap", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./tidyCareerGap")>();
+  return {
+    ...actual,
+    recheckCareerGaps: (...args: Parameters<typeof actual.recheckCareerGaps>) => {
+      if (gapRecheck.fail) throw new Error("forced re-check failure");
+      return actual.recheckCareerGaps(...args);
+    },
+  };
+});
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -361,10 +375,13 @@ describe("tidyCards.cardContext — reads", () => {
       const rows: Array<[string, Record<string, unknown>]> = [
         // Born (or migrated) ready and bare: nobody has asked.
         ["Born Ready", {}],
-        // A lookup ran and found nothing: ready and bare, but it left a generation.
-        ["Finished Miss", { lookupGen: 2 }],
+        // A lookup ran and found nothing: ready and bare, but it left a stamp.
+        ["Finished Miss", { lookupGen: 2, lookupRequestedAt: NOW }],
         // Asked once, the generation since cleared: the request time still says so.
         ["Asked Once", { lookupRequestedAt: NOW }],
+        // Reset for a re-fetch: the generation only climbs, the stamp is gone, so
+        // it is a name nobody has asked about.
+        ["Reset", { lookupGen: 3 }],
         // Not ready, or already answered or enriched: never "new" either.
         ["Still Pending", { status: "pending" }],
         ["Answered", { answer: { kind: "notEntity", by: "operator" } }],
@@ -391,6 +408,7 @@ describe("tidyCards.cardContext — reads", () => {
     const byName = Object.fromEntries(view!.names.map((n) => [n.printed, n.row!.neverLooked]));
     expect(byName).toEqual({
       "Born Ready": true,
+      Reset: true,
       "Finished Miss": false,
       "Asked Once": false,
       "Still Pending": false,
@@ -520,6 +538,42 @@ describe("tidyCards.markReviewed", () => {
       expect(await playedFor2024(t, merrill, mets)).toBe(true);
       const row = await t.run((ctx) => ctx.db.get(id));
       expect((row?.tidyChecks ?? []).some((c) => c.kind === "careerGap")).toBe(false);
+    });
+
+    test("a set year the career will not hold skips the stint and still marks the card seen", async () => {
+      const t = convexTest(schema, modules);
+      const { id, merrill, mets } = await gapCard(t);
+      await t.run(async (ctx) => {
+        const year = (await ctx.db.query("selectorOptions").collect()).find((o) => o.level === "year")!;
+        await ctx.db.patch(year._id, { value: "1500" });
+      });
+      const key = tidyReviewedKeyCareerGap(merrill, mets);
+      const before = (await t.run((ctx) => ctx.db.get(merrill)))!.teamYears;
+      const res = await t.withIdentity(ADMIN).mutation(api.tidyCards.markReviewed, { cardId: id, keys: [key] });
+      expect(res.keys).toEqual([key]);
+      expect((await t.run((ctx) => ctx.db.get(merrill)))!.teamYears).toEqual(before);
+      const row = await t.run((ctx) => ctx.db.get(id));
+      expect(row?.tidyReviewed?.keys).toEqual([key]);
+      expect((row?.tidyChecks ?? []).some((c) => c.kind === "careerGap")).toBe(true);
+    });
+
+    test("a failure after the stint is written propagates and persists nothing", async () => {
+      const t = convexTest(schema, modules);
+      const { id, merrill, mets } = await gapCard(t);
+      const before = (await t.run((ctx) => ctx.db.get(merrill)))!.teamYears;
+      gapRecheck.fail = true;
+      try {
+        await expect(
+          t
+            .withIdentity(ADMIN)
+            .mutation(api.tidyCards.markReviewed, { cardId: id, keys: [tidyReviewedKeyCareerGap(merrill, mets)] }),
+        ).rejects.toThrow(/forced re-check failure/);
+      } finally {
+        gapRecheck.fail = false;
+      }
+      // The whole mutation rolled back: no stint, and the card is not marked seen.
+      expect((await t.run((ctx) => ctx.db.get(merrill)))!.teamYears).toEqual(before);
+      expect((await t.run((ctx) => ctx.db.get(id)))!.tidyReviewed).toBeUndefined();
     });
 
     test("'Keep as is' stores the key at once, and a later Save & next leaves the career alone", async () => {

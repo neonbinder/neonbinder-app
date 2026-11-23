@@ -81,10 +81,20 @@ describe("sweepExpiredLookupOutput: only expired Wikidata output goes", () => {
     const cleared = (await rowById(t, old.id))!;
     expect(cleared.enrichment).toBeUndefined();
     expect(cleared.status).toBe("ready");
-    expect(cleared.lookupGen).toBeUndefined();
+    // The generation only climbs (a stale job for gen 2 can never match again).
+    expect(cleared.lookupGen).toBe(3);
     expect(cleared.lookupRequestedAt).toBeUndefined();
     expect(neverLooked(cleared)).toBe(true);
     expect(neverLooked((await rowById(t, err.id))!)).toBe(true);
+    // A result still queued for the cleared generation is dropped.
+    await t.mutation(internal.tidyNames.applyLookupResult, {
+      id: old.id,
+      gen: 2,
+      status: "ready",
+      enrichment: { wikidataId: "Q_STALE" },
+      sportId: cleared.sportId,
+    });
+    expect((await rowById(t, old.id))!.enrichment).toBeUndefined();
 
     expect((await rowById(t, fresh.id))!.enrichment).toEqual(WD);
     expect((await rowById(t, pending.id))).toMatchObject({ status: "pending", lookupGen: 1 });
@@ -258,7 +268,8 @@ describe("Change, then Add as new player, after the output expired", () => {
     await as().mutation(api.tidyNames.requestLookup, { cardId: open, kind: "player", name: "Rookie Newguy" });
     const asked = (await rowNow())!;
     expect(asked.status).toBe("pending");
-    expect(asked.lookupGen).toBe(1);
+    // Reset bumped 1 to 2; the ask bumps it again.
+    expect(asked.lookupGen).toBe(3);
     const queued = (await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).filter((s) =>
       s.name.includes("enqueueTidyNameLookups"),
     );
@@ -267,7 +278,7 @@ describe("Change, then Add as new player, after the output expired", () => {
     // The lookup lands, then Add as new player creates from it.
     await t.mutation(internal.tidyNames.applyLookupResult, {
       id: asked._id,
-      gen: 1,
+      gen: asked.lookupGen!,
       status: "ready",
       enrichment: { wikidataId: "Q_NEW", description: "fresh" },
       sportId: asked.sportId,
@@ -295,6 +306,6 @@ describe("Change, then Add as new player, after the output expired", () => {
     await t.withIdentity(ADMIN).mutation(api.tidyNames.requestTeamLookup, { cardId: open, name: "Pads", sportId: w.sport });
     const row = (await rowsAll(t)).find((r) => r.kind === "team")!;
     expect(row.status).toBe("pending");
-    expect(row.lookupGen).toBe(1);
+    expect(row.lookupGen).toBe(3);
   });
 });

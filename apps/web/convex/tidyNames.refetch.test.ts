@@ -235,13 +235,57 @@ describe("a fetch forgets the Wikidata output of the last one (working state, ne
     const row = (await rowOf(t, PRINTED))!;
     expect(row.enrichment).toBeUndefined();
     expect(row.status).toBe("pending");
-    expect(row.lookupGen).toBe(0);
-    // The commit queued it: one lookup, under a new generation.
+    // The reset bumped generation 1 to 2 and left the row unstamped: not asked yet.
+    expect(row.lookupGen).toBe(2);
+    expect(row.lookupRequestedAt).toBeUndefined();
+    // The commit queued it: one lookup, under a newer generation than any before.
     const queued = await t.mutation(internal.tidyNames.enqueuePendingLookups, {
       scopeId: w.variantTypeId,
     });
     expect(queued).toBe(1);
-    expect((await rowOf(t, PRINTED))!.lookupGen).toBe(1);
+    const asked = (await rowOf(t, PRINTED))!;
+    expect(asked.lookupGen).toBe(3);
+    expect(asked.lookupRequestedAt).toBeDefined();
+    // A second walk queues none.
+    expect(await t.mutation(internal.tidyNames.enqueuePendingLookups, { scopeId: w.variantTypeId })).toBe(0);
+  });
+
+  test("a Wikidata job still queued from before the reset is ignored, even after the row is asked again (no generation reuse)", async () => {
+    const t = newT();
+    const w = await seedLeaf(t);
+    await fetchSet(t, w, [PRINTED]);
+    const first = (await rowOf(t, PRINTED))!;
+    // The first fetch's job (generation 1) is still queued in the pool.
+    await t.run((ctx) => ctx.db.patch(first._id, { status: "pending", lookupGen: 1 }));
+
+    await fetchSet(t, w, [PRINTED]);
+    expect(await t.mutation(internal.tidyNames.enqueuePendingLookups, { scopeId: w.variantTypeId })).toBe(1);
+    const asked = (await rowOf(t, PRINTED))!;
+    // Asked again under a generation no earlier job carries (the old one cleared would have been 1 again).
+    expect(asked.lookupGen).toBeGreaterThan(1);
+
+    for (const gen of [1, 2]) {
+      await t.mutation(internal.tidyNames.applyLookupResult, {
+        id: first._id,
+        gen,
+        status: "ready",
+        enrichment: { wikidataId: "Q_STALE", description: "from the old question" },
+        sportId: asked.sportId,
+      });
+    }
+    const still = (await rowOf(t, PRINTED))!;
+    expect(still.status).toBe("pending");
+    expect(still.enrichment).toBeUndefined();
+
+    // The current generation's result lands.
+    await t.mutation(internal.tidyNames.applyLookupResult, {
+      id: first._id,
+      gen: asked.lookupGen!,
+      status: "ready",
+      enrichment: { wikidataId: "Q_NOW", description: "fresh" },
+      sportId: asked.sportId,
+    });
+    expect((await rowOf(t, PRINTED))!.enrichment).toMatchObject({ wikidataId: "Q_NOW" });
   });
 
   test("a finished miss from the first fetch (ready, nothing found) is asked again, not trusted", async () => {
@@ -253,7 +297,7 @@ describe("a fetch forgets the Wikidata output of the last one (working state, ne
     await fetchSet(t, w, [PRINTED]);
     const row = (await rowOf(t, PRINTED))!;
     expect(row.status).toBe("pending");
-    expect(row.lookupGen).toBe(0);
+    expect(row.lookupGen).toBe(3);
   });
 
   test("a name the fetch no longer needs to ask about is left blank and is NOT looked up", async () => {
@@ -317,7 +361,8 @@ describe("resetForRefetch (the step itself)", () => {
       expect(row.answer).toBeUndefined();
       expect(row.enrichment).toBeUndefined();
       expect(row.fanOutFrom).toBeUndefined();
-      expect(row.lookupGen).toBeUndefined();
+      expect(row.lookupGen).toBe(2);
+      expect(row.lookupRequestedAt).toBeUndefined();
       expect(row.status).toBe("ready");
       expect(row.answerGen).toBe(2);
     }

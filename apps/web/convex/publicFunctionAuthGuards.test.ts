@@ -1302,6 +1302,23 @@ describe("NEO-645 — a refused Tidy Up write persists nothing", () => {
           sportId: c.w.sport,
         }),
     ],
+    [
+      "tidyCameo.pickSourceAsCameo",
+      (c, as) => as().mutation(api.tidyCameo.pickSourceAsCameo, { cardId: c.cardId }),
+    ],
+    [
+      "tidyCards.keepCareerGap",
+      (c, as) =>
+        as().mutation(api.tidyCards.keepCareerGap, {
+          cardId: c.cardId,
+          playerId: c.playerId,
+          teamId: c.w.padres,
+        }),
+    ],
+    [
+      "tidyCards.markReviewed",
+      (c, as) => as().mutation(api.tidyCards.markReviewed, { cardId: c.cardId, keys: [] }),
+    ],
   ];
 
   test.each(calls)("%s refuses a signed-out caller and writes nothing", async (_name, call) => {

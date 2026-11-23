@@ -149,3 +149,4 @@
 - [Revert narrows input validator](patterns_revert_narrows_input_validator.md) — schema keeps literal: check returns reuse it, no row round-trips
 - [Neo640 review skip autocommit](patterns_neo640_review_skip_autocommit.md) — client skip of a review: fence on server batch id, fail-open union, unmount edge
 - [Neo643 ingest cleanse fold drift](patterns_neo643_ingest_cleanse_fold_drift.md) — cleanse vs narrower folds; SL prefix filter; stored/compare split drops J-P rows
+- [Generation counter reset ABA](patterns_generation_counter_reset_aba.md) — reset writing a CAS generation back to 0 re-admits in-flight results at the reused gen

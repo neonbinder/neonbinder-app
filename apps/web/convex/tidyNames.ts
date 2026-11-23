@@ -917,7 +917,8 @@ export const neverLooked = (row: Doc<"tidyNames">): boolean =>
   // A name the gate offered candidates for is a choice, not an unasked name.
   (row.candidateTeamIds?.length ?? 0) === 0 &&
   row.candidatePlace === undefined &&
-  (row.lookupGen ?? 0) === 0 &&
+  // The stamp alone says "never asked". The generation does NOT: it only
+  // climbs (a reset bumps it, never clears it), so a reset row has one.
   row.lookupRequestedAt === undefined;
 
 /**
@@ -1179,7 +1180,9 @@ export const sweepStaleLookups = internalMutation({
     const stale = await ctx.db
       .query("tidyNames")
       .withIndex("by_status_requested", (q) =>
-        q.eq("status", "pending").lt("lookupRequestedAt", cutoff),
+        // `gt 0` keeps a pending row the gate re-opened but the pool has not
+        // been asked about yet (no stamp) out of the range.
+        q.eq("status", "pending").gt("lookupRequestedAt", 0).lt("lookupRequestedAt", cutoff),
       )
       .take(LOOKUP_SWEEP_CHUNK);
     for (const row of stale) await ctx.db.patch(row._id, { status: "error" });
@@ -1291,7 +1294,9 @@ export const sweepExpiredLookupOutput = internalMutation({
         await ctx.db.patch(row._id, {
           enrichment: withoutLookupOutput(row.enrichment),
           status: "ready",
-          lookupGen: undefined,
+          // Monotonic: a result still queued for an older generation must
+          // never match again. "Never asked" is the missing stamp.
+          lookupGen: (row.lookupGen ?? 0) + 1,
           lookupRequestedAt: undefined,
         });
         cleared += 1;
@@ -1304,8 +1309,8 @@ export const sweepExpiredLookupOutput = internalMutation({
 
 /**
  * After the commit finalizes (schema doc 4b): enqueue the lookup of every
- * pending row in the scope that has not been enqueued (`lookupGen` 0). The gate
- * wrote them at gen 0 so the pool never patches a row the prelude is reading.
+ * pending row in the scope that has not been enqueued (`lookupGen` 0, or no
+ * `lookupRequestedAt` stamp). The gate wrote them unstamped so the pool never patches a row the prelude is reading.
  *
  * One page per call, walked with a real cursor (NEO-645). A queued row STAYS
  * `pending` (the lookup answers it later), so a `.take()` of the index re-read
@@ -1324,9 +1329,13 @@ export const enqueuePendingLookups = internalMutation({
       .paginate({ numItems: ENQUEUE_PAGE, cursor: args.cursor ?? null });
     const items: Array<{ rowId: Id<"tidyNames">; gen: number }> = [];
     for (const row of page.page) {
-      if ((row.lookupGen ?? 0) > 0) continue;
-      await ctx.db.patch(row._id, { lookupGen: 1, lookupRequestedAt: Date.now() });
-      items.push({ rowId: row._id, gen: 1 });
+      // Enqueued already: a generation AND a stamp. A re-opened row has a
+      // generation (a reset bumped it) but no stamp, so it is asked now, under
+      // the next generation: it never reuses one a stale job might carry.
+      if ((row.lookupGen ?? 0) > 0 && row.lookupRequestedAt !== undefined) continue;
+      const gen = (row.lookupGen ?? 0) + 1;
+      await ctx.db.patch(row._id, { lookupGen: gen, lookupRequestedAt: Date.now() });
+      items.push({ rowId: row._id, gen });
     }
     if (items.length > 0) {
       await ctx.scheduler.runAfter(0, internal.wikidataPool.enqueueTidyNameLookups, { items });
@@ -1462,13 +1471,13 @@ export const upsertFromGatePage = internalMutation({
           const patch: Partial<Doc<"tidyNames">> = {};
           // A row nobody has looked up (the fetch's reset left it blank, or a
           // migration did) that the gate asks about like a new name is born
-          // again: `pending` at generation 0, so it is looked up after the
+          // again: `pending` and unstamped, so it is looked up after the
           // commit exactly as a new row is. A name the gate decides itself
           // (an answer, a same-name choice, a preselect) stays `ready`.
           if (!answer && !awaitsChoice && !existing.answer && neverLooked(existing)) {
+            // The generation is left alone (it only climbs); the missing stamp
+            // is what `enqueuePendingLookups` reads as "not asked yet".
             patch.status = "pending";
-            patch.lookupGen = 0;
-            patch.lookupRequestedAt = Date.now();
           }
           if (answer) {
             if (!sameAnswer(existing.answer, answer)) {
@@ -1548,9 +1557,9 @@ export const RESET_PAGE = 150;
  * "That name has nothing to answer." A cleared answer bumps `answerGen`, so a
  * fan-out still running for it stops (its generation no longer matches). The
  * cards themselves are not touched here: the commit that follows rewrites them
- * from the names as they now resolve. `lookupGen` goes back to zero, so a
- * lookup result still in flight for the old question finds a different
- * generation and is dropped.
+ * from the names as they now resolve. `lookupGen` is bumped (never cleared) and the
+ * request stamp is cleared, so a lookup result still in flight for the old
+ * question finds a different generation and is dropped.
  *
  * Paged (a scope holds a few hundred to a few thousand name rows); the gate
  * drives it with the cursor until it returns null.
@@ -1578,7 +1587,6 @@ export const resetForRefetch = internalMutation({
         row.enrichment === undefined &&
         row.candidateTeamIds === undefined &&
         row.candidatePlace === undefined &&
-        row.lookupGen === undefined &&
         row.lookupRequestedAt === undefined &&
         row.fanOutFrom === undefined &&
         row.answeredByUserId === undefined &&
@@ -1597,7 +1605,9 @@ export const resetForRefetch = internalMutation({
         candidateTeamIds: undefined,
         candidatePlace: undefined,
         status: "ready",
-        lookupGen: undefined,
+        // Monotonic, so a Wikidata job still queued for the old question finds
+        // a newer generation and is dropped, even after the row is asked again.
+        lookupGen: (row.lookupGen ?? 0) + 1,
         lookupRequestedAt: undefined,
         sportId: args.sportId,
       });
