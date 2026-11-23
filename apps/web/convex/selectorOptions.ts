@@ -365,7 +365,7 @@ import { normalizeEntityName, rosterCompareKey } from "../lib/entities/normalize
 // NEO-591: the one names-first pairing core, shared with the publisher
 // checklist matcher (lib/checklists/match-published-checklist.ts).
 import { pairNamesFirst } from "../lib/cards/pair-names-first";
-import { bornNameless, placeholderCardName } from "../lib/cards/unnamed-card";
+import { placeholderCardName } from "../lib/cards/unnamed-card";
 // NEO-236: the team name split. `teamFullName` composes location + nickname
 // for every name that leaves this file; `teamRowFields`/`findTeamByFullName`
 // are the ONE place a team row's identity fields are derived and looked up.
@@ -24056,12 +24056,7 @@ export const commitCardChecklistChunk = internalMutation({
         const insertTidyChecks: Array<
           | { kind: "careerGap"; playerId: Id<"players">; teamId: Id<"teams"> }
           | { kind: "teamFill"; teamIds: Array<Id<"teams">>; reason: "otherCards" | "career" }
-          | { kind: "needsName" }
         > = [];
-        // Born nameless (Jason, 2026-11-23): stamped here only, never on a stored card.
-        if (bornNameless(born.playerIds, insertPendingPlayerNames, card.cardName)) {
-          insertTidyChecks.push({ kind: "needsName" });
-        }
         if (born.playerIds?.length === 1 && (card.teamOnCardIds ?? []).length > 0) {
           insertTidyChecks.push(...(await careerGapChecks(born.playerIds[0], card.teamOnCardIds ?? [])));
         }

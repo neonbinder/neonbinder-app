@@ -33,19 +33,6 @@ export function hasCardName(cardName: string | undefined): boolean {
 }
 
 /**
- * A card being born with nobody on it (no player, none waiting to be resolved)
- * and no name of its own. The commit stamps `needsName` on it; a card already
- * stored is never stamped (Jason, 2026-11-23).
- */
-export function bornNameless(
-  playerIds: readonly unknown[] | undefined,
-  pendingPlayerNames: readonly unknown[],
-  cardName: string | undefined,
-): boolean {
-  return (playerIds?.length ?? 0) === 0 && pendingPlayerNames.length === 0 && !hasCardName(cardName ?? "");
-}
-
-/**
  * Words of a name as a comparison reads them: folded (accents, case, dashes),
  * punctuation and the joiners between names ("/", "&", "and") dropped.
  */

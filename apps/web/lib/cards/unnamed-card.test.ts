@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bornNameless, cardSubjectName, hasCardName, placeholderCardName } from "./unnamed-card";
+import { cardSubjectName, hasCardName, placeholderCardName } from "./unnamed-card";
 
 describe("placeholderCardName", () => {
   it("is 'Card #n', and 'Card #NNO' for a blank number", () => {
@@ -25,17 +25,6 @@ describe("hasCardName", () => {
   it("reads what placeholderCardName writes as no name", () => {
     expect(hasCardName(placeholderCardName("12"))).toBe(false);
     expect(hasCardName(placeholderCardName(""))).toBe(false);
-  });
-});
-
-describe("bornNameless", () => {
-  it("is true only with no player, none pending and no real name", () => {
-    expect(bornNameless(undefined, [], "Card #3")).toBe(true);
-    expect(bornNameless([], [], "")).toBe(true);
-    expect(bornNameless([], [], undefined)).toBe(true);
-    expect(bornNameless([], [], "Team Card")).toBe(false);
-    expect(bornNameless(["p1"], [], "Card #3")).toBe(false);
-    expect(bornNameless([], ["Mike Trout"], "Card #3")).toBe(false);
   });
 });
 

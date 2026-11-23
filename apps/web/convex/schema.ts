@@ -1588,11 +1588,6 @@ export const tidyTeamFillReasonValidator = v.union(
  *  - teamFill: the commit wrote these teams itself from strict pre-fill
  *    evidence. NOTE-ONLY, never blue and never a stop; cleared when the team
  *    is changed by hand.
- *  - needsName: the card was BORN with no player and no name of its own (blank,
- *    or NB's "Card #N" placeholder). It is what makes a nameless card pink in
- *    the walk (Jason, 2026-11-23: a card already in production is never
- *    changed, so absence of the check = never asked). Pink while the card still
- *    has no player and no real name; a stale check says nothing.
  */
 export const tidyCheckValidator = v.union(
   v.object({
@@ -1606,7 +1601,6 @@ export const tidyCheckValidator = v.union(
     teamIds: v.array(v.id("teams")),
     reason: tidyTeamFillReasonValidator,
   }),
-  v.object({ kind: v.literal("needsName") }),
 );
 
 /**

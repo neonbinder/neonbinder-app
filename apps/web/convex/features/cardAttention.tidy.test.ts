@@ -422,8 +422,6 @@ describe("deriveCardAttention — a card always has a name (Jason, 2026-11-23)",
     teamOnCardIds: ["t1"],
     cardName: "Card #3",
     listingTitle: "2026 Topps Chrome #3 Baseball",
-    // Born nameless: only the commit stamps this (a stored card never has it).
-    tidyChecks: [{ kind: "needsName" }],
   };
 
   test("a card with no player and only NB's placeholder name is a pink 'needsName'", () => {
@@ -433,11 +431,11 @@ describe("deriveCardAttention — a card always has a name (Jason, 2026-11-23)",
     });
   });
 
-  test("a card already stored has no stamp, so a placeholder name is never asked (no change to production cards)", () => {
-    const { tidyChecks: _unused, ...stored } = NAMELESS;
-    expect(deriveCardAttention(stored)).toEqual({ level: "none", items: [] });
-    expect(deriveCardAttention({ ...stored, tidyChecks: [] })).toEqual({ level: "none", items: [] });
-    expect(deriveCardAttention({ ...stored, cardName: "" })).toEqual({ level: "none", items: [] });
+  test("an old card and a new one read the same: the row alone decides (Jason, 2026-11-23)", () => {
+    // No stamp, no creation marker: a stored row with a placeholder name is asked
+    // exactly as a freshly written one, and never rewritten by reading it.
+    expect(deriveCardAttention({ ...NAMELESS, tidyChecks: [] })).toEqual(deriveCardAttention(NAMELESS));
+    expect(level(NAMELESS)).toBe("fix");
   });
 
   test("a blank name is no name either", () => {
@@ -474,7 +472,6 @@ describe("deriveCardAttention — a card always has a name (Jason, 2026-11-23)",
       kinds({
         platformData: {},
         cardName: "Card #3",
-        tidyChecks: [{ kind: "needsName" }],
         pendingTeamNames: ["Padrez"],
         sourceDisagreements: [
           {

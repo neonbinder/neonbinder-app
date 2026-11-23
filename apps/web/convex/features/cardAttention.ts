@@ -207,8 +207,7 @@ export type TidyDisagreement = {
 export type TidyCheck =
   | { kind: "careerGap"; playerId: string; teamId: string }
   | { kind: "newPlayerCareer"; playerId: string }
-  | { kind: "teamFill"; teamIds: readonly string[]; reason: "otherCards" | "career" }
-  | { kind: "needsName" };
+  | { kind: "teamFill"; teamIds: readonly string[]; reason: "otherCards" | "career" };
 
 /**
  * NEO-102 — what this card still needs from a human.
@@ -540,12 +539,7 @@ function allTidyItems(row: AttentionCardRow): TidyAttentionItem[] {
   // with the card"). A card with nobody on it, and nobody waiting to be, names
   // itself: "Team Card", "Checklist", whatever it is. NB's own placeholder
   // ("Card #3") is no name. Never keyed on a marketplace's wording.
-  //
-  // Only a card BORN without one (the commit stamped `needsName` in
-  // `tidyChecks`): "there is no reason to change production cards" (Jason,
-  // 2026-11-23), so a row from before has no stamp and is never asked.
   if (
-    (row.tidyChecks ?? []).some((c) => c.kind === "needsName") &&
     playerIds.length === 0 &&
     pendingPlayers.length === 0 &&
     typeof row.cardName === "string" &&
