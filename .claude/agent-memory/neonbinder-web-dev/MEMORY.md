@@ -321,3 +321,4 @@
 - [Port a retired-UI rule: audit every server fill site](reference_porting_a_rule_from_a_retired_ui_audit_every_server_fill_site.md) — tile, commit fill, answer-time fill, Apply to all each gate rule 8 separately (NEO-645 x NEO-639)
 - [Parallel commit chunks: defer the shared flush](reference_parallel_commit_chunks_defer_the_shared_flush.md) — find the one shared write, defer it to the caller, prove disjointness with a db Proxy; ties on sortOrder stay sequential
 - [Capped history router test](pattern_capped_history_router_test.md) — push per step to a depth cap (40) then replace; test with HistoryRouter + a 50-entry capped memory history
+- [Every title builder passes the card name](pattern_every_title_builder_passes_the_card_name.md) — set inputs.subjectName via cardSubjectName in every assessListingTitle caller; fixtures named "Card 1" are real names, use "Card #1"
