@@ -40,6 +40,13 @@ the tool's current code before relying on any line here; some may be fixed.
   then read the file on the notification. `status` plus the newest run's `job.json`
   (`"specs"`) tells whose run holds the lock. In zsh, a spec list in a plain variable
   does not word-split; use an array for `git add -- $F`.
+- **`setup ✘ not since seed` can be a dead seed, not a pending phase.** `setup` warms
+  the deployment (syncs Manufacturers, etc.) before it asserts a cold column, so once
+  its FIRST attempt after a seed dies part-way, every later attempt reds earlier (e.g.
+  the paused branch's "No manufacturers available" with the listbox full). Every
+  `run` then dies in setup for every author. Check the run dirs since `seededAt` for
+  a first setup red; if so, no spec can run until a reseed: hand back "needs fresh
+  seed", never reseed a shared worktree deployment yourself.
 - `status` on a worktree with no `.e2e-local/` yet can crash (ENOENT on
   run.lock). Any `run` creates the folder.
 

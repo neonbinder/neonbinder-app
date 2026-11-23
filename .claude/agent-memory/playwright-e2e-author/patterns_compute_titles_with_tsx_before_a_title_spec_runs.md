@@ -21,3 +21,13 @@ can store a title still over 80 even after the variation is trimmed to its 65 ca
 **How to apply:** any spec asserting a rebuilt title after a walk write (variation
 trim, Apply to all, set-name shortening): check the length offline first, pick fixture
 values that make the intended state (fits / over cap / cut flag) true on every worker.
+
+**Offline red for a fresh-only title assertion (NEO-645 card-name-in-title):** when a
+plant would cost a re-seed you may not take, `git archive <pre-change sha> apps/web/convex
+apps/web/lib apps/web/package.json | tar -x -C <scratch>`, symlink the worktree's
+`node_modules` into `<scratch>/apps/web`, and import that copy's `generateListing.ts` in
+the same tsx script: the old title must fail the new regex (e.g. old "2014 Topps Base #6a
+Football" vs new `/New England Patriots #6a?/`). Quote both titles in the report as the
+proof the assertion discriminates. Stored titles take `subjectName` only via
+`cardSubjectName` (placeholder "Card #N" and names made of the linked players' words
+are dropped), so pass what the card really stores.
