@@ -355,8 +355,14 @@ export function storedCardVariation(raw: string | undefined): string | undefined
  * a caller (or a test) that holds just that says nothing about the shortened
  * set name, so the title is flagged as it always was.
  */
-export type TitleCutFacts = Pick<ListingTitleAssessment, "coreFits"> &
-  Partial<Pick<ListingTitleAssessment, "fits" | "tidyUp" | "dropped" | "shortNameUsed">>;
+export type TitleCutFacts = {
+  coreFits: boolean;
+  fits?: boolean;
+  tidyUp?: boolean;
+  dropped?: readonly string[];
+  /** `true` on an assessment; the preview query sends `boolean | undefined`. */
+  shortNameUsed?: boolean;
+};
 
 /**
  * NEO-645 (Jason, 2026-11-23) — the title is built from the set's box text
