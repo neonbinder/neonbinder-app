@@ -162,3 +162,4 @@
 - [Plant first, one-shot fixture](patterns_plant_first_on_a_one_shot_fresh_fixture.md) — consumed control: plant run, then pill probe; pill stale after a write
 - [Re-fetch reset, cameo tile](patterns_refetch_reset_and_cameo_tile_specs.md) — set-history note proves reset; Review Changes skip; cameo focus race
 - [Walk keeps a cleared card](patterns_walk_keeps_a_card_that_clears_on_screen.md) — open card stays after its last stop clears; assert tile in place
+- [Plant the fix past a red](patterns_plant_the_missing_fix_to_validate_past_a_product_red.md) — product red mid-spec: plant the fix, unmatchable --expect, STAYED GREEN = tail passes

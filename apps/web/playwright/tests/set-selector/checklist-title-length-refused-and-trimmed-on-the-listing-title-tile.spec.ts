@@ -14,7 +14,16 @@
 // The trim goes below 65 on purpose: the variation is never cut from a title
 // (NEO-609), so with 64 characters of it the rebuilt title is still over 80
 // (`assessListingTitle`). Trimmed to "Gold Refractor" the rebuilt title fits
-// on every worker (ATTEMPT_TOKEN is 12 characters at most: 79 at the longest).
+// with nothing left out on every worker (ATTEMPT_TOKEN is 12 characters at
+// most: 78 at the longest, where the quiet cuts take "Insert" and the sport).
+//
+// NEO-645: a card's own name is always in its title, after the levels and
+// before the number, and is never cut. These cards have no player, so each
+// card's name is its title's subject. The names are short fixed words, not
+// minted: the set is this attempt's alone, so nothing needs them unique, and a
+// token-length name would push the team out of the trimmed title on the
+// longest token. Every title below was computed with `assessListingTitle` for a
+// 1-, 10- and 12-character token.
 //
 // Fixture: a per-worker hand-made set (R7a, `tlf-` in SET-REGISTRY.md) with
 // three cards: #101 (the one the drawer checks are made on), #102 (generated
@@ -44,11 +53,13 @@ test(
   async ({ page, signIn, env, isMobile }) => {
     const id = env.ATTEMPT_ID;
     // Short single-token names (R7a, `tlf` in SET-REGISTRY.md): the whole generated title,
-    // sport included, fits 80 on every worker (11 runs the longest ATTEMPT_TOKEN), so
-    // nothing but the variation below is ever left out. The set is per attempt, so
-    // its one card can carry a plain number.
+    // the card's name, "Insert" and the sport included, fits 80 on every worker (79 at the
+    // longest ATTEMPT_TOKEN), so nothing but the variation below is ever left out. The set
+    // is per attempt, so its cards can carry plain numbers.
     const num = "101";
     const team = `TLF${env.ATTEMPT_TOKEN}`;
+    // The cards' own names (NEO-645: in every title, ahead of the number).
+    const name = "Capper";
     // `tlfset`, never `tlf` + the token: a set name equal to the team's (TLF + the token,
     // case-folded) is a repeat the generator leaves out of the title.
     const set = `tlfset${env.ATTEMPT_TOKEN}`;
@@ -60,15 +71,18 @@ test(
       name: new RegExp(`^Card ${num}(, .*)? is worth a check: (.*; )?variation text is over the 65-character limit(; .*)?$`),
     });
     const drawer = page.getByRole("dialog", { name: /^Card #/ });
-    const generated = new RegExp(`^2024 Topps .*#${num} ${team} Baseball$`);
+    // Born with nothing left out, the card's name after the level and before the number.
+    const generated = new RegExp(`^2024 Topps ${set} Base Insert ${name} #${num} ${team} Baseball$`);
     const variationText = "Gold Refractor Image Variation Wearing Sunglasses Holding Bat In Dugout";
     // What the trim saves: short enough that the rebuilt title (variation never cut) fits 80.
     const trimmed = "Gold Refractor";
     expect(variationText.startsWith(`${trimmed} `)).toBe(true);
     // The title every walk write rebuilds once the trim lands: nothing left out.
-    const retitled = (n: string) => new RegExp(`^2024 Topps ${set} Base (Insert )?#${n} ${trimmed} ${team} Baseball$`);
-    const generatedSibling = { num: "102", name: `TitleCapB${env.ATTEMPT_TOKEN}` };
-    const typedSibling = { num: "103", name: `TitleCapC${env.ATTEMPT_TOKEN}` };
+    // On the longest tokens the quiet cuts take "Insert" and the sport; the name, the number and the team stay.
+    const retitled = (n: string, subject: string) =>
+      new RegExp(`^2024 Topps ${set} Base (Insert )?${subject} #${n} ${trimmed} ${team}( Baseball)?$`);
+    const generatedSibling = { num: "102", name: `${name}B` };
+    const typedSibling = { num: "103", name: `${name}C` };
     const typedTitle = `Typed by hand ${env.ATTEMPT_TOKEN} 103`;
     const siblingEdit = (n: string) => page.getByRole("button", { name: new RegExp(`^Edit card ${n}(, .*)?$`) });
     const siblingMark = (n: string) =>
@@ -90,7 +104,7 @@ test(
     // ── A card with a brand-new team, so the generated title has a team in it ──
     await page.getByRole("button", { name: "Open add card form" }).click();
     await page.getByRole("textbox", { name: "Card number" }).fill(num);
-    await cardName.fill(`TitleCap${env.ATTEMPT_TOKEN}`);
+    await cardName.fill(name);
     await page.getByRole("button", { name: "Add team" }).click();
     const teamSearch = page.getByRole("textbox", { name: "Search teams" });
     await teamSearch.fill(team);
@@ -261,7 +275,9 @@ test(
     for (const sibling of [generatedSibling, typedSibling]) {
       await siblingEdit(sibling.num).click();
       await expect(variation).toHaveValue(variationText);
-      await expect(cardTitle).toHaveValue(sibling === typedSibling ? typedTitle : new RegExp(`#${sibling.num} ${team} Baseball$`));
+      await expect(cardTitle).toHaveValue(
+        sibling === typedSibling ? typedTitle : new RegExp(`${sibling.name} #${sibling.num} ${team} Baseball$`),
+      );
       await page.getByRole("button", { name: "Done editing card" }).click();
       await expect(cardName).toBeHidden();
     }
@@ -281,7 +297,7 @@ test(
     // ordinary insert (NEO-609), so its name stays in the title like any level's.
     await openTidyWalk(page, { title: tidyUpName({ year: "2024", set }) });
     // Walk order is the card number: #101 first, of the three (the header names the variation).
-    await expect(tidyCardHeader(page, `#${num} · ${variationText} · TitleCap${env.ATTEMPT_TOKEN}`)).toBeVisible();
+    await expect(tidyCardHeader(page, `#${num} · ${variationText} · ${name}`)).toBeVisible();
     await expectCardsLeft(page, 3);
     const walk = tidyWalk(page);
     const titleTile = tidyTile(page, "Listing title");
@@ -312,9 +328,10 @@ test(
 
     // ── Regenerate: the variation is never cut (NEO-609), so the rebuilt title is
     // over 80. It is kept in an editor that refuses it, pink, with its meter
-    // saying how far over; nothing is saved. ──
+    // saying how far over; nothing is saved. The card's name is never cut
+    // either (NEO-645), so it stays between the level and the variation. ──
     const regenerateOnTile = titleTile.getByRole("button", { name: "Regenerate card title", exact: true });
-    const regeneratedOver = `2024 Topps ${set} Base ${variationText}`;
+    const regeneratedOver = `2024 Topps ${set} Base ${name} ${variationText}`;
     expect(regeneratedOver.length, "the fixture's rebuilt title is over the cap").toBeGreaterThan(80);
     const overLine = titleTile.getByText("Over the limit, so it opens ready to edit.", { exact: true });
     await regenerateOnTile.click();
@@ -361,7 +378,7 @@ test(
     await expect(titleTile.getByRole("status").filter({ hasText: "Variation saved." })).toBeVisible();
     await expect(trim).toHaveValue(trimmed);
     // NEO-645 T4: the walk's write rebuilt the title, the variation in it and nothing left out.
-    await expect(titleTile.getByText(retitled(num))).toBeVisible();
+    await expect(titleTile.getByText(retitled(num, name))).toBeVisible();
     await expect(titleTile.getByText(/^Left out to fit: /)).toHaveCount(0);
     // ── Apply to all: the trim offered to the two other cards with the same variation ──
     // The hand-typed title on #103 is no reason to leave it out: only the variation is compared,
@@ -397,7 +414,7 @@ test(
     // marks blue seen, so the gone mark alone would not prove it).
     await edit.click();
     await expect(variation).toHaveValue(trimmed);
-    await expect(cardTitle).toHaveValue(retitled(num));
+    await expect(cardTitle).toHaveValue(retitled(num, name));
     await page.getByRole("button", { name: "Done editing card" }).click();
     await expect(cardName).toBeHidden();
     // Apply to all wrote both siblings: the trimmed variation on each and a rebuilt title, #103's
@@ -407,7 +424,7 @@ test(
       await expect(siblingMark(sibling.num)).toHaveCount(0);
       await siblingEdit(sibling.num).click();
       await expect(variation).toHaveValue(trimmed);
-      await expect(cardTitle).toHaveValue(retitled(sibling.num));
+      await expect(cardTitle).toHaveValue(retitled(sibling.num, sibling.name));
       await page.getByRole("button", { name: "Done editing card" }).click();
       await expect(cardName).toBeHidden();
     }
