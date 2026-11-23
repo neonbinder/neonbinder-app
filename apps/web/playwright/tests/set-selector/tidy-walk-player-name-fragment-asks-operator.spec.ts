@@ -19,7 +19,7 @@
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { editCardButton, escapeRe } from "../../support/cards";
 import { addPlayerByHand, expectPlayersLoaded, playersCounter, PLAYERS_MATCHES } from "../../support/players";
-import { usePastedChecklist } from "../../support/published-checklist";
+import { savedLine, usePastedChecklist } from "../../support/published-checklist";
 import { drillToCustom, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 import {
   needsYouPill,
@@ -61,7 +61,7 @@ test(
     await syncChecklistButton(page).click();
 
     // ── The commit saves the card, and the walk opens on it ──
-    const opened = await settleWalkAfterCommit(page, page.getByText(/Saved 1 cards\./).first());
+    const opened = await settleWalkAfterCommit(page, savedLine(page, 1));
     expect(opened, "the card's one-word name needs an answer, so the walk opened").toBe(true);
     const walk = tidyWalk(page);
     await expect(walk).toHaveAccessibleName(tidyUpName({ year: YEAR, set: SET }));

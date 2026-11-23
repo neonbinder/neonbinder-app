@@ -5,8 +5,11 @@
 // again leaves the list and is not saved. A search hit says which team it is: its league and years
 // ("MLB · 1913–present") are the option's description and ride on its chip.
 //
-// The flow, on three hand-added cards (walk order is the card number):
-//   #1 holds two minted teams, made in the card form, so they exist; it needs nobody (no walk stop).
+// The flow, on four hand-added cards (walk order is the card number):
+//   #1 makes both minted teams in the card form's New team dialog, so they exist, and keeps only
+//      the first (the second is removed from the form before the card is added): one team, so its
+//      title leaves nothing out and it needs nobody (no walk stop). With both teams on it, its name
+//      and two token-named teams run the title past the cap, and #1 would be worth a check.
 //   #2 no team -> pink. "Other team…" twice picks both teams; "Save teams" writes both.
 //   #3 no team -> pink. Both picked, the second pressed again (it leaves the list); "Save team"
 //      writes one.
@@ -62,7 +65,9 @@ test(
     // prefix of a longer attempt's team and turn the create's "No matches." into a match.
     const TEAM_A = `Cnwa${token}t`;
     const TEAM_B = `Cnwb${token}t`;
-    const holder = { number: "1", name: `CnwOne${token}` };
+    // Short on purpose: #1's title carries its name and TEAM_A and must leave nothing out
+    // (assessListingTitle: 78 characters at a 12-character token).
+    const holder = { number: "1", name: `Cnw1${token}` };
     const both = { number: "2", name: `CnwTwo${token}` };
     const one = { number: "3", name: `CnwThree${token}` };
     const real = { number: "4", name: `CnwFour${token}` };
@@ -111,19 +116,24 @@ test(
       variant: "Base",
     });
 
-    // The two teams exist before the walk: both made on #1 in the card form's New team dialog.
+    // The two teams exist before the walk: both made on #1 in the card form's New team dialog. The
+    // dialog writes the team; taking TEAM_B off the form only keeps it off #1.
     await addCardViaForm(page, {
       cardNumber: holder.number,
       playerName: holder.name,
       beforeSubmit: async () => {
         await createTeamInCardForm(page, TEAM_A);
         await createTeamInCardForm(page, TEAM_B);
+        await page.getByRole("button", { name: `Remove team ${TEAM_B}`, exact: true }).click();
+        await expect(page.getByRole("button", { name: `Remove team ${TEAM_B}`, exact: true })).toHaveCount(0);
+        await expect(page.getByRole("button", { name: `Remove team ${TEAM_A}`, exact: true })).toBeVisible();
       },
     });
     await addCardViaForm(page, { cardNumber: both.number, playerName: both.name });
     await addCardViaForm(page, { cardNumber: one.number, playerName: one.name });
     await addCardViaForm(page, { cardNumber: real.number, playerName: real.name });
-    // The precondition: #2 and #3 are flagged for their team; #1 (two teams) is not flagged at all.
+    // The precondition: #2, #3 and #4 are flagged for their team; #1 (one team, a title that leaves
+    // nothing out) is not flagged at all.
     await expect(noTeamMark(both.number)).toBeVisible();
     await expect(noTeamMark(one.number)).toBeVisible();
     await expect(noTeamMark(real.number)).toBeVisible();
@@ -223,7 +233,7 @@ test(
     });
     await expectDrawerTeams(page, both.number, [TEAM_A, TEAM_B]);
     await expectDrawerTeams(page, one.number, [TEAM_A]);
-    await expectDrawerTeams(page, holder.number, [TEAM_A, TEAM_B]);
+    await expectDrawerTeams(page, holder.number, [TEAM_A]);
     await expectDrawerTeams(page, real.number, [MLB_TEAM]);
   },
 );
