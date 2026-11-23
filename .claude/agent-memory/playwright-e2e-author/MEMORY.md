@@ -166,3 +166,4 @@
 - [Plant the fix past a red](patterns_plant_the_missing_fix_to_validate_past_a_product_red.md) — product red mid-spec: plant the fix, unmatchable --expect, STAYED GREEN = tail passes
 - [Title plant, adopting spec](patterns_title_plant_on_an_adopting_sole_writer_spec.md) — drawer read-path plant; generator plant misses or poisons the seed
 - [Removed button, described field](patterns_removed_button_absence_and_described_field.md) — plant every client gate; describedby/focus asserts
+- [BSC team lane shared across shards](patterns_bsc_team_lane_is_shared_across_shards.md) — 1 slot, 1.7 s/card, FIFO deployment-wide; assert answered OR held back

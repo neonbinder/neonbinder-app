@@ -11,7 +11,8 @@
 //   - the same answer reaches a PARALLEL built from the set's Base: its copies of two teamless
 //     Base cards (made before the set answered, so they carry no stamp) read No Team, and BSC's
 //     per-card "no team" answer is what settles them (the lookup holds the stamp back until it
-//     answers, rule 8), never a team.
+//     answers, rule 8; a copy still queued on the shared lane reads no team and is not flagged),
+//     never a team.
 //
 // NEO-645: Match Cards' Confirm IS the commit, and the walk opens after it only when a card needs
 // a person. The pre-NEO-645 spec also fetched once BEFORE the set answered, to read the old
@@ -232,10 +233,22 @@ test(
     await expectAccessible(page, { label: "Base parallels build stopped, set under No Team" });
 
     await columnOption(page, "Parallels", FIRST_PARALLEL).click();
-    // Both copies are on screen (two rows), so a missing mark is a real absence.
+    // The copies' lookups ride the background BSC team lane (convex/bscTeamPool.ts): ONE slot for
+    // the whole deployment, 1.7 s a card, first in first out across every test user. In CI the
+    // other shards' commits queue cards ahead of these two (merge-queue run 45273919105: seven
+    // items ahead, so the copies were answered 18-21 s after the build, past this step's 7 s; on
+    // an idle lane they answer in about 4 s). So a copy is EITHER answered, its row reading No
+    // Team, OR still on the lane: its row carries no team at all (the name runs straight into its
+    // BSC badge) and is not flagged, which the attention rule allows only while the lookup is owed
+    // (`isAwaitingTeamLookup`). Never a team, in either branch. Both copies are on screen (two
+    // rows), so a missing mark is a real absence.
     for (const player of BASE_CARDS) {
-      await expect(rowSays(player, "No Team")).toBeVisible();
+      const heldBack = page.getByText(new RegExp(`#NNO[^#]*${escapeRe(player)}\\s*BSC`));
+      await expect(rowSays(player, "No Team").or(heldBack).first()).toBeVisible();
       await expect(flaggedNoTeam(player)).toHaveCount(0);
+      // Which branch ran goes into the report (a read for the record, never an assert's branch).
+      const queued = await heldBack.isVisible();
+      test.info().annotations.push({ type: "bsc-team-lane", description: `${player}: ${queued ? "still queued" : "answered"}` });
     }
     await expectAccessible(page, { label: "Built parallel, copies No Team" });
   },
