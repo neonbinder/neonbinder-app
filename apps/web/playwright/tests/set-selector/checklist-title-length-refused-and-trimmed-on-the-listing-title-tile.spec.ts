@@ -5,9 +5,16 @@
 // where its "Listing title" tile shows the 80 meter, keeps a regenerated title
 // that cannot fit in an editor that refuses it, and trims the variation, then
 // offers the trim to the other cards with the same variation ("Apply to the 2
-// cards with the same variation" -> "Applied to 2 cards."). A card whose title
-// was typed by hand takes the trim and keeps its typed title (NEO-645: only the
-// variation is compared, and a typed title is never regenerated).
+// cards with the same variation" -> "Applied to 2 cards."). Every walk write
+// rebuilds the title from the card's facts (NEO-645 T4), so the saved trim
+// retitles #101 with the variation in it, and Apply to all retitles both other
+// cards, the one whose title was typed by hand included (only the variation is
+// compared; a typed title is overwritten).
+//
+// The trim goes below 65 on purpose: the variation is never cut from a title
+// (NEO-609), so with 64 characters of it the rebuilt title is still over 80
+// (`assessListingTitle`). Trimmed to "Gold Refractor" the rebuilt title fits
+// on every worker (ATTEMPT_TOKEN is 12 characters at most: 79 at the longest).
 //
 // Fixture: a per-worker hand-made set (R7a, `tlf-` in SET-REGISTRY.md) with
 // three cards: #101 (the one the drawer checks are made on), #102 (generated
@@ -55,8 +62,11 @@ test(
     const drawer = page.getByRole("dialog", { name: /^Card #/ });
     const generated = new RegExp(`^2024 Topps .*#${num} ${team} Baseball$`);
     const variationText = "Gold Refractor Image Variation Wearing Sunglasses Holding Bat In Dugout";
-    // What the trim saves: 65 characters, the trailing space dropped.
-    const trimmed = variationText.slice(0, 65).trimEnd();
+    // What the trim saves: short enough that the rebuilt title (variation never cut) fits 80.
+    const trimmed = "Gold Refractor";
+    expect(variationText.startsWith(`${trimmed} `)).toBe(true);
+    // The title every walk write rebuilds once the trim lands: nothing left out.
+    const retitled = (n: string) => new RegExp(`^2024 Topps ${set} Base (Insert )?#${n} ${trimmed} ${team} Baseball$`);
     const generatedSibling = { num: "102", name: `TitleCapB${env.ATTEMPT_TOKEN}` };
     const typedSibling = { num: "103", name: `TitleCapC${env.ATTEMPT_TOKEN}` };
     const typedTitle = `Typed by hand ${env.ATTEMPT_TOKEN} 103`;
@@ -339,15 +349,23 @@ test(
     await expect(titleTile.getByRole("button", { name: "Edit title", exact: true })).toBeVisible();
     await expect(shownTitle).toHaveText(stored);
 
-    // ── The variation trimmed to 65: the note and the pink go, and it saves ──
+    // ── The variation trimmed: at 65 the note and the pink go ──
     await trim.fill(variationText.slice(0, 65));
     await expect(trimNote).toHaveCount(0);
     await expect(titleTile.getByText("65/65", { exact: true })).toBeVisible();
     await expectNoOverCapLook(trim);
+    // Trimmed to a variation the rebuilt title can carry (the header's note), and saved.
+    await trim.fill(trimmed);
+    await expect(titleTile.getByText(`${trimmed.length}/65`, { exact: true })).toBeVisible();
     await titleTile.getByRole("button", { name: "Save variation", exact: true }).click();
-    await expect(trim).toHaveValue(variationText.slice(0, 65));
+    await expect(titleTile.getByRole("status").filter({ hasText: "Variation saved." })).toBeVisible();
+    await expect(trim).toHaveValue(trimmed);
+    // NEO-645 T4: the walk's write rebuilt the title, the variation in it and nothing left out.
+    await expect(titleTile.getByText(retitled(num))).toBeVisible();
+    await expect(titleTile.getByText(/^Left out to fit: /)).toHaveCount(0);
     // ── Apply to all: the trim offered to the two other cards with the same variation ──
-    // The hand-typed title on #103 is no reason to leave it out: only the variation is compared.
+    // The hand-typed title on #103 is no reason to leave it out: only the variation is compared,
+    // and the write rebuilds its title like any walk write.
     const applyTrim = titleTile.getByRole("button", { name: "Apply to the 2 cards with the same variation", exact: true });
     await applyTrim.click();
     const applied = titleTile.getByRole("status").filter({ hasText: /^(Applying…|Applied|No cards changed)/ });
@@ -378,18 +396,18 @@ test(
     // Read back from the card, not the tile's draft: the trim was written (Save & next only
     // marks blue seen, so the gone mark alone would not prove it).
     await edit.click();
-    // (The save trims: the 65th character is a space.)
     await expect(variation).toHaveValue(trimmed);
+    await expect(cardTitle).toHaveValue(retitled(num));
     await page.getByRole("button", { name: "Done editing card" }).click();
     await expect(cardName).toBeHidden();
-    // Apply to all wrote both siblings: the trimmed variation on each, #102's title still the
-    // generated one, #103's typed title left as it was. Neither carries a mark (each beside its row).
+    // Apply to all wrote both siblings: the trimmed variation on each and a rebuilt title, #103's
+    // typed title overwritten too (NEO-645 T4). Neither carries a mark (each beside its row).
     for (const sibling of [generatedSibling, typedSibling]) {
       await expect(siblingEdit(sibling.num)).toBeVisible();
       await expect(siblingMark(sibling.num)).toHaveCount(0);
       await siblingEdit(sibling.num).click();
       await expect(variation).toHaveValue(trimmed);
-      await expect(cardTitle).toHaveValue(sibling === typedSibling ? typedTitle : new RegExp(`#${sibling.num} ${team} Baseball$`));
+      await expect(cardTitle).toHaveValue(retitled(sibling.num));
       await page.getByRole("button", { name: "Done editing card" }).click();
       await expect(cardName).toBeHidden();
     }
