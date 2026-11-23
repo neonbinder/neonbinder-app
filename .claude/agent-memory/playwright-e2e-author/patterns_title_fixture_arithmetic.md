@@ -98,3 +98,12 @@ field against the card's current facts (a later /N shows as left out).
 The collector's "Find a card" (`collectionCatalog.search`) reads the card's
 DESCRIPTION, which keeps every fact; to prove it, search a single token only
 the description holds (the number the title dropped).
+
+**NEO-645 (2026-11-23): the card's name is always in its title.** A hand-added card whose
+player name and teams are all minted from the token can run past 80 and earn "is worth a check:
+listing title was cut short", which breaks a "this card carries no mark" precondition. Before
+picking such names, run `assessListingTitle` with `npx tsx` (inputs: year, Topps, set, sport,
+`insertName`/`titleLevels` for Insert > Base, playerNames, teamNames) at a 12-character token.
+Two `Cnw?<token>t` teams + a `CnwOne<token>` player is cut; one team + `Cnw1<token>` is 78.
+A team made in the card form's New team dialog exists once created; "Remove team <name>" only
+keeps it off that card, so a holder card can mint a team for later cards without carrying it.
