@@ -6,7 +6,7 @@
  * Escape ordering can be driven. Router, URL, history and the sitting are real.
  */
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { useEffect, useRef, useState } from "react";
+import { createElement, useEffect, useRef, useState } from "react";
 import { MemoryRouter, useLocation, useSearchParams } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -14,6 +14,7 @@ vi.mock("../../../convex/_generated/api", () => ({
   api: {
     tidyNames: { lookupsPending: "lookupsPending" },
     tidyCards: { cardContext: "cardContext", markReviewed: "markReviewed" },
+    selectorOptions: { updateCard: "updateCard" },
     drillPath: { resolveDrillPath: "resolveDrillPath" },
   },
 }));
@@ -22,6 +23,7 @@ vi.mock("../../../convex/_generated/api", () => ({
 const { convexQuery } = vi.hoisted(() => ({ convexQuery: vi.fn(async (): Promise<unknown> => undefined) }));
 
 const markReviewed = vi.fn();
+const updateCard = vi.fn();
 let pendingLookups: { names: Array<{ kind: "player" | "team"; nameNormalized: string }>; more: boolean } = {
   names: [],
   more: false,
@@ -46,7 +48,8 @@ vi.mock("convex/react", () => ({
     }
     return undefined;
   },
-  useMutation: (ref: string) => (ref === "markReviewed" ? markReviewed : vi.fn()),
+  useMutation: (ref: string) =>
+    ref === "markReviewed" ? markReviewed : ref === "updateCard" ? updateCard : vi.fn(),
   useConvex: () => ({ query: convexQuery }),
 }));
 
@@ -54,17 +57,50 @@ vi.mock("./TidyCardFace", () => ({ default: () => <div data-testid="face" /> }))
 vi.mock("./tiles/SourcesDisagreeTile", () => ({ default: () => <div data-testid="tile-sources" /> }));
 // A tile's level is what the walk's "next pink tile" reads off the page.
 let playerLevel: "fix" | "plain" = "plain";
+// What the pink tile's first control is, and when it arrives: `late` mounts it
+// after the card is shown (a tile whose controls wait for the card's context).
+let playerControl: "button" | "combobox" = "button";
+let playerControlLate = false;
+const comboboxFocus = { quiet: null as boolean | null };
 // Off, the stub team tile answers without telling the walk: the focus repair for
 // a tile that has not been taught to (an unmounted button must not strand focus).
 let teamCallsAnswered = true;
 vi.mock("./tiles/PlayerTile", () => ({
-  default: () => (
-    <section data-testid="tile-player" data-tidy-level={playerLevel}>
-      <button type="button">Player control</button>
-    </section>
-  ),
+  default: function PlayerTile() {
+    const [ready, setReady] = useState(!playerControlLate);
+    useEffect(() => {
+      if (ready) return;
+      const t = setTimeout(() => setReady(true), 60);
+      return () => clearTimeout(t);
+    }, [ready]);
+    return (
+      <section data-testid="tile-player" data-tidy-level={playerLevel}>
+        {ready &&
+          (playerControl === "combobox" ? (
+            createElement("input", {
+              role: "combobox",
+              "aria-label": "Find a player",
+              defaultValue: "Mike Trout",
+              onFocus: (e: { currentTarget: HTMLElement }) => {
+                comboboxFocus.quiet = e.currentTarget.hasAttribute("data-quiet-focus");
+              },
+            })
+          ) : (
+            <button type="button">Player control</button>
+          ))}
+      </section>
+    );
+  },
 }));
-vi.mock("./tiles/CardNameTile", () => ({ default: () => <div data-testid="tile-card-name" /> }));
+// The real Card name tile when a test asks for it, the stub otherwise.
+let realCardName = false;
+vi.mock("./tiles/CardNameTile", async () => {
+  const actual = await vi.importActual<typeof import("./tiles/CardNameTile")>("./tiles/CardNameTile");
+  return {
+    default: (props: React.ComponentProps<typeof actual.default>) =>
+      realCardName ? <actual.default {...props} /> : <div data-testid="tile-card-name" />,
+  };
+});
 vi.mock("./tiles/CareerTile", () => ({ default: () => <div data-testid="tile-career" /> }));
 vi.mock("./tiles/TeamTile", async () => {
   const { useAnswered } = await import("./answered");
@@ -190,6 +226,11 @@ beforeEach(() => {
   markReviewed.mockResolvedValue({ keys: [] });
   pendingLookups = { names: [], more: false };
   playerLevel = "plain";
+  playerControl = "button";
+  playerControlLate = false;
+  comboboxFocus.quiet = null;
+  realCardName = false;
+  updateCard.mockReset();
   teamCallsAnswered = true;
 });
 
@@ -225,6 +266,14 @@ describe("opening", () => {
     expect(screen.queryByText("1 to fix")).toBeNull();
     expect(screen.getByText(/^1 to fix before this card can save\./)).toBeTruthy();
     expect(screen.getByTestId("face")).toBeTruthy();
+  });
+
+  it("prints no count of cards to check under the header either: the blue tiles say what to check", async () => {
+    mount([blue("a", "1")]);
+    const group = await screen.findByRole("group", { name: "#1 · Mike Trout" });
+    expect(screen.queryByText(/to check/)).toBeNull();
+    expect(screen.queryByText(/to fix/)).toBeNull();
+    expect(group.querySelectorAll("p")).toHaveLength(1);
   });
 
   it("mounts the tiles in the contract order", async () => {
@@ -297,7 +346,7 @@ describe("the footer", () => {
   it("Save & next stores the card's blue keys, then moves to the next card", async () => {
     const first = blue("a", "1");
     mount([first, pink("b", "2")]);
-    await screen.findByText("1 to check");
+    await screen.findByTestId("tile-team");
     fireEvent.click(button("Save & next (Enter)"));
     await waitFor(() => expect(url()).toBe("?tidy=b"));
     expect(markReviewed).toHaveBeenCalledWith({ cardId: "a", keys: currentReviewKeys(first) });
@@ -306,7 +355,7 @@ describe("the footer", () => {
   it("shows `Didn't save, try again` and stays on the card when the write fails", async () => {
     markReviewed.mockRejectedValueOnce(new Error("nope"));
     mount([blue("a", "1"), pink("b", "2")]);
-    await screen.findByText("1 to check");
+    await screen.findByTestId("tile-team");
     fireEvent.click(button("Save & next (Enter)"));
     expect((await screen.findByRole("alert")).textContent).toBe("Didn't save, try again");
     expect(url()).toBe("?tidy=a");
@@ -336,10 +385,10 @@ describe("the footer", () => {
     let finish: (v: unknown) => void = () => {};
     markReviewed.mockReturnValueOnce(new Promise((r) => (finish = r)));
     mount([blue("a", "1"), blue("b", "2")]);
-    await screen.findByText("1 to check");
+    await screen.findByTestId("tile-team");
     fireEvent.click(button("Skip: not ready to list"));
     await waitFor(() => expect(url()).toBe("?tidy=b"));
-    await screen.findByText("1 to check");
+    await screen.findByTestId("tile-team");
     await nextFrame();
     const back = button("Back");
     act(() => back.focus());
@@ -393,7 +442,7 @@ describe("the footer", () => {
 describe("the keys", () => {
   it("Enter outside a field is Save & next", async () => {
     mount([blue("a", "1"), pink("b", "2")]);
-    await screen.findByText("1 to check");
+    await screen.findByTestId("tile-team");
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Enter" });
     await waitFor(() => expect(markReviewed).toHaveBeenCalledTimes(1));
   });
@@ -428,26 +477,98 @@ describe("the keys", () => {
 });
 
 describe("focus", () => {
-  it("lands on the card header when a card opens", async () => {
+  // One rule for every way a card is shown, and for every answer: the first
+  // control of the first pink tile, and Save & next when nothing is pink.
+  const playerControlButton = () => screen.getByRole("button", { name: "Player control" });
+
+  it("on opening, lands on Save & next when nothing on the card is pink", async () => {
     mount([blue("a", "1")]);
-    await screen.findByText("1 to check");
+    await screen.findByTestId("tile-team");
     await nextFrame();
-    const dialog = screen.getByRole("dialog");
-    expect(dialog.contains(document.activeElement)).toBe(true);
-    expect(document.activeElement?.textContent).toContain("#1");
+    expect(document.activeElement).toBe(button("Save & next (Enter)"));
   });
 
-  it("moves to the next card's header after Save & next", async () => {
+  it("on opening, lands on the first control of the first pink tile", async () => {
+    playerLevel = "fix";
+    mount([pink("a", "1")]);
+    await screen.findByTestId("tile-team");
+    await nextFrame();
+    expect(document.activeElement).toBe(playerControlButton());
+  });
+
+  it("after Save & next, the next card gets the same rule: Save & next when it is clear, else its first pink control", async () => {
     mount([blue("a", "1"), blue("b", "2")]);
-    await screen.findByText("1 to check");
+    await screen.findByTestId("tile-team");
     await nextFrame();
     fireEvent.click(button("Save & next (Enter)"));
     await waitFor(() => expect(url()).toContain("tidy=b"));
     await nextFrame();
-    expect(document.activeElement?.textContent).toContain("#2");
+    expect(document.activeElement).toBe(button("Save & next (Enter)"));
   });
 
-  it("returns to the dialog when an answer unmounts the focused button, and Enter then saves", async () => {
+  it("after Save & next onto a pink card, lands on that card's first pink control", async () => {
+    mount([blue("a", "1"), pink("b", "2")]);
+    await screen.findByTestId("tile-team");
+    await nextFrame();
+    playerLevel = "fix";
+    fireEvent.click(button("Save & next (Enter)"));
+    await waitFor(() => expect(url()).toContain("tidy=b"));
+    await nextFrame();
+    expect(document.activeElement).toBe(playerControlButton());
+  });
+
+  it("after Skip and after Back, each card gets the rule again", async () => {
+    playerLevel = "fix";
+    mount([pink("a", "1"), pink("b", "2")]);
+    await screen.findByTestId("tile-team");
+    await nextFrame();
+    fireEvent.click(button("Skip: not ready to list"));
+    await waitFor(() => expect(url()).toBe("?tidy=b"));
+    await nextFrame();
+    expect(document.activeElement).toBe(playerControlButton());
+    fireEvent.click(button("Back"));
+    await waitFor(() => expect(url()).toBe("?tidy=a"));
+    await nextFrame();
+    expect(document.activeElement).toBe(playerControlButton());
+  });
+
+  it("a pink tile whose control has not arrived yet holds focus on the header, and the control gets it when it does", async () => {
+    playerLevel = "fix";
+    playerControlLate = true;
+    mount([pink("a", "1")]);
+    await screen.findByTestId("tile-team");
+    await nextFrame();
+    // Something is pink, so Save & next is not the answer; the card header holds focus.
+    expect(document.activeElement).not.toBe(button("Save & next (Enter)"));
+    expect(document.activeElement?.textContent).toContain("#1");
+    await screen.findByRole("button", { name: "Player control" });
+    await waitFor(() => expect(document.activeElement).toBe(playerControlButton()));
+  });
+
+  it("a control that arrives late does not pull focus from someone who has already moved on", async () => {
+    playerLevel = "fix";
+    playerControlLate = true;
+    mount([pink("a", "1")]);
+    await screen.findByTestId("tile-team");
+    await nextFrame();
+    act(() => button("Back").focus());
+    await screen.findByRole("button", { name: "Player control" });
+    await nextFrame();
+    expect(document.activeElement).toBe(button("Back"));
+  });
+
+  it("hands focus to a combobox without opening its list", async () => {
+    playerLevel = "fix";
+    playerControl = "combobox";
+    mount([pink("a", "1")]);
+    const box = await screen.findByRole("combobox", { name: "Find a player" });
+    await nextFrame();
+    expect(document.activeElement).toBe(box);
+    expect(comboboxFocus.quiet).toBe(true);
+    expect(box.hasAttribute("data-quiet-focus")).toBe(false);
+  });
+
+  it("returns to the dialog when an answer unmounts the focused button, on Save & next", async () => {
     // Pink for the team, answered on the tile: the card is saveable once the
     // stub's answer lands, so use a blue card (nothing pink) for the Enter.
     teamCallsAnswered = false;
@@ -465,8 +586,11 @@ describe("focus", () => {
     const dialog = screen.getByRole("dialog");
     expect(document.activeElement).not.toBe(document.body);
     expect(dialog.contains(document.activeElement)).toBe(true);
+    // Nothing is pink, so it is Save & next that holds focus (the rule); Enter
+    // on a focused button is the button's own click.
+    expect(document.activeElement).toBe(button("Save & next (Enter)"));
 
-    fireEvent.keyDown(document.activeElement as Element, { key: "Enter" });
+    fireEvent.click(document.activeElement as Element);
     await waitFor(() => expect(markReviewed).toHaveBeenCalledTimes(1));
   });
 
@@ -532,6 +656,89 @@ describe("focus", () => {
     fireEvent.click(answer);
     await nextFrame();
     expect(document.activeElement).toBe(field);
+  });
+});
+
+describe("focus: Enter in the Card name tile (NEO-645, Jason 2026-11-23)", () => {
+  // Two nameless cards, the real Card name tile, and a card list that changes
+  // the way the live query does: the saved name leaves the row, the tile goes.
+  const nameless = (id: string, n: string) =>
+    ({
+      _id: id,
+      cardNumber: n,
+      cardName: `Card #${n}`,
+      playerIds: [],
+      teamOnCardIds: ["t1"],
+    }) as unknown as CardChecklistRow;
+
+  function Host() {
+    const [cards, setCards] = useState<CardChecklistRow[]>([nameless("a", "1"), nameless("b", "2")]);
+    updateCard.mockImplementation(async (args: { id: string; cardName: string }) => {
+      await Promise.resolve();
+      setCards((rows) => rows.map((r) => (r._id === args.id ? { ...r, cardName: args.cardName } : r)));
+    });
+    return (
+      <MemoryRouter initialEntries={["/?tidy=first"]}>
+        <UrlProbe />
+        <TidyUpWalk
+          leafId={LEAF}
+          setName="2024 Topps Chrome"
+          title="Tidy up 2024 Topps Chrome"
+          cards={cards}
+          onClose={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+  }
+  const nameField = () => screen.getByRole("textbox", { name: "Card name" });
+
+  beforeEach(() => {
+    realCardName = true;
+  });
+
+  it("a card with a nameless card opens with the focus in its Card name box, the first error", async () => {
+    render(<Host />);
+    const field = await screen.findByRole("textbox", { name: "Card name" });
+    await nextFrame();
+    expect(document.activeElement).toBe(field);
+  });
+
+  it("Enter saves the name in place and focus lands on Save & next; that Enter is neither a second save nor a press of Save & next", async () => {
+    render(<Host />);
+    const field = await screen.findByRole("textbox", { name: "Card name" });
+    await nextFrame();
+    fireEvent.change(field, { target: { value: "Checklist" } });
+    // fireEvent returns false when the handler called preventDefault: the walk's
+    // own key handler (which is Save & next outside a field) never sees this Enter.
+    let notPrevented = true;
+    await act(async () => {
+      notPrevented = fireEvent.keyDown(field, { key: "Enter" });
+    });
+    expect(notPrevented).toBe(false);
+    await nextFrame();
+    expect(updateCard).toHaveBeenCalledTimes(1);
+    expect(markReviewed).not.toHaveBeenCalled();
+    expect(url()).toBe("?tidy=a");
+    expect(screen.queryByRole("textbox", { name: "Card name" })).toBeNull();
+    expect(document.activeElement).toBe(button("Save & next (Enter)"));
+    // The walk is still on the same card, saved only once the operator says so.
+    expect(markReviewed).not.toHaveBeenCalled();
+  });
+
+  it("the next card then opens on its own first error, the Card name box, never on a box that was already focused", async () => {
+    render(<Host />);
+    const field = await screen.findByRole("textbox", { name: "Card name" });
+    await nextFrame();
+    fireEvent.change(field, { target: { value: "Checklist" } });
+    await act(async () => {
+      fireEvent.keyDown(field, { key: "Enter" });
+    });
+    await nextFrame();
+    fireEvent.click(button("Save & next (Enter)"));
+    await waitFor(() => expect(url()).toBe("?tidy=b"));
+    await nextFrame();
+    expect(document.activeElement).toBe(nameField());
+    expect((nameField() as HTMLInputElement).value).toBe("");
   });
 });
 
@@ -781,7 +988,7 @@ describe("handing focus back when the walk closes", () => {
         />
       </MemoryRouter>,
     );
-    await screen.findByText("1 to check");
+    await screen.findByTestId("tile-team");
     // The pill appears while the walk is open (cards still need someone).
     document.body.append(pill);
     pillThere = true;

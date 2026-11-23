@@ -17,6 +17,7 @@ import type { Id } from "../../../convex/_generated/dataModel";
 import { inertBackground } from "@/lib/dom/inert-background";
 import { isEditableTarget } from "@/lib/dom/is-editable-target";
 import NeonButton from "../../modules/NeonButton";
+import { focusWithoutOpening } from "../../primitives/Autocomplete";
 import HintedLabel from "../HintedLabel";
 import WizardChrome from "../WizardChrome";
 import {
@@ -315,7 +316,6 @@ function WalkDialog({
   const markReviewed = useMutation(api.tidyCards.markReviewed);
 
   const pinkCount = attention?.items.filter((i) => i.level === "fix").length ?? 0;
-  const checkCount = attention?.items.filter((i) => i.level === "check").length ?? 0;
   const canSave = isDone || (!!current && pinkCount === 0 && !saving);
 
   const save = async () => {
@@ -441,47 +441,79 @@ function WalkDialog({
     };
   }, [restoreFocusRef]);
 
-  // On every card: the header line is read (number, who, what is owed), and
-  // Tab starts from there. Never a field: the walk must not start a typing
-  // session nobody asked for. `reviewing` is a dependency on purpose: "Review the
-  // N skipped" changes it in the same transition that moves the walk to the
-  // first skipped card, so that landing is focused by this effect (the header
-  // of that card), not left to the lost-focus repair below.
+  // ── where focus goes on a card ──────────────────────────────────────────
+  // ONE rule, whatever brought it here (a card opening, Save & next, Skip,
+  // Back, Forward, the repair below, an answer on a tile): the first control of
+  // the first pink tile, and with nothing pink left, Save & next. A field the
+  // operator is typing in is left alone.
+  //
+  // A pink tile can be on the page before its controls are (the card's context
+  // is still loading), and Save & next is not the answer while something is
+  // pink. So the focus is OWED until it can be given: the card header holds it
+  // meanwhile, and the panel observer below pays the debt once the controls
+  // arrive, while focus is still parked on the header (anyone who has moved
+  // focus on their own is not chased).
+  // Read by the callbacks below at the moment they run, never closed over.
+  const pinkCountRef = useRef(pinkCount);
+  const isDoneRef = useRef(isDone);
+  useEffect(() => {
+    pinkCountRef.current = pinkCount;
+    isDoneRef.current = isDone;
+  });
+  const focusOwed = useRef(false);
+  const placeFocus = useCallback(() => {
+    const panel = panelRef.current;
+    if (!panel) return;
+    const active = document.activeElement;
+    if (active && panel.contains(active) && isEditableTarget(active)) {
+      focusOwed.current = false;
+      return;
+    }
+    const pink = panel.querySelector<HTMLElement>('[data-tidy-level="fix"]');
+    const first = pink?.querySelector<HTMLElement>(FOCUSABLE);
+    // A combobox opens its list on focus; code handing focus over never opens it.
+    if (first) {
+      focusOwed.current = false;
+      focusWithoutOpening(first);
+    } else if (pinkCountRef.current === 0 && saveRef.current) {
+      focusOwed.current = false;
+      saveRef.current.focus();
+    } else {
+      headerRef.current?.focus({ preventScroll: true });
+    }
+  }, []);
+
+  // On every card. `reviewing` is a dependency on purpose: "Review the N
+  // skipped" changes it in the same transition that moves the walk to the first
+  // skipped card, so that landing is placed by this effect, not left to the
+  // lost-focus repair below. The end screen has no tiles: its header group.
   useEffect(() => {
     if (!currentId && !isDone) return;
+    focusOwed.current = !isDone;
     const id = requestAnimationFrame(() => {
-      // The card changed, so the field the operator was in (if any) belonged
-      // to the card that just left; one still on the page is a field of this
-      // card that someone is already typing in. Leave that one alone.
-      const active = document.activeElement;
-      if (active && panelRef.current?.contains(active) && isEditableTarget(active)) return;
-      headerRef.current?.focus({ preventScroll: true });
+      if (isDone) {
+        const active = document.activeElement;
+        if (active && panelRef.current?.contains(active) && isEditableTarget(active)) return;
+        headerRef.current?.focus({ preventScroll: true });
+        return;
+      }
+      placeFocus();
     });
     return () => cancelAnimationFrame(id);
-  }, [currentId, isDone, reviewing]);
+  }, [currentId, isDone, reviewing, placeFocus]);
 
-  // An ANSWER on a tile (`useAnswered`): focus goes on, never back to the
-  // control that was pressed (an answered row's Change, a reopened search: one
-  // more Enter there would undo the answer). With nothing pink left on the card
-  // it lands on Save & next, so Enter saves and advances; otherwise on the
-  // first control of the first pink tile. Decided a frame later, from the page,
-  // so it sees the card as the answer left it.
+  // An ANSWER on a tile (`useAnswered`): focus goes on by the same rule, never
+  // back to the control that was pressed (an answered row's Change, a reopened
+  // search: one more Enter there would undo the answer). Decided a frame later,
+  // from the page, so it sees the card as the answer left it.
   const [answerTick, setAnswerTick] = useState(0);
   const onAnswered = useCallback(() => setAnswerTick((t) => t + 1), []);
   useEffect(() => {
     if (answerTick === 0) return;
-    const id = requestAnimationFrame(() => {
-      const panel = panelRef.current;
-      if (!panel) return;
-      // Someone typing in a field of this card is left where they are.
-      const active = document.activeElement;
-      if (active && panel.contains(active) && isEditableTarget(active)) return;
-      const pink = panel.querySelector<HTMLElement>('[data-tidy-level="fix"]');
-      const first = pink?.querySelector<HTMLElement>(FOCUSABLE);
-      (first ?? saveRef.current)?.focus({ preventScroll: false });
-    });
+    focusOwed.current = true;
+    const id = requestAnimationFrame(placeFocus);
     return () => cancelAnimationFrame(id);
-  }, [answerTick]);
+  }, [answerTick, placeFocus]);
 
   // Back goes unavailable at the oldest card. It is `aria-disabled`, so focus is
   // not thrown out; if it was on Back, it moves to the next control along.
@@ -497,10 +529,10 @@ function WalkDialog({
   // (No team on this card, Looks right, a picked chip) can unmount the very
   // button that was pressed; the browser then drops focus to <body>, outside
   // the dialog's key handler, and Enter and Esc go nowhere. Watch the panel
-  // for changes and, one frame after the dust settles, put focus on the card
-  // header (`tabIndex=-1`, the same place a new card starts). Only a LOST
-  // focus is repaired: while focus is on any live element (a field being
-  // typed in, a control that took it itself) nothing moves.
+  // for changes and, one frame after the dust settles, place focus by the rule
+  // above. Only a LOST focus is repaired (or one parked on the header while
+  // the rule still owes a control): while focus is on any live element (a field
+  // being typed in, a control that took it itself) nothing moves.
   useEffect(() => {
     const panel = panelRef.current;
     if (!panel || typeof MutationObserver === "undefined") return;
@@ -513,8 +545,14 @@ function WalkDialog({
         active === document.body ||
         active === document.documentElement ||
         (active instanceof HTMLElement && active.matches(":disabled"));
-      if (!lost || !panel.isConnected) return;
-      (headerRef.current ?? panel).focus({ preventScroll: true });
+      const parked = active === headerRef.current || active === panel;
+      if (!panel.isConnected || !(lost || (parked && focusOwed.current))) return;
+      if (isDoneRef.current) {
+        (headerRef.current ?? panel).focus({ preventScroll: true });
+        return;
+      }
+      focusOwed.current = true;
+      placeFocus();
     };
     const observer = new MutationObserver(() => {
       if (frame === 0) frame = requestAnimationFrame(settle);
@@ -529,7 +567,7 @@ function WalkDialog({
       observer.disconnect();
       if (frame !== 0) cancelAnimationFrame(frame);
     };
-  }, []);
+  }, [placeFocus]);
 
   const playerNames = context?.players.map((p) => p.nameOnCard ?? p.name);
   const header = current ? cardHeaderParts(current, playerNames) : null;
@@ -626,9 +664,6 @@ function WalkDialog({
                         <span className="whitespace-nowrap">{header?.number}</span>
                         {header?.rest ? ` · ${header.rest}` : ""}
                       </p>
-                      {checkCount > 0 && (
-                        <p className="text-sm text-neon-blue-text">{checkCount} to check</p>
-                      )}
                     </div>
                   </div>
                   <SourcesDisagreeTile {...tileProps} />

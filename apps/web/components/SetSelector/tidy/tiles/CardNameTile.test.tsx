@@ -125,6 +125,45 @@ describe("CardNameTile", () => {
     expect(document.activeElement).not.toBe(field());
   });
 
+  it("Enter is the field's: its default is prevented, so the walk's Save & next never reads it", async () => {
+    renderTile();
+    fireEvent.change(field(), { target: { value: "Checklist" } });
+    let notPrevented = true;
+    await act(async () => {
+      notPrevented = fireEvent.keyDown(field(), { key: "Enter" });
+    });
+    expect(notPrevented).toBe(false);
+  });
+
+  it("an Enter that repeats while a save is in flight writes once", async () => {
+    let finish: (v: unknown) => void = () => {};
+    mockUpdateCard.mockReturnValueOnce(new Promise((r) => (finish = r)));
+    const answered = vi.fn();
+    renderTile(needsName, answered);
+    fireEvent.change(field(), { target: { value: "Checklist" } });
+    await act(async () => {
+      fireEvent.keyDown(field(), { key: "Enter" });
+      fireEvent.keyDown(field(), { key: "Enter", repeat: true });
+    });
+    expect(mockUpdateCard).toHaveBeenCalledTimes(1);
+    expect(answered).not.toHaveBeenCalled();
+    await act(async () => finish(null));
+    expect(answered).toHaveBeenCalledTimes(1);
+  });
+
+  it("after an Enter save the field has let go before the walk is told, so the walk decides where focus goes", async () => {
+    let activeWhenAnswered: Element | null = null;
+    renderTile(needsName, () => {
+      activeWhenAnswered = document.activeElement;
+    });
+    fireEvent.change(field(), { target: { value: "Checklist" } });
+    act(() => field().focus());
+    await act(async () => fireEvent.keyDown(field(), { key: "Enter" }));
+    expect(activeWhenAnswered).not.toBeNull();
+    expect(activeWhenAnswered).not.toBe(field());
+    expect(document.activeElement).not.toBe(field());
+  });
+
   it("an Enter that confirms an IME composition is not a save", async () => {
     renderTile();
     fireEvent.change(field(), { target: { value: "チェックリスト" } });
