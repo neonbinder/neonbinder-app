@@ -39,7 +39,7 @@ import { expect, type Locator, type Page } from "@playwright/test";
 import type { FlowEnv } from "./env";
 import { expectAccessible } from "./fixtures";
 import { expectAfterMarketplace, expectStepWithSportLots } from "./marketplace-wait";
-import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist, type ChecklistName } from "./published-checklist";
+import { CHECKLISTS, settleChecklistFetch, usePublishersChecklist, type ChecklistName } from "./published-checklist";
 import {
   DRILL_DEFAULTS,
   ONE_MARKETPLACE_DEFAULTS,
@@ -101,10 +101,12 @@ const TO_FIX = "To fix";
 const NOT_A_PLAYER = /^Not a player \(checklist, team card, stadium\)( .+)?$/;
 /** "Not a team", plus " <printed name>" on a card with more than one team name. */
 const NOT_A_TEAM = /^Not a team( .+)?$/;
-/** An answered player row's Change ("Change player", or "Change player <printed name>" on a multi-name card). */
-const CHANGE_PLAYER = /^Change player( .+)?$/;
-/** An answered team row's Change ("Change team", or "Change team <printed name>" on a multi-name card). */
-const CHANGE_TEAM = /^Change team( .+)?$/;
+/**
+ * An answered player or team row's Edit, "Edit <name>" (the linked player's or team's name; the
+ * printed name on a not-a-player / not-a-team row). Cameo rows ("Edit cameo <name>") are excluded:
+ * callers scope it to the row's group ("Player <printed>" / "Team <printed>").
+ */
+const EDIT = /^Edit (?!cameo )/;
 
 /** The open walk. Contract: a locator, nothing waited for. */
 export function tidyWalk(page: Page): Locator {
@@ -396,10 +398,10 @@ function openPlayerRows(page: Page): Locator {
     .filter({ has: page.getByRole("button", { name: NOT_A_PLAYER }) });
 }
 
-/** The answered row named `Player <printed>`: its Change is up and its "Not a player" is gone. */
+/** The answered row named `Player <printed>`: its Edit is up and its "Not a player" is gone. */
 async function expectPlayerRowAnswered(page: Page, rowName: string): Promise<void> {
   const row = tidyTile(page, "Player").getByRole("group", { name: rowName, exact: true });
-  await expect(row.getByRole("button", { name: CHANGE_PLAYER }), `"${rowName}" was answered`).toBeVisible();
+  await expect(row.getByRole("button", { name: EDIT }), `"${rowName}" was answered`).toBeVisible();
   await expect(row.getByRole("button", { name: NOT_A_PLAYER })).toHaveCount(0);
 }
 
@@ -507,7 +509,7 @@ export function creatablePlayerRow(page: Page): Locator {
  * Answer ONE open Player row as a new player: the first row offering a plain
  * create. A spec whose intent is "this name is new" takes this; one that walks
  * past names takes `answerPinkPlayerTiles`. Contract: ENTRY a settled card with
- * such a row (waited for, 7 s). EXIT that row reads answered (its Change is up).
+ * such a row (waited for, 7 s). EXIT that row reads answered (its Edit is up).
  * Returns the row's name ("Player <printed>").
  */
 export async function createPlayerOnOpenRow(page: Page): Promise<string> {
@@ -564,7 +566,7 @@ export async function createTeamOnOpenRow(page: Page): Promise<string> {
   const rowName = (await row.getAttribute("aria-label")) ?? "";
   await createTeamFromRow(page, row);
   const done = tidyTile(page, "Team").getByRole("group", { name: rowName, exact: true });
-  await expect(done.getByRole("button", { name: CHANGE_TEAM }), `"${rowName}" was answered`).toBeVisible();
+  await expect(done.getByRole("button", { name: EDIT }), `"${rowName}" was answered`).toBeVisible();
   return rowName;
 }
 
@@ -613,7 +615,7 @@ export async function answerPinkTeamTiles(
       else await createTeamFromRow(page, row);
     }
     const done = tile.getByRole("group", { name: rowName, exact: true });
-    await expect(done.getByRole("button", { name: CHANGE_TEAM }), `"${rowName}" was answered`).toBeVisible();
+    await expect(done.getByRole("button", { name: EDIT }), `"${rowName}" was answered`).toBeVisible();
     await expect(done.getByRole("button", { name: NOT_A_TEAM })).toHaveCount(0);
     answered++;
   }
@@ -753,7 +755,7 @@ export async function tidyForTheParallelBuild(
  * storyline caption, a team card's title), except the printed names in
  * `keep`. Each answer reaches every card in the scope that prints the name.
  * Contract: ENTRY a settled card. EXIT every row not kept reads answered (its
- * Change is up). Returns the printed names it ruled out, in order. `maxRows` is
+ * Edit is up). Returns the printed names it ruled out, in order. `maxRows` is
  * a runaway guard.
  */
 export async function ruleOutOpenPlayerRows(
@@ -793,7 +795,7 @@ export async function ruleOutOpenTeamRows(page: Page, { maxRows = 8 }: { maxRows
     const rowName = (await rows.first().getAttribute("aria-label")) ?? "";
     const row = tidyTile(page, "Team").getByRole("group", { name: rowName, exact: true });
     await row.getByRole("button", { name: NOT_A_TEAM, disabled: false }).click();
-    await expect(row.getByRole("button", { name: CHANGE_TEAM }), `"${rowName}" was answered`).toBeVisible();
+    await expect(row.getByRole("button", { name: EDIT }), `"${rowName}" was answered`).toBeVisible();
     await expect(row.getByText(/ is not a team\.$/), `"${rowName}" reads not a team`).toBeVisible();
     ruledOut.push(rowName.replace(/^Team /, ""));
   }
@@ -824,7 +826,7 @@ export async function takeSourceSide(page: Page, source: "Checklist" | "BSC" | "
     const said = text === none ? `no ${field === "Team name" ? "team" : "player"}` : `“${text}”`;
     const use = `Use ${said}`;
     const button = tile.getByRole("button", { name: use, exact: true, disabled: false });
-    // A settled entry offers only "… instead" (NB's pick) or its Change: nothing to press.
+    // A settled entry offers only its "Change the <field>": nothing to press.
     if ((await button.count()) === 0) continue;
     await button.click();
     await expect(tile.getByRole("status").filter({ hasText: `Using ${said}` }), `${source}'s ${field} was taken`).toBeVisible();
@@ -832,27 +834,6 @@ export async function takeSourceSide(page: Page, source: "Checklist" | "BSC" | "
   }
   await expect(pinkTile(page, "Sources disagree"), `every disagreement took ${source}'s side`).toHaveCount(0);
   return answered;
-}
-
-// ── "Add all N new players" (NEO-645 decision 32) ────────────────────────────
-
-/**
- * The walk's dashed "Add all N new players" control (or "Add the first N new
- * players" when the server cut the list). It is shown only while two or more
- * names qualify, after the names' lookups finish and a settled read asks the
- * server, so wait for it with a web-first assert. Contract: a locator.
- */
-export function addAllNewPlayersTrigger(page: Page, n: number): Locator {
-  return tidyWalk(page).getByRole("button", { name: `Add all ${n} new players`, exact: true });
-}
-
-/**
- * The trigger's inline confirm: the group "New players to add", holding the
- * list "Names to add" and the buttons "Add N players" / "Cancel adding new
- * players". Contract: a locator, nothing waited for.
- */
-export function newPlayersToAdd(page: Page): Locator {
-  return tidyWalk(page).getByRole("group", { name: "New players to add", exact: true });
 }
 
 // ── fetching a real set's checklist into the walk ───────────────────────────
@@ -868,14 +849,15 @@ const FETCH = 120_000;
  * Drill to a real set's Base checklist (2024 Topps Stars of MLB Network by
  * default, a 10-card set the seed maps and leaves empty), upload its
  * publisher's checklist (NEO-489; the default set always has one), fetch, and
- * confirm Match Cards keeping every marketplace card
- * (`confirmChecklistMatchCards`). With no checklist: live, the two
- * marketplaces pair the same way; with SportLots paused it is the
+ * settle it on the file's Match Cards fact (`settleChecklistFetch`): confirm
+ * the dialog keeping every marketplace card when it opens, or read the skip's
+ * saved line when every card matched (NEO-640). With no checklist: live, the
+ * two marketplaces pair the same way; with SportLots paused it is the
  * one-marketplace solo path ("Kept all N cards from BSC").
  *
- * NEO-645: Confirm SAVES the cards and the walk opens on them by itself, so
- * this helper is for a fetch whose cards need a person (any unknown name
- * does). The fetch WRITES the set: the default set is read-only for every
+ * NEO-645: the cards SAVE first (Confirm, or the skip) and the walk opens on
+ * them by itself after the save, so this helper is for a fetch whose cards
+ * need a person (any unknown name does). The fetch WRITES the set: the default set is read-only for every
  * spec but its registered sole writer (R7a, SET-REGISTRY.md).
  *
  * `firstFetch`: the precondition of a FIRST fetch ("No cards in this checklist
@@ -903,9 +885,9 @@ export async function fetchChecklistToTidyWalk(
 
   const confirmMatches = page.getByRole("button", { name: "Confirm card matches" });
   if (facts !== undefined) {
-    // NEO-496 (D10, NQ1): BSC plus the checklist are two sources, so Match Cards opens even with
-    // SportLots paused.
-    await confirmChecklistMatchCards(page, { facts, what: "the fetch of the Base checklist" });
+    // NEO-496 (D10, NQ1): BSC plus the checklist are two sources, so the fetch is settled on the
+    // file's own Match Cards fact, even with SportLots paused (NEO-640: a full 100% skips it).
+    await settleChecklistFetch(page, env, { facts, what: "the fetch of the Base checklist" });
   } else if (!env.SL_PAUSED) {
     await expect(page.getByText(/Match Cards/).first()).toBeVisible({ timeout: FETCH });
     // The button reads "Loading…" (aria-disabled) while cards still stream in: wait for the usable one.
@@ -924,7 +906,7 @@ export async function fetchChecklistToTidyWalk(
     await expect(confirmMatches).toBeHidden();
   }
   // Live, the walk opens after the pairing's Confirm (a live SportLots + BSC round trip's
-  // aftermath); paused, once the commit has landed, our own work: the standard 7 s.
+  // aftermath); paused, or after a skip's save, once the commit has landed: our own work, 7 s.
   await expectStepWithSportLots(page, tidyWalk(page), env, { liveMs: FETCH, what: "the Tidy Up walk opening", statusLine: false });
   await expectTidyWalkOpen(page, {
     title: tidyUpName({ year: drilled.year ?? DRILL_DEFAULTS.year, set: drilled.set ?? DRILL_DEFAULTS.set }),
@@ -937,9 +919,11 @@ export async function fetchChecklistToTidyWalk(
  * The one-marketplace twin of `fetchChecklistToTidyWalk` (NEO-330): open the
  * set's Base with ONE marketplace attached (`openOneMarketplaceSetBase`), fetch
  * the never-fetched checklist, and land in the walk. With `checklist`, BSC and
- * the uploaded file are two sources (NEO-496, NQ1), so Match Cards opens and is
- * confirmed keeping every BSC card (and `extraRows`, the cards the file alone
- * names, NEO-574); without one, the solo path keeps BSC's cards.
+ * the uploaded file are two sources (NEO-496, NQ1), settled on the file's Match
+ * Cards fact (`settleChecklistFetch`): confirmed keeping every BSC card (and
+ * `extraRows`, the cards the file alone names, NEO-574) when it opens, or past
+ * the skip's saved line when every card matched (NEO-640); without one, the
+ * solo path keeps BSC's cards. Either way the save lands first, then the walk.
  *
  * Contract: ENTRY the set is registered one-marketplace and never fetched (a
  * fetched set fails on "No cards in this checklist yet.", by name: re-seed).
@@ -962,7 +946,7 @@ export async function fetchOneMarketplaceSetChecklistToTidyWalk(
 
   if (facts !== undefined) {
     // One live BSC round trip, waited on inside with `expectAfterMarketplace` (NEO-487).
-    await confirmChecklistMatchCards(page, {
+    await settleChecklistFetch(page, env, {
       facts,
       what: `the fetch of ${target.set}`,
       keepChecklistOnly: target.extraRows?.length,

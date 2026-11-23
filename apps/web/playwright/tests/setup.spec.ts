@@ -138,7 +138,7 @@ async function fetchChecklist(
     // Every card paired with its own row by number at 100% (the Future Stars file is BSC's own
     // answers for the 20 cards): the run stays on its progress line, then saves every card with
     // nobody confirming a Match Cards (NEO-645 C5: the save first, the walk after it).
-    await settleChecklistFetch(page, env, { facts, what: `the ${facts.rows}-row checklist fetch`, lands: "saved" });
+    await settleChecklistFetch(page, env, { facts, what: `the ${facts.rows}-row checklist fetch` });
     return savedLine(page, facts.rows);
   }
   // NEO-496 (D10, NQ1): the uploaded checklist is a source of its own, so live it lines up BSC,

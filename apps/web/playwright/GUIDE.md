@@ -401,7 +401,7 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   `skipUntil`, `saveForLater`, `finishTidyWalk`. Answer tiles:
   `createPlayerOnOpenRow`, `createTeamOnOpenRow`, `answerPinkPlayerTiles`,
   `answerPinkTeamTiles`, `answerPinkAutographTile`, `ruleOutOpenPlayerRows`,
-  `ruleOutOpenTeamRows`, `takeSourceSide`, `addAllNewPlayersTrigger`. Whole
+  `ruleOutOpenTeamRows`, `takeSourceSide`. Whole
   walks: `walkAnsweringEverything` (answers every pink Player and Team tile,
   Save & next or Skip, returns a tally), `tidyForTheParallelBuild`. Fetch into
   it: `fetchChecklistToTidyWalk`, `fetchOneMarketplaceSetChecklistToTidyWalk`
@@ -420,20 +420,20 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   ticking " N of M cards ready." is aria-hidden, so read it with `getByText`;
   its Cancel is "Cancel card fetch", `cancelCardFetchButton`); the dialog opens
   only when a card needs the operator, with focus on the dialog itself
-  ("Match Cards — <set>"). A run with every card Matched at 100% skips it: the
-  line before the save reads "All N cards matched across BSC and your
-  checklist. No Match Cards needed, totally clean." (`matchedKeptSentence`),
-  and the saved line says why right after its count, "Saved N cards. BSC and
-  your checklist agreed on every one, so Match Cards sat this one out."
-  (`skippedSavedReason`). That line names Match Cards, so assert the dialog's
+  ("Match Cards — <set>"). A run with every card Matched at 100% skips it and
+  the cards SAVE first (NEO-645): the saved line says why right after its
+  count, "Saved N cards. BSC and your checklist agreed on every one, so Match
+  Cards sat this one out." (`skippedSavedReason`), then the teams line, and any
+  walk opens only after the save. The "All N cards matched…" line before the
+  save is a moment, never asserted. That line names Match Cards, so assert the dialog's
   absence by role (`matchCardsDialog`), never by text. Each file in
   `CHECKLISTS` carries `matchCards: { paused, live }` (`MATCH_CARDS`); a full
   capture skips, a file with a row left out, a tie or the publisher's own numbers
   opens, and an edit to the rows (appended, dropped, renumbered, split) opens.
-  Settle a fetch with `settleChecklistFetch(page, env, { facts, what, lands })`
-  (`lands`: `"review"`, `"saved"` or `"either"` for where a skip goes), which
+  Settle a fetch with `settleChecklistFetch(page, env, { facts, what })`, which
   branches on `opensMatchCards(facts, env)`, never on an `.or()` between the
-  dialog and the kept line. A new file gets its entry from a run, checked
+  dialog and the saved line; then settle the walk (`settleWalkAfterCommit(page,
+  savedLine(page, n))`, or `expectTidyWalkOpen` when a card needs a person). A new file gets its entry from a run, checked
   against `checklistMatch` (the product's matcher over the file and BSC's cards).
 - `support/bypass-proxy.mjs`: CI-only proxy that injects the preview's
   deployment-protection header and `x-vercel-skip-toolbar` (NEO-548: Vercel's
