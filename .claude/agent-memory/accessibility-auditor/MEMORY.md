@@ -55,3 +55,4 @@
 - [Numbers differ note and shared-row Unlink NEO-591](numbers-differ-note-and-shared-row-unlink-neo591.md) — title+sr-only twin, ink-2 passes, focus target after shared unlink
 - [Park on unmount needs had-focus NEO-581](park-on-unmount-needs-had-focus-neo581.md) — body-only guard also fires on reload/silent recount; gate on the control having held focus
 - [Step counter high-water vs vanishing step NEO-426](step-counter-high-water-vs-vanishing-step-neo426.md) — trackSteps never shrinks; async-fact step drop-outs leave a phantom step; Save sentence needs describedby on Confirm
+- [Opener isConnected races the query](opener-disconnected-check-races-query.md) — rAF restore after a deleting mutation focuses a row about to unmount; null the opener (NEO-645)

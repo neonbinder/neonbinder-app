@@ -65,6 +65,8 @@ export default function PlayerTile({ row, context, attention, sportId }: TidyTil
     setSearchFor(next);
   };
   const closeSearch = () => {
+    // Read before the search unmounts: the tile is the last place focus can land.
+    const tile = searchScopeRef.current?.closest<HTMLElement>("section") ?? null;
     setSearchFor(null);
     requestAnimationFrame(() => {
       const opener = openerRef.current;
@@ -72,7 +74,15 @@ export default function PlayerTile({ row, context, attention, sportId }: TidyTil
       const target = opener?.isConnected
         ? opener
         : (fallbackRef.current.current ?? addRef.current ?? cameoRef.current);
-      target?.focus({ preventScroll: true });
+      if (target) {
+        target.focus({ preventScroll: true });
+        return;
+      }
+      // Both add buttons are gone (each list is at its cap): park focus on the tile.
+      if (tile?.isConnected) {
+        tile.tabIndex = -1;
+        tile.focus({ preventScroll: true });
+      }
     });
   };
   useInlinePart(searchFor !== null, closeSearch, searchScopeRef);
@@ -151,9 +161,14 @@ export default function PlayerTile({ row, context, attention, sportId }: TidyTil
    * option uses. `regenerateListing` is the walk's own flag (T4): the title and
    * description are rebuilt from the card as this write leaves it.
    */
-  const saveCameos = (next: Array<Id<"players">>, fallback: string) =>
+  const saveCameos = (next: Array<Id<"players">>, fallback: string, openerGone = false) =>
     write.run(async () => {
       await setSecondaryPlayers({ cardId: row._id, playerIds: next, regenerateListing: true });
+      // A removed cameo takes its "Edit cameo" opener with it, but the query has not
+      // re-rendered by the next frame, so the opener still reads as connected and
+      // focus would land on a button that is about to unmount. Only on success: a
+      // refused removal keeps the search open and Cancel still returns to the Edit.
+      if (openerGone) openerRef.current = null;
       closeSearch();
     }, fallback);
 
@@ -184,6 +199,7 @@ export default function PlayerTile({ row, context, attention, sportId }: TidyTil
     saveCameos(
       cameoIds.filter((p) => p !== playerId),
       "Couldn't remove that cameo. Try again.",
+      true,
     );
 
   return (

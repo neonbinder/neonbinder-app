@@ -911,6 +911,23 @@ describe("PlayerTile: cameos (T5)", () => {
     });
   });
 
+  it("after Remove cameo, focus lands on '+ Cameo' (the Edit that opened it is leaving)", async () => {
+    cameoTile([
+      { playerId: "player-5", name: "Francisco Lindor" },
+      { playerId: "player-6", name: "Juan Soto" },
+    ]);
+    const edit = screen.getByRole("button", { name: "Edit cameo Juan Soto" });
+    edit.focus();
+    await act(async () => fireEvent.click(edit));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Remove cameo Juan Soto" })));
+    // The mock query does not re-render, so the old Edit is still connected: the
+    // same state the live app is in for the frame after the write resolves.
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "+ Cameo" }));
+  });
+
   it("Remove is offered only while a cameo is open, never on '+ Cameo'", async () => {
     cameoTile([{ playerId: "player-5", name: "Francisco Lindor" }]);
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "+ Cameo" })));

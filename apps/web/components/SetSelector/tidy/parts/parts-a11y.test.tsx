@@ -92,7 +92,15 @@ describe("WikidataBlock career-team boxes", () => {
   });
 });
 
-function Chips({ onAnswered = () => {}, row = {} }: { onAnswered?: () => void; row?: Record<string, unknown> }) {
+function Chips({
+  onAnswered = () => {},
+  row = {},
+  players = [{ playerId: "player-1", name: "Jackson Merrill", sportId: "sport-1", stints: [], stintsMore: false }],
+}: {
+  onAnswered?: () => void;
+  row?: Record<string, unknown>;
+  players?: Array<Record<string, unknown>>;
+}) {
   const write = useTidyWrite();
   return (
     <AnsweredProvider value={onAnswered}>
@@ -100,7 +108,7 @@ function Chips({ onAnswered = () => {}, row = {} }: { onAnswered?: () => void; r
         row={{ _id: "c1", cardNumber: "1", cardName: "X", playerIds: ["player-1"], ...row } as unknown as TidyRow}
         sportId={"sport-1" as never}
         leafId={"leaf-1" as never}
-        players={[{ playerId: "player-1", name: "Jackson Merrill", sportId: "sport-1", stints: [], stintsMore: false }] as never}
+        players={players as never}
         leafCards={[]}
         write={write}
       />
@@ -171,6 +179,46 @@ describe("TeamFillChips", () => {
       el.className.split(/\s+/).includes("text-neon-blue-text"),
     );
     expect(resting).toHaveLength(0);
+  });
+
+  it("each chip list is labelled by the heading above it, and a chip reads 'Team · Player years' with the separator", () => {
+    const { container } = render(<Chips />);
+    const lists = Array.from(container.querySelectorAll<HTMLElement>("ul[aria-labelledby]"));
+    expect(lists.length).toBeGreaterThan(0);
+    for (const ul of lists) {
+      const id = ul.getAttribute("aria-labelledby") ?? "";
+      expect(id).toMatch(/^fill-(listing|career)-c1$/);
+      const heading = container.querySelector<HTMLElement>(`[id="${id}"]`);
+      expect(heading).not.toBeNull();
+      expect(heading?.textContent?.trim()).not.toBe("");
+      expect(screen.getByRole("list", { name: heading?.textContent?.trim() ?? "" })).toBe(ul);
+    }
+    // The Mariners chip is not preselected, so it shows the player's years there.
+    expect(screen.getByRole("button", { name: "Seattle Mariners · 2015–2019" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "San Diego Padres · Jackson Merrill played here" })).toBeTruthy();
+  });
+
+  it("with two players on the card the years line names each player after the separator", () => {
+    const two = evidence();
+    two.players.push({
+      playerId: "player-2",
+      answer: { tier: "career", teams: [{ teamId: "t1", name: "San Diego Padres" }] },
+      candidates: [{ teamId: "t2", name: "Seattle Mariners" }],
+      stints: [{ teamId: "t2", fromYear: 2010, toYear: 2012 }],
+    } as never);
+    queryResults["cardChecklist.teamSuggestionsForPreview"] = two;
+    render(
+      <Chips
+        row={{ playerIds: ["player-1", "player-2"] }}
+        players={[
+          { playerId: "player-1", name: "Jackson Merrill", sportId: "sport-1", stints: [], stintsMore: false },
+          { playerId: "player-2", name: "Pete Rose", sportId: "sport-1", stints: [], stintsMore: false },
+        ]}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: "Seattle Mariners · Jackson Merrill 2015–2019; Pete Rose 2010–2012" }),
+    ).toBeTruthy();
   });
 
   it("Save team is an answer: the walk is told once it lands", async () => {
