@@ -116,6 +116,7 @@ import { safeMarketplaceText } from "../lib/marketplace/safe-text";
 // each entry point rather than trusted from the adapter. (`MAX_CARD_PLAYERS` /
 // `MAX_CARD_TEAMS` are already imported below.)
 import { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
+import { cleanseExternalName } from "../lib/entities/cleanse-name";
 import { assertCareerStintYears, maxCareerYear } from "../lib/players/career-years";
 import {
   CROSS_LISTING_LINKS_PER_CALL,
@@ -7135,8 +7136,10 @@ export const addCustomCard = mutation({
     notes: v.optional(v.string()),
   },
   returns: v.id("cardChecklist"),
-  handler: async (ctx, args) => {
+  handler: async (ctx, rawArgs) => {
     const operatorUserId = await requireAdmin(ctx);
+    // NEO-645 — the name is cleansed and bounded before anything is written.
+    const args = { ...rawArgs, cardName: cleanCardNameForWrite(rawArgs.cardName) };
     // NEO-367 — refused before anything is written, like the ids below.
     const notes = normalizeCardNotes(args.notes);
     const typedPlayerNames = normalizePendingNames(
@@ -7738,6 +7741,10 @@ export const updateCard = mutation({
       if (value !== undefined) {
         filtered[key] = value;
       }
+    }
+    // NEO-645 — a card name is cleansed and bounded before any write.
+    if (typeof filtered.cardName === "string") {
+      filtered.cardName = cleanCardNameForWrite(filtered.cardName);
     }
 
     // NEO-217 — clearing a NUMBER.
@@ -16418,6 +16425,19 @@ function rowVariationName(row: object): string | undefined {
 }
 
 /**
+ * NEO-645 — a card's name as a write stores it: cleansed like every external
+ * name (junk and control characters out, composed, whitespace collapsed) and
+ * held to a player name's length. A fixed message, so the refusal never echoes
+ * what was typed.
+ */
+const CARD_NAME_TOO_LONG = `A card name can be at most ${MAX_PLAYER_NAME_LENGTH} characters.`;
+function cleanCardNameForWrite(raw: string): string {
+  const name = cleanseExternalName(raw);
+  if (name.length > MAX_PLAYER_NAME_LENGTH) throw new ConvexError(CARD_NAME_TOO_LONG);
+  return name;
+}
+
+/**
  * NEO-645 — the name a checklist row gives a card with no player: the subject it
  * printed ("Checklist", "Team Card"), trimmed. Read structurally, like
  * `rowVariationName`, so a row stored before the field reads as none.
@@ -16425,7 +16445,7 @@ function rowVariationName(row: object): string | undefined {
 function rowCardName(row: object): string | undefined {
   const name = (row as { cardName?: unknown }).cardName;
   if (typeof name !== "string") return undefined;
-  const trimmed = name.trim();
+  const trimmed = name.trim().slice(0, MAX_PLAYER_NAME_LENGTH);
   return trimmed ? trimmed : undefined;
 }
 

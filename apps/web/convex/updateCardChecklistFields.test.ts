@@ -106,6 +106,33 @@ async function seed() {
   return { asAdmin, ...ids };
 }
 
+describe("updateCard — the card name (NEO-645)", () => {
+  test("is cleansed, and refused past a player name's length without echoing it or writing anything", async () => {
+    const { asAdmin, variantTypeId, cardId } = await seed();
+    const nameOf = async () =>
+      (
+        await asAdmin.query(api.selectorOptions.getCardChecklist, { selectorOptionId: variantTypeId })
+      ).find((c) => c._id === cardId)!.cardName;
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      cardName: "  Team \u0000  Card ",
+    });
+    expect(await nameOf()).toBe("Team Card");
+
+    const err = await asAdmin
+      .mutation(api.selectorOptions.updateCard, { id: cardId, cardName: "Q".repeat(121) })
+      .then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+    const text = String((err as { data?: unknown })?.data ?? err);
+    expect(text).toContain("at most 120 characters");
+    expect(text).not.toContain("QQQQ");
+    expect(await nameOf()).toBe("Team Card");
+  });
+});
+
 describe("updateCard structured fields (NEO-25)", () => {
   test("round-trips every new field through getCardChecklist", async () => {
     const { asAdmin, variantTypeId, playerA, cardId } = await seed();

@@ -40,6 +40,14 @@ describe("the card a checklist row with no marketplace card becomes", () => {
     expect(checklistPairedRow(row, () => null).cardName).toBe("Team Card");
   });
 
+  test("a stored subject past a player name's length is held to it", () => {
+    const card = checklistOnlyCard(
+      { number: "9", players: [], teams: [], cardName: "L".repeat(500) },
+      () => null,
+    );
+    expect(card.cardName).toBe("L".repeat(120));
+  });
+
   test("a row with no number reads 'Card #NNO'", () => {
     const card = checklistOnlyCard({ number: "", players: [], teams: [] }, () => null);
     expect(card.cardName).toBe("Card #NNO");

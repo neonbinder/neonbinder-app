@@ -523,6 +523,35 @@ describe("addCustomCard — the listing title names the LINKED players", () => {
     expect((await getCard(t, placeholder))!.listingTitle).not.toContain("Card #");
   });
 
+  test("NEO-645: a card name is cleansed and refused past a player name's length, without echoing it", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { leafId } = await seedTree(t);
+
+    const cleansed = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: leafId,
+      cardNumber: "104",
+      cardName: "  Team \u0000  Card  ",
+    });
+    expect((await getCard(t, cleansed))!.cardName).toBe("Team Card");
+
+    const tooLong = "Z".repeat(121);
+    const err = await asAdmin
+      .mutation(api.selectorOptions.addCustomCard, {
+        selectorOptionId: leafId,
+        cardNumber: "105",
+        cardName: tooLong,
+      })
+      .then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+    expect(String((err as { data?: unknown })?.data ?? err)).toContain("at most 120 characters");
+    expect(String((err as { data?: unknown })?.data ?? err)).not.toContain("ZZZZ");
+    const rows = await t.run((ctx) => ctx.db.query("cardChecklist").collect());
+    expect(rows.some((r) => r.cardNumber === "105")).toBe(false);
+  });
+
   test("falls back to the pending names for an old-client write", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
