@@ -1,26 +1,22 @@
-// NEO-645 (R1): on the Tidy Up walk's Team tile, "Apply to all" offers a card's team to the same
-// player's other teamless cards; the server writes it only where the player's career names that
-// team for the set's year and nothing on the card names or rules out a team, and the status line
-// says how many cards took it ("No cards changed." when the server refused them all).
+// NEO-645 (R1): on the Tidy Up walk's Team tile, "Apply to all" offers a card's team to the cards
+// on the same line (main's Tidy Up wizard rule, `cardTakesLineTeams`): the same checklist, the same
+// player set and claim, and still waiting for a team. The server writes it at once, with no career
+// check, and the status line says how many cards took it ("Applied to 2 cards.").
 //
 // The operator meets it like this, on ONE player printed on five cards:
 //   1. #1 opens the walk with the player still a name. "Add as new player" answers it on every card
 //      that prints it. #1's Team tile stays pink (blank cell: no team).
 //   2. A team made on #1's tile ("+ New team", then Save team) puts the offer up: "Apply to all 2
 //      other <player> cards" (#2 and #3). #4 is NOT offered: its team cell names another team
-//      (rule 8, a data claim holds back a guess). #5 is NOT offered either: it prints the player and
-//      a second, still-unknown person, which the server always refuses, so the offer leaves it out
-//      and its count stays honest (decision 28, the collector pass's "honest Apply to all").
-//   3. Pressed before the player's career holds the team, the server refuses every card: "No cards
-//      changed." (the client proposes, the server checks the career).
-//   4. "+ Add stint" on #1's Career tile puts the team in the player's career from the set's year.
-//      Pressed again: "Applied to 2 cards." (#2 and #3 took it).
-//      The "M left as it was" tail is now reached only by a card that changes between the offer and
-//      the press (decision 28); no UI step stages that race, so the tile's unit test
-//      (TeamTile.test.tsx, applyOutcomeText) holds that line, and STEP 3 proves the server's refusal.
-//   5. The walk: Save & next from #1 lands on #4 (#2 and #3 have nothing left and drop out), whose
-//      claimed team still stops it; Skip lands on #5, still pink for its second name and its team.
-//   6. Read back in each card's drawer: #1, #2, #3 hold the team; #4 and #5 hold none.
+//      (rule 8, a data claim holds back a guess, and a claim is its own line). #5 is NOT offered
+//      either: it prints the player and a second, still-unknown person, so it is still waiting on a
+//      name and takes no line's answer.
+//   3. Pressed once: "Applied to 2 cards." (#2 and #3 took it; nothing was left as it was, so no
+//      "left as" tail; the tail itself is held by the tile's unit test, applyOutcomeText).
+//   4. What Apply to all left: Save & next from #1 lands on #4 (#2 and #3 have nothing left and drop
+//      out), whose claimed team still stops it; Skip lands on #5, still pink for its second name and
+//      its team.
+//   5. Read back in each card's drawer: #1, #2, #3 hold the team; #4 and #5 hold none.
 //
 // R2: each walk move is proved by the card that lands and what it shows; every negative sits
 // beside a positive. The Apply button stays on the page after it is pressed (it keeps focus).
@@ -54,7 +50,7 @@ import {
 const YEAR = "2026";
 
 test(
-  "Tidy Up — Apply to all on the Team tile fills the player's other teamless cards where his career names the team, leaves a claimed or still-unsettled card out of the offer, and counts the cards it changed",
+  "Tidy Up — Apply to all on the Team tile fills the player's other teamless cards on the first press, says how many it changed, and leaves a claimed or still-unsettled card asking",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     const T = env.ATTEMPT_TOKEN;
@@ -115,25 +111,7 @@ test(
     await expect(applyButton).toHaveText(`Apply to all 2 other ${PLAYER} cards`);
     await expectAccessible(page, { within: walk, label: "Tidy Up walk, Team tile offering Apply to all" });
 
-    // ── STEP 3: the server checks the career, not the client's offer ──
-    await applyButton.click();
-    await expect(teamTile.getByText("No cards changed.", { exact: true })).toBeVisible();
-    // Nothing was written, so the same two cards are still offered.
-    await expect(applyButton).toHaveText(`Apply to all 2 other ${PLAYER} cards`);
-
-    // ── STEP 4: the team joins the player's career from the set's year, then Apply ──
-    const career = tidyTile(page, "Career").getByRole("group", { name: `Career ${PLAYER}`, exact: true });
-    await career.getByRole("button", { name: `+ Add stint for ${PLAYER}`, exact: true }).click();
-    const careerTeam = career.getByRole("combobox", { name: `Career team name for ${PLAYER}`, exact: true });
-    // The whole name of a team on file IS the pick: the list steps aside (NEO-574) and + Add
-    // unlocks once the year is in (it stays held for a name NeonBinder does not hold).
-    await careerTeam.fill(TEAM);
-    await career.getByRole("spinbutton", { name: `From year for ${PLAYER}`, exact: true }).fill(YEAR);
-    await career.getByRole("button", { name: `Add career team for ${PLAYER}`, exact: true, disabled: false }).click();
-    // The stint is written and the entry closes.
-    await expect(careerTeam).toBeHidden();
-    await expect(career.getByRole("button", { name: `+ Add stint for ${PLAYER}`, exact: true })).toBeVisible();
-
+    // ── STEP 3: one press fills the two teamless cards, with no career stint needed ──
     await applyButton.click();
     const outcome = teamTile.getByText("Applied to 2 cards.", { exact: true });
     await expect(outcome).toBeVisible();
@@ -142,7 +120,7 @@ test(
     await expect(applyButton).toHaveCount(1);
     await expectAccessible(page, { within: walk, label: "Tidy Up walk, Apply to all reported its counts" });
 
-    // ── STEP 5: the walk — #2 and #3 are done; #4 and #5 still stop ──
+    // ── STEP 4: what Apply to all left — #2 and #3 are done; #4 and #5 still stop ──
     await saveAndNext(page);
     await expect(header("4")).toBeVisible();
     await expect(walk.getByText(/^#[23]( · .+)?$/), "#2 and #3 took the team, so the walk never shows them").toHaveCount(0);
@@ -167,7 +145,7 @@ test(
     await expectCardSettled(page);
     await saveForLater(page);
 
-    // ── STEP 6: read back from the stored cards ──
+    // ── STEP 5: read back from the stored cards ──
     await expectDrawerTeams(page, "1", [TEAM]);
     await expectDrawerTeams(page, "2", [TEAM]);
     await expectDrawerTeams(page, "3", [TEAM]);
