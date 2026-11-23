@@ -4,7 +4,7 @@
  * Jason, 2026-11-22: "the title generation should use the name and then the
  * cameo if it fits". 2026 Topps Base #118 is named "Hopping to It CPC" (not a
  * player) and pictures Ronald Acuña Jr.; its title says the name where a
- * player's would go, the cameo after it, and never "Base" in the name's place.
+ * player's would go, and the cameo after it.
  *
  * Jason, 2026-11-23: "Whatever name we put on a card should always show up,
  * whether that is checklist, Team Card, Boston Red Sox or just cool card. If
@@ -37,19 +37,27 @@ const hopping: ListingCardInputs = {
 };
 
 describe("a non-player card with a cameo", () => {
-  test("the name, then the cameo, and no Base", () => {
+  test("the variant, then the name, then the cameo", () => {
     const a = assessListingTitle(hopping);
-    expect(a.title).toBe("2026 Topps Hopping to It CPC Ronald Acuña Jr. #118 Atlanta Braves Baseball");
+    expect(a.title).toBe("2026 Topps Base Hopping to It CPC Ronald Acuña Jr. #118 Atlanta Braves Baseball");
     expect(a.fits).toBe(true);
     expect(a.dropped).toEqual([]);
   });
 
-  test("a Base type name leaves too, not only a Base level", () => {
+  test("a Base type name is treated as for any card: the level shows, the type word stays out", () => {
     const a = assessListingTitle({
       ...hopping,
       titleLevels: [{ name: "Gold", typeName: "Base" }],
     });
     expect(a.title).toBe("2026 Topps Gold Hopping to It CPC Ronald Acuña Jr. #118 Atlanta Braves Baseball");
+  });
+
+  test("Base is the first word the cut drops: just over the cap, Base goes and the cameo stays", () => {
+    const fits = assessListingTitle({ ...hopping, teamNames: ["Atlanta Braves Sq"] });
+    const withBase = "2026 Topps Base Hopping to It CPC Ronald Acuña Jr. #118 Atlanta Braves Sq Baseball";
+    expect(withBase.length).toBeGreaterThan(80);
+    expect(fits.title).toBe("2026 Topps Hopping to It CPC Ronald Acuña Jr. #118 Atlanta Braves Sq Baseball");
+    expect(fits.dropped).toEqual([]);
   });
 
   test("over the cap the cameo goes first, the name stays, and the note names the cameo", () => {
@@ -116,7 +124,7 @@ describe("every other card is as it was", () => {
       teamNames: ["Boston Red Sox"],
       sport: "Baseball",
     });
-    expect(a.title).toBe("2026 Topps Boston Red Sox Ceddanne Rafaela #198 Baseball");
+    expect(a.title).toBe("2026 Topps Base Boston Red Sox Ceddanne Rafaela #198 Baseball");
   });
 
   test("a team that differs from the subject's name is kept", () => {
@@ -128,7 +136,7 @@ describe("every other card is as it was", () => {
       teamNames: ["Atlanta Braves"],
     });
     expect(a.title).toBe(
-      "2026 Topps Boston Red Sox Ceddanne Rafaela #198 Atlanta Braves Baseball",
+      "2026 Topps Base Boston Red Sox Ceddanne Rafaela #198 Atlanta Braves Baseball",
     );
   });
 });
@@ -147,7 +155,7 @@ describe("a name is in the title whether or not the card has a cameo (Jason, 202
 
   test("Checklist, with no team", () => {
     expect(assessListingTitle({ ...card, subjectName: "Checklist" }).title).toBe(
-      "2026 Topps Checklist #1 Baseball",
+      "2026 Topps Base Checklist #1 Baseball",
     );
   });
 
@@ -158,7 +166,7 @@ describe("a name is in the title whether or not the card has a cameo (Jason, 202
         subjectName: "Team Card",
         teamNames: ["Kansas City Royals"],
       }).title,
-    ).toBe("2026 Topps Team Card #1 Kansas City Royals Baseball");
+    ).toBe("2026 Topps Base Team Card #1 Kansas City Royals Baseball");
   });
 
   test("'Kansas City Royals' with the Royals team says the team once", () => {
@@ -168,7 +176,7 @@ describe("a name is in the title whether or not the card has a cameo (Jason, 202
         subjectName: "Kansas City Royals",
         teamNames: ["Kansas City Royals"],
       }).title,
-    ).toBe("2026 Topps Kansas City Royals #1 Baseball");
+    ).toBe("2026 Topps Base Kansas City Royals #1 Baseball");
   });
 
   test("'Royals Team Card' with the Royals team: the name already says the team, so it is not added", () => {
@@ -177,7 +185,7 @@ describe("a name is in the title whether or not the card has a cameo (Jason, 202
       subjectName: "Royals Team Card",
       teamNames: ["Kansas City Royals"],
     });
-    expect(a.title).toBe("2026 Topps Royals Team Card #1 Baseball");
+    expect(a.title).toBe("2026 Topps Base Royals Team Card #1 Baseball");
     expect(a.dropped).toEqual([]);
   });
 
@@ -189,7 +197,7 @@ describe("a name is in the title whether or not the card has a cameo (Jason, 202
         teamNames: ["Boston Red Sox"],
         teamSplits: [{ location: "Boston", name: "Red Sox" }],
       }).title,
-    ).toBe("2026 Topps Red Sox Team Card #1 Baseball");
+    ).toBe("2026 Topps Base Red Sox Team Card #1 Baseball");
   });
 
   test("a place that is not the team's nickname does not hide the team", () => {
@@ -199,7 +207,7 @@ describe("a name is in the title whether or not the card has a cameo (Jason, 202
         subjectName: "Kansas City Team Card",
         teamNames: ["Kansas City Royals"],
       }).title,
-    ).toBe("2026 Topps Kansas City Team Card #1 Kansas City Royals Baseball");
+    ).toBe("2026 Topps Base Kansas City Team Card #1 Kansas City Royals Baseball");
   });
 
   test("a player card named for its player is as it always was", () => {
@@ -218,7 +226,7 @@ describe("a name is in the title whether or not the card has a cameo (Jason, 202
         playerNames: ["Mike Trout"],
         subjectName: "It Takes Two CPC",
       }).title,
-    ).toBe("2026 Topps It Takes Two CPC Mike Trout #1 Baseball");
+    ).toBe("2026 Topps Base It Takes Two CPC Mike Trout #1 Baseball");
   });
 
   test("a name that already contains the player adds nothing", () => {

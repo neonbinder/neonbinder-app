@@ -108,9 +108,10 @@ export type ListingCardInputs = {
    * should always show up ... If there is a name we include it in title") —
    * the card's own name. Whenever the card has one (`cardSubjectName`: not
    * blank, not NB's "Card #N", and not just its players' own names said
-   * again), it stands ahead of the players and cameos, a Base level's word is
-   * left out rather than say "Base" where the name goes, and a team the name
-   * already says is not added. Never cut, like a surname.
+   * again), it stands ahead of the players and cameos, and a team the name
+   * already says is not added. Never cut, like a surname. The variant's word,
+   * Base included, stays whenever it fits and is the first word the cut drops
+   * (Jason, 2026-11-23).
    */
   subjectName?: string;
   /** Mirrors the year node's value verbatim — same field `features.season` holds. */
@@ -836,22 +837,6 @@ function subjectSays(subject: string, text: string): boolean {
   );
 }
 
-/**
- * NEO-645 — `parts` without the Base kind's words, for a title whose subject
- * is a name: "Base" never stands where the name goes (Jason, 2026-11-22). A
- * Base level and a Base type name leave the description; nothing else does.
- */
-function withoutBase(parts: DescriptionParts): DescriptionParts {
-  return {
-    ...parts,
-    levels: parts.levels
-      .filter((level) => !level.base)
-      .map((level) =>
-        level.typeBase ? { ...level, typeName: undefined, typeBase: undefined } : level,
-      ),
-  };
-}
-
 /** The full title's state, before any cut, for one description. */
 function fullTitleState(inputs: ListingCardInputs, parts: DescriptionParts): {
   state: TitleState;
@@ -869,7 +854,7 @@ function fullTitleState(inputs: ListingCardInputs, parts: DescriptionParts): {
     .filter((name) => !own.has(name.toLowerCase()) && !(subject && subjectSays(subject, name)))
     .map((name) => ({ name, in: true }));
   const state: TitleState = {
-    parts: subject ? withoutBase(parts) : parts,
+    parts,
     ...(subject ? { subject } : {}),
     levels: parts.levels.map((level) => ({
       abbreviated: false,
