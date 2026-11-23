@@ -19,7 +19,7 @@
 //   checklist's own state. Empty: Pete Rose is stored as the player on every
 //   card and Johnny Bench as a cameo (no cards, so no confirm), the
 //   publisher's checklist is uploaded and the checklist synced. Match Cards'
-//   Confirm SAVES the 75 cards (NEO-645: commit first), and the Tidy Up walk
+//   Confirm (or its skip) SAVES the 75 cards (NEO-645: commit first), and the Tidy Up walk
 //   opens on them. On the walk, card by card: a sources disagreement takes
 //   the checklist's side (it splits #4's "Pete Rose & Harry 'Pete' Rose" into
 //   two names); every name nobody knows is ruled out on its row, "Not a
@@ -33,8 +33,9 @@
 //   back as they are. Both branches end on the same asserts.
 // - #10's and #18's drawers: no player, Johnny Bench under "Also on this
 //   card", the description's "Cameo: Johnny Bench" line, and the exact card
-//   title with no player before the number (the cameo stands there, NEO-528 +
-//   NEO-535). #4's drawer: Pete Rose as its player (its title names him, then
+//   title the walk's write regenerated (NEO-645 C7): the card's name, then the
+//   cameo, with "Base" dropped. #10's runs over 80, so its cameo is cut first
+//   and the drawer says "Left out to fit: Johnny Bench". #4's drawer: Pete Rose as its player (its title names him, then
 //   "& Johnny Bench"), and the cameo.
 // - Printing Plates Black is built from Base (or adopted, built): its #10 has
 //   no player and its #4 keeps Pete Rose.
@@ -48,9 +49,9 @@
 //   by `set-selector/player-on-every-card` (quick-add on a hand-made set) and,
 //   for the commit, by `convex/cardPlayerDefaults.creation.test.ts` and
 //   `convex/lib/cardPlayerDefaults.test.ts`.
-// - A Listing title tile on a ruled-out card: no title here is long enough to
-//   be cut or go over 80 by its cameo. The committed titles are asserted
-//   in the drawers instead.
+// - The walk's Listing title tile on a ruled-out card: the walk is driven
+//   card by card off whatever it opens on, so the titles are asserted once,
+//   in the drawers, after the walk (both branches read them there).
 //
 // R7/R7a: SOLE WRITER of Baseball > 2011 > Leaf > Leaf Pete Rose Legacy (its
 // Base, its Parallel rows and Printing Plates Black's cards) and of the year's
@@ -81,7 +82,7 @@ import {
 import { escapeRe } from "../../support/cards";
 import type { FlowEnv } from "../../support/env";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist } from "../../support/published-checklist";
+import { CHECKLISTS, savedLine, settleChecklistFetch, usePublishersChecklist } from "../../support/published-checklist";
 import {
   drillToBaseVariant,
   drillToColdManufacturer,
@@ -118,11 +119,17 @@ const PLAYER = "Pete Rose";
 const CAMEO = "Johnny Bench";
 /** Cards whose listing names somebody entity review rules out (not a person). */
 const RULED_OUT = [
-  // The committed titles (NEO-528 + NEO-535): no player, so the stored cameo
-  // stands where the player would; #18's team is "No Team", which a title omits.
-  // NEO-609: the Base checklist's own name is in the title while it fits.
-  { number: "10", printed: "1975 World Champions", title: `${SET_TITLE} Base ${CAMEO} #10 Cincinnati Reds Baseball` },
-  { number: "18", printed: "Former Teammates", title: `${SET_TITLE} Base ${CAMEO} #18 Baseball` },
+  // NEO-645 C7: every walk write regenerates the title. A card with no player and a cameo reads
+  // "<year> <set> <card name> <cameo> #N <team> <sport>", "Base" dropped; #18's team is "No Team",
+  // which a title omits. #10's runs to 89 characters, so the cameo is cut first (76), and the
+  // drawer names it under "Left out to fit".
+  {
+    number: "10",
+    printed: "1975 World Champions",
+    title: `${SET_TITLE} 1975 World Champions #10 Cincinnati Reds Baseball`,
+    leftOut: CAMEO,
+  },
+  { number: "18", printed: "Former Teammates", title: `${SET_TITLE} Former Teammates ${CAMEO} #18 Baseball`, leftOut: undefined },
 ] as const;
 /** The card whose listing names Pete Rose (and his father): it keeps its own Pete Rose. */
 const OWN = "4";
@@ -162,13 +169,12 @@ async function fetchAndCommit(page: Page, env: FlowEnv, section: Locator): Promi
   // rows becoming variations of #27a / #38a. `facts` is the product matcher's own answer.
   expect(facts.matched, "every Leaf row pairs its card (a trailing SP is no part of a name)").toBe(facts.rows);
   await syncChecklistButton(page).click();
-  // NEO-496 (D10, NQ1): the uploaded checklist is a second source, so the fetch opens Match Cards on
-  // either branch (SportLots paused or not). The helper waits on it (7 s of ours plus BSC's), proves the
-  // teams line while it is open (the only time before the save), keeps any BSC-only card and confirms.
-  await confirmChecklistMatchCards(page, { facts, what: "the empty checklist's fetch" });
-  // NEO-645: Confirm IS the commit (our own write, 7 s). The storyline captions are names nobody
-  // knows, so the walk opens on its own.
-  const saved = page.getByText(/Saved 75 cards\./).first();
+  // NEO-640 / NEO-645 C5: settled on the file's own Match Cards fact, never a race: Confirm (keeping
+  // any BSC-only card) when the dialog opens, the skip's saved line when every card matched. Either
+  // way the cards SAVE first (our own write, 7 s); the storyline captions are names nobody knows, so
+  // the walk opens on its own after the save.
+  await settleChecklistFetch(page, env, { facts, what: "the empty checklist's fetch" });
+  const saved = savedLine(page, 75);
   await expect(saved).toBeVisible();
   expect(await settleWalkAfterCommit(page, saved), "the captions need a person, so the walk opened").toBe(true);
   const walk = tidyWalk(page);
@@ -198,7 +204,8 @@ async function fetchAndCommit(page: Page, env: FlowEnv, section: Locator): Promi
     await expect(ownRow.getByText("Checking for players by that name…")).toHaveCount(0);
     if ((await ownRow.getByRole("button", { name: /^Not a player / }).count()) > 0) {
       await ownRow.getByRole("button", { name: /^Link to Pete Rose( \(Baseball\))?( Pete Rose)?$/, disabled: false }).click();
-      await expect(ownRow.getByRole("button", { name: /^Change player/ })).toBeVisible();
+      // C1: the answered row's one button is "Edit <the linked player>".
+      await expect(ownRow.getByRole("button", { name: `Edit ${PLAYER}`, exact: true })).toBeVisible();
       linkedByHand.push(number);
     }
     await expect(ownRow.getByRole("button", { name: /^Not a player / })).toHaveCount(0);
@@ -209,7 +216,7 @@ async function fetchAndCommit(page: Page, env: FlowEnv, section: Locator): Promi
       // #1's high school was ruled out, so #1 has no team and asks for one under its own
       // Pete Rose (the old wizard's "Cards with no team" listed it as "#1 · Pete Rose").
       expect(teams, "#1's high school was asked about and ruled out").toHaveLength(1);
-      await expect(ownRow.getByRole("button", { name: /^Change player/ })).toBeVisible();
+      await expect(ownRow.getByRole("button", { name: `Edit ${PLAYER}`, exact: true })).toBeVisible();
       await expect(pinkTile(page, "Team")).toHaveCount(1);
       await expect(tidyTile(page, "Team").getByRole("button", { name: "No team on this card", exact: true })).toBeVisible();
     }
@@ -285,7 +292,7 @@ test(
     await expect(section.getByRole("button", { name: E.stopCameo(CAMEO), exact: true })).toBeVisible();
 
     // --- The ruled-out cards: no player, the cameo ---------------------------
-    for (const { number, printed, title } of RULED_OUT) {
+    for (const { number, printed, title, leftOut } of RULED_OUT) {
       const drawer = await openCardDrawer(page, number);
       const description = cardDescription(drawer);
       // The card has loaded (its description, written at the commit, names the
@@ -299,10 +306,12 @@ test(
       // ...and no player: the stored Pete Rose was held back.
       await expect(drawer.getByRole("button", { name: "Add player", exact: true })).toBeVisible();
       await expect(anyPlayerChip(drawer)).toHaveCount(0);
-      // The committed title, exact: no player between the set and the number,
-      // only the cameo (a title names it while it has room, and drops it first
-      // when over 80: NEO-528 + NEO-535).
+      // The title the walk regenerated, exact: the card's name, then the cameo
+      // while it has room (cut first when over 80, and the note names it).
       await expect(cardTitle(drawer)).toHaveValue(title);
+      const leftOutNote = drawer.getByText(/^Left out to fit: /);
+      if (leftOut === undefined) await expect(leftOutNote).toHaveCount(0);
+      else await expect(leftOutNote).toHaveText(`Left out to fit: ${leftOut}`);
       if (number === RULED_OUT[0].number) {
         await expectAccessible(page, { within: drawer, label: "Card drawer, a ruled-out card with no player and a cameo" });
       }
@@ -315,8 +324,7 @@ test(
     await expect(playerChip(own, PLAYER)).toBeVisible();
     await expect(anyPlayerChip(own)).toHaveCount(1);
     await expect(cameoChip(own, CAMEO)).toBeVisible();
-    // NEO-609: 84 characters with "Base", the first word cut: 79 without it,
-    // and nothing else goes.
+    // NEO-645 C7: "Base" is dropped from every title; 79 characters, nothing cut.
     await expect(cardTitle(own)).toHaveValue(
       `${SET_TITLE} ${PLAYER} & ${CAMEO} #${OWN} Cincinnati Reds Baseball`,
     );

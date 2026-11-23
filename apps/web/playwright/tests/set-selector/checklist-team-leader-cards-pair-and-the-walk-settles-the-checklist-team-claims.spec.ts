@@ -59,20 +59,21 @@
 // fetch of this set can still prove: a publisher's checklist that says "No Team" on
 // #6a, a team-leader card whose BSC bulk answer already names its team. NEO-645: Match
 // Cards' Confirm SAVES the cards, and the per-card Tidy Up walk then shows the claim as a
-// "Sources disagree" item on #6a's "Team name": BSC's "New England Patriots" is an NB team
-// and No Team names nobody, so NB went with the Patriots (blue "To check", "Went with
-// “New England Patriots”, they're already in your binder."), and the checklist's side is
-// one press away. Taking it saves #6a with no team and no "no team on this card yet" badge.
+// "Sources disagree" item on #6a's "Team name": BSC's "New England Patriots" against the
+// checklist's No Team. NEO-645 C6: NB never picks a side, so the item is pink ("To fix"), with
+// one "Use …" per source (`Use “New England Patriots”`, `Use no team`); and C8: a listing or
+// checklist team claim pre-fills nothing. Taking the checklist's side saves #6a with no team and
+// no "no team on this card yet" badge.
 // NEO-591: the same file prints #38a (the Chiefs' card) as the MIXED cell
 // "Kansas City Chiefs / Prospect (Dallas Baptist)": the X of "Prospect (X)" is one of the
 // card's printed teams (Jason, 2026-11-19). Match Cards reads that row as printed, both
 // paired ("· Kansas City Chiefs / Prospect (Dallas Baptist)", in its Unlink control) and
 // unpaired on the checklist list after an Unlink (before 1a4def6c it read "Prospect (Kansas
 // City Chiefs / Dallas Baptist)"); linked back, the row is unchanged. The checklist names a
-// team BSC does not (Dallas Baptist, no team on file), so #38a disagrees too: NB went with
-// the marketplace's Chiefs (blue), the checklist's "Kansas City Chiefs / Dallas Baptist" a
-// press away; Save & next accepts it, and #38a is saved with its own team AND as a Prospect
-// Card (the claim rides with every outcome). This is the only registered
+// team BSC does not (Dallas Baptist, no team on file), so #38a disagrees too, pink, with
+// `Use “Kansas City Chiefs”` and `Use “Kansas City Chiefs / Dallas Baptist”`. The spec takes
+// the marketplace's Chiefs, and #38a is saved with its own team AND as a Prospect Card (the
+// claim rides with every outcome). This is the only registered
 // set whose marketplace bulk answer carries a team, which is why both claims are
 // exercised here. Zero BSC calls: all 554 rows are answered by the file, and #6a and
 // #38a carry their teams from the bulk answer.
@@ -119,8 +120,10 @@ import {
 } from "../../support/published-checklist";
 import {
   expectCardSettled,
+  finishTidyWalk,
   mustFixLine,
   openTidyWalk,
+  pinkTile,
   saveAndNext,
   saveForLater,
   settleWalkAfterCommit,
@@ -368,13 +371,17 @@ test(
           continue;
         }
         met.add(number);
-        // Both cards carry a team the bulk answer named and NB has on file, so NB went with it
-        // (blue: a check, never a stop) and the checklist's side is one press away.
-        await expect(disagree).toHaveAccessibleDescription(/To check/);
+        // NEO-645 C6: the sources disagree on the team and NB never picks, so the item is pink
+        // (its sr-only "To fix" is the tile's description, C2), one "Use …" per source, no status yet.
+        await expect(pinkTile(page, "Sources disagree")).toHaveCount(1);
+        await expect(disagree).toHaveAccessibleDescription(/To fix/);
         await expect(teamSays.getByRole("listitem")).toHaveCount(2);
+        await expect(disagree.getByText(/^Went with /)).toHaveCount(0);
+        await expect(disagree.getByRole("button", { name: / instead$/ })).toHaveCount(0);
         if (number === "6a") {
           await expect(column("BSC")).toContainText("New England Patriots");
-          await expect(disagree.getByRole("status")).toHaveText("Went with “New England Patriots”, they're already in your binder.");
+          await expect(disagree.getByRole("button", { name: "Use “New England Patriots”", exact: true })).toBeVisible();
+          await expect(disagree.getByRole("button", { name: "Use no team", exact: true })).toBeVisible();
           // Answered last (below), from the pill: skipped now, nothing written.
           await skipCard(page);
           continue;
@@ -382,19 +389,32 @@ test(
         // #38a: X is one of the checklist's teams, so the checklist's side names both printed teams.
         await expect(column("BSC")).toContainText(PROSPECT.team);
         await expect(column("Checklist")).toContainText(PROSPECT.checklistSide);
-        await expect(disagree.getByRole("status")).toHaveText(`Went with “${PROSPECT.team}”, they're already in your binder.`);
-        // The source button is named by its visible text.
-        await expect(disagree.getByRole("button", { name: new RegExp(`^Use “${escapeRe(PROSPECT.checklistSide)}” instead$`) })).toBeVisible();
-        await expectAccessible(page, { within: walk, label: "Tidy Up walk, NB's pick against a Prospect (X) checklist team" });
-        // Keeping the marketplace's side is NB's pick: Save & next accepts it when nothing else is
-        // pink; a card with a name still waiting is skipped, the team already standing.
+        // Each source button is named by its visible text.
+        const useMarketplace = disagree.getByRole("button", { name: `Use “${PROSPECT.team}”`, exact: true });
+        await expect(useMarketplace).toBeVisible();
+        await expect(disagree.getByRole("button", { name: `Use “${PROSPECT.checklistSide}”`, exact: true })).toBeVisible();
+        await expectAccessible(page, { within: walk, label: "Tidy Up walk, BSC's team against a Prospect (X) checklist team" });
+        // The operator takes the marketplace's side: the tile says what it uses and is not pink.
+        await useMarketplace.click();
+        await expect(disagree.getByRole("status")).toHaveText(`Using “${PROSPECT.team}” (BSC)`);
+        await expect(pinkTile(page, "Sources disagree")).toHaveCount(0);
+        // The Team tile now stands on the Chiefs (the pick is saved as it is given). Save & next
+        // when nothing else is pink; a card with a name still waiting is skipped (measured
+        // 2026-11-22: the Player tile asks about the printed "Kansas City Chiefs", a name this
+        // spec does not answer), the team standing either way.
+        await expect(tidyTile(page, "Team").getByRole("button", { name: `Edit ${PROSPECT.team}`, exact: true })).toBeVisible();
         const save = tidyFooterButton(page, "saveAndNext", { usable: true });
         await expect(save.or(mustFixLine(page)).first()).toBeVisible();
         if (await save.isVisible()) await saveAndNext(page);
         else await skipCard(page);
       }
       expect([...met].sort(), "the walk showed both checklist claims").toEqual([...owned].sort());
-      await saveForLater(page);
+      // The walk shows only the cards that need a person (measured 92), in its own order: the
+      // last of them may be one of ours, so it ends on its end screen or on the next card.
+      const ended = tidyFooterButton(page, "done");
+      await expect(ended.or(tidyTile(page, "More about this card")).first()).toBeVisible();
+      if (await ended.isVisible()) await finishTidyWalk(page);
+      else await saveForLater(page);
 
       // A fresh load of the set: what was stored, not the walk's echo.
       await drillToBaseVariant(page, env, { ...FOOTBALL_2014, set: "Topps" });
@@ -441,10 +461,11 @@ test(
         .filter({ hasText: "New England Patriots" });
       await skipUntil(page, sixSays, { maxCards: SET_CARDS });
       // The checklist's side says, in words, that the card shows no team (the retired wizard read
-      // "No team on the card"), and offers that side in plain words, unquoted ("Use no team
-      // instead"; a named value stays quoted, “Padres”).
+      // "No team on the card"), and offers that side in plain words, unquoted ("Use no team"; a
+      // named value stays quoted, “Padres”). Still pink: skipping wrote nothing.
       await expect(column("Checklist")).toContainText(/No team/i);
-      const useNoTeam = disagree.getByRole("button", { name: "Use no team instead", exact: true });
+      await expect(pinkTile(page, "Sources disagree")).toHaveCount(1);
+      const useNoTeam = disagree.getByRole("button", { name: "Use no team", exact: true });
       await expect(useNoTeam).toBeVisible();
       await expectAccessible(page, { within: walk, label: "Tidy Up walk, a No Team claim against a team-leader card's team" });
       await useNoTeam.click();
