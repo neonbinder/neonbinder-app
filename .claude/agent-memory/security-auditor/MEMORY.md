@@ -150,3 +150,4 @@
 - [Neo640 review skip autocommit](patterns_neo640_review_skip_autocommit.md) — client skip of a review: fence on server batch id, fail-open union, unmount edge
 - [Neo643 ingest cleanse fold drift](patterns_neo643_ingest_cleanse_fold_drift.md) — cleanse vs narrower folds; SL prefix filter; stored/compare split drops J-P rows
 - [Generation counter reset ABA](patterns_generation_counter_reset_aba.md) — reset writing a CAS generation back to 0 re-admits in-flight results at the reused gen
+- [Agent memory index overwrite](patterns_agent_memory_index_overwrite.md) — a Written (not appended) MEMORY.md wipes the index; check diff --stat on .claude/
