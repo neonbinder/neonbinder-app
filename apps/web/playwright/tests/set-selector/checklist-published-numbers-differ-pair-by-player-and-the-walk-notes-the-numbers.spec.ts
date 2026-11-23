@@ -37,9 +37,9 @@
 //     Checklist n" is a purple NOTE on the Listing title tile of every card it shows,
 //     never a stop: a card left with nothing to fix saves with Save & next while the
 //     note is up. A preselect is no answer, so #SIG-RL carries the two spellings as a
-//     "Sources disagree" item; "Rhett Lowder" is already an NB player and "Rhett Lowdr"
-//     is not, so NB went with Lowder (blue "To check", "Went with “Rhett Lowder”,
-//     they're already in your binder.", the checklist's spelling a press away).
+//     "Sources disagree" item, and NB never picks between sources (NEO-645 A1): the tile is
+//     pink with a "Use" per spelling (no cameo offer: "Rhett Lowdr" is a near spelling of
+//     the NB player, not a title), and the operator takes BSC's "Rhett Lowder".
 //     Panini writes "Oakland A's" for Jacob Wilson; NB holds no club of that name (the
 //     checklist's claim is never rewritten, rule 8), so #SIG-JW's Team tile is pink,
 //     and the operator links it to the club the checklist means, Oakland Athletics
@@ -87,6 +87,7 @@ import {
   publishersChecklistButton,
   publishersChecklistChip,
   removeSetChecklistUnderAllBrands,
+  savedLine,
   usePublishersChecklist,
 } from "../../support/published-checklist";
 import {
@@ -451,12 +452,12 @@ test(
     // line they land with; the walk then opens on the cards that need a person.
     await matchCards.getByRole("button", { name: "Confirm card matches" }).click();
     await expect(matchCards).toBeHidden();
-    const saved = page
-      .getByText(new RegExp(`Saved ${MIXED.cards} cards\\. .*Teams from your checklist: ${MIXED.matched} of ${MIXED.cards} cards`))
-      .first();
+    const saved = savedLine(page, MIXED.cards);
+    await expect(saved).toBeVisible();
+    await expect(saved).toContainText(`Teams from your checklist: ${MIXED.matched} of ${MIXED.cards} cards`);
     expect(await settleWalkAfterCommit(page, saved), "Oakland A's is no club on file, so the walk opens").toBe(true);
 
-    // ══ THE WALK: the numbers are a note, the club is linked, the spelling NB chose is shown ══
+    // ══ THE WALK: the numbers are a note, the club is linked, the operator picks the spelling ══
     const walk = tidyWalk(page);
     // The file's number for each card, by the card's BSC number (Rhett Lowdr's row is #11 too).
     const fileNumber = new Map(checklistRows(CHECKLISTS.signatureSeries2026MisspelledLowder).map((r) => [bscNumber(r), r.number]));
@@ -481,18 +482,32 @@ test(
 
       const disagree = tidyTile(page, "Sources disagree");
       if (number === "SIG-RL") {
-        // The untouched picker is no answer: both spellings ride on the card. NB knows Rhett Lowder
-        // and not "Rhett Lowdr", so it went with Lowder and asks only for a check (blue, not pink).
-        await expect(disagree).toHaveAccessibleDescription(/To check/);
+        // The untouched picker is no answer: both spellings ride on the card, and NB never picks
+        // between sources (NEO-645 C6, A1), even though it knows Rhett Lowder and not "Rhett
+        // Lowdr": the tile is pink, one "Use" per spelling, nothing chosen.
+        await expect(disagree).toHaveAccessibleDescription(/To fix/);
+        await expect(pinkTile(page, "Sources disagree")).toHaveCount(1);
         const says = disagree.getByRole("list", { name: "What each source says: Player name", exact: true });
         await expect(says.getByRole("listitem")).toHaveCount(2);
         await expect(says.getByRole("listitem").filter({ hasText: /^BSC/ })).toContainText("Rhett Lowder");
         await expect(says.getByRole("listitem").filter({ hasText: /^Checklist/ })).toContainText("Rhett Lowdr");
-        await expect(disagree.getByRole("status")).toHaveText("Went with “Rhett Lowder”, they're already in your binder.");
-        // The checklist's spelling is one press away (the button is named by its visible text).
-        await expect(disagree.getByRole("button", { name: "Use “Rhett Lowdr” instead", exact: true })).toBeVisible();
+        // Nothing chosen: the entry's status is empty (and so hidden), no "Went with", no "instead".
+        await expect(disagree.getByText(/^(Using|Went with) /)).toHaveCount(0);
+        await expect(disagree.getByRole("button", { name: / instead$/ })).toHaveCount(0);
+        const useBsc = disagree.getByRole("button", { name: "Use “Rhett Lowder”", exact: true });
+        await expect(useBsc).toBeVisible();
+        await expect(disagree.getByRole("button", { name: "Use “Rhett Lowdr”", exact: true })).toBeVisible();
+        await expect(disagree.getByRole("button", { name: "Type another… player name", exact: true })).toBeVisible();
+        // A near spelling of the NB player is that player misspelled, not a title: no cameo offer.
+        await expect(disagree.getByRole("button", { name: / as a cameo$/ })).toHaveCount(0);
+        await expect(mustFixLine(page)).toBeVisible();
+        await expectAccessible(page, { within: walk, label: "Tidy Up walk, two spellings for the operator to pick" });
+        // The operator takes BSC's spelling: it saves as picked (J1), the tile is no longer pink.
+        await useBsc.click();
+        await expect(disagree.getByRole("status")).toHaveText("Using “Rhett Lowder” (BSC)");
+        await expect(disagree.getByRole("button", { name: "Change the player name", exact: true })).toBeVisible();
+        await expect(disagree.getByRole("button", { name: /^Use “/ })).toHaveCount(0);
         await expect(pinkTile(page, "Sources disagree")).toHaveCount(0);
-        await expectAccessible(page, { within: walk, label: "Tidy Up walk, NB's pick between two spellings" });
       } else {
         // Every other card's names agree across the sources.
         await expect(disagree).toHaveCount(0);
@@ -788,7 +803,7 @@ async function openDonrussSet(page: Page, env: Parameters<typeof drillToColdManu
  * saved. The link saves as it is made (J1).
  *
  * Contract: ENTRY a settled card whose Team tile asks about "Oakland A's". EXIT the row reads linked
- * (the club's name and a Change), and the Team tile is no longer pink.
+ * (the club's name and its "Edit <club>", NEO-645 C1), and the Team tile is no longer pink.
  */
 async function linkClubOnTheWalk(page: Page): Promise<void> {
   await expect(pinkTile(page, "Team"), "the club no one has on file holds the Team tile").toHaveCount(1);
@@ -807,7 +822,7 @@ async function linkClubOnTheWalk(page: Page): Promise<void> {
   // Empty and focused, the combobox lists the row's near matches by label: the era is in the name.
   await page.getByRole("option", { name: /^Oakland Athletics .*1968.2024/ }).click();
   await expect(row.getByText("Oakland Athletics", { exact: true })).toBeVisible();
-  await expect(row.getByRole("button", { name: /^Change team( .+)?$/ })).toBeVisible();
+  await expect(row.getByRole("button", { name: "Edit Oakland Athletics", exact: true })).toBeVisible();
   await expect(row.getByRole("checkbox")).toHaveCount(0);
   await expect(pinkTile(page, "Team")).toHaveCount(0);
 }

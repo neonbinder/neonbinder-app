@@ -24,8 +24,9 @@
 //     place's MLB teams of every era (the Mets and the Yankees, which the set year would not
 //     choose between, and the Giants), nothing linked, its "Remember" box settled UNTICKED (a bare
 //     place is not a name to remember). Answered "Not a team", the card is a no-team card with no
-//     team claim left (NEO-639: only a team the data names holds a guess back), so his one career
-//     team in the year, the Cubs, is PRESELECTED ("Seiya Suzuki played here"), never written: the
+//     team claim left (NEO-639: only a team the data names holds a guess back), so his other card
+//     in the set (#7, the Cubs) PRESELECTS the Cubs ("Seiya Suzuki played here", "Suggested from
+//     the player's other cards": the wizard's batch evidence leads, NEO-645 C8), never written: the
 //     tile stays pink and Save & next held until "Save team". The operator skips it; it commits
 //     teamless and stays badged (the commit wrote no Cubs either: "New York" was a claim then).
 // The leaf's checklist preview reads each claim as printed, never "We'll look it up": none of
@@ -42,8 +43,10 @@
 // (#6, Matt McLain) carries the mixed cell and a seventh (#7, Seiya Suzuki again) prints Chicago.
 // Uploaded through the leaf's "Add the official checklist" and synced: a checklist-only fetch (the
 // set has no marketplace id; the checklist is the one source), so the Sync commits the cards and
-// the walk opens on its own. The blue Career checks are left with Save & next (it writes only the
-// card's "seen" marks): the catalogue players' careers are not this spec's to write.
+// the walk opens on its own. The blue Career checks are answered "Keep as is" before Save & next:
+// since NEO-645 C8, Save & next with a career gap open ADDS the stint to the player (main's
+// default), and the catalogue players' careers are not this spec's to write (a written Sooners
+// stint would also drop that card's stop on the next attempt).
 //
 // FIXTURE (R7a, SET-REGISTRY.md prefix `psp`): ONE hand-made set per attempt, `psp<token>`, under
 // the REAL `Baseball` › 2024 › `Topps` (the team and player lookups read the set's sport and
@@ -69,6 +72,7 @@ import {
   publishersChecklistButton,
   publishersChecklistChip,
   publishersChecklistDialog,
+  savedLine,
 } from "../../support/published-checklist";
 import {
   expectCardSettled,
@@ -89,8 +93,11 @@ import {
 const FILE = new URL("../../fixtures/checklists/prospect-team-cells.csv", import.meta.url).pathname;
 /** The catalogue team a known X names (NCAA; the set's league is MLB, so only its full name links). */
 const SOONERS = "Oklahoma Sooners";
-/** An answered row's Change (decision 22); on a multi-name card it carries " <printed>", which these cards are not. */
-const CHANGE = "Change team";
+/**
+ * An answered row's Edit (NEO-645 C1): "Edit <name>", the linked team's name, or the printed name
+ * on a not-a-team row. Always scoped to the row's own group.
+ */
+const editRow = (name: string) => ({ name: `Edit ${name}`, exact: true });
 
 /**
  * The committed file with this attempt's edits: #2's X is the catalogue's full team name, #3's X
@@ -168,10 +175,14 @@ test(
 
     // ── 2. Sync: one source, so no Match Cards. The cards are saved, then the walk opens ──
     await syncChecklistButton(page).click();
-    // The count includes checklist-named teams the operator still settles (New York), as it counts
+    // NEO-640 (C5): the saved line says why nothing was matched right after its count (the
+    // checklist was the one source), then the teams line; its sentences are read one by one. The
+    // count includes checklist-named teams the operator still settles (New York), as it counts
     // unresolved checklist teams: intended.
-    const saved = page.getByText(`Saved ${ROWS} cards. Teams from your checklist: ${ROWS} of ${ROWS} cards.`);
+    const saved = savedLine(page, ROWS);
     await expect(saved).toBeVisible();
+    await expect(saved).toContainText(new RegExp(`^Saved ${ROWS} cards\\. Only your checklist was in play, so there was nothing to match\\.`));
+    await expect(saved).toContainText(`Teams from your checklist: ${ROWS} of ${ROWS} cards.`);
     expect(await settleWalkAfterCommit(page, saved), "two team names are unsettled, so the walk opened").toBe(true);
     const walk = tidyWalk(page);
     await expect(walk).toHaveAccessibleName(tidyUpName({ year: target.year, set }));
@@ -202,8 +213,17 @@ test(
           await expect(teamTile.getByRole("group", { name: new RegExp(`^Team ${escapeRe(team)}$`) })).toBeVisible();
         }
         await expect(pinkTile(page, "Team")).toHaveCount(0);
-        await expect(tidyTile(page, "Career")).toHaveAccessibleDescription(/To check/);
+        const career = tidyTile(page, "Career");
+        await expect(career).toHaveAccessibleDescription(/To check/);
         await expect(mustFixLine(page)).toHaveCount(0);
+        // One gap, the Sooners (each player's catalogue career holds his pro club only). C8: Save &
+        // next would add it, so "Keep as is" answers it first; it acts at once and the tile goes.
+        const player = number === KNOWN.number ? KNOWN.player : MIXED.player;
+        const line = career.getByRole("group", { name: `Career ${player}`, exact: true });
+        await expect(line).toHaveCount(1);
+        await expect(line.getByText("Save & next adds it to the career.", { exact: true })).toBeVisible();
+        await line.getByRole("button", { name: "Keep as is", exact: true }).click();
+        await expect(career, "Keep as is answered the career gap at once").toHaveCount(0);
         await saveAndNext(page);
         continue;
       }
@@ -221,7 +241,7 @@ test(
         await expect(form.getByRole("textbox", { name: "New team name" })).toHaveValue(minted);
         await form.getByRole("button", { name: /^Create team( .+)?$/, disabled: false }).click();
         await expect(form).toHaveCount(0);
-        await expect(row.getByRole("button", { name: CHANGE, exact: true })).toBeVisible();
+        await expect(row.getByRole("button", editRow(minted))).toBeVisible();
         await expect(row.getByRole("button", { name: "Not a team", exact: true })).toHaveCount(0);
         await expect(pinkTile(page, "Team")).toHaveCount(0);
         await saveAndNext(page);
@@ -248,14 +268,15 @@ test(
       await expectAccessible(page, { within: walk, label: "Tidy Up walk, a team printed as an ambiguous place" });
 
       // "Not a team": New York is the operator's ruling. The card is now a card with no team and no
-      // team claim, so his one career team in the year is preselected, with its provenance. A
+      // team claim, so the team on his other card in the set (#7, the Cubs) is preselected, with its
+      // provenance (the batch's evidence before his career, as main's wizard; NEO-645 C8). A
       // preselect is not a write: the tile stays pink and Save & next held until "Save team" (or
       // "No team on this card") is pressed.
       await place.getByRole("button", { name: "Not a team", exact: true }).click();
       await expect(place.getByText(`${AMBIGUOUS.cell} is not a team.`, { exact: true })).toBeVisible();
-      await expect(place.getByRole("button", { name: CHANGE, exact: true })).toBeVisible();
+      await expect(place.getByRole("button", editRow(AMBIGUOUS.cell))).toBeVisible();
       await expect(placeTeams).toHaveCount(0);
-      await expect(teamTile.getByText("Suggested from career history.", { exact: true })).toBeVisible();
+      await expect(teamTile.getByText("Suggested from the player's other cards.", { exact: true })).toBeVisible();
       const cubs = teamTile.getByRole("button", { name: `${BY_PLAYER.team} · ${AMBIGUOUS.player} played here`, exact: true });
       await expect(cubs).toHaveAttribute("aria-pressed", "true");
       await expect(teamTile.getByRole("button", { name: "Save team", exact: true })).toBeVisible();
