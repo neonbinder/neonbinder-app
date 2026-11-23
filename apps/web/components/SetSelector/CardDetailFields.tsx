@@ -631,7 +631,7 @@ export function CardDetailFields({
   const titleField = useReactiveField<HTMLTextAreaElement>({
     value: card.listingTitle ?? "",
     onSave: async (trimmed) => {
-      const state = titleLengthState(trimmed.length, LISTING_TITLE_MAX, true);
+      const state = titleLengthState(trimmed.length, LISTING_TITLE_MAX);
       if (state.over) {
         // Says what HAPPENED, not what is wrong: `TitleLengthAlert` already
         // renders "Title is 157 characters, 77 over the 80-character limit.
@@ -760,7 +760,7 @@ export function CardDetailFields({
     setVariationLength((card.cardVariation ?? "").length);
   }, [card.cardVariation]);
 
-  const titleState = titleLengthState(titleLength, LISTING_TITLE_MAX, true);
+  const titleState = titleLengthState(titleLength, LISTING_TITLE_MAX);
   const titleAlertId = `${uid}-title-limit`;
   const variationAlertId = `${uid}-variation-limit`;
   const nameErrorId = `${uid}-name-error`;
@@ -1240,7 +1240,7 @@ export function CardDetailFields({
           <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-ink-3 mb-1">
             <span>Card title</span>
             <span className="flex items-center gap-2">
-              <TitleLengthMeter length={titleLength} soft />
+              <TitleLengthMeter length={titleLength} />
               <button
                 type="button"
                 onClick={() => preview.request(titleIsEdited())}

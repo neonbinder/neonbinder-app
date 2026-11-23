@@ -122,7 +122,7 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
   const saveTitle = useCallback(
     async (next: string, regenerate = false) => {
       const trimmed = oneLine(next).trim();
-      if (!trimmed || titleLengthState(trimmed.length, LISTING_TITLE_MAX, true).over) return false;
+      if (!trimmed || titleLengthState(trimmed.length, LISTING_TITLE_MAX).over) return false;
       setBusy(true);
       setError(null);
       try {
@@ -255,7 +255,7 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
   // open) shows this card with the new set name as it is typed, until the
   // operator types a title of their own.
   const shown = livePreviewTitle !== null && !typedOwn ? livePreviewTitle : text;
-  const state = titleLengthState(shown.length, LISTING_TITLE_MAX, true);
+  const state = titleLengthState(shown.length, LISTING_TITLE_MAX);
   // A name still waiting for its answer (a player or team not made yet) is not
   // in the title because it is unanswered, not because it did not fit.
   const waitingNames = useMemo(
@@ -268,8 +268,8 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
   );
 
   const changeTitle = (next: string) => {
-    const wasOver = titleLengthState(shown.length, LISTING_TITLE_MAX, true).over;
-    const nowOver = titleLengthState(next.length, LISTING_TITLE_MAX, true).over;
+    const wasOver = titleLengthState(shown.length, LISTING_TITLE_MAX).over;
+    const nowOver = titleLengthState(next.length, LISTING_TITLE_MAX).over;
     setOverByKeystroke(nowOver && (wasOver ? overByKeystroke : true));
     if (nowOver) setFitsNow(false);
     else if (wasOver) setFitsNow(true);
@@ -295,7 +295,7 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
     <TidyTile
       heading="Listing title"
       level={level}
-      aside={<TitleLengthMeter length={shown.length} soft />}
+      aside={<TitleLengthMeter length={shown.length} />}
     >
       {editing ? (
         <Textarea

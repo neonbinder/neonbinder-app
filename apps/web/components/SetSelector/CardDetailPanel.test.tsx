@@ -1467,7 +1467,7 @@ describe("CardDetailPanel — drawer geometry (NEO-272)", () => {
   });
 
   it("keeps a full-budget 80-character title whole in the field", () => {
-    // The ticket's own case: `80/80 · may clip in search`, whose tail was the
+    // The ticket's own case: `80/80`, and the title's tail was the
     // part scrolled out of sight at 30rem.
     const title = "2026 Topps Chrome Update #USC-250 Jose Ramirez SSP Cleveland Guardians Gold";
     const padded = `${title}${"!".repeat(LISTING_TITLE_MAX - title.length)}`;

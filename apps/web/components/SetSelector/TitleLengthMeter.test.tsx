@@ -2,13 +2,10 @@
  * NEO-101 — `titleLengthState` and the two components built on it
  * (`TitleLengthMeter`, `TitleLengthAlert`), plus `TitleFieldNote`.
  *
- * This is the ONE place the 55/70/80 bands are pinned as a pure function, so
- * a boundary regression here is a red test rather than something only
- * discoverable by eyeballing a rendered drawer. `CardDetailPanel.titleLimits`
- * and `TitleFixer.test.tsx` both exercise this component through a real
- * field, which is the right coverage for "does the drawer behave correctly"
- * — but neither one walks every boundary (54/55/56, 69/70/71, 79/80/81), and
- * a boundary is exactly where an off-by-one hides.
+ * This is the ONE place the 80 cap is pinned as a pure function, so a
+ * boundary regression here is a red test rather than something only
+ * discoverable by eyeballing a rendered drawer. There is no soft band below
+ * the cap (NEO-645): 55 and 70 are as plain as 40.
  */
 
 import { render, screen } from "@testing-library/react";
@@ -24,18 +21,8 @@ import {
   TitleLengthMeter,
   titleLengthState,
 } from "./TitleLengthMeter";
-// The two soft-band constants are NOT re-exported from TitleLengthMeter.tsx
-// (only the two caps are — see its own `export { ASPECT_VALUE_MAX,
-// LISTING_TITLE_MAX }`), so this test goes to the same source module the
-// component itself imports them from, exactly like `CardDetailPanel` and
-// `listingLimits.test.ts` do.
-import {
-  LISTING_TITLE_MOBILE_CLIP,
-  LISTING_TITLE_SEARCH_CLIP,
-} from "../../convex/features/listingLimits";
-
-describe("titleLengthState — hard cap, no soft bands requested", () => {
-  it("is 'ok' for everything up to and including the cap when soft is false (the default)", () => {
+describe("titleLengthState — the hard cap", () => {
+  it("is 'ok' for everything up to and including the cap (the default)", () => {
     for (const length of [0, 1, 40, 54, 55, 56, 69, 70, 71, 79, 80]) {
       const state = titleLengthState(length);
       expect(state, `length ${length}`).toMatchObject({
@@ -72,75 +59,31 @@ describe("titleLengthState — hard cap, no soft bands requested", () => {
   });
 });
 
-describe("titleLengthState — soft display bands (soft: true), the title field's own usage", () => {
-  it("is silent below the mobile band", () => {
-    for (const length of [0, 1, 40, LISTING_TITLE_MOBILE_CLIP - 1]) {
-      expect(titleLengthState(length, LISTING_TITLE_MAX, true)).toMatchObject({
+describe("titleLengthState — no soft band below the cap (NEO-645)", () => {
+  it("is plain 'ok' with no hint at every length up to and including 80, 55 and 70 included", () => {
+    for (const length of [0, 1, 40, 54, 55, 56, 69, 70, 71, 79, 80]) {
+      expect(titleLengthState(length, LISTING_TITLE_MAX), `length ${length}`).toMatchObject({
         tone: "ok",
+        over: false,
         hint: null,
+        alert: null,
       });
     }
   });
 
-  it("54 is ok, 55 enters the mobile band, 56 is still mobile", () => {
-    expect(titleLengthState(54, LISTING_TITLE_MAX, true).tone).toBe("ok");
-    expect(titleLengthState(55, LISTING_TITLE_MAX, true)).toMatchObject({
-      tone: "mobile",
-      hint: "may clip in search",
-      over: false,
-    });
-    expect(titleLengthState(56, LISTING_TITLE_MAX, true).tone).toBe("mobile");
-  });
-
-  it("69 is still mobile, 70 crosses into the search band, 71 is still search", () => {
-    expect(titleLengthState(69, LISTING_TITLE_MAX, true).tone).toBe("mobile");
-    expect(titleLengthState(70, LISTING_TITLE_MAX, true)).toMatchObject({
-      tone: "search",
-      hint: "may clip in search",
-      over: false,
-    });
-    expect(titleLengthState(71, LISTING_TITLE_MAX, true).tone).toBe("search");
-  });
-
-  it("79 is search, 80 (at the cap) is still search — not over —, 81 is over and wins over the soft band", () => {
-    expect(titleLengthState(79, LISTING_TITLE_MAX, true).tone).toBe("search");
-    const atCap = titleLengthState(80, LISTING_TITLE_MAX, true);
-    expect(atCap.tone).toBe("search");
-    expect(atCap.over).toBe(false);
-    expect(atCap.alert).toBeNull();
-
-    const overCap = titleLengthState(81, LISTING_TITLE_MAX, true);
+  it("81 is over and keeps its over-limit treatment", () => {
+    const overCap = titleLengthState(81, LISTING_TITLE_MAX);
     expect(overCap.tone).toBe("over");
+    expect(overCap.over).toBe(true);
     expect(overCap.hint).toBe("1 over");
-    // The over-cap fact wins outright — a title cannot be simultaneously
-    // "may clip in search" and "will be rejected"; the more serious one is
-    // the only one reported.
     expect(overCap.alert).not.toBeNull();
-  });
-
-  it("both soft bands say the same words; the tone still steps up at 70 (NEO-645)", () => {
-    const mobile = titleLengthState(60, LISTING_TITLE_MAX, true);
-    const search = titleLengthState(75, LISTING_TITLE_MAX, true);
-    expect(mobile.hint).toBe("may clip in search");
-    expect(search.hint).toBe(mobile.hint);
-    expect(mobile.tone).not.toBe(search.tone);
-    // The thresholds are unchanged: 55 and 70.
-    expect(titleLengthState(54, LISTING_TITLE_MAX, true).hint).toBeNull();
-    expect(titleLengthState(55, LISTING_TITLE_MAX, true).hint).toBe("may clip in search");
-  });
-
-  it("the two bands are strictly ordered: MOBILE_CLIP < SEARCH_CLIP < MAX (sanity against the constants, not just the literals above)", () => {
-    expect(LISTING_TITLE_MOBILE_CLIP).toBeLessThan(LISTING_TITLE_SEARCH_CLIP);
-    expect(LISTING_TITLE_SEARCH_CLIP).toBeLessThan(LISTING_TITLE_MAX);
   });
 });
 
-describe("titleLengthState — a non-title field (the aspect value), soft left false", () => {
-  // This is exactly how TitleFixer and CardDetailPanel call it for
-  // `cardVariation`: a custom `max` and no `soft` argument. The 55/70 bands
-  // are title-specific display truncation and must never leak onto a field
-  // that isn't shown in eBay search results.
-  it("never enters a mobile/search band even past where those bands would sit on the title scale", () => {
+describe("titleLengthState — a non-title field (the aspect value)", () => {
+  // How TitleFixer and CardDetailPanel call it for `cardVariation`: a custom
+  // `max`. Nothing below the cap warns.
+  it("stays plain below its own cap", () => {
     for (const length of [0, 50, 55, 60, 64, 65]) {
       expect(titleLengthState(length, ASPECT_VALUE_MAX)).toMatchObject({
         tone: "ok",
@@ -159,28 +102,29 @@ describe("titleLengthState — a non-title field (the aspect value), soft left f
 });
 
 describe("TitleLengthMeter — rendering", () => {
-  it("renders the raw count and no hint inside the safe band", () => {
-    render(<TitleLengthMeter length={40} soft />);
+  it("renders the raw count and no hint within the cap", () => {
+    render(<TitleLengthMeter length={40} />);
     expect(screen.getByText("40/80")).toBeTruthy();
-    expect(screen.queryByText("may clip in search")).toBeNull();
+    expect(screen.queryByText(/may clip/)).toBeNull();
   });
 
-  it("renders the hint text at the mobile and search bands when soft", () => {
-    const { rerender } = render(<TitleLengthMeter length={55} soft />);
+  it("renders a plain count, no clip hint, at 55 and 70 (NEO-645)", () => {
+    const { rerender, container } = render(<TitleLengthMeter length={55} />);
     expect(screen.getByText("55/80")).toBeTruthy();
-    // One phrase for both bands (NEO-645); only the tone steps up at 70.
-    expect(screen.getByText("may clip in search")).toBeTruthy();
-    expect(screen.queryByText(/on mobile/)).toBeNull();
+    expect(screen.queryByText(/may clip/)).toBeNull();
+    expect(container.textContent).toBe("55/80");
+    expect(container.firstElementChild?.className).toContain("text-ink-3");
 
-    rerender(<TitleLengthMeter length={70} soft />);
+    rerender(<TitleLengthMeter length={70} />);
     expect(screen.getByText("70/80")).toBeTruthy();
-    expect(screen.getByText("may clip in search")).toBeTruthy();
+    expect(container.textContent).toBe("70/80");
+    expect(container.firstElementChild?.className).toContain("text-ink-3");
   });
 
-  it("does not show a hint at the same lengths when soft is omitted (default false)", () => {
-    render(<TitleLengthMeter length={70} />);
-    expect(screen.getByText("70/80")).toBeTruthy();
-    expect(screen.queryByText("may clip in search")).toBeNull();
+  it("past the cap shows the count, '· N over' and the pink text role", () => {
+    const { container } = render(<TitleLengthMeter length={84} />);
+    expect(container.textContent).toBe("84/80·4 over");
+    expect(container.firstElementChild?.className).toContain("text-neon-pink-text");
   });
 
   it("uses a custom max verbatim (the aspect-value field)", () => {

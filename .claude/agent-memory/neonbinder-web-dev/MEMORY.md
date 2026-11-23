@@ -322,3 +322,4 @@
 - [Parallel commit chunks: defer the shared flush](reference_parallel_commit_chunks_defer_the_shared_flush.md) — find the one shared write, defer it to the caller, prove disjointness with a db Proxy; ties on sortOrder stay sequential
 - [Capped history router test](pattern_capped_history_router_test.md) — push per step to a depth cap (40) then replace; test with HistoryRouter + a 50-entry capped memory history
 - [Every title builder passes the card name](pattern_every_title_builder_passes_the_card_name.md) — set inputs.subjectName via cardSubjectName in every assessListingTitle caller; fixtures named "Card 1" are real names, use "Card #1"
+- [Title counter has no soft band](feedback_title_counter_has_no_soft_band.md) — warn only past 80; no "may clip" (NEO-645)

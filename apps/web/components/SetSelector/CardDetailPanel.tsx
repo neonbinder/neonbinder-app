@@ -142,8 +142,8 @@ export default function CardDetailPanel({
         deliberate rather than coincidental.
 
         WHY. `Card title` is a field whose budget is counted in CHARACTERS:
-        `LISTING_TITLE_MAX` is 80, and `TitleLengthMeter` prints `80/80 · may
-        clip in search` in the label row directly above the input. At the old
+        `LISTING_TITLE_MAX` is 80, and `TitleLengthMeter` prints `80/80` in the
+        label row directly above the input. At the old
         30rem (480px) the input's content box was 434px, which holds 54
         characters in the widest face below and 63 in the narrowest — the ~60
         Jason counted in the screenshot that opened this, with the trailing
