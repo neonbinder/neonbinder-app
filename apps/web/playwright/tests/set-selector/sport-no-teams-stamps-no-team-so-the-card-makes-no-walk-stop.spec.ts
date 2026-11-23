@@ -245,7 +245,7 @@ test(
     await expect(header("3")).toBeVisible();
     await expect(walk.getByText(/^#2 · /), "#2 was stamped, so the walk never shows it").toHaveCount(0);
     await expectCardsLeft(page, 1);
-    await expect(playerRow.getByRole("button", { name: "Change player", exact: true })).toBeVisible();
+    await expect(playerRow.getByRole("button", { name: `Edit ${PLAYER}`, exact: true })).toBeVisible();
     await expect(pinkTile(page, "Team")).toHaveCount(1);
     await expect(teamTile.getByRole("group", { name: `Team ${CLAIMED}`, exact: true })).toBeVisible();
     await expect(stampedLine).toHaveCount(0);

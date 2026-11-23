@@ -6,7 +6,7 @@
 //   2. One answer there ("Add as new player") lands on all three cards at once: the walk's
 //      "N cards left" falls by the cards it emptied, not by one.
 //   3. Save & next skips the emptied card (#2) and opens the next card still flagged (#3),
-//      where the name already reads answered (its Change is up) and only the card's own
+//      where the name already reads answered (its Edit is up) and only the card's own
 //      problem (no team) is left pink.
 //   4. The browser's Back walks back to #1; Save for later closes the walk, and the
 //      checklist's pill counts the two cards still flagged.
@@ -98,7 +98,7 @@ test(
     // #1 is behind us and marked seen; #3 and #4 are left.
     await expectCardsLeft(page, 2);
     // The answer reached #3: its row reads answered, and only its own problem is pink.
-    await expect(sharedRow.getByRole("button", { name: "Change player", exact: true })).toBeVisible();
+    await expect(sharedRow.getByRole("button", { name: `Edit ${SHARED}`, exact: true })).toBeVisible();
     await expect(sharedRow.getByRole("button", { name: /^Not a player / })).toHaveCount(0);
     await expect(pinkTile(page, "Player")).toHaveCount(0);
     await expect(pinkTile(page, "Team")).toHaveCount(1);
@@ -109,7 +109,7 @@ test(
     await expect(header("1", SHARED)).toBeVisible();
     await expect(header("3", SHARED)).toHaveCount(0);
     await expectCardSettled(page);
-    await expect(sharedRow.getByRole("button", { name: "Change player", exact: true })).toBeVisible();
+    await expect(sharedRow.getByRole("button", { name: `Edit ${SHARED}`, exact: true })).toBeVisible();
 
     // ── STEP 5: Save for later; the checklist counts the two cards still flagged, both pink (#3 no
     // team, #4 its unanswered name) ──

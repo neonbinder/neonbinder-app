@@ -1,18 +1,18 @@
 // ONE FEATURE (R1, NEO-645): in the Tidy Up walk, answering "Not a player (checklist, team card,
-// stadium)" for a printed name clears that name on EVERY card that prints it, and pressing Change
+// stadium)" for a printed name clears that name on EVERY card that prints it, and pressing Edit
 // on the answered row brings the name back, pink, on every one of those cards.
 //
 // Replaces checklist-wizard-skip-not-a-person (a per-row skip in the old entity-review wizard,
 // read back off its Save step) and checklist-wizard-skip-commits-and-unskip (the set's "Skipped
-// names" panel and its Unskip). The panel is gone (NEO-645 decision 19): Change on the answered
+// names" panel and its Unskip). The panel is gone (NEO-645 decision 19): Edit on the answered
 // row is how a skipped name comes back, and it comes back on the cards at once.
 //
 // The operator meets it like this:
 //   1. Card #1 asks about NAME, printed on #1 and #2. Three cards are left (#3 prints OTHER).
-//   2. "Not a player" on #1: the row says NAME is not a player, with a Change, and #1 and #2 have
+//   2. "Not a player" on #1: the row says NAME is not a player, with an "Edit NAME", and #1 and #2 have
 //      nothing left, so one card is left (#3).
 //   3. Save & next lands on #3: the walk never shows #2.
-//   4. Back returns to #1, still answered. Change clears the answer: the row asks again, pink,
+//   4. Back returns to #1, still answered. Edit clears the answer: the row asks again, pink,
 //      and #2 is back in the walk (two left: #2 and #3; #1 was passed by Save & next, so the
 //      sitting does not count it again).
 //   5. Skip lands on #2, which asks about NAME again, pink.
@@ -44,11 +44,9 @@ import {
 const YEAR = "2026";
 /** The row's answer; on a multi-name card it carries " <printed>", which these cards are not. */
 const NOT_A_PLAYER = "Not a player (checklist, team card, stadium)";
-/** An answered row's Change; on a multi-name card it carries " <printed>", which these cards are not. */
-const CHANGE = "Change player";
 
 test(
-  "Tidy Up — Not a player clears a printed name on every card that prints it, and Change brings it back on every card",
+  "Tidy Up — Not a player clears a printed name on every card that prints it, and Edit brings it back on every card",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     const T = env.ATTEMPT_TOKEN;
@@ -78,7 +76,8 @@ test(
     const cardLines = (number: string) => walk.getByText(new RegExp(`^#${number}( · .+)?$`));
     const row = tidyTile(page, "Player").getByRole("group", { name: `Player ${NAME}`, exact: true });
     const notAPlayer = row.getByRole("button", { name: NOT_A_PLAYER, exact: true });
-    const change = row.getByRole("button", { name: CHANGE, exact: true });
+    // The answered row's Edit (NEO-645 C1): a not-a-player row is named for its printed name.
+    const change = row.getByRole("button", { name: `Edit ${NAME}`, exact: true });
     const answered = row.getByText(`${NAME} is not a player.`);
 
     // ── STEP 1: #1 asks about the name, printed on #1 and #2 ──
@@ -105,7 +104,7 @@ test(
     await expect(header("3", OTHER)).toBeVisible();
     await expect(walk.getByText(/^#2 · /), "#2 was cleared by the answer, so the walk never shows it").toHaveCount(0);
 
-    // ── STEP 4: Back to #1; Change brings the name back on every card ──
+    // ── STEP 4: Back to #1; Edit brings the name back on every card ──
     await page.goBack();
     await expect(cardLines("1").first()).toBeVisible();
     await expect(cardLines("3")).toHaveCount(0);

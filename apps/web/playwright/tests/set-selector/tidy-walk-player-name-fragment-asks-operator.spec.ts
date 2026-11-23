@@ -2,7 +2,7 @@
 // or last word of a fuller-named player in the same sport is never offered as a plain "Add as
 // new player". The Player tile asks "Just <name>? We've got <fuller name>. …", offers the
 // fuller player as a "Link to <name>" choice, and its create becomes "Add as a one-name player"
-// (the genuine mononym). Both answers are driven on the one row: the link, then Change, then
+// (the genuine mononym). Both answers are driven on the one row: the link, then Edit, then
 // the one-name player; each lands at once (J1) and reads back on the row.
 //
 // FIXTURE (SET-REGISTRY.md, the `twf`/`twg` prefixes; R7a): a per-attempt sport `twf<token>`
@@ -74,7 +74,11 @@ test(
     const question = row.getByRole("group", { name: new RegExp(`^Just ${escapeRe(ONE_WORD)}\\? We've got `) });
     const linkFuller = question.getByRole("button", { name: new RegExp(`^Link to ${escapeRe(FULLER)}(,|$)`) });
     const oneName = row.getByRole("button", { name: "Add as a one-name player", exact: true });
-    const change = row.getByRole("button", { name: "Change player", exact: true });
+    // The answered row's Edit is named for the player it links (NEO-645 C1): the fuller player
+    // after the link, the one-name player after the create. Any Edit at all, for its absence.
+    const editFuller = row.getByRole("button", { name: `Edit ${FULLER}`, exact: true });
+    const editOneName = row.getByRole("button", { name: `Edit ${ONE_WORD}`, exact: true });
+    const anyEdit = row.getByRole("button", { name: /^Edit (?!cameo )/ });
     await expect(pinkTile(page, "Player")).toHaveCount(1);
     await expect(question).toBeVisible();
     await expect(linkFuller).toBeVisible();
@@ -85,18 +89,18 @@ test(
 
     // ── STEP 2: link the fuller player; the row reads answered, naming him ──
     await linkFuller.click();
-    await expect(change).toBeVisible();
+    await expect(editFuller).toBeVisible();
     await expect(row.getByText(FULLER, { exact: true })).toBeVisible();
     await expect(question).toHaveCount(0);
     await expect(pinkTile(page, "Player")).toHaveCount(0);
 
-    // ── STEP 3: Change takes the answer back; the question returns, and the one-name answer lands ──
-    await change.click();
+    // ── STEP 3: Edit takes the answer back; the question returns, and the one-name answer lands ──
+    await editFuller.click();
     await expect(question).toBeVisible();
-    await expect(change).toHaveCount(0);
+    await expect(anyEdit).toHaveCount(0);
     await expect(pinkTile(page, "Player")).toHaveCount(1);
     await oneName.click();
-    await expect(change).toBeVisible();
+    await expect(editOneName).toBeVisible();
     // The card now carries the one-name player, not the fuller one.
     await expect(row.getByText(ONE_WORD, { exact: true })).toBeVisible();
     await expect(row.getByText(FULLER, { exact: true })).toHaveCount(0);
@@ -108,7 +112,7 @@ test(
     await expect(tidyFooterButton(page, "done")).toBeVisible();
     await page.goBack();
     await expect(walk.getByText(`#1 · ${ONE_WORD}`, { exact: true })).toBeVisible();
-    await expect(change).toBeVisible();
+    await expect(editOneName).toBeVisible();
     await saveForLater(page);
     // Nothing on the checklist needs a person any more (positive first: the card is listed).
     await expect(editCardButton(page, "1")).toBeVisible();
