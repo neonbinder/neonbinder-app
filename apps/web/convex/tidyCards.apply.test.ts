@@ -737,16 +737,16 @@ describe("applySetNameToTitles — the three title cases", () => {
     expect((await card(t, s.leftOut))!.listingTitle).toBe("Topps Holo 91 Jackson #3");
   });
 
-  test("a title the new set name rebuilds is flagged as every generated title is: cut short while the core does not fit", async () => {
+  test("a title the new set name rebuilds with nothing left out is not flagged cut short (Jason, 2026-11-23)", async () => {
     const t = newT();
     const s = await setup(t);
     await apply(t, s, SHORT);
     await drainScheduled(t);
     const rebuilt = (await card(t, s.generated))!;
     expect(rebuilt.listingTitle?.startsWith(SHORT)).toBe(true);
-    // Main's rule (`generatedTitleTruncatedFlag`): flagged whenever the core did
-    // not fit, whatever the box brought back.
-    expect(rebuilt.listingTitleTruncated).toBe(true);
+    // `generatedTitleTruncatedFlag`: a title that fits only because the set name
+    // was shortened, with nothing left out, is no blue check.
+    expect(rebuilt.listingTitleTruncated).toBeUndefined();
   });
 
   test("setting the same name again writes nothing and schedules nothing", async () => {

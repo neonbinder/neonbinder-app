@@ -2,13 +2,14 @@ import { useCallback, useId, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import { assessListingTitle, titleDescription } from "../../../../convex/features/generateListing";
+import { titleFitsOnShortName } from "../../../../convex/features/listingInputs";
 import { MAX_LISTING_SHORT_NAME_LENGTH } from "../../../../convex/listingShortName";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { Input } from "../../../primitives/Input";
 import { Textarea } from "../../../primitives/Textarea";
 import NeonButton from "../../../modules/NeonButton";
 import { oneLine } from "../../card-titles";
-import { AUTO_TITLE_CUT_TEXT } from "../../title-copy";
+import { AUTO_TITLE_CUT_TEXT, SET_NAME_SHORTENED_TEXT } from "../../title-copy";
 import {
   ASPECT_VALUE_MAX,
   LISTING_TITLE_MAX,
@@ -33,6 +34,10 @@ import type { TidyTileProps } from "../tile-types";
  *   item-specific cap (`variationOverLimit`). Plain otherwise, because the
  *   tile also carries the purple notes ("Left out", "Numbers didn't match"),
  *   which only ever show on a card that is already a stop.
+ * - A title that fits only because the set name was shortened ("Shorten the
+ *   set name"), with nothing else left out, is no blue check (Jason,
+ *   2026-11-23): a purple note says "Set name shortened to fit." and shows only
+ *   because the card is in the walk for another reason.
  * - Regenerate keeps its name. It rebuilds the title (and, like the side
  *   panel's, the description) and saves it when it fits.
  * - "Shorten the set name for every card" opens the set-name field inline.
@@ -342,6 +347,17 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
       {cut && !state.over && leftOut.length === 0 && (
         <p className="text-sm text-ink-2">{AUTO_TITLE_CUT_TEXT}</p>
       )}
+      {/* The stored title is the generated one and fits only because the set name
+          was shortened, with nothing else out: a purple note, never a stop. */}
+      {!editing &&
+        livePreviewTitle === null &&
+        !state.over &&
+        !cut &&
+        leftOut.length === 0 &&
+        previewData !== undefined &&
+        stored !== "" &&
+        stored === previewData.title &&
+        titleFitsOnShortName(previewData) && <TidyNote>{SET_NAME_SHORTENED_TEXT}</TidyNote>}
       {/* One form, cut or not: the purple note. */}
       {!state.over && leftOut.length > 0 && (
         <TidyNote>Left out to fit: {leftOut.join(", ")}</TidyNote>

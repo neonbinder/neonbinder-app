@@ -2558,7 +2558,10 @@ export default defineSchema({
     // NEO-101 / NEO-609: the card is in Tidy Up. The auto-generated title fit
     // eBay's 80-character cap only by a cut from the Tidy Up line down (a
     // whole team, the card number, SP, RELIC, a first name, RC or AUTO; the
-    // "#" alone is not one), or it was built from the set's box text.
+    // "#" alone is not one), or it was built from the set's box text and that
+    // version still leaves something out or is over the cap. A title that fits
+    // only because the set name was shortened, with nothing left out, is not
+    // flagged (NEO-645, `titleFitsOnShortName`).
     // The title is valid and listable — it is just missing identifying words a
     // human may want to decide differently, which is why this drives a "needs attention" item
     // (`features/cardAttention.ts` → `titleTruncated`) rather than an error.

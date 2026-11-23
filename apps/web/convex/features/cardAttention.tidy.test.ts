@@ -25,6 +25,8 @@ import {
   tidyReviewedKeyVariation,
   type AttentionCardRow,
 } from "./cardAttention";
+import { assessListingTitle } from "./generateListing";
+import { generatedTitleTruncatedFlag } from "./listingInputs";
 
 /** A card with nothing to ask: one linked player, one linked team. */
 const CLEAN: AttentionCardRow = {
@@ -357,6 +359,50 @@ describe("deriveCardAttention — blue", () => {
     expect(deriveCardAttention(row).items).toEqual([
       { level: "check", kind: "titleCut", key: tidyReviewedKeyCut(CLEAN.listingTitle!) },
     ]);
+  });
+
+  test("a title that fits because the set name was shortened is no blue item: the flag is not stored (Jason, 2026-11-23)", () => {
+    // `assessListingTitle` builds this title from the set's box text; the row
+    // is stored the way every writer stores it (`generatedTitleTruncatedFlag`).
+    const after = assessListingTitle({
+      cardNumber: "38",
+      playerNames: ["Bo Jackson"],
+      teamNames: ["Kansas City Royals"],
+      year: "1991",
+      manufacturer: "Upper Deck",
+      setName: "Hologram Collection Extraordinaire Series Nineteen Ninety One Anniversary",
+      insertName: "Dugout Collection Deluxe",
+      isRookie: true,
+      setShortName: "UD Holo",
+    });
+    expect(after.shortNameUsed).toBe(true);
+    const flag = generatedTitleTruncatedFlag(after);
+    const row: AttentionCardRow = {
+      ...CLEAN,
+      listingTitle: after.title,
+      ...(flag ? { listingTitleTruncated: true } : {}),
+    };
+    expect(deriveCardAttention(row)).toEqual({ level: "none", items: [] });
+  });
+
+  test("a title still cut after the set name was shortened keeps its blue check", () => {
+    const after = assessListingTitle({
+      cardNumber: "38",
+      playerNames: ["Bo Jackson"],
+      teamNames: ["Kansas City Royals"],
+      year: "1991",
+      manufacturer: "Upper Deck",
+      setName: "Hologram Collection Extraordinaire Series Nineteen Ninety One Anniversary",
+      insertName: "Dugout Collection Deluxe",
+      isRookie: true,
+      setShortName: "Upper Deck Hologram Collection Extraordinaire Series Nineteen Ninety One",
+    });
+    expect(after.shortNameUsed).toBe(true);
+    expect(after.tidyUp || after.dropped.length > 0).toBe(true);
+    const flag = generatedTitleTruncatedFlag(after);
+    expect(flag).toBe(true);
+    const row: AttentionCardRow = { ...CLEAN, listingTitle: after.title, listingTitleTruncated: true };
+    expect(deriveCardAttention(row).items.map((i) => i.kind)).toEqual(["titleCut"]);
   });
 
   test("teamFill is a note, never a stop: no item, whatever the card", () => {

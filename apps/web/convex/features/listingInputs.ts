@@ -351,17 +351,44 @@ export function storedCardVariation(raw: string | undefined): string | undefined
 }
 
 /**
+ * What the cut-short flag reads off an assessment. Only `coreFits` is required:
+ * a caller (or a test) that holds just that says nothing about the shortened
+ * set name, so the title is flagged as it always was.
+ */
+export type TitleCutFacts = Pick<ListingTitleAssessment, "coreFits"> &
+  Partial<Pick<ListingTitleAssessment, "fits" | "tidyUp" | "dropped" | "shortNameUsed">>;
+
+/**
+ * NEO-645 (Jason, 2026-11-23) — the title is built from the set's box text
+ * ("Shorten the set name"), fits eBay's cap, and that is the ONLY thing cut:
+ * no Tidy Up cut is out and nothing is left out to fit. Such a title is as
+ * complete as the card's facts allow, so nobody has to check it. It is no
+ * blue "cut short" stop; the Listing title tile says it with a purple note.
+ */
+export function titleFitsOnShortName(facts: TitleCutFacts): boolean {
+  return (
+    facts.shortNameUsed === true &&
+    facts.fits !== false &&
+    facts.tidyUp === false &&
+    facts.dropped !== undefined &&
+    facts.dropped.length === 0
+  );
+}
+
+/**
  * NEO-609 — the `listingTitleTruncated` value a GENERATED title is stored
  * with, from the assessment it was written from: `true` while a Tidy Up cut is
- * still out (or the title came from the box), `undefined` otherwise, which in
- * a patch clears a flag the old title carried. The one reading every writer of
- * a generated title uses (insert, Regenerate, a player link, a team removal);
- * only an operator's own typed title clears the flag without asking it.
+ * still out (or the title came from the box and the box version left
+ * something out or is over the cap), `undefined` otherwise, which in a patch
+ * clears a flag the old title carried. A title that fits only because the set
+ * name was shortened, with nothing left out, is not flagged (NEO-645,
+ * `titleFitsOnShortName`). The one reading every writer of a generated title
+ * uses (insert, Regenerate, a player link, a team removal); only an operator's
+ * own typed title clears the flag without asking it.
  */
-export function generatedTitleTruncatedFlag(
-  assessment: Pick<ListingTitleAssessment, "coreFits">,
-): true | undefined {
-  return assessment.coreFits ? undefined : true;
+export function generatedTitleTruncatedFlag(assessment: TitleCutFacts): true | undefined {
+  if (assessment.coreFits) return undefined;
+  return titleFitsOnShortName(assessment) ? undefined : true;
 }
 
 /**

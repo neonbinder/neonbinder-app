@@ -18,7 +18,7 @@ import {
   titleDescription,
   type ListingCardInputs,
 } from "./generateListing";
-import { generatedTitleTruncatedFlag } from "./listingInputs";
+import { generatedTitleTruncatedFlag, titleFitsOnShortName } from "./listingInputs";
 import {
   oneLine,
   retitleForSetName,
@@ -313,11 +313,12 @@ describe("a rebuilt title is flagged as every generated title is", () => {
     sport: "Baseball",
   };
 
-  test("a rebuilt title whose core did not fit is flagged, whatever the box brought back", () => {
+  test("a rebuilt title the box brought whole (first name back, team as its nickname) is not flagged (Jason, 2026-11-23)", () => {
     const before = assessListingTitle(daulton);
     expect(before.dropped).toEqual(["Philadelphia Phillies", "Darren"]);
     const after = assessListingTitle({ ...daulton, setShortName: BOX });
     expect(after.coreFits).toBe(false);
+    expect(after).toMatchObject({ shortNameUsed: true, fits: true, tidyUp: false, dropped: [] });
     const out = retitleForSetName({
       storedTitle: before.title,
       inputsAfter: { ...daulton, setShortName: BOX },
@@ -329,7 +330,7 @@ describe("a rebuilt title is flagged as every generated title is", () => {
       title: "1996 Score Dugout Collection Artists Proofs Darren Daulton #12 Phillies Baseball",
       truncated: generatedTitleTruncatedFlag(after),
     });
-    expect((out as { truncated: true | undefined }).truncated).toBe(true);
+    expect((out as { truncated: true | undefined }).truncated).toBeUndefined();
   });
 
   test("a rebuilt title that fits whole is not flagged", () => {
@@ -352,5 +353,41 @@ describe("a rebuilt title is flagged as every generated title is", () => {
     });
     expect(out).toMatchObject({ kind: "generated" });
     expect((out as { truncated: true | undefined }).truncated).toBeUndefined();
+  });
+});
+
+describe("a title that fits because the set name was shortened is not flagged cut short (Jason, 2026-11-23)", () => {
+  test("built from the box, fits, nothing left out: no flag, whatever the builder did without it", () => {
+    const without = assessListingTitle(LONG);
+    expect(without.fits).toBe(false);
+    const after = assessListingTitle({ ...LONG, setShortName: SHORT });
+    expect(after).toMatchObject({ shortNameUsed: true, fits: true, tidyUp: false, dropped: [], coreFits: false });
+    expect(titleFitsOnShortName(after)).toBe(true);
+    expect(generatedTitleTruncatedFlag(after)).toBeUndefined();
+  });
+
+  test("a rebuild for a set-name change stores no flag for it", () => {
+    const out = retitleForSetName({
+      storedTitle: undefined,
+      inputsAfter: { ...LONG, setShortName: SHORT },
+      oldShortName: undefined,
+      newShortName: SHORT,
+    });
+    expect(out).toMatchObject({ kind: "generated", title: "UD Holo Bo Jackson #38 RC Kansas City Royals Rookie" });
+    expect((out as { truncated: true | undefined }).truncated).toBeUndefined();
+  });
+
+  test("a box version that still leaves something out, or runs over the cap, keeps the flag", () => {
+    const base = { shortNameUsed: true as const, coreFits: false };
+    expect(generatedTitleTruncatedFlag({ ...base, fits: true, tidyUp: false, dropped: ["Kansas City Royals"] })).toBe(true);
+    expect(generatedTitleTruncatedFlag({ ...base, fits: true, tidyUp: true, dropped: [] })).toBe(true);
+    expect(generatedTitleTruncatedFlag({ ...base, fits: false, tidyUp: false, dropped: [] })).toBe(true);
+  });
+
+  test("a Tidy Up cut with no box is flagged as ever, and a bare coreFits says nothing about the box", () => {
+    const cut = assessListingTitle(LONG);
+    expect(titleFitsOnShortName(cut)).toBe(false);
+    expect(generatedTitleTruncatedFlag(cut)).toBe(true);
+    expect(generatedTitleTruncatedFlag({ coreFits: false })).toBe(true);
   });
 });

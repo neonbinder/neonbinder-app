@@ -37,6 +37,7 @@ import {
   type ListingTeamSplit,
 } from "./features/generateListing";
 import {
+  generatedTitleTruncatedFlag,
   listingInputsForCard,
   mergeCardFeatures,
   storedCardVariation,
@@ -394,8 +395,10 @@ export function buildCardRowForInsert(
   // so it is flagged `listingTitleTruncated` too; `titleOverLimit` (its
   // length) takes precedence when the attention items are read.
   const operatorTitle = card.listingTitle?.trim();
+  // NEO-645: a title that fits only because the set name was shortened, with
+  // nothing left out, is not flagged (`generatedTitleTruncatedFlag`).
   const flagTruncated =
-    !listingTitle.coreFits &&
+    generatedTitleTruncatedFlag(listingTitle) === true &&
     !operatorTitle &&
     card.listingTitleKept !== listingTitle.title;
 

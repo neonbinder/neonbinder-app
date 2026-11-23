@@ -132,6 +132,53 @@ describe("TitleTile levels", () => {
   });
 });
 
+describe("TitleTile: a title that fits because the set name was shortened (Jason, 2026-11-23)", () => {
+  const NOTE = "Set name shortened to fit.";
+  const boxed = (over: Record<string, unknown> = {}) => ({
+    title: SHORT,
+    fits: true,
+    tidyUp: false,
+    shortNameUsed: true,
+    coreFits: false,
+    dropped: [],
+    inputs: { ...inputs, setShortName: "2024 TC Update" },
+    ...over,
+  });
+
+  it("says so in a purple note, and the tile stays plain (no blue check)", () => {
+    previewResult = boxed();
+    renderTile(cardOf("c1"));
+    expect(screen.getByText(NOTE)).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Listing title" }).getAttribute("data-tidy-level")).toBe("plain");
+  });
+
+  it("says nothing when the title was not built from the set name box", () => {
+    previewResult = boxed({ shortNameUsed: undefined, coreFits: true });
+    renderTile(cardOf("c1"));
+    expect(screen.queryByText(NOTE)).toBeNull();
+  });
+
+  it("says nothing while the box version still leaves something out (the blue check keeps its place)", () => {
+    previewResult = boxed({ tidyUp: true });
+    renderTile(
+      cardOf("c1"),
+      { level: "check", items: [{ level: "check", kind: "titleCut", key: "cut:1" }] } as unknown as TidyAttention,
+    );
+    expect(screen.queryByText(NOTE)).toBeNull();
+    expect(screen.getByText("Auto title was cut short. Rewrite it.")).toBeTruthy();
+  });
+
+  it("says nothing when a Tidy Up cut is out, or the stored title is not the generated one", () => {
+    previewResult = boxed({ tidyUp: true });
+    const { unmount } = renderTile(cardOf("c1"));
+    expect(screen.queryByText(NOTE)).toBeNull();
+    unmount();
+    previewResult = boxed();
+    renderTile(cardOf("c1", { listingTitle: "My own title for the card" }));
+    expect(screen.queryByText(NOTE)).toBeNull();
+  });
+});
+
 describe("TitleTile editing", () => {
   it("Enter saves a title that fits and closes the editor", async () => {
     renderTile(cardOf("c1"));

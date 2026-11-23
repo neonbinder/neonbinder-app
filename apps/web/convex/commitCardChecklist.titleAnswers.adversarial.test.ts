@@ -49,10 +49,13 @@ const LONG_SET_NAME =
 
 /**
  * NEO-535 — the leaf's box text. The builder's title is over the cap, so
- * every card's title is built from the box and born `listingTitleTruncated`
- * (on the Card titles step): the flag these tests turn on and off.
+ * every card's title is built from the box. The box is exactly the 80
+ * characters the cap allows, so the card number still has to go (a Tidy Up
+ * cut): a title that fits only because of a short box, with nothing left out,
+ * is not flagged (NEO-645, Jason 2026-11-23), and these tests need the flag to
+ * turn on and off.
  */
-const BOX = "2026 Topps Sapphire";
+const BOX = "2026 Topps Chrome Sapphire Edition Platinum Anniversary Hobby Exclusive Pak Sevn";
 
 async function seedTree(t: T): Promise<Ids> {
   return t.run(async (ctx) => {
