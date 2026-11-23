@@ -157,3 +157,4 @@
 - [Match Cards skip is a per-fixture fact](patterns_match_cards_skip_is_a_per_fixture_fact.md) — NEO-640: matchCards fact, progress group + Cancel card fetch, skip copy, absence by role
 - [Compute titles with tsx first](patterns_compute_titles_with_tsx_before_a_title_spec_runs.md) — assessListingTitle offline before a fresh-only title run; variation never cut, walk writes retitle
 - [Typed-title overwrite proof needs every word](typed-title-overwrite-proof-needs-every-word.md) — NEO-637 rebuilds a typed title missing words anyway; shorten twice on one card
+- [Checklist total, lib plants](patterns_checklist_total_and_lib_plants_reaching_convex.md) — "N of M cards" total; lib/ plant needs a convex/ touch
