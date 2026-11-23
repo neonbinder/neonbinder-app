@@ -14,7 +14,12 @@
 // the open card is retitled at once ("Set name saved. The other cards' titles
 // are updating.") and the other card on a schedule, so when the walk reaches
 // it, its tile is no longer pink and shows the short name without opening for
-// editing. Each card's "No team on this card" is answered so the walk ends
+// editing. NEO-645 C7, every walk write regenerates the card's title and
+// description, a hand-typed title included. On #901 a title typed in the tile
+// is rebuilt by its team answer; typed again (holding every word, so the
+// NEO-637 rule outside the walk would keep it), a second "Shorten the set name"
+// rebuilds it with the newer name, and #902 is retitled with that one. Each
+// card's "No team on this card" is answered so the walk ends
 // "All tidy", the browser's Back/Forward step through the walk's address, and
 // the drawer reads the second card's stored title back.
 //
@@ -36,7 +41,8 @@
 // and every wait is the 7 s budget. Minted names are single tokens from
 // env.ATTEMPT_TOKEN: `tuplongset` + `x` padding + the token (set),
 // `tuphost<token>` (insert), `tupgold<token>` (its parallel) and the set's short
-// names `tupa<token>` / `tups<token>`. Neither parallel name starts with the
+// names `tupa<token>` / `tups<token>` / `tupb<token>`; the hand-typed titles
+// carry `tuptyped<token>`. Neither parallel name starts with the
 // insert's, so the prefix rule is the only thing that can put the insert's name
 // in the walk's name. R9: drillToCustom for the set stop, then drillToCustomSet
 // to the Insert type; the grouping is the same Group Parallels move the
@@ -111,6 +117,8 @@ test(
     const PARALLEL = `tupgold${T}`;
     const FIRST_TRY = `tupa${T}`;
     const SHORT = `tups${T}`;
+    const SHORT2 = `tupb${T}`;
+    const TYPED = `tuptyped${T}`;
     const year = "2026";
     /** A title naming `name` before card `#n`'s number (the set name leads, the number follows). */
     const titleWith = (name: string, n: string) => new RegExp(`\\b${escapeRe(name)}\\b.*#${n}\\b`);
@@ -155,6 +163,17 @@ test(
     await expectCardsLeft(page, 2);
     const walk = tidyWalk(page);
     const titleTile = tidyTile(page, "Listing title");
+    /** A title typed by hand in the open card's tile and saved: it fits and holds every word. */
+    const typeOwnTitle = async (n: string, setName: string): Promise<string> => {
+      const own = `${setName} Tup${n}${T} #${n} ${TYPED}`;
+      await titleTile.getByRole("button", { name: "Edit title", exact: true }).click();
+      const box = titleTile.getByRole("textbox", { name: `Card title for #${n}`, exact: true });
+      await box.fill(own);
+      await titleTile.getByRole("button", { name: "Save title", exact: true }).click();
+      await expect(box).toHaveCount(0);
+      await expect(titleTile.getByText(own, { exact: true })).toBeVisible();
+      return own;
+    };
 
     // ── #901: pink, and opened ready to edit ──
     const box901 = titleTile.getByRole("textbox", { name: "Card title for #901", exact: true });
@@ -205,12 +224,30 @@ test(
     await expect(titleTile.getByText(titleWith(SHORT, "901"))).toBeVisible();
     await expect(titleTile.getByRole("button", { name: "Edit title", exact: true })).toBeVisible();
     await expect(pinkTile(page, "Listing title")).toHaveCount(0);
-    // The card's other pink (no team) is answered, so Save & next can take it.
+    // C7: a title typed by hand, then the card's other pink (no team) answered so
+    // Save & next can take it. The answer regenerates the title over the typed
+    // one, and it still opens with the short name.
+    await typeOwnTitle("901", SHORT);
     await answerPinkTeamTiles(page, { noTeam: "noTeamOnCard" });
+    await expect(titleTile.getByText(titleWith(SHORT, "901"))).toBeVisible();
+    await expect(titleTile.getByText(TYPED)).toHaveCount(0);
+    await expect(titleTile.getByText(longSet)).toHaveCount(0);
+    // C7: typed again, holding every word, then the set name shortened again from
+    // the walk: the save rebuilds this card's title, the typed words gone.
+    await typeOwnTitle("901", SHORT);
+    await shorten.click();
+    await expect(setNameBox).toBeFocused();
+    await setNameBox.fill(SHORT2);
+    await titleTile.getByRole("button", { name: "Save and apply to all 2 cards", exact: true }).click();
+    await expect(
+      titleTile.getByRole("status").filter({ hasText: "Set name saved. The other cards' titles are updating." }),
+    ).toBeVisible();
+    await expect(titleTile.getByText(titleWith(SHORT2, "901"))).toBeVisible();
+    await expect(titleTile.getByText(TYPED)).toHaveCount(0);
     await saveAndNext(page);
 
-    // ── #902, retitled by the schedule: no longer pink, shown with the short name, not opened ──
-    await expect(titleTile.getByText(titleWith(SHORT, "902"))).toBeVisible();
+    // ── #902, retitled by the schedule: no longer pink, shown with the newer short name, not opened ──
+    await expect(titleTile.getByText(titleWith(SHORT2, "902"))).toBeVisible();
     await expect(pinkTile(page, "Listing title")).toHaveCount(0);
     await expect(titleTile.getByRole("textbox", { name: "Card title for #902", exact: true })).toHaveCount(0);
     await expect(titleTile.getByRole("button", { name: "Edit title", exact: true })).toBeVisible();
@@ -222,21 +259,22 @@ test(
     // The walk's place is in the address: Back steps to #902, Forward to the end again.
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tidy=(?!done)/);
-    await expect(titleTile.getByText(titleWith(SHORT, "902"))).toBeVisible();
+    await expect(titleTile.getByText(titleWith(SHORT2, "902"))).toBeVisible();
     await expect(allTidy).toHaveCount(0);
     await page.goForward();
     await expect(allTidy).toBeVisible();
     await finishTidyWalk(page);
 
-    // Nothing on the checklist needs anyone now, and #902's stored title carries the short name.
+    // Nothing on the checklist needs anyone now, and #902's stored title carries the newer short name.
     await expect(editCardButton(page, "902")).toBeVisible();
     await expect(needsYouPill(page)).toHaveCount(0);
     await editCardButton(page, "902").click();
-    const cardTitle = page.getByRole("dialog").getByRole("textbox", { name: "Card title", exact: true });
-    await expect(cardTitle).toHaveValue(titleWith(SHORT, "902"));
-    await expect(cardTitle).not.toHaveValue(longSet);
+    const drawerTitle = page.getByRole("dialog").getByRole("textbox", { name: "Card title", exact: true });
+    await expect(drawerTitle).toHaveValue(titleWith(SHORT2, "902"));
+    await expect(drawerTitle).not.toHaveValue(longSet);
+    await expect(drawerTitle).not.toHaveValue(new RegExp(escapeRe(TYPED)));
     await page.getByRole("button", { name: "Done editing card" }).click();
-    await expect(cardTitle).toBeHidden();
+    await expect(drawerTitle).toBeHidden();
 
     // ── The parallel under the insert: the walk's name puts the insert's name first ──
     await columnOption(page, "Parallels", PARALLEL).click();

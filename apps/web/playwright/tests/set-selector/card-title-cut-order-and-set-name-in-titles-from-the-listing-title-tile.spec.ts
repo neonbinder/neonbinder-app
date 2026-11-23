@@ -432,8 +432,10 @@ test(
     await expect(walkTitle).toHaveCount(0);
     await expect(titleTile.getByRole("button", { name: "Edit title", exact: true })).toBeVisible();
 
-    // The card has no team: say so, and the card is done.
+    // The card has no team: say so, and the card is done. The answer
+    // regenerates the title (NEO-645 C7), which keeps the row's new set name.
     await answerPinkTeamTiles(page, { noTeam: "noTeamOnCard" });
+    await expect(titleTile.getByText(titleCBox, { exact: true })).toBeVisible();
     await saveAndNext(page);
     await expect(walk.getByText("All tidy. Nothing on this checklist needs you.", { exact: true })).toBeVisible();
     await finishTidyWalk(page);
