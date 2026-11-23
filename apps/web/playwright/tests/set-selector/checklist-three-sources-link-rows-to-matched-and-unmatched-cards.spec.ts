@@ -10,7 +10,7 @@
 // (PAUSED_PLATFORMS=sportlots, GUIDE -> "Operator switches"). Paused, this set's
 // fetch has two sources, BSC and the checklist (NEO-496), not the three this spec
 // is about; the two-source screen is proved by set-checklist-pdf-topps-chrome-2026
-// and checklist-published-numbers-differ-pairs-by-player, which own their sets. The suite's way of sitting out is a branch on `env.SL_PAUSED`, never
+// and checklist-published-numbers-differ-pair-by-player-and-the-walk-notes-the-numbers, which own their sets. The suite's way of sitting out is a branch on `env.SL_PAUSED`, never
 // a skip: the paused branch below proves what the pause shows on this set and
 // returns; the live branch is the flow, and it returns by itself the day the
 // variable is unset. The live branch has NOT been run (it cannot be: nothing may

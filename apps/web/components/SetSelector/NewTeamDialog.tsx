@@ -73,7 +73,7 @@ import NewTeamForm, {
  * and a client that destructured it blindly would turn a malformed payload into
  * a render crash on the one screen an operator is already being refused on.
  */
-function teamEraRefusal(err: unknown): Array<{ years: string }> | null {
+export function teamEraRefusal(err: unknown): Array<{ years: string }> | null {
   if (!(err instanceof ConvexError)) return null;
   const data = err.data as { code?: unknown; eras?: unknown } | null;
   if (!data || typeof data !== "object" || data.code !== "TEAM_ERA_EXISTS") {
@@ -99,7 +99,7 @@ function teamEraRefusal(err: unknown): Array<{ years: string }> | null {
  * CALLED but another team answers to as an alias. Each holder carries its full
  * name and, when it has one, its era, so the dialog can say who answers to it.
  */
-function aliasHolderRefusal(
+export function aliasHolderRefusal(
   err: unknown,
 ): Array<{ name: string; yearsActive?: { from: number; to?: number } }> | null {
   if (!(err instanceof ConvexError)) return null;

@@ -27,6 +27,20 @@ export function editCardButton(page: Page, cardNumber: string): Locator {
   return page.getByRole("button", { name: new RegExp(`^Edit card ${escapeRe(cardNumber)}(, .*)?$`) });
 }
 
+/**
+ * NEO-645: a checklist row's attention mark (`role="img"`), whose name is "Card <n>[, <name>]
+ * needs attention: <reasons>" (pink) or "… is worth a check: <reasons>" (blue), the reasons
+ * joined by "; ". `reason` (a regex SOURCE, e.g. "team name not yet linked|no team on this
+ * card yet") narrows it to a mark that names one of those reasons. A row with no mark has
+ * none: pair a `toHaveCount(0)` with the row's `editCardButton` being visible.
+ */
+export function cardAttentionMark(page: Page, cardNumber: string, reason?: string): Locator {
+  const reasons = reason === undefined ? "" : `(.*; )?(${reason})(;|$)`;
+  return page.getByRole("img", {
+    name: new RegExp(`^Card ${escapeRe(cardNumber)}(, [^:]+)? (needs attention|is worth a check): ${reasons}`),
+  });
+}
+
 export function deleteCardButton(page: Page, cardNumber: string): Locator {
   return page.getByRole("button", { name: new RegExp(`^Delete card ${escapeRe(cardNumber)}(, .*)?$`) });
 }
@@ -122,6 +136,38 @@ export async function addCardViaForm(page: Page, card: CardFormInput): Promise<v
   await expect(name).toBeHidden();
   await expect(number).toBeHidden();
   await expect(editCardButton(page, cardNumber)).toBeVisible();
+}
+
+/**
+ * In an open add-card form (or a card drawer), raise a BRAND-NEW team through
+ * its team picker and leave it on the card: "Add team", type the name, Enter on
+ * the create row opens the New team dialog, "Create team <name>". Ends with the
+ * picker's search closed (focus moved to the "Card name" field), so a popover
+ * never hangs over the next control.
+ *
+ * Contract: ENTRY a card form or drawer is open and no team named `name`
+ * exists. EXIT the card holds the team ("Remove team <name>" is up). 7 s each.
+ */
+export async function createTeamInCardForm(page: Page, name: string): Promise<void> {
+  await page.getByRole("button", { name: "Add team" }).click();
+  const search = page.getByRole("textbox", { name: "Search teams" });
+  await expect(search).toBeVisible();
+  await search.fill(name);
+  // The picker is keyboard-first: Enter on a name no team has opens "New team".
+  // (Its dropdown can sit below the fold of the card form, so no click here.)
+  await expect(page.getByRole("button", { name: `New team ${name}` })).toBeVisible();
+  // NEO-331: Enter on the create row is dropped while the rows are HELD from an
+  // earlier query; "No matches." is the verdict for THIS query, so wait for it.
+  await expect(page.getByText("No matches.")).toBeVisible();
+  await search.press("Enter");
+  const dialog = page.getByRole("dialog", { name: `New team: ${name}` });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("textbox", { name: "New team name" })).toHaveValue(name);
+  await dialog.getByRole("button", { name: `Create team ${name}` }).click();
+  await expect(page.getByRole("button", { name: `Remove team ${name}` })).toBeVisible();
+  // Leaving the picker closes its search.
+  await page.getByRole("textbox", { name: "Card name", exact: true }).click();
+  await expect(search).toBeHidden();
 }
 
 export interface CustomCard extends Omit<CardFormInput, "beforeSubmit"> {

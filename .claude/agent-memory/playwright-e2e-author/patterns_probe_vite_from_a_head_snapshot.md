@@ -42,7 +42,7 @@ reds `setup.spec.ts`, and then nothing tests the spec. Restore with
 lists only `vite.config.ts`. A spec's `finally` cleanup shows in the failure PNG
 (the screenshot comes after `finally`), which proves cleanup-on-red for free.
 
-Related: [[local-vite-serves-one-worktree]]
+Related: [[patterns_local_run_backend_and_vite]]
 
 NEO-639: `e2e-run run` refuses a snapshot Vite on its port ("in use by a process that is
 not this worktree's Vite"). With the snapshot up on the ticket port, `e2e-run seed` still

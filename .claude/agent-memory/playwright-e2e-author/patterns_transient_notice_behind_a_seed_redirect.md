@@ -26,4 +26,4 @@ red, line up in the deployment-wide convex-logs: last upload confirm, first
 window closed before the page mounted, the spec cannot pass and the cause is
 neither timing nor the PR: it needs an uncached/cold escalation or the
 assertion moved to where the window is observable (propose to Jason; never
-weaken it silently). Related: [[never-diagnose-timing-first]].
+weaken it silently). Related: never diagnose timing first (GUIDE).

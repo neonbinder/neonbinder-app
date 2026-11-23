@@ -26,3 +26,13 @@ escaping or stripping at `ebayListingText`. Also confirm the preview
 `requireAdmin`. `pickTitleChainFacts` copies only `titleChainFactsFields` keys,
 so spreading it into an insert cannot smuggle extra fields.
 See [[patterns_neo364_client_carried_undo]] for other text-to-write doors.
+
+**NEO-645 addendum:** `subjectName` (the card's own `cardName`, via
+`lib/cards/unnamed-card.ts` `cardSubjectName`) is in every title that has one
+and is NEVER cut, so a long name yields an over-cap title (probe: 300-char
+subject gives a 320-char title, `fits:false`). The checklist door caps it at
+120 after `cleanseExternalName`; `updateCard` and `addCustomCard` take
+`cardName: v.string()` with no cap or cleanse. Same admin trust class, but
+check the operator doors' bounds whenever a never-cut title input widens. A
+quick offline check: a tsx script importing `assessListingTitle` from the
+worktree.

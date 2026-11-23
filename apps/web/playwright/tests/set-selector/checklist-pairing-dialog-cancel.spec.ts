@@ -40,7 +40,7 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../../support/set-builder";
-import { reviewWizard } from "../../support/wizard";
+import { tidyWalk } from "../../support/tidy-walk";
 
 /**
  * How long the fake holds the second fetch's catalogue read (`search/bulk-upload/results`): the
@@ -284,9 +284,9 @@ test(
     await expect(cancelled).toBeVisible();
     await expect(matchCardsDialog(page)).toHaveCount(0);
 
-    // The set is untouched: Sync is available for a retry, no entity-review wizard opened and no
+    // The set is untouched: Sync is available for a retry, no Tidy Up walk opened and no
     // save landed (paired with the cancelled line above, R2).
-    await expect(reviewWizard(page)).toBeHidden();
+    await expect(tidyWalk(page)).toBeHidden();
     await expect(page.getByText(/^Saved [0-9]+ cards?\./)).toHaveCount(0);
     await expect(syncChecklistButton(page)).toBeEnabled();
     await expectAccessible(page, { label: "Future Stars checklist after the sync was cancelled" });
@@ -307,10 +307,10 @@ test(
     await cancelCardFetchButton(page).click();
     await expect(cancelled).toBeVisible();
     await expect(progress).toHaveCount(0);
-    // Nothing came of the run: no dialog, no wizard, no save, and Sync is usable again (R2: each rides
+    // Nothing came of the run: no dialog, no walk, no save, and Sync is usable again (R2: each rides
     // on the cancelled line).
     await expect(matchCardsDialog(page)).toHaveCount(0);
-    await expect(reviewWizard(page)).toBeHidden();
+    await expect(tidyWalk(page)).toBeHidden();
     await expect(page.getByText(/^Saved [0-9]+ cards?\./)).toHaveCount(0);
     await expect(syncChecklistButton(page)).toBeEnabled();
     await expectAccessible(page, { label: "Future Stars checklist after a fetch was cancelled from its progress line" });

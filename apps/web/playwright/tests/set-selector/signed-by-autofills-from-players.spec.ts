@@ -14,7 +14,7 @@ test(
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
     await drillToBaseVariant(page, env);
-    await expect(page.getByRole("button", { name: "Sync card checklist" })).toHaveText("Refresh");
+    await expect(page.getByRole("button", { name: "Refresh", exact: true })).toBeVisible();
 
     await editCardButton(page, "300").click();
     const drawer = page.getByRole("dialog");

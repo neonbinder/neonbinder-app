@@ -1,6 +1,6 @@
 ---
 name: patterns_record_a_fixture_sets_lookups
-description: Recording a fixture set's lookups - live lookups from convex logs, catalogue on CI previews, catalogue-seeded wizard staging, measuring a fixture from CI artifacts
+description: Recording a fixture set's lookups - live lookups from convex logs, catalogue on CI previews, catalogue-seeded name staging, measuring a fixture from CI artifacts
 metadata:
   type: pattern
 ---
@@ -18,7 +18,7 @@ capture's own guard). The sport context is the sport row's `sportConfig`
 
 **The exact staged names:** after a committed probe the set's
 `entityReviewSkips` rows (index `by_selector_option_and_kind_and_name`) hold
-every SKIPPED row's raw `name` — the split per-player strings the wizard
+every SKIPPED row's raw `name` — the split per-player strings the review
 staged, not `cardName` ("A / B CO" cards stage two names). Linked rows are
 not there; add them by hand. Staged career teams/leagues carry a `knownQid`
 (`source.wikidataId`): a recorded entry hits only when its `wikidataId`
@@ -39,9 +39,9 @@ key/shape/sort and keeps the live-proof player out.
 `pickTeamForYear`): dump the sport's `teams` read-only, key rows by
 `normalizeEntityName` of the composed name AND each alias, then run the real
 `pickTeamForYear(rows, setYear, { allowPastEra: true })` under tsx. One dated
-row ending before the set year = silent past-era link (no wizard step); two+
-rows with none covering the year = no auto-link (a team step ONLY if the
-name reaches the review gate; on a BSC-only fetch it can instead commit
+row ending before the set year = silent past-era link (no Team tile ask); two+
+rows with none covering the year = no auto-link (a Team tile row ONLY if the
+name reaches the commit's review; on a BSC-only fetch it can instead commit
 teamless as "needs a team", see [[patterns_record_a_fixture_sets_lookups]]); one of
 several covering it =
 silent link to that era (the NEO-336 retro-card trap). BSC public shop facets
@@ -55,7 +55,7 @@ artifacts (gzipped JSONL, one Convex function execution per line; each shard's
 file holds the whole deployment's window, so dedupe by `executionId`), the
 `logLines[].messages` carry `{"msg":"enrichment_fixture","outcome":"hit"|"miss","kind","name"}`.
 `identifier` says who asked: `adapters/wikidata:runEntityReviewLookup` (a
-wizard row), `enrichPlayer` (a player the product just created), `enrichLeague`.
+Player/Team name row), `enrichPlayer` (a player the product just created), `enrichLeague`.
 A `miss` went live. The artifacts download through the public GitHub API
 (`/actions/artifacts/<id>/zip`) even where job logs are blocked.
 
@@ -126,17 +126,17 @@ placeholder is the CARD NAME box), the spine label's "Name on the label", and
 descriptions never reach a search. Multi-word card names were still made
 single tokens for the rule's sake.
 
-See [[patterns_pick_a_wizard_name_from_bsc_facets_and_the_gate_resolver]],
+See [[patterns_pick_a_fixture_name_from_bsc_facets_and_the_resolver]],
 [[patterns_button_name_substring_hides_demoted_variants]].
 
-## Catalogue seeded wizard staging
+## Catalogue seeded name staging
 
 **The catalogue is a PROD snapshot, not just public reference data.** It holds
 the players/teams prod's own set builds created (2025-26 Bowman prospects, NPB
 names, "Checklist" as a baseball player), with their prod `_creationTime`. So
 "prospects are absent from Lahman" is not a fixture strategy: anything an
 operator has built in prod is known, and every bundle refresh can drain a
-fixture that was green. Re-measure wizard fixtures after each refresh.
+fixture that was green. Re-measure walk fixtures after each refresh.
 
 **What still stages (CI run, all fixtures fresh):** non-person rows ("Become a
 Big Leaguer", "Team Photo") — permanent unless prod commits one; spelling
@@ -155,7 +155,7 @@ Baseball/Basketball/Football/Hockey carry `sportConfig.wikidata`/`espn`;
 every other sport gets no enrichment, so a live-Wikidata fixture must be one
 of those four. The enrichment recording is Baseball-only (every key `|Q5369|`).
 
-**1995 minor-league hockey (re-measured 2026-10-10, wizard fixtures):** Tulsa
+**1995 minor-league hockey (re-measured 2026-10-10, name-staging fixtures):** Tulsa
 Oilers / Memphis RiverKings / San Antonio Iguanas / Fort Worth Fire CHL each
 stage 15–16 players and 0 teams (BSC tags no team on these team sets — even
 absent clubs never stage). Some players DO hit Wikidata (career clubs staged,
@@ -199,32 +199,32 @@ Montreal Expos, California Angels = ONE dated row (auto past-era link);
 St. Louis Browns (2), Washington Senators (3), Philadelphia Athletics (4),
 St. Louis Stars (3), Detroit Stars (2) = ambiguous for any year after
 their eras; Kansas City Monarchs = in-era 2021– trap.
-**An ambiguous club only reaches the wizard if the fetch waits for its team
+**An ambiguous club only reaches the Team tile if the fetch waits for its team
 lookups.** Before NEO-330's race fix the BSC-only fetch on 2025 Topps WttC 3X
 MVP went straight to `Saved 36 cards. 2 need attention` (the action resolved
 before the team patches arrived, so the two Phil. Athletics cards committed
 TEAMLESS and surfaced as `2 cards need a team`). With the fix (re-probed
-2026-10-11) the same fetch stages `0 new players + 1 new teams` and opens on
-`New Team: Philadelphia Athletics`. A predicted team step must still be
+2026-10-11) the same fetch stages `0 new players + 1 new teams` and asks
+`Which team: Philadelphia Athletics` on the Team tile. A predicted team ask must still be
 PROBED; an offline `pickTeamForYear` run only says how a name resolves once
-it gets there. See [[reference_reaching_the_missing_team_fixer]].
+it gets there. See [[patterns_team_era_specs_on_the_walk]].
 
-**A fixture that expected unknown names can now commit with no wizard.**
+**A fixture that expected unknown names can now commit with nothing to ask.**
 Prod has built 2025 Bowman Draft, so all its draftees are catalogue rows
 (NEO-333's dual-team spec, re-measured 2026-10-12). On the one-marketplace
 path with nothing staged, the commit's `Saved N cards` REPLACES the
 `Kept all N cards from BSC` line (CardChecklist holds one notice), so a fetch
-gate must accept `Saved` too, and a wizard gate must be the either/or: the `Confirm New Players & Teams` heading OR a `Saved N cards` notice. Make the wizard
-drain exit on a player OR `Confirm & Save` (a batch can stage teams and no
-player). Prove "nothing was staged" through the unknown-name route: an
-unresolvable value always lands in `unknownTeams` and opens the wizard.
+gate must accept `Saved` too: the walk opening (`expectTidyWalkOpen`) OR a
+`Saved N cards` line with no `N need you` pill (`settleWalkAfterCommit` is that
+either/or). Prove "nothing was staged" through the unknown-name route: an
+unresolvable value always raises a Player/Team row and opens the walk.
 
-**Reading a wizard red:** a walk helper that spins through its drain loop and then fails on the `Skip ... not a person` button means the batch
-ran out of player rows, not a slow page — check `N of N reviewed` in the
-screenshot. `runEntityReviewLookup` `enrichment_fixture` lines in the
-convex-logs artifact list every staged player name per fetch, timestamped,
-so a passing spec's staging can be counted without a screenshot. See
-[[patterns_record_a_fixture_sets_lookups]], [[reference_same_name_player_panel]].
+**Reading a walk red:** a helper that loops over Player rows (`answerPinkPlayerTiles`,
+`skipUntil`) and then fails by name means the walk ran out of rows, not a slow
+page: read the screenshot's tally and the card header. `runEntityReviewLookup`
+`enrichment_fixture` lines in the convex-logs artifact list every staged player
+name per fetch, timestamped, so a passing spec's staging can be counted without
+a screenshot. See [[reference_same_name_player_panel]].
 
 ## Measure a fixture from ci artifacts
 

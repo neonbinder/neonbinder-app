@@ -18,19 +18,27 @@
 // - The set builder drills to the set's Base cold, and branches on the
 //   checklist's own state. Empty: Pete Rose is stored as the player on every
 //   card and Johnny Bench as a cameo (no cards, so no confirm), the
-//   publisher's checklist is uploaded, the checklist synced, the four player
-//   disagreements take the checklist's side (so #4 reads two names), and the
-//   review's names are ruled out ONE BY ONE ("Skip <name> — not a person"),
-//   "1975 World Champions" and "Former Teammates" among them. "Cards with no
-//   team" then lists only #1 (its high-school team was skipped), filed under
-//   its own Pete Rose, and no ruled-out card; it is left for later and 75
-//   cards are saved. Already committed (a rerun on the same seed): the stored
-//   values are read back as they are. Both branches end on the same asserts.
+//   publisher's checklist is uploaded and the checklist synced. Match Cards'
+//   Confirm (or its skip) SAVES the 75 cards (NEO-645: commit first), and the Tidy Up walk
+//   opens on them. On the walk, card by card: a sources disagreement takes
+//   the checklist's side (it splits #4's "Pete Rose & Harry 'Pete' Rose" into
+//   two names); every name nobody knows is ruled out on its row, "Not a
+//   player" ("1975 World Champions" and "Former Teammates" among them, each
+//   answer reaching every card that prints it), Pete Rose himself never; a
+//   team name nobody knows (#1's high school) is "Not a team", which leaves
+//   #1 asking for a team under its own Pete Rose, and #1 is skipped. No
+//   ruled-out card asks for a team. Done closes the walk with no name or
+//   disagreement left pink (J3: the parallel build below needs that).
+//   Already committed (a rerun on the same seed): the stored values are read
+//   back as they are. Both branches end on the same asserts.
 // - #10's and #18's drawers: no player, Johnny Bench under "Also on this
 //   card", the description's "Cameo: Johnny Bench" line, and the exact card
-//   title with no player before the number (the cameo stands there, NEO-528 +
-//   NEO-535). #4's drawer: Pete Rose as its player (its title names him, then
-//   "& Johnny Bench"), and the cameo.
+//   title the walk's write regenerated (NEO-645 C7): the levels ("Base" while it
+//   fits), the card's name, then the cameo. #10's runs over 80, so "Base" is
+//   the first word cut and the cameo next, and the drawer says "Left out to
+//   fit: Johnny Bench". #4's drawer: Pete Rose as its player (its title names
+//   him, then "& Johnny Bench"; its card name only repeats him, so it adds
+//   nothing), and the cameo.
 // - Printing Plates Black is built from Base (or adopted, built): its #10 has
 //   no player and its #4 keeps Pete Rose.
 // - Back steps the drill out of the parallel.
@@ -43,12 +51,9 @@
 //   by `set-selector/player-on-every-card` (quick-add on a hand-made set) and,
 //   for the commit, by `convex/cardPlayerDefaults.creation.test.ts` and
 //   `convex/lib/cardPlayerDefaults.test.ts`.
-// - The wizard's "Cards with no players" group and the card-titles preview of
-//   a ruled-out card: every card here carries a team claim (its own or the
-//   checklist's No Team), so none reaches the teams step but #1, and no title
-//   is long enough to open the titles step. Both previews are unit-tested
-//   (`components/SetSelector/teams-on-cards.test.tsx`, `card-titles.test.tsx`);
-//   the committed titles are asserted here instead.
+// - The walk's Listing title tile on a ruled-out card: the walk is driven
+//   card by card off whatever it opens on, so the titles are asserted once,
+//   in the drawers, after the walk (both branches read them there).
 //
 // R7/R7a: SOLE WRITER of Baseball > 2011 > Leaf > Leaf Pete Rose Legacy (its
 // Base, its Parallel rows and Printing Plates Black's cards) and of the year's
@@ -59,7 +64,7 @@
 // adopts them. It writes nothing else.
 //
 // R3: the drill is `drillToColdManufacturer` + `drillToBaseVariant` + `pick`
-// (R9), the upload `usePublishersChecklist`, the review `support/wizard.ts`,
+// (R9), the upload `usePublishersChecklist`, the walk `support/tidy-walk.ts`,
 // and the section's and the drawer's names `support/also-pictured.ts`.
 import type { Locator, Page } from "@playwright/test";
 import {
@@ -77,10 +82,9 @@ import {
   storeEveryCardValue,
 } from "../../support/also-pictured";
 import { escapeRe } from "../../support/cards";
-import { nameOf } from "../../support/collection";
 import type { FlowEnv } from "../../support/env";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist } from "../../support/published-checklist";
+import { CHECKLISTS, savedLine, settleChecklistFetch, usePublishersChecklist } from "../../support/published-checklist";
 import {
   drillToBaseVariant,
   drillToColdManufacturer,
@@ -91,18 +95,23 @@ import {
   syncChecklistButton,
 } from "../../support/set-builder";
 import {
-  advanceToSave,
-  checklistDisagreementHeading,
-  confirmSaveButton,
-  disagreementOn,
-  expectChecklistDisagreementFirst,
-  expectNameStepLeft,
-  nextStepButton,
-  personSkip,
-  pickSideForAllCards,
-  reviewWizard,
+  expectCardSettled,
+  finishTidyWalk,
+  mustFixLine,
+  pinkTile,
+  ruleOutOpenPlayerRows,
+  ruleOutOpenTeamRows,
+  saveAndNext,
+  settleWalkAfterCommit,
+  skipCard,
+  takeSourceSide,
+  tidyCardIdentity,
+  tidyFooterButton,
+  tidyTile,
+  type TidyTileName,
   tidyUpName,
-} from "../../support/wizard";
+  tidyWalk,
+} from "../../support/tidy-walk";
 
 const BUILD = { sport: "Baseball", year: "2011", manufacturer: "Leaf", set: "Leaf Pete Rose Legacy" } as const;
 /** How a card's description names the set ("<year> <set>"). */
@@ -112,26 +121,43 @@ const PLAYER = "Pete Rose";
 const CAMEO = "Johnny Bench";
 /** Cards whose listing names somebody entity review rules out (not a person). */
 const RULED_OUT = [
-  // The committed titles (NEO-528 + NEO-535): no player, so the stored cameo
-  // stands where the player would; #18's team is "No Team", which a title omits.
-  // NEO-609: the Base checklist's own name is in the title while it fits.
-  { number: "10", printed: "1975 World Champions", title: `${SET_TITLE} Base ${CAMEO} #10 Cincinnati Reds Baseball` },
-  { number: "18", printed: "Former Teammates", title: `${SET_TITLE} Base ${CAMEO} #18 Baseball` },
+  // NEO-645 C7: every walk write regenerates the title. A card's own name is in it whenever it has
+  // one (Jason, 2026-11-23): "<year> <set> Base <card name> <cameo> #N <team> <sport>", the variant
+  // word "Base" kept while it fits and the first word cut; #18's team is "No Team", which a title
+  // omits, so #18 keeps "Base" (74). #10's would run to 94: "Base" goes first (89), then the cameo
+  // (76), and the drawer names only the cameo under "Left out to fit" (a label is never listed).
+  // Computed offline with `assessListingTitle` (agent memory: compute titles with tsx first).
+  {
+    number: "10",
+    printed: "1975 World Champions",
+    title: `${SET_TITLE} 1975 World Champions #10 Cincinnati Reds Baseball`,
+    leftOut: CAMEO,
+  },
+  { number: "18", printed: "Former Teammates", title: `${SET_TITLE} Base Former Teammates ${CAMEO} #18 Baseball`, leftOut: undefined },
 ] as const;
 /** The card whose listing names Pete Rose (and his father): it keeps its own Pete Rose. */
 const OWN = "4";
 /** The parallel built from Base (a Printing Plate: BSC lists one per colour). */
 const PARALLEL = "Printing Plates Black";
 
-/** The wizard opens behind the entity check's batch (live lookups; the 1984 cameo spec's ceiling). */
-const WIZARD_OPENS = 60_000;
-/** A name step waits on its row's lookup before its skip is usable (the batch-lookups ceiling, `LOOKUPS`' class; the 1984 cameo spec's 60 s). */
-const NAME_STEP = 60_000;
+/** The card whose team name nobody knows (its high school): ruled out, it asks for a team. */
+const HIGH_SCHOOL = "1";
+/** The tiles a card can be skipped with; J3 holds the parallel build on the first three. */
+const BLOCKING: readonly TidyTileName[] = ["Sources disagree", "Player", "Team"];
+/** A runaway guard: the walk shows at most the checklist's 75 cards. */
+const MAX_CARDS = 80;
+
+/** The open card's number, off its first "#…" line (`tidyCardIdentity`). */
+async function openCardNumber(page: Page): Promise<string> {
+  const [first] = await tidyCardIdentity(page).allTextContents();
+  return /^#(\S+)/.exec(first ?? "")?.[1] ?? "";
+}
 
 /**
- * Fetch and commit the empty checklist, the defaults stored first. Contract:
- * ENTRY the set's Base is on screen with no cards. EXIT the checklist is on
- * screen again, freshly drilled, with its cards.
+ * Fetch and commit the empty checklist, the defaults stored first, then walk
+ * the Tidy Up walk that opens on it. Contract: ENTRY the set's Base is on
+ * screen with no cards. EXIT the walk is closed and the checklist is on screen
+ * again, freshly drilled, with its cards.
  */
 async function fetchAndCommit(page: Page, env: FlowEnv, section: Locator): Promise<void> {
   // Stored before the cards exist: saved with no question (no cards beneath).
@@ -147,65 +173,99 @@ async function fetchAndCommit(page: Page, env: FlowEnv, section: Locator): Promi
   // rows becoming variations of #27a / #38a. `facts` is the product matcher's own answer.
   expect(facts.matched, "every Leaf row pairs its card (a trailing SP is no part of a name)").toBe(facts.rows);
   await syncChecklistButton(page).click();
-  // NEO-496 (D10, NQ1): the uploaded checklist is a second source, so the fetch opens Match Cards on
-  // either branch (SportLots paused or not). The helper waits on it (7 s of ours plus BSC's), proves the
-  // teams line while it is open (the only time before the save), keeps any BSC-only card and confirms.
-  await confirmChecklistMatchCards(page, { facts, what: "the empty checklist's fetch" });
-  const wizard = reviewWizard(page);
-  await expect(wizard).toBeVisible({ timeout: WIZARD_OPENS });
-  await expect(wizard).toHaveAccessibleName(tidyUpName({ year: BUILD.year, set: BUILD.set }));
+  // NEO-640 / NEO-645 C5: settled on the file's own Match Cards fact, never a race: Confirm (keeping
+  // any BSC-only card) when the dialog opens, the skip's saved line when every card matched. Either
+  // way the cards SAVE first (our own write, 7 s); the storyline captions are names nobody knows, so
+  // the walk opens on its own after the save.
+  await settleChecklistFetch(page, env, { facts, what: "the empty checklist's fetch" });
+  const saved = savedLine(page, 75);
+  await expect(saved).toBeVisible();
+  expect(await settleWalkAfterCommit(page, saved), "the captions need a person, so the walk opened").toBe(true);
+  const walk = tidyWalk(page);
+  await expect(walk).toHaveAccessibleName(tidyUpName({ year: BUILD.year, set: BUILD.set }));
 
-  // The checklist splits #4's "Pete Rose & Harry 'Pete' Rose" into two names
-  // (and drops the "SP" BSC prints on two names): its side, on every card, is
-  // what lets #4 resolve to Pete Rose.
-  await expectChecklistDisagreementFirst(page);
-  await expect(disagreementOn(page, OWN)).toBeVisible();
-  await pickSideForAllCards(page, "Use the checklist's", [OWN]);
-  await nextStepButton(page).click();
-  await expect(checklistDisagreementHeading(page)).toBeHidden();
+  const ruledOut: string[] = [];
+  const linkedByHand: string[] = [];
+  const skipped: { number: string; pink: TidyTileName[] }[] = [];
+  const ownRow = tidyTile(page, "Player").getByRole("group", { name: `Player ${PLAYER}`, exact: true });
+  for (let i = 0; i < MAX_CARDS; i++) {
+    const done = tidyFooterButton(page, "done");
+    await expect(tidyTile(page, "More about this card").or(done).first()).toBeVisible();
+    if (await done.isVisible()) break;
+    await expectCardSettled(page);
+    const number = await openCardNumber(page);
 
-  // Every name nobody knows is ruled out on its own step, "Skip <name> — not a
-  // person" (the storyline captions, Harry 'Pete' Rose, "Pete" and "Coach"); a
-  // team step (#1's high school) is skipped as not a team. Each press is proved
-  // to have moved the wizard off that row (its own skip gone, NEO-467).
-  const skipped: string[] = [];
-  const teamSkip = wizard.getByRole("button", { name: /^Skip .* — (not a team|this team has no league)$/, disabled: false });
-  const usablePerson = wizard.getByRole("button", { name: /^Skip .* — not a person$/, disabled: false });
-  const namesDone = nextStepButton(page).or(confirmSaveButton(page));
-  for (let i = 0; i < 20; i++) {
-    await expect(usablePerson.or(teamSkip).or(namesDone).first()).toBeVisible({ timeout: NAME_STEP });
-    if (await namesDone.isVisible()) break;
-    // One read of whichever skip is up now, then person or team is told from
-    // its label: choosing the control first (`isVisible() ? a : b`) let the
-    // wizard move to a team step in between and `nameOf(a)` wait for a button
-    // that was gone (NEO-568). The press is aimed at the name just read, so a
-    // step that moved on matches nothing rather than skipping the next row.
-    const label = await nameOf(usablePerson.or(teamSkip).first());
-    if (/ — not a person$/.test(label)) skipped.push(label.replace(/^Skip (.*) — not a person$/, "$1"));
-    await wizard.getByRole("button", { name: label, exact: true, disabled: false }).click();
-    await expectNameStepLeft(page, label);
+    // The checklist's side of any disagreement (#4 reads two names on it). The Player tile waits
+    // on the spelling, so the card settles again once it is taken.
+    if ((await takeSourceSide(page, "Checklist")) > 0) {
+      await expect(walk.getByText(/^(Looks up once the spelling is picked|Waiting on the spelling above)$/)).toHaveCount(0);
+      await expect(tidyTile(page, "Player")).toBeVisible();
+      await expectCardSettled(page);
+    }
+    // Pete Rose is the catalogue's own player and never ruled out. The commit links him; where a
+    // row still asks (#4's name only arrives with the checklist's side), he is linked by hand to
+    // the one Pete Rose on file, and the run says so.
+    await expect(ownRow.getByText("Checking for players by that name…")).toHaveCount(0);
+    if ((await ownRow.getByRole("button", { name: /^Not a player / }).count()) > 0) {
+      await ownRow.getByRole("button", { name: /^Link to Pete Rose( \(Baseball\))?( Pete Rose)?$/, disabled: false }).click();
+      // C1: the answered row's one button is "Edit <the linked player>".
+      await expect(ownRow.getByRole("button", { name: `Edit ${PLAYER}`, exact: true })).toBeVisible();
+      linkedByHand.push(number);
+    }
+    await expect(ownRow.getByRole("button", { name: /^Not a player / })).toHaveCount(0);
+    ruledOut.push(...(await ruleOutOpenPlayerRows(page, { keep: [PLAYER] })));
+    const teams = await ruleOutOpenTeamRows(page);
+
+    if (number === HIGH_SCHOOL) {
+      // #1's high school was ruled out, so #1 has no team and asks for one under its own
+      // Pete Rose (the old wizard's "Cards with no team" listed it as "#1 · Pete Rose").
+      expect(teams, "#1's high school was asked about and ruled out").toHaveLength(1);
+      await expect(ownRow.getByRole("button", { name: `Edit ${PLAYER}`, exact: true })).toBeVisible();
+      await expect(pinkTile(page, "Team")).toHaveCount(1);
+      await expect(tidyTile(page, "Team").getByRole("button", { name: "No team on this card", exact: true })).toBeVisible();
+    }
+    const ruledOutCard = RULED_OUT.find((c) => c.number === number);
+    if (ruledOutCard !== undefined) {
+      // Ruled out here: the row says so, nothing on the Player tile is left, and the card asks
+      // for no team (it carries the listing's Cincinnati Reds or No Team).
+      const row = tidyTile(page, "Player").getByRole("group", { name: `Player ${ruledOutCard.printed}`, exact: true });
+      await expect(row.getByText(`${ruledOutCard.printed} is not a player.`, { exact: true })).toBeVisible();
+      await expect(pinkTile(page, "Player")).toHaveCount(0);
+      await expect(pinkTile(page, "Team")).toHaveCount(0);
+      if (number === RULED_OUT[0].number) {
+        await expectAccessible(page, { within: walk, label: "Tidy Up walk, a caption ruled out as not a player" });
+      }
+    }
+
+    // Settled into one state: the status line says what is still pink, or Save & next is usable.
+    const save = tidyFooterButton(page, "saveAndNext", { usable: true });
+    await expect(save.or(mustFixLine(page)).first()).toBeVisible();
+    if (await save.isVisible()) {
+      await saveAndNext(page);
+      continue;
+    }
+    const pink: TidyTileName[] = [];
+    for (const name of BLOCKING) if ((await pinkTile(page, name).count()) > 0) pink.push(name);
+    skipped.push({ number, pink });
+    await skipCard(page);
   }
-  await expect(namesDone).toBeVisible();
-  await expect(personSkip(page)).toHaveCount(0);
+  await expect(tidyFooterButton(page, "done"), `the walk did not end within ${MAX_CARDS} cards`).toBeVisible();
+
+  // Each caption was ruled out on a card that prints it; #1 is the one card left asking for a team.
   for (const { printed } of RULED_OUT) {
-    expect(skipped, `"${printed}" was ruled out on its own step`).toContain(printed);
+    expect(ruledOut, `"${printed}" was ruled out on the walk`).toContain(printed);
   }
-
-  // "Cards with no team": only #1, under its own Pete Rose. No ruled-out card
-  // is filed under the stored player (each carries a team claim, so none is
-  // listed at all).
-  await expect(wizard.getByText("Cards with no team", { exact: true })).toBeVisible();
-  await expect(wizard.getByText(`#1 · ${PLAYER}`, { exact: true })).toBeVisible();
-  await expect(wizard.getByRole("radiogroup", { name: `Team for ${PLAYER}` })).toBeVisible();
-  for (const { number } of RULED_OUT) {
-    await expect(wizard.getByText(new RegExp(`^#${number} · `))).toHaveCount(0);
+  expect(ruledOut, "Pete Rose is never ruled out").not.toContain(PLAYER);
+  expect(skipped.find((c) => c.number === HIGH_SCHOOL)?.pink, "#1 was skipped asking for its team").toEqual(["Team"]);
+  // J3: no card was left with a name or a disagreement pink (a teamless card's Team tile has no
+  // name row left, so it never holds the build).
+  for (const { number, pink } of skipped) {
+    expect(pink.filter((t) => t !== "Team"), `#${number} was skipped with a name or disagreement pink`).toEqual([]);
   }
-  await expectAccessible(page, { within: wizard, label: "Entity review wizard, cards with no team after the ruled-out names" });
-  await advanceToSave(page);
-  await expect(wizard.getByRole("heading", { name: "Save 75 cards?" })).toBeVisible();
-  await confirmSaveButton(page).click();
-  await expect(page.getByText(/Saved 75 cards/)).toBeVisible();
-  await expect(wizard).toBeHidden();
+  if (linkedByHand.length > 0) {
+    test.info().annotations.push({ type: "pete-rose-linked-on-the-walk", description: linkedByHand.map((n) => `#${n}`).join(", ") });
+  }
+  await finishTidyWalk(page);
   // A fresh load of the checklist, as a rerun finds it.
   await drillToBaseVariant(page, env, BUILD);
 }
@@ -236,7 +296,7 @@ test(
     await expect(section.getByRole("button", { name: E.stopCameo(CAMEO), exact: true })).toBeVisible();
 
     // --- The ruled-out cards: no player, the cameo ---------------------------
-    for (const { number, printed, title } of RULED_OUT) {
+    for (const { number, printed, title, leftOut } of RULED_OUT) {
       const drawer = await openCardDrawer(page, number);
       const description = cardDescription(drawer);
       // The card has loaded (its description, written at the commit, names the
@@ -250,10 +310,12 @@ test(
       // ...and no player: the stored Pete Rose was held back.
       await expect(drawer.getByRole("button", { name: "Add player", exact: true })).toBeVisible();
       await expect(anyPlayerChip(drawer)).toHaveCount(0);
-      // The committed title, exact: no player between the set and the number,
-      // only the cameo (a title names it while it has room, and drops it first
-      // when over 80: NEO-528 + NEO-535).
+      // The title the walk regenerated, exact: the card's name, then the cameo
+      // while it has room (cut first when over 80, and the note names it).
       await expect(cardTitle(drawer)).toHaveValue(title);
+      const leftOutNote = drawer.getByText(/^Left out to fit: /);
+      if (leftOut === undefined) await expect(leftOutNote).toHaveCount(0);
+      else await expect(leftOutNote).toHaveText(`Left out to fit: ${leftOut}`);
       if (number === RULED_OUT[0].number) {
         await expectAccessible(page, { within: drawer, label: "Card drawer, a ruled-out card with no player and a cameo" });
       }
@@ -266,8 +328,7 @@ test(
     await expect(playerChip(own, PLAYER)).toBeVisible();
     await expect(anyPlayerChip(own)).toHaveCount(1);
     await expect(cameoChip(own, CAMEO)).toBeVisible();
-    // NEO-609: 84 characters with "Base", the first word cut: 79 without it,
-    // and nothing else goes.
+    // NEO-645 C7: 79 characters once "Base" (84 with it, the first word cut) is out; nothing else cut.
     await expect(cardTitle(own)).toHaveValue(
       `${SET_TITLE} ${PLAYER} & ${CAMEO} #${OWN} Cincinnati Reds Baseball`,
     );

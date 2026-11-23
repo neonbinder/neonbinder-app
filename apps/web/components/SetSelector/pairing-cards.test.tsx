@@ -195,7 +195,7 @@ describe("NEO-335 — BSC's raw team value rides to the commit", () => {
   });
 });
 
-describe("NEO-591 — the numbers each source printed ride to the dialog, not to the commit", () => {
+describe("NEO-591 — the numbers each source printed ride to the dialog and on to the commit (NEO-645)", () => {
   const PRINTED = { bsc: "OV-ANFI", checklist: "NNO" };
 
   test("carried onto the card when the server sent them", () => {
@@ -208,11 +208,11 @@ describe("NEO-591 — the numbers each source printed ride to the dialog, not to
     expect("sourceNumbers" in candidateToPairingCard(FULL)).toBe(false);
   });
 
-  test("the committable form (the no-dialog auto-keep path) drops them", () => {
+  test("the committable form (the no-dialog auto-keep path) keeps them: the new row stores them", () => {
     const [card] = candidatesToPairingCards([
       { ...FULL, bucket: "bscOnly", sourceNumbers: PRINTED },
     ]);
-    expect("sourceNumbers" in card).toBe(false);
+    expect(card.sourceNumbers).toEqual(PRINTED);
   });
 });
 

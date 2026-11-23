@@ -52,6 +52,7 @@ function baseCard(overrides: Partial<NewCardRow> = {}): NewCardRow {
     pendingTeamNames: [],
     sortOrder: 0,
     playerNames: ["Ken Griffey Jr."],
+    printedNames: [],
     ...overrides,
   };
 }
@@ -599,6 +600,30 @@ describe("buildCardRowForInsert — a parallel copy's parallelName (NEO-321)", (
   });
 });
 
+describe("buildCardRowForInsert — the card's own name is in its born title (NEO-645)", () => {
+  test("a card named for something that is not a player carries the name; a placeholder or the player's own name changes nothing", () => {
+    const set = baseSet();
+    const player = buildCardRowForInsert(baseCard(), set, 1).row.listingTitle;
+    const named = buildCardRowForInsert(
+      baseCard({ cardName: "Team Card", playerNames: [] }),
+      set,
+      1,
+    ).row.listingTitle;
+    expect(named).toContain("Team Card");
+    const placeholder = buildCardRowForInsert(
+      baseCard({ cardName: "Card #10", playerNames: [] }),
+      set,
+      1,
+    ).row.listingTitle;
+    expect(placeholder).not.toContain("Card #");
+    // "Ken Griffey Jr." is the player's own name: the title says it once.
+    expect(player.match(/Ken Griffey Jr\./g)).toHaveLength(1);
+    const own = buildCardRowForInsert(baseCard({ cardName: "It Takes Two CPC" }), set, 1).row
+      .listingTitle;
+    expect(own).toContain("It Takes Two CPC Ken Griffey Jr.");
+  });
+});
+
 describe("buildCardRowForInsert — a card committed on a parallel leaf names the leaf (NEO-535)", () => {
   // The leaf's snapshot inherited "Base" from a Parallel type; the chain says
   // the leaf IS a parallel (`parallelLeafValue`, set only on that role).
@@ -611,9 +636,9 @@ describe("buildCardRowForInsert — a card committed on a parallel leaf names th
   });
 
   test("the commit (no parallelName passed) is born like a parallel copy", () => {
-    const committed = buildCardRowForInsert(baseCard({ cardNumber: "BA-3", playerNames: ["Murakami"] }), leafSet, 1);
+    const committed = buildCardRowForInsert(baseCard({ cardNumber: "BA-3", cardName: "Murakami", playerNames: ["Murakami"] }), leafSet, 1);
     const copied = buildCardRowForInsert(
-      baseCard({ cardNumber: "BA-3", playerNames: ["Murakami"], parallelName: "Anime Red Refractors" }),
+      baseCard({ cardNumber: "BA-3", cardName: "Murakami", playerNames: ["Murakami"], parallelName: "Anime Red Refractors" }),
       leafSet,
       1,
     );

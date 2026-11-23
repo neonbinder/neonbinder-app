@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useQuery, useAction, useMutation, useConvex } from "convex/react";
 import { userFacingMessage } from "../../lib/errors/user-facing-message";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
@@ -11,43 +11,14 @@ import { keptCollectedNote } from "@/lib/collection/collectors";
 import CardDetailPanel from "./CardDetailPanel";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import NeonButton from "../modules/NeonButton";
-import EntityReviewWizard from "./EntityReviewWizard";
 // NEO-345: the stored leaf's "how are these autographs signed?" line.
-import { AutographFormatPrompt } from "./AutographFormatStep";
+import { AutographFormatPrompt } from "./AutographFormatPrompt";
 import {
   asAutographFormat,
-  autographCardIndexes,
   carriesAutograph,
   type AutographFormat,
-} from "./entity-review-steps";
-// NEO-335 Phase 2: the "Card titles" step's answers, put on the cards at commit.
-import {
-  cardsNeedingTitleReview,
-  withTitleAnswer,
-  type TitleCommitFields,
-} from "./card-titles";
-import type { TitleContext } from "../../convex/features/listingInputs";
-// NEO-335: the teams step's answers, put on the cards at commit.
-import {
-  defaultPlayerPositions,
-  sameTeamAnswers,
-  setDefaultSettlesNewRow,
-  setTeamDefaultKind,
-  storedPeople,
-  teamlessCardIndexes,
-  withTeamAnswer,
-  type DefaultPlayerWire,
-  type TeamAnswer,
-} from "./teams-on-cards";
-import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
-// NEO-574: the "Career check" step's answers, put on the cards at commit.
-import {
-  applyCareerCardEdit,
-  careerContextAsks,
-  sameCareerFields,
-  type CareerCommitFields,
-  type CareerContext,
-} from "./career-check";
+} from "./autograph-format";
+import { setTeamDefaultKind } from "./teams-on-cards";
 import CardPairingModal, {
   type PairingCard,
   type PairingConflicts,
@@ -64,15 +35,27 @@ import ChecklistSourceFilter, {
   type SourceFilter,
 } from "./ChecklistSourceFilter";
 import CrossListingImportModal from "./CrossListingImportModal";
-import CardAttentionWalker from "./CardAttentionWalker";
+// NEO-645: Tidy Up, one card at a time (replaces the entity review wizard and
+// the attention walker).
+import { faceHeaderFromChain } from "./tidy/face-header";
+import TidyUpWalk from "./tidy/TidyUpWalk";
+import { useTidyWalkUrl } from "./tidy/useTidyWalkUrl";
+import { resetSitting } from "./tidy/walk-order";
 // NEO-497: the tidy-up dialogs name the set ("Tidy up 2024 Topps Chrome").
 import { tidyUpTitleFromChain } from "./WizardChrome";
-import SkippedNamesPanel from "./SkippedNamesPanel";
 import {
+  blocksParallelBuild,
+  deriveCardAttention,
   isAwaitingTeamLookup,
-  needsAttention,
+  needsTidyUp,
   teamLookupStatusLine,
 } from "./card-attention";
+import {
+  FETCHING_LABEL,
+  FETCH_FROM_MARKETPLACES_LABEL,
+  REFRESH_LABEL,
+  SAVING_LABEL,
+} from "./fetch-labels";
 import ChecklistSearch, { searchEmptyText } from "./ChecklistSearch";
 import {
   cardSearchHaystack,
@@ -137,13 +120,7 @@ import {
 import { tallyChecklistTeams } from "@/lib/checklists/checklist-teams-tally";
 import { WaitingOnMarketplaceRun } from "../modules/WaitingOnMarketplace";
 import { mintWaitKey } from "@/lib/marketplace/wait-key";
-import {
-  applyChecklistChoice,
-  checklistConflictIndexes,
-  type ChecklistChoice,
-  type ChecklistConflict,
-  type TeamLookupOutcome,
-} from "./checklist-conflict";
+import type { ChecklistConflict, TeamLookupOutcome } from "./checklist-conflict";
 
 type CardChecklistProps = {
   variantId: GenericId<"selectorOptions">;
@@ -184,17 +161,17 @@ type CardChecklistProps = {
 };
 
 /**
- * The CONFIRMED card set, held between `resolveChecklistEntities` (action) and
- * `commitCardChecklist` (mutation) so the operator can review new
- * players/teams in EntityReviewWizard before the entities are persisted.
+ * The CONFIRMED card set, handed from `resolveChecklistEntities` (action) to
+ * `commitCardChecklist` (action).
  *
  * These are the cards the operator paired and kept, handed over by
- * `CardPairingModal` — not the fetch's output. (It used to be the fetch's
- * output, hence the name; the fetch no longer returns cards at all.)
+ * `CardPairingModal` — not the fetch's output. NEO-645: there is no review
+ * between the two any more. Every name the gate could not settle is saved on
+ * the card as a pending name and answered in Tidy Up afterwards, one card at a
+ * time; nothing is held here but the cards themselves.
  *
- * `batchId` is present whenever there are unknowns — it's what the wizard
- * subscribes to (entityReviewQueue.getBatch) and what commitCardChecklist
- * reads back to resolve each name's create/link decision.
+ * `batchId` is whatever `resolveChecklistEntities` answered; the commit reads
+ * it back where it still needs it.
  */
 type FetchPreview = {
   sportId: Id<"selectorOptions">;
@@ -220,10 +197,9 @@ type FetchPreview = {
     teamLookup?: TeamLookupOutcome;
     /**
      * NEO-478 — the operator's published checklist and the marketplace
-     * disagree about this card's players or teams. Held while the preview is
-     * (the wizard's "Checklist says otherwise" step asks about it); the
-     * answers ride in `checklistChoices` and `runCommit` applies them, so the
-     * commit never sees a card still carrying one.
+     * disagree about this card's players or teams. NEO-645: stored on the card
+     * as a source disagreement (`sourceDisagreements`) and settled in Tidy Up's
+     * "Sources disagree" tile; the commit no longer refuses it.
      */
     checklistConflict?: ChecklistConflict;
     /**
@@ -231,17 +207,6 @@ type FetchPreview = {
      * commit's "Listed as:" hint is what BSC listed (`PairingCard.rawTeamName`).
      */
     rawTeamName?: string;
-    /**
-     * NEO-335 — the operator's answer from the wizard's "K cards have no team
-     * yet". Never set on `cards` while the preview is held — they ride in
-     * `teamAnswers` below and `runCommit` puts them on (`withTeamAnswer`), so
-     * the section can keep telling which cards arrived teamless. Typed here
-     * because this is the commit's wire shape.
-     */
-    teamIds?: Array<Id<"teams">>;
-    /** NEO-335 — `teams` holds the operator's answer, not the printed strings. */
-    teamsAnswered?: true;
-    teamNone?: true;
     // NEO-137: WIRE shape from fetchCardChecklist — ref plus the marketplace
     // SET it came from. commitCardChecklist resolves setId to a slot on this
     // card's parent row.
@@ -265,103 +230,6 @@ type FetchPreview = {
   decisions: Array<{ applyFields?: string[]; baseVersion?: number }>;
   /** Rows the operator explicitly ticked for deletion in the review. */
   operatorDeleteIds: Array<Id<"cardChecklist">>;
-  unknownPlayers: string[];
-  unknownTeams: string[];
-  /**
-   * NEO-335 — the wizard's team answers, POSITIONALLY ALIGNED with `cards`
-   * (undefined = none). Client state only, the same way `decisions` is: zipped
-   * onto the cards by `runCommit` and forgotten with the preview. Wizard
-   * answers are never stored anywhere else.
-   */
-  teamAnswers?: Array<TeamAnswer | undefined>;
-  /**
-   * NEO-478 — the wizard's "Checklist says otherwise" answers, POSITIONALLY
-   * ALIGNED with `cards` (undefined = no disagreement, or unanswered). Client
-   * state only: `runCommit` applies each one to its card
-   * (`applyChecklistChoice`) and they are forgotten with the preview.
-   */
-  checklistChoices?: Array<ChecklistChoice | undefined>;
-  /**
-   * NEO-335 — no names to review, but some cards would save with no team or
-   * (Phase 2 D7) some new cards' titles need a look, so the wizard opens past
-   * the names, on its teams or titles step (`teamsOnly`, the "no names" entry).
-   */
-  teamsOnly?: boolean;
-  /**
-   * NEO-335 — positions in `cards` whose team is already settled, so the
-   * wizard does not ask about them: a re-synced stored row that carries a
-   * team, an operator's "no team", or a team name still pending review; and,
-   * under a node with a set-level team, a card that will be a NEW row (the
-   * commit gives it that team). See `resolveAndCommit`.
-   */
-  settledTeamIndexes?: number[];
-  /**
-   * NEO-335 Phase 2 — `resolveChecklistEntities`' `titleContext`: what the
-   * wizard's "Card titles" step needs to title a NEW card the way the insert
-   * will. Absent on an older server answer: no titles step.
-   */
-  titleContext?: TitleContext;
-  /** NEO-335 Phase 2 — positions in `cards` that re-sync a stored row (the diff's `existingId`). */
-  existingIndexes?: number[];
-  /**
-   * NEO-335 — positions in `cards` that re-sync a stored row with NO players
-   * which this save keeps that way (no accepted `playerIds` change), so the
-   * wizard's teams step files them under "Cards with no players" whatever
-   * they print. See `resolveAndCommit`.
-   */
-  playerlessIndexes?: number[];
-  /**
-   * NEO-528 — the leaf's "Player on every card" and the positions in `cards`
-   * of the NEW rows the commit gives them: those whose listing names nobody
-   * (`listingNamesAPlayer`, see `resolveAndCommit`). The wizard's teams
-   * step files those cards under that player, by id, never "Cards with no
-   * players". Absent when the leaf has no such player.
-   */
-  defaultPlayer?: DefaultPlayerWire;
-  /**
-   * NEO-426 — `resolveChecklistEntities`' `teamlessPlayerNames`: printed
-   * player names that resolved to a known player whose HOME sport has no
-   * teams. A card every one of whose people is such a player (or a player the
-   * wizard creates or links in a teamless sport) is not asked about in the
-   * teams step: the commit saves it as "No team". Absent on an older server,
-   * or when no sport is flagged.
-   */
-  teamlessPlayerNames?: string[];
-  /**
-   * NEO-335 Phase 2 — the titles step's answers, POSITIONALLY ALIGNED with
-   * `cards`, as `titleAnswersForCommit` decided them. Absent unless the step
-   * was part of the sitting (the wizard reports nothing otherwise). Client
-   * state only, zipped on by `runCommit` like `teamAnswers`.
-   */
-  titleAnswers?: Array<TitleCommitFields | undefined>;
-  /**
-   * NEO-335 title rules — the short name for titles the Card titles step
-   * collected, sent as the commit's batch-level `listingShortName`. Absent
-   * unless the step was shown, asked for one, and the operator typed one or
-   * took the suggestion. Client state only.
-   */
-  listingShortName?: string;
-  /**
-   * NEO-345 — the wizard's "Autographed cards" answer, sent as the commit's
-   * batch-level `autographFormat`: the server writes it onto the leaf before
-   * the first insert, so new AU cards are born with it. Absent unless the
-   * step was part of the sitting and answered. Client state only.
-   */
-  autographFormat?: AutographFormat;
-  /**
-   * NEO-574 — `resolveChecklistEntities`' `careerContext`: the set's year and
-   * what the gate resolved and judged, for the wizard's "Career check" step.
-   * Absent on an older server answer, or a set with no year: no career step.
-   */
-  careerContext?: CareerContext;
-  /**
-   * NEO-574 — the career step's answers: stints to add and per-card edits
-   * (`playerIdByName`, `teamIds`, a team string dropped), the edits
-   * POSITIONALLY ALIGNED with `cards`. Client state only: `runCommit` puts
-   * them on the cards and sends the stints, and they are forgotten with the
-   * preview.
-   */
-  careerFields?: CareerCommitFields;
 };
 
 /** The confirmed cards, waiting on the content-diff review. */
@@ -369,39 +237,6 @@ type PendingReview = {
   sportId: Id<"selectorOptions">;
   cards: PairingCard[];
   diff: SyncDiff;
-};
-
-/**
- * The sync banner's line while names wait in the review wizard.
- *
- * NEO-335 Phase 2 (Jason, 2026-10-10): one count, no per-type counts. The
- * wizard's header shows progress over every screen; the banner only has to
- * say that names are holding the save, and how many. New players, new teams
- * and NEO-332's same-name picks are all names that need a look, so they are
- * one number: every unknown player (an ambiguous one included — it is in
- * `unknownPlayers` too) plus every unknown team.
- */
-export const entityConfirmationMessage = (
-  unknownPlayers: readonly string[],
-  unknownTeams: readonly string[],
-  /**
-   * NEO-424 — names the batch linked on its own (set history, the Hall of
-   * Fame tie-break). They hold the save too: every one is shown in the
-   * wizard's Decided list for the operator to keep or Change. Only worded
-   * when nothing else is owed; beside names that need a look, the wizard
-   * says the rest.
-   */
-  autoLinked = 0,
-): string => {
-  const names = unknownPlayers.length + unknownTeams.length;
-  if (names === 0 && autoLinked > 0) {
-    return autoLinked === 1
-      ? "1 name was linked for you. Give it a look before this saves."
-      : `${autoLinked} names were linked for you. Give them a look before this saves.`;
-  }
-  return names === 1
-    ? "1 name needs a look before this saves."
-    : `${names} names need a look before this saves.`;
 };
 
 /**
@@ -461,8 +296,8 @@ const joinSourceNames = (sources: readonly FetchSource[]): string => {
  * operator knows about did not happen, so the line says why. The count is what
  * was handed to the commit, and it may stand here because nothing can
  * contradict it yet; the line after the save is `savedReasonMessage`, which
- * carries no count. "Back to Match Cards" in the wizard that follows reopens the
- * dialog that was skipped.
+ * carries no count. A skipped run has no dialog to come back to: the cards
+ * save, and Tidy Up's walk opens for any that need a person (NEO-645).
  */
 export const matchedKeptMessage = (
   sources: readonly FetchSource[],
@@ -807,8 +642,16 @@ const NO_HAYSTACK: CardSearchHaystack = {
 export const QUICK_ADD_NO_TEAM_FROM_SET_HINT =
   "From the set. Pick a team, or press No Team to turn it off.";
 
-function needsYouLabel(count: number): string {
-  return count === 1 ? "1 needs you" : `${count} need you`;
+/**
+ * "5 need you" with nothing to fix; "5 need you, 2 to fix" when some of them
+ * block listing (pink). The pill takes the colour of the worst level present
+ * (pink when any card is to fix, otherwise blue), and the text, which is also
+ * its accessible name, carries the split. "N need you" is always the
+ * start, so a reader and a spec find the count first.
+ */
+export function needsYouLabel(count: number, toFix = 0): string {
+  const head = count === 1 ? "1 needs you" : `${count} need you`;
+  return toFix > 0 ? `${head}, ${toFix} to fix` : head;
 }
 
 /**
@@ -816,23 +659,6 @@ function needsYouLabel(count: number): string {
  * the build ticker's ("Fix 12 card titles"), which can be on the same page.
  */
 export const FIX_CARD_TITLES_LABEL = "Fix card titles";
-
-/**
- * NEO-335 — is any of a stored row's pending names one the set's skip records
- * have NOT ruled out? A pending name that IS a skipped name is not waiting on
- * anything — the operator already answered it — so it neither teams a row nor
- * puts a person on it. (A save before the fix stamped such names; the next
- * commit retires them, see the prelude's `isStoredSkip`.)
- */
-function pendingBeyondSkips(
-  pending: readonly string[] | undefined,
-  skipped: readonly string[],
-): boolean {
-  if (!pending || pending.length === 0) return false;
-  if (skipped.length === 0) return true;
-  const ruled = new Set(skipped.map((n) => normalizeEntityName(n.trim())));
-  return pending.some((n) => !ruled.has(normalizeEntityName(n.trim())));
-}
 
 export default function CardChecklist({
   variantId,
@@ -845,77 +671,6 @@ export default function CardChecklist({
   const cards = useQuery(api.selectorOptions.getCardChecklist, {
     selectorOptionId: variantId,
   });
-  /**
-   * NEO-335 — the names this set's skip records rule "not a person" / "not a
-   * team". The gate drops them before queuing anything, so on a re-sync no
-   * review row says so: the wizard's teams step needs the player half to keep
-   * them off the player lines, and both halves decide which cards are asked
-   * about at all. The same subscription `SkippedNamesPanel` holds (Convex
-   * dedupes it).
-   */
-  const skipRecords = useQuery(api.entityReviewSkips.listForSet, {
-    selectorOptionId: variantId,
-  });
-  const skippedPlayerNames = useMemo(
-    () => (skipRecords ?? []).filter((s) => s.kind === "player").map((s) => s.name),
-    [skipRecords],
-  );
-  /**
-   * The team half. Without it a re-synced card printing only a skipped team
-   * name looks teamed (no review row, so "resolved before the wizard opened"),
-   * and the save goes ahead without its teams step.
-   */
-  const skippedTeamNames = useMemo(
-    () => (skipRecords ?? []).filter((s) => s.kind === "team").map((s) => s.name),
-    [skipRecords],
-  );
-  /**
-   * NEO-335 — stored rows whose team is already answered for: a team, an
-   * operator's "no team", or a team NAME still pending review. A re-sync
-   * keeps all three, so the card matching one is not asked about in the
-   * wizard's teams section. A pending name is a team, waiting: attention
-   * counts the row as teamed, the commit never stamps "no team" over it, and
-   * the attention walker's unreviewed-name step is where it is answered —
-   * asking here would put a question whose likeliest answer the save ignores.
-   * Unless the pending name is one the set's skip records rule "not a team":
-   * that is no team at all.
-   */
-  const storedTeamedCardIds = useMemo(
-    () =>
-      new Set<string>(
-        (cards ?? [])
-          .filter(
-            (row) =>
-              (row.teamOnCardIds?.length ?? 0) > 0 ||
-              row.teamNoneConfirmedAt !== undefined ||
-              pendingBeyondSkips(row.pendingTeamNames, skippedTeamNames),
-          )
-          .map((row) => row._id),
-      ),
-    [cards, skippedTeamNames],
-  );
-  /**
-   * NEO-335 — stored rows with nobody on them: no player links, and no
-   * player name still waiting to become one (`pendingPlayerNames`, which the
-   * attention walker answers — a skipped name is not waiting). A re-sync that
-   * does not accept a players change keeps that, so the teams step must not
-   * file such a card under whatever name it prints — most often a name the
-   * operator skipped as "not a person" in the first save, which the review
-   * rows of a later sitting never carry.
-   */
-  const storedPlayerlessCardIds = useMemo(
-    () =>
-      new Set<string>(
-        (cards ?? [])
-          .filter(
-            (row) =>
-              (row.playerIds?.length ?? 0) === 0 &&
-              !pendingBeyondSkips(row.pendingPlayerNames, skippedPlayerNames),
-          )
-          .map((row) => row._id),
-      ),
-    [cards, skippedPlayerNames],
-  );
   // Names the set in the pairing dialog's header. That dialog is modal and can
   // be hundreds of rows long — without this it says only "Match Cards" and an
   // operator who steps away has no way to tell which set they came back to.
@@ -933,11 +688,12 @@ export default function CardChecklist({
     id: variantId,
   });
   /**
-   * NEO-497 — "Tidy up 2024 Topps Chrome": the tidy-up dialogs (the
-   * pre-save wizard and the post-save walker) name the set they are tidying.
+   * NEO-497 — "Tidy up 2024 Topps Chrome": the Tidy Up walk names the
+   * set it is tidying.
    * The chain includes the leaf itself; "Tidy up this set" while it loads.
    */
   const tidyTitle = useMemo(() => tidyUpTitleFromChain(ancestorChain), [ancestorChain]);
+  const faceHeader = useMemo(() => faceHeaderFromChain(ancestorChain), [ancestorChain]);
   /**
    * NEO-345 — how this leaf's autographs are signed, when somebody has said.
    * NB data on the leaf (`features.autographFormat`); no marketplace knows.
@@ -994,17 +750,14 @@ export default function CardChecklist({
    * change however long it waited. A ref updated from an effect is the value
    * that does.
    */
-  /** The one-sided run's "Kept all N cards …" sentence, for the wizard notice. */
-  const soloKeptRef = useRef<string | null>(null);
   /**
    * NEO-640 — what the "Saved N cards." line needs to say why no Match Cards
    * came up (`savedReasonMessage`): the sources the skipped run fetched from,
    * and the paused sides. A run that skipped Match Cards and has nothing for
-   * the wizard to ask commits within a frame, and the saved line replaces the
-   * one that said why no dialog appeared; it carries the reason on, right
-   * after the count. Spent by the commit that lands (a failed one leaves it
-   * for the retry), and dropped when the operator goes back to Match Cards:
-   * that commit is no longer the run that was skipped.
+   * the operator to answer commits within a frame, and the saved line
+   * replaces the one that said why no dialog appeared; it carries the reason
+   * on, right after the count. Spent by the commit that lands (a failed one
+   * leaves it for the retry); a new Sync clears it.
    */
   const skipReasonRef = useRef<{
     sources: FetchSource[];
@@ -1012,7 +765,7 @@ export default function CardChecklist({
   } | null>(null);
   /**
    * NEO-330 — this run's teams missed the wait (see `TEAMS_LATE_NOTICE`). Read
-   * by the wizard notice and the "Saved N cards." line, so the operator is told
+   * by the sync notice and the "Saved N cards." line, so the operator is told
    * on the line that is on screen when the cards land, not only on one a
    * second later replaces.
    */
@@ -1036,7 +789,7 @@ export default function CardChecklist({
   const addCustomCard = useMutation(api.selectorOptions.addCustomCard);
   /**
    * NEO-203 — the content diff is fetched ONCE, imperatively, between pairing
-   * and the entity wizard.
+   * and the commit.
    *
    * A `useQuery` subscription would be wrong twice over: its argument is the
    * whole confirmed card array (a new subscription key on every keystroke of
@@ -1310,27 +1063,6 @@ export default function CardChecklist({
   // Unique per-field marker class so Maestro's inputText targets the tapped
   // add-card field, not the first input (see useFieldTestClass).
   const fieldClass = useFieldTestClass();
-  const [pendingPreview, setPendingPreview] = useState<FetchPreview | null>(
-    null,
-  );
-  /**
-   * NEO-221 (D10) — the commit's failure message, for the wizard's final step.
-   *
-   * The banner already says "Commit failed: …", but the banner is BEHIND the
-   * wizard's overlay. Before this, `handleWizardConfirm` cleared
-   * `pendingPreview` regardless of outcome, so a failed commit closed the
-   * wizard, discarded the reviewed set and left the operator reading a failure
-   * they could no longer act on — the whole review had to be done again. The
-   * wizard now stays open on a failure and renders this, with Retry and Back.
-   *
-   * Written by `runCommit` itself rather than by its caller: it is the only
-   * place that has the error, and `userFacingMessage` has already unwrapped
-   * the phase label a chunked commit fails with ("chunk 2/3 (cards 151-300 of
-   * 375)"), which is exactly what makes a retry decision possible. Set on the
-   * non-wizard path too, where nothing renders it — harmless, and cheaper than
-   * a second code path that would only differ in whether it remembers.
-   */
-  const [commitError, setCommitError] = useState<string | null>(null);
   // NEO-203 — confirmed cards parked in front of the content-diff review.
   const [pendingReview, setPendingReview] = useState<PendingReview | null>(
     null,
@@ -1349,27 +1081,12 @@ export default function CardChecklist({
    * every team in — `streamSettled`, NEO-341). This one outlives the fetch: the session stays alive until the operator
    * confirms and commits, or aborts.
    *
-   * NEO-221 (D9) widened this from a boolean to three states, so the wizard
-   * can hand the operator BACK to matching:
-   *
    *   - `"closed"`   — no session. `streamedPairing` is null and the dialog is
-   *                    unmounted.
+   *                    unmounted. Confirming the pairing closes it too: what
+   *                    the operator decided travels in the confirmed cards.
    *   - `"review"`   — the operator is pairing. The dialog is open.
-   *   - `"parked"`   — they confirmed the pairing and are now downstream (the
-   *                    content-diff review, the entity wizard, the commit).
-   *                    `streamedPairing` stays non-null so `CardPairingModal`
-   *                    stays MOUNTED with `isOpen={false}`, and its `if
-   *                    (!isOpen) return null` sits below all of its hooks —
-   *                    which is what makes every link, keep and rename in its
-   *                    reducer survive a trip into the wizard and back.
-   *
-   * Unmounting it instead (what `setPairingOpen(false)` used to do) threw that
-   * reducer away, so "Back to Match Cards" could only ever have meant "start the
-   * pairing over".
    */
-  const [pairingPhase, setPairingPhase] = useState<
-    "closed" | "review" | "parked"
-  >("closed");
+  const [pairingPhase, setPairingPhase] = useState<"closed" | "review">("closed");
   /**
    * NEO-221 — which FETCH the mounted pairing modal belongs to. Bumped once
    * per `handleSync`, and used for nothing but the modal's React `key`.
@@ -1436,15 +1153,6 @@ export default function CardChecklist({
   useEffect(() => {
     pairingPhaseRef.current = pairingPhase;
   }, [pairingPhase]);
-  /**
-   * NEO-640 — `pendingPreview`, readable from `runCommit`'s catch for the same
-   * reason: whether the wizard is open is a fact about NOW, not about the
-   * render the failing commit was started from.
-   */
-  const pendingPreviewRef = useRef(pendingPreview);
-  useEffect(() => {
-    pendingPreviewRef.current = pendingPreview;
-  }, [pendingPreview]);
   /**
    * NEO-640 — open Match Cards the moment a visible row of this run's batch
    * needs the operator.
@@ -1518,8 +1226,8 @@ export default function CardChecklist({
   /** The set's year, so the dialog reads a "1995 …" heading line as a title. */
   const setYearValue = ancestorChain?.find((c) => c.level === "year")?.value ?? null;
   /**
-   * NEO-478 — "Teams from your checklist: N of M cards", for this run. A ref
-   * like `soloKeptRef`: every line the run says from the fetch to the save
+   * NEO-478 — "Teams from your checklist: N of M cards", for this run. A ref:
+   * every line the run says from the fetch to the save
    * carries it.
    */
   const checklistTeamsRef = useRef<string | null>(null);
@@ -1595,25 +1303,24 @@ export default function CardChecklist({
   const [searchQuery, setSearchQuery] = useState("");
   const [searchWarm, setSearchWarm] = useState(false);
   /**
-   * NEO-102 — the "needs attention" pass.
-   *
-   * `walkerOpenedByHand` is the ONLY thing that opens the walker: the
-   * operator pressed its one control, the header's amber "N need you" pill
-   * (NEO-335 retired the grid filter chip, the "Fix them one at a time" link
-   * and the post-commit banner's call-to-action in its favour).
-   *
-   * Nothing opens the walker on its own. An earlier revision armed it on a
-   * commit and let a derived `walkerOpen` pop the modal the moment the
-   * background BSC team pass flagged its first row. That is an interruption
-   * the operator never asked for: it lands over whatever they moved on to
-   * (it needed an `activeElement` guard just to avoid stealing focus mid
-   * keystroke), and it broke every flow that commits and then touches the
-   * grid, because the modal's `fixed inset-0` overlay swallowed the next
-   * click. The count is instead advertised REACTIVELY — the header pill reads
-   * `attentionCount` off the live subscription, so rows flagged after the
-   * commit still get announced, without taking the screen.
+   * NEO-645 — Tidy Up's place lives in the URL (`?tidy=`), so Back and a
+   * refresh work. It opens only by hand (the header's "N need you" pill) or
+   * once a commit has landed with cards that need a person; never because a
+   * background lookup flagged a row.
    */
-  const [walkerOpenedByHand, setWalkerOpenedByHand] = useState(false);
+  const tidy = useTidyWalkUrl();
+  const tidyOpen = tidy.location.kind !== "closed";
+  /** A commit landed: open the walk once the live rows say a card needs a person. */
+  const openTidyAfterCommitRef = useRef(false);
+  /** J3: an insert's parallels wait until no card has an unanswered name (`blocksParallelBuild`). */
+  const heldParallelBuildRef = useRef<{
+    id: Id<"selectorOptions">;
+    value: string;
+    committedText: string;
+  } | null>(null);
+  // Bumped when a commit lands, so the effect below runs against the render
+  // that already holds the new rows (the refs above are not render inputs).
+  const [postCommitTick, setPostCommitTick] = useState(0);
   const [showCrossListingModal, setShowCrossListingModal] = useState(false);
 
   // Reset filter + close the detail panel when the variant changes — chips and
@@ -1730,14 +1437,9 @@ export default function CardChecklist({
   /**
    * NEO-221 — end the pairing session for good and bin what it was reviewing.
    *
-   * Every path that leaves the operator with NO dialog on screen has to call
-   * this. Parking (D9) is what made that a rule rather than a nicety: a parked
-   * phase keeps `streamedPairing` non-null, which keeps `CardPairingModal`
-   * mounted and its reducer alive. That is exactly right while the wizard is
-   * up and can offer "Back to Match Cards" — and exactly wrong the moment the
-   * wizard is not, because nothing on screen can then reach the session, its
-   * candidates are never discarded, and the next sync re-shows the same
-   * instance with the previous batch still in it.
+   * Every path that leaves the operator with NO dialog on screen after a
+   * failure has to call this, or the candidates are never discarded and the
+   * next sync starts beside the previous batch.
    *
    * The discard failure is logged, not shown: nothing was saved, the operator
    * has already been told why, and the next fetch's clear-stale step sweeps
@@ -1745,7 +1447,6 @@ export default function CardChecklist({
    */
   const abandonPairingSession = useCallback(() => {
     setPairingPhase("closed");
-    setCommitError(null);
     void discardCandidates({ selectorOptionId: variantId }).catch((error) => {
       console.warn("Failed to discard checklist candidates:", error);
     });
@@ -1767,10 +1468,10 @@ export default function CardChecklist({
   useEffect(() => {
     if (!restoreSyncFocusRef.current) return;
     if (syncing || committing) return;
-    if (pendingReview || pendingPreview || pairingPhase !== "closed") return;
+    if (pendingReview || pairingPhase !== "closed") return;
     restoreSyncFocusRef.current = false;
     syncButtonRef.current?.focus();
-  }, [syncing, committing, pendingReview, pendingPreview, pairingPhase]);
+  }, [syncing, committing, pendingReview, pairingPhase]);
 
   /**
    * a11y (NEO-255) — catch the blur the moment a dialog-less run starts.
@@ -1941,9 +1642,8 @@ export default function CardChecklist({
    * data for cards that never exist.
    */
   const handleSync = async () => {
-    soloKeptRef.current = null;
-    skipReasonRef.current = null;
     teamsLateRef.current = false;
+    skipReasonRef.current = null;
     checklistTeamsRef.current = null;
     // NEO-496: a new run counts its own sources.
     setPairingSources(null);
@@ -2038,7 +1738,6 @@ export default function CardChecklist({
     // failure the previous run left behind, which the wizard would otherwise
     // render on a review that has nothing to do with it.
     setPairingInstance((n) => n + 1);
-    setCommitError(null);
     setSyncMessage(null);
     // NEO-341: a new run has reported nothing yet.
     setSettleTarget(null);
@@ -2060,8 +1759,8 @@ export default function CardChecklist({
       if (abandoned()) return;
       // NEO-640: the fetch is over the moment its promise resolves. The wait
       // for the subscription below is not "fetching", and a Match Cards that
-      // opens after it (or is reopened from the wizard) must not read as
-      // streaming — that would hold its Confirm shut for the whole commit.
+      // opens after it must not read as streaming — that would hold its
+      // Confirm shut for the whole commit.
       setFetchInFlight(false);
       checklistTeamsRef.current = result.success && result.checklistTeams
         ? checklistTeamsLine(result.checklistTeams.matched, result.checklistTeams.total)
@@ -2196,7 +1895,7 @@ export default function CardChecklist({
         ) {
           setSoloFetch(null);
           // Functional, so a dialog the operator has already confirmed out of
-          // (parked) is not pulled back to the front.
+          // is not pulled back to the front.
           setPairingPhase((phase) => (phase === "closed" ? "review" : phase));
           if (streamed.teamsLate) {
             // The wait has ended; unlock Confirm on what the dialog holds
@@ -2210,10 +1909,8 @@ export default function CardChecklist({
         }
         const cards = candidatesToPairingCards(live.cards);
         setSoloFetch(null);
-        // Remembered so the wizard's "N names need a look before this saves."
-        // notice can keep this sentence in front of it: with no dialog, this
-        // line is the only place the operator (and the E2E flow) learns how
-        // many cards the fetch kept, and the wizard opens within a second.
+        // With no dialog, this line is the only place the operator (and the E2E
+        // flow) learns how many cards the fetch kept, until the walk opens.
         const keptSentence =
           serverSources.length === 1
             ? soloKeptMessage(
@@ -2230,22 +1927,20 @@ export default function CardChecklist({
           sources: [...serverSources],
           paused: [...pausedAttached],
         };
-        soloKeptRef.current = withTeamsLine(keptSentence);
         setSyncMessage(
-          [soloKeptRef.current, teamsLateRef.current ? TEAMS_LATE_NOTICE : null]
+          [
+            withTeamsLine(keptSentence),
+            teamsLateRef.current ? TEAMS_LATE_NOTICE : null,
+          ]
             .filter(Boolean)
             .join(" "),
         );
-        // NEO-640: park the skipped session before the commit, so the wizard
-        // has a Match Cards to go BACK to: parking mounts the dialog (closed,
-        // never shown) with every pairing as it stands, and "Back to Match
-        // Cards" opens it. A one-source run has no session — nothing to go
-        // back to — and is left as it was.
-        if (serverSources.length > 1) setPairingPhase("parked");
         // Exactly what Confirm hands back for a screen where nothing needed
         // the operator: the cards, and no conflicts (a single has no second
         // marketplace to disagree with; the predicate admitted no pair that
-        // carries one).
+        // carries one). The same call the dialog's Confirm makes, so a
+        // skipped run commits, gates and opens the walk exactly as a
+        // confirmed one does.
         await handlePairingConfirm({ cards, conflictsByIndex: {} });
         return;
       }
@@ -2360,16 +2055,8 @@ export default function CardChecklist({
       return;
     }
     const sportId = ancestorSportId;
-    // NEO-221 (D9): PARKED, not closed. The dialog leaves the screen either
-    // way, but parking keeps it mounted so its reducer — every link, keep,
-    // rename and name choice the operator just made — is still there if the
-    // wizard hands them back with "Back to Match Cards".
-    //
-    // A functional update rather than a bare set: `handleSync`'s
-    // zero-candidate short-circuit calls this handler with no pairing session
-    // at all (phase is already `"closed"`), and parking a session that never
-    // existed would be a lie the footer could read back.
-    setPairingPhase((phase) => (phase === "review" ? "parked" : phase));
+    // The pairing decisions travel in `result`; the dialog is done.
+    setPairingPhase("closed");
     setCommitting(true);
     try {
       // Nothing incoming means nothing to diff, and — critically — it must NOT
@@ -2408,15 +2095,14 @@ export default function CardChecklist({
           return;
         }
       }
-      await resolveAndCommit(sportId, result.cards, NO_SYNC_DECISIONS, diff);
+      await resolveAndCommit(sportId, result.cards, NO_SYNC_DECISIONS);
     } catch (error) {
       setSyncMessage(
         `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
         "error",
       );
-      // The diff query or entity resolution threw, so no wizard opened and
-      // nothing on screen can reach the session we parked a moment ago. Un-park
-      // it, or it stays mounted with a stale reducer until the tab is closed.
+      // The diff query or entity resolution threw: bin the candidates the
+      // session was reviewing.
       abandonPairingSession();
     } finally {
       setCommitting(false);
@@ -2434,236 +2120,52 @@ export default function CardChecklist({
     sportId: Id<"selectorOptions">,
     cards: PairingCard[],
     review: SyncReviewResult,
-    /** NEO-335 — the content diff these cards were reviewed against, if any. */
-    diff?: SyncDiff,
   ) => {
     const heldBack = new Set(review.heldBackIndices);
     const kept = cards
       .map((card, index) => ({ card, index }))
       .filter(({ index }) => !heldBack.has(index));
-    // NEO-332's `ambiguousPlayers` is not read here any more: the banner
-    // counts every name as one (`entityConfirmationMessage`), and the wizard
-    // finds a same-name row's pick step from the row itself.
-    const {
-      unknownPlayers,
-      unknownTeams,
-      batchId,
-      titleContext,
-      careerContext,
-      autoLinkedCount: autoLinkedWire,
-      teamlessPlayerNames,
-    } = await resolveEntities({
+    // NEO-645: the gate, then the commit, and nothing between. The gate
+    // settles every name it can (an exact single match, set history, Hall of
+    // Fame, the alias rules) and records the rest as name rows; the commit
+    // writes the cards with those names pending. Whatever still needs a
+    // person is answered in Tidy Up afterwards, card by card, so there is no
+    // gate to hold the save.
+    const { batchId } = await resolveEntities({
       selectorOptionId: variantId,
       sportId,
       cards: kept.map(({ card }) => card),
     });
-    // NEO-424 — names the batch linked on its own (set history, the Hall of
-    // Fame tie-break). They are left out of `unknownPlayers`/`unknownTeams`
-    // because nobody has to answer them, but every one must still be SEEN
-    // (and be reversible with Change) in the wizard's Decided list before the
-    // save. Optional on the wire, so an older server reads as none.
-    const autoLinkedCount = autoLinkedWire ?? 0;
-    // NEO-335 — kept positions whose team is already settled, so the wizard
-    // never asks about them:
-    //  - a card that re-syncs a stored row which already carries a team (or
-    //    an operator's "no team", or a pending team name). The commit keeps a
-    //    stored row's answer, so these cannot save teamless.
-    //  - under a node with a set-level team (NEO-277), a card that will be a
-    //    NEW row: the commit gives it that team. Only new rows — the commit
-    //    never defaults a set team onto an EXISTING row, so a re-synced
-    //    teamless row under such a node is still asked about, or it would
-    //    save teamless without the question ever being put.
-    // The diff is what knows which is which (`existingId`); it runs whenever
-    // there are cards, so with no diff there is nothing to place.
-    const existingIdByIndex = new Map(
-      (diff?.cards ?? []).flatMap((c) => (c.existingId ? [[c.index, c.existingId] as const] : [])),
-    );
-    // NEO-556 — under a "No Team" node a new row is settled only when the
-    // commit will stamp it: a BSC card whose lookup has not answered, or
-    // whose listing names a team, is held back and asked about
-    // (`setDefaultSettlesNewRow`, invariant 8).
-    const setDefault = setTeamDefaultKind(variantRow);
-    const settledTeamIndexes = kept.flatMap(({ card, index }, position) => {
-      const existingId = existingIdByIndex.get(index);
-      if (existingId) return storedTeamedCardIds.has(existingId) ? [position] : [];
-      return diff && setDefaultSettlesNewRow(card, setDefault) ? [position] : [];
-    });
-    // NEO-335 Phase 2 — the same `existingId` map: a card that re-syncs a
-    // stored row keeps that row's title, so the titles step never asks.
-    const existingIndexes = kept.flatMap(({ index }, position) =>
-      existingIdByIndex.has(index) ? [position] : [],
-    );
-    // NEO-335 — and the same map for who is on the card: a re-synced row
-    // with nobody on it stays that way unless the operator accepted the
-    // incoming players in the content review (`applyFields`), so the teams
-    // step files it under "Cards with no players" — never under a printed
-    // name the first save ruled "not a person".
-    const playerlessIndexes = kept.flatMap(({ index }, position) => {
-      const existingId = existingIdByIndex.get(index);
-      if (!existingId || !storedPlayerlessCardIds.has(existingId)) return [];
-      return review.applyFieldsByIndex[index]?.includes("playerIds") ? [] : [position];
-    });
-    // NEO-528 — the same, for who is on the card: under a node with a
-    // "Player on every card", a NEW row whose listing names nobody is born
-    // with that player (the commit's insert branch). A card that prints any
-    // name, even one ruled "not a person" or still waiting for review, is
-    // left blank there (`listingNamedPlayer`), so it never joins: the same
-    // `listingNamesAPlayer` test, so the wizard cannot plan a player the save
-    // leaves off (Jason, 2026-11-15). The title context names them
-    // (`setPlayerNames`) and carries their id beside the name (`setPlayerId`),
-    // both resolved by the server the way the commit resolves them (a player
-    // of another sport is dropped there, so never arrives here). Existing
-    // rows are never filled, so they never join. An older server sends no
-    // id: the teams step then files these cards as it always has.
-    const setPlayerName = titleContext?.setPlayerNames?.[0];
-    const setPlayerId = titleContext?.setPlayerId;
-    let defaultPlayer: DefaultPlayerWire | undefined;
-    if (setPlayerName && setPlayerId && diff) {
-      const positions = defaultPlayerPositions(kept, existingIdByIndex);
-      if (positions.length > 0) {
-        defaultPlayer = { playerId: setPlayerId, name: setPlayerName, positions };
-      }
-    }
     const preview: FetchPreview = {
       sportId,
       batchId,
-      settledTeamIndexes,
-      existingIndexes,
-      playerlessIndexes,
-      ...(defaultPlayer ? { defaultPlayer } : {}),
-      ...(titleContext ? { titleContext } : {}),
-      ...(teamlessPlayerNames && teamlessPlayerNames.length > 0 ? { teamlessPlayerNames } : {}),
-      ...(careerContext ? { careerContext } : {}),
       cards: kept.map(({ card }) => card),
       decisions: kept.map(({ index }) => ({
         applyFields: review.applyFieldsByIndex[index],
         baseVersion: review.baseVersionByIndex[index],
       })),
       operatorDeleteIds: review.operatorDeleteIds,
-      unknownPlayers,
-      unknownTeams,
     };
-    // NEO-335 — no names to review is no longer "nothing to ask": a card that
-    // would save with no team gets the wizard's final step, which is the one
-    // place its team can be answered before the save. SportLots-only syncs of
-    // known players land here, and they are most of the teamless cards there
-    // are. With every card teamed or settled (the node's set-level team
-    // covers the NEW ones, see `settledTeamIndexes`) nothing changes: commit
-    // straight away, no dialog. Every name resolved without review on this
-    // path, so the cards are judged against no review rows — the same call
-    // the section itself makes. "Resolved" includes a team name an earlier
-    // save skipped (the gate drops it): it is not a team, so a card printing
-    // only that is teamless and asked about.
-    //
-    // NEO-426 — and a NEW card every one of whose people plays a sport with no
-    // teams is not asked about either: the commit saves it as "No team" (the
-    // server reads the same facts). Every name resolved on this path, so the
-    // fetch's `teamlessPlayerNames` is the whole fact; a sitting left with
-    // nothing to ask commits without the wizard. Re-synced rows ride along as
-    // `existingIndexes` so they are still asked about.
-    //
-    // NEO-424 — and a batch the server linked names in is NOT "no names",
-    // even with nothing left to answer: it opens the full wizard (the else
-    // branch below), whose Save step lists every link with its Change. Keyed
-    // on the count, never on `batchId` alone — NEO-221's "Back to Match Cards"
-    // return trip hands back a batch of the operator's OWN decisions with no
-    // unknowns, and that one must keep committing without a dialog.
-    const noNames =
-      unknownPlayers.length === 0 && unknownTeams.length === 0 && autoLinkedCount === 0;
-    const askTeams =
-      noNames &&
-      teamlessCardIndexes(
-        preview.cards,
-        [],
-        new Set(settledTeamIndexes),
-        storedPeople(undefined, skippedPlayerNames, skippedTeamNames, undefined, {
-          teamlessPlayerNames: preview.teamlessPlayerNames,
-          existingIndexes: preview.existingIndexes,
-        }),
-      ).length > 0;
-    // NEO-335 Phase 2 (D7) — and the same for titles: a NEW card that would be
-    // born with a title the walker flags gets the wizard's "Card titles" step
-    // before the save (Jason: everything pre-save; the walker is only a safety
-    // net). Judged exactly as the step judges it, with no review rows (every
-    // name resolved) and no team answers yet — the wizard recomputes once the
-    // teams step answers. With teamless cards as well, the same entry carries
-    // both steps (teams, titles, save).
-    const askTitles =
-      noNames &&
-      !!titleContext &&
-      cardsNeedingTitleReview(preview.cards, titleContext, undefined, { existingIndexes })
-        .length > 0;
-    // NEO-345 — and the same for the autograph format: a NEW card carrying
-    // "AU" on a leaf that has not said how its autographs are signed gets the
-    // wizard's "Autographed cards" step, whose answer is required. Only once
-    // the leaf row has loaded: an unknown leaf is never asked about, and its
-    // cards then fall to the header prompt after the save.
-    const askAutograph =
-      noNames &&
-      !!variantRow &&
-      !leafAutographFormat &&
-      autographCardIndexes(preview.cards, existingIndexes).length > 0;
-    // NEO-478 — and any card the operator's published checklist disagrees
-    // with ALWAYS opens the wizard: its "Checklist says otherwise" step is
-    // the only place that disagreement is settled (rule 7: never silently),
-    // and the commit refuses a card still carrying one.
-    const askChecklist = checklistConflictIndexes(preview.cards).length > 0;
-    // NEO-574 — and a new card whose team its (existing) player's career does
-    // not show gets the wizard's "Career check" step. With no names to review
-    // every pair is the gate's own to judge (`careerContext.gaps`); a pair it
-    // did not judge is put to the wizard, which reads it.
-    const askCareer =
-      noNames &&
-      careerContextAsks(
-        preview.cards,
-        existingIndexes,
-        careerContext,
-        skippedPlayerNames,
-      );
-    if (noNames && !askTeams && !askTitles && !askAutograph && !askChecklist && !askCareer) {
-      // No wizard on this path — nothing to hold the preview for, and nothing
-      // to render `commitError`. `runCommit` has already put the failure in the
-      // sync banner (`Commit failed: …`), which is the only place an operator
-      // will see it here, so all that is left is to end the parked session.
-      if (!(await runCommit(preview))) {
-        setPairingPhase("closed");
-        setCommitError(null);
-      }
-    } else if (noNames) {
-      // Stash preview; the wizard opens past the names, on its teams step,
-      // its autograph step (NEO-345) or (D7) its titles step. The banner keeps whatever the run already said
-      // ("Kept all N cards from …") — the dialog itself says what is being
-      // asked.
-      setPendingPreview({ ...preview, teamsOnly: true });
-    } else {
-      // Stash preview; the review wizard handles the rest.
-      setPendingPreview(preview);
-      setSyncMessage(
-        [
-          soloKeptRef.current,
-          teamsLateRef.current ? TEAMS_LATE_NOTICE : null,
-          entityConfirmationMessage(unknownPlayers, unknownTeams, autoLinkedCount),
-        ]
-          .filter(Boolean)
-          .join(" "),
-      );
-    }
+    // `runCommit` has already put a failure in the sync banner ("Commit
+    // failed: ..."), the one place an operator reads it on this path; all that
+    // is left is to end the pairing session.
+    if (!(await runCommit(preview))) setPairingPhase("closed");
   };
 
   const handleSyncReviewDone = async (review: SyncReviewResult) => {
     if (!pendingReview) return;
-    const { sportId, cards, diff } = pendingReview;
+    const { sportId, cards } = pendingReview;
     setPendingReview(null);
     setCommitting(true);
     try {
-      await resolveAndCommit(sportId, cards, review, diff);
+      await resolveAndCommit(sportId, cards, review);
     } catch (error) {
       setSyncMessage(
         `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
         "error",
       );
-      // Same as `handlePairingConfirm`'s catch: the content review is gone, no
-      // wizard opened, and the parked session would otherwise be unreachable.
+      // Same as `handlePairingConfirm`'s catch: the content review is gone, so
+      // bin the candidates the session was reviewing.
       abandonPairingSession();
     } finally {
       setCommitting(false);
@@ -2673,14 +2175,11 @@ export default function CardChecklist({
   /**
    * NEO-221 (D10) — answers whether the commit LANDED.
    *
-   * It still swallows the failure into a banner, as it always has; the return
-   * value is what lets `handleWizardConfirm` tell the two outcomes apart. It
-   * used to be indistinguishable, so the caller cleared the reviewed set
-   * either way.
+   * It swallows the failure into the sync banner; the return value is what
+   * lets the caller tell the two outcomes apart.
    */
   const runCommit = async (preview: FetchPreview): Promise<boolean> => {
     setCommitting(true);
-    setCommitError(null);
     try {
       const result = await commitChecklist({
         selectorOptionId: variantId,
@@ -2693,53 +2192,19 @@ export default function CardChecklist({
         //
         // NEO-335: and the wizard's team answer, on the same terms — only on a
         // card the operator (or a pre-fill they saw) answered.
-        cards: preview.cards.map((incoming, i) => {
-          // NEO-478: the operator's pick between their published checklist
-          // and the marketplace goes on first — every later answer was made
-          // against the card as it reads after that pick. A card still
-          // carrying a disagreement is sent as it is; the commit refuses it,
-          // and the wizard's step holds Save until there is none.
-          const choice = preview.checklistChoices?.[i];
-          const checked = choice ? applyChecklistChoice(incoming, choice) : incoming;
-          // NEO-574: the career step's edits (a different player or team) go
-          // on next, ahead of the teams and titles answers made against them.
-          const card = applyCareerCardEdit(checked, preview.careerFields?.cardEdits[i]);
+        cards: preview.cards.map((card, i) => {
           const decision = preview.decisions[i];
-          const reviewed = decision?.applyFields?.length
+          return decision?.applyFields?.length
             ? {
                 ...card,
                 applyFields: decision.applyFields,
                 baseVersion: decision.baseVersion,
               }
             : card;
-          // NEO-335 Phase 2: and the titles step's answer, present only
-          // when that step was part of the sitting.
-          return withTitleAnswer(
-            withTeamAnswer(reviewed, preview.teamAnswers?.[i]),
-            preview.titleAnswers?.[i],
-          );
         }),
         batchId: preview.batchId,
         ...(preview.operatorDeleteIds.length > 0
           ? { operatorDeleteIds: preview.operatorDeleteIds }
-          : {}),
-        // NEO-335: the set's short name for titles, only when the titles
-        // step collected one. The kept titles above were generated with it.
-        ...(preview.listingShortName
-          ? { listingShortName: preview.listingShortName }
-          : {}),
-        // NEO-345: how this leaf's autographs are signed, only when the
-        // wizard's "Autographed cards" step asked and was answered.
-        ...(preview.autographFormat ? { autographFormat: preview.autographFormat } : {}),
-        // NEO-574: the stints the career check added, only when it asked and
-        // the operator said yes to one.
-        ...(preview.careerFields?.stints.length
-          ? { careerStints: preview.careerFields.stints }
-          : {}),
-        // NEO-591: and the players the career check creates (each card that
-        // points at one carries `newPlayerByName`, put on it above).
-        ...(preview.careerFields?.newPlayers?.length
-          ? { careerNewPlayers: preview.careerFields.newPlayers }
           : {}),
       });
       // NEO-195: the candidates have been promoted into cardChecklist, so the
@@ -2812,18 +2277,9 @@ export default function CardChecklist({
           `${result.unmatchedExistingCount} no longer listed upstream (kept).`,
         );
       }
-      // NEO-221 (D12): names whose review rows were never decided. The cards
-      // ARE saved — this is not a failure — but they carry the typed name
-      // instead of a player/team LINK, which is what every listing and player
-      // page reads. Said here because it is otherwise invisible until someone
-      // notices a card attributed to nobody; the same cards are badged for the
-      // attention walker, and `UnreviewedNameFixer` is how they get answered
-      // without waiting for the next sync.
-      if (result.unreviewedNameCount) {
-        notes.push(
-          `${result.unreviewedNameCount} names were not reviewed; those cards have no player/team link.`,
-        );
-      }
+      // NEO-645: no "names were not reviewed" note. The walk opens next and
+      // answers those names, so the line would describe a state that is about
+      // to be fixed in front of the operator.
       // NEO-330 — said once more on the line the cards land with, then spent:
       // a later commit that is not this run's must not inherit it.
       if (teamsLateRef.current) {
@@ -2840,7 +2296,7 @@ export default function CardChecklist({
         notes.push(`${checklistTeamsRef.current}.`);
       }
       // NEO-640 — and the reason no Match Cards came up, the same way and
-      // FIRST: a run with nothing for the wizard to ask lands "Saved N cards."
+      // FIRST: a run with nothing for the operator to answer lands "Saved N cards."
       // within a frame of the pre-save line that said why, so without this the
       // operator never reads it. It sits right after the count, ahead of every
       // caveat the commit adds ("not saved", "no longer listed upstream"), so
@@ -2863,29 +2319,32 @@ export default function CardChecklist({
         .join(" ");
       setSyncMessage(committedText);
       // NEO-312 (J1): an insert's checklist is its parallels' checklist too,
-      // so saving it builds them — one at a time, in the panel under this
-      // notice, stoppable between parallels. Not awaited: the commit has
-      // landed and the wizard should close on it now. Only a failure to LIST
-      // the parallels comes back here (nothing was built), and it is said in
-      // the same notice as the save it followed. A failed parallel is that
-      // parallel's line in the panel, never this notice.
+      // so saving it builds them, one at a time, in the panel under this
+      // notice, stoppable between parallels.
+      //
+      // NEO-645 (J3): not yet. The parallels copy this checklist's cards, so
+      // they wait until no card has an unanswered name left (`blocksParallelBuild`:
+      // sources that disagree, a player or team name still waiting). A teamless
+      // card does not hold them: the parallel's own Set Team fills it. The effect below starts the build (or the
+      // operator's "Build from ..." button does, as it always could).
       if (parallelBuild?.role === "insert") {
-        void parallelRun
-          .start({ id: variantId, value: variantRow?.value ?? "" }, convex)
-          .then((failure) => {
-            if (failure) {
-              setSyncMessage(`${committedText} ${planFailedText(failure)}`);
-            }
-          });
+        heldParallelBuildRef.current = {
+          id: variantId,
+          value: variantRow?.value ?? "",
+          committedText,
+        };
       }
+      // NEO-645: the commit has landed, so the cards are on screen. If any of
+      // them needs a person, the walk opens (see the effect below, which reads
+      // the live rows rather than this closure's). The discard above has
+      // resolved, so the subscription already holds the new rows.
+      openTidyAfterCommitRef.current = true;
+      setPostCommitTick((n) => n + 1);
       // NEO-335: no attention count is decided here either — what still needs
       // the operator after the save is read live from the checklist by the
       // header's own control, not handed over by this handler.
       //
-      // NEO-221 (D9): the pairing session is spent — its cards are now NB
-      // rows. Closing the phase is what finally unmounts `CardPairingModal`
-      // and drops its reducer, and it is the point after which "Back to
-      // matching" would be meaningless.
+      // The pairing session is spent: its cards are now NB rows.
       setPairingPhase("closed");
       return true;
     } catch (error) {
@@ -2901,121 +2360,10 @@ export default function CardChecklist({
         error instanceof Error ? error.message : "Unknown error",
       );
       setSyncMessage(`Commit failed: ${message}`, "error");
-      setCommitError(message);
-      // NEO-640 (a11y): a skipped multi-source run parks its Match Cards
-      // session before the commit, and the focus restore on Sync waits for
-      // the phase to be "closed". With no wizard open there is nothing on
-      // screen to go "Back to Match Cards" from, so the failure ends the session
-      // here; with the wizard open the phase stays parked and "Back to
-      // matching" keeps working. The alert stays: it is the sync banner's.
-      const wizardOpen = pendingPreviewRef.current !== null;
-      setPairingPhase((phase) =>
-        phase === "parked" && !wizardOpen ? "closed" : phase,
-      );
       return false;
     } finally {
       setCommitting(false);
     }
-  };
-
-  /**
-   * NEO-221 (D10) — the reviewed set is kept until the commit LANDS.
-   *
-   * Clearing `pendingPreview` unconditionally (what this used to do) meant a
-   * commit that failed for any reason — a chunk timing out, a network blip —
-   * threw away the entity review the operator had just finished and closed the
-   * wizard over the failure message. There was no route back: the only way to
-   * re-decide the same names was to re-run the whole sync.
-   *
-   * On failure the preview stays, the wizard stays open, and `commitError`
-   * gives it something to say. The batch is untouched server-side, so pressing
-   * Retry re-sends exactly the same commit.
-   */
-  /**
-   * NEO-335 — the wizard's team answers, held on the preview until commit.
-   * Returns the same preview when nothing changed, so a re-report does not
-   * re-render the wizard.
-   */
-  const handleTeamAnswers = useCallback(
-    (answers: Array<TeamAnswer | undefined>) => {
-      setPendingPreview((prev) =>
-        prev && !sameTeamAnswers(prev.teamAnswers ?? [], answers)
-          ? { ...prev, teamAnswers: answers }
-          : prev,
-      );
-    },
-    [],
-  );
-
-  /**
-   * NEO-335 Phase 2 — the titles step's answers (commit fields), held on the
-   * preview until commit. `undefined` = the step was not part of the sitting.
-   */
-  const handleTitleAnswers = useCallback(
-    (fields: Array<TitleCommitFields | undefined> | undefined) => {
-      setPendingPreview((prev) => {
-        if (!prev) return prev;
-        if (JSON.stringify(prev.titleAnswers ?? null) === JSON.stringify(fields ?? null)) {
-          return prev;
-        }
-        return { ...prev, titleAnswers: fields };
-      });
-    },
-    [],
-  );
-
-  /**
-   * NEO-335 — the titles step's short name for titles, held on the preview
-   * until commit. `undefined` = none to send.
-   */
-  const handleListingShortName = useCallback((value: string | undefined) => {
-    setPendingPreview((prev) => {
-      if (!prev || prev.listingShortName === value) return prev;
-      return { ...prev, listingShortName: value };
-    });
-  }, []);
-
-  /**
-   * NEO-478 — the wizard's "Checklist says otherwise" answers, held on the
-   * preview until commit. Same-content reports return the same preview.
-   */
-  const handleChecklistChoices = useCallback(
-    (choices: Array<ChecklistChoice | undefined>) => {
-      setPendingPreview((prev) => {
-        if (!prev) return prev;
-        if (JSON.stringify(prev.checklistChoices ?? []) === JSON.stringify(choices)) return prev;
-        return { ...prev, checklistChoices: choices };
-      });
-    },
-    [],
-  );
-
-  /**
-   * NEO-345 — the wizard's "Autographed cards" answer, held on the preview
-   * until commit. `undefined` = nothing to send.
-   */
-  const handleAutographFormat = useCallback((value: AutographFormat | undefined) => {
-    setPendingPreview((prev) => {
-      if (!prev || prev.autographFormat === value) return prev;
-      return { ...prev, autographFormat: value };
-    });
-  }, []);
-
-  /**
-   * NEO-574 — the wizard's "Career check" answers, held on the preview until
-   * commit. `undefined` = nothing to send.
-   */
-  const handleCareerFields = useCallback((fields: CareerCommitFields | undefined) => {
-    setPendingPreview((prev) => {
-      if (!prev || sameCareerFields(prev.careerFields, fields)) return prev;
-      return { ...prev, careerFields: fields };
-    });
-  }, []);
-
-  const handleWizardConfirm = async () => {
-    if (!pendingPreview) return;
-    const committed = await runCommit(pendingPreview);
-    if (committed) setPendingPreview(null);
   };
 
   /**
@@ -3162,13 +2510,21 @@ export default function CardChecklist({
   }, []);
 
   /**
-   * NEO-102 — how many stored rows need a human, derived (see
-   * card-attention.ts). Recomputed from the live subscription, so fixing a
+   * NEO-102 / NEO-645 — how many stored rows need a human, derived (see
+   * card-attention.ts): pink (to fix) or blue (to check), the same rule as the
+   * badge, the grid filter and the walk, so the pill, the badges and the walk
+   * always count the same cards. A card with only purple notes is not counted. Recomputed from the live subscription, so fixing a
    * card in the walker drops the count without anything having to invalidate
    * it.
    */
   const attentionCount = useMemo(
-    () => (cards ?? []).filter((c) => needsAttention(c)).length,
+    () => (cards ?? []).filter((c) => needsTidyUp(c)).length,
+    [cards],
+  );
+  // Of those, the cards with something pink on them (cannot be listed yet):
+  // the pill says how many, so a checklist of mere checks reads differently.
+  const attentionToFix = useMemo(
+    () => (cards ?? []).filter((c) => deriveCardAttention(c).level === "fix").length,
     [cards],
   );
   /**
@@ -3315,53 +2671,51 @@ export default function CardChecklist({
   );
 
   /**
-   * NEO-221 (D6) — what the wizard's final step promises to save.
-   *
-   * The wizard used to be told only `cardCount`, so "All reviewed — save 712
-   * cards?" was the entire account of a commit that could also be deleting
-   * rows the operator ticked in the content review and applying field changes
-   * they accepted there. Those two are the irreversible half, and they were
-   * decided one dialog earlier — far enough back to have been forgotten by the
-   * time Confirm is pressed.
-   *
-   * Derived here rather than in the wizard because these are facts about the
-   * PREVIEW, which is this component's state; the wizard derives the
-   * created/linked/skipped half from the review rows it already subscribes to.
-   *
-   * Memoised so the wizard is not handed a fresh object on every reactive
-   * `getCardChecklist` update.
+   * NEO-645 — open Tidy Up at its first card. A new sitting: anything skipped
+   * last time is offered again. The pill and a landed commit both come here.
    */
-  const wizardSummary = useMemo(
-    () =>
-      pendingPreview
-        ? {
-            cardCount: pendingPreview.cards.length,
-            deleteCount: pendingPreview.operatorDeleteIds.length,
-            reviewDecisionCount: pendingPreview.decisions.filter(
-              (d) => d.applyFields?.length,
-            ).length,
-          }
-        : null,
-    [pendingPreview],
-  );
+  const openTidyWalk = useCallback(() => {
+    resetSitting(variantId);
+    tidy.open();
+  }, [variantId, tidy]);
 
   /**
-   * NEO-102 — the single entry point into the walker.
-   *
-   * The header's "N need you" pill is the one control that calls this
-   * (NEO-335), so there is exactly one way the dialog can come up and it is
-   * always a deliberate press.
+   * NEO-102 — the single deliberate entry point from the header: the "N need
+   * you" pill.
    */
   const openAttentionWalker = useCallback(() => {
-    // NEO-312: the walker edits cards a build is about to replace.
+    // NEO-312: the walk edits cards a build is about to replace.
     if (editsHeld) return;
-    setWalkerOpenedByHand(true);
-  }, [editsHeld]);
+    openTidyWalk();
+  }, [editsHeld, openTidyWalk]);
 
-  /** Both paths out of the walker: the operator is done, or deferred the rest. */
-  const closeAttentionWalker = useCallback(() => {
-    setWalkerOpenedByHand(false);
-  }, []);
+  const closeTidyWalk = useCallback(() => tidy.close(), [tidy]);
+
+  // After a commit lands: open the walk when something needs a person (this
+  // is the one self-opening the product wants, and it only follows the
+  // operator's own save), and start a held parallel build once nothing is
+  // pink. Reads refs set by `runCommit`; no state is set here.
+  useEffect(() => {
+    if (!cards) return;
+    if (openTidyAfterCommitRef.current) {
+      openTidyAfterCommitRef.current = false;
+      if (cards.some((c) => needsTidyUp(c))) openTidyWalk();
+    }
+    const held = heldParallelBuildRef.current;
+    if (held) {
+      if (held.id !== variantId) {
+        heldParallelBuildRef.current = null;
+      } else if (!cards.some((c) => blocksParallelBuild(c))) {
+        heldParallelBuildRef.current = null;
+        void parallelRun.start({ id: held.id, value: held.value }, convex).then((failure) => {
+          if (failure) setSyncMessage(`${held.committedText} ${planFailedText(failure)}`);
+        });
+      }
+    }
+    // `openTidyWalk` changes with the router's params; the ticks and the live
+    // rows are what this reacts to.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [postCommitTick, cards, variantId]);
 
   /**
    * a11y (NEO-335) — the "N need you" pill leaves the page the moment the
@@ -3387,6 +2741,18 @@ export default function CardChecklist({
     };
   }, []);
   const needsYouShown = attentionCount > 0;
+  // NEO-645 a11y: where the Tidy Up walk hands focus back, asked when it closes
+  // (not when it opened): the "N need you" pill if cards still need someone,
+  // else Sync, which is always mounted. A getter, so it reads the refs then.
+  const tidyRestoreRef = useMemo<RefObject<HTMLElement | null>>(
+    () =>
+      ({
+        get current(): HTMLElement | null {
+          return needsYouNodeRef.current ?? syncButtonRef.current;
+        },
+      }) as RefObject<HTMLElement | null>,
+    [],
+  );
   useEffect(() => {
     if (needsYouShown || !needsYouParkRef.current) return;
     needsYouParkRef.current = false;
@@ -3677,11 +3043,7 @@ export default function CardChecklist({
    * fetch, and gating on the fetch is what made a second source necessary in
    * the first place.
    *
-   * NEO-221 (D9): non-null for `"review"` AND `"parked"`. This is what keeps
-   * `CardPairingModal` MOUNTED (with `isOpen={false}`) while the operator is
-   * downstream in the wizard, so its reducer survives a "Back to Match Cards".
-   * It is also the client's test for "is there a pairing session to go back
-   * to" — the wizard gets an `onBack` only when this is non-null.
+   * Non-null while the phase is `"review"`.
    *
    * Gated on `total`, not `ready`. `ready` counts rows whose TEAM has
    * resolved, and teams gate Confirm, not visibility (see
@@ -3872,12 +3234,12 @@ export default function CardChecklist({
     </NeonButton>
   );
   const fetchLabel = syncing
-    ? "Fetching..."
+    ? FETCHING_LABEL
     : committing
-      ? "Saving..."
+      ? SAVING_LABEL
       : sortedCards.length === 0
-        ? "Fetch from Marketplaces"
-        : "Refresh";
+        ? FETCH_FROM_MARKETPLACES_LABEL
+        : REFRESH_LABEL;
 
   return (
     <div className="w-full flex flex-col gap-4">
@@ -3929,7 +3291,6 @@ export default function CardChecklist({
                       variant="secondary"
                       onClick={handleSync}
                       disabled={busy}
-                      aria-label="Sync card checklist"
                     >
                       {fetchLabel}
                     </NeonButton>
@@ -3974,7 +3335,6 @@ export default function CardChecklist({
             onSaved={() => {}}
           />
         ) : (
-          !pendingPreview &&
           !!variantRow &&
           !leafAutographFormat &&
           unformattedAutographCount > 0 && (
@@ -4385,14 +3745,6 @@ export default function CardChecklist({
             </span>
           )}
 
-        {/* NEO-212 — the see-and-undo record of the review wizard's "Skip —
-            not a person/team" decision, for THIS set. It sits with the other
-            per-set notices, directly under the sync banner, because a skip is
-            a property of what the next sync will and will not ask about.
-            Renders nothing at all unless this set actually has skips, which
-            is nearly always. */}
-        <SkippedNamesPanel selectorOptionId={variantId} />
-
         <ChecklistSourceFilter
           chips={sourceChips}
           filter={sourceFilter}
@@ -4416,7 +3768,7 @@ export default function CardChecklist({
           </div>
         )}
 
-        {/* NEO-335 — the set-level attention row: ONE control, the amber
+        {/* NEO-335 — the set-level attention row: ONE control, the pink-or-blue
             "N need you" pill, which opens the walker. It replaced the filter
             chip, the set-wide Fill teams pill and the "Fix them one at a time"
             link: the walker already orders what is left (missing teams, then
@@ -4427,7 +3779,7 @@ export default function CardChecklist({
             Rendered only while something needs a person, off the live
             subscription — so cards flagged after a save still show up here,
             and the row leaves when the last one is answered. It never opens
-            anything on its own (see `walkerOpenedByHand`).
+            anything on its own (see `openAttentionWalker`).
 
             Name: the visible text IS the accessible name (SetRowActionButton
             takes no aria-label), so SC 2.5.3 holds by construction. No DOM
@@ -4446,13 +3798,13 @@ export default function CardChecklist({
             {attentionCount > 0 && (
               <SetRowActionButton
                 ref={needsYouRef}
-                tone="attention"
+                tone={attentionToFix > 0 ? "fix" : "check"}
                 onActivate={openAttentionWalker}
                 disabled={editsHeld}
                 aria-describedby={editsHeld ? heldDescribedBy : undefined}
                 aria-haspopup="dialog"
               >
-                {needsYouLabel(attentionCount)}
+                {needsYouLabel(attentionCount, attentionToFix)}
               </SetRowActionButton>
             )}
             {/* NEO-535 — a parallel's Card titles: every copy whose title
@@ -4539,13 +3891,13 @@ export default function CardChecklist({
             the page is enough for a reader and a text locator alike. Nothing
             here names a marketplace. */}
         <p role="status" data-team-lookup-status="">
-          {shownLookupCount > 0 && !walkerOpenedByHand && (
+          {shownLookupCount > 0 && !tidyOpen && (
             <span className="mb-3 flex items-center gap-2 text-sm text-ink-2">
               <span
                 aria-hidden="true"
                 className="h-2 w-2 shrink-0 rounded-full bg-neon-blue-text shadow-[0_0_8px_rgb(0_194_255/var(--glow))] motion-safe:animate-pulse"
               />
-              <span>{teamLookupStatusLine(shownLookupCount)}</span>
+              <span>{teamLookupStatusLine(shownLookupCount, attentionCount)}</span>
             </span>
           )}
         </p>
@@ -4577,7 +3929,6 @@ export default function CardChecklist({
                   ref={syncButtonRef}
                   onClick={handleSync}
                   disabled={busy}
-                  aria-label="Sync card checklist"
                 >
                   {fetchLabel}
                 </NeonButton>
@@ -4698,29 +4049,30 @@ export default function CardChecklist({
         />
       )}
 
-      {/* NEO-102 — the attention pass. Opened only by hand (the header's
-          "N need you" pill), and kept mounted only while open; it
-          takes the FULL row list and derives its own queue, so rows arriving
-          from the background BSC pass join it without the walker losing the
-          card on screen. */}
-      {walkerOpenedByHand && cards && (
-        <CardAttentionWalker
-          isOpen
-          cards={cards}
+      {/* NEO-645 — Tidy Up, one card at a time. Mounted only while the URL
+          says so (`?tidy=`), so Back and a refresh work. It takes the FULL row
+          list and derives its own queue, so rows arriving from the background
+          lookups join it without the walk losing the card on screen. */}
+      {tidyOpen && cards && (
+        <TidyUpWalk
+          leafId={variantId}
           sportId={ancestorSportId}
-          contextOptionId={variantId}
-          // NEO-639 (decision A): under the set's own "No Team" the team
-          // fixer offers careers and preselects none, like the Teams step.
-          setNoTeam={setTeamDefaultKind(variantRow) === "noTeam"}
-          // a11y: the durable restore target, because the control that opened
-          // this may not survive the sitting — the pill unmounts at
-          // `attentionCount === 0`, which is exactly the state the walker is
-          // in when the operator closes it from the all-clear step. Restoring
-          // to the walker's own activeElement-at-mount capture would then be
-          // restoring to a detached node. This Sync button is always mounted.
-          restoreFocusRef={syncButtonRef}
-          onClose={closeAttentionWalker}
+          setName={faceHeader.setName}
+          season={faceHeader.season}
+          variantName={faceHeader.variantName}
+          variantKind={faceHeader.variantKind}
+          // NEO-639 (decision A): under the set's own "No Team" the Team tile
+          // offers a card's teams and preselects none, and Apply to all offers
+          // nothing: the set has answered for every card.
+          setNoTeam={setIsNoTeam}
           title={tidyTitle}
+          cards={cards}
+          // a11y: the durable restore target, because the control that opened
+          // this may not survive the sitting: the pill unmounts when the count
+          // reaches zero, which is the state the walk is in when it ends. The
+          // pill when it is still there, else the Sync button (always mounted).
+          restoreFocusRef={tidyRestoreRef}
+          onClose={closeTidyWalk}
         />
       )}
 
@@ -4737,10 +4089,6 @@ export default function CardChecklist({
           // `initialData`'s append-only absorb stacks the new batch on the old
           // one. See `pairingInstance`.
           key={pairingInstance}
-          // NEO-221 (D9): MOUNTED for `"review"` and `"parked"`, OPEN only for
-          // `"review"`. `CardPairingModal`'s `if (!isOpen) return null` sits
-          // below all of its hooks, so a parked modal keeps its reducer — that
-          // is the entire mechanism behind the wizard's "Back to Match Cards".
           isOpen={pairingPhase === "review"}
           onClose={async () => {
             // Supersede any in-flight fetch so its result cannot reopen this
@@ -4783,10 +4131,7 @@ export default function CardChecklist({
           sources={pairingSources ?? undefined}
           resolveChecklistPairs={resolveChecklistPairs}
           setLabel={variantRow?.value}
-          // a11y: see syncButtonRef's own comment — "Back to Match Cards" reopens
-          // this modal by unmounting the wizard's own trigger button in the
-          // same update that flips `isOpen`, so this component's own
-          // document.activeElement-at-mount capture cannot be trusted.
+          // a11y: see syncButtonRef's own comment.
           restoreFocusRef={syncButtonRef}
           // One source, live for the whole review — during the fetch and after
           // it. The modal absorbs updates append-only, so rows that arrive
@@ -4854,108 +4199,6 @@ export default function CardChecklist({
         />
       )}
 
-      {(pendingPreview?.batchId || pendingPreview?.teamsOnly) && wizardSummary && (
-        <EntityReviewWizard
-          isOpen={pendingPreview !== null}
-          selectorOptionId={variantId}
-          batchId={pendingPreview.batchId ?? ""}
-          // NEO-335: no names to review — open on the final step for the
-          // cards that would save with no team.
-          teamsOnly={pendingPreview.teamsOnly}
-          cardsWithSettledTeam={pendingPreview.settledTeamIndexes}
-          // NEO-335: who is on the cards, as the stored data says — the
-          // re-synced rows the save keeps playerless, and the names the set's
-          // skip records rule "not a person".
-          cardsWithNoPlayers={pendingPreview.playerlessIndexes}
-          cardsWithDefaultPlayer={pendingPreview.defaultPlayer}
-          skippedPlayerNames={skippedPlayerNames}
-          // NEO-335: and the team names they rule "not a team".
-          skippedTeamNames={skippedTeamNames}
-          // NEO-426: names the fetch found playing a sport with no teams.
-          teamlessPlayerNames={pendingPreview.teamlessPlayerNames}
-          // NEO-335 Phase 2 (C7): with no set-level team on this node, a long
-          // teams step points at "Edit attributes" instead.
-          // NEO-556: a "No Team" default counts too — the hint then points
-          // at the answer already given rather than at setting one.
-          hasSetTeam={setTeamDefaultKind(variantRow) !== "none"}
-          // NEO-639 (decision A): under the set's own "No Team", the teams
-          // step offers each line's teams and pre-fills none.
-          setNoTeam={setTeamDefaultKind(variantRow) === "noTeam"}
-          // NEO-497: "Tidy up 2024 Topps Chrome", not "this set".
-          title={tidyTitle}
-          // NEO-221 (D6): the whole account of what Confirm is about to do,
-          // not just the card count. See `wizardSummary`.
-          summary={wizardSummary}
-          saving={committing}
-          onConfirm={handleWizardConfirm}
-          // NEO-221 (D10): the wizard renders this on its final step with
-          // Retry and Back, instead of the commit failure closing the wizard
-          // and throwing the review away.
-          commitError={commitError}
-          onDismissCommitError={() => setCommitError(null)}
-          // NEO-335: the teams step, for cards that would save with no team.
-          previewCards={pendingPreview.cards}
-          onTeamAnswersChange={handleTeamAnswers}
-          // NEO-478: the "Checklist says otherwise" step, first after the
-          // names, for cards the publisher's checklist disagrees with.
-          onChecklistChoicesChange={handleChecklistChoices}
-          // NEO-335 Phase 2: the "Card titles" step, after Teams.
-          titleContext={pendingPreview.titleContext}
-          existingCardIndexes={pendingPreview.existingIndexes}
-          onTitleAnswersChange={handleTitleAnswers}
-          // NEO-335: the set's short name for titles, from the same step.
-          onListingShortNameChange={handleListingShortName}
-          // NEO-345: the "Autographed cards" step, between teams and titles,
-          // when this leaf has not said how its autographs are signed.
-          hasAutographFormat={leafAutographFormat !== undefined}
-          onAutographFormatChange={handleAutographFormat}
-          // NEO-574: the "Career check" step, first after the names, when a
-          // new card's team is missing from its player's career.
-          sportId={pendingPreview.sportId}
-          careerContext={pendingPreview.careerContext}
-          onCareerChange={handleCareerFields}
-          /**
-           * NEO-221 (D9) — BACK, not abort.
-           *
-           * Offered only when there is a pairing session to go back TO. On the
-           * custom-subtree path (`candidateCount === 0`) there is none —
-           * nothing was paired — so the prop is absent and the wizard's footer
-           * shows only Cancel.
-           *
-           * Deliberately does NOT cancel the batch: `startBatch` resumes an
-           * existing one, so returning to matching, changing a pairing and
-           * confirming again lands on the SAME review with the same decisions
-           * already made. Dropping the preview is enough to close the wizard.
-           */
-          onBack={
-            streamedPairing
-              ? () => {
-                  setPendingPreview(null);
-                  setCommitError(null);
-                  // The skip is over: whatever the operator confirms now is
-                  // their own pairing, not "every card matched".
-                  skipReasonRef.current = null;
-                  setPairingPhase("review");
-                }
-              : undefined
-          }
-          onCancel={() => {
-            // The wizard has already cancelled the batch by the time this
-            // fires (see its own `handleCancel`); this is the client half of
-            // the abort — drop the reviewed set, close the parked pairing
-            // session for good, and bin the candidates it was reviewing.
-            setPendingPreview(null);
-            setSyncMessage("Fetch cancelled — no cards saved.");
-            // NEO-221 (D9/R4): the discard used to happen when the operator
-            // CONFIRMED the pairing. It cannot any more — a parked session can
-            // still be returned to, and discarding its candidates would empty
-            // the dialog it goes back to. So it moved to the ends of the
-            // pipeline: a landed commit (in `runCommit`), this abort, and the
-            // failure paths that leave no dialog on screen.
-            abandonPairingSession();
-          }}
-        />
-      )}
     </div>
   );
 }

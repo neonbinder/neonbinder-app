@@ -12,7 +12,7 @@ confirm is never pressed, and the helper fails at `Add Custom Entry` toBeHidden
 (screenshot shows the confirm still up). Seen on NEO-602's set-history team spec.
 
 **Why:** a readiness marker that is true before the action proves nothing (same family
-as [[negative-asserts-pass-on-a-dead-page]]).
+as [[patterns_negative_asserts_pass_on_a_dead_page]]).
 
 **How to apply:** for a spec that needs two variants of one hand-made set, call
 `drillToCustom(page, { sport, year, manufacturer, set, variantType, variant })` again for

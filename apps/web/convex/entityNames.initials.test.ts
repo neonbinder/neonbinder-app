@@ -176,55 +176,6 @@ describe("teams key joins initials (NEO-322)", () => {
   });
 });
 
-describe("the review-queue resume key agrees across initials (NEO-322)", () => {
-  test("resuming with the other spelling keeps the row and its decision", async () => {
-    const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(USER);
-    const selectorOptionId = await seedSport(t);
-
-    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
-      selectorOptionId,
-      createdByUserId: USER.subject,
-      sportId: selectorOptionId,
-      playerNames: ["C. J. Kayfus"],
-      teamNames: ["Texas A & M"],
-    });
-
-    const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
-      selectorOptionId,
-      batchId,
-    });
-    expect(rows).toHaveLength(2);
-    const playerRow = rows.find((r) => r.kind === "player")!;
-    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
-      reviewRowId: playerRow._id,
-      action: "create",
-    });
-
-    const resumed = await t.mutation(internal.entityReviewQueue.startBatch, {
-      selectorOptionId,
-      createdByUserId: USER.subject,
-      sportId: selectorOptionId,
-      playerNames: ["C.J. Kayfus"],
-      teamNames: ["Texas A&M"],
-    });
-    expect(resumed).toBe(batchId);
-
-    const after = await asAdmin.query(api.entityReviewQueue.getBatch, {
-      selectorOptionId,
-      batchId,
-    });
-    expect(after).toHaveLength(2);
-    expect(after.map((r) => r._id).sort()).toEqual(
-      rows.map((r) => r._id).sort(),
-    );
-    expect(after.find((r) => r.kind === "player")?.decision).toEqual({
-      action: "create",
-    });
-
-    await drainScheduled(t);
-  });
-});
 
 describe("the entityReviewSkips key agrees across initials (NEO-322)", () => {
   test("a skip recorded under one spelling suppresses the other", async () => {

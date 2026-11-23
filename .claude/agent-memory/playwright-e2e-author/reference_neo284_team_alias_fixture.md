@@ -1,85 +1,38 @@
 ---
-name: neo284-team-alias-fixture
-description: NEO-284 team-alias E2E — since NEO-330 the one-sided 1996 Line Up Venezuelan Winter League fixture (300 cards, 8 unknown clubs, one club acted on BY NAME; the older Rickwood fixture and its SportLots picker CANCELLED path), how the "remember as alias" checkbox is asserted, the decision read-back, the wizard's TWO "Cancel (Esc)" controls, the NEO-326 team-step shape, and the wrong-SportLots-slot recovery via the MultiSourcePanel chip
+name: reference_neo284_team_alias_fixture
+description: NEO-284 team-link-remembers-the-name spec on the walk - the New Haven Ravens Rally Raffle fixture, Link to existing team + Remember box, alias read-back in Team Management, the one-sided set picker recovery
 metadata:
   type: reference
 ---
 
-# NEO-284 — `checklist-wizard-link-team-saves-alias` facts (2026-09-16)
+Spec: `tidy-up-team-link-remembers-the-name.spec.ts` (renamed from `checklist-wizard-link-team-saves-alias` in NEO-645).
 
-**Fixture (since NEO-330):** Baseball > 1996 > All Brands > *Line Up Venezuelan Winter
-League* > Base, BSC only, through the fetch-to-wizard helper. 200 players + 8 clubs
-unknown; 211 rows settle (a staged league + 2 staged career teams) after ~144 s of LIVE
-lookups. All 211 are now in the NEO-289 recording, so re-measure the settle time from CI
-(see [[patterns_record_a_fixture_sets_lookups]]). The walk reads every team/league heading and acts
-on one checklist club BY NAME (Navegantes, an alias link), skipping the rest; branching on
-the heading text is free in a Playwright spec. The past-era claims (Tigres, the catalogue's
-single `Pittsburgh Crawfords`) moved to the past-era team-link spec, see
-[[reference_reaching_the_missing_team_fixer]]. The alias-clash holder (`Pca`) now lives on the minted `Loc Ali`
-team. Until NEO-330 the fixture was the 4-card Rickwood Field set below, whose clubs the
-reference catalogue now holds; the Rickwood history follows.
+**Fixture:** Baseball > 1996 > `New Haven Ravens Rally Raffle` (BSC only; filed under the year's Unknown row,
+reached through All Brands), 9 cards, ONE club the catalogue lacks (`New Haven Ravens`, a recorded no-match so the
+New team form opens on the whole name). Sole writer, fresh-only (SET-REGISTRY): the fetch commits the set, so a
+local re-run fails at `No cards in this checklist yet.`: re-seed. Fetched with
+`fetchOneMarketplaceSetChecklistToTidyWalk` (`support/tidy-walk.ts`), not a hand-rolled sync: the set is one-sided,
+so Match Cards' solo path (NEO-255, "Kept all N cards from BSC") is handled there.
 
-Rickwood history: Baseball > 2024 > Topps > *Topps MLB at Rickwood Field Negro Leagues
-Collection* > Base. BSC: 4 cards on Negro League clubs; 8 unknown names = 4 players +
-clubs + ONE staged league ("Negro league baseball", presented FIRST: skip it with the
-`Skip ... has no league` control, then the first team row follows).
+**The linked string must be one no other spec can look up.** The alias is live deployment-wide between commit
+and cleanup: "whichever club comes first" once linked a career team other specs also stage and changed their
+walks ([[patterns_per_worker_data_isolation]]). Mint the fixture team per attempt (`Loc<token> Ali<token>`) and
+act on the checklist club BY NAME (`group "Team New Haven Ravens"`).
 
-**It is ONE-SIDED: cancel the base picker.** (Rickwood history:) SportLots did not carry the set; the
-picker's SL column is the year's whole catalogue with "Base Set" flagged "likely
-match" (2024 Topps flagship, 352 cards). Taking the first-candidate path
-(`drillToBaseVariant`) attaches that wrong set and pairs 0 of 4. Cancel, "Base mapping
-cancelled", Close, "Map Base Set", Sync, then the NEO-255 solo path ("Kept all N cards
-from BSC"), no Match Cards dialog, so `fetchChecklistToWizard` cannot be used as is
-(hand-roll the sync like the one-marketplace-skips-match-dialog spec).
+**Team row handles** (`tidyTile(page, "Team")`): `“<printed>” isn't linked to a team yet.`, `Checking for teams by that
+name…` (wait it gone before reading the row), `Not a team`, `+ New team`, group `Link to existing team` holding
+combobox `Search all teams` (opens EMPTY, placeholder `Type a team name`: `toHaveValue("")`) and checkbox
+`Remember “<printed>” as a name for this team` (held while near-matches load, then ON). Pick by `option` name; the
+answer saves at once; the row reads `Change team`. The open `New team: <printed>` form stands in for the search and
+its remember box; `Cancel new team` closes it and writes nothing.
 
-**Recovering from a wrong SportLots slot on a preview:** the `MultiSourcePanel` chip
-(`Remove <label>` then `Confirm detach <label>`) takes the slot off; the picker
-auto-reopens (unmapped again) and the set is back to the fresh-sync shape. No reseed.
+**Assert the box by its effect**, not its value: the answer reaches the NEXT card that prints the club (Back returns
+to the first), and Team Management (`/admin/teams`, filter by the single token, open the row by its short name)
+lists the printed spelling under `Also known as` (on screen twice: the textarea value and the chip; the
+`Current aliases` list is the chip list; `toHaveValue("")` is the positive for "gone").
 
-**Asserting the checkbox is ON:** assert the effect rather than the box (a checkbox's
-value reads "on" either way in the old driver; in Playwright `toBeChecked()` works but
-the effect is the stronger proof): the decision line `Linked to <team> · remembered as
-“<row>”` is composed by `describeDecision` ONLY when `decision.saveAsAlias` is true on a
-team link. Read it back with the `Back to previous decision` control after the link
-(the wizard walks on immediately), then the `Decision for <row name>` group's text; then
-`Next` resumes.
-
-**The linked row is named, and the skip click names the row it read.** The alias is
-live deployment-wide between commit and cleanup, so the linked string must be one no
-other spec can look up: "whichever club comes first" once linked "Montreal Royals", a
-career team the Big League specs also stage, and changed their walks (see
-[[patterns_per_worker_data_isolation]]). On the Venezuelan set that is Navegantes, a BSC
-card club no other spec's set carries. The walk's skip click is built from the heading
-it just read (`Skip <escaped name> . (not a team|this team has no league)`): a bare
-`Skip .*` click issued while the previous skip lands can hit the NEXT row, which may be
-the row under test (NEO-335).
-
-**A hand-staged career team's "New Team:" step waits on the deployment-wide Wikidata
-pool** (`maxParallelism: 5`, FIFO across every shard): with two Big League batches (88
-rows each) just queued by other shards, the staged row stayed "1 still being looked up"
-past 30 s. Assert the `still looking up` text going away with the sanctioned 180 s
-external-exception timeout (GUIDE hard rule 3, commented at the site) between the 7 s
-"stage landed" wait and the 7 s step wait.
-
-**Two "Cancel (Esc)" controls while the link search is open:** the search panel has its
-own (`Cancel linking`), and a bare `getByRole("button", { name: "Cancel (Esc)" })` can
-resolve both (strict-mode error). Close the panel first, or scope to the footer.
-
-**The wizard's counter counts EVERY decision:** "Step x of y" since NEO-335, x = decided
-+ 1 on a name step, so never pin x after the link; wait for the row's heading to
-go (`New Team: <row>` hidden) instead.
-
-**Team Management after the commit:** filter by the single token, open the row by its
-printed short name, then reach `Also known as`. The alias is on screen twice (the
-textarea VALUE and the chip); the `Current aliases` list is the chip list's presence.
-Empty textarea: `toHaveValue("")` is the positive for "gone".
-
-**NEO-326 team-step shape (2026-10-04):** `Search all teams` sits in an ALWAYS-ON bordered
-section headed `Link to existing team` (players/leagues keep "Possible matches") and
-starts EMPTY (placeholder `Type a team name`): assert `toHaveValue("")` on the labelled
-search field for "empty". The `Remember “<row>” ...` box is inside the section. With the
-search box empty and the wizard's "Shows as:" gone, the Team name input is the only
-full-name node under its caption; `New Team: <row>` (raw name, never the draft) proves
-the walk did not move.
-
+**Recovering from a wrong SportLots slot on a preview:** the `MultiSourcePanel` chip (`Remove <label>` then
+`Confirm detach <label>`) takes the slot off; the base picker auto-reopens and the set is back to the fresh-sync
+shape. No reseed. A staged career team's row waits on the deployment-wide 5-wide Wikidata pool: assert the
+`Checking for teams…` text going away rather than a fixed delay.
 Related: [[patterns_draft_echo_is_not_a_read_back]], [[reference_neo255_one_marketplace_surfaces]].

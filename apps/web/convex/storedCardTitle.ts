@@ -37,6 +37,7 @@ import {
 } from "./features/generateListing";
 import { listingInputsForCard } from "./features/listingInputs";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
+import { cardSubjectName } from "../lib/cards/unnamed-card";
 import { teamFullName, teamSplitOf } from "../lib/teams/team-name";
 // From listingShortName.ts, not selectorOptions.ts: the cameo writer
 // (cardSecondaryPlayers.ts) imports this module, players.ts imports the
@@ -279,8 +280,18 @@ export async function listingInputsForStoredCard(
     features,
   );
 
+  // NEO-645 — a card's own name is in its title whenever it has one (Jason,
+  // 2026-11-23), unless it only repeats the players (their NB names, or the
+  // names the card printed). The generator places it; this hands it over.
+  const subjectName =
+    cardSubjectName({
+      cardName: card.cardName,
+      playerNames,
+      printedPlayerNames: (card.playerLinks ?? []).map((l) => l.nameOnCard),
+      cameoNames,
+    }) ?? "";
   return {
-    inputs: { ...inputs, playerNames, teamNames },
+    inputs: { ...inputs, playerNames, teamNames, ...(subjectName ? { subjectName } : {}) },
     unresolved: {
       players: danglingPlayers,
       teams: danglingTeams,

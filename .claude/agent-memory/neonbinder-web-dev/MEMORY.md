@@ -298,6 +298,19 @@
 - [Wizard plan waits on teamless-sport mock](reference_wizard_plan_waits_on_teamless_sport_mock.md) — test useQuery mock must answer listTeamlessSportIds or the bar stays 0; how to port a new step onto trackSteps
 - [Box rule: yellow line OR over cap](reference_box_rule_is_the_yellow_line_over_cap_stays.md) — NEO-637: box used when title leaves something out or is over 80; hand edits swapped in CardTitlesStep.changeShort
 - [Stand down on mounted, not phase](reference_stand_down_on_mounted_not_on_phase.md) — page element duplicated by a dialog keys on the dialog being mounted/open, not the phase before it (NEO-624)
+- [BSD sed has no \b](reference_bsd_sed_has_no_word_boundary.md) — macOS sed ignores \b so a bulk rename silently no-ops; python re.sub; keep a Legacy-named old body when a shared fn changes shape
+- [Extracting fields from a drawer keeps the lint override list](reference_extracting_fields_from_a_drawer_keeps_the_lint_override_list.md) — add the new file to per-file eslint overrides; hooks stay unconditional, gate JSX only
+- [Proxy api mock, live-region waits](reference_proxy_api_mock_and_live_region_waits.md) — component tests: Proxy `api` returning "module.fn"; findByText for announced lead-ins; derive pre-fill in render, not an effect
+- [Retire a flow: stand-in mock first](reference_retire_a_flow_by_deleting_its_tests_after_a_stand_in_mock.md) — stand-in the replacement, JSON-report failures by describe, script-delete retired `it(` blocks
+- [Swap a storage layer with a pseudo-row adapter](reference_swap_a_storage_layer_with_a_pseudo_row_adapter.md) — read new rows in the OLD shape; shim old test seeds; shim throws on retired shapes
+- [Pin regexes match planner inputs](reference_pin_regexes_match_plan_inputs_not_just_writes.md) — rename planner keys, do not loosen source-slice pins
+- [New Team form shows the suggestion as the answer](reference_new_team_form_shows_suggestion_as_answer_server_must_write_it.md) — host must forward it via findOrCreate enrichment or the shown league is lost
+- [Apply result outlives its offer](reference_apply_result_must_outlive_the_offer_it_empties.md) — key the outcome on count at press time; also purple-text dark contrast fix
+- [Tidy walk answer focus belongs to the walk](project_tidy_walk_answer_focus_belongs_to_the_walk.md) — tiles call useAnswered(); walk lands on Save & next / next pink tile; opener restore only on Cancel/Esc
+- [Key hints hide on coarse pointers](reference_key_hint_hides_on_coarse_pointers_via_hintedlabel.md) — HintedLabel sr-onlys (Esc)/(Enter); drop aria-label to satisfy label-in-name, regex lookups
+- [Tile and commit share one verdict](reference_tile_and_commit_share_one_verdict.md) — client preselect and server write call one pure fn; one test drives both; goldens/pins updated on purpose
+- [Radix size-1 button does not wrap](reference_radix_button_size1_does_not_wrap_long_labels.md) — 24px fixed height, no wrap; data-driven labels overflow phones; use h-auto min-h-6 max-w-full wrap-anywhere
+- [Open card then paged pass double-applies](reference_open_card_then_paged_pass_double_applies.md) — skip the in-call card in the scheduled pages; one helper for the shared career verdict
 - [Render-phase open needs batch in state](reference_render_phase_open_needs_batch_in_state_and_fixture_batch_ids.md) — NEO-640 early open: previousBatchId in state; pre-streamed test fixtures never trip it; matched w/o pairedBy opens
 - [Names-first core: a name pair at 1 is clean](reference_names_first_core_makes_a_name_pair_at_one_clean.md) — skip predicate reads confidence + sourceNumbers, not pairedBy "name"; D2 duplicate-number tie vs main test
 - [Compiler memoization error points at unrelated callback](reference_compiler_memoization_error_points_at_unrelated_callback.md) — bisect your hunks; a new render-scope object breaks old useCallbacks
@@ -305,3 +318,9 @@
 - [Stored key vs comparison key split](feedback_stored_key_vs_comparison_key_split.md) — a name-rule change goes in an explicit comparison step, never the stored-key fold; prove stored keys vs origin/main by fuzz
 - [Optional result field: omit when empty](reference_optional_result_field_omit_when_empty.md) — always-present [] reds toEqual pins in convex tests; spread only when non-empty
 - [Mixed preselect: focus the open question](pattern_mixed_preselect_focus_goes_to_the_open_question.md) — some ticked, one tied: focus its chip by ref, not Save; heading names both
+- [Port a retired-UI rule: audit every server fill site](reference_porting_a_rule_from_a_retired_ui_audit_every_server_fill_site.md) — tile, commit fill, answer-time fill, Apply to all each gate rule 8 separately (NEO-645 x NEO-639)
+- [Parallel commit chunks: defer the shared flush](reference_parallel_commit_chunks_defer_the_shared_flush.md) — find the one shared write, defer it to the caller, prove disjointness with a db Proxy; ties on sortOrder stay sequential
+- [Capped history router test](pattern_capped_history_router_test.md) — push per step to a depth cap (40) then replace; test with HistoryRouter + a 50-entry capped memory history
+- [Every title builder passes the card name](pattern_every_title_builder_passes_the_card_name.md) — set inputs.subjectName via cardSubjectName in every assessListingTitle caller; fixtures named "Card 1" are real names, use "Card #1"
+- [Title counter has no soft band](feedback_title_counter_has_no_soft_band.md) — warn only past 80; no "may clip" (NEO-645)
+- [Walk focus is one owed rule](pattern_walk_focus_is_one_owed_rule.md) — placeFocus for arrival/answer/repair; combobox via focusWithoutOpening; pink controls can mount late (NEO-645)

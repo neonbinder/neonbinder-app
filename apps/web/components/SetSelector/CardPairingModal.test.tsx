@@ -4893,7 +4893,7 @@ describe("CardPairingModal — a BSC/SportLots name pair whose numbers differ (N
     expect(screen.getByLabelText("Keep #250 Griffey as SportLots-only")).toBeTruthy();
   });
 
-  test("Confirm hands on a card with no sourceNumbers", async () => {
+  test("Confirm hands on the card's sourceNumbers (NEO-645: the new row stores them for the walk's note)", async () => {
     const { onConfirm } = renderModal({ autoMatched: [namePair()] });
 
     fireEvent.click(screen.getByLabelText("Confirm card matches"));
@@ -4901,7 +4901,7 @@ describe("CardPairingModal — a BSC/SportLots name pair whose numbers differ (N
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
     const cards = onConfirm.mock.calls[0][0].cards;
     expect(cards).toHaveLength(1);
-    expect(cards[0]).not.toHaveProperty("sourceNumbers");
+    expect(cards[0]).toHaveProperty("sourceNumbers", { bsc: "38", sportlots: "250" });
   });
 
   test("Unlink then keeping both halves saves cards with no sourceNumbers either", async () => {

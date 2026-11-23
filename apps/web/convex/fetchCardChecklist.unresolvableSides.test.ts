@@ -169,13 +169,10 @@ describe("fetchCardChecklist — a path with no marketplace ids", () => {
       { selectorOptionId, sportId: selectorOptionId, cards: [] },
     );
     expect(resolved.unknownPlayers).toEqual(["Custom Subtree Player"]);
-    expect(resolved.batchId).toBeTruthy();
-
-    const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
-      selectorOptionId,
-      batchId: resolved.batchId!,
-    });
+    // NEO-645: the name is one `tidyNames` row (no batch), unanswered.
+    const rows = await t.run((ctx) => ctx.db.query("tidyNames").collect());
     expect(rows).toHaveLength(1);
+    expect(rows[0].answer).toBeUndefined();
     expect(rows[0].name).toBe("Custom Subtree Player");
     expect(rows[0].kind).toBe("player");
   });
@@ -199,10 +196,10 @@ describe("fetchCardChecklist — a path with no marketplace ids", () => {
     );
     expect(resolved.unknownPlayers).toEqual([]);
     expect(resolved.unknownTeams).toEqual([]);
-    expect(resolved.batchId).toBeUndefined();
+    expect(await t.run((ctx) => ctx.db.query("tidyNames").collect())).toEqual([]);
   });
 
-  test("two different users fetching the SAME custom subtree get separate, non-colliding batches", async () => {
+  test("two different users fetching the SAME custom subtree share ONE name row (NEO-645: no batches)", async () => {
     // Direct regression coverage for the exact bug class this session fixed
     // in production: a shared review batch used to leak one caller's
     // pending names into another caller's wizard. Confirms the fix holds
@@ -226,9 +223,10 @@ describe("fetchCardChecklist — a path with no marketplace ids", () => {
       { selectorOptionId, sportId: selectorOptionId, cards: [] },
     );
 
-    expect(resultA.batchId).toBeTruthy();
-    expect(resultB.batchId).toBeTruthy();
-    expect(resultB.batchId).not.toBe(resultA.batchId);
+    expect(resultA.unknownPlayers).toEqual(["Shared Set Player"]);
+    expect(resultB.unknownPlayers).toEqual(["Shared Set Player"]);
+    // The name row belongs to the set, not to a caller: both gates found it.
+    expect(await t.run((ctx) => ctx.db.query("tidyNames").collect())).toHaveLength(1);
   });
 });
 

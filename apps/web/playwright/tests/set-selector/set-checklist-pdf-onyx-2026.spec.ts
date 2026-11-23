@@ -9,22 +9,26 @@
 //      Autographs 2 (96 cards), each "NNO only", and "Skipped lines (1)", that one
 //      "Above the column headings" (the title line). Save: "Checklist saved: 3 sections, 96 cards."
 //   2. Name proof: the Inserts column's first visit opens Reconcile Inserts with the
-//      checklist's sections; Player Autographs is made its own set, and its sync (the stored
-//      section, no marketplace: a checklist-only fetch) opens the tidy-up wizard. The Player
-//      Autographs block prints "Owusu-Asiedu | Avery"; the wizard's step for him reads
-//      "Avery Owusu-Asiedu" (first last, hyphenated surname whole). Cancel, Discard: nothing
-//      is saved.
-//   3. Back to the set and Remove the checklist.
+//      checklist's sections; Player Autographs is made its own set (Back and Forward step
+//      through the pick), and its sync (the stored section, no marketplace: a checklist-only
+//      fetch, so no Match Cards) saves the section's 38 cards and opens the Tidy Up walk
+//      (NEO-645), every name being new in the custom sport. The Player Autographs block prints
+//      "Owusu-Asiedu | Avery"; his card in the walk reads "#NNO · Avery Owusu-Asiedu" and asks
+//      about the player "Avery Owusu-Asiedu" (first last, hyphenated surname whole). The
+//      subject is the parse, not the names: "Save for later (Esc)" closes the walk, writing
+//      nothing, and every card still needs a person.
+//   3. Back to the set (a fresh drill: Back would step through the walk's cards, each an
+//      address) and Remove the checklist.
 //
 // FIXTURE (R7a, SET-REGISTRY.md prefix `onx`): ONE hand-made set per attempt, `onx<token>`,
 // under `E2E Test Sport <w>` › 2026 › Topps (drillToCustom, up to the set: the set's own
 // attributes hold its checklist). No marketplace id anywhere beneath it. The custom sport has no
 // players and no Wikidata config, so every name in the section is a new player with no lookup.
-// The set keeps its `Insert` › `Player Autographs` row (per attempt, read by no other spec); the
-// checklist is removed and no card is saved.
+// The set keeps its `Insert` › `Player Autographs` row and that row's 38 saved cards (NEO-645:
+// the cards save before the walk opens; per attempt, read by no other spec); no player or team
+// is written (the walk is left with Save for later). The checklist is removed.
 //
-// Measured locally on a worktree deployment (2026-11-17): Sync to wizard 2.4 s; the walk past
-// the section's 21 team steps to the first player 7.2 s (each step within 7 s).
+// Measured locally on a worktree deployment (2026-11-17, the old wizard): Sync to wizard 2.4 s.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import {
   columnOption,
@@ -38,21 +42,22 @@ import {
 } from "../../support/set-builder";
 import { setChecklistPanel } from "../../support/published-checklist";
 import {
-  cancelAndDiscard,
-  expectNameStepLeft,
-  personSkip,
-  readNameStep,
-  reviewWizard,
+  needsYouPill,
+  saveForLater,
+  settleWalkAfterCommit,
+  skipUntil,
+  tidyCardHeader,
+  tidyTile,
   tidyUpName,
-  walkToPlayerRow,
-} from "../../support/wizard";
+  tidyWalk,
+} from "../../support/tidy-walk";
 
 const FILE = "2026-onyx-vintage-baseball.pdf";
 const PDF = new URL(`../../fixtures/checklists/${FILE}`, import.meta.url).pathname;
 const SECTION = "Player Autographs";
 /** Printed "Owusu-Asiedu" under Last Name and "Avery" under First Name, in Player Autographs. */
 const PLAYER = "Avery Owusu-Asiedu";
-/** Player Autographs' rows: the bound on the walk past its players. */
+/** Player Autographs' rows: the cards its fetch saves, and the bound on the walk past them. */
 const SECTION_ROWS = 38;
 
 test(
@@ -115,38 +120,38 @@ test(
     await expect(reconcile).toBeHidden();
     await columnOption(page, "Inserts", SECTION).click();
     await expect(columnSelection(page, "Inserts", SECTION)).toBeVisible();
-    await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
-
-    await syncChecklistButton(page).click();
-    // No marketplace is attached: the stored section is the only source, so no Match Cards, and
-    // every name is new in the custom sport, so the wizard opens.
-    await expect(reviewWizard(page)).toBeVisible();
-    await expect(reviewWizard(page)).toHaveAccessibleName(tidyUpName({ year: "2026", set, variant: SECTION }));
-    await walkToPlayerRow(page);
-    // The players come in batch order, not file order: skip past each (nothing is saved) until the
-    // one this proof reads. Bounded by the section's rows; each skip is proved to have landed.
-    const avery = reviewWizard(page).getByRole("heading", { level: 3, name: PLAYER, exact: true });
-    for (let i = 0; i < SECTION_ROWS; i++) {
-      await expect(personSkip(page)).toBeVisible();
-      if (await avery.isVisible()) break;
-      const row = await readNameStep(page);
-      await personSkip(page).click();
-      await expectNameStepLeft(page, row);
-    }
-    await expect(avery).toBeVisible();
-    await expect(reviewWizard(page).getByRole("button", { name: `Skip ${PLAYER} — not a person` })).toBeVisible();
-    await expect(reviewWizard(page).getByRole("heading", { level: 3, name: "Owusu-Asiedu Avery" })).toHaveCount(0);
-    await cancelAndDiscard(page);
-    await expect(reviewWizard(page)).toBeHidden();
-    await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
-
-    // ══ 3. REMOVE: Back to the set, whose panel holds the checklist ══
-    // Navigation lives in the URL: Back steps from the section's set to the Insert type, then
-    // to the set with nothing picked under it.
+    // Navigation lives in the URL: Back is the Insert type with nothing picked, Forward the section's set.
     await page.goBack();
     await expect(columnOption(page, "Inserts", SECTION)).toBeVisible();
     await expect(columnSelection(page, "Inserts", SECTION)).toHaveCount(0);
-    await page.goBack();
+    await page.goForward();
+    await expect(columnSelection(page, "Inserts", SECTION)).toBeVisible();
+    await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
+
+    await syncChecklistButton(page).click();
+    // No marketplace is attached: the stored section is the only source, so no Match Cards. The
+    // cards save first (NEO-645), and every name being new in the custom sport, the walk opens.
+    const opened = await settleWalkAfterCommit(page, page.getByText(new RegExp(`Saved ${SECTION_ROWS} cards\\.`)).first());
+    expect(opened, "every card names a player new to the custom sport, so the walk opened").toBe(true);
+    await expect(tidyWalk(page)).toHaveAccessibleName(tidyUpName({ year: "2026", set, variant: SECTION }));
+    // The cards come in the walk's order, not file order: skip past each (Skip writes nothing)
+    // until his. Bounded by the section's rows; each skip is proved to have landed (skipCard).
+    const averyRow = tidyTile(page, "Player").getByRole("group", { name: `Player ${PLAYER}`, exact: true });
+    await skipUntil(page, averyRow, { maxCards: SECTION_ROWS });
+    // His card and its player name read first name first, the hyphenated surname whole; the
+    // printed order (last, first) names nothing.
+    await expect(tidyCardHeader(page, `#NNO · ${PLAYER}`)).toBeVisible();
+    await expect(averyRow.getByRole("button", { name: /^Not a player \(checklist, team card, stadium\)( .+)?$/ })).toBeVisible();
+    await expect(tidyWalk(page).getByText(/Owusu-Asiedu,? Avery/)).toHaveCount(0);
+    await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk on a card read from an Onyx PDF" });
+    // The parse is the subject, not the names: leave them for later, nothing written.
+    await saveForLater(page);
+    // Every card's player name is unanswered (pink), so every card counted is one to fix.
+    await expect(needsYouPill(page)).toHaveAccessibleName(`${SECTION_ROWS} need you, ${SECTION_ROWS} to fix`);
+
+    // ══ 3. REMOVE: back to the set, whose panel holds the checklist ══
+    // A fresh drill: Back from here steps through the walk's cards (each card shown is an address).
+    await drillToCustom(page, target);
     await expect(columnOption(page, "Variant Types", "Insert")).toBeVisible();
     await expect(columnSelection(page, "Variant Types", "Insert")).toHaveCount(0);
     await openAttributesPanel(page);

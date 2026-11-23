@@ -22,7 +22,7 @@
  * is almost certainly looking at the row they were about to re-create. Sorting
  * it to the top and labelling it "same name" is the difference between the
  * panel being a warning and it being a list. That tag is part of the row's
- * ACCESSIBLE NAME (`{pickLabel} — same name`), not decoration beside it: a
+ * ACCESSIBLE NAME (`{pickLabel} · same name`), not decoration beside it: a
  * warning only a sighted operator receives is not a warning. An alias hit is
  * `exact` too but is not the same name, so it follows the same-name rows and
  * precedes the close ones (NEO-462).
@@ -203,7 +203,7 @@ export function NearMatchPanel({
       (labelCounts.get(labelKey(r)) ?? 0) > 1
         ? `, option ${index + 1} of ${count}`
         : "";
-    return `${r.base}${ordinal}${r.sameName ? " — same name" : ""}`;
+    return `${r.base}${ordinal}${r.sameName ? " · same name" : ""}`;
   };
 
   return (

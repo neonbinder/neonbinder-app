@@ -34,7 +34,7 @@ Reference specs that show the patterns below:
 | `tests/home/landing-smoke.spec.ts` | signed-out page, reachability as the assertion |
 | `tests/set-selector/admin-missing-both-shows-warning.spec.ts` | dedicated `account=`, role-scoped asserts, `toBeHidden` |
 | `tests/set-selector/topps-chrome-add-feature.spec.ts` | the drill helper, a genuine "is it open?" branch |
-| `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` | entity-review wizard, minted names |
+| `tests/set-selector/tidy-up-team-link-remembers-the-name.spec.ts` | the Tidy Up walk's Team tile, minted names, Back through the walk |
 | `tests/labels/scan-visibility.spec.ts` | scoping to one list item; hidden-then-shown text |
 | `tests/admin/player-live-wikidata-enrichment.spec.ts` | a link whose name carries sr-only text; a sanctioned long wait |
 
@@ -223,7 +223,7 @@ typed into "+ Custom" (the form refuses the name) and never searched for.
   mobile") and `ATTEMPT_TOKEN` is that with hyphens stripped; anything that
   reconstructs a prefix from `WORKER_INDEX` by hand is wrong.
 - **Committing specs are sole writers and self-cleaning.** A spec that
-  commits data (wizard flows, set builds) owns what it commits, uses minted
+  commits data (checklist fetches, set builds) owns what it commits, uses minted
   names, and leaves nothing a later spec or the same worker's next run
   trips on. Fresh-only specs are listed under Gotchas.
 - **Tags.** `{ tag: ["@smoke", "@<area>"] }`: `@smoke` (the fast subset) plus
@@ -393,15 +393,28 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   person per worker for a spec that adds a Baseball player as scaffolding
   (see "Enrichment fixtures").
 - `support/theme.ts`: `expectLook`, `expectPageLook` (a light or dark page, proven by painted colour; theme specs), `paintsLook`, `pageHasBanner` (what `expectAccessible` uses to prove each mode; see "Accessibility checks").
-- `support/wizard.ts`: entity-review wizard (`reviewWizard`, `wizardProgress`,
-  `STEP_SUBTITLE`, `expectWizardStep`, `readProgress`, `expectNoStepCount`,
-  `expectNothingDecided`, `decidedSummary`, `readDecidedCount`,
-  `expectDecidedCount`, `nameStepSkip`, `readNameStep`, `expectNameStepLeft`,
-  `expectPostNameStepLeft`, `fetchChecklistToWizard`,
-  `fetchOneMarketplaceSetChecklistToWizard`, `cancelAndDiscard`,
-  `discardResumedReviewBatch`, `personSkip`, `walkToPlayerRow`,
-  `advanceToSave`, `readBackDecision`, `confirmSaveButton`). Each helper's
-  contract is in its doc comment; see "The entity-review wizard" under Gotchas.
+- `support/tidy-walk.ts`: the per-card Tidy Up walk (NEO-645). Open and read
+  it: `tidyWalk`, `tidyUpName`, `expectTidyWalkOpen`, `expectCardSettled`,
+  `expectCardsLeft`, `needsYouPill`, `openTidyWalk`, `settleWalkAfterCommit`
+  (after "Saved N cards.": did the walk open?), `tidyTile`, `pinkTile`,
+  `mustFixLine`, `tidyCardHeader`, `EDIT` (an answered row's `Edit <name>`
+  button name, cameo rows excluded; scope it to the row's group). Move:
+  `saveAndNext`, `skipCard`,
+  `skipUntil`, `saveForLater`, `finishTidyWalk`. Answer tiles:
+  `createPlayerOnOpenRow`, `createTeamOnOpenRow`, `answerPinkPlayerTiles`,
+  `answerPinkTeamTiles`, `answerPinkAutographTile`, `ruleOutOpenPlayerRows`,
+  `ruleOutOpenTeamRows`, `takeSourceSide`. Career gaps: `keepOpenCareerGaps(page)`
+  answers every open gap on the card "Keep as is" (writes nothing), because
+  Save & next over an open Career gap writes a stint from the set's year to the
+  player. Whole walks: `walkAnsweringEverything` (answers every pink Player and
+  Team tile, Save & next or Skip, returns a `WalkTally`; its `career?: "keep" |
+  "add"` option defaults to `"keep"`, which keeps every open gap first and
+  counts them in `WalkTally.careerKept`; `"add"` leaves them for Save & next to
+  write, so never use it where the player is a catalogue player),
+  `tidyForTheParallelBuild`. Fetch into
+  it: `fetchChecklistToTidyWalk`, `fetchOneMarketplaceSetChecklistToTidyWalk`
+  (`openOneMarketplaceSetBase` is in `set-builder.ts`). Each contract is in its
+  doc comment; see "The Tidy Up walk" under Gotchas.
 - `support/published-checklist.ts`: the publisher's-checklist upload
   (`usePublishersChecklist`, `expectTeamsFromChecklist`, `checklistFacts`,
   `CHECKLISTS`) and the captured CSVs in `fixtures/checklists/`. A spec that
@@ -415,20 +428,20 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   ticking " N of M cards ready." is aria-hidden, so read it with `getByText`;
   its Cancel is "Cancel card fetch", `cancelCardFetchButton`); the dialog opens
   only when a card needs the operator, with focus on the dialog itself
-  ("Match Cards — <set>"). A run with every card Matched at 100% skips it: the
-  line before the save reads "All N cards matched across BSC and your
-  checklist. No Match Cards needed, totally clean." (`matchedKeptSentence`),
-  and the saved line says why right after its count, "Saved N cards. BSC and
-  your checklist agreed on every one, so Match Cards sat this one out."
-  (`skippedSavedReason`). That line names Match Cards, so assert the dialog's
+  ("Match Cards — <set>"). A run with every card Matched at 100% skips it and
+  the cards SAVE first (NEO-645): the saved line says why right after its
+  count, "Saved N cards. BSC and your checklist agreed on every one, so Match
+  Cards sat this one out." (`skippedSavedReason`), then the teams line, and any
+  walk opens only after the save. The "All N cards matched…" line before the
+  save is a moment, never asserted. That line names Match Cards, so assert the dialog's
   absence by role (`matchCardsDialog`), never by text. Each file in
   `CHECKLISTS` carries `matchCards: { paused, live }` (`MATCH_CARDS`); a full
   capture skips, a file with a row left out, a tie or the publisher's own numbers
   opens, and an edit to the rows (appended, dropped, renumbered, split) opens.
-  Settle a fetch with `settleChecklistFetch(page, env, { facts, what, lands })`
-  (`lands`: `"review"`, `"saved"` or `"either"` for where a skip goes), which
+  Settle a fetch with `settleChecklistFetch(page, env, { facts, what })`, which
   branches on `opensMatchCards(facts, env)`, never on an `.or()` between the
-  dialog and the kept line. A new file gets its entry from a run, checked
+  dialog and the saved line; then settle the walk (`settleWalkAfterCommit(page,
+  savedLine(page, n))`, or `expectTidyWalkOpen` when a card needs a person). A new file gets its entry from a run, checked
   against `checklistMatch` (the product's matcher over the file and BSC's cards).
 - `support/bypass-proxy.mjs`: CI-only proxy that injects the preview's
   deployment-protection header and `x-vercel-skip-toolbar` (NEO-548: Vercel's
@@ -496,7 +509,7 @@ Idioms:
   and the `hasNot` filter then passes everything. Build the inner locator from
   `page.locator(...)` only when it is meant relative, or use `hasText`/`hasNotText`.
 - **`aria-disabled` buttons.** Much of the app disables with `aria-disabled`
-  (the wizard's "Add as New Team" while a lookup is in flight, between rows).
+  (the walk's Save & next while anything on the card is pink).
   Playwright treats that as disabled, so `click()` waits and times out at 7 s.
   When the flow waits for a button to become usable, locate only the enabled
   one: `getByRole("button", { name, disabled: false })`. When the flow taps a
@@ -517,72 +530,39 @@ Idioms:
   section is absent when everything paired. Branch on the thing the YAML
   branches on (`heading /^BSC only \([1-9]/` visible), not on a control
   inside it.
-- **Loops over wizard steps.** After acting on step N, wait for step N's own
-  control to go (`getByRole("button", { name: skipName, exact: true })`
-  `.toBeHidden()`) before looking for step N+1, or the next iteration can
-  act on the same step twice.
-- **The entity-review wizard ("Tidy up <set>", NEO-335, NEO-497).** The
-  dialog is named for the checklist it tidies: `Tidy up <year> <set>
-  <variant>`, e.g. `Tidy up 2024 Topps Chrome Refractor` (the year row, the
-  SET row, never the manufacturer, and the checklist's own row). A Base
-  checklist's title leaves "Base" out: `Tidy up 2024 Topps Chrome`. It reads `Tidy
-  up this set` only while those names load. The post-save attention walker
-  wears the same title. Find either by `TIDY_UP_NAME` (`/^Tidy up /`, via
-  `reviewWizard` or `getByRole("dialog", { name: TIDY_UP_NAME })`), never by
-  the old literal: an absence check on `Tidy up this set` would pass forever.
-  Assert the full name with `tidyUpName({ year, set, variant })` where the
-  spec knows its fixture, leaving `variant` out for a Base checklist (the
-  helper throws on "Base"); both fetch-to-wizard helpers already do. It was
-  "Tidy up this set" until NEO-497 and "Confirm New Players & Teams" before
-  NEO-335. The title holds the set's names, so while it is open a loose
-  `getByText(<set name>)` also matches it: scope to the row or use `exact`. The old
-  "N of M reviewed" line and its "N still being looked up" tail are gone (the
-  footer still says "N still looking up"). Header facts a spec may assert:
-  the subtitle (`New league`, `New team`, `New player`, `Which player is
-  this?`, `Cards with no team`, `Card titles`, `Ready to save`) and, since
-  NEO-467, the progress bar `getByRole("progressbar", { name: "Wizard
-  progress" })` (`wizardProgress`), whose `aria-valuetext` is the subtitle and
-  `aria-valuenow` a rounded percent (100 on Save). There is NO exact count: no
-  `Step x of y` anywhere, no growth line. Say where the wizard is by subtitle
-  (`expectWizardStep`); a batch with nothing decided is `expectNothingDecided`
-  (a name step, no "Decided (N)" history). Name steps of a kind share a
-  subtitle, so "this row was decided" is the row's own skip going
-  (`readNameStep`, then `expectNameStepLeft`), and "exactly one decision" is
-  the "Decided (N)" history growing by one (`readDecidedCount`, then
-  `expectDecidedCount`; read it on a settled name step, and only there: the
-  history is not shown on the teams, autograph or titles steps). A Next on a
-  post-name step is proved by `expectPostNameStepLeft` (a later subtitle). A
-  percent may only be held not to go down across a change, and only once the
-  new step is asserted; never pin its value except 100 on Save.
-  "Every name is decided" is the footer state `Next (Enter)` or
-  `Confirm & Save`: past the names come `Cards with no team`, `Autographed
-  cards` and `Card titles` (each only when needed, each with `Next (Enter)`
-  and NO Confirm & Save), then `Ready to save` (heading `Save N cards?`),
-  the end of the progress bar and the only step with Confirm & Save. `Autographed
-  cards` (NEO-345) is asked when a card the save will create carries BSC's AU
-  tag and the synced part has no autograph format; it is a radio group (`On
-  card` / `Sticker`, placeholder copy in `support/wizard.ts`) whose answer is
-  REQUIRED, so its Next is `aria-disabled` until one is picked and
-  `advanceToSave` picks `On card` for any spec that does not own the step. A spec whose feature is a name decision calls
-  `advanceToSave` to reach Save (Next leaves every line on its default); a
-  spec whose feature is the teams or titles step drives that step itself. A
-  sync with no unknown names opens the wizard only when a post-name step is
-  needed, straight onto it (subtitle `Cards with no team` or `Card titles`). The wizard only opens for names
-  the reference catalogue does not know, so a wizard spec needs a registered
-  fixture set (SET-REGISTRY.md). The post-save attention walker wears the same
-  title, subtitles and progress bar: tell them apart by the walker's `Skip for
-  now, card <number>`, and scope its progress bar to the walker's dialog. A
-  walker sitting's size is proved by the walk (one answer or skip per card,
-  then `All clear`), not by a count. To prove WHAT a decision was, read it back with
-  `readBackDecision` (the footer Back opens the most recent decision read-only
-  in the group `Decision for <name>`); the "Decided (N)" list is batch-ordered
-  and collapses past five entries, so it is no read-back. A Maestro-era scroll
-  or drag to bring a form above the footer has no Playwright counterpart:
-  click() scrolls and refuses to click through an overlapping control.
+- **Loops over walk cards.** The address changes BEFORE the next card
+  renders, so a footer move is proved by what is on screen: `saveAndNext` and
+  `skipCard` read the card's face (one `img` named "Card #<number>, <who>…")
+  before the press and wait for a face named otherwise (or the end screen),
+  so two NNO cards are still told apart. Never loop on the URL alone, or the
+  next iteration reads the old card's tiles.
+- **The Tidy Up walk (NEO-645).** It replaced the entity-review wizard and
+  the post-save attention walker. Match Cards' Confirm (or a single-source
+  fetch) SAVES the cards; the walk opens by itself when a saved card needs a
+  person (`settleWalkAfterCommit`), else from the checklist's pill ("N need
+  you", "1 needs you", plus ", M to fix" when M of them are pink; its text is
+  its name, so assert the whole string where the spec knows its cards). It is
+  a dialog named `Tidy up <year> <set> [<variant>]`: assert it with
+  `tidyUpName` (leave `variant` out for Base; the helper throws on "Base").
+  One card at a time: a face, a header line ("#38b · Mike Trout"), and tiles,
+  each a `group` named by its heading ("Sources disagree", "Player",
+  "Career", "Team", "Autograph", "Listing title", "More about this card").
+  A tile's level is its accessible description: "To fix" (pink, holds Save &
+  next), "To check" (blue), none. Purple notes are `role="note"` and never
+  stop a card. Every tile saves when it is answered, so nothing is staged and
+  nothing is discarded: "Save for later (Esc)" closes the walk writing
+  nothing, "Skip: not ready to list" moves on writing nothing, "Save & next
+  (Enter)" marks the card's blue items seen. The position is in the URL
+  (`?tidy=<card>|done`), so the browser's Back walks back through the cards;
+  the header's progress bar reads "N cards left" (`expectCardsLeft`). The end
+  screen counts skipped cards and has "Done (Esc)". A fetch writes its set,
+  so a spec that needs a first fetch of a real set is that set's registered
+  sole writer (SET-REGISTRY.md); a hand-made set reaches the walk through a
+  pasted checklist (`usePastedChecklist`).
 - **Option names include their badges.** A set-builder row reads
   "Base SL BSC" to a screen reader; pick rows by their own visible text with
   `columnOption()` (`.filter({ has: getByText(name, { exact: true }) })`).
-- **Fresh-only specs** (wikidata live proof, the committing wizard flows, the
+- **Fresh-only specs** (wikidata live proof, the first fetch of a real set, the
   specs that persist a name from `support/recorded-names.ts`) pass
   once per seed. A second local run fails at its "nothing exists yet"
   precondition; that is correct, not flaky. So does CI's retry of one: read the
@@ -709,7 +689,7 @@ await expectAccessible(page, { within: dialog, label: "New Team dialog" });
   finished (a dialog's open animation, a page flip, a list still filling):
   axe checks whatever is in the DOM at that moment, and a half-faded element
   measures as a contrast failure that no user sees. A dialog opening, a
-  wizard step, an error state and an empty state are each a state. It runs on both projects
+  walk card, an error state and an empty state are each a state. It runs on both projects
   with the same call, so the phone layout is checked too. `expectAccessible`
   also re-checks (up to three passes in all) a pass that has violations AND saw a
   finite animation or transition start while axe ran (a row fading into a live
@@ -717,7 +697,7 @@ await expectAccessible(page, { within: dialog, label: "New Team dialog" });
   that held still, is final, and the last pass is what it reports, so a
   violation the settled screen really has is never hidden.
 - **Helpers.** A `support/` helper whose product is a screen, dialog or
-  wizard it opens and returns with showing (`fetchChecklistToWizard`,
+  walk it opens and returns with showing (`fetchChecklistToTidyWalk`,
   `openCrossListForm`) runs `expectAccessible` itself on arrival, so every
   spec that uses it covers that state; do not repeat it in the spec. Helpers
   that only drive through intermediate states (the `drillTo*` cascade,
@@ -790,12 +770,12 @@ its Base Sync, `setup.spec.ts` uploads `fixtures/checklists/2024-topps-chrome-ba
 (BSC's own per-card answers for 2024 Topps Chrome Base, with card #300's row
 left out) through "Add the official checklist", asserts the result line
 `Teams from your checklist: N of M cards` (N read off the file by
-`checklistFacts`), and fails by name if the wizard opens on "Checklist says
-otherwise". So the seed asks BSC for the bulk checklist and for ONE card, and
+`checklistFacts`), and fails by name if a card of the walk opens on a
+"Sources disagree" tile. So the seed asks BSC for the bulk checklist and for ONE card, and
 **setup is no longer the live proof for per-card team lookups.** The live proofs
 are `checklist-bsc-team-enrichment` (card #300), the stall spec
 (`checklist-fetch-bounds-a-bsc-stall-and-queues-the-cards`) and the upload spec
-(`checklist-published-upload-skips-bsc-and-asks-on-disagreement`). Do not read a
+(`checklist-published-upload-skips-bsc-and-asks-on-the-sources-disagree-tile`). Do not read a
 green seed as evidence that a per-card BSC lookup works. The Future Stars insert
 uploads its own file too (20 cards, `fixtures/checklists/2024-topps-chrome-insert-future-stars.csv`);
 the Gold Wave build is a copy of Base's cards and asks BSC for nothing per card.
@@ -1048,7 +1028,7 @@ trip the spec waits for (faster specs). So a spec spends a per-card lookup only 
 the card it is about:
 
 - **Every real-set fetch uploads its publisher checklist first** (`usePublishersChecklist`,
-  or `fetchChecklistToWizard`, which does it for the default set), before Sync card
+  or `fetchChecklistToTidyWalk`, which does it for the default set), before Sync card
   checklist. BSC is then asked per card only for rows left out on purpose
   (`--omit-number` / `--omit-player` in `tools/capture-bsc-checklist-teams.mjs`) and
   for a number that appears twice (rule 7: never keyed on a non-unique number).
@@ -1243,7 +1223,7 @@ rejected-credentials answer, which is what `credentials-lifecycle` types.
 
 ## Enrichment fixtures (NEO-289)
 
-The entity-review wizard enriches players, teams and leagues from Wikidata
+The product enriches the players and leagues it creates from Wikidata
 (and ESPN) as before, but on **dev and PR previews** the names the seed set
 surfaces (2024 Topps Chrome, Baseball) are answered from a committed
 recording (`convex/adapters/__fixtures__/enrichment-lookups.json`) instead of
@@ -1256,8 +1236,8 @@ no-match and logged as `enrichment_fixture_live_refused` (error level), except
 the live-proof player below. Record a name before a spec depends on its
 answer. What that changes:
 
-- **`setup.spec.ts` no longer proves the live lane.** Its wizard drain
-  (the names-done footer, 240 s) is now an upper bound over a fixture-backed hit:
+- **`setup.spec.ts` no longer proves the live lane.** Its drain (the Tidy Up
+  walk, `walkAnsweringEverything`) is now an upper bound over a fixture-backed hit:
   seconds when the recording covers the seed, network time only for names it
   does not. The 240 s stays (the seed's sanctioned cold-path ceiling), but a seed that needs it with the recording in
   place is a coverage gap, not a slow Wikidata. CI prints the coverage report
@@ -1287,7 +1267,7 @@ answer. What that changes:
 - **Every other spec stays off live Wikidata** (Jason, 2026-10-30: "Use real
   names in tests. Keep a single test that does a real Wikidata lookup").
   Every player and league the product CREATES is looked up once, through the
-  same 5-wide pool the wizard's lookups wait in, so a minted name
+  same 5-wide pool a fetch's lookups wait in, so a minted name
   (`PM<token>`) is a live miss that holds a slot. Teams are not looked up on
   creation (NEO-254), and a custom sport has no `sportConfig.wikidata`, so
   neither costs anything. A spec that adds a Baseball player only as
@@ -1297,8 +1277,8 @@ answer. What that changes:
   per worker per spec. Such a spec is fresh-only. The unit test refuses a
   pool name that is not a recorded no-match. Since NEO-413 the same holds
   for every player, league or team a spec makes that the product looks up
-  (a Football player, a league added by hand or in the wizard, a career
-  team staged in the wizard): it comes from `recordedNoMatchName(env,
+  (a Football player, a league added by hand, a career team added on the
+  walk's Career tile): it comes from `recordedNoMatchName(env,
   "<spec>[:<role>]")`, a real name recorded as a no-match in that sport and
   absent from the catalogue. Never mint a token for a name that reaches a
   lookup; under the recording it is refused and logged as

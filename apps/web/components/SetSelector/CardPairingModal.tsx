@@ -28,6 +28,7 @@ import { Input } from "../primitives/Input";
 import { countPairingEdits } from "./pairing-session-edits";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import { compareCardNumbers, preferCardNumber } from "@/lib/cards/card-number";
+import { hasCardName } from "@/lib/cards/unnamed-card";
 import { keyboardAwareCollision } from "@/lib/dnd/keyboard-aware-collision";
 // NEO-199: the wrong-player check is SHARED with the server. `fetchCardChecklist`
 // runs this exact function over an auto-matched pair before it discards the
@@ -302,7 +303,7 @@ export type PairingCard = {
    * by NAME while their numbers differ (names first, numbers confirm). The
    * card's own `cardNumber` is the chosen one. Present only when the numbers
    * differ; a key only when that source is in the pair. Drives the "Numbers
-   * differ" note. Stripped at Confirm (`committable`).
+   * differ" note, and rides to the commit (NEO-645: the new row stores it).
    */
   sourceNumbers?: SourceNumbers;
   /**
@@ -1365,6 +1366,9 @@ export function checklistRowOf(card: PairingCard): ChecklistLinkRow {
     // sends it to the server and the claim is not lost.
     ...(card.isProspect ? { prospect: true as const } : {}),
     ...(card.teamCell ? { claim: card.teamCell } : {}),
+    // NEO-645: a row with no player is named for what it printed ("Checklist",
+    // "Team Card"); the placeholder name is no name and is not sent.
+    ...((card.players ?? []).length === 0 && hasCardName(card.cardName) ? { cardName: card.cardName } : {}),
   };
 }
 

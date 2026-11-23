@@ -506,10 +506,11 @@ describe("NEO-535 — Set name in titles on the step", () => {
   test("the box shows whenever the step lists titles, a stored value or not", () => {
     expect(shortNameFieldApplies(cards, context())).toBe(true);
     expect(shortNameFieldApplies(cards, OVER)).toBe(true);
-    // A stored value the builder used is still a title the operator should
-    // see (Jason Q1: such cards appear in the dialog).
+    // A stored value the builder used, whose titles then fit with nothing left
+    // out, is nothing for the operator to check (NEO-645, Jason 2026-11-23); one
+    // whose titles still run over the cap stays on the step (the test below).
     expect(shortNameFieldApplies(cards, context({ listingShortName: "2026 Topps Chrome" }))).toBe(
-      true,
+      false,
     );
     // Nothing listed: no box.
     expect(shortNameFieldApplies(cards, SHORT)).toBe(false);
@@ -616,7 +617,10 @@ describe("a split team in the preview (NEO-606)", () => {
   /**
    * A 50-character "Set name in titles" box: "<box> Shohei Ohtani #1" is 66,
    * "New York Yankees" would make 83, "Yankees" 74. The card is on the step
-   * because its own description lost a first name and the box did not.
+   * only while the box title leaves something out (NEO-645, Jason 2026-11-23:
+   * a title that fits because of the box, with nothing left out, is not
+   * flagged, so it is not listed): the team is the thing out when it has no
+   * split, and nothing is out when it does.
    */
   const BOX = "B".repeat(50);
   const boxed = (extra: Partial<TitleContext> = {}) =>
@@ -638,14 +642,13 @@ describe("a split team in the preview (NEO-606)", () => {
       }),
     );
 
-  test("the preview says 'Yankees' from the server context, exactly as the stored title does", () => {
+  test("with the split from the server context 'Yankees' fits, nothing is left out, and the card is not on the step", () => {
     const ctx = boxed({ teamSplits: [NY] });
-    const [row] = rowsOf(buildTitleGroups([teamCard], ctx).titleGroups);
     const written = stored(ctx, [NY]);
-    expect(row.title).toBe(`${BOX} Shohei Ohtani #1 Yankees`);
-    expect(row.title).toBe(written.title);
-    expect(row.leftOut).toEqual(written.dropped);
-    expect(row.leftOut).toEqual([]);
+    expect(written.title).toBe(`${BOX} Shohei Ohtani #1 Yankees`);
+    expect(written.dropped).toEqual([]);
+    expect(rowsOf(buildTitleGroups([teamCard], ctx).titleGroups)).toEqual([]);
+    expect(cardsNeedingTitleReview([teamCard], ctx)).toEqual([]);
   });
 
   test("without the split the team is dropped whole, in the preview and the stored title alike", () => {
@@ -666,11 +669,17 @@ describe("a split team in the preview (NEO-606)", () => {
       teamSplits: [NY],
     };
     const ctx = boxed();
+    // The split reaches the preview: "Yankees" fits, so nothing is left out and
+    // the card is not listed. Without it the team would be dropped whole.
+    expect(stored(ctx, [NY]).title.endsWith("#1 Yankees")).toBe(true);
+    expect(
+      rowsOf(buildTitleGroups([card("1")], ctx, [{ teamIds: [id] }], { names }).titleGroups),
+    ).toEqual([]);
+    const withoutSplit = { names: { teamNameById: names.teamNameById } };
     const [row] = rowsOf(
-      buildTitleGroups([card("1")], ctx, [{ teamIds: [id] }], { names }).titleGroups,
+      buildTitleGroups([card("1")], ctx, [{ teamIds: [id] }], withoutSplit).titleGroups,
     );
-    expect(row.title).toBe(stored(ctx, [NY]).title);
-    expect(row.title.endsWith("#1 Yankees")).toBe(true);
+    expect(row.leftOut).toEqual(["New York Yankees"]);
   });
 
   test("a team created in the Names phase carries the Location / Name it was created with", () => {
@@ -682,12 +691,15 @@ describe("a split team in the preview (NEO-606)", () => {
       },
     ];
     const ctx = boxed({ teams: [] });
-    const [row] = rowsOf(
-      buildTitleGroups([card("1", { teams: ["NYY"] })], ctx, undefined, { names: { rows } })
-        .titleGroups,
-    );
-    expect(row.title).toBe(stored(ctx, [NY]).title);
-    expect(row.title.endsWith("#1 Yankees")).toBe(true);
+    // "Yankees" fits with the split it was created with: nothing is left out,
+    // so the card is not on the step.
+    expect(stored(ctx, [NY]).title.endsWith("#1 Yankees")).toBe(true);
+    expect(
+      rowsOf(
+        buildTitleGroups([card("1", { teams: ["NYY"] })], ctx, undefined, { names: { rows } })
+          .titleGroups,
+      ),
+    ).toEqual([]);
   });
 
   test("a team with no location (no split) is dropped whole", () => {

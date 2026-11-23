@@ -14,8 +14,7 @@ hand-added card sorts first, `editCardButton(page, card)`), then press the
 drawer's `Next card` / `Previous card` (native `disabled` at the ends) until the
 `Card name` textbox holds the wanted name (case-insensitive contains). Prove each
 press moved the drawer (`not.toHaveValue(before)`). A name to look for can be
-read off the wizard's `Skip <name> — not a person` aria-label while the row is
-presented. A teams-step line is the radiogroup `Team for <name>` (exact).
+read off the open walk card's face (img `Card #NNO, <who>[, <teams>]`) or the Player row's group name `Player <printed>`; never `tidyCardIdentity`, which yields `#NNO` alone.
 
 A sport row the suite flips a flag on is global state: normalise a leftover at
 the start (clear if pressed) and clear it at the end, since sole-writer specs

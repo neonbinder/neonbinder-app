@@ -1338,6 +1338,15 @@ describe("checklistRowLine (NEO-490)", () => {
     ).toMatchObject({ prospect: true, claim: "Cincinnati Reds / Prospect (Frisco)" });
   });
 
+  test("a checklist-only card with no player sends its name as the row's (NEO-645), a placeholder or a player-named one does not", () => {
+    const base = { cardNumber: "3", platformData: {} };
+    expect(checklistRowOf({ ...base, cardName: "Team Card" })).toMatchObject({ cardName: "Team Card" });
+    expect(checklistRowOf({ ...base, cardName: "Card #3" })).not.toHaveProperty("cardName");
+    expect(
+      checklistRowOf({ ...base, cardName: "Mike Trout", players: ["Mike Trout"] }),
+    ).not.toHaveProperty("cardName");
+  });
+
   test("without the noNumber flag a number is a number, even one spelled NNO", () => {
     expect(checklistRowLine({ number: "NNO", players: ["Mike Lowell"], teams: [] })).toBe(
       "#NNO Mike Lowell",

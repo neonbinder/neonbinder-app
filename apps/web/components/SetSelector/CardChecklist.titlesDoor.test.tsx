@@ -11,6 +11,7 @@
 
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
+import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
 
@@ -65,7 +66,6 @@ vi.mock("./CardChecklistItem", () => ({
   default: ({ card }: { card: { cardName: string } }) => <div>{card.cardName}</div>,
 }));
 vi.mock("./CardDetailPanel", () => ({ default: () => null }));
-vi.mock("./EntityReviewWizard", () => ({ default: () => null }));
 vi.mock("./CardPairingModal", () => ({ default: () => null }));
 vi.mock("./sync-review-modal", () => ({
   default: () => null,
@@ -73,10 +73,9 @@ vi.mock("./sync-review-modal", () => ({
 }));
 vi.mock("./CrossListingImportModal", () => ({ default: () => null }));
 // A visible stand-in, so "the walker opened" is observable without its queue.
-vi.mock("./CardAttentionWalker", () => ({
+vi.mock("./tidy/TidyUpWalk", () => ({
   default: () => <div role="dialog" aria-label="Walker stand-in" />,
 }));
-vi.mock("./SkippedNamesPanel", () => ({ default: () => null }));
 vi.mock("./TeamPicker", () => ({ default: () => null }));
 vi.mock("./PlayerPicker", () => ({ default: () => null }));
 
@@ -123,12 +122,14 @@ const PARALLEL_ROLE = { role: "parallel" as const, sourceId: INSERT_ID, sourceVa
 
 function ui(parallelBuild?: React.ComponentProps<typeof CardChecklist>["parallelBuild"]) {
   return (
-    <CardChecklist
-      variantId={VARIANT_ID}
-      sourceChips={{}}
-      sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-      parallelBuild={parallelBuild}
-    />
+    <MemoryRouter>
+      <CardChecklist
+        variantId={VARIANT_ID}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        parallelBuild={parallelBuild}
+      />
+    </MemoryRouter>
   );
 }
 
@@ -216,7 +217,7 @@ describe("CardChecklist — the Fix card titles door (NEO-535)", () => {
       const line = screen.getAllByRole("status").find((n) => /^Saved 1 title/.test(n.textContent ?? ""));
       expect(line).toBeTruthy();
       await waitFor(() =>
-        expect(document.activeElement).toBe(screen.getByRole("button", { name: "1 needs you" })),
+        expect(document.activeElement).toBe(screen.getByRole("button", { name: "1 needs you, 1 to fix" })),
       );
     });
 

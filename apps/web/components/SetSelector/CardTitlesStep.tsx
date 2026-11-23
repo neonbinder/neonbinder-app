@@ -947,9 +947,8 @@ function TitleRow({
             <span />
           )}
           <span id={meterId}>
-            {/* Neutral until past the cap (no `soft` bands): every title on
-                this step sits near 80, so "may clip in search" would be on
-                every row and say nothing. TitleFixer keeps its bands. */}
+            {/* Neutral until past the cap: every title on this step sits near
+                80, and no counter warns below the cap (NEO-645). */}
             <TitleLengthMeter length={value.trim().length} max={LISTING_TITLE_MAX} />
           </span>
         </div>

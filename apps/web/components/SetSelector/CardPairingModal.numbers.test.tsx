@@ -10,7 +10,8 @@
  *
  * Pinned here: the note, its tooltip and screen-reader words, the amber %,
  * the "Checklist: NNO" chip, the number a hand link picks, what an Unlink
- * restores, and that `sourceNumbers` never reaches the commit.
+ * restores, and that `sourceNumbers` reaches the commit (NEO-645: it is stored on
+ * the new row, where the Tidy Up walk's "Numbers didn't match" note reads it).
  */
 
 import { describe, expect, test, vi } from "vitest";
@@ -194,7 +195,7 @@ describe("the number picker", () => {
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
     const [card] = confirmedCards(onConfirm);
     expect(card.cardNumber).toBe("NNO");
-    expect(card).not.toHaveProperty("sourceNumbers");
+    expect(card.sourceNumbers).toEqual({ bsc: "OV-ANFI", checklist: "NNO" });
   });
 
   test("arrow keys move the pick, and focus goes with it", async () => {
@@ -410,7 +411,7 @@ describe("a hand link between BSC and SportLots", () => {
     );
   };
 
-  test("letters beat digits: the card takes the SportLots number, and the commit carries no sourceNumbers", async () => {
+  test("letters beat digits: the card takes the SportLots number, and the commit carries both printed numbers", async () => {
     const bsc = bscCard("12", "Alpha Card");
     const sl = slCard("13b", "Beta Card");
     const { onConfirm } = mount({ unmatchedBsc: [bsc], unmatchedSl: [sl] });
@@ -419,7 +420,7 @@ describe("a hand link between BSC and SportLots", () => {
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
     const [card] = confirmedCards(onConfirm);
     expect(card.cardNumber).toBe("13b");
-    expect(card).not.toHaveProperty("sourceNumbers");
+    expect(card.sourceNumbers).toEqual({ bsc: "12", sportlots: "13b" });
   });
 
   test("the same kind of number keeps BSC's", async () => {
@@ -502,7 +503,7 @@ describe("Unlink on the server's checklist pair", () => {
 });
 
 describe("a checklist row the operator links by hand", () => {
-  test("the card takes the more specific number; the commit carries no sourceNumbers", async () => {
+  test("the card takes the more specific number; the commit carries every printed number", async () => {
     const row: PairingCard = {
       cardNumber: "38a",
       cardName: "Ted Williams",
@@ -531,7 +532,7 @@ describe("a checklist row the operator links by hand", () => {
     expect(resolve).toHaveBeenCalledTimes(1);
     const [card] = confirmedCards(onConfirm);
     expect(card.cardNumber).toBe("38a");
-    expect(card).not.toHaveProperty("sourceNumbers");
+    expect(card.sourceNumbers).toEqual({ bsc: "38", sportlots: "5", checklist: "38a" });
   });
 });
 
@@ -578,7 +579,7 @@ describe("a minted variation card on the Keeping shelf", () => {
     expect(card.numberMinted).toBe(true);
     expect(card.variationGroup).toBe("grp-38");
     expect(card).not.toHaveProperty("preKept");
-    expect(card).not.toHaveProperty("sourceNumbers");
+    expect(card.sourceNumbers).toEqual({ sportlots: "38" });
   });
 });
 

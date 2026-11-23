@@ -18,4 +18,4 @@ product behaved as intended.
 **How to apply:** whenever a copy change adds a statement beside a refusal (a
 hint, a status line), audit every absence check on that copy in the specs; a
 red there is usually the spec, so read error-context to see which paragraph
-matched. Related: [[near-match-absence-proved-by-the-same-locator]].
+matched. Related: [[patterns_near_match_absence_proved_by_the_same_locator]].

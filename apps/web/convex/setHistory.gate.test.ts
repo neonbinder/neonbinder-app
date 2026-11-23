@@ -19,6 +19,7 @@
  * `t.query`, so the REAL queries run against the in-memory database.
  */
 
+import { tidyRowAsReviewRow } from "./lib/tidyAnswerDecisions";
 import { convexTest } from "convex-test";
 import { getFunctionName } from "convex/server";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -199,11 +200,16 @@ async function gate(
   );
 }
 
-async function rowsOf(t: T, batchId: string | undefined) {
-  if (!batchId) return [];
-  return (await t.run((ctx) => ctx.db.query("entityReviewQueue").collect())).filter(
-    (row) => row.batchId === batchId,
-  );
+/**
+ * NEO-645 — the gate's rows are `tidyNames` rows (one per leaf, kind and name,
+ * answered by `decision` -> `answer`), read through the adapter the commit
+ * prelude reads them through, so every assertion below keeps its meaning.
+ * There is no batch: the argument is kept so each call site still reads as the
+ * gate run it came from.
+ */
+async function rowsOf(t: T, _fromGate?: unknown) {
+  const rows = await t.run((ctx) => ctx.db.query("tidyNames").collect());
+  return rows.map((row) => tidyRowAsReviewRow(row));
 }
 
 /** `runQuery` straight onto the real internal queries, for `scanSetHistory`. */
@@ -226,7 +232,7 @@ describe("the gate: set history against today's in-sport lookup (D3)", () => {
     const result = await gate(t, p.insert, baseball, ["Bo Jackson"]);
 
     expect(result.unknownPlayers).toEqual([]);
-    expect(result.batchId).toBeUndefined();
+    expect(await rowsOf(t, result.batchId)).toEqual([]);
   });
 
   test("history naming a different player than the lookup is a visible row, history first", async () => {
@@ -555,7 +561,7 @@ describe("the gate: Hall of Fame (rule D) is a visible link, and history outrank
     const result = await gate(t, p.insert, baseball, ["Frank Thomas"]);
 
     expect(result.unknownPlayers).toEqual([]);
-    expect(result.batchId).toBeUndefined();
+    expect(await rowsOf(t, result.batchId)).toEqual([]);
   });
 
   test("when history names the OTHER man, history wins over the Hall of Famer", async () => {
@@ -707,7 +713,7 @@ describe("the gate: autoLinkedCount tells the client a batch holds decided rows 
 
     expect(result.unknownPlayers).toEqual([]);
     expect(result.unknownTeams).toEqual([]);
-    expect(result.batchId).toBeDefined();
+    expect((await rowsOf(t, result.batchId)).length).toBeGreaterThan(0);
     expect(result.autoLinkedCount).toBe(2);
     const rows = await rowsOf(t, result.batchId);
     expect(rows.map((r) => r.decision)).toEqual(
@@ -728,12 +734,12 @@ describe("the gate: autoLinkedCount tells the client a batch holds decided rows 
 
     // History and the lookup agree (D3): silent, no batch.
     const silent = await gate(t, p.insert, baseball, ["Bo Jackson"]);
-    expect(silent.batchId).toBeUndefined();
+    expect(await rowsOf(t, silent.batchId)).toEqual([]);
     expect(silent.autoLinkedCount).toBe(0);
 
     // An unknown name opens a batch, but nothing in it was decided for the operator.
     const unknown = await gate(t, p.insert, baseball, ["Nobody Anywhere"], ["Nowhere Nobodies"]);
-    expect(unknown.batchId).toBeDefined();
+    expect((await rowsOf(t, unknown.batchId)).length).toBeGreaterThan(0);
     expect(unknown.unknownTeams).toEqual(["Nowhere Nobodies"]);
     expect(unknown.autoLinkedCount).toBe(0);
   });
@@ -1077,7 +1083,7 @@ describe("scanSetHistory: an incomplete history is not used at all", () => {
     // scan is ignored, so the lone baseball Bo Jackson answers, silently.
     const result = await gate(t, p.insert, baseball, ["Bo Jackson"]);
     expect(result.unknownPlayers).toEqual([]);
-    expect(result.batchId).toBeUndefined();
+    expect(await rowsOf(t, result.batchId)).toEqual([]);
     void boBaseball;
   });
 });

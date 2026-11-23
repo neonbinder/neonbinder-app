@@ -1,26 +1,19 @@
 ---
-name: patterns-ready-at-insert-preselect-has-no-career-editor
-description: A player row inserted READY with a preselect shows no career editor, so a helper or spec that needs a creatable player must skip past it; real-name fixtures can gain a namesake from seeded data in another sport
+name: patterns_ready_at_insert_preselect_has_no_career_editor
+description: A Player row with one namesake on file leads with "Link to <name> (<sport>)"; creating needs the demoted "anyway"; real-name fixtures can gain a namesake from seeded data in another sport
 metadata:
   type: project
 ---
 
-A player with one namesake on file, in any sport, is inserted READY with no
-lookup. Its footer primary reads `Link to <name> (<sport>)`, and it offers no
-career editor, no "Decide team" and no automatic staging. "Add as New Player
-anyway" is the press that requests the lookup and opens the New Player step.
+A player name with one namesake on file, in any sport, is a READY row with no lookup: its lead action is
+`Link to <name> (<sport>)` and "Add as new player anyway" is demoted (it only OPENS the plain create). A real-name
+fixture has no fixed set of namesakes: seeded reference data in another sport can give any name one, so a row that
+offered a plain create on one seed leads with a link on the next.
 
-**Why:** a person row is not a creatable row. A real-name fixture has no fixed
-set of namesakes: seeded reference data in another sport can give any name one,
-so a row that was creatable on one seed can be a preselect on the next.
-
-**How to apply:**
-- A caller that must create the player it lands on uses
-  `walkToPlayerRow(page, { readyToCreate: true })`, which skips preselected
-  rows as well as held ones.
-- Match the preselect by its trailing `(<sport>)`: a plain exact match reads
-  `Link to <name>` and a pick-step row reads `Link to <name>, ...`.
-- A skip can land on a team step or a lookup wait, so re-run the walk over the
-  team/league steps after it rather than asserting the next player at once.
-- A pick step ("Which <name> is this?") has no career editor either.
+**How to apply (Tidy up walk, `support/tidy-walk.ts`):**
+- A spec whose intent is "this name is new" uses `createPlayerOnOpenRow` (first row offering a plain create) or
+  `answerPinkPlayerTiles` (`promoted: "create" | "link"` picks what a promoted row gets).
+- Match the promoted link by its trailing `(<sport>)`: an exact match reads `Link to <name>` and a pick-step row
+  reads `Link to <name>, ...`. A pick step ("Which <name> is this?") offers no create until its own "new" option.
+- A fixture the spec needs creatable must use a minted name, not a real one.
 - See [[patterns_button_name_substring_hides_demoted_variants]].

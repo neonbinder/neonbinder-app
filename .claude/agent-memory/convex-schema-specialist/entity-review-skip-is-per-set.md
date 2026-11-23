@@ -26,3 +26,8 @@ with [[staging-tables-scope-per-operator]]: `entityReviewQueue.createdByUserId`
 scopes *reads* per operator, but `entityReviewSkips.skippedByUserId` is
 audit-only and deliberately does NOT scope reads — a skip is a fact about the
 set's data, so it applies to every operator who fetches that set afterwards.
+
+**NEO-645 (2026-11-21):** skips are being migrated into `tidyNames`
+`notEntity` answers with the same per-leaf scope; readers dual-read both
+tables until a follow-up ticket removes `entityReviewSkips`. The scope rule
+above carries over unchanged. See [[project-neo645-tidy-names-schema]].

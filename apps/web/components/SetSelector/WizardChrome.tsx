@@ -51,7 +51,8 @@ import { useState, type ReactNode } from "react";
  *   change inside one region instead of arriving with a new one.
  * The subtitle row has a fixed minimum height whatever it says, so the body
  * below the header never moves between steps (the NEO-110 rule the wizard's
- * footer already lives by).
+ * footer already lives by). Its side padding is the body's (`px-5`), so title
+ * and cards share one left edge.
  */
 
 /** The title while the set's names are still loading, or none is known. */
@@ -212,7 +213,7 @@ export default function WizardChrome({
 
   return (
     <header className="shrink-0">
-      <div className="px-6 pt-4 pb-3">
+      <div className="px-5 pt-4 pb-3">
         {/* A long set name wraps in balanced lines; `wrap-anywhere` breaks a
             single unbroken word. Past three lines it is clamped VISUALLY
             only: the text stays whole, so the heading's accessible name (and

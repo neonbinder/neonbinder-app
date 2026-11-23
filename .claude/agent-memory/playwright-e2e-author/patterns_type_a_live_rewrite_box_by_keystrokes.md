@@ -9,4 +9,4 @@ metadata:
 
 **Why:** tests prove the product as a user drives it (hard rule 1); a fill-only spec stays green over a control that destroys work under real typing.
 
-**How to apply:** for any box whose onChange rewrites sibling fields, drive at least one step with `box.focus(); box.press("End");` and a bounded `for` of `box.press("Backspace")` (or `pressSequentially`), then assert the final values. Before writing it, run the product's own helpers over each intermediate text in a scratchpad tsx script (`leftOutOfTitle`, `swapSetNameInTitle`) to predict where a row flips. Keep `fill` where a paste-like replace is the claim. Related: [[title-fixture-arithmetic]].
+**How to apply:** for any box whose onChange rewrites sibling fields, drive at least one step with `box.focus(); box.press("End");` and a bounded `for` of `box.press("Backspace")` (or `pressSequentially`), then assert the final values. Before writing it, run the product's own helpers over each intermediate text in a scratchpad tsx script (`leftOutOfTitle`, `swapSetNameInTitle`) to predict where a row flips. Keep `fill` where a paste-like replace is the claim. Related: [[patterns_title_fixture_arithmetic]].

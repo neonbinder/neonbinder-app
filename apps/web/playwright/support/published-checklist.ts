@@ -1,6 +1,6 @@
 /**
  * NEO-478 / NEO-482: the publisher's checklist, uploaded through the Set
- * Builder's "Add the official checklist" dialog before Sync card checklist.
+ * Builder's "Add the official checklist" dialog before the checklist fetch.
  *
  * A checklist with a team beside each card means a fetch asks BuySportsCards
  * for nothing per card (D4): the specs that used to make one `card-listing` call
@@ -55,7 +55,6 @@ export const CHECKLISTS = {
   fortWorthFire: "1995-hockey-fort-worth-fire-chl-base",
   oklahomaCityBlazers: "1995-hockey-oklahoma-city-blazers-chl-base",
   newHavenRavens: "1996-new-haven-ravens-rally-raffle-base",
-  welcomeToTheClub: "2025-topps-welcome-to-the-club-3x-mvp-base",
   bbmRookieEditionPremium: "2024-bbm-rookie-edition-premium-base",
   /**
    * Baseball 2024 Topps Chrome Base, the seed's own fetch: 334 rows, card #300's row LEFT OUT
@@ -178,7 +177,6 @@ const MATCH_CARDS: Record<ChecklistName, MatchCardsFact> = {
   "1995-hockey-fort-worth-fire-chl-base": opens(false),
   "1995-hockey-oklahoma-city-blazers-chl-base": opens(false),
   "1996-new-haven-ravens-rally-raffle-base": opens(false),
-  "2025-topps-welcome-to-the-club-3x-mvp-base": opens(false),
   "2024-bbm-rookie-edition-premium-base": opens(false),
   // Card #300's row is left out, so #300 is a BSC-only card.
   "2024-topps-chrome-base": opens(true),
@@ -443,7 +441,7 @@ export function nearNamePair(
   return { score: pair.nameScore, confidence: pair.confidence, numbersAgree: pair.numbersAgree };
 }
 
-/** The button beside "Sync card checklist". Contract: a locator, nothing waited for. */
+/** The button beside the card checklist's fetch button (`syncChecklistButton`). Contract: a locator, nothing waited for. */
 export function publishersChecklistButton(page: Page): Locator {
   return page.getByRole("button", { name: "Add the official checklist" });
 }
@@ -513,7 +511,7 @@ export async function usePublishersChecklist(
   const captured = checklistFacts(name, { edits });
   // NEO-640: an edit to the rows themselves opens Match Cards: an appended row is "Checklist only",
   // a dropped one leaves its card without a row, and a renumbered or split one pairs by its stem
-  // with a number for the operator to choose. A team cell changes no pair (the wizard settles it).
+  // with a number for the operator to choose. A team cell changes no pair (the walk settles it).
   const structural =
     (edits.extraRows?.length ?? 0) > 0 ||
     (edits.drop?.length ?? 0) > 0 ||
@@ -571,7 +569,7 @@ export async function usePastedChecklist(page: Page, csv: string, rows: number):
  *
  * NEO-496: when the fetch opens Match Cards (a checklist is a source, so a
  * one-marketplace leaf with one is two sources), the line is on the page while
- * the dialog is open; once Confirm hands the cards to the wizard it is said
+ * the dialog is open; once Confirm saves the cards it is said
  * again only on the line the save lands with. Assert it before Confirm
  * (`confirmChecklistMatchCards` does) or on the saved line.
  */
@@ -608,10 +606,10 @@ export function matchCardsDialog(page: Page): Locator {
  * waits are 7 s of our own time plus the seconds the screen says it is waiting
  * on BSC (`expectAfterMarketplace`).
  *
- * Contract: ENTRY Sync card checklist has just been pressed with a checklist in
+ * Contract: ENTRY the fetch button (`syncChecklistButton`) has just been pressed with a checklist in
  * play (pasted, or the leaf's sections of the set's stored checklist). EXIT the
- * dialog was confirmed and is gone; the wizard (or the saved line) is the
- * caller's to wait for. With `facts`, the "Teams from your checklist: N of M
+ * dialog was confirmed and is gone; the walk is the caller's to wait for (the
+ * save lands first). With `facts`, the "Teams from your checklist: N of M
  * cards" line was asserted while the dialog was open (the only time before the
  * save that it is on the page).
  */
@@ -658,24 +656,6 @@ export function cancelCardFetchButton(page: Page): Locator {
 }
 
 /**
- * NEO-640: the line a skipped Match Cards leaves before the save, "All N cards matched across BSC
- * and your checklist. No Match Cards needed, totally clean." ("The 1 card matched across …" for
- * one). A skip is only ever BSC and the file (`MATCH_CARDS`: a set with a SportLots side is written
- * to open live). The line goes on with the paused sentence and the teams line, so only its start is
- * pinned. Contract: a locator, nothing waited for.
- */
-export function matchedKeptLine(page: Page, cards: number): Locator {
-  return page.getByText(new RegExp(`^${escapeRe(matchedKeptSentence(cards))}`)).filter({ visible: true });
-}
-
-/** NEO-640: the kept sentence itself (`matchedKeptLine`). */
-export function matchedKeptSentence(cards: number): string {
-  return cards === 1
-    ? "The 1 card matched across BSC and your checklist. No Match Cards needed, totally clean."
-    : `All ${cards} cards matched across BSC and your checklist. No Match Cards needed, totally clean.`;
-}
-
-/**
  * NEO-640: why Match Cards sat out, as the saved line says it right after "Saved N cards." (ahead
  * of any caveat and the teams line). It names the dialog, so the dialog's absence is asserted by
  * its role, never by text.
@@ -694,73 +674,48 @@ export function savedLine(page: Page, cards: number): Locator {
 }
 
 /**
- * NEO-640: a fetch whose every card paired with its own row at 100% skips Match Cards. The run
- * starts on the progress line (with its Cancel), and when the fetch ends the line goes with no
- * dialog standing. Where it lands is the caller's `lands`, which the fixture decides:
- *  - `"review"`: names (or teams, titles, a career check) are left to settle, so the tidy-up
- *    dialog opens, and the kept line (`matchedKeptSentence`, N the file's rows: on a skip each row
- *    is exactly one card) stays in front of it with the teams line;
- *  - `"saved"`: nothing is left to ask, so the cards are saved at once, and the saved line says
- *    why Match Cards sat out (`skippedSavedReason`) right after its count;
- *  - `"either"`: whichever of the two comes, read as above.
- * The landing is then read by axe in light and dark (the state the skip leaves behind).
+ * NEO-640, NEO-645 C5: a fetch whose every card paired with its own row at 100% skips Match Cards.
+ * The run starts on the progress line (with its Cancel), and when the fetch ends the line goes with
+ * no dialog standing. The cards SAVE first, always: the saved line says why Match Cards sat out
+ * (`skippedSavedReason`) right after its count, then the teams line. Any walk comes after the save
+ * and is the caller's to settle (`settleWalkAfterCommit` / `expectTidyWalkOpen`). The saved state
+ * is read by axe in light and dark.
  *
  * Contract: ENTRY Sync card checklist has just been pressed with `facts`' file in play and
- * `opensMatchCards` false. EXIT the tidy-up dialog is open (`"review"`) or the saved line is up.
+ * `opensMatchCards` false. EXIT the saved line is up and no Match Cards dialog ever stood.
  */
 export async function expectMatchCardsSkipped(
   page: Page,
-  { facts, what, lands }: { facts: ChecklistFacts; what: string; lands: SkippedLanding },
+  { facts, what }: { facts: ChecklistFacts; what: string },
 ): Promise<void> {
   const progress = checklistFetchProgress(page);
   await expect(progress, `the progress line of ${what}`).toBeVisible();
   await expect(cancelCardFetchButton(page)).toBeVisible();
   // One live BSC round trip, under its own "Waiting on BuySportsCards" line (NEO-487).
   await expectAfterMarketplace(page, progress, { platform: "BuySportsCards", what: `the end of ${what}`, state: "hidden" });
-  const review = page.getByRole("dialog", { name: /^Tidy up / });
   const saved = savedLine(page, facts.rows);
-  // Our own queueing once the fetch has landed (measured 1.3 s at most, #487): the standard 7 s.
-  if (lands === "either") await expect(review.or(saved).first()).toBeVisible();
-  const reviewed = lands === "review" || (lands === "either" && (await review.isVisible()));
-  if (reviewed) {
-    await expect(review).toBeVisible();
-    await expect(matchedKeptLine(page, facts.rows)).toBeVisible();
-  } else {
-    await expect(saved).toBeVisible();
-    await expect(saved).toContainText(new RegExp(`^Saved ${facts.rows} cards?\\. ${escapeRe(skippedSavedReason(facts.rows))}`));
-  }
+  // Our own commit once the fetch has landed: the standard 7 s.
+  await expect(saved, `the saved line of ${what}`).toBeVisible();
+  await expect(saved).toContainText(new RegExp(`^Saved ${facts.rows} cards?\\. ${escapeRe(skippedSavedReason(facts.rows))}`));
   await expectTeamsFromChecklist(page, facts);
-  // Paired with the landing just above (R2): the dialog never stood, and nobody confirmed one. By
-  // role: the saved line itself says "Match Cards".
+  // Paired with the saved line just above (R2): the dialog never stood, and nobody confirmed one.
+  // By role: the saved line itself says "Match Cards".
   await expect(matchCardsDialog(page)).toHaveCount(0);
-  await expectAccessible(page, {
-    label: reviewed ? `${what}: skipped Match Cards, kept line before the tidy-up` : `${what}: skipped Match Cards, saved`,
-  });
+  await expectAccessible(page, { label: `${what}: skipped Match Cards, saved` });
 }
-
-/**
- * NEO-640: where a skipped Match Cards lands (`expectMatchCardsSkipped`). `"either"` is for a
- * spec that already accepts both (the catalogue decides whether a name is left to review); the
- * helper waits for one of them, then asserts the kept sentence where that one carries it.
- */
-export type SkippedLanding = "review" | "saved" | "either";
 
 /**
  * NEO-640: settle a fetch with a publisher's checklist in play, on the file's own measured fact
  * (`opensMatchCards`): through Match Cards (`confirmChecklistMatchCards`) when it opens, past it
- * (`expectMatchCardsSkipped`, landing as `lands` says) when every card matched. Never a race
- * between the two: a fixture that changes sides fails here by name. `keepChecklistOnly` needs rows
- * no card has, which always open the dialog.
+ * (`expectMatchCardsSkipped`: the save lands first) when every card matched. Never a race between
+ * the two: a fixture that changes sides fails here by name. `keepChecklistOnly` needs rows no card
+ * has, which always open the dialog. Contract: EXIT the dialog was confirmed, or the skip's saved
+ * line is up; either way any Tidy Up walk is the caller's to settle.
  */
 export async function settleChecklistFetch(
   page: Page,
   env: FlowEnv,
-  {
-    facts,
-    what,
-    keepChecklistOnly,
-    lands,
-  }: { facts: ChecklistFacts; what: string; keepChecklistOnly?: number; lands: SkippedLanding },
+  { facts, what, keepChecklistOnly }: { facts: ChecklistFacts; what: string; keepChecklistOnly?: number },
 ): Promise<void> {
   if (opensMatchCards(facts, env)) {
     await confirmChecklistMatchCards(page, { facts, what, keepChecklistOnly });
@@ -769,7 +724,7 @@ export async function settleChecklistFetch(
   if (keepChecklistOnly !== undefined) {
     throw new Error(`settleChecklistFetch: ${what} keeps checklist-only rows, but its facts say Match Cards does not open.`);
   }
-  await expectMatchCardsSkipped(page, { facts, what, lands });
+  await expectMatchCardsSkipped(page, { facts, what });
 }
 
 /** The set panel's region, on the set level with its attributes open. Contract: a locator, nothing waited for. */

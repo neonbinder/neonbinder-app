@@ -88,6 +88,7 @@ import { clampSearchQuery } from "./lib/searchQueryClamp";
 import { refreshDescriptionsAfterRename } from "./cardDescriptionFanOut";
 // NEO-528: the also-pictured index, for the sport-removal guard.
 import { cardSecondaryPlayerLinkPage } from "./cardSecondaryPlayers";
+import { recheckCareerGaps } from "./tidyCareerGap";
 // NEO-463: a one-word name that is a fuller-named player's first or last name.
 import {
   fragmentMatches,
@@ -4240,6 +4241,88 @@ export const MAX_CAREER_STINT_APPENDS = 200;
  * does not belong to, or that would push the career past the cap is skipped
  * and counted, never written. Counts only; the caller logs ids.
  */
+type CareerStintAppend = {
+  playerId: Id<"players">;
+  teamId: Id<"teams">;
+  fromYear: number;
+  toYear?: number;
+};
+
+/** `appendCareerStints`'s body, shared with the public `addStint`. */
+export async function appendCareerStintsImpl(
+  ctx: MutationCtx,
+  stints: ReadonlyArray<CareerStintAppend>,
+): Promise<{ added: number; existing: number; skipped: number }> {
+  if (stints.length > MAX_CAREER_STINT_APPENDS) {
+    throw new Error(
+      `appendCareerStints: ${stints.length} stints exceeds the ${MAX_CAREER_STINT_APPENDS}-stint limit`,
+    );
+  }
+  const maxYear = maxCareerYear();
+  for (const stint of stints) {
+    assertCareerStintYears(stint.fromYear, stint.toYear, maxYear);
+  }
+  const byPlayer = new Map<string, Array<CareerStintAppend>>();
+  for (const stint of stints) {
+    const key = stint.playerId as string;
+    const list = byPlayer.get(key);
+    if (list) list.push(stint);
+    else byPlayer.set(key, [stint]);
+  }
+  let added = 0;
+  let existing = 0;
+  let skipped = 0;
+  const teamSport = new Map<string, Id<"selectorOptions"> | null>();
+  for (const stints of byPlayer.values()) {
+    const player = await ctx.db.get(stints[0].playerId);
+    if (!player) {
+      skipped += stints.length;
+      continue;
+    }
+    const sportIds = new Set<string>([
+      player.sportId as string,
+      ...(await additionalSportIds(ctx, player._id)),
+    ]);
+    const current = player.teamYears ?? [];
+    const seen = new Set(
+      current
+        .filter((s) => s.fromYear !== undefined)
+        .map((s) => `${s.teamId}|${s.fromYear}`),
+    );
+    const next = [...current];
+    for (const stint of stints) {
+      const key = `${stint.teamId}|${stint.fromYear}`;
+      if (seen.has(key)) {
+        existing++;
+        continue;
+      }
+      let sport = teamSport.get(stint.teamId as string);
+      if (sport === undefined) {
+        sport = (await ctx.db.get(stint.teamId))?.sportId ?? null;
+        teamSport.set(stint.teamId as string, sport);
+      }
+      if (sport === null || !sportIds.has(sport as string) || next.length >= MAX_PLAYER_TEAM_YEARS) {
+        skipped++;
+        continue;
+      }
+      seen.add(key);
+      next.push({
+        teamId: stint.teamId,
+        fromYear: stint.fromYear,
+        ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
+      });
+      added++;
+    }
+    if (next.length !== current.length) {
+      await ctx.db.patch(player._id, {
+        teamYears: sortTeamYears(next),
+        lastUpdated: Date.now(),
+      });
+    }
+  }
+  return { added, existing, skipped };
+}
+
 export const appendCareerStints = internalMutation({
   args: {
     stints: v.array(
@@ -4256,75 +4339,78 @@ export const appendCareerStints = internalMutation({
     existing: v.number(),
     skipped: v.number(),
   }),
+  handler: async (ctx, args) => appendCareerStintsImpl(ctx, args.stints),
+});
+
+/**
+ * NEO-645 — Add to career: append ONE stint to a player from the career tile
+ * (and the inline New team form, whose `findOrCreate` result is the `teamId`).
+ *
+ * The public, operator-facing wrapper over `appendCareerStints` (which stays
+ * the internal writer of `players.teamYears`).
+ *
+ * ## Contract
+ *
+ * - `requireAdmin`. Years are held to the bounds every other writer holds
+ *   (`assertCareerStintYears`).
+ * - Additive and idempotent, exactly as `appendCareerStints`: a stint whose
+ *   `(teamId, fromYear)` the player already has is left alone and reported as
+ *   `existing`; nothing existing is edited or removed. The merged list is stored
+ *   in the one canonical order (`sortTeamYears`) and stays within
+ *   `MAX_PLAYER_TEAM_YEARS`. A team in a sport the player does not belong to, or
+ *   a missing player or team, is `skipped`, never written.
+ * - Then re-check the `careerGap` of the OPEN card (`cardId`): when the new
+ *   stint now covers the card's team by the card's year (`careerCoversCardTeam`,
+ *   J2: today's rule, not a [Y-1, Y] window) the card's `{ kind: "careerGap" }`
+ *   check for this (player, team) is removed from `tidyChecks`. Then schedule the
+ *   same re-check for the leaf's OTHER single-player cards for that player.
+ * - `tidyChecks` writes never bump the card's `lastUpdated`. The player row's
+ *   `lastUpdated` does bump (a career changed).
+ * - NEO-307: a team creation that would clash with another team's alias is the
+ *   caller's job (`teams.findOrCreate` returns the holder to link); the
+ *   `teamId` here is always an existing row.
+ *
+ * Returns the `appendCareerStints` counts.
+ */
+export const addStint = mutation({
+  args: {
+    playerId: v.id("players"),
+    teamId: v.id("teams"),
+    fromYear: v.number(),
+    toYear: v.optional(v.number()),
+    /** The open card; its `careerGap` check is re-evaluated after the write. */
+    cardId: v.id("cardChecklist"),
+  },
+  returns: v.object({
+    added: v.number(),
+    existing: v.number(),
+    skipped: v.number(),
+  }),
   handler: async (ctx, args) => {
-    if (args.stints.length > MAX_CAREER_STINT_APPENDS) {
-      throw new Error(
-        `appendCareerStints: ${args.stints.length} stints exceeds the ${MAX_CAREER_STINT_APPENDS}-stint limit`,
-      );
-    }
-    const maxYear = maxCareerYear();
-    for (const stint of args.stints) {
-      assertCareerStintYears(stint.fromYear, stint.toYear, maxYear);
-    }
-    const byPlayer = new Map<string, Array<(typeof args.stints)[number]>>();
-    for (const stint of args.stints) {
-      const key = stint.playerId as string;
-      const list = byPlayer.get(key);
-      if (list) list.push(stint);
-      else byPlayer.set(key, [stint]);
-    }
-    let added = 0;
-    let existing = 0;
-    let skipped = 0;
-    const teamSport = new Map<string, Id<"selectorOptions"> | null>();
-    for (const stints of byPlayer.values()) {
-      const player = await ctx.db.get(stints[0].playerId);
-      if (!player) {
-        skipped += stints.length;
-        continue;
-      }
-      const sportIds = new Set<string>([
-        player.sportId as string,
-        ...(await additionalSportIds(ctx, player._id)),
-      ]);
-      const current = player.teamYears ?? [];
-      const seen = new Set(
-        current
-          .filter((s) => s.fromYear !== undefined)
-          .map((s) => `${s.teamId}|${s.fromYear}`),
-      );
-      const next = [...current];
-      for (const stint of stints) {
-        const key = `${stint.teamId}|${stint.fromYear}`;
-        if (seen.has(key)) {
-          existing++;
-          continue;
-        }
-        let sport = teamSport.get(stint.teamId as string);
-        if (sport === undefined) {
-          sport = (await ctx.db.get(stint.teamId))?.sportId ?? null;
-          teamSport.set(stint.teamId as string, sport);
-        }
-        if (sport === null || !sportIds.has(sport as string) || next.length >= MAX_PLAYER_TEAM_YEARS) {
-          skipped++;
-          continue;
-        }
-        seen.add(key);
-        next.push({
-          teamId: stint.teamId,
-          fromYear: stint.fromYear,
-          ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
-        });
-        added++;
-      }
-      if (next.length !== current.length) {
-        await ctx.db.patch(player._id, {
-          teamYears: sortTeamYears(next),
-          lastUpdated: Date.now(),
+    await requireAdmin(ctx);
+    // The one writer of `teamYears` appends, with every bound it holds.
+    const result = await appendCareerStintsImpl(ctx, [
+      {
+        playerId: args.playerId,
+        teamId: args.teamId,
+        fromYear: args.fromYear,
+        ...(args.toYear !== undefined ? { toYear: args.toYear } : {}),
+      },
+    ]);
+    // A stint that was already there can still be what the card was waiting on.
+    if (result.added + result.existing > 0) {
+      const card = await ctx.db.get(args.cardId);
+      if (card) {
+        await recheckCareerGaps(ctx, card, args.playerId);
+        // The leaf's other cards for this player, paged and scheduled.
+        await ctx.scheduler.runAfter(0, internal.tidyCards.recheckCareerGapPage, {
+          leafId: card.selectorOptionId,
+          playerId: args.playerId,
+          cursor: null,
         });
       }
     }
-    return { added, existing, skipped };
+    return result;
   },
 });
 

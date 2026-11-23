@@ -62,4 +62,6 @@
 - [NEO-628 gate key adversarial](reference_neo628_gate_key_adversarial_patterns.md) — fake acquire writes no row, source-scan control, test.fails known gaps
 - [NEO-628 guard test patterns](reference_neo628_guard_test_patterns.md) — stub AxeBuilder replace semantics, yaml job-section pins, ?raw scan with control, Sync wait-line stand-down
 - [Slow component test profile recipe](reference_slow_demo_test_profile_recipe.md) — load-only timeouts are CPU-bound; in-test inspector profile, split tests, no real sleeps
+- [NEO-645 tidy test patterns](reference_neo645_tidy_test_patterns.md) — id-only world fixture, fan-out drain, commit-action traps
+- [NEO-645 tidy ported tests](reference_neo645_tidy_ported_tests.md) — porting batch-wizard tests to tidyNames: fixture, walk-driven creates, bulk test removal
 - [NEO-639 chip years + failed lookup tests](reference_neo639_chip_years_and_failed_lookup_tests.md) — reaching an unselected chip, cap vs per-player tie, stints read-cap guard

@@ -72,6 +72,9 @@ export const REPORT_SOURCES = [
   "players",
   "entityReviewQueue",
   "entityReviewSkips",
+  // NEO-645 — the Tidy Up name rows, which replace the review queue's rows.
+  // Flagged under the same two review-row kinds.
+  "tidyNames",
   "cardChecklist",
 ] as const;
 export type ReportSource = (typeof REPORT_SOURCES)[number];
@@ -87,6 +90,7 @@ export const REPORT_PAGE_SIZE: Record<ReportSource, number> = {
   players: 500,
   entityReviewQueue: 500,
   entityReviewSkips: 500,
+  tidyNames: 500,
   cardChecklist: 150,
 };
 /**
@@ -129,6 +133,7 @@ const sourceValidator = v.union(
   v.literal("players"),
   v.literal("entityReviewQueue"),
   v.literal("entityReviewSkips"),
+  v.literal("tidyNames"),
   v.literal("cardChecklist"),
 );
 
@@ -243,6 +248,18 @@ export const scanPage = internalQuery({
         }
         return { hits, scanned: page.page.length, isDone: page.isDone, continueCursor: page.continueCursor };
       }
+      case "tidyNames": {
+        const page = await ctx.db.query("tidyNames").paginate(opts);
+        for (const row of page.page) {
+          if (reviewRowHasSeparator(row.kind, row.name)) {
+            flag("reviewQueueNameSeparator", row._id);
+          }
+          if (row.kind === "player" && isSuffixOnlyName(row.name)) {
+            flag("reviewQueuePlayerSuffixOnly", row._id);
+          }
+        }
+        return { hits, scanned: page.page.length, isDone: page.isDone, continueCursor: page.continueCursor };
+      }
       case "cardChecklist": {
         const page = await ctx.db.query("cardChecklist").paginate(opts);
         for (const card of page.page) {
@@ -289,6 +306,7 @@ export const run = internalAction({
       players: v.number(),
       entityReviewQueue: v.number(),
       entityReviewSkips: v.number(),
+      tidyNames: v.number(),
       cardChecklist: v.number(),
     }),
     /** The run stopped before the last page of the last table. */
@@ -330,6 +348,7 @@ export const run = internalAction({
       players: 0,
       entityReviewQueue: 0,
       entityReviewSkips: 0,
+      tidyNames: 0,
       cardChecklist: 0,
     };
     const counts = new Map<ReportKind, number>();

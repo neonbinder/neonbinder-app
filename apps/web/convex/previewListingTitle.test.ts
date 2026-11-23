@@ -86,7 +86,7 @@ async function insertCard(
     insertTestCard(ctx, {
       selectorOptionId: variantTypeId,
       cardNumber: "50",
-      cardName: "A Card",
+      cardName: "Card #1",
       platformData: {},
       sortOrder: 0,
       lastUpdated: Date.now(),
@@ -164,6 +164,92 @@ describe("previewListingTitle (NEO-101)", () => {
       teamNames: [],
       sport: "Baseball",
     });
+  });
+
+  // NEO-645 — `inputs.subjectName` rides the returns validator; a validator
+  // that lacks it throws ReturnsValidationError (convex-test enforces returns).
+  test("NEO-645: a card's own name rides along as subjectName (cameo or not); a placeholder name, or a player card named for its player, omits it", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, variantTypeId } = await seedSubtree(t);
+
+    const [playerId, cameoId] = await t.run(async (ctx) => [
+      await ctx.db.insert("players", {
+        name: "Elly De La Cruz",
+        nameNormalized: "cruz elly de la",
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+      await ctx.db.insert("players", {
+        name: "Chipper Jones",
+        nameNormalized: "jones chipper",
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    ]);
+
+    const noPlayer = await insertCard(t, variantTypeId, {
+      cardNumber: "1",
+      cardName: "Checklist",
+    });
+    const cameoOnly = await insertCard(t, variantTypeId, {
+      cardNumber: "2",
+      cardName: "Rookie Class",
+      secondaryPlayerIds: [cameoId],
+    });
+    const playerCard = await insertCard(t, variantTypeId, {
+      cardNumber: "3",
+      cardName: "Elly De La Cruz",
+      playerIds: [playerId],
+      secondaryPlayerIds: [cameoId],
+    });
+
+    const none = await asAdmin.query(api.selectorOptions.previewListingTitle, {
+      cardId: noPlayer,
+    });
+    // No cameo needed any more (Jason, 2026-11-23): a name is in the title.
+    expect(none.inputs.subjectName).toBe("Checklist");
+    const placeholder = await insertCard(t, variantTypeId, {
+      cardNumber: "4",
+      cardName: "Card #4",
+    });
+    const unnamed = await asAdmin.query(api.selectorOptions.previewListingTitle, {
+      cardId: placeholder,
+    });
+    expect(unnamed.inputs.subjectName).toBeUndefined();
+
+    // A name the card printed for its player ("Doc Gooden" for Dwight Gooden)
+    // is the player said again, so the title does not move.
+    const printed = await insertCard(t, variantTypeId, {
+      cardNumber: "5",
+      cardName: "Elly",
+      playerIds: [playerId],
+      playerLinks: [{ playerId, nameOnCard: "Elly" }],
+    });
+    const printedOut = await asAdmin.query(api.selectorOptions.previewListingTitle, {
+      cardId: printed,
+    });
+    expect(printedOut.inputs.subjectName).toBeUndefined();
+    // A card with a name of its own beside its player carries it.
+    const own = await insertCard(t, variantTypeId, {
+      cardNumber: "6",
+      cardName: "It Takes Two CPC",
+      playerIds: [playerId],
+    });
+    const ownOut = await asAdmin.query(api.selectorOptions.previewListingTitle, { cardId: own });
+    expect(ownOut.inputs.subjectName).toBe("It Takes Two CPC");
+
+    const cameo = await asAdmin.query(api.selectorOptions.previewListingTitle, {
+      cardId: cameoOnly,
+    });
+    expect(cameo.inputs.playerNames).toEqual([]);
+    expect(cameo.inputs.cameoNames).toEqual(["Chipper Jones"]);
+    expect(cameo.inputs.subjectName).toBe("Rookie Class");
+
+    const player = await asAdmin.query(api.selectorOptions.previewListingTitle, {
+      cardId: playerCard,
+    });
+    expect(player.inputs.subjectName).toBeUndefined();
   });
 
   test("NEO-609: a title that lost a first name says tidyUp, and coreFits is its inverse", async () => {

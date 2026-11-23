@@ -41,4 +41,4 @@ seeding the year-less title into a run that counts the Baseball band exactly (th
 **A self-cleaning Pick List spec's failure screenshot shows the CLEANED list.** The finally block ships
 leftovers on a second page, but the failing page is a live Convex subscription, so its screenshot and
 error-context read "Nothing to pull". Read the assertion's Received value, not the screenshot. See
-[[sibling-edits-reload-a-local-vite-run]] for the eBay unmatched row names.
+[[patterns_sibling_edits_reload_a_local_vite_run]] for the eBay unmatched row names.

@@ -117,7 +117,7 @@ test(
     const rowOf1975 = panel.getByRole("listitem").filter({ hasText: "b. 1975" });
     await expect(rowOf1975).toContainText("b. 1975");
     await expect(
-      rowOf1975.getByRole("button", { name: `Open ${surname}, born 1975 — same name`, exact: true }),
+      rowOf1975.getByRole("button", { name: `Open ${surname}, born 1975 · same name`, exact: true }),
     ).toBeVisible();
 
     // Visible text: birth year, then the two longest teams with short ranges and a
@@ -130,13 +130,13 @@ test(
     // The same facts are in the row's accessible name, in words (all three share a name, so each ends "same name").
     await expect(
       rowOf1962.getByRole("button", {
-        name: `Open ${surname}, born 1962, ${teamA} 2001 to 2012, ${teamC} 1995 to 1999, plus 1 more — same name`,
+        name: `Open ${surname}, born 1962, ${teamA} 2001 to 2012, ${teamC} 1995 to 1999, plus 1 more · same name`,
         exact: true,
       }),
     ).toBeVisible();
     await expect(
       rowOf1988.getByRole("button", {
-        name: `Open ${surname}, born 1988, ${teamA} 2015 to 2016 and 2019 — same name`,
+        name: `Open ${surname}, born 1988, ${teamA} 2015 to 2016 and 2019 · same name`,
         exact: true,
       }),
     ).toBeVisible();

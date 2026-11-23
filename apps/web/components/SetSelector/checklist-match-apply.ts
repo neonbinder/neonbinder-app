@@ -30,6 +30,7 @@
  */
 
 import { cardNumbersAgree, preferCardNumber } from "../../lib/cards/card-number";
+import { hasCardName } from "../../lib/cards/unnamed-card";
 import type { ChecklistConflict, TeamLookupOutcome } from "./checklist-conflict";
 import type { PairingCard } from "./CardPairingModal";
 
@@ -46,7 +47,6 @@ export function committable<C extends PairingCard>(card: C): C {
     card.checklistLink === undefined &&
     card.checklistRowId === undefined &&
     card.teamCell === undefined &&
-    card.sourceNumbers === undefined &&
     card.preKept === undefined
   ) {
     return card;
@@ -56,10 +56,9 @@ export function committable<C extends PairingCard>(card: C): C {
   delete out.checklistRowId;
   // NEO-591: a checklist-only row's printed team cell is for its row line only.
   delete out.teamCell;
-  // NEO-591: the numbers each source printed are for the dialog's note only;
-  // the commit's validators refuse a field they do not know and save the one
-  // number the card carries.
-  delete out.sourceNumbers;
+  // NEO-645: `sourceNumbers` is KEPT. The commit accepts it
+  // (`previewCardFields.sourceNumbers`) and stores it on a new row, where the
+  // Tidy Up walk's Listing title tile reads it for "Numbers didn't match".
   // NEO-591 (variations): where the card started (already in Keeping) is the
   // dialog's own business.
   delete out.preKept;
@@ -166,6 +165,12 @@ export type ChecklistLinkRow = {
    * variation card made from it keeps its name.
    */
   variationName?: string;
+  /**
+   * NEO-645 — the subject a row with no player printed ("Checklist", "Team
+   * Card"): the card's own name. Rides the row through an Unlink and a relink
+   * so the card made from it keeps its name.
+   */
+  cardName?: string;
 };
 
 /** What a linked card needs to carry into the question. */
@@ -191,6 +196,7 @@ export type ChecklistPairRequest = {
     noTeam?: true;
     prospect?: true;
     variationName?: string;
+    cardName?: string;
   };
 };
 
@@ -278,6 +284,8 @@ export function buildChecklistPairRequests<C extends ChecklistLinkCard>(
         ...(row.prospect ? { prospect: true as const } : {}),
         // NEO-591 (variations): the row's note survives a relink.
         ...(row.variationName ? { variationName: row.variationName } : {}),
+        // NEO-645: so is the name a row with no player printed.
+        ...(row.cardName ? { cardName: row.cardName } : {}),
       },
     });
   }
@@ -434,6 +442,8 @@ export function pairedRowOf(row: ServerPairedRow): ChecklistLinkRow {
     ...(row.prospect ? { prospect: true as const } : {}),
     ...(row.claim ? { claim: row.claim } : {}),
     ...(row.variationName ? { variationName: row.variationName } : {}),
+    // NEO-645: the name the row gave a card with no player (the placeholder is no name).
+    ...(row.players.length === 0 && hasCardName(row.cardName) ? { cardName: row.cardName } : {}),
   };
 }
 

@@ -515,18 +515,22 @@ describe("NEO-591 — distinctNumbers", () => {
 });
 
 describe("NEO-591 — names first, numbers confirm", () => {
-  test("committable takes sourceNumbers off, and a card carrying only that is no longer returned by reference", () => {
+  test("committable keeps sourceNumbers (the commit stores them), and still takes the dialog-only fields off", () => {
     const withNumbers = {
       cardNumber: "OV-ANFI",
       cardName: "A",
       platformData: {},
       sourceNumbers: { bsc: "OV-ANFI", checklist: "NNO" },
     } as PairingCard;
-    const out = committable(withNumbers);
-    expect(out).not.toHaveProperty("sourceNumbers");
+    // Nothing to take off: returned by reference, numbers and all.
+    expect(committable(withNumbers)).toBe(withNumbers);
+    const withLink = { ...withNumbers, checklistRowId: "row-1" } as PairingCard;
+    const out = committable(withLink);
+    expect(out).not.toHaveProperty("checklistRowId");
+    expect(out.sourceNumbers).toEqual({ bsc: "OV-ANFI", checklist: "NNO" });
     expect(out.cardNumber).toBe("OV-ANFI");
     // The input is not mutated.
-    expect(withNumbers.sourceNumbers).toEqual({ bsc: "OV-ANFI", checklist: "NNO" });
+    expect(withLink.checklistRowId).toBe("row-1");
   });
 
   test("committable takes preKept off (the dialog's own business), and keeps the rest", () => {
@@ -577,6 +581,32 @@ describe("NEO-591 — names first, numbers confirm", () => {
       (c) => c.key,
     );
     expect(request.row.variationName).toBe("Photo variation");
+  });
+
+  test("a no-player row's cardName (NEO-645) survives an Unlink and a relink", () => {
+    const row: ServerPairedRow = {
+      number: "3",
+      players: [],
+      teams: [],
+      cardName: "Team Card",
+    };
+    // The unlinked row stands as the card it was, named for what it printed ...
+    expect(pairedRowCard(row, "unlinked:1").cardName).toBe("Team Card");
+    // ... and listed again as the dialog's row it keeps the name, so a relink asks about it.
+    const listed = pairedRowOf(row);
+    expect(listed.cardName).toBe("Team Card");
+    const [request] = buildChecklistPairRequests(
+      [{ key: "a", cardNumber: "3" }],
+      new Map([["a", 0]]),
+      [listed],
+      (c) => c.key,
+    );
+    expect(request.row.cardName).toBe("Team Card");
+  });
+
+  test("a row that carries no name sends none (NB's placeholder is no name)", () => {
+    const row: ServerPairedRow = { number: "3", players: [], teams: [], cardName: "Card #3" };
+    expect(pairedRowOf(row).cardName).toBeUndefined();
   });
 
   test("withoutChecklistNumber keeps a picker while the numbers left differ in text", () => {

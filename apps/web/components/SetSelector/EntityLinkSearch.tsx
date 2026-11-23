@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { teamFullName } from "../../lib/teams/team-name";
+import { leagueShortName, teamDetailLine } from "../../lib/teams/team-detail";
 import { contrastRatio, normalizeHexColor } from "../../lib/print/contrast";
 import { Input } from "../primitives/Input";
+import HintedLabel from "./HintedLabel";
 import { useTheme } from "../../src/theme/ThemeProvider";
 import type { ThemeMode } from "../../src/theme/theme-mode";
 import { tokenHex } from "../../src/theme/tokens";
@@ -73,7 +75,9 @@ const MAX_STINTS_SHOWN = 3;
  * The two grounds a result row is ever painted on: the panel over the
  * dialog's `raised-deep`, and the highlighted row (`bg-neon-green/20`
  * composited over that same ground). A livery colour must clear 4.5:1 on
- * BOTH, or it would read on one row and vanish when highlighted. Both follow
+ * BOTH, or it would read on one row and vanish when highlighted. (The quiet
+ * text on a highlighted row is `ink-2`: `ink-3` misses 4.5:1 on the green wash
+ * over a tile in dark, held by `tokens.test.tsx`.) Both follow
  * the mode (NEO-356): dark is gray-900 and #0e3e31, as before; light is white
  * and a pale green.
  */
@@ -93,7 +97,15 @@ function compositeHex(fg: string, bg: string, alpha: number): string {
 
 function resultGrounds(mode: ThemeMode): string[] {
   const idle = tokenHex("raised-deep", mode);
-  return [idle, compositeHex(tokenHex("neon-green", mode), idle, 0.2)];
+  // The search opens inline in the walk's tiles (NEO-645), so the row can also
+  // sit on a tile's blue or pink wash (10% of the fill over the panel in dark;
+  // plain white in light, which the panel already stands for).
+  const bases =
+    mode === "dark"
+      ? [idle, compositeHex("#00c2ff", idle, 0.1), compositeHex("#ff2e9a", idle, 0.1)]
+      : [idle];
+  const green = tokenHex("neon-green", mode);
+  return bases.flatMap((base) => [base, compositeHex(green, base, 0.2)]);
 }
 
 /**
@@ -126,6 +138,7 @@ export default function EntityLinkSearch({
   kind,
   sportId,
   contextOptionId,
+  initialQuery,
   onSelect,
   onCancel,
 }: {
@@ -138,6 +151,11 @@ export default function EntityLinkSearch({
    * name order. Players and leagues ignore it.
    */
   contextOptionId?: Id<"selectorOptions">;
+  /**
+   * NEO-645 (S2) — the search opens with this typed already (the printed name,
+   * selected so the first keystroke replaces it) and runs at once.
+   */
+  initialQuery?: string;
   onSelect: (
     id: Id<"players"> | Id<"teams"> | Id<"leagues">,
     name: string,
@@ -145,8 +163,9 @@ export default function EntityLinkSearch({
   onCancel: () => void;
 }) {
   const { mode } = useTheme();
-  const [query, setQuery] = useState("");
-  const [debouncedQuery, setDebouncedQuery] = useState("");
+  const uid = useId();
+  const [query, setQuery] = useState(initialQuery ?? "");
+  const [debouncedQuery, setDebouncedQuery] = useState(initialQuery ?? "");
   const [highlightIdx, setHighlightIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -184,9 +203,19 @@ export default function EntityLinkSearch({
    * the same ranking the other two get. Adding a server-side search for a list
    * that fits on a screen would be a second thing to keep in step for nothing.
    */
+  // NEO-645 — a TEAM result also names its league ("MLB · 1954–present"), so
+  // three "Baltimore Orioles" can be told apart. The same list, read for the
+  // same reason: a sport's leagues fit on a screen.
   const leagues = useQuery(
     api.leagues.list,
-    kind === "league" && trimmed ? { sportId } : "skip",
+    (kind === "league" || kind === "team") && trimmed ? { sportId } : "skip",
+  );
+  const leagueNameById = useMemo(
+    () =>
+      new Map(
+        (kind === "team" ? (leagues ?? []) : []).map((l) => [l._id as string, leagueShortName(l)]),
+      ),
+    [kind, leagues],
   );
   /**
    * One `{ _id, name }` shape for both kinds, with a TEAM's name composed from
@@ -205,6 +234,8 @@ export default function EntityLinkSearch({
         // NEO-313 — players only: whose sport they are, and where they played.
         sportValue?: string;
         stints?: ResultStint[];
+        // NEO-645 — teams only: "MLB · 1954–present", off the row's own fields.
+        detail?: string;
       }>
     | undefined =
     kind === "player"
@@ -220,6 +251,10 @@ export default function EntityLinkSearch({
         : rankedTeams?.map(({ team }) => ({
             _id: team._id,
             name: teamFullName(team),
+            detail: teamDetailLine(
+              team.leagueId ? leagueNameById.get(team.leagueId as string) : undefined,
+              team.yearsActive,
+            ),
           }));
 
   useEffect(() => {
@@ -229,6 +264,9 @@ export default function EntityLinkSearch({
 
   useEffect(() => {
     inputRef.current?.focus();
+    if (initialQuery) inputRef.current?.select();
+    // Mount only: the prefill is the opening text, not a value to keep in step.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const matches = useMemo(() => {
@@ -333,6 +371,7 @@ export default function EntityLinkSearch({
               // line below are what a sighted operator reads to choose; the
               // name alone is what a flow and a screen reader select by.
               aria-label={`Link to ${m.name}`}
+              aria-describedby={m.detail ? `${uid}-detail-${idx}` : undefined}
               role="option"
               aria-selected={idx === highlightIdx}
               className={`w-full text-left px-2 py-1 text-sm rounded ${
@@ -346,13 +385,27 @@ export default function EntityLinkSearch({
               <span className="flex items-baseline gap-2">
                 <span>{m.name}</span>
                 {m.sportValue && (
-                  <span className="rounded border border-control px-1 text-[0.625rem] leading-4 text-ink-3">
+                  <span
+                    className={`rounded border border-control px-1 text-[0.625rem] leading-4 ${
+                      idx === highlightIdx ? "text-ink-2" : "text-ink-3"
+                    }`}
+                  >
                     {m.sportValue}
                   </span>
                 )}
               </span>
+              {m.detail && (
+                <span
+                  id={`${uid}-detail-${idx}`}
+                  className={`block text-xs wrap-anywhere ${idx === highlightIdx ? "text-ink-2" : "text-ink-3"}`}
+                >
+                  {m.detail}
+                </span>
+              )}
               {shown.length > 0 && (
-                <span className="block truncate text-xs text-ink-3">
+                <span
+                  className={`block truncate text-xs ${idx === highlightIdx ? "text-ink-2" : "text-ink-3"}`}
+                >
                   {shown.map((st, i) => {
                     const color = stintColor(st.primaryColor, mode);
                     return (
@@ -382,7 +435,7 @@ export default function EntityLinkSearch({
         aria-label="Cancel linking"
         className="w-full text-left px-2 py-1 text-xs text-ink-3 hover:text-neon-pink-text focus:text-neon-pink-text focus-outline"
       >
-        Cancel (Esc)
+        <HintedLabel label="Cancel (Esc)" />
       </button>
     </div>
   );

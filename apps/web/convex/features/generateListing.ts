@@ -62,6 +62,8 @@ import { singularTypeName, singularWord } from "../listingShortName";
 export { singularTypeName };
 import { isGenerationalSuffix } from "../../lib/players/name-fragment";
 import { teamFullName } from "../../lib/teams/team-name";
+import { cardSubjectName } from "../../lib/cards/unnamed-card";
+import { foldNameForCompare } from "../../lib/entities/normalize-name";
 import { parallelAfterInsert, parallelOpensWithInsert, roughlySays } from "../listingShortName";
 
 /** NEO-606 — a team row's Location / Name, as `ListingCardInputs.teamSplits` carries it. */
@@ -100,6 +102,18 @@ export type ListingCardInputs = {
    * 81 go before them. The description states them on a line of their own.
    */
   cameoNames?: string[];
+  /**
+   * NEO-645 (Jason, 2026-11-22: "the title generation should use the name and
+   * then the cameo if it fits"; 2026-11-23: "whatever name we put on a card
+   * should always show up ... If there is a name we include it in title") —
+   * the card's own name. Whenever the card has one (`cardSubjectName`: not
+   * blank, not NB's "Card #N", and not just its players' own names said
+   * again), it stands ahead of the players and cameos, and a team the name
+   * already says is not added. Never cut, like a surname. The variant's word,
+   * Base included, stays whenever it fits and is the first word the cut drops
+   * (Jason, 2026-11-23).
+   */
+  subjectName?: string;
   /** Mirrors the year node's value verbatim — same field `features.season` holds. */
   year?: string;
   manufacturer?: string;
@@ -739,6 +753,8 @@ type TitleState = {
   players: Array<{ full: string; short?: string; firstOut: boolean }>;
   /** NEO-528 — the cameos, after the players; each whole name in or out. */
   cameos: Array<{ name: string; in: boolean }>;
+  /** NEO-645 — a non-player card's own name, ahead of its cameos. Never cut. */
+  subject?: string;
   number?: { text: string; mode: "hash" | "bare" | "out" };
   tail: TailToken[];
 };
@@ -753,6 +769,9 @@ function renderTitle(state: TitleState): string {
   const players = state.players.map((p) => (p.firstOut && p.short ? p.short : p.full));
   // NEO-528 — the people also pictured follow the card's own, in one run.
   for (const cameo of state.cameos) if (cameo.in) players.push(cameo.name);
+  // NEO-645 — a non-player card's own name stands where its player would, and
+  // the cameos follow it as a run of their own: no "&" joins a name to a person.
+  if (state.subject) out.push(state.subject);
   if (players.length > 0) out.push(players.join(" & "));
   if (state.number && state.number.mode !== "out") {
     out.push(state.number.mode === "hash" ? `#${state.number.text}` : state.number.text);
@@ -775,6 +794,49 @@ function renderTitle(state: TitleState): string {
   return out.filter(Boolean).join(" ") || "#";
 }
 
+/**
+ * NEO-645 — the name the title carries: `subjectName`, unless it is no name
+ * (blank, "Card #N") or says nothing the players and cameos do not
+ * (`cardSubjectName`). The caller that read the card may already have judged it
+ * with the printed spellings of the players; this repeats the check on the NB
+ * names so a caller that did not still cannot say a person twice.
+ */
+function subjectOf(inputs: ListingCardInputs): string | undefined {
+  return cardSubjectName({
+    cardName: inputs.subjectName,
+    playerNames: distinctNames(inputs.playerNames),
+    cameoNames: distinctNames(inputs.cameoNames),
+  });
+}
+
+/**
+ * NEO-645 — does the name already say this team? Its full name, or its
+ * nickname: the split's own, else the full name's last word ("Royals Team
+ * Card" says Kansas City Royals). Said once, whichever way.
+ */
+function subjectSaysTeam(
+  subject: string,
+  team: string,
+  nickname: string | undefined,
+): boolean {
+  if (subjectSays(subject, team)) return true;
+  return subjectSays(subject, nickname ?? foldedWords(team).slice(-1).join(" "));
+}
+
+function foldedWords(text: string): string[] {
+  return foldNameForCompare(text).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+}
+
+/** Does the subject's name contain `text` as a run of whole words? */
+function subjectSays(subject: string, text: string): boolean {
+  const said = foldedWords(subject);
+  const phrase = foldedWords(text);
+  return (
+    phrase.length > 0 &&
+    said.some((_, i) => phrase.every((w, j) => said[i + j] === w))
+  );
+}
+
 /** The full title's state, before any cut, for one description. */
 function fullTitleState(inputs: ListingCardInputs, parts: DescriptionParts): {
   state: TitleState;
@@ -787,11 +849,13 @@ function fullTitleState(inputs: ListingCardInputs, parts: DescriptionParts): {
   }));
   const cardNumber = inputs.cardNumber?.trim();
   const own = new Set(players.map((p) => p.full.toLowerCase()));
+  const subject = subjectOf(inputs);
   const cameos = distinctNames(inputs.cameoNames)
-    .filter((name) => !own.has(name.toLowerCase()))
+    .filter((name) => !own.has(name.toLowerCase()) && !(subject && subjectSays(subject, name)))
     .map((name) => ({ name, in: true }));
   const state: TitleState = {
     parts,
+    ...(subject ? { subject } : {}),
     levels: parts.levels.map((level) => ({
       abbreviated: false,
       typeIn: !!level.typeName,
@@ -841,6 +905,10 @@ function fullTitleState(inputs: ListingCardInputs, parts: DescriptionParts): {
   for (const team of inputs.teamNames ?? []) {
     const trimmed = team.trim();
     if (!trimmed) continue;
+    // NEO-645 — a team the subject's name already says is not said twice
+    // ("Boston Red Sox" card, Boston Red Sox team; "Royals Team Card", Kansas
+    // City Royals): the name stands once, and the team is not added.
+    if (subject && subjectSaysTeam(subject, trimmed, nicknames.get(trimmed))) continue;
     pushUnlessSaid("team", trimmed);
     // NEO-606 — a split team can give up its location before it goes.
     const nickname = nicknames.get(trimmed);

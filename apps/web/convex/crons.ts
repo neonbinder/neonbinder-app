@@ -63,20 +63,36 @@ crons.interval(
 );
 
 /**
- * Age review rows stranded on `pending` to `error` (NEO-99).
+ * Age name lookups stranded on `pending` to `error` (NEO-99, NEO-645).
  *
  * The last-resort net behind the Wikidata pool's `onComplete` backstop and the
  * `runSparql` fetch timeout: if a lookup work item is lost so completely that
- * its completion callback never fires, this is what stops the entity-review
- * wizard hanging on "Looking up…" forever. Like the two sweeps above it is an
- * `interval` (a timeout, not a time-of-day job), fifteen minutes against a
- * thirty-minute staleness threshold, and the common run reads the oldest few
- * pending rows, finds none stale, and stops — see `sweepStalePendingRows`.
+ * its completion callback never fires, this is what stops a Tidy Up name tile
+ * hanging on "Looking up..." forever. An `interval` (a timeout, not a
+ * time-of-day job), fifteen minutes against a thirty-minute staleness
+ * threshold. It reads `tidyNames.lookupRequestedAt`, so a row born `ready` and
+ * asked to look up later is never aged at once; see `sweepStaleLookups`.
  */
 crons.interval(
-  "age stale entity-review lookups",
+  "age stale name lookups",
   { minutes: 15 },
-  internal.entityReviewQueue.sweepStalePendingRows,
+  internal.tidyNames.sweepStaleLookups,
+  {},
+);
+
+/**
+ * NEO-645 — forget Wikidata output a day after it was looked up.
+ *
+ * The same hourly reaper and the same day main gave its review rows
+ * (`reap abandoned entity-review batches`: hourly, 24 hours): the output of a
+ * name lookup is working state for the walk, never kept longer than needed. An
+ * expired row goes back to a name nobody has asked about and is asked again
+ * when the operator needs it; answers stay. See `sweepExpiredLookupOutput`.
+ */
+crons.interval(
+  "forget expired name lookup output",
+  { hours: 1 },
+  internal.tidyNames.sweepExpiredLookupOutput,
   {},
 );
 
@@ -103,28 +119,6 @@ crons.interval(
   "reap stale checklist name resolutions",
   { hours: 1 },
   internal.checklistNameResolutions.sweepStaleResolutions,
-  {},
-);
-
-/**
- * NEO-221 — delete entity-review batches nobody is coming back to.
- *
- * A separate entry from "age stale entity-review lookups" above, and
- * deliberately so: that one is about a single row's LOOKUP hanging (30
- * minutes, `pending` → `error`, deletes nothing), while this is about the
- * SESSION ending — a closed tab leaves a batch of perfectly healthy rows that
- * `startBatch` would otherwise resume into the next fetch of that set, weeks
- * later, complete with decisions made against a card list that has moved on.
- *
- * Hourly against a 24-hour threshold, matching the checklist-candidate reaper
- * next to it: the cost of being an hour late is nothing, and the common run
- * samples the oldest few rows, finds them all fresh, and stops — see
- * `sweepAbandonedBatches`.
- */
-crons.interval(
-  "reap abandoned entity-review batches",
-  { hours: 1 },
-  internal.entityReviewQueue.sweepAbandonedBatches,
   {},
 );
 

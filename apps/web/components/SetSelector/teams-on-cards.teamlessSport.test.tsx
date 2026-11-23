@@ -1,8 +1,7 @@
 /**
  * NEO-426 — the client half of "a teamless sport defaults a card to No team":
  * `autoNoTeamIndexes` (cards the commit stamps without asking),
- * `teamlessCardIndexes` (cards still asked about) and `cardsForTeamsStep`
- * (the step's membership).
+ * `teamlessCardIndexes` (cards still asked about).
  *
  * `takesNoTeamByDefault` is private, so every case here reads it through the
  * partition it drives: a card that would save with no team is in EXACTLY ONE of
@@ -19,7 +18,6 @@
 import { describe, expect, test } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
 import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
-import { cardsForTeamsStep } from "./entity-review-steps";
 import {
   autoNoTeamIndexes,
   autoNoTeamNote,
@@ -227,7 +225,7 @@ describe("autoNoTeamIndexes / teamlessCardIndexes: who counts as teamless", () =
         sportIds: [NONE],
         sportUnknown: false,
       });
-      expect(cardsForTeamsStep([fresh()], [], undefined, stored)).toEqual([]);
+      expect(teamlessCardIndexes([fresh()], [], undefined, stored)).toEqual([]);
     });
 
     test("setSportId is carried only beside a flagged sport", () => {
@@ -527,51 +525,6 @@ describe("autoNoTeamIndexes: the row's 'Player on every card' (NEO-528)", () => 
       stored(NONE),
     );
     expect([auto, asked]).toEqual([[], [0]]);
-  });
-});
-
-describe("cardsForTeamsStep: the step lists only the cards still asked", () => {
-  test("a stamped card is out of the step; a mixed card beside it stays in", () => {
-    const rows = [created("Pat Nonsport"), created("Ron Ballplayer", BALL)];
-    const cards = [
-      card({ cardNumber: "1", players: ["Pat Nonsport"] }),
-      card({ cardNumber: "2", players: ["Ron Ballplayer"] }),
-      card({ cardNumber: "3", players: ["Pat Nonsport", "Ron Ballplayer"] }),
-    ];
-    expect(cardsForTeamsStep(cards, rows, undefined, people())).toEqual([1, 2]);
-  });
-
-  test("with every card teamless the step is empty", () => {
-    expect(cardsForTeamsStep([card()], [created("Pat Nonsport")], undefined, people())).toEqual(
-      [],
-    );
-  });
-
-  test("an unflagged sport leaves the step exactly as it was", () => {
-    expect(cardsForTeamsStep([card()], [created("Pat Nonsport", BALL)], undefined, people())).toEqual(
-      [0],
-    );
-    expect(cardsForTeamsStep([card()], [created("Pat Nonsport")], undefined, undefined)).toEqual(
-      [0],
-    );
-  });
-
-  test("an undecided team name is assumed to resolve: the card is in neither list", () => {
-    const rows = [created("Pat Nonsport"), row({ kind: "team", name: "Cubs", decision: null })];
-    expect(cardsForTeamsStep([card({ teams: ["Cubs"] })], rows, undefined, people())).toEqual([]);
-  });
-
-  test("an undecided player name keeps the card in the step", () => {
-    const rows = [created("Pat Nonsport"), undecided("New Guy")];
-    expect(
-      cardsForTeamsStep([card({ players: ["Pat Nonsport", "New Guy"] })], rows, undefined, people()),
-    ).toEqual([0]);
-  });
-
-  test("a settled index stays out whatever the default says", () => {
-    expect(
-      cardsForTeamsStep([card({ players: ["Ron Ballplayer"] })], [created("Ron Ballplayer", BALL)], [0], people()),
-    ).toEqual([]);
   });
 });
 

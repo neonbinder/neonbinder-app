@@ -29,6 +29,7 @@
  *    move rather than choosing.
  */
 
+import { rescopePrintedNames } from "./tidyRescope";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalMutation } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
@@ -701,6 +702,8 @@ export async function moveCards(
       lastUpdated: now,
     });
     if (card.selectorOptionId !== destId) {
+      // NEO-645 — its printed names follow it to the destination leaf.
+      await rescopePrintedNames(ctx, card, destId);
       countLedger.removeCard(card);
       countLedger.addCard({
         selectorOptionId: destId,

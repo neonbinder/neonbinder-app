@@ -25,6 +25,7 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
+import { normalizeEntityName } from "../lib/entities/normalize-name";
 // NEO-236: `teams.pickerCandidates` returns raw rows, so a split team's
 // `name` is the nickname alone. Every assertion about a team NAME composes it.
 import { teamFullName } from "../lib/teams/team-name";
@@ -85,42 +86,69 @@ async function seedTree(t: ReturnType<typeof convexTest>) {
 }
 
 /**
- * commitCardChecklist only materializes players/teams from DECIDED
- * entityReviewQueue rows (the wizard's output) — names on a card alone are not
- * enough. Mirrors what the real fetch → wizard → commit flow produces.
+ * NEO-645: the commit no longer creates players or teams. The walk does: the
+ * commit leaves a printed name pending, then the operator's "Add as new player"
+ * (`tidyNames.createPlayer`) or New Team form (`teams.findOrCreate` + an
+ * `answerName` link) makes the row. These helpers drive exactly that.
  */
-async function decideCreate(
+async function openCardFor(
   t: ReturnType<typeof convexTest>,
-  opts: {
-    selectorOptionId: Id<"selectorOptions">;
-    sportId: Id<"selectorOptions">;
-    batchId: string;
-    kind: "player" | "team";
-    name: string;
-    /**
-     * NEO-236: the operator's Location + Name. A TEAM row is built from this
-     * and nothing else — commit never inserts from `name`, which is the raw
-     * checklist string. Omit it for a player row, or to model a team the
-     * operator never gave a pair for (commit then links or leaves it).
-     */
-    create?: { location?: string; name: string };
-  },
+  s: { sportId: Id<"selectorOptions">; variantTypeId: Id<"selectorOptions"> },
+  kind: "player" | "team",
+  name: string,
+  cardNumber: string,
 ) {
-  return t.run(async (ctx) =>
-    ctx.db.insert("entityReviewQueue", {
-      selectorOptionId: opts.selectorOptionId,
-      batchId: opts.batchId,
-      createdByUserId: "user_sport_ref_001",
-      kind: opts.kind,
-      name: opts.name,
-      sportId: opts.sportId,
+  await t.run(async (ctx) => {
+    await ctx.db.insert("tidyNames", {
+      scopeId: s.variantTypeId,
+      kind,
+      nameNormalized: normalizeEntityName(name),
+      name,
+      sportId: s.sportId,
       status: "ready",
-      decision: {
-        action: "create",
-        ...(opts.create ? { create: opts.create } : {}),
-      },
-    }),
+    });
+  });
+  await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+    selectorOptionId: s.variantTypeId,
+    sportId: s.sportId,
+    cards: [card(cardNumber, kind === "player" ? [name] : [], kind === "team" ? [name] : [])],
+  });
+  const cards = await t.run(async (ctx) =>
+    ctx.db
+      .query("cardChecklist")
+      .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", s.variantTypeId))
+      .collect(),
   );
+  return cards.find((c) => c.cardNumber === cardNumber)!._id;
+}
+
+async function walkCreatePlayer(
+  t: ReturnType<typeof convexTest>,
+  s: { sportId: Id<"selectorOptions">; variantTypeId: Id<"selectorOptions"> },
+  name: string,
+  cardNumber: string,
+) {
+  const cardId = await openCardFor(t, s, "player", name, cardNumber);
+  await t.withIdentity(ADMIN_IDENTITY).mutation(api.tidyNames.createPlayer, { cardId, name });
+}
+
+async function walkCreateTeam(
+  t: ReturnType<typeof convexTest>,
+  s: { sportId: Id<"selectorOptions">; variantTypeId: Id<"selectorOptions"> },
+  printed: string,
+  pair: { location?: string; name: string },
+  cardNumber: string,
+) {
+  const cardId = await openCardFor(t, s, "team", printed, cardNumber);
+  const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+  const teamId = await asAdmin.mutation(api.teams.findOrCreate, { ...pair, sportId: s.sportId });
+  await asAdmin.mutation(api.tidyNames.answerName, {
+    cardId,
+    kind: "team",
+    name: printed,
+    answer: { kind: "linkTeam", teamId },
+  });
+  await drainScheduled(t);
 }
 
 function card(cardNumber: string, players: string[] = [], teams: string[] = []) {
@@ -143,19 +171,7 @@ describe("NEO-96 round trip: commit-created entities are visible to the pickers"
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { sportId, variantTypeId } = await seedTree(t);
 
-    await decideCreate(t, {
-      selectorOptionId: variantTypeId,
-      sportId,
-      batchId: "b1",
-      kind: "player",
-      name: "Mike Trout",
-    });
-    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
-      selectorOptionId: variantTypeId,
-      sportId,
-      batchId: "b1",
-      cards: [card("1", ["Mike Trout"])],
-    });
+    await walkCreatePlayer(t, { sportId, variantTypeId }, "Mike Trout", "1");
 
     // This is precisely what PlayerPicker queries. Before NEO-96 the commit
     // stored "baseball" while the picker asked for "Baseball", so this
@@ -170,22 +186,7 @@ describe("NEO-96 round trip: commit-created entities are visible to the pickers"
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { sportId, variantTypeId } = await seedTree(t);
 
-    await decideCreate(t, {
-      selectorOptionId: variantTypeId,
-      sportId,
-      batchId: "b2",
-      kind: "team",
-      name: "Los Angeles Angels",
-      // NEO-236: the wizard's Location + Name. Without it commit creates
-      // nothing at all — the raw checklist string is never a source for a row.
-      create: { location: "Los Angeles", name: "Angels" },
-    });
-    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
-      selectorOptionId: variantTypeId,
-      sportId,
-      batchId: "b2",
-      cards: [card("2", [], ["Los Angeles Angels"])],
-    });
+    await walkCreateTeam(t, { sportId, variantTypeId }, "Los Angeles Angels", { location: "Los Angeles", name: "Angels" }, "2");
 
     // NEO-331: `teams.list` is gone; the picker's own read is
     // `teams.pickerCandidates`, and a blank query is its browse — the sport's
@@ -243,19 +244,7 @@ describe("NEO-96 round trip: commit-created entities are visible to the pickers"
       }),
     );
 
-    await decideCreate(t, {
-      selectorOptionId: variantTypeId,
-      sportId,
-      batchId: "b4",
-      kind: "player",
-      name: "Mike Trout",
-    });
-    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
-      selectorOptionId: variantTypeId,
-      sportId,
-      batchId: "b4",
-      cards: [card("4", ["Mike Trout"])],
-    });
+    await walkCreatePlayer(t, { sportId, variantTypeId }, "Mike Trout", "4");
 
     const otherSport = await asAdmin.query(api.players.list, {
       sportId: otherSportId,
@@ -385,21 +374,8 @@ describe("NEO-96 renameSelectorOption", () => {
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { sportId, variantTypeId } = await seedTree(t);
 
-    await decideCreate(t, {
-      selectorOptionId: variantTypeId, sportId, batchId: "r1",
-      kind: "player", name: "Mike Trout",
-    });
-    await decideCreate(t, {
-      selectorOptionId: variantTypeId, sportId, batchId: "r1",
-      kind: "team", name: "Los Angeles Angels",
-      create: { location: "Los Angeles", name: "Angels" },
-    });
-    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
-      selectorOptionId: variantTypeId,
-      sportId,
-      batchId: "r1",
-      cards: [card("1", ["Mike Trout"], ["Los Angeles Angels"])],
-    });
+    await walkCreatePlayer(t, { sportId, variantTypeId }, "Mike Trout", "1");
+    await walkCreateTeam(t, { sportId, variantTypeId }, "Los Angeles Angels", { location: "Los Angeles", name: "Angels" }, "2");
 
     const res = await asAdmin.mutation(api.selectorOptions.renameSelectorOption, {
       id: sportId,

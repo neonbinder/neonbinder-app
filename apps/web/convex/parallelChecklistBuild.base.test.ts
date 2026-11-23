@@ -611,10 +611,10 @@ describe("copies carry the parallel row's NB name as parallelName and in the tit
     });
     await addCard(t, gold, {
       cardNumber: "7",
-      cardName: "Juan Soto",
+      cardName: "Card #7",
       features: { cardType: "Parallel", parallelName: "Base" },
     });
-    bscState.cards = [{ cardNumber: "7", cardName: "Juan Soto", platformRef: "bsc-7" }];
+    bscState.cards = [{ cardNumber: "7", cardName: "Card #7", platformRef: "bsc-7" }];
 
     const result = await t
       .withIdentity(ADMIN)

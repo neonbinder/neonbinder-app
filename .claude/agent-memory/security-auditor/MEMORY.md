@@ -144,5 +144,10 @@
 - [Neo622 local e2e runner](patterns_neo622_local_e2e_runner.md) — derived re-seed bypasses flag-keyed guard; regex patch list != git apply; APFS case
 - [Convex client error origin](patterns_convex_client_error_origin.md) — classify by client [CONVEX X(] prefix, not Request ID; convexToJson errors embed args
 - [Neo627 inert path skip](patterns_neo627_inert_path_skip.md) — file names in GITHUB_OUTPUT inject keys; merge_group base_sha stacking; fail-fast gate
+- [Public-surface PRs skip the guards-file pins](patterns_public_surface_prs_skip_the_guards_file_pins.md) — publicFunctionAuth.test.ts pinned, but publicFunctionAuthGuards.test.ts write-nothing and audit-field pins missing
+- [Deferred ledger flush](patterns_deferred_ledger_flush.md) — counts moved out of the inserting txn: delta landing never heals on re-run; need recount
+- [Revert narrows input validator](patterns_revert_narrows_input_validator.md) — schema keeps literal: check returns reuse it, no row round-trips
 - [Neo640 review skip autocommit](patterns_neo640_review_skip_autocommit.md) — client skip of a review: fence on server batch id, fail-open union, unmount edge
 - [Neo643 ingest cleanse fold drift](patterns_neo643_ingest_cleanse_fold_drift.md) — cleanse vs narrower folds; SL prefix filter; stored/compare split drops J-P rows
+- [Generation counter reset ABA](patterns_generation_counter_reset_aba.md) — reset writing a CAS generation back to 0 re-admits in-flight results at the reused gen
+- [Agent memory index overwrite](patterns_agent_memory_index_overwrite.md) — a Written (not appended) MEMORY.md wipes the index; check diff --stat on .claude/

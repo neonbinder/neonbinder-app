@@ -256,16 +256,20 @@ describe("parallel build — the parallel's player defaults (NEO-528 round 3)", 
     expect(one.cameoIndex).toEqual([fx.ohtani]);
   });
 
-  test("a pending name on the insert card blocks the default player but not the default cameos", async () => {
+  // NEO-645 (J3): a source card with a name still waiting is pink, and the build
+  // refuses it before it deletes or copies anything, so the default player never
+  // lands on a card whose own player is unanswered.
+  test("a pending name on the insert card blocks the build: nothing is copied, no default lands", async () => {
     const t = convexTest(schema, modules);
     const fx = await seed(t);
     await insertCard(t, fx, "1", { extra: { pendingPlayerNames: ["S. Ohtani"] } });
     await store(t, fx.parallel, { defaultPlayerIds: [fx.skenes], defaultCameoIds: [fx.soto] });
-    await build(t, fx);
-    const one = (await copies(t, fx)).get("1")!;
-    expect(one.playerIds).toBeUndefined();
-    expect(one.pendingPlayerNames).toEqual(["S. Ohtani"]);
-    expect(one.secondaryPlayerIds).toEqual([fx.soto]);
+    await stubParallelListing(t, fx);
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId: fx.parallel });
+    expect(result.status).toBe("blocked");
+    expect((await copies(t, fx)).size).toBe(0);
   });
 
   // Jason, 2026-11-15: a card whose listing named anyone, even a name entity
@@ -384,17 +388,15 @@ describe("parallel build — the parallel's own Set Team, fill-empty (the Set Te
   test("never over a pending team name, an operator's no-team ruling, or a listing's unmatched team", async () => {
     const t = convexTest(schema, modules);
     const fx = await seed(t);
-    await insertCard(t, fx, "1", { extra: { pendingTeamNames: ["Dodgers"] } });
     await insertCard(t, fx, "2", { extra: { teamNoneConfirmedAt: NOW } });
     await insertCard(t, fx, "3", { extra: { bscTeamName: "LA Dodgers", teamCheckDoneAt: NOW } });
     await store(t, fx.parallel, { teamIds: [fx.yankees] });
     await build(t, fx);
     const got = await copies(t, fx);
-    for (const n of ["1", "2", "3"]) {
+    for (const n of ["2", "3"]) {
       expect(got.get(n)!.teamOnCardIds, n).toBeUndefined();
       expect(got.get(n)!.teamIndex, n).toEqual([]);
     }
-    expect(got.get("1")!.pendingTeamNames).toEqual(["Dodgers"]);
   });
 
   test("a team on the insert row only (not the parallel) is not written: the parallel's own value is read", async () => {

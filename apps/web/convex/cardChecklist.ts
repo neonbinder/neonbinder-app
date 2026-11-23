@@ -28,6 +28,7 @@ import {
   mutation,
   query,
   type MutationCtx,
+  type QueryCtx,
 } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -64,7 +65,7 @@ import {
 } from "./lib/teamFill";
 // NEO-335 Phase 2: the set's league (C2b) and a listing's team name as choices.
 import { effectiveSetLeagueIds } from "./lib/selectorLeagues";
-import { pickTeamForYear, teamOptionLabel } from "../lib/teams/team-era";
+import { pickTeamForYear } from "../lib/teams/team-era";
 import { MAX_CARD_TEAMS } from "./features/cardAttention";
 // NEO-345: BSC attribute tokens read into NB's vocabulary, and the closed
 // autograph-format vocabulary the fill writes into `features.autographed`.
@@ -82,9 +83,11 @@ import {
 import { variantTypeKind } from "./variantRole";
 // NEO-556: the leaf's set-level "No Team", stamped once BSC answers with none.
 import { noTeamCardVerdict, stampNoTeam, teamDefaultOf } from "./lib/selectorTeams";
+import { regenerateListingNow } from "./tidyListingText";
 // NEO-426 — a teamless sport is one more reason to stamp "No team".
 import { createSportNoTeamReader } from "./sportTeamless";
 import { queuedByField } from "./lib/bscGateKey";
+import { isRuledOutName } from "./tidySkips";
 
 /**
  * Walk up the parent chain from a cardChecklist's selectorOption to
@@ -639,16 +642,9 @@ async function findSkippedTeamNameKeys(
     const key = normalizeEntityName(name);
     if (!key || asked.has(key)) continue;
     asked.add(key);
-    const row = await ctx.db
-      .query("entityReviewSkips")
-      .withIndex("by_selector_option_and_kind_and_name", (q) =>
-        q
-          .eq("selectorOptionId", selectorOptionId)
-          .eq("kind", "team")
-          .eq("nameNormalized", key),
-      )
-      .first();
-    if (row) skipped.add(key);
+    // NEO-645 — a ruling is an `entityReviewSkips` row (before the deploy) or a
+    // `tidyNames` notEntity answer (after it).
+    if (await isRuledOutName(ctx, selectorOptionId, "team", key)) skipped.add(key);
   }
   return skipped;
 }
@@ -1419,7 +1415,14 @@ export const enqueueBscTeamBackfill = internalMutation({
  * open in another tab, turning an unrelated accepted diff stale.
  */
 export const confirmCardNoTeam = mutation({
-  args: { cardId: v.id("cardChecklist") },
+  args: {
+    cardId: v.id("cardChecklist"),
+    /**
+     * NEO-645 T4 — the Tidy Up walk's answer: rebuild the title and
+     * description from the card as it stands, always. Only the walk sends it.
+     */
+    regenerateListing: v.optional(v.literal(true)),
+  },
   returns: v.object({
     /** The row now carries a "no team" confirmation. */
     confirmed: v.boolean(),
@@ -1434,206 +1437,15 @@ export const confirmCardNoTeam = mutation({
     if (row.teamOnCardIds && row.teamOnCardIds.length > 0) {
       return { confirmed: false, stamped: false };
     }
-    if (row.teamNoneConfirmedAt) return { confirmed: true, stamped: false };
+    if (row.teamNoneConfirmedAt) {
+      if (args.regenerateListing) await regenerateListingNow(ctx, row._id);
+      return { confirmed: true, stamped: false };
+    }
 
     // NEO-556 — the one stamp builder every writer shares.
     await ctx.db.patch(row._id, stampNoTeam(userId, Date.now()));
+    if (args.regenerateListing) await regenerateListingNow(ctx, row._id);
     return { confirmed: true, stamped: true };
-  },
-});
-
-/**
- * NEO-102 — career-team SUGGESTIONS for one card, from the players on it.
- *
- * Suggestions, never auto-fill. The operator accepts one with a keystroke and
- * the write goes through `selectorOptions.updateCard` like any other team edit;
- * nothing here writes anything, and confirming a card's team never writes back
- * to `players.teamYears` (card team and player career are different facts —
- * Mickey Mantle on a modern "Legend" insert is printed with the Yankees, which
- * says nothing new about his career).
- *
- * ## The year filter, and when it lets go
- *
- * `players.teamYears` is a whole career (Wikidata P54 with P580/P582
- * qualifiers). For a 2024 set the useful answer is "who was he playing for in
- * 2024", so entries are filtered to `fromYear <= year <= (toYear ?? this
- * year)` — an open-ended entry is a current team. With no year resolvable
- * (see `findSetYearForSelectorOption`) the whole career is offered rather than
- * nothing.
- *
- * NEO-279: the same fallback applies when the year IS known but the filter
- * finds nothing. A retired player on a modern card — a 1960s Yankee on a 2026
- * "Legends" insert, the whole premise of a legends set — has no stint
- * covering the set year, and the filtered list came back empty, so the fixer
- * showed zero chips for a card whose answer was one lookup away. The career
- * is then offered whole, one suggestion per player per team. Still
- * suggestions: a chip the operator judges, never a fill. Each fallback
- * suggestion carries the year it looked for (`uncoveredSetYear`), so the
- * fixer can say "No 2025 team on file — here's the whole career". NEO-335:
- * before save, the entity review wizard's "K cards have no team yet" section
- * (`teamSuggestionsForPreview`) is where a one-team career becomes a
- * PRE-FILLED answer — still the operator's, written only by their Confirm &
- * Save.
- *
- * ## One per (player, team)
- *
- * A multi-player card whose players share a team (the common League Leaders
- * case) yields one suggestion PER PLAYER for that team, and the fixer folds
- * them into one chip that says "Bench & Rose played here" — `playerName` is
- * there so the operator can see WHY a team is being suggested, which is the
- * difference between a suggestion they can judge and a guess. (NEO-330: this
- * used to keep only the first player, so a shared chip named one of them.)
- *
- * ## `inSetYear` — what the fixer may preselect (NEO-330)
- *
- * The career fallback above is a list of everywhere the player ever played,
- * and it used to arrive preselected with focus on Save: one Enter wrote Jimmie
- * Foxx's whole career (Athletics, Red Sox, Cubs, Phillies) onto a single-team
- * 2025 retro card. Only a stint that COVERS the set year is evidence for the
- * card; a fallback chip is a list to choose from. So each suggestion says
- * which it is, and `MissingTeamFixer` preselects only `inSetYear: true`. With
- * no resolvable year nothing is in the set year, so nothing is preselected.
- *
- * ## `label` — the era, when the name alone does not say which team
- *
- * There are four Philadelphia Athletics rows. A chip reading "Philadelphia
- * Athletics" does not say which franchise the operator is about to write, so
- * when the team's sport holds more than one row under its full name the label
- * carries the era — `teamOptionLabel`, the same "Name · 1901–1954" every
- * other team picker shows. A unique name stays bare: "San Diego Padres ·
- * 1969–present" on every chip is noise.
- *
- * Bounded: one read per distinct `playerId` on the card, plus per distinct
- * team those players name one read and one identity lookup counted to two
- * (`findTeamsByFullName`'s `limit`, at most four operations). A dangling
- * player or team link is skipped rather than surfaced as a blank chip.
- */
-export const suggestedTeamsForCard = query({
-  args: { cardId: v.id("cardChecklist") },
-  returns: v.array(
-    v.object({
-      teamId: v.id("teams"),
-      /** The team's full name ("San Diego Padres"). */
-      name: v.string(),
-      /**
-       * What a chip shows: the full name, plus the era when the sport holds
-       * several rows under that name ("Philadelphia Athletics · 1901–1954").
-       */
-      label: v.string(),
-      source: v.literal("career"),
-      /** Which player on the card this team came from. */
-      playerName: v.string(),
-      /**
-       * NEO-330: a stint covering the set year produced this. False for the
-       * whole-career fallback and for a set with no resolvable year — the
-       * fixer preselects only `true`.
-       */
-      inSetYear: v.boolean(),
-      /**
-       * NEO-330: on a whole-career fallback made because no stint covers the
-       * set's year, that year. Absent on a set-year suggestion and when the
-       * set has no resolvable year.
-       */
-      uncoveredSetYear: v.optional(v.number()),
-    }),
-  ),
-  handler: async (ctx, args) => {
-    await requireAdmin(ctx);
-
-    const row = await ctx.db.get(args.cardId);
-    if (!row) return [];
-    const playerIds = row.playerIds ?? [];
-    if (playerIds.length === 0) return [];
-
-    const year = await findSetYearForSelectorOption(ctx, row.selectorOptionId);
-    const thisYear = new Date().getFullYear();
-
-    // Players read once, up front, so the career fallback below re-walks the
-    // same rows without a second round of reads. A card can legitimately list
-    // the same player twice (a dual-auto of one player); each distinct id once.
-    const players: Array<Doc<"players">> = [];
-    const seenPlayerIds = new Set<string>();
-    for (const playerId of playerIds) {
-      if (seenPlayerIds.has(playerId)) continue;
-      seenPlayerIds.add(playerId);
-      const player = await ctx.db.get(playerId);
-      if (!player) continue; // dangling link — soft data error, not fatal
-      players.push(player);
-    }
-
-    type Suggestion = {
-      teamId: Id<"teams">;
-      name: string;
-      label: string;
-      source: "career";
-      playerName: string;
-      inSetYear: boolean;
-      uncoveredSetYear?: number;
-    };
-    const teamTextById = new Map<string, { name: string; label: string } | null>();
-
-    const collect = async (
-      inYear: (fromYear: number, toYear?: number) => boolean,
-      inSetYear: boolean,
-      uncoveredSetYear?: number,
-    ): Promise<Array<Suggestion>> => {
-      const out: Array<Suggestion> = [];
-      for (const player of players) {
-        // Per player: two stints at one team are one suggestion, but a team
-        // two players share is one suggestion EACH (the fixer folds them).
-        const seenTeamIds = new Set<string>();
-        for (const entry of player.teamYears ?? []) {
-          // NEO-285 — an undated stint (a college with no years) says nothing
-          // about which team the player was on in a card's season.
-          if (entry.fromYear === undefined) continue;
-          if (!inYear(entry.fromYear, entry.toYear)) continue;
-          if (seenTeamIds.has(entry.teamId)) continue;
-          if (!teamTextById.has(entry.teamId)) {
-            const team = await ctx.db.get(entry.teamId);
-            if (!team) {
-              teamTextById.set(entry.teamId, null);
-            } else {
-              // NEO-236: the FULL name. This chip is a suggestion an operator
-              // judges at a glance, and "Padres" does not say which Padres.
-              const name = teamFullName(team);
-              // NEO-330: counted to two, never listed — the label only needs
-              // to know whether this name is shared.
-              const sameName = await findTeamsByFullName(ctx, team.sportId, name, 2);
-              teamTextById.set(entry.teamId, {
-                name,
-                label: sameName.length > 1 ? teamOptionLabel(name, team.yearsActive) : name,
-              });
-            }
-          }
-          const text = teamTextById.get(entry.teamId);
-          if (!text || !text.name) continue; // never suggest a blank chip
-          seenTeamIds.add(entry.teamId);
-          out.push({
-            teamId: entry.teamId,
-            name: text.name,
-            label: text.label,
-            source: "career",
-            playerName: player.name,
-            inSetYear,
-            ...(uncoveredSetYear !== undefined ? { uncoveredSetYear } : {}),
-          });
-        }
-      }
-      return out;
-    };
-
-    const wholeCareer = () => true;
-    if (year === undefined) return collect(wholeCareer, false);
-
-    const filtered = await collect(
-      (fromYear, toYear) => fromYear <= year && year <= (toYear ?? thisYear),
-      true,
-    );
-    if (filtered.length > 0) return filtered;
-    // Nothing covers the set year: the retired-player case (see "when it lets
-    // go" above). Offer the career rather than an empty fixer — as choices,
-    // never as an answer (`inSetYear: false`).
-    return collect(wholeCareer, false, year);
   },
 });
 
@@ -1703,6 +1515,53 @@ const TEAM_SUGGESTION_LOCATION_HITS = 16;
  * answer, keeping it can only cost one.
  */
 const TEAM_SUGGESTION_CAREER_TEAMS_READ = 24;
+
+/**
+ * NEO-335 / NEO-645 — the nodes the stored team tiers read (`sameNode`,
+ * `parallelOf`, `baseSet`): the sport the cards are filed under, the node a
+ * parallel copies, and the set's base checklist (the variantType whose title
+ * is the word "Base", `variantTypeKind`; exactly one, or the tier is skipped).
+ */
+export async function storedTierNodes(
+  ctx: Pick<QueryCtx, "db">,
+  node: Doc<"selectorOptions">,
+): Promise<{
+  sportId: Id<"selectorOptions"> | undefined;
+  parallelOfNodeId: Id<"selectorOptions"> | null;
+  baseNodeId: Id<"selectorOptions"> | null;
+}> {
+  // One walk up the chain for the facts it holds: the sport (the card
+  // links are filed under the CARD's sport) and the setName row whose
+  // children hold the base checklist.
+  let sportId: Id<"selectorOptions"> | undefined;
+  let setNameNode: Doc<"selectorOptions"> | null = null;
+  {
+    let cursor: Doc<"selectorOptions"> | null = node;
+    let depth = 0;
+    while (cursor && depth < 16) {
+      if (cursor.level === "setName" && !setNameNode) setNameNode = cursor;
+      if (cursor.level === "sport") {
+        sportId = cursor._id;
+        break;
+      }
+      cursor = cursor.parentId ? await ctx.db.get(cursor.parentId) : null;
+      depth += 1;
+    }
+  }
+  const parallelOfNodeId = node.level === "parallel" && node.parentId ? node.parentId : null;
+  let baseNodeId: Id<"selectorOptions"> | null = null;
+  if (setNameNode) {
+    const bases: Array<Id<"selectorOptions">> = [];
+    for (const childId of (setNameNode.children ?? []).slice(0, TEAM_SUGGESTION_SET_CHILD_SCAN)) {
+      const child = await ctx.db.get(childId);
+      if (child?.level === "variantType" && variantTypeKind(child) === "base") {
+        bases.push(child._id);
+      }
+    }
+    if (bases.length === 1) baseNodeId = bases[0];
+  }
+  return { sportId, parallelOfNodeId, baseNodeId };
+}
 
 /**
  * NEO-639 — how many of one player's DATED stints come back as `stints`, in
@@ -1932,24 +1791,9 @@ export const teamSuggestionsForPreview = query({
       };
     }
 
-    // One walk up the chain for the facts it holds: the sport (the card
-    // links are filed under the CARD's sport) and the setName row whose
-    // children hold the base checklist.
-    let sportId: Id<"selectorOptions"> | undefined;
-    let setNameNode: Doc<"selectorOptions"> | null = null;
-    {
-      let cursor: Doc<"selectorOptions"> | null = node;
-      let depth = 0;
-      while (cursor && depth < 16) {
-        if (cursor.level === "setName" && !setNameNode) setNameNode = cursor;
-        if (cursor.level === "sport") {
-          sportId = cursor._id;
-          break;
-        }
-        cursor = cursor.parentId ? await ctx.db.get(cursor.parentId) : null;
-        depth += 1;
-      }
-    }
+    // The sport, the base checklist and the node a parallel copies: one walk,
+    // shared with the commit's own stored-evidence read (`storedTeamEvidence`).
+    const { sportId, parallelOfNodeId, baseNodeId } = await storedTierNodes(ctx, node);
     const setYear = await findSetYearForSelectorOption(ctx, node._id);
 
     // C2b / NEO-569 — the set's leagues, by NB's own field and NB's own rows,
@@ -1966,27 +1810,6 @@ export const teamSuggestionsForPreview = query({
             levels: setLeagues.map((league) => league.level ?? null),
           }
         : null;
-
-    const parallelOfNodeId =
-      node.level === "parallel" && node.parentId ? node.parentId : null;
-
-    // The base checklist: the variantType whose title is the word "Base"
-    // (`variantTypeKind`, NEO-334 — the title is the kind, there is no flag).
-    // Exactly one, or the tier is skipped.
-    let baseNodeId: Id<"selectorOptions"> | null = null;
-    if (setNameNode) {
-      const bases: Array<Id<"selectorOptions">> = [];
-      for (const childId of (setNameNode.children ?? []).slice(
-        0,
-        TEAM_SUGGESTION_SET_CHILD_SCAN,
-      )) {
-        const child = await ctx.db.get(childId);
-        if (child?.level === "variantType" && variantTypeKind(child) === "base") {
-          bases.push(child._id);
-        }
-      }
-      if (bases.length === 1) baseNodeId = bases[0];
-    }
 
     const relevantNodes = new Set<string>(
       [node._id, parallelOfNodeId, baseNodeId].filter(
@@ -2239,5 +2062,91 @@ export const teamSuggestionsForPreview = query({
       players,
       teamNames,
     };
+  },
+});
+
+/** How many players one `storedTeamEvidence` call reads (each is up to ~50 reads). */
+export const STORED_TEAM_EVIDENCE_PLAYERS_PER_CALL = 16;
+
+/**
+ * NEO-645 (Q1 = A) — the "stored cards of the set" tier of the commit's own
+ * team fill: for each player, the team set his OTHER cards already carry under
+ * the node being saved, the node it copies (a parallel), or the set's base
+ * checklist — exactly the stored tiers `teamSuggestionsForPreview` offered the
+ * old Teams step (`suggestTeamsForPlayer`, minus the career, which the commit
+ * chunk reads itself).
+ *
+ * Per player, either:
+ *  - `answer`: one team set agrees (the first tier that has cards decides);
+ *  - `disagree`: that tier's cards disagree with each other. The search STOPS
+ *    for this player (a career tier must not outvote two printed cards), so the
+ *    card is left for the operator.
+ * A player with no stored evidence is absent from the result, and the chunk
+ * falls through to his career. Never a guess at which of two same-name players
+ * is meant: the caller sends player ids. The bound (24 newest links per
+ * player) can cost a suggestion, never produce a wrong one.
+ */
+export const storedTeamEvidence = internalQuery({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    askAbout: v.array(v.id("players")),
+  },
+  returns: v.array(
+    v.object({
+      playerId: v.id("players"),
+      status: v.union(v.literal("answer"), v.literal("disagree")),
+      teamIds: v.array(v.id("teams")),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    if (args.askAbout.length > STORED_TEAM_EVIDENCE_PLAYERS_PER_CALL) {
+      throw new ConvexError(
+        `Too many players to read stored teams for at once (${args.askAbout.length}; max ${STORED_TEAM_EVIDENCE_PLAYERS_PER_CALL}).`,
+      );
+    }
+    const node = await ctx.db.get(args.selectorOptionId);
+    if (!node) return [];
+    const { sportId, parallelOfNodeId, baseNodeId } = await storedTierNodes(ctx, node);
+    if (!sportId) return [];
+    const relevantNodes = new Set<string>(
+      [node._id, parallelOfNodeId, baseNodeId].filter(
+        (id): id is Id<"selectorOptions"> => id !== null,
+      ),
+    );
+    const out: Array<{
+      playerId: Id<"players">;
+      status: "answer" | "disagree";
+      teamIds: Array<Id<"teams">>;
+    }> = [];
+    for (const playerId of new Set(args.askAbout)) {
+      const cards: Array<Doc<"cardChecklist">> = [];
+      for (const cardId of await recentCardIdsForPlayer(
+        ctx,
+        playerId,
+        sportId,
+        TEAM_SUGGESTION_LINKS_PER_PLAYER,
+      )) {
+        const card = await ctx.db.get(cardId);
+        if (card && relevantNodes.has(card.selectorOptionId)) cards.push(card);
+      }
+      const suggestion = suggestTeamsForPlayer({
+        playerId,
+        // No player row: the stored tiers only, the career is the chunk's.
+        player: undefined,
+        cards,
+        nodeId: node._id,
+        parallelOfNodeId,
+        baseNodeId,
+        year: undefined,
+        currentYear: new Date().getFullYear(),
+        maxCandidates: TEAM_SUGGESTION_MAX_CANDIDATES,
+      });
+      if (suggestion.answer) {
+        out.push({ playerId, status: "answer", teamIds: suggestion.answer.teamIds });
+      } else if (suggestion.candidates.length > 0) {
+        out.push({ playerId, status: "disagree", teamIds: [] });
+      }
+    }
+    return out;
   },
 });

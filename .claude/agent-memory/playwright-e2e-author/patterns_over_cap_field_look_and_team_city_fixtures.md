@@ -30,7 +30,7 @@ with rows (`teamIds`) have a split; a typed or location-less team goes whole and
   cards D/E): Brett under `Insert > Rw<token>` (NEO-609: not `Base`), 15-char
   set, 14-char row, location and nickname each padded to 15 (`Lc<token>`,
   `Nk<token>`), and a 31-char single-token team with no location for the
-  contrast. Compute with the bundled generator ([[title-fixture-arithmetic]]).
+  contrast. Compute with the bundled generator ([[patterns_title_fixture_arithmetic]]).
 - Over-cap look on the Card titles step without a generated over-80 card (the
   step draws only 50 rows): TYPE a title past 80 into a listed row; the row's
   `role=status` reads "Too long to list as-is." (inserts-1996-score, #8).

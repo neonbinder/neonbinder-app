@@ -349,6 +349,22 @@ export class CardCountLedger {
     this.add(rowId, 0, isVariation ? -1 : 1);
   }
 
+  /**
+   * NEO-645 — true when the ledger holds anything to write for a row OTHER than
+   * `rowId`: a non-zero own delta, a card that landed on or left another row,
+   * or a subtree move or flag chain (which write up the chain). A commit chunk
+   * that defers its flush to its caller reports only the leaf's deltas, so it
+   * asks this before returning: anything else would be dropped silently.
+   */
+  holdsDeltasBeyond(rowId: RowId): boolean {
+    for (const [id, d] of this.deltas) if (id !== rowId && !isZero(d)) return true;
+    for (const id of this.landed) if (id !== rowId) return true;
+    for (const id of this.departed) if (id !== rowId) return true;
+    return (
+      this.chainDeltas.length > 0 || this.unknownMoves.length > 0 || this.flagChains.length > 0
+    );
+  }
+
   /** The pending deltas for one row; for tests and logging. */
   deltaFor(rowId: RowId): Delta {
     return this.deltas.get(rowId) ?? { all: 0, nonVariation: 0 };

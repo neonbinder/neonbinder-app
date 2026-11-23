@@ -488,6 +488,25 @@ body {
   color: var(--nb-ink-hover);
 }
 
+/* NEO-645 — the Tidy Up walk is worked by thumb as often as by mouse, and
+ * Radix's size-1 button is 24px high. On a coarse pointer the walk's size-1
+ * buttons take size 2's height, type and padding (scoped to the walk's own
+ * panel, `.tidy-walk`; nothing else on the site changes). Unlayered, so it
+ * also lifts the 24px floor of the wrap-instead-of-run-out class
+ * (`min-h-6`) to size 2's 32px. */
+@media (pointer: coarse) {
+  .tidy-walk .rt-BaseButton.rt-r-size-1 {
+    --base-button-height: var(--space-6);
+    min-height: var(--space-6);
+    gap: var(--space-2);
+    padding-left: var(--space-3);
+    padding-right: var(--space-3);
+    font-size: var(--font-size-2);
+    line-height: var(--line-height-2);
+    letter-spacing: var(--letter-spacing-2);
+  }
+}
+
 /* Dark ink on Radix's solid pink and blue, in both modes. Radix ships white
  * (`--pink-contrast` / `--blue-contrast` on `:root`), which is 3.9:1 on its
  * dark pink-9 and 3.2:1 on its dark blue-9, under SC 1.4.3's 4.5:1. Black is

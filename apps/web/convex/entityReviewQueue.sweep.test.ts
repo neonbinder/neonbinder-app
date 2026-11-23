@@ -323,42 +323,6 @@ describe("sweepAbandonedBatches", () => {
     expect(rows).toHaveLength(ENTITY_REVIEW_ABANDONED_SCAN);
   });
 
-  test("a cancelled or committed batch cannot be resumed after the sweep has run", async () => {
-    // The point of the sweep, stated end to end: `startBatch` resumes any
-    // batch it finds for a (selectorOptionId, user) pair, so an abandoned one
-    // silently becomes the NEXT fetch's starting point — complete with
-    // decisions taken against a card list that has moved on. After the sweep,
-    // the next fetch is a fresh question with a new batchId.
-    const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const selectorOptionId = await seedSelectorOption(t);
-
-    const oldBatchId = await t.mutation(internal.entityReviewQueue.startBatch, {
-      selectorOptionId,
-      createdByUserId: "user_review_001",
-      sportId: selectorOptionId,
-      playerNames: ["Long Forgotten"],
-      teamNames: [],
-    });
-
-    vi.setSystemTime(BASE + ENTITY_REVIEW_ABANDONED_MS + HOUR);
-    await t.mutation(internal.entityReviewQueue.sweepAbandonedBatches, {});
-
-    const newBatchId = await t.mutation(internal.entityReviewQueue.startBatch, {
-      selectorOptionId,
-      createdByUserId: "user_review_001",
-      sportId: selectorOptionId,
-      playerNames: ["Someone New"],
-      teamNames: [],
-    });
-
-    expect(newBatchId).not.toBe(oldBatchId);
-    const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
-      selectorOptionId,
-      batchId: newBatchId,
-    });
-    expect(rows.map((r) => r.name)).toEqual(["Someone New"]);
-  });
 });
 
 /**

@@ -15,4 +15,4 @@ metadata:
 - **The planner also refuses a tagged spec without `describe.configure({ retries: 0 })`** (`checkNoRetryTagged` in shard-plan.mjs, comments stripped first; unit test in `scripts/shard-plan.test.mjs`). shard-plan.mjs runs its CLI only when it is the entry file (realpath of argv[1] vs import.meta.url), so tests can import it. Shard index is 1-based: `8 0` is a usage error, `8 --project e2e` prints the totals. A hung renderer can refuse `about:blank`, so the reset teardown also closes every page before the context.
 - Check redaction by decoding the `console` attachment body from the JSON report and grepping for testing tokens, JWTs, Convex hosts and emails; never paste the body anywhere.
 
-Related: [[per-worker-data-isolation]], [[planted-red-for-server-side-behaviour]], [[collection-optimistic-writes-wait-for-the-notice]].
+Related: [[patterns_per_worker_data_isolation]], [[patterns_planted_red_for_server_side_behaviour]], [[patterns_collection_optimistic_writes_wait_for_the_notice]].

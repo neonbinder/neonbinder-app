@@ -269,18 +269,18 @@ describe("parallel build — the parallel's No Team (NEO-556)", () => {
     const t = convexTest(schema, modules);
     const fx = await seed(t);
     await insertCard(t, fx, "1", { teams: [fx.yankees], extra: ANSWERED });
-    await insertCard(t, fx, "2", { extra: { ...ANSWERED, pendingTeamNames: ["Dodgers"] } });
+    // A pending team name on the SOURCE is refused by the build (J3, NEO-645):
+    // see "a source with a name still waiting" in parallelChecklistBuild.test.ts.
     await insertCard(t, fx, "3", { extra: { ...ANSWERED, bscTeamName: "LA Dodgers" } });
     await insertCard(t, fx, "4", { extra: { teamCheckDoneAt: NOW, teamCheckOutcome: "gaveUp" } });
     await store(t, fx.parallel, { noTeamDefault: NO_TEAM });
     await build(t, fx);
     const got = await copies(t, fx);
-    for (const n of ["1", "2", "3", "4"]) {
+    for (const n of ["1", "3", "4"]) {
       expect(got.get(n)!.teamNoneConfirmedAt, n).toBeUndefined();
     }
     expect(got.get("1")!.teamOnCardIds).toEqual([fx.yankees]);
     expect(got.get("1")!.teamIndex).toEqual([fx.yankees]);
-    expect(got.get("2")!.pendingTeamNames).toEqual(["Dodgers"]);
     expect(got.get("3")!.bscTeamName).toBe("LA Dodgers");
   });
 

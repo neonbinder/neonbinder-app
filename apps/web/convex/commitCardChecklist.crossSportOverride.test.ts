@@ -15,6 +15,7 @@
  * commitCardChecklist.entityReview.test.ts, which this file sits beside.
  */
 
+import { insertAsTidyName } from "../lib/testing/tidy-review-row";
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
@@ -122,7 +123,7 @@ async function insertLinkRow(
   },
 ) {
   return t.run(async (ctx) =>
-    ctx.db.insert("entityReviewQueue", {
+    insertAsTidyName(ctx, {
       selectorOptionId: opts.selectorOptionId,
       batchId: opts.batchId,
       createdByUserId: "user_review_001",
@@ -203,36 +204,6 @@ describe("NEO-313: commit's cross-sport override, and its security fix", () => {
     expect(row?.alsoSportIds).toEqual([baseball]);
   });
 
-  test("a player-review row switched to another sport creates its NEW player under that sport", async () => {
-    const t = convexTest(schema, modules);
-    const { variantTypeId } = await seedBaseballSet(t);
-    const football = await seedSport(t, "Football");
-    await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewQueue", {
-        selectorOptionId: variantTypeId,
-        batchId: "b1",
-        createdByUserId: "user_review_001",
-        kind: "player",
-        name: "Earl Campbell",
-        sportId: football,
-        status: "ready",
-        decision: { action: "create" },
-      }),
-    );
-
-    const result = await t
-      .withIdentity(ADMIN_IDENTITY)
-      .action(api.selectorOptions.commitCardChecklist, {
-        selectorOptionId: variantTypeId,
-        sportId: (await seedBaseballSet(t)).sportId, // any real baseball-level sport for the SKU check
-        batchId: "b1",
-        cards: [makeCard({ players: ["Earl Campbell"] })],
-      });
-
-    expect(result.createdPlayerIds).toHaveLength(1);
-    const created = await t.run((ctx) => ctx.db.get(result.createdPlayerIds[0]));
-    expect(created?.sportId).toBe(football);
-  });
 
   test("a cross-sport LINK survives the commit: playerIds and playerLinks both carry the guest", async () => {
     const t = convexTest(schema, modules);

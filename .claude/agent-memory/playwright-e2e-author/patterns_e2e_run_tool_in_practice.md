@@ -34,8 +34,22 @@ the tool's current code before relying on any line here; some may be fixed.
 - `seed` does not start Vite. After `stop-vite`, its setup phase dies on
   `net::ERR_CONNECTION_REFUSED` at the sign-in hop (the reset and import still
   ran). Harmless: the next `run --setup` starts Vite and runs setup again.
+- **Several authors on one runner:** a `wait` then `run` in two calls loses the lock to
+  another author's queued command almost every time (exit 3). Put the retry in ONE
+  backgrounded Bash call: `for i in $(seq 1 15); do wait; run --slice 0 <specs> > file; [ rc != 3 ] && break; done`,
+  then read the file on the notification. `status` plus the newest run's `job.json`
+  (`"specs"`) tells whose run holds the lock. In zsh, a spec list in a plain variable
+  does not word-split; use an array for `git add -- $F`.
+- **`setup ✘ not since seed` can be a dead seed, not a pending phase.** `setup` warms
+  the deployment (syncs Manufacturers, etc.) before it asserts a cold column, so once
+  its FIRST attempt after a seed dies part-way, every later attempt reds earlier (e.g.
+  the paused branch's "No manufacturers available" with the listbox full). Every
+  `run` then dies in setup for every author. Check the run dirs since `seededAt` for
+  a first setup red; if so, no spec can run until a reseed: hand back "needs fresh
+  seed", never reseed a shared worktree deployment yourself.
 - `status` on a worktree with no `.e2e-local/` yet can crash (ENOENT on
   run.lock). Any `run` creates the folder.
 
 **Why:** these cost time or misled the first live run. **How to apply:** any
-agent driving e2e-run from the Bash tool. Related: [[patterns-local-run-backend-and-vite]].
+agent driving e2e-run from the Bash tool. Related: [[patterns_local_run_backend_and_vite]].
+- A `setup` red after `--fresh` leaves a half-built seed: a plain `run` re-runs `setup` on it and fails at "No manufacturers available" (setup expects an empty catalogue). Re-run with `--fresh`, not without. A Card titles dialog that opens after a parallels build (copies over 80) intercepts the next click; close it with "Not now" in the spec, naming the copies it lists (NEO-645).

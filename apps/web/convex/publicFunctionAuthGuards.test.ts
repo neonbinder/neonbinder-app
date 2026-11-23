@@ -37,7 +37,8 @@
  * ## NEO-212
  *
  * The same two shapes, applied to the ten public functions the entity review
- * wizard and the Player Management page added. This file is hand-maintained —
+ * wizard and the Player Management page added (the wizard's have since been
+ * removed: NEO-645). This file is hand-maintained —
  * nothing enumerates the API, so a new public function is recorded here as
  * part of writing it, and the NEO-212 audit's INFO finding was that ten had
  * not been.
@@ -57,6 +58,7 @@ import schema from "./schema";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 import { Id } from "./_generated/dataModel";
 import { insertTestCard } from "../lib/testing/card-row";
+import { addPlayer, nameRow, printCard, seedTidyWorld } from "../lib/testing/tidy-world";
 
 // NEO-315: the placeholder download mints sign with a storage client. A fake one
 // records every probe and signature so "refused" can be asserted as "touched
@@ -412,174 +414,9 @@ describe("NEO-212 — a refused write to shared reference data persists nothing"
 
     expect(await t.run(async (ctx) => ctx.db.query("players").collect())).toEqual([]);
   });
-
-  test.each([
-    ["recordAllRemainingAsSkip", api.entityReviewQueue.recordAllRemainingAsSkip],
-    // NEO-301 — the create twin, pinned beside it now that both are actions
-    // whose write half takes the caller's id as an argument.
-    ["recordAllRemainingAsCreate", api.entityReviewQueue.recordAllRemainingAsCreate],
-  ] as const)("entityReviewQueue.%s refuses a non-admin without deciding a row", async (_name, fn) => {
-    // The BULK one: a single call marks every undecided name in a batch as
-    // "not an entity", and commit then makes each of those a durable per-set
-    // suppression. Ungated, one call could retire an operator's whole review.
-    const t = convexTest(schema, modules);
-    const selectorOptionId = await seedSport(t);
-    const rowId = await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewQueue", {
-        selectorOptionId,
-        batchId: "batch-1",
-        createdByUserId: ADMIN.subject,
-        kind: "player" as const,
-        name: "CHECKLIST",
-        sportId: selectorOptionId,
-        status: "ready" as const,
-      }),
-    );
-
-    await expect(
-      t.withIdentity(MEMBER).action(fn, {
-        selectorOptionId,
-        batchId: "batch-1",
-      }),
-    ).rejects.toThrow(/admin access required/i);
-
-    expect((await t.run(async (ctx) => ctx.db.get(rowId)))?.decision).toBeUndefined();
-  });
-
-  test("entityReviewQueue.clearDecision refuses a non-admin without un-deciding a row", async () => {
-    // NEO-221. The reverse of recordDecision: it puts a name the operator
-    // already ruled on back into the wizard as an open question. Ungated, a
-    // signed-in non-admin could walk a finished review back to the start, and
-    // — because un-deciding a still-`pending` row re-enqueues its Wikidata
-    // lookup — do it while spending outbound requests.
-    const t = convexTest(schema, modules);
-    const selectorOptionId = await seedSport(t);
-    const rowId = await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewQueue", {
-        selectorOptionId,
-        batchId: "batch-1",
-        createdByUserId: ADMIN.subject,
-        kind: "player" as const,
-        name: "Mike Trout",
-        sportId: selectorOptionId,
-        status: "ready" as const,
-        decision: { action: "create" as const },
-      }),
-    );
-
-    await expect(
-      t.withIdentity(MEMBER).mutation(api.entityReviewQueue.clearDecision, {
-        reviewRowId: rowId,
-      }),
-    ).rejects.toThrow(/admin access required/i);
-
-    // The decision is STILL there — the refusal happened before any write.
-    expect((await t.run(async (ctx) => ctx.db.get(rowId)))?.decision).toEqual({
-      action: "create",
-    });
-  });
-
-  test("entityReviewQueue.clearCareerTeamStint refuses a non-admin without clearing the stint", async () => {
-    // NEO-248. It undoes a staging patch: the years the operator typed on a
-    // career-team step. Ungated, a signed-in non-admin could empty a
-    // colleague's entries one step at a time, and the loss is silent — the
-    // wizard rebuilds its chips from exactly this field, so the chips would
-    // simply stop appearing.
-    const t = convexTest(schema, modules);
-    const selectorOptionId = await seedSport(t);
-    const playerRowId = await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewQueue", {
-        selectorOptionId,
-        batchId: "batch-1",
-        createdByUserId: ADMIN.subject,
-        kind: "player" as const,
-        name: "Travis Bazzana",
-        sportId: selectorOptionId,
-        status: "ready" as const,
-      }),
-    );
-    const teamRowId = await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewQueue", {
-        selectorOptionId,
-        batchId: "batch-1",
-        createdByUserId: ADMIN.subject,
-        kind: "team" as const,
-        name: "Sydney Blue Sox",
-        sportId: selectorOptionId,
-        status: "ready" as const,
-        source: {
-          kind: "careerTeamOf" as const,
-          playerRowId,
-          manualStint: { fromYear: 2001, toYear: 2005 },
-        },
-      }),
-    );
-
-    await expect(
-      t.withIdentity(MEMBER).mutation(api.entityReviewQueue.clearCareerTeamStint, {
-        reviewRowId: playerRowId,
-        teamRowId,
-      }),
-    ).rejects.toThrow(/admin access required/i);
-
-    // The years are STILL there — the refusal happened before any write.
-    expect(
-      (await t.run(async (ctx) => ctx.db.get(teamRowId)))?.source?.manualStint,
-    ).toEqual({ fromYear: 2001, toYear: 2005 });
-  });
-
-  test("entityReviewSkips.clearSkip refuses a non-admin without deleting the row", async () => {
-    // The only destructive one of the ten. Deleting a skip re-opens a decision
-    // the operator already made — the name re-enters the wizard on the next
-    // sync — so the delete has to be as gated as the write that created it.
-    const t = convexTest(schema, modules);
-    const selectorOptionId = await seedSport(t);
-    const skipId = await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewSkips", {
-        selectorOptionId,
-        kind: "player" as const,
-        name: "CHECKLIST",
-        nameNormalized: "checklist",
-        skippedAt: Date.now(),
-        skippedByUserId: ADMIN.subject,
-      }),
-    );
-
-    await expect(
-      t.withIdentity(MEMBER).mutation(api.entityReviewSkips.clearSkip, { skipId }),
-    ).rejects.toThrow(/admin access required/i);
-
-    expect(await t.run(async (ctx) => ctx.db.get(skipId))).not.toBeNull();
-  });
 });
 
 describe("NEO-212 — admin-gated reads still omit their audit fields", () => {
-  test("entityReviewSkips.listForSet answers an admin without shipping skippedByUserId", async () => {
-    const t = convexTest(schema, modules);
-    const selectorOptionId = await seedSport(t);
-    await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewSkips", {
-        selectorOptionId,
-        kind: "player" as const,
-        name: "CHECKLIST",
-        nameNormalized: "checklist",
-        skippedAt: Date.now(),
-        skippedByUserId: "clerk_some_operator",
-        batchId: "batch-1",
-      }),
-    );
-
-    const rows = await t
-      .withIdentity(ADMIN)
-      .query(api.entityReviewSkips.listForSet, { selectorOptionId });
-
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).not.toHaveProperty("skippedByUserId");
-    // `batchId` is what the operator gets instead: enough to find the review
-    // session in the logs, and it names a batch rather than a person.
-    expect(rows[0].batchId).toBe("batch-1");
-  });
-
   test("players.listForManagement and players.nearMatches answer an admin without shipping createdByUserId", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
@@ -1362,5 +1199,222 @@ describe("NEO-536 — the admin's sync report review never ships closedBy", () =
     expect(review).toMatchObject({ status: "notABug", closedAt: 5, closeNote: "Add the team on the card." });
     expect(review).not.toHaveProperty("closedBy");
     expect(JSON.stringify(review)).not.toContain("HIDDEN");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-645 — One-card Tidy Up
+// ---------------------------------------------------------------------------
+
+/**
+ * One-card Tidy Up added public writes to SHARED reference data (players,
+ * teams, name answers) and to a set's own metadata. Pinned here the way the
+ * NEO-212 block pins the wizard's: a refused caller (signed out, or signed in
+ * without the admin role) leaves `players`, `teams`, `tidyNames`, the cards and
+ * the leaf's metadata exactly as they were. `publicFunctionAuth.test.ts` pins
+ * which gate each one carries; this pins what the refusal did NOT do.
+ */
+describe("NEO-645 — a refused Tidy Up write persists nothing", () => {
+  async function world() {
+    const t = convexTest(schema, modules);
+    const seeded = await t.run(async (ctx) => {
+      const w = await seedTidyWorld(ctx);
+      // Looked up and found nothing: a new rookie, so a refused call has a
+      // real player to have created.
+      await nameRow(ctx, {
+        scopeId: w.base,
+        sportId: w.sport,
+        kind: "player",
+        name: "Rookie Newguy",
+        over: { lookupGen: 1, lookupRequestedAt: 1 },
+      });
+      await nameRow(ctx, { scopeId: w.base, sportId: w.sport, kind: "team", name: "Pads" });
+      const cardId = await printCard(ctx, w, {
+        number: "1",
+        printed: [
+          { kind: "player", name: "Rookie Newguy" },
+          { kind: "team", name: "Pads" },
+        ],
+      });
+      const playerId = await addPlayer(ctx, w, "Sam Veteran");
+      return { w, cardId, playerId };
+    });
+    return { t, ...seeded };
+  }
+
+  /** Everything a refused call could have touched. */
+  const snapshot = (t: ReturnType<typeof convexTest>, leafId: Id<"selectorOptions">) =>
+    t.run(async (ctx) => ({
+      players: await ctx.db.query("players").collect(),
+      teams: await ctx.db.query("teams").collect(),
+      tidyNames: await ctx.db.query("tidyNames").collect(),
+      cards: await ctx.db.query("cardChecklist").collect(),
+      leafMetadata: (await ctx.db.get(leafId))?.metadata,
+    }));
+
+  type Call = (
+    c: Awaited<ReturnType<typeof world>>,
+    as: (id?: typeof MEMBER) => ReturnType<ReturnType<typeof convexTest>["withIdentity"]> | ReturnType<typeof convexTest>,
+  ) => Promise<unknown>;
+
+  const calls: Array<[string, Call]> = [
+    [
+      "tidyNames.createPlayer",
+      (c, as) =>
+        as().mutation(api.tidyNames.createPlayer, { cardId: c.cardId, name: "Rookie Newguy" }),
+    ],
+    [
+      "players.addStint",
+      (c, as) =>
+        as().mutation(api.players.addStint, {
+          playerId: c.playerId,
+          teamId: c.w.padres,
+          fromYear: 2020,
+          toYear: 2022,
+          cardId: c.cardId,
+        }),
+    ],
+    [
+      "tidyNames.answerName (linkTeam with saveAsAlias)",
+      (c, as) =>
+        as().mutation(api.tidyNames.answerName, {
+          cardId: c.cardId,
+          kind: "team",
+          name: "Pads",
+          answer: { kind: "linkTeam", teamId: c.w.padres, saveAsAlias: true },
+        }),
+    ],
+    [
+      "tidyCards.applySetNameToTitles",
+      (c, as) =>
+        as().mutation(api.tidyCards.applySetNameToTitles, {
+          leafId: c.w.base,
+          cardId: c.cardId,
+          listingShortName: "Short Chrome",
+        }),
+    ],
+    [
+      "tidyNames.requestTeamLookup",
+      (c, as) =>
+        as().mutation(api.tidyNames.requestTeamLookup, {
+          cardId: c.cardId,
+          name: "Brand New Club",
+          sportId: c.w.sport,
+        }),
+    ],
+    [
+      "tidyCameo.pickSourceAsCameo",
+      (c, as) => as().mutation(api.tidyCameo.pickSourceAsCameo, { cardId: c.cardId }),
+    ],
+    [
+      "tidyCards.keepCareerGap",
+      (c, as) =>
+        as().mutation(api.tidyCards.keepCareerGap, {
+          cardId: c.cardId,
+          playerId: c.playerId,
+          teamId: c.w.padres,
+        }),
+    ],
+    [
+      "tidyCards.markReviewed",
+      (c, as) => as().mutation(api.tidyCards.markReviewed, { cardId: c.cardId, keys: [] }),
+    ],
+  ];
+
+  test.each(calls)("%s refuses a signed-out caller and writes nothing", async (_name, call) => {
+    const c = await world();
+    const before = await snapshot(c.t, c.w.base);
+    // Not vacuous: the fixture holds rows for the call to have changed.
+    expect(before.players.length).toBeGreaterThan(0);
+    expect(before.teams.length).toBeGreaterThan(0);
+    expect(before.tidyNames.length).toBeGreaterThan(0);
+
+    await expect(call(c, () => c.t)).rejects.toThrow(/not authenticated/i);
+
+    expect(await snapshot(c.t, c.w.base)).toEqual(before);
+    expect(await scheduledCount(c.t)).toBe(0);
+  });
+
+  test.each(calls)("%s refuses a non-admin and writes nothing", async (_name, call) => {
+    const c = await world();
+    const before = await snapshot(c.t, c.w.base);
+
+    await expect(call(c, () => c.t.withIdentity(MEMBER))).rejects.toThrow(
+      /admin access required/i,
+    );
+
+    expect(await snapshot(c.t, c.w.base)).toEqual(before);
+    expect(await scheduledCount(c.t)).toBe(0);
+  });
+});
+
+async function scheduledCount(t: ReturnType<typeof convexTest>): Promise<number> {
+  return (await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).length;
+}
+
+describe("NEO-645 — the admin's Tidy Up reads never ship answeredByUserId", () => {
+  const OPERATOR = "clerk_operator_HIDDEN";
+
+  test("tidyCards.cardContext answers an admin for an answered name without answeredByUserId", async () => {
+    const t = convexTest(schema, modules);
+    const { cardId, padres } = await t.run(async (ctx) => {
+      const w = await seedTidyWorld(ctx);
+      await nameRow(ctx, {
+        scopeId: w.base,
+        sportId: w.sport,
+        kind: "team",
+        name: "Pads",
+        over: {
+          answer: { kind: "linkTeam", teamId: w.padres, by: "operator" },
+          answerGen: 1,
+          answeredByUserId: OPERATOR,
+          answeredAt: 5,
+        },
+      });
+      const cardId = await printCard(ctx, w, {
+        number: "1",
+        printed: [{ kind: "team", name: "Pads" }],
+      });
+      return { cardId, padres: w.padres };
+    });
+
+    const context = await t.withIdentity(ADMIN).query(api.tidyCards.cardContext, { cardId });
+    // Not vacuous: the read really carried the answered row.
+    expect(context?.names[0].row?.answer).toEqual({
+      kind: "linkTeam",
+      teamId: padres,
+      by: "operator",
+    });
+    expect(JSON.stringify(context)).not.toContain("answeredByUserId");
+    expect(JSON.stringify(context)).not.toContain("HIDDEN");
+  });
+
+  test("tidyNames.teamLookup answers an admin for an answered team row without answeredByUserId", async () => {
+    const t = convexTest(schema, modules);
+    const cardId = await t.run(async (ctx) => {
+      const w = await seedTidyWorld(ctx);
+      await nameRow(ctx, {
+        scopeId: w.base,
+        sportId: w.sport,
+        kind: "team",
+        name: "Pads",
+        over: {
+          answer: { kind: "linkTeam", teamId: w.padres, by: "operator" },
+          answerGen: 1,
+          answeredByUserId: OPERATOR,
+          answeredAt: 5,
+          enrichment: { wikidataId: "Q1" },
+        },
+      });
+      return printCard(ctx, w, { number: "1", printed: [{ kind: "team", name: "Pads" }] });
+    });
+
+    const lookup = await t
+      .withIdentity(ADMIN)
+      .query(api.tidyNames.teamLookup, { cardId, name: "Pads" });
+    // Not vacuous: it found the row and answered with its enrichment.
+    expect(lookup).toMatchObject({ status: "ready", enrichment: { wikidataId: "Q1" } });
+    expect(JSON.stringify(lookup)).not.toContain("answeredByUserId");
+    expect(JSON.stringify(lookup)).not.toContain("HIDDEN");
   });
 });

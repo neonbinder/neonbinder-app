@@ -15,6 +15,7 @@
  * Whatever the gate shows as needing the operator, the commit must not resolve
  * silently, and the reverse.
  */
+import { tidyRowAsReviewRow } from "./lib/tidyAnswerDecisions";
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -200,11 +201,23 @@ function commit(
   });
 }
 
-async function teamRows(t: T, batchId: string | undefined) {
-  if (!batchId) return [];
-  return (await t.run((ctx) => ctx.db.query("entityReviewQueue").collect())).filter(
-    (r) => r.batchId === batchId && r.kind === "team",
-  );
+/**
+ * NEO-645: the gate's team rows are `tidyNames` rows. Each is read the way the
+ * commit prelude reads it (`tidyRowAsReviewRow`), with the place candidates the
+ * row stores (`candidateTeamIds`, `candidatePlace`) as the `teamContext` the
+ * old queue row carried, so every assertion below keeps its meaning. The
+ * batch argument is gone with the batches.
+ */
+async function teamRows(t: T, _fromGate?: unknown) {
+  return (await t.run((ctx) => ctx.db.query("tidyNames").collect()))
+    .filter((r) => r.kind === "team")
+    .map((r) => ({
+      ...tidyRowAsReviewRow(r),
+      teamContext: {
+        candidateTeamIds: r.candidateTeamIds ?? [],
+        place: r.candidatePlace === true,
+      },
+    }));
 }
 
 async function storedCards(t: T, w: World) {
@@ -262,11 +275,6 @@ describe("the review gate: a printed place reads the card's players, never the y
     // The candidates are teams located at the place, none named it: the step's
     // lead-in says so ("from Seattle"), and reads it back from the query.
     expect(row.teamContext?.place).toBe(true);
-    const step = await t
-      .withIdentity(ADMIN)
-      .query(api.entityReviewQueue.teamStepContext, { reviewRowId: row._id });
-    expect(step?.fromPlace).toBe(true);
-    expect(step?.candidates).toHaveLength(2);
   });
 
   test("a player with no stint on either Seattle team says nothing: the operator is asked", async () => {
