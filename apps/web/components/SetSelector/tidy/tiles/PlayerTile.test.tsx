@@ -911,21 +911,62 @@ describe("PlayerTile: cameos (T5)", () => {
     });
   });
 
-  it("after Remove cameo, focus lands on '+ Cameo' (the Edit that opened it is leaving)", async () => {
-    cameoTile([
-      { playerId: "player-5", name: "Francisco Lindor" },
-      { playerId: "player-6", name: "Juan Soto" },
-    ]);
+  it("after Remove cameo, focus lands on '+ Cameo' once the query has dropped the cameo (the frame can come first)", async () => {
+    const lindor = { playerId: "player-5", name: "Francisco Lindor" };
+    const soto = { playerId: "player-6", name: "Juan Soto" };
+    const element = (cameos: Array<{ playerId: string; name: string }>) => (
+      <AnsweredProvider value={() => {}}>
+        <PlayerTile
+          row={card({ playerIds: ["player-1"], secondaryPlayerIds: cameos.map((c) => c.playerId) })}
+          context={context({ players: [merrill], cameos })}
+          attention={{ level: "fix", items: [] }}
+          leafId={"leaf-1" as never}
+          sportId={SPORT as never}
+          leafCards={[]}
+          setName="Set"
+        />
+      </AnsweredProvider>
+    );
+    // A frame that runs before React has re-rendered: the worst order the old
+    // one-frame lookup could meet.
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+      cb(0);
+      return 0;
+    });
+    try {
+      const { rerender } = render(element([lindor, soto]));
+      const edit = screen.getByRole("button", { name: "Edit cameo Juan Soto" });
+      edit.focus();
+      await act(async () => fireEvent.click(edit));
+      let resolve!: (v: null) => void;
+      mutation("cardSecondaryPlayers.setSecondaryPlayers").mockReturnValueOnce(
+        new Promise((r) => {
+          resolve = r;
+        }),
+      );
+      await act(async () => fireEvent.click(screen.getByRole("button", { name: "Remove cameo Juan Soto" })));
+      // The write resolves, but the query still lists Soto: nothing to focus yet.
+      await act(async () => resolve(null));
+      expect(document.activeElement).not.toBe(screen.queryByRole("button", { name: "+ Cameo" }));
+      // The query catches up: the tile re-renders without him, and focus follows.
+      rerender(element([lindor]));
+      expect(screen.queryByRole("button", { name: "Edit cameo Juan Soto" })).toBeNull();
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "+ Cameo" }));
+    } finally {
+      raf.mockRestore();
+    }
+  });
+
+  it("a refused Remove cameo keeps the search open, and Cancel returns focus to that cameo's Edit", async () => {
+    cameoTile([{ playerId: "player-6", name: "Juan Soto" }]);
+    mutation("cardSecondaryPlayers.setSecondaryPlayers").mockRejectedValueOnce(new Error("Server Error"));
     const edit = screen.getByRole("button", { name: "Edit cameo Juan Soto" });
     edit.focus();
     await act(async () => fireEvent.click(edit));
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Remove cameo Juan Soto" })));
-    // The mock query does not re-render, so the old Edit is still connected: the
-    // same state the live app is in for the frame after the write resolves.
-    await act(async () => {
-      await new Promise((r) => requestAnimationFrame(() => r(null)));
-    });
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: "+ Cameo" }));
+    expect(screen.getByRole("alert").textContent).toBe("Couldn't remove that cameo. Try again.");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Cancel linking" })));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Edit cameo Juan Soto" }));
   });
 
   it("Remove is offered only while a cameo is open, never on '+ Cameo'", async () => {

@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
@@ -64,28 +64,40 @@ export default function PlayerTile({ row, context, attention, sportId }: TidyTil
     fallbackRef.current = next.kind === "addCameo" || next.kind === "changeCameo" ? cameoRef : addRef;
     setSearchFor(next);
   };
-  const closeSearch = () => {
+  // Focus owed to the tile once it has re-rendered. Set by `closeSearch`, settled by
+  // the effect below, which runs after the commit that closed the search and, for a
+  // removal, after the query dropped the cameo. `goneCameo` is the removed cameo's
+  // player: its Edit stays in the DOM until the query catches up.
+  const pendingFocus = useRef<{ tile: HTMLElement | null; goneCameo: string | null } | null>(null);
+  const cameoKey = (context?.cameos ?? []).map((c) => c.playerId).join("|");
+  const closeSearch = (goneCameo: string | null = null) => {
     // Read before the search unmounts: the tile is the last place focus can land.
     const tile = searchScopeRef.current?.closest<HTMLElement>("section") ?? null;
+    pendingFocus.current = { tile, goneCameo };
     setSearchFor(null);
-    requestAnimationFrame(() => {
-      const opener = openerRef.current;
-      // An Edit that swapped the player is a different row: its old button is gone.
-      const target = opener?.isConnected
-        ? opener
-        : (fallbackRef.current.current ?? addRef.current ?? cameoRef.current);
-      if (target) {
-        target.focus({ preventScroll: true });
-        return;
-      }
-      // Both add buttons are gone (each list is at its cap): park focus on the tile.
-      if (tile?.isConnected) {
-        tile.tabIndex = -1;
-        tile.focus({ preventScroll: true });
-      }
-    });
   };
-  useInlinePart(searchFor !== null, closeSearch, searchScopeRef);
+  useEffect(() => {
+    const pending = pendingFocus.current;
+    if (!pending || searchFor !== null) return;
+    // A removed cameo's Edit is still on screen until the query re-renders the tile.
+    if (pending.goneCameo !== null && cameoKey.split("|").includes(pending.goneCameo)) return;
+    pendingFocus.current = null;
+    const opener = openerRef.current;
+    // An Edit that swapped the player is a different row: its old button is gone.
+    const target = opener?.isConnected
+      ? opener
+      : (fallbackRef.current.current ?? addRef.current ?? cameoRef.current);
+    if (target) {
+      target.focus({ preventScroll: true });
+      return;
+    }
+    // Both add buttons are gone (each list is at its cap): park focus on the tile.
+    if (pending.tile?.isConnected) {
+      pending.tile.tabIndex = -1;
+      pending.tile.focus({ preventScroll: true });
+    }
+  }, [searchFor, cameoKey]);
+  useInlinePart(searchFor !== null, () => closeSearch(), searchScopeRef);
 
   if (attention.items.some((i) => i.kind === "sourcesDisagree" && i.field === "players")) {
     return (
@@ -161,15 +173,12 @@ export default function PlayerTile({ row, context, attention, sportId }: TidyTil
    * option uses. `regenerateListing` is the walk's own flag (T4): the title and
    * description are rebuilt from the card as this write leaves it.
    */
-  const saveCameos = (next: Array<Id<"players">>, fallback: string, openerGone = false) =>
+  const saveCameos = (next: Array<Id<"players">>, fallback: string, goneCameo: string | null = null) =>
     write.run(async () => {
       await setSecondaryPlayers({ cardId: row._id, playerIds: next, regenerateListing: true });
-      // A removed cameo takes its "Edit cameo" opener with it, but the query has not
-      // re-rendered by the next frame, so the opener still reads as connected and
-      // focus would land on a button that is about to unmount. Only on success: a
-      // refused removal keeps the search open and Cancel still returns to the Edit.
-      if (openerGone) openerRef.current = null;
-      closeSearch();
+      // Only on success: a refused removal keeps the search open and Cancel still
+      // returns to the Edit. A removed cameo's focus waits for the tile to re-render.
+      closeSearch(goneCameo);
     }, fallback);
 
   const onSelect = (picked: string) => {
@@ -199,7 +208,7 @@ export default function PlayerTile({ row, context, attention, sportId }: TidyTil
     saveCameos(
       cameoIds.filter((p) => p !== playerId),
       "Couldn't remove that cameo. Try again.",
-      true,
+      playerId,
     );
 
   return (
@@ -273,7 +282,7 @@ export default function PlayerTile({ row, context, attention, sportId }: TidyTil
             kind="player"
             sportId={sportForSearch}
             onSelect={(id) => void onSelect(id)}
-            onCancel={closeSearch}
+            onCancel={() => closeSearch()}
           />
           {searchFor.kind === "changeCameo" && (
             <div className="flex flex-wrap gap-2">
