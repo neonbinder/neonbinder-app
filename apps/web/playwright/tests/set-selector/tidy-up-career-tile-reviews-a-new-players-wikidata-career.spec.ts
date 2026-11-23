@@ -41,6 +41,7 @@ import {
   expectCardSettled,
   expectCardsLeft,
   finishTidyWalk,
+  keepOpenCareerGaps,
   pinkTile,
   saveAndNext,
   settleWalkAfterCommit,
@@ -239,6 +240,10 @@ test(
     const [first, second] = walkerFirst ? [walkerCard, hondaCard] : [hondaCard, walkerCard];
     const [firstHeader, secondHeader] = walkerFirst ? [header("1", WALKER), header("2", HONDA)] : [header("2", HONDA), header("1", WALKER)];
     await first();
+    // Save & next with a career gap open adds a stint from the set's year (CareerGapRow's default).
+    // Both cards are pasted "No Team", but whatever team a fill puts on one, its gap is kept, so the
+    // walk writes no stint beyond the ones this spec adds (the header's "no catalogue row").
+    await keepOpenCareerGaps(page);
     await saveAndNext(page);
     await expect(secondHeader).toBeVisible();
     await expectCardsLeft(page, 1);
@@ -252,6 +257,7 @@ test(
     await expect(secondHeader).toBeVisible();
     await expectCardSettled(page);
     await second();
+    await keepOpenCareerGaps(page);
     await saveAndNext(page);
     await expect(tidyFooterButton(page, "done")).toBeVisible();
     await finishTidyWalk(page);

@@ -106,7 +106,14 @@ const NOT_A_TEAM = /^Not a team( .+)?$/;
  * printed name on a not-a-player / not-a-team row). Cameo rows ("Edit cameo <name>") are excluded:
  * callers scope it to the row's group ("Player <printed>" / "Team <printed>").
  */
-const EDIT = /^Edit (?!cameo )/;
+export const EDIT = /^Edit (?!cameo )/;
+
+/**
+ * A career gap's "Keep as is" (CareerGapRow): "Keep as is", or "Keep as is for <player>" when the
+ * Career tile holds more than one row. A new player's Wikidata row shares the tile (and the
+ * "Career <player>" group name) but has no such button, so this names the gap rows alone.
+ */
+const KEEP_AS_IS = /^Keep as is( for .+)?$/;
 
 /** The open walk. Contract: a locator, nothing waited for. */
 export function tidyWalk(page: Page): Locator {
@@ -670,8 +677,32 @@ export interface WalkTally {
   teams: number;
   /** Cards that opened with a pink "Sources disagree" tile (never answered here; such a card is skipped). */
   disagreements: number;
+  /** Career gaps answered "Keep as is" before Save & next (`career: "keep"`, the default). */
+  careerKept: number;
   /** Skipped cards per tile still pink when they were skipped (a card counts under each of its pink tiles). */
   skippedFor: Partial<Record<TidyTileName, number>>;
+}
+
+/**
+ * Answer every open career gap on the card "Keep as is" (writes nothing to the player), so a
+ * following Save & next adds no stint. Each press acts at once and its line goes; a new player's
+ * Wikidata rows (no Keep as is) stay. Returns the number of gaps kept.
+ *
+ * Contract: ENTRY the card is settled. EXIT no career gap is open on it.
+ */
+export async function keepOpenCareerGaps(page: Page, { maxGaps = 8 }: { maxGaps?: number } = {}): Promise<number> {
+  // A Career tile that appeared with an answer is the "Looking at this card" skeleton until its read lands.
+  await expectCardSettled(page);
+  const keep = tidyTile(page, "Career").getByRole("group", { name: /^Career / }).getByRole("button", { name: KEEP_AS_IS });
+  let kept = 0;
+  for (let open = await keep.count(); open > 0; open--) {
+    if (kept >= maxGaps) throw new Error(`more than ${maxGaps} career gaps on one card`);
+    await keep.first().click();
+    kept++;
+    await expect(keep, "Keep as is answered the career gap at once").toHaveCount(open - 1);
+  }
+  await expect(keep, "no career gap is left open for Save & next to add").toHaveCount(0);
+  return kept;
 }
 
 /** The tiles that can be pink, in the walk's order. */
@@ -687,6 +718,14 @@ const PINKABLE: readonly TidyTileName[] = ["Sources disagree", "Player", "Team",
  * decide). Does NOT press Done: the caller asserts the end screen first, then
  * `finishTidyWalk`.
  *
+ * Career gaps (blue): Save & next with a gap still open ADDS a stint from the
+ * set's year to that player's career (CareerGapRow's default). A walk that does
+ * not care about careers must not write them onto shared catalogue players, so
+ * by default (`career: "keep"`) every open gap is answered "Keep as is" before
+ * Save & next, which writes nothing to the player. `career: "add"` leaves the
+ * gaps open, so Save & next adds them. A new player's Wikidata career lines are
+ * never touched (Save & next writes nothing from them).
+ *
  * Contract: ENTRY the walk is open. EXIT the end screen is up. Returns the
  * tally. `maxCards` is a runaway guard (the seed's Base is 335 cards).
  */
@@ -696,9 +735,15 @@ export async function walkAnsweringEverything(
     maxCards = 400,
     noTeam = "prefilled",
     autograph = "On-card auto",
-  }: { maxCards?: number; noTeam?: "prefilled" | "noTeamOnCard"; autograph?: "On-card auto" | "Sticker auto" | "leave" } = {},
+    career = "keep",
+  }: {
+    maxCards?: number;
+    noTeam?: "prefilled" | "noTeamOnCard";
+    autograph?: "On-card auto" | "Sticker auto" | "leave";
+    career?: "keep" | "add";
+  } = {},
 ): Promise<WalkTally> {
-  const tally: WalkTally = { cards: 0, saved: 0, skipped: 0, players: 0, teams: 0, disagreements: 0, skippedFor: {} };
+  const tally: WalkTally = { cards: 0, saved: 0, skipped: 0, players: 0, teams: 0, disagreements: 0, careerKept: 0, skippedFor: {} };
   await expectTidyWalkOpen(page);
   for (let i = 0; i < maxCards; i++) {
     if (await endScreen(page).isVisible()) break;
@@ -712,6 +757,7 @@ export async function walkAnsweringEverything(
     const save = tidyFooterButton(page, "saveAndNext", { usable: true });
     await expect(save.or(mustFixLine(page)).first()).toBeVisible();
     if (await save.isVisible()) {
+      if (career === "keep") tally.careerKept += await keepOpenCareerGaps(page);
       await saveAndNext(page);
       tally.saved++;
     } else {
