@@ -76,7 +76,8 @@ import {
  *   - **Back** steps to the card before, as it is now.
  *
  * The position is `?tidy=<cardId>` (`useTidyWalkUrl`), so a refresh lands on
- * the same card and the browser's Back walks back through the cards.
+ * the same card. The walk is one history entry, so the browser's Back leaves it
+ * (the footer Back is the walk's own).
  *
  * ## The queue is derived, not held
  *
@@ -354,16 +355,16 @@ function WalkDialog({
    * starting at the first of them. `passed` is left alone (the tally and this
    * button are derived from it, so Back to the end screen shows both as they
    * were); the cards are marked as being reviewed, which makes each count as
-   * open until it is left again. The walk moves to the first: a push.
+   * open until it is left again. The walk moves to the first: a replace.
    */
   const reviewSkipped = () => {
     const first = skippedIds[0];
     if (!first) return;
-    // One transition for the state and the push (router navigation is a
+    // One transition for the state and the move (router navigation is a
     // transition; a sibling setState outside it would render the old URL first).
     startTransition(() => {
       setReviewing(skippedIds);
-      // From the end screen, so the footer's Back is the browser's Back: a step to it.
+      // From the end screen, so the footer's Back returns to it.
       goToCard(first, TIDY_DONE);
     });
   };
