@@ -34,6 +34,12 @@ the tool's current code before relying on any line here; some may be fixed.
 - `seed` does not start Vite. After `stop-vite`, its setup phase dies on
   `net::ERR_CONNECTION_REFUSED` at the sign-in hop (the reset and import still
   ran). Harmless: the next `run --setup` starts Vite and runs setup again.
+- **Several authors on one runner:** a `wait` then `run` in two calls loses the lock to
+  another author's queued command almost every time (exit 3). Put the retry in ONE
+  backgrounded Bash call: `for i in $(seq 1 15); do wait; run --slice 0 <specs> > file; [ rc != 3 ] && break; done`,
+  then read the file on the notification. `status` plus the newest run's `job.json`
+  (`"specs"`) tells whose run holds the lock. In zsh, a spec list in a plain variable
+  does not word-split; use an array for `git add -- $F`.
 - `status` on a worktree with no `.e2e-local/` yet can crash (ENOENT on
   run.lock). Any `run` creates the folder.
 

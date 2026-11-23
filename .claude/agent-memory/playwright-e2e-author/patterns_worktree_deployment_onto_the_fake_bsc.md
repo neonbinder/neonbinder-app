@@ -28,6 +28,10 @@ metadata:
   per-worktree script with `--seed` between rounds (the script sets the fake env again itself), then bootstrap;
   Outside a record loop the same red just means "already seeded": a reused worktree deployment whose
   Manufacturers list is full needs only bootstrap, then the spec (no `--seed`, no second setup);
+  with SportLots paused the list is BSC's brands ("Unknown", "BBM", "Topps"...): setup's Sets step
+  (`syncSetsAcrossManufacturers` → `ensureBrandRow`, read in CI's seed convex-logs) files them AFTER
+  the Manufacturers check, so CI (global reset first) always sees the empty list and `e2e-run --setup`
+  (no global reset) never does. Not a product regression; it needs `--fresh`, never a spec change;
   (3) one setup round unlocks one recording level (sports, years, manufacturers' sets, variant types, base
   results, base card-listing, insert filters, insert results, parallel filters...), about 7 min with the re-seed.
 - Fake-mode BSC sessions are keyed per deployment AND user (a stale shared-login session gave
