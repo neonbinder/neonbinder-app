@@ -130,7 +130,7 @@
 - [Match Cards after commit-first](patterns_match_cards_specs_after_commit_first.md) — Cancel is the pre-save exit
 - [Team fill tier](patterns_team_fill_career_tier_fixture.md) — 70-char team; negative stints
 - [Team-era on the walk](patterns_team_era_specs_on_the_walk.md) — NEO-602 auto link vs keep
-- [Team Apply to all](patterns_team_apply_to_all_fixture.md) — two-name card not offered; skip tail UI-unreachable
+- [Team Apply to all](patterns_team_apply_to_all_fixture.md) — line rule, no career check; claimed/two-name not offered; tail UI-unreachable
 - [J3 base tidy](patterns_parallel_build_specs_must_tidy_the_base_j3.md) — tidyForTheParallelBuild
 - [Need-you pill](patterns_need_you_pill_is_not_a_team_lookup_proof.md) — counts unlinked players
 - [Tile state lost](patterns_tile_state_lost_when_card_context_arrives.md) — search opened early closes itself
@@ -155,3 +155,4 @@
 - [Name-fold specs on a discard-only fixtu…](patterns_name_fold_specs_on_a_discard_only_fixture.md) — NEO-643: full-row CSV, toggle conflict cl…
 - [Key-chain change vs the reference seed](patterns_key_chain_change_vs_reference_seed.md) — seed imports old nameNormalized; known na…
 - [Match Cards skip is a per-fixture fact](patterns_match_cards_skip_is_a_per_fixture_fact.md) — NEO-640: matchCards fact, progress group + Cancel card fetch, skip copy, absence by role
+- [Compute titles with tsx first](patterns_compute_titles_with_tsx_before_a_title_spec_runs.md) — assessListingTitle offline before a fresh-only title run; variation never cut, walk writes retitle
