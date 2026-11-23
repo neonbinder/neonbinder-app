@@ -2,30 +2,39 @@
  * NEO-645 — where the Tidy Up walk is lives in the URL.
  *
  * `?tidy=first | <cardId> | done`, next to the drill's own params. A refresh
- * or a pasted link lands on the same card. The drill hook drops `tidy` when the
- * drill itself changes (`useDrillUrlState`), because the card belongs to the
- * checklist it was opened on.
+ * or a pasted link lands on the same card, and Back steps back through the
+ * walk one card at a time. The drill hook drops `tidy` when the drill itself
+ * changes (`useDrillUrlState`), because the card belongs to the checklist it
+ * was opened on.
  *
  * ## Push vs replace
  *
- * Opening the walk is the one `push`: one history entry for the whole walk.
- * Every move after that (next, skip, the end screen, Back, a correction such
- * as `first` becoming the first card's id) is a `replace`. A walk of hundreds
- * of cards is therefore still one entry deep, which matters because browsers
- * keep only a bounded session history (Chromium: 50 entries) and
- * `history.go(-n)` past it does nothing, so a per-card push made Done, Esc and
- * Save for later fail silently once a walk had made about 48 moves.
+ * Opening the walk and every move to another card is a `push` (up to the cap,
+ * below), so Back steps through the cards. The clean-ups (`first` becoming the first card's id, an
+ * unknown id becoming the first card) are `replace`: a correction the operator
+ * did not ask for must never be a Back stop.
+ *
+ * ## The history cap
+ *
+ * Chromium keeps at most 50 session-history entries, and `history.go(-n)` past
+ * what is kept does nothing, so leaving by `go(-(depth + 1))` would silently
+ * fail once a long walk had pushed about 48 entries. A move therefore pushes
+ * only while the walk is shallower than `TIDY_MAX_DEPTH`; from there on it
+ * replaces and the depth stays put. The depth never passes the cap, so leaving
+ * always lands on the page the walk opened from. Past the cap the browser's
+ * Back steps to the entry at the cap rather than the previous card (the
+ * footer Back keeps its trail, see "Back").
  *
  * ## Leaving
  *
- * Closing the walk (Save for later, Done) goes back exactly the one entry the
- * walk pushed, so Back from the checklist goes to whatever was before the walk
- * opened and never into it. The entry carries `state.tidyOpened` (kept across
- * every replace). A walk that was not opened here (a pasted link, a new tab)
- * has no such entry, and nothing before it is ours to go back to, so it just
- * drops the param with a replace. The browser's own Back, pressed inside the
- * walk, leaves the walk the same way; the footer Back button is the walk's own
- * (below).
+ * Closing the walk (Save for later, Done) takes every entry the walk added out
+ * of history, so Back from the checklist goes to whatever was before the walk
+ * opened and never into it (a Back that lands on `?tidy=<last card>` reopens a
+ * walk nobody asked to reopen). Each entry the walk pushes carries its depth in
+ * `state.tidyDepth` (the first is 0, kept across the replace that turns `first`
+ * into a card), so leaving is one `navigate(-(depth + 1))`. A walk that was not
+ * opened here (a pasted link, a new tab) has no depth, and nothing before it is
+ * ours to go back to, so it just drops the param with a replace.
  *
  * ## What reaches a Convex argument
  *
@@ -34,13 +43,15 @@
  * the first walk card. A pasted `?tidy=<anything>` therefore cannot fail
  * argument validation.
  *
- * ## Footer Back
+ * ## Back
  *
- * A move from one walk position to another carries `state.tidyFrom` (the
- * position it left: a card id, or `done` when the review of skipped cards left
- * the end screen). Footer Back replaces the URL with that position. Without it
- * (the walk was opened here by a refresh or a link) the walk steps to the card
- * before on its own trail (`previousCardId`).
+ * A push from one walk card to another carries `state.tidyFrom` (the card it
+ * left). Footer Back uses the browser's history when that is present, so the
+ * browser's Back and the footer's Back are the same move. Without it (the
+ * walk was opened here by a refresh or a link) the walk steps to the card
+ * before on its own trail (`previousCardId`). At the cap the entry behind this
+ * one is no longer the card before, so footer Back replaces the URL with the
+ * position the move left instead.
  */
 import { useCallback, useLayoutEffect, useMemo, useRef } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router";
@@ -48,6 +59,13 @@ import { liveSearchParams, noteSearchWrite, settleSearchWrite } from "../live-se
 
 /** The query-string key. */
 export const TIDY_PARAM = "tidy";
+
+/**
+ * How many entries deep a walk may push before its moves replace. Chromium
+ * keeps 50 session-history entries; the walk's own are at most this + 1, with
+ * the page it opened from, well inside the cap.
+ */
+export const TIDY_MAX_DEPTH = 40;
 
 /** The reserved values; a Convex id is never either. */
 export const TIDY_FIRST = "first";
@@ -79,12 +97,12 @@ export function withTidyParam(params: URLSearchParams, value: string | null): UR
   return next;
 }
 
-/** What the walk's history entry carries. */
+/** What a walk history entry carries. */
 type TidyState = {
-  /** The position a move left (a card id or `done`), so footer Back can return to it. */
+  /** The card a push left, so footer Back can use the browser's history. */
   tidyFrom?: string;
-  /** The walk was opened here: its one history entry is ours to go back to. */
-  tidyOpened?: true;
+  /** How many walk entries came before this one since the walk opened here (the first is 0). */
+  tidyDepth?: number;
 };
 
 export type TidyWalkUrl = {
@@ -97,23 +115,23 @@ export type TidyWalkUrl = {
    * depends on it.
    */
   entryKey: string;
-  /** A move led here from a walk position that footer Back can return to. */
+  /** A walk card was on screen before this entry (so the browser can step back to it). */
   canStepBack: boolean;
-  /** Open the walk at its first card. The walk's one push. */
+  /** Open the walk at its first card. Push. */
   open: () => void;
-  /** Move to a card, leaving `from`. Replace. */
+  /** Move to a card, leaving `from`. Push. */
   goToCard: (cardId: string, from: string | null) => void;
-  /** Show a card (a correction, or Back along the trail). Replace. */
+  /** Show a card without adding a history entry (a correction). Replace. */
   showCard: (cardId: string) => void;
-  /** The end screen. Replace. */
+  /** The end screen. Push. */
   finish: (from: string | null) => void;
   /** The end screen as a correction (nothing to walk). Replace. */
   showDone: () => void;
-  /** Return to the position the last move left. Replace. */
+  /** Step back one history entry (the previous walk card). */
   stepBack: () => void;
   /**
-   * Leave the walk: back the one entry it pushed when it was opened here, so
-   * Back never returns to it; a replace that drops the param otherwise.
+   * Leave the walk: out of history entirely when it was opened here, so Back
+   * never returns to it; a replace that drops the param otherwise.
    */
   close: () => void;
 };
@@ -128,52 +146,64 @@ export function useTidyWalkUrl(): TidyWalkUrl {
 
   const entryState = routerLocation.state as TidyState | null | undefined;
   const fromState = entryState?.tidyFrom;
-  const opened = entryState?.tidyOpened === true;
+  const depth = typeof entryState?.tidyDepth === "number" ? entryState.tidyDepth : undefined;
   const canStepBack = typeof fromState === "string" && fromState.length > 0;
 
   // The handlers read the latest params so a write made in the same tick as
   // another change (the drill's own write) never rebuilds from a stale copy.
-  const latest = useRef({ searchParams, setSearchParams, navigate, opened, fromState });
+  const latest = useRef({ searchParams, setSearchParams, navigate, depth, fromState });
   useLayoutEffect(() => {
-    latest.current = { searchParams, setSearchParams, navigate, opened, fromState };
+    latest.current = { searchParams, setSearchParams, navigate, depth, fromState };
     settleSearchWrite(searchParams);
   });
 
-  /** Every move is a replace; the walk's one entry is pushed by `open`. */
-  const write = useCallback((value: string | null, from?: string | null) => {
-    const { searchParams: rendered, setSearchParams: set, opened: here } = latest.current;
-    // Build on the URL a drill write has just asked for, not the one last rendered.
-    const params = liveSearchParams(rendered);
-    const state: TidyState | undefined =
-      from || here
-        ? { ...(from ? { tidyFrom: from } : {}), ...(here ? { tidyOpened: true as const } : {}) }
-        : undefined;
-    const nextParams = withTidyParam(params, value);
-    noteSearchWrite(nextParams);
-    set(nextParams, { replace: true, state });
-  }, []);
+  const write = useCallback(
+    (value: string | null, mode: "push" | "replace", from?: string | null) => {
+      const { searchParams: rendered, setSearchParams: set, depth: here } = latest.current;
+      // Build on the URL a drill write has just asked for, not the one last rendered.
+      const params = liveSearchParams(rendered);
+      // A push is one entry deeper than this one, until the cap: from there a
+      // move replaces and the depth stays put (see "The history cap").
+      const push = mode === "push" && (here === undefined || here < TIDY_MAX_DEPTH);
+      const next = here === undefined ? undefined : push ? here + 1 : here;
+      const state: TidyState | undefined =
+        from || next !== undefined
+          ? { ...(from ? { tidyFrom: from } : {}), ...(next !== undefined ? { tidyDepth: next } : {}) }
+          : undefined;
+      const nextParams = withTidyParam(params, value);
+      noteSearchWrite(nextParams);
+      set(nextParams, { replace: !push, state });
+    },
+    [],
+  );
 
   const open = useCallback(() => {
     const { searchParams: rendered, setSearchParams: set } = latest.current;
     const next = withTidyParam(liveSearchParams(rendered), TIDY_FIRST);
     noteSearchWrite(next);
-    set(next, { state: { tidyOpened: true } satisfies TidyState });
+    set(next, { state: { tidyDepth: 0 } satisfies TidyState });
   }, []);
-  const goToCard = useCallback((cardId: string, from: string | null) => write(cardId, from), [write]);
-  const showCard = useCallback((cardId: string) => write(cardId), [write]);
-  const finish = useCallback((from: string | null) => write(TIDY_DONE, from), [write]);
-  const showDone = useCallback(() => write(TIDY_DONE), [write]);
+  const goToCard = useCallback(
+    (cardId: string, from: string | null) => write(cardId, "push", from),
+    [write],
+  );
+  const showCard = useCallback((cardId: string) => write(cardId, "replace"), [write]);
+  const finish = useCallback((from: string | null) => write(TIDY_DONE, "push", from), [write]);
+  const showDone = useCallback(() => write(TIDY_DONE, "replace"), [write]);
   const close = useCallback(() => {
-    const { navigate: go, opened: here } = latest.current;
-    if (!here) {
-      write(null);
+    const { navigate: go, depth: here } = latest.current;
+    if (here === undefined) {
+      write(null, "replace");
       return;
     }
-    go(-1);
+    go(-(here + 1));
   }, [write]);
   const stepBack = useCallback(() => {
-    const { fromState: from } = latest.current;
-    if (from) write(from);
+    const { navigate: go, depth: here, fromState: from } = latest.current;
+    // At the cap the entry behind this one may be many cards back: go to the
+    // position the move left instead of stepping the browser's history.
+    if (here !== undefined && here >= TIDY_MAX_DEPTH && from) write(from, "replace");
+    else go(-1);
   }, [write]);
 
   return { location, entryKey: routerLocation.key, canStepBack, open, goToCard, showCard, finish, showDone, stepBack, close };

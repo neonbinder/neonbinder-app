@@ -2,9 +2,8 @@
  * NEO-645 — where the Tidy Up walk is lives in the URL.
  *
  * Driven under a real MemoryRouter, so push vs replace and Back are the
- * router's own. The walk pushes one history entry when it opens and replaces
- * on every move after that; one test drives 100 moves against a history that
- * keeps only 50 entries, as Chromium does.
+ * router's own. Two tests drive a long walk against a history that keeps only
+ * 50 entries, as Chromium does.
  */
 import { act, render } from "@testing-library/react";
 import {
@@ -17,6 +16,7 @@ import {
 } from "react-router";
 import { describe, expect, it } from "vitest";
 import {
+  TIDY_MAX_DEPTH,
   TIDY_PARAM,
   parseTidyParam,
   useTidyWalkUrl,
@@ -123,25 +123,28 @@ describe("useTidyWalkUrl", () => {
     expect(probe.type).toBe("PUSH");
   });
 
-  it("replaces on a move between cards, and footer Back returns to the card it left, also a replace", () => {
+  it("pushes a move between cards and Back steps to the card before", () => {
     const probe = mount("/?tidy=a");
     act(() => probe.url!.goToCard("b", "a"));
     expect(probe.search).toBe("?tidy=b");
-    expect(probe.type).toBe("REPLACE");
+    expect(probe.type).toBe("PUSH");
     expect(probe.url!.canStepBack).toBe(true);
     act(() => probe.url!.stepBack());
     expect(probe.search).toBe("?tidy=a");
-    expect(probe.type).toBe("REPLACE");
     expect(probe.url!.canStepBack).toBe(false);
   });
 
-  it("footer Back from the first card of a review returns to the end screen", () => {
-    const probe = mount("/?tidy=done");
-    act(() => probe.url!.goToCard("a", "done"));
-    expect(probe.search).toBe("?tidy=a");
-    act(() => probe.url!.stepBack());
-    expect(probe.search).toBe("?tidy=done");
-    expect(probe.type).toBe("REPLACE");
+  it("browser Back within the first moves steps to the previous card, one at a time", () => {
+    const probe = mount("/?sport=s");
+    act(() => probe.url!.open());
+    act(() => probe.url!.showCard("c0"));
+    for (let i = 0; i < 5; i++) act(() => probe.url!.goToCard(`c${i + 1}`, `c${i}`));
+    expect(probe.search).toBe("?sport=s&tidy=c5");
+    for (let i = 4; i >= 0; i--) {
+      act(() => probe.nav!(-1));
+      expect(probe.search).toBe(`?sport=s&tidy=c${i}`);
+      expect(probe.type).toBe("POP");
+    }
   });
 
   it("replaces `first` and a bad id with a card, so Back never lands on them", () => {
@@ -151,11 +154,11 @@ describe("useTidyWalkUrl", () => {
     expect(probe.type).toBe("REPLACE");
   });
 
-  it("replaces for the end screen too, whether the walk finished or had nothing to walk", () => {
+  it("pushes the end screen, and replaces it when there was nothing to walk", () => {
     const probe = mount("/?tidy=a");
     act(() => probe.url!.finish("a"));
     expect(probe.search).toBe("?tidy=done");
-    expect(probe.type).toBe("REPLACE");
+    expect(probe.type).toBe("PUSH");
     act(() => probe.url!.showDone());
     expect(probe.type).toBe("REPLACE");
   });
@@ -168,11 +171,11 @@ describe("useTidyWalkUrl", () => {
     expect(probe.url!.location).toEqual({ kind: "closed" });
   });
 
-  describe("leaving goes back the one entry the walk pushed (Back never reopens it)", () => {
+  describe("leaving takes the walk out of history (Back never reopens it)", () => {
     it("Done after a walk of several cards goes back to the entry before the walk opened", () => {
       const probe = mount("/?sport=s");
       act(() => probe.url!.open());
-      act(() => probe.url!.showCard("a")); // `first` becomes the first card: a replace, still the same entry
+      act(() => probe.url!.showCard("a")); // `first` becomes the first card: a replace, depth kept
       act(() => probe.url!.goToCard("b", "a"));
       act(() => probe.url!.goToCard("c", "b"));
       act(() => probe.url!.finish("c"));
@@ -195,7 +198,7 @@ describe("useTidyWalkUrl", () => {
       expect(probe.type).toBe("POP");
     });
 
-    it("after footer Back the walk still closes the same one entry", () => {
+    it("counts only this sitting's entries after a step back", () => {
       const probe = mount("/?sport=s");
       act(() => probe.url!.open());
       act(() => probe.url!.showCard("a"));
@@ -206,15 +209,15 @@ describe("useTidyWalkUrl", () => {
       expect(probe.search).toBe("?sport=s");
     });
 
-    it("a walk that was not opened here (a pasted link, a new tab) has nothing before it that is ours: it only drops the param", () => {
+    it("a walk with no depth (a pasted link, a new tab) has nothing before it that is ours: it only drops the param", () => {
       const probe = mount("/?sport=s&tidy=a");
-      act(() => probe.url!.goToCard("b", "a")); // no opening entry to carry
+      act(() => probe.url!.goToCard("b", "a")); // no depth to carry
       act(() => probe.url!.close());
       expect(probe.search).toBe("?sport=s");
       expect(probe.type).toBe("REPLACE");
     });
 
-    it("100 moves against a 50-entry history still close back to the page the walk opened from", () => {
+    it("100 moves against a 50-entry history stop pushing at the cap and still close back to the page the walk opened from", () => {
       const { history, counts } = cappedHistory("/?sport=s");
       const probe = mount("/?sport=s", history);
       act(() => probe.url!.open());
@@ -222,19 +225,35 @@ describe("useTidyWalkUrl", () => {
       for (let i = 0; i < 99; i++) act(() => probe.url!.goToCard(`c${i + 1}`, `c${i}`));
       act(() => probe.url!.finish("c99"));
       expect(probe.search).toBe("?sport=s&tidy=done");
-      // One push for the whole walk; every move was a replace.
-      expect(counts.pushes).toBe(1);
+      // The open, then one push per move until the walk is TIDY_MAX_DEPTH deep.
+      expect(counts.pushes).toBe(1 + TIDY_MAX_DEPTH);
       act(() => probe.url!.close());
       expect(probe.search).toBe("?sport=s");
       expect(probe.type).toBe("POP");
       expect(probe.url!.location).toEqual({ kind: "closed" });
     });
 
-    it("the capped history fails the old way: a push per move leaves go(-n) stranded", () => {
+    it("the capped history fails the unbounded way: a push per move leaves go(-n) stranded", () => {
       const { history } = cappedHistory("/?sport=s");
       for (let i = 0; i < 60; i++) history.push(`/?tidy=c${i}`);
       history.go(-60);
       expect(history.location.search).toBe("?tidy=c59");
+    });
+
+    it("past the cap, footer Back returns to the card the last move left, not the entry behind", () => {
+      const { history } = cappedHistory("/?sport=s");
+      const probe = mount("/?sport=s", history);
+      act(() => probe.url!.open());
+      act(() => probe.url!.showCard("c0"));
+      for (let i = 0; i < TIDY_MAX_DEPTH + 10; i++) act(() => probe.url!.goToCard(`c${i + 1}`, `c${i}`));
+      const last = TIDY_MAX_DEPTH + 10;
+      expect(probe.search).toBe(`?sport=s&tidy=c${last}`);
+      expect(probe.url!.canStepBack).toBe(true);
+      act(() => probe.url!.stepBack());
+      expect(probe.search).toBe(`?sport=s&tidy=c${last - 1}`);
+      expect(probe.type).toBe("REPLACE");
+      act(() => probe.url!.close());
+      expect(probe.search).toBe("?sport=s");
     });
 
     it("still reads a pasted ?tidy=<id>", () => {

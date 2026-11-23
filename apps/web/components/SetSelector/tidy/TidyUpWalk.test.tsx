@@ -668,7 +668,7 @@ describe("the end screen: Review the skipped (NEO-645 audit)", () => {
     expect(screen.queryByRole("button", { name: /^Review the/ })).toBeNull();
   });
 
-  it("goes back to the first skipped card, in walk order, and offers them all again", async () => {
+  it("goes back to the first skipped card, in walk order, as a history step, and offers them all again", async () => {
     await skipAll([pink("a", "1"), pink("b", "2"), pink("c", "3")]);
     expect(screen.getByText("3 cards skipped, not ready to list")).toBeTruthy();
     fireEvent.click(button("Review the 3 skipped"));
