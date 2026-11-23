@@ -1,0 +1,52 @@
+# Review Wizards and Card Domain
+
+Entity-review, Tidy Up and walk flows, team/player resolution, card titles and descriptions, checklist and pairing rules.
+
+- [Load only network guard trip is a delayed tail](reference_load_only_network_guard_trip_is_a_delayed_tail.md) — A NEO-188 guard trip that fails only in the full parallel suite and passes in isolation is usually a self-rescheduling DELAYED scheduled tail that drainScheduled canno…
+- [Known full-suite unit flakes](reference_playermanagement_deeplink_test_flakes_under_load.md) — PlayerManagement deep link, ScannerJoin timer, bscSeller clock digits, panelLink 5 s ceiling, dashboard renders under high load; rerun alone, --testTimeout
+- [Review batch rows the batch stages itself](reference_review_batch_rows_the_batch_stages_itself.md) — A row the review batch stages for itself (entityReviewQueue.source) is invisible to the incoming name list, so startBatch's resume reconciliation deletes it — and any…
+- [Client preview of a commit rule shares its predicate](client-preview-of-a-commit-rule-shares-its-predicate.md) — wizard previews of a commit birth rule call one convex/lib predicate; gate the host AND the reader
+- [Shared-alias-only match is a question, not an adopt](reference_shared_alias_only_match_is_a_question_not_an_adopt.md) — loader adopts only when a PRIMARY name vouches; nearMatches search loop must not overwrite exact-leg candidates (drops matchedAlias)
+- [Undefined error_class is transient](reference_undefined_error_class_is_transient.md) — an untagged login failure gets the "didn't answer" copy; a test stub must set error_class to reach the refused-credentials wording
+- [Refuse vs truncate a bounded read](reference_refuse_vs_truncate_a_bounded_read.md) — check the caller before writing a refusal; a window of 2 beats a budget when the consumer only counts to two; truncate a name map, never throw in a query
+- [Team resolver serves card and stint years](reference_team_resolver_serves_card_and_stint_years.md) — card callers opt into allowPastEra, stint callers stay strict (resolveTeamIdByName is a stint path); an alias is never another team's name, any era
+- [Review row sport can differ from the set](reference_review_row_sport_can_differ_from_the_set.md) — NEO-313 switchRowSport: prelude decisions use the ROW's sport, staged maps key sport|name; automated paths stay on the set's
+- [Ancestor rollups make the sport row hot](reference_ancestor_rollups_make_the_sport_row_hot.md) — rollups to sport/year/brand = cross-set OCC; NEO-364: counts from set down + one-time hasCards above; ledger hint/move mechanics
+- [Scope to a run on a catalogue deployment](reference_scope_to_a_run_on_a_catalogue_deployment.md) — _creationTime range from a boundary, not a field; `convex run` prints pretty JSON off a TTY
+- [Review walk holds for open controls](reference_review_walk_holds_for_open_controls.md) — pinnedRowHasEdits gates only teams-first; open popovers/forms report onOpenChange (row-id keyed) into rowInteractionOpen
+- [Gate on the subscription, not the action promise](reference_gate_on_the_subscription_not_the_action_promise.md) — action promise beats its runMutation writes; data-as-marker + latch the flag inside ABSORB (NEO-341)
+- [Bulk walk gap strands late-staged steps](reference_bulk_walk_gap_strands_late_staged_steps.md) — lookup landing between listBulkCandidates and decideRowsByIds stages an unseen step; sweep by_source_* in the write
+- [Wizard step local drafts settle pattern](reference_wizard_step_local_drafts_settle_pattern.md) — many-field step: local drafts, report on blur/Enter/timer/unmount; Escape undo = focus-time; long title = wrapping Textarea
+- [Candidate field reaches commit only through the client](reference_candidate_field_reaches_commit_only_through_the_client.md) — candidate row → commit hops via pairing-cards.ts, CardPairingModal merge, CardChecklist type; convex-only carry is dead
+- [No review row is not unanswered](reference_no_review_row_is_not_unanswered.md) — the gate drops stored skips before queuing; "no row ⇒ resolved/unreviewed" must read entityReviewSkips
+- [Checklist section kinds read card numbers](reference_checklist_section_kinds_read_card_numbers.md) — numbered fixtures 1,2,3… turn parallels into base-subsets; parallels repeat the base numbers
+- [Card description follows facts](reference_card_description_follows_facts.md) — card-fact writers call refreshedListingDescription; renames via cardDescriptionFanOut (overlay before-reads)
+- [Cross-sibling jump via a store](reference_cross_sibling_jump_via_store.md) — walker door to SetAttributesPanel: targets + closers store, door only when reachable, focus a frame late
+- [Title year and maker come from features](reference_title_year_and_maker_come_from_features.md) — convex-test trees need features.season/manufacturer or titles drop the year and length boundaries shift
+- [Card panel sees crew only over dashboard](reference_card_panel_sees_crew_only_over_the_dashboard.md) — useCrew null on Collection/Inventory/demo; no SyncStatus import from CardDetail
+- [Team change refreshes the description](reference_team_change_refreshes_description_via_owner.md) — description prints "Team:"; refresh via cardSecondaryPlayers.refreshedGeneratedDescription (cameo pin)
+- [Attributes panel collapsed tests need a non-set level](reference_attributes_panel_collapsed_tests_need_non_set_level.md) — a setName row opens itself; collapsed tests use insert/parallel or click Hide first
+- [New candidate field needs three client hand copies](reference_new_candidate_field_needs_three_client_hand_copies.md) — pairing-cards.ts, CardChecklist resolveChecklistPairs, PairingCard type pick fields by name; grep before done
+- [New checklist row field: three copy sites](reference_new_checklist_row_field_has_three_copy_sites.md) — parser sets it; checklist-sections withoutSubset + convex validators copy it field by field
+- [Wizard extra query lives in a child component](reference_wizard_extra_query_lives_in_a_child_component.md) — new per-step read: child owns useQuery; getBatch stays slim; auto-linked rows carry context too
+- [Title chain facts travel by key](reference_title_chain_facts_travel_by_key.md) — pickTitleChainFacts replaces hand-passed lines; tidyUp (not coreFits) says the builder worked
+- [Review gate is hops times latency](reference_review_gate_is_hops_times_latency.md) — mapBounded in a query, settleAll in the action, prelude query, review_gate_timing line
+- [One-shot status read races the live-words frame](reference_one_shot_status_read_races_the_live_words_frame.md) — NoticeLine text lands a rAF later; waitFor it; notice timers clear only their own id
+- [Client teamless default mirrors server](client-teamless-default-mirrors-server-conservatively.md) — client may ASK about a card the server stamps, never skip one it would not; gate on every server data-claim
+- [Testing hop status lines are an API](reference_testing_hop_status_lines_are_an_api.md) — /testing/*-fake status lines feed DONE/FAILED regexes in playwright/support; new op = FAILED-matching refusals, report the DONE prefix
+- [Radio pill that opens a picker](radio-pill-that-opens-a-picker.md) — arrows pick only; click/Enter open; Escape returns to the opener
+- [playerLinks pin greps playerIds keys in logs](reference_playerlinks_pin_greps_playerids_keys_in_logs.md) — name log keys differently; mint-after-resolve + prelude excludePlayerCreationRefs; run full convex suite
+- [Row status region via portal](reference_row_status_region_via_portal.md) — one always-mounted role=status per row, panels createPortal text into it; dirty-after-load needs a baseline
+- [Two team resolvers after NEO-602](reference_merge_two_team_resolvers_pairing_stays_year_only.md) — card text -> resolveCardTeamName (year-only if no cards); stint/existence -> resolveTeamForSetYear
+- [Latch a conditionally shown control by row id](reference_latch_a_conditionally_shown_control_by_row_id.md) — id-keyed latch keeps a gated control (and focus) mounted; sample titles via the real builder
+- [Box rule: yellow line OR over cap](reference_box_rule_is_the_yellow_line_over_cap_stays.md) — NEO-637: box used when title leaves something out or is over 80; hand edits swapped in CardTitlesStep.changeShort
+- [Stand down on mounted, not phase](reference_stand_down_on_mounted_not_on_phase.md) — page element duplicated by a dialog keys on the dialog being mounted/open, not the phase before it (NEO-624)
+- [Extracting fields from a drawer keeps the lint override list](reference_extracting_fields_from_a_drawer_keeps_the_lint_override_list.md) — add the new file to per-file eslint overrides; hooks stay unconditional, gate JSX only
+- [Swap a storage layer with a pseudo-row adapter](reference_swap_a_storage_layer_with_a_pseudo_row_adapter.md) — read new rows in the OLD shape; shim old test seeds; shim throws on retired shapes
+- [New Team form shows the suggestion as the answer](reference_new_team_form_shows_suggestion_as_answer_server_must_write_it.md) — host must forward it via findOrCreate enrichment or the shown league is lost
+- [Tile and commit share one verdict](reference_tile_and_commit_share_one_verdict.md) — client preselect and server write call one pure fn; one test drives both; goldens/pins updated on purpose
+- [Open card then paged pass double-applies](reference_open_card_then_paged_pass_double_applies.md) — skip the in-call card in the scheduled pages; one helper for the shared career verdict
+- [Names-first core: a name pair at 1 is clean](reference_names_first_core_makes_a_name_pair_at_one_clean.md) — skip predicate reads confidence + sourceNumbers, not pairedBy "name"; D2 duplicate-number tie vs main test
+- [Optional result field: omit when empty](reference_optional_result_field_omit_when_empty.md) — always-present [] reds toEqual pins in convex tests; spread only when non-empty
+- [Port a retired-UI rule: audit every server fill site](reference_porting_a_rule_from_a_retired_ui_audit_every_server_fill_site.md) — tile, commit fill, answer-time fill, Apply to all each gate rule 8 separately (NEO-645 x NEO-639)
+- [Parallel commit chunks: defer the shared flush](reference_parallel_commit_chunks_defer_the_shared_flush.md) — find the one shared write, defer it to the caller, prove disjointness with a db Proxy; ties on sortOrder stay sequential
