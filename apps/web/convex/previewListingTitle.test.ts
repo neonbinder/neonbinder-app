@@ -166,6 +166,62 @@ describe("previewListingTitle (NEO-101)", () => {
     });
   });
 
+  // NEO-645 — `inputs.subjectName` rides the returns validator; a validator
+  // that lacks it throws ReturnsValidationError (convex-test enforces returns).
+  test("NEO-645: a non-player card with a cameo returns subjectName; a card with no player and no cameo, or a player card, omits it", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, variantTypeId } = await seedSubtree(t);
+
+    const [playerId, cameoId] = await t.run(async (ctx) => [
+      await ctx.db.insert("players", {
+        name: "Elly De La Cruz",
+        nameNormalized: "cruz elly de la",
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+      await ctx.db.insert("players", {
+        name: "Chipper Jones",
+        nameNormalized: "jones chipper",
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    ]);
+
+    const noPlayer = await insertCard(t, variantTypeId, {
+      cardNumber: "1",
+      cardName: "Checklist",
+    });
+    const cameoOnly = await insertCard(t, variantTypeId, {
+      cardNumber: "2",
+      cardName: "Rookie Class",
+      secondaryPlayerIds: [cameoId],
+    });
+    const playerCard = await insertCard(t, variantTypeId, {
+      cardNumber: "3",
+      cardName: "Elly De La Cruz",
+      playerIds: [playerId],
+      secondaryPlayerIds: [cameoId],
+    });
+
+    const none = await asAdmin.query(api.selectorOptions.previewListingTitle, {
+      cardId: noPlayer,
+    });
+    expect(none.inputs.subjectName).toBeUndefined();
+
+    const cameo = await asAdmin.query(api.selectorOptions.previewListingTitle, {
+      cardId: cameoOnly,
+    });
+    expect(cameo.inputs.playerNames).toEqual([]);
+    expect(cameo.inputs.cameoNames).toEqual(["Chipper Jones"]);
+    expect(cameo.inputs.subjectName).toBe("Rookie Class");
+
+    const player = await asAdmin.query(api.selectorOptions.previewListingTitle, {
+      cardId: playerCard,
+    });
+    expect(player.inputs.subjectName).toBeUndefined();
+  });
+
   test("NEO-609: a title that lost a first name says tidyUp, and coreFits is its inverse", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);

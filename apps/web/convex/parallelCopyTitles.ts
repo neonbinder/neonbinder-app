@@ -83,6 +83,8 @@ const listingInputsValidator = v.object({
   playerNames: v.array(v.string()),
   // NEO-528 + NEO-535 — the people also pictured, named while the title has room.
   cameoNames: v.optional(v.array(v.string())),
+  // NEO-645 — a non-player card's own name, titled ahead of its cameos.
+  subjectName: v.optional(v.string()),
   year: v.optional(v.string()),
   manufacturer: v.optional(v.string()),
   manufacturerBrandUnknown: v.optional(v.boolean()),

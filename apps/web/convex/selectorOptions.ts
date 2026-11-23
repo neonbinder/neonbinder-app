@@ -8251,6 +8251,8 @@ export const previewListingTitle = query({
       // NEO-528 + NEO-535 — the cameos, which the title names while it has
       // room; the client re-assesses these inputs, so they must ride along.
       cameoNames: v.optional(v.array(v.string())),
+      // NEO-645 — a non-player card's own name, titled ahead of its cameos.
+      subjectName: v.optional(v.string()),
       year: v.optional(v.string()),
       manufacturer: v.optional(v.string()),
       // NEO-272: reaches the client so the operator-facing "Maker" source chip

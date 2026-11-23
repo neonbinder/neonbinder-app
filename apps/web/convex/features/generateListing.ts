@@ -62,6 +62,7 @@ import { singularTypeName, singularWord } from "../listingShortName";
 export { singularTypeName };
 import { isGenerationalSuffix } from "../../lib/players/name-fragment";
 import { teamFullName } from "../../lib/teams/team-name";
+import { foldNameForCompare } from "../../lib/entities/normalize-name";
 import { parallelAfterInsert, parallelOpensWithInsert, roughlySays } from "../listingShortName";
 
 /** NEO-606 — a team row's Location / Name, as `ListingCardInputs.teamSplits` carries it. */
@@ -889,6 +890,9 @@ function fullTitleState(inputs: ListingCardInputs, parts: DescriptionParts): {
   for (const team of inputs.teamNames ?? []) {
     const trimmed = team.trim();
     if (!trimmed) continue;
+    // NEO-645 — a team that is the subject's own name is not said twice
+    // ("Boston Red Sox" card, Boston Red Sox team: the name stands once).
+    if (subject && foldNameForCompare(trimmed) === foldNameForCompare(subject)) continue;
     pushUnlessSaid("team", trimmed);
     // NEO-606 — a split team can give up its location before it goes.
     const nickname = nicknames.get(trimmed);

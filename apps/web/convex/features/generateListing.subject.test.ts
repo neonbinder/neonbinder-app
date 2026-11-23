@@ -93,4 +93,33 @@ describe("every other card is as it was", () => {
     const a = assessListingTitle({ ...hopping, subjectName: undefined });
     expect(a.title).toBe("2026 Topps Base Ronald Acuña Jr. #118 Atlanta Braves Baseball");
   });
+
+  test("a team that is the subject's own name is not said twice", () => {
+    const a = assessListingTitle({
+      year: "2026",
+      manufacturer: "Topps",
+      setName: "Topps",
+      titleLevels: [{ name: "Base", base: true }],
+      cardNumber: "198",
+      playerNames: [],
+      cameoNames: ["Ceddanne Rafaela"],
+      subjectName: "Boston Red Sox",
+      teamNames: ["Boston Red Sox"],
+      sport: "Baseball",
+    });
+    expect(a.title).toBe("2026 Topps Boston Red Sox Ceddanne Rafaela #198 Baseball");
+  });
+
+  test("a team that differs from the subject's name is kept", () => {
+    const a = assessListingTitle({
+      ...hopping,
+      subjectName: "Boston Red Sox",
+      cameoNames: ["Ceddanne Rafaela"],
+      cardNumber: "198",
+      teamNames: ["Atlanta Braves"],
+    });
+    expect(a.title).toBe(
+      "2026 Topps Boston Red Sox Ceddanne Rafaela #198 Atlanta Braves Baseball",
+    );
+  });
 });
