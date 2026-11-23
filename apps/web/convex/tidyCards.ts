@@ -74,7 +74,7 @@ import {
   type NameWriteCache,
 } from "./tidyCardWrites";
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
-import { isTeamlessOnLine, teamLineKey } from "./lib/teamLine";
+import { hasTeamLine, isTeamlessOnLine, teamLineKey } from "./lib/teamLine";
 import { defaultGapStint } from "./lib/careerGapStint";
 import { appendCareerStintsImpl } from "./players";
 import { assertCareerStintYears, maxCareerYear } from "../lib/players/career-years";
@@ -739,7 +739,9 @@ export const pickSourceValuePage = internalMutation({
  * team"). The server checks EVERY card in `cardIds` (at most `MAX_APPLY_CARDS`)
  * and skips and counts any it refuses. A card is written only when ALL hold:
  *  - it is under the same checklist (leaf) as `sourceCardId`, and on the same
- *    line (`teamLineKey`), a multi-player set included;
+ *    line (`teamLineKey`), a multi-player set included. The source card must
+ *    have a player: the line of cards with nobody on them is refused
+ *    (`hasTeamLine`);
  *  - nobody is waiting on it and it has no team: no pending player or team
  *    names, no "No team" stamp, no teams disagreement between the sources
  *    (`isTeamlessOnLine`).
@@ -780,6 +782,9 @@ export const applyTeamToPlayerCards = mutation({
       throw new ConvexError("Give this card the team first.");
     }
     const line = { leafId: source.selectorOptionId, lineKey: teamLineKey(source) };
+    if (!hasTeamLine(line.lineKey)) {
+      throw new ConvexError("Apply to all is for cards with a player.");
+    }
     const accepted: Array<Id<"cardChecklist">> = [];
     for (const id of ids) {
       const card = await ctx.db.get(id);
@@ -808,10 +813,12 @@ type TeamLine = { leafId: Id<"selectorOptions">; lineKey: string };
 
 /**
  * Whether a card takes its line's answer: under the same checklist, on the same
- * line, and still waiting for a team. Pure: every field is on the card.
+ * line, and still waiting for a team. The line of cards with no player takes
+ * nothing. Pure: every field is on the card.
  */
 export function cardTakesLineTeams(card: Doc<"cardChecklist">, line: TeamLine): boolean {
   return (
+    hasTeamLine(line.lineKey) &&
     card.selectorOptionId === line.leafId &&
     teamLineKey(card) === line.lineKey &&
     isTeamlessOnLine(card)

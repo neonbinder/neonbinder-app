@@ -14,8 +14,10 @@ import { afterEach, describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
+import { NO_PLAYERS_LINE_KEY } from "./lib/teamLine";
 import {
   APPLY_PAGE_SIZE,
+  cardTakesLineTeams,
   MAX_APPLY_CARDS,
   MAX_VARIATION_LENGTH,
 } from "./tidyCards";
@@ -254,7 +256,7 @@ describe("applyTeamToPlayerCards — the answer goes to the card's line (main's 
     expect((await card(t, solo))!.teamOnCardIds).toBeUndefined();
   });
 
-  test("the cards with nobody on them share one line, whatever their claims", async () => {
+  test("a source card with nobody on it is refused, and no card is written (Jason, 2026-11-23)", async () => {
     const t = newT();
     const tw = await teamWorld(t);
     const bare = (n: string, extra: Record<string, unknown> = {}) =>
@@ -262,7 +264,19 @@ describe("applyTeamToPlayerCards — the answer goes to the card's line (main's 
     const src = await bare("60", { teamOnCardIds: [tw.w.padres] });
     const plain = await bare("61");
     const named = await bare("62", { bscTeamName: "League Leaders" });
-    expect(await applyTeam(t, tw, [plain, named], { sourceCardId: src })).toEqual({ applied: 2, skipped: 0 });
+    await expect(applyTeam(t, tw, [plain, named], { sourceCardId: src })).rejects.toThrow(
+      /cards with a player/,
+    );
+    expect((await card(t, plain))!.teamOnCardIds).toBeUndefined();
+    expect((await card(t, named))!.teamOnCardIds).toBeUndefined();
+  });
+
+  test("a card with no player never takes a line's answer, whatever line key it is sent", async () => {
+    const t = newT();
+    const tw = await teamWorld(t);
+    const bare = await t.run((ctx) => printCard(ctx, tw.w, { number: "63" }));
+    const doc = (await card(t, bare))!;
+    expect(cardTakesLineTeams(doc, { leafId: doc.selectorOptionId, lineKey: NO_PLAYERS_LINE_KEY })).toBe(false);
   });
 
   test("a card with a player name still pending is refused", async () => {

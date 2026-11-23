@@ -3,7 +3,7 @@ import { useMutation } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
 import { MAX_CARD_TEAMS, teamFillOf } from "../../../../convex/features/cardAttention";
-import { isTeamlessOnLine, teamLineKey } from "../../../../convex/lib/teamLine";
+import { hasTeamLine, isTeamlessOnLine, teamLineKey } from "../../../../convex/lib/teamLine";
 import NeonButton from "../../../modules/NeonButton";
 import EntityLinkSearch from "../../EntityLinkSearch";
 import { useAnswered } from "../answered";
@@ -51,7 +51,8 @@ const NO_CONTEXT_YET = {
  * grouping: one line per player set plus claim key (`convex/lib/teamLine`), so
  * every teamless card under this checklist with the same players and the same
  * listing claim takes the answer, a multi-player card included, with no career
- * test (the operator's answer is the evidence). The client PROPOSES the cards on
+ * test (the operator's answer is the evidence). A card with no player gets no
+ * button (Jason, 2026-11-23). The client PROPOSES the cards on
  * the line from the checklist it holds; `tidyCards.applyTeamToPlayerCards`
  * re-checks every one and skips the rest. A set's own "No Team" (`setNoTeam`,
  * NEO-639 decision A) holds back what NB guesses, never an answer the operator
@@ -149,13 +150,15 @@ export default function TeamTile({
   };
 
   // "Apply to all": the client proposes the card's line, the server checks.
-  const sourceTeamIds = teamsOnCard.length > 0 && !open ? teamsOnCard : [];
+  // A card with no player is on no line to apply to (Jason, 2026-11-23).
   const lineKey = teamLineKey(row);
+  const who = ctx.players.map((p) => p.name).join(" & ");
+  const sourceTeamIds =
+    teamsOnCard.length > 0 && !open && who !== "" && hasTeamLine(lineKey) ? teamsOnCard : [];
   const proposed =
     sourceTeamIds.length > 0
       ? leafCards.filter((c) => proposesTeam(c, row._id, lineKey)).slice(0, APPLY_PROPOSE_MAX)
       : [];
-  const who = ctx.players.map((p) => p.name).join(" & ");
 
   return (
     <TidyTile heading="Team" level={open ? "fix" : "plain"}>
@@ -267,11 +270,8 @@ export default function TeamTile({
   );
 }
 
-/** "Apply to the other Jimmie Foxx card" / "Apply to all 4 other Johnny Bench & Pete Rose cards". */
+/** "Apply to the other Jimmie Foxx card" / "Apply to all 4 other Johnny Bench & Pete Rose cards". Never offered on a card with no player. */
 function applyLabel(count: number, who: string): string {
-  if (who === "") {
-    return count === 1 ? "Apply to the other card with no player" : `Apply to all ${count} other cards with no player`;
-  }
   return count === 1 ? `Apply to the other ${who} card` : `Apply to all ${count} other ${who} cards`;
 }
 

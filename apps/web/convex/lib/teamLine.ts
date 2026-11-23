@@ -15,9 +15,10 @@
  *    A card under a claim never shares a line with a card under another claim
  *    or none (product invariant 8: a data claim holds a guess back, so what
  *    the operator answers about one claim says nothing about another).
- *  - Every card with nobody on it shares ONE line, whatever its claim: there
- *    is no player evidence at all, so no claim can tell two of them apart
- *    (main's `NO_PLAYERS_GROUP_KEY`).
+ *  - A card with nobody on it is on the `NO_PLAYERS_LINE_KEY` line, and that
+ *    line never takes an "Apply to all" answer (Jason, 2026-11-23: "not a good
+ *    button"): with no player there is no evidence to share, so the tile does
+ *    not offer it and the server refuses it (`hasTeamLine`).
  *  - A card number is never a key.
  *
  * Pure: ids and flags in, strings and booleans out, so the browser can import
@@ -27,7 +28,7 @@
 import { normalizeEntityName } from "../../lib/entities/normalize-name";
 import { idSetKey } from "./teamFill";
 
-/** The line every card with nobody on it shares. */
+/** The line a card with nobody on it carries. It is never applied to (see `hasTeamLine`). */
 export const NO_PLAYERS_LINE_KEY = "no-players";
 
 /** The fields of a card the line key reads. */
@@ -46,6 +47,15 @@ export function teamLineKey(card: TeamLineCard): string {
     (listed ? `|listed:${normalizeEntityName(listed)}` : "") +
     (card.teamCheckOutcome === "checklist" ? "|checklist" : "");
   return `players:${players}${claim}`;
+}
+
+/**
+ * Whether a line key is one an "Apply to all" answer can belong to: any line but
+ * the no-players one. Read on the client (no button) and on the server (a
+ * refusal), so a direct call cannot do what the button no longer offers.
+ */
+export function hasTeamLine(lineKey: string): boolean {
+  return lineKey !== NO_PLAYERS_LINE_KEY;
 }
 
 /** The fields of a card that say whether it is still waiting for a team. */

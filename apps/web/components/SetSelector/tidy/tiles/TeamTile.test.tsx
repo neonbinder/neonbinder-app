@@ -1138,7 +1138,7 @@ describe("TeamTile", () => {
         });
       });
 
-      it("a card with nobody on it shares one line with every other, whatever its claim", async () => {
+      it("a card with nobody on it is offered no Apply to all, however many other cards have no player (Jason, 2026-11-23)", () => {
         const none = {
           row: card({ teamOnCardIds: ["team-7"] }),
           items: [] as TidyAttention["items"],
@@ -1148,8 +1148,11 @@ describe("TeamTile", () => {
           ...none,
           leafCards: [none.row, card({ _id: "c2" }), card({ _id: "c3", bscTeamName: "League Leaders" }), sibling("c4")],
         });
-        await click(screen.getByRole("button", { name: "Apply to all 2 other cards with no player" }));
-        expect(applied()).toHaveBeenCalledWith({ sourceCardId: CARD, teamIds: ["team-7"], cardIds: ["c2", "c3"] });
+        expect(screen.queryByRole("button", { name: /Apply to/ })).toBeNull();
+        expect(screen.queryByRole("button", { name: /with no player/ })).toBeNull();
+        expect(applied()).not.toHaveBeenCalled();
+        // The rest of the tile is untouched: the team and the way to add another.
+        expect(screen.getByRole("button", { name: "+ Another team" })).toBeTruthy();
       });
 
       it("reads every refusal the way the server does: a pending player name, a blank pending team name; a whitespace listing team is no claim", async () => {
