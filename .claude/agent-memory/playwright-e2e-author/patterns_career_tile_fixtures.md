@@ -17,7 +17,10 @@ Career tile (blue "To check", never pink) has two sources, both stored at write 
 
 Handles: group `Career <player>`; gap text `No <full team> in the career by <year>.`; list
 `Career on file for <player>` (`<team> · 2020–2024`, open `2024–`); `Add to career`, `Keep as is`
-(aria-pressed, writes nothing); new player: `Wikidata career for <player>` lines
+(C8: no pressed state, acts at once and the gap row goes; writes nothing). **Save & next with a gap
+still open ADDS the stint from the set year** (line "Save & next adds it to the career."), so a
+spec walking a CATALOGUE player's blue Career check must press "Keep as is" first, or it writes the
+shared player and the next attempt loses that card's stop (seen on a prospect/place-team spec); new player: `Wikidata career for <player>` lines
 `<team> · <years>` + `✓ in the career` / `✓ team in NB` / `team not in NB`, `+ New team <team>`,
 `Not now <team>`, `Add stints to <player>`; inline form group `New team: <team>`, `Checking for
 team details…`, `Create team <team> and add stint`; undated: `Add years for <team>` → group
