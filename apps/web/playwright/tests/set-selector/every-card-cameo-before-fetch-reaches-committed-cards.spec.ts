@@ -13,7 +13,8 @@
 // - The set builder drills to Profiles and branches on the checklist's own
 //   state. Empty: Ken Griffey Jr. is stored as a cameo on every card (no cards,
 //   so no confirm), the publisher's checklist is uploaded and the checklist
-//   synced; Match Cards' Confirm saves the 25 cards (NEO-645: commit first).
+//   synced; every card pairs at 100%, so Match Cards sits out (NEO-640) and
+//   the 25 cards are saved first (NEO-645).
 //   The names are not this spec's subject: if the Tidy Up walk opens on them
 //   it is closed with "Save for later (Esc)", which writes nothing. Already
 //   committed (a rerun on the same seed): the stored cameo is
@@ -64,7 +65,7 @@ import { escapeRe } from "../../support/cards";
 import type { CollectorSet } from "../../support/collection";
 import type { FlowEnv } from "../../support/env";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist } from "../../support/published-checklist";
+import { CHECKLISTS, savedLine, settleChecklistFetch, usePublishersChecklist } from "../../support/published-checklist";
 import { drillToSet, pick, pickAfterBscSync, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 import { saveForLater, settleWalkAfterCommit, tidyUpName, tidyWalk } from "../../support/tidy-walk";
 
@@ -106,13 +107,12 @@ async function fetchAndCommit(page: Page, env: FlowEnv, section: Locator): Promi
   // GUIDE "Checklist first": every row names its team, so BSC is asked for no card one by one.
   const facts = await usePublishersChecklist(page, CHECKLISTS.toppsProfiles2026);
   await syncChecklistButton(page).click();
-  // NEO-496 (D10, NQ1): the uploaded checklist is a second source, so the fetch opens Match Cards on
-  // either branch (SportLots paused or not). The helper waits on it (7 s of ours plus BSC's), proves the
-  // teams line while it is open (the only time before the save), keeps any BSC-only card and confirms.
-  await confirmChecklistMatchCards(page, { facts, what: "the empty checklist's fetch" });
-  // NEO-645: Confirm IS the commit (our own write, 7 s); the cards are saved before any walk.
-  const saved = page.getByText(new RegExp(`Saved ${CARDS} cards\\.`)).first();
-  await expect(saved).toBeVisible();
+  // NEO-496 (D10, NQ1): the uploaded checklist is a second source. NEO-640 (C5): the file is BSC's own
+  // 25 cards, each paired by its number at 100%, so Match Cards sits this one out; the helper settles
+  // on the file's measured fact (never a race), waits on the fetch (7 s of ours plus BSC's) and proves
+  // the saved line and the teams line. NEO-645: the cards are saved before any walk.
+  await settleChecklistFetch(page, env, { facts, what: "the empty checklist's fetch" });
+  const saved = savedLine(page, CARDS);
   // The walk opens only if a card needs a person (a name nobody knows, a blue check). Either way
   // the cards are already saved: an open walk is closed with Save for later, which writes nothing.
   if (await settleWalkAfterCommit(page, saved)) {

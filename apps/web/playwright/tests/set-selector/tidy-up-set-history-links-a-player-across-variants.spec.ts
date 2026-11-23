@@ -1,14 +1,15 @@
 // ONE FEATURE (NEO-424 set history, on the NEO-645 Tidy Up walk): a name already linked on a SAVED
 // card of a set links, at the commit, to that same player when another variant of the set is
-// fetched, whatever sport he is filed under; the walk's Player tile says why in a purple note, and
-// "Change player" turns the link back into a suggestion with its reason. Around it, the rules that
+// fetched, whatever sport he is filed under, with no stop; the walk's Player tile says why in a
+// purple note, and the row's "Edit <name>" re-asks it (an exact namesake then leads, main's rule). Around it, the rules that
 // share the gate: one namesake in another sport is a suggestion (E2), the Hall of Famer among
 // namesakes is linked (D), a historic club is linked from the stint of the player on the card (2b),
 // a club held in several eras is never linked from set history (NEO-602), and a year on, the prior
 // year's edition suggests the same player (E1).
 //
 // Renamed from checklist-wizard-set-history-links-across-variants (NEO-645): the pre-save wizard,
-// its Decided list and Confirm & Save are gone. Match Cards' Confirm SAVES the cards, then the walk
+// its Decided list and Confirm & Save are gone. A fetch SAVES the cards (through Match Cards' Confirm,
+// or first thing when every card paired at 100% and Match Cards sat out, NEO-640), then the walk
 // opens on the cards that need a person, and every tile answer saves at once (J1). The links are
 // read where the walk shows them (the tiles) and, where it does not (a link with nothing else to
 // ask makes no stop), in the card drawer and on the player page.
@@ -19,10 +20,11 @@
 //      a new player ("Also add Baseball to their sports" left unticked). Save for later.
 //   2. Silk Collection (rule A, cross-sport, and E2): STAR arrives linked, his Player row carries
 //      the note "Linked for you: another card in this set is already linked to them" (his card is
-//      in the walk for its blue career check: a player on file with no stints). "Change player"
-//      reopens the row on the suggestion "Link to STAR (Football)" with the reason "Another card in
-//      this set is already linked to STAR (Football). Same one?" (schema item 15: the auto pick
-//      becomes the preselect); pressed, the row reads answered. Brantley's row shows E2: "Link to
+//      in the walk for its blue career check: a player on file with no stints). "Edit STAR"
+//      reopens the row. Its sport is still Football (his phase-1 answer), so STAR himself is the
+//      one exact namesake there, and main's rule holds: an exact namesake is the stronger, live
+//      answer, so "Link to STAR" leads and the set-history suggestion and its reason give way;
+//      pressed, the row reads answered (phase 5 proves no second player). Brantley's row shows E2: "Link to
 //      Michael Brantley (Football)", "Add as new player anyway" and the reason line; left alone.
 //   3. Peak Performance: Bob Gibson and Joe Morgan (two Baseball namesakes each, none active in 2010) link to
 //      the Hall of Famer; the Washington Senators, Philadelphia Athletics and St. Louis Browns link
@@ -39,7 +41,7 @@
 //      Weeks (Football). Same one?" and NOT E2's line; the promoted link is pressed.
 //   7. Weeks's page lists exactly his two cards as Baseball guest cards.
 //
-// The Hall of Fame Change -> "Which Joe Morgan is this?" pick is no longer reachable here: the walk
+// The Hall of Fame Edit -> "Which Joe Morgan is this?" pick is no longer reachable here: the walk
 // shows a card only when it needs a person, and Morgan's card asks nothing. That pick step is
 // covered by tidy-up-same-name-player-asks-which-one.
 //
@@ -71,7 +73,7 @@ import {
 } from "../../support/set-builder";
 import { addPlayerByHand, expectPlayersLoaded, PLAYERS_MATCHES, playersCounter } from "../../support/players";
 import { expectStepWithSportLots } from "../../support/marketplace-wait";
-import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist, type ChecklistName } from "../../support/published-checklist";
+import { CHECKLISTS, settleChecklistFetch, usePublishersChecklist, type ChecklistName } from "../../support/published-checklist";
 import {
   expectCardSettled,
   saveForLater,
@@ -142,14 +144,19 @@ const CHECKLIST_OF: Readonly<Record<string, ChecklistName | undefined>> = {
  * is the fake (NEO-552) and the wait is the marketplace rule: 7 s plus the seconds
  * "Waiting on BuySportsCards" is up (measured 6.3 s at most on the #487 merge-group run (GUIDE)). The wizard
  * opening afterwards is our own backend at the 7 s default. The fetch itself (the bulk
- * checklist, one BSC round trip) is waited on inside `confirmChecklistMatchCards` with
+ * checklist, one BSC round trip) is waited on inside `settleChecklistFetch` with
  * `expectAfterMarketplace` (NEO-487).
  */
 const LIVE_BSC_FETCH = 60_000;
 /** The purple notes (tidy/parts/copy.ts `linkedForText`). */
 const SET_HISTORY_NOTE = "Linked for you: another card in this set is already linked to them";
-/** An answered row's Change ("Change player", or "Change player <name>" on a multi-name card). */
-const CHANGE_PLAYER = /^Change player( .+)?$/;
+/**
+ * An answered row's Edit (NEO-645 C1): "Edit <name>", the linked player's name on a linked row.
+ * Exact, read inside the row's own group. Contract: a locator, nothing waited for.
+ */
+function editPlayer(row: Locator, name: string): Locator {
+  return row.getByRole("button", { name: `Edit ${name}`, exact: true });
+}
 const NOT_A_PLAYER = /^Not a player \(checklist, team card, stadium\)( .+)?$/;
 
 /** The Player tile's row for `name` on the open card. Contract: a locator, nothing waited for. */
@@ -203,13 +210,14 @@ async function addAsFootballPlayer(page: Page, name: string, axeLabel: string): 
   await expect(row.getByText("Checking for players by that name…")).toHaveCount(0);
   await expectAccessible(page, { within: tidyWalk(page), label: axeLabel });
   await row.getByRole("button", { name: /^Add as new player( .+)?$/, disabled: false }).click();
-  await expect(row.getByRole("button", { name: CHANGE_PLAYER }), `${name} was added`).toBeVisible();
+  await expect(editPlayer(row, name), `${name} was added`).toBeVisible();
   await expect(row.getByRole("button", { name: NOT_A_PLAYER })).toHaveCount(0);
 }
 
 /**
- * Open `name` under the set's Insert type, upload its captured checklist, fetch, confirm Match
- * Cards (which SAVES the cards) and settle whether the walk opened. Contract: ENTRY the Variant
+ * Open `name` under the set's Insert type, upload its captured checklist, fetch, settle Match Cards
+ * on the file's measured fact (confirmed, or skipped with the save first: NEO-640) and settle
+ * whether the walk opened. Contract: ENTRY the Variant
  * Types column is open with Insert listed. `reconcile` (live only) makes `inserts` their own sets
  * in the Reconcile Inserts dialog; the paused column fills from BSC alone. EXIT the cards are saved;
  * returns whether the walk is open.
@@ -258,11 +266,14 @@ async function fetchInsert(
   if (checklist === undefined) throw new Error(`${name} has no captured checklist in CHECKLIST_OF`);
   const published = await usePublishersChecklist(page, checklist);
   await syncChecklistButton(page).click();
-  // NEO-496 (D10): BSC plus the uploaded checklist are two sources, so Match Cards opens; the
-  // helper waits on it (7 s of ours plus BSC's), proves the teams line and confirms. NEO-645:
-  // Confirm SAVES the cards, then the walk opens on the cards that need a person.
-  await confirmChecklistMatchCards(page, { facts: published, what: `${name}'s fetch` });
-  return settleWalkAfterCommit(page, page.getByText(/Saved [1-9][0-9]* cards?\./).first());
+  // NEO-496 (D10), NEO-640 (C5): BSC plus the uploaded checklist are two sources. Most of these
+  // files pair every card at 100%, so Match Cards sits out and the cards save first; Peak
+  // Performance Relics' repeated numbers open it. The helper settles on the file's fact (never a
+  // race), waiting 7 s of ours plus BSC's. NEO-645: the save lands, then the walk opens on the
+  // cards that need a person. A kept BSC-only card can change the count, so only its shape is pinned
+  // here (the skip's exact count is the helper's assert).
+  await settleChecklistFetch(page, env, { facts: published, what: `${name}'s fetch` });
+  return settleWalkAfterCommit(page, page.getByText(/^Saved [1-9][0-9]* cards?\./).filter({ visible: true }).first());
 }
 
 /** In the open checklist: find card `number` by `player` and read its drawer's teams. */
@@ -283,7 +294,7 @@ async function openPlayer(page: Page, filter: string, row: RegExp | string): Pro
 }
 
 test(
-  "Tidy Up — a name linked on a saved card of the set links to the same player on the set's next variant (another sport's player, a Hall of Famer), the Player tile says why and Change player turns it back into the suggestion; a club held in several eras links from its player's stint, never from set history; a year on, the prior year's edition suggests the same player (NEO-424, NEO-602)",
+  "Tidy Up — a name linked on a saved card of the set links to the same player on the set's next variant (another sport's player, a Hall of Famer), the Player tile says why and its Edit re-asks it; a club held in several eras links from its player's stint, never from set history; a year on, the prior year's edition suggests the same player (NEO-424, NEO-602)",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     // ── PHASE 0: the fixture, from the UI: a FOOTBALL Michael Brantley ──
@@ -325,19 +336,25 @@ test(
         await expect(star.getByRole("note")).toHaveText(SET_HISTORY_NOTE);
         await expect(star.getByRole("button", { name: NOT_A_PLAYER })).toHaveCount(0);
         await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk, a name linked from this set" });
-        // Change player: the auto pick becomes the suggestion, with its reason (schema item 15).
-        await star.getByRole("button", { name: CHANGE_PLAYER }).click();
-        const linkSuggested = star.getByRole("button", { name: `Link to ${STAR} (Football)`, exact: true });
-        await expect(linkSuggested).toBeVisible();
+        // Edit clears the link and re-asks (C1). The row's sport is still Football (his phase-1
+        // answer), so STAR is the one exact namesake there. Main's rule (NEO-645 A7, reverted to
+        // main): an exact namesake is the stronger, live answer, so it leads and the set-history
+        // suggestion, with its reason line, gives way to it.
+        await editPlayer(star, STAR).click();
+        const linkExact = star.getByRole("button", { name: `Link to ${STAR}`, exact: true });
+        await expect(linkExact).toBeVisible();
+        await expect(star.getByRole("button", { name: "Sport for this name: Football" })).toBeVisible();
         await expect(star.getByRole("button", { name: /^Add as new player anyway( .+)?$/ })).toBeVisible();
-        await expect(
-          star.getByText(`Another card in this set is already linked to ${STAR} (Football). Same one?`, { exact: true }),
-        ).toBeVisible();
+        await expect(star.getByRole("button", { name: `Link to ${STAR} (Football)`, exact: true })).toHaveCount(0);
+        await expect(star.getByText(/^Another card in this set is already linked to /)).toHaveCount(0);
         await expect(star.getByRole("note").filter({ hasText: SET_HISTORY_NOTE })).toHaveCount(0);
-        await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk, suggested player after Change" });
-        await linkSuggested.click();
-        await expect(star.getByRole("button", { name: CHANGE_PLAYER }), `${STAR} is linked again`).toBeVisible();
-        await expect(linkSuggested).toHaveCount(0);
+        await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk, the exact namesake after Edit" });
+        await linkExact.click();
+        await expect(editPlayer(star, STAR), `${STAR} is linked again`).toBeVisible();
+        await expect(linkExact).toHaveCount(0);
+        // C4: a plain exact-match link says nothing; purple is only for set history, the Hall of
+        // Fame and a career team.
+        await expect(star.getByRole("note")).toHaveCount(0);
       }
       const brantley = openPlayerRow(page, BRANTLEY);
       if (!sawBrantley && (await brantley.count()) > 0) {
@@ -454,7 +471,7 @@ test(
     await expect(weeks.getByText(`We've only got one ${WEEKS} (Football) on file. Same one?`)).toHaveCount(0);
     await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk, last year's edition suggests a player (rule E1)" });
     await linkWeeks.click();
-    await expect(weeks.getByRole("button", { name: CHANGE_PLAYER }), `${WEEKS} is linked`).toBeVisible();
+    await expect(editPlayer(weeks, WEEKS), `${WEEKS} is linked`).toBeVisible();
     await expect(linkWeeks).toHaveCount(0);
     await saveForLater(page);
 
