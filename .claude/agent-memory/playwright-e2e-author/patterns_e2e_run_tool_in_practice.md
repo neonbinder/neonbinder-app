@@ -52,3 +52,4 @@ the tool's current code before relying on any line here; some may be fixed.
 
 **Why:** these cost time or misled the first live run. **How to apply:** any
 agent driving e2e-run from the Bash tool. Related: [[patterns_local_run_backend_and_vite]].
+- A `setup` red after `--fresh` leaves a half-built seed: a plain `run` re-runs `setup` on it and fails at "No manufacturers available" (setup expects an empty catalogue). Re-run with `--fresh`, not without. A Card titles dialog that opens after a parallels build (copies over 80) intercepts the next click; close it with "Not now" in the spec, naming the copies it lists (NEO-645).

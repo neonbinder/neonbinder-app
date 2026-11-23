@@ -79,6 +79,8 @@ test(
     // ── STEP 0: two cards in the set's Base, made while the set has no answer, so they are
     // teamless and carry no stamp. (Opening Base cancels its mapping picker: a one-marketplace set.)
     await drillToBaseVariant(page, env, TARGET);
+    // The precondition of a FIRST run on this seed (fresh-only): a re-run fails here, by name.
+    await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
     for (const player of BASE_CARDS) {
       await page.getByRole("button", { name: "Open add card form" }).click();
       const number = page.getByRole("textbox", { name: "Card number", exact: true });
@@ -197,6 +199,10 @@ test(
     // ── STEP 4: the set's parallels, built from Base (stopped after the first). A copy of a Base
     // card the set's answer never touched is born under the parallel's own No Team once BSC's
     // per-card lookup, which holds the stamp back, answers that it names no team.
+    // NEO-645: a copy's title carries the card's name (a real card name always goes in the title),
+    // and "2026 Leaf Vivid <the parallel's name>" is already 69 characters, so both Clear Green
+    // copies run over 80 and the build stops on the Card titles dialog, which names them. "Not
+    // now" closes it and keeps the titles as they are (nothing was edited, so no confirm).
     await drillToSet(page, env, TARGET);
     await pick(page, "Variant Types", "Parallel", { search: false });
     await page.getByRole("button", { name: /^Build [0-9]+ parallels from Base$/ }).click();
@@ -214,6 +220,15 @@ test(
     await expect(
       page.getByText(new RegExp(`^${FIRST_PARALLEL} — Built ${BASE_CARDS.length} cards?`)),
     ).toBeVisible();
+    const titles = page.getByRole("dialog", { name: "Card titles" });
+    await expect(titles).toBeVisible();
+    for (const player of BASE_CARDS) {
+      const title = titles.getByRole("textbox", { name: `Title for #NNO ${player}`, exact: true });
+      await expect(title).toBeVisible();
+      await expect(title).toHaveValue(new RegExp(`^2026 Leaf Vivid .* ${escapeRe(player)}$`));
+    }
+    await titles.getByRole("button", { name: "Not now", exact: true }).click();
+    await expect(titles).toBeHidden();
     await expectAccessible(page, { label: "Base parallels build stopped, set under No Team" });
 
     await columnOption(page, "Parallels", FIRST_PARALLEL).click();

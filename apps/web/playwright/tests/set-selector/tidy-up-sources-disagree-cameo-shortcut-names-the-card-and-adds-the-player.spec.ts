@@ -4,7 +4,8 @@
 // the player and is NAMED for something else. One button, "“<other name>”, <Surname> as a cameo",
 // settles it: the card is named for the non-player side, that name is answered "not a player", the
 // player is added as a cameo, the card has no player of its own, and the title is rebuilt as
-// `<year> <set> <card name> <cameo> #N <team> <sport>` (Base is left out; convex/tidyCameo.ts,
+// `<year> <set> Base <card name> <cameo> #N <team> <sport>` (Base stays while the title fits: it
+// is the first word the cut drops, Jason 2026-11-23; convex/tidyCameo.ts,
 // convex/features/generateListing.ts `subjectName`).
 //
 // The flow, as the operator lives it:
@@ -29,11 +30,13 @@
 //   5. The saved card reads back in its drawer: Card name "Scorch", the rebuilt Card title.
 //
 // The expected title was computed first with `assessListingTitle` (npx tsx), as the commit's
-// inputs give it: year 1995, the set's brand unknown (left out), set "Fort Worth Fire CHL", Base,
-// subject "Scorch", cameo "Wayne Gretzky", team Fort Worth Fire (left out: the set name already
-// says it), sport Hockey: "1995 Fort Worth Fire CHL Scorch Wayne Gretzky #17 Hockey" (56). Without
-// the cameo the same card titles "1995 Fort Worth Fire CHL Base Scorch #17 Hockey": the exact
-// string below is also the proof that Base is left out.
+// inputs give it: year 1995, the set's brand unknown (left out), set "Fort Worth Fire CHL", Base
+// (kept: the title fits), subject "Scorch", cameo "Wayne Gretzky", team Fort Worth Fire (left out:
+// the set name already says it), sport Hockey: "1995 Fort Worth Fire CHL Base Scorch Wayne Gretzky
+// #17 Hockey" (61). No minted token reaches it, so it is the same on every worker and attempt.
+// Without the cameo the same card titles "1995 Fort Worth Fire CHL Base Scorch #17 Hockey" (47),
+// and as the checklist's player "1995 Fort Worth Fire CHL Base Wayne Gretzky #17 Hockey" (54): the
+// exact string below is the proof that the card's name leads and the cameo follows it.
 //
 // FIXTURE (SET-REGISTRY.md -> "Hockey -> 1995 -> Unknown -> Fort Worth Fire CHL"): SOLE WRITER of
 // that set (BSC only, 18 cards, reached through the All Brands view); FRESH-ONLY: it commits the
@@ -75,7 +78,7 @@ const SURNAME = "Gretzky";
 /** The team every row prints; NB holds no team of that name until the spec creates it. */
 const CLUB = "Fort Worth Fire";
 /** `assessListingTitle` for the card after the shortcut (see the top comment). */
-const TITLE = "1995 Fort Worth Fire CHL Scorch Wayne Gretzky #17 Hockey";
+const TITLE = "1995 Fort Worth Fire CHL Base Scorch Wayne Gretzky #17 Hockey";
 
 /** The pill's whole name for N cards needing you, M of them pink. */
 function pillName(needYou: number, toFix: number): string {
@@ -154,7 +157,7 @@ test(
     await expect(playerTile.getByRole("group", { name: /^Player / })).toHaveCount(1);
     await expect(pinkTile(page, "Player")).toHaveCount(0);
     await expect(pinkTile(page, "Team")).toHaveCount(0);
-    // The title is rebuilt: the card's name, then the cameo, Base left out.
+    // The title is rebuilt: the card's name, then the cameo, Base kept while it fits (61).
     await expect(tidyTile(page, "Listing title").getByText(TITLE, { exact: true })).toBeVisible();
     await expectAccessible(page, { within: walk, label: "Tidy Up walk, the cameo shortcut taken" });
 
