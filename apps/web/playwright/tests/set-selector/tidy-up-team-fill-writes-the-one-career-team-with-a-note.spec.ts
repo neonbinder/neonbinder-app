@@ -5,8 +5,9 @@
 // in the window gets nothing written, and his card's Team tile is pink, asking.
 //
 // The rule: convex/features/teamFillOnCommit.ts `planCardFill` (career tier) over
-// lib/teamFill.ts `careerTeamVerdict` ("oneTeamInWindow"), applied in the commit's insert path
-// (selectorOptions.ts, "NEO-645 (Q1 = A)"). Rule 8 is not exercised: the checklist's team cells are
+// convex/lib/teamFill.ts `careerTeamVerdict` ("oneTeamInWindow"), applied in the commit's insert path
+// (selectorOptions.ts, "NEO-645 (Q1 = A)"), per player after the batch and stored tiers (main's
+// order: batch, then stored, then career). Rule 8 is not exercised: the checklist's team cells are
 // BLANK, which is no claim (a "No Team" cell would be one and would hold the fill back).
 //
 // Why card #1 is in the walk at all: the fill is a purple note and never a stop, so a filled card
@@ -23,8 +24,7 @@
 //     tile pink, both career teams offered as chips, no fill note. Both stints cover 2025 itself on
 //     purpose: the tile's chips read the set year alone (`cardChecklist.suggestedTeamsForCard`), so
 //     with a stint ending in 2024 the tile would offer the other team alone. This spec proves the
-//     COMMIT's rule; whether the tile may preselect chips the commit refused to write (today it
-//     preselects both) is the tile's own question, reported with the NEO-645 e2e findings.
+//     COMMIT's rule; which chips the tile preselects is the tile's own rule, not read here.
 //   Both are read back in the card drawer: #1 carries the long team, #2 carries no team.
 //
 // FIXTURE (SET-REGISTRY.md "Custom sets", the `tfs`/`tfa` prefixes, and the `Tfl`/`Tfm`/`Tfn`/

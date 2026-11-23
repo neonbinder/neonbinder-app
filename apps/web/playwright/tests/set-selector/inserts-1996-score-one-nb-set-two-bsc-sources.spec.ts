@@ -4,15 +4,15 @@
 // NEO-535 / NEO-645: the "Listing title" tile of the Tidy Up walk is proved in the SportLots-PAUSED
 // branch, which has no marketplace pairing and no 220-card merge. There ONE BSC insert (Series 1,
 // 110 cards, a captured publisher's checklist uploaded first) is renamed to a name long enough that
-// every title has to leave something out (NEO-609: a whole team, the number or a first name), so
-// Match Cards' Confirm saves 110 cards that are each worth a check, and the walk opens on them.
-// Card by card the tile shows what went ("Left out to fit"), takes titles typed by hand (one typed
-// past 80 is refused in place), and "Shorten the set name for every card" saves a "Set name in
-// titles" that retitles every card by the NEO-637 rules (server-side since NEO-645): a generated
-// title is rebuilt with it, a typed title that still leaves something out gets the new set name in
-// place of the old, and a typed title that leaves something out with no set name in it is
-// rebuilt. The stored titles are read back; #3's swap into a typed title and #12 losing its "cut
-// short" flag (both red on an earlier NEO-645 build, fixed since) are asserted LAST, in P9.
+// every title has to leave something out (NEO-609: a whole team, the number or a first name). The
+// file pairs every card at 100%, so Match Cards sits out (NEO-640): the 110 cards save first, each
+// worth a check, and the walk opens on them. Card by card the tile shows what went ("Left out
+// to fit"), takes titles typed by hand (one typed past 80 is refused in place), and "Shorten the
+// set name for every card" saves a "Set name in titles" that retitles every card. From the walk
+// that is a regeneration (NEO-645 C7): every title is rebuilt with the set name, the ones typed by
+// hand included. The stored titles are read back; #3's typed title rebuilt and #12 keeping its
+// "cut short" mark (main's cut flag: a title built on the set name is flagged) are asserted LAST,
+// in P9.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectAfterMarketplace } from "../../support/marketplace-wait";
 import {
@@ -27,7 +27,7 @@ import {
   syncChecklistButton,
 } from "../../support/set-builder";
 import { cardAttentionMark, editCardButton } from "../../support/cards";
-import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist } from "../../support/published-checklist";
+import { CHECKLISTS, savedLine, settleChecklistFetch, usePublishersChecklist } from "../../support/published-checklist";
 import {
   expectCardSettled,
   expectCardsLeft,
@@ -64,14 +64,13 @@ const FETCH = 120_000;
 //   #12 Darren Daulton   loses the team and "Darren"; the set name brings the name back and
 //                        the team fits as its nickname (NEO-606), the sport kept
 // and #76 Todd Hollandsworth runs over 80 after every cut (81) until the set name makes it fit.
-// NEO-637, the titles the operator writes (computed the same way), each typed BEFORE the set
-// name is saved:
+// The titles the operator writes, each typed BEFORE the set name is saved. The set name saved
+// from the walk regenerates every title (NEO-645 C7), so neither survives it:
 //   #3  Ryan Klesko      holding the description: "Klesko #3" after it, 77, so it still leaves
-//                        out "Ryan" and the team; the set name is swapped in for the
-//                        description and "Klesko #3" kept
-//   #8  Don Mattingly    OWN_TITLE (after one typed past 80): the team is left out and neither
-//                        the description nor the box text is in it, so the set name drops the
-//                        edit and the title is the generated one
+//                        out "Ryan" and the team; the set name rebuilds it whole (KLESKO_BOXED),
+//                        where a set name saved outside the walk would have swapped it in
+//                        (NEO-637)
+//   #8  Don Mattingly    OWN_TITLE (after one typed past 80): rebuilt as the generated one
 const SERIES_1_CARDS = 110;
 const LONG_INSERT = "Dugout Collection Artists Proofs Hologram Foil Series II";
 const LONG_DESCRIPTION = `1996 Score ${LONG_INSERT}`;
@@ -96,6 +95,8 @@ const OWN_TITLE = "1996 Score Artists Proofs Don Mattingly #8 My Own Title";
 const MATTINGLY_BOXED = `${SHORT_BOX} Don Mattingly #8 New York Yankees`;
 /** NEO-637 — #3 as the operator types it: the set name kept, "Ryan" and the team out. */
 const KLESKO_OWN = (setName: string) => `${setName} Klesko #3`;
+/** #3 under the set name, rebuilt from the walk: the name and the team back; the sport does not fit (82). */
+const KLESKO_BOXED = `${SHORT_BOX} Ryan Klesko #3 Atlanta Braves`;
 
 async function openScoreInserts(page: Page, env: Parameters<typeof drillToSet>[1]) {
   await drillToSet(page, env, { year: "1996", manufacturer: "Score", set: "Score", createManufacturer: true });
@@ -130,20 +131,23 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   expect(SHORT_BOX, "the box text is 43 characters").toHaveLength(43);
   expect([BECKER_BUILT.length, THOME_BUILT.length, BECKER_BOXED.length, THOME_BOXED.length]).toEqual([79, 80, 74, 74]);
   // NEO-637: every title the operator writes fits, and so does #8's under the set name.
-  expect([KLESKO_OWN(LONG_DESCRIPTION).length, MATTINGLY_BOXED.length]).toEqual([77, 77]);
+  expect([KLESKO_OWN(LONG_DESCRIPTION).length, KLESKO_BOXED.length, MATTINGLY_BOXED.length]).toEqual([77, 73, 77]);
 
   // ── P2. Fetch with the publisher's checklist uploaded first, BSC alone ──
   const facts = await usePublishersChecklist(page, CHECKLISTS.dugoutArtistsProofs1996Series1);
   expect(facts.rows, "the captured file holds every one of Series 1's cards").toBe(SERIES_1_CARDS);
   await syncChecklistButton(page).click();
-  // NEO-496 (D10): a publisher's checklist is a source, so even one marketplace opens Match Cards.
-  // The helper waits for it (one live BSC round trip: our 7 s plus the time BSC is measured to take),
-  // asserts "Teams from your checklist" while it is open, keeps every BSC card and confirms.
-  // NEO-645: Confirm IS the commit, of all 110 cards (our own write, 7 s), and the Tidy Up walk
-  // opens on them by itself: every title had to leave something out, so every card is worth a check.
-  await confirmChecklistMatchCards(page, { facts, what: "the solo fetch of Series 1" });
-  const saved = page.getByText(new RegExp(`^Saved ${SERIES_1_CARDS} cards\\.`)).first();
-  expect(await settleWalkAfterCommit(page, saved), "every title left something out, so the walk opened").toBe(true);
+  // NEO-496 (D10): a publisher's checklist is a source, so one marketplace and the file are two.
+  // NEO-640 / NEO-645 C5: the file is BSC's own 110 cards, each paired by its number at 100%, so
+  // Match Cards sits out: the helper asserts the progress line, then (one live BSC round trip: our
+  // 7 s plus BSC's) the saved line of all 110 cards with why the dialog sat out and "Teams from your
+  // checklist". The cards save FIRST; the walk opens after, on its own: every title had to leave
+  // something out, so every card is worth a check.
+  await settleChecklistFetch(page, env, { facts, what: "the solo fetch of Series 1" });
+  expect(
+    await settleWalkAfterCommit(page, savedLine(page, SERIES_1_CARDS)),
+    "every title left something out, so the walk opened",
+  ).toBe(true);
   await expect(tidyWalk(page)).toHaveAccessibleName(tidyUpName({ year: "1996", set: "Score", variant: LONG_INSERT }));
   await expectCardsLeft(page, SERIES_1_CARDS);
   await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk, every title left something out (SportLots paused)" });
@@ -254,7 +258,7 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await expect(titleTile.getByText("Set name saved. The other cards' titles are updating.", { exact: true })).toBeVisible();
   await expect(box).toBeHidden();
   // #12's STORED title is the set name's now, and nothing is left out of it (STEP P9 reads, last,
-  // that it is no longer flagged as cut).
+  // that it is still flagged as cut: main's flag counts the set name itself as a cut).
   await expect(shownTitle(DAULTON_BOXED)).toBeVisible();
   await expect(leftOut).toHaveCount(0);
   await saveForLater(page);
@@ -294,8 +298,8 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await openCard(76);
   await expect(cardTitle).toHaveValue(HOLLANDSWORTH_BOXED);
   await closeCard();
-  // A typed title that left something out with neither the description nor the set name in it
-  // has nothing to swap: the edit is dropped and the title is the generated one (#8).
+  // A title typed by hand is rebuilt too: the set name from the walk regenerates (C7), so #8's own
+  // words are gone and the title is the generated one.
   await openCard(8);
   await expect(cardTitle).toHaveValue(MATTINGLY_BOXED);
   await closeCard();
@@ -316,24 +320,26 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await expect(columnOption(page, "Inserts", LONG_INSERT)).toBeVisible();
   await expect(page.getByRole("heading", { name: `Attributes for ${LONG_INSERT}` })).toBeHidden();
 
-  // ── P9 (LAST: two findings of an earlier NEO-645 run, fixed since and kept as regressions) ──
-  // NEO-637: a typed title that still leaves something out (#3 left out "Ryan" and the team) takes
-  // the set name in place of the description it holds, its own words kept (the pre-walk version of
-  // this spec proved it). The row opens with the checklist at its end, so the card is brought up
-  // by its player's name.
+  // ── P9 (LAST: #3's typed title rebuilt, #12's "cut short" mark kept) ──
+  // NEO-645 C7: the set name saved from the walk regenerates every title, a typed one included, so
+  // #3's "Klesko #3" (which still left out "Ryan" and the team) is the generated title under the set
+  // name, nothing of the hand edit kept. The row opens with the checklist at its end, so the card is
+  // brought up by its player's name.
   await columnOption(page, "Inserts", LONG_INSERT).click();
   const search = page.getByRole("searchbox", { name: "Search cards" });
   await search.fill("Klesko");
   await page.getByRole("button", { name: /^Edit card 3, / }).click();
   await expect(cardTitle).toBeVisible();
-  await expect(cardTitle).toHaveValue(KLESKO_OWN(SHORT_BOX));
+  await expect(cardTitle).toHaveValue(KLESKO_BOXED);
   await closeCard();
   // #12 under the set name leaves nothing out (its team fits as the nickname, NEO-606, and the tile
-  // lists nothing under "Left out to fit"), so it is not "worth a check: listing title was cut
-  // short" any more. Its row's Edit button is the positive the missing mark is read against.
+  // lists nothing under "Left out to fit"), yet it is still "worth a check: listing title was cut
+  // short": production's flag (`generatedTitleTruncatedFlag`, `coreFits`) counts a title built on
+  // the set name as cut, whatever it left out, and the walk's rebuild stores it as every
+  // generated title is stored. Main's rule, kept by this flow ticket (NEO-645 C7).
   await search.fill("Daulton");
   await expect(editCardButton(page, "12")).toBeVisible();
-  await expect(cardAttentionMark(page, "12", "listing title was cut short")).toHaveCount(0);
+  await expect(cardAttentionMark(page, "12", "listing title was cut short")).toBeVisible();
 }
 
 test(
