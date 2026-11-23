@@ -38,7 +38,7 @@ function row(over: Partial<NewCardRow> = {}): NewCardRow {
   return {
     selectorOptionId: SELECTOR_ID,
     cardNumber: "9",
-    cardName: "x",
+    cardName: "Card #1",
     platformData: {},
     pendingPlayerNames: [],
     pendingTeamNames: [],

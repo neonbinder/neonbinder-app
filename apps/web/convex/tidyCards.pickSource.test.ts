@@ -730,6 +730,6 @@ describe("pickSourceValue — the card's own name follows the pick (decision 23)
     const teamCard = await named(t, w, "40", "Padres", teamsEntry(["Padres"], ["San Diego Padres"]));
     await pick(t, teamCard, ["San Diego Padres"], { field: "teams" });
     expect((await card(t, teamCard))!.cardName).toBe("Padres");
-    expect((await card(t, open))!.cardName).toBe("Card 1");
+    expect((await card(t, open))!.cardName).toBe("Card #1");
   });
 });

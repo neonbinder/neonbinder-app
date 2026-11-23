@@ -156,7 +156,7 @@ async function seedCard(
     insertTestCard(ctx, {
       selectorOptionId,
       cardNumber,
-      cardName: `Card ${cardNumber}`,
+      cardName: `Card #${cardNumber}`,
       platformData: {},
       sortOrder: Number(cardNumber),
       lastUpdated: 1_700_000_000_000,
@@ -470,7 +470,7 @@ describe("NEO-556 addCustomCard", () => {
     const id = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
       selectorOptionId: tree.variantTypeId,
       cardNumber: "1",
-      cardName: "Card 1",
+      cardName: "Card #1",
     });
     const card = await getCard(t, id);
     expect(card!.teamNoneConfirmedAt).toEqual(expect.any(Number));
@@ -488,13 +488,13 @@ describe("NEO-556 addCustomCard", () => {
     const picked = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
       selectorOptionId: tree.variantTypeId,
       cardNumber: "1",
-      cardName: "Card 1",
+      cardName: "Card #1",
       teamOnCardIds: [bulls],
     });
     const typed = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
       selectorOptionId: tree.variantTypeId,
       cardNumber: "2",
-      cardName: "Card 2",
+      cardName: "Card #2",
       teams: ["Somewhere Else"],
     });
     expect((await getCard(t, picked))!.teamNoneConfirmedAt).toBeUndefined();
@@ -512,7 +512,7 @@ describe("NEO-556 addCustomCard", () => {
     const id = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
       selectorOptionId: tree.variantTypeId,
       cardNumber: "1",
-      cardName: "Card 1",
+      cardName: "Card #1",
       teamNone: false,
     });
     const card = await getCard(t, id);
@@ -532,7 +532,7 @@ describe("NEO-556 addCustomCard", () => {
     const id = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
       selectorOptionId: tree.variantTypeId,
       cardNumber: "1",
-      cardName: "Card 1",
+      cardName: "Card #1",
       teamNone: false,
     });
     const card = await getCard(t, id);
@@ -550,7 +550,7 @@ describe("NEO-556 addCustomCard", () => {
     const id = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
       selectorOptionId: tree.variantTypeId,
       cardNumber: "1",
-      cardName: "Card 1",
+      cardName: "Card #1",
       teamNone: true,
     });
     const card = await getCard(t, id);
@@ -571,7 +571,7 @@ describe("NEO-556 addCustomCard", () => {
       asAdmin.mutation(api.selectorOptions.addCustomCard, {
         selectorOptionId: tree.variantTypeId,
         cardNumber: "1",
-        cardName: "Card 1",
+        cardName: "Card #1",
         teamOnCardIds: [bulls],
         teamNone: true,
       }),
@@ -580,7 +580,7 @@ describe("NEO-556 addCustomCard", () => {
       asAdmin.mutation(api.selectorOptions.addCustomCard, {
         selectorOptionId: tree.variantTypeId,
         cardNumber: "2",
-        cardName: "Card 2",
+        cardName: "Card #2",
         teams: ["Bulls"],
         teamNone: true,
       }),
@@ -602,7 +602,7 @@ describe("NEO-556 addCustomCard", () => {
     const id = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
       selectorOptionId: tree.variantTypeId,
       cardNumber: "1",
-      cardName: "Card 1",
+      cardName: "Card #1",
     });
     expect((await getCard(t, id))!.teamNoneConfirmedAt).toBeUndefined();
   });
@@ -618,7 +618,7 @@ describe("NEO-556 updateCard teamNone", () => {
     return t.withIdentity(ADMIN_IDENTITY).mutation(api.selectorOptions.addCustomCard, {
       selectorOptionId: leaf,
       cardNumber: "7",
-      cardName: "Card 7",
+      cardName: "Card #7",
       teamOnCardIds: [bulls],
     });
   }
@@ -955,7 +955,7 @@ function wireCard(opts: {
 }) {
   return {
     cardNumber: opts.cardNumber,
-    cardName: `Card ${opts.cardNumber}`,
+    cardName: `Card #${opts.cardNumber}`,
     teams: opts.teams ?? [],
     players: [],
     platformData: opts.bscRef !== undefined ? { bsc: { ref: opts.bscRef } } : {},

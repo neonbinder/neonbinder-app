@@ -1,10 +1,17 @@
 /**
- * NEO-645 — a card named for something that is not a player, with a cameo.
+ * NEO-645 — a card's own name is in its title.
  *
  * Jason, 2026-11-22: "the title generation should use the name and then the
  * cameo if it fits". 2026 Topps Base #118 is named "Hopping to It CPC" (not a
  * player) and pictures Ronald Acuña Jr.; its title says the name where a
  * player's would go, the cameo after it, and never "Base" in the name's place.
+ *
+ * Jason, 2026-11-23: "Whatever name we put on a card should always show up,
+ * whether that is checklist, Team Card, Boston Red Sox or just cool card. If
+ * there is a name we include it in title." So no cameo is needed, a player card
+ * with a name of its own shows it, and only a placeholder or a name that merely
+ * repeats the players adds nothing. Never said twice: a team the name already
+ * says is not added.
  */
 import { describe, expect, test } from "vitest";
 import {
@@ -79,14 +86,16 @@ describe("a non-player card with a cameo", () => {
 });
 
 describe("every other card is as it was", () => {
-  test("a non-player name with no cameo says Base and no name", () => {
-    const a = assessListingTitle({ ...hopping, cameoNames: [] });
-    expect(a.title).toBe("2026 Topps Base #118 Atlanta Braves Baseball");
-  });
-
-  test("a card with a player ignores the name", () => {
-    const a = assessListingTitle({ ...hopping, playerNames: [CAMEO], cameoNames: ["Mike Trout"], subjectName: NAME });
-    expect(a.title).toBe("2026 Topps Base Ronald Acuña Jr. & Mike Trout #118 Atlanta Braves Baseball");
+  test("a placeholder name says Base and no name", () => {
+    expect(assessListingTitle({ ...hopping, cameoNames: [], subjectName: "Card #118" }).title).toBe(
+      "2026 Topps Base #118 Atlanta Braves Baseball",
+    );
+    expect(assessListingTitle({ ...hopping, cameoNames: [], subjectName: "Card #NNO" }).title).toBe(
+      "2026 Topps Base #118 Atlanta Braves Baseball",
+    );
+    expect(assessListingTitle({ ...hopping, cameoNames: [], subjectName: "  " }).title).toBe(
+      "2026 Topps Base #118 Atlanta Braves Baseball",
+    );
   });
 
   test("no subject name: the same as before", () => {
@@ -121,5 +130,122 @@ describe("every other card is as it was", () => {
     expect(a.title).toBe(
       "2026 Topps Boston Red Sox Ceddanne Rafaela #198 Atlanta Braves Baseball",
     );
+  });
+});
+
+describe("a name is in the title whether or not the card has a cameo (Jason, 2026-11-23)", () => {
+  const card: ListingCardInputs = {
+    year: "2026",
+    manufacturer: "Topps",
+    setName: "Topps",
+    titleLevels: [{ name: "Base", base: true }],
+    cardNumber: "1",
+    playerNames: [],
+    teamNames: [],
+    sport: "Baseball",
+  };
+
+  test("Checklist, with no team", () => {
+    expect(assessListingTitle({ ...card, subjectName: "Checklist" }).title).toBe(
+      "2026 Topps Checklist #1 Baseball",
+    );
+  });
+
+  test("Team Card, with a team", () => {
+    expect(
+      assessListingTitle({
+        ...card,
+        subjectName: "Team Card",
+        teamNames: ["Kansas City Royals"],
+      }).title,
+    ).toBe("2026 Topps Team Card #1 Kansas City Royals Baseball");
+  });
+
+  test("'Kansas City Royals' with the Royals team says the team once", () => {
+    expect(
+      assessListingTitle({
+        ...card,
+        subjectName: "Kansas City Royals",
+        teamNames: ["Kansas City Royals"],
+      }).title,
+    ).toBe("2026 Topps Kansas City Royals #1 Baseball");
+  });
+
+  test("'Royals Team Card' with the Royals team: the name already says the team, so it is not added", () => {
+    const a = assessListingTitle({
+      ...card,
+      subjectName: "Royals Team Card",
+      teamNames: ["Kansas City Royals"],
+    });
+    expect(a.title).toBe("2026 Topps Royals Team Card #1 Baseball");
+    expect(a.dropped).toEqual([]);
+  });
+
+  test("the nickname of a split team counts the same way", () => {
+    expect(
+      assessListingTitle({
+        ...card,
+        subjectName: "Red Sox Team Card",
+        teamNames: ["Boston Red Sox"],
+        teamSplits: [{ location: "Boston", name: "Red Sox" }],
+      }).title,
+    ).toBe("2026 Topps Red Sox Team Card #1 Baseball");
+  });
+
+  test("a place that is not the team's nickname does not hide the team", () => {
+    expect(
+      assessListingTitle({
+        ...card,
+        subjectName: "Kansas City Team Card",
+        teamNames: ["Kansas City Royals"],
+      }).title,
+    ).toBe("2026 Topps Kansas City Team Card #1 Kansas City Royals Baseball");
+  });
+
+  test("a player card named for its player is as it always was", () => {
+    const withPlayer = { ...card, playerNames: ["Mike Trout"], teamNames: ["Los Angeles Angels"] };
+    const plain = assessListingTitle(withPlayer).title;
+    expect(plain).toBe("2026 Topps Base Mike Trout #1 Los Angeles Angels Baseball");
+    expect(assessListingTitle({ ...withPlayer, subjectName: "Mike Trout" }).title).toBe(plain);
+    // The last name alone, or the name beside other words of the player's own.
+    expect(assessListingTitle({ ...withPlayer, subjectName: "Trout" }).title).toBe(plain);
+  });
+
+  test("a player card with a name of its own shows it ahead of the player", () => {
+    expect(
+      assessListingTitle({
+        ...card,
+        playerNames: ["Mike Trout"],
+        subjectName: "It Takes Two CPC",
+      }).title,
+    ).toBe("2026 Topps It Takes Two CPC Mike Trout #1 Baseball");
+  });
+
+  test("a name that already contains the player adds nothing", () => {
+    const withPlayer = { ...card, playerNames: ["Kyle Schwarber", "Pete Alonso"] };
+    const plain = assessListingTitle(withPlayer).title;
+    expect(
+      assessListingTitle({
+        ...withPlayer,
+        subjectName: "National League Leaders RBI (Kyle Schwarber / Pete Alonso)",
+      }).title,
+    ).toBe(plain);
+  });
+
+  test("a placeholder says no name, with or without a team", () => {
+    expect(
+      assessListingTitle({ ...card, subjectName: "Card #1", teamNames: ["Kansas City Royals"] }).title,
+    ).toBe("2026 Topps Base #1 Kansas City Royals Baseball");
+  });
+
+  test("the name is never cut: over the cap the team goes before it", () => {
+    const a = assessListingTitle({
+      ...card,
+      setName: "Topps Chrome Update Series Sapphire Edition",
+      subjectName: "Checklist",
+      teamNames: ["Kansas City Royals"],
+    });
+    expect(a.title).toContain("Checklist");
+    expect(a.title.length).toBeLessThanOrEqual(80);
   });
 });

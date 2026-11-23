@@ -126,7 +126,7 @@ export async function printCard(
   const id = await insertTestCard(ctx, {
     selectorOptionId: leaf,
     cardNumber: args.number,
-    cardName: `Card ${args.number}`,
+    cardName: `Card #${args.number}`,
     platformData: {},
     sortOrder: Number(args.number) || 0,
     lastUpdated: WORLD_NOW,

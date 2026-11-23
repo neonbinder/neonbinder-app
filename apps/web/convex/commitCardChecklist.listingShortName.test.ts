@@ -120,7 +120,7 @@ async function seedTree(
 function card(opts: { cardNumber: string; listingTitleKept?: string }) {
   return {
     cardNumber: opts.cardNumber,
-    cardName: `Card ${opts.cardNumber}`,
+    cardName: `Card #${opts.cardNumber}`,
     teams: [],
     players: [],
     platformData: { sportlots: { ref: `SL-${opts.cardNumber}` } },
@@ -367,7 +367,7 @@ describe("every title walk reports the insert's name only on the insert ROLE (NE
     const cardId = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
       selectorOptionId: ids.leafId,
       cardNumber: "9",
-      cardName: "Card 9",
+      cardName: "Card #9",
     });
     const row = await t.run(async (ctx) => ctx.db.get(cardId));
     expect(row!.listingTitle).toContain(fragment);
@@ -386,7 +386,7 @@ describe("every title walk reports the insert's name only on the insert ROLE (NE
     const cardId = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
       selectorOptionId: ids.leafId,
       cardNumber: "9",
-      cardName: "Card 9",
+      cardName: "Card #9",
     });
     const before = await t.run(async (ctx) => ctx.db.get(cardId));
     // NEO-535: born over the cap (no box yet), flagged by its length.

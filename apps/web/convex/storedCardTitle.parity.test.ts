@@ -98,7 +98,7 @@ async function seed(t: T) {
       insertTestCard(ctx, {
         selectorOptionId,
         cardNumber,
-        cardName: `Card ${cardNumber}`,
+        cardName: `Card #${cardNumber}`,
         platformData: {},
         sortOrder: 0,
         lastUpdated: NOW,
@@ -206,7 +206,7 @@ describe("previewListingTitle and titleForStoredCard", () => {
       return insertTestCard(ctx, {
         selectorOptionId: s.base,
         cardNumber: "BOX-1xxxxxxxxxxxxxxxxxxxxxxxx",
-        cardName: "Card BOX-1",
+        cardName: "Card #BOX-1",
         platformData: {},
         sortOrder: 0,
         lastUpdated: NOW,
@@ -243,7 +243,7 @@ describe("previewListingTitle and titleForStoredCard", () => {
       cards: [
         {
           cardNumber: "20",
-          cardName: "Card 20",
+          cardName: "Card #20",
           playerIds: [s.gooden],
           teamOnCardIds: [s.mets],
           platformData: {},
@@ -375,7 +375,7 @@ describe("a stored title survives the set's move out of Unknown (NEO-527)", () =
       cards: [
         {
           cardNumber: "1",
-          cardName: "Card 1",
+          cardName: "Card #1",
           teams: [],
           players: [],
           platformData: { sportlots: { ref: "SL-1" } },
@@ -445,7 +445,7 @@ describe("cameos in titleForStoredCard and previewListingTitle", () => {
       .mutation(api.selectorOptions.addCustomCard, {
         selectorOptionId: s.base,
         cardNumber: "40",
-        cardName: "Card 40",
+        cardName: "Card #40",
         playerIds: [s.gooden],
       });
     await cancelScheduled(t);
@@ -478,7 +478,7 @@ describe("cameos in titleForStoredCard and previewListingTitle", () => {
       const withGoner = await insertTestCard(ctx, {
         selectorOptionId: s.base,
         cardNumber: "41",
-        cardName: "Card 41",
+        cardName: "Card #41",
         platformData: {},
         sortOrder: 0,
         lastUpdated: NOW,
@@ -505,7 +505,7 @@ describe("cameos in titleForStoredCard and previewListingTitle", () => {
       insertTestCard(ctx, {
         selectorOptionId: s.base,
         cardNumber: "42",
-        cardName: "Card 42",
+        cardName: "Card #42",
         platformData: {},
         sortOrder: 0,
         lastUpdated: NOW,
@@ -560,7 +560,7 @@ describe("a split team gives up its location before it goes (NEO-606)", () => {
       insertTestCard(ctx, {
         selectorOptionId: s.base,
         cardNumber: "21",
-        cardName: "Card 21",
+        cardName: "Card #21",
         platformData: {},
         sortOrder: 0,
         lastUpdated: NOW,
@@ -588,7 +588,7 @@ describe("a split team gives up its location before it goes (NEO-606)", () => {
       insertTestCard(ctx, {
         selectorOptionId: s.base,
         cardNumber: "21",
-        cardName: "Card 21",
+        cardName: "Card #21",
         platformData: {},
         sortOrder: 0,
         lastUpdated: NOW,
@@ -611,7 +611,7 @@ describe("a split team gives up its location before it goes (NEO-606)", () => {
       return insertTestCard(ctx, {
         selectorOptionId: s.base,
         cardNumber: "21",
-        cardName: "Card 21",
+        cardName: "Card #21",
         platformData: {},
         sortOrder: 0,
         lastUpdated: NOW,
@@ -636,7 +636,7 @@ describe("a split team gives up its location before it goes (NEO-606)", () => {
       cards: [
         {
           cardNumber: "21",
-          cardName: "Card 21",
+          cardName: "Card #21",
           playerIds: [s.long],
           teamOnCardIds: [s.mets],
           platformData: {},
@@ -667,7 +667,7 @@ describe("a split team gives up its location before it goes (NEO-606)", () => {
       cards: [
         {
           cardNumber: "21",
-          cardName: "Card 21",
+          cardName: "Card #21",
           playerIds: [s.long],
           platformData: {},
           sortOrder: 21,
@@ -692,7 +692,7 @@ describe("a split team gives up its location before it goes (NEO-606)", () => {
     const cardId = await t.withIdentity(ADMIN).mutation(api.selectorOptions.addCustomCard, {
       selectorOptionId: s.base,
       cardNumber: "21",
-      cardName: "Card 21",
+      cardName: "Card #21",
       playerIds: [s.long],
       teamOnCardIds: [s.mets],
     });

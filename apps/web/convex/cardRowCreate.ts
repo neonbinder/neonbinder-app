@@ -43,6 +43,7 @@ import {
   storedCardVariation,
   type ListingSetContext,
 } from "./features/listingInputs";
+import { cardSubjectName } from "../lib/cards/unnamed-card";
 import { generateSku } from "./sku";
 import { syncCardPlayerLinks } from "./cardPlayerLinks";
 import { syncCardTeamLinks } from "./cardTeamLinks";
@@ -385,6 +386,16 @@ export function buildCardRowForInsert(
     },
     mergedFeatures,
   );
+  // NEO-645 — the card's own name is in its title whenever it has one, as
+  // `listingInputsForStoredCard` hands it over for Regenerate (one rule, so a
+  // born title and a regenerated one agree).
+  const subjectName = cardSubjectName({
+    cardName: card.cardName,
+    playerNames,
+    printedPlayerNames: (card.playerLinks ?? []).map((l) => l.nameOnCard),
+    cameoNames: cameos.map((c) => c.name),
+  });
+  if (subjectName) listingInputs.subjectName = subjectName;
   const listingTitle = assessListingTitle(listingInputs);
   // NEO-335 — the operator's answer from the "Card titles" step, when one
   // rode on the card: their own words, or the trimmed title kept. Either way

@@ -86,7 +86,7 @@ async function insertCard(
     insertTestCard(ctx, {
       selectorOptionId: variantTypeId,
       cardNumber: "50",
-      cardName: "A Card",
+      cardName: "Card #1",
       platformData: {},
       sortOrder: 0,
       lastUpdated: Date.now(),
@@ -168,7 +168,7 @@ describe("previewListingTitle (NEO-101)", () => {
 
   // NEO-645 — `inputs.subjectName` rides the returns validator; a validator
   // that lacks it throws ReturnsValidationError (convex-test enforces returns).
-  test("NEO-645: a non-player card with a cameo returns subjectName; a card with no player and no cameo, or a player card, omits it", async () => {
+  test("NEO-645: a card's own name rides along as subjectName (cameo or not); a placeholder name, or a player card named for its player, omits it", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { sportId, variantTypeId } = await seedSubtree(t);
@@ -207,7 +207,37 @@ describe("previewListingTitle (NEO-101)", () => {
     const none = await asAdmin.query(api.selectorOptions.previewListingTitle, {
       cardId: noPlayer,
     });
-    expect(none.inputs.subjectName).toBeUndefined();
+    // No cameo needed any more (Jason, 2026-11-23): a name is in the title.
+    expect(none.inputs.subjectName).toBe("Checklist");
+    const placeholder = await insertCard(t, variantTypeId, {
+      cardNumber: "4",
+      cardName: "Card #4",
+    });
+    const unnamed = await asAdmin.query(api.selectorOptions.previewListingTitle, {
+      cardId: placeholder,
+    });
+    expect(unnamed.inputs.subjectName).toBeUndefined();
+
+    // A name the card printed for its player ("Doc Gooden" for Dwight Gooden)
+    // is the player said again, so the title does not move.
+    const printed = await insertCard(t, variantTypeId, {
+      cardNumber: "5",
+      cardName: "Elly",
+      playerIds: [playerId],
+      playerLinks: [{ playerId, nameOnCard: "Elly" }],
+    });
+    const printedOut = await asAdmin.query(api.selectorOptions.previewListingTitle, {
+      cardId: printed,
+    });
+    expect(printedOut.inputs.subjectName).toBeUndefined();
+    // A card with a name of its own beside its player carries it.
+    const own = await insertCard(t, variantTypeId, {
+      cardNumber: "6",
+      cardName: "It Takes Two CPC",
+      playerIds: [playerId],
+    });
+    const ownOut = await asAdmin.query(api.selectorOptions.previewListingTitle, { cardId: own });
+    expect(ownOut.inputs.subjectName).toBe("It Takes Two CPC");
 
     const cameo = await asAdmin.query(api.selectorOptions.previewListingTitle, {
       cardId: cameoOnly,

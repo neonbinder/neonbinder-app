@@ -100,7 +100,7 @@ function card(opts: {
 }) {
   return {
     cardNumber: opts.cardNumber,
-    cardName: `Card ${opts.cardNumber}`,
+    cardName: `Card #${opts.cardNumber}`,
     teams: [],
     players: [],
     platformData: { sportlots: { ref: opts.slRef ?? `SL-${opts.cardNumber}` } },
