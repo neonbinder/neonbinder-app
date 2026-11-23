@@ -33,10 +33,12 @@
 //   back as they are. Both branches end on the same asserts.
 // - #10's and #18's drawers: no player, Johnny Bench under "Also on this
 //   card", the description's "Cameo: Johnny Bench" line, and the exact card
-//   title the walk's write regenerated (NEO-645 C7): the card's name, then the
-//   cameo, with "Base" dropped. #10's runs over 80, so its cameo is cut first
-//   and the drawer says "Left out to fit: Johnny Bench". #4's drawer: Pete Rose as its player (its title names him, then
-//   "& Johnny Bench"), and the cameo.
+//   title the walk's write regenerated (NEO-645 C7): the levels ("Base" while it
+//   fits), the card's name, then the cameo. #10's runs over 80, so "Base" is
+//   the first word cut and the cameo next, and the drawer says "Left out to
+//   fit: Johnny Bench". #4's drawer: Pete Rose as its player (its title names
+//   him, then "& Johnny Bench"; its card name only repeats him, so it adds
+//   nothing), and the cameo.
 // - Printing Plates Black is built from Base (or adopted, built): its #10 has
 //   no player and its #4 keeps Pete Rose.
 // - Back steps the drill out of the parallel.
@@ -119,17 +121,19 @@ const PLAYER = "Pete Rose";
 const CAMEO = "Johnny Bench";
 /** Cards whose listing names somebody entity review rules out (not a person). */
 const RULED_OUT = [
-  // NEO-645 C7: every walk write regenerates the title. A card with no player and a cameo reads
-  // "<year> <set> <card name> <cameo> #N <team> <sport>", "Base" dropped; #18's team is "No Team",
-  // which a title omits. #10's runs to 89 characters, so the cameo is cut first (76), and the
-  // drawer names it under "Left out to fit".
+  // NEO-645 C7: every walk write regenerates the title. A card's own name is in it whenever it has
+  // one (Jason, 2026-11-23): "<year> <set> Base <card name> <cameo> #N <team> <sport>", the variant
+  // word "Base" kept while it fits and the first word cut; #18's team is "No Team", which a title
+  // omits, so #18 keeps "Base" (74). #10's would run to 94: "Base" goes first (89), then the cameo
+  // (76), and the drawer names only the cameo under "Left out to fit" (a label is never listed).
+  // Computed offline with `assessListingTitle` (agent memory: compute titles with tsx first).
   {
     number: "10",
     printed: "1975 World Champions",
     title: `${SET_TITLE} 1975 World Champions #10 Cincinnati Reds Baseball`,
     leftOut: CAMEO,
   },
-  { number: "18", printed: "Former Teammates", title: `${SET_TITLE} Former Teammates ${CAMEO} #18 Baseball`, leftOut: undefined },
+  { number: "18", printed: "Former Teammates", title: `${SET_TITLE} Base Former Teammates ${CAMEO} #18 Baseball`, leftOut: undefined },
 ] as const;
 /** The card whose listing names Pete Rose (and his father): it keeps its own Pete Rose. */
 const OWN = "4";
@@ -324,7 +328,7 @@ test(
     await expect(playerChip(own, PLAYER)).toBeVisible();
     await expect(anyPlayerChip(own)).toHaveCount(1);
     await expect(cameoChip(own, CAMEO)).toBeVisible();
-    // NEO-645 C7: "Base" is dropped from every title; 79 characters, nothing cut.
+    // NEO-645 C7: 79 characters once "Base" (84 with it, the first word cut) is out; nothing else cut.
     await expect(cardTitle(own)).toHaveValue(
       `${SET_TITLE} ${PLAYER} & ${CAMEO} #${OWN} Cincinnati Reds Baseball`,
     );

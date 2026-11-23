@@ -77,7 +77,12 @@ const CARD_LABEL = `${BUILD.year} ${BUILD.set} ${INSERT}`;
 /** A set's name in a smart rule and its picker ("<season> <set>"). */
 const SET_LABEL = `${BUILD.year} ${BUILD.set}`;
 const CAMEO = "Ken Griffey Jr.";
-/** Two cards and their own players, checked in the set builder. */
+/**
+ * Two cards and their own players, checked in the set builder. NEO-645 (Jason, 2026-11-23): a
+ * card's own name is in its title whenever it adds something, but each Profiles card is named for
+ * its player, so its name says nothing the title does not and these titles stand as they were
+ * (computed offline with `assessListingTitle`; a card named for its player keeps its title).
+ */
 const OWN_CARDS = [
   // Over 80 with the cameo (93): he is cut first, the rest of the title stays.
   { number: "TP-1", player: "Shohei Ohtani", title: "2026 Topps Profiles Insert Shohei Ohtani #TP-1 Los Angeles Dodgers Baseball" },
