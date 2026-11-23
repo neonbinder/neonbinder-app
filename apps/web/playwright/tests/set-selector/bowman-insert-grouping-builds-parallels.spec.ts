@@ -36,6 +36,12 @@
 //   Both are renamed back at the end. The arithmetic (`calc` of the builder over
 //   the 29 BA- cards of fixtures/checklists/2026-bowman-insert-anime.csv) is
 //   in the comment at LONG_PARALLEL and CARRY_PARALLEL.
+//   NEO-645 (a card's own name is always in its title) leaves it unchanged:
+//   every Anime card is named for its player, and a name that only says the
+//   players again adds nothing (`cardSubjectName`), so each copy's title is the
+//   player card's as before (re-checked offline with `assessListingTitle`, the
+//   player's name passed as the card name: same titles, 29 failing on
+//   CARRY_PARALLEL before BA-3's carry, none on BLACK).
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectAfterMarketplace } from "../../support/marketplace-wait";
 import {

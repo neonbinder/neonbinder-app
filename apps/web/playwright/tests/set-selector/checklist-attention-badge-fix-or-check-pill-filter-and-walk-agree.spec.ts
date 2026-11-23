@@ -12,14 +12,23 @@
 // The cards (a per-attempt hand-made set, so the counts are exact):
 //   701 no team                          -> pink: no team on this card yet
 //   702 no team, then a team in its drawer -> pink, then no mark
-//   703 born linked (quick-add player + team), bare number -> no mark. Its
-//       title "2024 Topps cna-<w>-<id> Base <player> #703 CNAB<token>" fits in
-//       80 for every worker (NEO-609: a whole-team cut would make it blue).
+//   703 born linked (quick-add player + team), bare number, and named for its
+//       player (the Card name is the player's own name) -> no mark. A card's
+//       own name is always in its title (NEO-645), unless it only says the
+//       players' names again: then the title is the player card's as before,
+//       "2024 Topps cna-<w>-<id> Base [Insert] <player> #703 CNAB<token>
+//       [Baseball]", which fits in 80 for every worker and token (computed
+//       offline with `assessListingTitle`, workers 0-11, 1-5 digit attempts:
+//       74 to 80 characters after the quiet cuts, nothing left out). A name of
+//       its own ("AttnCharlie<token>") would push the team out (NEO-609: a
+//       whole-team cut, blue) on every worker, so the name IS the fixture.
 //   704 a 70-character team (no Location) -> blue: listing title was cut short.
-//       It has no player, so its name stays out of the title: "2024 Topps
-//       cna-<w>-<id> Base #704 <team>". Everything but the team is at most
-//       11 + 30 + 5 + 5 = 51 characters, so the team never fits (>= 93 with
-//       it) and the title without it always does: the Tidy Up cut, every run.
+//       It has no player; its own name is in the title (NEO-645): "2024 Topps
+//       cna-<w>-<id> Base [Insert] AttnDelta<token> #704 <team> [Baseball]".
+//       Without the team it is 69 to 80 characters with nothing else left out
+//       (offline, as above), and the 70-character team never fits beside it:
+//       the Tidy Up cut, every run, never the purple set-name note (no set name
+//       was shortened).
 // The colour is the badge's look; its LEVEL is also in its accessible name
 // ("needs attention" / "is worth a check"), which is what this spec reads
 // (colour is never the only carrier, and the name is the perceivable handle).
@@ -97,9 +106,10 @@ test(
 
     await addCardViaForm(page, { cardNumber: n701, playerName: `AttnAlpha${token}` });
     await addCardViaForm(page, { cardNumber: n702, playerName: `AttnBravo${token}` });
+    // Named for its player: the name adds nothing to the title (NEO-645), see the header.
     await addCardViaForm(page, {
       cardNumber: n703,
-      playerName: `AttnCharlie${token}`,
+      playerName: player,
       beforeSubmit: async () => {
         await expectAccessible(page, { label: "Add card form" });
         // The quick-add player picker (NEO-220). Its results popover opens below the
