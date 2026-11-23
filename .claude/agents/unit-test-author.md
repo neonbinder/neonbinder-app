@@ -52,6 +52,9 @@ cementing it.
 
 ## Hard rules
 
+- Tests assert production behaviour (`origin/main`) unless the brief quotes
+  Jason changing a rule. Never rewrite an assertion to fit a builder's new
+  rule; report it under **Behaviour changes** instead (NEO-653).
 - The gate is `npm run test:unit`, which runs vitest and then the
   completeness verifier. Compare counts, not the word "passed".
 - Tests never reach a live server. The fetch guard turns any real request
@@ -69,6 +72,13 @@ cementing it.
 > `npm run build && npm test`. Never treat `tsc -p .` at the app root as a
 > gate (red at baseline); the gate is the convex tsconfig via `npm run
 > typecheck`. Check `node --version` matches `.nvmrc` first.
+>
+> **While iterating, gate only what you touched** (NEO-653; whole-app gates
+> ran ~700 times on NEO-645 and took up to 16 minutes each under parallel
+> load). Lint the changed files (`npx eslint <files>`) and run
+> `npx vitest related --run <files>`. Run the full `npm run lint`,
+> `npm run typecheck` and `npm run test:unit` **once**, at the end of the
+> assignment, piped through `tail -40`, and read only the failures.
 
 > **You are one of several parallel builders.** The coordinator (the main
 > session) planned the work, owns the worktree, commits, pushes, opens the PR

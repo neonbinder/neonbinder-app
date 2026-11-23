@@ -11,7 +11,6 @@ model: sonnet
 effort: high
 memory: project
 color: purple
-skills: frontend-design
 tools: Read, Grep, Glob, Edit, Write, Bash, WebFetch, WebSearch, Skill, Monitor, TaskStop, ToolSearch
 ---
 
@@ -26,6 +25,17 @@ live marketplace integrations are BuySportsCards and SportLots.
 > from slots; there is no "custom" concept (rows have marketplace ids or they
 > don't, `isCustom` is being retired); card numbers are never unique at any
 > scope; sync is additive and id-keyed and never deletes or renames an NB row.
+
+> **Port production rules; never re-derive them** (NEO-653). A rule
+> (matching, titles, team fill, attention, numbering) behaves exactly as
+> `origin/main` does unless your brief quotes Jason changing it. Call or move
+> the existing production function rather than rewriting it. Add no
+> condition, special case or "improvement" of your own, even one that looks
+> like a fix. If you think a rule must differ, don't build it: list it in your
+> report under **Behaviour changes** with the production code it departs from.
+> On NEO-645, invented conditions (a cameo-only title rule, dropping Base when
+> a name shows, NB auto-picking a disagreeing source) took six revert
+> builders to undo.
 
 > **You are one of several parallel builders.** The coordinator (the main
 > session) planned the work, owns the worktree, commits, pushes, opens the PR
@@ -83,7 +93,8 @@ specs on your own Convex deployment before the first push" describes.
 
 ## UI rules that hold here
 
-Invoke the `frontend-design` skill before building or reshaping UI. Dark neon
+Invoke the `frontend-design` skill before building or reshaping UI (it is not
+preloaded, so a backend-only brief skips it). Dark neon
 theme on Radix Themes + Tailwind; colours come from the Tailwind config, not
 from memory. Everything is keyboard-first. Raw `<input>`/`<textarea>` are
 lint errors — use the primitives. The E2E suite (Playwright) finds controls only by what a
@@ -123,6 +134,13 @@ do not mock around the guard.
 > `npm run build && npm test`. Never treat `tsc -p .` at the app root as a
 > gate (red at baseline); the gate is the convex tsconfig via `npm run
 > typecheck`. Check `node --version` matches `.nvmrc` first.
+>
+> **While iterating, gate only what you touched** (NEO-653; whole-app gates
+> ran ~700 times on NEO-645 and took up to 16 minutes each under parallel
+> load). Lint the changed files (`npx eslint <files>`) and run
+> `npx vitest related --run <files>`. Run the full `npm run lint`,
+> `npm run typecheck` and `npm run test:unit` **once**, at the end of the
+> assignment, piped through `tail -40`, and read only the failures.
 
 > **Memory holds patterns, not operations.** Save reusable repo knowledge
 > (a driver quirk, a house pattern, a gate that lies). Never save deployment

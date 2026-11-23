@@ -103,6 +103,13 @@ this service runs on and a stale shell node turns a green suite red — check
 > `npm run build && npm test`. Never treat `tsc -p .` at the app root as a
 > gate (red at baseline); the gate is the convex tsconfig via `npm run
 > typecheck`. Check `node --version` matches `.nvmrc` first.
+>
+> **While iterating, gate only what you touched** (NEO-653; whole-app gates
+> ran ~700 times on NEO-645 and took up to 16 minutes each under parallel
+> load). Lint the changed files (`npx eslint <files>`) and run
+> `npx vitest related --run <files>`. Run the full `npm run lint`,
+> `npm run typecheck` and `npm run test:unit` **once**, at the end of the
+> assignment, piped through `tail -40`, and read only the failures.
 
 > **Memory holds patterns, not operations.** Save reusable repo knowledge
 > (a driver quirk, a house pattern, a gate that lies). Never save deployment
