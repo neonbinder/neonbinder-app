@@ -8,7 +8,7 @@
 //
 // THE ONE-TEAM LEGEND RULE IS THE EXCEPTION (NEO-335 Phase 2, `oneTeamCareerInLeague`,
 // convex/lib/teamFill.ts): a retired player with ONE career team in the set's league IS
-// preselected ("Suggested from career history.", "<team> · <player> played here"), because a
+// preselected ("Suggested from career history.", "<team>, suggested · <player> played here"), because a
 // legends insert prints that team. So the claim needs a multi-team career, and a second card is the
 // positive control: the catalogue's one-team George Brett on the same set IS preselected. Without
 // the control, a tile that never preselected anything would pass this spec.
@@ -27,8 +27,8 @@
 // the teams, the badges and the pill are gone, and the drawer (the stored card) holds exactly the
 // team each card was given.
 //
-// R2 - every move has its positive and its negative: chips with no aria-current beside no Save team;
-// the saved row beside the tile no longer pink; the legend's preselected chip (aria-current) beside
+// R2 - every move has its positive and its negative: chips with no ", suggested" in their names beside no Save team;
+// the saved row beside the tile no longer pink; the legend's preselected chip (", suggested") beside
 // the multi-team card's none; the row's
 // team beside the badge and pill gone.
 //
@@ -164,8 +164,8 @@ test(
     // ── STEP 3: THE CLAIM: the whole career offered, NOTHING picked, Save & next held ──
     // The list renders only once the suggestion query has answered, so it gates the reads below.
     await expect(chip).toBeVisible();
-    await expect(chip).not.toHaveAttribute("aria-current", "true");
-    await expect(otherChip).not.toHaveAttribute("aria-current", "true");
+    await expect(otherChip).toBeVisible();
+    await expect(career.getByRole("button", { name: /, suggested/ })).toHaveCount(0);
     // Nothing preselected, nothing written: a click on a chip is what saves.
     await expect(saveTeam).toHaveCount(0);
     await expect(tidyFooterButton(page, "saveAndNext")).toBeDisabled();
@@ -187,8 +187,8 @@ test(
     await expect(tidyCardHeader(page, `#${LEGEND.number} · ${LEGEND.player}`)).toBeVisible();
     await expectCardsLeft(page, 1);
     const suggested = team.getByRole("list", { name: "Suggested from career history.", exact: true });
-    const legendChip = suggested.getByRole("button", { name: `${LEGEND.team} · ${LEGEND.player} played here`, exact: true });
-    await expect(legendChip, "a one-team legend in the set's league is preselected").toHaveAttribute("aria-current", "true");
+    const legendChip = suggested.getByRole("button", { name: `${LEGEND.team}, suggested · ${LEGEND.player} played here`, exact: true });
+    await expect(legendChip, "a one-team legend in the set's league is preselected").toBeVisible();
     // A preselect is not a write: the tile is still pink until the chip is clicked.
     await expect(team).toHaveAccessibleDescription("To fix");
     await expect(career).toHaveCount(0);

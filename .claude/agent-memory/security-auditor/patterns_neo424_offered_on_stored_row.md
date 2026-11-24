@@ -31,3 +31,12 @@ DROPS history candidates and preselect, narrowing). No public mutation accepts
   `entityReviewQueue.autoLink.test.ts`; confirm they still exist.
 
 Related: [[patterns-neo92-entity-review-queue]], [[patterns-neo313-cross-sport-override]].
+
+**NEO-656 follow-up (stored rows removed):** when a ticket deletes the stored
+row a relaxation read, the relaxation tends to survive as a CLIENT flag
+(`tidyNames.answerName` `offered: true` skips the sport check outright; the
+commit's `gateLinks` replace server-written link rows). Each such flag needs a
+server re-derivation (player's name/alias equals the printed key, team sport
+equals the set's sport), or the relaxation is now unbounded for any admin
+client. Also check fan-out doors (`applyNameToAll`) that treat "the open card
+already carries it" as proof: they inherit whatever the single-card door let in.

@@ -187,6 +187,14 @@ export const coverageForPairs = internalQuery({
 export const CAREER_GAPS_MAX_PAIRS = 1024;
 
 /**
+ * NEO-656 (security audit, S7) — the most distinct leaves (`selectorOptionId`s)
+ * one `careerGaps` call answers. Each leaf is about ten ancestry reads, so the
+ * pair cap alone would let 1024 pairs on 1024 leaves read ten thousand
+ * documents. A walk's pairs sit in one leaf (and the checklist's in a few).
+ */
+export const CAREER_GAPS_MAX_LEAVES = 64;
+
+/**
  * NEO-656 (Jason: "it should read real data and display pink/blue as
  * appropriate depending on the current state of the data") — the career gaps
  * among a set of cards' (player, team) pairs, read LIVE from the players' own
@@ -236,6 +244,11 @@ export const careerGaps = query({
       const held = byLeaf.get(pair.selectorOptionId);
       if (held) held.push(pair);
       else byLeaf.set(pair.selectorOptionId, [pair]);
+    }
+    if (byLeaf.size > CAREER_GAPS_MAX_LEAVES) {
+      throw new Error(
+        `careerGaps: ${byLeaf.size} distinct sets exceeds the ${CAREER_GAPS_MAX_LEAVES}-set limit`,
+      );
     }
     // Players and teams are read once across every leaf.
     const memo = newCoverageMemo();

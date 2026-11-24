@@ -40,10 +40,10 @@ type LookupArgs = {
     sportValue: string;
     reason: "priorYearProduct" | "onlyNamesake";
   };
-  /** A team's partial answer already held for this key (ESPN's half); the new result is laid over it. */
-  heldEnrichment?: NonNullable<LookupResult["enrichment"]>;
+  /** "Add anyway": ask Wikidata too, for a name the first answer held back from it. */
+  full?: true;
 };
-type AskArgs = Omit<LookupArgs, "historyPlayerIds" | "preselect" | "heldEnrichment">;
+type AskArgs = Omit<LookupArgs, "historyPlayerIds" | "preselect" | "full">;
 export type LookupRunner = (args: LookupArgs) => Promise<LookupResult>;
 
 /** What a name's lookup said. `pending` is "asked, not back yet" (and "held for the facts"). */
@@ -88,9 +88,14 @@ export function lookupKeyOf(
 
 export class WalkMemory {
   private lookups = new Map<string, NameLookup>();
+  /** The newest request per lookup key: an older answer never overwrites a newer ask. */
+  private seqs = new Map<string, number>();
+  /** Keys the operator asked to look up in full ("Add anyway"). */
+  private fullKeys = new Set<string>();
   private answers = new Map<string, OpenAnswer>();
   private picks = new Map<string, KeptPick>();
   private gateItems = new Map<string, GateItem>();
+  private focusOwed: string | null = null;
   private factsState: FactsState = "idle";
   private version = 0;
   private listeners = new Set<() => void>();
@@ -148,23 +153,30 @@ export class WalkMemory {
   }
 
   /** Ask once per key. Held while the facts load; the caller asks again when they land. */
-  ask(
-    args: AskArgs,
-    run: LookupRunner,
-    heldEnrichment?: NonNullable<LookupResult["enrichment"]>,
-  ): void {
+  ask(args: AskArgs, run: LookupRunner): void {
     if (this.factsLoading()) return;
     const key = lookupKeyOf(args.cardId, args.kind, args.name, args.sportId);
     if (this.lookups.has(key)) return;
     this.lookups.set(key, { status: "pending" });
     this.bump();
+    this.send(key, args, run, undefined);
+  }
+
+  private send(
+    key: string,
+    args: AskArgs,
+    run: LookupRunner,
+    before: NameLookup | undefined,
+  ): void {
+    const seq = (this.seqs.get(key) ?? 0) + 1;
+    this.seqs.set(key, seq);
     const item = this.gateItemFor(args.kind, args.name);
     const history = item?.historyPlayerIds ?? [];
     const request: LookupArgs = {
       ...args,
       ...(history.length > 0 ? { historyPlayerIds: [...history] } : {}),
       ...(args.kind === "player" && item?.preselect ? { preselect: item.preselect } : {}),
-      ...(args.kind === "team" && heldEnrichment ? { heldEnrichment } : {}),
+      ...(args.kind === "player" && this.fullKeys.has(key) ? { full: true as const } : {}),
     };
     let answered: Promise<LookupResult>;
     try {
@@ -172,8 +184,11 @@ export class WalkMemory {
     } catch {
       answered = Promise.reject(new Error("lookup"));
     }
+    // A newer ask for the same key (Add anyway) outranks this one.
+    const current = () => this.seqs.get(key) === seq;
     answered.then(
       (result) => {
+        if (!current()) return;
         this.lookups.set(key, {
           status: result.status,
           ...(result.enrichment ? { enrichment: result.enrichment } : {}),
@@ -181,30 +196,49 @@ export class WalkMemory {
         this.bump();
       },
       () => {
-        // A failed try never downgrades a team's partial answer already held
-        // (NEO-301): the server keeps it when the lookup says `error`, and so
-        // does this when the call itself fails.
-        this.lookups.set(
-          key,
-          heldEnrichment && args.kind === "team"
-            ? { status: "ready", enrichment: heldEnrichment }
-            : { status: "error" },
-        );
+        if (!current()) return;
+        this.lookups.set(key, {
+          status: "error",
+          ...(before?.enrichment ? { enrichment: before.enrichment } : {}),
+        });
         this.bump();
       },
     );
   }
 
-  /**
-   * "Try again": forget the answer and ask once more. A team's partial answer
-   * held for this key (ESPN's half) goes with the new ask, so the result is
-   * laid over it and never replaces it (`lookupTidyName`'s `heldEnrichment`).
-   */
+  /** "Try again": forget the answer and ask once more. */
   retry(args: AskArgs, run: LookupRunner): void {
     const key = lookupKeyOf(args.cardId, args.kind, args.name, args.sportId);
-    const held = args.kind === "team" ? this.lookups.get(key) : undefined;
     this.lookups.delete(key);
-    this.ask(args, run, held?.status === "ready" ? held.enrichment : undefined);
+    this.ask(args, run);
+  }
+
+  /**
+   * "Add anyway" on a player whose first answer was a same-name choice or a
+   * preselect: `lookupTidyName` held Wikidata back for it (main's
+   * `awaitsOperatorBeforeLookup`), so ask again with `full: true`. What is
+   * already shown stays on screen while it runs. Does nothing for a name whose
+   * first answer already included the Wikidata call.
+   */
+  askFull(args: AskArgs, run: LookupRunner): void {
+    if (args.kind !== "player") return;
+    const key = lookupKeyOf(args.cardId, args.kind, args.name, args.sportId);
+    if (this.fullKeys.has(key)) return;
+    const before = this.lookups.get(key);
+    const heldBack =
+      (before?.enrichment?.existingCandidates?.length ?? 0) > 0 ||
+      before?.enrichment?.preselect !== undefined;
+    // Answered with Wikidata already (or failed with nothing held back): nothing to add.
+    if (before && before.status !== "pending" && !heldBack) return;
+    this.fullKeys.add(key);
+    // The facts are still loading, or the first ask has not gone out: it goes out full.
+    if (!before) return;
+    this.lookups.set(key, {
+      status: "pending",
+      ...(before.enrichment ? { enrichment: before.enrichment } : {}),
+    });
+    this.bump();
+    this.send(key, args, run, before);
   }
 
   // ── answers given on the open card ────────────────────────────────────────
@@ -231,6 +265,23 @@ export class WalkMemory {
   }
   dropPick(cardId: string, field: "players" | "teams"): void {
     if (this.picks.delete(`${cardId}|${field}`)) this.bump();
+  }
+
+  // ── focus owed to a re-opened name ────────────────────────────────────────
+  /**
+   * Edit on a ruled-out name puts the name back to waiting; the row that
+   * re-opens takes focus on its first control (`useReopenedFocus`). The ruled-out
+   * row is gone by then, so the owing is held here, not in the row.
+   */
+  oweFocus(cardId: string, kind: "player" | "team", printed: string): void {
+    this.focusOwed = `${cardId}|${nameKeyOf(kind, printed)}`;
+  }
+  /** True once, to the row that is owed focus. */
+  takeFocusOwed(cardId: string, kind: "player" | "team", printed: string): boolean {
+    const key = `${cardId}|${nameKeyOf(kind, printed)}`;
+    if (this.focusOwed !== key) return false;
+    this.focusOwed = null;
+    return true;
   }
 
   /** The walk has left this card: what it held for it goes. Lookups stay for the sitting. */
@@ -356,7 +407,7 @@ export function useNameLookup({
   kind: "player" | "team";
   name: string;
   sportId: Id<"selectorOptions"> | undefined;
-}): { lookup: NameLookup | undefined; retry: () => void } {
+}): { lookup: NameLookup | undefined; retry: () => void; askFull: () => void } {
   const run = useLookupRunner();
   const loading = memory.factsLoading();
   useEffect(() => {
@@ -367,6 +418,9 @@ export function useNameLookup({
     lookup: sportId ? memory.lookupFor(cardId, kind, name, sportId) : undefined,
     retry: () => {
       if (sportId) memory.retry({ cardId, kind, name, sportId }, run);
+    },
+    askFull: () => {
+      if (sportId) memory.askFull({ cardId, kind, name, sportId }, run);
     },
   };
 }

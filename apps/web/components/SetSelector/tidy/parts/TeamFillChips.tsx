@@ -225,13 +225,29 @@ export default function TeamFillChips({
 
   const disabled = write.busy ? true : undefined;
 
-  const save = async (teamId: Id<"teams">) => {
+  /** "Padres", "Padres and Mets", "Padres, Mets and Cubs". */
+  const joinLabels = (labels: readonly string[]): string =>
+    labels.length <= 1
+      ? (labels[0] ?? "")
+      : `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
+
+  /**
+   * Writes the teams on the card (the one writer, `updateCard`). A click on a
+   * preselected chip writes EVERY preselected team (what main's Save wrote
+   * untouched); a click on any other chip, Other team… and + New team write the
+   * one team. On success the walk's own live region says what was saved: the
+   * tile is gone by then.
+   */
+  const save = async (teamIds: readonly Id<"teams">[], labels: readonly string[] = []) => {
     const ok = await write.run(
-      () => updateCard({ id: row._id, teamOnCardIds: [teamId], regenerateListing: true }),
+      () => updateCard({ id: row._id, teamOnCardIds: [...teamIds], regenerateListing: true }),
       "Couldn't save those teams. Try again.",
     );
-    if (ok) answered();
+    if (ok) answered(labels.length > 0 ? `Saved ${joinLabels(labels)}.` : "Saved the team.");
   };
+
+  const chipLabelOf = (teamId: Id<"teams">): string =>
+    [...marketplaceChips, ...careerChips].find((c) => c.teamId === teamId)?.label ?? "the team";
 
   const recordNoTeam = async () => {
     const ok = await write.run(async () => {
@@ -253,11 +269,12 @@ export default function TeamFillChips({
       <li key={chip.teamId as string} className="max-w-full">
         <button
           type="button"
-          aria-current={on ? "true" : undefined}
           aria-disabled={write.busy || undefined}
           onClick={() => {
             if (write.busy) return;
-            void save(chip.teamId);
+            // A preselected chip stands for the whole pre-fill; any other is one team.
+            const teams = on ? preselect : [chip.teamId];
+            void save(teams, teams.map(chipLabelOf));
           }}
           className={`hit-area-24 inline-flex max-w-full flex-col items-start gap-0 border px-2 py-0.5 text-left text-xs focus-outline ${
             opts.suffix ? "rounded-2xl" : "rounded-full"
@@ -268,9 +285,12 @@ export default function TeamFillChips({
           }`}
         >
           <span className="inline-flex items-center gap-1">
-            {/* The preselected mark that is not a colour (SC 1.4.1); aria-current says it to a reader. */}
+            {/* The preselected mark that is not a colour (SC 1.4.1); the sr-only word says it to a reader. */}
             {on && <CheckIcon aria-hidden="true" className="h-3 w-3 shrink-0" />}
-            {chip.label}
+            <span>
+              {chip.label}
+              {on && <span className="sr-only">, suggested</span>}
+            </span>
           </span>
           {/* NEO-645: the years (every player's, merged) get their own line, so a
               long list wraps inside the chip at 320px and is never clipped. The
@@ -349,9 +369,9 @@ export default function TeamFillChips({
             kind="team"
             sportId={sportId}
             contextOptionId={leafId}
-            onSelect={(id) => {
+            onSelect={(id, name) => {
               setSearchOpen(false);
-              void save(id as Id<"teams">);
+              void save([id as Id<"teams">], name ? [name] : []);
             }}
             onCancel={closeSearch}
           />
@@ -368,7 +388,7 @@ export default function TeamFillChips({
             creating ? `Creating team ${full}` : full ? `Create team ${full}` : "Create team"
           }
           disabled={write.busy}
-          onCreated={(teamId) => save(teamId)}
+          onCreated={(teamId) => save([teamId])}
           onClose={() => {
             setNewOpen(false);
             requestAnimationFrame(() => newRef.current?.focus({ preventScroll: true }));

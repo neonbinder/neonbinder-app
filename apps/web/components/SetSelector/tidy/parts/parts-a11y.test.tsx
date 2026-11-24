@@ -152,8 +152,12 @@ describe("TeamFillChips", () => {
     // A chip acts (a click saves it), so it is a plain button, not a toggle.
     expect(chosen.getAttribute("aria-pressed")).toBeNull();
     expect(idle.getAttribute("aria-pressed")).toBeNull();
-    expect(chosen.getAttribute("aria-current")).toBe("true");
-    expect(idle.getAttribute("aria-current")).toBeNull();
+    // The preselected chip says so by name, not by a state a reader may skip
+    // (happy-dom puts a space before the sr-only span that a real browser does not).
+    expect(chosen.getAttribute("aria-current")).toBeNull();
+    expect(chosen.querySelector(".sr-only")?.textContent).toBe(", suggested");
+    expect(screen.getByRole("button", { name: /^San Diego Padres ?, suggested/ })).toBe(chosen);
+    expect(idle.textContent).not.toContain("suggested");
     expect(chosen.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
     expect(idle.querySelector("svg")).toBeNull();
   });
@@ -188,7 +192,7 @@ describe("TeamFillChips", () => {
     }
     // The Mariners chip is not preselected, so it shows the player's years there.
     expect(screen.getByRole("button", { name: "Seattle Mariners · 2015–2019" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "San Diego Padres · Jackson Merrill played here" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^San Diego Padres ?, suggested · Jackson Merrill played here$/ })).toBeTruthy();
   });
 
   it("with two players on the card the years line names each player after the separator", () => {

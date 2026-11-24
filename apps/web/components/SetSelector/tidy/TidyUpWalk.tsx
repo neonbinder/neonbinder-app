@@ -573,7 +573,21 @@ function WalkDialog({
   // search: one more Enter there would undo the answer). Decided a frame later,
   // from the page, so it sees the card as the answer left it.
   const [answerTick, setAnswerTick] = useState(0);
-  const onAnswered = useCallback(() => setAnswerTick((t) => t + 1), []);
+  // What the last answer says to a screen reader. The tile that was answered
+  // is gone by the next frame, so the line lives here, mounted for the whole
+  // sitting (a change to a live region already in the page is announced).
+  const [announcement, setAnnouncement] = useState("");
+  const onAnswered = useCallback((message?: string) => {
+    setAnswerTick((t) => t + 1);
+    if (message) setAnnouncement(message);
+  }, []);
+  // A sentence belongs to the card it was said on: a new card starts with
+  // nothing said, so the same sentence can be said again.
+  const [saidOnCard, setSaidOnCard] = useState(currentId);
+  if (saidOnCard !== currentId) {
+    setSaidOnCard(currentId);
+    setAnnouncement("");
+  }
   useEffect(() => {
     if (answerTick === 0) return;
     focusOwed.current = true;
@@ -819,6 +833,11 @@ function WalkDialog({
                 className="min-h-4 text-right text-xs text-neon-pink-text"
               >
                 {!isDone && pinkCount > 0 ? mustFixLine(pinkCount) : ""}
+              </p>
+              {/* Always mounted: what the last answer saved, for a screen reader. Kept
+                  apart from the alert below. */}
+              <p role="status" className="sr-only">
+                {announcement}
               </p>
               {saveFailed && (
                 <p role="alert" className="text-right text-xs text-neon-pink-text">

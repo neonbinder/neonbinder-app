@@ -118,7 +118,7 @@ vi.mock("./tiles/TeamTile", async () => {
               type="button"
               onClick={() => {
                 setAnswered(true);
-                if (teamCallsAnswered) onAnswered();
+                if (teamCallsAnswered) onAnswered("Saved Padres.");
               }}
             >
               No team on this card
@@ -815,6 +815,19 @@ describe("the end screen", () => {
     // The same element that was on the page all along.
     expect(verdict?.isConnected).toBe(true);
     expect(verdict?.textContent).toBe("1 card skipped, not ready to list");
+  });
+
+  it("says what a team answer saved in its own always-mounted status line, which outlives the tile and is not the alert", async () => {
+    mount([pink("a", "1")]);
+    await screen.findByTestId("tile-team");
+    const line = screen.getAllByRole("status").find((el) => el.className.includes("sr-only"));
+    expect(line?.textContent).toBe("");
+    fireEvent.click(button("No team on this card"));
+    await waitFor(() => expect(line?.textContent).toBe("Saved Padres."));
+    // The tile's own button is gone; the line is the same element, still on the page.
+    expect(screen.queryByRole("button", { name: "No team on this card" })).toBeNull();
+    expect(line?.isConnected).toBe(true);
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("tallies the sitting: cards that left the walk are fixed, the rest are skipped", async () => {

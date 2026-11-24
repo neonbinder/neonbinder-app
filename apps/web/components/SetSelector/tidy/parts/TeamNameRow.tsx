@@ -18,6 +18,7 @@ import { printedOnOf, printedOnText } from "./printed-on";
 import TeamCandidates, { type TeamCandidate } from "./TeamCandidates";
 import { orderCandidateTeams } from "./team-candidates";
 import type { TidyWrite } from "./tidy-write";
+import { useReopenedFocus } from "./use-reopened-focus";
 
 const NO_IDS: Array<Id<"teams">> = [];
 
@@ -93,6 +94,7 @@ export function RuledOutTeamRow({
   const memory = useWalkMemory();
   const answerName = useMutation(api.tidyNames.answerName);
   const clear = async () => {
+    memory.oweFocus(row._id, "team", printed);
     const ok = await write.run(
       () =>
         answerName({
@@ -104,7 +106,10 @@ export function RuledOutTeamRow({
         }),
       "Couldn't change that answer. Try again.",
     );
+    // The row re-opens as soon as the card says so, which can be before this
+    // await resolves: the focus is owed first, and given back if the write fails.
     if (ok) memory.forgetAnswer(row._id, "team", printed);
+    else memory.takeFocusOwed(row._id, "team", printed);
   };
   return (
     <div role="group" aria-label={`Team ${printed}`} className="grid gap-1.5">
@@ -147,6 +152,9 @@ function UnansweredTeamName({
   const answerName = useMutation(api.tidyNames.answerName);
   const answered = useAnswered();
   const memory = useWalkMemory();
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  // Edit on a ruled-out name re-opens this row: focus lands on its first control.
+  useReopenedFocus(memory, row._id, "team", name.printed, wrapRef);
 
   /** A write that ANSWERS the name: on success the walk moves focus on. */
   const answer = async (fn: () => Promise<unknown>, fallback: string): Promise<boolean> => {
@@ -281,7 +289,7 @@ function UnansweredTeamName({
   const disabled = write.busy ? true : undefined;
 
   return (
-    <div role="group" aria-label={`Team ${name.printed}`} className="grid gap-2">
+    <div ref={wrapRef} role="group" aria-label={`Team ${name.printed}`} className="grid gap-2">
       <p className="text-sm text-ink wrap-anywhere">
         {candidateStep ? `Which team: ${queryName}` : `“${queryName}” isn't linked to a team yet.`}
       </p>

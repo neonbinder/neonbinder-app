@@ -139,9 +139,12 @@ function noTeamOnCard(page: Page) {
   return tidyTile(page, "Team").getByRole("button", { name: "No team on this card", exact: true });
 }
 
-/** A team chip on the open card's Team tile, by the team's name (a chip may add " · <years / played here>"). */
+/**
+ * A team chip on the open card's Team tile, by the team's name (a chip may add ", suggested" when the
+ * pre-fill picked it, and " · <years / played here>").
+ */
 function teamChip(page: Page, name: string) {
-  return tidyTile(page, "Team").getByRole("button", { name: new RegExp(`^${escapeRe(name)}( · .*)?$`) });
+  return tidyTile(page, "Team").getByRole("button", { name: new RegExp(`^${escapeRe(name)}(, suggested)?( · .*)?$`) });
 }
 
 /**
@@ -408,9 +411,9 @@ test(
       await expect(addStint, "the stint was added and the entry closed").toBeVisible();
     }
     // Both teams are now his career's chips on the Team tile, and nothing is saved: the set's league
-    // ranks the Badgers first, so they are preselected (aria-current) and the club is only offered.
-    await expect(teamChip(page, COLLEGE_TEAM)).toHaveAttribute("aria-current", "true");
-    await expect(teamChip(page, team)).not.toHaveAttribute("aria-current", "true");
+    // ranks the Badgers first, so they are preselected (", suggested" in the name) and the club is only offered.
+    await expect(teamChip(page, COLLEGE_TEAM)).toHaveAccessibleName(/, suggested/);
+    await expect(teamChip(page, team)).not.toHaveAccessibleName(/, suggested/);
     await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk, a created player's career and team chips" });
     // Nothing saved for his team yet: Save for later writes nothing (STEP 11 answers him).
     await saveForLater(page);
@@ -589,12 +592,12 @@ test(
     await skipUntil(page, livePlayerRow(page), { maxCards: FETCHED + 1 });
     await expect(pinkTile(page, "Team")).toHaveCount(1);
     await expect(teamChip(page, team)).toBeVisible();
-    await expect(teamChip(page, COLLEGE_TEAM)).toHaveAttribute("aria-current", "true");
-    await expect(teamChip(page, team)).not.toHaveAttribute("aria-current", "true");
+    await expect(teamChip(page, COLLEGE_TEAM)).toHaveAccessibleName(/, suggested/);
+    await expect(teamChip(page, team)).not.toHaveAccessibleName(/, suggested/);
     // NEO-639 (C8): the chip the pre-fill passes over says his years with that club, bare (one player
     // on the card, so no name in front: "<team> · 1994–1996"), and the pre-filled one says who played there.
     await expect(teamChip(page, team)).toHaveAccessibleName(`${team} · 1994–1996`);
-    await expect(teamChip(page, COLLEGE_TEAM)).toHaveAccessibleName(`${COLLEGE_TEAM} · ${LIVE_PLAYER} played here`);
+    await expect(teamChip(page, COLLEGE_TEAM)).toHaveAccessibleName(`${COLLEGE_TEAM}, suggested · ${LIVE_PLAYER} played here`);
     await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk, a league-ranked team pre-fill" });
     // The operator clicks the club instead, which saves it: the card's last pink goes, and Save &
     // next (the career is only blue) moves on.

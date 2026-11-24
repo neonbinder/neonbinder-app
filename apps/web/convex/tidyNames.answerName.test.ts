@@ -370,13 +370,16 @@ describe("answerName — NEO-284 saveAsAlias and NEO-313 addSetSport", () => {
   test("Change never removes an alias already saved", async () => {
     const t = newT();
     const w = await world(t);
-    const open = await t.run((ctx) =>
-      printCard(ctx, w, { number: "1", printed: [{ kind: "team", name: "Pads" }] }),
-    );
+    // A linked team has no name on its card (a Change goes through the Team
+    // tile), so the second answer is on another card still waiting on "Pads".
+    const [open, later] = await t.run(async (ctx) => [
+      await printCard(ctx, w, { number: "1", printed: [{ kind: "team", name: "Pads" }] }),
+      await printCard(ctx, w, { number: "2", printed: [{ kind: "team", name: "Pads" }] }),
+    ]);
     await answerTeam(t, w, open, "Pads", { kind: "linkTeam", teamId: w.padres, saveAsAlias: true });
-    await answerTeam(t, w, open, "Pads", { kind: "linkTeam", teamId: w.mets });
+    await answerTeam(t, w, later, "Pads", { kind: "linkTeam", teamId: w.mets });
     expect((await t.run((ctx) => ctx.db.get(w.padres)))!.aliases).toContain("Pads");
-    expect((await card(t, open))!.teamOnCardIds).toContain(w.mets);
+    expect((await card(t, later))!.teamOnCardIds).toContain(w.mets);
   });
 
   test("addSetSport adds the SET's sport to a player of another sport", async () => {
@@ -585,6 +588,42 @@ describe("answerName — validation and the gate", () => {
     ).rejects.toThrow(/player is gone/);
     expect((await card(t, open))!.playerIds).toBeUndefined();
     expect((await card(t, open))!.pendingPlayerNames).toEqual(["Mike Jordan"]);
+  });
+
+  test("a name the card does not hold is refused for a link, Not a player and a team link; only clear may name it (main's guard)", async () => {
+    const t = newT();
+    const w = await world(t);
+    const open = await t.run((ctx) =>
+      printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: BO }] }),
+    );
+    await expect(answerPlayer(t, w, open, w.bo, "Somebody Else")).rejects.toThrow(
+      /isn't on this card/,
+    );
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
+        cardId: open,
+        kind: "player",
+        name: "Somebody Else",
+        sportId: w.sport,
+        answer: { kind: "notEntity" },
+      }),
+    ).rejects.toThrow(/isn't on this card/);
+    await expect(
+      answerTeam(t, w, open, "Some Team", { kind: "linkTeam", teamId: w.padres }),
+    ).rejects.toThrow(/isn't on this card/);
+    const after = (await card(t, open))!;
+    expect(after.pendingPlayerNames).toEqual([BO]);
+    expect(after.playerIds).toBeUndefined();
+    // `clear` is the one answer that may name a name the card no longer holds
+    // (the walk re-asks after Not a player).
+    await t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
+      cardId: open,
+      kind: "player",
+      name: "Somebody Else",
+      sportId: w.sport,
+      answer: { kind: "clear" },
+    });
+    expect((await card(t, open))!.pendingPlayerNames).toContain("Somebody Else");
   });
 
   test("a card that is gone is refused", async () => {

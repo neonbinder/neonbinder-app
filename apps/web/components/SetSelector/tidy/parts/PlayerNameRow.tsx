@@ -24,6 +24,7 @@ import { preselectReasonLine, stintYears } from "./copy";
 import NameApplyToAll from "./NameApplyToAll";
 import { printedOnOf, printedOnText } from "./printed-on";
 import type { TidyWrite } from "./tidy-write";
+import { useReopenedFocus } from "./use-reopened-focus";
 import { useSportValue } from "./use-sport-value";
 import WikidataBlock from "./WikidataBlock";
 
@@ -182,6 +183,7 @@ export function RuledOutPlayerRow({
   const memory = useWalkMemory();
   const answerName = useMutation(api.tidyNames.answerName);
   const clear = async () => {
+    memory.oweFocus(row._id, "player", printed);
     const ok = await write.run(
       () =>
         answerName({
@@ -193,7 +195,10 @@ export function RuledOutPlayerRow({
         }),
       "Couldn't change that answer. Try again.",
     );
+    // The row re-opens as soon as the card says so, which can be before this
+    // await resolves: the focus is owed first, and given back if the write fails.
     if (ok) memory.forgetAnswer(row._id, "player", printed);
+    else memory.takeFocusOwed(row._id, "player", printed);
   };
   return (
     <div role="group" aria-label={`Player ${printed}`} className="grid gap-1.5">
@@ -239,6 +244,8 @@ function UnansweredPlayerName({
   const createPlayer = useMutation(api.tidyNames.createPlayer);
   const answered = useAnswered();
   const memory = useWalkMemory();
+  // Edit on a ruled-out name re-opens this row: focus lands on its first control.
+  useReopenedFocus(memory, row._id, "player", name.printed, wrapRef);
 
   /** A write that ANSWERS the name: on success the walk moves focus on. */
   const answer = async (fn: () => Promise<unknown>, fallback: string): Promise<boolean> => {
@@ -252,7 +259,7 @@ function UnansweredPlayerName({
   const [chipSportId, setChipSportId] = useState<Id<"selectorOptions"> | undefined>(undefined);
   const rowSportId = chipSportId ?? memory.defaultSportFor("player", name.printed, setSportId);
   const queryName = name.printed;
-  const { lookup, retry } = useNameLookup({
+  const { lookup, retry, askFull } = useNameLookup({
     memory,
     cardId: row._id,
     kind: "player",
@@ -432,7 +439,11 @@ function UnansweredPlayerName({
     if (ok) memory.rememberAnswer(row._id, "player", name.printed, { kind: "notEntity", printed: name.printed });
   };
 
-  const addAnyway = () => setCreateAnyway(true);
+  const addAnyway = () => {
+    setCreateAnyway(true);
+    // The first answer held Wikidata back for a same-name choice or a preselect.
+    askFull();
+  };
 
   const switchSport = (sportId: Id<"selectorOptions">) => {
     // A new question: the old answer's career ticks and "add anyway" do not carry.

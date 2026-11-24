@@ -267,17 +267,19 @@ describe("pickSourceAsCameo", () => {
     expect(o.playerIds).toBeUndefined();
   });
 
-  test("answering the pending name 'not a player' leaves a card with no player and nothing to stop on", async () => {
+  test("the name the cameo pick answered 'not a player' leaves a card with no player and nothing to stop on; a second answer for it is refused (the card no longer holds it)", async () => {
     const t = newT();
     const { card } = await setup(t);
     await t.withIdentity(ADMIN).mutation(api.tidyCameo.pickSourceAsCameo, { cardId: card });
-    await t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
-      cardId: card,
-      kind: "player",
-      name: CPC,
-      sportId: (await t.run((ctx) => ctx.db.get(card)))!.sportId,
-      answer: { kind: "notEntity" },
-    });
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
+        cardId: card,
+        kind: "player",
+        name: CPC,
+        sportId: (await t.run((ctx) => ctx.db.get(card)))!.sportId,
+        answer: { kind: "notEntity" },
+      }),
+    ).rejects.toThrow(/isn't on this card/);
     const c = (await get(t, card))!;
     expect(c.playerIds).toBeUndefined();
     expect(c.pendingPlayerNames).toBeUndefined();

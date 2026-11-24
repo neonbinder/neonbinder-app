@@ -26,4 +26,4 @@ Playwright and e2e-viewport behaviour, print and demo paths, screenshots and har
 - [Spec arithmetic: old vs new probe](reference_spec_arithmetic_old_vs_new_probe.md) — zzold_ copy of HEAD + CSV probe; OLD must reproduce the spec first
 - [Repeating a set-building spec needs a full reseed](reference_repeating_a_set_building_spec_needs_a_full_reseed.md) — partial reset breaks setup; each repeat = agent-convex --seed + setup + bootstrap
 - [Printed place reads players, never the year](reference_printed_place_reads_players_never_the_year.md) — pairing settles only a lone in-league place team; several → card rule, playersMustDecide; a marketplace team among them AGREES
-- [No role filter for aria-current](reference_playwright_no_role_filter_for_aria_current.md) — .locator() is lint-banned; assert aria-current per element or loop .all() + getAttribute
+- [No role filter for aria-current](reference_playwright_no_role_filter_for_aria_current.md) — no role filter, .locator() banned; put the state in the accessible name (sr-only ", suggested") and find by name

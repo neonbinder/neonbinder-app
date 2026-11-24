@@ -2,7 +2,7 @@
 // teamless card's career team only when the player's career gives exactly that one team for the
 // set's season, and never against the set's own answer. One rule, three cases:
 //   1. a player with ONE team in the window (the set year and the year before): that chip is
-//      preselected ("<team> · <player> played here") under "Suggested from career history.";
+//      preselected ("<team>, suggested · <player> played here") under "Suggested from career history.";
 //   2. a player with TWO teams that season (a tie no rule breaks): neither chip is pressed, each
 //      shows the player's years with the team (no name before them on a one-player card, NEO-645
 //      C8), under "From the career. More than one team that
@@ -17,7 +17,7 @@
 // team` (deleted in the NEO-639 merge); the walker's tie-focus check went with the walker (the
 // walk moves focus by its own rule, `useAnswered`, covered by its unit tests).
 //
-// R2 - every negative beside a positive: claim 1's preselected chip (aria-current) beside the tile
+// R2 - every negative beside a positive: claim 1's preselected chip (", suggested" in its name) beside the tile
 // still pink (a preselect is not a write) and no Save team; claim 2's preselected count 0 beside both
 // chips visible with their years, and no Save team; claim 3's unpressed chip beside its list
 // heading, and "Apply to the other <player> card" (#964, same player, teamless) beside the saved
@@ -99,10 +99,13 @@ test(
     const TIED = /^From the career\. More than one team that season, so pick the one on the card\.$/;
     // #961 holds TEAM_A by then, so the offer's source is the player's other cards, not his career.
     const SET_SAYS_NO_TEAM = /^From the player.s other cards\. This set says No Team, so pick one only if it.s on the card\.$/;
-    // A chip is a button that saves its team; preselected it reads "· <player> played here" and carries
-    // aria-current, otherwise "· <years>" (one player on the card, so no name before the years; NEO-645 C8).
+    // A chip is a button that saves its team; preselected it reads "<team>, suggested · <player> played here",
+    // otherwise "<team> · <years>" (one player on the card, so no name before the years; NEO-645 C8).
     const chip = (teamName: string, suffix: string) =>
       team.getByRole("button", { name: `${teamName} · ${suffix}`, exact: true });
+    const suggestedChip = (teamName: string, suffix: string) =>
+      team.getByRole("button", { name: `${teamName}, suggested · ${suffix}`, exact: true });
+    const anySuggested = team.getByRole("button", { name: /, suggested/ });
     const saveTeam = team.getByRole("button", { name: /^Save teams?$/ });
     const savedTeamRow = (teamName: string) => team.getByRole("group", { name: `Team ${teamName}`, exact: true });
     const applyToAll = team.getByRole("button", {
@@ -167,7 +170,7 @@ test(
     await expect(tidyCardHeader(page, `#961 · ${SOLO}`)).toBeVisible();
     await expect(team).toHaveAccessibleDescription("To fix");
     const suggested = careerList(SUGGESTED);
-    await expect(chip(TEAM_A, `${SOLO} played here`)).toHaveAttribute("aria-current", "true");
+    await expect(suggestedChip(TEAM_A, `${SOLO} played here`)).toBeVisible();
     await expect(suggested.getByRole("button")).toHaveCount(1);
     // A preselect is a choice, not a write: there is no Save team, and the tile is still pink.
     await expect(saveTeam).toHaveCount(0);
@@ -175,7 +178,7 @@ test(
     await expectAccessible(page, { within: team, label: "Tidy Up Team tile, the one set-year team preselected" });
 
     // Clicked, it saves, and offers itself to SOLO's other teamless cards (#963, #964): the counterpart of step 3.
-    await chip(TEAM_A, `${SOLO} played here`).click();
+    await suggestedChip(TEAM_A, `${SOLO} played here`).click();
     await expect(savedTeamRow(TEAM_A).getByRole("button", { name: `Edit ${TEAM_A}`, exact: true })).toBeVisible();
     await expect(suggested).toHaveCount(0);
     await expect(applyToAll).toHaveText(`Apply to all 2 other ${SOLO} cards`);
@@ -188,8 +191,7 @@ test(
     await expect(chip(TEAM_B, "2025–2027")).toBeVisible();
     await expect(chip(TEAM_C, "2026")).toBeVisible();
     await expect(tied.getByRole("button")).toHaveCount(2);
-    await expect(chip(TEAM_B, "2025–2027")).not.toHaveAttribute("aria-current", "true");
-    await expect(chip(TEAM_C, "2026")).not.toHaveAttribute("aria-current", "true");
+    await expect(anySuggested).toHaveCount(0);
     await expect(saveTeam).toHaveCount(0);
     await expect(tidyFooterButton(page, "saveAndNext")).toBeDisabled();
     await expectAccessible(page, { within: team, label: "Tidy Up Team tile, a set-year tie with nothing picked" });
@@ -238,7 +240,7 @@ test(
     const underNoTeam = careerList(SET_SAYS_NO_TEAM);
     await expect(chip(TEAM_A, "2025–2027")).toBeVisible();
     await expect(underNoTeam.getByRole("button")).toHaveCount(1);
-    await expect(chip(TEAM_A, "2025–2027")).not.toHaveAttribute("aria-current", "true");
+    await expect(anySuggested).toHaveCount(0);
     await expect(saveTeam).toHaveCount(0);
     await expect(tidyFooterButton(page, "saveAndNext")).toBeDisabled();
     await expectAccessible(page, { within: team, label: "Tidy Up Team tile under a No Team set, nothing picked" });

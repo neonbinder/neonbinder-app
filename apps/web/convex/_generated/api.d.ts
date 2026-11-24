@@ -254,6 +254,7 @@ import type * as tidyCards from "../tidyCards.js";
 import type * as tidyListingText from "../tidyListingText.js";
 import type * as tidyNames from "../tidyNames.js";
 import type * as tidyPickSource from "../tidyPickSource.js";
+import type * as tidyPrintingLevel from "../tidyPrintingLevel.js";
 import type * as userProfile from "../userProfile.js";
 import type * as variantRole from "../variantRole.js";
 import type * as wikidataPool from "../wikidataPool.js";
@@ -512,6 +513,7 @@ declare const fullApi: ApiFromModules<{
   tidyListingText: typeof tidyListingText;
   tidyNames: typeof tidyNames;
   tidyPickSource: typeof tidyPickSource;
+  tidyPrintingLevel: typeof tidyPrintingLevel;
   userProfile: typeof userProfile;
   variantRole: typeof variantRole;
   wikidataPool: typeof wikidataPool;

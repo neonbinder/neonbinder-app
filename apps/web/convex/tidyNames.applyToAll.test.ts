@@ -450,6 +450,23 @@ describe("applyNameToAll — what it refuses", () => {
     await expect(applyAll(t, open, { kind: "notEntity" })).rejects.toThrow(/Answer this card first/);
   });
 
+  test("a team answer is refused while the open card still holds the name, even if the team is already on it (S4)", async () => {
+    const t = newT();
+    const w = await world(t);
+    const [open, other] = await t.run(async (ctx) => {
+      const open = await printCard(ctx, w, { number: "1", printed: [{ kind: "team", name: "Pads" }] });
+      const other = await printCard(ctx, w, { number: "2", printed: [{ kind: "team", name: "Pads" }] });
+      // The team is on the open card some other way; "Pads" is still waiting on it.
+      await ctx.db.patch(open, { teamOnCardIds: [w.padres] });
+      return [open, other];
+    });
+    await expect(
+      applyAll(t, open, { kind: "linkTeam", teamId: w.padres }, "Pads", "team"),
+    ).rejects.toThrow(/Answer this card first/);
+    expect((await card(t, other))!.teamOnCardIds).toBeUndefined();
+    expect((await card(t, other))!.pendingTeamNames).toEqual(["Pads"]);
+  });
+
   test("a player answer on a team name, and a team answer on a player name, are refused", async () => {
     const t = newT();
     const w = await world(t);

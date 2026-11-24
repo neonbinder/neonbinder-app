@@ -6,6 +6,7 @@ import { ConvexError, v, type Infer } from "convex/values";
 import type { Id } from "../_generated/dataModel";
 import { requireAdmin } from "../auth";
 import {
+  awaitsOperatorBeforeLookup,
   LOOKUP_HISTORY_IDS_MAX,
   MAX_TIDY_NAME_LENGTH,
   mergeLookupEnrichment,
@@ -2101,54 +2102,6 @@ export const enrichTeam = internalAction({
   },
 });
 
-type TeamEnrichment = Infer<typeof tidyNameEnrichmentValidator>;
-
-/**
- * NEO-301 — lay a team lookup's later result over the partial answer already
- * held for it (ported from the deleted `entityReviewQueue.overlayTeamEnrichment`;
- * `tidyNames.applyLookupResult` made the same merge on the walk's rows). A field
- * the new result leaves `undefined` keeps its held value; `colors` is merged per
- * swatch for the same reason. Everything the new result DOES carry wins, so a
- * Wikidata answer adds `wikidataId`, `yearsActive` and `leagueWikidataId` and an
- * ESPN answer refreshes its own fields. Either side missing returns the other.
- */
-export function overlayTeamEnrichment(
-  prior: TeamEnrichment | undefined,
-  next: TeamEnrichment | undefined,
-): TeamEnrichment | undefined {
-  if (!next) return prior;
-  if (!prior) return next;
-  const merged: Record<string, unknown> = { ...prior };
-  for (const [key, value] of Object.entries(next)) {
-    if (value !== undefined) merged[key] = value;
-  }
-  if (prior.colors || next.colors) {
-    const colors: Record<string, unknown> = { ...(prior.colors ?? {}) };
-    for (const [key, value] of Object.entries(next.colors ?? {})) {
-      if (value !== undefined) colors[key] = value;
-    }
-    merged.colors = colors;
-  }
-  return merged as TeamEnrichment;
-}
-
-/**
- * A team lookup that lands on a partial answer the walk already holds (ESPN's
- * league, location and colours from an earlier try) adds to it and never takes
- * from it: the result is overlaid field by field, and an `error` (a try that
- * found nothing at all) does not downgrade it, as `tidyNames.applyLookupResult`
- * did (NEO-301). Without a held answer the result is returned as it came.
- */
-export function withHeldTeamAnswer(
-  held: TeamEnrichment | undefined,
-  result: { status: "ready" | "error"; enrichment?: TeamEnrichment },
-): { status: "ready" | "error"; enrichment?: TeamEnrichment } {
-  if (!held) return result;
-  if (result.status === "error") return { status: "ready", enrichment: held };
-  const enrichment = overlayTeamEnrichment(held, result.enrichment);
-  return { status: "ready", ...(enrichment ? { enrichment } : {}) };
-}
-
 /**
  * NEO-656 (D3) — one name's Wikidata lookup, ON DEMAND, for the walk.
  *
@@ -2186,10 +2139,12 @@ export const lookupTidyName = action({
     /** The set's own history picks (`tidyLeafFacts`), carried first among the candidates. */
     historyPlayerIds: v.optional(v.array(v.id("players"))),
     /**
-     * A team's partial answer the walk already holds (ESPN's half from an
-     * earlier try). The new result is laid over it, never replacing it (NEO-301).
+     * "Add anyway" (NEO-332/424, ported from main's `awaitsOperatorBeforeLookup`):
+     * a player name that already has a same-name choice or a preselect is
+     * answered from those alone, with no Wikidata call, until the operator asks
+     * for the rest. `true` asks Wikidata too.
      */
-    heldEnrichment: v.optional(tidyNameEnrichmentValidator),
+    full: v.optional(v.literal(true)),
     /** Rule E's obvious candidate (`tidyLeafFacts`), carried onto the answer. */
     preselect: v.optional(
       v.object({
@@ -2224,6 +2179,24 @@ export const lookupTidyName = action({
       sportId: args.sportId,
       ...(args.historyPlayerIds ? { historyPlayerIds: args.historyPlayerIds } : {}),
     });
+
+    const preselect =
+      args.kind === "player" && args.preselect ? { ...args.preselect, name } : undefined;
+    // A same-name choice or a preselect waits for the operator before any
+    // lookup (main: `awaitsOperatorBeforeLookup`). The answer is what the
+    // facts and the live same-name players already say, so it does not wait on
+    // a Wikidata call it does not need.
+    if (args.kind === "player" && args.full !== true) {
+      const held = mergeLookupEnrichment({
+        incoming: undefined,
+        history: known.history,
+        live: known.live,
+        preselect,
+      });
+      if (awaitsOperatorBeforeLookup(held)) {
+        return { status: "ready" as const, ...(held ? { enrichment: held } : {}) };
+      }
+    }
 
     let payload: { status: "ready" | "error"; enrichment?: Record<string, unknown> };
     const trace = newLookupTrace();
@@ -2268,21 +2241,12 @@ export const lookupTidyName = action({
       payload = { status: "error" };
     }
 
-    const settled =
-      args.kind === "team"
-        ? withHeldTeamAnswer(args.heldEnrichment, {
-            status: payload.status,
-            enrichment: pickEnrichment(payload.enrichment),
-          })
-        : { status: payload.status, enrichment: pickEnrichment(payload.enrichment) };
+    const settled = { status: payload.status, enrichment: pickEnrichment(payload.enrichment) };
     const enrichment = mergeLookupEnrichment({
       incoming: settled.enrichment,
       history: known.history,
       live: known.live,
-      preselect:
-        args.kind === "player" && args.preselect
-          ? { ...args.preselect, name }
-          : undefined,
+      preselect,
     });
     return { status: settled.status, ...(enrichment ? { enrichment } : {}) };
   },

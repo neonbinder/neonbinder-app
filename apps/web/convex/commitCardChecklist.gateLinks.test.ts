@@ -560,10 +560,11 @@ describe("NEO-254: a gate link is re-validated at commit", () => {
     expect(card.pendingPlayerNames).toEqual(["Bob Allen"]);
   });
 
-  test("a linked player of ANOTHER sport is a guest link: kept, its sport read off the player's own document", async () => {
+  test("a SET-HISTORY link to a player of ANOTHER sport is a guest link: kept, its sport read off the player's own document", async () => {
     // NEO-656: `checkGateLinks` takes the sport from the player's row, never
-    // from the client, and no longer refuses a foreign one (the retired
-    // operator link refused it; see Behaviour changes in the hand-off).
+    // from the client. Only a set-history link may cross sports (the set's own
+    // earlier commit vouches for it); any other origin must play the set's
+    // sport (S2, pinned in "checkGateLinks refuses ...").
     const t = convexTest(schema, modules);
     const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
     const football = await insertSport(t, "Football");
@@ -1490,10 +1491,10 @@ describe("NEO-424: commitCardChecklist honours a set-history gate link (D5)", ()
     expect((await readCards(t, w.variantTypeId))[0].playerIds).toEqual([w.boBaseball]);
   });
 
-  // RED ON PURPOSE (NEO-656 PR1 hand-off): main held the name back with its
-  // review row. With the row gone, a dropped link falls to the exactly-one
-  // in-sport rule and links the baseball Bo Jackson, a man the gate's data
-  // (the set's own history) said was a different one (invariant 8).
+  // Main held the name back with its decided review row. A dropped link must
+  // not fall to the exactly-one in-sport rule and link the baseball Bo Jackson,
+  // a man the gate's data (the set's own history) said was a different one
+  // (invariant 8): `gatePlayerNames` holds the name back.
   test("a player deleted between the gate and the commit leaves the name unreviewed, never the baseball namesake", async () => {
     const t = convexTest(schema, modules);
     const w = await world(t);
@@ -1538,21 +1539,93 @@ describe("NEO-424: commitCardChecklist honours a set-history gate link (D5)", ()
   test("a team history link commits to that team and mints none", async () => {
     const t = convexTest(schema, modules);
     const w = await world(t);
-    const raiders = await t.run((ctx) =>
+    const athletics = await t.run((ctx) =>
       ctx.db.insert("teams", {
         location: "Oakland",
-        name: "Raiders",
-        nameNormalized: normalizeTeamName("Oakland Raiders"),
-        sportId: w.football,
+        name: "Athletics",
+        nameNormalized: normalizeTeamName("Oakland Athletics"),
+        sportId: w.sportId,
         lastUpdated: Date.now(),
       }),
     );
 
-    await commit(t, w, [makeCard({ teams: ["Oakland Raiders"] })], {
-      gateLinks: [{ kind: "team", name: "Oakland Raiders", teamId: raiders, origin: "setHistory" }],
+    await commit(t, w, [makeCard({ teams: ["Oakland Athletics"] })], {
+      gateLinks: [{ kind: "team", name: "Oakland Athletics", teamId: athletics, origin: "setHistory" }],
     });
 
-    expect((await readCards(t, w.variantTypeId))[0].teamOnCardIds).toEqual([raiders]);
+    expect((await readCards(t, w.variantTypeId))[0].teamOnCardIds).toEqual([athletics]);
     expect(await t.run((ctx) => ctx.db.query("teams").collect())).toHaveLength(1);
+  });
+
+  describe("checkGateLinks refuses what the set's sport and the origin do not allow (S2, P3)", () => {
+    const raidersIn = (t: T, sportId: Sel) =>
+      t.run((ctx) =>
+        ctx.db.insert("teams", {
+          location: "Oakland",
+          name: "Raiders",
+          nameNormalized: normalizeTeamName("Oakland Raiders"),
+          sportId,
+          lastUpdated: Date.now(),
+        }),
+      );
+
+    test("a team link of ANOTHER sport is dropped: the card gets no team and none is minted", async () => {
+      const t = convexTest(schema, modules);
+      const w = await world(t);
+      const raiders = await raidersIn(t, w.football);
+
+      await commit(t, w, [makeCard({ teams: ["Oakland Raiders"] })], {
+        gateLinks: [{ kind: "team", name: "Oakland Raiders", teamId: raiders, origin: "setHistory" }],
+      });
+
+      expect((await readCards(t, w.variantTypeId))[0].teamOnCardIds).toBeUndefined();
+      expect(await t.run((ctx) => ctx.db.query("teams").collect())).toHaveLength(1);
+    });
+
+    test("a Hall of Fame TEAM link is refused even in the set's sport: the name is an ordinary unanswered one (NEO-490)", async () => {
+      const t = convexTest(schema, modules);
+      const w = await world(t);
+      // The link points at a team the printed name does not resolve to on its
+      // own, so a link that was honoured would be the only way to land on it.
+      const team = await t.run((ctx) =>
+        ctx.db.insert("teams", {
+          name: "Some Team",
+          nameNormalized: normalizeTeamName("Some Team"),
+          sportId: w.sportId,
+          lastUpdated: Date.now(),
+        }),
+      );
+
+      await commit(t, w, [makeCard({ teams: ["Oakland Raiders"] })], {
+        gateLinks: [{ kind: "team", name: "Oakland Raiders", teamId: team, origin: "hallOfFame" }],
+      });
+
+      expect((await readCards(t, w.variantTypeId))[0].teamOnCardIds ?? []).not.toContain(team);
+    });
+
+    test("a Hall of Fame link to a player of ANOTHER sport is dropped and the name is held back, not given to the namesake", async () => {
+      const t = convexTest(schema, modules);
+      const w = await world(t);
+
+      const result = await commit(t, w, [makeCard({ players: ["Bo Jackson"] })], {
+        gateLinks: [{ kind: "player", name: "Bo Jackson", playerId: w.boFootball, origin: "hallOfFame" }],
+      });
+
+      expect(result.unreviewedNameCount).toBe(1);
+      const [card] = await readCards(t, w.variantTypeId);
+      expect(card.playerIds ?? []).toEqual([]);
+      expect(card.pendingPlayerNames).toContain("Bo Jackson");
+    });
+
+    test("a career-team link to a player of ANOTHER sport is dropped too; only a set-history link may cross sports", async () => {
+      const t = convexTest(schema, modules);
+      const w = await world(t);
+
+      await commit(t, w, [makeCard({ players: ["Bo Jackson"] })], {
+        gateLinks: [{ kind: "player", name: "Bo Jackson", playerId: w.boFootball, origin: "careerTeam" }],
+      });
+
+      expect((await readCards(t, w.variantTypeId))[0].playerIds ?? []).toEqual([]);
+    });
   });
 });

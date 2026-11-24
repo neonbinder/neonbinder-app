@@ -954,6 +954,23 @@ describe("PlayerTile: answers live on the card, the lookup in the walk's memory 
     expect(memory.answersOn(CARD, "player")).toEqual([]);
   });
 
+  it("Edit on a ruled-out name hands focus to the first control of the row it re-opens, not to <body> or another tile (A3)", async () => {
+    queryResults["players.nearMatches"] = [];
+    memory.rememberAnswer(CARD, "player", "Jackson Merrill", { kind: "notEntity", printed: "Jackson Merrill" });
+    const view = renderTile({ row: card(), items: [], ctx: context() });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Edit Jackson Merrill" })));
+    // Convex delivers the card with the name waiting again; the ruled-out row is replaced by the question.
+    rerenderWith(view, { row: card({ pendingPlayerNames: ["Jackson Merrill"] }), context: context({ names: [printedName()] }) });
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+    const group = screen.getByRole("group", { name: "Player Jackson Merrill" });
+    expect(screen.queryByText(/is not a player\./)).toBeNull();
+    const first = group.querySelector<HTMLElement>("button, input, [tabindex]");
+    expect(first).not.toBeNull();
+    expect(document.activeElement).toBe(first);
+  });
+
   it("a refused Edit on a ruled-out name keeps the ruling and says so", async () => {
     memory.rememberAnswer(CARD, "player", "Jackson Merrill", { kind: "notEntity", printed: "Jackson Merrill" });
     mutation("tidyNames.answerName").mockRejectedValueOnce(new Error("Server Error"));

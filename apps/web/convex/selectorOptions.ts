@@ -19893,6 +19893,16 @@ export const commitCardChecklistPrelude = internalMutation({
      */
     gateTeamNames: v.optional(v.array(v.string())),
     /**
+     * NEO-656 — the player names the gate linked automatically (set history,
+     * Hall of Fame, career team), as the commit received them, BEFORE
+     * `checkGateLinks` dropped any. On origin/main each had a decided review
+     * row, so a link that could no longer stand (the player deleted, or not in
+     * this sport) left the name unreviewed and never fell to the exactly-one
+     * silent link: a data claim holds back a guess (invariant 8). The gate
+     * stores no row now, so the names ride in here. Names only, never stored.
+     */
+    gatePlayerNames: v.optional(v.array(v.string())),
+    /**
      * NEO-296 — which half of the prelude this call runs. Absent runs BOTH,
      * which is what every caller did before the split and what the direct
      * callers in the test suite still do.
@@ -20369,6 +20379,8 @@ export const commitCardChecklistPrelude = internalMutation({
       if (row.kind === "team" && !row.source) gateTeamRowKeys.add(norm(row.name));
     }
     for (const name of args.gateTeamNames ?? []) gateTeamRowKeys.add(norm(name));
+    const gatePlayerRowKeys = new Set<string>();
+    for (const name of args.gatePlayerNames ?? []) gatePlayerRowKeys.add(norm(name));
     /**
      * NEO-602 (S1) — the team a printed name means when NOTHING needs an
      * operator: the gate's card rule (`resolveCardTeamName`), with the cards'
@@ -22048,6 +22060,13 @@ export const commitCardChecklistPrelude = internalMutation({
        * NEO-402 checklistNameResolutions answer folded into the prefetch.
        */
       const decision = reviewByKey.get(`player:${normalized}`)?.decision;
+      // NEO-656 — the gate linked this name and the link did not survive the
+      // commit's re-check (see `gatePlayerNames`): on main its decided row
+      // beat the fast path and, once unanswerable, left the name unreviewed.
+      if (!decision && gatePlayerRowKeys.has(normalized)) {
+        unreviewedPlayerNames.push(name);
+        continue;
+      }
       const decisionBeatsSingleMatch =
         decision !== undefined &&
         (decision.action !== "create" ||
@@ -26112,12 +26131,24 @@ export const validateOperatorPlayerIds = internalQuery({
  *  - the row's sport is read off the player's or team's own document, never
  *    from the client: an auto-linked player carries HIS home sport, which may
  *    differ from the set's (a set-history link across sports is a guest link),
- *    exactly as the gate set it.
+ *    exactly as the gate set it;
+ *  - the set's sport is walked from `selectorOptionId` here (never the action's
+ *    client-supplied `sportId`). A team of another sport is dropped, and so is
+ *    a player who does not play the set's sport unless the link is a
+ *    set-history one (the set's own earlier commit is the only proof a guest
+ *    link has). With no sport above the row nothing can be verified, so such
+ *    links are dropped (fail closed);
+ *  - a TEAM link whose origin is `hallOfFame` is dropped: a Hall of Fame fact
+ *    names a player, and main took team links only from the set's history and
+ *    the career team (NEO-490), leaving the name an ordinary unanswered row.
  *
  * Counts only leave this function, never a name.
  */
 export const checkGateLinks = internalQuery({
-  args: { gateLinks: v.array(gateLinkValidator) },
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    gateLinks: v.array(gateLinkValidator),
+  },
   returns: v.object({
     links: v.array(checkedGateLinkValidator),
     dropped: v.number(),
@@ -26130,7 +26161,9 @@ export const checkGateLinks = internalQuery({
     }
     const links: Array<Infer<typeof checkedGateLinkValidator>> = [];
     let dropped = 0;
+    const setSportId = await findSportForSelectorOption(ctx, args.selectorOptionId);
     const playerSport = new Map<string, Id<"selectorOptions"> | null>();
+    const playerPlaysSet = new Map<string, boolean>();
     const teamSport = new Map<string, Id<"selectorOptions"> | null>();
     for (const link of args.gateLinks) {
       if (link.kind === "player") {
@@ -26142,16 +26175,24 @@ export const checkGateLinks = internalQuery({
         if (!playerSport.has(id)) {
           const player = await ctx.db.get(id);
           playerSport.set(id, player ? player.sportId : null);
+          playerPlaysSet.set(
+            id,
+            !!player && !!setSportId && (await playerBelongsToSport(ctx, player, setSportId)),
+          );
         }
         const sportId = playerSport.get(id);
         if (!sportId) {
           dropped++;
           continue;
         }
+        if (link.origin !== "setHistory" && !playerPlaysSet.get(id)) {
+          dropped++;
+          continue;
+        }
         links.push({ kind: "player", name: link.name, playerId: id, origin: link.origin, sportId });
       } else {
         const id = link.teamId;
-        if (!id) {
+        if (!id || link.origin === "hallOfFame") {
           dropped++;
           continue;
         }
@@ -26160,7 +26201,7 @@ export const checkGateLinks = internalQuery({
           teamSport.set(id, team ? team.sportId : null);
         }
         const sportId = teamSport.get(id);
-        if (!sportId) {
+        if (!sportId || sportId !== setSportId) {
           dropped++;
           continue;
         }
@@ -26424,11 +26465,15 @@ export const commitCardChecklist = action({
     let gateLinksDropped = 0;
     for (let at = 0; at < gateLinksIn.length; at += GATE_LINKS_PER_CHECK) {
       const checked = await ctx.runQuery(internal.selectorOptions.checkGateLinks, {
+        selectorOptionId: args.selectorOptionId,
         gateLinks: gateLinksIn.slice(at, at + GATE_LINKS_PER_CHECK),
       });
       checkedGateLinks.push(...checked.links);
       gateLinksDropped += checked.dropped;
     }
+    // NEO-656 — every name the gate linked, kept even where the re-check
+    // dropped the link; the prelude holds those names back (`gatePlayerNames`).
+    const gatePlayerNames = gateLinksIn.filter((l) => l.kind === "player").map((l) => l.name);
     const gateTeamNames = args.gateTeamNames ?? [];
     if (gateTeamNames.length > GATE_LINKS_MAX) {
       throw new ConvexError(
@@ -26934,6 +26979,7 @@ export const commitCardChecklist = action({
       ).filter((entry) => entry.cards.length > 0),
       ...(checkedGateLinks.length > 0 ? { checkedGateLinks } : {}),
       ...(gateTeamNames.length > 0 ? { gateTeamNames } : {}),
+      ...(gatePlayerNames.length > 0 ? { gatePlayerNames } : {}),
       // NEO-335 — written by the page that opens the commit, read by all.
       ...(listingShortName ? { listingShortName } : {}),
       // NEO-345 — same page, same reason.

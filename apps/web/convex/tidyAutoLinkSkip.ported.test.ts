@@ -75,19 +75,52 @@ function commitLinked(
 }
 
 describe("an auto-link is applied by the commit (was: startBatch's decided rows)", () => {
-  test.each(["setHistory", "hallOfFame", "careerTeam"] as const)(
-    "%s: the card links to the player with no operator, even across sports",
+  test("setHistory: the card links to the player with no operator, even across sports", async () => {
+    const t = newT();
+    const w = await world(t);
+    const result = await commitLinked(t, w, "setHistory", [makeCard({ players: [BO] })]);
+
+    expect(result.unreviewedNameCount).toBe(0);
+    const [card] = await readCards(t, w.variantTypeId);
+    expect(card.playerIds).toEqual([w.bo]);
+    expect(card.playerLinks).toEqual([{ playerId: w.bo, nameOnCard: BO }]);
+    expect(card.pendingPlayerNames).toBeUndefined();
+    expect(await allOf(t, "players")).toHaveLength(1);
+  });
+
+  // S2: only the set's own history may cross sports; the other origins name an
+  // in-sport tie-break, so a foreign player is dropped and the name waits.
+  test.each(["hallOfFame", "careerTeam"] as const)(
+    "%s: a player of ANOTHER sport is refused at the commit and the name waits for the operator",
     async (origin) => {
       const t = newT();
       const w = await world(t);
       const result = await commitLinked(t, w, origin, [makeCard({ players: [BO] })]);
 
+      expect(result.unreviewedNameCount).toBe(1);
+      const [card] = await readCards(t, w.variantTypeId);
+      expect(card.playerIds ?? []).toEqual([]);
+      expect(card.pendingPlayerNames).toEqual([BO]);
+    },
+  );
+
+  test.each(["hallOfFame", "careerTeam"] as const)(
+    "%s: a player of the set's own sport links with no operator",
+    async (origin) => {
+      const t = newT();
+      const w = await world(t);
+      const inSport = await t.run((ctx) =>
+        ctx.db.insert("players", { name: BO, nameNormalized: normalizePlayerName(BO), sportId: w.sportId, lastUpdated: Date.now() }),
+      );
+      const result = await asAdmin(t).action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: w.variantTypeId,
+        sportId: w.sportId,
+        cards: [makeCard({ players: [BO] })],
+        gateLinks: [{ kind: "player", name: BO, playerId: inSport, origin }],
+      });
       expect(result.unreviewedNameCount).toBe(0);
       const [card] = await readCards(t, w.variantTypeId);
-      expect(card.playerIds).toEqual([w.bo]);
-      expect(card.playerLinks).toEqual([{ playerId: w.bo, nameOnCard: BO }]);
-      expect(card.pendingPlayerNames).toBeUndefined();
-      expect(await allOf(t, "players")).toHaveLength(1);
+      expect(card.playerIds).toEqual([inSport]);
     },
   );
 
@@ -102,9 +135,9 @@ describe("an auto-link is applied by the commit (was: startBatch's decided rows)
 });
 
 describe("Change on an auto-link (D6): answerName clear, on this card", () => {
-  async function linked(t: T, origin: "setHistory" | "hallOfFame" | "careerTeam" = "setHistory") {
+  async function linked(t: T) {
     const w = await world(t);
-    await commitLinked(t, w, origin, [
+    await commitLinked(t, w, "setHistory", [
       makeCard({ cardNumber: "1", players: [BO] }),
       makeCard({ cardNumber: "2", players: [BO] }),
     ]);
@@ -127,22 +160,20 @@ describe("Change on an auto-link (D6): answerName clear, on this card", () => {
       ...extra,
     });
 
-  test.each(["setHistory", "hallOfFame", "careerTeam"] as const)(
-    "%s: this card is unlinked and its name waits again; the other card keeps the link",
-    async (origin) => {
-      const t = newT();
-      const { w, cards } = await linked(t, origin);
-      await ask(t, w, cards[0]._id, { kind: "clear" });
+  // Nothing stores the link's origin, so Change is the same `clear` whichever rule made the link.
+  test("this card is unlinked and its name waits again; the other card keeps the link", async () => {
+    const t = newT();
+    const { w, cards } = await linked(t);
+    await ask(t, w, cards[0]._id, { kind: "clear" });
 
-      const after = await readCards(t, w.variantTypeId);
-      const first = after.find((c) => c._id === cards[0]._id)!;
-      const second = after.find((c) => c._id === cards[1]._id)!;
-      expect(first.playerIds ?? []).toEqual([]);
-      expect(first.pendingPlayerNames).toEqual([BO]);
-      expect(second.playerIds).toEqual([w.bo]);
-      expect(second.pendingPlayerNames).toBeUndefined();
-    },
-  );
+    const after = await readCards(t, w.variantTypeId);
+    const first = after.find((c) => c._id === cards[0]._id)!;
+    const second = after.find((c) => c._id === cards[1]._id)!;
+    expect(first.playerIds ?? []).toEqual([]);
+    expect(first.pendingPlayerNames).toEqual([BO]);
+    expect(second.playerIds).toEqual([w.bo]);
+    expect(second.pendingPlayerNames).toBeUndefined();
+  });
 
   test("Change, then pick the history player again: accepted across sports when the lookup offered it", async () => {
     const t = newT();

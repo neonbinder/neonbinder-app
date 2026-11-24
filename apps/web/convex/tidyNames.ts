@@ -365,23 +365,6 @@ export const lookupContext = internalQuery({
 /** The most history ids a lookup is handed (the candidate builder caps the rest). */
 export const LOOKUP_HISTORY_IDS_MAX = MAX_CANDIDATES_FOR_IDS * 2;
 
-/**
- * NEO-645 — `cleanseExternalName` for every name the gate hands in, bound again
- * after cleansing (NFC can lengthen a string). Refused by length and position,
- * never by echoing the name.
- */
-export function cleansedGateNames(items: ReadonlyArray<{ kind: string; name: string }>): string[] {
-  return items.map((item, index) => {
-    const name = cleanseExternalName(item.name);
-    if (name.length > MAX_PLAYER_NAME_LENGTH) {
-      throw new Error(
-        `the ${item.kind} name at index ${index} is ${name.length} characters once cleansed; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
-      );
-    }
-    return name;
-  });
-}
-
 // ─── answerName ─────────────────────────────────────────────────────────────
 
 /**
@@ -389,12 +372,14 @@ export function cleansedGateNames(items: ReadonlyArray<{ kind: string; name: str
  * shortcut all end here, so a created player is answered exactly as a linked
  * one.
  *
- * The name is read off the card (`printedRefOf`). A name the card no longer
- * holds (the walk is re-asking after Not a player, which it holds for the
- * sitting) is placed like a waiting one, under the spelling given.
+ * The name is read off the card (`printedRefOf`). A name the card does not
+ * hold is refused ("That name isn't on this card.", as on main), except for
+ * `clear`, which the walk sends to put a name Not a player took off back to
+ * waiting under the spelling given.
  *
  * `offered` (D5, ported from D7 of NEO-645): a link the lookup itself offered
- * may be in another sport, so the sport check is skipped for it.
+ * may be in another sport, so the sport check is skipped for it, but only for a
+ * player whose name or alias is this name (NEO-656 security audit, S1).
  */
 export async function applyAnswer(
   ctx: MutationCtx,
@@ -411,8 +396,13 @@ export async function applyAnswer(
   const { name, key } = nameAndKey(args.name);
   const card = await ctx.db.get(args.cardId);
   if (!card) throw new ConvexError("That card is gone. Refresh and try again.");
-  const { ref, unlinkedBefore } = printedRefOf(card, args.kind, key, name);
   const input = args.input;
+  // Main's guard (`resolveName`): only a name the card holds can be answered.
+  // `clear` is the one exception: the walk re-asks a name Not a player took off.
+  if (input.kind !== "clear" && !cardHoldsName(card, args.kind, key)) {
+    throw new ConvexError("That name isn't on this card.");
+  }
+  const { ref, unlinkedBefore } = printedRefOf(card, args.kind, key, name);
 
   let change: NameChange;
   let previousAnswer: StoredAnswer | undefined;
@@ -420,7 +410,15 @@ export async function applyAnswer(
     if (args.kind !== "player") throw new ConvexError("That answer is for a player name.");
     const player = await ctx.db.get(input.playerId);
     if (!player) throw new ConvexError("That player is gone. Pick them again.");
-    if (!args.offered) {
+    // `offered` is a client flag, so it is re-derived here: it skips the sport
+    // check only for a player who answers to this very name (their own name or
+    // one of their aliases), which is what a lookup offers. Anyone else gets
+    // the ordinary sport check.
+    const offeredForName =
+      args.offered === true &&
+      (player.nameNormalized === key ||
+        (player.aliases ?? []).some((a) => normalizeEntityName(a) === key));
+    if (!offeredForName) {
       if (!args.sportId) throw new ConvexError("Pick a sport.");
       await assertSport(ctx, args.sportId);
       if (!(await playerBelongsToSport(ctx, player, args.sportId))) {
@@ -586,6 +584,10 @@ export const createPlayer = mutation({
     ) {
       throw new ConvexError("This name already has an answer. Change it first.");
     }
+    // Only a name the card is waiting on can get a new player (main's guard).
+    if (!cardHoldsName(card, "player", key)) {
+      throw new ConvexError("That name isn't on this card.");
+    }
     // NEO-643 (career-check's `cleanNewPlayerName`, ported): the name a new player
     // is stored under is cleansed (stray backslash, soft hyphen, zero-width and
     // other invisible characters gone, whitespace collapsed) like every external name.
@@ -709,7 +711,7 @@ export const applyToAllPlan = internalQuery({
       if (!linked) throw new ConvexError("Answer this card first.");
     } else if (answer.kind === "linkTeam") {
       if (args.kind !== "team") throw new ConvexError("That answer is for a team name.");
-      if (!(card.teamOnCardIds ?? []).includes(answer.teamId)) {
+      if (!(card.teamOnCardIds ?? []).includes(answer.teamId) || cardHoldsName(card, args.kind, key)) {
         throw new ConvexError("Answer this card first.");
       }
     } else if (cardHoldsName(card, args.kind, key)) {

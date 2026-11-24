@@ -128,6 +128,84 @@ describe("WalkMemory lookups", () => {
     expect(m.lookupFor("c1", "player", "Jackson Merrill", "sport-1")).toEqual(READY);
   });
 
+  describe("Add anyway asks again in full (main's awaitsOperatorBeforeLookup)", () => {
+    const CHOICE = {
+      status: "ready" as const,
+      enrichment: { existingCandidates: [{ playerId: "p1", name: "A", careerSummary: "" }] },
+    } as never;
+    const target = { ...ids("c1"), kind: "player" as const, name: "Jackson Merrill" };
+
+    it("asks again with full: true, keeps the choice on screen meanwhile, and files the full answer", async () => {
+      const m = new WalkMemory();
+      const second = deferred<typeof READY>();
+      const run = vi.fn().mockResolvedValueOnce(CHOICE).mockReturnValueOnce(second.promise);
+      ask(m, run);
+      await flush();
+      expect(run.mock.calls[0][0]).not.toHaveProperty("full");
+      m.askFull(target, run);
+      expect(run.mock.calls[1][0]).toMatchObject({ full: true });
+      const during = m.lookupFor("c1", "player", "Jackson Merrill", "sport-1");
+      expect(during?.status).toBe("pending");
+      expect(during?.enrichment).toEqual((CHOICE as { enrichment: unknown }).enrichment);
+      second.resolve(READY);
+      await flush();
+      expect(m.lookupFor("c1", "player", "Jackson Merrill", "sport-1")).toEqual(READY);
+    });
+
+    it("does nothing when the first answer already included Wikidata, and asks in full only once", async () => {
+      const m = new WalkMemory();
+      const run = vi.fn().mockResolvedValue(READY);
+      ask(m, run);
+      await flush();
+      m.askFull(target, run);
+      expect(run).toHaveBeenCalledTimes(1);
+
+      const held = new WalkMemory();
+      const run2 = vi.fn().mockResolvedValue(CHOICE);
+      ask(held, run2);
+      await flush();
+      held.askFull(target, run2);
+      held.askFull(target, run2);
+      expect(run2).toHaveBeenCalledTimes(2);
+    });
+
+    it("a failed full ask is an error that keeps the choice, and Try again asks in full again", async () => {
+      const m = new WalkMemory();
+      const run = vi.fn().mockResolvedValueOnce(CHOICE).mockRejectedValueOnce(new Error("down")).mockResolvedValueOnce(READY);
+      ask(m, run);
+      await flush();
+      m.askFull(target, run);
+      await flush();
+      const failed = m.lookupFor("c1", "player", "Jackson Merrill", "sport-1");
+      expect(failed?.status).toBe("error");
+      expect(failed?.enrichment).toBeDefined();
+      m.retry(target, run);
+      await flush();
+      expect(run.mock.calls[2][0]).toMatchObject({ full: true });
+    });
+
+    it("an answer to the first ask that lands after Add anyway never overwrites the full one", async () => {
+      const m = new WalkMemory();
+      const first = deferred<typeof CHOICE>();
+      const run = vi.fn().mockReturnValueOnce(first.promise).mockResolvedValueOnce(READY);
+      ask(m, run);
+      m.askFull(target, run);
+      await flush();
+      first.resolve(CHOICE);
+      await flush();
+      expect(m.lookupFor("c1", "player", "Jackson Merrill", "sport-1")).toEqual(READY);
+    });
+
+    it("a team is always asked in full already", async () => {
+      const m = new WalkMemory();
+      const run = vi.fn().mockResolvedValue(CHOICE);
+      m.ask({ ...ids("c1"), kind: "team", name: "Nationals" }, run);
+      await flush();
+      m.askFull({ ...ids("c1"), kind: "team", name: "Nationals" }, run);
+      expect(run).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("a runner that throws synchronously is an error too", async () => {
     const m = new WalkMemory();
     ask(m, () => {

@@ -106,7 +106,7 @@ describe("createPlayer — the answer, on this card only", () => {
     expect((await card(t, other))!.pendingPlayerNames).toEqual(["Rookie Newguy"]);
   });
 
-  test("a name Not-a-player took off the card is placed again when the walk re-asks (the card holds no stored ruling)", async () => {
+  test("Edit after Not a player puts the name back to waiting, and only then can a player be created for it", async () => {
     const t = newT();
     const { w, open } = await setup(t, "Rookie Newguy");
     await t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
@@ -117,8 +117,27 @@ describe("createPlayer — the answer, on this card only", () => {
       answer: { kind: "notEntity" },
     });
     expect((await card(t, open))!.pendingPlayerNames).toBeUndefined();
+    // Not on the card any more: a create for it is refused and makes nobody.
+    await expect(create(t, open, "Rookie Newguy")).rejects.toThrow(/isn't on this card/);
+    expect(await players(t)).toEqual([]);
+    // The client's real path: Edit (clear) first, then create.
+    await t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
+      cardId: open,
+      kind: "player",
+      name: "Rookie Newguy",
+      sportId: w.sport,
+      answer: { kind: "clear" },
+    });
+    expect((await card(t, open))!.pendingPlayerNames).toEqual(["Rookie Newguy"]);
     const out = await create(t, open, "Rookie Newguy");
     expect((await card(t, open))!.playerIds).toEqual([out.playerId]);
+  });
+
+  test("a name the card never held is refused and creates nobody", async () => {
+    const t = newT();
+    const { open } = await setup(t, "Rookie Newguy");
+    await expect(create(t, open, "Somebody Else")).rejects.toThrow(/isn't on this card/);
+    expect(await players(t)).toEqual([]);
   });
 
   test("a second create for the same name is refused: the name already has an answer", async () => {

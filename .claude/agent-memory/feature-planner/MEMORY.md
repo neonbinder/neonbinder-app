@@ -96,3 +96,4 @@
 - [Marketplace ids are never Convex field names](marketplace-ids-are-never-convex-field-names.md) — non-ASCII keys throw client-side, unlogged; arrays of {id,label}; server accepts old shape (NEO-625)
 - [Removing a seen/ack needs a per-kind fix audit](removing-a-seen-ack-needs-a-per-kind-fix-audit.md) — newPlayerCareer has no clearing writer; spread-doc returns need projection (NEO-656)
 - [Live attention facts: bucket by player](live-attention-facts-bucket-by-player-not-by-card-reads.md) — careerGap live = fixed client buckets of no-card queries; a stored note can be a rule guard (teamFillOf) (NEO-656)
+- [Removing stored rows hides implicit guards](removing-stored-rows-hides-implicit-guards.md) — on-card refusal, lookup deferral, origin whitelist rode on row existence; port or label each (NEO-656)

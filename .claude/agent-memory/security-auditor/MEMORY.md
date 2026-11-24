@@ -94,7 +94,7 @@
 - [Neo446 rejected names and copies](patterns_neo446_rejected_names_and_copies.md) — names passing `_name_rejection` are not display-safe
 - [Bundler plugin disable drops cleanup](patterns_bundler_plugin_disable_drops_cleanup.md) — `disable` also drops delete-after-upload
 - [Address step bundle order](patterns_neo434_address_step_bundle_order.md) — "First import" is a source claim; read the built entry, run a timeline
-- [Neo424 offered-on-stored-row](patterns_neo424_offered_on_stored_row.md) — id relaxation keyed on stored row fields is as narrow as that field's
+- [Neo424 offered-on-stored-row](patterns_neo424_offered_on_stored_row.md) — relaxation keyed on stored row fields; NEO-656: survives as client flag, re-derive
 - [Signed URL scrub coverage](patterns_signed_url_scrub_coverage.md) — which pipelines scrubUrlSecrets covers; test a new shape via strip-types
 - [Neo475 body scrubber](patterns_neo475_body_scrubber.md) — run adversarial inputs; x-amzn-* wildcard + unredacted headers; slice-before-redact
 - [Neo481 photo edit renders](patterns_neo481_photo_edit_renders.md) — per-object caps ≠ rate/concurrency; runAfter bypasses the capacity-pinned

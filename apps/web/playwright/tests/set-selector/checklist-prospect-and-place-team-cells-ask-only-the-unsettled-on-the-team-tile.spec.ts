@@ -277,8 +277,8 @@ test(
       await expect(place.getByRole("button", editRow(AMBIGUOUS.cell))).toBeVisible();
       await expect(placeTeams).toHaveCount(0);
       await expect(teamTile.getByText("Suggested from the player's other cards.", { exact: true })).toBeVisible();
-      const cubs = teamTile.getByRole("button", { name: `${BY_PLAYER.team} · ${AMBIGUOUS.player} played here`, exact: true });
-      await expect(cubs).toHaveAttribute("aria-current", "true");
+      const cubs = teamTile.getByRole("button", { name: `${BY_PLAYER.team}, suggested · ${AMBIGUOUS.player} played here`, exact: true });
+      await expect(cubs).toBeVisible();
       await expect(teamTile.getByRole("button", { name: /^Save teams?$/ })).toHaveCount(0);
       await expect(teamTile.getByRole("button", { name: "No team on this card", exact: true })).toBeVisible();
       await expect(pinkTile(page, "Team")).toHaveCount(1);
