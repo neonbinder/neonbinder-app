@@ -152,12 +152,12 @@ describe("TeamFillChips", () => {
     // A chip acts (a click saves it), so it is a plain button, not a toggle.
     expect(chosen.getAttribute("aria-pressed")).toBeNull();
     expect(idle.getAttribute("aria-pressed")).toBeNull();
-    // The preselected chip says so by name, not by a state a reader may skip
-    // (happy-dom puts a space before the sr-only span that a real browser does not).
+    // The preselected chip says so by name, not by a state a reader may skip. The
+    // name is set whole (aria-label), so Chromium cannot pad a sr-only span in it.
     expect(chosen.getAttribute("aria-current")).toBeNull();
-    expect(chosen.querySelector(".sr-only")?.textContent).toBe(", suggested");
-    expect(screen.getByRole("button", { name: /^San Diego Padres ?, suggested/ })).toBe(chosen);
-    expect(idle.textContent).not.toContain("suggested");
+    expect(chosen.getAttribute("aria-label")).toBe("San Diego Padres, suggested · Jackson Merrill played here");
+    expect(screen.getByRole("button", { name: "San Diego Padres, suggested · Jackson Merrill played here" })).toBe(chosen);
+    expect(idle.getAttribute("aria-label")).not.toContain("suggested");
     expect(chosen.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
     expect(idle.querySelector("svg")).toBeNull();
   });
@@ -192,7 +192,7 @@ describe("TeamFillChips", () => {
     }
     // The Mariners chip is not preselected, so it shows the player's years there.
     expect(screen.getByRole("button", { name: "Seattle Mariners · 2015–2019" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /^San Diego Padres ?, suggested · Jackson Merrill played here$/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "San Diego Padres, suggested · Jackson Merrill played here" })).toBeTruthy();
   });
 
   it("with two players on the card the years line names each player after the separator", () => {
@@ -239,8 +239,8 @@ describe("TeamFillChips", () => {
     const note = container.querySelector<HTMLElement>('p[id^="fill-together-"]');
     expect(note?.textContent).toBe("Suggested teams save together.");
     expect(note?.className).toContain("sr-only");
-    const padres = screen.getByRole("button", { name: /^San Diego Padres ?, suggested/ });
-    const mariners = screen.getByRole("button", { name: /^Seattle Mariners ?, suggested/ });
+    const padres = screen.getByRole("button", { name: /^San Diego Padres, suggested/ });
+    const mariners = screen.getByRole("button", { name: /^Seattle Mariners, suggested/ });
     for (const chip of [padres, mariners]) {
       expect(chip.getAttribute("aria-describedby")).toBe(note?.id);
       // The note describes the chip; it is not part of its name.

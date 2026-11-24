@@ -129,6 +129,20 @@ export function reviewSkippedLabel(skipped: number): string {
   return skipped === 1 ? "Review the skipped card" : `Review the ${skipped} skipped`;
 }
 
+/** The end screen's way back to blue cards that were saved: "Check the 2 cards still to check". */
+export function checkStillToCheckLabel(count: number): string {
+  return count === 1 ? "Check the card still to check" : `Check the ${count} cards still to check`;
+}
+
+/**
+ * The end screen's review button names what it reviews (NEO-656, B20): a skipped
+ * (pink) card gets "Review the skipped card(s)"; when only blue cards remain,
+ * "Check the N cards still to check". The tally beside it counts the same way.
+ */
+export function reviewButtonLabel(skipped: number, stillToCheck: number): string {
+  return skipped > 0 ? reviewSkippedLabel(skipped) : checkStillToCheckLabel(stillToCheck);
+}
+
 /** "3 to fix before this card can save. Skip it and it can't be listed until it's fixed." */
 export function mustFixLine(fix: number): string {
   return `${fix} to fix before this card can save. Skip it and it can't be listed until it's fixed.`;
@@ -787,7 +801,7 @@ function WalkDialog({
                   <>
                     {skippedIds.length > 0 && (
                       <NeonButton type="button" variant="secondary" onClick={reviewSkipped}>
-                        {reviewSkippedLabel(skippedIds.length)}
+                        {reviewButtonLabel(skipped, stillToCheck)}
                       </NeonButton>
                     )}
                     <NeonButton type="button" onClick={onClose}>

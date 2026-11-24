@@ -707,9 +707,9 @@ describe("TeamTile", () => {
       };
     };
     const career = (...teams: ReturnType<typeof T>[]) => ({ tier: "career", teams });
-    // A preselected chip carries the check mark and says ", suggested" to a reader (sr-only);
+    // A preselected chip carries the check mark and says ", suggested" in its accessible name;
     // a chip is a plain button (a click saves it).
-    const marked = (chip: HTMLElement) => String(/, suggested/.test(chip.textContent ?? ""));
+    const marked = (chip: HTMLElement) => String(/, suggested/.test(chip.getAttribute("aria-label") ?? ""));
     const pressed = (name: RegExp | string) => marked(screen.getByRole("button", { name }));
     const allChips = (name: RegExp) => screen.getAllByRole("button", { name });
     // There is no Save button: nothing is written until a team is clicked.

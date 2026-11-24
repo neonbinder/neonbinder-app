@@ -103,15 +103,38 @@ describe("useLeafCareerGaps", () => {
     expect(result.current.gapsByCard.get("a")).toHaveLength(1);
   });
 
-  it("stays ready (never flips back) while a team change re-asks", () => {
+  it("keeps the last gaps on screen while a new pair is asked about, but is not ready until its answer lands", () => {
     answer = [{ selectorOptionId: "leaf", playerId: "p1", teamId: "t1" }];
     let cards = [card("a")];
     const { result, rerender } = renderHook(() => useLeafCareerGaps(cards));
-    expect(result.current.gapsByCard.get("a")).toHaveLength(1);
-    cards = [card("a", { teamOnCardIds: ["t2"] as never })];
+    expect(result.current.ready).toBe(true);
+    cards = [card("a"), card("b", { teamOnCardIds: ["t2"] as never })];
     answer = undefined; // the new question is in flight
     rerender();
+    expect(result.current.gapsByCard.get("a")).toHaveLength(1); // no blink
+    expect(result.current.ready).toBe(false);
+    answer = [];
+    rerender();
     expect(result.current.ready).toBe(true);
+    expect(result.current.gapsByCard.size).toBe(0);
+  });
+
+  it("is not ready from the stale empty answer when a commit adds the first pairs (NEO-656 post-commit walk)", () => {
+    // Before the commit no card named a team: nothing to ask, "ready" with no gaps.
+    let cards = [card("a", { teamOnCardIds: [] })];
+    const { result, rerender } = renderHook(() => useLeafCareerGaps(cards));
+    expect(result.current.ready).toBe(true);
+    expect(result.current.gapsByCard.size).toBe(0);
+    // The commit lands a team: a pair to ask about, the answer not here yet.
+    cards = [card("a")];
+    answer = undefined;
+    rerender();
+    expect(result.current.ready).toBe(false);
+    // The answer arrives: the gap is there and only now is it ready.
+    answer = [{ selectorOptionId: "leaf", playerId: "p1", teamId: "t1" }];
+    rerender();
+    expect(result.current.ready).toBe(true);
+    expect(result.current.gapsByCard.get("a")).toHaveLength(1);
   });
 
   it("the cards stay on the answer when a card is written but no pair changed (the same pairs, one question)", () => {

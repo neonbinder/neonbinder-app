@@ -382,7 +382,10 @@ export const LOOKUP_HISTORY_IDS_MAX = MAX_CANDIDATES_FOR_IDS * 2;
  * may be in another sport, so the sport check is skipped for it, but only for a
  * player whose name or alias is this name, or one the server itself offers for
  * it (the set's history players, rule E1's prior-year pick) (NEO-656 security
- * audit, S1; N1).
+ * audit, S1; N1). The history proof is a scan, which a mutation must not run:
+ * `answerOfferedName` (an action) runs it and hands the result in as `proven`.
+ * The public `answerName` / `createPlayer` never pass it, so a client cannot
+ * claim it.
  */
 export async function applyAnswer(
   ctx: MutationCtx,
@@ -394,6 +397,8 @@ export async function applyAnswer(
     sportId: Id<"selectorOptions"> | undefined;
     input: Infer<typeof tidyAnswerInputValidator>;
     offered?: boolean;
+    /** Server-computed (`answerOfferedName`): the set's history offers this player for the name. */
+    proven?: boolean;
   },
 ): Promise<void> {
   const { name, key } = nameAndKey(args.name);
@@ -419,12 +424,13 @@ export async function applyAnswer(
     // the ordinary sport check.
     // Or one the server itself offers for this name: the set's own history
     // players and rule E1's prior-year pick, under whatever spelling the set
-    // printed (main took any id in the row's own preselect / candidates).
+    // printed (main took any id in the row's own preselect / candidates). The
+    // scan that proves it ran in `answerOfferedName`; here it is `proven`.
     const offeredForName =
       args.offered === true &&
       (player.nameNormalized === key ||
         (player.aliases ?? []).some((a) => normalizeEntityName(a) === key) ||
-        (await setHistoryOffersPlayer(ctx, card.selectorOptionId, name, player._id)));
+        args.proven === true);
     if (!offeredForName) {
       if (!args.sportId) throw new ConvexError("Pick a sport.");
       await assertSport(ctx, args.sportId);
@@ -481,15 +487,17 @@ export async function applyAnswer(
  * `sportId` is the sport the question is asked in (the Sport chip). `offered`
  * says the player is one the lookup offered, who may be in another sport.
  */
+const answerNameArgs = {
+  cardId: v.id("cardChecklist"),
+  kind: tidyNameKindValidator,
+  name: v.string(),
+  sportId: v.id("selectorOptions"),
+  answer: tidyAnswerInputValidator,
+  offered: v.optional(v.literal(true)),
+};
+
 export const answerName = mutation({
-  args: {
-    cardId: v.id("cardChecklist"),
-    kind: tidyNameKindValidator,
-    name: v.string(),
-    sportId: v.id("selectorOptions"),
-    answer: tidyAnswerInputValidator,
-    offered: v.optional(v.literal(true)),
-  },
+  args: answerNameArgs,
   returns: v.null(),
   handler: async (ctx, args) => {
     const userId = await requireAdmin(ctx);
@@ -501,6 +509,97 @@ export const answerName = mutation({
       input: args.answer,
       offered: args.offered === true,
     });
+    return null;
+  },
+});
+
+/**
+ * The cheap half of an `offered` answer, read before any scan: does the player
+ * answer to this very name, or already play the question's sport? Either way
+ * the mutation needs no proof. `selectorOptionId` is where the scan runs.
+ * A missing card or player says "no proof needed": the mutation names the error.
+ */
+export const offeredProofProbe = internalQuery({
+  args: {
+    cardId: v.id("cardChecklist"),
+    name: v.string(),
+    sportId: v.id("selectorOptions"),
+    playerId: v.id("players"),
+  },
+  returns: v.object({
+    selectorOptionId: v.optional(v.id("selectorOptions")),
+    needsProof: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    const card = await ctx.db.get(args.cardId);
+    const player = await ctx.db.get(args.playerId);
+    if (!card || !player) return { needsProof: false };
+    const { key } = nameAndKey(args.name);
+    if (
+      player.nameNormalized === key ||
+      (player.aliases ?? []).some((a) => normalizeEntityName(a) === key) ||
+      (await playerBelongsToSport(ctx, player, args.sportId))
+    ) {
+      return { selectorOptionId: card.selectorOptionId, needsProof: false };
+    }
+    return { selectorOptionId: card.selectorOptionId, needsProof: true };
+  },
+});
+
+/** `answerName`'s write with the history proof the action computed. Never public. */
+export const applyOfferedAnswer = internalMutation({
+  args: { ...answerNameArgs, userId: v.string(), proven: v.boolean() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await applyAnswer(ctx, args.userId, {
+      cardId: args.cardId,
+      kind: args.kind,
+      name: args.name,
+      sportId: args.sportId,
+      input: args.answer,
+      offered: args.offered === true,
+      proven: args.proven,
+    });
+    return null;
+  },
+});
+
+/**
+ * `answerName` for a player the lookup offered (`offered`): the answer a pick
+ * under another spelling than the card's, or in another sport, needs. The
+ * set's history scan cannot run in a mutation, so it runs here, like the
+ * commit's `proveSetHistoryLinks`, only when the player neither answers to the
+ * name nor plays the sport, and the result is handed to an internal mutation.
+ * A scan that errors proves nothing: the ordinary sport refusal follows.
+ * Same args and effect as `answerName`.
+ */
+export const answerOfferedName = action({
+  args: answerNameArgs,
+  returns: v.null(),
+  handler: async (ctx, args): Promise<null> => {
+    const userId = await requireAdmin(ctx);
+    let proven = false;
+    if (args.offered === true && args.answer.kind === "linkPlayer" && args.kind === "player") {
+      const probe = await ctx.runQuery(internal.tidyNames.offeredProofProbe, {
+        cardId: args.cardId,
+        name: args.name,
+        sportId: args.sportId,
+        playerId: args.answer.playerId,
+      });
+      if (probe.needsProof && probe.selectorOptionId) {
+        try {
+          proven = await setHistoryOffersPlayer(
+            ctx,
+            probe.selectorOptionId,
+            nameAndKey(args.name).name,
+            args.answer.playerId,
+          );
+        } catch {
+          proven = false;
+        }
+      }
+    }
+    await ctx.runMutation(internal.tidyNames.applyOfferedAnswer, { ...args, userId, proven });
     return null;
   },
 });

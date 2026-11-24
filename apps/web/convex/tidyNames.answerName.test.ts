@@ -571,7 +571,9 @@ describe("answerName — validation and the gate", () => {
   // NEO-656 (N1): main took any id in the row's own preselect / candidates, so a
   // history pick or the prior-year pick offered under ANOTHER spelling than the
   // card's was accepted. `offered` is a client flag, so the server re-derives
-  // those two picks itself (the gate's own scan) rather than trusting it.
+  // those two picks itself (the gate's own scan) rather than trusting it. The scan
+  // runs in the `answerOfferedName` action (a mutation must not scan a big set)
+  // and reaches the write as a server-computed `proven`, never from the client.
   describe("offered: a pick the server itself derives for this name (N1)", () => {
     /** A Basketball player known to the set's cards as "Magic Johnson" only: no alias says so. */
     const nicknamed = (t: T) =>
@@ -606,7 +608,7 @@ describe("answerName — validation and the gate", () => {
       lastUpdated: 1,
     });
     const offeredLink = (t: T, w: World, cardId: Id<"cardChecklist">, playerId: Id<"players">) =>
-      t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
+      t.withIdentity(ADMIN).action(api.tidyNames.answerOfferedName, {
         cardId,
         kind: "player",
         name: "Magic Johnson",
@@ -689,6 +691,82 @@ describe("answerName — validation and the gate", () => {
       await expect(offeredLink(t, w, open, mj)).rejects.toThrow(/isn't in this sport/);
       expect((await card(t, open))!.playerIds).toBeUndefined();
       expect((await card(t, open))!.pendingPlayerNames).toEqual(["Magic Johnson"]);
+    });
+
+    test("the public mutation does not run the history proof: a differently spelled history pick is refused there, and `proven` cannot be passed", async () => {
+      const t = newT();
+      const w = await world(t);
+      const earvin = await nicknamed(t);
+      const open = await t.run(async (ctx) => {
+        await ctx.db.insert("cardChecklist", {
+          ...printedLink(w.insert, earvin, "Magic Johnson"),
+          listingTitle: "#H1",
+          sportId: w.sport,
+        });
+        return printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: "Magic Johnson" }] });
+      });
+      const args = {
+        cardId: open,
+        kind: "player" as const,
+        name: "Magic Johnson",
+        sportId: w.sport,
+        answer: { kind: "linkPlayer" as const, playerId: earvin },
+        offered: true as const,
+      };
+      await expect(t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, args)).rejects.toThrow(
+        /isn't in this sport/,
+      );
+      await expect(
+        t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, { ...args, proven: true } as never),
+      ).rejects.toThrow();
+      await expect(
+        t.withIdentity(ADMIN).action(api.tidyNames.answerOfferedName, { ...args, proven: true } as never),
+      ).rejects.toThrow();
+      expect((await card(t, open))!.playerIds).toBeUndefined();
+    });
+
+    test("a player who plays the question's sport links through the action with no history at all", async () => {
+      const t = newT();
+      const w = await world(t);
+      const open = await t.run((ctx) =>
+        printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: BO }] }),
+      );
+      const bo = await t.run((ctx) =>
+        ctx.db.insert("players", {
+          name: "Robert Jackson",
+          nameNormalized: normalizeEntityName("Robert Jackson"),
+          sportId: w.sport,
+          lastUpdated: 1,
+        }),
+      );
+      await t.withIdentity(ADMIN).action(api.tidyNames.answerOfferedName, {
+        cardId: open,
+        kind: "player",
+        name: BO,
+        sportId: w.sport,
+        answer: { kind: "linkPlayer", playerId: bo },
+        offered: true,
+      });
+      expect((await card(t, open))!.playerIds).toEqual([bo]);
+    });
+
+    test("a signed-out caller and a non-admin are refused by the action", async () => {
+      const t = newT();
+      const w = await world(t);
+      const earvin = await nicknamed(t);
+      const open = await t.run((ctx) =>
+        printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: "Magic Johnson" }] }),
+      );
+      const args = {
+        cardId: open,
+        kind: "player" as const,
+        name: "Magic Johnson",
+        sportId: w.sport,
+        answer: { kind: "linkPlayer" as const, playerId: earvin },
+        offered: true as const,
+      };
+      await expect(t.action(api.tidyNames.answerOfferedName, args)).rejects.toThrow();
+      await expect(t.withIdentity(MEMBER).action(api.tidyNames.answerOfferedName, args)).rejects.toThrow();
     });
 
     test("without offered: true a history pick of another sport is refused like any other", async () => {

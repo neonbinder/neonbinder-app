@@ -23,7 +23,12 @@ export type CareerGapCard = {
 export type LeafCareerGaps = {
   /** Cards with a gap, by card id. A card with none is absent. */
   gapsByCard: ReadonlyMap<string, readonly LiveCareerGap[]>;
-  /** The first answer has arrived (or there is nothing to ask). Never flips back. */
+  /**
+   * The answer is for the pairs the cards name NOW (or there is nothing to
+   * ask). It drops to false while a changed question is in flight, even
+   * though `gapsByCard` keeps showing the last answer, so a decision that
+   * must read the real gaps (the post-commit walk) never acts on a stale one.
+   */
   ready: boolean;
 };
 
@@ -51,7 +56,8 @@ const pairKey = (selectorOptionId: string, playerId: string, teamId: string) =>
  * is handed back on its card. Nothing is stored.
  *
  * The last answer is held while the next loads (a team change re-keys the
- * query), so a badge never blinks off for the round trip.
+ * query), so a badge never blinks off for the round trip. `ready` is not held:
+ * it is true only when the answer in hand was asked for the current pairs.
  */
 export function useLeafCareerGaps(cards: readonly CareerGapCard[] | undefined): LeafCareerGaps {
   const pairs = useMemo(() => {
@@ -92,5 +98,8 @@ export function useLeafCareerGaps(cards: readonly CareerGapCard[] | undefined): 
     return out;
   }, [cards, held]);
 
-  return { gapsByCard, ready: cards !== undefined && (pairs.length === 0 || held !== undefined) };
+  // `answer` is `undefined` from the moment the pairs change until the query
+  // answers THEM, so it (not the held copy, which is the previous question's)
+  // says the gaps match the cards in hand.
+  return { gapsByCard, ready: cards !== undefined && (pairs.length === 0 || answer !== undefined) };
 }

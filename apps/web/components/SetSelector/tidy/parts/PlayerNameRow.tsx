@@ -1,6 +1,6 @@
 import { useId, useMemo, useRef, useState } from "react";
 import { QuestionMarkCircleIcon } from "@heroicons/react/16/solid";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
 import { formatCareerLine } from "../../../../lib/players/player-description";
@@ -241,6 +241,9 @@ function UnansweredPlayerName({
   leafCards: readonly TidyRow[];
 }) {
   const answerName = useMutation(api.tidyNames.answerName);
+  // A pick the lookup offered goes through the action that proves it server-side
+  // (the set's history scan cannot run in a mutation).
+  const answerOfferedName = useAction(api.tidyNames.answerOfferedName);
   const createPlayer = useMutation(api.tidyNames.createPlayer);
   const answered = useAnswered();
   const memory = useWalkMemory();
@@ -367,7 +370,8 @@ function UnansweredPlayerName({
   const link = (playerId: string) =>
     answer(
       async () => {
-        await answerName({
+        const offered = offeredIds.has(playerId);
+        await (offered ? answerOfferedName : answerName)({
           cardId: row._id,
           kind: "player",
           name: name.printed,
@@ -377,7 +381,7 @@ function UnansweredPlayerName({
             playerId: playerId as Id<"players">,
             ...(crossSport && addSetSport ? { addSetSport: true as const } : {}),
           },
-          ...(offeredIds.has(playerId) ? { offered: true as const } : {}),
+          ...(offered ? { offered: true as const } : {}),
         });
         setLinkOpen(false);
       },

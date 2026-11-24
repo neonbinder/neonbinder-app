@@ -149,7 +149,7 @@ vi.mock("./tiles/TitleTile", async () => {
   };
 });
 
-import TidyUpWalk, { mustFixLine, reviewSkippedLabel } from "./TidyUpWalk";
+import TidyUpWalk, { checkStillToCheckLabel, mustFixLine, reviewButtonLabel, reviewSkippedLabel } from "./TidyUpWalk";
 import { useDrillUrlState } from "../useDrillUrlState";
 import { useTidyWalkUrl } from "./useTidyWalkUrl";
 import { forgetSearchWrite } from "../live-search-params";
@@ -1265,5 +1265,16 @@ describe("NEO-656: the walk reads live data and keeps nothing", () => {
     await waitFor(() => expect(url()).toBe("?tidy=done"));
     expect(screen.getByText("1 card still to check")).toBeTruthy();
     expect(screen.queryByText(/skipped, not ready to list/)).toBeNull();
+    // The review button names what it reviews: no "skipped" beside "0 skipped, 1 still to check".
+    expect(button("Check the card still to check")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /skipped/ })).toBeNull();
+  });
+
+  it("words the end-screen review button by what remains: pink is skipped, blue alone is still to check", () => {
+    expect(checkStillToCheckLabel(1)).toBe("Check the card still to check");
+    expect(checkStillToCheckLabel(2)).toBe("Check the 2 cards still to check");
+    expect(reviewButtonLabel(1, 0)).toBe("Review the skipped card");
+    expect(reviewButtonLabel(3, 2)).toBe("Review the 3 skipped");
+    expect(reviewButtonLabel(0, 4)).toBe("Check the 4 cards still to check");
   });
 });

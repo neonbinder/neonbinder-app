@@ -1296,6 +1296,18 @@ describe("NEO-645 — a refused Tidy Up write persists nothing", () => {
       (c, as) => as().mutation(api.tidyCards.saveCard, { cardId: c.cardId, gaps: [] }),
     ],
     [
+      "tidyNames.answerOfferedName",
+      (c, as) =>
+        as().action(api.tidyNames.answerOfferedName, {
+          cardId: c.cardId,
+          kind: "player",
+          name: "Rookie Newguy",
+          sportId: c.w.sport,
+          answer: { kind: "linkPlayer", playerId: c.playerId },
+          offered: true,
+        }),
+    ],
+    [
       "tidyNames.applyNameToAll",
       (c, as) =>
         as().action(api.tidyNames.applyNameToAll, {

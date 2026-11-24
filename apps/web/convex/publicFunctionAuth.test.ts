@@ -4193,6 +4193,18 @@ describe("NEO-645: the Tidy Up surface is admin-gated", () => {
         }),
     ],
     [
+      "tidyNames.answerOfferedName",
+      (t, s) =>
+        t.action(api.tidyNames.answerOfferedName, {
+          cardId: s.cardId,
+          kind: "player",
+          name: "Doc Gooden",
+          sportId: s.sportId,
+          answer: { kind: "linkPlayer", playerId: s.playerId },
+          offered: true,
+        }),
+    ],
+    [
       "tidyNames.applyNameToAll",
       (t, s) =>
         t.action(api.tidyNames.applyNameToAll, {

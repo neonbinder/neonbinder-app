@@ -754,6 +754,25 @@ describe("PlayerTile: the set-history suggestion (NEO-645 item 8)", () => {
     expect(screen.getByRole("button", { name: "Link to Kendry Morales (Football)" })).toBeTruthy();
   });
 
+  it("linking the set-history pick asks the server to prove it: the action, with offered, never the mutation", async () => {
+    queryResults["players.nearMatches"] = [];
+    actions["tidyNames.answerOfferedName"] = vi.fn().mockResolvedValue(null);
+    mutations["tidyNames.answerName"]?.mockClear();
+    renderMorales(sethistory);
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Link to Kendry Morales (Football)" })),
+    );
+    expect(action("tidyNames.answerOfferedName")).toHaveBeenCalledWith({
+      cardId: CARD,
+      kind: "player",
+      name: "Kendry Morales",
+      sportId: SPORT,
+      answer: { kind: "linkPlayer", playerId: "player-5" },
+      offered: true,
+    });
+    expect(mutation("tidyNames.answerName")).not.toHaveBeenCalled();
+  });
+
   it("gives way to an exact namesake on file, as on main: only his plain link shows", () => {
     queryResults["players.nearMatches"] = [
       { _id: "player-6", name: "Kendry Morales", confidence: "exact", birthYear: 1983 },
