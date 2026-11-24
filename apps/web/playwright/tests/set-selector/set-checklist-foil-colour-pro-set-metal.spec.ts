@@ -28,9 +28,10 @@
 //   4. Commit 1989 Pro Set Base's four cards. Each City Designation is the card's team cell as
 //      printed: "Miami" links the Marlins by itself; "Cincinnati" (three clubs) and "Los Angeles
 //      N" (none) are pink on the Tidy Up walk's Team tile, and the operator links the Reds and
-//      the Dodgers (no alias remembered). With no name left waiting, its four parallels build.
+//      the Dodgers (no alias remembered). With no name left waiting, its four parallels build;
+//      Card titles opens on the three copies whose title left a team out.
 //   5. The built cards carry their runs: every Prismatic Blue card /5; Silver Circles
-//      RWB RWB's #89B-1 /1 and #89B-3 /3.
+//      RWB RWB's #89B-1 /1 and #89B-3 /3. The Minis' cards keep their own 89M-n numbers.
 //   6. The collection Checklists drill reads the parallel's run beside its name: "/5"
 //      (spoken "numbered to 5") on Prismatic Blue, nothing on the split one.
 //
@@ -298,13 +299,12 @@ test(
     await page.getByRole("option", { name: /^Los Angeles Dodgers\b.*MLB/ }).click();
     await expect(teamTile.getByRole("button", { name: "Edit Los Angeles Dodgers", exact: true })).toBeVisible();
     await expect(pinkTile(page, "Team")).toHaveCount(0);
-    await keepOpenCareerGaps(page);
-    await saveAndNext(page);
-
-    // #89B-3 took the Dodgers from #89B-2's answer: nothing on it is pink.
-    await expect(cardFace(page, CARDS[2])).toBeVisible();
-    await expect(teamTile.getByRole("button", { name: "Edit Los Angeles Dodgers", exact: true })).toBeVisible();
-    await expect(pinkTile(page, "Team")).toHaveCount(0);
+    // The walk counts live attention. This card now asks nothing, and the answer reaches #89B-3,
+    // which prints the same designation and asks nothing else, so both leave the count: 1 card
+    // left (#89B-4). Save & next then goes straight to #89B-4. Waited on before the save: the
+    // walk picks the next card from the count as it stands, so a save pressed before #89B-3's
+    // link lands opens #89B-3 and keeps it, cleared, on screen.
+    await expectCardsLeft(page, 1);
     await keepOpenCareerGaps(page);
     await saveAndNext(page);
 
@@ -331,14 +331,33 @@ test(
     });
     // The two Minis build from the subset like any parallel of it (Jason, 2026-11-19). Mini
     // Prismatic Gold is BSC's, and BSC numbers a Mini apart from the subset's 89B-n: its cards
-    // are the same players, so they pair on the name and the number only confirms (invariant 7).
+    // are the same players and the numbers differ only in the prefix (89M-1 against 89B-1), so
+    // they pair and the copy keeps the parallel's own number (Jason, 2026-11-24).
     for (const name of PARALLELS) await expect(builtLine(page, name)).toBeVisible();
-    // Silver Circles RWB RWB's long name leaves one title over 80 (#89B-2 Adam Serwinowski), so
-    // the build ends on Card titles by itself (NEO-535). Titles are not this spec's subject.
+    // Card titles (NEO-535): a copy whose title had to leave something out to fit 80 is one to
+    // check, so the build ends on the dialog by itself. A parallel is said after its insert's own
+    // name ("2026 Pro Set Metal 1989 Base Mini Prismatic Gold …", no doubled "Base"), so only
+    // three titles lose a team: one Mini Prismatic Gold, two Silver Circles RWB RWB. Mini and
+    // Prismatic Blue keep every word. The Gold copy's title carries the Mini's own number.
+    await expect(builtLine(page, MINI_GOLD)).toContainText(/, 1 title needs a fix,/);
+    await expect(builtLine(page, RWB)).toContainText(/, 2 titles need a fix/);
+    for (const name of [MINI, BLUE]) await expect(builtLine(page, name)).not.toContainText(/needs? a fix/);
     const titles = page.getByRole("dialog", { name: "Card titles" });
     await expect(titles).toBeVisible();
+    await expect(titles.getByRole("region", { name: new RegExp(`^${MINI_GOLD} ?1 title$`) })).toBeVisible();
+    await expect(titles.getByRole("region", { name: new RegExp(`^${RWB} ?2 titles$`) })).toBeVisible();
+    // A title field is named for its parallel and card: "Title for <parallel> #<number> <player>".
+    const titleField = (parallel: string, card: string) =>
+      titles.getByRole("textbox", { name: `Title for ${parallel} ${card}`, exact: true });
+    await expect(titleField(MINI_GOLD, "#89M-2 Adam Serwinowski")).toHaveValue(
+      "2026 Pro Set Metal 1989 Base Mini Prismatic Gold Adam Serwinowski #89M-2 /1",
+    );
+    await expect(titleField(RWB, "#89B-2 Adam Serwinowski")).toHaveValue(
+      "2026 Pro Set Metal 1989 Base Silver Circles RWB RWB Adam Serwinowski #89B-2 /1",
+    );
     await titles.getByRole("button", { name: "Not now", exact: true }).click();
     await expect(titles).toBeHidden();
+    await expect(page.getByRole("button", { name: "Fix 3 card titles", exact: true })).toBeVisible();
     await expectAccessible(page, { label: "1989 Pro Set Base saved and its parallels built" });
 
     // ══ 5. THE BUILT CARDS CARRY THEIR RUNS ══
@@ -358,6 +377,20 @@ test(
     await expect(page.getByRole("heading", { name: new RegExp(`^Attributes for ${RWB}`) })).toBeVisible();
     await expectCardPrintRun(page, "89B-1", "1");
     await expectCardPrintRun(page, "89B-3", "3");
+
+    // The Minis' cards carry the Mini's own numbers, 89M-1..89M-4, never the subset's 89B-n:
+    // only the prefix differs, so each is the same player's card in the parallel, numbered as
+    // printed (Jason, 2026-11-24: "should keep its proper number not reuse the base").
+    for (const mini of [MINI, MINI_GOLD]) {
+      await page.goBack();
+      await expect(columnSelection(page, "Inserts", BASE)).toBeVisible();
+      await columnOption(page, "Parallels", mini).click();
+      await expect(columnSelection(page, "Parallels", mini)).toBeVisible();
+      for (const { number } of CARDS) await expect(editCardButton(page, number.replace("89B-", "89M-"))).toBeVisible();
+      for (const { number } of CARDS) await expect(editCardButton(page, number)).toHaveCount(0);
+    }
+    // Mini Prismatic Gold is 1/1 on every card.
+    await expectCardPrintRun(page, "89M-1", "1");
 
     // ══ 6. THE COLLECTION DRILL: the uniform run beside its name, none on the split ══
     await page.goto("/collection?tab=checklists");

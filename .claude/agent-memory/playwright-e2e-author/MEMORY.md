@@ -167,4 +167,4 @@
 - [Title plant, adopting spec](patterns_title_plant_on_an_adopting_sole_writer_spec.md) — drawer read-path plant; generator plant misses or poisons the seed
 - [Removed button, described field](patterns_removed_button_absence_and_described_field.md) — plant every client gate; describedby/focus asserts
 - [BSC team lane shared across shards](patterns_bsc_team_lane_is_shared_across_shards.md) — 1 slot, 1.7 s/card, FIFO deployment-wide; assert answered OR held back
-- [Foil × colour checklist spec shape](patterns_foil_colour_checklist_spec_shape.md) — NEO-616: prefix sections near-name pair, City Designation walk tiles, build keys on number, collector spoken run
+- [Foil × colour checklist spec shape](patterns_foil_colour_checklist_spec_shape.md) — NEO-616: City Designation walk tiles, answer-vs-save race, prefix-only pairing, titles dialog

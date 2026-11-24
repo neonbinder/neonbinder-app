@@ -26,14 +26,20 @@ Learned writing `set-checklist-foil-colour-pro-set-metal` (2026-11-19):
   `fill` "Search all teams", pick the option. The answer reaches every card printing the name.
   Never `tidyForTheParallelBuild` here: it would link the first (1954 Redlegs) and CREATE a
   "Los Angeles N" team. Keep career gaps (`keepOpenCareerGaps`) before each `saveAndNext`.
+- **A cross-card answer races Save & next:** the #89B-2 answer reaches #89B-3 a moment later;
+  a save before it lands opens #89B-3 (cleared, kept on screen), after it goes to #89B-4. Gate the
+  save on the live count (`expectCardsLeft(page, 1)`: both cleared cards left the count).
 - The walk title drops a trailing "Base" from an insert name ("Tidy up 2026 Pro Set Metal 1989
   Pro Set") while main's `tidyUpTitle` trims by word; don't assert it until that settles.
-- **Parallel build links by card NUMBER first** (`convex/lib/parallelCardLink.ts`): a
-  BSC-linked parallel whose cards carry another subset's numbers (Mini 89M-n under Base 89B-n)
-  ends "Nothing copied — none of <source>'s N cards turned up…". A checklist-only parallel is an
-  unlinked copy and always builds.
-- A long parallel name makes the build open **Card titles** by itself ("Not now" closes it);
-  wait for the "<source> parallels — N built" heading first.
+- **Parallel build pairs a prefix-only number difference** (2026-11-24, `convex/lib/parallelCardLink.ts`):
+  BSC Mini Prismatic Gold 89M-n pairs with Base 89B-n when the player matches, and the copy keeps
+  the parallel's own number (89M-n). Assert by `editCardButton(page, "89M-1")` visible and
+  `editCardButton(page, "89B-1")` count 0 under the Mini parallel (goBack, then the next option).
+- **Card titles still opens** after the parallel-title fix: a copy whose title LEFT SOMETHING OUT
+  (a team) counts too, not only over-80. Here: Gold 1, RWB 2, "Fix 3 card titles". Ledger clause
+  "1 title needs a fix"; dialog sections are regions "<parallel> 1 title"; fields are named
+  "Title for <parallel> #<number> <player>" (the parallel IS in the name). Offline tsx titles
+  can disagree with the app on what is left out: read the dialog from a run.
 - Ledger lines: BSC-linked ones are buttons ("X — Built 4 cards, 185 on BSC that … doesn't
   have"), checklist-only ones plain list items; `getByText(/^X — Built 4 cards/)` finds both.
 - **Collector drill:** under an insert the next listbox is "<insert> parallels"; a row with a
