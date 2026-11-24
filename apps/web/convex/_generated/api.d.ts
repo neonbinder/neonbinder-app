@@ -74,7 +74,6 @@ import type * as cardTeamLinks from "../cardTeamLinks.js";
 import type * as careerCoverage from "../careerCoverage.js";
 import type * as checklistCandidates from "../checklistCandidates.js";
 import type * as checklistNameResolutions from "../checklistNameResolutions.js";
-import type * as clearTidyReviewState from "../clearTidyReviewState.js";
 import type * as collection from "../collection.js";
 import type * as collectionCatalog from "../collectionCatalog.js";
 import type * as collectionContainers from "../collectionContainers.js";
@@ -336,7 +335,6 @@ declare const fullApi: ApiFromModules<{
   careerCoverage: typeof careerCoverage;
   checklistCandidates: typeof checklistCandidates;
   checklistNameResolutions: typeof checklistNameResolutions;
-  clearTidyReviewState: typeof clearTidyReviewState;
   collection: typeof collection;
   collectionCatalog: typeof collectionCatalog;
   collectionContainers: typeof collectionContainers;

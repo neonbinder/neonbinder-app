@@ -82,7 +82,6 @@ describe("linking a pending player name fills the team the career gives", () => 
     const first = await get(t, open);
     expect(first?.playerIds).toEqual([player]);
     expect(first?.teamOnCardIds).toEqual([dodgers]);
-    expect(first?.tidyChecks).toBeUndefined();
     expect((await get(t, other))?.teamOnCardIds).toBeUndefined();
 
     await applyAll(t, open, player);
@@ -104,7 +103,6 @@ describe("linking a pending player name fills the team the career gives", () => 
     const card = await get(t, open);
     expect(card?.playerIds).toEqual([player]);
     expect(card?.teamOnCardIds).toBeUndefined();
-    expect(card?.tidyChecks).toBeUndefined();
   });
 
   test("rule 8: a team the listing named, a pending team name, a No-team stamp or a disputed teams field holds the fill back", async () => {

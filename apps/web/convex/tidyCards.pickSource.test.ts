@@ -57,13 +57,12 @@ afterEach(async () => {
 const JUDGE = "Aaron Judge";
 const SOTO = "Juan Soto";
 
-const playersEntry = (a = [JUDGE], b = [SOTO], chosen?: Entry["chosen"]): Entry => ({
+const playersEntry = (a = [JUDGE], b = [SOTO]): Entry => ({
   field: "players",
   values: [
     { value: a, sources: ["bsc"] },
     { value: b, sources: ["sportlots"] },
   ],
-  ...(chosen ? { chosen } : {}),
 });
 const teamsEntry = (a: string[], b: string[]): Entry => ({
   field: "teams",
@@ -407,7 +406,6 @@ describe("pickSourceValue — Apply to the cards with the same disagreement", ()
           { field: "players", values: [{ value: [SOTO], sources: ["sportlots"] }, { value: [JUDGE], sources: ["bsc"] }] },
         ]),
         differs: await mk("4", [playersEntry([JUDGE], ["Mookie Betts"])]),
-        settled: await mk("5", [playersEntry([JUDGE], [SOTO], { value: [SOTO], by: "operator" })]),
         none: await printCard(ctx, w, { number: "6" }),
       };
     });
@@ -418,9 +416,9 @@ describe("pickSourceValue — Apply to the cards with the same disagreement", ()
     const t = newT();
     const { judge, open, ids } = await fiveCards(t);
     const out = await pick(t, open, [JUDGE], {
-      cardIds: [ids.same, ids.sameReordered, ids.differs, ids.settled, ids.none],
+      cardIds: [ids.same, ids.sameReordered, ids.differs, ids.none],
     });
-    expect(out).toEqual({ applied: 1, scheduled: 2, refused: 3 });
+    expect(out).toEqual({ applied: 1, scheduled: 2, refused: 2 });
     await drainScheduled(t);
     expect((await card(t, ids.same))!.playerIds).toEqual([judge]);
     expect((await card(t, ids.sameReordered))!.playerIds).toEqual([judge]);
@@ -428,9 +426,6 @@ describe("pickSourceValue — Apply to the cards with the same disagreement", ()
     const differs = (await card(t, ids.differs))!;
     expect(differs.playerIds).toBeUndefined();
     expect(differs.sourceDisagreements).toEqual([playersEntry([JUDGE], ["Mookie Betts"])]);
-    // A card settled before NEO-656 (a stored `chosen`) is read as picked: left as it is.
-    expect((await card(t, ids.settled))!.sourceDisagreements?.[0].chosen?.value).toEqual([SOTO]);
-    expect((await card(t, ids.settled))!.playerIds).toBeUndefined();
     // A card that was picked and has no entry any more is refused too.
     expect((await card(t, ids.same))!.sourceDisagreements).toBeUndefined();
     expect((await card(t, ids.none))!.sourceDisagreements).toBeUndefined();
@@ -488,7 +483,7 @@ describe("pickSourceValue — Apply to the cards with the same disagreement", ()
       field: "players",
       value: [JUDGE],
       offered: [[JUDGE], [SOTO]],
-      cardIds: [ids.same, ids.settled],
+      cardIds: [ids.same, ids.none],
       userId: "op",
     });
     expect(out).toEqual({ applied: 1, refused: 1 });

@@ -24,7 +24,7 @@ describe("blocksParallelBuild", () => {
     expect(blocksParallelBuild(row({ pendingTeamNames: ["Yankees"] }))).toBe(true);
   });
 
-  test("sources that disagree with no value chosen hold the build", () => {
+  test("sources that disagree hold the build", () => {
     expect(
       blocksParallelBuild(
         row({
@@ -40,26 +40,6 @@ describe("blocksParallelBuild", () => {
         }),
       ),
     ).toBe(true);
-  });
-
-  test("a disagreement that has a chosen value does not hold it", () => {
-    expect(
-      blocksParallelBuild(
-        row({
-          teamNoneConfirmedAt: 1,
-          sourceDisagreements: [
-            {
-              field: "players",
-              values: [
-                { value: ["A One"], sources: ["bsc"] },
-                { value: ["A Two"], sources: ["checklist"] },
-              ],
-              chosen: { value: ["A One"], by: "operator" },
-            },
-          ],
-        }),
-      ),
-    ).toBe(false);
   });
 
   test("a teamless card is pink but does not hold the build", () => {

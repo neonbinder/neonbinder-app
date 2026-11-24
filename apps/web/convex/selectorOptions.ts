@@ -458,8 +458,6 @@ import {
   selectorOptionLevelValidator,
   sourceDisagreementValidator,
   sourceNumbersValidator,
-  tidyCheckValidator,
-  tidyReviewedValidator,
   tidyTeamFillReasonValidator,
 } from "./schema";
 import {
@@ -3042,37 +3040,11 @@ async function buildSetLabel(
  * though the returns validator allows it. The client type is inferred from the
  * handler's return, not from the validator.
  */
-type CardChecklistRow = Omit<
-  Doc<"cardChecklist">,
-  "tidyChecks" | "tidyReviewed" | "sourceDisagreements"
-> & {
-  // NEO-656 — the stored `chosen` never reaches the client: an entry that
-  // carries one is a settled disagreement and is left out (see
-  // `withoutStoredTidyState`).
-  sourceDisagreements?: Array<
-    Omit<NonNullable<Doc<"cardChecklist">["sourceDisagreements"]>[number], "chosen">
-  >;
+type CardChecklistRow = Doc<"cardChecklist"> & {
   isCrossListed?: boolean;
   crossListingId?: Id<"cardCrossListings">;
   homeSetLabel?: string;
 };
-
-/**
- * NEO-656 — the card's stored review state the client no longer reads. The
- * checklist returns neither `tidyChecks` nor `tidyReviewed` (what is blue is
- * read live from the card), and a `sourceDisagreements` entry that already
- * carries a stored `chosen` is a pick made before the card kept only the
- * result: it is left out, so the card reads as one picked after it. The
- * returns validator still lists the three fields (optional) until the stored
- * values are cleared.
- */
-function withoutStoredTidyState(card: Doc<"cardChecklist">): CardChecklistRow {
-  const { tidyChecks: _tidyChecks, tidyReviewed: _tidyReviewed, sourceDisagreements, ...rest } = card;
-  void _tidyChecks;
-  void _tidyReviewed;
-  const open = (sourceDisagreements ?? []).filter((entry) => !entry.chosen);
-  return open.length > 0 ? { ...rest, sourceDisagreements: open } : rest;
-}
 
 export const getCardChecklist = query({
   args: { selectorOptionId: v.id("selectorOptions") },
@@ -3175,13 +3147,11 @@ export const getCardChecklist = query({
       pendingPlayerNames: v.optional(v.array(v.string())),
       pendingTeamNames: v.optional(v.array(v.string())),
       // NEO-645: the One-card Tidy Up review state (see schema.ts). Listed
-      // because this validator is STRICT: a row carrying any of the four would
+      // because this validator is STRICT: a row carrying either would
       // otherwise fail the whole checklist with `Object contains extra field`.
       // The shapes are the exported schema validators, never hand copies.
       sourceDisagreements: v.optional(v.array(sourceDisagreementValidator)),
       sourceNumbers: v.optional(sourceNumbersValidator),
-      tidyChecks: v.optional(v.array(tidyCheckValidator)),
-      tidyReviewed: v.optional(tidyReviewedValidator),
       features: featuresValidator,
       // NEO-91: cross-marketplace SKU (see convex/sku.ts).
       sku: v.optional(v.string()),
@@ -3200,14 +3170,12 @@ export const getCardChecklist = query({
   ),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    const homeCards: CardChecklistRow[] = (
-      await ctx.db
-        .query("cardChecklist")
-        .withIndex("by_selector_option", (q) =>
-          q.eq("selectorOptionId", args.selectorOptionId),
-        )
-        .collect()
-    ).map(withoutStoredTidyState);
+    const homeCards: CardChecklistRow[] = await ctx.db
+      .query("cardChecklist")
+      .withIndex("by_selector_option", (q) =>
+        q.eq("selectorOptionId", args.selectorOptionId),
+      )
+      .collect();
 
     const crossListings = await ctx.db
       .query("cardCrossListings")
@@ -3229,7 +3197,7 @@ export const getCardChecklist = query({
         labelCache.set(card.selectorOptionId, homeSetLabel);
       }
       guestCards.push({
-        ...withoutStoredTidyState(card),
+        ...card,
         isCrossListed: true,
         crossListingId: link._id,
         homeSetLabel,
@@ -23519,7 +23487,7 @@ export const commitCardChecklistChunk = internalMutation({
         // NEO-645 — and a teams field still in dispute between the sources is
         // a data claim too: the sources name a team, so no rule fills one.
         const teamsInDispute = (card.sourceDisagreements ?? []).some(
-          (e) => e.field === "teams" && !e.chosen,
+          (e) => e.field === "teams",
         );
         const listingNamesATeam = (card.bscTeamHint?.trim() ?? "") !== "" || teamsInDispute;
         const bornTeams = defaultTeamOnCardIds(
@@ -27676,7 +27644,7 @@ export const commitCardChecklist = action({
         !card.pendingTeamNames?.length &&
         !card.bscTeamHint &&
         card.teamNone !== true &&
-        !(card.sourceDisagreements ?? []).some((e) => e.field === "teams" && !e.chosen),
+        !(card.sourceDisagreements ?? []).some((e) => e.field === "teams"),
     }));
     const batchFills = new Map(
       planBatchTeamFill(fillInputs, MAX_CARD_TEAMS).map((fill) => [fill.index, fill] as const),
