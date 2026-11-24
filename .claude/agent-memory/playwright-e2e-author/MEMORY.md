@@ -171,3 +171,4 @@
 - [NEO-656 live counts](patterns_neo656_live_career_mark_and_apply_counts.md) — answer drops open card only; live career gap on hand-added cards; badge reasons "; "; title cut survives Save & next
 - [NEO-656 linked rows, Edit sport](patterns_neo656_linked_name_rows_and_edit_reask_sport.md) — card team line, bare "Not a team", Edit re-asks in own sport (reopenName)
 - [NEO-656 re-fetch, catalogue skip](patterns_neo656_refetch_asks_again_and_catalogue_career_skip.md) — ruled-out name pink again; Skip Career tiles on catalogue players
+- [NEO-656 Career tile after J6](patterns_neo656_career_tile_specs_after_j6.md) — Team Change closes gap, sibling cleared by Save & next, untick own team; plants
