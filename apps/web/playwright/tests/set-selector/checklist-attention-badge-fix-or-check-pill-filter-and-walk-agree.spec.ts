@@ -6,14 +6,18 @@
 // yet) or blue "is worth a check" (a stop that never blocks), and the three
 // places that count those cards agree, card for card: the header's "N need you, M to fix"
 // pill, the checklist search's "attention" keyword, and the Tidy Up walk the
-// pill opens ("N cards left"). A card born linked to a player and a team, whose
-// title fits, carries no mark and is counted nowhere.
+// pill opens ("N cards left"). Pink and blue read the card's live data
+// (NEO-656 J5): a card whose last stop is fixed loses its mark and leaves every
+// count at once, and a career gap computed live (B22) marks a card blue.
 //
 // The cards (a per-attempt hand-made set, so the counts are exact):
 //   701 no team                          -> pink: no team on this card yet
-//   702 no team, then a team in its drawer -> pink, then no mark
+//   702 no team, then a team in its drawer -> pink, then no mark (no player
+//       is linked, so no career check): counted nowhere
 //   703 born linked (quick-add player + team), bare number, and named for its
-//       player (the Card name is the player's own name) -> no mark. A card's
+//       player (the Card name is the player's own name) -> blue: team is
+//       missing from the player's career (the new player has no stint, so the
+//       live check, B22, raises it on a card no commit made). A card's
 //       own name is always in its title (NEO-645), unless it only says the
 //       players' names again: then the title is the player card's as before,
 //       "2024 Topps cna-<w>-<id> Base [Insert] <player> #703 CNAB<token>
@@ -21,7 +25,8 @@
 //       offline with `assessListingTitle`, workers 0-11, 1-5 digit attempts:
 //       74 to 80 characters after the quiet cuts, nothing left out). A name of
 //       its own ("AttnCharlie<token>") would push the team out (NEO-609: a
-//       whole-team cut, blue) on every worker, so the name IS the fixture.
+//       whole-team cut, blue) on every worker, so the name IS the fixture: the
+//       career check is #703's only reason.
 //   704 a 70-character team (no Location) -> blue: listing title was cut short.
 //       It has no player; its own name is in the title (NEO-645): "2024 Topps
 //       cna-<w>-<id> Base [Insert] AttnDelta<token> #704 <team> [Baseball]".
@@ -35,9 +40,10 @@
 //
 // R2 - each count is an exact full-string read: the pill's name IS its count,
 // the search's "N of 4 cards" line, and the walk's "N cards left"; each list of
-// rows is matched by number. The walk opening on #701 proves its first card is
-// a flagged one; it is closed with Save for later (Esc) and the counts hold.
-// Searching is client-side and writes nothing.
+// rows is matched by number; each badge's name is matched whole, so a card
+// carrying a second reason (or none) fails by name. The walk opening on #701
+// proves its first card is a flagged one; it is closed with Save for later
+// (Esc) and the counts hold. Searching is client-side and writes nothing.
 //
 // R3 - the walk's moves are `tidy-up-walk-one-card-at-a-time`'s; the search
 // control itself is checklist-search-narrows-and-clears'. This spec also keeps
@@ -78,6 +84,11 @@ test(
       page.getByRole("img", { name: new RegExp(`^Card ${escapeRe(number)}(, .*)? needs attention: no team on this card yet$`) });
     const blue = (number: string) =>
       page.getByRole("img", { name: new RegExp(`^Card ${escapeRe(number)}(, .*)? is worth a check: listing title was cut short$`) });
+    /** Blue for the live career check alone (B22). */
+    const careerBlue = (number: string) =>
+      page.getByRole("img", {
+        name: new RegExp(`^Card ${escapeRe(number)}(, .*)? is worth a check: team is missing from the player's career$`),
+      });
     /** Any attention mark, at either level. */
     const mark = (number: string) =>
       page.getByRole("img", { name: new RegExp(`^Card ${escapeRe(number)}(, .*)? (needs attention|is worth a check): `) });
@@ -133,18 +144,19 @@ test(
       beforeSubmit: () => createTeamInCardForm(page, teamLong),
     });
 
-    // One badge per flagged card, at its level; the born-linked card has none.
+    // One badge per flagged card, at its level: two pink, and two blue for two
+    // different reasons (the live career check on the born-linked card).
     await expect(pink(n701)).toBeVisible();
     await expect(pink(n702)).toBeVisible();
+    await expect(careerBlue(n703)).toBeVisible();
     await expect(blue(n704)).toBeVisible();
-    await expect(editCardButton(page, n703)).toBeVisible();
-    await expect(mark(n703)).toHaveCount(0);
     // A card has one mark, never both levels.
     await expect(mark(n701)).toHaveCount(1);
+    await expect(mark(n703)).toHaveCount(1);
     await expect(mark(n704)).toHaveCount(1);
     // The pill counts pink AND blue, then how many of them are pink ("…, 2 to fix"): its visible
     // text is its name, so the text IS the count.
-    await expect(needsYouPill(page)).toHaveText("3 need you, 2 to fix");
+    await expect(needsYouPill(page)).toHaveText("4 need you, 2 to fix");
     await expectAccessible(page, { label: "Checklist with pink and blue attention badges and the need-you pill" });
 
     // #703's player was STORED: the drawer's picker chip (off the live query) is the read-back.
@@ -157,23 +169,19 @@ test(
     // NEO-343 — the "attention" keyword lists exactly the cards the pill counts.
     const search = page.getByRole("searchbox", { name: "Search cards" });
     await search.fill("attention");
-    await expect(page.getByText("3 of 4 cards", { exact: true })).toBeVisible();
-    await expect(rows).toHaveCount(3);
+    await expect(page.getByText("4 of 4 cards", { exact: true })).toBeVisible();
+    await expect(rows).toHaveCount(4);
     await expect(editCardButton(page, n701)).toBeVisible();
     await expect(editCardButton(page, n702)).toBeVisible();
+    await expect(editCardButton(page, n703)).toBeVisible();
     await expect(editCardButton(page, n704)).toBeVisible();
-    await expect(editCardButton(page, n703)).toHaveCount(0);
-    await expect(marks).toHaveCount(3);
-    // A keyword ANDs with the other terms: flagged AND #703 is nothing.
-    await search.fill(`attention ${n703}`);
-    await expect(page.getByText(`No cards match "attention ${n703}".`)).toBeVisible();
-    await expect(page.getByText("0 of 4 cards", { exact: true })).toBeVisible();
-    await expect(rows).toHaveCount(0);
+    await expect(marks).toHaveCount(4);
     await search.press("Escape");
     await expect(search).toHaveValue("");
     await expect(rows).toHaveCount(4);
 
-    // Give #702 a team through its drawer: its badge goes, and every count drops by one.
+    // Give #702 a team through its drawer: its badge goes (no player, so no career
+    // check), and every count drops by one.
     await editCardButton(page, n702).click();
     const drawer = page.getByRole("dialog", { name: /^Card #/ });
     await expect(drawer.getByRole("textbox", { name: "Card name", exact: true })).toBeVisible();
@@ -185,24 +193,38 @@ test(
     await expect(mark(n702)).toHaveCount(0);
     await expect(editCardButton(page, n702)).toBeVisible();
     await expect(pink(n701)).toBeVisible();
-    await expect(needsYouPill(page)).toHaveText("2 need you, 1 to fix");
+    await expect(needsYouPill(page)).toHaveText("3 need you, 1 to fix");
     await search.fill("attention");
-    await expect(page.getByText("2 of 4 cards", { exact: true })).toBeVisible();
-    await expect(rows).toHaveCount(2);
+    await expect(page.getByText("3 of 4 cards", { exact: true })).toBeVisible();
+    await expect(rows).toHaveCount(3);
     await expect(editCardButton(page, n701)).toBeVisible();
+    await expect(editCardButton(page, n703)).toBeVisible();
     await expect(editCardButton(page, n704)).toBeVisible();
+    await expect(editCardButton(page, n702)).toHaveCount(0);
+    await expect(marks).toHaveCount(3);
+    // A keyword ANDs with the other terms: flagged AND the fixed #702 is nothing
+    // (#702 alone is one card; either term alone is not empty).
+    await search.fill(`attention ${n702}`);
+    await expect(page.getByText(`No cards match "attention ${n702}".`)).toBeVisible();
+    await expect(page.getByText("0 of 4 cards", { exact: true })).toBeVisible();
+    await expect(rows).toHaveCount(0);
+    await search.fill(n702);
+    await expect(page.getByText("1 of 4 cards", { exact: true })).toBeVisible();
+    await expect(editCardButton(page, n702)).toBeVisible();
     await search.press("Escape");
+    await expect(search).toHaveValue("");
     await expect(rows).toHaveCount(4);
 
-    // The pill opens the walk on the same cards: two left, the first flagged one first.
+    // The pill opens the walk on the same cards: three left, the first flagged one first.
     await openTidyWalk(page, { title: tidyUpName({ year: "2024", set }) });
-    await expectCardsLeft(page, 2);
+    await expectCardsLeft(page, 3);
     await expect(tidyCardHeader(page, `#${n701} · AttnAlpha${token}`)).toBeVisible();
     // Save for later (Esc) writes nothing: the counts hold.
     await page.keyboard.press("Escape");
     await expect(tidyWalk(page)).toBeHidden();
-    await expect(needsYouPill(page)).toHaveText("2 need you, 1 to fix");
+    await expect(needsYouPill(page)).toHaveText("3 need you, 1 to fix");
     await expect(pink(n701)).toBeVisible();
+    await expect(careerBlue(n703)).toBeVisible();
     await expect(blue(n704)).toBeVisible();
   },
 );

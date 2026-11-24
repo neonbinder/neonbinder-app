@@ -35,5 +35,16 @@ After NEO-656 (2026-11-24) the walk's "N cards left" and the pill are live count
   Plant: guard the cameo branch's `memory.keepPick` with an impossible condition (anchor on the
   "Player tile says the name is not a player" comment: `const before = kept;` occurs twice).
 
+- **Badge reasons join with "; ", career first.** A quick-add card with one new player and a team
+  reads `Card X is worth a check: team is missing from the player's career; listing title was cut
+  short`. Hand-added and born-linked cards get the live gap too (no commit needed), so a "born
+  linked, no mark" fixture is gone: use a card with no player link (no career check) for "no mark".
+- **Save & next never clears a title cut.** With a Career tile on screen it writes the default
+  stint (the career reason drops live) and the cut title stays blue: end screen
+  `{ fixed: 0, stillToCheck: 1 }`, badge keeps the title reason alone, pill stays. Plants: in
+  `TidyUpWalk.tsx` flip `if (gaps.length > 0) await saveCard(...)` to `< 0` (badge keeps both
+  reasons); in `lib/cards/card-search.ts` drop `live` from `deriveCardAttention(card, live)` (the
+  "attention" search count falls below the pill's).
+
 **How to apply:** rewriting any NEO-645 walk spec whose counts assumed fan-out or a sticky blue.
 Related: [[neo656-tidy-walk-helpers-skip-apply-end-screen]], [[patterns-walk-keeps-a-card-that-clears-on-screen]].
