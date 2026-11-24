@@ -25,10 +25,14 @@
 // is rebuilt by its team answer; typed again (holding every word, so the
 // NEO-637 rule outside the walk would keep it), a second "Shorten the set name"
 // rebuilds it with the newer name, and #902 is retitled with that one. Each
-// card's "No team on this card" is answered so the walk ends
-// "All tidy" (#904's blue check is marked seen by Save & next), the browser's
-// Back/Forward step through the walk's address, and the drawer reads the second
-// card's stored title back.
+// card's "No team on this card" is answered, so the pink cards are fixed. Blue
+// is read from the live data (NEO-656 J5, B20): Save & next on #904 leaves it
+// blue, so the walk ends "1 card still to check" (2 fixed, 0 skipped, 1 still
+// to check, never "All tidy"), its review button names what it reviews ("Check
+// the card still to check", not "Review the skipped card"), the checklist keeps
+// #904's "listing title was cut short" mark and the pill reads "1 needs you".
+// The browser's Back/Forward step through the walk's address, and the drawer
+// reads the second card's stored title back.
 //
 // The walk's name (NEO-497): an insert other than Base reads as its own name;
 // a parallel (a sub-variant under an insert) carries its insert's name first,
@@ -63,7 +67,7 @@
 // to the Insert type; the grouping is the same Group Parallels move the
 // sub-variants spec makes.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { addCardViaForm, createTeamInCardForm, editCardButton, escapeRe } from "../../support/cards";
+import { addCardViaForm, cardAttentionMark, createTeamInCardForm, editCardButton, escapeRe } from "../../support/cards";
 import type { Locator, Page } from "@playwright/test";
 import {
   addCustomEntry,
@@ -77,6 +81,7 @@ import {
 import {
   answerPinkTeamTiles,
   expectCardsLeft,
+  expectTidyEndScreen,
   finishTidyWalk,
   mustFixLine,
   needsYouPill,
@@ -84,6 +89,7 @@ import {
   pinkTile,
   saveAndNext,
   saveForLater,
+  TIDY_ALL_CLEAR,
   tidyFooterButton,
   tidyTile,
   tidyUpName,
@@ -305,22 +311,34 @@ test(
     await expect(pinkTile(page, "Listing title")).toHaveCount(0);
     await expect(titleTile.getByText(longSet)).toHaveCount(0);
     await expectAccessible(page, { within: walk, label: "Tidy Up walk, a short-name title that still leaves the team out" });
-    // Blue never holds the card: Save & next marks it seen.
+    // Blue never holds the card, and Save & next does not clear it (B20): its title is still cut,
+    // so the walk ends with #904 "still to check", #901 and #902 fixed, nothing skipped.
     await saveAndNext(page);
-    const allTidy = walk.getByText("All tidy. Nothing on this checklist needs you.", { exact: true });
-    await expect(allTidy).toBeVisible();
+    await expectTidyEndScreen(page, { fixed: 2, stillToCheck: 1 });
+    await expect(walk.getByText(TIDY_ALL_CLEAR, { exact: true })).toHaveCount(0);
+    // The review button names the blue card it goes back to, never a skipped one.
+    const checkBlue = walk.getByRole("button", { name: "Check the card still to check", exact: true });
+    await expect(checkBlue).toBeVisible();
+    await expect(walk.getByRole("button", { name: /^Review the / })).toHaveCount(0);
+    await expectAccessible(page, { within: walk, label: "Tidy Up walk end screen with a card still to check" });
     // The walk's place is in the address: Back steps to #904, Forward to the end again.
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tidy=(?!done)/);
     await expect(titleTile.getByText(titleWith(SHORT2, "904"))).toBeVisible();
-    await expect(allTidy).toHaveCount(0);
+    await expect(checkBlue).toHaveCount(0);
     await page.goForward();
-    await expect(allTidy).toBeVisible();
+    await expectTidyEndScreen(page, { fixed: 2, stillToCheck: 1 });
     await finishTidyWalk(page);
 
-    // Nothing on the checklist needs anyone now, and #902's stored title carries the newer short name.
+    // Only #904 needs anyone now (blue: its team is left out of the title), #901 and #902 carry
+    // no mark, and #902's stored title carries the newer short name.
     await expect(editCardButton(page, "902")).toBeVisible();
-    await expect(needsYouPill(page)).toHaveCount(0);
+    await expect(cardAttentionMark(page, "904", "listing title was cut short")).toBeVisible();
+    await expect(cardAttentionMark(page, "904")).toHaveAccessibleName(/is worth a check: /);
+    await expect(editCardButton(page, "901")).toBeVisible();
+    await expect(cardAttentionMark(page, "901")).toHaveCount(0);
+    await expect(cardAttentionMark(page, "902")).toHaveCount(0);
+    await expect(needsYouPill(page)).toHaveAccessibleName("1 needs you");
     await editCardButton(page, "902").click();
     const drawerTitle = page.getByRole("dialog").getByRole("textbox", { name: "Card title", exact: true });
     await expect(drawerTitle).toHaveValue(titleWith(SHORT2, "902"));

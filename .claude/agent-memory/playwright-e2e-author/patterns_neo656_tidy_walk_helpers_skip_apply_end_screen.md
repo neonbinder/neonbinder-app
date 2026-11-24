@@ -21,6 +21,11 @@ NEO-656 removed every stored Tidy Up answer, so the walk helpers changed (2026-1
 - **End screen** = verdict status (pink skipped > blue still to check > "All tidy…", empty while team
   lookups are out) + tally "F cards fixed, S skipped[, C still to check].[ Totally rad.]", by each
   walked card's LIVE level. `expectTidyEndScreen` / `readTidyEndScreen`.
+- **Blue end screen (B20):** a saved blue card ends `{ fixed: F, stillToCheck: 1 }` and the button is
+  "Check the card still to check" (pink wins: "Review the skipped card"). Pressing it pushes to the
+  first passed-and-flagged card; Back returns to the end screen. Checklist keeps the blue mark and the
+  pill reads "1 needs you". Plant (outside tidy/ UI files): `attention.level === "check"` to
+  `"never"` in `walk-order.ts` `cardsStillToCheck`; `--expect "end screen's verdict"`.
 - **Preselected chip** name is "<team>, suggested[ · <why>]" from an sr-only span; BUG-2 padded it to
   "<team> , suggested". `suggestedTeamChip` matches the exact name; the generic finder is anchored with
   a non-space before the comma so the padded name does not pass.

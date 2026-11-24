@@ -11,7 +11,9 @@
 //      title leaves nothing out and it needs nobody (no walk stop). With both teams on it, its name
 //      and two token-named teams run the title past the cap, and #1 would be worth a check.
 //   #2 no team -> pink. "Other team…" picks the first team (saved at once), "+ Another team" the
-//      second: two rows.
+//      second: two rows. Its name and two token teams now run the title past the cap, so the
+//      Listing title tile turns BLUE ("To check") on the live data (NEO-656 J5), and Save & next
+//      does not clear it (B20): #2 stays "still to check".
 //   #3 no team -> pink. "Other team…" picks one team: one row, and no row for the other.
 //   #4 no team -> pink. The catalogue's New York Yankees (read only) is found by name; the hit
 //      describes itself "MLB · 1913–present" (the minted teams, with no league or years, describe
@@ -19,8 +21,12 @@
 //
 // R2 - every move is proved by what lands: the tile's plain "Team <name>" rows right after the pick
 // (and no Save team button), the negative for the team not picked, the walk's count, and after it
-// the drawer's stored teams (#2 both, #3 one) and the badges and pill gone beside each row on screen.
-// Back: the browser's Back from the end screen lands on #4 again, showing its saved team.
+// the drawer's stored teams (#2 both, #3 one). The end screen reads "1 card still to check" (2 fixed,
+// 0 skipped, 1 still to check; never "All tidy" while #2 is blue) and its button "Check the card
+// still to check" goes back to #2, the blue card. On the checklist #3 and #4 lose their badges, #2
+// keeps a blue "listing title was cut short" one, and the pill reads "1 needs you".
+// Back: the browser's Back from #2 returns to the end screen, and from there lands on #4 again,
+// showing its saved team.
 //
 // R3 - not here: Skip, Save for later, Enter/Esc, the pill's sitting and "No team on this card"
 // (`tidy-up-walk-one-card-at-a-time`); "+ New team" from the tile (`tidy-up-team-apply-to-all-…`);
@@ -37,15 +43,17 @@
 // set is this attempt's alone and no other spec reads it.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToCustom, setBuilderReady } from "../../support/set-builder";
-import { addCardViaForm, createTeamInCardForm, escapeRe } from "../../support/cards";
+import { addCardViaForm, cardAttentionMark, createTeamInCardForm, escapeRe } from "../../support/cards";
 import { expectDrawerTeams } from "../../support/also-pictured";
 import {
   expectCardsLeft,
+  expectTidyEndScreen,
   needsYouPill,
   openTidyWalk,
   pinkTile,
   saveAndNext,
   saveForLater,
+  TIDY_ALL_CLEAR,
   tidyCardHeader,
   tidyFooterButton,
   tidyTile,
@@ -80,6 +88,7 @@ test(
       page.getByRole("img", { name: new RegExp(`^Card ${escapeRe(n)}(, .*)? needs attention: no team on this card yet$`) });
     const walk = tidyWalk(page);
     const team = tidyTile(page, "Team");
+    const titleTile = tidyTile(page, "Listing title");
     const savedRow = (name: string) => team.getByRole("group", { name: `Team ${name}`, exact: true });
     const search = team.getByRole("textbox", { name: "Search existing teams" });
 
@@ -148,6 +157,9 @@ test(
     await pickOtherTeam(TEAM_B, "+ Another team");
     await expect(savedRow(TEAM_A)).toBeVisible();
     await expect(savedRow(TEAM_B)).toBeVisible();
+    // Two token teams no longer fit the title: blue on the live data, which never holds the card.
+    await expect(titleTile).toHaveAccessibleDescription("To check");
+    await expect(pinkTile(page, "Listing title")).toHaveCount(0);
     await expectAccessible(page, { within: walk, label: "Tidy Up Team tile with two teams saved" });
     await saveAndNext(page);
 
@@ -176,26 +188,41 @@ test(
     await expect(pinkTile(page, "Team")).toHaveCount(0);
     await saveAndNext(page);
 
-    // ── The end screen: nothing left ──
-    await expect(walk.getByText("All tidy. Nothing on this checklist needs you.")).toBeVisible();
+    // ── The end screen: nothing left to walk, #2 still to check (blue stays after Save & next) ──
+    await expectTidyEndScreen(page, { fixed: 2, stillToCheck: 1 });
+    await expect(walk.getByText(TIDY_ALL_CLEAR, { exact: true })).toHaveCount(0);
     await expectCardsLeft(page, 0);
+    const checkBlue = walk.getByRole("button", { name: "Check the card still to check", exact: true });
+    await expect(checkBlue).toBeVisible();
+    await expect(walk.getByRole("button", { name: /^Review the / })).toHaveCount(0);
     await expectAccessible(page, { within: walk, label: "Tidy Up walk end screen after the Team tile answers" });
 
-    // Back: the browser's Back steps to #4, which shows the team it saved (and none of the minted).
+    // The button goes back to the blue card it names: #2, its title still to check.
+    await checkBlue.click();
+    await expect(tidyCardHeader(page, header(both))).toBeVisible();
+    await expect(titleTile).toHaveAccessibleDescription("To check");
+    await expect(savedRow(TEAM_B)).toBeVisible();
+    // Back: the browser's Back returns to the end screen, then steps to #4, which shows the team it
+    // saved (and none of the minted).
+    await page.goBack();
+    await expectTidyEndScreen(page, { fixed: 2, stillToCheck: 1 });
     await page.goBack();
     await expect(tidyCardHeader(page, header(real))).toBeVisible();
     await expect(savedRow(MLB_TEAM)).toBeVisible();
     await expect(savedRow(TEAM_A)).toHaveCount(0);
     await saveForLater(page);
 
-    // The checklist: both cards lost their mark and the pill is gone (each negative beside its row).
+    // The checklist: #3 and #4 lost their mark (each negative beside its row); #2 is blue for its
+    // cut title, the only card the pill counts.
     await expect(page.getByText(both.name, { exact: true })).toBeVisible();
-    await expect(anyMark(both.number)).toHaveCount(0);
+    await expect(cardAttentionMark(page, both.number, "listing title was cut short")).toBeVisible();
+    await expect(anyMark(both.number)).toHaveAccessibleName(/ is worth a check: /);
+    await expect(noTeamMark(both.number)).toHaveCount(0);
     await expect(page.getByText(one.name, { exact: true })).toBeVisible();
     await expect(anyMark(one.number)).toHaveCount(0);
     await expect(page.getByText(real.name, { exact: true })).toBeVisible();
     await expect(anyMark(real.number)).toHaveCount(0);
-    await expect(needsYouPill(page)).toHaveCount(0);
+    await expect(needsYouPill(page)).toHaveAccessibleName("1 needs you");
 
     // A fresh drill reads the stored cards: #2 holds both teams, #3 only the one picked.
     await drillToCustom(page, {
