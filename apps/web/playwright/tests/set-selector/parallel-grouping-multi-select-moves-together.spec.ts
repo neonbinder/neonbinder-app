@@ -151,6 +151,13 @@ test(
     await expect(boxOf(comet)).toHaveCount(0);
     await expect(boxOf(aces)).toBeVisible();
 
+    // A filter matching only a ticked row leaves the right pane with no box
+    // to show while the switch is off, and the pane says so.
+    await filter.fill(`bolt ${T}`);
+    await expect(row(bolt)).toBeVisible();
+    await expect(boxes.getByText(`No parallels to show for "bolt ${T}"`, { exact: true })).toBeVisible();
+    await expect(boxes.getByRole("group", { name: /^Parallels of / })).toHaveCount(0);
+
     // Filtered again, Enter on Aces' box moves both hidden rows.
     await filter.fill(`aces ${T}`);
     await expect(dialog.getByText("2 selected (2 hidden by the filter)", { exact: true })).toBeVisible();

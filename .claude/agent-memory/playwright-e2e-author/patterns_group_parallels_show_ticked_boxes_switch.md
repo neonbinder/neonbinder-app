@@ -1,6 +1,6 @@
 ---
 name: patterns_group_parallels_show_ticked_boxes_switch
-description: NEO-660 Group Parallels hides a ticked row's own "Parallels of" box unless the "Show selected rows' boxes" switch is on; keeps filter asserts honest; dashed target border via toHaveCSS
+description: NEO-660 Group Parallels hides a ticked row's own box unless "Show selected rows' boxes" is on; filter asserts, empty-pane line, suggested-box fixture, scratch screenshot config
 metadata:
   type: feedback
 ---
@@ -26,6 +26,18 @@ and assert `toBeChecked()` on the checkbox, as a user would.
   border-style solid. A box that takes the selection: description starts
   "Click here to make the N selected rows parallels", and
   `toHaveCSS("border-style", "dashed")` (a perceivable look, no class check).
+- Empty right pane: with the switch off, a filter matching only ticked rows
+  shows `No parallels to show for "<filter>"` (scope to the "Parallels by
+  insert" region; it also appears for a filter matching nothing). Pair it
+  with the ticked row still visible on the left.
+- A suggested box needs a prefix fixture (`<T> Aces` + `<T> Aces Gold`); Cancel
+  with a pending suggestion opens "Discard N pending move(s)?" first.
+- Screenshots for review without touching `playwright/tests/`: a scratch
+  config in the worktree scratchpad that spreads the suite config, overrides
+  testDir/testMatch/outputDir, keeps only e2e/e2e-mobile with no deps; run
+  `npx playwright test --config <absolute path>` from apps/web with .env.local
+  sourced, APP_URL and WORKER_INDEX set; `page.emulateMedia` + `paintsLook`
+  per theme, then `locator.screenshot`.
 - Other specs that tick a row and click ANOTHER row's box are unaffected; the
   long-set spec's `/^\d+ selected/` does not collide with the switch label.
 
