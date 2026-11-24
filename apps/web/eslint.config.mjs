@@ -122,6 +122,7 @@ const jsxA11yHouseRules = {
           "PlayerAutocomplete",
           "PlayerPicker",
           "TeamPicker",
+          "Switch",
         ],
         depth: 5,
       },

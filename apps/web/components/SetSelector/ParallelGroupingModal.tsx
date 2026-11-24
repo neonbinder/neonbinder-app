@@ -1782,7 +1782,6 @@ export default function ParallelGroupingModal({
                   className="space-y-4 md:min-h-0 md:overflow-y-auto md:p-1.5 rounded-lg focus-outline focus-visible:-outline-offset-2"
                 >
                 {/* The label wraps the switch, so it names it with no id. */}
-                {/* eslint-disable-next-line jsx-a11y/label-has-associated-control -- wraps the Switch input; the rule's controlComponents list does not know Switch */}
                 <label
                   className="flex min-h-11 cursor-pointer items-center gap-3"
                 >
