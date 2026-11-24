@@ -7,6 +7,7 @@ import {
   rankTeamCandidates,
 } from "../../convex/lib/entityNearMatch";
 import { teamFullName } from "../../lib/teams/team-name";
+import { eraLabel } from "../../lib/teams/team-era";
 import { Input } from "../primitives/Input";
 import { MIN_CAREER_YEAR, maxCareerYear } from "../../lib/players/career-years";
 import {
@@ -133,6 +134,7 @@ export default function CareerTeamEntry({
   disabled = false,
   knownTeamsOnly = false,
   onDone,
+  onDraftChange,
 }: {
   /** NEO-96: the sport-level selectorOptions row id, not its display name. */
   sportId: Id<"selectorOptions">;
@@ -218,6 +220,14 @@ export default function CareerTeamEntry({
    * moves on (the Career check step goes to its next line).
    */
   onDone?: () => void;
+  /**
+   * NEO-657 — the entry the form would add RIGHT NOW (the same one + Add
+   * reports), or null while the team, the years or the pair is not addable. A
+   * host that wants to add what is on screen when the operator moves on reads
+   * it from here. Fires on a change only, and with null when the form goes
+   * away; held in a ref, so an inline handler is safe.
+   */
+  onDraftChange?: (draft: CareerTeamAdded | null) => void;
 }) {
   const suffix = label ? ` for ${label}` : "";
   const initialName = initialTeam ?? "";
@@ -439,16 +449,28 @@ export default function CareerTeamEntry({
     const staged = stagedNames
       .filter((n) => nameMatchesQuery(n, q))
       .sort(rank)
-      .map((n) => ({ key: `staged:${n}`, name: n, staged: true }));
+      .map((n) => ({
+        key: `staged:${n}`,
+        name: n,
+        staged: true,
+        teamId: undefined,
+        yearsActive: undefined,
+      }));
 
     const saved = (freshSearched ?? [])
       // NEO-236: the FULL name. A suggestion is something the operator can
       // pick to LINK to, and "Padres" does not identify the row it belongs to.
-      .map((t) => ({ _id: t._id, name: teamFullName(t) }))
+      .map((t) => ({ _id: t._id, name: teamFullName(t), yearsActive: t.yearsActive }))
       // Dropping a saved team already offered as staged: the same name twice,
       // once tagged and once not, reads as two different teams.
       .filter((t) => !stagedKeys.has(normalizeEntityName(t.name)))
-      .map((t) => ({ key: `team:${t._id}`, name: t.name, staged: false, teamId: t._id }));
+      .map((t) => ({
+        key: `team:${t._id}`,
+        name: t.name,
+        staged: false,
+        teamId: t._id,
+        yearsActive: t.yearsActive,
+      }));
 
     return [...staged, ...saved].slice(0, MAX_SUGGESTIONS);
   }, [stagedNames, freshSearched, trimmedName]);
@@ -554,6 +576,31 @@ export default function CareerTeamEntry({
     toNum === undefined ||
     (Number.isInteger(toNum) && toNum <= maxYear && toNum >= fromNum);
   const canAdd = trimmedName !== "" && fromValid && toValid && teamKnown && !disabled;
+
+  /* NEO-657 — what + Add would report, whether or not the host is `disabled`. */
+  const draftReady = trimmedName !== "" && fromValid && toValid && teamKnown;
+  const draftKey = draftReady
+    ? `${resolvedTeamId ?? ""}|${trimmedName}|${fromNum}|${toNum ?? ""}`
+    : "";
+  const onDraftChangeRef = useRef(onDraftChange);
+  useEffect(() => {
+    onDraftChangeRef.current = onDraftChange;
+  }, [onDraftChange]);
+  useEffect(() => {
+    onDraftChangeRef.current?.(
+      draftKey === ""
+        ? null
+        : {
+            name: trimmedName,
+            fromYear: fromNum,
+            ...(toNum !== undefined ? { toYear: toNum } : {}),
+            ...(resolvedTeamId ? { teamId: resolvedTeamId } : {}),
+          },
+    );
+    // The key stands for the entry; the values it is made of are not deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftKey]);
+  useEffect(() => () => onDraftChangeRef.current?.(null), []);
 
   const commit = () => {
     if (!canAdd) return;
@@ -861,7 +908,18 @@ export default function CareerTeamEntry({
                    * it dedupes them against the saved half. It just no longer
                    * says anything.
                    */
-                  aria-label={`Use ${s.name}`}
+                  /*
+                   * NEO-657 — a saved team's era is part of its name here:
+                   * two rows can share one full name ("Monterrey Sultanes"),
+                   * and the era is what tells them apart, on screen and to a
+                   * screen reader. A staged name has no era, so it reads as
+                   * before.
+                   */
+                  aria-label={
+                    s.yearsActive
+                      ? `Use ${s.name} ${eraLabel(s.yearsActive)}`
+                      : `Use ${s.name}`
+                  }
                   onMouseEnter={() => setHighlightIdx(idx)}
                   onClick={() => pickSuggestion(s.name, s.teamId)}
                   className={`flex w-full items-center gap-2 px-2 py-1 text-left text-sm ${
@@ -870,7 +928,18 @@ export default function CareerTeamEntry({
                       : "hover:bg-hover text-ink-2"
                   }`}
                 >
-                  <span className="flex-1 truncate">{s.name}</span>
+                  <span className="min-w-0 flex-1 wrap-anywhere">
+                    {s.name}
+                    {s.yearsActive && (
+                      <span
+                        className={`ml-2 font-mono text-[10px] tabular-nums ${
+                          idx === highlightIdx ? "text-ink-2" : "text-ink-3"
+                        }`}
+                      >
+                        {eraLabel(s.yearsActive)}
+                      </span>
+                    )}
+                  </span>
                 </button>
               </li>
             ))}

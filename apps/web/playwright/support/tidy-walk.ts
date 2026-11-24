@@ -728,7 +728,10 @@ const PINKABLE: readonly TidyTileName[] = ["Sources disagree", "Player", "Team",
  * by default (`career: "keep"`) every open gap is answered "Keep as is" before
  * Save & next, which writes nothing to the player. `career: "add"` leaves the
  * gaps open, so Save & next adds them. A new player's Wikidata career lines are
- * never touched (Save & next writes nothing from them).
+ * never touched (Save & next writes nothing from them), but a new player whose
+ * card names one NB team gets that team's stint for the set's year: the
+ * prefilled "+ Add stint" form is open, and Save & next adds it (NEO-657). That
+ * player is the walk's own, never a shared catalogue row.
  *
  * Contract: ENTRY the walk is open. EXIT the end screen is up. Returns the
  * tally. `maxCards` is a runaway guard (the seed's Base is 335 cards).
