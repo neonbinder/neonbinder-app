@@ -392,14 +392,17 @@ function WalkDialog({
   const saveCard = useMutation(api.tidyCards.saveCard);
 
   const pinkCount = attention?.items.filter((i) => i.level === "fix").length ?? 0;
-  const canSave = isDone || (!!current && pinkCount === 0 && !saving);
+  // Not while the career question is in flight: a card that just gained a team
+  // shows no gap until the live answer comes back, and a Save pressed in that
+  // moment would write no default stint and leave the card blue.
+  const canSave = isDone || (!!current && pinkCount === 0 && !saving && careerGapsReady);
 
   const save = async () => {
     if (isDone) {
       onClose();
       return;
     }
-    if (!current || saving || pinkCount > 0) return;
+    if (!current || saving || pinkCount > 0 || !careerGapsReady) return;
     setSaving(true);
     setSaveFailed(false);
     const cardId = current._id;

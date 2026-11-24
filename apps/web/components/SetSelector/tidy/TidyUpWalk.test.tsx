@@ -214,7 +214,7 @@ function mount(
   } = {},
 ) {
   const onClose = opts.onClose ?? vi.fn();
-  const view = render(
+  const tree = (o: typeof opts) => (
     <MemoryRouter initialEntries={[`/${opts.search ?? "?tidy=first"}`]}>
       <UrlProbe />
       <TidyUpWalk
@@ -224,13 +224,14 @@ function mount(
         title="Tidy up 2024 Topps Chrome"
         cards={cards}
         onClose={onClose}
-        {...(opts.careerGaps ? { careerGaps: opts.careerGaps } : {})}
-        {...(opts.careerGapsReady !== undefined ? { careerGapsReady: opts.careerGapsReady } : {})}
+        {...(o.careerGaps ? { careerGaps: o.careerGaps } : {})}
+        {...(o.careerGapsReady !== undefined ? { careerGapsReady: o.careerGapsReady } : {})}
         {...(opts.setNoTeam !== undefined ? { setNoTeam: opts.setNoTeam } : {})}
       />
-    </MemoryRouter>,
+    </MemoryRouter>
   );
-  return { onClose, ...view };
+  const view = render(tree(opts));
+  return { onClose, ...view, rerenderWith: (o: typeof opts) => view.rerender(tree({ ...opts, ...o })) };
 }
 
 /** One animation frame, inside act, so the walk's focus repair has run. */
@@ -401,6 +402,21 @@ describe("the footer", () => {
     });
     fireEvent.click(button("Save & next (Enter)"));
     await waitFor(() => expect(url()).toBe("?tidy=d"));
+  });
+
+  it("holds Save & next while the career question is in flight, so a gap not shown yet is never saved without its stint", async () => {
+    const view = mount([gapCard("a", "1"), pink("b", "2")], { careerGaps: gapsFor("a") });
+    await screen.findByTestId("tile-team");
+    view.rerenderWith({ careerGapsReady: false });
+    const save = button("Save & next (Enter)");
+    expect(save.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(save);
+    expect(saveCard).not.toHaveBeenCalled();
+    expect(url()).toBe("?tidy=a");
+    view.rerenderWith({ careerGaps: gapsFor("a"), careerGapsReady: true });
+    await waitFor(() => expect(button("Save & next (Enter)").getAttribute("aria-disabled")).toBeNull());
+    fireEvent.click(button("Save & next (Enter)"));
+    await waitFor(() => expect(saveCard).toHaveBeenCalledWith({ cardId: "a", gaps: [GAP] }));
   });
 
   it("Save & next on a blue card with no career gap writes nothing: nothing records that it was seen", async () => {
