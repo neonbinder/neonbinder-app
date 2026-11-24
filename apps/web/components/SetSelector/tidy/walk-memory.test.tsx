@@ -303,6 +303,76 @@ describe("WalkMemory leaf facts", () => {
     expect(m.defaultSportFor("player", "Jackson Merrill", "sport-set" as never)).toBe("sport-home");
     expect(m.defaultSportFor("player", "Someone Else", "sport-set" as never)).toBe("sport-set");
   });
+
+  describe("Edit on a linked name (a set-history link made at commit has no facts)", () => {
+    const empty = () => ({ gateItems: [] }) as unknown as LeafFacts;
+
+    it("asks the facts again once the write has re-opened the name, holds lookups meanwhile, then asks in the linked player's sport with the history pick", async () => {
+      const m = new WalkMemory();
+      const run = vi.fn<() => Promise<LeafFacts>>().mockResolvedValueOnce(empty());
+      m.loadFacts(run);
+      await flush();
+      expect(m.defaultSportFor("player", "Kendry Morales", "sport-set" as never)).toBe("sport-set");
+
+      const write = deferred<boolean>();
+      const second = deferred<LeafFacts>();
+      run.mockReturnValueOnce(second.promise);
+      let result: Promise<boolean> | undefined;
+      await act(async () => {
+        result = m.reopenName("player", "Kendry Morales", () => write.promise);
+      });
+      // The write is in flight: lookups already wait, so nothing is asked in the set's sport.
+      expect(m.factsLoading()).toBe(true);
+      const lookup = vi.fn().mockResolvedValue({ status: "ready" });
+      ask(m, lookup, "c1", "Kendry Morales", "player", "sport-set");
+      expect(lookup).not.toHaveBeenCalled();
+      expect(run).toHaveBeenCalledTimes(1);
+
+      await act(async () => write.resolve(true));
+      expect(run).toHaveBeenCalledTimes(2);
+      expect(m.factsLoading()).toBe(true);
+      await act(async () => second.resolve(facts({ name: "Kendry Morales", sportId: "sport-football" as never })));
+      expect(await result).toBe(true);
+      expect(m.factsLoading()).toBe(false);
+      expect(m.defaultSportFor("player", "Kendry Morales", "sport-set" as never)).toBe("sport-football");
+
+      ask(m, lookup, "c1", "Kendry Morales", "player", "sport-football");
+      expect(lookup.mock.calls[0][0]).toMatchObject({
+        sportId: "sport-football",
+        historyPlayerIds: ["p-hist"],
+        preselect: { playerId: "p-1" },
+      });
+    });
+
+    it("does not ask when the write fails, and does not ask for a name the facts already hold", async () => {
+      const m = new WalkMemory();
+      const run = vi.fn<() => Promise<LeafFacts>>().mockResolvedValue(facts());
+      m.loadFacts(run);
+      await flush();
+      expect(await m.reopenName("player", "Kendry Morales", async () => false)).toBe(false);
+      expect(m.factsLoading()).toBe(false);
+      expect(await m.reopenName("player", "Jackson Merrill", async () => true)).toBe(true);
+      expect(run).toHaveBeenCalledTimes(1);
+    });
+
+    it("a facts call that fails is not a claim: the name is asked in the set's sport", async () => {
+      const m = new WalkMemory();
+      const run = vi.fn<() => Promise<LeafFacts>>().mockResolvedValueOnce(empty());
+      m.loadFacts(run);
+      await flush();
+      run.mockRejectedValueOnce(new Error("down"));
+      expect(await m.reopenName("player", "Kendry Morales", async () => true)).toBe(true);
+      expect(m.factsLoading()).toBe(false);
+      expect(m.defaultSportFor("player", "Kendry Morales", "sport-set" as never)).toBe("sport-set");
+    });
+
+    it("with no walk facts (a tile alone) it is just the write", async () => {
+      const m = new WalkMemory();
+      const write = vi.fn().mockResolvedValue(true);
+      expect(await m.reopenName("player", "Kendry Morales", write)).toBe(true);
+      expect(write).toHaveBeenCalledTimes(1);
+    });
+  });
 });
 
 describe("WalkMemory answers on the open card", () => {

@@ -97,6 +97,10 @@ export class WalkMemory {
   private gateItems = new Map<string, GateItem>();
   private focusOwed: string | null = null;
   private factsState: FactsState = "idle";
+  /** The walk's own facts call (this leaf), kept so a re-opened name can ask again. */
+  private runFacts: (() => Promise<LeafFacts>) | null = null;
+  /** Re-opened names whose facts are on their way: lookups wait for them like for the first ask. */
+  private refreshing = 0;
   private version = 0;
   private listeners = new Set<() => void>();
 
@@ -115,6 +119,7 @@ export class WalkMemory {
   // ── leaf facts ────────────────────────────────────────────────────────────
   /** Asked once per walk: a second call, or one after a failure, does nothing. */
   loadFacts(run: () => Promise<LeafFacts>): void {
+    this.runFacts = run;
     if (this.factsState !== "idle") return;
     this.factsState = "loading";
     this.bump();
@@ -133,7 +138,42 @@ export class WalkMemory {
   }
   /** Lookups wait for the facts: the history picks and the preselect ride on the first ask. */
   factsLoading(): boolean {
-    return this.factsState === "loading";
+    return this.factsState === "loading" || this.refreshing > 0;
+  }
+  /**
+   * Edit on a LINKED name puts it back to waiting. The walk's facts were asked
+   * for the names pending when it opened, so a name that was linked then (a
+   * set-history link made at commit) has none: its sport and its set-history
+   * pick would be gone, and it would be asked in the set's sport as new to NB.
+   * So the facts are asked again once the write has re-opened the name, and
+   * lookups wait for them (as they do for the first ask). Nothing is stored; a
+   * name the facts already hold is not asked about again; a failed call holds
+   * nothing back (missing data is not a claim). Resolves to the write's result.
+   */
+  async reopenName(
+    kind: "player" | "team",
+    name: string,
+    write: () => Promise<boolean>,
+  ): Promise<boolean> {
+    const run = this.runFacts;
+    if (!run || this.gateItemFor(kind, name)) return write();
+    this.refreshing += 1;
+    this.bump();
+    try {
+      const ok = await write();
+      if (ok) {
+        try {
+          const facts = await run();
+          for (const item of facts.gateItems) this.gateItems.set(nameKeyOf(item.kind, item.name), item);
+        } catch {
+          // Not a claim: the normal rules go on without it.
+        }
+      }
+      return ok;
+    } finally {
+      this.refreshing -= 1;
+      this.bump();
+    }
   }
   gateItemFor(kind: "player" | "team", name: string): GateItem | undefined {
     return this.gateItems.get(nameKeyOf(kind, name));

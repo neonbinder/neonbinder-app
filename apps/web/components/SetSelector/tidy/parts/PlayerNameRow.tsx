@@ -106,6 +106,7 @@ export default function PlayerNameRow({
   leafCards: readonly TidyRow[];
 }) {
   const answerName = useMutation(api.tidyNames.answerName);
+  const memory = useWalkMemory();
   const wrapRef = useRef<HTMLDivElement | null>(null);
 
   // When the answer lands the question unmounts under the operator's focus. The
@@ -113,17 +114,21 @@ export default function PlayerNameRow({
   // Enter would undo the answer.
 
   if (!name.pending) {
+    // The re-opened name gets the facts a pending one has (its own sport, its
+    // set-history pick): `reopenName` asks for them once the write has landed.
     const clear = () =>
-      write.run(
-        () =>
-          answerName({
-            cardId: row._id,
-            kind: "player",
-            name: name.printed,
-            sportId: needSport(linked?.sportId ?? setSportId),
-            answer: { kind: "clear" },
-          }),
-        "Couldn't change that answer. Try again.",
+      memory.reopenName("player", name.printed, () =>
+        write.run(
+          () =>
+            answerName({
+              cardId: row._id,
+              kind: "player",
+              name: name.printed,
+              sportId: needSport(linked?.sportId ?? setSportId),
+              answer: { kind: "clear" },
+            }),
+          "Couldn't change that answer. Try again.",
+        ),
       );
     return (
       <div ref={wrapRef} role="group" aria-label={`Player ${name.printed}`} className="grid gap-1.5">
