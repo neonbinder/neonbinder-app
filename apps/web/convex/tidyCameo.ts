@@ -12,11 +12,11 @@
  *      it behaves exactly like "Use “It Takes Two CPC”";
  *   2. the player is added to "Also on this card" (NEO-528), through the
  *      cameo writer;
- *   3. the disagreement is settled (the pick stamps `chosen`);
+ *   3. the disagreement is settled (the pick removes its entry from the card);
  *   4. the card's own player stays empty, and the picked name is answered "not
- *      a player" in the same call (`tidyNames.applyAnswer`, the answer the
- *      Player tile's own button gives), so nothing is left to ask: the card has
- *      its cameo, no main player and no stop from this tile;
+ *      a player" on THIS card in the same call (`tidyNames.applyAnswer`, the
+ *      answer the Player tile's own button gives), so nothing is left to ask:
+ *      the card has its cameo, no main player and no stop from this tile;
  *   5. the title and description are rebuilt (T4), with the cameo in them.
  *
  * `cameoOfferFor` is the one reading of "when does the button show": the
@@ -24,12 +24,11 @@
  * so a stale tab can never write what the server would not offer.
  *
  * "Exactly one NB player" is main's exact-match rule (`resolveName` in
- * `tidyPickSource`, the loader's): a `tidyNames` answer linking a player wins;
- * otherwise exactly ONE player answers to the name and its own PRIMARY name is
- * the name (an alias-only or tied match is a question, never a player here; an
- * unanswered name row does not change that).
- * "Not a player" is the strict reading: a ruled-out name, or a name nobody
- * answers to (no primary, sport or alias match). A name that might be a player
+ * `tidyPickSource`, the loader's): exactly ONE player answers to the name and
+ * its own PRIMARY name is the name (an alias-only or tied match is a question,
+ * never a player here).
+ * "Not a player" is the strict reading: a name nobody answers to (no primary,
+ * sport or alias match). A name that might be a player
  * (an alias match, a tie, an unanswered lookup that found one) offers nothing.
  * A name that is a near spelling of the player's own (`nearSpellingDistance`)
  * is the same person misspelled,
@@ -42,7 +41,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
 import { sameNamePlayers } from "./players";
 import { applyPickToCard, entryFor } from "./tidyPickSource";
-import { applyAnswer, resolveName } from "./tidyNames";
+import { applyAnswer } from "./tidyNames";
 import { newNameWriteCache } from "./tidyCardWrites";
 import { addCardCameo, cameoIdsOf } from "./cardSecondaryPlayers";
 import { playerSurname } from "../lib/players/surname";
@@ -73,15 +72,6 @@ type Side = { kind: "player"; playerId: Id<"players"> } | { kind: "none" } | { k
 /** What one printed name is, by the pick path's own rules. */
 async function sideOf(ctx: ReadCtx, card: Card, name: string): Promise<Side> {
   const key = normalizeEntityName(name);
-  const row = await ctx.db
-    .query("tidyNames")
-    .withIndex("by_scope_kind_name", (q) =>
-      q.eq("scopeId", card.selectorOptionId).eq("kind", "player").eq("nameNormalized", key),
-    )
-    .first();
-  const answer = row?.answer;
-  if (answer?.kind === "notEntity") return { kind: "none" };
-  if (answer?.kind === "linkPlayer") return { kind: "player", playerId: answer.playerId };
   const same = await sameNamePlayers(ctx as MutationCtx, key, card.sportId);
   if (same.length === 0) return { kind: "none" };
   if (same.length === 1 && same[0].nameNormalized === key) {
@@ -164,12 +154,16 @@ export const pickSourceAsCameo = mutation({
     });
     // The picked name is not a player: say so now, so the card is done in one
     // click. The ordinary operator answer (`tidyNames.applyAnswer`), so it takes
-    // the name off the card, rebuilds the text and fans out to every card that
-    // prints this exact name. A name the pick did not leave pending (it was
-    // already ruled out) has nothing to answer.
+    // the name off THIS card and rebuilds the text. A name the pick did not
+    // leave pending has nothing to answer.
     if (result.pending) {
-      const target = await resolveName(ctx, card._id, "player", offer.name);
-      await applyAnswer(ctx, userId, target, { kind: "notEntity" });
+      await applyAnswer(ctx, userId, {
+        cardId: card._id,
+        kind: "player",
+        name: offer.name,
+        sportId: undefined,
+        input: { kind: "notEntity" },
+      });
     }
     return { playerId: offer.playerId, name: offer.name };
   },

@@ -1261,7 +1261,11 @@ describe("NEO-645 — a refused Tidy Up write persists nothing", () => {
     [
       "tidyNames.createPlayer",
       (c, as) =>
-        as().mutation(api.tidyNames.createPlayer, { cardId: c.cardId, name: "Rookie Newguy" }),
+        as().mutation(api.tidyNames.createPlayer, {
+          cardId: c.cardId,
+          name: "Rookie Newguy",
+          sportId: c.w.sport,
+        }),
     ],
     [
       "players.addStint",
@@ -1281,6 +1285,7 @@ describe("NEO-645 — a refused Tidy Up write persists nothing", () => {
           cardId: c.cardId,
           kind: "team",
           name: "Pads",
+          sportId: c.w.sport,
           answer: { kind: "linkTeam", teamId: c.w.padres, saveAsAlias: true },
         }),
     ],
@@ -1294,30 +1299,22 @@ describe("NEO-645 — a refused Tidy Up write persists nothing", () => {
         }),
     ],
     [
-      "tidyNames.requestTeamLookup",
-      (c, as) =>
-        as().mutation(api.tidyNames.requestTeamLookup, {
-          cardId: c.cardId,
-          name: "Brand New Club",
-          sportId: c.w.sport,
-        }),
-    ],
-    [
       "tidyCameo.pickSourceAsCameo",
       (c, as) => as().mutation(api.tidyCameo.pickSourceAsCameo, { cardId: c.cardId }),
     ],
     [
-      "tidyCards.keepCareerGap",
-      (c, as) =>
-        as().mutation(api.tidyCards.keepCareerGap, {
-          cardId: c.cardId,
-          playerId: c.playerId,
-          teamId: c.w.padres,
-        }),
+      "tidyCards.saveCard",
+      (c, as) => as().mutation(api.tidyCards.saveCard, { cardId: c.cardId, gaps: [] }),
     ],
     [
-      "tidyCards.markReviewed",
-      (c, as) => as().mutation(api.tidyCards.markReviewed, { cardId: c.cardId, keys: [] }),
+      "tidyNames.applyNameToAll",
+      (c, as) =>
+        as().action(api.tidyNames.applyNameToAll, {
+          cardId: c.cardId,
+          kind: "player",
+          name: "Rookie Newguy",
+          answer: { kind: "notEntity" },
+        }),
     ],
   ];
 
@@ -1351,70 +1348,3 @@ describe("NEO-645 — a refused Tidy Up write persists nothing", () => {
 async function scheduledCount(t: ReturnType<typeof convexTest>): Promise<number> {
   return (await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).length;
 }
-
-describe("NEO-645 — the admin's Tidy Up reads never ship answeredByUserId", () => {
-  const OPERATOR = "clerk_operator_HIDDEN";
-
-  test("tidyCards.cardContext answers an admin for an answered name without answeredByUserId", async () => {
-    const t = convexTest(schema, modules);
-    const { cardId, padres } = await t.run(async (ctx) => {
-      const w = await seedTidyWorld(ctx);
-      await nameRow(ctx, {
-        scopeId: w.base,
-        sportId: w.sport,
-        kind: "team",
-        name: "Pads",
-        over: {
-          answer: { kind: "linkTeam", teamId: w.padres, by: "operator" },
-          answerGen: 1,
-          answeredByUserId: OPERATOR,
-          answeredAt: 5,
-        },
-      });
-      const cardId = await printCard(ctx, w, {
-        number: "1",
-        printed: [{ kind: "team", name: "Pads" }],
-      });
-      return { cardId, padres: w.padres };
-    });
-
-    const context = await t.withIdentity(ADMIN).query(api.tidyCards.cardContext, { cardId });
-    // Not vacuous: the read really carried the answered row.
-    expect(context?.names[0].row?.answer).toEqual({
-      kind: "linkTeam",
-      teamId: padres,
-      by: "operator",
-    });
-    expect(JSON.stringify(context)).not.toContain("answeredByUserId");
-    expect(JSON.stringify(context)).not.toContain("HIDDEN");
-  });
-
-  test("tidyNames.teamLookup answers an admin for an answered team row without answeredByUserId", async () => {
-    const t = convexTest(schema, modules);
-    const cardId = await t.run(async (ctx) => {
-      const w = await seedTidyWorld(ctx);
-      await nameRow(ctx, {
-        scopeId: w.base,
-        sportId: w.sport,
-        kind: "team",
-        name: "Pads",
-        over: {
-          answer: { kind: "linkTeam", teamId: w.padres, by: "operator" },
-          answerGen: 1,
-          answeredByUserId: OPERATOR,
-          answeredAt: 5,
-          enrichment: { wikidataId: "Q1" },
-        },
-      });
-      return printCard(ctx, w, { number: "1", printed: [{ kind: "team", name: "Pads" }] });
-    });
-
-    const lookup = await t
-      .withIdentity(ADMIN)
-      .query(api.tidyNames.teamLookup, { cardId, name: "Pads" });
-    // Not vacuous: it found the row and answered with its enrichment.
-    expect(lookup).toMatchObject({ status: "ready", enrichment: { wikidataId: "Q1" } });
-    expect(JSON.stringify(lookup)).not.toContain("answeredByUserId");
-    expect(JSON.stringify(lookup)).not.toContain("HIDDEN");
-  });
-});

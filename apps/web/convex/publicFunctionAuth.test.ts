@@ -4043,8 +4043,9 @@ describe("NEO-574: the career check reads are admin-gated; the writer is interna
     const src = readFileSync(join(__dirname, "careerCoverage.ts"), "utf8");
     expect(src).toContain("export const coverageForPreview = query({");
     expect(src).toContain("export const relinkCandidates = query({");
+    expect(src).toContain("export const careerGaps = query({");
     expect(src).toContain("export const coverageForPairs = internalQuery({");
-    for (const name of ["coverageForPreview", "relinkCandidates"]) {
+    for (const name of ["coverageForPreview", "relinkCandidates", "careerGaps"]) {
       const body = src.slice(src.indexOf(`export const ${name} =`));
       const guard = body.indexOf("await requireAdmin(ctx)");
       expect(guard).toBeGreaterThan(-1);
@@ -4063,6 +4064,9 @@ describe("NEO-574: the career check reads are admin-gated; the writer is interna
     await expect(
       t.query(api.careerCoverage.relinkCandidates, { selectorOptionId: id, printedName: "Bob Allen" }),
     ).rejects.toThrow(/not authenticated/i);
+    await expect(t.query(api.careerCoverage.careerGaps, { pairs: [] })).rejects.toThrow(
+      /not authenticated/i,
+    );
   });
 
   test("a signed-in non-admin is refused", async () => {
@@ -4075,6 +4079,9 @@ describe("NEO-574: the career check reads are admin-gated; the writer is interna
       t
         .withIdentity(SIGNED_IN)
         .query(api.careerCoverage.relinkCandidates, { selectorOptionId: id, printedName: "Bob Allen" }),
+    ).rejects.toThrow(/admin access required/i);
+    await expect(
+      t.withIdentity(SIGNED_IN).query(api.careerCoverage.careerGaps, { pairs: [] }),
     ).rejects.toThrow(/admin access required/i);
   });
 });
@@ -4183,17 +4190,33 @@ describe("NEO-645: the Tidy Up surface is admin-gated", () => {
           cardId: s.cardId,
           kind: "player",
           name: "Doc Gooden",
+          sportId: s.sportId,
           answer: { kind: "linkPlayer", playerId: s.playerId },
         }),
     ],
     [
       "tidyNames.createPlayer",
-      (t, s) => t.mutation(api.tidyNames.createPlayer, { cardId: s.cardId, name: "Doc Gooden" }),
+      (t, s) =>
+        t.mutation(api.tidyNames.createPlayer, {
+          cardId: s.cardId,
+          name: "Doc Gooden",
+          sportId: s.sportId,
+        }),
     ],
     [
-      "tidyNames.setNameSport",
+      "tidyNames.applyNameToAll",
       (t, s) =>
-        t.mutation(api.tidyNames.setNameSport, {
+        t.action(api.tidyNames.applyNameToAll, {
+          cardId: s.cardId,
+          kind: "player",
+          name: "Doc Gooden",
+          answer: { kind: "notEntity" },
+        }),
+    ],
+    [
+      "adapters/wikidata.lookupTidyName",
+      (t, s) =>
+        t.action(api.adapters.wikidata.lookupTidyName, {
           cardId: s.cardId,
           kind: "player",
           name: "Doc Gooden",
@@ -4201,32 +4224,16 @@ describe("NEO-645: the Tidy Up surface is admin-gated", () => {
         }),
     ],
     [
-      "tidyNames.requestLookup",
+      "careerCoverage.careerGaps",
       (t, s) =>
-        t.mutation(api.tidyNames.requestLookup, {
-          cardId: s.cardId,
-          kind: "player",
-          name: "Doc Gooden",
+        t.query(api.careerCoverage.careerGaps, {
+          pairs: [{ selectorOptionId: s.leafId, playerId: s.playerId, teamId: s.teamId }],
         }),
     ],
-    [
-      "tidyNames.requestTeamLookup",
-      (t, s) =>
-        t.mutation(api.tidyNames.requestTeamLookup, {
-          cardId: s.cardId,
-          name: "Binghamton Mets",
-          sportId: s.sportId,
-        }),
-    ],
-    [
-      "tidyNames.teamLookup",
-      (t, s) => t.query(api.tidyNames.teamLookup, { cardId: s.cardId, name: "Binghamton Mets" }),
-    ],
-    ["tidyNames.lookupsPending", (t, s) => t.query(api.tidyNames.lookupsPending, { scopeId: s.leafId })],
     ["tidyCards.cardContext", (t, s) => t.query(api.tidyCards.cardContext, { cardId: s.cardId })],
     [
-      "tidyCards.markReviewed",
-      (t, s) => t.mutation(api.tidyCards.markReviewed, { cardId: s.cardId, keys: [] }),
+      "tidyCards.saveCard",
+      (t, s) => t.mutation(api.tidyCards.saveCard, { cardId: s.cardId, gaps: [] }),
     ],
     [
       "tidyCards.pickSourceValue",
@@ -4248,15 +4255,6 @@ describe("NEO-645: the Tidy Up surface is admin-gated", () => {
           sourceCardId: s.cardId,
           teamIds: [s.teamId],
           cardIds: [s.cardId],
-        }),
-    ],
-    [
-      "tidyCards.keepCareerGap",
-      (t, s) =>
-        t.mutation(api.tidyCards.keepCareerGap, {
-          cardId: s.cardId,
-          playerId: s.playerId,
-          teamId: s.teamId,
         }),
     ],
     [

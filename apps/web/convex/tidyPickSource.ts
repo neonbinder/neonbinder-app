@@ -10,33 +10,26 @@
  * pending names), which is what keeps the losing side out of the walk. Choosing
  * resolves each name of the value the same way the commit does:
  *
- *   1. an answer already on the name's `tidyNames` row applies (a link, or "not
- *      an entity", which leaves the name off the card);
- *   2. otherwise exactly ONE NB match links (a player whose own name is the
- *      name, one team the set's year allows; an alias-only or tied match is a
- *      question, never an adoption);
- *   3. otherwise the name stays pending: a name row is born (lookup enqueued
- *      after the write by `tidyNames.enqueuePendingLookups`) and the card
- *      carries the printed name.
+ *   1. exactly ONE NB match links (a player whose own name is the name, one team
+ *      the set's year allows; an alias-only or tied match is a question, never
+ *      an adoption);
+ *   2. otherwise the name stays pending and the card carries the printed name.
+ *
+ * NEO-656 (Jason: "Once you pick a source, the card keeps only the result"): a
+ * pick REMOVES the disagreement's entry from the card instead of stamping
+ * `chosen` on it, and nothing is read from or written to a name row.
  *
  * Every write goes through `writeNameChange` (links, title, description, the
  * teamless default; a pick that moves no name still rebuilds the title and
- * description, `regenerateListingNow`) and `syncCardPrintedNames` (the printed-name index).
- * `chosen` alone does not bump `lastUpdated` (the NEO-203 baseVersion); the
- * link writes it causes do, and so does a card name that follows the pick
- * (`pickedCardName`).
+ * description, `regenerateListingNow`). Removing the entry alone does not bump
+ * `lastUpdated` (the NEO-203 baseVersion); the link writes it causes do, and so
+ * does a card name that follows the pick (`pickedCardName`).
  */
 
-import { ConvexError } from "convex/values";
-import { getConvexSize } from "convex/values";
+import { ConvexError, getConvexSize } from "convex/values";
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
-import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
-import {
-  listCardPrintedNames,
-  syncCardPrintedNames,
-  type DesiredPrintedName,
-} from "./cardPrintedNames";
+import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS, isOpenDisagreement } from "./features/cardAttention";
 import {
   nameFieldsOf,
   writeNameChange,
@@ -44,7 +37,7 @@ import {
   type NameWriteCache,
 } from "./tidyCardWrites";
 import { regenerateListingNow } from "./tidyListingText";
-import { ensureTidyNameRow, MAX_TIDY_NAME_LENGTH } from "./tidyNames";
+import { MAX_TIDY_NAME_LENGTH } from "./tidyNames";
 import { sameNamePlayers } from "./players";
 import { resolveTeamForSetYear } from "./lib/teamRow";
 import { stampNoTeam } from "./lib/selectorTeams";
@@ -53,7 +46,7 @@ import { normalizeEntityName } from "../lib/entities/normalize-name";
 
 /** Names one picked value may hold (a card carries at most 20 players). */
 export const MAX_PICK_NAMES = 20;
-/** Stored `sourceDisagreements` bytes per card (schema.ts: 4096). */
+/** `sourceDisagreements` bytes per card (schema.ts: 4096); also the bound on an `offered` entry. */
 export const SOURCE_DISAGREEMENTS_MAX_BYTES = 4096;
 
 export type PickField = "players" | "teams";
@@ -107,13 +100,47 @@ export function sameDisagreement(a: Entry, b: Entry): boolean {
   );
 }
 
+/**
+ * The card's open disagreement on `field`, or undefined. An entry that carries
+ * the legacy `chosen` (stored before NEO-656, until the armed clear has run) is
+ * settled and is read as absent (D16, `isOpenDisagreement`).
+ */
 export function entryFor(
   card: Pick<Doc<"cardChecklist">, "sourceDisagreements">,
   field: PickField,
 ): { entry: Entry; index: number } | undefined {
   const list = card.sourceDisagreements ?? [];
-  const index = list.findIndex((e) => e.field === field);
+  const index = list.findIndex((e) => e.field === field && isOpenDisagreement(e));
   return index < 0 ? undefined : { entry: list[index], index };
+}
+
+/**
+ * NEO-656 (D13) — the entry a pick works from when the card no longer carries it:
+ * the values the walk kept for the open card, bounded the way the stored field
+ * is (at most 3 values, `MAX_PICK_NAMES` names of at most `MAX_TIDY_NAME_LENGTH`
+ * characters, `SOURCE_DISAGREEMENTS_MAX_BYTES`). Refused without them. Typed
+ * values are already unchecked, so this gives an admin no new power.
+ */
+export function entryFromOffered(
+  field: PickField,
+  offered: ReadonlyArray<ReadonlyArray<string>> | undefined,
+): Entry {
+  if (!offered || offered.length === 0) throw new ConvexError("That card has nothing to pick.");
+  if (offered.length > 3) throw new ConvexError("A disagreement holds at most 3 values.");
+  const values = offered.map((value) => {
+    if (value.length > MAX_PICK_NAMES) {
+      throw new ConvexError(`A value holds at most ${MAX_PICK_NAMES} names.`);
+    }
+    if (value.some((name) => name.length > MAX_TIDY_NAME_LENGTH)) {
+      throw new ConvexError(`A name is at most ${MAX_TIDY_NAME_LENGTH} characters.`);
+    }
+    return { value: [...value], sources: [] };
+  });
+  const entry: Entry = { field, values };
+  if (getConvexSize([entry]) > SOURCE_DISAGREEMENTS_MAX_BYTES) {
+    throw new ConvexError("Those values are too long to pick from.");
+  }
+  return entry;
 }
 
 /** Two names alike when only case and edge space differ (main's `sameName`). */
@@ -148,11 +175,15 @@ export function pickedCardName(
 }
 
 type Resolved =
-  | { state: "playerLink"; playerId: Id<"players">; hasRow: boolean }
-  | { state: "teamLink"; teamId: Id<"teams">; hasRow: boolean }
-  | { state: "ruledOut"; hasRow: true }
-  | { state: "pending"; hasRow: true };
+  | { state: "playerLink"; playerId: Id<"players"> }
+  | { state: "teamLink"; teamId: Id<"teams"> }
+  | { state: "pending" };
 
+/**
+ * What one name of a picked value becomes: exactly ONE NB match links, anything
+ * else stays pending for the operator. NEO-656 (B10): nothing stored is read,
+ * so a name a card once had answered is matched like any other.
+ */
 async function resolveName(
   ctx: MutationCtx,
   card: Doc<"cardChecklist">,
@@ -161,42 +192,30 @@ async function resolveName(
   setYear: number | undefined,
 ): Promise<Resolved> {
   const key = normalizeEntityName(name);
-  const row = await ctx.db
-    .query("tidyNames")
-    .withIndex("by_scope_kind_name", (q) =>
-      q.eq("scopeId", card.selectorOptionId).eq("kind", kind).eq("nameNormalized", key),
-    )
-    .first();
-  const answer = row?.answer;
-  if (answer?.kind === "notEntity") return { state: "ruledOut", hasRow: true };
-  if (answer?.kind === "linkPlayer" && kind === "player") {
-    return { state: "playerLink", playerId: answer.playerId, hasRow: true };
-  }
-  if (answer?.kind === "linkTeam" && kind === "team") {
-    return { state: "teamLink", teamId: answer.teamId, hasRow: true };
-  }
-  if (!row) {
-    if (kind === "player") {
-      const same = await sameNamePlayers(ctx, key, card.sportId);
-      // The PRIMARY name must be the name: a shared alias is a question.
-      if (same.length === 1 && same[0].nameNormalized === key) {
-        return { state: "playerLink", playerId: same[0]._id, hasRow: false };
-      }
-    } else {
-      const found = await resolveTeamForSetYear(ctx, card.sportId, name, setYear, {
-        allowPastEra: true,
-      });
-      if (found.teamId) return { state: "teamLink", teamId: found.teamId, hasRow: false };
+  if (kind === "player") {
+    const same = await sameNamePlayers(ctx, key, card.sportId);
+    // The PRIMARY name must be the name: a shared alias is a question.
+    if (same.length === 1 && same[0].nameNormalized === key) {
+      return { state: "playerLink", playerId: same[0]._id };
     }
+  } else {
+    const found = await resolveTeamForSetYear(ctx, card.sportId, name, setYear, {
+      allowPastEra: true,
+    });
+    if (found.teamId) return { state: "teamLink", teamId: found.teamId };
   }
-  return { state: "pending", hasRow: true };
+  return { state: "pending" };
 }
 
 /**
- * Write `names` as the chosen value of `field` on `card`. The caller has
- * already checked the value is one the entry offers (or typed) and that the
- * card carries the entry. Returns whether names were left pending, so the
- * caller enqueues their lookups once.
+ * Write `names` as the chosen value of `field` on `card`, and remove the
+ * disagreement's entry. The caller has already checked the value is one the
+ * entry offers (or typed).
+ *
+ * The entry is the card's own open one. A card that no longer carries it (the
+ * walk is Changing a pick it made a moment ago) passes `entry`, the values the
+ * walk kept (`entryFromOffered`); nothing is then removed from the card.
+ * Returns whether names were left pending.
  */
 export async function applyPickToCard(
   ctx: MutationCtx,
@@ -207,11 +226,13 @@ export async function applyPickToCard(
     typed: boolean;
     userId: string;
     cache: NameWriteCache;
+    entry?: Entry;
   },
 ): Promise<{ pending: boolean; written: boolean }> {
   const kind = args.field === "players" ? "player" : "team";
   const found = entryFor(card, args.field);
-  if (!found) throw new ConvexError("That card has nothing to pick.");
+  const entry = found?.entry ?? args.entry;
+  if (!entry) throw new ConvexError("That card has nothing to pick.");
   const cap = kind === "player" ? MAX_CARD_PLAYERS : MAX_CARD_TEAMS;
   if (args.names.length > cap) {
     throw new ConvexError(`A card holds at most ${cap} ${args.field}.`);
@@ -219,16 +240,6 @@ export async function applyPickToCard(
 
   const setYear = await findSetYearForSelectorOption(ctx, card.selectorOptionId);
   const fields: NameFields = nameFieldsOf(card);
-  const desired: DesiredPrintedName[] = (await listCardPrintedNames(ctx, card._id))
-    .filter((row) => row.kind !== kind)
-    .map((row) => ({
-      kind: row.kind,
-      scopeId: row.scopeId,
-      nameNormalized: row.nameNormalized,
-      printed: row.printed,
-      order: row.order,
-      ...(row.cardOverride ? { cardOverride: true as const } : {}),
-    }));
 
   // The disagreeing field held nothing, or held the value Change is replacing.
   if (kind === "player") {
@@ -241,28 +252,8 @@ export async function applyPickToCard(
   }
 
   let anyPending = false;
-  for (let order = 0; order < args.names.length; order++) {
-    const name = args.names[order];
-    const key = normalizeEntityName(name);
+  for (const name of args.names) {
     const resolved = await resolveName(ctx, card, kind, name, setYear);
-    if (resolved.hasRow) {
-      // The row exists (an answer) or is born now (pending): either way the
-      // card prints it, so it is indexed.
-      await ensureTidyNameRow(ctx, {
-        scopeId: card.selectorOptionId,
-        kind,
-        name,
-        sportId: card.sportId,
-        setYear,
-      });
-      desired.push({
-        kind,
-        scopeId: card.selectorOptionId,
-        nameNormalized: key,
-        printed: name,
-        order,
-      });
-    }
     if (resolved.state === "playerLink") {
       if (!fields.playerIds.includes(resolved.playerId)) {
         fields.playerIds.push(resolved.playerId);
@@ -272,25 +263,18 @@ export async function applyPickToCard(
       if (!fields.teamOnCardIds.includes(resolved.teamId)) {
         fields.teamOnCardIds.push(resolved.teamId);
       }
-    } else if (resolved.state === "pending") {
+    } else {
       anyPending = true;
       if (kind === "player") fields.pendingPlayerNames.push(name);
       else fields.pendingTeamNames.push(name);
     }
   }
 
-  const entries = [...(card.sourceDisagreements ?? [])];
-  entries[found.index] = {
-    ...found.entry,
-    chosen: {
-      value: args.names,
-      by: "operator",
-      ...(args.typed ? { typed: true as const } : {}),
-    },
-  };
-  if (getConvexSize(entries) > SOURCE_DISAGREEMENTS_MAX_BYTES) {
-    throw new ConvexError("That value is too long to keep on the card.");
-  }
+  // The pick keeps only its result: the entry leaves the card (the other
+  // field's entry, and every entry nobody picked, stay). Removing an entry only
+  // shrinks the field, so there is no size check.
+  const remaining = (card.sourceDisagreements ?? []).filter((_, i) => i !== found?.index);
+  const sourceDisagreements = remaining.length > 0 ? remaining : undefined;
 
   const before = nameFieldsOf(card);
   const changed =
@@ -300,9 +284,9 @@ export async function applyPickToCard(
     JSON.stringify(before.teamOnCardIds) !== JSON.stringify(fields.teamOnCardIds) ||
     JSON.stringify(before.pendingTeamNames) !== JSON.stringify(fields.pendingTeamNames);
 
-  // The stamp first, alone: on its own it must not bump `lastUpdated`. A card
+  // The removal first, alone: on its own it must not bump `lastUpdated`. A card
   // name that follows the pick is content, so it does (the NEO-203 baseVersion).
-  const cardName = pickedCardName(card, found.entry, args.names);
+  const cardName = pickedCardName(card, entry, args.names);
   // A teams value that names nobody ("No Team") IS the No-team answer: the
   // operator took the source's own claim that this card has no team, so the card
   // is stamped the way "No team on this card" stamps it and is not asked again.
@@ -321,14 +305,14 @@ export async function applyPickToCard(
             }
           : {};
   await ctx.db.patch(card._id, {
-    sourceDisagreements: entries,
+    sourceDisagreements,
     ...noTeamStamp,
     ...(cardName !== undefined ? { cardName, lastUpdated: Date.now() } : {}),
   });
   if (changed) {
     const stamped = {
       ...card,
-      sourceDisagreements: entries,
+      sourceDisagreements,
       ...noTeamStamp,
       ...(cardName !== undefined ? { cardName } : {}),
     } as Doc<"cardChecklist">;
@@ -338,6 +322,5 @@ export async function applyPickToCard(
     // write still rebuilds the title and description (NEO-645 T4).
     await regenerateListingNow(ctx, card._id, args.cache.titles);
   }
-  await syncCardPrintedNames(ctx, card, desired);
   return { pending: anyPending, written: changed || cardName !== undefined };
 }

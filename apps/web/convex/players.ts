@@ -88,7 +88,6 @@ import { clampSearchQuery } from "./lib/searchQueryClamp";
 import { refreshDescriptionsAfterRename } from "./cardDescriptionFanOut";
 // NEO-528: the also-pictured index, for the sport-removal guard.
 import { cardSecondaryPlayerLinkPage } from "./cardSecondaryPlayers";
-import { recheckCareerGaps } from "./tidyCareerGap";
 // NEO-463: a one-word name that is a fuller-named player's first or last name.
 import {
   fragmentMatches,
@@ -4359,12 +4358,9 @@ export const appendCareerStints = internalMutation({
  *   in the one canonical order (`sortTeamYears`) and stays within
  *   `MAX_PLAYER_TEAM_YEARS`. A team in a sport the player does not belong to, or
  *   a missing player or team, is `skipped`, never written.
- * - Then re-check the `careerGap` of the OPEN card (`cardId`): when the new
- *   stint now covers the card's team by the card's year (`careerCoversCardTeam`,
- *   J2: today's rule, not a [Y-1, Y] window) the card's `{ kind: "careerGap" }`
- *   check for this (player, team) is removed from `tidyChecks`. Then schedule the
- *   same re-check for the leaf's OTHER single-player cards for that player.
- * - `tidyChecks` writes never bump the card's `lastUpdated`. The player row's
+ * - Nothing is re-checked (NEO-656): a card's career gap is read live from the
+ *   player's stints (`careerCoverage.careerGaps`), so it leaves the card the
+ *   moment this stint covers it, on every card of the player. The player row's
  *   `lastUpdated` does bump (a career changed).
  * - NEO-307: a team creation that would clash with another team's alias is the
  *   caller's job (`teams.findOrCreate` returns the holder to link); the
@@ -4378,8 +4374,11 @@ export const addStint = mutation({
     teamId: v.id("teams"),
     fromYear: v.number(),
     toYear: v.optional(v.number()),
-    /** The open card; its `careerGap` check is re-evaluated after the write. */
-    cardId: v.id("cardChecklist"),
+    /**
+     * @deprecated NEO-656 — ignored. An SPA tab opened before the release still
+     * sends it; removed with the next schema tightening.
+     */
+    cardId: v.optional(v.id("cardChecklist")),
   },
   returns: v.object({
     added: v.number(),
@@ -4397,19 +4396,6 @@ export const addStint = mutation({
         ...(args.toYear !== undefined ? { toYear: args.toYear } : {}),
       },
     ]);
-    // A stint that was already there can still be what the card was waiting on.
-    if (result.added + result.existing > 0) {
-      const card = await ctx.db.get(args.cardId);
-      if (card) {
-        await recheckCareerGaps(ctx, card, args.playerId);
-        // The leaf's other cards for this player, paged and scheduled.
-        await ctx.scheduler.runAfter(0, internal.tidyCards.recheckCareerGapPage, {
-          leafId: card.selectorOptionId,
-          playerId: args.playerId,
-          cursor: null,
-        });
-      }
-    }
     return result;
   },
 });
