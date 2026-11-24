@@ -16,17 +16,23 @@
 //      Cards opens (not every card is 100%) and its Confirm SAVES the 18 cards; the walk opens.
 //   2. Every row prints "Fort Worth Fire", a club NB does not hold, so every card's Team tile is
 //      pink (measured: the pill read "18 need you, 18 to fix"). The first card's "+ New team"
-//      creates it, which answers all 18 at once, so #17's only pink is the disagreement. Save for
-//      later: the pill reads "16 need you, 16 to fix" (two cards' players NB links by itself; the
-//      other 15 names are unknown to NB). The pill reopens the walk; every card but #17 is skipped
+//      creates it and links that card only (NEO-656); its "Apply to all cards printing “Fort Worth
+//      Fire”" links the other 17 ("Linked 17 more cards."), so #17's only pink is the
+//      disagreement. Save for
+//      later: the pill reads "18 need you, 16 to fix": two cards' players NB links by itself,
+//      and each is blue for a career gap (no stint with the new club; read live, J5/J6), and the
+//      other 15 names are unknown to NB (pink). The pill reopens the walk; every card but #17 is skipped
 //      (nothing written).
 //   3. #17's Sources disagree tile is pink and offers, besides a "Use" per source, the shortcut
 //      "“Scorch”, Gretzky as a cameo" (axe on that tile). One click: the tile stops being pink
-//      ("Using “Scorch” (BSC)"), the Player tile shows "Scorch is not a player." and a "Cameo Wayne
+//      ("Using “Scorch” (BSC)" and Change, shown while #17 is open: the pick removes the card's
+//      disagreement entry and the walk keeps only this sitting's pick, NEO-656 J4), the Player
+//      tile shows "Scorch is not a player." and a "Cameo Wayne
 //      Gretzky" row, and no "Player Wayne Gretzky" row; the Listing title tile shows the rebuilt
 //      title. Save & next is usable (nothing is left pink on the card) and moves on; Back returns to
-//      #17 with the cameo still on it.
-//   4. Save for later: the pill drops by #17, to "15 need you, 15 to fix".
+//      #17 with the cameo still on it and no Sources disagree tile (the card keeps only the result).
+//   4. Save for later: the pill drops by #17, to "17 need you, 15 to fix" (a cameo is not the
+//      card's player, so #17 has no career gap).
 //   5. The saved card reads back in its drawer: Card name "Scorch", the rebuilt Card title.
 //
 // The expected title was computed first with `assessListingTitle` (npx tsx), as the commit's
@@ -42,9 +48,11 @@
 // that set (BSC only, 18 cards, reached through the All Brands view); FRESH-ONLY: it commits the
 // checklist, so a re-run on the same seed fails at "No cards in this checklist yet." by name.
 // Writes: the 18 cards; the team "Fort Worth Fire" (Hockey, created in the walk: NB holds none,
-// so the first card's "+ New team" makes it, and the answer reaches all 18 cards); on #17 the "not a player" answer for "Scorch" (set scope), the cameo
-// (the catalogue's Wayne Gretzky, the one Hockey row of that name; no other spec counts his
-// cameos) and the "seen" marks of Save & next. Every other name is skipped: nothing minted.
+// so the first card's "+ New team" makes it, and its Apply to all reaches the other 17 cards); on
+// #17 "Scorch" off the card's waiting names (not a player, this card only), the picked card name
+// and the cameo (the catalogue's Wayne Gretzky, the one Hockey row of that name; no other spec
+// counts his cameos). Nothing else is stored (Jason, 2026-09-28: "We should not be keeping
+// answers to anything"); every other name is skipped: nothing minted.
 //
 // Desktop and mobile: one spec, no branch (role and label locators; click() scrolls).
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
@@ -52,6 +60,7 @@ import { editCardButton } from "../../support/cards";
 import { CHECKLISTS, checklistRows, settleChecklistFetch, usePastedChecklist } from "../../support/published-checklist";
 import { openOneMarketplaceSetBase, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 import {
+  applyNameToAll,
   createTeamOnOpenRow,
   expectCardSettled,
   needsYouPill,
@@ -114,14 +123,18 @@ test(
 
     // ── 2. The club, so that #17's only pink is the disagreement; then the pill before ──
     // "Fort Worth Fire" is printed on all 18 cards and NB holds no team of that name, so every
-    // card's Team tile is pink. Creating it (the row's "+ New team") answers every card at once.
+    // card's Team tile is pink. Creating it (the row's "+ New team") links this card; its Apply to
+    // all links the 17 others still waiting on the name.
     expect(await createTeamOnOpenRow(page)).toBe(`Team ${CLUB}`);
     await expect(pinkTile(page, "Team")).toHaveCount(0);
+    expect(await applyNameToAll(page, "Team", CLUB)).toBe(`Linked ${rows.length - 1} more cards.`);
     await saveForLater(page);
-    // 18 cards less the two whose players NB links by itself once the club is answered: 16, #17
-    // among them (measured: the walk past the team answer held 15 cards besides #17).
+    // All 18 need you: 16 pink, #17 among them (their player names are unknown to NB or, on #17,
+    // disputed), and 2 blue, whose players NB links by itself and whose careers hold no stint
+    // with the new club. Jason (J5): "it should read real data and display pink/blue as
+    // appropriate depending on the current state of the data".
     const pill = needsYouPill(page);
-    await expect(pill).toHaveAccessibleName(pillName(16, 16));
+    await expect(pill).toHaveAccessibleName(pillName(18, 16));
     await openTidyWalk(page, { title: tidyUpName({ year: "1995", set: SET }) });
 
     // ── 3. #17: the pink tile offers the shortcut ──
@@ -169,11 +182,13 @@ test(
     await expect(tidyCardIdentity(page).first()).toHaveText(new RegExp(`^#${CARD}\\b`));
     await expectCardSettled(page);
     await expect(playerTile.getByRole("group", { name: `Cameo ${PLAYER}`, exact: true })).toBeVisible();
-    await expect(pinkTile(page, "Sources disagree")).toHaveCount(0);
+    // The pick kept only the result: the card carries no disagreement, and "Using" went with the
+    // sitting that made it (J4: "Once you pick a source, the card keeps only the result.").
+    await expect(tidyTile(page, "Sources disagree")).toHaveCount(0);
 
     // ── 4. The pill drops by #17 ──
     await saveForLater(page);
-    await expect(pill).toHaveAccessibleName(pillName(15, 15));
+    await expect(pill).toHaveAccessibleName(pillName(17, 15));
 
     // ── 5. The saved card reads back ──
     await openOneMarketplaceSetBase(page, env, { set: SET });

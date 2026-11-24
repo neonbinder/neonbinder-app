@@ -4,8 +4,10 @@
 // check, and the status line says how many cards took it ("Applied to 2 cards.").
 //
 // The operator meets it like this, on ONE player printed on five cards:
-//   1. #1 opens the walk with the player still a name. "Add as new player" answers it on every card
-//      that prints it. #1's Team tile stays pink (blank cell: no team).
+//   1. #1 opens the walk with the player still a name. "Add as new player" links #1 only (NEO-656:
+//      an answer links the open card); the Player tile's "Apply to all cards printing “<player>”"
+//      then links the four other cards still waiting on that name ("Linked 4 more cards."). #5
+//      keeps its second name waiting. #1's Team tile stays pink (blank cell: no team).
 //   2. A team made on #1's tile ("+ New team", which saves it) puts the offer up: "Apply to all 2
 //      other <player> cards" (#2 and #3). #4 is NOT offered: its team cell names another team
 //      (rule 8, a data claim holds back a guess, and a claim is its own line). #5 is NOT offered
@@ -21,6 +23,9 @@
 // R2: each walk move is proved by the card that lands and what it shows; every negative sits
 // beside a positive. The Apply button stays on the page after it is pressed (it keeps focus).
 //
+// NB keeps no answer (Jason, 2026-09-28: "We should not be keeping answers to anything"): every
+// link here is a card's own field, read back in step 5.
+//
 // FIXTURE (SET-REGISTRY.md, the `ata`/`atb` prefixes; R7a): a per-attempt sport `ata<token>` with
 // year 2026, brand Topps and ONE set `atb<token>` with `Insert` › `Base`, all hand-made with no
 // marketplace id anywhere, so the Sync is checklist-only (a pasted five-row checklist is the one
@@ -35,6 +40,7 @@ import { escapeRe } from "../../support/cards";
 import { usePastedChecklist } from "../../support/published-checklist";
 import { drillToCustom, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 import {
+  applyNameToAll,
   createPlayerOnOpenRow,
   expectCardSettled,
   pinkTile,
@@ -86,11 +92,13 @@ test(
       name: new RegExp(`^Apply to (all [0-9]+ other|the other) ${escapeRe(PLAYER)} cards?$`),
     });
 
-    // ── STEP 1: #1, the player answered on every card that prints him ──
+    // ── STEP 1: #1, the player answered here, then on every card still waiting on the name ──
     await expect(header("1")).toBeVisible();
     await expectCardSettled(page);
     expect(await createPlayerOnOpenRow(page)).toBe(`Player ${PLAYER}`);
     await expect(pinkTile(page, "Player")).toHaveCount(0);
+    // The answer linked #1 only; #2-#5 still wait on the name until Apply to all reaches them.
+    expect(await applyNameToAll(page, "Player", PLAYER)).toBe("Linked 4 more cards.");
     // R2 precondition: no team on #1 yet, so the tile asks, and nothing is offered.
     await expect(pinkTile(page, "Team")).toHaveCount(1);
     await expect(applyButton).toHaveCount(0);
@@ -121,6 +129,10 @@ test(
     await expectAccessible(page, { within: walk, label: "Tidy Up walk, Apply to all reported its counts" });
 
     // ── STEP 4: what Apply to all left — #2 and #3 are done; #4 and #5 still stop ──
+    // The new player has no stint with the team, so #1's career gap is blue (read live, J5/J6:
+    // "it should read real data and display pink/blue as appropriate depending on the current
+    // state of the data"). Save & next adds the default stint, which covers #2 and #3 as well.
+    await expect(tidyTile(page, "Career"), "#1's career gap is shown").toHaveAccessibleDescription("To check");
     await saveAndNext(page);
     await expect(header("4")).toBeVisible();
     await expect(walk.getByText(/^#[23]( · .+)?$/), "#2 and #3 took the team, so the walk never shows them").toHaveCount(0);

@@ -27,5 +27,13 @@ After NEO-656 (2026-11-24) the walk's "N cards left" and the pill are live count
   Plants that redden both era specs: swap `onLink(candidate.teamId)` in `TeamCandidates.tsx` to the
   mirrored index; and in `careerCoverage.careerGaps` guard `gaps.push` off (convex push, ~1.5 min).
 
+- **Save & next over a Career gap waits for live data** (`afterSave` in `TidyUpWalk.tsx`): the
+  walk re-reads cards and gaps before choosing the next card, so cards the stint settled drop out.
+  Plant: flip `if (gaps.length > 0)` before `setAfterSave` to `< 0`; Save & next then lands on a
+  settled card (#2) and a "next card is #4" assert goes red. `saveAndNext` already waits on URL+face.
+- **Cameo shortcut keeps "Using … (BSC)" up while the card is open** (the walk's pick memory).
+  Plant: guard the cameo branch's `memory.keepPick` with an impossible condition (anchor on the
+  "Player tile says the name is not a player" comment: `const before = kept;` occurs twice).
+
 **How to apply:** rewriting any NEO-645 walk spec whose counts assumed fan-out or a sticky blue.
 Related: [[neo656-tidy-walk-helpers-skip-apply-end-screen]], [[patterns-walk-keeps-a-card-that-clears-on-screen]].
