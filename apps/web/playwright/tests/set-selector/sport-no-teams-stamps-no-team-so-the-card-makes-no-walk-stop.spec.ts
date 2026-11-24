@@ -7,18 +7,23 @@
 //      a BLANK team cell (no claim), #3 with a team the checklist names. The commit saves them
 //      (the player still a pending name) and the walk opens on #1, "3 cards left". #1's Team
 //      tile is pink: nothing can be stamped while the name is unknown (he could play anywhere).
-//   3. Adding him as a new player (his sport is the set's, the teamless one) stamps the default
-//      on every card it may reach: #1's Team tile turns to "No team on this card." by itself,
-//      and #2 leaves the walk without ever being shown ("2 cards left").
+//   3. Adding him as a new player (his sport is the set's, the teamless one) links #1 only
+//      (NEO-656: an answer links the open card) and stamps its default: #1's Team tile turns to
+//      "No team on this card." by itself and #1 leaves the count ("2 cards left"). "Apply to all
+//      cards printing “<player>”" links #2 and #3; #2 is stamped the same way and leaves the
+//      walk without ever being shown ("1 card left").
 //   4. #3 is the counter-case (invariant 8: a data claim holds a default back): its Team tile
 //      stays pink with the checklist's team for the operator to answer, never "No team on this
-//      card.". Answered, the walk ends "All tidy".
+//      card.". Answered, the walk ends "All tidy" with both walked cards fixed.
 //   5. The checklist: #1 and #2 read No Team, #3 its named team; nothing is badged or counted.
 //   6. The default never blocks a team: a team picked in the card editor wins, after a reload.
+//      Blue is live (Jason, NEO-656: "it should read real data and display pink/blue as
+//      appropriate depending on the current state of the data"): the player's career does not
+//      hold that team, so #1 is now worth a check for it, and only #1.
 //   7. The quick-add form is the other birth path: a card added by hand for the same player is
 //      born No Team, unbadged.
 //   8. Turning the flag off says the sport asks for a team again, reads not pressed, and changes
-//      no card already saved.
+//      no card already saved (#1's career check is the only mark, as before).
 // The listing-names-a-team half is `sport-no-teams-listing-team-holds-back-the-default`; BSC
 // answering "no team" is `sport-no-teams-bsc-no-team-answer-stamps-no-team-once-the-person-is-added`.
 //
@@ -51,10 +56,12 @@ import { addCardViaForm, confirmDeleteCardButton, deleteCardButton, editCardButt
 import { usePastedChecklist } from "../../support/published-checklist";
 import { ensureSportHasTeams, openSportAttributes, pressTeamlessToggle, teamlessToggle } from "../../support/teamless-sport";
 import {
+  applyNameToAll,
   createPlayerOnOpenRow,
   createTeamOnOpenRow,
   expectCardSettled,
   expectCardsLeft,
+  expectTidyEndScreen,
   finishTidyWalk,
   mustFixLine,
   needsYouPill,
@@ -91,6 +98,13 @@ function rowSays(page: Page, number: string, text: string) {
 function anyMark(page: Page, number: string) {
   return page.getByRole("img", {
     name: new RegExp(`^Card ${escapeRe(number)}(, .*)? (needs attention|is worth a check): `),
+  });
+}
+
+/** The card's blue career check: its team is not in the player's career (live, NEO-656 B22). */
+function careerMark(page: Page, number: string) {
+  return page.getByRole("img", {
+    name: new RegExp(`^Card ${escapeRe(number)}(, .*)? is worth a check: .*team is missing from the player's career`),
   });
 }
 
@@ -215,7 +229,7 @@ test(
     const teamTile = tidyTile(page, "Team");
     const stampedLine = teamTile.getByText("No team on this card.", { exact: true });
 
-    // ══ 3. #1: the player answered, and the default stamps No team by itself ══
+    // ══ 3. #1: the player answered, and the default stamps No team by itself; Apply to all for #2 ══
     await expect(header("1")).toBeVisible();
     await expectCardSettled(page);
     await expect(pinkTile(page, "Player")).toHaveCount(1);
@@ -235,10 +249,16 @@ test(
     await expect(teamTile.getByRole("button", { name: "No team on this card", exact: true })).toHaveCount(0);
     await expect(mustFixLine(page)).toHaveCount(0);
     await expect(tidyFooterButton(page, "saveAndNext", { usable: true })).toBeVisible();
-    // #2 had nothing else and drops out; #1 (a blue career check on the card the player was added
-    // on) and #3 (its claimed team) stay.
+    // The answer linked #1 only: #1 has nothing left and drops out; #2 and #3 still wait on the name.
     await expectCardsLeft(page, 2);
     await expectAccessible(page, { within: walk, label: "Tidy Up walk on a card stamped No team by its sport" });
+    // Apply to all links the two cards still waiting on him: #2, stamped too, has nothing else and
+    // drops out; #3 (its claimed team) stays.
+    expect(await applyNameToAll(page, "Player", PLAYER)).toBe("Linked 2 more cards.");
+    await expectCardsLeft(page, 1);
+    // #1 is untouched by it: still stamped, nothing pink.
+    await expect(stampedLine).toBeVisible();
+    await expect(pinkTile(page, "Team")).toHaveCount(0);
 
     // ══ 4. #3: the checklist's team holds the default back; the operator answers it ══
     await saveAndNext(page);
@@ -261,7 +281,8 @@ test(
     expect(await createTeamOnOpenRow(page)).toBe(`Team ${CLAIMED}`);
     await expect(pinkTile(page, "Team")).toHaveCount(0);
     await saveAndNext(page);
-    await expect(walk.getByText("All tidy. Nothing on this checklist needs you.")).toBeVisible();
+    // #1 and #3, both walked and both clear now.
+    await expectTidyEndScreen(page, { fixed: 2 });
     await expectCardsLeft(page, 0);
     await finishTidyWalk(page);
 
@@ -304,6 +325,11 @@ test(
     await expect(editCardButton(page, "1")).toBeVisible({ timeout: LAUNCH_GATE });
     await expect(rowSays(page, "1", TEAM)).toBeVisible();
     await expect(rowSays(page, "1", "No Team")).toHaveCount(0);
+    // Blue is read from the data: the player's career does not hold the new team, so #1, and only
+    // #1, is worth a check for it.
+    await expect(careerMark(page, "1")).toBeVisible();
+    for (const number of ["2", "3"]) await expect(anyMark(page, number)).toHaveCount(0);
+    await expect(needsYouPill(page)).toHaveAccessibleName("1 needs you");
     await editCardButton(page, "1").click();
     await expect(cardName).toBeVisible();
     await expect(page.getByRole("button", { name: `Remove team ${TEAM}` })).toBeVisible();
@@ -332,7 +358,8 @@ test(
     written.cards.push("4");
     await expect(rowSays(page, "4", "No Team")).toBeVisible();
     await expect(anyMark(page, "4")).toHaveCount(0);
-    await expect(needsYouPill(page)).toHaveCount(0);
+    // Still only #1's career check: the new card adds nothing to the count.
+    await expect(needsYouPill(page)).toHaveAccessibleName("1 needs you");
 
     // ══ 8. FLAG OFF: the sport asks for a team again, and no existing card changes ══
     await openSportAttributes(page, sport);
@@ -340,7 +367,8 @@ test(
     written.sportFlagged = false;
     await expectAccessible(page, { label: "Sport attributes with No teams in this sport off" });
     // The leaf again, by its address: clearing the flag touched no card. #1 keeps the team picked
-    // in step 6, #2 and #4 are still No Team (unbadged, uncounted), #3 still has its named team.
+    // in step 6 (and its career check), #2 and #4 are still No Team (unbadged, uncounted), #3 still
+    // has its named team.
     await page.goto(leafUrl);
     // A full load pays the app's launch and the Clerk handshake again (LAUNCH_GATE, as the reload above).
     await expect(editCardButton(page, "1")).toBeVisible({ timeout: LAUNCH_GATE });
@@ -351,6 +379,7 @@ test(
     await expect(anyMark(page, "2")).toHaveCount(0);
     await expect(anyMark(page, "4")).toHaveCount(0);
     await expect(rowSays(page, "3", CLAIMED)).toBeVisible();
-    await expect(needsYouPill(page)).toHaveCount(0);
+    await expect(careerMark(page, "1")).toBeVisible();
+    await expect(needsYouPill(page)).toHaveAccessibleName("1 needs you");
   },
 );

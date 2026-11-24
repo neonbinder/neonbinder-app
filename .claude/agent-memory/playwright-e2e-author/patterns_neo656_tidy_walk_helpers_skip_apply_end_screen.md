@@ -24,5 +24,13 @@ NEO-656 removed every stored Tidy Up answer, so the walk helpers changed (2026-1
 - **Preselected chip** name is "<team>, suggested[ · <why>]" from an sr-only span; BUG-2 padded it to
   "<team> , suggested". `suggestedTeamChip` matches the exact name; the generic finder is anchored with
   a non-space before the comma so the padded name does not pass.
+- **Live career gaps move pill counts.** A team written onto a card whose single player has no
+  stint with it (a line apply, a new club, a gate-linked catalogue player) is BLUE until a stint
+  covers it, so "N need you" grows (old "16 need you, 16 to fix" became "18 need you, 16 to fix").
+  Save & next over the gap writes the stint and clears sibling cards, but `advance` reads the
+  pre-save `order`, so it can land on a card the same save just cleared (reported 2026-11-24).
+- **Where-the-pick-lives check:** a tile's "while the card is open" state lives in `walk-memory`
+  (`keepPick`, `rememberAnswer`); a write path that skips it (the cameo shortcut, 2026-11-24)
+  makes the tile vanish. Grep the handler for `memory.` before blaming the spec.
 - Open risk: after a Team answer the Career gap query re-runs with no perceivable pending state, so
   a gap can appear after the helper looked. See [[patterns-walk-helper-planted-breaks]].

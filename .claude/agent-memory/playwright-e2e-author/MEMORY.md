@@ -168,3 +168,4 @@
 - [Removed button, described field](patterns_removed_button_absence_and_described_field.md) — plant every client gate; describedby/focus asserts
 - [BSC team lane shared across shards](patterns_bsc_team_lane_is_shared_across_shards.md) — 1 slot, 1.7 s/card, FIFO deployment-wide; assert answered OR held back
 - [NEO-656 walk helpers](patterns_neo656_tidy_walk_helpers_skip_apply_end_screen.md) — no Keep as is (career skip), applyNameToAll, end screen, exact chip
+- [NEO-656 live counts](patterns_neo656_live_career_mark_and_apply_counts.md) — answer drops open card only; editor team = live blue; "1 needs you"
