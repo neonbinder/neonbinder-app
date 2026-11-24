@@ -7,13 +7,12 @@ import {
   cardsLeft,
   cardsLeftText,
   cardsSkipped,
+  cardsStillToCheck,
   cardsSkippedText,
   cardsTallyText,
   loadSitting,
-  lookupKey,
   lookupsFinished,
   nextCardId,
-  pendingLookupKeys,
   previousCardId,
   resetSitting,
   saveSitting,
@@ -61,16 +60,6 @@ describe("walkOrder", () => {
     expect(walkOrder(rows).map((e) => e.row.cardNumber)).toEqual(["USC1", "USC2", "USC10"]);
   });
 
-  it("puts cards whose lookups have finished before cards still looking", () => {
-    const rows = [pinkName("late", "1"), pinkName("ready", "2")];
-    const pending = pendingLookupKeys({
-      names: [{ kind: "player", nameNormalized: lookupKey("player", "Name late").split(":")[1] }],
-    });
-    const order = walkOrder(rows, pending);
-    expect(order.map((e) => e.row._id)).toEqual(["ready", "late"]);
-    expect(order.map((e) => e.ready)).toEqual([true, false]);
-  });
-
   it("puts a card still waiting on the automatic team lookup after the ready ones", () => {
     const waiting: WalkRow = {
       _id: "w",
@@ -84,8 +73,19 @@ describe("walkOrder", () => {
 
   it("orders by the leaf's rank between readiness and number", () => {
     const rows = [pinkName("a", "1"), pinkName("b", "2")];
-    const order = walkOrder(rows, new Set(), (row) => (row._id === "b" ? 0 : 1));
+    const order = walkOrder(rows, new Map(), (row) => (row._id === "b" ? 0 : 1));
     expect(order.map((e) => e.row._id)).toEqual(["b", "a"]);
+  });
+
+  it("a single-player card the career does not cover is in the walk, blue, only while the live gap holds", () => {
+    const linked: WalkRow = { ...tidy("g", "1") };
+    expect(walkOrder([linked])).toEqual([]);
+    const gaps = new Map([["g", [{ playerId: "p", teamId: "team" }]]]);
+    const withGap = walkOrder([linked], gaps);
+    expect(withGap.map((e) => e.row._id)).toEqual(["g"]);
+    expect(withGap[0].attention.level).toBe("check");
+    // The data clears (a stint was added elsewhere): the card leaves the walk, nothing remembered.
+    expect(walkOrder([linked], new Map())).toEqual([]);
   });
 
   it("never reads a marketplace value: a card is in the walk by its own data", () => {
@@ -95,20 +95,18 @@ describe("walkOrder", () => {
 });
 
 describe("lookupsFinished", () => {
-  it("is true when nothing is pending", () => {
-    expect(lookupsFinished(pinkName("a", "1"), new Set())).toBe(true);
+  it("is true when nothing is pending the automatic team lookup", () => {
+    expect(lookupsFinished(pinkName("a", "1"))).toBe(true);
   });
 
-  it("is false while one of the card's team names is still looking", () => {
+  it("is false for a card still waiting on the automatic team lookup", () => {
+    const row: WalkRow = { _id: "w", cardNumber: "1", pendingPlayerNames: ["X"], platformData: { bsc: { ref: "r" } } };
+    expect(lookupsFinished(row)).toBe(false);
+  });
+
+  it("a name's own lookup (it runs when the card opens) never holds a card back", () => {
     const row: WalkRow = { _id: "a", cardNumber: "1", pendingTeamNames: ["Padres"] };
-    const keys = pendingLookupKeys({
-      names: [{ kind: "team", nameNormalized: lookupKey("team", "Padres").split(":")[1] }],
-    });
-    expect(lookupsFinished(row, keys)).toBe(false);
-  });
-
-  it("matches a name through the one normaliser (accents, case)", () => {
-    expect(lookupKey("player", "  José  RAMÍREZ ")).toBe(lookupKey("player", "jose ramirez"));
+    expect(lookupsFinished(row)).toBe(true);
   });
 });
 
@@ -126,15 +124,25 @@ describe("the sitting", () => {
     expect(nextCardId(order, sitting, "c")).toBeNull();
   });
 
-  it("counts cards left (the current one included) and cards skipped", () => {
-    const sitting = withPassed(EMPTY_SITTING, "a");
-    expect(cardsLeft(order, sitting)).toBe(2);
-    expect(cardsSkipped(order, sitting)).toBe(1);
+  it("counts cards left (the current one included)", () => {
+    expect(cardsLeft(order, withPassed(EMPTY_SITTING, "a"))).toBe(2);
+  });
+
+  it("B20: passed cards are tallied by their LIVE level, pink as skipped and blue as still to check", () => {
+    const live = [
+      { row: { _id: "pink" }, attention: { level: "fix" } },
+      { row: { _id: "blue" }, attention: { level: "check" } },
+      { row: { _id: "open" }, attention: { level: "fix" } },
+    ];
+    const sitting = withPassed(withPassed(EMPTY_SITTING, "pink"), "blue");
+    expect(cardsSkipped(live, sitting)).toBe(1);
+    expect(cardsStillToCheck(live, sitting)).toBe(1);
   });
 
   it("does not count a passed card that was fixed (it left the order)", () => {
     const sitting = withPassed(EMPTY_SITTING, "z");
-    expect(cardsSkipped(order, sitting)).toBe(0);
+    expect(cardsSkipped([], sitting)).toBe(0);
+    expect(cardsStillToCheck([], sitting)).toBe(0);
   });
 
   it("walks the trail back one card at a time", () => {

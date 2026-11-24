@@ -1,8 +1,11 @@
 /**
- * NEO-645 tile 3, "Player": a skeleton while the spelling is unsettled, one
- * row per printed name, every way to answer a name inline (add as new, not a
- * player, change), the "Linked for you" note, "Printed on", and never an empty
- * "Possible matches".
+ * NEO-645 tile 3, "Player", as NEO-656 left it: a skeleton while the spelling is
+ * unsettled, one row per printed name READ FROM THE CARD (linked or still
+ * pending), every way to answer a name inline (add as new, not a player,
+ * change), "Printed on", and never an empty "Possible matches". The lookup a
+ * row shows lives in the walk's memory (`WalkMemory`), keyed by
+ * `cardId|kind|name|sportId`; these tests seed it. There is no "Linked for
+ * you" note, and "Not a player" is held in memory only while the card is open.
  */
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,7 +17,10 @@ vi.mock("../../../../convex/_generated/api", () => ({
       get: (_t, mod) =>
         typeof mod !== "string" || mod === "then"
           ? undefined
-          : new Proxy(
+          : mod === "adapters"
+            ? // `adapters.wikidata.lookupTidyName` is one level deeper than the other modules.
+              new Proxy({}, { get: (_a, sub) => new Proxy({}, { get: (_b, fn) => `adapters.${String(sub)}.${String(fn)}` }) })
+            : new Proxy(
               {},
               {
                 get: (_t2, fn) => (typeof fn !== "string" || fn === "then" ? undefined : `${mod}.${fn}`),
@@ -27,9 +33,13 @@ vi.mock("../../../../convex/_generated/api", () => ({
 const queryResults: Record<string, unknown> = {};
 const mutations: Record<string, ReturnType<typeof vi.fn>> = {};
 const mutation = (ref: string) => (mutations[ref] ??= vi.fn().mockResolvedValue(null));
+// An action that never answers by default: a name's lookup stays "pending" until a test seeds it.
+const actions: Record<string, ReturnType<typeof vi.fn>> = {};
+const action = (ref: string) => (actions[ref] ??= vi.fn(() => new Promise(() => {})));
 vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => (args === "skip" ? undefined : queryResults[ref]),
   useMutation: (ref: string) => mutation(ref),
+  useAction: (ref: string) => action(ref),
   useConvex: () => ({ query: vi.fn() }),
 }));
 
@@ -52,6 +62,8 @@ vi.mock("../../EntityLinkSearch", () => ({
 }));
 
 import { AnsweredProvider } from "../answered";
+import { WalkMemory, WalkMemoryProvider, lookupKeyOf, nameKeyOf } from "../walk-memory";
+import { normalizeEntityName } from "@/lib/entities/normalize-name";
 import PlayerTile from "./PlayerTile";
 import { WRAP_LABEL_CLASS } from "../TidyTile";
 import type { TidyAttentionItem } from "../../../../convex/features/cardAttention";
@@ -63,6 +75,7 @@ const SPORT = "sport-1";
 const card = (extra: Record<string, unknown> = {}) =>
   ({ _id: CARD, cardNumber: "USC42", cardName: "Jackson Merrill", ...extra }) as unknown as TidyRow;
 
+/** What a name's lookup said (seeded into the walk's memory), as the old tests wrote it. */
 const nameRow = (extra: Record<string, unknown> = {}) => ({
   name: "Jackson Merrill",
   sportId: SPORT,
@@ -70,17 +83,32 @@ const nameRow = (extra: Record<string, unknown> = {}) => ({
   ...extra,
 });
 
-const printedName = (over: Record<string, unknown> = {}) => ({
-  kind: "player" as const,
-  nameNormalized: "jackson merrill",
-  printed: "Jackson Merrill",
-  order: 0,
-  cardOverride: false,
-  scopeId: "leaf-1",
-  row: nameRow(),
-  printedOn: null,
-  ...over,
-});
+/**
+ * A name as `tidyCards.cardContext` reads it off the card: kind, printed,
+ * pending (waiting) or linked (`playerId`). `row` stands for the lookup the
+ * walk holds for it (`enrichment`, `status`) and `answer: linkPlayer` for a
+ * name the card already links; neither is stored anywhere but the card.
+ */
+const printedName = (over: Record<string, unknown> = {}) => {
+  const { row = nameRow(), printedOn: _printedOn, ...rest } = over as {
+    row?: ReturnType<typeof nameRow> & { answer?: { kind: string; playerId?: string }; enrichment?: unknown };
+    printedOn?: unknown;
+    [k: string]: unknown;
+  };
+  const printed = (rest.printed as string | undefined) ?? "Jackson Merrill";
+  const linked = row.answer?.kind === "linkPlayer";
+  return {
+    kind: "player" as const,
+    nameNormalized: normalizeEntityName(printed),
+    printed,
+    order: 0,
+    pending: !linked,
+    ...(linked ? { playerId: row.answer?.playerId } : {}),
+    ...rest,
+    // Read by `renderTile` to seed the walk's memory; not part of the context.
+    lookup: { status: row.status, enrichment: row.enrichment, sportId: row.sportId },
+  };
+};
 
 const context = (over: Record<string, unknown> = {}) =>
   ({
@@ -95,31 +123,69 @@ const context = (over: Record<string, unknown> = {}) =>
 
 const fixItem: TidyAttentionItem = { level: "fix", kind: "playerName", names: ["Jackson Merrill"] };
 
+let memory: WalkMemory;
+
+/** Put a lookup straight into the walk's memory (the state after the action resolved). */
+function seedLookup(
+  m: WalkMemory,
+  name: { kind: "player" | "team"; printed: string },
+  lookup: { status?: string; enrichment?: unknown; sportId?: string },
+) {
+  const sportId = lookup.sportId ?? SPORT;
+  const inner = m as unknown as { lookups: Map<string, unknown>; gateItems: Map<string, unknown> };
+  // A lookup in another sport than the set's is the facts' sport for the name (an auto-linked player's home).
+  if (sportId !== SPORT) {
+    inner.gateItems.set(nameKeyOf(name.kind, name.printed), { kind: name.kind, name: name.printed, sportId });
+  }
+  inner.lookups.set(lookupKeyOf(CARD, name.kind, name.printed, sportId), {
+    status: lookup.status ?? "ready",
+    ...(lookup.enrichment ? { enrichment: lookup.enrichment } : {}),
+  });
+}
+
 function renderTile(
   opts: {
     row?: TidyRow;
     ctx?: TidyCardContext | undefined;
     items?: TidyAttentionItem[];
     onAnswered?: () => void;
+    leafCards?: TidyRow[];
+    /** Name keys to leave unseeded: their lookup is still pending. */
+    unseeded?: boolean;
   } = {},
 ) {
+  const ctx = "ctx" in opts ? opts.ctx : context({ names: [printedName()] });
+  if (!opts.unseeded) {
+    for (const n of (ctx?.names ?? []) as unknown as Array<{
+      kind: "player" | "team";
+      printed: string;
+      pending: boolean;
+      lookup?: { status?: string; enrichment?: unknown; sportId?: string };
+    }>) {
+      if (n.pending && n.lookup) seedLookup(memory, n, n.lookup);
+    }
+  }
   const props: TidyTileProps = {
     row: opts.row ?? card({ pendingPlayerNames: ["Jackson Merrill"] }),
-    context: "ctx" in opts ? opts.ctx : context({ names: [printedName()] }),
+    context: ctx,
     attention: { level: "fix", items: opts.items ?? [fixItem] },
     leafId: "leaf-1" as never,
     sportId: SPORT as never,
-    leafCards: [],
+    leafCards: opts.leafCards ?? [],
     setName: "Set",
   };
   return render(
-    <AnsweredProvider value={opts.onAnswered ?? (() => {})}>
-      <PlayerTile {...props} />
-    </AnsweredProvider>,
+    <WalkMemoryProvider value={memory}>
+      <AnsweredProvider value={opts.onAnswered ?? (() => {})}>
+        <PlayerTile {...props} />
+      </AnsweredProvider>
+    </WalkMemoryProvider>,
   );
 }
 
 beforeEach(() => {
+  memory = new WalkMemory();
+  for (const k of Object.keys(actions)) delete actions[k];
   linkSearchProps.length = 0;
   for (const k of Object.keys(queryResults)) delete queryResults[k];
   for (const k of Object.keys(mutations)) delete mutations[k];
@@ -152,10 +218,15 @@ describe("PlayerTile", () => {
         names: [
           printedName({
             row: nameRow({ enrichment: { description: "American baseball outfielder", birthYear: 2003 } }),
-            printedOn: { cardNumbers: ["USC1", "USC17"], count: 2, more: false },
           }),
         ],
       }),
+      // "Printed on" is counted from the checklist's own cards still waiting on the name.
+      leafCards: [
+        card({ _id: "card-1", cardNumber: "USC1", pendingPlayerNames: ["Jackson Merrill"] }),
+        card({ _id: "card-2", cardNumber: "USC17", pendingPlayerNames: ["Jackson Merrill"] }),
+        card({ _id: "card-3", cardNumber: "USC20", playerIds: ["player-1"] }),
+      ],
     });
     expect(screen.getByRole("group", { name: "Player" }).getAttribute("data-tidy-level")).toBe("fix");
     expect(screen.getByText("“Jackson Merrill” is new to NeonBinder.")).toBeTruthy();
@@ -198,7 +269,11 @@ describe("PlayerTile", () => {
     queryResults["players.nearMatches"] = [];
     renderTile();
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Add as new player" })));
-    expect(mutation("tidyNames.createPlayer")).toHaveBeenCalledWith({ cardId: CARD, name: "Jackson Merrill" });
+    expect(mutation("tidyNames.createPlayer")).toHaveBeenCalledWith({
+      cardId: CARD,
+      name: "Jackson Merrill",
+      sportId: SPORT,
+    });
   });
 
   describe("Wikidata career teams (NEO-212)", () => {
@@ -232,11 +307,19 @@ describe("PlayerTile", () => {
       expect(boxes.every((b) => b.checked)).toBe(true);
     });
 
-    it("creates with every team when nothing was unticked (no key sent)", async () => {
+    it("creates with every team when nothing was unticked (no exclusion key sent); the career the operator saw seeds the player", async () => {
       queryResults["players.nearMatches"] = [];
       renderTile({ ctx: careerCtx() });
       await act(async () => fireEvent.click(screen.getByRole("button", { name: "Add as new player" })));
-      expect(mutation("tidyNames.createPlayer")).toHaveBeenCalledWith({ cardId: CARD, name: "Jackson Merrill" });
+      expect(mutation("tidyNames.createPlayer")).toHaveBeenCalledWith({
+        cardId: CARD,
+        name: "Jackson Merrill",
+        sportId: SPORT,
+        enrichment: { careerTeams: [
+          { name: "San Diego Padres", fromYear: 2024 },
+          { name: "Salt Lake Bees", fromYear: 2022, toYear: 2023 },
+        ] },
+      });
     });
 
     it("sends the unticked team names with the create, and re-ticking takes one back", async () => {
@@ -253,7 +336,12 @@ describe("PlayerTile", () => {
       expect(mutation("tidyNames.createPlayer")).toHaveBeenCalledWith({
         cardId: CARD,
         name: "Jackson Merrill",
+        sportId: SPORT,
         excludedCareerTeamNames: ["Salt Lake Bees"],
+        enrichment: { careerTeams: [
+          { name: "San Diego Padres", fromYear: 2024 },
+          { name: "Salt Lake Bees", fromYear: 2022, toYear: 2023 },
+        ] },
       });
     });
 
@@ -284,7 +372,12 @@ describe("PlayerTile", () => {
       expect(mutation("tidyNames.createPlayer")).toHaveBeenCalledWith({
         cardId: CARD,
         name: "Jackson Merrill",
+        sportId: SPORT,
         excludedCareerTeamNames: ["Los Angeles Angels"],
+        enrichment: { careerTeams: [
+          { name: "Los Angeles Angels", fromYear: 2011, toYear: 2013 },
+          { name: "Los Angeles Angels", fromYear: 2016 },
+        ] },
       });
     });
 
@@ -334,6 +427,7 @@ describe("PlayerTile", () => {
       cardId: CARD,
       kind: "player",
       name: "Jackson Merrill",
+      sportId: SPORT,
       answer: { kind: "notEntity" },
     });
   });
@@ -348,23 +442,18 @@ describe("PlayerTile", () => {
       cardId: CARD,
       kind: "player",
       name: "Jackson Merrill",
+      sportId: SPORT,
       answer: { kind: "linkPlayer", playerId: "player-1" },
     });
     expect(screen.getByRole("button", { name: "Add as new player anyway" })).toBeTruthy();
   });
 
-  it("a linked name is plain, says why it was linked, and Edit clears the answer", async () => {
+  it("a linked name is plain and Edit clears the answer; no 'Linked for you' note is ever shown", async () => {
     renderTile({
       row: card({ playerIds: ["player-1"] }),
       items: [],
       ctx: context({
-        names: [
-          printedName({
-            row: nameRow({
-              answer: { kind: "linkPlayer", playerId: "player-1", by: "auto", autoReason: "setHistory" },
-            }),
-          }),
-        ],
+        names: [printedName({ pending: false, row: nameRow({ answer: { kind: "linkPlayer", playerId: "player-1" } }) })],
         players: [
           {
             playerId: "player-1",
@@ -375,28 +464,28 @@ describe("PlayerTile", () => {
             stintsMore: false,
           },
         ],
-        linkedFor: [{ kind: "player", playerId: "player-1", reason: "setHistory" }],
       }),
     });
     expect(screen.getByRole("group", { name: "Player" }).getAttribute("data-tidy-level")).toBe("plain");
-    expect(screen.getByText("Linked for you: another card in this set is already linked to them")).toBeTruthy();
+    expect(screen.queryByText(/Linked for you/)).toBeNull();
+    expect(screen.queryByRole("note")).toBeNull();
     expect(screen.getByText(/b\. 2003/)).toBeTruthy();
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Edit Jackson Merrill" })));
     expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
       cardId: CARD,
       kind: "player",
       name: "Jackson Merrill",
+      sportId: SPORT,
       answer: { kind: "clear" },
     });
   });
 
-  it("T1: an exact link with no name row carries no purple note, and Edit changes this card only", async () => {
+  it("a link the card keeps no printed name for has no note, and Edit changes this card only", async () => {
     renderTile({
       row: card({ playerIds: ["player-1"] }),
       items: [],
       ctx: context({
         players: [{ playerId: "player-1", name: "Jackson Merrill", sportId: SPORT, stints: [], stintsMore: false }],
-        linkedFor: [],
       }),
     });
     expect(screen.queryByText(/Linked for you/)).toBeNull();
@@ -410,32 +499,17 @@ describe("PlayerTile", () => {
     });
   });
 
-  it("T1: a reason this build calls plain ('exact', from an older server) draws no note either", () => {
+  it("an older server's linkedFor reasons draw no note: the client no longer reads them", () => {
     renderTile({
       row: card({ playerIds: ["player-1"] }),
       items: [],
       ctx: context({
         players: [{ playerId: "player-1", name: "Jackson Merrill", sportId: SPORT, stints: [], stintsMore: false }],
-        linkedFor: [{ kind: "player", playerId: "player-1", reason: "exact" }],
+        linkedFor: [{ kind: "player", playerId: "player-1", reason: "setHistory" }],
       }),
     });
     expect(screen.queryByRole("note")).toBeNull();
-  });
-
-  it.each([
-    ["setHistory", "Linked for you: another card in this set is already linked to them"],
-    ["hallOfFame", "Linked for you: none of the others on file played that year, but this one is in the Hall of Fame"],
-    ["careerTeam", "Linked for you: the only one on file who played for this card's team"],
-  ])("T1: the %s judgement call keeps its purple note on a link with no name row", (reason, text) => {
-    renderTile({
-      row: card({ playerIds: ["player-1"] }),
-      items: [],
-      ctx: context({
-        players: [{ playerId: "player-1", name: "Jackson Merrill", sportId: SPORT, stints: [], stintsMore: false }],
-        linkedFor: [{ kind: "player", playerId: "player-1", reason }],
-      }),
-    });
-    expect(screen.getByRole("note").textContent).toBe(text);
+    expect(screen.queryByText(/Linked for you/)).toBeNull();
   });
 
   it("T2: each linked name ends its line with one small Edit, named 'Edit <name>'; no Change player row remains", () => {
@@ -602,18 +676,20 @@ describe("PlayerTile", () => {
       const ctx = context({
         names: [
           printedName({
-            row: nameRow({ answer: { kind: "linkPlayer", playerId: "player-1", by: "operator" } }),
+            row: nameRow({ answer: { kind: "linkPlayer", playerId: "player-1" } }),
           }),
           printedName({
-            nameNormalized: "juan soto",
             printed: "Juan Soto",
             order: 1,
-            row: nameRow({ name: "Juan Soto", answer: { kind: "notEntity", by: "operator" } }),
+            row: nameRow({ name: "Juan Soto", answer: { kind: "linkPlayer", playerId: "player-2" } }),
           }),
         ],
-        players: [{ playerId: "player-1", name: "Jackson Merrill", sportId: SPORT, stints: [], stintsMore: false }],
+        players: [
+          { playerId: "player-1", name: "Jackson Merrill", sportId: SPORT, stints: [], stintsMore: false },
+          { playerId: "player-2", name: "Juan Soto", sportId: SPORT, stints: [], stintsMore: false },
+        ],
       });
-      renderTile({ row: linkedRow(), items: [], ctx });
+      renderTile({ row: card({ playerIds: ["player-1", "player-2"] }), items: [], ctx });
       expect(screen.getByRole("button", { name: "Edit Jackson Merrill" }).textContent).toBe("Edit");
       expect(screen.getByRole("button", { name: "Edit Juan Soto" }).textContent).toBe("Edit");
     });
@@ -798,7 +874,7 @@ describe("PlayerTile: one filled button per tile, and long labels wrap (NEO-645 
     renderTile({
       ctx: context({
         names: [
-          printedName({ row: nameRow({ answer: { kind: "notEntity" } }) }),
+          printedName({ row: nameRow({ answer: { kind: "linkPlayer", playerId: "player-1" } }) }),
           holiday("Juan Soto", 1),
         ],
       }),
@@ -836,6 +912,172 @@ describe("PlayerTile: one filled button per tile, and long labels wrap (NEO-645 
     renderTile({ ctx: context({ names: [printedName({ row: nameRow({ sportId: "sport-2" }) })] }) });
     expect(screen.getByRole("checkbox", { name: /^Also add / })).toBeTruthy();
     expect(screen.queryByText(/one-off appearance/)).toBeNull();
+  });
+});
+
+describe("PlayerTile: answers live on the card, the lookup in the walk's memory (NEO-656)", () => {
+  const rerenderWith = (view: ReturnType<typeof renderTile>, props: Partial<TidyTileProps>) =>
+    view.rerender(
+      <WalkMemoryProvider value={memory}>
+        <AnsweredProvider value={() => {}}>
+          <PlayerTile
+            row={card()}
+            context={context()}
+            attention={{ level: "none", items: [] }}
+            leafId={"leaf-1" as never}
+            sportId={SPORT as never}
+            leafCards={[]}
+            setName="Set"
+            {...props}
+          />
+        </AnsweredProvider>
+      </WalkMemoryProvider>,
+    );
+
+  it("'Not a player' is held in memory only: once the card drops the name, a 'is not a player' row with Edit stays while the card is open", async () => {
+    queryResults["players.nearMatches"] = [];
+    const view = renderTile();
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Not a player (checklist, team card, stadium)" })),
+    );
+    expect(memory.answersOn(CARD, "player")).toEqual([{ kind: "notEntity", printed: "Jackson Merrill" }]);
+    rerenderWith(view, { context: context() });
+    expect(screen.getByRole("group", { name: "Player Jackson Merrill" }).textContent).toContain("is not a player.");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Edit Jackson Merrill" })));
+    expect(mutation("tidyNames.answerName")).toHaveBeenLastCalledWith({
+      cardId: CARD,
+      kind: "player",
+      name: "Jackson Merrill",
+      sportId: SPORT,
+      answer: { kind: "clear" },
+    });
+    expect(memory.answersOn(CARD, "player")).toEqual([]);
+  });
+
+  it("a refused Edit on a ruled-out name keeps the ruling and says so", async () => {
+    memory.rememberAnswer(CARD, "player", "Jackson Merrill", { kind: "notEntity", printed: "Jackson Merrill" });
+    mutation("tidyNames.answerName").mockRejectedValueOnce(new Error("Server Error"));
+    renderTile({ row: card(), items: [], ctx: context() });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Edit Jackson Merrill" })));
+    expect(screen.getByRole("alert").textContent).toBe("Couldn't change that answer. Try again.");
+    expect(memory.answersOn(CARD, "player")).toHaveLength(1);
+  });
+
+  it("a ruled-out name that is waiting again is the question, not a second 'is not a player' row", () => {
+    queryResults["players.nearMatches"] = [];
+    memory.rememberAnswer(CARD, "player", "Jackson Merrill", { kind: "notEntity", printed: "Jackson Merrill" });
+    renderTile();
+    expect(screen.queryByText(/is not a player\./)).toBeNull();
+    expect(screen.getByRole("button", { name: "Add as new player" })).toBeTruthy();
+  });
+
+  it("Apply to all after 'Not a player' reaches only the cards still waiting, and says Cleared", async () => {
+    const applyNameToAll = (actions["tidyNames.applyNameToAll"] = vi.fn().mockResolvedValue({ linked: 2, skipped: 0 }));
+    memory.rememberAnswer(CARD, "player", "Jackson Merrill", { kind: "notEntity", printed: "Jackson Merrill" });
+    renderTile({
+      row: card(),
+      items: [],
+      ctx: context(),
+      leafCards: [
+        card(),
+        card({ _id: "card-2", cardNumber: "2", pendingPlayerNames: ["Jackson Merrill"] }),
+        card({ _id: "card-3", cardNumber: "3", pendingPlayerNames: ["Jackson Merrill"] }),
+        card({ _id: "card-4", cardNumber: "4", playerIds: ["player-1"] }),
+      ],
+    });
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Apply to all cards printing “Jackson Merrill”" })),
+    );
+    expect(applyNameToAll).toHaveBeenCalledWith({
+      cardId: CARD,
+      kind: "player",
+      name: "Jackson Merrill",
+      answer: { kind: "notEntity" },
+    });
+    expect(screen.getByText("Cleared 2 more cards.")).toBeTruthy();
+  });
+
+  it("a linked name offers Apply to all with the card's own link, never before the answer", async () => {
+    const applyNameToAll = (actions["tidyNames.applyNameToAll"] = vi.fn().mockResolvedValue({ linked: 1, skipped: 1 }));
+    const waiting = card({ _id: "card-2", cardNumber: "2", pendingPlayerNames: ["Jackson Merrill"] });
+    // Unanswered: nothing is offered yet.
+    queryResults["players.nearMatches"] = [];
+    const view = renderTile({ leafCards: [card({ pendingPlayerNames: ["Jackson Merrill"] }), waiting] });
+    expect(screen.queryByRole("button", { name: /Apply to all/ })).toBeNull();
+    rerenderWith(view, {
+      row: card({ playerIds: ["player-1"] }),
+      context: context({
+        names: [printedName({ pending: false, row: nameRow({ answer: { kind: "linkPlayer", playerId: "player-1" } }) })],
+        players: [{ playerId: "player-1", name: "Jackson Merrill", sportId: SPORT, stints: [], stintsMore: false }],
+      }),
+      leafCards: [card({ playerIds: ["player-1"] }), waiting],
+    });
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Apply to all cards printing “Jackson Merrill”" })),
+    );
+    expect(applyNameToAll).toHaveBeenCalledWith({
+      cardId: CARD,
+      kind: "player",
+      name: "Jackson Merrill",
+      answer: { kind: "linkPlayer", playerId: "player-1" },
+    });
+    expect(screen.getByText("Linked 1 more card. 1 left as it was.")).toBeTruthy();
+  });
+
+  it("nothing is offered when no other card waits on the name", () => {
+    renderTile({
+      row: card({ playerIds: ["player-1"] }),
+      items: [],
+      ctx: context({
+        names: [printedName({ pending: false, row: nameRow({ answer: { kind: "linkPlayer", playerId: "player-1" } }) })],
+        players: [{ playerId: "player-1", name: "Jackson Merrill", sportId: SPORT, stints: [], stintsMore: false }],
+      }),
+      leafCards: [card({ playerIds: ["player-1"] })],
+    });
+    expect(screen.queryByRole("button", { name: /Apply to all/ })).toBeNull();
+  });
+
+  describe("a lookup that failed", () => {
+    it("says so, leaves every answer on offer (missing data is not a claim), and Try again asks once more", async () => {
+      queryResults["players.nearMatches"] = [];
+      renderTile({ ctx: context({ names: [printedName({ row: nameRow({ status: "error" }) })] }) });
+      expect(screen.getByText("Couldn't look this one up.")).toBeTruthy();
+      expect(screen.queryByText("Checking for players by that name…")).toBeNull();
+      const add = screen.getByRole("button", { name: "Add as new player" });
+      expect(add.getAttribute("aria-disabled")).toBeNull();
+      const lookup = action("adapters.wikidata.lookupTidyName");
+      expect(lookup).not.toHaveBeenCalled();
+      await act(async () => fireEvent.click(screen.getByRole("button", { name: "Try again" })));
+      expect(lookup).toHaveBeenCalledTimes(1);
+      expect(lookup).toHaveBeenCalledWith({
+        cardId: CARD,
+        kind: "player",
+        name: "Jackson Merrill",
+        sportId: SPORT,
+      });
+      // Asked again: pending now, so Try again is gone until it answers.
+      expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    });
+
+    it("a lookup still pending holds 'Add as new player' (a created player can't be taken back)", async () => {
+      queryResults["players.nearMatches"] = [];
+      renderTile({ unseeded: true });
+      const add = screen.getByRole("button", { name: "Add as new player" });
+      expect(add.getAttribute("aria-disabled")).toBe("true");
+      await act(async () => fireEvent.click(add));
+      expect(mutation("tidyNames.createPlayer")).not.toHaveBeenCalled();
+    });
+  });
+
+  it("writes nothing to sessionStorage or localStorage while answering", async () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    queryResults["players.nearMatches"] = [];
+    renderTile();
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Not a player (checklist, team card, stadium)" })),
+    );
+    expect(setItem).not.toHaveBeenCalled();
+    setItem.mockRestore();
   });
 });
 

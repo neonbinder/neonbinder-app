@@ -25,6 +25,7 @@ vi.mock("convex/react", () => ({
 }));
 
 import { AnsweredProvider } from "../answered";
+import { WalkMemory, WalkMemoryProvider } from "../walk-memory";
 import SourcesDisagreeTile from "./SourcesDisagreeTile";
 import type { TidyAttention, TidyRow, TidyTileProps } from "../tile-types";
 import type { TidyDisagreement as RowDisagreement } from "../../../../convex/features/cardAttention";
@@ -76,6 +77,40 @@ function renderTile(
       <SourcesDisagreeTile {...props} />
     </AnsweredProvider>,
   );
+}
+
+/**
+ * NEO-656: a pick removes the disagreement from the card, so the card keeps
+ * only the result. This drives the real thing: click the pick, then re-render
+ * the row the way Convex would deliver it, with the entry gone. The walk's
+ * memory (one shared object, as in the walk) is what keeps "Using" on screen.
+ */
+async function renderPicked(
+  d: RowDisagreement,
+  pickName: string,
+  { leafCards = [], context }: { leafCards?: TidyRow[]; context?: unknown } = {},
+) {
+  const memory = new WalkMemory();
+  const make = (row: TidyRow, cards: TidyRow[]): TidyTileProps => ({
+    row,
+    context: context as TidyTileProps["context"],
+    attention: { level: "fix", items: [] },
+    leafId: "leaf-1" as never,
+    sportId: undefined,
+    leafCards: cards,
+    setName: "Set",
+  });
+  const tree = (props: TidyTileProps) => (
+    <WalkMemoryProvider value={memory}>
+      <SourcesDisagreeTile {...props} />
+    </WalkMemoryProvider>
+  );
+  const open = rowOf("card-1", d);
+  const view = render(tree(make(open, [open, ...leafCards])));
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: pickName })));
+  const settled = rowOf("card-1");
+  view.rerender(tree(make(settled, [settled, ...leafCards])));
+  return { memory, view };
 }
 
 beforeEach(() => {
@@ -139,8 +174,8 @@ describe("SourcesDisagreeTile", () => {
       expect(screen.getByRole("status").textContent).toBe("");
     });
 
-    it("an answer of no team reads 'Using no team'", () => {
-      renderTile({ ...NO_TEAM, chosen: { value: [], by: "operator" } } as RowDisagreement);
+    it("an answer of no team reads 'Using no team'", async () => {
+      await renderPicked(NO_TEAM, "Use no team");
       expect(screen.getByRole("status").textContent).toBe("Using no team (SportLots)");
     });
   });
@@ -216,41 +251,53 @@ describe("SourcesDisagreeTile", () => {
   });
 
   describe("answered by the operator", () => {
-    const CHOSEN: RowDisagreement = { ...UNCHOSEN, chosen: { value: MERRILL, by: "operator" } };
-
-    it("says what is used and where it came from, with Change", () => {
-      renderTile(CHOSEN);
+    it("says what is used and where it came from, with Change", async () => {
+      await renderPicked(UNCHOSEN, "Use “Jackson Merrill”");
       expect(screen.getByText("Using “Jackson Merrill” (Checklist)")).toBeTruthy();
       expect(screen.getByRole("group", { name: "Sources disagree" }).getAttribute("data-tidy-level")).toBe("plain");
       fireEvent.click(screen.getByRole("button", { name: "Change the player name" }));
       expect(screen.getByRole("button", { name: "Use “Jackson Merril”" })).toBeTruthy();
     });
 
-    it("offers the cards with the same disagreement, and only those", async () => {
+    it("a legacy `chosen` on the card is settled: the tile offers nothing (the card keeps only the result)", () => {
+      const { container } = renderTile({ ...UNCHOSEN, chosen: { value: MERRILL, by: "operator" } } as RowDisagreement);
+      expect(container.textContent).toBe("");
+    });
+
+    it("offers the cards with the same open disagreement, and only those; sends what the sources gave", async () => {
       const same = rowOf("card-2", UNCHOSEN);
       const reordered = rowOf("card-3", { ...UNCHOSEN, values: [...UNCHOSEN.values].reverse() });
-      const answered = rowOf("card-4", CHOSEN);
+      const settled = rowOf("card-4");
       const other = rowOf("card-5", { field: "players", values: [{ value: ["A"], sources: ["bsc"] }, { value: ["B"], sources: ["checklist"] }] });
       const teams = rowOf("card-6", { ...UNCHOSEN, field: "teams" });
-      renderTile(CHOSEN, { leafCards: [rowOf("card-1", CHOSEN), same, reordered, answered, other, teams] });
+      await renderPicked(UNCHOSEN, "Use “Jackson Merrill”", { leafCards: [same, reordered, settled, other, teams] });
       const apply = screen.getByRole("button", { name: "Apply to the 2 cards with the same disagreement" });
+      mockPick.mockClear();
       await act(async () => fireEvent.click(apply));
       expect(mockPick).toHaveBeenCalledWith({
         cardId: "card-1",
         field: "players",
         value: MERRILL,
         cardIds: ["card-2", "card-3"],
+        // The card no longer carries the entry, so the values ride with the call.
+        offered: [MERRIL, MERRILL],
       });
     });
 
-    it("offers nothing when no other card shares it", () => {
-      renderTile(CHOSEN);
+    it("the first pick sends no `offered` (the card still carries the entry)", async () => {
+      renderTile(UNCHOSEN);
+      await act(async () => fireEvent.click(screen.getByRole("button", { name: "Use “Jackson Merrill”" })));
+      expect(mockPick.mock.calls[0][0]).not.toHaveProperty("offered");
+    });
+
+    it("offers nothing when no other card shares it", async () => {
+      await renderPicked(UNCHOSEN, "Use “Jackson Merrill”");
       expect(screen.queryByRole("button", { name: /Apply to the/ })).toBeNull();
     });
 
     it("says how many cards the server applied and how many it left alone", async () => {
+      await renderPicked(UNCHOSEN, "Use “Jackson Merrill”", { leafCards: [rowOf("card-2", UNCHOSEN)] });
       mockPick.mockResolvedValueOnce({ applied: 1, scheduled: 3, refused: 1 });
-      renderTile(CHOSEN, { leafCards: [rowOf("card-1", CHOSEN), rowOf("card-2", UNCHOSEN)] });
       await act(async () =>
         fireEvent.click(screen.getByRole("button", { name: "Apply to the 1 card with the same disagreement" })),
       );
@@ -258,20 +305,46 @@ describe("SourcesDisagreeTile", () => {
     });
 
     it("says no cards changed when the server accepted none", async () => {
+      await renderPicked(UNCHOSEN, "Use “Jackson Merrill”", { leafCards: [rowOf("card-2", UNCHOSEN)] });
       mockPick.mockResolvedValueOnce({ applied: 1, scheduled: 0, refused: 1 });
-      renderTile(CHOSEN, { leafCards: [rowOf("card-1", CHOSEN), rowOf("card-2", UNCHOSEN)] });
       await act(async () =>
         fireEvent.click(screen.getByRole("button", { name: "Apply to the 1 card with the same disagreement" })),
       );
       expect(screen.getByText("No cards changed.")).toBeTruthy();
     });
+
+    it("a refused pick takes the held pick back, so the tile stays open and pink", async () => {
+      mockPick.mockRejectedValueOnce(new Error("no"));
+      const memory = new WalkMemory();
+      const row = rowOf("card-1", UNCHOSEN);
+      render(
+        <WalkMemoryProvider value={memory}>
+          <SourcesDisagreeTile
+            row={row}
+            context={undefined}
+            attention={{ level: "fix", items: [] }}
+            leafId={"leaf-1" as never}
+            sportId={undefined}
+            leafCards={[row]}
+            setName="Set"
+          />
+        </WalkMemoryProvider>,
+      );
+      await act(async () => fireEvent.click(screen.getByRole("button", { name: "Use “Jackson Merrill”" })));
+      expect(memory.pickFor("card-1", "players")).toBeUndefined();
+    });
+
+    it("the walk leaving the card drops the pick: nothing about it is kept", async () => {
+      const { memory } = await renderPicked(UNCHOSEN, "Use “Jackson Merrill”");
+      expect(memory.pickFor("card-1", "players")).toBeDefined();
+      memory.leaveCard("card-1");
+      expect(memory.pickFor("card-1", "players")).toBeUndefined();
+    });
   });
 
   describe("the status line", () => {
-    const CHOSEN: RowDisagreement = { ...UNCHOSEN, chosen: { value: MERRILL, by: "operator" } };
-
-    it("is on the page before any answer, empty, and says the pick when the answer lands", () => {
-      const row = rowOf("card-1", UNCHOSEN);
+    it("is on the page before any answer, empty, and says the pick when the answer lands", async () => {
+      const memory = new WalkMemory();
       const props = (r: TidyRow): TidyTileProps => ({
         row: r,
         context: undefined,
@@ -281,17 +354,22 @@ describe("SourcesDisagreeTile", () => {
         leafCards: [r],
         setName: "Set",
       });
-      const { rerender } = render(<SourcesDisagreeTile {...props(row)} />);
+      const tree = (r: TidyRow) => (
+        <WalkMemoryProvider value={memory}>
+          <SourcesDisagreeTile {...props(r)} />
+        </WalkMemoryProvider>
+      );
+      const { rerender } = render(tree(rowOf("card-1", UNCHOSEN)));
       const status = screen.getByRole("status");
       expect(status.textContent).toBe("");
-      rerender(<SourcesDisagreeTile {...props(rowOf("card-1", CHOSEN))} />);
-      // The same element: a change to a live region that was already there.
-      expect(screen.getByRole("status")).toBe(status);
-      expect(status.textContent).toBe("Using “Jackson Merrill” (Checklist)");
+      await act(async () => fireEvent.click(screen.getByRole("button", { name: "Use “Jackson Merrill”" })));
+      rerender(tree(rowOf("card-1")));
+      // The entry's status element is the same one: a change to a live region that was already there.
+      expect(screen.getByRole("status").textContent).toBe("Using “Jackson Merrill” (Checklist)");
     });
 
-    it("clears while Change is open, so the choices are the only thing on offer", () => {
-      renderTile(CHOSEN);
+    it("clears while Change is open, so the choices are the only thing on offer", async () => {
+      await renderPicked(UNCHOSEN, "Use “Jackson Merrill”");
       expect(screen.getByRole("status").textContent).toContain("Using");
       fireEvent.click(screen.getByRole("button", { name: "Change the player name" }));
       expect(screen.getByRole("status").textContent).toBe("");
@@ -299,8 +377,7 @@ describe("SourcesDisagreeTile", () => {
   });
 
   it("Change puts focus on the first choice it brings back", async () => {
-    const CHOSEN: RowDisagreement = { ...UNCHOSEN, chosen: { value: MERRILL, by: "operator" } };
-    renderTile(CHOSEN);
+    await renderPicked(UNCHOSEN, "Use “Jackson Merrill”");
     const change = screen.getByRole("button", { name: "Change the player name" });
     change.focus();
     await act(async () => fireEvent.click(change));
@@ -386,8 +463,8 @@ describe("the cameo shortcut (T3)", () => {
     expect(screen.queryByRole("button", { name: /as a cameo/ })).toBeNull();
   });
 
-  it("is not there once the disagreement is settled, until Change", () => {
-    renderTile({ ...CPC, chosen: { value: ["It Takes Two CPC"], by: "operator" } }, { context: ctx(OFFER) });
+  it("is not there once the disagreement is settled, until Change", async () => {
+    await renderPicked(CPC, "Use “It Takes Two CPC”", { context: ctx(OFFER) });
     expect(screen.queryByRole("button", { name: LABEL })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Change the player name" }));
     expect(screen.getByRole("button", { name: LABEL })).toBeTruthy();
