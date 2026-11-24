@@ -17,7 +17,10 @@ import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { blockedSideFailed, sideMissingFromRun } from "./parallelChecklistBuild";
 import type { FetchFailure } from "./lib/marketplaceFetchFailure";
-import { insertTestCard } from "../lib/testing/card-row";
+import { insertTestCard, testCardSport } from "../lib/testing/card-row";
+import { teamRowFields } from "./lib/teamRow";
+import type { MutationCtx } from "./_generated/server";
+
 
 const modules = (
   import.meta as unknown as {
@@ -131,6 +134,29 @@ afterEach(() => {
 type T = ReturnType<typeof convexTest>;
 
 /** sport → year → setName → variantType(Insert) → insert(Anime) → parallel. */
+/**
+ * NEO-661: a source card with no team shows pink, and any pink card holds the
+ * parallel build. A fixture card therefore carries this neutral team unless it
+ * names its own (or passes `teamOnCardIds: []` to be the teamless case). Not
+ * `teamNoneConfirmedAt`: it is copied to the parallel's copy and would switch
+ * off the Set Team fill those tests are about.
+ */
+async function neutralTeam(
+  ctx: Pick<MutationCtx, "db">,
+  selectorOptionId: Id<"selectorOptions">,
+): Promise<Id<"teams">> {
+  const sportId = await testCardSport(ctx, selectorOptionId);
+  const existing = (await ctx.db.query("teams").collect()).find(
+    (team) => team.sportId === sportId && team.name === "Neutrals",
+  );
+  if (existing) return existing._id;
+  return ctx.db.insert("teams", {
+    ...teamRowFields({ location: "Neutral", name: "Neutrals" }),
+    sportId,
+    lastUpdated: SENTINEL,
+  });
+}
+
 async function seed(t: T, slIds: string[] = ["SL-P-1"]) {
   return t.run(async (ctx) => {
     const sport = await ctx.db.insert("selectorOptions", {
@@ -193,6 +219,7 @@ async function seed(t: T, slIds: string[] = ["SL-P-1"]) {
       cardNumber: "1",
       cardName: "Someone",
       platformData: {},
+      teamOnCardIds: [await neutralTeam(ctx, insert)],
       sortOrder: 0,
       lastUpdated: SENTINEL,
     });

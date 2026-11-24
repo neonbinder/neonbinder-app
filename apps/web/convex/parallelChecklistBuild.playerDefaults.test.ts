@@ -256,9 +256,10 @@ describe("parallel build — the parallel's player defaults (NEO-528 round 3)", 
     expect(one.cameoIndex).toEqual([fx.ohtani]);
   });
 
-  // NEO-645 (J3): a source card with a name still waiting is pink, and the build
-  // refuses it before it deletes or copies anything, so the default player never
-  // lands on a card whose own player is unanswered.
+  // NEO-645 (J3), widened by NEO-661 to any pink card: a source card with a name
+  // still waiting is pink, and the build refuses it before it deletes or copies
+  // anything, so the default player never lands on a card whose own player is
+  // unanswered.
   test("a pending name on the insert card blocks the build: nothing is copied, no default lands", async () => {
     const t = convexTest(schema, modules);
     const fx = await seed(t);
@@ -385,18 +386,32 @@ describe("parallel build — the parallel's own Set Team, fill-empty (the Set Te
     expect(two.teamIndex).toEqual([fx.yankees]);
   });
 
-  test("never over a pending team name, an operator's no-team ruling, or a listing's unmatched team", async () => {
+  test("never over an operator's no-team ruling", async () => {
     const t = convexTest(schema, modules);
     const fx = await seed(t);
     await insertCard(t, fx, "2", { extra: { teamNoneConfirmedAt: NOW } });
-    await insertCard(t, fx, "3", { extra: { bscTeamName: "LA Dodgers", teamCheckDoneAt: NOW } });
     await store(t, fx.parallel, { teamIds: [fx.yankees] });
     await build(t, fx);
     const got = await copies(t, fx);
-    for (const n of ["2", "3"]) {
-      expect(got.get(n)!.teamOnCardIds, n).toBeUndefined();
-      expect(got.get(n)!.teamIndex, n).toEqual([]);
-    }
+    expect(got.get("2")!.teamOnCardIds).toBeUndefined();
+    expect(got.get("2")!.teamIndex).toEqual([]);
+  });
+
+  // A listing that named a team NB could not match, its lookup already answered
+  // and no team on the card, is pink: the build refuses rather than fill the
+  // parallel's team over a team the data named (invariant 8; NEO-661).
+  test("a listing's unmatched team on a teamless source holds the build: no team is filled over it", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seed(t);
+    await insertCard(t, fx, "3", { extra: { bscTeamName: "LA Dodgers", teamCheckDoneAt: NOW } });
+    await store(t, fx.parallel, { teamIds: [fx.yankees] });
+    await stubParallelListing(t, fx);
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId: fx.parallel });
+    expect(result.status).toBe("blocked");
+    expect(result.blockedReason).toBe(parallelBuild.BLOCKED_SOURCE_NOT_TIDY);
+    expect((await copies(t, fx)).size).toBe(0);
   });
 
   test("a team on the insert row only (not the parallel) is not written: the parallel's own value is read", async () => {

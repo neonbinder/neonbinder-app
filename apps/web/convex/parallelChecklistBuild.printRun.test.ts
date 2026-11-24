@@ -14,7 +14,10 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import { insertTestCard } from "../lib/testing/card-row";
+import { insertTestCard, testCardSport } from "../lib/testing/card-row";
+import { teamRowFields } from "./lib/teamRow";
+import type { MutationCtx } from "./_generated/server";
+
 import { setRowChecklistSections } from "./lib/publishedChecklistSections";
 import { normalizePlayerName } from "./players";
 
@@ -150,6 +153,29 @@ async function seed(t: T, shape: "baseParallel" | "linkedInsert") {
 let sortOrder = 0;
 // NEO-645: a card whose player is only a pending name is pink and blocks the
 // build, so each card is linked to a real player, as a tidied set's cards are.
+/**
+ * NEO-661: a source card with no team shows pink, and any pink card holds the
+ * parallel build. A fixture card therefore carries this neutral team unless it
+ * names its own (or passes `teamOnCardIds: []` to be the teamless case). Not
+ * `teamNoneConfirmedAt`: it is copied to the parallel's copy and would switch
+ * off the Set Team fill those tests are about.
+ */
+async function neutralTeam(
+  ctx: Pick<MutationCtx, "db">,
+  selectorOptionId: Id<"selectorOptions">,
+): Promise<Id<"teams">> {
+  const sportId = await testCardSport(ctx, selectorOptionId);
+  const existing = (await ctx.db.query("teams").collect()).find(
+    (team) => team.sportId === sportId && team.name === "Neutrals",
+  );
+  if (existing) return existing._id;
+  return ctx.db.insert("teams", {
+    ...teamRowFields({ location: "Neutral", name: "Neutrals" }),
+    sportId,
+    lastUpdated: SENTINEL,
+  });
+}
+
 async function card(t: T, selectorOptionId: SO, cardNumber: string, name: string) {
   return t.run(async (ctx) => {
     const sport = (await ctx.db.query("selectorOptions").collect()).find((r) => r.level === "sport")!;
@@ -169,6 +195,7 @@ async function card(t: T, selectorOptionId: SO, cardNumber: string, name: string
       playerIds: [playerId],
       playerLinks: [{ playerId, nameOnCard: name }],
       platformData: {},
+      teamOnCardIds: [await neutralTeam(ctx, selectorOptionId)],
       sortOrder: sortOrder++,
       lastUpdated: SENTINEL,
     });
