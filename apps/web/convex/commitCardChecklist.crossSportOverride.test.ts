@@ -1,21 +1,16 @@
 /**
- * NEO-313 — the commit prelude's cross-sport override surface:
+ * NEO-313, on NEO-656's gate links — a cross-sport LINK survives the commit.
  *
- *   1. Security fix: `addSetSport` must add the SET's sport, walked from
- *      `selectorOptionId`, never the client-supplied `args.sportId`. Before
- *      the fix a caller who sent the wrong (but validly-shaped) `sportId`
- *      could make `commitCardChecklist` attach a player to a sport that has
- *      nothing to do with the set being committed.
- *   2. A player-review row switched to another sport creates its new player
- *      under THAT sport, not the set's.
- *   3. A cross-sport LINK survives the commit: `playerIds` and `playerLinks`
- *      both carry the football-only player onto the baseball card.
+ * The gate's own link (`resolveChecklistEntities` -> `gateLinks`, origin
+ * `setHistory`) names a football-only player for a baseball card; the commit
+ * re-checks it, and `playerIds` and `playerLinks` both carry the guest.
  *
- * Fixture shape (tree, `makeCard`, `insertReviewRow`) copied from
- * commitCardChecklist.entityReview.test.ts, which this file sits beside.
+ * Gone with NEO-656: an operator's link is made on the card in the walk and is
+ * never handed to the commit, and nothing stores an "also add the set's sport"
+ * answer, so `addSetSport` at commit (and its walked-sport security fix and
+ * `alsoSportIds` write) no longer exist.
  */
 
-import { insertAsTidyName } from "../lib/testing/tidy-review-row";
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
@@ -111,117 +106,17 @@ async function insertPlayer(
   );
 }
 
-async function insertLinkRow(
-  t: T,
-  opts: {
-    selectorOptionId: Id<"selectorOptions">;
-    batchId: string;
-    sportId: Id<"selectorOptions">;
-    name: string;
-    linkedPlayerId: Id<"players">;
-    addSetSport?: boolean;
-  },
-) {
-  return t.run(async (ctx) =>
-    insertAsTidyName(ctx, {
-      selectorOptionId: opts.selectorOptionId,
-      batchId: opts.batchId,
-      createdByUserId: "user_review_001",
-      kind: "player",
-      name: opts.name,
-      sportId: opts.sportId,
-      status: "ready",
-      decision: {
-        action: "link",
-        linkedPlayerId: opts.linkedPlayerId,
-        ...(opts.addSetSport ? { addSetSport: true } : {}),
-      },
-    }),
-  );
-}
-
-const additionalSports = (t: T, playerId: Id<"players">) =>
-  t.run((ctx) =>
-    ctx.db
-      .query("playerSports")
-      .withIndex("by_player_id", (q) => q.eq("playerId", playerId))
-      .collect(),
-  );
-
-describe("NEO-313: commit's cross-sport override, and its security fix", () => {
-  test("addSetSport adds the SET's walked sport, never the client-supplied args.sportId", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId: baseball, variantTypeId } = await seedBaseballSet(t);
-    const football = await seedSport(t, "Football");
-    // A bogus-but-validly-shaped sport a malicious or stale client sends as
-    // `args.sportId` — nothing to do with the set actually being committed.
-    const basketball = await seedSport(t, "Basketball");
-    const fields = await insertPlayer(t, { name: "Justin Fields", sportId: football });
-    await insertLinkRow(t, {
-      selectorOptionId: variantTypeId,
-      batchId: "b1",
-      sportId: football,
-      name: "Justin Fields",
-      linkedPlayerId: fields,
-      addSetSport: true,
-    });
-
-    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
-      selectorOptionId: variantTypeId,
-      // The lie: this does not match the set's real (baseball) ancestry.
-      sportId: basketball,
-      batchId: "b1",
-      cards: [makeCard({ players: ["Justin Fields"] })],
-    });
-
-    const memberships = await additionalSports(t, fields);
-    expect(memberships.map((m) => m.sportId)).toEqual([baseball]);
-    expect(memberships.map((m) => m.sportId)).not.toContain(basketball);
-  });
-
-  test("NEO-318: addSetSport at commit writes players.alsoSportIds alongside the membership row", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId: baseball, variantTypeId } = await seedBaseballSet(t);
-    const football = await seedSport(t, "Football");
-    const fields = await insertPlayer(t, { name: "Justin Fields", sportId: football });
-    await insertLinkRow(t, {
-      selectorOptionId: variantTypeId,
-      batchId: "b1",
-      sportId: football,
-      name: "Justin Fields",
-      linkedPlayerId: fields,
-      addSetSport: true,
-    });
-
-    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
-      selectorOptionId: variantTypeId,
-      sportId: baseball,
-      batchId: "b1",
-      cards: [makeCard({ players: ["Justin Fields"] })],
-    });
-
-    const row = await t.run((ctx) => ctx.db.get(fields));
-    expect(row?.alsoSportIds).toEqual([baseball]);
-  });
-
-
+describe("NEO-313: a cross-sport gate link at commit", () => {
   test("a cross-sport LINK survives the commit: playerIds and playerLinks both carry the guest", async () => {
     const t = convexTest(schema, modules);
     const { variantTypeId } = await seedBaseballSet(t);
     const football = await seedSport(t, "Football");
     const fields = await insertPlayer(t, { name: "Justin Fields", sportId: football });
-    await insertLinkRow(t, {
-      selectorOptionId: variantTypeId,
-      batchId: "b1",
-      sportId: football,
-      name: "Justin Fields",
-      linkedPlayerId: fields,
-    });
 
     await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId: (await seedBaseballSet(t)).sportId,
-      batchId: "b1",
+      gateLinks: [{ kind: "player" as const, name: "Justin Fields", playerId: fields, origin: "setHistory" as const }],
       cards: [makeCard({ players: ["Justin Fields"] })],
     });
 
@@ -246,18 +141,11 @@ describe("NEO-313: commit's cross-sport override, and its security fix", () => {
     const { variantTypeId } = await seedBaseballSet(t);
     const football = await seedSport(t, "Football");
     const fields = await insertPlayer(t, { name: "Justin Fields", sportId: football });
-    await insertLinkRow(t, {
-      selectorOptionId: variantTypeId,
-      batchId: "b1",
-      sportId: football,
-      name: "Justin Fields",
-      linkedPlayerId: fields,
-    });
 
     await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId: (await seedBaseballSet(t)).sportId,
-      batchId: "b1",
+      gateLinks: [{ kind: "player" as const, name: "Justin Fields", playerId: fields, origin: "setHistory" as const }],
       cards: [makeCard({ players: ["Justin Fields"] })],
     });
 

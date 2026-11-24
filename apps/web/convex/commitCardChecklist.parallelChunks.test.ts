@@ -43,7 +43,6 @@ import {
   commitChunkSize,
 } from "./selectorOptions";
 import { CardCountLedger } from "./cardCounts";
-import { ENQUEUE_PAGE } from "./tidyNames";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import { seedTidyWorld } from "../lib/testing/tidy-world";
 import { insertTestCard } from "../lib/testing/card-row";
@@ -842,103 +841,5 @@ describe("a commit with NNO cards across chunks", () => {
     expect(nno).toEqual(["First NNO", "Second NNO"]);
     const leaf = await t.run((ctx) => ctx.db.get(w.base));
     expect(leaf?.cardCount).toBe(cards.length);
-  });
-});
-
-describe("the lookup enqueue is scheduled, not awaited", () => {
-  const scheduledEnqueues = (t: T) =>
-    t.run(async (ctx) => {
-      const rows = await (ctx as unknown as {
-        db: { system: { query: (n: string) => { collect: () => Promise<Array<{ name: string; args: unknown[] }>> } } };
-      }).db.system.query("_scheduled_functions").collect();
-      return rows.filter((r) => r.name === "tidyNames:enqueuePendingLookups");
-    });
-
-  test("a commit schedules the enqueue for its leaf and does not run it inline", async () => {
-    const t = convexTest(schema, modules);
-    live.push(t);
-    const w = await seed(t);
-    const rowId = await t.run((ctx) =>
-      ctx.db.insert("tidyNames", {
-        scopeId: w.base,
-        kind: "player",
-        nameNormalized: "pending person",
-        name: "Pending Person",
-        sportId: w.sport,
-        status: "pending",
-        lookupGen: 0,
-      } as never),
-    );
-    await commitAll(t, w, distinct(MANY));
-    const queued = await scheduledEnqueues(t);
-    expect(queued).toHaveLength(1);
-    expect(queued[0].args[0]).toEqual({ scopeId: w.base });
-    // Not run inline: the row still waits for the scheduled function.
-    expect((await t.run((ctx) => ctx.db.get(rowId)))?.lookupGen).toBe(0);
-  });
-
-  test("a failed commit schedules nothing, and the re-run schedules it once more", async () => {
-    const t = convexTest(schema, modules);
-    live.push(t);
-    const w = await seed(t);
-    const cards = distinct(MANY);
-    const realChunk = handlerOf<{ cards: Array<{ cardNumber: string }> }, unknown>(commitCardChecklistChunk);
-    const failing = vi
-      .spyOn(commitCardChecklistChunk as unknown as Handler<{ cards: Array<{ cardNumber: string }> }, unknown>, "_handler")
-      .mockImplementation(async (ctx, args) => {
-        if (args.cards.some((c) => c.cardNumber === cards[0].cardNumber)) throw new Error("chunk blew up");
-        return realChunk(ctx, args);
-      });
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    await expect(commitAll(t, w, cards)).rejects.toThrow();
-    expect(await scheduledEnqueues(t)).toHaveLength(0);
-    failing.mockRestore();
-    await commitAll(t, w, cards);
-    expect(await scheduledEnqueues(t)).toHaveLength(1);
-  });
-
-  // A queued row stays `pending`, so the walk needs a real cursor: a `.take()` re-read page one and never reached the rest.
-  test("the scheduled enqueue queues every pending name across pages, and a second run queues none twice", async () => {
-    const t = convexTest(schema, modules);
-    live.push(t);
-    const w = await seed(t);
-    const total = ENQUEUE_PAGE * 2 + 17;
-    await t.run(async (ctx) => {
-      for (let i = 0; i < total; i++) {
-        await ctx.db.insert("tidyNames", {
-          scopeId: w.base,
-          kind: "player",
-          nameNormalized: `pending person ${i}`,
-          name: `Pending Person ${i}`,
-          sportId: w.sport,
-          status: "pending",
-          lookupGen: 0,
-        } as never);
-      }
-    });
-    // One page per call; each call schedules the next with the cursor it ended on.
-    // Walk that chain by hand (draining it would reach the unregistered wikidata pool).
-    const walk = async () => {
-      let sum = 0;
-      let calls = 0;
-      let args: { scopeId: Id<"selectorOptions">; cursor?: string } | undefined = { scopeId: w.base };
-      while (args && calls < 10) {
-        const known = (await scheduledEnqueues(t)).length;
-        sum += await t.mutation(internal.tidyNames.enqueuePendingLookups, args);
-        calls++;
-        const after = await scheduledEnqueues(t);
-        args = after.length > known ? (after[after.length - 1].args[0] as typeof args) : undefined;
-      }
-      return { sum, calls };
-    };
-    const first = await walk();
-    const queued = first.sum;
-    // 2 full pages and a part page: three calls, and the walk ends by itself.
-    expect(first.calls).toBe(3);
-    expect(queued).toBe(total);
-    const rows = await t.run((ctx) => ctx.db.query("tidyNames").collect());
-    expect(rows.every((r) => r.lookupGen === 1)).toBe(true);
-    // Idempotent: a second walk finds nothing left to queue, on every page.
-    expect((await walk()).sum).toBe(0);
   });
 });

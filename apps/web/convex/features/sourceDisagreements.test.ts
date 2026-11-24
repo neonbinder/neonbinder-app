@@ -245,11 +245,6 @@ describe("namesHeld — an unsettled field holds NOTHING", () => {
   test("an unsettled entry holds the field and names no one", () => {
     expect(namesHeld([unsettled], "players")).toEqual({ held: true, names: [] });
   });
-
-  test("a chosen entry holds the chosen value", () => {
-    const chosen = { ...unsettled, chosen: { value: ["B"], by: "operator" as const } };
-    expect(namesHeld([chosen], "players")).toEqual({ held: true, names: ["B"] });
-  });
 });
 
 describe("sameNames", () => {

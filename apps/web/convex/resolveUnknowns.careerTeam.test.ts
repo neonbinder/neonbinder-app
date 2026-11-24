@@ -13,8 +13,7 @@
  * answers null with two candidates.
  */
 
-import type { Doc } from "./_generated/dataModel";
-import { tidyRowAsReviewRow } from "./lib/tidyAnswerDecisions";
+import type { GateLink } from "./lib/tidyAnswerDecisions";
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -44,14 +43,6 @@ type T = ReturnType<typeof convexTest>;
 type Sel = Id<"selectorOptions">;
 
 const live: T[] = [];
-/**
- * NEO-645 — the gate's name rows are `tidyNames` rows; read each the way the
- * commit prelude reads it (the old queue shape: `decision`, `enrichment`, ...).
- */
-async function tidyReviewRows(ctx: { db: { query: (t: "tidyNames") => { collect: () => Promise<Doc<"tidyNames">[]> } } }) {
-  return (await ctx.db.query("tidyNames").collect()).map((row) => tidyRowAsReviewRow(row));
-}
-
 function newT(): T {
   const t = convexTest(schema, modules);
   live.push(t);
@@ -149,10 +140,16 @@ async function gate(
   });
 }
 
-async function teamRows(t: T, _fromGate?: unknown) {
-  return (await t.run((ctx) => tidyReviewRows(ctx))).filter(
-    (r) => r.kind === "team",
-  );
+/**
+ * The gate's automatic team links (NEO-656: facts it returns, never stored),
+ * in the shape the old team rows had so each assertion reads as it did.
+ */
+function teamRows(result: { gateLinks?: GateLink[] }) {
+  return (result.gateLinks ?? [])
+    .filter((l) => l.kind === "team")
+    .map((l) => ({
+      decision: { action: "link" as const, linkedTeamId: l.teamId, autoLinked: l.origin },
+    }));
 }
 
 describe("the gate: a team name with several eras, settled by the card's players (NEO-490)", () => {
@@ -164,7 +161,7 @@ describe("the gate: a team name with several eras, settled by the card's players
     const result = await gate(t, s, [card(["Satchel Paige"], 1)]);
 
     expect(result.unknownTeams).toEqual([]);
-    const rows = await teamRows(t, result.batchId);
+    const rows = teamRows(result);
     expect(rows).toHaveLength(1);
     expect(rows[0].decision).toMatchObject({
       action: "link",
@@ -184,7 +181,7 @@ describe("the gate: a team name with several eras, settled by the card's players
     ]);
 
     expect(result.unknownTeams).toEqual([TEAM_NAME]);
-    const rows = await teamRows(t, result.batchId);
+    const rows = teamRows(result);
     expect(rows.every((r) => r.decision?.autoLinked !== "careerTeam")).toBe(true);
   });
 
@@ -197,7 +194,7 @@ describe("the gate: a team name with several eras, settled by the card's players
     const result = await gate(t, s, [card(["Satchel Paige"], 1), card(["Ken Boyer"], 2)]);
 
     expect(result.unknownTeams).toEqual([TEAM_NAME]);
-    const rows = await teamRows(t, result.batchId);
+    const rows = teamRows(result);
     expect(rows.some((r) => r.decision?.autoLinked === "careerTeam")).toBe(false);
   });
 
@@ -224,7 +221,7 @@ describe("the gate: a team name with several eras, settled by the card's players
     const result = await gate(t, s, [card(["Satchel Paige"], 1)]);
 
     expect(result.unknownTeams).toEqual([TEAM_NAME]);
-    const rows = await teamRows(t, result.batchId);
+    const rows = teamRows(result);
     expect(rows.every((r) => r.decision === undefined)).toBe(true);
     expect(rows.some((r) => r.decision?.autoLinked === "setHistory")).toBe(false);
   });
@@ -248,7 +245,7 @@ describe("the gate: a team name with several eras, settled by the card's players
     const result = await gate(t, s, [card(["Ken Boyer"], 1)]);
 
     expect(result.unknownTeams).toEqual([]);
-    const rows = await teamRows(t, result.batchId);
+    const rows = teamRows(result);
     expect(rows).toHaveLength(1);
     expect(rows[0].decision).toMatchObject({ linkedTeamId: s.late, autoLinked: "careerTeam" });
   });
@@ -261,7 +258,7 @@ describe("the gate: a team name with several eras, settled by the card's players
     const result = await gate(t, s, [card(["Satchel Paige"], 1)]);
 
     expect(result.unknownTeams).toEqual([TEAM_NAME]);
-    const rows = await teamRows(t, result.batchId);
+    const rows = teamRows(result);
     expect(rows.some((r) => r.decision?.autoLinked === "careerTeam")).toBe(false);
   });
 
@@ -295,7 +292,7 @@ describe("the gate: a team name with several eras, settled by the card's players
     );
 
     expect(result.unknownTeams).toEqual([]);
-    expect((await teamRows(t, result.batchId))[0]?.decision?.autoLinked).toBe("careerTeam");
+    expect((teamRows(result))[0]?.decision?.autoLinked).toBe("careerTeam");
   });
 
   test("a team name printed on more than the card bound is never sent to the query", async () => {
@@ -312,7 +309,7 @@ describe("the gate: a team name with several eras, settled by the card's players
     );
 
     expect(result.unknownTeams).toEqual([TEAM_NAME]);
-    const rows = await teamRows(t, result.batchId);
+    const rows = teamRows(result);
     expect(rows.some((r) => r.decision?.autoLinked === "careerTeam")).toBe(false);
   });
 });
@@ -397,7 +394,7 @@ describe("the gate: a name that is one row's own name and another's alias (NEO-6
     const result = await gate(t, s, [athleticsCard(["Rickey Henderson"], 1)]);
 
     expect(result.unknownTeams).toEqual([]);
-    const rows = await teamRows(t, result.batchId);
+    const rows = teamRows(result);
     expect(rows).toHaveLength(1);
     expect(rows[0].decision).toMatchObject({
       action: "link",
@@ -416,7 +413,7 @@ describe("the gate: a name that is one row's own name and another's alias (NEO-6
     const result = await gate(t, s, [athleticsCard(["Jacob Wilson"], 1)]);
 
     expect(result.unknownTeams).toEqual([]);
-    expect(await teamRows(t, result.batchId)).toEqual([]);
+    expect(teamRows(result)).toEqual([]);
   });
 
   test("a card with no player evidence is NOT silently linked to the alias-only Athletics: the operator is asked", async () => {
@@ -426,7 +423,7 @@ describe("the gate: a name that is one row's own name and another's alias (NEO-6
     const result = await gate(t, s, [athleticsCard([], 1)]);
 
     expect(result.unknownTeams).toEqual([NAME]);
-    expect((await teamRows(t, result.batchId)).every((r) => r.decision === undefined)).toBe(true);
+    expect((teamRows(result)).every((r) => r.decision === undefined)).toBe(true);
   });
 
   test("an ambiguous name skips set history even when a committed card names one row", async () => {
@@ -447,7 +444,7 @@ describe("the gate: a name that is one row's own name and another's alias (NEO-6
     const result = await gate(t, s, [athleticsCard([], 1)]);
 
     expect(result.unknownTeams).toEqual([NAME]);
-    expect((await teamRows(t, result.batchId)).some((r) => r.decision?.autoLinked === "setHistory")).toBe(false);
+    expect((teamRows(result)).some((r) => r.decision?.autoLinked === "setHistory")).toBe(false);
   });
 
   test("a player on both rows is a tie: the operator is asked", async () => {

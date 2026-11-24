@@ -325,11 +325,6 @@ describe("addPlayerToVariant: makes them the card's player, only where no one is
     ]);
   });
 
-  test("nothing goes to entity review", async () => {
-    const { t } = await scenario();
-    expect(await t.run(async (ctx) => ctx.db.query("entityReviewQueue").collect())).toEqual([]);
-  });
-
   test("run again: every card already theirs or skipped, nothing written", async () => {
     const { t, fx } = await scenario();
     const again = await runAll(t.withIdentity(ADMIN), "player", fx.baseId, fx.mahomes);

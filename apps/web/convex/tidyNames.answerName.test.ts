@@ -506,6 +506,7 @@ describe("answerName — validation and the gate", () => {
       const mj = await ctx.db.insert("players", {
         name: "Michael Jordan",
         nameNormalized: normalizeEntityName("Michael Jordan"),
+        aliases: ["Mike Jordan"],
         sportId: hoops,
         lastUpdated: 1,
       });
@@ -541,6 +542,27 @@ describe("answerName — validation and the gate", () => {
     });
     expect((await card(t, open))!.playerIds).toEqual([mj]);
     expect((await card(t, open))!.playerLinks).toEqual([{ playerId: mj, nameOnCard: "Mike Jordan" }]);
+  });
+
+  test("offered: true does not carry a player of another sport whose name or alias is not this name (S1)", async () => {
+    const t = newT();
+    const w = await world(t);
+    const { mj } = await stranger(t);
+    const open = await t.run((ctx) =>
+      printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: BO }] }),
+    );
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
+        cardId: open,
+        kind: "player",
+        name: BO,
+        sportId: w.sport,
+        answer: { kind: "linkPlayer", playerId: mj },
+        offered: true,
+      }),
+    ).rejects.toThrow(/isn't in this sport/);
+    expect((await card(t, open))!.playerIds).toBeUndefined();
+    expect((await card(t, open))!.pendingPlayerNames).toEqual([BO]);
   });
 
   test("an offered id that is gone since the lookup is refused, and nothing is written", async () => {

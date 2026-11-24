@@ -37,7 +37,6 @@ import { api, internal } from "./_generated/api";
 import {
   CARDS_PER_COMMIT_CHUNK,
   FINALIZE_DELETES_PER_PAGE,
-  FINALIZE_REVIEW_ROWS_PER_PAGE,
   FINALIZE_ROWS_PER_PAGE,
   type FinalizePageResult,
   type FinalizeResume,
@@ -594,7 +593,6 @@ describe("commitCardChecklistFinalize — bounded, resumable pages (NEO-294)", (
       resolvedTeamNames: [] as string[],
       skippedPlayerNames: [] as string[],
       skippedTeamNames: [] as string[],
-      reviewRowIds: [] as Array<Id<"entityReviewQueue">>,
       bscTeamEnrichmentIds: [] as Array<Id<"cardChecklist">>,
       cardCount: 0,
     };
@@ -685,8 +683,8 @@ describe("commitCardChecklistFinalize — bounded, resumable pages (NEO-294)", (
     const walk = await drainFinalize(t, baseFinalizeArgs(variantTypeId));
 
     expect(walk.unmatchedExistingIds.sort()).toEqual([...ids].sort());
-    // Three row pages (the short third ends the walk) plus the tail.
-    expect(walk.calls).toBe(4);
+    // Three row pages; the short third ends the walk and runs the tail.
+    expect(walk.calls).toBe(3);
   });
 
   test("one call does ONE page and no more", async () => {
@@ -731,31 +729,24 @@ describe("commitCardChecklistFinalize — bounded, resumable pages (NEO-294)", (
       internal.selectorOptions.commitCardChecklistFinalize,
       { ...args, resume: first.resume! },
     );
-    // A short page ends the ROW walk, but not the run: the tail still has to
-    // happen, and it is the only page allowed to say `hasMore: false`.
+    // A short page ends the ROW walk and runs the tail on that same page, so
+    // it is the only page allowed to say `hasMore: false`.
     expect(second.unmatchedExistingIds.length).toBe(1);
-    expect(second.hasMore).toBe(true);
-    expect(second.resume!.phase).toBe("review");
-
-    const tail: FinalizePageResult = await asAdmin.mutation(
-      internal.selectorOptions.commitCardChecklistFinalize,
-      { ...args, resume: second.resume! },
-    );
-    expect(tail.hasMore).toBe(false);
-    expect(tail.resume).toBeNull();
+    expect(second.hasMore).toBe(false);
+    expect(second.resume).toBeNull();
   });
 
-  test("a checklist smaller than a page is a row page and a tail, and nothing more", async () => {
+  test("a checklist smaller than a page is one row page that carries the tail, and nothing more", async () => {
     const t = convexTest(schema, modules);
     const { variantTypeId } = await seedTree(t);
     await seedRows(t, variantTypeId, 3);
 
     const walk = await drainFinalize(t, baseFinalizeArgs(variantTypeId));
 
-    expect(walk.calls).toBe(2);
+    expect(walk.calls).toBe(1);
     expect(walk.unmatchedExistingIds.length).toBe(3);
     // No deletes were asked for, so that phase is never entered at all.
-    expect(walk.phases).toEqual(["review"]);
+    expect(walk.phases).toEqual([]);
   });
 
   test("an interrupted walk keeps what it wrote, and re-running finishes without applying anything twice", async () => {
@@ -795,7 +786,7 @@ describe("commitCardChecklistFinalize — bounded, resumable pages (NEO-294)", (
     // over from the head of the checklist.
     const rerun = await drainFinalize(t, args);
 
-    expect(rerun.calls).toBe(4);
+    expect(rerun.calls).toBe(3);
     const final = await t.run(async (ctx) =>
       Promise.all(ids.map(async (id) => (await ctx.db.get(id))!.sortOrder)),
     );
@@ -856,7 +847,7 @@ describe("commitCardChecklistFinalize — bounded, resumable pages (NEO-294)", (
     expect(walk.deleteSkipped).toBe(0);
     // Two delete pages, then the row walk over an empty checklist, then the
     // tail — and the row walk sees nothing, because deletes run first.
-    expect(walk.phases).toEqual(["deletes", "rows", "review"]);
+    expect(walk.phases).toEqual(["deletes", "rows"]);
     expect(walk.unmatchedExistingIds).toEqual([]);
     const { rows } = await readChecklist(t, variantTypeId);
     expect(rows).toEqual([]);
@@ -925,64 +916,6 @@ describe("commitCardChecklistFinalize — bounded, resumable pages (NEO-294)", (
     expect(walk.deleteSkipped).toBe(1);
     const { rows } = await readChecklist(t, variantTypeId);
     expect(rows.map((r) => r._id)).toEqual([ids[1]]);
-  });
-
-  test("the review batch is deleted in bounded pages, and an interrupted run resumes without failing on a row already gone", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, variantTypeId } = await seedTree(t);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const reviewRowIds = await t.run(async (ctx) => {
-      const out: Array<Id<"entityReviewQueue">> = [];
-      for (let i = 0; i < FINALIZE_REVIEW_ROWS_PER_PAGE + 11; i++) {
-        out.push(
-          await ctx.db.insert("entityReviewQueue", {
-            selectorOptionId: variantTypeId,
-            batchId: "finalize-batch",
-            createdByUserId: ADMIN_IDENTITY.subject,
-            kind: "player",
-            name: `Rookie${i}`,
-            sportId,
-            status: "ready",
-            decision: { action: "create" },
-          }),
-        );
-      }
-      return out;
-    });
-    const args = { ...baseFinalizeArgs(variantTypeId), reviewRowIds };
-
-    // Walk to the review phase by hand so the interruption lands inside it.
-    let page: FinalizePageResult = await asAdmin.mutation(
-      internal.selectorOptions.commitCardChecklistFinalize,
-      args,
-    );
-    expect(page.resume!.phase).toBe("review");
-    page = await asAdmin.mutation(
-      internal.selectorOptions.commitCardChecklistFinalize,
-      { ...args, resume: page.resume! },
-    );
-    expect(page.hasMore).toBe(true);
-    expect(page.resume).toEqual({
-      phase: "review",
-      offset: FINALIZE_REVIEW_ROWS_PER_PAGE,
-      rowCursor: null,
-    });
-    expect(
-      await t.run(async (ctx) =>
-        (await ctx.db.query("entityReviewQueue").collect()).length,
-      ),
-    ).toBe(reviewRowIds.length - FINALIZE_REVIEW_ROWS_PER_PAGE);
-
-    // …and the re-run re-sends the whole id list. The rows already deleted are
-    // existence-checked rather than deleted again, which is what keeps a
-    // replayed page from failing an otherwise complete commit.
-    const rerun = await drainFinalize(t, args);
-    expect(rerun.calls).toBeGreaterThan(1);
-    expect(
-      await t.run(async (ctx) =>
-        (await ctx.db.query("entityReviewQueue").collect()).length,
-      ),
-    ).toBe(0);
   });
 
   test("a variation whose parent sits several row pages earlier is still linked", async () => {

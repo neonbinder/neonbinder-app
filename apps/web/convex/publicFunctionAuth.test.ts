@@ -763,8 +763,6 @@ describe("NEO-214: the Set Builder admin panel and its client-callable functions
     "resetCardPlayerLinksBatch",
     "resetCardChecklistBatch",
     "resetCardCrossListingsBatch",
-    // NEO-294 — the entity-review staging tables, added to the reset loop.
-    "resetEntityReviewQueueBatch",
     "resetChecklistCandidatesBatch",
     // NEO-313 — a player's additional sports, drained before the players.
     "resetPlayerSportsBatch",
@@ -1461,32 +1459,23 @@ describe("NEO-305: the set ⇄ parallel doors are admin-gated", () => {
   });
 });
 
-describe("NEO-645: the old review wizard has no public surface", () => {
+describe("NEO-645 / NEO-656: the old review wizard has no surface at all", () => {
   /**
-   * One-card Tidy Up replaced the wizard, and every public function of
-   * `entityReviewQueue.ts` and `entityReviewSkips.ts` went with it (getBatch,
-   * recordDecision, the step contexts, the bulk actions, clearSkip, ...). What
-   * remains of the queue module is internal, for the deploy window. Pinned by
-   * reading the source, the way the NEO-154 blocks are (convex-test does not
-   * enforce the public/internal boundary): a public function added back here
-   * would be an ungated door onto a table nothing reads any more.
+   * One-card Tidy Up replaced the wizard, and NEO-656 removed what was left of
+   * it: the review queue, the skips, the name rows and the printed rows are
+   * gone with their modules. Pinned the way the NEO-154 blocks are (convex-test
+   * does not enforce the public/internal boundary): a module added back under
+   * one of these names would be a door onto a table nothing reads any more.
    */
-  test("entityReviewQueue.ts declares no public query, mutation or action", () => {
-    const src = readFileSync(join(__dirname, "entityReviewQueue.ts"), "utf8");
-    expect(src).not.toMatch(/=\s*(query|mutation|action)\(/);
-    expect(src).not.toMatch(/import\s*\{[^}]*\b(query|mutation|action)\b[^}]*\}\s*from "\.\/_generated\/server"/);
-  });
-
-  test("entityReviewSkips.ts is gone", () => {
-    expect(existsSync(join(__dirname, "entityReviewSkips.ts"))).toBe(false);
-  });
-
   test.each([
-    ["getInternal", "internalQuery"],
-    ["applyLookupResult", "internalMutation"],
-  ])("entityReviewQueue.%s (the in-flight lookup's door) is %s", (fn, keyword) => {
-    const src = readFileSync(join(__dirname, "entityReviewQueue.ts"), "utf8");
-    expect(src).toContain(`export const ${fn} = ${keyword}({`);
+    "entityReviewQueue.ts",
+    "entityReviewSkips.ts",
+    "tidySkips.ts",
+    "tidyMigrations.ts",
+    "tidyTypedNames.ts",
+    "cardPrintedNames.ts",
+  ])("%s is gone", (file) => {
+    expect(existsSync(join(__dirname, file))).toBe(false);
   });
 });
 
@@ -4229,6 +4218,10 @@ describe("NEO-645: the Tidy Up surface is admin-gated", () => {
         t.query(api.careerCoverage.careerGaps, {
           pairs: [{ selectorOptionId: s.leafId, playerId: s.playerId, teamId: s.teamId }],
         }),
+    ],
+    [
+      "selectorOptions.tidyLeafFacts",
+      (t, s) => t.action(api.selectorOptions.tidyLeafFacts, { selectorOptionId: s.leafId }),
     ],
     ["tidyCards.cardContext", (t, s) => t.query(api.tidyCards.cardContext, { cardId: s.cardId })],
     [

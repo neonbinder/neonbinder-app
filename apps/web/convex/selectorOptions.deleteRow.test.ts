@@ -8,10 +8,10 @@
  *
  * Covers:
  *  - empty custom row is deleted, the parent's children array shrinks, and the
- *    transient rows keyed on it (skips, sync status) go with it
- *  - staged checklist review work (checklistCandidates / entityReviewQueue) is
+ *    transient rows keyed on it (sync status) go with it
+ *  - staged checklist review work (checklistCandidates) is
  *    a HOLDING, not transient — the delete refuses while a review is live
- *  - the sweep is bounded: more archived skips than the cap refuses instead
+ *  - the sweep is bounded: more "sets I am building" entries than the cap refuse instead
  *  - refused for child rows / cards / cross-listings, each naming what it found
  *  - a "rows" holding carries the children's LEVEL when they share one, and
  *    omits it when they are mixed
@@ -205,15 +205,6 @@ describe("deleteSelectorOption — empty row", () => {
     });
 
     await t.run(async (ctx) => {
-      // A "not a person" ruling is meaningless once the set is gone.
-      await ctx.db.insert("entityReviewSkips", {
-        selectorOptionId: setId,
-        kind: "team",
-        nameNormalized: "checklist",
-        name: "Checklist",
-        skippedAt: SENTINEL_LAST_UPDATED,
-        skippedByUserId: ADMIN_IDENTITY.subject,
-      });
       // Status row for a CHILD column of the row being deleted.
       await ctx.db.insert("selectorSyncStatus", {
         level: "variantType",
@@ -229,11 +220,10 @@ describe("deleteSelectorOption — empty row", () => {
     });
 
     const leftovers = await t.run(async (ctx) => ({
-      skips: (await ctx.db.query("entityReviewSkips").collect()).length,
       statuses: (await ctx.db.query("selectorSyncStatus").collect()).length,
     }));
 
-    expect(leftovers).toEqual({ skips: 0, statuses: 0 });
+    expect(leftovers).toEqual({ statuses: 0 });
   });
 
   test("NEO-306: a brand whose names all wait in the SportLots review is empty — it deletes, and its review goes with it", async () => {
@@ -335,45 +325,6 @@ describe("deleteSelectorOption — empty row", () => {
     ).toBe(3);
   });
 
-  test("refuses a row carrying an entityReviewQueue", async () => {
-    const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-
-    const sportId = await insertRow(t, "sport", "Baseball");
-    const setId = await insertRow(t, "setName", "Topps Chrome", {
-      parentId: sportId,
-      isCustom: true,
-    });
-    await t.run(async (ctx) => {
-      await ctx.db.insert("entityReviewQueue", {
-        selectorOptionId: setId,
-        batchId: "batch-1",
-        createdByUserId: "some_other_admin",
-        kind: "player",
-        name: "Unresolved Name",
-        sportId,
-        status: "pending",
-      });
-    });
-
-    const error = await expectRefusal(() =>
-      asAdmin.mutation(api.selectorOptions.deleteSelectorOption, { id: setId }),
-    );
-
-    expect(error.data.code).toBe("SELECTOR_ROW_NOT_EMPTY");
-    expect(holdFor(error.data, "review")).toEqual({
-      kind: "review",
-      count: 1,
-      examples: [],
-    });
-
-    expect(
-      await t.run(async (ctx) =>
-        (await ctx.db.query("entityReviewQueue").collect()).length,
-      ),
-    ).toBe(1);
-  });
-
   test("getSelectorOptionHoldings reports staged review work too", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
@@ -403,70 +354,6 @@ describe("deleteSelectorOption — empty row", () => {
     expect(holdings.holds).toEqual([
       { kind: "review", count: 1, examples: [] },
     ]);
-  });
-
-  // ── security condition 3a: the sweep is bounded ──────────────────────────
-
-  test("refuses rather than sweeping more archived skips than the cap", async () => {
-    const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-
-    const setId = await insertRow(t, "setName", "Topps Chrome", {
-      isCustom: true,
-    });
-    await t.run(async (ctx) => {
-      for (let i = 0; i < TRANSIENT_DELETE_CAP + 1; i++) {
-        await ctx.db.insert("entityReviewSkips", {
-          selectorOptionId: setId,
-          kind: "player",
-          nameNormalized: `name ${i}`,
-          name: `Name ${i}`,
-          skippedAt: SENTINEL_LAST_UPDATED,
-          skippedByUserId: ADMIN_IDENTITY.subject,
-        });
-      }
-    });
-
-    const error = await expectRefusal(() =>
-      asAdmin.mutation(api.selectorOptions.deleteSelectorOption, { id: setId }),
-    );
-
-    expect(error.data.code).toBe("SELECTOR_ROW_NOT_EMPTY");
-    // Refused rather than issuing a 501-row write batch in one transaction.
-    expect(holdFor(error.data, "review")?.count).toBe(TRANSIENT_DELETE_CAP + 1);
-    expect(await t.run(async (ctx) => ctx.db.get(setId))).not.toBeNull();
-  });
-
-  test("sweeps a skip count at the cap without refusing", async () => {
-    const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-
-    const setId = await insertRow(t, "setName", "Topps Chrome", {
-      isCustom: true,
-    });
-    await t.run(async (ctx) => {
-      for (let i = 0; i < TRANSIENT_DELETE_CAP; i++) {
-        await ctx.db.insert("entityReviewSkips", {
-          selectorOptionId: setId,
-          kind: "player",
-          nameNormalized: `name ${i}`,
-          name: `Name ${i}`,
-          skippedAt: SENTINEL_LAST_UPDATED,
-          skippedByUserId: ADMIN_IDENTITY.subject,
-        });
-      }
-    });
-
-    const result = await asAdmin.mutation(
-      api.selectorOptions.deleteSelectorOption,
-      { id: setId },
-    );
-    expect(result.deleted).toBe(true);
-    expect(
-      await t.run(async (ctx) =>
-        (await ctx.db.query("entityReviewSkips").collect()).length,
-      ),
-    ).toBe(0);
   });
 
   // NEO-358 — "Sets I'm building" entries are swept with an empty set, up to
@@ -1072,12 +959,12 @@ describe("getSelectorOptionHoldings", () => {
 
 describe("deleteSelectorOption — adversarial", () => {
   // NEO-219 security condition 2 rewrote this case. It used to assert that a
-  // row carrying all four per-batch tables deleted cleanly. Two of them —
-  // checklistCandidates and entityReviewQueue — are another operator's live
-  // review, and a set under review has NO cardChecklist rows yet, so that
-  // behaviour made the delete most available exactly when it was most
-  // destructive. They are holdings now; the other two are still swept.
-  test("staged review rows hold the delete; skips and sync status do not", async () => {
+  // row carrying every per-batch table deleted cleanly. checklistCandidates
+  // is another operator's live review, and a set under review has NO
+  // cardChecklist rows yet, so that behaviour made the delete most available
+  // exactly when it was most destructive. It is a holding now; the sync
+  // status is still swept (NEO-656: the review queue and the skips are gone).
+  test("staged review rows hold the delete; sync status does not", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
 
@@ -1089,14 +976,6 @@ describe("deleteSelectorOption — adversarial", () => {
 
     const seedSweepable = async () => {
       await t.run(async (ctx) => {
-        await ctx.db.insert("entityReviewSkips", {
-          selectorOptionId: setId,
-          kind: "team",
-          nameNormalized: "checklist",
-          name: "Checklist",
-          skippedAt: SENTINEL_LAST_UPDATED,
-          skippedByUserId: ADMIN_IDENTITY.subject,
-        });
         await ctx.db.insert("selectorSyncStatus", {
           level: "variantType",
           parentId: setId,
@@ -1107,18 +986,9 @@ describe("deleteSelectorOption — adversarial", () => {
       });
     };
 
-    // All four present → the two staged ones hold it.
+    // Staged candidates present → they hold it.
     await seedSweepable();
     const stagedIds = await t.run(async (ctx) => ({
-      queue: await ctx.db.insert("entityReviewQueue", {
-        selectorOptionId: setId,
-        batchId: "batch-1",
-        createdByUserId: "some_other_admin",
-        kind: "player",
-        name: "Some Name",
-        sportId,
-        status: "pending",
-      }),
       candidate: await ctx.db.insert("checklistCandidates", {
         selectorOptionId: setId,
         batchId: "batch-1",
@@ -1138,7 +1008,7 @@ describe("deleteSelectorOption — adversarial", () => {
       { id: setId },
     );
     expect(holdingsBefore.holds).toEqual([
-      { kind: "review", count: 2, examples: [] },
+      { kind: "review", count: 1, examples: [] },
     ]);
 
     const error = await expectRefusal(() =>
@@ -1150,22 +1020,17 @@ describe("deleteSelectorOption — adversarial", () => {
     expect(await t.run(async (ctx) => ctx.db.get(setId))).not.toBeNull();
     expect(
       await t.run(async (ctx) => ({
-        queue: await ctx.db.get(stagedIds.queue),
         candidate: await ctx.db.get(stagedIds.candidate),
-        skips: (await ctx.db.query("entityReviewSkips").collect()).length,
         statuses: (await ctx.db.query("selectorSyncStatus").collect()).length,
       })),
     ).toEqual({
-      queue: expect.objectContaining({ name: "Some Name" }),
       candidate: expect.objectContaining({ cardName: "Some Player" }),
-      skips: 1,
       statuses: 1,
     });
 
     // Review finishes (its rows are cleaned up by the commit) → now it goes,
-    // and the two sweepable tables go with it.
+    // and the sync status goes with it.
     await t.run(async (ctx) => {
-      await ctx.db.delete(stagedIds.queue);
       await ctx.db.delete(stagedIds.candidate);
     });
 
@@ -1183,10 +1048,9 @@ describe("deleteSelectorOption — adversarial", () => {
     expect(await t.run(async (ctx) => ctx.db.get(setId))).toBeNull();
     expect(
       await t.run(async (ctx) => ({
-        skips: (await ctx.db.query("entityReviewSkips").collect()).length,
         statuses: (await ctx.db.query("selectorSyncStatus").collect()).length,
       })),
-    ).toEqual({ skips: 0, statuses: 0 });
+    ).toEqual({ statuses: 0 });
   });
 
   test("deletes even when the parent's `children` array does NOT list it (legacy divergence)", async () => {

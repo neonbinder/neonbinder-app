@@ -22,7 +22,7 @@ import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import { normalizePlayerName } from "./players";
+import { buildExistingPlayerCandidates, normalizePlayerName } from "./players";
 import { PLAYER_AMBIGUITY_SCAN_LIMIT } from "../lib/players/name-limits";
 
 const modules = (import.meta as unknown as {
@@ -568,24 +568,10 @@ describe("NEO-254: a candidate matched by alias says so", () => {
     );
     const byName = await insertPlayerWithAliases(t, sportId, "Ron Artest");
 
-    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
-      selectorOptionId: sportId,
-      createdByUserId: ADMIN_IDENTITY.subject,
-      sportId,
-      playerNames: ["Ron Artest"],
-      teamNames: [],
-    });
-    const row = await t.run(async (ctx) =>
-      ctx.db
-        .query("entityReviewQueue")
-        .withIndex("by_selector_option_and_batch", (q) =>
-          q.eq("selectorOptionId", sportId).eq("batchId", batchId),
-        )
-        .first(),
+    const candidates = await t.run(async (ctx) =>
+      buildExistingPlayerCandidates(ctx, "Ron Artest", sportId),
     );
-    const byId = new Map(
-      (row!.enrichment!.existingCandidates ?? []).map((c) => [c.playerId, c]),
-    );
+    const byId = new Map(candidates.map((c) => [c.playerId, c]));
     // The row whose FORMER name matched says why it is on the list…
     expect(byId.get(byAlias)!.matchedAlias).toBe("Ron Artest");
     // …and the row whose primary name matched does not.

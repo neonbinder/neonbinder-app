@@ -115,37 +115,6 @@ async function seedAll(t: T): Promise<Seeded> {
     await player("playerSuffix", "Jr.");
     await player("playerClean", "Ken Griffey Jr.");
 
-    const queue = (key: string, kind: "player" | "team" | "league", name: string) =>
-      ctx.db
-        .insert("entityReviewQueue", {
-          selectorOptionId: setId,
-          batchId: "b",
-          createdByUserId: "u",
-          kind,
-          name,
-          sportId,
-          status: "ready",
-        } as never)
-        .then((id) => void (ids[key] = id));
-    await queue("queueTeamComma", "team", "Cleveland Guardians, Washington Nationals");
-    await queue("queueTeamSlash", "team", "Bodø/Glimt");
-    await queue("queuePlayerSuffix", "player", "Sr.");
-    await queue("queueLeagueComma", "league", "A, B");
-
-    const skip = (key: string, kind: "player" | "team", name: string) =>
-      ctx.db
-        .insert("entityReviewSkips", {
-          selectorOptionId: setId,
-          kind,
-          nameNormalized: name.toLowerCase(),
-          name,
-          skippedAt: 1,
-          skippedByUserId: "u",
-        } as never)
-        .then((id) => void (ids[key] = id));
-    await skip("skipTeamComma", "team", "Chicago Cubs, Texas Rangers");
-    await skip("skipPlayerSuffix", "player", "III");
-
     const card = (key: string, extra: Record<string, unknown>) =>
       insertTestCard(ctx, {
           selectorOptionId: setId,
@@ -214,12 +183,6 @@ describe("combinedNamesReport.run: what is flagged", () => {
     expect(idsOf(r, "teamAliasSeparator")).toEqual([ids.teamAliasComma]);
     expect(idsOf(r, "playerNameSeparator")).toEqual([ids.playerSlash]);
     expect(idsOf(r, "playerNameSuffixOnly")).toEqual([ids.playerSuffix]);
-    expect(new Set(idsOf(r, "reviewQueueNameSeparator"))).toEqual(
-      new Set([ids.queueTeamComma, ids.queueLeagueComma]),
-    );
-    expect(idsOf(r, "reviewQueuePlayerSuffixOnly")).toEqual([ids.queuePlayerSuffix]);
-    expect(idsOf(r, "reviewSkipNameSeparator")).toEqual([ids.skipTeamComma]);
-    expect(idsOf(r, "reviewSkipPlayerSuffixOnly")).toEqual([ids.skipPlayerSuffix]);
     expect(idsOf(r, "cardBscTeamNameSeparator")).toEqual([ids.cardBsc]);
     expect(idsOf(r, "cardPendingTeamNameSeparator")).toEqual([ids.cardPendingTeam]);
     expect(idsOf(r, "cardPendingPlayerNameSeparator")).toEqual([ids.cardPendingPlayer]);
@@ -234,7 +197,6 @@ describe("combinedNamesReport.run: what is flagged", () => {
 
     expect(idsOf(r, "teamNameSeparator")).toContain(ids.teamComma);
     expect(idsOf(r, "teamNameSeparator")).not.toContain(ids.teamSlash);
-    expect(idsOf(r, "reviewQueueNameSeparator")).not.toContain(ids.queueTeamSlash);
     expect(idsOf(r, "cardBscTeamNameSeparator")).not.toContain(ids.cardClean);
   });
 
@@ -249,15 +211,13 @@ describe("combinedNamesReport.run: what is flagged", () => {
     expect(idsOf(r, "cardPendingPlayerSuffixOnly")).not.toContain(ids.cardClean);
   });
 
-  test("a suffix-only player is flagged in players, the queue, the skips and card pending names", async () => {
+  test("a suffix-only player is flagged in players and card pending names", async () => {
     const t = convexTest(schema, modules);
     const { ids } = await seedAll(t);
 
     const r = await run(t);
 
     expect(idsOf(r, "playerNameSuffixOnly")).toEqual([ids.playerSuffix]);
-    expect(idsOf(r, "reviewQueuePlayerSuffixOnly")).toEqual([ids.queuePlayerSuffix]);
-    expect(idsOf(r, "reviewSkipPlayerSuffixOnly")).toEqual([ids.skipPlayerSuffix]);
     expect(idsOf(r, "cardPendingPlayerSuffixOnly")).toEqual([ids.cardPendingSuffix]);
   });
 

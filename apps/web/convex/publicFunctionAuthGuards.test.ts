@@ -58,7 +58,7 @@ import schema from "./schema";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 import { Id } from "./_generated/dataModel";
 import { insertTestCard } from "../lib/testing/card-row";
-import { addPlayer, nameRow, printCard, seedTidyWorld } from "../lib/testing/tidy-world";
+import { addPlayer, printCard, seedTidyWorld } from "../lib/testing/tidy-world";
 
 // NEO-315: the placeholder download mints sign with a storage client. A fake one
 // records every probe and signature so "refused" can be asserted as "touched
@@ -1210,7 +1210,7 @@ describe("NEO-536 — the admin's sync report review never ships closedBy", () =
  * One-card Tidy Up added public writes to SHARED reference data (players,
  * teams, name answers) and to a set's own metadata. Pinned here the way the
  * NEO-212 block pins the wizard's: a refused caller (signed out, or signed in
- * without the admin role) leaves `players`, `teams`, `tidyNames`, the cards and
+ * without the admin role) leaves `players`, `teams`, the cards and
  * the leaf's metadata exactly as they were. `publicFunctionAuth.test.ts` pins
  * which gate each one carries; this pins what the refusal did NOT do.
  */
@@ -1219,16 +1219,6 @@ describe("NEO-645 — a refused Tidy Up write persists nothing", () => {
     const t = convexTest(schema, modules);
     const seeded = await t.run(async (ctx) => {
       const w = await seedTidyWorld(ctx);
-      // Looked up and found nothing: a new rookie, so a refused call has a
-      // real player to have created.
-      await nameRow(ctx, {
-        scopeId: w.base,
-        sportId: w.sport,
-        kind: "player",
-        name: "Rookie Newguy",
-        over: { lookupGen: 1, lookupRequestedAt: 1 },
-      });
-      await nameRow(ctx, { scopeId: w.base, sportId: w.sport, kind: "team", name: "Pads" });
       const cardId = await printCard(ctx, w, {
         number: "1",
         printed: [
@@ -1247,7 +1237,6 @@ describe("NEO-645 — a refused Tidy Up write persists nothing", () => {
     t.run(async (ctx) => ({
       players: await ctx.db.query("players").collect(),
       teams: await ctx.db.query("teams").collect(),
-      tidyNames: await ctx.db.query("tidyNames").collect(),
       cards: await ctx.db.query("cardChecklist").collect(),
       leafMetadata: (await ctx.db.get(leafId))?.metadata,
     }));
@@ -1324,7 +1313,7 @@ describe("NEO-645 — a refused Tidy Up write persists nothing", () => {
     // Not vacuous: the fixture holds rows for the call to have changed.
     expect(before.players.length).toBeGreaterThan(0);
     expect(before.teams.length).toBeGreaterThan(0);
-    expect(before.tidyNames.length).toBeGreaterThan(0);
+    expect(before.cards.some((c) => (c.pendingPlayerNames ?? []).length > 0)).toBe(true);
 
     await expect(call(c, () => c.t)).rejects.toThrow(/not authenticated/i);
 

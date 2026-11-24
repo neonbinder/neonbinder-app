@@ -20,15 +20,16 @@
  * is asserted in `lib/players/career-span.test.ts`.
  */
 
-import { insertAsTidyName } from "../lib/testing/tidy-review-row";
 import { convexTest } from "convex-test";
 import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
+import type { GateLink } from "./lib/tidyAnswerDecisions";
 import {
   CAREER_TEAM_READS_PER_NAME,
   CARD_YEAR_TEAM_READS_PER_TRANSACTION,
+  buildExistingPlayerCandidates,
   createCardYearTeamCache,
   narrowSameNamePlayersByCardYear,
 } from "./players";
@@ -370,7 +371,7 @@ async function commit(
   t: ReturnType<typeof convexTest>,
   ids: { sportId: Id<"selectorOptions">; variantTypeId: Id<"selectorOptions"> },
   cards: ReturnType<typeof makeCard>[],
-  batchId?: string,
+  gateLinks?: GateLink[],
 ) {
   await t
     .withIdentity(ADMIN_IDENTITY)
@@ -378,7 +379,7 @@ async function commit(
       selectorOptionId: ids.variantTypeId,
       sportId: ids.sportId,
       cards,
-      ...(batchId ? { batchId } : {}),
+      ...(gateLinks ? { gateLinks } : {}),
     });
   return t.run(async (ctx) =>
     ctx.db
@@ -443,16 +444,13 @@ describe("NEO-254: the commit prelude narrows on the card's year too", () => {
     expect(cards[0].playerIds).toEqual([cub]);
   });
 
-  test("an operator's recorded decision beats the narrowing", async () => {
+  test("a gate link beats the narrowing", async () => {
     /*
      * The ordering this pins.
      *
-     * A review session is human-paced and the commit happens at the end of it.
-     * Between the operator picking the 1930s man (they had a reason — a
-     * missing stint, a source they checked) and pressing Confirm, a bulk load
-     * can add stints that make the year evidence point at the other row. If
-     * the narrowing ran first it would silently overrule a person who had
-     * already looked at these very rows. Inference fills a silence; it never
+     * The gate's own link (NEO-656: `gateLinks`, handed back at commit) is the
+     * answer the commit reads. If the narrowing ran first it would overrule the
+     * row the gate already linked. Inference fills a silence; it never
      * overrules an answer.
      */
     const t = convexTest(schema, modules);
@@ -462,63 +460,17 @@ describe("NEO-254: the commit prelude narrows on the card's year too", () => {
     await insertBobAllen(t, ids.sportId, [
       { teamId: padres, fromYear: 1986, toYear: 1994 },
     ]);
-    const operatorsPick = await insertBobAllen(t, ids.sportId, [
+    const linkedByGate = await insertBobAllen(t, ids.sportId, [
       { teamId: padres, fromYear: 1930, toYear: 1937 },
     ]);
-
-    await t.run(async (ctx) =>
-      insertAsTidyName(ctx, {
-        selectorOptionId: ids.variantTypeId,
-        batchId: "batch-1",
-        createdByUserId: ADMIN_IDENTITY.subject,
-        kind: "player" as const,
-        name: "Bob Allen",
-        sportId: ids.sportId,
-        status: "ready" as const,
-        decision: { action: "link" as const, linkedPlayerId: operatorsPick },
-      }),
-    );
 
     const cards = await commit(
       t,
       ids,
       [makeCard({ players: ["Bob Allen"] })],
-      "batch-1",
+      [{ kind: "player", name: "Bob Allen", playerId: linkedByGate, origin: "careerTeam" }],
     );
-    expect(cards[0].playerIds).toEqual([operatorsPick]);
-  });
-
-  test("a SKIP is an answer too, and the narrowing does not undo it", async () => {
-    const t = convexTest(schema, modules);
-    const ids = await seedSetOfYear(t, "1990");
-    const padres = await insertTeam(t, ids.sportId, "San Diego", "Padres", "diego padres san");
-    await insertBobAllen(t, ids.sportId, [
-      { teamId: padres, fromYear: 1986, toYear: 1994 },
-    ]);
-    await insertBobAllen(t, ids.sportId, [
-      { teamId: padres, fromYear: 1930, toYear: 1937 },
-    ]);
-
-    await t.run(async (ctx) =>
-      insertAsTidyName(ctx, {
-        selectorOptionId: ids.variantTypeId,
-        batchId: "batch-1",
-        createdByUserId: ADMIN_IDENTITY.subject,
-        kind: "player" as const,
-        name: "Bob Allen",
-        sportId: ids.sportId,
-        status: "ready" as const,
-        decision: { action: "skip" as const },
-      }),
-    );
-
-    const cards = await commit(
-      t,
-      ids,
-      [makeCard({ players: ["Bob Allen"] })],
-      "batch-1",
-    );
-    expect(cards[0].playerIds ?? []).toEqual([]);
+    expect(cards[0].playerIds).toEqual([linkedByGate]);
   });
 
   test("two spellings of one name pool the teams their cards carry", async () => {
@@ -590,7 +542,7 @@ describe("NEO-254: the commit prelude narrows on the card's year too", () => {
 describe("NEO-254: candidates carry whether they were active in the set's year", () => {
   test("only the candidate whose stints cover the year is flagged", async () => {
     const t = convexTest(schema, modules);
-    const { sportId, variantTypeId } = await seedSetOfYear(t, "1990");
+    const { sportId } = await seedSetOfYear(t, "1990");
     const padres = await insertTeam(t, sportId, "San Diego", "Padres", "diego padres san");
     const modern = await insertBobAllen(t, sportId, [
       { teamId: padres, fromYear: 1986, toYear: 1994 },
@@ -602,26 +554,10 @@ describe("NEO-254: candidates carry whether they were active in the set's year",
     // year, and nothing on file to say.
     const bare = await insertBobAllen(t, sportId);
 
-    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
-      selectorOptionId: variantTypeId,
-      createdByUserId: ADMIN_IDENTITY.subject,
-      sportId,
-      playerNames: ["Bob Allen"],
-      teamNames: [],
-    });
-    expect(batchId).toBeTruthy();
-
-    const row = await t.run(async (ctx) =>
-      ctx.db
-        .query("entityReviewQueue")
-        .withIndex("by_selector_option_and_batch", (q) =>
-          q.eq("selectorOptionId", variantTypeId).eq("batchId", batchId),
-        )
-        .first(),
+    const candidates = await t.run(async (ctx) =>
+      buildExistingPlayerCandidates(ctx, "Bob Allen", sportId, { cardYear: 1990 }),
     );
-    const byId = new Map(
-      (row!.enrichment!.existingCandidates ?? []).map((c) => [c.playerId, c]),
-    );
+    const byId = new Map(candidates.map((c) => [c.playerId, c]));
     expect(byId.get(modern)!.activeInSetYear).toBe(true);
     // Absent, never `false`: the flag states what we can stand behind.
     expect(byId.get(older)!.activeInSetYear).toBeUndefined();
@@ -630,27 +566,14 @@ describe("NEO-254: candidates carry whether they were active in the set's year",
 
   test("with no set year, nothing is flagged and nothing is dropped", async () => {
     const t = convexTest(schema, modules);
-    const { sportId, variantTypeId } = await seedSetOfYear(t, null);
+    const { sportId } = await seedSetOfYear(t, null);
     const padres = await insertTeam(t, sportId, "San Diego", "Padres", "diego padres san");
     await insertBobAllen(t, sportId, [{ teamId: padres, fromYear: 1986, toYear: 1994 }]);
     await insertBobAllen(t, sportId, [{ teamId: padres, fromYear: 1930, toYear: 1937 }]);
 
-    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
-      selectorOptionId: variantTypeId,
-      createdByUserId: ADMIN_IDENTITY.subject,
-      sportId,
-      playerNames: ["Bob Allen"],
-      teamNames: [],
-    });
-    const row = await t.run(async (ctx) =>
-      ctx.db
-        .query("entityReviewQueue")
-        .withIndex("by_selector_option_and_batch", (q) =>
-          q.eq("selectorOptionId", variantTypeId).eq("batchId", batchId),
-        )
-        .first(),
+    const candidates = await t.run(async (ctx) =>
+      buildExistingPlayerCandidates(ctx, "Bob Allen", sportId, {}),
     );
-    const candidates = row!.enrichment!.existingCandidates ?? [];
     expect(candidates).toHaveLength(2);
     expect(candidates.every((c) => c.activeInSetYear === undefined)).toBe(true);
   });
@@ -734,7 +657,7 @@ describe("NEO-254: two Griffeys, one alias, and the card's year", () => {
 
   test("a 1989 card with NO team goes to review, with the son flagged active", async () => {
     const t = convexTest(schema, modules);
-    const { sportId, variantTypeId } = await seedSetOfYear(t, "1989");
+    const { sportId } = await seedSetOfYear(t, "1989");
     const { father, son } = await seedGriffeys(t, sportId);
 
     // Neither wins: both were on a roster that year.
@@ -743,24 +666,10 @@ describe("NEO-254: two Griffeys, one alias, and the card's year", () => {
         .playerId,
     ).toBeUndefined();
 
-    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
-      selectorOptionId: variantTypeId,
-      createdByUserId: ADMIN_IDENTITY.subject,
-      sportId,
-      playerNames: ["Ken Griffey"],
-      teamNames: [],
-    });
-    const row = await t.run(async (ctx) =>
-      ctx.db
-        .query("entityReviewQueue")
-        .withIndex("by_selector_option_and_batch", (q) =>
-          q.eq("selectorOptionId", variantTypeId).eq("batchId", batchId),
-        )
-        .first(),
+    const candidates = await t.run(async (ctx) =>
+      buildExistingPlayerCandidates(ctx, "Ken Griffey", sportId, { cardYear: 1989 }),
     );
-    const byId = new Map(
-      (row!.enrichment!.existingCandidates ?? []).map((c) => [c.playerId, c]),
-    );
+    const byId = new Map(candidates.map((c) => [c.playerId, c]));
     expect(byId.size).toBe(2);
     expect(byId.get(son)!.activeInSetYear).toBe(true);
     expect(byId.get(father)!.activeInSetYear).toBe(true);
@@ -1533,26 +1442,16 @@ describe("NEO-424: the commit prelude applies the Hall of Fame tie-break to a na
     expect(await t.run(async (ctx) => ctx.db.query("players").collect())).toHaveLength(2);
   });
 
-  test("an operator's link to the other man beats the Hall of Fame tie-break", async () => {
+  test("a gate link to the other man beats the Hall of Fame tie-break", async () => {
     const t = convexTest(schema, modules);
     const ids = await seedSetOfYear(t, "2024");
     await insertFamer(t, ids.sportId, true);
-    const operatorsPick = await insertFamer(t, ids.sportId, false);
-    await t.run(async (ctx) =>
-      insertAsTidyName(ctx, {
-        selectorOptionId: ids.variantTypeId,
-        batchId: "batch-hof",
-        createdByUserId: ADMIN_IDENTITY.subject,
-        kind: "player" as const,
-        name: "Bob Allen",
-        sportId: ids.sportId,
-        status: "ready" as const,
-        decision: { action: "link" as const, linkedPlayerId: operatorsPick },
-      }),
-    );
+    const linkedByGate = await insertFamer(t, ids.sportId, false);
 
-    const cards = await commit(t, ids, [makeCard({ players: ["Bob Allen"] })], "batch-hof");
-    expect(cards[0].playerIds).toEqual([operatorsPick]);
+    const cards = await commit(t, ids, [makeCard({ players: ["Bob Allen"] })], [
+      { kind: "player", name: "Bob Allen", playerId: linkedByGate, origin: "setHistory" },
+    ]);
+    expect(cards[0].playerIds).toEqual([linkedByGate]);
   });
 
   test("two Hall of Famers leave the card unlinked", async () => {
