@@ -101,7 +101,17 @@ vi.mock("./tiles/CardNameTile", async () => {
       realCardName ? <actual.default {...props} /> : <div data-testid="tile-card-name" />,
   };
 });
-vi.mock("./tiles/CareerTile", () => ({ default: () => <div data-testid="tile-career" /> }));
+// NEO-657: a tile's before-save hook, when a test sets one (the open "+ Add stint" form's).
+let careerBeforeSave: (() => Promise<boolean>) | null = null;
+vi.mock("./tiles/CareerTile", async () => {
+  const { useBeforeSave } = await import("./before-save");
+  return {
+    default: function CareerTile() {
+      useBeforeSave(careerBeforeSave !== null, () => careerBeforeSave!());
+      return <div data-testid="tile-career" />;
+    },
+  };
+});
 vi.mock("./tiles/TeamTile", async () => {
   const { useAnswered } = await import("./answered");
   return {
@@ -232,6 +242,7 @@ beforeEach(() => {
   realCardName = false;
   updateCard.mockReset();
   teamCallsAnswered = true;
+  careerBeforeSave = null;
 });
 
 describe("the fixtures", () => {
@@ -363,6 +374,33 @@ describe("the footer", () => {
     fireEvent.click(button("Save & next (Enter)"));
     await waitFor(() => expect(url()).toBe("?tidy=b"));
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("NEO-657: Save & next runs a tile's before-save hook first, and marks the card reviewed after it", async () => {
+    const order: string[] = [];
+    careerBeforeSave = vi.fn(async () => {
+      order.push("hook");
+      return true;
+    });
+    markReviewed.mockImplementation(async () => {
+      order.push("markReviewed");
+      return { keys: [] };
+    });
+    mount([blue("a", "1"), pink("b", "2")]);
+    await screen.findByTestId("tile-team");
+    fireEvent.click(button("Save & next (Enter)"));
+    await waitFor(() => expect(url()).toBe("?tidy=b"));
+    expect(order).toEqual(["hook", "markReviewed"]);
+  });
+
+  it("NEO-657: a before-save hook that reports false holds the card, with the save-failed line, and writes nothing", async () => {
+    careerBeforeSave = vi.fn(async () => false);
+    mount([blue("a", "1"), pink("b", "2")]);
+    await screen.findByTestId("tile-team");
+    fireEvent.click(button("Save & next (Enter)"));
+    expect((await screen.findByRole("alert")).textContent).toBe("Didn't save, try again");
+    expect(markReviewed).not.toHaveBeenCalled();
+    expect(url()).toBe("?tidy=a");
   });
 
   it("Back steps to the card before, as it is now", async () => {

@@ -5,7 +5,8 @@
  * "Keep as is" writes nothing to the player: it is stored on the card at once
  * (`tidyCards.keepCareerGap`), so Save & next leaves the career alone.
  */
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../../convex/_generated/api", () => ({
@@ -39,14 +40,56 @@ vi.mock("convex/react", () => ({
   useConvex: () => ({ query: mockConvexQuery }),
 }));
 
-/** The entry form owns its own tests; here it is one button that adds a known team. */
+/**
+ * The entry form owns its own tests; here it is one button that adds a known
+ * team, plus what the prefilled form hands it (`load`, `onDraftChange`).
+ */
 vi.mock("../../CareerTeamEntry", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../CareerTeamEntry")>()),
-  default: ({ onAdd }: { onAdd: (e: { name: string; fromYear: number; teamId: string }) => void }) => (
-    <button type="button" onClick={() => onAdd({ name: "Texas Rangers", fromYear: 2020, teamId: "team-tex" })}>
-      Entry form stub
-    </button>
-  ),
+  default: function EntryStub({
+    onAdd,
+    onDone,
+    load,
+    onDraftChange,
+  }: {
+    onAdd: (e: { name: string; fromYear: number; teamId: string }) => void;
+    onDone?: () => void;
+    load?: { name: string; teamId?: string; fromYear: number; toYear?: number };
+    onDraftChange?: (d: { name: string; fromYear: number; toYear?: number; teamId: string } | null) => void;
+  }) {
+    useEffect(() => {
+      if (load && load.teamId) {
+        onDraftChange?.({
+          name: load.name,
+          fromYear: load.fromYear,
+          ...(load.toYear !== undefined ? { toYear: load.toYear } : {}),
+          teamId: load.teamId,
+        });
+      }
+      return () => onDraftChange?.(null);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+    return (
+      <div>
+        {load && <p>{`Prefilled ${load.name} ${load.fromYear}-${load.toYear ?? ""}`}</p>}
+        <button type="button" onClick={() => onAdd({ name: "Texas Rangers", fromYear: 2020, teamId: "team-tex" })}>
+          Entry form stub
+        </button>
+        <button
+          type="button"
+          onClick={() => onDraftChange?.({ name: "San Diego Padres", fromYear: 2023, toYear: 2024, teamId: "team-pad" })}
+        >
+          Edit the years stub
+        </button>
+        <button type="button" onClick={() => onDraftChange?.(null)}>
+          Clear the form stub
+        </button>
+        <button type="button" onClick={() => onDone?.()}>
+          Close stub
+        </button>
+      </div>
+    );
+  },
 }));
 
 vi.mock("../../NewTeamForm", async (importOriginal) => ({
@@ -59,6 +102,7 @@ vi.mock("../../NewTeamForm", async (importOriginal) => ({
 }));
 
 import { AnsweredProvider } from "../answered";
+import { BeforeSaveProvider, createBeforeSaveRegistry } from "../before-save";
 import CareerTile from "./CareerTile";
 import type { TidyAttention, TidyCardContext, TidyRow, TidyTileProps } from "../tile-types";
 
@@ -360,6 +404,196 @@ describe("CareerTile", () => {
       await click(screen.getByRole("button", { name: "+ New team San Antonio Missions" }));
       await click(screen.getByRole("button", { name: "Submit new team form" }));
       expect(mutation("teams.findOrCreate").mock.calls[0][0]).not.toHaveProperty("enrichment");
+    });
+
+    describe("the card's team, as a stint for the card's year (NEO-657)", () => {
+      const renderWithSave = (ctx: TidyCardContext) => {
+        const { registry, run } = createBeforeSaveRegistry();
+        const props: TidyTileProps = {
+          row: card(),
+          context: ctx,
+          attention: { level: "check", items: [newItem] },
+          leafId: "leaf-1" as never,
+          sportId: SPORT as never,
+          leafCards: [],
+          setName: "Set",
+        };
+        render(
+          <BeforeSaveProvider value={registry}>
+            <CareerTile {...props} />
+          </BeforeSaveProvider>,
+        );
+        return run;
+      };
+
+      it("opens '+ Add stint' already holding the card's team and the year as both From and To", () => {
+        renderTile([newItem], context({ names: [wikidataName({})] }));
+        expect(screen.getByText("Prefilled San Diego Padres 2024-2024")).toBeTruthy();
+        expect(screen.queryByRole("button", { name: "+ Add stint for Jackson Merrill" })).toBeNull();
+      });
+
+      it("a stint for that team that already counts for the year leaves the form closed", () => {
+        renderTile(
+          [newItem],
+          context({
+            names: [wikidataName({})],
+            players: [player({ stints: [{ teamId: "team-pad", teamName: "San Diego Padres", fromYear: 2020, toYear: 2021 }] })],
+          }),
+        );
+        expect(screen.queryByText(/Prefilled/)).toBeNull();
+        expect(screen.getByRole("button", { name: "+ Add stint for Jackson Merrill" })).toBeTruthy();
+      });
+
+      it("a stint for that team that starts after the year does not count", () => {
+        renderTile(
+          [newItem],
+          context({
+            players: [player({ stints: [{ teamId: "team-pad", teamName: "San Diego Padres", fromYear: 2025 }] })],
+          }),
+        );
+        expect(screen.getByText("Prefilled San Diego Padres 2024-2024")).toBeTruthy();
+      });
+
+      it.each([
+        ["no team on the card", { teams: [] }],
+        [
+          "two teams on the card",
+          {
+            teams: [
+              { teamId: "team-pad", name: "San Diego Padres", onCard: true, candidate: false },
+              { teamId: "team-tex", name: "Texas Rangers", onCard: true, candidate: false },
+            ],
+          },
+        ],
+        [
+          "a team only a name row offered",
+          { teams: [{ teamId: "team-pad", name: "San Diego Padres", onCard: false, candidate: true }] },
+        ],
+      ])("%s: nothing is prefilled", (_label, over) => {
+        renderTile([newItem], context(over));
+        expect(screen.queryByText(/Prefilled/)).toBeNull();
+        expect(screen.getByRole("button", { name: "+ Add stint for Jackson Merrill" })).toBeTruthy();
+      });
+
+      it("a set with no year: nothing is prefilled", () => {
+        queryResults["selectorOptions.getAncestorChain"] = [{ _id: "y", level: "year", value: "Unknown" }];
+        renderTile([newItem], context());
+        expect(screen.queryByText(/Prefilled/)).toBeNull();
+      });
+
+      it("the team arriving later (answered on the Team tile) opens the form then", () => {
+        const { rerender } = renderTile([newItem], context({ teams: [] }));
+        expect(screen.queryByText(/Prefilled/)).toBeNull();
+        const props: TidyTileProps = {
+          row: card(),
+          context: context(),
+          attention: { level: "check", items: [newItem] },
+          leafId: "leaf-1" as never,
+          sportId: SPORT as never,
+          leafCards: [],
+          setName: "Set",
+        };
+        rerender(<CareerTile {...props} />);
+        expect(screen.getByText("Prefilled San Diego Padres 2024-2024")).toBeTruthy();
+      });
+
+      it("Save & next with the form still open adds the stint as it shows, years the operator changed included", async () => {
+        const run = renderWithSave(context());
+        await click(screen.getByRole("button", { name: "Edit the years stub" }));
+        let ok = false;
+        await act(async () => {
+          ok = await run();
+        });
+        expect(ok).toBe(true);
+        expect(mutation("players.addStint")).toHaveBeenCalledTimes(1);
+        expect(mutation("players.addStint")).toHaveBeenCalledWith({
+          playerId: "player-1",
+          teamId: "team-pad",
+          fromYear: 2023,
+          toYear: 2024,
+          cardId: CARD,
+        });
+      });
+
+      it("Save & next holds the card when the stint will not write", async () => {
+        mutation("players.addStint").mockRejectedValueOnce(new Error("Server Error"));
+        const run = renderWithSave(context());
+        let ok = true;
+        await act(async () => {
+          ok = await run();
+        });
+        expect(ok).toBe(false);
+      });
+
+      it("closing the form writes nothing, on Save & next or ever", async () => {
+        const run = renderWithSave(context());
+        await click(screen.getByRole("button", { name: "Close stub" }));
+        expect(screen.getByRole("button", { name: "+ Add stint for Jackson Merrill" })).toBeTruthy();
+        await act(async () => {
+          await run();
+        });
+        expect(mutation("players.addStint")).not.toHaveBeenCalled();
+      });
+
+      it("a form opened by hand after closing it is not added by Save & next", async () => {
+        const run = renderWithSave(context());
+        await click(screen.getByRole("button", { name: "Close stub" }));
+        await click(screen.getByRole("button", { name: "+ Add stint for Jackson Merrill" }));
+        expect(screen.queryByText(/Prefilled/)).toBeNull();
+        await act(async () => {
+          await run();
+        });
+        expect(mutation("players.addStint")).not.toHaveBeenCalled();
+      });
+
+      it("a stint for that team that ended before the year still counts (the career-gap rule ignores the end year), so the form stays closed", () => {
+        renderTile(
+          [newItem],
+          context({
+            players: [player({ stints: [{ teamId: "team-pad", teamName: "San Diego Padres", fromYear: 2018, toYear: 2020 }] })],
+          }),
+        );
+        expect(screen.queryByText(/Prefilled/)).toBeNull();
+      });
+
+      it("a stint for a different team does not block the prefill, even one spanning the year", () => {
+        renderTile(
+          [newItem],
+          context({
+            players: [player({ stints: [{ teamId: "team-tex", teamName: "Texas Rangers", fromYear: 2020, toYear: 2026 }] })],
+          }),
+        );
+        expect(screen.getByText("Prefilled San Diego Padres 2024-2024")).toBeTruthy();
+      });
+
+      it("a player with no new-player item (an existing player's gap) gets no prefilled form", () => {
+        renderTile([gapItem], context({ players: [player({ stints: [] })] }));
+        expect(screen.queryByText(/Prefilled/)).toBeNull();
+      });
+
+      it("Save & next after the form became unaddable adds nothing and lets the card move on", async () => {
+        const run = renderWithSave(context());
+        await click(screen.getByRole("button", { name: "Clear the form stub" }));
+        let ok = false;
+        await act(async () => {
+          ok = await run();
+        });
+        expect(ok).toBe(true);
+        expect(mutation("players.addStint")).not.toHaveBeenCalled();
+      });
+
+      it("'+ Add' writes the stint now and the form closes", async () => {
+        renderTile([newItem], context());
+        await click(screen.getByRole("button", { name: "Entry form stub" }));
+        expect(mutation("players.addStint")).toHaveBeenCalledTimes(1);
+        expect(screen.queryByText(/Prefilled/)).toBeNull();
+        // NEO-657: one instance, so focus lands on the button the form closed into.
+        await waitFor(() =>
+          expect(document.activeElement).toBe(
+            screen.getByRole("button", { name: "+ Add stint for Jackson Merrill" }),
+          ),
+        );
+      });
     });
 
     describe("the lookup for a team NB lacks (NEO-645)", () => {

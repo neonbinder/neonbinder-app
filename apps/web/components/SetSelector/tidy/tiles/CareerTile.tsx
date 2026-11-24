@@ -61,6 +61,7 @@ export default function CareerTile({ row, context, attention, leafId }: TidyTile
           context={context}
           playerId={item.playerId}
           leafId={leafId}
+          setYear={setYear}
           write={write}
         />
       ))}
