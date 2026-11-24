@@ -40,7 +40,6 @@ import {
   playerRow,
   product,
   seedGateWorld,
-  skipRow,
   teamRow,
 } from "../lib/testing/neo592-gate-fixture";
 
@@ -286,44 +285,6 @@ describe("teams.findManyByNameAndSport answers exactly what findByNameAndSport a
 describe("reviewGatePrelude", () => {
   const prelude = (t: T, selectorOptionId: Sel, sportId: Sel) =>
     t.query(internal.selectorOptions.reviewGatePrelude, { selectorOptionId, sportId });
-
-  test("skip keys are this set's own: both kinds, none from another set", async () => {
-    const t = newT();
-    const w = await seedGateWorld(t);
-    const out = await prelude(t, w.selectorOptionId, w.sportId);
-    expect([...(out.skippedKeys ?? [])].sort()).toEqual(
-      [
-        `player:${normalizePlayerName("Skipped Person")}`,
-        `team:${normalizeTeamName("Skipped Team")}`,
-        `player:${normalizePlayerName("Dual Name")}`,
-      ].sort(),
-    );
-    const otherSet = await prelude(t, w.ids.other.insert, w.sportId);
-    expect(otherSet.skippedKeys).toEqual([`player:${normalizePlayerName("Other Set Skip")}`]);
-  });
-
-  test("a set with exactly 300 skip rows lists them all; 301 is null (the prefix read is incomplete)", async () => {
-    const t = newT();
-    const sportId = await node(t, { level: "sport", value: "Baseball" });
-    const p = await product(t, sportId, { year: "2024" });
-    for (let i = 0; i < 300; i++) await skipRow(t, p.insert, "player", `Skip Person ${i}`);
-    const at300 = await prelude(t, p.insert, sportId);
-    expect(at300.skippedKeys).toHaveLength(300);
-    await skipRow(t, p.insert, "team", "One Over");
-    expect((await prelude(t, p.insert, sportId)).skippedKeys).toBeNull();
-  });
-
-  test("the skip rows are one index read whatever the candidate count", async () => {
-    const t = newT();
-    const sportId = await node(t, { level: "sport", value: "Baseball" });
-    const p = await product(t, sportId, { year: "2024" });
-    for (let i = 0; i < 40; i++) await skipRow(t, p.insert, "player", `Skip Person ${i}`);
-    const { out, probe } = await probed(t, (ctx) =>
-      (reviewGatePrelude as any)._handler(ctx, { selectorOptionId: p.insert, sportId }),
-    );
-    expect(out.skippedKeys).toHaveLength(40);
-    expect(probe.stats.byTable.entityReviewSkips).toBe(1);
-  });
 
   test("pending names: home plus guest cards, in compareCardNumbers order, equal to getCardChecklist's", async () => {
     const t = newT();

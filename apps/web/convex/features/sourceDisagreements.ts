@@ -151,42 +151,15 @@ export function assertDisagreementsFit(
   }
 }
 
-/** The names a card holds for `field`: the chosen value, or nothing while unsettled. */
+/**
+ * The names a card holds for `field`: nothing while a disagreement stands.
+ * `held` says whether the field is in dispute at all.
+ */
 export function namesHeld(
   entries: ReadonlyArray<DisagreementEntry>,
   field: DisagreementField,
 ): { held: boolean; names: string[] } {
   const entry = entries.find((e) => e.field === field);
   if (!entry) return { held: false, names: [] };
-  return { held: true, names: entry.chosen ? entry.chosen.value : [] };
-}
-
-/**
- * NEO-645 (schema doc 4) — the names the review gate writes NO `tidyNames` row
- * for: a name that sits only on the sides of a disagreement nobody has
- * settled. Every stored disagreement is unsettled at the commit (NB never picks
- * a side), so every side of one is unsettled. Nothing is looked up for a side
- * that may never be used; when the operator picks a side, the walk creates the
- * row then (`ensureTidyNameRow`).
- *
- * A name that is ALSO printed somewhere settled (a card with no disagreement
- * for that field) keeps its row. `heldElsewhere` are the normalised names the
- * caller found on settled places. Pure: normalised keys in, normalised keys out.
- */
-export function namesOnlyOnUnsettledSides(input: {
-  entries: ReadonlyArray<Pick<DisagreementEntry, "field" | "values">>;
-  heldElsewhere: { players: ReadonlySet<string>; teams: ReadonlySet<string> };
-}): { players: Set<string>; teams: Set<string> } {
-  const sides = { players: new Set<string>(), teams: new Set<string>() };
-  for (const entry of input.entries) {
-    for (const value of entry.values) {
-      for (const name of value.value) {
-        sides[entry.field].add(normalizeEntityName(name));
-      }
-    }
-  }
-  for (const field of ["players", "teams"] as const) {
-    for (const key of input.heldElsewhere[field]) sides[field].delete(key);
-  }
-  return sides;
+  return { held: true, names: [] };
 }

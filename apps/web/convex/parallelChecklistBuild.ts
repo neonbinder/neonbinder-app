@@ -136,7 +136,6 @@ import {
   teamDefaultOf,
 } from "./lib/selectorTeams";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS, blocksParallelBuild } from "./features/cardAttention";
-import { listCardPrintedNames } from "./cardPrintedNames";
 import {
   cardKey,
   linkCardsToSide,
@@ -870,25 +869,13 @@ async function reviewStagedOn(
       q.eq("selectorOptionId", selectorOptionId),
     )
     .first();
-  if (candidate) return true;
-  const queued = await ctx.db
-    .query("entityReviewQueue")
-    .withIndex("by_selector_option", (q) =>
-      q.eq("selectorOptionId", selectorOptionId),
-    )
-    .first();
-  return queued !== null;
-}
-
-/** The last sign of life of a review row — see `sweepAbandonedBatches`. */
-function reviewRowLastActive(row: Doc<"entityReviewQueue">): number {
-  return Math.max(row._creationTime, row.lastTouchedAt ?? 0);
+  return candidate !== null;
 }
 
 /**
- * The list's cheap early warning: the first staged row of each kind, judged
- * for freshness. Approximate on purpose (one read each); the build scans every
- * row before it clears anything.
+ * The list's cheap early warning: the first staged row, judged for freshness.
+ * Approximate on purpose (one read); the build scans every row before it
+ * clears anything.
  */
 async function reviewLooksLive(
   ctx: { db: QueryCtx["db"] },
@@ -901,14 +888,7 @@ async function reviewLooksLive(
       q.eq("selectorOptionId", selectorOptionId),
     )
     .first();
-  if (candidate && candidate._creationTime >= cutoff) return true;
-  const queued = await ctx.db
-    .query("entityReviewQueue")
-    .withIndex("by_selector_option", (q) =>
-      q.eq("selectorOptionId", selectorOptionId),
-    )
-    .first();
-  return queued !== null && reviewRowLastActive(queued) >= cutoff;
+  return candidate !== null && candidate._creationTime >= cutoff;
 }
 
 function hasScans(card: Doc<"cardChecklist">): boolean {
@@ -1475,13 +1455,12 @@ export const loadParallelCardsForLink = internalQuery({
 /**
  * One page of the parallel's staged review state, for the build's freshness
  * scan: how many rows, and the newest sign of life among them. Reads only;
- * the clear runs after EVERY page of both tables has been judged, so a live
- * session is never half-deleted.
+ * the clear runs after EVERY page has been judged, so a live session is never
+ * half-deleted.
  */
 export const scanParallelReviewPage = internalQuery({
   args: {
     parallelId: v.id("selectorOptions"),
-    table: v.union(v.literal("candidates"), v.literal("entityReview")),
     cursor: v.union(v.string(), v.null()),
   },
   returns: v.object({
@@ -1491,30 +1470,15 @@ export const scanParallelReviewPage = internalQuery({
     continueCursor: v.string(),
   }),
   handler: async (ctx, args) => {
-    const opts = { numItems: REVIEW_SCAN_PAGE, cursor: args.cursor };
-    if (args.table === "candidates") {
-      const page = await ctx.db
-        .query("checklistCandidates")
-        .withIndex("by_selector_option_and_user", (q) =>
-          q.eq("selectorOptionId", args.parallelId),
-        )
-        .paginate(opts);
-      return {
-        rows: page.page.length,
-        lastActiveAt: Math.max(0, ...page.page.map((r) => r._creationTime)),
-        isDone: page.isDone,
-        continueCursor: page.continueCursor,
-      };
-    }
     const page = await ctx.db
-      .query("entityReviewQueue")
-      .withIndex("by_selector_option", (q) =>
+      .query("checklistCandidates")
+      .withIndex("by_selector_option_and_user", (q) =>
         q.eq("selectorOptionId", args.parallelId),
       )
-      .paginate(opts);
+      .paginate({ numItems: REVIEW_SCAN_PAGE, cursor: args.cursor });
     return {
       rows: page.page.length,
-      lastActiveAt: Math.max(0, ...page.page.map(reviewRowLastActive)),
+      lastActiveAt: Math.max(0, ...page.page.map((r) => r._creationTime)),
       isDone: page.isDone,
       continueCursor: page.continueCursor,
     };
@@ -1522,10 +1486,9 @@ export const scanParallelReviewPage = internalQuery({
 });
 
 /**
- * Delete one page of the parallel's STALE review state: `checklistCandidates`
- * first, then `entityReviewQueue`. Both are transient wizard/dialog state
- * (a Cancel deletes exactly these rows); no player, team, league, card or
- * `entityReviewSkips` ruling is touched.
+ * Delete one page of the parallel's STALE review state: `checklistCandidates`.
+ * It is transient dialog state (a Cancel deletes exactly these rows); no
+ * player, team, league or card is touched.
  *
  * A row fresher than `cutoff` stops the page before anything in it is
  * deleted and answers `live` — a session started since the scan.
@@ -1534,7 +1497,6 @@ export const clearParallelReviewPage = internalMutation({
   args: { parallelId: v.id("selectorOptions"), cutoff: v.number() },
   returns: v.object({
     candidates: v.number(),
-    reviewRows: v.number(),
     done: v.boolean(),
     live: v.boolean(),
   }),
@@ -1546,28 +1508,12 @@ export const clearParallelReviewPage = internalMutation({
       )
       .take(REVIEW_CLEAR_PAGE);
     if (candidates.some((r) => r._creationTime >= args.cutoff)) {
-      return { candidates: 0, reviewRows: 0, done: true, live: true };
+      return { candidates: 0, done: true, live: true };
     }
     for (const row of candidates) await ctx.db.delete(row._id);
-    if (candidates.length === REVIEW_CLEAR_PAGE) {
-      return { candidates: candidates.length, reviewRows: 0, done: false, live: false };
-    }
-    const budget = REVIEW_CLEAR_PAGE - candidates.length;
-    const rows = await ctx.db
-      .query("entityReviewQueue")
-      .withIndex("by_selector_option", (q) =>
-        q.eq("selectorOptionId", args.parallelId),
-      )
-      .take(budget + 1);
-    const page = rows.slice(0, budget);
-    if (page.some((r) => reviewRowLastActive(r) >= args.cutoff)) {
-      return { candidates: candidates.length, reviewRows: 0, done: true, live: true };
-    }
-    for (const row of page) await ctx.db.delete(row._id);
     return {
       candidates: candidates.length,
-      reviewRows: page.length,
-      done: rows.length <= budget,
+      done: candidates.length < REVIEW_CLEAR_PAGE,
       live: false,
     };
   },
@@ -2043,21 +1989,9 @@ export const insertParallelCardsPage = internalMutation({
           ? stampNoTeam(parallelNoTeam.setByUserId, Date.now())
           : undefined;
 
-      // NEO-645 — the copy prints what its source prints, so the source's
-      // printed-name rows carry over with their `scopeId` (the SOURCE leaf's:
-      // the answer a name was given there), spelling, order and override. The
-      // review state (`tidyChecks`, `tidyReviewed`, `sourceDisagreements`,
-      // `sourceNumbers`) does NOT travel: it is the source card's own.
-      const sourcePrinted = await listCardPrintedNames(ctx, source._id);
+      // NEO-645 — the review state (`sourceDisagreements`, `sourceNumbers`)
+      // does NOT travel: it is the source card's own.
       const card: NewCardRow = {
-        printedNames: sourcePrinted.map((row) => ({
-          kind: row.kind,
-          scopeId: row.scopeId,
-          nameNormalized: row.nameNormalized,
-          printed: row.printed,
-          order: row.order,
-          ...(row.cardOverride ? { cardOverride: true as const } : {}),
-        })),
         selectorOptionId: args.parallelId,
         cardNumber: source.cardNumber,
         cardName: source.cardName,
@@ -2171,8 +2105,7 @@ export const insertParallelCardsPage = internalMutation({
         (copy.keepSku ? 1 : 2) +
         (born.playerIds?.length ?? 0) +
         (teamOnCardIds?.length ?? 0) +
-        born.cameos.length +
-        sourcePrinted.length;
+        born.cameos.length;
       newIdOf.set(source._id, newId);
       created.push({ from: source._id, to: newId });
       if (
@@ -2985,40 +2918,36 @@ export const buildParallelChecklist = action({
 async function clearStaleReviewState(
   ctx: Pick<ActionCtx, "runQuery" | "runMutation">,
   parallelId: Id<"selectorOptions">,
-): Promise<{ live: boolean; candidates: number; reviewRows: number }> {
+): Promise<{ live: boolean; candidates: number }> {
   const cutoff = Date.now() - REVIEW_ACTIVE_WINDOW_MS;
   let staged = 0;
-  for (const table of ["candidates", "entityReview"] as const) {
-    let cursor: string | null = null;
-    for (;;) {
-      const page: {
-        rows: number;
-        lastActiveAt: number;
-        isDone: boolean;
-        continueCursor: string;
-      } = await ctx.runQuery(
-        internal.parallelChecklistBuild.scanParallelReviewPage,
-        { parallelId, table, cursor },
-      );
-      if (page.lastActiveAt >= cutoff) {
-        return { live: true, candidates: 0, reviewRows: 0 };
-      }
-      staged += page.rows;
-      if (page.isDone) break;
-      cursor = page.continueCursor;
+  let cursor: string | null = null;
+  for (;;) {
+    const page: {
+      rows: number;
+      lastActiveAt: number;
+      isDone: boolean;
+      continueCursor: string;
+    } = await ctx.runQuery(
+      internal.parallelChecklistBuild.scanParallelReviewPage,
+      { parallelId, cursor },
+    );
+    if (page.lastActiveAt >= cutoff) {
+      return { live: true, candidates: 0 };
     }
+    staged += page.rows;
+    if (page.isDone) break;
+    cursor = page.continueCursor;
   }
-  if (staged === 0) return { live: false, candidates: 0, reviewRows: 0 };
+  if (staged === 0) return { live: false, candidates: 0 };
 
   let candidates = 0;
-  let reviewRows = 0;
   for (;;) {
     const page = await ctx.runMutation(
       internal.parallelChecklistBuild.clearParallelReviewPage,
       { parallelId, cutoff },
     );
     candidates += page.candidates;
-    reviewRows += page.reviewRows;
     if (page.live || page.done) {
       // Ids and counts only.
       console.log(
@@ -3026,11 +2955,10 @@ async function clearStaleReviewState(
           msg: "parallel_review_state_cleared",
           parallelId,
           candidates,
-          reviewRows,
           stoppedOnLiveSession: page.live,
         }),
       );
-      return { live: page.live, candidates, reviewRows };
+      return { live: page.live, candidates };
     }
   }
 }
