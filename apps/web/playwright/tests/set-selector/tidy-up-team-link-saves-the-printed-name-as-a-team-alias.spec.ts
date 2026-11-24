@@ -1,14 +1,20 @@
 // ONE FEATURE (NEO-284 on the NEO-645 Tidy Up walk): linking a card's printed team name to a
 // team NeonBinder already holds, through the Team tile's "Link to existing team" search with
-// "Remember “<printed>” as a name for this team" on (its default), answers the name for every
-// card in the checklist that prints it and saves the printed spelling as one of that team's
-// aliases; Team Management lists it. The same row's inline New team refuses a name another team
-// already answers to as an alias while their years may overlap, offering "Link to <holder>"
-// (NEO-307 / NEO-602, the era rule): dated clear of the holder, the create is offered again.
+// "Remember “<printed>” as a name for this team" on (its default), saves the printed spelling as
+// one of that team's aliases (team data); Team Management lists it, once. The same row's inline
+// New team refuses a name another team already answers to as an alias while their years may
+// overlap, offering "Link to <holder>" (NEO-307 / NEO-602, the era rule): dated clear of the
+// holder, the create is offered again.
 //
-// Renamed from checklist-wizard-link-team-saves-alias (NEO-645): the entity-review wizard it
-// walked is gone. Its NEO-574 "Career check" rides moved to the Career tile's specs (the walk
-// asks career questions per card, on the Career tile).
+// NEO-656 (the card is the only record): the link answers THE OPEN CARD only. The printed name
+// stops being a row: the card's team is the tile's own line (`Team <team>` with `Edit <team>`),
+// with no "Linked for you" note (J1). The next card printing the club still asks (pink), and
+// "Apply to all cards printing “<club>”" reaches the cards still waiting on it ("Linked N more
+// cards."); the card after that shows the team with nothing to answer.
+//
+// Renamed from tidy-up-team-link-remembers-the-name (NEO-656: nothing about an answer is
+// remembered now; what is kept is the alias, which is the team's own data). Before that,
+// checklist-wizard-link-team-saves-alias (NEO-645).
 //
 // Sole writer of the 1996 New Haven Ravens Rally Raffle set (BSC only, filed under the year's
 // Unknown row and reached through the All Brands view; SET-REGISTRY.md); fresh-only: it mints
@@ -16,13 +22,17 @@
 // walk opens). Re-seed before re-running. The checklist names ONE club the catalogue lacks
 // ("New Haven Ravens", the row under test; its lookup is a recorded no-match, so the New team
 // form opens on the whole name) and two unknown players, left unanswered (Skip and Save for
-// later write nothing). The raffle card's row says "No Team" (NEO-489), so it asks nothing.
+// later write nothing; never Save & next here: a linked catalogue player's career gap would get
+// a stint). The raffle card's row says "No Team" (NEO-489), so it asks nothing. Walk order is
+// the card number: #12 (unknown player) then #13 (a catalogue player); the club is printed on
+// all eight numbered cards, so after #13's link six more wait on it.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { CHECKLISTS } from "../../support/published-checklist";
 import { expectPlayersLoaded, expectTeamsLoaded, teamsCounter } from "../../support/players";
 import { recordedNoMatchPlayer } from "../../support/recorded-names";
 import { escapeRe } from "../../support/set-builder";
 import {
+  applyNameToAll,
   expectCardSettled,
   expectTidyWalkOpen,
   fetchOneMarketplaceSetChecklistToTidyWalk,
@@ -52,7 +62,7 @@ async function openTeams(page: Page, query: string) {
 }
 
 test(
-  "Tidy Up — linking a card's printed team to an existing team remembers the printed spelling as one of that team's names",
+  "Tidy Up — linking a card's printed team to an existing team saves the printed spelling as that team's alias; the link is that card's, Apply to all reaches the rest",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     const T = env.ATTEMPT_TOKEN;
@@ -117,14 +127,17 @@ test(
     const teamRow = tidyTile(page, "Team").getByRole("group", { name: `Team ${ROW}`, exact: true });
     const NOT_A_TEAM = /^Not a team( .+)?$/;
     const notATeam = teamRow.getByRole("button", { name: NOT_A_TEAM });
-    // The answered row's Edit, named for the linked team (NEO-645 C1).
-    const change = teamRow.getByRole("button", { name: /^Edit (?!cameo )/ });
+    const unlinked = teamRow.getByText(`“${ROW}” isn't linked to a team yet.`, { exact: true });
+    // Once linked, the team is the card's own line on the tile (NEO-656 B11), with its Edit.
+    const linkedLine = tidyTile(page, "Team").getByRole("group", { name: `Team ${FIXTURE_TEAM}`, exact: true });
+    const change = linkedLine.getByRole("button", { name: `Edit ${FIXTURE_TEAM}`, exact: true });
+    const linkedForYou = tidyWalk(page).getByText(/Linked for you/);
     // Eight of the nine cards print the club; Skip writes nothing, so any card before it is left as is.
     // (A `has` locator is relative to the row it filters, so it is rooted at the page.)
     await skipUntil(page, teamRow.filter({ has: page.getByRole("button", { name: NOT_A_TEAM }) }));
     // Settled: the near-match read has answered (it holds + New team and the remember default).
     await expect(teamRow.getByText("Checking for teams by that name…")).toHaveCount(0);
-    await expect(teamRow.getByText(`“${ROW}” isn't linked to a team yet.`, { exact: true })).toBeVisible();
+    await expect(unlinked).toBeVisible();
     await expect(pinkTile(page, "Team"), "an unlinked printed team is a must-fix").toHaveCount(1);
 
     const linkSection = teamRow.getByRole("group", { name: "Link to existing team" });
@@ -180,25 +193,53 @@ test(
     await tidyWalk(page)
       .getByRole("option", { name: new RegExp(`^${escapeRe(FIXTURE_TEAM)}`) })
       .click();
-    // The answer is saved at once (J1): the row reads answered, names the team and stops being pink.
+    // The answer is saved at once: the printed name stops being a row, the team is the card's
+    // line with its Edit, the tile stops being pink, and no "Linked for you" note (J1).
     await expect(change).toBeVisible();
+    await expect(linkedLine.getByText(FIXTURE_TEAM, { exact: true })).toBeVisible();
+    await expect(teamRow).toHaveCount(0);
     await expect(notATeam).toHaveCount(0);
-    await expect(teamRow.getByText(FIXTURE_TEAM, { exact: true })).toBeVisible();
     await expect(pinkTile(page, "Team")).toHaveCount(0);
     await expect(tidyTile(page, "Team")).toBeVisible();
+    await expect(linkedForYou).toHaveCount(0);
     await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk, printed team linked" });
 
-    // ── PART 6: the answer reaches the next card that prints the club; Back returns ──
+    // ── PART 6: that answer linked THIS card only; the next card printing the club still asks ──
     await skipCard(page);
     await expect(tidyCardIdentity(page)).not.toHaveText(linkedCard);
-    await expect(change, "the link answered the club on the next card too").toBeVisible();
-    await expect(notATeam).toHaveCount(0);
+    await expectCardSettled(page);
+    await expect(unlinked, "the link on the card before did not reach this one").toBeVisible();
+    await expect(pinkTile(page, "Team")).toHaveCount(1);
+    await expect(change).toHaveCount(0);
+
+    // Link it here too (the alias is already on the team: saving it again adds no second one,
+    // PART 7), then Apply to all reaches the six other cards still waiting on the club.
+    const appliedCard = await tidyCardIdentity(page).allTextContents();
+    await expect(teamRow.getByText("Checking for teams by that name…")).toHaveCount(0);
+    await expect(remember).toBeEnabled();
+    await searchAll.fill(`Ali${T}`);
+    await tidyWalk(page)
+      .getByRole("option", { name: new RegExp(`^${escapeRe(FIXTURE_TEAM)}`) })
+      .click();
+    await expect(change).toBeVisible();
+    await expect(teamRow).toHaveCount(0);
+    expect(await applyNameToAll(page, "Team", ROW)).toBe("Linked 6 more cards.");
+
+    // The card after it shows the team as its own line, with nothing to answer.
+    await skipCard(page);
+    await expect(tidyCardIdentity(page)).not.toHaveText(appliedCard);
+    await expectCardSettled(page);
+    await expect(change, "Apply to all linked the club on the next card").toBeVisible();
+    await expect(linkedLine.getByText(FIXTURE_TEAM, { exact: true })).toBeVisible();
+    await expect(teamRow).toHaveCount(0);
     await expect(pinkTile(page, "Team")).toHaveCount(0);
+    await expect(linkedForYou).toHaveCount(0);
+    // Back returns to the card Apply to all was pressed on, its team on file.
     await page.goBack();
-    await expect(tidyCardIdentity(page), "Back returned to the card the link was made on").toHaveText(linkedCard);
+    await expect(tidyCardIdentity(page), "Back returned to the card Apply to all was pressed on").toHaveText(appliedCard);
     await expectCardSettled(page);
     await expect(change).toBeVisible();
-    await expect(teamRow.getByText(FIXTURE_TEAM, { exact: true })).toBeVisible();
+    await expect(linkedLine.getByText(FIXTURE_TEAM, { exact: true })).toBeVisible();
 
     // Save for later closes the walk; every answer is already saved.
     await saveForLater(page);
@@ -208,7 +249,8 @@ test(
     await page.getByRole("button", { name: new RegExp(`Ali${T}`) }).click();
     const aka = page.getByRole("textbox", { name: "Also known as" });
     const currentAliases = page.getByRole("list", { name: "Current aliases" });
-    // Every alias: the fixture team's own `Pca<token>` (PART 1) and the remembered printed spelling.
+    // Every alias: the fixture team's own `Pca<token>` (PART 1) and the printed spelling, once
+    // though two links saved it.
     await expect(aka).toHaveValue(`Pca${T}, ${ROW}`);
     await expect(currentAliases.getByText(ROW, { exact: true })).toBeVisible();
     await expectAccessible(page, { label: "Team Management, team detail with its remembered alias" });
