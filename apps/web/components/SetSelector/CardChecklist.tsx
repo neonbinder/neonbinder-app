@@ -187,6 +187,12 @@ type FetchPreview = {
    * handed to the commit untouched. Nothing is stored between the two.
    */
   gateLinks?: GateLinks;
+  /**
+   * NEO-656 — the team names the gate left for the operator
+   * (`resolveChecklistEntities` -> `unknownTeams`), handed to the commit so
+   * the year-only shortcut never links one. Nothing is stored.
+   */
+  gateTeamNames?: string[];
   cards: Array<{
     cardNumber: string;
     cardName: string;
@@ -2145,7 +2151,7 @@ export default function CardChecklist({
     // writes the cards with those names pending. Whatever still needs a
     // person is answered in Tidy Up afterwards, card by card, so there is no
     // gate to hold the save.
-    const { batchId, gateLinks } = await resolveEntities({
+    const { batchId, gateLinks, unknownTeams } = await resolveEntities({
       selectorOptionId: variantId,
       sportId,
       cards: kept.map(({ card }) => card),
@@ -2154,6 +2160,7 @@ export default function CardChecklist({
       sportId,
       batchId,
       ...(gateLinks && gateLinks.length > 0 ? { gateLinks } : {}),
+      ...(unknownTeams.length > 0 ? { gateTeamNames: unknownTeams } : {}),
       cards: kept.map(({ card }) => card),
       decisions: kept.map(({ index }) => ({
         applyFields: review.applyFieldsByIndex[index],
@@ -2219,6 +2226,7 @@ export default function CardChecklist({
         }),
         batchId: preview.batchId,
         ...(preview.gateLinks ? { gateLinks: preview.gateLinks } : {}),
+        ...(preview.gateTeamNames ? { gateTeamNames: preview.gateTeamNames } : {}),
         ...(preview.operatorDeleteIds.length > 0
           ? { operatorDeleteIds: preview.operatorDeleteIds }
           : {}),

@@ -215,13 +215,6 @@ export async function seedGateWorld(t: T) {
   // The set's own committed card (history for D3).
   await committedCard(t, now.base, "1", { printed: [["Mike Trout", trout]] });
 
-  // ── skips ──
-  await skipRow(t, now.insert, "player", "Skipped Person");
-  await skipRow(t, now.insert, "team", "Skipped Team");
-  await skipRow(t, now.insert, "player", "Dual Name");
-  // Another set's skip: must not hide "Other Set Skip" here.
-  await skipRow(t, other.insert, "player", "Other Set Skip");
-
   // ── pending names on the set's own cards ──
   // Sorting is by card number, so the queue order is Amy (2), Guest Mid (3),
   // Tie Home (5, home first), Tie Guest (5), Zed Late (10).

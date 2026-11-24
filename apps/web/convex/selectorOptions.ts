@@ -19884,6 +19884,15 @@ export const commitCardChecklistPrelude = internalMutation({
      */
     checkedGateLinks: v.optional(v.array(checkedGateLinkValidator)),
     /**
+     * NEO-656 — the team names the gate raised for the operator
+     * (`resolveChecklistEntities` -> `unknownTeams`), undecided ones included.
+     * On origin/main each had a team review row, so it controlled its name
+     * (`gateTeamRowKeys`) whether or not it carried a decision; the gate now
+     * stores no row, so the names ride in here and take the same place. Names
+     * only, never stored.
+     */
+    gateTeamNames: v.optional(v.array(v.string())),
+    /**
      * NEO-296 — which half of the prelude this call runs. Absent runs BOTH,
      * which is what every caller did before the split and what the direct
      * callers in the test suite still do.
@@ -20359,6 +20368,7 @@ export const commitCardChecklistPrelude = internalMutation({
     for (const row of reviewRows) {
       if (row.kind === "team" && !row.source) gateTeamRowKeys.add(norm(row.name));
     }
+    for (const name of args.gateTeamNames ?? []) gateTeamRowKeys.add(norm(name));
     /**
      * NEO-602 (S1) — the team a printed name means when NOTHING needs an
      * operator: the gate's card rule (`resolveCardTeamName`), with the cards'
@@ -26218,6 +26228,13 @@ export const commitCardChecklist = action({
      * it (`checkGateLinks`). Nothing is stored. Absent: the gate made none.
      */
     gateLinks: v.optional(v.array(gateLinkValidator)),
+    /**
+     * NEO-656 — the team names the gate left to the operator
+     * (`resolveChecklistEntities` -> `unknownTeams`), handed back untouched. A
+     * name here controls itself in the prelude exactly as main's team review
+     * row did, so the year-only shortcut never links it. Absent: none.
+     */
+    gateTeamNames: v.optional(v.array(v.string())),
     // NEO-203: rows the operator explicitly chose to delete. A marketplace
     // dropping a card never deletes anything on its own — see the note on
     // `commitCardChecklistFinalize`.
@@ -26411,6 +26428,12 @@ export const commitCardChecklist = action({
       });
       checkedGateLinks.push(...checked.links);
       gateLinksDropped += checked.dropped;
+    }
+    const gateTeamNames = args.gateTeamNames ?? [];
+    if (gateTeamNames.length > GATE_LINKS_MAX) {
+      throw new ConvexError(
+        `commitCardChecklist: ${gateTeamNames.length} gate team names exceeds the ${GATE_LINKS_MAX} limit.`,
+      );
     }
     if (gateLinksDropped > 0) {
       console.log(
@@ -26910,6 +26933,7 @@ export const commitCardChecklist = action({
         }),
       ).filter((entry) => entry.cards.length > 0),
       ...(checkedGateLinks.length > 0 ? { checkedGateLinks } : {}),
+      ...(gateTeamNames.length > 0 ? { gateTeamNames } : {}),
       // NEO-335 — written by the page that opens the commit, read by all.
       ...(listingShortName ? { listingShortName } : {}),
       // NEO-345 — same page, same reason.

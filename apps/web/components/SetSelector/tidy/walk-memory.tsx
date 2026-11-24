@@ -40,7 +40,10 @@ type LookupArgs = {
     sportValue: string;
     reason: "priorYearProduct" | "onlyNamesake";
   };
+  /** A team's partial answer already held for this key (ESPN's half); the new result is laid over it. */
+  heldEnrichment?: NonNullable<LookupResult["enrichment"]>;
 };
+type AskArgs = Omit<LookupArgs, "historyPlayerIds" | "preselect" | "heldEnrichment">;
 export type LookupRunner = (args: LookupArgs) => Promise<LookupResult>;
 
 /** What a name's lookup said. `pending` is "asked, not back yet" (and "held for the facts"). */
@@ -145,7 +148,11 @@ export class WalkMemory {
   }
 
   /** Ask once per key. Held while the facts load; the caller asks again when they land. */
-  ask(args: Omit<LookupArgs, "historyPlayerIds" | "preselect">, run: LookupRunner): void {
+  ask(
+    args: AskArgs,
+    run: LookupRunner,
+    heldEnrichment?: NonNullable<LookupResult["enrichment"]>,
+  ): void {
     if (this.factsLoading()) return;
     const key = lookupKeyOf(args.cardId, args.kind, args.name, args.sportId);
     if (this.lookups.has(key)) return;
@@ -157,6 +164,7 @@ export class WalkMemory {
       ...args,
       ...(history.length > 0 ? { historyPlayerIds: [...history] } : {}),
       ...(args.kind === "player" && item?.preselect ? { preselect: item.preselect } : {}),
+      ...(args.kind === "team" && heldEnrichment ? { heldEnrichment } : {}),
     };
     let answered: Promise<LookupResult>;
     try {
@@ -173,16 +181,30 @@ export class WalkMemory {
         this.bump();
       },
       () => {
-        this.lookups.set(key, { status: "error" });
+        // A failed try never downgrades a team's partial answer already held
+        // (NEO-301): the server keeps it when the lookup says `error`, and so
+        // does this when the call itself fails.
+        this.lookups.set(
+          key,
+          heldEnrichment && args.kind === "team"
+            ? { status: "ready", enrichment: heldEnrichment }
+            : { status: "error" },
+        );
         this.bump();
       },
     );
   }
 
-  /** "Try again": forget the answer and ask once more. */
-  retry(args: Omit<LookupArgs, "historyPlayerIds" | "preselect">, run: LookupRunner): void {
-    this.lookups.delete(lookupKeyOf(args.cardId, args.kind, args.name, args.sportId));
-    this.ask(args, run);
+  /**
+   * "Try again": forget the answer and ask once more. A team's partial answer
+   * held for this key (ESPN's half) goes with the new ask, so the result is
+   * laid over it and never replaces it (`lookupTidyName`'s `heldEnrichment`).
+   */
+  retry(args: AskArgs, run: LookupRunner): void {
+    const key = lookupKeyOf(args.cardId, args.kind, args.name, args.sportId);
+    const held = args.kind === "team" ? this.lookups.get(key) : undefined;
+    this.lookups.delete(key);
+    this.ask(args, run, held?.status === "ready" ? held.enrichment : undefined);
   }
 
   // ── answers given on the open card ────────────────────────────────────────
