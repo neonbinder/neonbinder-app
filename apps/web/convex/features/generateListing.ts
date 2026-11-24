@@ -635,7 +635,12 @@ function builderDescriptionParts(inputs: ListingCardInputs): DescriptionParts {
         // ("Gold Wave" + "Gold Wave Refractors" -> "Gold Wave Refractors"),
         // so the upper level's type name sits out instead of splitting it
         // ("Gold Wave Parallel Refractors").
-        if (wordsOf(trimmed).length < wordsOf(raw).length) {
+        // Only when the words trimmed away include one the upper level says:
+        // maker and year words its text already dropped do not make the two
+        // one name ("Pro Set Rookies" + "Pro Set Gold").
+        const dropped = wordsOf(raw).slice(0, wordsOf(raw).length - wordsOf(trimmed).length);
+        const saidAbove = wordsOf(above.text ?? "").map(bareWord);
+        if (dropped.some((w) => saidAbove.includes(bareWord(w)))) {
           const upper = levels[levels.length - 1];
           if (upper && !upper.base) {
             upper.typeName = undefined;

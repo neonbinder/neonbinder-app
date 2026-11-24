@@ -143,6 +143,14 @@ describe("printRunsFromChecklistRows", () => {
     expect(player.size).toBe(0);
   });
 
+  test("a row whose number differs only in punctuation gives no number beside the run", () => {
+    const facts = checklistRowFactsForCards(
+      [mk("a", "BCP12", "Joe Montana")],
+      [r("BCP-12", "Joe Montana", 5)],
+    );
+    expect(facts.get("a")).toEqual({ printRun: 5 });
+  });
+
   test("a row without a run gives none", () => {
     expect(
       printRunsFromChecklistRows([mk("a", "1", "Joe Montana")], [r("1", "Joe Montana")]).size,

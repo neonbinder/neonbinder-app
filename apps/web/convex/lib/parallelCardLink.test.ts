@@ -577,6 +577,43 @@ describe("linkCardsToSide — a number that differs only in its prefix (NEO-616)
     expect(r.outcomes.get("lo")).toEqual({ kind: "none" });
   });
 
+  test("the prefix tier never cancels a link the number tier makes", () => {
+    // A (T88-12, name spelled loosely) links to the fetched T88-12 by its
+    // number. B (12, same player) would prefix-propose the same card: it sits
+    // out, and A keeps the link it has without B.
+    const nbCards = [
+      nb({ id: "a", cardNumber: "T88-12", cardName: "Jon Smith", namesOnCard: ["Jon Smith"] }),
+      nb({ id: "b", cardNumber: "12", ...who("John Smith") }),
+    ];
+    const parallelCards = [fetched({ ref: "p1", cardNumber: "T88-12", ...theirs("John Smith") })];
+    const r = linkCardsToSide(nbCards, parallelCards);
+    expect(r.outcomes.get("a")).toMatchObject({ kind: "linked", card: parallelCards[0], via: "number" });
+    expect(r.outcomes.get("b")).toEqual({ kind: "none" });
+    const alone = linkCardsToSide([nbCards[0]], parallelCards);
+    expect(alone.outcomes.get("a")).toMatchObject({ kind: "linked", via: "number" });
+  });
+
+  test("an ambiguous card that is as good a prefix candidate blocks the pair: a tie", () => {
+    // y (12a) is ambiguous: two fetched 12A cards fit it by its case-folded
+    // number. It is also a prefix candidate of T88-12a, as x (89B-12a) is, so
+    // x is not that card's only taker: the pair is a tie and stays unmatched.
+    const nbCards = [
+      nb({ id: "x", cardNumber: "89B-12a", ...who("John Smith") }),
+      nb({ id: "y", cardNumber: "12a", ...who("John Smith") }),
+    ];
+    const parallelCards = [
+      fetched({ ref: "p1", cardNumber: "T88-12a", ...theirs("John Smith") }),
+      fetched({ ref: "p2", cardNumber: "12A", ...theirs("John Smith") }),
+      fetched({ ref: "p3", cardNumber: "12A", ...theirs("John Smith") }),
+    ];
+    const r = linkCardsToSide(nbCards, parallelCards);
+    expect(r.outcomes.get("y")).toEqual({ kind: "ambiguous" });
+    expect(r.outcomes.get("x")).toEqual({ kind: "none" });
+    // Without y in the way, x is the only taker and pairs by prefix.
+    const alone = linkCardsToSide([nbCards[0]], parallelCards);
+    expect(alone.outcomes.get("x")).toMatchObject({ kind: "linked", card: parallelCards[0], via: "prefix" });
+  });
+
   test("a variation only pairs with a variation", () => {
     const nbCards = [
       nb({ id: "n1", cardNumber: "89B-1", ...who("Joe Montana"), isVariation: true, cardVariation: "Action" }),

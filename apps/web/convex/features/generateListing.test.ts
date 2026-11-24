@@ -1606,6 +1606,46 @@ describe("NEO-535 — a parallel's leading insert words are said once", () => {
     };
     expect(titleDescription(proSet)).toBe("2026 Pro Set Metal 1989 Base Prismatic Blue");
   });
+
+  test("NEO-616: the insert's type name stays when the parallel shares only maker and year words", () => {
+    // "Pro Set Rookies" says "Rookies" once the maker is stripped. The parallel
+    // "Pro Set Gold" trims against the insert's own name down to "Gold", but
+    // the words it dropped ("Pro Set") were maker words `above.text` had
+    // already dropped, not words the insert says: the insert keeps "Insert".
+    const rookies: ListingCardInputs = {
+      cardNumber: "R-1",
+      playerNames: ["Joe Montana"],
+      year: "2026",
+      manufacturer: "Pro Set",
+      setName: "Pro Set Metal",
+      titleLevels: [
+        { name: "Pro Set Rookies", typeName: "Insert" },
+        { name: "Pro Set Gold", typeName: "Parallel" },
+      ],
+      sport: "Football",
+    };
+    expect(generateListingTitle(rookies)).toBe(
+      "2026 Pro Set Metal Rookies Insert Gold Parallel Joe Montana #R-1 Football",
+    );
+  });
+
+  test("NEO-616: the Pro Set Base shape still reads once, no doubled Base, in the full title", () => {
+    const proSet: ListingCardInputs = {
+      cardNumber: "89B-1",
+      playerNames: ["Joe Montana"],
+      year: "2026",
+      manufacturer: "Pro Set",
+      setName: "Pro Set Metal",
+      titleLevels: [
+        { name: "1989 Pro Set Base", typeName: "Insert" },
+        { name: "1989 Pro Set Base Prismatic Blue", typeName: "Parallel" },
+      ],
+      sport: "Football",
+    };
+    const title = generateListingTitle(proSet);
+    expect(title).toBe("2026 Pro Set Metal 1989 Base Prismatic Blue Parallel Joe Montana #89B-1 Football");
+    expect(title).not.toMatch(/Base\s+Base/);
+  });
 });
 
 describe("NEO-528 — the description names the card's cameos", () => {

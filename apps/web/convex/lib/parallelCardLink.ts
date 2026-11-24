@@ -431,7 +431,9 @@ export function linkCardsToSide(
   const prefixHits = new Map<string, number[]>();
   const prefixReach = new Map<number, number>();
   for (const card of nbCards) {
-    if (outcomes.get(card.id)?.kind !== "none") continue;
+    // Every card not already linked by its key counts, an ambiguous one too:
+    // one that is an equally good candidate for the fetched card is a tie.
+    if (outcomes.get(card.id)?.kind === "linked") continue;
     const hits = prefixCandidatesOf(card);
     prefixHits.set(card.id, hits);
     for (const i of hits) prefixReach.set(i, (prefixReach.get(i) ?? 0) + 1);
@@ -458,7 +460,10 @@ export function linkCardsToSide(
       if (
         byPrefix.length === 1 &&
         prefixReach.get(byPrefix[0]) === 1 &&
-        (claimsByFetched.get(byPrefix[0]) ?? 0) === 0
+        (claimsByFetched.get(byPrefix[0]) ?? 0) === 0 &&
+        // A card the number spelling reaches is that card's to propose; the
+        // prefix tier never cancels a link the number tier makes.
+        (numberReach.get(byPrefix[0]) ?? 0) === 0
       ) {
         propose(card.id, byPrefix[0], "prefix");
       }

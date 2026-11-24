@@ -242,6 +242,14 @@ describe("cardNumbersDifferOnlyByPrefix (NEO-616)", () => {
     expect(cardNumbersDifferOnlyByPrefix("rc-10", "RC-10")).toBe(false);
   });
 
+  it("is false when only the punctuation of the prefix differs", () => {
+    expect(cardNumbersDifferOnlyByPrefix("BCP12", "BCP-12")).toBe(false);
+    expect(cardNumbersDifferOnlyByPrefix("BCP 12", "BCP-12")).toBe(false);
+    expect(cardNumbersDifferOnlyByPrefix("bcp.12", "BCP-12")).toBe(false);
+    expect(cardNumbersDifferOnlyByPrefix("89B-1", "89M-1")).toBe(true);
+    expect(cardNumbersDifferOnlyByPrefix("12", "T88-12")).toBe(true);
+  });
+
   it("is false when a number has no remainder", () => {
     expect(cardNumbersDifferOnlyByPrefix("NNO", "NNO")).toBe(false);
     expect(cardNumbersDifferOnlyByPrefix("OV-A", "XX-A")).toBe(false);

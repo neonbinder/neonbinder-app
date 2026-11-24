@@ -282,15 +282,18 @@ export function splitCardNumberPrefix(
  * Do two card numbers differ ONLY in their prefix (Jason, 2026-11-24: "sometimes
  * parallels just have a different prefix")? Their remainders are the same as
  * printed (case kept: "1a" and "1A" stay two numbers) and their prefixes are
- * not the same once case is folded ("89B-1" / "89M-1", "12" / "T88-12"). Two
- * identical numbers, or ones that differ only in the case of the prefix, do
- * not: those are the same number, not a different prefix.
+ * not the same once case and punctuation (hyphens, spaces, dots) are folded
+ * ("89B-1" / "89M-1", "12" / "T88-12"). Two identical numbers, or ones that
+ * differ only in the case or punctuation of the prefix ("BCP12" / "BCP-12"),
+ * do not: those are the same number spelled differently, not a different
+ * prefix.
  */
 export function cardNumbersDifferOnlyByPrefix(a: string, b: string): boolean {
   const sa = splitCardNumberPrefix(a);
   const sb = splitCardNumberPrefix(b);
   if (!sa || !sb) return false;
-  return sa.remainder === sb.remainder && sa.prefix.toUpperCase() !== sb.prefix.toUpperCase();
+  const bare = (prefix: string) => prefix.replace(/[-.\s]/g, "").toUpperCase();
+  return sa.remainder === sb.remainder && bare(sa.prefix) !== bare(sb.prefix);
 }
 
 /**
