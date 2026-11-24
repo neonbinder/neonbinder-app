@@ -343,10 +343,11 @@ export const BLOCKED_IDS_UNREACHABLE =
 // from the Base, not an insert.
 // NEO-321 (audit N1) — the two size sentences now cover the byte cap too.
 /**
- * NEO-645 (J3, Q4) — the checklist a parallel is built from still has cards that
- * need fixing (a name waiting to be linked, a missing autograph format, a team to
- * choose). A parallel copies its source, so it is built once the source is
- * tidy. Checked here, before anything is deleted or fetched.
+ * NEO-645 (J3, Q4), widened by NEO-661 (Jason, 2026-11-24) — the checklist a
+ * parallel is built from still has a card that shows pink (any pink item: a name
+ * waiting to be linked, a missing autograph format, a team to choose, a title
+ * over the limit). A parallel copies its source, so it is built once no card is
+ * pink. Checked here, before anything is deleted or fetched.
  */
 export const BLOCKED_SOURCE_NOT_TIDY =
   "the checklist it's built from still has cards that need fixing — tidy those up first";
@@ -1418,7 +1419,8 @@ export const loadInsertCardsForLink = internalQuery({
     return {
       cards: page.page.map((row) => ({
         ...linkableOf(row),
-        // NEO-645 (J3) — from the row alone, no extra read.
+        // NEO-645 (J3), NEO-661 — pink = any pink card (`blocksParallelBuild`),
+        // from the row alone, no extra read.
         ...(blocksParallelBuild(row) ? { pink: true as const } : {}),
         ...(row.variationOfCardId
           ? { variationOfCardId: row.variationOfCardId }
@@ -2501,8 +2503,8 @@ export const buildParallelChecklist = action({
       }),
     );
     if (insertCards.overLimit) return blocked(BLOCKED_TOO_MANY_CARDS);
-    // NEO-645 (J3, Q4) — the server's half of "build the parallels once the base
-    // is complete" (the client gate is the other half).
+    // NEO-645 (J3, Q4), NEO-661 — the server's half of "hold the parallels back
+    // while any card is pink" (the client gate is the other half).
     if (insertCards.cards.some((c) => c.pink === true)) return blocked(BLOCKED_SOURCE_NOT_TIDY);
 
     // ── 3. fetch every side before anything is touched ──────────────────────
