@@ -64,7 +64,7 @@ import { isGenerationalSuffix } from "../../lib/players/name-fragment";
 import { teamFullName } from "../../lib/teams/team-name";
 import { cardSubjectName } from "../../lib/cards/unnamed-card";
 import { foldNameForCompare } from "../../lib/entities/normalize-name";
-import { parallelAfterInsert, parallelOpensWithInsert, roughlySays } from "../listingShortName";
+import { foldWord, parallelAfterInsert, parallelOpensWithInsert, roughlySays } from "../listingShortName";
 
 /** NEO-606 — a team row's Location / Name, as `ListingCardInputs.teamSplits` carries it. */
 export type ListingTeamSplit = { location: string; name: string };
@@ -639,8 +639,10 @@ function builderDescriptionParts(inputs: ListingCardInputs): DescriptionParts {
         // maker and year words its text already dropped do not make the two
         // one name ("Pro Set Rookies" + "Pro Set Gold").
         const dropped = wordsOf(raw).slice(0, wordsOf(raw).length - wordsOf(trimmed).length);
-        const saidAbove = wordsOf(above.text ?? "").map(bareWord);
-        if (dropped.some((w) => saidAbove.includes(bareWord(w)))) {
+        // Folded as `parallelAfterInsert` matches ("Autographs" / "Autograph");
+        // the insert's own name when its text says nothing (origin/main).
+        const saidAbove = wordsOf(above.text ?? above.raw).map(foldWord);
+        if (dropped.some((w) => saidAbove.includes(foldWord(w)))) {
           const upper = levels[levels.length - 1];
           if (upper && !upper.base) {
             upper.typeName = undefined;

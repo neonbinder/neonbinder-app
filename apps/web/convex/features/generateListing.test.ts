@@ -1646,6 +1646,38 @@ describe("NEO-535 — a parallel's leading insert words are said once", () => {
     expect(title).toBe("2026 Pro Set Metal 1989 Base Prismatic Blue Parallel Joe Montana #89B-1 Football");
     expect(title).not.toMatch(/Base\s+Base/);
   });
+
+  test("NEO-616: words the trim folds together still read as one name (Autographs / Autograph Gold), as on main", () => {
+    const autos: ListingCardInputs = {
+      cardNumber: "A-1",
+      playerNames: ["Joe Montana"],
+      year: "2026",
+      manufacturer: "Pro Set",
+      setName: "Pro Set Metal",
+      titleLevels: [
+        { name: "Autographs", typeName: "Insert" },
+        { name: "Autograph Gold", typeName: "Parallel" },
+      ],
+      sport: "Football",
+    };
+    expect(generateListingTitle(autos)).not.toContain("Insert");
+  });
+
+  test("NEO-616: an insert the set name already says still yields its type name to the parallel, as on main", () => {
+    const prospects: ListingCardInputs = {
+      cardNumber: "BCP-1",
+      playerNames: ["Joe Montana"],
+      year: "2026",
+      manufacturer: "Bowman",
+      setName: "Bowman Chrome Prospects",
+      titleLevels: [
+        { name: "Chrome Prospects", typeName: "Insert" },
+        { name: "Chrome Prospects Gold", typeName: "Parallel" },
+      ],
+      sport: "Baseball",
+    };
+    expect(generateListingTitle(prospects)).not.toContain("Insert");
+  });
 });
 
 describe("NEO-528 — the description names the card's cameos", () => {
