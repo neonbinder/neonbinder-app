@@ -77,7 +77,12 @@ export default function AddStintEntry({
   }
   useEffect(() => {
     if (focusTicket === 0) return;
-    requestAnimationFrame(() => buttonRef.current?.focus({ preventScroll: true }));
+    requestAnimationFrame(() => {
+      // Only re-home focus the unmount dropped; a user who moved on in that frame keeps theirs.
+      const active = document.activeElement;
+      if (active && active !== document.body) return;
+      buttonRef.current?.focus({ preventScroll: true });
+    });
   }, [focusTicket]);
   const close = () => {
     setOpen(false);
