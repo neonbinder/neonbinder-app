@@ -132,7 +132,7 @@
 - [Team fill tier](patterns_team_fill_career_tier_fixture.md) — 70-char team; negative stints
 - [Team-era on the walk](patterns_team_era_specs_on_the_walk.md) — NEO-602 auto link vs keep
 - [Team Apply to all](patterns_team_apply_to_all_fixture.md) — line rule, no career check; claimed/two-name not offered; tail UI-unreachable
-- [J3 base tidy](patterns_parallel_build_specs_must_tidy_the_base_j3.md) — tidyForTheParallelBuild
+- [J3 base tidy](patterns_parallel_build_specs_must_tidy_the_base_j3.md) — any pink holds a build (NEO-661); tidyForTheParallelBuild, zero skips
 - [Need-you pill](patterns_need_you_pill_is_not_a_team_lookup_proof.md) — counts unlinked players
 - [Tile state lost](patterns_tile_state_lost_when_card_context_arrives.md) — search opened early closes itself
 - [State-named button](patterns_state_named_button_helper_regex.md) — anchored regex in the helper
