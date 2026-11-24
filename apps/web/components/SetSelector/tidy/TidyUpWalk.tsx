@@ -21,7 +21,6 @@ import { focusWithoutOpening } from "../../primitives/Autocomplete";
 import HintedLabel from "../HintedLabel";
 import WizardChrome from "../WizardChrome";
 import {
-  currentReviewKeys,
   deriveCardAttention,
   isAwaitingTeamLookup,
   needsTidyUp,
@@ -43,22 +42,31 @@ import SourcesDisagreeTile from "./tiles/SourcesDisagreeTile";
 import TeamTile from "./tiles/TeamTile";
 import TitleTile from "./tiles/TitleTile";
 import { useTidyKeys } from "./useTidyKeys";
-import { useOpenCardLookups } from "./useOpenCardLookups";
 import { TIDY_DONE, useTidyWalkUrl } from "./useTidyWalkUrl";
+import {
+  pendingNamesOf,
+  useCardNameLookups,
+  useLeafFacts,
+  useWalkMemory,
+  useWalkMemoryStore,
+  WalkMemoryProvider,
+} from "./walk-memory";
 import {
   cardsLeft,
   cardsLeftText,
   cardsSkipped,
   cardsSkippedText,
+  cardsStillToCheck,
+  cardsStillToCheckText,
   cardsTallyText,
   loadSitting,
   nextCardId,
-  pendingLookupKeys,
   previousCardId,
   saveSitting,
   walkOrder,
   withPassed,
   withShown,
+  type CareerGapsByCard,
 } from "./walk-order";
 
 /**
@@ -69,16 +77,25 @@ import {
  * (Match Cards ended); every tile saves the moment it is answered (J1), so
  * what is left for the walk is to look at each card and move on.
  *
- *   - **Save & next** writes "seen" for the card's blue items
- *     (`tidyCards.markReviewed`) and moves on. It is held while anything is
+ *   - **Save & next** adds the default stint for each career gap shown
+ *     (`tidyCards.saveCard`) and moves on. Nothing records that a blue item was
+ *     seen (NEO-656): the data decides what shows. It is held while anything is
  *     pink: the card cannot be listed without that answer.
  *   - **Skip: not ready to list** moves on with no write. The card stays
- *     flagged; the end screen counts it. Pink never blocks Skip.
+ *     flagged; the end screen counts it by what is still on it. Pink never
+ *     blocks Skip.
  *   - **Save for later** (Esc) closes the walk. Nothing rolls back.
  *   - **Back** steps to the card before, as it is now.
  *
  * The position is `?tidy=<cardId>` (`useTidyWalkUrl`), so a refresh lands on
  * the same card and the browser's Back walks back through the cards.
+ *
+ * ## What the walk remembers
+ *
+ * Only for the sitting, only in memory (`walk-memory.tsx`): the set's facts
+ * (asked once when the walk opens), each name's lookup (asked when its card
+ * opens, and the next card's names ahead of it), and what was answered on the
+ * open card. The card is the record of its names; nothing else is stored.
  *
  * ## The queue is derived, not held
  *
@@ -113,6 +130,20 @@ export function reviewSkippedLabel(skipped: number): string {
   return skipped === 1 ? "Review the skipped card" : `Review the ${skipped} skipped`;
 }
 
+/** The end screen's way back to blue cards that were saved: "Check the 2 cards still to check". */
+export function checkStillToCheckLabel(count: number): string {
+  return count === 1 ? "Check the card still to check" : `Check the ${count} cards still to check`;
+}
+
+/**
+ * The end screen's review button names what it reviews (NEO-656, B20): a skipped
+ * (pink) card gets "Review the skipped card(s)"; when only blue cards remain,
+ * "Check the N cards still to check". The tally beside it counts the same way.
+ */
+export function reviewButtonLabel(skipped: number, stillToCheck: number): string {
+  return skipped > 0 ? reviewSkippedLabel(skipped) : checkStillToCheckLabel(stillToCheck);
+}
+
 /** "3 to fix before this card can save. Skip it and it can't be listed until it's fixed." */
 export function mustFixLine(fix: number): string {
   return `${fix} to fix before this card can save. Skip it and it can't be listed until it's fixed.`;
@@ -143,6 +174,13 @@ type WalkProps = {
   /** The checklist's live rows, ALL of them: the walk derives its own queue. */
   cards: readonly CardChecklistRow[];
   /**
+   * NEO-656: the career gaps read live for these cards (`useLeafCareerGaps`),
+   * by card id. Omitted: none (a walk rendered alone).
+   */
+  careerGaps?: CareerGapsByCard;
+  /** The gaps' first answer has arrived. The walk holds its first card until then. */
+  careerGapsReady?: boolean;
+  /**
    * A durable control to give focus back to. The pill that opens the walk
    * leaves the page when the count reaches zero, so the opener cannot be
    * trusted to survive the sitting.
@@ -153,10 +191,14 @@ type WalkProps = {
 };
 
 export default function TidyUpWalk(props: WalkProps) {
+  // One memory per open walk; it goes with the walk (never stored).
+  const memory = useWalkMemoryStore();
   return (
-    <InlineStackProvider>
-      <WalkDialog {...props} />
-    </InlineStackProvider>
+    <WalkMemoryProvider value={memory}>
+      <InlineStackProvider>
+        <WalkDialog {...props} />
+      </InlineStackProvider>
+    </WalkMemoryProvider>
   );
 }
 
@@ -192,6 +234,8 @@ export function cardHeaderLine(
   return rest ? `${number} · ${rest}` : number;
 }
 
+const NO_CAREER_GAPS: CareerGapsByCard = new Map();
+
 function WalkDialog({
   leafId,
   sportId,
@@ -202,6 +246,8 @@ function WalkDialog({
   setNoTeam = false,
   title,
   cards,
+  careerGaps = NO_CAREER_GAPS,
+  careerGapsReady = true,
   restoreFocusRef,
   onClose,
 }: WalkProps) {
@@ -232,17 +278,20 @@ function WalkDialog({
   // stay in `passed` (so Back to the end screen shows the same tally and the same
   // button); while one is in here it counts as open, wherever the walk is but the
   // end screen.
-  const [reviewing, setReviewing] = useState<readonly string[]>([]);
+  const [reviewing, setReviewing] = useState<readonly string[]>(initial.reviewing);
 
   // ── what the walk reads ─────────────────────────────────────────────────
-  // Subscribed only while the walk is mounted (an index range, NEO-392).
-  const pending = useQuery(api.tidyNames.lookupsPending, { scopeId: leafId });
-  const pendingKeys = useMemo(() => pendingLookupKeys(pending), [pending]);
-  const order = useMemo(() => walkOrder(cards, pendingKeys), [cards, pendingKeys]);
+  const memory = useWalkMemory();
+  // The set's facts: asked once, held in memory (never stored).
+  useLeafFacts(memory, leafId);
+  const order = useMemo(() => walkOrder(cards, careerGaps), [cards, careerGaps]);
   const rowsById = useMemo(() => new Map(cards.map((c) => [c._id as string, c])), [cards]);
   const awaitingLookup = useMemo(() => cards.filter(isAwaitingTeamLookup).length, [cards]);
   // The end screen's lookup line must not say "nothing for you to do" while cards still need a person.
-  const needYouCount = useMemo(() => cards.filter((c) => needsTidyUp(c)).length, [cards]);
+  const needYouCount = useMemo(
+    () => cards.filter((c) => needsTidyUp(c, { careerGaps: careerGaps.get(c._id) })).length,
+    [cards, careerGaps],
+  );
 
   // What the walk counts as done: `passed`, less the skipped cards being
   // reviewed. The end screen reads `passed` whole, so Back to it restores it.
@@ -255,22 +304,43 @@ function WalkDialog({
   const current: CardChecklistRow | undefined =
     location.kind === "card" ? rowsById.get(location.cardId) : undefined;
   const currentId = current?._id as string | undefined;
-  const attention = current ? deriveCardAttention(current) : undefined;
+  const attention = current
+    ? deriveCardAttention(current, { careerGaps: careerGaps.get(current._id) })
+    : undefined;
 
   // One card's names, players and teams: subscribed for the open card only.
   const context = useQuery(
     api.tidyCards.cardContext,
     current ? { cardId: current._id } : "skip",
   );
-  // Names a migration left with no lookup get asked once when the card opens.
-  useOpenCardLookups(context);
+  // The card's names are asked about when it opens, and the next card's ahead
+  // of it (one try each; the tile offers Try again).
+  const upNextId = current
+    ? nextCardId(order, withPassed({ passed: openPassed, trail: [], reviewing: [] }, current._id), current._id)
+    : null;
+  const upNext = upNextId ? rowsById.get(upNextId) : undefined;
+  useCardNameLookups(
+    memory,
+    sportId,
+    [current, upNext].flatMap((card) =>
+      card ? [{ id: card._id, names: pendingNamesOf(card) }] : [],
+    ),
+  );
+  // What the walk held for a card goes when the walk leaves it.
+  useEffect(() => {
+    if (!currentId) return;
+    return () => memory.leaveCard(currentId);
+  }, [memory, currentId]);
 
   // `first`, or an id that is not one of this checklist's cards (a stale or
   // pasted link): replace it with the first card still to walk. The id never
   // reaches a Convex argument unless a row of ours carries it.
-  const needsResolve = location.kind === "first" || (location.kind === "card" && !current);
+  // NEO-656: it also waits for the career gaps' first answer, so a card whose
+  // only blue item is a gap is in the order when the first card is picked.
+  const needsResolve =
+    careerGapsReady && (location.kind === "first" || (location.kind === "card" && !current));
   const firstTarget = needsResolve
-    ? nextCardId(order, { passed: openPassed, trail: [] }, null)
+    ? nextCardId(order, { passed: openPassed, trail: [], reviewing: [] }, null)
     : null;
   // `entryKey` is a dependency on purpose: it changes with every committed
   // navigation, so if another writer ever puts `tidy=first` (or a stale id) back
@@ -288,54 +358,83 @@ function WalkDialog({
   // a card (the render-phase update React documents for "information from
   // previous renders"), so no effect chases the URL.
   if (currentId) {
-    const shown = withShown({ passed, trail }, currentId);
+    const shown = withShown({ passed, trail, reviewing }, currentId);
     if (shown.trail !== trail) setTrail(shown.trail);
   }
   useEffect(() => {
-    saveSitting(leafId, { passed, trail });
-  }, [leafId, passed, trail]);
+    saveSitting(leafId, { passed, trail, reviewing });
+  }, [leafId, passed, trail, reviewing]);
 
-  const left = cardsLeft(order, { passed: openPassed, trail: [] });
-  const skipped = cardsSkipped(order, { passed, trail: [] });
-  // Cards the sitting moved past that no longer need a person; the rest are the skipped ones.
-  const fixed = Math.max(0, passed.length - skipped);
+  const left = cardsLeft(order, { passed: openPassed, trail: [], reviewing: [] });
+  // By the card's level NOW (B20): pink is "not ready to list", blue alone is
+  // "still to check", and a card fixed elsewhere is in neither.
+  const skipped = cardsSkipped(order, { passed, trail: [], reviewing: [] });
+  const stillToCheck = cardsStillToCheck(order, { passed, trail: [], reviewing: [] });
+  // Cards the sitting moved past that no longer need a person.
+  const fixed = Math.max(0, passed.length - skipped - stillToCheck);
   const isDone = location.kind === "done";
 
   // ── moving ──────────────────────────────────────────────────────────────
   /** Leave `fromId` going forward: to the next card still to walk, or the end. */
-  const advance = (fromId: string) => {
-    const sitting = withPassed({ passed: openPassed, trail }, fromId);
-    setPassed((prev) => (prev.includes(fromId) ? prev : [...prev, fromId]));
-    setReviewing((prev) => (prev.includes(fromId) ? prev.filter((id) => id !== fromId) : prev));
-    const next = nextCardId(order, sitting, fromId);
-    if (next) goToCard(next, fromId);
-    else finish(fromId);
-  };
+  const advance = useCallback(
+    (fromId: string) => {
+      const sitting = withPassed({ passed: openPassed, trail, reviewing: [] }, fromId);
+      setPassed((prev) => (prev.includes(fromId) ? prev : [...prev, fromId]));
+      setReviewing((prev) => (prev.includes(fromId) ? prev.filter((id) => id !== fromId) : prev));
+      const next = nextCardId(order, sitting, fromId);
+      if (next) goToCard(next, fromId);
+      else finish(fromId);
+    },
+    [openPassed, trail, order, goToCard, finish],
+  );
 
   const [saving, setSaving] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
+  const saveCard = useMutation(api.tidyCards.saveCard);
   // NEO-657: what an open tile form still has to write before Save & next moves on.
   const [beforeSave] = useState(createBeforeSaveRegistry);
-  const markReviewed = useMutation(api.tidyCards.markReviewed);
 
   const pinkCount = attention?.items.filter((i) => i.level === "fix").length ?? 0;
-  const canSave = isDone || (!!current && pinkCount === 0 && !saving);
+  // Not while the career question is in flight: a card that just gained a team
+  // shows no gap until the live answer comes back, and a Save pressed in that
+  // moment would write no default stint and leave the card blue.
+  const canSave = isDone || (!!current && pinkCount === 0 && !saving && careerGapsReady);
 
   const save = async () => {
     if (isDone) {
       onClose();
       return;
     }
-    if (!current || saving || pinkCount > 0) return;
+    if (!current || saving || pinkCount > 0 || !careerGapsReady) return;
     setSaving(true);
     setSaveFailed(false);
     const cardId = current._id;
+    // The career gaps shown take the default stint (main's); with none shown
+    // there is nothing to write.
+    const shown = (attention?.items ?? []).flatMap((i) =>
+      i.kind === "careerGap"
+        ? [{ playerId: i.playerId as Id<"players">, teamId: i.teamId as Id<"teams"> }]
+        : [],
+    );
+    let gaps = shown;
+    const wrote = new Set<string>();
     try {
-      if (!(await beforeSave.run())) throw new Error("A tile could not write its form");
-      await markReviewed({ cardId, keys: currentReviewKeys(current) });
+      // A tile's open form writes first. A player it wrote a stint to (an
+      // edited form that misses the set year, say) is not also given the
+      // default stint: main's hook wrote only the form.
+      if (!(await beforeSave.run(wrote))) throw new Error("A tile could not write its form");
+      gaps = shown.filter((g) => !wrote.has(g.playerId));
+      if (gaps.length > 0) await saveCard({ cardId, gaps });
     } catch {
       setSaveFailed(true);
       setSaving(false);
+      return;
+    }
+    // A stint written for this card's player can settle other cards of theirs
+    // too, so the walk moves on only once the cards and the career gaps have
+    // been read again (`afterSave` below): `order` here is from before the write.
+    if (shown.length > 0 || wrote.size > 0) {
+      setAfterSave(cardId);
       return;
     }
     // One transition for the state and the navigation, so the old card never
@@ -347,7 +446,22 @@ function WalkDialog({
     });
   };
 
-  // The skipped cards (passed, and still flagged), in walk order.
+  // The card whose save wrote a stint, waiting for the live cards and gaps.
+  // The mutation resolves after the transition that carries its effects, so the
+  // render this state causes already reads the settled cards; it also waits for
+  // the gap query to have answered the pairs the cards name now.
+  const [afterSave, setAfterSave] = useState<string | null>(null);
+  useEffect(() => {
+    if (afterSave === null || !careerGapsReady) return;
+    const from = afterSave;
+    setAfterSave(null);
+    startTransition(() => {
+      setSaving(false);
+      advance(from);
+    });
+  }, [afterSave, careerGapsReady, advance]);
+
+  // The cards the sitting passed that are still flagged, in walk order.
   const skippedIds = useMemo(() => {
     const passedSet = new Set(passed);
     return order.filter(({ row }) => passedSet.has(row._id)).map(({ row }) => row._id as string);
@@ -361,7 +475,14 @@ function WalkDialog({
    * open until it is left again. The walk moves to the first: a push.
    */
   const reviewSkipped = () => {
-    const first = skippedIds[0];
+    // Pink first: the cards "not ready to list" are what the button counts, so
+    // a lower-numbered blue card must not be where the review opens. The rest
+    // follow in walk order.
+    const passedIds = new Set(skippedIds);
+    const firstPink = order.find(
+      ({ row, attention }) => passedIds.has(row._id as string) && attention.level === "fix",
+    );
+    const first = (firstPink?.row._id as string | undefined) ?? skippedIds[0];
     if (!first) return;
     // One transition for the state and the push (router navigation is a
     // transition; a sibling setState outside it would render the old URL first).
@@ -385,12 +506,12 @@ function WalkDialog({
       stepBack();
       return;
     }
-    const prev = previousCardId({ passed, trail }, currentId ?? null);
+    const prev = previousCardId({ passed, trail, reviewing }, currentId ?? null);
     if (prev) showCard(prev);
   };
 
   const canGoBack =
-    !saving && (canStepBack || previousCardId({ passed, trail }, currentId ?? null) !== null);
+    !saving && (canStepBack || previousCardId({ passed, trail, reviewing }, currentId ?? null) !== null);
 
   // ── keys ────────────────────────────────────────────────────────────────
   const inlineOpen = useInlineStackOpen();
@@ -511,7 +632,21 @@ function WalkDialog({
   // search: one more Enter there would undo the answer). Decided a frame later,
   // from the page, so it sees the card as the answer left it.
   const [answerTick, setAnswerTick] = useState(0);
-  const onAnswered = useCallback(() => setAnswerTick((t) => t + 1), []);
+  // What the last answer says to a screen reader. The tile that was answered
+  // is gone by the next frame, so the line lives here, mounted for the whole
+  // sitting (a change to a live region already in the page is announced).
+  const [announcement, setAnnouncement] = useState("");
+  const onAnswered = useCallback((message?: string) => {
+    setAnswerTick((t) => t + 1);
+    if (message) setAnnouncement(message);
+  }, []);
+  // A sentence belongs to the card it was said on: a new card starts with
+  // nothing said, so the same sentence can be said again.
+  const [saidOnCard, setSaidOnCard] = useState(currentId);
+  if (saidOnCard !== currentId) {
+    setSaidOnCard(currentId);
+    setAnnouncement("");
+  }
   useEffect(() => {
     if (answerTick === 0) return;
     focusOwed.current = true;
@@ -617,15 +752,21 @@ function WalkDialog({
                 id={doneLineId}
                 role="status"
                 className={`mb-2 empty:hidden ${
-                  skipped > 0 ? "text-base font-semibold text-neon-pink-text" : "text-sm text-ink-2"
+                  skipped > 0
+                    ? "text-base font-semibold text-neon-pink-text"
+                    : stillToCheck > 0
+                      ? "text-base font-semibold text-neon-blue-text"
+                      : "text-sm text-ink-2"
                 }`}
               >
                 {isDone
                   ? skipped > 0
                     ? cardsSkippedText(skipped)
-                    : awaitingLookup === 0
-                      ? TIDY_ALL_CLEAR
-                      : ""
+                    : stillToCheck > 0
+                      ? cardsStillToCheckText(stillToCheck)
+                      : awaitingLookup === 0
+                        ? TIDY_ALL_CLEAR
+                        : ""
                   : ""}
               </p>
               {isDone ? (
@@ -638,7 +779,7 @@ function WalkDialog({
                 >
                   {passed.length > 0 && (
                     <p id={doneTallyId} className="text-sm text-ink">
-                      {cardsTallyText(fixed, skipped)}
+                      {cardsTallyText(fixed, skipped, stillToCheck)}
                     </p>
                   )}
                   {awaitingLookup > 0 && (
@@ -706,7 +847,7 @@ function WalkDialog({
                   <>
                     {skippedIds.length > 0 && (
                       <NeonButton type="button" variant="secondary" onClick={reviewSkipped}>
-                        {reviewSkippedLabel(skippedIds.length)}
+                        {reviewButtonLabel(skipped, stillToCheck)}
                       </NeonButton>
                     )}
                     <NeonButton type="button" onClick={onClose}>
@@ -752,6 +893,11 @@ function WalkDialog({
                 className="min-h-4 text-right text-xs text-neon-pink-text"
               >
                 {!isDone && pinkCount > 0 ? mustFixLine(pinkCount) : ""}
+              </p>
+              {/* Always mounted: what the last answer saved, for a screen reader. Kept
+                  apart from the alert below. */}
+              <p role="status" className="sr-only">
+                {announcement}
               </p>
               {saveFailed && (
                 <p role="alert" className="text-right text-xs text-neon-pink-text">

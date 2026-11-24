@@ -5,7 +5,7 @@ metadata:
   type: reference
 ---
 
-Spec: `tidy-up-team-link-remembers-the-name.spec.ts` (renamed from `checklist-wizard-link-team-saves-alias` in NEO-645).
+Spec: `tidy-up-team-link-saves-the-printed-name-as-a-team-alias.spec.ts` (renamed from `checklist-wizard-link-team-saves-alias` in NEO-645).
 
 **Fixture:** Baseball > 1996 > `New Haven Ravens Rally Raffle` (BSC only; filed under the year's Unknown row,
 reached through All Brands), 9 cards, ONE club the catalogue lacks (`New Haven Ravens`, a recorded no-match so the

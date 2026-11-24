@@ -34,7 +34,7 @@ Reference specs that show the patterns below:
 | `tests/home/landing-smoke.spec.ts` | signed-out page, reachability as the assertion |
 | `tests/set-selector/admin-missing-both-shows-warning.spec.ts` | dedicated `account=`, role-scoped asserts, `toBeHidden` |
 | `tests/set-selector/topps-chrome-add-feature.spec.ts` | the drill helper, a genuine "is it open?" branch |
-| `tests/set-selector/tidy-up-team-link-remembers-the-name.spec.ts` | the Tidy Up walk's Team tile, minted names, Back through the walk |
+| `tests/set-selector/tidy-up-team-link-saves-the-printed-name-as-a-team-alias.spec.ts` | the Tidy Up walk's Team tile, minted names, Back through the walk |
 | `tests/labels/scan-visibility.spec.ts` | scoping to one list item; hidden-then-shown text |
 | `tests/admin/player-live-wikidata-enrichment.spec.ts` | a link whose name carries sr-only text; a sanctioned long wait |
 
@@ -403,22 +403,35 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   `skipUntil`, `saveForLater`, `finishTidyWalk`. Answer tiles:
   `createPlayerOnOpenRow`, `createTeamOnOpenRow`, `answerPinkPlayerTiles`,
   `answerPinkTeamTiles`, `answerPinkAutographTile`, `ruleOutOpenPlayerRows`,
-  `ruleOutOpenTeamRows`, `takeSourceSide`. Career gaps: `keepOpenCareerGaps(page)`
-  answers every open gap on the card "Keep as is" (writes nothing), because
-  Save & next over an open Career gap writes a stint from the set's year to the
-  player. Whole walks: `walkAnsweringEverything` (answers every pink Player and
-  Team tile, Save & next or Skip, returns a `WalkTally`; its `career?: "keep" |
-  "add"` option defaults to `"keep"`, which keeps every open gap first and
-  counts them in `WalkTally.careerKept`; `"add"` leaves them for Save & next to
-  write, so never use it where the player is a catalogue player; `noTeam?:
-  "prefilled" | "noTeamOnCard" | "prefilledElseNoTeamOnCard"`, default
-  `"prefilled"`, the last saving the pre-filled chips and else answering "No team
-  on this card"; `title?: "cut" | "leave"`, default `"leave"`, where `"cut"` cuts
-  an over-limit title at the last word within 80 and saves it,
-  `answerPinkTitleTile`), `tidyForTheParallelBuild` (the same walk with
-  `"prefilledElseNoTeamOnCard"` and `"cut"`, asserting no card was skipped: any
-  pink card on the source holds a parallel build, NEO-661, so walk a source with
-  it before a build is expected). Fetch into
+  `ruleOutOpenTeamRows`, `takeSourceSide`, `suggestedTeamChip(page, team, why?)`
+  (a preselected fill chip by its exact name "<team>, suggested · <why>").
+  An answer links the open card only (NEO-656): `applyNameToAll(page, "Player"
+  | "Team", printed)` presses "Apply to all cards printing “<printed>”" and
+  returns its line ("Linked N more cards." / "Cleared N more cards.").
+  Career gaps: there is no "Keep as is" (NEO-656); Save & next over an open
+  Career gap writes a stint from the set's year to the player, so a spec that
+  must not write one leaves the card with `skipCard`. End screen:
+  `expectTidyEndScreen(page, { fixed, skipped?, stillToCheck? })` asserts the
+  verdict (pink `cardsSkippedText`, else blue `cardsStillToCheckText`, else
+  `TIDY_ALL_CLEAR`) and the tally (`cardsTallyText`); `readTidyEndScreen`
+  reads them when the counts are not known. Whole walks:
+  `walkAnsweringEverything` (answers every pink Player and Team tile, Save &
+  next or Skip, returns a `WalkTally`; its `career?: "skip" | "add"` option
+  defaults to `"skip"`, which Skips a card with nothing pink but a Career gap
+  open, counted in `WalkTally.careerSkipped` and "still to check" on the end
+  screen; `"add"` presses Save & next over the gaps, writing them, so never
+  use it where the player is a catalogue player; `noTeam?: "prefilled" |
+  "noTeamOnCard" | "prefilledElseNoTeamOnCard"`, default `"prefilled"`, the
+  last clicking the suggested chip when there is one (a click saves it) and
+  else answering "No team on this card", counted in `WalkTally.noTeamOnCard`;
+  `title?: "cut" | "leave"`, default `"leave"`, where `"cut"` cuts an
+  over-limit title at the last word within 80 and saves it,
+  `answerPinkTitleTile`, counted in `WalkTally.titlesCut`),
+  `tidyForTheParallelBuild` (the same walk with `"prefilledElseNoTeamOnCard"`
+  and `"cut"`, asserting no card was skipped: any pink card on the source
+  holds a parallel build, NEO-661, so walk a source with it before a build is
+  expected; a card Skipped for a blue Career gap is not pink and does not
+  count). Fetch into
   it: `fetchChecklistToTidyWalk`, `fetchOneMarketplaceSetChecklistToTidyWalk`
   (`openOneMarketplaceSetBase` is in `set-builder.ts`). Each contract is in its
   doc comment; see "The Tidy Up walk" under Gotchas.
@@ -559,10 +572,15 @@ Idioms:
   stop a card. Every tile saves when it is answered, so nothing is staged and
   nothing is discarded: "Save for later (Esc)" closes the walk writing
   nothing, "Skip: not ready to list" moves on writing nothing, "Save & next
-  (Enter)" marks the card's blue items seen. The position is in the URL
-  (`?tidy=<card>|done`), so the browser's Back walks back through the cards;
-  the header's progress bar reads "N cards left" (`expectCardsLeft`). The end
-  screen counts skipped cards and has "Done (Esc)". A fetch writes its set,
+  (Enter)" moves on and, with a Career gap on screen, adds the default stint
+  to the player. Nothing records that a card was seen (NEO-656): pink and
+  blue are read live from the data, so a blue card stays blue until fixed.
+  The position is in the URL (`?tidy=<card>|done`), so the browser's Back
+  walks back through the cards; the header's progress bar reads "N cards
+  left" (`expectCardsLeft`). The end screen counts the walked cards by their
+  live level (pink "N cards skipped, not ready to list", else blue "N cards
+  still to check", plus the tally; `expectTidyEndScreen`) and has "Done
+  (Esc)". A fetch writes its set,
   so a spec that needs a first fetch of a real set is that set's registered
   sole writer (SET-REGISTRY.md); a hand-made set reaches the walk through a
   pasted checklist (`usePastedChecklist`).

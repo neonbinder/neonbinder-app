@@ -3,11 +3,10 @@
  *
  * Additive and idempotent over `appendCareerStints`: it never removes or
  * shortens a stint, a (team, fromYear) the player already has is `existing`, a
- * stint it cannot write is `skipped`. After a write (or an `existing` hit, which
- * can still be what the card was waiting on) it re-checks the open card's
- * `careerGap` with today's rule (`careerCoversCardTeam`: a stint that STARTED by
- * the card year), then the leaf's other cards for that player by a scheduled
- * page. `tidyChecks` writes never bump `lastUpdated` (the NEO-203 baseVersion).
+ * stint it cannot write is `skipped`. Nothing is rechecked or scheduled
+ * (NEO-656): a card's career gap is read live (`careerCoverage.careerGaps`,
+ * today's rule: a stint that STARTED by the card year), so it leaves every card
+ * of the player the moment the stint exists.
  */
 
 import { convexTest } from "convex-test";
@@ -16,7 +15,7 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { MAX_PLAYER_TEAM_YEARS } from "./players";
-import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
+import { cancelScheduled } from "../lib/testing/drain-scheduled";
 import { addPlayer, addTeam, printCard, seedTidyWorld, WORLD_NOW } from "../lib/testing/tidy-world";
 
 const modules = (import.meta as unknown as {
@@ -42,7 +41,6 @@ async function setup(t: T) {
   return t.run(async (ctx) => {
     const w = await seedTidyWorld(ctx);
     const merrill = await addPlayer(ctx, w, "Jackson Merrill", [{ teamId: w.mets, fromYear: 2020, toYear: 2023 }]);
-    const gap = [{ kind: "careerGap" as const, playerId: merrill, teamId: w.padres }];
     const mk = (n: string, leaf = w.base, extra: Record<string, unknown> = {}) =>
       printCard(ctx, w, {
         leaf,
@@ -51,11 +49,10 @@ async function setup(t: T) {
           playerIds: [merrill],
           playerLinks: [{ playerId: merrill, nameOnCard: "Jackson Merrill" }],
           teamOnCardIds: [w.padres],
-          tidyChecks: gap,
           ...extra,
         },
       });
-    return { w, merrill, gap, open: await mk("1"), sibling: await mk("2"), elsewhere: await mk("3", w.insert) };
+    return { w, merrill, open: await mk("1"), sibling: await mk("2"), elsewhere: await mk("3", w.insert) };
   });
 }
 type World = Awaited<ReturnType<typeof setup>>;
@@ -157,133 +154,53 @@ describe("addStint — additive", () => {
   });
 });
 
-describe("addStint — re-checks careerGap on the open card, then the leaf", () => {
-  test("a stint that STARTED by the card year covers the team: the open card's check is dropped", async () => {
-    const t = newT();
-    const s = await setup(t);
-    await add(t, s, { fromYear: 2019 }); // started before 2024
-    const open = (await card(t, s.open))!;
-    expect(open.tidyChecks).toBeUndefined();
-    // tidyChecks writes never bump the baseVersion.
-    expect(open.lastUpdated).toBe(WORLD_NOW);
-  });
-
-  test("a stint that starts AFTER the card year does not cover it (today's rule, not a window): the check stays", async () => {
-    const t = newT();
-    const s = await setup(t);
-    const out = await add(t, s, { fromYear: 2025 });
-    expect(out.added).toBe(1);
-    await drainScheduled(t);
-    expect((await card(t, s.open))!.tidyChecks).toEqual(s.gap);
-    expect((await card(t, s.sibling))!.tidyChecks).toEqual(s.gap);
-  });
-
-  test("a stint for some OTHER team leaves the check", async () => {
-    const t = newT();
-    const s = await setup(t);
-    const braves = await t.run((ctx) => addTeam(ctx, { sport: s.w.sport, league: s.w.league }, "Atlanta", "Braves"));
-    await add(t, s, { teamId: braves, fromYear: 2010 });
-    await drainScheduled(t);
-    expect((await card(t, s.open))!.tidyChecks).toEqual(s.gap);
-  });
-
-  test("the leaf's other cards of the player are re-checked by a scheduled page; other leaves are not", async () => {
-    const t = newT();
-    const s = await setup(t);
-    await add(t, s, { fromYear: 2019 });
-    // Before the page runs the sibling still carries the check.
-    expect((await card(t, s.sibling))!.tidyChecks).toEqual(s.gap);
-    await drainScheduled(t);
-    expect((await card(t, s.sibling))!.tidyChecks).toBeUndefined();
-    expect((await card(t, s.sibling))!.lastUpdated).toBe(WORLD_NOW);
-    expect((await card(t, s.elsewhere))!.tidyChecks).toEqual(s.gap);
-  });
-
-  test("only that player's checks go: another player's gap on the same card stays", async () => {
-    const t = newT();
-    const s = await setup(t);
-    const other = await t.run((ctx) => addPlayer(ctx, s.w, "Somebody Else"));
-    const both = [...s.gap, { kind: "careerGap" as const, playerId: other, teamId: s.w.padres }];
-    await t.run((ctx) => ctx.db.patch(s.open, { tidyChecks: both }));
-    await add(t, s, { fromYear: 2019 });
-    expect((await card(t, s.open))!.tidyChecks).toEqual([both[1]]);
-  });
-
-  test("a non-gap check on the card is never touched", async () => {
-    const t = newT();
-    const s = await setup(t);
-    const keep = { kind: "newPlayerCareer" as const, playerId: s.merrill };
-    await t.run((ctx) => ctx.db.patch(s.open, { tidyChecks: [...s.gap, keep] }));
-    await add(t, s, { fromYear: 2019 });
-    expect((await card(t, s.open))!.tidyChecks).toEqual([keep]);
-  });
-
-  test("an `existing` stint is still re-checked: it may be exactly what the card was waiting on", async () => {
-    const t = newT();
-    const s = await setup(t);
-    // The stint is already on file (added elsewhere), but the card's check is stale.
-    await t.run((ctx) =>
-      ctx.db.patch(s.merrill, {
-        teamYears: [
-          { teamId: s.w.mets, fromYear: 2020, toYear: 2023 },
-          { teamId: s.w.padres, fromYear: 2019 },
-        ],
-      }),
-    );
-    const out = await add(t, s, { fromYear: 2019 });
-    expect(out).toEqual({ added: 0, existing: 1, skipped: 0 });
-    expect((await card(t, s.open))!.tidyChecks).toBeUndefined();
-  });
-
-  test("a skipped stint re-checks nothing", async () => {
-    const t = newT();
-    const s = await setup(t);
-    const foreign = await t.run(async (ctx) => {
-      const hoops = await ctx.db.insert("selectorOptions", {
-        level: "sport",
-        value: "Basketball",
-        platformData: {},
-        children: [],
-        lastUpdated: 1,
-      });
-      return addTeam(ctx, { sport: hoops }, "Boston", "Celtics");
+describe("addStint — the career gap is read live (NEO-656)", () => {
+  const gapsOf = (t: T, s: World, leaf = s.w.base) =>
+    t.withIdentity(ADMIN).query(api.careerCoverage.careerGaps, {
+      pairs: [{ selectorOptionId: leaf, playerId: s.merrill, teamId: s.w.padres }],
     });
-    await add(t, s, { teamId: foreign, fromYear: 2019 });
-    const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
-    expect(scheduled.filter((f) => f.name.includes("recheckCareerGapPage"))).toEqual([]);
-    expect((await card(t, s.open))!.tidyChecks).toEqual(s.gap);
-  });
 
-  test("a card that is gone does not fail the write", async () => {
+  test("a stint that STARTED by the card year covers the team: the gap is gone on every leaf, nothing written to the card", async () => {
     const t = newT();
     const s = await setup(t);
-    await t.run((ctx) => ctx.db.delete(s.open));
-    await expect(add(t, s, { fromYear: 2019 })).resolves.toEqual({ added: 1, existing: 0, skipped: 0 });
+    expect(await gapsOf(t, s)).toHaveLength(1);
+    expect(await gapsOf(t, s, s.w.insert)).toHaveLength(1);
+    const before = (await card(t, s.open))!;
+    await add(t, s, { fromYear: 2024 });
+    expect(await gapsOf(t, s)).toEqual([]);
+    expect(await gapsOf(t, s, s.w.insert)).toEqual([]);
+    // Nothing is rechecked or stored: the card is exactly as it was.
+    expect(await card(t, s.open)).toEqual(before);
   });
 
-  test("a stale gap on a multi-player card is dropped too: coverage is by player and team", async () => {
+  test("a stint that starts AFTER the card year does not cover it (today's rule, not a window)", async () => {
     const t = newT();
     const s = await setup(t);
-    const two = await t.run(async (ctx) => {
-      const other = await addPlayer(ctx, s.w, "Somebody Else");
-      return printCard(ctx, s.w, {
-        number: "9",
-        extra: {
-          playerIds: [s.merrill, other],
-          playerLinks: [
-            { playerId: s.merrill, nameOnCard: "Jackson Merrill" },
-            { playerId: other, nameOnCard: "Somebody Else" },
-          ],
-          teamOnCardIds: [s.w.padres],
-          tidyChecks: s.gap,
-        },
-      });
-    });
-    await add(t, s, { fromYear: 2019 });
-    await drainScheduled(t);
-    // Coverage is by (player, team) and does not look at how many players the card has:
-    // the check on a two-player card would be dropped too, never added.
-    expect((await card(t, two))!.tidyChecks).toBeUndefined();
+    await add(t, s, { fromYear: 2025 });
+    expect(await gapsOf(t, s)).toHaveLength(1);
+  });
+
+  test("a stint for some OTHER team leaves the gap", async () => {
+    const t = newT();
+    const s = await setup(t);
+    await add(t, s, { teamId: s.w.mets, fromYear: 2018, toYear: 2019 });
+    expect(await gapsOf(t, s)).toHaveLength(1);
+  });
+
+  test("an `existing` stint changes nothing and schedules nothing", async () => {
+    const t = newT();
+    const s = await setup(t);
+    await add(t, s, { fromYear: 2024 });
+    expect(await add(t, s, { fromYear: 2024 })).toEqual({ added: 0, existing: 1, skipped: 0 });
+    expect(await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).toEqual([]);
+  });
+
+  test("the legacy `cardId` argument is accepted and ignored", async () => {
+    const t = newT();
+    const s = await setup(t);
+    const args = { playerId: s.merrill, teamId: s.w.padres, fromYear: 2024 };
+    await t.withIdentity(ADMIN).mutation(api.players.addStint, args);
+    expect(await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).toEqual([]);
   });
 });
 

@@ -107,12 +107,9 @@ describe("blocksParallelBuild", () => {
   });
 
   test("a card that is only blue (a career gap) does not hold the build", () => {
-    const gap = row({
-      playerIds: ["p1"],
-      teamOnCardIds: ["t1"],
-      tidyChecks: [{ kind: "careerGap", playerId: "p1", teamId: "t1" }],
-    });
-    const attention = deriveCardAttention(gap);
+    // NEO-656: a career gap is read live (`careerCoverage.careerGaps`), never from the row.
+    const gap = row({ playerIds: ["p1"], teamOnCardIds: ["t1"] });
+    const attention = deriveCardAttention(gap, { careerGaps: [{ playerId: "p1", teamId: "t1" }] });
     expect(attention.items.some((i) => i.kind === "careerGap")).toBe(true);
     expect(attention.level).toBe("check");
     expect(blocksParallelBuild(gap)).toBe(false);

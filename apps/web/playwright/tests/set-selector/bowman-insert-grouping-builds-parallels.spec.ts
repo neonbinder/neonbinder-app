@@ -17,7 +17,10 @@
 //     fixes every other title ("Every title fits now."), and the button and
 //     the clause leave the ticker (it used to keep a button that said
 //     "Nothing to fix."). The parallel opens with the box text in its titles,
-//     the card's own title intact, and no attention.
+//     the card's own title intact, and nothing to fix (no pink, no title to
+//     fix). NEO-656: the career-gap check reads live data, so the real players
+//     whose careers miss the card's team and year (Team USA, Japan, new MLB
+//     teams) keep a blue "N need you" on the copies; blue is allowed here.
 //   * `Anime Red Refractors` is renamed to a name whose description is 65
 //     characters (the builder says the shared word "Anime" once: the parallel's
 //     name starts with its insert's, so the description reads
@@ -476,7 +479,8 @@ test(
     await expect(remove).toBeVisible();
     await expect(page.getByRole("button", { name: "Rebuild from Anime" })).toBeVisible();
 
-    // ── PART 5 (NEO-535): the parallel opens with the box text, and attention is gone ──
+    // ── PART 5 (NEO-535): the parallel opens with the box text, nothing to fix, titles fixed ──
+    // NEO-656: blue career gaps stay (live data, real players); pink and titles are gone.
     /** Re-open Anime's parallels from a fresh page load and select one. */
     const openParallel = async (name: string) => {
       await openInserts();
@@ -494,10 +498,11 @@ test(
     await openParallel(LONG_PARALLEL);
     await expect(page.getByRole("heading", { name: /^Cards \([1-9][0-9]*\)$/ })).toBeVisible();
     // A positive first (a negative passes on a list that never drew): the
-    // rows are on screen, so "no attention" and "no Fix card titles" are read
+    // rows are on screen, so "nothing to fix" and "no Fix card titles" are read
     // off a loaded checklist.
     await expect(page.getByRole("button", { name: /^Edit card .+/ }).first()).toBeVisible();
-    await expect(needYou).toBeHidden();
+    // NEO-656: blue only. The pill has no ", N to fix" suffix, so no card is pink.
+    await expect(needYou).toHaveAccessibleName(/^[1-9][0-9]* needs? you$/);
     await expect(fixCardTitles).toBeHidden();
     // NEO-581, after the reload: no door anywhere offers the fixed titles
     // again, and nothing says they need a fix.

@@ -18,6 +18,7 @@ import type { Id } from "../../convex/_generated/dataModel";
 
 vi.mock("../../convex/_generated/api", () => ({
   api: {
+    careerCoverage: { careerGaps: "careerCoverage.careerGaps" },
     selectorOptions: {
       getCardChecklist: "getCardChecklist",
       getSelectorOptionById: "getSelectorOptionById",

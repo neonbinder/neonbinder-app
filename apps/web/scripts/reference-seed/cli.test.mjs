@@ -14,7 +14,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 
 import { spawn, spawnSync } from "node:child_process";
 import { PROD_DEPLOYMENT_NAME, makeTempDir, zipDir } from "./lib.mjs";
-import { main, parseArgs, RefusedError, UsageError, SELECTOR_DEPENDANT_TABLES, SELECTOR_DEPENDANT_UNDRAINED_TABLES } from "./cli.mjs";
+import { main, parseArgs, RefusedError, UsageError, SELECTOR_DEPENDANT_TABLES } from "./cli.mjs";
 import { BUNDLE_TABLES } from "./lib.mjs";
 import schema from "../../convex/schema";
 import { makeFixtureExport } from "./make-fixture.mjs";
@@ -249,14 +249,14 @@ describe("selectorOptions dependants vs convex/schema.ts", () => {
     expect(tablesPointingInto(exported, "selectorOptions").has("leagues")).toBe(true);
   });
 
-  test("every table holding a selectorOptions id is in exactly one of the two lists, so a new table cannot slip past the import guard", () => {
-    const listed = [...SELECTOR_DEPENDANT_TABLES, ...SELECTOR_DEPENDANT_UNDRAINED_TABLES];
+  test("every table holding a selectorOptions id is in the list, so a new table cannot slip past the import guard", () => {
+    const listed = [...SELECTOR_DEPENDANT_TABLES];
     expect([...listed].sort()).toEqual(dependants);
     expect(new Set(listed).size).toBe(listed.length);
   });
 
   test("none of the listed tables is in the reference set", () => {
-    for (const t of [...SELECTOR_DEPENDANT_TABLES, ...SELECTOR_DEPENDANT_UNDRAINED_TABLES]) expect(BUNDLE_TABLES).not.toContain(t);
+    for (const t of SELECTOR_DEPENDANT_TABLES) expect(BUNDLE_TABLES).not.toContain(t);
   });
 });
 
@@ -264,7 +264,7 @@ describe("selectorOptions dependants vs convex/schema.ts", () => {
 describe("NEO-408: clear reads the target through referenceSeed:*, never an export", () => {
   const key = { CONVEX_DEPLOY_KEY: "dev:happy-animal-123|tok" };
   const SPORT_ID_FIELDS = ["sportId", "alsoSportIds"];
-  const ALL_TABLES = [...BUNDLE_TABLES, ...SELECTOR_DEPENDANT_TABLES, ...SELECTOR_DEPENDANT_UNDRAINED_TABLES];
+  const ALL_TABLES = [...BUNDLE_TABLES, ...SELECTOR_DEPENDANT_TABLES];
   const numbers = Object.fromEntries(BUNDLE_TABLES.map((t, i) => [t, 10001 + i]));
   const zeros = (tables) => Object.fromEntries(tables.map((t) => [t, 0]));
 

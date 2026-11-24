@@ -21,7 +21,6 @@ import { internal } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import { teamRowFields } from "./lib/teamRow";
-import { normalizeEntityName } from "../lib/entities/normalize-name";
 import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
@@ -145,27 +144,6 @@ describe("applyBscTeamResolution under a No Team leaf (NEO-556)", () => {
     expect(card!.teamCheckDoneAt).toBe(card!.teamNoneConfirmedAt);
     expect(card!.teamCheckOutcome).toBe("answered");
     expect(card!.teamOnCardIds ?? []).toEqual([]);
-  });
-
-  test("BSC's whole claim ruled not a team for the set: stamped the same", async () => {
-    const t = harness();
-    const { leafId } = await seedSet(t, { noTeam: true });
-    const cardId = await seedCard(t, leafId);
-    await t.run(async (ctx) => {
-      await ctx.db.insert("entityReviewSkips", {
-        selectorOptionId: leafId,
-        kind: "team",
-        nameNormalized: normalizeEntityName("League Leaders"),
-        name: "League Leaders",
-        skippedAt: 1,
-        skippedByUserId: "user-skipper",
-      });
-    });
-    await apply(t, cardId, "League Leaders", ["League Leaders"]);
-    const card = await getCard(t, cardId);
-    expect(card!.bscTeamName).toBeUndefined();
-    expect(card!.teamNoneConfirmedByUserId).toBe(SETTER);
-    expect(card!.teamNoneConfirmedAt).toBeTypeOf("number");
   });
 
   test("BSC names a team NB holds: the team is linked, never replaced by No Team (rule 8)", async () => {

@@ -757,109 +757,6 @@ describe("captureFromCli / coverageReportFromCli — the gate", () => {
   });
 });
 
-async function seedQueueRow(
-  t: T,
-  sportId: Id<"selectorOptions">,
-  row: {
-    kind: "player" | "team" | "league";
-    name: string;
-    sourceQid?: string;
-    enrichmentQid?: string;
-  },
-) {
-  return t.run(async (ctx) => {
-    const base = {
-      selectorOptionId: sportId,
-      batchId: "batch_capture",
-      createdByUserId: "user_capture",
-      sportId,
-      status: "pending" as const,
-    };
-    // A staged row needs a real parent: `source.playerRowId` is a validated id.
-    const parentId = row.sourceQid
-      ? await ctx.db.insert("entityReviewQueue", { ...base, kind: "player", name: `parent of ${row.name}` })
-      : undefined;
-    return ctx.db.insert("entityReviewQueue", {
-      ...base,
-      kind: row.kind,
-      name: row.name,
-      ...(parentId
-        ? { source: { kind: "careerTeamOf" as const, playerRowId: parentId, wikidataId: row.sourceQid } }
-        : {}),
-      ...(row.enrichmentQid ? { enrichment: { wikidataId: row.enrichmentQid } } : {}),
-    });
-  });
-}
-
-describe("listLookedUpNames — entity rows ∪ review-queue rows", () => {
-  test("a queue-only deployment (the seed never reached Confirm & Save) still yields its names", async () => {
-    const t = convexTest(schema, modules);
-    const sportId = await seedSport(t);
-    await seedQueueRow(t, sportId, { kind: "player", name: "Tony Gwynn" });
-    await seedQueueRow(t, sportId, { kind: "team", name: "San Diego Padres", enrichmentQid: "Q2000" });
-    await seedQueueRow(t, sportId, { kind: "league", name: "Major League Baseball", sourceQid: "Q3000" });
-    // Another sport's queue row is not this sport's name.
-    const other = await seedSport(t, "Football", "Q41323");
-    await seedQueueRow(t, other, { kind: "player", name: "Jerry Rice" });
-
-    const listed = await t.query(internal.enrichmentFixtures.listLookedUpNames, { sportId });
-    expect(listed.truncated).toBe(false);
-    expect(listed.items).toEqual([
-      { kind: "player", name: "Tony Gwynn" },
-      { kind: "player", name: "parent of Major League Baseball" },
-      { kind: "team", name: "San Diego Padres", knownQid: "Q2000" },
-      { kind: "league", name: "Major League Baseball", knownQid: "Q3000" },
-    ]);
-  });
-
-  test("the union dedupes a name present in both, and the entity row wins", async () => {
-    const t = convexTest(schema, modules);
-    const sportId = await seedSport(t);
-    await seedNames(t, sportId);
-    // Same team as the entity row (composed name, different case/spacing),
-    // carrying a DIFFERENT id on the queue side.
-    await seedQueueRow(t, sportId, { kind: "team", name: "san  diego padres", enrichmentQid: "Q9999" });
-    await seedQueueRow(t, sportId, { kind: "player", name: "Tony Gwynn" });
-    await seedQueueRow(t, sportId, { kind: "player", name: "Ken Caminiti" });
-
-    const listed = await t.query(internal.enrichmentFixtures.listLookedUpNames, { sportId });
-    expect(listed.items).toEqual([
-      { kind: "player", name: "Ken Caminiti" },
-      { kind: "player", name: "Tony Gwynn" },
-      { kind: "team", name: "San Diego Padres", knownQid: "Q2000" },
-      { kind: "league", name: "Major League Baseball", knownQid: "Q3000" },
-    ]);
-  });
-
-  test("knownQid precedence on a queue row: source.wikidataId over enrichment.wikidataId; a non-QID is dropped", async () => {
-    const t = convexTest(schema, modules);
-    const sportId = await seedSport(t);
-    await seedQueueRow(t, sportId, { kind: "team", name: "Both Ids", sourceQid: "Q1", enrichmentQid: "Q2" });
-    await seedQueueRow(t, sportId, { kind: "team", name: "Enrichment Only", enrichmentQid: "Q3" });
-    await seedQueueRow(t, sportId, { kind: "team", name: "Bad Id", sourceQid: "not-a-qid" });
-
-    const listed = await t.query(internal.enrichmentFixtures.listLookedUpNames, { sportId });
-    expect(listed.items.filter((i) => i.kind === "team")).toEqual([
-      { kind: "team", name: "Bad Id" },
-      { kind: "team", name: "Both Ids", knownQid: "Q1" },
-      { kind: "team", name: "Enrichment Only", knownQid: "Q3" },
-    ]);
-  });
-
-  test("captureFromCli records queue-only names", async () => {
-    armed();
-    countingFetch(happyRoute);
-    const t = convexTest(schema, modules);
-    const sportId = await seedSport(t);
-    await seedQueueRow(t, sportId, { kind: "player", name: "Tony Gwynn" });
-
-    const out = await t.action(internal.enrichmentFixtures.captureFromCli, { confirm: CONFIRM, sportQid: SPORT_QID });
-    expect(out.total).toBe(1);
-    expect(capturedKeys(out.fixture.entries)).toEqual([fixtureKey("player", SPORT_QID, "Tony Gwynn")]);
-    expect(capturedEntry(out.fixture.entries, fixtureKey("player", SPORT_QID, "Tony Gwynn"))?.result?.wikidataId).toBe("Q1000");
-  });
-});
-
 describe("captureFromCli", () => {
   test("records every name for the sport under its fixture key, bypassing the switch", async () => {
     armed();
@@ -927,7 +824,10 @@ describe("captureFromCli", () => {
     countingFetch(happyRoute);
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
-    await seedQueueRow(t, sportId, { kind: "player", name: "José Altuve" });
+    await seedSet(t, sportId);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("players", { name: "José Altuve", nameNormalized: "jose altuve", sportId, lastUpdated: 1 });
+    });
 
     const out = await t.action(internal.enrichmentFixtures.captureFromCli, { confirm: CONFIRM, sportQid: SPORT_QID });
 
@@ -1093,23 +993,6 @@ async function seedCatalogue(t: T, sportId: Id<"selectorOptions">, players = CAT
   });
 }
 
-async function seedSkip(
-  t: T,
-  setId: Id<"selectorOptions">,
-  row: { kind: "player" | "team"; name: string },
-) {
-  await t.run(async (ctx) => {
-    await ctx.db.insert("entityReviewSkips", {
-      selectorOptionId: setId,
-      kind: row.kind,
-      name: row.name,
-      nameNormalized: row.name.toLowerCase(),
-      skippedAt: 1,
-      skippedByUserId: "user_capture",
-    });
-  });
-}
-
 describe("listLookedUpNames — the run's names, never the catalogue's", () => {
   test("catalogue-sized deployment: coverage reports only the run's names, untruncated, from a bounded read", async () => {
     forbidFetch();
@@ -1123,29 +1006,14 @@ describe("listLookedUpNames — the run's names, never the catalogue's", () => {
     const t = convexTest({ schema, modules, transactionLimits: { documentsRead: 100 } });
     const sportId = await seedSport(t);
     await seedCatalogue(t, sportId);
-    // The run: builds a set, creates one row per kind, stages one name that
-    // is still in review, and skips one.
+    // The run: builds a set and creates one row per kind.
     await seedNames(t, sportId);
-    const { setId } = await t.run(async (ctx) => {
-      const set = await ctx.db
-        .query("selectorOptions")
-        .withIndex("by_level", (q) => q.eq("level", "setName"))
-        .first();
-      return { setId: set!._id };
-    });
-    await seedQueueRow(t, sportId, { kind: "player", name: "Ken Caminiti" });
-    await seedSkip(t, setId, { kind: "player", name: "Skipped Prospect" });
 
     const out = await t.action(internal.enrichmentFixtures.coverageReportFromCli, { confirm: CONFIRM, sportQid: SPORT_QID });
     expect(out).toMatchObject({
       covered: 1,
-      missing: [
-        "player: Ken Caminiti",
-        "player: Skipped Prospect",
-        "team: San Diego Padres",
-        "league: Major League Baseball",
-      ],
-      total: 5,
+      missing: ["team: San Diego Padres", "league: Major League Baseball"],
+      total: 3,
       truncated: false,
       truncatedSources: [],
       sinceSource: "firstYearRow",
@@ -1221,80 +1089,15 @@ describe("listLookedUpNames — the run's names, never the catalogue's", () => {
     ).rejects.toThrow(/non-negative/);
   });
 
-  test("no year row ⇒ no boundary: entity rows are left out, staged names are still listed", async () => {
+  test("no year row ⇒ no boundary: entity rows are left out, nothing is listed", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     await t.run(async (ctx) => {
       await ctx.db.insert("players", { name: "Catalogue Only", nameNormalized: "catalogue only", sportId, lastUpdated: 1 });
     });
-    await seedQueueRow(t, sportId, { kind: "player", name: "Tony Gwynn" });
 
     const listed = await t.query(internal.enrichmentFixtures.listLookedUpNames, { sportId });
     expect(listed).toMatchObject({ since: null, sinceSource: "none", truncated: false });
-    expect(listed.items).toEqual([{ kind: "player", name: "Tony Gwynn" }]);
-  });
-
-  test("skips: kept for a set under the sport, dropped for another sport's set and for one older than the boundary", async () => {
-    const t = convexTest(schema, modules);
-    const sportId = await seedSport(t);
-    const other = await seedSport(t, "Football", "Q41323");
-    // The oldest year row is the boundary, so a set is built first.
-    const { setId } = await seedSet(t, sportId);
-    const { setId: otherSetId } = await seedSet(t, other, "1990 Pro Set");
-    await seedSkip(t, setId, { kind: "player", name: "Skipped Prospect" });
-    await seedSkip(t, setId, { kind: "team", name: "Skipped Club" });
-    await seedSkip(t, otherSetId, { kind: "player", name: "Jerry Rice" });
-    // An entity row and a skip of the same name: the entity row wins.
-    await t.run(async (ctx) => {
-      await ctx.db.insert("players", { name: "Both Ways", nameNormalized: "both ways", sportId, lastUpdated: 1 });
-    });
-    await seedSkip(t, setId, { kind: "player", name: "both  ways" });
-
-    const listed = await t.query(internal.enrichmentFixtures.listLookedUpNames, { sportId });
-    expect(listed.items).toEqual([
-      { kind: "player", name: "Both Ways" },
-      { kind: "player", name: "Skipped Prospect" },
-      { kind: "team", name: "Skipped Club" },
-    ]);
-
-    // A skip recorded BEFORE the boundary (a previous run's, on a deployment
-    // whose skips survive) is out of range.
-    const later = await t.run(async (ctx) => {
-      const id = await ctx.db.insert("players", { name: "After", nameNormalized: "after", sportId, lastUpdated: 1 });
-      return (await ctx.db.get(id))!._creationTime;
-    });
-    const scoped = await t.query(internal.enrichmentFixtures.listLookedUpNames, { sportId, since: later });
-    expect(scoped.items).toEqual([{ kind: "player", name: "After" }]);
-  });
-
-  test("skips across more sets than MAX_SKIP_SETS are cut and reported", async () => {
-    const t = convexTest(schema, modules);
-    const sportId = await seedSport(t);
-    const { yearId } = await seedSet(t, sportId);
-    await t.run(async (ctx) => {
-      for (let i = 0; i < 201; i += 1) {
-        const setId = await ctx.db.insert("selectorOptions", {
-          level: "setName",
-          value: `Set ${i}`,
-          parentId: yearId,
-          platformData: {},
-          children: [],
-          lastUpdated: 1,
-        });
-        await ctx.db.insert("entityReviewSkips", {
-          selectorOptionId: setId,
-          kind: "player",
-          name: `Skip ${i}`,
-          nameNormalized: `skip ${i}`,
-          skippedAt: 1,
-          skippedByUserId: "user_capture",
-        });
-      }
-    });
-
-    const listed = await t.query(internal.enrichmentFixtures.listLookedUpNames, { sportId });
-    expect(listed.truncated).toBe(true);
-    expect(listed.truncatedSources).toEqual(["entityReviewSkips (sets)"]);
-    expect(listed.items).toHaveLength(200);
+    expect(listed.items).toEqual([]);
   });
 });

@@ -7,6 +7,10 @@
 // form still open adds what it shows (years the operator edited included); Esc closes it and adds
 // nothing. A card with no team opens no form. The stint form's team suggestions name each saved
 // team's era ("Use <full name> <from>–<to|present>"). Players admin reads every career back.
+// NEO-656: the Career tile is the live career gap, so it is up only while the new player's career
+// lacks the card's team, and it is gone the moment "+ Add" (or Enter, or Save & next) writes the
+// stint. A card with no team has no gap, so no Career tile. The prefill is only for a player made
+// on the open card ("Add as new player" in this sitting).
 //
 // FIXTURE (R7a, SET-REGISTRY.md prefix `tcs`): ONE hand-made set per attempt, `tcs<token>`, under
 // the REAL Baseball › 2024 › Topps (the cards' teams resolve against Baseball's catalogue teams),
@@ -21,7 +25,7 @@
 //   #1 Jose G. Urdaneta · Seattle Mariners   prefilled, "+ Add" as shown       -> Mariners 2024
 //   #2 Carlos Alvarez · Colorado Rockies     From edited to 2022, Enter        -> Rockies 2022–2024
 //   #3 Cristobal Colon · Chicago Cubs        years edited, Save & next         -> Cubs 2021–2023
-//   #4 Antonio Armas Jr. · San Diego Padres  Esc, then the era suggestion      -> no stint
+//   #4 Antonio Armas Jr. · San Diego Padres  Esc, the era suggestion, Skip     -> no stint
 //   #5 Jesus Tiamo CO · No Team              no form opens                     -> no stint
 // The walk's card order follows each card's lookups, so the spec answers whichever card is up.
 // FRESH-ONLY: the five players are global rows with real names, so a second run on the same seed
@@ -40,12 +44,16 @@ import {
   pinkTile,
   saveAndNext,
   settleWalkAfterCommit,
+  skipCard,
   tidyFooterButton,
   tidyTile,
   tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
 import { LOOKUPS } from "../../support/recorded-names";
+
+/** The gap row's line for a player whose career is empty (CareerGapRow). */
+const NO_CAREER = "No career on file yet.";
 
 const YEAR = "2024";
 /** The cards, by number: each a new player (see the header) and the team the checklist prints. */
@@ -131,8 +139,10 @@ test(
       }
       expect(await createPlayerOnOpenRow(page)).toBe(`Player ${who}`);
       await expect(pinkTile(page, "Player")).toHaveCount(0);
+      // A card with no team has no career gap, so no Career tile (#5).
+      if (CARDS[k].team === "No Team") return;
       await expect(career).toHaveAccessibleDescription("To check");
-      await expect(stint(k).row.getByText("No career from Wikidata.", { exact: true })).toBeVisible();
+      await expect(stint(k).row.getByText(NO_CAREER, { exact: true })).toBeVisible();
     }
 
     /** The prefilled form is open: the card's team, the set's year as From and To, no "+ Add stint". */
@@ -148,7 +158,12 @@ test(
       await expect(tidyFooterButton(page, "saveAndNext", { usable: true })).toBeVisible();
     }
 
-    /** The form closed and wrote (or not); the plain "+ Add stint" is back, empty-handed. */
+    /** The form wrote the stint, so the career covers the card's team: the gap, and its tile, are gone. */
+    async function expectStintAdded() {
+      await expect(career, "the stint covers the card's team, so the card has no career question left").toHaveCount(0);
+    }
+
+    /** The form closed without writing; the gap stays, and the plain "+ Add stint" is back, empty-handed. */
     async function expectFormClosed(k: CardKey) {
       const f = stint(k);
       await expect(f.addStint).toBeVisible();
@@ -163,11 +178,9 @@ test(
       await expectPrefilled("added");
       await expectAccessible(page, { within: walk, label: "Tidy Up walk, Career tile with a prefilled stint from the card's team" });
       await stint("added").add.click();
-      await expectFormClosed("added");
-      // Focus returns to the button that stood in for the form.
-      await expect(stint("added").addStint).toBeFocused();
-      await expect(career.getByRole("alert")).toHaveCount(0);
-      await expectAccessible(page, { within: walk, label: "Tidy Up walk, Career tile after the prefilled stint was added" });
+      await expectStintAdded();
+      await expect(header("added"), "a tile answer never moves the walk").toBeVisible();
+      await expectAccessible(page, { within: walk, label: "Tidy Up walk, card after the prefilled stint was added" });
     }
 
     // ── #2: an edited From year, then Enter on it, adds the edited range ──
@@ -181,8 +194,7 @@ test(
       await page.keyboard.type("2022");
       await expect(f.from).toHaveValue("2022");
       await page.keyboard.press("Enter");
-      await expectFormClosed("entered");
-      await expect(career.getByRole("alert")).toHaveCount(0);
+      await expectStintAdded();
     }
 
     // ── #3: years edited, the form left open, Save & next adds what it shows ──
@@ -239,10 +251,7 @@ test(
     // ── #5: a card with no team opens no form ──
     async function teamlessCard() {
       await makeNewPlayer("teamless");
-      const f = stint("teamless");
-      await expect(f.addStint, "no team on the card, so + Add stint waits closed").toBeVisible();
-      await expect(f.teamName).toHaveCount(0);
-      await expect(f.from).toHaveCount(0);
+      await expect(career, "no team on the card, so no career gap and no form").toHaveCount(0);
     }
 
     const handlers: Record<CardKey, () => Promise<void>> = {
@@ -266,7 +275,10 @@ test(
       const k = up as CardKey;
       await expectCardsLeft(page, left);
       await handlers[k]();
-      await saveAndNext(page);
+      // #4 only closed its form: the gap is still open, and Save & next would add the default stint
+      // for it (NEO-656), so that card is Skipped, writing nothing.
+      if (k === "escaped") await skipCard(page);
+      else await saveAndNext(page);
       await expect(header(k), "Save & next moved off the card").toHaveCount(0);
       done.push(k);
       if (done.length === 1) {

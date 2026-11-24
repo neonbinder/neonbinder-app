@@ -1,9 +1,8 @@
 /**
  * NEO-645 test fixture — a small real chain (sport > year > brand > set > Base
  * and Insert leaves, plus a parallel leaf), two teams, a few players, and
- * writers for the rows One-card Tidy Up reads: a card that PRINTED names, the
- * `tidyNames` row for a name, and a card whose stored title is the generated
- * one (so a title test can tell "generated" from "hand typed").
+ * writers for the rows One-card Tidy Up reads: a card that PRINTED names, and
+ * a card whose stored title is the generated one (so a title test can tell "generated" from "hand typed").
  *
  * Lives under lib/ so it is never deployed as a Convex module. Every function
  * takes the `ctx` of a `t.run`.
@@ -11,7 +10,6 @@
 
 import type { Doc, Id } from "../../convex/_generated/dataModel";
 import type { MutationCtx } from "../../convex/_generated/server";
-import { syncCardPrintedNames } from "../../convex/cardPrintedNames";
 import { newStoredCardReadCache, titleForStoredCard } from "../../convex/storedCardTitle";
 import { insertTestCard } from "./card-row";
 import { normalizeEntityName } from "../entities/normalize-name";
@@ -95,16 +93,12 @@ export type TidyWorld = Awaited<ReturnType<typeof seedTidyWorld>>;
 export type PrintedSeed = {
   kind: "player" | "team";
   name: string;
-  /** Position among the card's names of this kind (default: its place in the list). */
-  order?: number;
-  /** The scope the name is answered in (default: the card's own leaf). */
-  scopeId?: Sel;
-  cardOverride?: true;
 };
 
 /**
- * A card that printed names: the card row (its pending lists follow `pending*`
- * unless `extra` overrides them) plus its `cardPrintedNames` rows.
+ * A card that printed names: the card row. Its pending lists follow `printed`
+ * (the names still waiting, in printed order) unless `pending*` or `extra`
+ * overrides them. The card is the only record of its names (NEO-656).
  */
 export async function printCard(
   ctx: Ctx,
@@ -134,47 +128,7 @@ export async function printCard(
     ...(pendingTeams.length > 0 ? { pendingTeamNames: pendingTeams } : {}),
     ...(args.extra ?? {}),
   } as never);
-  if (args.printed?.length) {
-    const orders = { player: 0, team: 0 };
-    await syncCardPrintedNames(
-      ctx,
-      { _id: id },
-      args.printed.map((p) => {
-        const order = p.order ?? orders[p.kind]++;
-        return {
-          kind: p.kind,
-          scopeId: p.scopeId ?? leaf,
-          nameNormalized: normalizeEntityName(p.name),
-          printed: p.name,
-          order,
-          ...(p.cardOverride ? { cardOverride: true as const } : {}),
-        };
-      }),
-    );
-  }
   return id;
-}
-
-/** The `tidyNames` row for a name, defaulting to a settled (`ready`) unanswered one. */
-export async function nameRow(
-  ctx: Ctx,
-  args: {
-    scopeId: Sel;
-    sportId: Sel;
-    kind: "player" | "team";
-    name: string;
-    over?: Partial<Doc<"tidyNames">>;
-  },
-): Promise<Id<"tidyNames">> {
-  return ctx.db.insert("tidyNames", {
-    scopeId: args.scopeId,
-    kind: args.kind,
-    nameNormalized: normalizeEntityName(args.name),
-    name: args.name,
-    sportId: args.sportId,
-    status: "ready",
-    ...(args.over ?? {}),
-  });
 }
 
 /** Make the card's stored title the generated one, so retitling treats it as generated. */

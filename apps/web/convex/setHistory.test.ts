@@ -5,7 +5,6 @@
  */
 
 import type { Doc } from "./_generated/dataModel";
-import { tidyRowAsReviewRow } from "./lib/tidyAnswerDecisions";
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -72,14 +71,6 @@ describe("setHistoryVerdict", () => {
 });
 
 /** Baseball › 2024 › Topps › Series 1 › {Base, Insert}, plus a Football row. */
-/**
- * NEO-645 — the gate's name rows are `tidyNames` rows; read each the way the
- * commit prelude reads it (the old queue shape: `decision`, `enrichment`, ...).
- */
-async function tidyReviewRows(ctx: { db: { query: (t: "tidyNames") => { collect: () => Promise<Doc<"tidyNames">[]> } } }) {
-  return (await ctx.db.query("tidyNames").collect()).map((row) => tidyRowAsReviewRow(row));
-}
-
 async function seedSet(t: T) {
   return t.run(async (ctx) => {
     const now = Date.now();
@@ -154,16 +145,10 @@ describe("resolveChecklistEntities — set history (NEO-424)", () => {
     // Known to the banner, and still a batch so the operator can Change it.
     expect(result.unknownPlayers).toEqual([]);
     
-    const rows = (
-      await t.run((ctx) => tidyReviewRows(ctx))
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({
-      kind: "player",
-      name: "Bo Jackson",
-      sportId: football,
-      decision: { action: "link", linkedPlayerId: bo, autoLinked: "setHistory" },
-    });
+    expect(result.gateLinks).toMatchObject([
+      { kind: "player", name: "Bo Jackson", playerId: bo, origin: "setHistory" },
+    ]);
+    expect(result.autoLinkedCount).toBe(1);
   });
 
   test("re-sync: a name linked on the fetched variant's own card is auto-linked to that player", async () => {
@@ -189,16 +174,10 @@ describe("resolveChecklistEntities — set history (NEO-424)", () => {
     // Fetching Base again: its own committed card is the set's earlier
     // answer, so the name links to Bo over the baseball namesake.
     expect(result.unknownPlayers).toEqual([]);
-    const rows = (
-      await t.run((ctx) => tidyReviewRows(ctx))
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({
-      kind: "player",
-      name: "Bo Jackson",
-      sportId: football,
-      decision: { action: "link", linkedPlayerId: bo, autoLinked: "setHistory" },
-    });
+    expect(result.gateLinks).toMatchObject([
+      { kind: "player", name: "Bo Jackson", playerId: bo, origin: "setHistory" },
+    ]);
+    expect(result.autoLinkedCount).toBe(1);
   });
 });
 

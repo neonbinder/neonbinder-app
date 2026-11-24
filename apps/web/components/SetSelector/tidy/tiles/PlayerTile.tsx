@@ -3,26 +3,32 @@ import { useMutation } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
 import { MAX_CARD_PLAYERS } from "../../../../convex/features/cardAttention";
+import { normalizeEntityName } from "@/lib/entities/normalize-name";
 import NeonButton from "../../../modules/NeonButton";
 import EntityLinkSearch from "../../EntityLinkSearch";
 import { ALREADY_A_PLAYER_MESSAGE } from "../../player-picker-labels";
 import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
 import EditLine from "../parts/EditLine";
-import PlayerNameRow, { PlayerSummary, type ContextPlayer } from "../parts/PlayerNameRow";
-import { linkedForText, noteworthyReason } from "../parts/copy";
+import PlayerNameRow, {
+  PlayerSummary,
+  RuledOutPlayerRow,
+  type ContextPlayer,
+} from "../parts/PlayerNameRow";
 import { useTidyWrite } from "../parts/tidy-write";
-import TidyTile, { TidyNote } from "../TidyTile";
+import TidyTile from "../TidyTile";
 import type { TidyTileProps } from "../tile-types";
+import { useWalkMemory } from "../walk-memory";
 
 /**
  * NEO-645 — tile 3, Player.
  *
  * One row per name the card printed (a multi-player card is answered when
- * every row is). A row that is still a question is pink and carries every way
- * to answer it inline; a name NeonBinder linked for you reads as a purple note
- * on its row, never as a stop (it happens on nearly every card of a veteran
- * set).
+ * every row is), read from the card itself: a player linked
+ * (`playerLinks.nameOnCard`) or a name still waiting (`pendingPlayerNames`). A
+ * row that is still a question is pink and carries every way to answer it
+ * inline. An answer links THIS card; "Apply to all" offers it to the cards of
+ * the checklist still waiting on the name.
  *
  * Waits (`level="waiting"`) while a PLAYERS disagreement is unsettled: the
  * spelling decides which name this tile asks about, so nothing runs until it
@@ -31,7 +37,7 @@ import type { TidyTileProps } from "../tile-types";
  * Per-card edits (Edit on a link NeonBinder made without a name row,
  * "+ Another player") go through `updateCard`, which marks the card as set by
  * hand so an answer elsewhere never overwrites it. An answer to a printed name
- * goes through `tidyNames.answerName` and reaches every card that prints it.
+ * goes through `tidyNames.answerName` and links this card (NEO-656).
  *
  * Cameos (T5) are the card's "Also on this card" list (NEO-528
  * `secondaryPlayerIds`), the same data as the attributes panel's cameo option and
@@ -39,8 +45,9 @@ import type { TidyTileProps } from "../tile-types";
  * through the same player search. Each is a row with its own Edit, which
  * changes or removes it; "+ Cameo" sits beside "+ Another player".
  */
-export default function PlayerTile({ row, context, attention, sportId }: TidyTileProps) {
+export default function PlayerTile({ row, context, attention, sportId, leafCards }: TidyTileProps) {
   const write = useTidyWrite();
+  const memory = useWalkMemory();
   const answered = useAnswered();
   const updateCard = useMutation(api.selectorOptions.updateCard);
   const setSecondaryPlayers = useMutation(api.cardSecondaryPlayers.setSecondaryPlayers);
@@ -122,35 +129,34 @@ export default function PlayerTile({ row, context, attention, sportId }: TidyTil
 
   const playerNames = context.names.filter((n) => n.kind === "player");
   const answeredPlayerIds = new Set<string>(
-    playerNames.flatMap((n) =>
-      n.row?.answer?.kind === "linkPlayer" ? [n.row.answer.playerId as string] : [],
-    ),
+    playerNames.flatMap((n) => (n.playerId ? [n.playerId as string] : [])),
   );
   const playerById = new Map<string, ContextPlayer>(context.players.map((p) => [p.playerId, p]));
-  // A linked player with no name row: an exact single match is linked without
-  // one (D6), and its note is read live.
+  // A linked player the card keeps no printed name for (a link older than the
+  // card's own record of it).
   const unrowed = context.players.filter((p) => !answeredPlayerIds.has(p.playerId));
+  // Names ruled out ("Not a player") while this card is open: off the card, so
+  // the walk's memory is what lets Edit take it back. One that is waiting again
+  // is already a row above.
+  const waitingKeys = new Set(playerNames.filter((n) => n.pending).map((n) => n.nameNormalized));
+  const ruledOut = memory
+    .answersOn(row._id, "player")
+    .flatMap((a) => (a.kind === "notEntity" ? [a] : []))
+    .filter((a) => !waitingKeys.has(normalizeEntityName(a.printed.trim())));
 
   // An older server sends no cameos: none to list.
   const cameos = context.cameos ?? [];
   // The ids come from the same read as the names, so a cameo whose player is
   // gone is not written back (the server would refuse the whole list).
   const cameoIds = cameos.map((c) => c.playerId);
-  const rowCount = playerNames.length + unrowed.length;
+  const rowCount = playerNames.length + unrowed.length + ruledOut.length;
   if (rowCount === 0 && !hasPeople) return null;
-
-  const reasonOf = (playerId: string) =>
-    noteworthyReason(context.linkedFor.find((l) => l.kind === "player" && l.playerId === playerId)?.reason);
 
   const open = attention.items.some((i) => i.kind === "playerName");
   // The tile's one filled button belongs to its first unanswered name.
-  const leadName = playerNames.find((n) => {
-    const kind = n.row?.answer?.kind;
-    return kind !== "notEntity" && kind !== "linkPlayer";
-  });
+  const leadName = playerNames.find((n) => n.pending);
   const multi = rowCount > 1;
-  const sportForSearch =
-    playerNames.find((n) => n.row)?.row?.sportId ?? context.players[0]?.sportId ?? sportId;
+  const sportForSearch = context.players[0]?.sportId ?? sportId;
   const atCap = (row.playerIds?.length ?? 0) >= MAX_CARD_PLAYERS;
   const cameosAtCap = cameoIds.length >= MAX_CARD_PLAYERS;
 
@@ -219,44 +225,47 @@ export default function PlayerTile({ row, context, attention, sportId }: TidyTil
         </p>
       )}
 
-      {playerNames.map((name) => {
-        const answer = name.row?.answer;
-        const linkedId = answer?.kind === "linkPlayer" ? (answer.playerId as string) : undefined;
-        return (
-          <PlayerNameRow
-            key={`${name.kind}|${name.nameNormalized}`}
-            row={row}
-            name={name}
-            linked={linkedId ? playerById.get(linkedId) : undefined}
-            reason={linkedId ? reasonOf(linkedId) : undefined}
-            setSportId={sportId}
-            multi={multi}
-            lead={name === leadName}
-            write={write}
-          />
-        );
-      })}
+      {playerNames.map((name) => (
+        <PlayerNameRow
+          key={`${name.kind}|${name.nameNormalized}`}
+          row={row}
+          name={name}
+          linked={name.playerId ? playerById.get(name.playerId) : undefined}
+          setSportId={sportId}
+          multi={multi}
+          lead={name === leadName}
+          write={write}
+          leafCards={leafCards}
+        />
+      ))}
 
-      {unrowed.map((player) => {
-        const reason = reasonOf(player.playerId);
-        return (
-          <div
-            key={player.playerId}
-            role="group"
-            aria-label={`Player ${player.name}`}
-            className="grid gap-1.5"
+      {ruledOut.map((a) => (
+        <RuledOutPlayerRow
+          key={`ruled:${a.printed}`}
+          row={row}
+          printed={a.printed}
+          setSportId={sportId}
+          write={write}
+          leafCards={leafCards}
+        />
+      ))}
+
+      {unrowed.map((player) => (
+        <div
+          key={player.playerId}
+          role="group"
+          aria-label={`Player ${player.name}`}
+          className="grid gap-1.5"
+        >
+          <EditLine
+            editLabel={`Edit ${player.name}`}
+            busy={write.busy}
+            onEdit={(opener) => openSearch({ kind: "change", playerId: player.playerId }, opener)}
           >
-            <EditLine
-              editLabel={`Edit ${player.name}`}
-              busy={write.busy}
-              onEdit={(opener) => openSearch({ kind: "change", playerId: player.playerId }, opener)}
-            >
-              <PlayerSummary player={player} fallbackName={player.name} />
-            </EditLine>
-            {reason && <TidyNote>{linkedForText(reason)}</TidyNote>}
-          </div>
-        );
-      })}
+            <PlayerSummary player={player} fallbackName={player.name} />
+          </EditLine>
+        </div>
+      ))}
 
       {cameos.map((cameo) => (
         <div

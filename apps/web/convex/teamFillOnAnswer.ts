@@ -24,7 +24,8 @@
  * own team default is "No Team" (NEO-639, decision A). A lookup that never
  * answered is missing data, not a claim: it holds nothing back.
  *
- * A team NB itself filled (`teamFillOf`) is never evidence for the next card.
+ * A team on a card is the card's team, whoever wrote it, and counts as evidence
+ * for the next card (NEO-656, J8: nothing records that NB filled it).
  *
  * The batch and stored tiers read a player's newest `TEAM_SUGGESTION_LINKS_PER_PLAYER`
  * cards: a bound that can cost a suggestion, never produce a wrong one. Both
@@ -34,7 +35,7 @@
 
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
-import { MAX_CARD_TEAMS, teamFillOf } from "./features/cardAttention";
+import { MAX_CARD_TEAMS } from "./features/cardAttention";
 import { planCardFill, type StoredTeamEvidence } from "./features/teamFillOnCommit";
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { careerVerdictFor, newCareerVerdictCache, type CareerVerdictCache } from "./lib/careerVerdict";
@@ -87,7 +88,6 @@ export function cardMayTakeFill(
     | "teamNoneConfirmedAt"
     | "teamCheckOutcome"
     | "sourceDisagreements"
-    | "tidyChecks"
   >,
   fields: {
     playerIds: ReadonlyArray<unknown>;
@@ -163,9 +163,7 @@ export async function planFillOnAnswer(
           TEAM_SUGGESTION_LINKS_PER_PLAYER,
         )) {
           const other = await ctx.db.get(cardId);
-          // A team NB itself filled is a guess, not data: it is never evidence for
-          // the next card (the wizard's evidence was only printed or answered teams).
-          if (other && tiers.relevant.has(other.selectorOptionId) && !teamFillOf(other)) {
+          if (other && tiers.relevant.has(other.selectorOptionId)) {
             cards.push(other);
           }
         }

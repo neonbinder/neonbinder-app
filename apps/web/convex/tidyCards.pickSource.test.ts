@@ -1,14 +1,17 @@
 /**
- * NEO-645 — `tidyCards.pickSourceValue`: "the sources disagree, use this one".
+ * NEO-645 / NEO-656 — `tidyCards.pickSourceValue`: "the sources disagree, use
+ * this one".
  *
  * Until a value is chosen the disagreeing field holds NOTHING. Choosing resolves
- * each name the way the commit does: an existing answer applies; otherwise
- * EXACTLY ONE NB match links (a primary-name match: an alias-only or tied match
- * is a question, never an adoption); anything else becomes a pending name plus a
- * name row, its lookup enqueued after the write.
+ * each name the way the commit does: EXACTLY ONE NB match links (a primary-name
+ * match: an alias-only or tied match is a question, never an adoption); anything
+ * else stays a pending name on the card. Nothing is stored about the pick
+ * (NEO-656: "once you pick a source, the card keeps only the result"): the
+ * disagreement's entry is REMOVED from the card, and a Change while the card is
+ * open works from the `offered` values the walk kept.
  *
  * "Apply to the cards with the same disagreement" is checked card by card on the
- * server: a card whose values differ (or that has already been settled) is
+ * server: a card whose values differ (or that has already been picked) is
  * refused and counted, never written; at most `MAX_APPLY_CARDS` cards.
  *
  * (That "Judge / Soto" and "Judge | Soto", Acuña and Acuna, Jr. and Jr store no
@@ -24,10 +27,8 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { MAX_APPLY_CARDS, MAX_PICK_NAMES } from "./tidyCards";
 import { deriveCardAttention } from "./features/cardAttention";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
-import { normalizeEntityName } from "../lib/entities/normalize-name";
 import {
   addPlayer,
-  nameRow,
   printCard,
   seedTidyWorld,
   stampGeneratedTitle,
@@ -87,7 +88,12 @@ const pick = (
   t: T,
   cardId: Id<"cardChecklist">,
   value: string[],
-  extra: { typed?: true; cardIds?: Array<Id<"cardChecklist">>; field?: "players" | "teams" } = {},
+  extra: {
+    typed?: true;
+    cardIds?: Array<Id<"cardChecklist">>;
+    field?: "players" | "teams";
+    offered?: string[][];
+  } = {},
 ) =>
   t.withIdentity(ADMIN).mutation(api.tidyCards.pickSourceValue, {
     cardId,
@@ -95,18 +101,13 @@ const pick = (
     value,
     ...(extra.typed ? { typed: true as const } : {}),
     ...(extra.cardIds ? { cardIds: extra.cardIds } : {}),
+    ...(extra.offered ? { offered: extra.offered } : {}),
   });
-const nameRows = (t: T) => t.run((ctx) => ctx.db.query("tidyNames").collect());
-const printedRows = (t: T, id: Id<"cardChecklist">) =>
-  t.run((ctx) =>
-    ctx.db
-      .query("cardPrintedNames")
-      .withIndex("by_card", (q) => q.eq("cardChecklistId", id))
-      .collect(),
-  );
+const scheduledNames = async (t: T) =>
+  (await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).map((s) => s.name);
 
 describe("pickSourceValue — each name resolves the way the commit does", () => {
-  test("an exact single NB match links; no name row, no printed row", async () => {
+  test("an exact single NB match links, takes the entry off the card, and stores nothing else", async () => {
     const t = newT();
     const { judge, open } = await setup(t);
     const out = await pick(t, open, [JUDGE]);
@@ -115,46 +116,23 @@ describe("pickSourceValue — each name resolves the way the commit does", () =>
     expect(c.playerIds).toEqual([judge]);
     expect(c.playerLinks).toEqual([{ playerId: judge, nameOnCard: JUDGE }]);
     expect(c.pendingPlayerNames).toBeUndefined();
-    expect(await nameRows(t)).toEqual([]);
-    expect(await printedRows(t, open)).toEqual([]);
+    // "Once you pick a source, the card keeps only the result."
+    expect(c.sourceDisagreements).toBeUndefined();
+    expect(await scheduledNames(t)).toEqual([]);
   });
 
-  test("no NB match: a pending name, a name row born pending, and a printed row", async () => {
+  test("no NB match: the name is pending on the card, and nothing else is written or scheduled", async () => {
     const t = newT();
-    const { w, open } = await setup(t);
+    const { open } = await setup(t);
     await pick(t, open, [SOTO]);
     const c = (await card(t, open))!;
     expect(c.playerIds).toBeUndefined();
     expect(c.pendingPlayerNames).toEqual([SOTO]);
-    const rows = await nameRows(t);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({
-      scopeId: w.base,
-      kind: "player",
-      nameNormalized: normalizeEntityName(SOTO),
-      status: "pending",
-      lookupGen: 0,
-    });
-    expect((await printedRows(t, open)).map((r) => [r.kind, r.printed, r.order])).toEqual([["player", SOTO, 0]]);
+    expect(c.sourceDisagreements).toBeUndefined();
+    expect(await scheduledNames(t)).toEqual([]);
   });
 
-  test("the lookup of a pending name is enqueued AFTER the write, for the leaf", async () => {
-    const t = newT();
-    const { open } = await setup(t);
-    await pick(t, open, [SOTO]);
-    const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
-    expect(scheduled.some((s) => s.name.includes("enqueuePendingLookups"))).toBe(true);
-  });
-
-  test("a value that links everything schedules no lookup", async () => {
-    const t = newT();
-    const { open } = await setup(t);
-    await pick(t, open, [JUDGE]);
-    const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
-    expect(scheduled.some((s) => s.name.includes("enqueuePendingLookups"))).toBe(false);
-  });
-
-  test("two namesakes are a question, never an adoption: pending, with the same-name choice on its row", async () => {
+  test("two namesakes are a question, never an adoption: the name stays pending", async () => {
     const t = newT();
     const { w, open } = await setup(t);
     await t.run(async (ctx) => {
@@ -164,9 +142,6 @@ describe("pickSourceValue — each name resolves the way the commit does", () =>
     await pick(t, open, [SOTO]);
     expect((await card(t, open))!.playerIds).toBeUndefined();
     expect((await card(t, open))!.pendingPlayerNames).toEqual([SOTO]);
-    const row = (await nameRows(t))[0];
-    expect(row.status).toBe("ready");
-    expect(row.enrichment?.existingCandidates).toHaveLength(2);
   });
 
   test("a player known only by an ALIAS is not adopted by name", async () => {
@@ -180,43 +155,13 @@ describe("pickSourceValue — each name resolves the way the commit does", () =>
     expect((await card(t, open))!.pendingPlayerNames).toEqual([SOTO]);
   });
 
-  test("an answer already on the name's row applies: a link", async () => {
+  test("a name once ruled out is matched like any other: one exact match links (nothing remembers the ruling, B10)", async () => {
     const t = newT();
     const { w, open } = await setup(t);
-    const soto = await t.run(async (ctx) => {
-      const soto = await addPlayer(ctx, w, "Juan Soto Jr");
-      await nameRow(ctx, {
-        scopeId: w.base,
-        sportId: w.sport,
-        kind: "player",
-        name: SOTO,
-        over: { answer: { kind: "linkPlayer", playerId: soto, by: "operator" }, answerGen: 1 },
-      });
-      return soto;
-    });
+    const soto = await t.run((ctx) => addPlayer(ctx, w, SOTO));
     await pick(t, open, [SOTO]);
     expect((await card(t, open))!.playerIds).toEqual([soto]);
     expect((await card(t, open))!.pendingPlayerNames).toBeUndefined();
-    // The card printed it, so it is indexed even though nothing is pending.
-    expect((await printedRows(t, open)).map((r) => r.printed)).toEqual([SOTO]);
-  });
-
-  test("an answer already on the name's row applies: not a player leaves it off the card", async () => {
-    const t = newT();
-    const { w, open } = await setup(t);
-    await t.run((ctx) =>
-      nameRow(ctx, {
-        scopeId: w.base,
-        sportId: w.sport,
-        kind: "player",
-        name: SOTO,
-        over: { answer: { kind: "notEntity", by: "operator" }, answerGen: 1 },
-      }),
-    );
-    await pick(t, open, [SOTO]);
-    const c = (await card(t, open))!;
-    expect(c.playerIds).toBeUndefined();
-    expect(c.pendingPlayerNames).toBeUndefined();
   });
 
   test("a multi-name value keeps its printed order and mixes links with pending", async () => {
@@ -229,8 +174,7 @@ describe("pickSourceValue — each name resolves the way the commit does", () =>
     const c = (await card(t, open))!;
     expect(c.playerIds).toEqual([judge]);
     expect(c.pendingPlayerNames).toEqual([SOTO]);
-    const printed = await printedRows(t, open);
-    expect(printed.map((r) => [r.printed, r.order])).toEqual([[SOTO, 1]]);
+    expect(c.playerLinks).toEqual([{ playerId: judge, nameOnCard: JUDGE }]);
   });
 
   test("a team value: one NB team links, an unknown name stays pending", async () => {
@@ -244,7 +188,10 @@ describe("pickSourceValue — each name resolves the way the commit does", () =>
     );
     await pick(t, open, ["San Diego Padres"], { field: "teams" });
     expect((await card(t, open))!.teamOnCardIds).toEqual([w.padres]);
-    await pick(t, open, ["Mystery Club"], { field: "teams" });
+    await pick(t, open, ["Mystery Club"], {
+      field: "teams",
+      offered: [["San Diego Padres"], ["Mystery Club"]],
+    });
     const c = (await card(t, open))!;
     expect(c.teamOnCardIds).toBeUndefined();
     expect(c.pendingTeamNames).toEqual(["Mystery Club"]);
@@ -255,23 +202,47 @@ describe("pickSourceValue — each name resolves the way the commit does", () =>
     const { judge, open } = await setup(t);
     await pick(t, open, [JUDGE]);
     expect((await card(t, open))!.playerIds).toEqual([judge]);
-    await pick(t, open, [SOTO]);
+    // The entry is gone, so a Change works from the values the walk kept.
+    await expect(pick(t, open, [SOTO])).rejects.toThrow(/nothing to pick/);
+    await pick(t, open, [SOTO], { offered: [[JUDGE], [SOTO]] });
     const c = (await card(t, open))!;
     expect(c.playerIds).toBeUndefined();
     expect(c.playerLinks).toBeUndefined();
     expect(c.pendingPlayerNames).toEqual([SOTO]);
-    expect(c.sourceDisagreements?.[0].chosen).toEqual({ value: [SOTO], by: "operator" });
+    expect(c.sourceDisagreements).toBeUndefined();
   });
 
-  test("stamps chosen as the operator's, and a typed value says so", async () => {
+  test("Change with offered values that do not include the pick is refused", async () => {
+    const t = newT();
+    const { open } = await setup(t);
+    await pick(t, open, [JUDGE]);
+    await expect(pick(t, open, ["Nobody Offered"], { offered: [[JUDGE], [SOTO]] })).rejects.toThrow(
+      /isn't one of the values/,
+    );
+  });
+
+  test("Change's offered values are bounded: more than 3 values, and a value over the byte cap, are refused", async () => {
+    const t = newT();
+    const { judge, open } = await setup(t);
+    await pick(t, open, [JUDGE]);
+    await expect(pick(t, open, [JUDGE], { offered: [[JUDGE], [SOTO], ["A B"], ["C D"]] })).rejects.toThrow(
+      /at most 3 values/,
+    );
+    const fat = Array.from({ length: 20 }, (_, i) => `${"A".repeat(100)}${i}`);
+    await expect(pick(t, open, [JUDGE], { offered: [fat, fat, [JUDGE]] })).rejects.toThrow(
+      /too long to pick from/,
+    );
+    // Nothing was written by the refusals.
+    expect((await card(t, open))!.playerIds).toEqual([judge]);
+  });
+
+  test("a typed value is used as given (it needs no offer) and the entry leaves the card", async () => {
     const t = newT();
     const { open } = await setup(t);
     await pick(t, open, ["Somebody Typed"], { typed: true });
-    expect((await card(t, open))!.sourceDisagreements?.[0].chosen).toEqual({
-      value: ["Somebody Typed"],
-      by: "operator",
-      typed: true,
-    });
+    const c = (await card(t, open))!;
+    expect(c.pendingPlayerNames).toEqual(["Somebody Typed"]);
+    expect(c.sourceDisagreements).toBeUndefined();
   });
 });
 
@@ -302,7 +273,7 @@ describe("pickSourceValue — titles and lastUpdated", () => {
     expect((await card(t, open))!.lastUpdated).toBeGreaterThan(WORLD_NOW);
   });
 
-  test("the chosen stamp ALONE does not bump lastUpdated (the NEO-203 baseVersion)", async () => {
+  test("taking the entry off the card ALONE does not bump lastUpdated (the NEO-203 baseVersion)", async () => {
     const t = newT();
     const { w } = await setup(t);
     // One source named nobody (the checklist's "No team"): choosing it changes no field.
@@ -311,7 +282,7 @@ describe("pickSourceValue — titles and lastUpdated", () => {
     );
     await pick(t, open, [], { field: "teams" });
     const c = (await card(t, open))!;
-    expect(c.sourceDisagreements?.[0].chosen).toEqual({ value: [], by: "operator" });
+    expect(c.sourceDisagreements).toBeUndefined();
     expect(c.lastUpdated).toBe(WORLD_NOW);
   });
 });
@@ -358,7 +329,7 @@ describe("pickSourceValue — an empty teams value is the No-team answer", () =>
     );
     await pick(t, open, [], { field: "teams" });
     expect((await card(t, open))!.teamNoneConfirmedAt).toBeTypeOf("number");
-    await pick(t, open, ["San Diego Padres"], { field: "teams" });
+    await pick(t, open, ["San Diego Padres"], { field: "teams", offered: [["San Diego Padres"], []] });
     const c = (await card(t, open))!;
     expect(c.teamNoneConfirmedAt).toBeUndefined();
     expect(c.teamOnCardIds?.length).toBe(1);
@@ -370,7 +341,8 @@ describe("pickSourceValue — what it refuses", () => {
     const t = newT();
     const { open } = await setup(t);
     await expect(pick(t, open, ["Nobody Offered"])).rejects.toThrow(/isn't one of the values/);
-    expect((await card(t, open))!.sourceDisagreements?.[0].chosen).toBeUndefined();
+    // Refused: the entry is still on the card, so the operator can pick again.
+    expect((await card(t, open))!.sourceDisagreements).toEqual([playersEntry()]);
   });
 
   test("an offered value matches by the shared name key, not by exact text", async () => {
@@ -404,20 +376,6 @@ describe("pickSourceValue — what it refuses", () => {
     expect(err.message).not.toContain(long);
   });
 
-  test("a typed value that would not fit the 4096-byte cap on the card is refused, and nothing is written", async () => {
-    const t = newT();
-    const { w } = await setup(t);
-    const fat = Array.from({ length: 20 }, (_, i) => `${"A".repeat(100)}${i}`);
-    const open = await t.run((ctx) =>
-      printCard(ctx, w, { number: "11", extra: { sourceDisagreements: [playersEntry(fat, [SOTO])] } }),
-    );
-    const typed = Array.from({ length: 20 }, (_, i) => `${"B".repeat(100)}${i}`);
-    await expect(pick(t, open, typed, { typed: true })).rejects.toThrow(/too long to keep/);
-    const c = (await card(t, open))!;
-    expect(c.sourceDisagreements?.[0].chosen).toBeUndefined();
-    expect(c.pendingPlayerNames).toBeUndefined();
-  });
-
   test("a card that is gone is refused", async () => {
     const t = newT();
     const { open } = await setup(t);
@@ -433,7 +391,7 @@ describe("pickSourceValue — what it refuses", () => {
     await expect(t.withIdentity(MEMBER).mutation(api.tidyCards.pickSourceValue, args)).rejects.toThrow(
       /Admin access required/,
     );
-    expect((await card(t, open))!.sourceDisagreements?.[0].chosen).toBeUndefined();
+    expect((await card(t, open))!.sourceDisagreements).toEqual([playersEntry()]);
   });
 });
 
@@ -469,9 +427,12 @@ describe("pickSourceValue — Apply to the cards with the same disagreement", ()
     // The card whose values differ is NOT written, however the client counted it.
     const differs = (await card(t, ids.differs))!;
     expect(differs.playerIds).toBeUndefined();
-    expect(differs.sourceDisagreements?.[0].chosen).toBeUndefined();
-    // A card the operator already settled keeps its own choice.
+    expect(differs.sourceDisagreements).toEqual([playersEntry([JUDGE], ["Mookie Betts"])]);
+    // A card settled before NEO-656 (a stored `chosen`) is read as picked: left as it is.
     expect((await card(t, ids.settled))!.sourceDisagreements?.[0].chosen?.value).toEqual([SOTO]);
+    expect((await card(t, ids.settled))!.playerIds).toBeUndefined();
+    // A card that was picked and has no entry any more is refused too.
+    expect((await card(t, ids.same))!.sourceDisagreements).toBeUndefined();
     expect((await card(t, ids.none))!.sourceDisagreements).toBeUndefined();
   });
 
@@ -492,27 +453,31 @@ describe("pickSourceValue — Apply to the cards with the same disagreement", ()
     expect(out).toEqual({ applied: 1, scheduled: 1, refused: 0 });
   });
 
-  test("names pending on the applied cards are queued for lookup, and each card gets its own name rows", async () => {
+  test("names left pending on the applied cards stay pending on each card; nothing else is written or scheduled", async () => {
     const t = newT();
-    const { w, open, ids } = await fiveCards(t);
+    const { open, ids } = await fiveCards(t);
     await pick(t, open, [SOTO], { cardIds: [ids.same] });
     await drainScheduled(t);
     expect((await card(t, ids.same))!.pendingPlayerNames).toEqual([SOTO]);
-    expect((await printedRows(t, ids.same)).map((r) => r.printed)).toEqual([SOTO]);
-    expect((await nameRows(t)).filter((r) => r.scopeId === w.base)).toHaveLength(1);
+    expect((await card(t, ids.same))!.sourceDisagreements).toBeUndefined();
+    expect(await scheduledNames(t)).toEqual(
+      (await scheduledNames(t)).filter((n) => n.includes("pickSourceValuePage")),
+    );
   });
 
   test("a card is re-checked when its scheduled page runs: one settled in between is left alone", async () => {
     const t = newT();
     const { open, ids } = await fiveCards(t);
     await pick(t, open, [JUDGE], { cardIds: [ids.same] });
-    // Between the call and the page, the operator settled the other card by hand.
+    // Between the call and the page, the operator picked the other card by hand
+    // (a pick takes the entry off the card).
     await t.run((ctx) =>
-      ctx.db.patch(ids.same, { sourceDisagreements: [playersEntry([JUDGE], [SOTO], { value: [SOTO], by: "operator" })] }),
+      ctx.db.patch(ids.same, { sourceDisagreements: undefined, pendingPlayerNames: [SOTO] }),
     );
     await drainScheduled(t);
     const c = (await card(t, ids.same))!;
-    expect(c.sourceDisagreements?.[0].chosen?.value).toEqual([SOTO]);
+    expect(c.sourceDisagreements).toBeUndefined();
+    expect(c.pendingPlayerNames).toEqual([SOTO]);
     expect(c.playerIds).toBeUndefined();
   });
 
@@ -545,7 +510,8 @@ describe("pickSourceValue — Apply to the cards with the same disagreement", ()
     for (const id of [ids.same, ids.sameReordered]) {
       const c = (await card(t, id))!;
       expect(c.playerIds).toBeUndefined();
-      expect(c.sourceDisagreements?.[0].chosen).toBeUndefined();
+      // Refused: the card keeps the disagreement it now carries.
+      expect(c.sourceDisagreements).toHaveLength(1);
     }
   });
 
@@ -568,11 +534,10 @@ describe("pickSourceValue — Apply to the cards with the same disagreement", ()
     const { open, ids } = await fiveCards(t);
     await pick(t, open, ["Somebody Else"], { typed: true, cardIds: [ids.same, ids.differs] });
     await drainScheduled(t);
-    expect((await card(t, ids.same))!.sourceDisagreements?.[0].chosen).toMatchObject({
-      value: ["Somebody Else"],
-      typed: true,
-    });
-    expect((await card(t, ids.differs))!.sourceDisagreements?.[0].chosen).toBeUndefined();
+    expect((await card(t, ids.same))!.pendingPlayerNames).toEqual(["Somebody Else"]);
+    expect((await card(t, ids.same))!.sourceDisagreements).toBeUndefined();
+    expect((await card(t, ids.differs))!.pendingPlayerNames).toBeUndefined();
+    expect((await card(t, ids.differs))!.sourceDisagreements).toHaveLength(1);
   });
 
   test("at most 100 OTHER cards: 101 is refused, and nothing at all is written, the open card included", async () => {
@@ -586,7 +551,7 @@ describe("pickSourceValue — Apply to the cards with the same disagreement", ()
       return out;
     });
     await expect(pick(t, open, [JUDGE], { cardIds: ids })).rejects.toThrow(/At most 100/);
-    expect((await card(t, open))!.sourceDisagreements?.[0].chosen).toBeUndefined();
+    expect((await card(t, open))!.sourceDisagreements).toEqual([playersEntry()]);
     expect((await card(t, open))!.playerIds).toBeUndefined();
   });
 
@@ -611,8 +576,8 @@ describe("pickSourceValue — Apply to the cards with the same disagreement", ()
   });
 });
 
-describe("pickSourceValue — lookups go out for each card's own scope", () => {
-  test("a name left pending on cards in two leaves is queued for lookup in BOTH leaves", async () => {
+describe("pickSourceValue — cards on other leaves", () => {
+  test("a name left pending on cards in two leaves is pending on each, with no lookup queued", async () => {
     const t = newT();
     const { w, open } = await setup(t);
     const other = await t.run((ctx) =>
@@ -625,10 +590,10 @@ describe("pickSourceValue — lookups go out for each card's own scope", () => {
     const out = await pick(t, open, [SOTO], { cardIds: [other] });
     expect(out).toEqual({ applied: 1, scheduled: 1, refused: 0 });
     await drainScheduled(t);
-    const rows = (await nameRows(t)).filter((r) => r.nameNormalized === normalizeEntityName(SOTO));
-    expect(rows.map((r) => r.scopeId).sort()).toEqual([w.base, w.insert].sort());
-    // Each scope's row was asked about (the enqueue bumps the generation), not just the open card's.
-    expect(rows.every((r) => (r.lookupGen ?? 0) === 1)).toBe(true);
+    expect((await card(t, open))!.pendingPlayerNames).toEqual([SOTO]);
+    expect((await card(t, other))!.pendingPlayerNames).toEqual([SOTO]);
+    const names = await scheduledNames(t);
+    expect(names.filter((n) => !n.includes("pickSourceValuePage"))).toEqual([]);
   });
 });
 

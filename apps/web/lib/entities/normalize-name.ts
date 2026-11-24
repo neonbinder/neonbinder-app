@@ -2,8 +2,7 @@
  * NEO-253 — ONE normalisation of an entity name, for every side of the wire.
  *
  * `players.nameNormalized`, `teams.nameNormalized`, `leagues.nameNormalized`,
- * the `entityReviewSkips` key, the `entityReviewQueue` resume key and the
- * commit prelude's own inline helper all have to answer "is this the same
+ * and the commit prelude's own inline helper all have to answer "is this the same
  * name?" identically. Before this module there were SIX hand-written copies of
  * the same regex chain (`convex/players.ts`, `convex/teams.ts`,
  * `convex/leagues.ts`, two in `convex/selectorOptions.ts`, one in
@@ -111,8 +110,8 @@ chain uses NFD, exactly as main does.
  *   "smith-jones", "Wilkes-Barre Barons" as "barons wilkes-barre". That is
  *   `normalizeEntityName`, `normalizeOrderedEntityName` and `entityNameTokens`
  *   as the writers use them (`players`, `playerSports`, `playerAliases`,
- *   `teams`, `teamAliases`, `leagues`, `franchises`, `entityReviewSkips`,
- *   `entityReviewQueue`) and `rekeyEntityNames`. No re-key, no seed change:
+ *   `teams`, `teamAliases`, `leagues`, `franchises`)
+ *   and `rekeyEntityNames`. No re-key, no seed change:
  *   for any name without a junk character the key is byte-identical to main's
  *   (pinned in `normalize-name.test.ts`). The second reason is the token
  *   sort: with the dash gone, "Min-jae Kim" and "Jae-min Kim" both sort to

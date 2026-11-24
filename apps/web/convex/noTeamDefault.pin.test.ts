@@ -544,27 +544,6 @@ describe("NEO-556 invariant 8 — applyBscTeamResolution", () => {
     expect(card!.teamCheckDoneAt).toBeTypeOf("number");
   });
 
-  test("BSC's whole claim ruled 'not a team' still never stamps a card holding a pending team name", async () => {
-    const t = convexTest(schema, modules);
-    const { id, tree } = await leafWithCard(t, { noTeamDefault: NO_TEAM }, { pendingTeamNames: ["Gotham"] });
-    await t.run(async (ctx) => {
-      await ctx.db.insert("entityReviewSkips", {
-        selectorOptionId: tree.variantTypeId,
-        kind: "team",
-        nameNormalized: "league leaders",
-        name: "League Leaders",
-        skippedAt: 1,
-        skippedByUserId: "skipper",
-      });
-    });
-    await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
-      cardChecklistId: id,
-      rawTeamName: "League Leaders",
-      teamNames: ["League Leaders"],
-    });
-    expect((await getCard(t, id))!.teamNoneConfirmedAt).toBeUndefined();
-  });
-
   test("only the card's own leaf is asked: a No Team set above an unset leaf stamps nothing", async () => {
     const t = convexTest(schema, modules);
     const { id } = await leafWithCard(t, { noTeamDefault: NO_TEAM }, {}, "setNameOnly");

@@ -14,7 +14,10 @@ vi.mock("../../../../convex/_generated/api", () => ({
       get: (_t, mod) =>
         typeof mod !== "string" || mod === "then"
           ? undefined
-          : new Proxy(
+          : mod === "adapters"
+            ? // `adapters.wikidata.lookupTidyName` is one level deeper than the other modules.
+              new Proxy({}, { get: (_a, sub) => new Proxy({}, { get: (_b, fn) => `adapters.${String(sub)}.${String(fn)}` }) })
+            : new Proxy(
               {},
               {
                 get: (_t2, fn) => (typeof fn !== "string" || fn === "then" ? undefined : `${mod}.${fn}`),
@@ -27,9 +30,13 @@ vi.mock("../../../../convex/_generated/api", () => ({
 const queryResults: Record<string, unknown> = {};
 const mutations: Record<string, ReturnType<typeof vi.fn>> = {};
 const mutation = (ref: string) => (mutations[ref] ??= vi.fn().mockResolvedValue(null));
+// An action that never answers by default: a name's lookup stays "pending" until a test seeds it.
+const actions: Record<string, ReturnType<typeof vi.fn>> = {};
+const action = (ref: string) => (actions[ref] ??= vi.fn(() => new Promise(() => {})));
 vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => (args === "skip" ? undefined : queryResults[ref]),
   useMutation: (ref: string) => mutation(ref),
+  useAction: (ref: string) => action(ref),
   useConvex: () => ({ query: vi.fn() }),
 }));
 
@@ -82,6 +89,8 @@ vi.mock("../../NewTeamForm", async (importOriginal) => ({
 }));
 
 import { AnsweredProvider } from "../answered";
+import { WalkMemory, WalkMemoryProvider, lookupKeyOf, nameKeyOf } from "../walk-memory";
+import { normalizeEntityName } from "@/lib/entities/normalize-name";
 import TeamTile from "./TeamTile";
 import type { TidyAttentionItem } from "../../../../convex/features/cardAttention";
 import type { TidyAttention, TidyCardContext, TidyRow, TidyTileProps } from "../tile-types";
@@ -92,17 +101,30 @@ const SPORT = "sport-1";
 const card = (extra: Record<string, unknown> = {}) =>
   ({ _id: CARD, cardNumber: "USC42", cardName: "Jackson Merrill", ...extra }) as unknown as TidyRow;
 
-const teamName = (over: Record<string, unknown> = {}) => ({
-  kind: "team" as const,
-  nameNormalized: "padres",
-  printed: "Padres",
-  order: 0,
-  cardOverride: false,
-  scopeId: "leaf-1",
-  row: { name: "Padres", sportId: SPORT, status: "ready" as const },
-  printedOn: null,
-  ...over,
-});
+/**
+ * A printed team name as `tidyCards.cardContext` reads it off the card (kind,
+ * printed, pending). `row` stands for what the walk holds for it: the lookup
+ * (`status`, `enrichment`) and the rows the set's facts say it reached
+ * (`candidateTeamIds`, `candidatePlace`). A linked team has no name of its own
+ * (it is in `teams`, onCard), and "Not a team" lives in the walk's memory.
+ */
+const teamName = (over: Record<string, unknown> = {}) => {
+  const { row = {}, ...rest } = over as {
+    row?: { status?: string; enrichment?: unknown; candidateTeamIds?: string[]; candidatePlace?: boolean };
+    [k: string]: unknown;
+  };
+  const printed = (rest.printed as string | undefined) ?? "Padres";
+  return {
+    kind: "team" as const,
+    nameNormalized: normalizeEntityName(printed),
+    printed,
+    order: 0,
+    pending: true,
+    ...rest,
+    // Read by `renderTile` to seed the walk's memory; not part of the context.
+    seed: row,
+  };
+};
 
 const context = (over: Record<string, unknown> = {}) =>
   ({
@@ -118,6 +140,30 @@ const context = (over: Record<string, unknown> = {}) =>
 const nameItem: TidyAttentionItem = { level: "fix", kind: "teamName", names: ["Padres"] };
 const noTeamItem: TidyAttentionItem = { level: "fix", kind: "noTeam" };
 
+let memory: WalkMemory;
+
+/** Put the lookup and the set's facts for a name straight into the walk's memory. */
+function seedName(
+  m: WalkMemory,
+  printed: string,
+  seed: { status?: string; enrichment?: unknown; candidateTeamIds?: string[]; candidatePlace?: boolean },
+) {
+  const inner = m as unknown as { lookups: Map<string, unknown>; gateItems: Map<string, unknown> };
+  inner.lookups.set(lookupKeyOf(CARD, "team", printed, SPORT), {
+    status: seed.status ?? "ready",
+    ...(seed.enrichment ? { enrichment: seed.enrichment } : {}),
+  });
+  if (seed.candidateTeamIds || seed.candidatePlace) {
+    inner.gateItems.set(nameKeyOf("team", printed), {
+      kind: "team",
+      name: printed,
+      sportId: SPORT,
+      ...(seed.candidateTeamIds ? { candidateTeamIds: seed.candidateTeamIds } : {}),
+      ...(seed.candidatePlace ? { candidatePlace: true } : {}),
+    });
+  }
+}
+
 function renderTile(
   opts: {
     row?: TidyRow;
@@ -125,12 +171,24 @@ function renderTile(
     items?: TidyAttentionItem[];
     leafCards?: TidyRow[];
     setNoTeam?: boolean;
-    onAnswered?: () => void;
+    onAnswered?: (announcement?: string) => void;
+    /** Leave every name's lookup unseeded: still pending. */
+    unseeded?: boolean;
   } = {},
 ) {
+  const ctxIn = "ctx" in opts ? opts.ctx : context({ names: [teamName()] });
+  if (!opts.unseeded) {
+    for (const n of (ctxIn?.names ?? []) as unknown as Array<{
+      kind: string;
+      printed: string;
+      seed?: Parameters<typeof seedName>[2];
+    }>) {
+      if (n.kind === "team" && n.seed) seedName(memory, n.printed, n.seed);
+    }
+  }
   const props: TidyTileProps = {
     row: opts.row ?? card({ pendingTeamNames: ["Padres"] }),
-    context: "ctx" in opts ? opts.ctx : context({ names: [teamName()] }),
+    context: ctxIn,
     attention: { level: "fix", items: opts.items ?? [nameItem] },
     leafId: "leaf-1" as never,
     sportId: SPORT as never,
@@ -139,15 +197,19 @@ function renderTile(
     ...(opts.setNoTeam !== undefined ? { setNoTeam: opts.setNoTeam } : {}),
   };
   return render(
-    <AnsweredProvider value={opts.onAnswered ?? (() => {})}>
-      <TeamTile {...props} />
-    </AnsweredProvider>,
+    <WalkMemoryProvider value={memory}>
+      <AnsweredProvider value={opts.onAnswered ?? (() => {})}>
+        <TeamTile {...props} />
+      </AnsweredProvider>
+    </WalkMemoryProvider>,
   );
 }
 
 const click = (el: HTMLElement) => act(async () => fireEvent.click(el));
 
 beforeEach(() => {
+  memory = new WalkMemory();
+  for (const k of Object.keys(actions)) delete actions[k];
   for (const k of Object.keys(queryResults)) delete queryResults[k];
   for (const k of Object.keys(mutations)) delete mutations[k];
 });
@@ -181,6 +243,7 @@ describe("TeamTile", () => {
         cardId: CARD,
         kind: "team",
         name: "Padres",
+        sportId: SPORT,
         answer: { kind: "linkTeam", teamId: "team-7", saveAsAlias: true },
       });
     });
@@ -197,6 +260,7 @@ describe("TeamTile", () => {
         cardId: CARD,
         kind: "team",
         name: "Padres",
+        sportId: SPORT,
         answer: { kind: "linkTeam", teamId: "team-7" },
       });
     });
@@ -227,6 +291,7 @@ describe("TeamTile", () => {
         cardId: CARD,
         kind: "team",
         name: "Padres",
+        sportId: SPORT,
         answer: { kind: "linkTeam", teamId: "team-7" },
       });
     });
@@ -342,6 +407,7 @@ describe("TeamTile", () => {
         cardId: CARD,
         kind: "team",
         name: "Padres",
+        sportId: SPORT,
         answer: { kind: "notEntity" },
       });
     });
@@ -359,6 +425,7 @@ describe("TeamTile", () => {
         cardId: CARD,
         kind: "team",
         name: "Padres",
+        sportId: SPORT,
         answer: { kind: "linkTeam", teamId: "team-new" },
       });
       // Closed again once it is made.
@@ -442,58 +509,157 @@ describe("TeamTile", () => {
   });
 
   describe("an answered name", () => {
-    const linked = (answer: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
-      context({
-        names: [teamName({ row: { name: "Padres", sportId: SPORT, status: "ready", answer } })],
-        teams: [{ teamId: "team-7", name: "San Diego Padres", onCard: true, candidate: false }],
-        ...extra,
-      });
-
-    it("a team we linked says why, is plain, and Edit clears the answer", async () => {
+    it("a team linked to the card is plain, with Edit at the end of its line; no 'Linked for you' note", async () => {
       renderTile({
         row: card({ teamOnCardIds: ["team-7"] }),
         items: [],
-        ctx: linked(
-          { kind: "linkTeam", teamId: "team-7", by: "auto", autoReason: "careerTeam" },
-          {
-            linkedFor: [{ kind: "team", teamId: "team-7", reason: "careerTeam" }],
-            players: [
-              {
-                playerId: "player-1",
-                name: "Jackson Merrill",
-                sportId: SPORT,
-                stints: [{ teamId: "team-7", teamName: "San Diego Padres", fromYear: 2024 }],
-                stintsMore: false,
-              },
-            ],
-          },
-        ),
+        ctx: context({
+          teams: [{ teamId: "team-7", name: "San Diego Padres", onCard: true, candidate: false }],
+          linkedFor: [{ kind: "team", teamId: "team-7", reason: "careerTeam" }],
+        }),
       });
       expect(screen.getByRole("group", { name: "Team" }).getAttribute("data-tidy-level")).toBe("plain");
       expect(screen.getByText("San Diego Padres")).toBeTruthy();
-      // The team row's own words: the player row's "the only one on file…" is about a person.
-      expect(screen.getByText("Linked for you: Jackson Merrill played here")).toBeTruthy();
-      expect(screen.queryByText(/only one on file/)).toBeNull();
-      await click(screen.getByRole("button", { name: "Edit San Diego Padres" }));
-      expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
+      expect(screen.queryByText(/Linked for you/)).toBeNull();
+      expect(screen.getByRole("button", { name: "Edit San Diego Padres" })).toBeTruthy();
+    });
+
+    it("'Not a team' reads as answered while the card is open, and Edit brings the question back", async () => {
+      queryResults["teams.nearMatches"] = [];
+      const { rerender } = renderTile();
+      await click(screen.getByRole("button", { name: "Not a team" }));
+      // The card no longer lists the name as waiting (Convex delivers the new row); only memory holds the ruling.
+      rerender(
+        <WalkMemoryProvider value={memory}>
+          <AnsweredProvider value={() => {}}>
+            <TeamTile
+              row={card()}
+              context={context()}
+              attention={{ level: "none", items: [] } as never}
+              leafId={"leaf-1" as never}
+              sportId={SPORT as never}
+              leafCards={[]}
+              setName="Set"
+            />
+          </AnsweredProvider>
+        </WalkMemoryProvider>,
+      );
+      expect(screen.getByText("is not a team.", { exact: false })).toBeTruthy();
+      await click(screen.getByRole("button", { name: "Edit Padres" }));
+      expect(mutation("tidyNames.answerName")).toHaveBeenLastCalledWith({
         cardId: CARD,
         kind: "team",
         name: "Padres",
+        sportId: SPORT,
         answer: { kind: "clear" },
       });
+      // The ruling is taken back out of memory.
+      expect(memory.answersOn(CARD, "team")).toEqual([]);
     });
 
-    it("'Not a team' reads as answered and Edit brings the question back", async () => {
-      renderTile({
-        row: card(),
-        items: [],
-        ctx: linked({ kind: "notEntity", by: "operator" }, { teams: [] }),
-      });
-      expect(screen.getByText("is not a team.")).toBeTruthy();
+    it("answers are never stored: the ruling is gone once the walk leaves the card", async () => {
+      queryResults["teams.nearMatches"] = [];
+      renderTile();
+      await click(screen.getByRole("button", { name: "Not a team" }));
+      expect(memory.answersOn(CARD, "team")).toHaveLength(1);
+      memory.leaveCard(CARD);
+      expect(memory.answersOn(CARD, "team")).toEqual([]);
+    });
+
+    it("Edit on a ruled-out team name hands focus to the first control of the row it re-opens (A3)", async () => {
+      queryResults["teams.nearMatches"] = [];
+      memory.rememberAnswer(CARD, "team", "Padres", { kind: "notEntity", printed: "Padres" });
+      const { rerender } = renderTile({ row: card(), items: [], ctx: context() });
       await click(screen.getByRole("button", { name: "Edit Padres" }));
-      expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith(
-        expect.objectContaining({ answer: { kind: "clear" } }),
+      rerender(
+        <WalkMemoryProvider value={memory}>
+          <AnsweredProvider value={() => {}}>
+            <TeamTile
+              row={card({ pendingTeamNames: ["Padres"] })}
+              context={context({ names: [teamName()] })}
+              attention={{ level: "none", items: [] } as never}
+              leafId={"leaf-1" as never}
+              sportId={SPORT as never}
+              leafCards={[]}
+              setName="Set"
+            />
+          </AnsweredProvider>
+        </WalkMemoryProvider>,
       );
+      await act(async () => {
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      });
+      const group = screen.getByRole("group", { name: "Team Padres" });
+      expect(screen.queryByText(/is not a team\./)).toBeNull();
+      const first = group.querySelector<HTMLElement>("button, input, [tabindex]");
+      expect(first).not.toBeNull();
+      expect(document.activeElement).toBe(first);
+    });
+
+    it("a refused 'Edit' on a ruled-out name keeps the ruling", async () => {
+      memory.rememberAnswer(CARD, "team", "Padres", { kind: "notEntity", printed: "Padres" });
+      mutation("tidyNames.answerName").mockRejectedValueOnce(new Error("Server Error"));
+      renderTile({ row: card(), items: [], ctx: context() });
+      await click(screen.getByRole("button", { name: "Edit Padres" }));
+      expect(screen.getByRole("alert").textContent).toBe("Couldn't change that answer. Try again.");
+      expect(memory.answersOn(CARD, "team")).toHaveLength(1);
+    });
+
+    it("a link made on the open card is offered to the other cards still waiting on the name (Apply to all)", async () => {
+      queryResults["teams.nearMatches"] = [];
+      const waiting = card({ _id: "card-2", cardNumber: "USC43", pendingTeamNames: ["Padres"] });
+      const { rerender } = renderTile({ leafCards: [card({ pendingTeamNames: ["Padres"] }), waiting] });
+      await click(screen.getByRole("button", { name: "Pick San Diego Padres" }));
+      rerender(
+        <WalkMemoryProvider value={memory}>
+          <AnsweredProvider value={() => {}}>
+            <TeamTile
+              row={card({ teamOnCardIds: ["team-7"] })}
+              context={context({ teams: [{ teamId: "team-7", name: "San Diego Padres", onCard: true, candidate: false }] })}
+              attention={{ level: "none", items: [] } as never}
+              leafId={"leaf-1" as never}
+              sportId={SPORT as never}
+              leafCards={[card({ teamOnCardIds: ["team-7"] }), waiting]}
+              setName="Set"
+            />
+          </AnsweredProvider>
+        </WalkMemoryProvider>,
+      );
+      expect(screen.getByRole("button", { name: "Apply to all cards printing “Padres”" })).toBeTruthy();
+    });
+  });
+
+  describe("the lookup is the walk's, read live", () => {
+    it("is asked once through the lookup action, in the set's sport, and holds nothing in storage", async () => {
+      const setItem = vi.spyOn(Storage.prototype, "setItem");
+      queryResults["teams.nearMatches"] = [];
+      renderTile({ unseeded: true });
+      expect(action("adapters.wikidata.lookupTidyName")).toHaveBeenCalledTimes(1);
+      expect(action("adapters.wikidata.lookupTidyName")).toHaveBeenCalledWith({
+        cardId: CARD,
+        kind: "team",
+        name: "Padres",
+        sportId: SPORT,
+      });
+      expect(setItem).not.toHaveBeenCalled();
+      setItem.mockRestore();
+    });
+
+    it("a lookup that failed says so, offers Try again, and leaves the rest working", async () => {
+      queryResults["teams.nearMatches"] = [];
+      renderTile({ ctx: context({ names: [teamName({ row: { status: "error" } })] }) });
+      expect(screen.getByText("Couldn't look this one up.")).toBeTruthy();
+      // Missing data is not a claim: the normal answers are all still on offer.
+      expect(screen.getByRole("button", { name: "Not a team" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "+ New team" }).getAttribute("aria-disabled")).toBeNull();
+      await click(screen.getByRole("button", { name: "Try again" }));
+      expect(action("adapters.wikidata.lookupTidyName")).toHaveBeenCalledTimes(1);
+    });
+
+    it("no Try again while the lookup is pending or ready", () => {
+      queryResults["teams.nearMatches"] = [];
+      renderTile();
+      expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
     });
   });
 
@@ -541,18 +707,27 @@ describe("TeamTile", () => {
       };
     };
     const career = (...teams: ReturnType<typeof T>[]) => ({ tier: "career", teams });
-    const pressed = (name: RegExp | string) => screen.getByRole("button", { name }).getAttribute("aria-pressed");
+    // A preselected chip carries the check mark and says ", suggested" in its accessible name;
+    // a chip is a plain button (a click saves it).
+    const marked = (chip: HTMLElement) => String(/, suggested/.test(chip.getAttribute("aria-label") ?? ""));
+    const pressed = (name: RegExp | string) => marked(screen.getByRole("button", { name }));
     const allChips = (name: RegExp) => screen.getAllByRole("button", { name });
-    const none = () => expect(screen.queryByRole("button", { name: /^Save teams?$/ })).toBeNull();
+    // There is no Save button: nothing is written until a team is clicked.
+    const none = () => {
+      expect(screen.queryByRole("button", { name: /^Save teams?$/ })).toBeNull();
+      expect(mutation("selectorOptions.updateCard")).not.toHaveBeenCalled();
+    };
 
     const foxx = [S("t-a", 1925, 1935), S("t-b", 1936, 1942)];
 
-    it("pre-fills a stint that covers the set's year and saves it with the Save button", async () => {
+    it("pre-fills a stint that covers the set's year, and clicking it saves it", async () => {
       evidence(1940, { answer: career(T("t-b", "Boston Red Sox")), candidates: [T("t-b", "Boston Red Sox")], stints: foxx });
       renderTile({ row: row(), ctx: ctx(), items });
       expect(pressed(/Boston Red Sox/)).toBe("true");
       expect(screen.getByText("Suggested from career history.")).toBeTruthy();
-      await click(screen.getByRole("button", { name: "Save team" }));
+      expect(screen.queryByRole("button", { name: /^Save teams?$/ })).toBeNull();
+      expect(mutation("selectorOptions.updateCard")).not.toHaveBeenCalled();
+      await click(screen.getByRole("button", { name: /Boston Red Sox/ }));
       expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
         id: CARD,
         teamOnCardIds: ["t-b"],
@@ -573,14 +748,12 @@ describe("TeamTile", () => {
         stints: foxx,
       });
       renderTile({ row: row(), ctx: ctx(), items });
-      for (const chip of allChips(/Athletics|Red Sox/)) expect(chip.getAttribute("aria-pressed")).toBe("false");
+      for (const chip of allChips(/Athletics|Red Sox/)) expect(marked(chip)).toBe("false");
       expect(screen.getByRole("button", { name: "Philadelphia Athletics · 1925–1935" })).toBeTruthy();
       expect(screen.getByText("No 2025 team on file. Here's the whole career, so pick the one on the card.")).toBeTruthy();
-      // Nothing chosen: there is nothing to save, so there is no Save button at all.
+      // Nothing is written until a team is clicked, and a click saves it.
       none();
-      expect(mutation("selectorOptions.updateCard")).not.toHaveBeenCalled();
       await click(screen.getByRole("button", { name: /Boston Red Sox/ }));
-      await click(screen.getByRole("button", { name: "Save team" }));
       expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
         id: CARD,
         teamOnCardIds: ["t-b"],
@@ -601,7 +774,7 @@ describe("TeamTile", () => {
           { _id: "t-a", name: "Philadelphia Athletics", label: "Philadelphia Athletics" },
         ];
         renderTile({ row: row({ bscTeamName: "Philadelphia Athletics" }), ctx: ctx(), items });
-        for (const chip of allChips(/Athletics|Red Sox/)) expect(chip.getAttribute("aria-pressed")).toBe("false");
+        for (const chip of allChips(/Athletics|Red Sox/)) expect(marked(chip)).toBe("false");
         expect(screen.getByText("From the career. The listing names a team, so pick the one on the card.")).toBeTruthy();
         expect(screen.getByText("The listing names “Philadelphia Athletics”. Pick it if it matches the card.")).toBeTruthy();
         const order = allChips(/Athletics|Red Sox/).map((b) => b.textContent);
@@ -613,7 +786,7 @@ describe("TeamTile", () => {
         evidence(1940, { answer: career(T("t-b", "Boston Red Sox")), candidates: [T("t-b", "Boston Red Sox")], stints: foxx });
         queryResults["teams.erasByNameAndSport"] = [{ _id: "t-b", name: "Boston Red Sox", label: "Boston Red Sox" }];
         renderTile({ row: row({ bscTeamName: "Boston Red Sox" }), ctx: ctx(), items });
-        for (const chip of allChips(/Red Sox/)) expect(chip.getAttribute("aria-pressed")).toBe("false");
+        for (const chip of allChips(/Red Sox/)) expect(marked(chip)).toBe("false");
         expect(screen.queryByText("The listing names “Boston Red Sox” and the career agrees.")).toBeNull();
         none();
       });
@@ -644,7 +817,7 @@ describe("TeamTile", () => {
         renderTile({ row: row(), ctx: ctx(), items, leafCards: [other()] });
         expect(pressed(/Philadelphia Athletics/)).toBe("true");
         expect(screen.getByText("Suggested from the player's other cards.")).toBeTruthy();
-        await click(screen.getByRole("button", { name: "Save team" }));
+        await click(screen.getByRole("button", { name: /Philadelphia Athletics/ }));
         expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
         id: CARD,
         teamOnCardIds: ["t-a"],
@@ -664,12 +837,12 @@ describe("TeamTile", () => {
           items,
           leafCards: [other(), other({ _id: "card-3", teamOnCardIds: ["t-c"] })],
         });
-        for (const chip of allChips(/Athletics|Yankees/)) expect(chip.getAttribute("aria-pressed")).toBe("false");
+        for (const chip of allChips(/Athletics|Yankees/)) expect(marked(chip)).toBe("false");
         expect(screen.queryByRole("button", { name: /Red Sox/ })).toBeNull();
         none();
       });
 
-      it("a card of another player set, a card the app filled itself, and a teamless card are not evidence", () => {
+      it("a card of another player set and a teamless card are not evidence", () => {
         evidence(1940, { answer: career(T("t-b", "Boston Red Sox")), candidates: [T("t-b", "Boston Red Sox")], stints: foxx });
         renderTile({
           row: row(),
@@ -677,15 +850,20 @@ describe("TeamTile", () => {
           items,
           leafCards: [
             other({ _id: "card-2", playerIds: ["player-9"] }),
-            other({
-              _id: "card-3",
-              tidyChecks: [{ kind: "teamFill", teamIds: ["t-a"], reason: "career" }],
-            }),
             other({ _id: "card-4", teamOnCardIds: [] }),
           ],
         });
         expect(pressed(/Boston Red Sox/)).toBe("true");
         expect(screen.getByText("Suggested from career history.")).toBeTruthy();
+      });
+
+      it("J8: a team on a card is the card's team whoever wrote it, so a filled card counts as evidence", () => {
+        evidence(1940, { answer: career(T("t-b", "Boston Red Sox")), candidates: [T("t-b", "Boston Red Sox")], stints: foxx });
+        queryResults["teams.getManyByIds"] = [{ _id: "t-a", name: "Athletics", location: "Philadelphia" }];
+        // Nothing on the card says who set the team (no stored fill note): it votes like any other.
+        renderTile({ row: row(), ctx: ctx(), items, leafCards: [other({ _id: "card-3" })] });
+        expect(pressed(/Philadelphia Athletics/)).toBe("true");
+        expect(screen.getByText("Suggested from the player's other cards.")).toBeTruthy();
       });
 
       it("a claim holds the batch answer back too", () => {
@@ -732,7 +910,7 @@ describe("TeamTile", () => {
           ctx: context({ players: [player, bench] }),
           items,
         });
-        for (const chip of allChips(/Reds|Angels|Dodgers/)) expect(chip.getAttribute("aria-pressed")).toBe("false");
+        for (const chip of allChips(/Reds|Angels|Dodgers/)) expect(marked(chip)).toBe("false");
         expect(screen.getByText(TIE)).toBeTruthy();
         none();
       });
@@ -764,7 +942,6 @@ describe("TeamTile", () => {
         evidence(2025, tied);
         renderTile({ row: row(), ctx: ctx(), items });
         await click(screen.getByRole("button", { name: /Los Angeles Dodgers/ }));
-        await click(screen.getByRole("button", { name: "Save team" }));
         expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
         id: CARD,
         teamOnCardIds: ["t-b"],
@@ -803,7 +980,7 @@ describe("TeamTile", () => {
         ).toBeTruthy();
       });
 
-      it("a toggle never changes a label: the years follow the pre-fill, not the pick", async () => {
+      it("a click saves only the team it names, and the labels follow the pre-fill", async () => {
         evidence(1940, {
           answer: career(T("t-b", "Boston Red Sox")),
           candidates: [T("t-b", "Boston Red Sox"), T("t-a", "Philadelphia Athletics")],
@@ -811,12 +988,63 @@ describe("TeamTile", () => {
         });
         renderTile({ row: row(), ctx: ctx(), items });
         // The pre-filled chip says who played there; the one beside it says the years.
-        expect(pressed("Boston Red Sox · Jimmie Foxx played here")).toBe("true");
+        expect(pressed(/^Boston Red Sox ?, suggested · Jimmie Foxx played here$/)).toBe("true");
         expect(pressed("Philadelphia Athletics · 1925–1935")).toBe("false");
         await click(screen.getByRole("button", { name: "Philadelphia Athletics · 1925–1935" }));
-        await click(screen.getByRole("button", { name: "Boston Red Sox · Jimmie Foxx played here" }));
-        expect(pressed("Philadelphia Athletics · 1925–1935")).toBe("true");
-        expect(pressed("Boston Red Sox · Jimmie Foxx played here")).toBe("false");
+        expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
+          id: CARD,
+          teamOnCardIds: ["t-a"],
+          regenerateListing: true,
+        });
+        expect(pressed("Philadelphia Athletics · 1925–1935")).toBe("false");
+        expect(pressed(/^Boston Red Sox ?, suggested · Jimmie Foxx played here$/)).toBe("true");
+      });
+
+      it("a save tells the walk what was saved, once it has landed", async () => {
+        const told = vi.fn();
+        evidence(1940, { answer: career(T("t-b", "Boston Red Sox")), candidates: [T("t-b", "Boston Red Sox")], stints: foxx });
+        renderTile({ row: row(), ctx: ctx(), items, onAnswered: told });
+        await click(screen.getByRole("button", { name: /Boston Red Sox/ }));
+        expect(told).toHaveBeenCalledWith("Saved Boston Red Sox.");
+      });
+
+      it("clicking the preselected chip saves it", async () => {
+        evidence(1940, { answer: career(T("t-b", "Boston Red Sox")), candidates: [T("t-b", "Boston Red Sox")], stints: foxx });
+        renderTile({ row: row(), ctx: ctx(), items });
+        await click(screen.getByRole("button", { name: /^Boston Red Sox ?, suggested · Jimmie Foxx played here$/ }));
+        expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
+          id: CARD,
+          teamOnCardIds: ["t-b"],
+          regenerateListing: true,
+        });
+      });
+
+      it("with two preselected teams a click on either writes BOTH (main's untouched Save); a click on any other chip writes only itself", async () => {
+        evidence(
+          1940,
+          { answer: career(T("t-b", "Boston Red Sox")), candidates: [T("t-b", "Boston Red Sox"), T("t-a", "Philadelphia Athletics")], stints: foxx },
+          { answer: career(T("t-c", "Cincinnati Reds")), candidates: [T("t-c", "Cincinnati Reds")], stints: [S("t-c", 1930, 1945)] },
+        );
+        const bench = { playerId: "player-2", name: "Johnny Bench", sportId: SPORT, stints: [], stintsMore: false };
+        renderTile({
+          row: card({ playerIds: ["player-1", "player-2"] }),
+          ctx: context({ players: [player, bench] }),
+          items,
+        });
+        expect(pressed(/Boston Red Sox/)).toBe("true");
+        expect(pressed(/Cincinnati Reds/)).toBe("true");
+        await click(screen.getByRole("button", { name: /Cincinnati Reds/ }));
+        expect(mutation("selectorOptions.updateCard")).toHaveBeenLastCalledWith({
+          id: CARD,
+          teamOnCardIds: ["t-b", "t-c"],
+          regenerateListing: true,
+        });
+        await click(screen.getByRole("button", { name: /Philadelphia Athletics/ }));
+        expect(mutation("selectorOptions.updateCard")).toHaveBeenLastCalledWith({
+          id: CARD,
+          teamOnCardIds: ["t-a"],
+          regenerateListing: true,
+        });
       });
 
       it("an undated career lead prints no years, even offered unselected", () => {
@@ -845,7 +1073,6 @@ describe("TeamTile", () => {
         lone();
         renderTile({ row: row(), ctx: ctx(), items, setNoTeam: true });
         await click(screen.getByRole("button", { name: /Boston Red Sox/ }));
-        await click(screen.getByRole("button", { name: "Save team" }));
         expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
         id: CARD,
         teamOnCardIds: ["t-b"],
@@ -856,7 +1083,7 @@ describe("TeamTile", () => {
       it("a set with a team default, or none, still preselects the same team", () => {
         lone();
         renderTile({ row: row(), ctx: ctx(), items, setNoTeam: false });
-        expect(pressed("Boston Red Sox · Jimmie Foxx played here")).toBe("true");
+        expect(pressed(/^Boston Red Sox ?, suggested · Jimmie Foxx played here$/)).toBe("true");
         expect(screen.getByText("Suggested from career history.")).toBeTruthy();
       });
     });
@@ -880,38 +1107,17 @@ describe("TeamTile", () => {
       expect(screen.getByRole("alert").textContent).toMatch(/nothing to confirm/);
     });
 
-    it("shows Save team only once there is a chip to save, and puts it away when the last one comes off", async () => {
+    it("has no Save button: the chips, Other team… and the way out are all there is", () => {
       evidence(2025, { answer: null, candidates: [T("t-b", "Boston Red Sox")], stints: foxx });
       renderTile({ row: row(), ctx: ctx(), items });
       expect(screen.queryByRole("button", { name: /^Save teams?$/ })).toBeNull();
-      // The way out of the question is still there.
       expect(screen.getByRole("button", { name: "No team on this card" })).toBeTruthy();
       expect(screen.getByRole("button", { name: "Other team…" })).toBeTruthy();
-      await click(screen.getByRole("button", { name: /Boston Red Sox/ }));
-      expect(screen.getByRole("button", { name: "Save team" })).toBeTruthy();
-      await click(screen.getByRole("button", { name: /Boston Red Sox/ }));
-      expect(screen.queryByRole("button", { name: /^Save teams?$/ })).toBeNull();
+      expect(screen.getByRole("button", { name: /Boston Red Sox/ }).getAttribute("aria-pressed")).toBeNull();
     });
 
-    it("a team picked with Other team… shows its league and years on its chip", async () => {
+    it("a team picked with Other team… before the card's context arrives is saved right away", async () => {
       evidence(2024, { answer: null, candidates: [] });
-      queryResults["teams.getManyByIds"] = [
-        { _id: "team-9", name: "Orioles", location: "Baltimore", leagueId: "l-mlb", yearsActive: { from: 1954 } },
-      ];
-      queryResults["leagues.list"] = [{ _id: "l-mlb", name: "Major League Baseball", abbreviation: "MLB" }];
-      renderTile({ row: row(), ctx: ctx(), items });
-      await click(screen.getByRole("button", { name: "Other team…" }));
-      await click(screen.getByRole("button", { name: "Pick a team" }));
-      const chip = screen.getByRole("button", { name: "Baltimore Orioles · MLB · 1954–present" });
-      expect(chip.getAttribute("aria-pressed")).toBe("true");
-    });
-
-    it("keeps an open Other team… search and the teams picked in it when the card's context arrives", async () => {
-      evidence(2024, { answer: null, candidates: [] });
-      queryResults["teams.getManyByIds"] = [
-        { _id: "team-9", name: "Orioles", location: "Baltimore", leagueId: "l-mlb", yearsActive: { from: 1954 } },
-      ];
-      queryResults["leagues.list"] = [{ _id: "l-mlb", name: "Major League Baseball", abbreviation: "MLB" }];
       const props = (ctx: TidyCardContext | undefined): TidyTileProps => ({
         row: row(),
         context: ctx,
@@ -921,23 +1127,13 @@ describe("TeamTile", () => {
         leafCards: [],
         setName: "Set",
       });
-      const tree = (ctx: TidyCardContext | undefined) => (
+      render(
         <AnsweredProvider value={() => {}}>
-          <TeamTile {...props(ctx)} />
-        </AnsweredProvider>
+          <TeamTile {...props(undefined)} />
+        </AnsweredProvider>,
       );
-      // The context query has not answered: the chips are the tile's only child.
-      const { rerender } = render(tree(undefined));
       await click(screen.getByRole("button", { name: "Other team…" }));
-      const pick = screen.getByRole("button", { name: "Pick a team" });
-      await click(pick);
-      const chip = screen.getByRole("button", { name: /Baltimore Orioles/ });
-      // Then it does: the same chips now sit among the tile's other children.
-      rerender(tree(ctx()));
-      expect(screen.getByRole("button", { name: /Baltimore Orioles/ })).toBe(chip);
-      expect(chip.isConnected).toBe(true);
-      expect(chip.getAttribute("aria-pressed")).toBe("true");
-      await click(screen.getByRole("button", { name: "Save team" }));
+      await click(screen.getByRole("button", { name: "Pick a team" }));
       expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
         id: CARD,
         teamOnCardIds: ["team-9"],
@@ -968,12 +1164,11 @@ describe("TeamTile", () => {
       expect(screen.getByRole("button", { name: "Pick a team" })).toBe(pick);
     });
 
-    it("'Other team…' adds a searched team to the choice", async () => {
+    it("'Other team…' saves the searched team right away", async () => {
       evidence(2024, { answer: null, candidates: [] });
       renderTile({ row: row(), ctx: ctx(), items });
       await click(screen.getByRole("button", { name: "Other team…" }));
       await click(screen.getByRole("button", { name: "Pick a team" }));
-      await click(screen.getByRole("button", { name: "Save team" }));
       expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
         id: CARD,
         teamOnCardIds: ["team-9"],
@@ -996,29 +1191,23 @@ describe("TeamTile", () => {
       }),
     });
 
-    it("says the commit filled it in, from the career or from the other cards", () => {
-      const { unmount } = renderTile(base());
-      expect(screen.getByText("Team filled from the player's career")).toBeTruthy();
-      unmount();
-      const other = base();
-      other.row = card({
-        playerIds: ["player-1"],
-        teamOnCardIds: ["team-7"],
-        tidyChecks: [{ kind: "teamFill", teamIds: ["team-7"], reason: "otherCards" }],
+    it("a team the commit filled shows no purple note: it is the card's team like any other", () => {
+      renderTile({
+        row: card({
+          playerIds: ["player-1"],
+          teamOnCardIds: ["team-7"],
+          // An old card may still carry the dead field: the client reads nothing from it.
+          tidyChecks: [{ kind: "teamFill", teamIds: ["team-7"], reason: "career" }],
+        }),
+        items: [] as TidyAttention["items"],
+        ctx: context({
+          players: [{ playerId: "player-1", name: "Jackson Merrill", sportId: SPORT, stints: [], stintsMore: false }],
+          teams: [{ teamId: "team-7", name: "San Diego Padres", onCard: true, candidate: false }],
+        }),
       });
-      renderTile(other);
-      expect(screen.getByText("Team filled from the player's other cards")).toBeTruthy();
-    });
-
-    it("drops the note once the operator changed the team by hand", () => {
-      const b = base();
-      b.row = card({
-        playerIds: ["player-1"],
-        teamOnCardIds: ["team-8"],
-        tidyChecks: [{ kind: "teamFill", teamIds: ["team-7"], reason: "career" }],
-      });
-      renderTile(b);
       expect(screen.queryByText(/Team filled from/)).toBeNull();
+      expect(screen.queryByRole("note")).toBeNull();
+      expect(screen.getByRole("button", { name: "Edit San Diego Padres" })).toBeTruthy();
     });
 
     it("Edit swaps the team on this card only", async () => {
@@ -1239,21 +1428,14 @@ describe("TeamTile", () => {
       }),
     });
 
-    it("T1: a team link with no name row keeps its purple note only for a judgement call", () => {
-      const withReason = (reason: string) => {
-        const b = base();
-        return renderTile({
-          ...b,
-          ctx: { ...b.ctx, linkedFor: [{ kind: "team", teamId: "team-7", reason }] } as never,
-        });
-      };
-      const { unmount } = withReason("setHistory");
-      expect(screen.getByRole("note").textContent).toBe(
-        "Linked for you: another card in this set is already linked to them",
-      );
-      unmount();
-      withReason("exact");
+    it("a team link with no name row draws no note, whatever an older server says in linkedFor", () => {
+      const b = base();
+      renderTile({
+        ...b,
+        ctx: { ...b.ctx, linkedFor: [{ kind: "team", teamId: "team-7", reason: "setHistory" }] } as never,
+      });
       expect(screen.queryByRole("note")).toBeNull();
+      expect(screen.queryByText(/Linked for you/)).toBeNull();
     });
 
     it("T2: 'Edit' is 'Edit <team>' to a reader, so the name holds the visible word, at the end of the team's line", () => {

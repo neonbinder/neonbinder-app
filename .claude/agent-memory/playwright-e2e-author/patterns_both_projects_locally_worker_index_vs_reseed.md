@@ -11,7 +11,7 @@ without a re-seed: pass a different `WORKER_INDEX` (8 desktop, 9 mobile, 10/11 f
 a planted-break or recheck run). Locally 3-11 all fall back to `TEST_EMAIL`, so it
 is the same user; run `bootstrap` for the new index first.
 
-A spec that commits a SHARED registry set (e.g. `tidy-up-team-link-remembers-the-name`,
+A spec that commits a SHARED registry set (e.g. `tidy-up-team-link-saves-the-printed-name-as-a-team-alias`,
 via `fetchOneMarketplaceSetChecklistToTidyWalk`) does NOT separate by worker: its
 second run fails at `No cards in this checklist yet.` (the precondition, by
 name). That red is the documented "re-seed first", not a product bug: re-run

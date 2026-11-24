@@ -52,8 +52,6 @@ import { recentCardIdsForPlayer } from "./cardPlayerLinks";
 import { syncCardTeamLinks } from "./cardTeamLinks";
 import { newCardLeagueCache } from "./cardLeague";
 import { refreshedListingDescription } from "./cardDescriptionRefresh";
-// NEO-330: also the key `entityReviewSkips.nameNormalized` is written with
-// (the commit prelude's `norm`). A skip lookup keyed any other way would miss.
 import { normalizeEntityName } from "../lib/entities/normalize-name";
 import {
   suggestTeamsForPlayer,
@@ -87,7 +85,6 @@ import { regenerateListingNow } from "./tidyListingText";
 // NEO-426 — a teamless sport is one more reason to stamp "No team".
 import { createSportNoTeamReader } from "./sportTeamless";
 import { queuedByField } from "./lib/bscGateKey";
-import { isRuledOutName } from "./tidySkips";
 
 /**
  * Walk up the parent chain from a cardChecklist's selectorOption to
@@ -622,34 +619,6 @@ export const getForBscTeamCheck = internalQuery({
 export const MAX_BSC_TEAM_NAME_LENGTH = 120;
 
 /**
- * NEO-330 — which of these team names has an operator ruled "not a team" for
- * this set, as normalized keys.
- *
- * One indexed point lookup per distinct name on
- * `entityReviewSkips.by_selector_option_and_kind_and_name`, keyed exactly as
- * the commit prelude writes the row (`normalizeEntityName`). Called with BSC's
- * raw value plus its split parts, so at most `1 + MAX_CARD_TEAMS` reads (the
- * caller has already set an over-cap split aside).
- */
-async function findSkippedTeamNameKeys(
-  ctx: MutationCtx,
-  selectorOptionId: Id<"selectorOptions">,
-  names: string[],
-): Promise<Set<string>> {
-  const skipped = new Set<string>();
-  const asked = new Set<string>();
-  for (const name of names) {
-    const key = normalizeEntityName(name);
-    if (!key || asked.has(key)) continue;
-    asked.add(key);
-    // NEO-645 — a ruling is an `entityReviewSkips` row (before the deploy) or a
-    // `tidyNames` notEntity answer (after it).
-    if (await isRuledOutName(ctx, selectorOptionId, "team", key)) skipped.add(key);
-  }
-  return skipped;
-}
-
-/**
  * NEO-556 / NEO-426 — the "No Team" default's stamp for a card BSC has just
  * answered with no team (nothing on file, or the whole claim ruled "not a
  * team").
@@ -833,65 +802,6 @@ export const applyBscTeamResolution = internalMutation({
       return { applied: false, unmatched: false };
     }
 
-    // ── NEO-330: the operator's "not a team" ruling for this set ───────────
-    //
-    // "Skip <name> — not a team" in the checklist wizard writes an
-    // `entityReviewSkips` row for the set, and the commit then lands the card
-    // with that name settled: no team, nothing pending. The card can still be
-    // queued here (the commit queues every BSC card left without a team, and
-    // `enqueueBscTeamBackfill` scans for the same shape), and BSC will answer
-    // with the very string the operator threw out. Linking it, or keeping it
-    // as the `bscTeamName` hint, would put "The listing names “<name>”" in
-    // the missing-team fixer — contradicting the operator's ruling.
-    //
-    // Checked HERE, on a fresh read inside the writing mutation, for the same
-    // reason `teamNoneConfirmedAt` is above: a re-fetch can record the skip
-    // while this lookup is in flight. One check covers all three ways in (the
-    // commit's queue, the backfill, and a skip that lands mid-flight), which
-    // an enqueue-time filter could not — the chunk that queues the card no
-    // longer holds the name it skipped, and the backfill never had it.
-    //
-    // NEO-333 split, decided per form:
-    //  - The RAW value skipped: the card's whole claim is ruled out. The
-    //    wizard only offers the raw string when it is the card's whole team
-    //    value (no comma, or a string that already names a held team), so its
-    //    parts were never names the card carried; none is consulted.
-    //  - A PART skipped: that part is dropped from the split, exactly as the
-    //    commit prelude drops a skipped name from a card's teams. The rest
-    //    keep the usual all-or-nothing walk, and an unmatched card's hint
-    //    names only them. Every part skipped is a ruling on the whole card.
-    //  - The whole-name match still runs first when the raw value itself was
-    //    not skipped: a skipped "South" says nothing about a held team called
-    //    "Korea, South", and the whole string is not the name thrown out.
-    const skippedKeys = await findSkippedTeamNameKeys(
-      ctx,
-      row.selectorOptionId,
-      rawTeamName ? [rawTeamName, ...teamNames] : teamNames,
-    );
-    const rawSkipped =
-      !!rawTeamName && skippedKeys.has(normalizeEntityName(rawTeamName));
-    const liveTeamNames = teamNames.filter(
-      (name) => !skippedKeys.has(normalizeEntityName(name)),
-    );
-    const partSkipped = liveTeamNames.length < teamNames.length;
-    if (rawSkipped || (partSkipped && liveTeamNames.length === 0)) {
-      // The lookup has been and gone (stamped, so no queue or backfill asks
-      // again), no team is written, and any hint is cleared: a hint naming
-      // the skipped string is the contradiction this exists to prevent. Not
-      // `unmatched` — "not a team" is an answer, not an unknown name.
-      //
-      // NEO-556: the claim ruled out leaves the card naming no team, so the
-      // leaf's "No Team" applies here too.
-      const now = Date.now();
-      await ctx.db.patch(row._id, {
-        teamCheckDoneAt: now,
-        teamCheckOutcome: "answered",
-        bscTeamName: undefined,
-        ...(await noTeamDefaultStamp(ctx, row, now)),
-      });
-      return { applied: false, unmatched: false };
-    }
-
     // NEO-333: what an unmatched card keeps as its hint — BSC's raw value,
     // exactly as it was given, so the operator sees what the marketplace said
     // rather than our reading of it. The join is only a fallback for a caller
@@ -901,14 +811,6 @@ export const applyBscTeamResolution = internalMutation({
       0,
       MAX_BSC_TEAM_NAME_LENGTH,
     );
-    // NEO-330: the split path's hint. With a part skipped, the raw value would
-    // carry the skipped name back to the operator, so it names only the parts
-    // still standing. The whole-name branch keeps `hint`: there the raw string
-    // is one held team's name, not the part that was thrown out.
-    const splitHint = partSkipped
-      ? liveTeamNames.join(", ").slice(0, MAX_BSC_TEAM_NAME_LENGTH)
-      : hint;
-
     const sportId = await findSportForSelectorOption(ctx, row.selectorOptionId);
     if (!sportId) {
       // Same ambiguous case backfillTeamToOnCardIds guards against. Leave
@@ -1003,11 +905,9 @@ export const applyBscTeamResolution = internalMutation({
     // `MAX_CARD_TEAMS` and N2 above set it aside) cannot resolve: the same
     // landing as an unknown team — stamped, hinted with the raw value, left
     // for the operator. NOT "no team on file": BSC did name a team.
-    //
-    // NEO-330: walks only the parts the operator did not skip.
     const resolvedTeamIds: Id<"teams">[] = [];
-    let allResolved = liveTeamNames.length > 0;
-    for (const teamName of allResolved ? liveTeamNames : []) {
+    let allResolved = teamNames.length > 0;
+    for (const teamName of allResolved ? teamNames : []) {
       const { teamId } = await resolveCardTeamName(
         ctx,
         sportId,
@@ -1055,15 +955,14 @@ export const applyBscTeamResolution = internalMutation({
       //
       // NEO-333: the hint is BSC's raw value — on a multi-team card that
       // includes the parts that DID resolve, so the operator sees the whole
-      // card's claim, not just the half we could not place. NEO-330: minus
-      // any part the operator skipped (`splitHint`).
+      // card's claim, not just the half we could not place.
       await ctx.db.patch(row._id, {
         teamCheckDoneAt: Date.now(),
         teamCheckOutcome: "answered",
         // No hint at all when there is nothing displayable to keep (the raw
         // string was over the adapter's cap AND the split was over
         // `MAX_CARD_TEAMS`): an empty "Marketplace says:" helps nobody.
-        bscTeamName: splitHint || undefined,
+        bscTeamName: hint || undefined,
       });
       return { applied: false, unmatched: true };
     }

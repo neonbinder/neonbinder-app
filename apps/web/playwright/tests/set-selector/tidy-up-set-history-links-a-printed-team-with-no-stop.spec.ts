@@ -1,12 +1,12 @@
 // ONE FEATURE (NEO-424 rule F, as NEO-602 leaves it, on the NEO-645 Tidy Up walk): a printed
 // team name that no catalogue row settles for the set's year is linked, at the commit, to the
 // team a SAVED card of the same set already carries. Nobody is asked: the team never makes a
-// walk stop, and where the card is in the walk for something else its Team tile says why, in
-// the purple note "Linked for you: another card in this set is already linked to them".
+// walk stop, and where the card is in the walk for something else its Team tile shows the team
+// as the card's own line (Edit, no per-name row) with no note (NEO-656 J1: no "Linked for you").
 //
 // Renamed from checklist-wizard-set-history-links-a-team (NEO-645): the entity-review wizard and
 // its Decided list ("· already on another card in this set", Change) are gone; the walk's Team
-// tile carries the link and its reason (the note), and Match Cards' commit saves before any walk.
+// tile carries the link, and Match Cards' commit saves before any walk.
 //
 // NEO-602 (Jason, 2026-11-19): a name several eras answer to is the players' stints' to settle,
 // or the operator's, never set history's (the across-variants spec proves that on the Browns).
@@ -21,12 +21,14 @@
 //       NICKNAME: `Lcn<token> Nic<token>`, printed as `Nic<token>` (the hobby's "Orioles" for
 //       "Baltimore Orioles"). No row, no candidates, nothing for the players to answer.
 //
-// The walk (positive and negative, R2): the player `Sol Ahs<token>` is on file before the sync,
-// so the commit checks each card's team against his career (J2). His ONE stint, `Fut<token>`
-// from 2025, covers card #1: #1 has nothing to ask and is never in the walk (the drawer proves
-// its team). Card #2's `Lcn<token> Nic<token>` is not in his career, so #2 is in the walk for
-// that blue Career check ALONE: its Team tile is not pink, asks nothing, names the linked team
-// and carries the purple set-history note. The walk holds exactly one card.
+// The walk (positive and negative, R2): the player `Sol Ahs<token>` is on file before the sync.
+// His ONE stint, `Fut<token>` from 2025, covers card #1: #1 has nothing to ask and is never in
+// the walk (the drawer proves its team). Card #2's `Lcn<token> Nic<token>` is not in his career,
+// so #2 carries a LIVE blue Career gap (NEO-656 J5: read from the data, never stored) and the
+// walk opens after the commit on that gap ALONE (the commit's only stop). Its Team tile is not
+// pink, asks nothing and shows the linked team as the card's line, with no note. The walk holds
+// exactly one card. The card is Skipped (Save & next would write the default stint): the end
+// screen counts it still to check and the pill keeps it, because blue stays until the data moves.
 //
 // Fixtures through the UI (GUIDE "Fixtures come from the UI"), all in this attempt's private
 // sport `aeh<token>` (SET-REGISTRY "Custom sets"), year 2025, brand Topps, ONE set `aeg<token>`
@@ -51,18 +53,17 @@ import { drillToCustom, escapeRe, setBuilderReady, syncChecklistButton } from ".
 import {
   expectCardSettled,
   expectCardsLeft,
+  expectTidyEndScreen,
   finishTidyWalk,
+  needsYouPill,
   pinkTile,
-  saveAndNext,
   settleWalkAfterCommit,
+  skipCard,
   tidyTile,
   tidyUpName,
   tidyWalk,
 } from "../../support/tidy-walk";
 import type { Page } from "@playwright/test";
-
-/** The purple note a team linked from the set's saved cards carries (tidy/parts/copy.ts `linkedForText`). */
-const SET_HISTORY_NOTE = "Linked for you: another card in this set is already linked to them";
 
 /** In the open card drawer: create `search` as a new team through the New Team dialog and put it on the card. */
 async function createTeamOnCard(
@@ -84,7 +85,7 @@ async function createTeamOnCard(
 }
 
 test(
-  "Tidy Up — a printed team name no catalogue row settles for the set's year (a team from a later year, or a bare nickname) links to the team a saved card of the set carries, with no stop; the walk's Team tile says why",
+  "Tidy Up — a printed team name no catalogue row settles for the set's year (a team from a later year, or a bare nickname) links to the team a saved card of the set carries, with no stop and no note on the walk's Team tile",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     const T = env.ATTEMPT_TOKEN;
@@ -163,7 +164,7 @@ test(
     expect(facts.rows).toBe(2);
     await syncChecklistButton(page).click();
     const opened = await settleWalkAfterCommit(page, page.getByText(/^Saved 2 cards\./).first());
-    expect(opened, "card #2's team is not in the player's career, so the walk opened for that check").toBe(true);
+    expect(opened, "card #2's team is not in the player's career: the commit's one live career gap opens the walk").toBe(true);
     const walk = tidyWalk(page);
     await expect(walk).toHaveAccessibleName(tidyUpName({ year: "2025", set: SET, variant: INSERT }));
     // Positive: #2 alone. Negative: #1 (its team linked, covered by the stint) is never a stop.
@@ -172,15 +173,21 @@ test(
     await expect(walk.getByText(/^#1 · /), "#1's linked team asks nothing, so the walk never shows it").toHaveCount(0);
     await expectCardSettled(page);
 
-    // The Team tile: nothing to fix, no question, the linked team and why it was linked.
+    // The Team tile: nothing to fix, no question; the linked team is the card's own line (B11).
     const team = tidyTile(page, "Team");
     await expect(team).toBeVisible();
     await expect(pinkTile(page, "Team"), "the team set history linked asks the operator nothing").toHaveCount(0);
-    const nickRow = team.getByRole("group", { name: `Team ${NICK}`, exact: true });
-    await expect(nickRow.getByText(NICK_FULL, { exact: true })).toBeVisible();
-    await expect(nickRow.getByRole("note")).toHaveText(SET_HISTORY_NOTE);
-    await expect(nickRow.getByRole("button", { name: `Edit ${NICK_FULL}`, exact: true })).toBeVisible();
+    const teamLine = team.getByRole("group", { name: `Team ${NICK_FULL}`, exact: true });
+    await expect(teamLine.getByText(NICK_FULL, { exact: true })).toBeVisible();
+    await expect(teamLine.getByRole("button", { name: `Edit ${NICK_FULL}`, exact: true })).toBeVisible();
+    // Negatives read against it (R2): no per-name row for the printed nickname, nothing asked about
+    // it, and no note saying why (J1: there is no "Linked for you").
+    await expect(team.getByRole("group", { name: /^Team / }), "one team line: the link, no per-name row").toHaveCount(1);
+    await expect(team.getByRole("group", { name: `Team ${NICK}`, exact: true })).toHaveCount(0);
+    await expect(team.getByText(/^Which team: /)).toHaveCount(0);
     await expect(team.getByRole("button", { name: /^Not a team/ })).toHaveCount(0);
+    await expect(team.getByRole("note")).toHaveCount(0);
+    await expect(walk.getByText(/Linked for you/)).toHaveCount(0);
     // The one stop on this card is the blue career check (J2), never pink.
     const career = tidyTile(page, "Career");
     await expect(career).toHaveAccessibleDescription(/To check/);
@@ -188,10 +195,12 @@ test(
     await expect(pinkTile(page, "Career")).toHaveCount(0);
     await expectAccessible(page, { within: walk, label: "Tidy Up walk, a printed team linked from the set's saved card" });
 
-    // Nothing pink, so Save & next is usable; it marks the check seen and the walk runs out.
-    await saveAndNext(page);
-    await expect(walk.getByText("All tidy. Nothing on this checklist needs you.")).toBeVisible();
+    // Skip (Save & next would add the default stint to his career): nothing is written, so the gap
+    // is still live. The end screen counts the card still to check, and the pill keeps it.
+    await skipCard(page);
+    await expectTidyEndScreen(page, { fixed: 0, stillToCheck: 1 });
     await finishTidyWalk(page);
+    await expect(needsYouPill(page), "the career gap is read live: Skip leaves it blue").toHaveAccessibleName("1 needs you");
 
     // ── PART 6: the commit put each linked team on its card, and only that team ──
     for (const [number, teamName, other] of [

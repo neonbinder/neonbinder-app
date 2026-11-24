@@ -15,7 +15,7 @@ import type { Id } from "./_generated/dataModel";
 import { normalizeTeamName } from "./teams";
 import { normalizePlayerName } from "./players";
 import { CAREER_COVERAGE_MAX_PAIRS } from "./lib/careerCoverage";
-import { COVERAGE_PAIRS_PER_INTERNAL_READ } from "./careerCoverage";
+import { CAREER_GAPS_MAX_LEAVES, COVERAGE_PAIRS_PER_INTERNAL_READ } from "./careerCoverage";
 import { cancelScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
@@ -550,5 +550,43 @@ describe("resolveChecklistEntities — careerContext", () => {
     expect(result.careerContext?.teams).toEqual([]);
     expect(result.careerContext?.gaps).toEqual([]);
     await cancelScheduled(t);
+  });
+});
+
+describe("careerGaps bounds its distinct leaves (S7)", () => {
+  test("more than CAREER_GAPS_MAX_LEAVES distinct sets are refused with a clear error; that many are answered", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedSet(t, "1990");
+    const teamId = await insertTeam(t, sportId, "San Diego", "Padres");
+    const playerId = await insertPlayer(t, sportId, "Bare Career");
+    const parentId = (await t.run((ctx) => ctx.db.get(leafId)))!.parentId!;
+    const leaves = await t.run(async (ctx) => {
+      const ids: Array<Id<"selectorOptions">> = [leafId];
+      for (let i = 1; i <= CAREER_GAPS_MAX_LEAVES; i++) {
+        ids.push(
+          await ctx.db.insert("selectorOptions", {
+            level: "variantType",
+            value: `Insert ${i}`,
+            platformData: {},
+            parentId,
+            children: [],
+            lastUpdated: Date.now(),
+          }),
+        );
+      }
+      return ids;
+    });
+    const pairsOf = (ids: Array<Id<"selectorOptions">>) =>
+      ids.map((selectorOptionId) => ({ selectorOptionId, playerId, teamId }));
+    const admin = t.withIdentity(ADMIN);
+    await expect(
+      admin.query(api.careerCoverage.careerGaps, {
+        pairs: pairsOf(leaves.slice(0, CAREER_GAPS_MAX_LEAVES + 1)),
+      }),
+    ).rejects.toThrow(/exceeds the 64-set limit/);
+    const ok = await admin.query(api.careerCoverage.careerGaps, {
+      pairs: pairsOf(leaves.slice(0, CAREER_GAPS_MAX_LEAVES)),
+    });
+    expect(ok).toHaveLength(CAREER_GAPS_MAX_LEAVES);
   });
 });

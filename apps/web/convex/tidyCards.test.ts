@@ -1,37 +1,21 @@
 /**
- * NEO-645 — the real reads and writes of `tidyCards.ts` (`cardContext`,
- * `markReviewed`), the strict `getCardChecklist` returns for the four new card
- * fields, and the gate on every function of the Tidy Up surface.
+ * NEO-645 / NEO-656 — the real reads and writes of `tidyCards.ts`
+ * (`cardContext`, `saveCard`), the strict `getCardChecklist` returns, and the
+ * gate on every function of the Tidy Up surface.
+ *
+ * The card is the only record of its names (NEO-656): `cardContext` reads them
+ * off the card itself, and `saveCard` stores nothing about the card having been
+ * seen.
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test, vi } from "vitest";
+import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { insertTestCard } from "../lib/testing/card-row";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
-import { syncCardPrintedNames } from "./cardPrintedNames";
-import {
-  tidyReviewedKeyCareer,
-  tidyReviewedKeyCareerGap,
-  tidyReviewedKeyCut,
-  tidyReviewedKeyVariation,
-} from "./features/cardAttention";
-
-// One switch to make the career-gap re-check fail, to prove a failure that is
-// NOT "a year the career will not hold" is not swallowed by `markReviewed`.
-const gapRecheck = vi.hoisted(() => ({ fail: false }));
-vi.mock("./tidyCareerGap", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./tidyCareerGap")>();
-  return {
-    ...actual,
-    recheckCareerGaps: (...args: Parameters<typeof actual.recheckCareerGaps>) => {
-      if (gapRecheck.fail) throw new Error("forced re-check failure");
-      return actual.recheckCareerGaps(...args);
-    },
-  };
-});
+import { SAVE_CARD_MAX_GAPS } from "./tidyCards";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -140,7 +124,7 @@ describe("tidyCards.cardContext — reads", () => {
     expect(await t.withIdentity(ADMIN).query(api.tidyCards.cardContext, { cardId: id })).toBeNull();
   });
 
-  test("a linked player comes back with his stints; an exact-name link carries no 'Linked for you' note", async () => {
+  test("a linked player comes back with his stints and the name the card printed", async () => {
     const t = convexTest(schema, modules);
     const { id, merrill, padres, mets } = await t.run(async (ctx) => {
       const s = await seedBase(ctx);
@@ -151,10 +135,19 @@ describe("tidyCards.cardContext — reads", () => {
       });
       return { id, merrill: s.merrill, padres: s.padres, mets: s.mets };
     });
-    const ctxView = await t.withIdentity(ADMIN).query(api.tidyCards.cardContext, { cardId: id });
-    expect(ctxView).not.toBeNull();
-    expect(ctxView!.names).toEqual([]);
-    expect(ctxView!.players).toEqual([
+    const view = await t.withIdentity(ADMIN).query(api.tidyCards.cardContext, { cardId: id });
+    expect(view).not.toBeNull();
+    expect(view!.names).toEqual([
+      {
+        kind: "player",
+        nameNormalized: normalizeEntityName("Jackson Merrill"),
+        printed: "Jackson Merrill",
+        order: 0,
+        pending: false,
+        playerId: merrill,
+      },
+    ]);
+    expect(view!.players).toEqual([
       {
         playerId: merrill,
         name: "Jackson Merrill",
@@ -166,13 +159,87 @@ describe("tidyCards.cardContext — reads", () => {
         stintsMore: false,
       },
     ]);
-    expect(ctxView!.playersMore).toBe(false);
-    // The base case (one player of that exact name) is not worth a purple note.
-    expect(ctxView!.linkedFor).toEqual([]);
-    expect(ctxView!.cameos).toEqual([]);
-    expect(ctxView!.teams).toEqual([
+    expect(view!.playersMore).toBe(false);
+    expect(view!.cameos).toEqual([]);
+    expect(view!.teams).toEqual([
       { teamId: padres, name: "San Diego Padres", onCard: true, candidate: false },
     ]);
+  });
+
+  test("a card with pending names and no other rows still lists its names, so the Player tile has something to ask (the reported bug)", async () => {
+    const t = convexTest(schema, modules);
+    const id = await t.run(async (ctx) => {
+      const s = await seedBase(ctx);
+      // No linked player, no team, no printed-name rows: only what the card itself waits on.
+      return s.card("1", {
+        pendingPlayerNames: ["Doc Gooden", "Darryl Strawberry"],
+        pendingTeamNames: ["Mets"],
+      });
+    });
+    const view = await t.withIdentity(ADMIN).query(api.tidyCards.cardContext, { cardId: id });
+    expect(view!.names).toEqual([
+      {
+        kind: "player",
+        nameNormalized: normalizeEntityName("Doc Gooden"),
+        printed: "Doc Gooden",
+        order: 0,
+        pending: true,
+      },
+      {
+        kind: "player",
+        nameNormalized: normalizeEntityName("Darryl Strawberry"),
+        printed: "Darryl Strawberry",
+        order: 1,
+        pending: true,
+      },
+      {
+        kind: "team",
+        nameNormalized: normalizeEntityName("Mets"),
+        printed: "Mets",
+        order: 0,
+        pending: true,
+      },
+    ]);
+    expect(view!.players).toEqual([]);
+  });
+
+  test("linked players come first in link order, waiting ones after them", async () => {
+    const t = convexTest(schema, modules);
+    const { id, merrill } = await t.run(async (ctx) => {
+      const s = await seedBase(ctx);
+      const id = await s.card("1", {
+        playerIds: [s.merrill],
+        playerLinks: [{ playerId: s.merrill, nameOnCard: "Jackson Merril" }],
+        pendingPlayerNames: ["Doc Gooden"],
+      });
+      return { id, merrill: s.merrill };
+    });
+    const view = await t.withIdentity(ADMIN).query(api.tidyCards.cardContext, { cardId: id });
+    expect(view!.names.map((n) => [n.printed, n.order, n.pending, n.playerId])).toEqual([
+      ["Jackson Merril", 0, false, merrill],
+      ["Doc Gooden", 1, true, undefined],
+    ]);
+    // The card's own spelling rides on the player when it differs from his name.
+    expect(view!.players[0].nameOnCard).toBe("Jackson Merril");
+  });
+
+  test("an answer on the card shows at once: a name leaves the waiting list and joins the links", async () => {
+    const t = convexTest(schema, modules);
+    const { id, merrill, sport } = await t.run(async (ctx) => {
+      const s = await seedBase(ctx);
+      const id = await s.card("1", { pendingPlayerNames: ["Jackson Merrill"] });
+      return { id, merrill: s.merrill, sport: s.sport };
+    });
+    await t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
+      cardId: id,
+      kind: "player",
+      name: "Jackson Merrill",
+      sportId: sport,
+      answer: { kind: "linkPlayer", playerId: merrill },
+    });
+    const view = await t.withIdentity(ADMIN).query(api.tidyCards.cardContext, { cardId: id });
+    expect(view!.names).toMatchObject([{ printed: "Jackson Merrill", pending: false, playerId: merrill }]);
+    expect(view!.players.map((p) => p.playerId)).toEqual([merrill]);
   });
 
   test("the card's cameos come back by name, in the card's order", async () => {
@@ -194,230 +261,25 @@ describe("tidyCards.cardContext — reads", () => {
     ]);
   });
 
-  test("an auto-linked name reports its reason and shows the answered name row", async () => {
-    const t = convexTest(schema, modules);
-    const { auto, merrill } = await t.run(async (ctx) => {
-      const s = await seedBase(ctx);
-      const base = s.base;
-      const mk = async (cardNumber: string, by: "auto" | "operator") => {
-        const id = await s.card(cardNumber, {
-          playerIds: [s.merrill],
-          playerLinks: [{ playerId: s.merrill, nameOnCard: "Jackson Merril" }],
-        });
-        await ctx.db.insert("tidyNames", {
-          scopeId: base,
-          kind: "player",
-          nameNormalized: normalizeEntityName("Jackson Merril"),
-          name: "Jackson Merril",
-          sportId: s.sport,
-          status: "ready",
-          answer:
-            by === "auto"
-              ? { kind: "linkPlayer", playerId: s.merrill, by: "auto", autoReason: "setHistory" }
-              : { kind: "linkPlayer", playerId: s.merrill, by: "operator" },
-        });
-        await syncCardPrintedNames(ctx, { _id: id }, [
-          {
-            kind: "player",
-            scopeId: base,
-            nameNormalized: normalizeEntityName("Jackson Merril"),
-            printed: "Jackson Merril",
-            order: 0,
-          },
-        ]);
-        return id;
-      };
-      const auto = await mk("1", "auto");
-      return { auto, merrill: s.merrill };
-    });
-    const view = await t.withIdentity(ADMIN).query(api.tidyCards.cardContext, { cardId: auto });
-    expect(view!.linkedFor).toEqual([{ kind: "player", playerId: merrill, reason: "setHistory" }]);
-    expect(view!.names).toHaveLength(1);
-    expect(view!.names[0]).toMatchObject({
-      kind: "player",
-      printed: "Jackson Merril",
-      cardOverride: false,
-      printedOn: null, // answered
-      row: { status: "ready", answer: { kind: "linkPlayer", by: "auto", autoReason: "setHistory" } },
-    });
-  });
-
-  test("an operator answer is not 'for you'", async () => {
-    const t = convexTest(schema, modules);
-    const id = await t.run(async (ctx) => {
-      const s = await seedBase(ctx);
-      const id = await s.card("1", {
-        playerIds: [s.merrill],
-        playerLinks: [{ playerId: s.merrill, nameOnCard: "Jackson Merril" }],
-      });
-      await ctx.db.insert("tidyNames", {
-        scopeId: s.base,
-        kind: "player",
-        nameNormalized: normalizeEntityName("Jackson Merril"),
-        name: "Jackson Merril",
-        sportId: s.sport,
-        status: "ready",
-        answer: { kind: "linkPlayer", playerId: s.merrill, by: "operator" },
-      });
-      await syncCardPrintedNames(ctx, { _id: id }, [
-        {
-          kind: "player",
-          scopeId: s.base,
-          nameNormalized: normalizeEntityName("Jackson Merril"),
-          printed: "Jackson Merril",
-          order: 0,
-        },
-      ]);
-      return id;
-    });
-    const view = await t.withIdentity(ADMIN).query(api.tidyCards.cardContext, { cardId: id });
-    expect(view!.linkedFor).toEqual([]);
-  });
-
-  test("an unanswered name shows who else printed it, up to the shown cap, counted", async () => {
-    const t = convexTest(schema, modules);
-    const id = await t.run(async (ctx) => {
-      const s = await seedBase(ctx);
-      const key = normalizeEntityName("Doc Gooden");
-      await ctx.db.insert("tidyNames", {
-        scopeId: s.base,
-        kind: "player",
-        nameNormalized: key,
-        name: "Doc Gooden",
-        sportId: s.sport,
-        status: "pending",
-      });
-      let first: Id<"cardChecklist"> | undefined;
-      for (let i = 1; i <= 11; i++) {
-        const c = await s.card(String(i), { pendingPlayerNames: ["Doc Gooden"] });
-        first ??= c;
-        await syncCardPrintedNames(ctx, { _id: c }, [
-          { kind: "player", scopeId: s.base, nameNormalized: key, printed: "Doc Gooden", order: 0 },
-        ]);
-      }
-      return first!;
-    });
-    const view = await t.withIdentity(ADMIN).query(api.tidyCards.cardContext, { cardId: id });
-    expect(view!.names).toHaveLength(1);
-    const printedOn = view!.names[0].printedOn!;
-    expect(printedOn.count).toBe(11);
-    expect(printedOn.more).toBe(false);
-    expect(printedOn.cardNumbers).toHaveLength(8);
-    expect(view!.names[0].row).toMatchObject({ status: "pending" });
-  });
-
-  test("a printed name whose scope leaf is gone is read in the card's own leaf (Q3)", async () => {
-    const t = convexTest(schema, modules);
-    const { id, base } = await t.run(async (ctx) => {
-      const s = await seedBase(ctx);
-      const sourceLeaf = await ctx.db.insert("selectorOptions", {
-        level: "variantType",
-        value: "Insert",
-        platformData: {},
-        children: [],
-        lastUpdated: NOW,
-      });
-      const key = normalizeEntityName("Doc Gooden");
-      // The name row exists in the card's OWN leaf; the printed row points at a gone leaf.
-      await ctx.db.insert("tidyNames", {
-        scopeId: s.base,
-        kind: "player",
-        nameNormalized: key,
-        name: "Doc Gooden",
-        sportId: s.sport,
-        status: "ready",
-      });
-      const c = await s.card("1", { pendingPlayerNames: ["Doc Gooden"] });
-      await syncCardPrintedNames(ctx, { _id: c }, [
-        { kind: "player", scopeId: sourceLeaf, nameNormalized: key, printed: "Doc Gooden", order: 0 },
-      ]);
-      await ctx.db.delete(sourceLeaf);
-      return { id: c, base: s.base };
-    });
-    const view = await t.withIdentity(ADMIN).query(api.tidyCards.cardContext, { cardId: id });
-    expect(view!.names[0].scopeId).toBe(base);
-    expect(view!.names[0].row).toMatchObject({ name: "Doc Gooden", status: "ready" });
-  });
-
-  test("a team name row offers its candidates; the card's team is flagged onCard", async () => {
+  test("the walk's candidate teams are named beside the card's own team, each flagged", async () => {
     const t = convexTest(schema, modules);
     const { id, padres, mets } = await t.run(async (ctx) => {
       const s = await seedBase(ctx);
-      const key = normalizeEntityName("NY");
-      await ctx.db.insert("tidyNames", {
-        scopeId: s.base,
-        kind: "team",
-        nameNormalized: key,
-        name: "NY",
-        sportId: s.sport,
-        status: "ready",
-        candidateTeamIds: [s.mets, s.padres],
-      });
       const c = await s.card("1", { teamOnCardIds: [s.padres], pendingTeamNames: ["NY"] });
-      await syncCardPrintedNames(ctx, { _id: c }, [
-        { kind: "team", scopeId: s.base, nameNormalized: key, printed: "NY", order: 0 },
-      ]);
       return { id: c, padres: s.padres, mets: s.mets };
     });
-    const view = await t.withIdentity(ADMIN).query(api.tidyCards.cardContext, { cardId: id });
+    const view = await t
+      .withIdentity(ADMIN)
+      .query(api.tidyCards.cardContext, { cardId: id, candidateTeamIds: [mets, padres] });
     expect(view!.teams.map((x) => [x.teamId, x.onCard, x.candidate]).sort()).toEqual(
       [
         [padres, true, true],
         [mets, false, true],
       ].sort(),
     );
-  });
-
-  test("a name row says whether anyone ever asked Wikidata about it (neverLooked)", async () => {
-    const t = convexTest(schema, modules);
-    const id = await t.run(async (ctx) => {
-      const s = await seedBase(ctx);
-      const rows: Array<[string, Record<string, unknown>]> = [
-        // Born (or migrated) ready and bare: nobody has asked.
-        ["Born Ready", {}],
-        // A lookup ran and found nothing: ready and bare, but it left a stamp.
-        ["Finished Miss", { lookupGen: 2, lookupRequestedAt: NOW }],
-        // Asked once, the generation since cleared: the request time still says so.
-        ["Asked Once", { lookupRequestedAt: NOW }],
-        // Reset for a re-fetch: the generation only climbs, the stamp is gone, so
-        // it is a name nobody has asked about.
-        ["Reset", { lookupGen: 3 }],
-        // Enqueued and still looking: stamped, so not new.
-        ["Still Pending", { status: "pending", lookupGen: 1, lookupRequestedAt: NOW }],
-        // Re-opened by the gate and never enqueued (the commit may not have run): asked on open.
-        ["Reopened Pending", { status: "pending", lookupGen: 1 }],
-        // Already answered or enriched: never "new" either.
-        ["Answered", { answer: { kind: "notEntity", by: "operator" } }],
-      ];
-      const c = await s.card("1", { pendingPlayerNames: rows.map(([n]) => n) });
-      const printed = [];
-      for (const [i, [name, extra]] of rows.entries()) {
-        const key = normalizeEntityName(name);
-        await ctx.db.insert("tidyNames", {
-          scopeId: s.base,
-          kind: "player",
-          nameNormalized: key,
-          name,
-          sportId: s.sport,
-          status: "ready",
-          ...extra,
-        } as never);
-        printed.push({ kind: "player" as const, scopeId: s.base, nameNormalized: key, printed: name, order: i });
-      }
-      await syncCardPrintedNames(ctx, { _id: c }, printed);
-      return c;
-    });
-    const view = await t.withIdentity(ADMIN).query(api.tidyCards.cardContext, { cardId: id });
-    const byName = Object.fromEntries(view!.names.map((n) => [n.printed, n.row!.neverLooked]));
-    expect(byName).toEqual({
-      "Born Ready": true,
-      Reset: true,
-      "Finished Miss": false,
-      "Asked Once": false,
-      "Still Pending": false,
-      "Reopened Pending": true,
-      Answered: false,
-    });
+    // Without candidates only the card's own team is named.
+    const plain = await t.withIdentity(ADMIN).query(api.tidyCards.cardContext, { cardId: id });
+    expect(plain!.teams.map((x) => [x.teamId, x.onCard, x.candidate])).toEqual([[padres, true, false]]);
   });
 
   test("refuses a signed-out caller and a non-admin", async () => {
@@ -433,218 +295,125 @@ describe("tidyCards.cardContext — reads", () => {
   });
 });
 
-describe("tidyCards.markReviewed", () => {
-  const CUT = { listingTitle: "2024 Topps Chrome #1 Mike Trout", listingTitleTruncated: true };
-
-  test("stores the keys the operator saw that are still current, without touching lastUpdated", async () => {
-    const t = convexTest(schema, modules);
-    const id = await t.run(async (ctx) => {
+describe("tidyCards.saveCard", () => {
+  // Merrill has only a Padres stint; a Mets card in a 2024 set is a gap (a stint
+  // counts once it has begun, so his old Mets years would cover it).
+  async function gapCard(t: T, extra: Record<string, unknown> = {}) {
+    return t.run(async (ctx) => {
       const s = await seedBase(ctx);
-      return s.card("1", {
-        ...CUT,
-        playerIds: [s.merrill],
-        teamOnCardIds: [s.padres],
-        cardVariation: "v".repeat(70),
-      });
+      await ctx.db.patch(s.merrill, { teamYears: [{ teamId: s.padres, fromYear: 2024 }] });
+      const id = await s.card("1", { playerIds: [s.merrill], teamOnCardIds: [s.mets], ...extra });
+      return { id, merrill: s.merrill, mets: s.mets, padres: s.padres };
     });
-    const cut = tidyReviewedKeyCut(CUT.listingTitle);
-    const variation = tidyReviewedKeyVariation("v".repeat(70));
-    const res = await t
-      .withIdentity(ADMIN)
-      .mutation(api.tidyCards.markReviewed, { cardId: id, keys: [cut, "stale:key", cut] });
-    // The variation key was never shown to the operator, so it is not marked seen.
-    expect(res.keys).toEqual([cut]);
-    const row = await t.run(async (ctx) => ctx.db.get(id));
-    expect(row!.tidyReviewed!.keys).toEqual([cut]);
-    expect(row!.lastUpdated).toBe(NOW);
-    // Sending the other key too clears the card.
-    await t.withIdentity(ADMIN).mutation(api.tidyCards.markReviewed, { cardId: id, keys: [cut, variation] });
-    expect((await t.run(async (ctx) => ctx.db.get(id)))!.tidyReviewed!.keys.sort()).toEqual(
-      [cut, variation].sort(),
+  }
+  const playedFor2024 = async (t: T, playerId: Id<"players">, teamId: Id<"teams">) => {
+    const p = await t.run((ctx) => ctx.db.get(playerId));
+    return (p?.teamYears ?? []).some(
+      (y: { teamId: Id<"teams">; fromYear?: number; toYear?: number }) =>
+        y.teamId === teamId && (y.fromYear ?? 0) <= 2024 && (y.toYear ?? 9999) >= 2024,
     );
+  };
+  const save = (t: T, cardId: Id<"cardChecklist">, gaps: Array<{ playerId: Id<"players">; teamId: Id<"teams"> }>) =>
+    t.withIdentity(ADMIN).mutation(api.tidyCards.saveCard, { cardId, gaps });
+
+  test("a gap the operator was shown takes the default stint from the set's year, and the career covers it after", async () => {
+    const t = convexTest(schema, modules);
+    const { id, merrill, mets } = await gapCard(t);
+    expect(await playedFor2024(t, merrill, mets)).toBe(false);
+    await save(t, id, [{ playerId: merrill, teamId: mets }]);
+    expect(await playedFor2024(t, merrill, mets)).toBe(true);
   });
 
-  test("replaces the previous list, so a changed value drops its old key", async () => {
+  test("stores nothing on the card: no seen marker, no lastUpdated, no title", async () => {
     const t = convexTest(schema, modules);
-    const old = tidyReviewedKeyCut("an older title");
-    const id = await t.run(async (ctx) => {
-      const s = await seedBase(ctx);
-      return s.card("1", {
-        ...CUT,
-        playerIds: [s.merrill],
-        teamOnCardIds: [s.padres],
-        tidyReviewed: { at: 1, keys: [old] },
-      });
+    const { id, merrill, mets } = await gapCard(t);
+    const before = (await t.run((ctx) => ctx.db.get(id)))!;
+    await save(t, id, [{ playerId: merrill, teamId: mets }]);
+    expect(await t.run((ctx) => ctx.db.get(id))).toEqual(before);
+  });
+
+  test("a gap the client never named is not written", async () => {
+    const t = convexTest(schema, modules);
+    const { id, merrill, mets } = await gapCard(t);
+    await save(t, id, []);
+    expect(await playedFor2024(t, merrill, mets)).toBe(false);
+  });
+
+  test("a gap the client named that is not on this card (a stale tab) is not written", async () => {
+    const t = convexTest(schema, modules);
+    const { id, merrill, mets, padres } = await gapCard(t);
+    // Padres is not on the card, and the Mets gap was never named.
+    await save(t, id, [{ playerId: merrill, teamId: padres }]);
+    expect(await playedFor2024(t, merrill, mets)).toBe(false);
+    const after = (await t.run((ctx) => ctx.db.get(merrill)))!.teamYears;
+    expect(after).toEqual([{ teamId: padres, fromYear: 2024 }]);
+  });
+
+  test("a gap already covered since the client looked is not written again", async () => {
+    const t = convexTest(schema, modules);
+    const { id, merrill, mets } = await gapCard(t);
+    await t.run((ctx) =>
+      ctx.db.patch(merrill, {
+        teamYears: [
+          { teamId: mets, fromYear: 2020 },
+        ],
+      }),
+    );
+    await save(t, id, [{ playerId: merrill, teamId: mets }]);
+    expect((await t.run((ctx) => ctx.db.get(merrill)))!.teamYears).toEqual([
+      { teamId: mets, fromYear: 2020 },
+    ]);
+  });
+
+  test("a set year the career will not hold leaves the gap in place and writes no stint", async () => {
+    const t = convexTest(schema, modules);
+    const { id, merrill, mets } = await gapCard(t);
+    await t.run(async (ctx) => {
+      const year = (await ctx.db.query("selectorOptions").collect()).find((o) => o.level === "year")!;
+      await ctx.db.patch(year._id, { value: "1500" });
     });
-    const cut = tidyReviewedKeyCut(CUT.listingTitle);
-    const res = await t.withIdentity(ADMIN).mutation(api.tidyCards.markReviewed, { cardId: id, keys: [old, cut] });
-    expect(res.keys).toEqual([cut]);
+    const before = (await t.run((ctx) => ctx.db.get(merrill)))!.teamYears;
+    await expect(save(t, id, [{ playerId: merrill, teamId: mets }])).resolves.toBeNull();
+    expect((await t.run((ctx) => ctx.db.get(merrill)))!.teamYears).toEqual(before);
+  });
+
+  test("a card with two players has no gap to write", async () => {
+    const t = convexTest(schema, modules);
+    const { id, merrill, mets } = await t.run(async (ctx) => {
+      const s = await seedBase(ctx);
+      const other = await s.player("Fernando Tatis");
+      const id = await s.card("1", { playerIds: [s.merrill, other], teamOnCardIds: [s.mets] });
+      return { id, merrill: s.merrill, mets: s.mets };
+    });
+    await save(t, id, [{ playerId: merrill, teamId: mets }]);
+    expect(await playedFor2024(t, merrill, mets)).toBe(false);
   });
 
   test("is refused while anything is pink, and writes nothing", async () => {
     const t = convexTest(schema, modules);
-    const id = await t.run(async (ctx) => {
-      const s = await seedBase(ctx);
-      return s.card("1", { ...CUT, pendingPlayerNames: ["Doc Gooden"], teamOnCardIds: [s.padres] });
-    });
-    await expect(
-      t
-        .withIdentity(ADMIN)
-        .mutation(api.tidyCards.markReviewed, { cardId: id, keys: [tidyReviewedKeyCut(CUT.listingTitle)] }),
-    ).rejects.toThrow(/Fix the pink items first/);
-    expect((await t.run(async (ctx) => ctx.db.get(id)))!.tidyReviewed).toBeUndefined();
+    const { id, merrill, mets } = await gapCard(t, { pendingPlayerNames: ["Doc Gooden"] });
+    await expect(save(t, id, [{ playerId: merrill, teamId: mets }])).rejects.toThrow(
+      /Fix the pink items first/,
+    );
+    expect(await playedFor2024(t, merrill, mets)).toBe(false);
   });
 
-  test("a new player's career key is accepted for the player who is on the card", async () => {
+  test("caps the gaps, and refuses a signed-out caller and a non-admin", async () => {
     const t = convexTest(schema, modules);
-    const { id, merrill } = await t.run(async (ctx) => {
-      const s = await seedBase(ctx);
-      const id = await s.card("1", {
-        playerIds: [s.merrill],
-        teamOnCardIds: [s.padres],
-        tidyChecks: [{ kind: "newPlayerCareer", playerId: s.merrill }],
-      });
-      return { id, merrill: s.merrill };
-    });
-    const res = await t
-      .withIdentity(ADMIN)
-      .mutation(api.tidyCards.markReviewed, { cardId: id, keys: [tidyReviewedKeyCareer(merrill)] });
-    expect(res.keys).toEqual([tidyReviewedKeyCareer(merrill)]);
-  });
-
-  describe("a career gap (A8/B16): Save & next adds it to the career, 'Keep as is' does not", () => {
-    // Merrill played for the Mets 2020-2023; the set is 2024, so a Mets card is a gap.
-    async function gapCard(t: T) {
-      return t.run(async (ctx) => {
-        const s = await seedBase(ctx);
-        const id = await s.card("1", {
-          playerIds: [s.merrill],
-          teamOnCardIds: [s.mets],
-          tidyChecks: [{ kind: "careerGap", playerId: s.merrill, teamId: s.mets }],
-        });
-        return { id, merrill: s.merrill, mets: s.mets };
-      });
-    }
-    const playedFor2024 = async (t: T, playerId: Id<"players">, teamId: Id<"teams">) => {
-      const p = await t.run((ctx) => ctx.db.get(playerId));
-      return (p?.teamYears ?? []).some(
-        (y: { teamId: Id<"teams">; fromYear?: number; toYear?: number }) => y.teamId === teamId && (y.fromYear ?? 0) <= 2024 && (y.toYear ?? 9999) >= 2024,
-      );
-    };
-
-    test("the gap's key, sent as seen without an explicit keep, adds the stint from the set's year and clears the gap", async () => {
-      const t = convexTest(schema, modules);
-      const { id, merrill, mets } = await gapCard(t);
-      expect(await playedFor2024(t, merrill, mets)).toBe(false);
-      await t
-        .withIdentity(ADMIN)
-        .mutation(api.tidyCards.markReviewed, { cardId: id, keys: [tidyReviewedKeyCareerGap(merrill, mets)] });
-      expect(await playedFor2024(t, merrill, mets)).toBe(true);
-      const row = await t.run((ctx) => ctx.db.get(id));
-      expect((row?.tidyChecks ?? []).some((c) => c.kind === "careerGap")).toBe(false);
-    });
-
-    test("a set year the career will not hold skips the stint and still marks the card seen", async () => {
-      const t = convexTest(schema, modules);
-      const { id, merrill, mets } = await gapCard(t);
-      await t.run(async (ctx) => {
-        const year = (await ctx.db.query("selectorOptions").collect()).find((o) => o.level === "year")!;
-        await ctx.db.patch(year._id, { value: "1500" });
-      });
-      const key = tidyReviewedKeyCareerGap(merrill, mets);
-      const before = (await t.run((ctx) => ctx.db.get(merrill)))!.teamYears;
-      const res = await t.withIdentity(ADMIN).mutation(api.tidyCards.markReviewed, { cardId: id, keys: [key] });
-      expect(res.keys).toEqual([key]);
-      expect((await t.run((ctx) => ctx.db.get(merrill)))!.teamYears).toEqual(before);
-      const row = await t.run((ctx) => ctx.db.get(id));
-      expect(row?.tidyReviewed?.keys).toEqual([key]);
-      expect((row?.tidyChecks ?? []).some((c) => c.kind === "careerGap")).toBe(true);
-    });
-
-    test("a failure after the stint is written propagates and persists nothing", async () => {
-      const t = convexTest(schema, modules);
-      const { id, merrill, mets } = await gapCard(t);
-      const before = (await t.run((ctx) => ctx.db.get(merrill)))!.teamYears;
-      gapRecheck.fail = true;
-      try {
-        await expect(
-          t
-            .withIdentity(ADMIN)
-            .mutation(api.tidyCards.markReviewed, { cardId: id, keys: [tidyReviewedKeyCareerGap(merrill, mets)] }),
-        ).rejects.toThrow(/forced re-check failure/);
-      } finally {
-        gapRecheck.fail = false;
-      }
-      // The whole mutation rolled back: no stint, and the card is not marked seen.
-      expect((await t.run((ctx) => ctx.db.get(merrill)))!.teamYears).toEqual(before);
-      expect((await t.run((ctx) => ctx.db.get(id)))!.tidyReviewed).toBeUndefined();
-    });
-
-    test("'Keep as is' stores the key at once, and a later Save & next leaves the career alone", async () => {
-      const t = convexTest(schema, modules);
-      const { id, merrill, mets } = await gapCard(t);
-      const key = tidyReviewedKeyCareerGap(merrill, mets);
-      await t.withIdentity(ADMIN).mutation(api.tidyCards.keepCareerGap, { cardId: id, playerId: merrill, teamId: mets });
-      expect((await t.run((ctx) => ctx.db.get(id)))!.tidyReviewed!.keys).toEqual([key]);
-      // Asking again changes nothing.
-      await t.withIdentity(ADMIN).mutation(api.tidyCards.keepCareerGap, { cardId: id, playerId: merrill, teamId: mets });
-      expect((await t.run((ctx) => ctx.db.get(id)))!.tidyReviewed!.keys).toEqual([key]);
-      await t.withIdentity(ADMIN).mutation(api.tidyCards.markReviewed, { cardId: id, keys: [] });
-      expect(await playedFor2024(t, merrill, mets)).toBe(false);
-      // The gap stays on the card, seen.
-      expect(((await t.run((ctx) => ctx.db.get(id)))?.tidyChecks ?? []).some((c) => c.kind === "careerGap")).toBe(true);
-    });
-
-    test("a gap whose key was not sent is not touched", async () => {
-      const t = convexTest(schema, modules);
-      const { id, merrill, mets } = await gapCard(t);
-      await t.withIdentity(ADMIN).mutation(api.tidyCards.markReviewed, { cardId: id, keys: [] });
-      expect(await playedFor2024(t, merrill, mets)).toBe(false);
-    });
-
-    test("keepCareerGap on a gap that is not on the card stores nothing", async () => {
-      const t = convexTest(schema, modules);
-      const { id, merrill, mets } = await gapCard(t);
-      const other = await t.run(async (ctx) => (await ctx.db.query("teams").collect()).find((x) => x._id !== mets)!._id);
-      await t.withIdentity(ADMIN).mutation(api.tidyCards.keepCareerGap, { cardId: id, playerId: merrill, teamId: other });
-      expect((await t.run((ctx) => ctx.db.get(id)))!.tidyReviewed).toBeUndefined();
-    });
-
-    test("keepCareerGap is for an admin", async () => {
-      const t = convexTest(schema, modules);
-      const { id, merrill, mets } = await gapCard(t);
-      const args = { cardId: id, playerId: merrill, teamId: mets };
-      await expect(t.mutation(api.tidyCards.keepCareerGap, args)).rejects.toThrow();
-      await expect(t.withIdentity(MEMBER).mutation(api.tidyCards.keepCareerGap, args)).rejects.toThrow(
-        /admin access required/i,
-      );
-    });
-  });
-
-  test("caps the keys and refuses a signed-out caller and a non-admin", async () => {
-    const t = convexTest(schema, modules);
-    const id = await t.run(async (ctx) => {
-      const s = await seedBase(ctx);
-      return s.card("1", { playerIds: [s.merrill], teamOnCardIds: [s.padres] });
-    });
-    const keys = Array.from({ length: 17 }, (_, i) => `k${i}`);
+    const { id, merrill, mets } = await gapCard(t);
+    const gaps = Array.from({ length: SAVE_CARD_MAX_GAPS + 1 }, () => ({ playerId: merrill, teamId: mets }));
+    await expect(save(t, id, gaps)).rejects.toThrow(/At most/);
+    await expect(t.mutation(api.tidyCards.saveCard, { cardId: id, gaps: [] })).rejects.toThrow();
     await expect(
-      t.withIdentity(ADMIN).mutation(api.tidyCards.markReviewed, { cardId: id, keys }),
-    ).rejects.toThrow(/At most 16/);
-    await expect(
-      t.withIdentity(ADMIN).mutation(api.tidyCards.markReviewed, { cardId: id, keys: ["x".repeat(65)] }),
-    ).rejects.toThrow(/at most 64/);
-    await expect(t.mutation(api.tidyCards.markReviewed, { cardId: id, keys: [] })).rejects.toThrow();
-    await expect(
-      t.withIdentity(MEMBER).mutation(api.tidyCards.markReviewed, { cardId: id, keys: [] }),
+      t.withIdentity(MEMBER).mutation(api.tidyCards.saveCard, { cardId: id, gaps: [] }),
     ).rejects.toThrow(/admin access required/i);
   });
 });
 
-describe("getCardChecklist — the strict returns carry the four Tidy Up fields (NEO-645)", () => {
-  test("a card written with all four round-trips through the validator", async () => {
+describe("getCardChecklist — the strict returns after NEO-656", () => {
+  test("a card carrying sourceDisagreements and sourceNumbers round-trips through the validator", async () => {
     const t = convexTest(schema, modules);
-    const { base, merrill, padres } = await t.run(async (ctx) => {
+    const base = await t.run(async (ctx) => {
       const s = await seedBase(ctx);
       await s.card("1", {
         playerIds: [s.merrill],
@@ -656,6 +425,34 @@ describe("getCardChecklist — the strict returns carry the four Tidy Up fields 
               { value: ["Jackson Merril"], sources: ["bsc", "sportlots"] },
               { value: ["Jackson Merrill"], sources: ["checklist"] },
             ],
+          },
+        ],
+        sourceNumbers: { bsc: "OV-ANFI", checklist: "NNO" },
+      });
+      return s.base;
+    });
+    const rows = await t
+      .withIdentity(ADMIN)
+      .query(api.selectorOptions.getCardChecklist, { selectorOptionId: base });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].sourceDisagreements).toHaveLength(1);
+    expect(rows[0].sourceNumbers).toEqual({ bsc: "OV-ANFI", checklist: "NNO" });
+  });
+
+  test("stored review state from before NEO-656 never reaches the client: tidyChecks, tidyReviewed and a settled (chosen) entry", async () => {
+    const t = convexTest(schema, modules);
+    const base = await t.run(async (ctx) => {
+      const s = await seedBase(ctx);
+      await s.card("1", {
+        playerIds: [s.merrill],
+        teamOnCardIds: [s.padres],
+        sourceDisagreements: [
+          {
+            field: "players",
+            values: [
+              { value: ["Jackson Merril"], sources: ["bsc"] },
+              { value: ["Jackson Merrill"], sources: ["checklist"] },
+            ],
             chosen: { value: ["Jackson Merrill"], by: "operator" },
           },
           {
@@ -664,35 +461,21 @@ describe("getCardChecklist — the strict returns carry the four Tidy Up fields 
               { value: ["Padres"], sources: ["bsc"] },
               { value: ["Mets"], sources: ["checklist"] },
             ],
-            chosen: { value: ["Mets"], by: "operator", typed: true },
           },
         ],
-        sourceNumbers: { bsc: "OV-ANFI", checklist: "NNO" },
-        tidyChecks: [
-          { kind: "careerGap", playerId: s.merrill, teamId: s.padres },
-          { kind: "newPlayerCareer", playerId: s.merrill },
-          { kind: "teamFill", teamIds: [s.padres], reason: "career" },
-        ],
-        tidyReviewed: { at: NOW, keys: ["cut:abc", "career:xyz"] },
+        tidyChecks: [{ kind: "careerGap", playerId: s.merrill, teamId: s.padres }],
+        tidyReviewed: { at: NOW, keys: ["cut:abc"] },
       });
-      return { base: s.base, merrill: s.merrill, padres: s.padres };
+      return s.base;
     });
     const rows = await t
       .withIdentity(ADMIN)
       .query(api.selectorOptions.getCardChecklist, { selectorOptionId: base });
     expect(rows).toHaveLength(1);
-    expect(rows[0].sourceDisagreements).toHaveLength(2);
-    expect(rows[0].sourceDisagreements![1].chosen).toEqual({
-      value: ["Mets"],
-      by: "operator",
-      typed: true,
-    });
-    expect(rows[0].sourceNumbers).toEqual({ bsc: "OV-ANFI", checklist: "NNO" });
-    expect(rows[0].tidyChecks).toEqual([
-      { kind: "careerGap", playerId: merrill, teamId: padres },
-      { kind: "newPlayerCareer", playerId: merrill },
-      { kind: "teamFill", teamIds: [padres], reason: "career" },
-    ]);
-    expect(rows[0].tidyReviewed).toEqual({ at: NOW, keys: ["cut:abc", "career:xyz"] });
+    expect(rows[0]).not.toHaveProperty("tidyChecks");
+    expect(rows[0]).not.toHaveProperty("tidyReviewed");
+    // The settled players entry is left out; the open teams entry stays, with no `chosen`.
+    expect(rows[0].sourceDisagreements!.map((e) => e.field)).toEqual(["teams"]);
+    expect(rows[0].sourceDisagreements![0]).not.toHaveProperty("chosen");
   });
 });

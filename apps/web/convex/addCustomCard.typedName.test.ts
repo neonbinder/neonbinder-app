@@ -1,9 +1,9 @@
 /**
- * NEO-645 (S7) — a hand-added card that carries a player NAME but no linked
- * player (a typed name, the legacy `players` argument) is born with what the
- * Player tile reads: a `cardPrintedNames` row and a `tidyNames` row for the
- * name, so the tile has the question to ask and the answers to take. Without
- * them the card is pink on the walk's list and the tile is empty.
+ * NEO-645 (S7), on NEO-656's storage — a hand-added card that carries a player
+ * NAME but no linked player (a typed name, the legacy `players` argument) keeps
+ * the name pending on the card, and the Player tile reads it from there. Without
+ * it the card is pink on the walk's list and the tile is empty. The card is the
+ * only record: no name row and no printed row exist (NEO-656).
  */
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test } from "vitest";
@@ -70,7 +70,7 @@ const add = (t: T, leafId: Id<"selectorOptions">, over: Record<string, unknown> 
   });
 
 describe("addCustomCard with a typed player name (NEO-645 S7)", () => {
-  test("the card is pink on the Player item, and the tile has its name row and printed row", async () => {
+  test("the card is pink on the Player item, and the tile reads the name off the card", async () => {
     const t = newT();
     const { leafId } = await tree(t);
     const id = await add(t, leafId);
@@ -84,53 +84,38 @@ describe("addCustomCard with a typed player name (NEO-645 S7)", () => {
       names: ["Jackson Holliday"],
     });
 
-    const printed = await t.run((ctx) =>
-      ctx.db.query("cardPrintedNames").withIndex("by_card", (q) => q.eq("cardChecklistId", id)).collect(),
-    );
-    expect(printed).toHaveLength(1);
-    expect(printed[0]).toMatchObject({ kind: "player", printed: "Jackson Holliday", order: 0, scopeId: leafId });
-    const rows = await t.run((ctx) => ctx.db.query("tidyNames").collect());
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ kind: "player", name: "Jackson Holliday", scopeId: leafId });
-
     // What the tile reads: the name, with its row, ready to be answered.
     const context = await t.withIdentity(ADMIN).query(api.tidyCards.cardContext, { cardId: id });
     expect(context?.names).toHaveLength(1);
     expect(context?.names[0]).toMatchObject({
       kind: "player",
       printed: "Jackson Holliday",
-      row: { name: "Jackson Holliday" },
+      order: 0,
+      pending: true,
     });
   });
 
-  test("a card added with no name at all gets none of it", async () => {
+  test("a card added with no name at all has no names for the tile", async () => {
     const t = newT();
     const { leafId } = await tree(t);
     const id = await add(t, leafId, { players: undefined, cardName: "Checklist" });
-    expect(await t.run((ctx) => ctx.db.query("cardPrintedNames").collect())).toEqual([]);
-    expect(await t.run((ctx) => ctx.db.query("tidyNames").collect())).toEqual([]);
-    void id;
+    const context = await t.withIdentity(ADMIN).query(api.tidyCards.cardContext, { cardId: id });
+    expect(context?.names).toEqual([]);
   });
 
-  test("a name typed onto an existing card by hand (updateCard) gets the same two rows", async () => {
+  test("a name typed onto an existing card by hand (updateCard) reaches the tile the same way", async () => {
     const t = newT();
     const { leafId } = await tree(t);
     const id = await add(t, leafId, { players: undefined });
-    expect(await t.run((ctx) => ctx.db.query("tidyNames").collect())).toEqual([]);
 
     await t.withIdentity(ADMIN).mutation(api.selectorOptions.updateCard, {
       id,
       pendingPlayerNames: ["Jackson Holliday"],
     });
 
-    const printed = await t.run((ctx) =>
-      ctx.db.query("cardPrintedNames").withIndex("by_card", (q) => q.eq("cardChecklistId", id)).collect(),
-    );
-    expect(printed.map((p) => [p.kind, p.printed])).toEqual([["player", "Jackson Holliday"]]);
-    expect((await t.run((ctx) => ctx.db.query("tidyNames").collect())).map((r) => r.name)).toEqual([
-      "Jackson Holliday",
-    ]);
     const context = await t.withIdentity(ADMIN).query(api.tidyCards.cardContext, { cardId: id });
-    expect(context?.names.map((n) => n.row?.name)).toEqual(["Jackson Holliday"]);
+    expect(context?.names.map((n) => [n.kind, n.printed, n.pending])).toEqual([
+      ["player", "Jackson Holliday", true],
+    ]);
   });
 });

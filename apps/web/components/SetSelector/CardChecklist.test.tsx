@@ -60,6 +60,7 @@ import {
 
 vi.mock("../../convex/_generated/api", () => ({
   api: {
+    careerCoverage: { careerGaps: "careerCoverage.careerGaps" },
     selectorOptions: {
       getCardChecklist: "getCardChecklist",
       getSelectorOptionById: "getSelectorOptionById",
@@ -1484,6 +1485,63 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
         screen.getByRole("button", { name: SYNC_BUTTON }),
       ),
     );
+  });
+
+  /**
+   * NEO-656 — the gate's answers are FACTS: resolve returns them and the commit
+   * is handed them back verbatim (`gateLinks`, `gateTeamNames`). Nothing else
+   * carries them from one call to the other, so dropping them here loses links.
+   */
+  it("passes the gate's links and unknown team names from resolve into the commit, and nothing else", async () => {
+    const gateLinks = [
+      { kind: "player", name: "Solo Player", playerId: "p-solo" },
+      { kind: "team", name: "Solo Team", teamId: "t-solo" },
+    ];
+    mockResolveEntities.mockResolvedValue({
+      unknownPlayers: [],
+      unknownTeams: ["Mystery Team"],
+      batchId: undefined,
+      gateLinks,
+    });
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    await streamCandidates(rerender, arrivedBatch);
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: "0 matched, 0 BSC-only, 2 SL-only",
+        candidateCount: 2,
+        attachedSides: ["sportlots"],
+      });
+    });
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+    const sent = mockCommitChecklist.mock.calls[0][0];
+    expect(sent.gateLinks).toEqual(gateLinks);
+    expect(sent.gateTeamNames).toEqual(["Mystery Team"]);
+  });
+
+  it("sends no gateLinks key when the gate linked nothing (an empty list is left off)", async () => {
+    mockResolveEntities.mockResolvedValue({
+      unknownPlayers: [],
+      unknownTeams: [],
+      batchId: undefined,
+      gateLinks: [],
+    });
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    await streamCandidates(rerender, arrivedBatch);
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: "0 matched, 0 BSC-only, 2 SL-only",
+        candidateCount: 2,
+        attachedSides: ["sportlots"],
+      });
+    });
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+    const sent = mockCommitChecklist.mock.calls[0][0];
+    expect(sent).not.toHaveProperty("gateLinks");
+    expect(sent).not.toHaveProperty("gateTeamNames");
   });
 
   /**

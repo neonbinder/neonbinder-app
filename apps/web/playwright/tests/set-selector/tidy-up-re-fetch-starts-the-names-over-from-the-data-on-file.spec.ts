@@ -1,28 +1,24 @@
-// NEO-645 (R1, A17): a re-fetch of a set starts its names over. The walk's earlier answers are not
-// carried; each name resolves again through the data on file now. Only an operator's "Not a
-// player" ruling is kept (main's NEO-212 skips).
+// NEO-645 (R1, A17), NEO-656: a re-fetch of a set starts its names over from the data on file. No
+// answer is carried, an operator's "Not a player" ruling included: the card is the only record of
+// its names, so a name the checklist still prints is asked again unless a card links it.
 //
 // Jason: "it should refetch all card data and use whatever player/team data exists now. We do
-// not need to keep track of answers." The gate resets every name row of the set before it writes
-// the fetch's facts (`tidyNames.resetForRefetch`; unit rule in convex/tidyNames.refetch.test.ts).
+// not need to keep track of answers." And (NEO-656, rule 9): "Any dialogs or interim information
+// needed to do that is simply for the purpose of building the set/card data and should never be
+// stored." A "Not a player" answer only takes the name off that card's waiting list; nothing
+// remembers it (plan B3a), so a re-fetch that prints the name again asks about it again.
 //
 // The operator meets it like this:
 //   1. First fetch, in the walk: #1's name is ruled "Not a player"; #2's name is added as a new
 //      player (`Dal Rfa<token>`); #3 prints a different spelling (`Daul Rfa<token>`) and the
 //      operator links it by hand to that player. #3 stays pink for its blank team, so it is the
 //      one card left.
-//   2. The same checklist is fetched again (Sync). The operator's link on #3 is gone as an answer:
-//      the name is linked again by the data on file (#3's own saved card already links it, set
-//      history, main's rule A), and the row says so with the purple note "Linked for you: another
-//      card in this set is already linked to them". Had the answer been carried, the row would read
-//      as the operator's own link, with no note.
-//   3. #1's "Not a player" ruling is kept: the re-fetch asks nothing about it, so the pill and the
-//      walk count only #3.
-//
-// Why no "asked again" (pink Player row) after the re-fetch: a card the walk linked keeps its
-// link, and set history re-links the printed name from it (unit test "the operator's link is not
-// carried"). The name is asked again only when nothing on file settles it (no card links it, or
-// two cards link it to two players), which the walk cannot reach on one fetch.
+//   2. The same checklist is fetched again (Sync). #1 prints `Chk Rfa<token>` again and nothing
+//      remembers the ruling, so the walk opens on #1 asking about the name again (a pink Player
+//      row offering Not a player). The operator rules it out again.
+//   3. #3's name stays linked: the card's own saved link is data on file (set history, main's
+//      rule A), so the name is not asked again. No "Linked for you" note says so (J1: dropped,
+//      nothing records why NB linked it). #3 is still pink for its team, so it is the one card left.
 //
 // FIXTURE (SET-REGISTRY.md, the `trf`/`trg` prefixes; R7a): a per-attempt sport `trf<token>` with
 // year 2026, brand Topps and ONE set `trg<token>` with `Insert` › `Base`, all hand-made with no
@@ -48,10 +44,11 @@ import {
 } from "../../support/tidy-walk";
 
 const YEAR = "2026";
-const SET_HISTORY_NOTE = "Linked for you: another card in this set is already linked to them";
+/** J1 (NEO-656): the purple "Linked for you: …" note is gone; no tile says why NB linked a name. */
+const LINKED_FOR_YOU = /^Linked for you/;
 
 test(
-  "Tidy Up — a re-fetch starts the names over: an answered name is linked again by the data on file, and only a Not a player ruling is kept",
+  "Tidy Up — a re-fetch starts the names over: a ruled-out name is asked again, and a name a card links stays linked",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     const T = env.ATTEMPT_TOKEN;
@@ -80,7 +77,8 @@ test(
     const header = (number: string, who: string) => walk.getByText(`#${number} · ${who}`, { exact: true });
     const spellingRow = tidyTile(page, "Player").getByRole("group", { name: `Player ${SPELLING}`, exact: true });
     const linkedRow = spellingRow.getByRole("button", { name: `Edit ${PLAYER}`, exact: true });
-    const historyNote = spellingRow.getByRole("note").filter({ hasText: SET_HISTORY_NOTE });
+    const linkedForYou = tidyTile(page, "Player").getByRole("note").filter({ hasText: LINKED_FOR_YOU });
+    const ruledOutRow = tidyTile(page, "Player").getByRole("group", { name: `Player ${RULED_OUT}`, exact: true });
 
     // ── STEP 1: the first fetch's answers ──
     await expect(header("1", RULED_OUT)).toBeVisible();
@@ -94,9 +92,8 @@ test(
     await spellingRow.getByRole("button", { name: "Link to existing…", exact: true }).click();
     await spellingRow.getByRole("textbox", { name: "Search existing players" }).fill(PLAYER);
     await spellingRow.getByRole("option", { name: `Link to ${PLAYER}`, exact: true }).click();
-    // The operator's own link: answered, and no "Linked for you" note (nobody linked it for them).
+    // The operator's own link: answered.
     await expect(linkedRow).toBeVisible();
-    await expect(historyNote).toHaveCount(0);
     await expect(pinkTile(page, "Player")).toHaveCount(0);
     await expect(pinkTile(page, "Team")).toHaveCount(1);
     await saveForLater(page);
@@ -114,17 +111,29 @@ test(
     await review.getByRole("button", { name: "Skip reviewing changes and continue", exact: true }).click();
     await expect(review).toBeHidden();
     const reopened = await settleWalkAfterCommit(page, page.getByText(/Saved 3 cards\./).first());
-    expect(reopened, "#3 still has no team, so the walk opened again").toBe(true);
-    await expect(header("3", SPELLING)).toBeVisible();
-    // The link is the data's now, not the operator's: the set's own saved card links the name.
-    await expect(linkedRow).toBeVisible();
-    await expect(historyNote).toBeVisible();
-    await expect(pinkTile(page, "Player")).toHaveCount(0);
-    await expectAccessible(page, { within: walk, label: "Tidy Up walk, a name linked again by a re-fetch" });
+    expect(reopened, "#1's name is waiting again and #3 still has no team, so the walk opened again").toBe(true);
+    // #1 and #3 need someone; #2 (linked to the player it created, No Team) does not.
+    await expectCardsLeft(page, 2);
 
-    // ── STEP 3: the Not a player ruling was kept, so only #3 needs anyone ──
+    // ── STEP 3: nothing remembered the ruling, so #1's name is asked again ──
+    await expect(header("1", RULED_OUT)).toBeVisible();
+    await expect(pinkTile(page, "Player"), "#1's printed name waits on the operator again").toHaveCount(1);
+    await expect(ruledOutRow.getByRole("button", { name: /^Not a player \(/ })).toBeVisible();
+    await expect(ruledOutRow.getByText(/ is not a player\.$/), "no ruling was carried onto the re-fetched card").toHaveCount(0);
+    await expectAccessible(page, { within: walk, label: "Tidy Up walk, a ruled-out name asked again by a re-fetch" });
+    expect(await ruleOutOpenPlayerRows(page)).toEqual([RULED_OUT]);
+    await expect(pinkTile(page, "Player")).toHaveCount(0);
+    await saveAndNext(page);
+
+    // ── STEP 4: the name a card links stays linked, with no note ──
+    await expect(header("3", SPELLING)).toBeVisible();
     await expectCardsLeft(page, 1);
-    await expect(walk.getByText(/^#1 · /), "#1's ruling was kept: the re-fetch asked nothing about it").toHaveCount(0);
+    // The set's own saved card links the name, so the re-fetch asks nothing about it.
+    await expect(linkedRow).toBeVisible();
+    await expect(pinkTile(page, "Player")).toHaveCount(0);
+    await expect(linkedForYou, "J1: no tile says why NB linked the name").toHaveCount(0);
+    await expect(pinkTile(page, "Team")).toHaveCount(1);
+    await expectAccessible(page, { within: walk, label: "Tidy Up walk, a name still linked after a re-fetch" });
     await saveForLater(page);
     await expect(needsYouPill(page)).toHaveAccessibleName("1 needs you, 1 to fix");
   },

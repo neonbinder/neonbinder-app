@@ -1,12 +1,13 @@
 // ONE FEATURE (R1, NEO-602 on the NEO-645 Tidy Up walk, the Orioles fix): when a printed team name
 // fits two eras, a card whose player has NO stint on either abstains, so long as the cards that do
 // speak point at the era the set's year covers. The commit links the name to that era on every
-// card with no stop: no card's Team tile asks ("Which team:"), and no "Linked for you" note marks
-// it (the year's own pick is silent). The walk still opens, on the silent card ALONE, for its blue
-// Career check (its player has no career on file, NEO-574). Save & next on an open gap would add
-// the stint from the set's year (main's default, "Save & next adds it to the career."); "Keep as
-// is" is the way out: it acts at once, the Career question goes, Save & next then writes nothing,
-// both cards carry the current era and the silent player's career stays empty.
+// card with no stop: no card's Team tile asks ("Which team:"), the link is the card's own line
+// (no per-name row) and no note marks it (NEO-656 J1). The walk still opens after the commit, on
+// the silent card ALONE, for its LIVE blue Career gap (his player has no career on file; NEO-656
+// J5 reads it from the data, so it is the commit's only stop). Save & next on an open gap would
+// add the stint from the set's year (main's default, "Save & next adds it to the career."), so
+// the card is Skipped: nothing is written, the end screen counts it still to check, the pill
+// keeps it, both cards carry the current era and the silent player's career stays empty.
 //
 // The Orioles shape, minted: `Bal<token> Ori<token>` (1954–present) is the current era and holds
 // the printed name as its own; `Mil<token> Bre<token>` (1901–1902) is the past era and answers to
@@ -50,12 +51,13 @@ import {
 import { drillToCustom, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 import {
   expectCardsLeft,
+  expectTidyEndScreen,
   finishTidyWalk,
+  needsYouPill,
   pinkTile,
-  saveAndNext,
   settleWalkAfterCommit,
+  skipCard,
   tidyCardHeader,
-  tidyFooterButton,
   tidyTile,
   tidyUpName,
   tidyWalk,
@@ -119,7 +121,7 @@ test(
     expect(facts.rows).toBe(2);
     await syncChecklistButton(page).click();
     const opened = await settleWalkAfterCommit(page, page.getByText(/^Saved 2 cards\./).first());
-    expect(opened, `${SILENT}'s empty career opens the walk for its Career check`).toBe(true);
+    expect(opened, `${SILENT}'s empty career is the commit's one live gap: it opens the walk`).toBe(true);
     const walk = tidyWalk(page);
     await expect(walk).toHaveAccessibleName(tidyUpName({ year: YEAR, set: SET }));
     // Positive: one card to walk, the silent one. Negative: the voter's card is not in the walk.
@@ -133,11 +135,13 @@ test(
     await expect(row.getByText(CURRENT, { exact: true })).toBeVisible();
     // C1: the linked row's Edit carries the linked team's name.
     await expect(row.getByRole("button", { name: `Edit ${CURRENT}`, exact: true, disabled: false })).toBeVisible();
-    // Negatives, read against it: nothing asked about the name, no "Linked for you" (the year's own
-    // pick is silent), the past era nowhere on the tile, and the tile not pink.
+    // Negatives, read against it: one team line (the link, no per-name row), nothing asked about the
+    // name, no note (J1), the past era nowhere on the tile, and the tile not pink.
+    await expect(team.getByRole("group", { name: /^Team / }), "one team line: the link, no per-name row").toHaveCount(1);
     await expect(team.getByText(/^Which team: /)).toHaveCount(0);
     await expect(team.getByRole("button", { name: /^Not a team/ })).toHaveCount(0);
     await expect(team.getByRole("note")).toHaveCount(0);
+    await expect(walk.getByText(/Linked for you/)).toHaveCount(0);
     await expect(team.getByText(PAST)).toHaveCount(0);
     await expect(pinkTile(page, "Team")).toHaveCount(0);
 
@@ -150,16 +154,12 @@ test(
     await expect(line.getByText("Save & next adds it to the career.", { exact: true })).toBeVisible();
     await expect(career.getByRole("group", { name: `Career ${VOTER}`, exact: true })).toHaveCount(0);
     await expectAccessible(page, { within: walk, label: "Tidy Up walk, Career check after a silent two-era link" });
-    // C8: "Keep as is" acts at once (no pressed state to read): the Career question is gone while
-    // the card stays open, and the walk has nothing left to ask.
-    await line.getByRole("button", { name: "Keep as is", exact: true }).click();
-    await expect(career, "Keep as is answered the career gap at once").toHaveCount(0);
-    await expect(tidyCardHeader(page, `#2 · ${SILENT}`), "an answer never moves the walk").toBeVisible();
-    await expectCardsLeft(page, 0);
-    await expect(tidyFooterButton(page, "saveAndNext", { usable: true })).toBeVisible();
-    await saveAndNext(page);
-    await expect(walk.getByText("All tidy. Nothing on this checklist needs you.")).toBeVisible();
+    // There is no "Keep as is" (NEO-656): Skip moves on with no write, so the gap stays live and blue.
+    await expect(career.getByRole("button", { name: /Keep as is/ })).toHaveCount(0);
+    await skipCard(page);
+    await expectTidyEndScreen(page, { fixed: 0, stillToCheck: 1 });
     await finishTidyWalk(page);
+    await expect(needsYouPill(page), "the career gap is read live: Skip leaves it blue").toHaveAccessibleName("1 needs you");
 
     // ── STEP 3: both cards carry the current era, the silent card included ──
     const drawer = page.getByRole("dialog");
@@ -172,14 +172,14 @@ test(
       await expect(drawer).toBeHidden();
     }
 
-    // ── STEP 4: Keep as is held Save & next back: the silent player's career is still empty ──
+    // ── STEP 4: Skip wrote nothing: the silent player's career is still empty ──
     await page.getByRole("link", { name: "Players", exact: true }).click();
     await expectPlayersLoaded(page);
     await page.getByRole("textbox", { name: "Filter players" }).fill(SILENT);
     await expect(playersCounter(page, PLAYERS_MATCHES)).toBeVisible();
     await page.getByRole("button", { name: new RegExp(`^${escapeRe(SILENT)} ${escapeRe(SPORT)}\\b`) }).click();
     await expect(page.getByRole("heading", { name: SILENT, exact: true })).toBeVisible();
-    await expect(page.getByText("No stints recorded yet."), "Keep as is: no stint from the set's year").toBeVisible();
+    await expect(page.getByText("No stints recorded yet."), "Skip: no stint from the set's year").toBeVisible();
     await expect(page.getByRole("list", { name: "Career history" })).toHaveCount(0);
 
     // Back: the set builder, on the filled checklist.
