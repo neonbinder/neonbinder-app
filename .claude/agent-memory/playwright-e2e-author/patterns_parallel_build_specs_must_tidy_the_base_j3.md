@@ -32,6 +32,13 @@ those up first" (a `role="alert"`); the client holds the auto build until the ro
 - **Card titles can end up behind the walk.** `ParallelTitlesDoor` never self-opens over another
   dialog: wait for `titlesDialog.or(waitingLine)`, press "Fix N card titles" on the waiting branch.
 - An adopting spec (rerun on the same seed) reopens the walk from the "N need you" pill.
+- **Proving a spec that now answers every pink:** planting the OLD, narrower rule leaves it green
+  by construction (the old rule is more lenient). Plant the spec's OLD fixture instead (leave the
+  card teamless / skipped, drop the no-skip asserts) against the new rule: it reds at the
+  "Built" line with the "— Blocked —" alert in error-context. On a one-shot sole writer run that
+  plant without `--expect` (it re-seeds), after the green run.
+- Hand-made quick-add card born No Team: `beforeSubmit` presses
+  `getByRole("button", { name: "No Team for the new card", pressed: false })`.
 
 **Why:** NEO-645 rewrites (2026-11-22), NEO-661 widening (2026-11-24). **How to apply:** any
 spec that saves a checklist and then expects its parallels built. Related:
