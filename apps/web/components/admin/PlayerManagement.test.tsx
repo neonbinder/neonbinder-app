@@ -3041,6 +3041,43 @@ describe("NEO-313: the Cards list", () => {
     expect(within(list).getByText("Hockey")).toBeTruthy();
   });
 
+  // NEO-656: axe's scrollable-region-focusable. happy-dom has no layout, so the
+  // box's heights are stubbed: a list that overflows takes a tab stop, one that
+  // fits does not.
+  it.each([
+    { scrollHeight: 600, clientHeight: 288, tabStop: true },
+    { scrollHeight: 120, clientHeight: 120, tabStop: false },
+  ])(
+    "the Cards box is a tab stop only when it scrolls ($scrollHeight over $clientHeight)",
+    ({ scrollHeight, clientHeight, tabStop }) => {
+      const sh = vi
+        .spyOn(HTMLElement.prototype, "scrollHeight", "get")
+        .mockReturnValue(scrollHeight);
+      const ch = vi
+        .spyOn(HTMLElement.prototype, "clientHeight", "get")
+        .mockReturnValue(clientHeight);
+      try {
+        cardsForPlayerById["p-bo"] = [
+          {
+            cardId: "c1",
+            cardName: "1990 Score",
+            cardNumber: "5",
+            setLabel: "1990 Score Baseball",
+            sportId: "sport-baseball",
+            sportValue: "Baseball",
+          },
+        ];
+        renderWithBo();
+        const box = screen.getByRole("group", { name: "Cards" });
+        expect(within(box).getByRole("list", { name: "Cards for Bo Jackson" })).toBeTruthy();
+        expect(box.getAttribute("tabindex")).toBe(tabStop ? "0" : null);
+      } finally {
+        sh.mockRestore();
+        ch.mockRestore();
+      }
+    },
+  );
+
   it("shows the 'Also: {sport}' chip in the master list for a multi-sport player", () => {
     renderWithBo();
 
