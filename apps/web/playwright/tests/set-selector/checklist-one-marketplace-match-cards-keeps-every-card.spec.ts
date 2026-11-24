@@ -12,11 +12,11 @@
 // NEO-645: Match Cards' Confirm SAVES the cards, and the Tidy Up walk opens on them (one card
 // at a time, tiles that save as they are answered). NEO-335 / NEO-518 / NEO-569 ride this
 // fixture (the suite's one set where every card arrives with a team name nobody links, and a
-// real BSC-linked fetch + commit): on the walk, LIVE_PLAYER is created on his own card with two
-// career stints; one card is answered "No team on this card"; another gets a team nobody
+// real BSC-linked fetch + commit): on the walk, LIVE_PLAYER is created on his own card and given
+// two career stints in Players admin (NEO-656 J6: the walk reviews no new player's career); one card is answered "No team on this card"; another gets a team nobody
 // offered, after the "Other team…" search proves it ranks by the set's league and year; the
 // "N need you" count is final at "Saved"; the one team written is read back off the cards in the
-// drawer; and a re-sync re-asks none of the answered cards. LAST (a known gap goes last in a
+// drawer; and a re-sync leaves the count where it was. LAST (a known gap goes last in a
 // fresh-only spec, so everything above is proved first): LIVE_PLAYER's no-team card pre-selects
 // the career team the set's leagues rank first.
 //
@@ -35,9 +35,9 @@
 // no league; the form is cancelled, no card is added). The walk's own "+ New team" would SAVE the
 // team on the card it opens on (a click on a team saves it), and the club must exist without being
 // on LIVE_PLAYER's card, so his Team tile can still pre-select the league-ranked career team. "Roanoke Express", the team
-// every card prints, is answered "Not a team" once for the checklist (the old review's skip of
-// its New Team step), which reaches every card that prints it. All of it is global; the same
-// trade checklist-wizard-career-team-commits makes.
+// the cards print, is answered "Not a team" on each card the walk stands on (NEO-656 B1: an
+// answer reaches the open card only, and nothing stores it, so a re-sync may ask again). All of
+// it is global; the same trade checklist-wizard-career-team-commits makes.
 //
 // ONE LIVE BSC LOOKUP PER SYNC, ON PURPOSE (NEO-489). Both syncs upload `roanokeExpress1995OneLive`
 // first: the publisher's checklist for 24 of the 25 cards, Chris Pollack's row LEFT OUT, so BSC is
@@ -78,6 +78,7 @@ import {
 import { createTeamInCardForm, editCardButton } from "../../support/cards";
 import { bscLookupOutcome, expectAfterMarketplace, expectStepWithSportLots } from "../../support/marketplace-wait";
 import { recordedNoMatchName } from "../../support/recorded-names";
+import { addCareerStint, expectPlayersLoaded, PLAYERS_MATCHES, playersCounter } from "../../support/players";
 import {
   CHECKLISTS,
   cancelCardFetchButton,
@@ -101,6 +102,7 @@ import {
   settleWalkAfterCommit,
   skipCard,
   skipUntil,
+  suggestedTeamChip,
   tidyFooterButton,
   tidyTile,
   tidyWalk,
@@ -140,17 +142,18 @@ function noTeamOnCard(page: Page) {
 }
 
 /**
- * A team chip on the open card's Team tile, by the team's name (a chip may add ", suggested" when the
- * pre-fill picked it, and " · <years / played here>").
+ * The career chip the pre-fill passes over, on the open card's Team tile: its whole name is the
+ * team and LIVE_PLAYER's years with it, bare (NEO-639 C8: one player on the card, so no name in
+ * front), and never ", suggested". Both stints run 1994-1996.
  */
-function teamChip(page: Page, name: string) {
-  return tidyTile(page, "Team").getByRole("button", { name: new RegExp(`^${escapeRe(name)}(, suggested)?( · .*)?$`) });
+function clubChip(page: Page, name: string) {
+  return tidyTile(page, "Team").getByRole("button", { name: `${name} · 1994–1996`, exact: true });
 }
 
 /**
  * The open card's printed team names, each answered "Not a team" if nobody has yet (the old
- * review's skip of the name's New Team step). An answer is the checklist's: it reaches every card
- * that prints the name. Contract: ENTRY a settled card. EXIT no printed team name waits and the
+ * review's skip of the name's New Team step). The answer is the open card's alone (NEO-656 B1).
+ * Contract: ENTRY a settled card. EXIT no printed team name waits and the
  * Team tile asks for a team ("No team on this card" is up). Returns the names THIS call answered.
  */
 async function releasePrintedTeam(page: Page): Promise<string[]> {
@@ -383,37 +386,40 @@ test(
     await expect(liveRow.getByRole("button", { name: /^Add as new player( .+)?$/ })).toBeVisible();
     await expect(liveRow.getByRole("button", { name: /^Add as new player anyway/ })).toHaveCount(0);
     expect(await createPlayerOnOpenRow(page)).toBe(`Player ${LIVE_PLAYER}`);
-    // A player made on this card brings his career to check (blue, never pink).
-    const career = tidyTile(page, "Career");
-    await expect(career).toHaveAccessibleDescription(/To check/);
-    await expect(career.getByRole("group", { name: `Career ${LIVE_PLAYER}`, exact: true })).toBeVisible();
+    // NEO-656 (J6, B24): a new player brings no career review of his own, and his card has no
+    // team yet, so no live gap either: no Career tile. The positive is the answered row above.
+    await expect(tidyTile(page, "Career"), "a new player on a card with no team raises no Career tile").toHaveCount(0);
 
-    // The printed team, ruled "Not a team" (once, for every card that prints it). BSC answered his
-    // card; whether it named the team is annotated, and everything after is the same either way.
+    // The printed team, ruled "Not a team" on this card (NEO-656 B1: an answer reaches the open
+    // card only; cards A and B are answered on their own below). BSC answered his card; whether it
+    // named the team is annotated, and everything after is the same either way.
     const printedOnLive = await releasePrintedTeam(page);
     bscLookupOutcome("answered", `${LIVE_PLAYER} (${printedOnLive.length > 0 ? `named ${printedOnLive.join(", ")}` : "no team"})`);
     await expect(pinkTile(page, "Team"), "a card with no team is still a stop").toHaveCount(1);
 
     const teamTile = tidyTile(page, "Team");
-    // His two stints, both covering 1995: the club (1994-1996) and the Badgers (same years).
-    const addStint = career.getByRole("button", { name: `+ Add stint for ${LIVE_PLAYER}`, exact: true });
+    // His two stints, both covering 1995: the club (1994-1996) and the Badgers (same years). The
+    // walk's Career tile shows only a live gap (J6), and this card has no team, so the career is
+    // written where stints live, on the player: Players admin, in a second tab of this session,
+    // while the walk stays open on his card.
+    const admin = await page.context().newPage();
+    await admin.goto("/admin/players");
+    // A fresh app load in the new tab: the launch gate (R4).
+    await expectPlayersLoaded(admin, LAUNCH_GATE);
+    await admin.getByRole("textbox", { name: "Filter players" }).fill(LIVE_PLAYER);
+    await expect(playersCounter(admin, PLAYERS_MATCHES)).toBeVisible();
+    await admin.getByRole("button", { name: new RegExp(`^${escapeRe(LIVE_PLAYER)} Hockey\\b`) }).click();
+    await expect(admin.getByRole("heading", { name: LIVE_PLAYER, exact: true })).toBeVisible();
     for (const stint of [team, COLLEGE_TEAM]) {
-      await addStint.click();
-      const name = career.getByRole("combobox", { name: `Career team name for ${LIVE_PLAYER}` });
-      await expect(name).toBeVisible();
-      await name.fill(stint);
-      await career.getByRole("spinbutton", { name: `From year for ${LIVE_PLAYER}` }).fill("1994");
-      await career.getByRole("spinbutton", { name: `To year (optional) for ${LIVE_PLAYER}` }).fill("1996");
-      // Usable only once the typed name IS one saved team (knownTeamsOnly).
-      const add = career.getByRole("button", { name: `Add career team for ${LIVE_PLAYER}` });
-      await expect(add, `${stint} is a team NeonBinder holds`).toBeEnabled();
-      await add.click();
-      await expect(addStint, "the stint was added and the entry closed").toBeVisible();
+      await addCareerStint(admin, { search: stint, full: stint, from: "1994", to: "1996" });
     }
-    // Both teams are now his career's chips on the Team tile, and nothing is saved: the set's league
-    // ranks the Badgers first, so they are preselected (", suggested" in the name) and the club is only offered.
-    await expect(teamChip(page, COLLEGE_TEAM)).toHaveAccessibleName(/, suggested/);
-    await expect(teamChip(page, team)).not.toHaveAccessibleName(/, suggested/);
+    await admin.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(admin.getByText(`Saved ${LIVE_PLAYER}`)).toBeVisible();
+    await admin.close();
+    // Both teams are now his career's chips on the Team tile (read live), and nothing is saved: the
+    // set's league ranks the Badgers first, so they are preselected and the club is only offered.
+    await expect(suggestedTeamChip(page, COLLEGE_TEAM, `${LIVE_PLAYER} played here`)).toBeVisible();
+    await expect(clubChip(page, team)).toBeVisible();
     await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk, a created player's career and team chips" });
     // Nothing saved for his team yet: Save for later writes nothing (STEP 11 answers him).
     await saveForLater(page);
@@ -535,7 +541,9 @@ test(
     await page.getByRole("button", { name: "Done editing card" }).click();
     await expect(title).toBeHidden();
 
-    // ── STEP 10: a re-sync re-asks none of the answered cards (NEO-335, NEO-203) ──
+    // ── STEP 10: a re-sync leaves the count where it was (NEO-335, NEO-203) ──
+    // NEO-656 (B3a, rule 9): no answer is stored, so a printed name ruled out may be asked again;
+    // every card it could reach is already counted, so the count is the commit's plus NB272.
     // The same checklist again: ONE live BSC lookup this time too, and Match Cards keeps
     // LIVE_PLAYER's card so every card comes back through. The content review comes first and
     // always comes (card B stores a team no source lists, LIVE_PLAYER's card a player link against
@@ -590,20 +598,22 @@ test(
     await saveForLater(page);
     await openTidyWalk(page);
     await skipUntil(page, livePlayerRow(page), { maxCards: FETCHED + 1 });
+    // NEO-656 (B3a): nothing stores "Not a team", so the re-sync may ask about his printed team
+    // again; it is ruled out again here (no-op when BSC named none), and the chips follow.
+    await releasePrintedTeam(page);
     await expect(pinkTile(page, "Team")).toHaveCount(1);
-    await expect(teamChip(page, team)).toBeVisible();
-    await expect(teamChip(page, COLLEGE_TEAM)).toHaveAccessibleName(/, suggested/);
-    await expect(teamChip(page, team)).not.toHaveAccessibleName(/, suggested/);
     // NEO-639 (C8): the chip the pre-fill passes over says his years with that club, bare (one player
     // on the card, so no name in front: "<team> · 1994–1996"), and the pre-filled one says who played there.
-    await expect(teamChip(page, team)).toHaveAccessibleName(`${team} · 1994–1996`);
-    await expect(teamChip(page, COLLEGE_TEAM)).toHaveAccessibleName(`${COLLEGE_TEAM}, suggested · ${LIVE_PLAYER} played here`);
+    await expect(clubChip(page, team)).toBeVisible();
+    await expect(suggestedTeamChip(page, COLLEGE_TEAM, `${LIVE_PLAYER} played here`)).toBeVisible();
     await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk, a league-ranked team pre-fill" });
-    // The operator clicks the club instead, which saves it: the card's last pink goes, and Save &
-    // next (the career is only blue) moves on.
-    await teamChip(page, team).click();
+    // The operator clicks the club instead, which saves it (J9: a click on a team saves it): the
+    // card's last pink goes. His 1994-1996 stint with the club covers 1995, so no live Career gap
+    // follows (J5), and Save & next moves on writing nothing.
+    await clubChip(page, team).click();
     await expect(pinkTile(page, "Team")).toHaveCount(0);
     await expect(teamTile.getByRole("group", { name: `Team ${team}`, exact: true })).toBeVisible();
+    await expect(tidyTile(page, "Career"), "the club is in his career: no gap").toHaveCount(0);
     await saveAndNext(page);
     // His card may have been the walk's last: the end screen ("1 card fixed") closes with Done,
     // a card with Save for later. Either way nothing else is written.
