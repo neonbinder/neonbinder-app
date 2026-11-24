@@ -21,7 +21,10 @@
 // outline; the "Show boxes for selected inserts" switch (in the filter row; off
 // on every open, never moved by a tick) brings the own boxes back with their
 // "Selected" hint. The switch is on through the filter steps, so it is the
-// filter, not the tick, that hides those boxes there.
+// filter, not the tick, that hides those boxes there. It is per session: a
+// close and reopen starts it off again. A target's dashed outline turns solid
+// under the pointer (desktop only: a phone has no hover). When the switch
+// hides every box the right pane says why, with or without a filter.
 //
 // MINTED NAMES are single tokens from env.ATTEMPT_TOKEN (set `pgmulti<token>`;
 // inserts `<token> Aces` / `Bolt` / `Comet`: the token plus a distinct second
@@ -33,7 +36,7 @@ import { setBuilderReady, addCustomEntry, drillToCustom } from "../../support/se
 test(
   "Group Parallels — two ticked rows move under one insert with a single press and a single Save, even while the filter hides them (NEO-300, NEO-472, NEO-660)",
   { tag: ["@set-selector", "@parallel-grouping"] },
-  async ({ page, signIn, env }) => {
+  async ({ page, signIn, env, isMobile }) => {
     const T = env.ATTEMPT_TOKEN;
     const W = env.WORKER_INDEX;
     const aces = `${T} Aces`;
@@ -91,6 +94,15 @@ test(
     await expect(boxOf(aces)).toHaveCSS("border-style", "dashed");
     await expect(inserts.getByText("Top-level inserts", { exact: true })).toBeVisible();
     await expect(showTicked).not.toBeChecked();
+    // Under the pointer the dashed outline turns solid. Pixel 7 emulation is a
+    // touch screen (hover: none), where the hover style never applies, so on
+    // mobile the outline stays dashed under a hover.
+    await boxOf(aces).hover();
+    if (isMobile) {
+      await expect(boxOf(aces)).toHaveCSS("border-style", "dashed");
+    } else {
+      await expect(boxOf(aces)).toHaveCSS("border-style", "solid");
+    }
 
     // Switched on, both own boxes come back with their own hint and a plain
     // (solid) border: they are not targets. Aces keeps its dashed outline.
@@ -104,6 +116,36 @@ test(
     await expect(boxOf(aces)).toHaveCSS("border-style", "dashed");
     await expect(dialog.getByText("2 selected", { exact: true })).toBeVisible();
     await expectAccessible(page, { within: dialog, label: "Group Parallels dialog showing the ticked rows' own boxes" });
+
+    // NEO-660: the switch is per session. Cancel (no moves yet, so no discard
+    // prompt) and reopen: it is off again, and re-ticked rows' own boxes are
+    // gone. With every row ticked and no filter, the right pane says why.
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(dialog).toBeHidden();
+    await page.getByRole("button", { name: "Group Parallels" }).click();
+    await expect(dialog.getByText("No changes yet")).toBeVisible();
+    await expect(showTicked).not.toBeChecked();
+    for (const name of [bolt, comet, aces]) await dialog.getByRole("checkbox", { name: `Select ${name}` }).click();
+    await expect(dialog.getByText("3 selected", { exact: true })).toBeVisible();
+    await expect(showTicked).not.toBeChecked();
+    const everyBoxSelected = boxes.getByText(
+      'Every box here belongs to a selected insert. Turn on "Show boxes for selected inserts" to see them.',
+      { exact: true },
+    );
+    await expect(row(bolt)).toBeVisible();
+    await expect(everyBoxSelected).toBeVisible();
+    await expect(boxes.getByRole("group", { name: /^Parallels of / })).toHaveCount(0);
+    await expectAccessible(page, { within: dialog, label: "Group Parallels dialog, every box belongs to a ticked row" });
+    // Aces unticked: its box is back as the one target, and the line goes.
+    await dialog.getByRole("checkbox", { name: `Select ${aces}` }).click();
+    await expect(dialog.getByText("2 selected", { exact: true })).toBeVisible();
+    await expect(boxOf(aces)).toHaveCSS("border-style", "dashed");
+    await expect(boxOf(bolt)).toHaveCount(0);
+    await expect(everyBoxSelected).toHaveCount(0);
+    await flipShowTicked();
+    await expect(showTicked).toBeChecked();
+    await expect(boxOf(bolt)).toBeVisible();
+    await expect(boxOf(comet)).toHaveAccessibleDescription("Selected");
 
     // The filter's count: shown beside the field at once, and announced by a
     // status of its own once typing pauses (500 ms). Once both have it, the
@@ -157,6 +199,7 @@ test(
     await expect(row(bolt)).toBeVisible();
     await expect(boxes.getByText(`No parallels to show for "bolt ${T}"`, { exact: true })).toBeVisible();
     await expect(boxes.getByRole("group", { name: /^Parallels of / })).toHaveCount(0);
+    await expectAccessible(page, { within: dialog, label: "Group Parallels dialog, switch off hides every filtered box" });
 
     // Filtered again, Enter on Aces' box moves both hidden rows.
     await filter.fill(`aces ${T}`);

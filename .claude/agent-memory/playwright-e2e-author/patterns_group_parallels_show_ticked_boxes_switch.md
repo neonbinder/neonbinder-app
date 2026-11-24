@@ -39,6 +39,12 @@ and assert `toBeChecked()` on the checkbox, as a user would.
   `npx playwright test --config <absolute path>` from apps/web with .env.local
   sourced, APP_URL and WORKER_INDEX set; `page.emulateMedia` + `paintsLook`
   per theme, then `locator.screenshot`.
+- Hover on a target: `box.hover()` then `toHaveCSS("border-style", "solid")`
+  on desktop only. Tailwind 4 `hover:` sits behind `@media (hover: hover)` and
+  Pixel 7 emulation is `hover: none`, so on mobile assert it stays dashed.
+- Switch reset on reopen: with no moves pending, Cancel closes without the
+  discard prompt; reopen, assert unchecked. A row holding parallels cannot be
+  ticked, so do this before the save, not after it.
 - Other specs that tick a row and click ANOTHER row's box are unaffected; the
   long-set spec's `/^\d+ selected/` does not collide with the switch label.
 
