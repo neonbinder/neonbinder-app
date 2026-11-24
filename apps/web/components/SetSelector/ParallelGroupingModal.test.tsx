@@ -780,6 +780,11 @@ describe("ParallelGroupingModal — several rows at once", () => {
   const boxTitle = (name: string) => `Parallels of "${name}"`;
   const zoneOf = (title: string) =>
     screen.getByText(title).parentElement!.parentElement as HTMLElement;
+  // NEO-660 — a ticked row's own box is hidden until this switch is on.
+  const boxSwitch = () =>
+    screen.getByRole("checkbox", { name: "Show ticked rows' boxes" });
+  const showTickedBoxes = () => fireEvent.click(boxSwitch());
+  const hasBox = (name: string) => screen.queryByText(boxTitle(name)) !== null;
   // dnd-kit keeps a role="status" of its own; this is the footer's.
   const count = () =>
     document.querySelector('[role="status"][data-selection-count]')!
@@ -935,6 +940,8 @@ describe("ParallelGroupingModal — several rows at once", () => {
     renderModal();
     fireEvent.click(screen.getByText(AQUA));
     fireEvent.click(nameButton(GREEN), { shiftKey: true });
+    // The six's own boxes are hidden by default; show them to read the hint.
+    showTickedBoxes();
     // Every box invites the drop — except those of the six themselves.
     expect(
       within(zoneOf(boxTitle(MOJO))).getByText(
@@ -1066,6 +1073,7 @@ describe("ParallelGroupingModal — several rows at once", () => {
     fireEvent.click(tick(AQUA));
     fireEvent.click(tick(BW));
     fireEvent.click(tick(MOJO));
+    showTickedBoxes();
 
     const box = zoneOf(boxTitle(MOJO));
     expect(
@@ -1092,6 +1100,7 @@ describe("ParallelGroupingModal — several rows at once", () => {
 
   test("a selected row's own box counts the OTHER rows: none, one, or several", () => {
     renderModal();
+    showTickedBoxes();
     const hint = () =>
       within(zoneOf(boxTitle(MOJO))).getByText(/^This row is selected/)
         .textContent;
@@ -1169,6 +1178,112 @@ describe("ParallelGroupingModal — several rows at once", () => {
     for (const el of controls) expect(el.getAttribute("id")).toBeNull();
     // Maestro reaches the tick by its name.
     expect(tick(AQUA).getAttribute("aria-label")).toBe(`Select ${AQUA}`);
+  });
+
+  // ---- NEO-660: the switch that hides ticked rows' boxes -----------------
+
+  test("a ticked row's box is absent by default; every other box stays", () => {
+    renderModal();
+    expect((boxSwitch() as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(tick(AQUA));
+    expect(hasBox(AQUA)).toBe(false);
+    for (const name of [MOJO, BW, BLACK, BLUE, WAVE, GOLD, GREEN]) {
+      expect(hasBox(name)).toBe(true);
+    }
+  });
+
+  test("switched on, every box shows, the ticked row's own with its hint", () => {
+    renderModal();
+    fireEvent.click(tick(AQUA));
+    fireEvent.click(tick(BW));
+    showTickedBoxes();
+    for (const name of [MOJO, AQUA, BW, BLACK, BLUE, WAVE, GOLD, GREEN]) {
+      expect(hasBox(name)).toBe(true);
+    }
+    expect(
+      within(zoneOf(boxTitle(AQUA))).getByText(
+        "This row is selected. Untick it to drop the other row here.",
+      ),
+    ).toBeTruthy();
+  });
+
+  test("the switch keeps its state while rows are ticked, unticked and cleared", () => {
+    renderModal();
+    showTickedBoxes();
+    fireEvent.click(tick(AQUA));
+    fireEvent.click(tick(BW));
+    expect((boxSwitch() as HTMLInputElement).checked).toBe(true);
+    expect(hasBox(AQUA)).toBe(true);
+    fireEvent.click(tick(AQUA));
+    expect((boxSwitch() as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Clear selection" }));
+    expect((boxSwitch() as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(tick(GOLD));
+    expect(hasBox(GOLD)).toBe(true);
+
+    // And off stays off through the same changes.
+    showTickedBoxes();
+    expect((boxSwitch() as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(tick(BLUE));
+    expect((boxSwitch() as HTMLInputElement).checked).toBe(false);
+    expect(hasBox(BLUE)).toBe(false);
+    expect(hasBox(GOLD)).toBe(false);
+  });
+
+  test("the switch is off again after the dialog is closed and reopened", () => {
+    const props = { onClose: vi.fn(), variantTypeId: VARIANT_TYPE_ID };
+    const { rerender } = render(<ParallelGroupingModal isOpen {...props} />);
+    showTickedBoxes();
+    fireEvent.click(tick(AQUA));
+    expect(hasBox(AQUA)).toBe(true);
+    rerender(<ParallelGroupingModal isOpen={false} {...props} />);
+    rerender(<ParallelGroupingModal isOpen {...props} />);
+    expect((boxSwitch() as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(tick(AQUA));
+    expect(hasBox(AQUA)).toBe(false);
+  });
+
+  test("the top-level box is always there, switch on or off", () => {
+    renderModal();
+    fireEvent.click(tick(AQUA));
+    expect(screen.getByText("Top-level inserts")).toBeTruthy();
+    showTickedBoxes();
+    expect(screen.getByText("Top-level inserts")).toBeTruthy();
+  });
+
+  test("click-target boxes are dashed; the ticked row's own box is not", () => {
+    renderModal();
+    expect(zoneOf(boxTitle(GOLD)).className).not.toContain("border-dashed");
+    fireEvent.click(tick(AQUA));
+    showTickedBoxes();
+    const target = zoneOf(boxTitle(GOLD)).className;
+    expect(target).toContain("border-dashed");
+    expect(target).toContain("hover:border-solid");
+    expect(target).not.toContain("hover:border-control");
+    expect(zoneOf(boxTitle(AQUA)).className).not.toContain("border-dashed");
+  });
+
+  test("starting a drag does not change which boxes are rendered", () => {
+    renderModal();
+    fireEvent.click(tick(AQUA));
+    fireEvent.click(tick(BW));
+    const boxes = () =>
+      screen
+        .getAllByRole("group", { name: /^Parallels of / })
+        .map((g) => g.getAttribute("aria-label"));
+    const before = boxes();
+    act(() => {
+      dnd.onDragStart!({ active: { id: "aqua" } });
+    });
+    expect(boxes()).toEqual(before);
+    act(() => {
+      dnd.onDragEnd!({ active: { id: "aqua" }, over: null });
+      dnd.onDragStart!({ active: { id: "green" } });
+    });
+    // Green is dragged alone; its box stays, the ticked boxes stay hidden.
+    expect(boxes()).toEqual(before);
+    expect(hasBox(GREEN)).toBe(true);
+    expect(hasBox(AQUA)).toBe(false);
   });
 
   test("✕ on one row keeps the rest of the selection", () => {
@@ -1574,6 +1689,22 @@ describe("ParallelGroupingModal — two panes, filter and jump", () => {
       window.matchMedia = original;
     };
   }
+
+  test("with a filter up, the hiding still applies to the visible boxes", () => {
+    renderModal();
+    fireEvent.click(tick(BOWMAN));
+    typeFilter("b");
+    // Bowman and Stadium match; Traded is filtered out, Bowman is ticked.
+    expect(screen.queryByRole("group", { name: boxTitle(BOWMAN) })).toBeNull();
+    expect(screen.getByRole("group", { name: boxTitle(STADIUM) })).toBeTruthy();
+    expect(screen.queryByRole("group", { name: boxTitle(TRADED) })).toBeNull();
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Show ticked rows' boxes" }),
+    );
+    expect(screen.getByRole("group", { name: boxTitle(BOWMAN) })).toBeTruthy();
+    // The filter still governs the rest.
+    expect(screen.queryByRole("group", { name: boxTitle(TRADED) })).toBeNull();
+  });
 
   test("rows sit in the left pane and their boxes in the right, same order", () => {
     renderModal();
@@ -2016,6 +2147,9 @@ describe("ParallelGroupingModal — two panes, keyboard and screen reader", () =
   test("Space on a box places too, and a box refusing the selection takes no key", () => {
     renderModal();
     fireEvent.click(screen.getByRole("checkbox", { name: `Select ${BOWMAN}` }));
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Show ticked rows' boxes" }),
+    );
     // Bowman's own box refuses its own row: not a target, not a stop.
     expect(box(BOWMAN).getAttribute("tabindex")).toBe("-1");
     fireEvent.keyDown(box(BOWMAN), { key: "Enter" });
