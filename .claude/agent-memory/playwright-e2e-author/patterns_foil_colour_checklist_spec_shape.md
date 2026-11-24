@@ -1,6 +1,6 @@
 ---
 name: patterns-foil-colour-checklist-spec-shape
-description: NEO-616 — what a set checklist whose sections are subsets AND their foil parallels meets on screen (Reconcile near-name pairing, City Designation wizard, build by number, Card titles pop-up, collector "<insert> parallels" listbox and spoken print run)
+description: NEO-616 — what a set checklist whose sections are subsets AND their foil parallels meets on screen (Reconcile near-name pairing, City Designation on the Tidy Up walk, build by number, Card titles pop-up, collector "<insert> parallels" listbox and spoken print run)
 metadata:
   type: patterns
 ---
@@ -16,9 +16,18 @@ Learned writing `set-checklist-foil-colour-pro-set-metal` (2026-11-19):
   ("1989 Pro Set Base" -> "… Base Lazer Red", 63%), because a unique best ratio under 0.4 with
   the words contained counts. A sibling with an unguarded closer name (Mini) stays pending.
   Read `Ready (n)` rows in error-context before assuming what auto-matched.
-- **City Designation cells** ("Cincinnati", "Los Angeles N", "Miami") are not team names the
-  reference catalogue resolves: a checklist-only commit opens Tidy up on "New team" steps
-  ("Skip remaining names (3)"). Skip + `advanceToSave` + Confirm when teams are not the subject.
+- **City Designation cells on the Tidy Up walk (NEO-645, ported 2026-11-24):** the cell is the
+  card's team cell as printed. Saved line "Saved 4 cards. Only your checklist was in play…" then
+  "Teams from your checklist: 4 of 4 cards."; pill "4 need you, 3 to fix". "Miami" links the
+  Marlins by itself (blue Career check only); "Cincinnati" is pink "Which team: Cincinnati" with
+  list "We've got 3 teams from Cincinnati. Pick the one on this card." (buttons "Link to <club>
+  · <era> · MLB", remember-box unticked for a place); "Los Angeles N" is pink "isn't linked to a
+  team yet", "Printed on #89B-2, #89B-3", remember-box held then ticked: untick the enabled one,
+  `fill` "Search all teams", pick the option. The answer reaches every card printing the name.
+  Never `tidyForTheParallelBuild` here: it would link the first (1954 Redlegs) and CREATE a
+  "Los Angeles N" team. Keep career gaps (`keepOpenCareerGaps`) before each `saveAndNext`.
+- The walk title drops a trailing "Base" from an insert name ("Tidy up 2026 Pro Set Metal 1989
+  Pro Set") while main's `tidyUpTitle` trims by word; don't assert it until that settles.
 - **Parallel build links by card NUMBER first** (`convex/lib/parallelCardLink.ts`): a
   BSC-linked parallel whose cards carry another subset's numbers (Mini 89M-n under Base 89B-n)
   ends "Nothing copied — none of <source>'s N cards turned up…". A checklist-only parallel is an
