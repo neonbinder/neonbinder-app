@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { compareCardNumbers } from "./card-number";
+import {
+  cardNumbersDifferOnlyByPrefix,
+  compareCardNumbers,
+  splitCardNumberPrefix,
+} from "./card-number";
 
 /** Sort with the comparator and return the resulting order, for readable assertions. */
 function sorted(values: string[]): string[] {
@@ -196,5 +200,50 @@ describe("the number helpers moved here", () => {
     expect(strippedCardNumber("bcp-12")).toBe("12");
     expect(strippedCardNumber("DK-5", "DK-")).toBe("5");
     expect(strippedCardNumber("38a")).toBe("38A");
+  });
+});
+
+describe("splitCardNumberPrefix (NEO-616)", () => {
+  it("splits the prefix from the trailing counting part", () => {
+    expect(splitCardNumberPrefix("89B-1")).toEqual({ prefix: "89B-", remainder: "1" });
+    expect(splitCardNumberPrefix("T88-12")).toEqual({ prefix: "T88-", remainder: "12" });
+    expect(splitCardNumberPrefix("12")).toEqual({ prefix: "", remainder: "12" });
+    expect(splitCardNumberPrefix("RC-10a")).toEqual({ prefix: "RC-", remainder: "10a" });
+    expect(splitCardNumberPrefix("US12")).toEqual({ prefix: "US", remainder: "12" });
+    expect(splitCardNumberPrefix("#89B-1")).toEqual({ prefix: "89B-", remainder: "1" });
+  });
+
+  it("reads the number as printed: case is kept", () => {
+    expect(splitCardNumberPrefix("x-1A")).toEqual({ prefix: "x-", remainder: "1A" });
+  });
+
+  it("has no remainder when the number does not end in digits", () => {
+    expect(splitCardNumberPrefix("NNO")).toBeNull();
+    expect(splitCardNumberPrefix("OV-ANFI")).toBeNull();
+    expect(splitCardNumberPrefix("")).toBeNull();
+  });
+});
+
+describe("cardNumbersDifferOnlyByPrefix (NEO-616)", () => {
+  it("is true when only the prefix differs", () => {
+    expect(cardNumbersDifferOnlyByPrefix("89B-1", "89M-1")).toBe(true);
+    expect(cardNumbersDifferOnlyByPrefix("12", "T88-12")).toBe(true);
+    expect(cardNumbersDifferOnlyByPrefix("T88-12", "12")).toBe(true);
+  });
+
+  it("is false when the remainder differs", () => {
+    expect(cardNumbersDifferOnlyByPrefix("89B-1", "89M-2")).toBe(false);
+    expect(cardNumbersDifferOnlyByPrefix("89B-1", "89M-11")).toBe(false);
+    expect(cardNumbersDifferOnlyByPrefix("1a", "T-1A")).toBe(false);
+  });
+
+  it("is false for the same number, or a prefix that differs only in case", () => {
+    expect(cardNumbersDifferOnlyByPrefix("12", "12")).toBe(false);
+    expect(cardNumbersDifferOnlyByPrefix("rc-10", "RC-10")).toBe(false);
+  });
+
+  it("is false when a number has no remainder", () => {
+    expect(cardNumbersDifferOnlyByPrefix("NNO", "NNO")).toBe(false);
+    expect(cardNumbersDifferOnlyByPrefix("OV-A", "XX-A")).toBe(false);
   });
 });

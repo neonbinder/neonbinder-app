@@ -246,9 +246,45 @@ describe("buildParallelChecklist — print runs from the parallel's linked check
     expect(result.status).toBe("built");
     const copies = await cardsOn(t, parallel);
     expect(runsByName(copies)).toEqual({ "Joe Montana": 5, "Jerry Rice": 5, "Dan Marino": 5 });
-    // The Mini's numbers never reach the built cards: they keep the Base's.
-    expect(copies.map((c) => c.cardNumber).sort()).toEqual(["89B-1", "89B-2", "89B-3"]);
+    // Only the prefix differs (89B- against 89M-), so each Mini card carries its
+    // own number, not the Base's (Jason, 2026-11-24).
+    expect(copies.map((c) => c.cardNumber).sort()).toEqual(["89M-1", "89M-2", "89M-3"]);
     expect((await rowOf(t, parallel))!.printRun).toBe(5);
+  });
+
+  test("a parallel whose rows carry the Base's own numbers keeps them", async () => {
+    const t = convexTest(schema, modules);
+    const { set, source, parallel } = await seed(t, "baseParallel");
+    await card(t, source, "89B-1", "Joe Montana");
+    await card(t, source, "89B-2", "Jerry Rice");
+    await linkChecklist(t, set, parallel, "1989 Pro Set Base Mini", [
+      row("89B-1", "Joe Montana", 5),
+      row("89B-2", "Jerry Rice", 5),
+    ]);
+
+    await build(t, parallel);
+
+    const copies = await cardsOn(t, parallel);
+    expect(copies.map((c) => c.cardNumber).sort()).toEqual(["89B-1", "89B-2"]);
+  });
+
+  test("a row whose remainder differs does not change the number", async () => {
+    const t = convexTest(schema, modules);
+    const { set, source, parallel } = await seed(t, "baseParallel");
+    await card(t, source, "89B-1", "Joe Montana");
+    await card(t, source, "89B-2", "Jerry Rice");
+    await linkChecklist(t, set, parallel, "1989 Pro Set Base Mini", [
+      row("89M-1", "Joe Montana", 5),
+      row("89M-9", "Jerry Rice", 5),
+    ]);
+
+    await build(t, parallel);
+
+    const copies = await cardsOn(t, parallel);
+    expect(Object.fromEntries(copies.map((c) => [c.cardName, c.cardNumber]))).toEqual({
+      "Joe Montana": "89M-1",
+      "Jerry Rice": "89B-2",
+    });
   });
 
   test("a player with two cards is a tie: neither takes a run, and the row falls under the share", async () => {

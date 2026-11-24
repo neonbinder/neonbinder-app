@@ -62,10 +62,22 @@ describe("linkCardsToSide — the number key", () => {
     expect(result.outcomes.get("n1")?.kind).toBe("linked");
   });
 
-  test("a bare number never matches a stripped one when neither side declares a prefix", () => {
+  test("a bare number and a prefixed one, neither prefix declared, pair when the player matches (Jason, 2026-11-24)", () => {
+    // Was "never matches": a number that differs only in its prefix is the
+    // same card of a parallel (NEO-616). Jason, 2026-11-24: "if just the prefix
+    // varies then it is still a prallel and should keep its proper number".
     const nbCards = [nb({ id: "n1", cardNumber: "RC-10", cardName: "Ken Griffey" })];
     const parallelCards = [fetched({ ref: "p1", cardNumber: "10", cardName: "Ken Griffey" })];
     const result = linkCardsToSide(nbCards, parallelCards); // no prefixes given
+    expect(result.outcomes.get("n1")).toEqual({ kind: "linked", card: parallelCards[0], via: "prefix" });
+  });
+
+  test("a bare number and a prefixed one never pair when the player differs", () => {
+    const nbCards = [nb({ id: "n1", cardNumber: "RC-10", cardName: "Ken Griffey", namesOnCard: ["Ken Griffey"] })];
+    const parallelCards = [
+      fetched({ ref: "p1", cardNumber: "10", cardName: "Someone Else", players: ["Someone Else"] }),
+    ];
+    const result = linkCardsToSide(nbCards, parallelCards);
     expect(result.outcomes.get("n1")).toEqual({ kind: "none" });
   });
 
@@ -436,5 +448,140 @@ describe("linkCardsToSide — numbers read as printed (NEO-489)", () => {
     const base = { cardName: "P", namesOnCard: ["P"], isTeamCard: false, isVariation: false };
     expect(cardKey({ ...base, cardNumber: "1a" })).not.toBe(cardKey({ ...base, cardNumber: "1A" }));
     expect(cardKey({ ...base, cardNumber: " 1a " })).toBe(cardKey({ ...base, cardNumber: "1a" }));
+  });
+});
+
+describe("linkCardsToSide — a number that differs only in its prefix (NEO-616)", () => {
+  // Jason, 2026-11-24: "this should have nothing to do with mini, sometimes
+  // parallels just have a different prefix. ... If the remainder of the number
+  // & player don't match the base then it is a seperate insert not a parallel,
+  // but if just the prefix varies then it is still a prallel and should keep
+  // its proper number not reuse the base".
+  const who = (name: string) => ({ cardName: name, namesOnCard: [name] });
+  const theirs = (name: string) => ({ cardName: name, players: [name] });
+
+  test("89B-1 pairs with 89M-1, and carries via prefix", () => {
+    const nbCards = [nb({ id: "n1", cardNumber: "89B-1", ...who("Joe Montana") })];
+    const parallelCards = [fetched({ ref: "p1", cardNumber: "89M-1", ...theirs("Joe Montana") })];
+    const r = linkCardsToSide(nbCards, parallelCards);
+    expect(r.outcomes.get("n1")).toEqual({ kind: "linked", card: parallelCards[0], via: "prefix" });
+    expect(r.linked).toBe(1);
+    expect(r.unclaimed).toEqual([]);
+  });
+
+  test("12 pairs with T88-12", () => {
+    const nbCards = [nb({ id: "n1", cardNumber: "12", ...who("Joe Montana") })];
+    const parallelCards = [fetched({ ref: "p1", cardNumber: "T88-12", ...theirs("Joe Montana") })];
+    const r = linkCardsToSide(nbCards, parallelCards);
+    expect(r.outcomes.get("n1")).toEqual({ kind: "linked", card: parallelCards[0], via: "prefix" });
+  });
+
+  test("the same prefix difference with a different player is a separate card: none", () => {
+    const nbCards = [nb({ id: "n1", cardNumber: "89B-1", ...who("Joe Montana") })];
+    const parallelCards = [fetched({ ref: "p1", cardNumber: "89M-1", ...theirs("Jerry Rice") })];
+    const r = linkCardsToSide(nbCards, parallelCards);
+    expect(r.outcomes.get("n1")).toEqual({ kind: "none" });
+  });
+
+  test("a multi-player card needs every name to agree", () => {
+    const nbCards = [
+      nb({
+        id: "n1",
+        cardNumber: "89B-1",
+        cardName: "Joe Montana / Jerry Rice",
+        namesOnCard: ["Joe Montana", "Jerry Rice"],
+      }),
+    ];
+    const both = [
+      fetched({
+        ref: "both",
+        cardNumber: "89M-1",
+        cardName: "Joe Montana / Jerry Rice",
+        players: ["Jerry Rice", "Joe Montana"],
+      }),
+    ];
+    expect(linkCardsToSide(nbCards, both).outcomes.get("n1")).toMatchObject({
+      kind: "linked",
+      via: "prefix",
+    });
+    const one = [
+      fetched({ ref: "one", cardNumber: "89M-1", cardName: "Joe Montana", players: ["Joe Montana"] }),
+    ];
+    expect(linkCardsToSide(nbCards, one).outcomes.get("n1")).toEqual({ kind: "none" });
+  });
+
+  test("a different remainder (89M-2 against 89B-1) never pairs", () => {
+    const nbCards = [nb({ id: "n1", cardNumber: "89B-1", ...who("Joe Montana") })];
+    const parallelCards = [fetched({ ref: "p1", cardNumber: "89M-2", ...theirs("Joe Montana") })];
+    const r = linkCardsToSide(nbCards, parallelCards);
+    expect(r.outcomes.get("n1")).toEqual({ kind: "none" });
+    expect(r.unclaimed).toEqual(parallelCards);
+  });
+
+  test("two fetched candidates for one card is a tie: none, never the first", () => {
+    const nbCards = [nb({ id: "n1", cardNumber: "89B-1", ...who("Joe Montana") })];
+    const parallelCards = [
+      fetched({ ref: "p1", cardNumber: "89M-1", ...theirs("Joe Montana") }),
+      fetched({ ref: "p2", cardNumber: "89X-1", ...theirs("Joe Montana") }),
+    ];
+    const r = linkCardsToSide(nbCards, parallelCards);
+    expect(r.outcomes.get("n1")).toEqual({ kind: "none" });
+  });
+
+  test("two NB cards that want one fetched card is a tie: neither links", () => {
+    const nbCards = [
+      nb({ id: "n1", cardNumber: "89B-1", ...who("Joe Montana") }),
+      nb({ id: "n2", cardNumber: "89C-1", ...who("Joe Montana") }),
+    ];
+    const parallelCards = [fetched({ ref: "p1", cardNumber: "89M-1", ...theirs("Joe Montana") })];
+    const r = linkCardsToSide(nbCards, parallelCards);
+    expect(r.outcomes.get("n1")).toEqual({ kind: "none" });
+    expect(r.outcomes.get("n2")).toEqual({ kind: "none" });
+  });
+
+  test("a fetched card another card's full key already wants is not reused", () => {
+    // n1 links to 89M-1 by its exact number; n2 (89B-1, same player) would
+    // pair to the same card by prefix, but it is taken.
+    const nbCards = [
+      nb({ id: "n1", cardNumber: "89M-1", ...who("Joe Montana") }),
+      nb({ id: "n2", cardNumber: "89B-1", ...who("Joe Montana") }),
+    ];
+    const parallelCards = [fetched({ ref: "p1", cardNumber: "89M-1", ...theirs("Joe Montana") })];
+    const r = linkCardsToSide(nbCards, parallelCards);
+    expect(r.outcomes.get("n1")).toEqual({ kind: "linked", card: parallelCards[0], via: "key" });
+    expect(r.outcomes.get("n2")).toEqual({ kind: "none" });
+  });
+
+  test("a case-only twin is never paired onto its claimed twin", () => {
+    // x-1A links to X-1A (case-folded tier is blocked by the twin, so exact);
+    // y-1a differs from it by prefix AND case of the remainder: not the same
+    // number, so it stays unlinked.
+    const nbCards = [
+      nb({ id: "up", cardNumber: "x-1A", ...who("Joe Montana") }),
+      nb({ id: "lo", cardNumber: "y-1a", ...who("Joe Montana") }),
+    ];
+    const parallelCards = [fetched({ ref: "p1", cardNumber: "x-1A", ...theirs("Joe Montana") })];
+    const r = linkCardsToSide(nbCards, parallelCards);
+    expect(r.outcomes.get("up")).toMatchObject({ kind: "linked", via: "key" });
+    expect(r.outcomes.get("lo")).toEqual({ kind: "none" });
+  });
+
+  test("1a and 1A under a new prefix each pair with their own spelling only", () => {
+    const nbCards = [
+      nb({ id: "lo", cardNumber: "89B-1a", ...who("Joe Montana") }),
+      nb({ id: "up", cardNumber: "89B-1A", ...who("Joe Montana") }),
+    ];
+    const parallelCards = [fetched({ ref: "pUp", cardNumber: "89M-1A", ...theirs("Joe Montana") })];
+    const r = linkCardsToSide(nbCards, parallelCards);
+    expect(r.outcomes.get("up")).toMatchObject({ kind: "linked", card: parallelCards[0], via: "prefix" });
+    expect(r.outcomes.get("lo")).toEqual({ kind: "none" });
+  });
+
+  test("a variation only pairs with a variation", () => {
+    const nbCards = [
+      nb({ id: "n1", cardNumber: "89B-1", ...who("Joe Montana"), isVariation: true, cardVariation: "Action" }),
+    ];
+    const parallelCards = [fetched({ ref: "p1", cardNumber: "89M-1", ...theirs("Joe Montana") })];
+    expect(linkCardsToSide(nbCards, parallelCards).outcomes.get("n1")).toEqual({ kind: "none" });
   });
 });

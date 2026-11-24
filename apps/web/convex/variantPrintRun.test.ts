@@ -11,6 +11,7 @@ import { insertTestCard } from "../lib/testing/card-row";
 import { refreshVariantPrintRun } from "./variantPrintRun";
 import {
   PRINT_RUN_SHARE,
+  checklistRowFactsForCards,
   printRunsFromChecklistRows,
   sharedPrintRun,
 } from "./lib/variantPrintRun";
@@ -114,6 +115,32 @@ describe("printRunsFromChecklistRows", () => {
     expect(
       printRunsFromChecklistRows([mk("a", "1", "Joe Montana")], [r("1", "Someone Else", 5)]).size,
     ).toBe(0);
+  });
+
+  test("a row whose number differs only in the prefix gives its number beside the run", () => {
+    const facts = checklistRowFactsForCards(
+      [mk("a", "89B-1", "Joe Montana"), mk("b", "89B-2", "Jerry Rice")],
+      [r("89M-1", "Joe Montana", 5), r("89M-2", "Jerry Rice")],
+    );
+    expect([...facts]).toEqual([
+      ["a", { printRun: 5, cardNumber: "89M-1" }],
+      ["b", { cardNumber: "89M-2" }],
+    ]);
+  });
+
+  test("a row with the card's own number, a different remainder or a different player gives no number", () => {
+    const same = checklistRowFactsForCards([mk("a", "89B-1", "Joe Montana")], [r("89B-1", "Joe Montana", 5)]);
+    expect(same.get("a")).toEqual({ printRun: 5 });
+    const other = checklistRowFactsForCards(
+      [mk("a", "89B-1", "Joe Montana")],
+      [r("89M-7", "Joe Montana", 5)],
+    );
+    expect(other.get("a")).toEqual({ printRun: 5 });
+    const player = checklistRowFactsForCards(
+      [mk("a", "89B-1", "Joe Montana")],
+      [r("89M-1", "Someone Else", 5)],
+    );
+    expect(player.size).toBe(0);
   });
 
   test("a row without a run gives none", () => {

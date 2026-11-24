@@ -64,9 +64,24 @@
  *     already held links to that ref: the operator's earlier pairing is the
  *     tiebreak, and a live link survives the rebuild. Two cards proposing the
  *     same ref both stay ambiguous.
+ *   • PREFIX (NEO-616, Jason 2026-11-24: "sometimes parallels just have a
+ *     different prefix ... if just the prefix varies then it is still a
+ *     parallel and should keep its proper number"). A card still unlinked
+ *     links to a fetched card whose number differs from its own ONLY in the
+ *     prefix (`splitCardNumberPrefix`: "89B-1" / "89M-1", "12" / "T88-12") and
+ *     whose players are the same (`sameWho`, the full key's own name test, all
+ *     names on a multi-player card). A different remainder or a different
+ *     player is a different card and never pairs. Exactly one candidate each
+ *     way, and the fetched card is wanted by no card's full key, so a tie
+ *     stays unlinked. The link carries `via: "prefix"`: the copy then takes the
+ *     fetched card's own number.
  */
 
 import { cardNumberStem } from "../../lib/cards/variations";
+import {
+  cardNumbersDifferOnlyByPrefix,
+  splitCardNumberPrefix,
+} from "../../lib/cards/card-number";
 import { nameKey, playersKey } from "../../lib/cards/card-name";
 
 /** One NB card of the insert, reduced to what the key reads. */
@@ -98,8 +113,11 @@ export type FetchedParallelCard = {
   printRun?: number;
 };
 
-/** How a link was made: the full key, the number alone, or an earlier link. */
-export type LinkVia = "key" | "number" | "earlierLink";
+/**
+ * How a link was made: the full key, the number alone, an earlier link, or a
+ * number that differs from the NB card's only in its prefix (NEO-616).
+ */
+export type LinkVia = "key" | "number" | "earlierLink" | "prefix";
 
 export type CardLinkOutcome =
   | { kind: "linked"; card: FetchedParallelCard; via: LinkVia }
@@ -364,6 +382,26 @@ export function linkCardsToSide(
     for (const i of reach) numberReach.set(i, (numberReach.get(i) ?? 0) + 1);
   }
 
+  // NEO-616 — the fetched cards by the remainder of their number, for the
+  // prefix tier. The remainder is compared as printed (case kept), so a
+  // case-only twin ("1a" / "1A") is never folded onto the other.
+  const byRemainder = new Map<string, number[]>();
+  fetched.forEach((f, i) => {
+    const split = splitCardNumberPrefix(f.cardNumber);
+    if (split) push(byRemainder, split.remainder, i);
+  });
+  const prefixCandidatesOf = (card: LinkableNbCard): number[] => {
+    const split = splitCardNumberPrefix(card.cardNumber);
+    if (!split) return [];
+    const who = identityOf(card);
+    return (byRemainder.get(split.remainder) ?? []).filter(
+      (i) =>
+        cardNumbersDifferOnlyByPrefix(card.cardNumber, fetched[i].cardNumber) &&
+        sameVariation(card, i) &&
+        sameWho(who, fetched[i]),
+    );
+  };
+
   const outcomes = new Map<string, CardLinkOutcome>();
   const taken = new Set<number>();
   for (const card of nbCards) {
@@ -387,6 +425,17 @@ export function linkCardsToSide(
     if (list) list.push({ id, via });
     else proposals.set(i, [{ id, via }]);
   };
+  // NEO-616 — the prefix tier's candidates, for every unlinked card, and how
+  // many such cards each fetched card is a candidate of (the reverse end of
+  // its exactly-one guard).
+  const prefixHits = new Map<string, number[]>();
+  const prefixReach = new Map<number, number>();
+  for (const card of nbCards) {
+    if (outcomes.get(card.id)?.kind !== "none") continue;
+    const hits = prefixCandidatesOf(card);
+    prefixHits.set(card.id, hits);
+    for (const i of hits) prefixReach.set(i, (prefixReach.get(i) ?? 0) + 1);
+  }
   for (const card of nbCards) {
     const outcome = outcomes.get(card.id);
     if (outcome?.kind === "none") {
@@ -401,6 +450,17 @@ export function linkCardsToSide(
         namesLooselyAgree(card, fetched[byNumber[0]])
       ) {
         propose(card.id, byNumber[0], "number");
+        continue;
+      }
+      // Prefix: only the prefix of the number differs, the players are the
+      // same, exactly one candidate each way.
+      const byPrefix = prefixHits.get(card.id) ?? [];
+      if (
+        byPrefix.length === 1 &&
+        prefixReach.get(byPrefix[0]) === 1 &&
+        (claimsByFetched.get(byPrefix[0]) ?? 0) === 0
+      ) {
+        propose(card.id, byPrefix[0], "prefix");
       }
     } else if (outcome?.kind === "ambiguous" && options.earlierRefsByKey) {
       const earlier = options.earlierRefsByKey.get(cardKey(card));

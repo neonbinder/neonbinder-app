@@ -256,6 +256,44 @@ export function cardNumbersAgree(
 }
 
 /**
+ * NEO-616 — a card number split into its PREFIX and its REMAINDER.
+ *
+ * The remainder is the number's trailing counting part: a run of digits,
+ * optionally followed by one letter ("1", "12", "10a"); the prefix is
+ * everything before it ("89B-", "T88-", "RC-", "US", or nothing). Read as
+ * printed (`exactChecklistNumber`: "#" and spaces dropped, case kept).
+ *
+ *   "89B-1"  -> { prefix: "89B-", remainder: "1" }
+ *   "T88-12" -> { prefix: "T88-",  remainder: "12" }
+ *   "12"     -> { prefix: "",      remainder: "12" }
+ *   "RC-10a" -> { prefix: "RC-",   remainder: "10a" }
+ *
+ * `null` when the number has no remainder to read (no trailing digits: "NNO",
+ * "OV-ANFI", "CC-JA", blank).
+ */
+export function splitCardNumberPrefix(
+  raw: string,
+): { prefix: string; remainder: string } | null {
+  const m = /^(.*?)(\d+[A-Za-z]?)$/.exec(exactChecklistNumber(raw));
+  return m ? { prefix: m[1], remainder: m[2] } : null;
+}
+
+/**
+ * Do two card numbers differ ONLY in their prefix (Jason, 2026-11-24: "sometimes
+ * parallels just have a different prefix")? Their remainders are the same as
+ * printed (case kept: "1a" and "1A" stay two numbers) and their prefixes are
+ * not the same once case is folded ("89B-1" / "89M-1", "12" / "T88-12"). Two
+ * identical numbers, or ones that differ only in the case of the prefix, do
+ * not: those are the same number, not a different prefix.
+ */
+export function cardNumbersDifferOnlyByPrefix(a: string, b: string): boolean {
+  const sa = splitCardNumberPrefix(a);
+  const sb = splitCardNumberPrefix(b);
+  if (!sa || !sb) return false;
+  return sa.remainder === sb.remainder && sa.prefix.toUpperCase() !== sb.prefix.toUpperCase();
+}
+
+/**
  * Which of two numbers NB keeps when two sources name the same card: letters
  * over digits over none (a number with a letter is the more specific print:
  * "38a" over "38", "OV-ANFI" over "NNO"). The same class keeps `own`, so the

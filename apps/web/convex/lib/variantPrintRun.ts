@@ -27,6 +27,7 @@ import {
   matchPublishedChecklist,
   type ChecklistRowInput,
 } from "../../lib/checklists/match-published-checklist";
+import { cardNumbersDifferOnlyByPrefix } from "../../lib/cards/card-number";
 import { MAX_BSC_PRINT_RUN } from "./bscAttributeTokens";
 
 /** The share of a row's cards one run must cover. */
@@ -66,9 +67,23 @@ export function sharedPrintRun(
   return best !== undefined && bestCount * 10 >= total * 9 ? best : undefined;
 }
 
+/** What a card takes from the parallel's own linked checklist row. */
+export type ChecklistRowFacts = {
+  /** The row's run, when it is a real one. */
+  printRun?: number;
+  /**
+   * NEO-616 — the row's own number, only when it differs from the card's in
+   * the prefix alone (Jason, 2026-11-24: "if just the prefix varies then it is
+   * still a prallel and should keep its proper number not reuse the base").
+   * A row whose remainder differs, or whose player differs, never sets it.
+   */
+  cardNumber?: string;
+};
+
 /**
- * The print run each source card takes from the parallel's own linked
- * checklist rows, keyed by the card's id.
+ * What each source card takes from the parallel's own linked checklist rows
+ * (its print run and, when only the prefix differs, its number), keyed by the
+ * card's id.
  *
  * Cards and rows pair with `matchPublishedChecklist`, the one pairing the app
  * uses (rule 7: a name pairs only on an exactly-one match on each side; a
@@ -76,26 +91,50 @@ export function sharedPrintRun(
  * pairs nothing). A parallel's numbers often differ from its source's (a Mini
  * numbered 89M-1 against a Base numbered 89B-1), so the name pairing is the
  * normal case. A pair whose players disagree is dropped: the row is about
- * someone else, so its run says nothing about this card. Teams do not decide
- * it. A row's run counts only when it is a real one (`validPrintRun`).
+ * someone else, so its run and number say nothing about this card. Teams do
+ * not decide it. A row's run counts only when it is a real one
+ * (`validPrintRun`).
  *
- * The cards' numbers are never changed and nothing is written: this only
- * reads which rows pair.
+ * Nothing is written: this only reads which rows pair.
  */
-export function printRunsFromChecklistRows<Id extends string>(
+export function checklistRowFactsForCards<Id extends string>(
   cards: ReadonlyArray<{ id: Id; cardNumber: string; players: readonly string[] }>,
   rows: ReadonlyArray<ChecklistRowInput & { printRun?: number }>,
-): Map<Id, number> {
-  const runs = new Map<Id, number>();
-  if (cards.length === 0 || rows.length === 0) return runs;
+): Map<Id, ChecklistRowFacts> {
+  const facts = new Map<Id, ChecklistRowFacts>();
+  if (cards.length === 0 || rows.length === 0) return facts;
   const result = matchPublishedChecklist(
     cards.map((c) => ({ cardNumber: c.cardNumber, players: c.players })),
     rows,
   );
   for (const match of result.matches) {
     if (match.conflict?.players) continue;
-    const run = validPrintRun(rows[match.rowIndex].printRun);
-    if (run !== undefined) runs.set(cards[match.cardIndex].id, run);
+    const card = cards[match.cardIndex];
+    const row = rows[match.rowIndex];
+    const printRun = validPrintRun(row.printRun);
+    const cardNumber = cardNumbersDifferOnlyByPrefix(card.cardNumber, row.number)
+      ? row.number.trim()
+      : undefined;
+    if (printRun === undefined && cardNumber === undefined) continue;
+    facts.set(card.id, {
+      ...(printRun !== undefined ? { printRun } : {}),
+      ...(cardNumber !== undefined ? { cardNumber } : {}),
+    });
+  }
+  return facts;
+}
+
+/**
+ * The print run each source card takes from the parallel's own linked
+ * checklist rows, keyed by the card's id (see `checklistRowFactsForCards`).
+ */
+export function printRunsFromChecklistRows<Id extends string>(
+  cards: ReadonlyArray<{ id: Id; cardNumber: string; players: readonly string[] }>,
+  rows: ReadonlyArray<ChecklistRowInput & { printRun?: number }>,
+): Map<Id, number> {
+  const runs = new Map<Id, number>();
+  for (const [id, fact] of checklistRowFactsForCards(cards, rows)) {
+    if (fact.printRun !== undefined) runs.set(id, fact.printRun);
   }
   return runs;
 }
