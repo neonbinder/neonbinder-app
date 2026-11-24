@@ -257,9 +257,16 @@ test(
 
     // All Brands, so the set is reachable under Unknown.
     await drillToColdManufacturer(page, env, { sport: "Hockey", year: YEAR, manufacturer: "All Brands" });
+    // R5 (GUIDE hard rule 3): 15 s, inherited from #466 (NEO-496) with no measurement recorded in
+    // the spec, its history or GUIDE. It covers the tail of the COLD drill (drillToColdManufacturer
+    // may pay a never-synced Hockey 2024 All Brands level's year-wide Sets sync). Unmeasured, so
+    // it is a candidate for the 7 s budget once a green run measures it; not raised here.
     await expect(columnHeading(page, "Sets")).toBeVisible({ timeout: 15_000 });
     await columnSearch(page, "Sets").fill(SET);
     await columnOption(page, "Sets", SET).click();
+    // R5: 20 s, likewise inherited from #466 unmeasured: opening a set nobody has opened on this
+    // seed, reached by the cold drill above, starts its first Variant Types load. Candidate for
+    // 7 s once measured; never raise it.
     await expect(columnHeading(page, "Variant Types")).toBeVisible({ timeout: 20_000 });
     await expect(columnSelection(page, "Manufacturers", "Unknown")).toBeVisible();
     // A set with ONE marketplace attached syncs its variant types from BSC alone, under the

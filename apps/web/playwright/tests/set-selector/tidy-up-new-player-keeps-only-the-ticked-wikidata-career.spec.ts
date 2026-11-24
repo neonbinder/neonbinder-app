@@ -7,11 +7,12 @@
 // whose team was ticked has no Career tile. Skip writes nothing, so the gap stays blue (there is no
 // "Keep as is", B23). Players admin reads the careers back.
 //
-// Renamed from tidy-up-career-tile-reviews-a-new-players-wikidata-career (NEO-656): J6/B24 dropped
-// the Career tile's review of a new player's Wikidata career (its lines, Add stints, + New team,
-// Not now and Add years); the Player tile's ticked career is what stays, and the Career tile now
-// checks it like any other career. Before that, renamed from checklist-wizard-career-team-entry
-// (NEO-645).
+// Renamed from tidy-up-career-tile-reviews-a-new-players-wikidata-career (NEO-656): J6/B24 retired
+// the Career tile's review of a new player's Wikidata career: its lines, Add stints, the inline
+// `+ New team`, `Not now`, and `Add years` with its refusal of a backwards range. None of that UI
+// remains in components/SetSelector/tidy. The career is now picked once, at player creation (the
+// Player tile's ticked teams), and the Career tile computes its gaps live from that career like any
+// other. Before that, renamed from checklist-wizard-career-team-entry (NEO-645).
 //
 // FIXTURE (R7a, SET-REGISTRY.md prefix `tcw`): ONE hand-made set per attempt, `tcw<token>`, under
 // the REAL Baseball › 2024 › Topps (Wikidata answers in Baseball from the recording and the
