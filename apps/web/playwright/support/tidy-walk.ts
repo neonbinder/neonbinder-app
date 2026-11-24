@@ -588,8 +588,8 @@ export async function createTeamOnOpenRow(page: Page): Promise<string> {
  *    to <team>"), else create it in the inline New team form. Never "Not a
  *    team". Each answer reaches every card in the scope that prints the name.
  *  - a card with no team (`noTeam`): `"prefilled"` (default) saves the chips the
- *    product pre-selected ("Save team" / "Save teams", the old wizard's default)
- *    and leaves a card with none pink; `"noTeamOnCard"` answers "No team on
+ *    product pre-selected (a click on a team chip saves it; the preselected chip
+ *    carries aria-current) and leaves a card with none pink; `"noTeamOnCard"` answers "No team on
  *    this card".
  *
  * Contract: ENTRY a settled card. EXIT no printed team name is waiting. The
@@ -634,13 +634,19 @@ export async function answerPinkTeamTiles(
 
   if ((await pinkTile(page, "Team").count()) > 0) {
     // What is left pink is a card with no team: the fill chips.
-    const save = tile.getByRole("button", { name: /^Save teams?$/, disabled: false });
+    // The preselected chip is the tile's one button that carries aria-current (a state, not a locator).
+    const preselected = async () => {
+      for (const button of await tile.getByRole("button").all()) {
+        if ((await button.getAttribute("aria-current")) === "true") return button;
+      }
+      return null;
+    };
     const none = tile.getByRole("button", { name: "No team on this card", exact: true, disabled: false });
     await expect(none, "the Team tile is pink with no name row left, so it is asking for a team").toBeVisible();
     if (noTeam === "noTeamOnCard") {
       await none.click();
-    } else if ((await save.count()) > 0) {
-      await save.click();
+    } else if (await preselected()) {
+      await (await preselected())!.click();
     } else {
       return answered;
     }

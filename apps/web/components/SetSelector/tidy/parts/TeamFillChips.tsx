@@ -253,6 +253,7 @@ export default function TeamFillChips({
       <li key={chip.teamId as string} className="max-w-full">
         <button
           type="button"
+          aria-current={on ? "true" : undefined}
           aria-disabled={write.busy || undefined}
           onClick={() => {
             if (write.busy) return;
@@ -267,8 +268,7 @@ export default function TeamFillChips({
           }`}
         >
           <span className="inline-flex items-center gap-1">
-            {/* The preselected mark that is not a colour (SC 1.4.1); the line under the label
-                says it to a reader ("played here"). */}
+            {/* The preselected mark that is not a colour (SC 1.4.1); aria-current says it to a reader. */}
             {on && <CheckIcon aria-hidden="true" className="h-3 w-3 shrink-0" />}
             {chip.label}
           </span>

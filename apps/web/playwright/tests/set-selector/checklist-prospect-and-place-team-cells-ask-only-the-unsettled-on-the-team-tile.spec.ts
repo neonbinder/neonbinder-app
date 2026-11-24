@@ -27,7 +27,7 @@
 //     team claim left (NEO-639: only a team the data names holds a guess back), so his other card
 //     in the set (#7, the Cubs) PRESELECTS the Cubs ("Seiya Suzuki played here", "Suggested from
 //     the player's other cards": the wizard's batch evidence leads, NEO-645 C8), never written: the
-//     tile stays pink and Save & next held until "Save team". The operator skips it; it commits
+//     tile stays pink and Save & next held until a team is clicked (which saves it). The operator skips it; it commits
 //     teamless and stays badged (the commit wrote no Cubs either: "New York" was a claim then).
 // The leaf's checklist preview reads each claim as printed, never "We'll look it up": none of
 // these cards is looked up.
@@ -270,16 +270,16 @@ test(
       // "Not a team": New York is the operator's ruling. The card is now a card with no team and no
       // team claim, so the team on his other card in the set (#7, the Cubs) is preselected, with its
       // provenance (the batch's evidence before his career, as main's wizard; NEO-645 C8). A
-      // preselect is not a write: the tile stays pink and Save & next held until "Save team" (or
-      // "No team on this card") is pressed.
+      // preselect is not a write: the tile stays pink and Save & next held until a team is clicked
+      // (which saves it) or "No team on this card" is pressed.
       await place.getByRole("button", { name: "Not a team", exact: true }).click();
       await expect(place.getByText(`${AMBIGUOUS.cell} is not a team.`, { exact: true })).toBeVisible();
       await expect(place.getByRole("button", editRow(AMBIGUOUS.cell))).toBeVisible();
       await expect(placeTeams).toHaveCount(0);
       await expect(teamTile.getByText("Suggested from the player's other cards.", { exact: true })).toBeVisible();
       const cubs = teamTile.getByRole("button", { name: `${BY_PLAYER.team} · ${AMBIGUOUS.player} played here`, exact: true });
-      await expect(cubs).toHaveAttribute("aria-pressed", "true");
-      await expect(teamTile.getByRole("button", { name: "Save team", exact: true })).toBeVisible();
+      await expect(cubs).toHaveAttribute("aria-current", "true");
+      await expect(teamTile.getByRole("button", { name: /^Save teams?$/ })).toHaveCount(0);
       await expect(teamTile.getByRole("button", { name: "No team on this card", exact: true })).toBeVisible();
       await expect(pinkTile(page, "Team")).toHaveCount(1);
       await expect(tidyFooterButton(page, "saveAndNext")).toBeDisabled();

@@ -31,7 +31,10 @@
 // Hockey no-match the catalogue does not hold), and `RXO<token>T`, a single search token per
 // attempt. RXO ends in a LETTER so it cannot be a prefix of another attempt's longer token
 // (Convex search treats the last term as a prefix, which would turn "No matches" into a match).
-// Both are created in the walk's inline New team form, with no league. "Roanoke Express", the team
+// Both are created BEFORE the fetch, in the empty checklist's add-card form (its New team dialog,
+// no league; the form is cancelled, no card is added). The walk's own "+ New team" would SAVE the
+// team on the card it opens on (a click on a team saves it), and the club must exist without being
+// on LIVE_PLAYER's card, so his Team tile can still pre-select the league-ranked career team. "Roanoke Express", the team
 // every card prints, is answered "Not a team" once for the checklist (the old review's skip of
 // its New Team step), which reaches every card that prints it. All of it is global; the same
 // trade checklist-wizard-career-team-commits makes.
@@ -72,7 +75,7 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../../support/set-builder";
-import { editCardButton } from "../../support/cards";
+import { createTeamInCardForm, editCardButton } from "../../support/cards";
 import { bscLookupOutcome, expectAfterMarketplace, expectStepWithSportLots } from "../../support/marketplace-wait";
 import { recordedNoMatchName } from "../../support/recorded-names";
 import {
@@ -301,6 +304,16 @@ test(
     await expect(page.getByRole("button", { name: "Open add card form" })).toBeVisible();
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
     await expectAccessible(page, { label: "Empty checklist with an unmapped base" });
+    // The two teams the walk uses are made now, in the add-card form (cancelled, no card added).
+    const team = recordedNoMatchName(env, "checklist-one-marketplace-match-cards-keeps-every-card");
+    const other = `RXO${env.ATTEMPT_TOKEN}T`;
+    await page.getByRole("button", { name: "Open add card form" }).click();
+    await expect(page.getByRole("textbox", { name: "Card name", exact: true })).toBeVisible();
+    await createTeamInCardForm(page, team);
+    await createTeamInCardForm(page, other);
+    await page.getByRole("button", { name: "Cancel new card" }).click();
+    await expect(page.getByRole("textbox", { name: "Card name", exact: true })).toBeHidden();
+    await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
     // The publisher's checklist, 24 of the 25 cards (LIVE_PLAYER's row left out), so BSC is
     // asked about ONE card and not 25 (NEO-489).
     const facts = await usePublishersChecklist(page, CHECKLISTS.roanokeExpress1995OneLive);
@@ -378,20 +391,7 @@ test(
     bscLookupOutcome("answered", `${LIVE_PLAYER} (${printedOnLive.length > 0 ? `named ${printedOnLive.join(", ")}` : "no team"})`);
     await expect(pinkTile(page, "Team"), "a card with no team is still a stop").toHaveCount(1);
 
-    // The club does not exist yet, and a stint takes only a team NeonBinder holds: the Team tile's
-    // "+ New team" makes it (no league), and it joins the card's chosen teams, NOT saved (Save team is).
     const teamTile = tidyTile(page, "Team");
-    const team = recordedNoMatchName(env, "checklist-one-marketplace-match-cards-keeps-every-card");
-    const other = `RXO${env.ATTEMPT_TOKEN}T`;
-    await teamTile.getByRole("button", { name: "+ New team", exact: true }).click();
-    const clubForm = teamTile.getByRole("group", { name: "New team: unnamed" });
-    await expect(clubForm).toBeVisible();
-    await clubForm.getByRole("textbox", { name: "New team name" }).fill(team);
-    await clubForm.getByRole("button", { name: `Create team ${team}` }).click();
-    await expect(clubForm).toBeHidden();
-    await expect(teamChip(page, team)).toHaveAttribute("aria-pressed", "true");
-    await expect(teamTile.getByRole("button", { name: "Save team", exact: true })).toBeVisible();
-
     // His two stints, both covering 1995: the club (1994-1996) and the Badgers (same years).
     const addStint = career.getByRole("button", { name: `+ Add stint for ${LIVE_PLAYER}`, exact: true });
     for (const stint of [team, COLLEGE_TEAM]) {
@@ -407,10 +407,10 @@ test(
       await add.click();
       await expect(addStint, "the stint was added and the entry closed").toBeVisible();
     }
-    // Both teams are now his career's chips on the Team tile. The club stays chosen (the operator's
-    // own create), the Badgers are offered: a press by the operator wins over any pre-fill.
-    await expect(teamChip(page, COLLEGE_TEAM)).toHaveAttribute("aria-pressed", "false");
-    await expect(teamChip(page, team)).toHaveAttribute("aria-pressed", "true");
+    // Both teams are now his career's chips on the Team tile, and nothing is saved: the set's league
+    // ranks the Badgers first, so they are preselected (aria-current) and the club is only offered.
+    await expect(teamChip(page, COLLEGE_TEAM)).toHaveAttribute("aria-current", "true");
+    await expect(teamChip(page, team)).not.toHaveAttribute("aria-current", "true");
     await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk, a created player's career and team chips" });
     // Nothing saved for his team yet: Save for later writes nothing (STEP 11 answers him).
     await saveForLater(page);
@@ -464,29 +464,18 @@ test(
     await expect(results.getByRole("option", { selected: true })).toHaveCount(1);
     await expect(results.getByRole("option").first()).toHaveAttribute("aria-selected", "true");
     await expectAccessible(page, { within: tidyWalk(page), label: "Other team search ranked by the set's league and year" });
-    await search.press("Enter");
-    // Enter chose the Penguins for this card (not saved), and the search closed.
-    await expect(search).toBeHidden();
-    await expect(teamChip(page, "Pittsburgh Penguins")).toHaveAttribute("aria-pressed", "true");
-    // NOTHING MATCHES RXO: the precondition for creating it.
-    await teamTile.getByRole("button", { name: "Other team…", exact: true }).click();
-    await search.fill(other);
-    await expect(teamTile.getByText("No matches", { exact: true })).toBeVisible();
+    // Enter would take the Penguins (and save them: a click on a team saves it), but this card is
+    // RXO's, so the search is cancelled here and the ranking above is what was proved.
     await teamTile.getByRole("button", { name: "Cancel linking" }).click();
     await expect(search).toBeHidden();
-    // THE WRITE: created inline (Location blank, no League, so the name is exactly what was typed).
-    await teamTile.getByRole("button", { name: "+ New team", exact: true }).click();
-    const rxoForm = teamTile.getByRole("group", { name: "New team: unnamed" });
-    await rxoForm.getByRole("textbox", { name: "New team name" }).fill(other);
-    await rxoForm.getByRole("button", { name: `Create team ${other}` }).click();
-    await expect(rxoForm).toBeHidden();
-    await expect(teamChip(page, other)).toHaveAttribute("aria-pressed", "true");
-    // The Penguins pick is let go (one press), so only RXO is saved.
-    await teamChip(page, "Pittsburgh Penguins").click();
-    await expect(teamChip(page, "Pittsburgh Penguins")).toHaveCount(0);
-    await teamTile.getByRole("button", { name: "Save team", exact: true }).click();
+    // THE WRITE: RXO (made before the fetch) is found by its one token and linked: saved at once.
+    await teamTile.getByRole("button", { name: "Other team…", exact: true }).click();
+    await search.fill(other);
+    await teamTile.getByRole("option", { name: `Link to ${other}`, exact: true }).click();
+    await expect(search).toBeHidden();
     await expect(pinkTile(page, "Team")).toHaveCount(0);
     await expect(teamTile.getByRole("group", { name: `Team ${other}`, exact: true })).toBeVisible();
+    await expect(teamTile.getByRole("button", { name: /^Save teams?$/ })).toHaveCount(0);
     await saveForLater(page);
 
     // ── STEP 8: the count holds, and each answer is on its own card's mark ──
@@ -600,20 +589,16 @@ test(
     await skipUntil(page, livePlayerRow(page), { maxCards: FETCHED + 1 });
     await expect(pinkTile(page, "Team")).toHaveCount(1);
     await expect(teamChip(page, team)).toBeVisible();
-    await expect(teamChip(page, COLLEGE_TEAM)).toHaveAttribute("aria-pressed", "true");
-    await expect(teamChip(page, team)).toHaveAttribute("aria-pressed", "false");
+    await expect(teamChip(page, COLLEGE_TEAM)).toHaveAttribute("aria-current", "true");
+    await expect(teamChip(page, team)).not.toHaveAttribute("aria-current", "true");
     // NEO-639 (C8): the chip the pre-fill passes over says his years with that club, bare (one player
     // on the card, so no name in front: "<team> · 1994–1996"), and the pre-filled one says who played there.
     await expect(teamChip(page, team)).toHaveAccessibleName(`${team} · 1994–1996`);
     await expect(teamChip(page, COLLEGE_TEAM)).toHaveAccessibleName(`${COLLEGE_TEAM} · ${LIVE_PLAYER} played here`);
     await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk, a league-ranked team pre-fill" });
-    // The operator picks the club instead, and saves it: the card's last pink goes, and Save & next
-    // (the career is only blue) moves on.
-    await teamChip(page, COLLEGE_TEAM).click();
+    // The operator clicks the club instead, which saves it: the card's last pink goes, and Save &
+    // next (the career is only blue) moves on.
     await teamChip(page, team).click();
-    await expect(teamChip(page, team)).toHaveAttribute("aria-pressed", "true");
-    await expect(teamChip(page, COLLEGE_TEAM)).toHaveAttribute("aria-pressed", "false");
-    await teamTile.getByRole("button", { name: "Save team", exact: true }).click();
     await expect(pinkTile(page, "Team")).toHaveCount(0);
     await expect(teamTile.getByRole("group", { name: `Team ${team}`, exact: true })).toBeVisible();
     await saveAndNext(page);

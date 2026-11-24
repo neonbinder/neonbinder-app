@@ -19,17 +19,17 @@
 // tile is pink, its career chips "San Diego Padres · 1978–1981" and "St. Louis Cardinals · 1982–1996"
 // are NOT pressed (one player's years carry no name prefix; a preselected chip would read "· Ozzie
 // Smith played here" instead),
-// there is no Save team, and Save & next is held. The chip pressed is a choice, not a write: Save
-// team appears, the tile stays pink and Save & next stays held. Save team writes it: the tile shows
-// the plain "Team St. Louis Cardinals" row and Save & next moves to #852, where Brett's one team is
-// PRESELECTED under "Suggested from career history."; Save team writes it and Save & next reaches
+// there is no Save team button (a click on a team saves it), and Save & next is held. Clicking a chip
+// writes it: the tile shows the plain "Team St. Louis Cardinals" row and Save & next moves to #852,
+// where Brett's one team is PRESELECTED under "Suggested from career history."; clicking it saves it
+// and Save & next reaches
 // the end screen. Back returns to #852 with its team; Save for later closes the walk. The rows print
 // the teams, the badges and the pill are gone, and the drawer (the stored card) holds exactly the
 // team each card was given.
 //
-// R2 - every move has its positive and its negative: unpressed chips beside no pressed chip and no
-// Save team; pressed chip beside the still-pink tile and held Save & next; the saved row beside
-// the tile no longer pink; the legend's pressed chip beside the multi-team card's none; the row's
+// R2 - every move has its positive and its negative: chips with no aria-current beside no Save team;
+// the saved row beside the tile no longer pink; the legend's preselected chip (aria-current) beside
+// the multi-team card's none; the row's
 // team beside the badge and pill gone.
 //
 // R3 - not here: "Other team…" search picks (`tidy-up-team-tile-other-team-links-existing-teams-…`),
@@ -110,9 +110,9 @@ test(
     });
     // Not preselected, so each chip carries the player's years with the team, not "played here". One
     // player on the card, so the years stand alone, with no name in front (NEO-639 chip copy).
-    const chip = (pressed: boolean) =>
-      career.getByRole("button", { name: `${TEAM} · 1982–1996`, exact: true, pressed });
+    const chip = career.getByRole("button", { name: `${TEAM} · 1982–1996`, exact: true });
     const otherChip = career.getByRole("button", { name: `${OTHER_TEAM} · 1978–1981`, exact: true });
+    // A click on a team saves it: there is no Save team button at all.
     const saveTeam = team.getByRole("button", { name: /^Save teams?$/ });
     const savedRow = team.getByRole("group", { name: `Team ${TEAM}`, exact: true });
     // The walk's Career tile. Neither catalogue player's card may carry a Career check here: Save &
@@ -163,26 +163,18 @@ test(
 
     // ── STEP 3: THE CLAIM: the whole career offered, NOTHING picked, Save & next held ──
     // The list renders only once the suggestion query has answered, so it gates the reads below.
-    await expect(chip(false)).toBeVisible();
-    await expect(otherChip).toHaveAttribute("aria-pressed", "false");
-    await expect(career.getByRole("button", { pressed: true })).toHaveCount(0);
-    // Nothing chosen, nothing to save: Save team appears only with the first pressed chip.
+    await expect(chip).toBeVisible();
+    await expect(chip).not.toHaveAttribute("aria-current", "true");
+    await expect(otherChip).not.toHaveAttribute("aria-current", "true");
+    // Nothing preselected, nothing written: a click on a chip is what saves.
     await expect(saveTeam).toHaveCount(0);
     await expect(tidyFooterButton(page, "saveAndNext")).toBeDisabled();
     await expect(mustFixLine(page)).toBeVisible();
     await expectAccessible(page, { within: team, label: "Tidy Up Team tile, whole career offered with nothing picked" });
 
-    // ── STEP 4: the operator picks one career team: a choice, not a write ──
-    await chip(false).click();
-    await expect(chip(true)).toBeVisible();
-    await expect(otherChip).toHaveAttribute("aria-pressed", "false");
-    await expect(saveTeam).toHaveText("Save team");
-    await expect(team).toHaveAccessibleDescription("To fix");
-    await expect(tidyFooterButton(page, "saveAndNext")).toBeDisabled();
-    await expectAccessible(page, { within: team, label: "Tidy Up Team tile, career team picked and not saved yet" });
-
-    // ── STEP 5: Save team writes it; Save & next is usable and moves to the legend's card ──
-    await saveTeam.click();
+    // ── STEP 4: the operator clicks one career team: that saves it, with no Save team step ──
+    // ── STEP 5: Save & next is usable and moves to the legend's card ──
+    await chip.click();
     await expect(savedRow).toBeVisible();
     await expect(pinkTile(page, "Team")).toHaveCount(0);
     await expect(career).toHaveCount(0);
@@ -191,17 +183,17 @@ test(
     await expect(careerCheck, "no Career check on the catalogue player's card for Save & next to write").toHaveCount(0);
     await saveAndNext(page);
 
-    // ── STEP 6 (POSITIVE CONTROL): the one-team legend IS preselected; Save team writes it ──
+    // ── STEP 6 (POSITIVE CONTROL): the one-team legend IS preselected; a click saves it ──
     await expect(tidyCardHeader(page, `#${LEGEND.number} · ${LEGEND.player}`)).toBeVisible();
     await expectCardsLeft(page, 1);
     const suggested = team.getByRole("list", { name: "Suggested from career history.", exact: true });
     const legendChip = suggested.getByRole("button", { name: `${LEGEND.team} · ${LEGEND.player} played here`, exact: true });
-    await expect(legendChip, "a one-team legend in the set's league is preselected").toHaveAttribute("aria-pressed", "true");
-    // A preselect is not a write: the tile is still pink until Save team.
+    await expect(legendChip, "a one-team legend in the set's league is preselected").toHaveAttribute("aria-current", "true");
+    // A preselect is not a write: the tile is still pink until the chip is clicked.
     await expect(team).toHaveAccessibleDescription("To fix");
     await expect(career).toHaveCount(0);
     await expectAccessible(page, { within: team, label: "Tidy Up Team tile, a one-team legend preselected" });
-    await saveTeam.click();
+    await legendChip.click();
     await expect(team.getByRole("group", { name: `Team ${LEGEND.team}`, exact: true })).toBeVisible();
     await expect(pinkTile(page, "Team")).toHaveCount(0);
     await expect(careerCheck, "no Career check on the legend's card for Save & next to write").toHaveCount(0);

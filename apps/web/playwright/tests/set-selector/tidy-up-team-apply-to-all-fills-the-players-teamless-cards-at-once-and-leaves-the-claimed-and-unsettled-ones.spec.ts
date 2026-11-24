@@ -6,7 +6,7 @@
 // The operator meets it like this, on ONE player printed on five cards:
 //   1. #1 opens the walk with the player still a name. "Add as new player" answers it on every card
 //      that prints it. #1's Team tile stays pink (blank cell: no team).
-//   2. A team made on #1's tile ("+ New team", then Save team) puts the offer up: "Apply to all 2
+//   2. A team made on #1's tile ("+ New team", which saves it) puts the offer up: "Apply to all 2
 //      other <player> cards" (#2 and #3). #4 is NOT offered: its team cell names another team
 //      (rule 8, a data claim holds back a guess, and a claim is its own line). #5 is NOT offered
 //      either: it prints the player and a second, still-unknown person, so it is still waiting on a
@@ -102,8 +102,8 @@ test(
     await form.getByRole("textbox", { name: "New team name" }).fill(TEAM);
     await form.getByRole("button", { name: `Create team ${TEAM}`, exact: true, disabled: false }).click();
     await expect(form).toBeHidden();
-    await expect(teamTile.getByRole("button", { name: new RegExp(`^${escapeRe(TEAM)}$`), pressed: true })).toBeVisible();
-    await teamTile.getByRole("button", { name: "Save team", exact: true, disabled: false }).click();
+    // Creating the team saves it on the card: there is no Save team step.
+    await expect(teamTile.getByRole("button", { name: /^Save teams?$/ })).toHaveCount(0);
     await expect(pinkTile(page, "Team"), "the team landed on #1").toHaveCount(0);
     await expect(teamGroup(TEAM).getByRole("button", { name: `Edit ${TEAM}`, exact: true })).toBeVisible();
     // #2 and #3 are offered; #4 (its cell names another team) and #5 (a second name nobody has
