@@ -84,7 +84,14 @@ import { listingNamesAPlayer } from "./lib/cardPlayerDefaults";
 import { newStoredCardReadCache } from "./storedCardTitle";
 import { rebuildListingText, regenerateListingNow } from "./tidyListingText";
 import { MAX_PARALLEL_GROUPING_ENTRIES } from "./parallelGroupingPlan";
-import { blockedSideFailed, sideMissingFromRun } from "./parallelChecklistBuild";
+import {
+  blockedSideFailed,
+  CARD_LOAD_PAGE,
+  CARD_LOAD_PAGE_BYTES,
+  MAX_CARD_BYTES_FOR_BUILD,
+  MAX_INSERT_CARDS_FOR_BUILD,
+  sideMissingFromRun,
+} from "./parallelChecklistBuild";
 import {
   failedChecklistSides,
   failureFromMessage,
@@ -1973,6 +1980,106 @@ function gateLinksOf(items: ReadonlyArray<GateItem>): GateLink[] {
   return links;
 }
 
+/** The part of a fetched card the gate reads. */
+type GateFetchedCard = Pick<
+  Infer<typeof previewCardValidator>,
+  "cardNumber" | "players" | "team" | "teams" | "newPlayerByName" | "checklistConflict"
+>;
+
+/**
+ * What the gate reads off the cards it was handed: every printed player and
+ * team name, and the card-level maps its tie-breaks use (NEO-254 teams on the
+ * same card as a player, NEO-490 players on each card printing a team, NEO-602
+ * each player's own cards). Lifted out of `resolveChecklistEntities` unchanged
+ * so a test can hand `computeGateFacts` exactly what the gate handed it.
+ *
+ * Names are deduped by NORMALIZED name inside `computeGateFacts` — two
+ * spellings of one player ("Ken Griffey Jr." vs "Ken Griffey Jr") must not
+ * produce two unknowns and two Wikidata lookups.
+ */
+export function gateCardInputs(cards: ReadonlyArray<GateFetchedCard>): {
+  additionalPlayerNames: string[];
+  additionalTeamNames: string[];
+  cardTeamNamesByPlayer: Map<string, string[]>;
+  cardPlayerNamesByTeam: CardPlayersByTeam;
+  cardsByPlayer: CardsByPlayer;
+} {
+  const additionalPlayerNames: string[] = [];
+  const additionalTeamNames: string[] = [];
+  // NEO-254 — which teams appeared on the same card as which player. The
+  // gate resolves names in one flat pass, so the per-card association has to
+  // be captured HERE, where the cards still exist, or it is gone.
+  const cardTeamNamesByPlayer = new Map<string, string[]>();
+  // NEO-490 — and the reverse: which players appeared on each card printing
+  // a team, so a team name the set year cannot settle may be settled by its
+  // card's players (`addCardPlayerNames`).
+  const cardPlayerNamesByTeam: CardPlayersByTeam = new Map();
+  // NEO-602 — and each player's own cards (number, printed team), for the
+  // same-name pick step.
+  const cardsByPlayer: CardsByPlayer = new Map();
+  for (const c of cards) {
+    const teamsOnCard = cardTeamNames(c);
+    for (const p of c.players ?? []) {
+      additionalPlayerNames.push(p);
+      addCardTeamNames(cardTeamNamesByPlayer, p, teamsOnCard);
+      addCardForPlayer(cardsByPlayer, p, teamsOnCard, c.cardNumber);
+    }
+    for (const t of teamsOnCard) {
+      additionalTeamNames.push(t);
+      // NEO-591 — a card the career check answered "New player" gives the
+      // card rule no evidence (see `addCardPlayerNames`); the gate runs
+      // before that step, so this only matters to a caller that sends the
+      // answers early, and keeps the gate's rule the commit's rule.
+      addCardPlayerNames(cardPlayerNamesByTeam, t, c.players ?? [], c.cardNumber, {
+        withheld: (c.newPlayerByName?.length ?? 0) > 0,
+      });
+    }
+    // PR 451 (NEO-478) — an unsettled checklist disagreement: the card
+    // carries the marketplace's side (resolved above), and the operator may
+    // pick the checklist's in the wizard. Its names are resolved and queued
+    // here too, so a picked checklist player or team arrives as a decided
+    // name, never a pending one. The checklist's players sit on a card with
+    // the checklist's teams when the teams disagree too. NEO-489: a team
+    // disagreement with an empty checklist side is the checklist saying
+    // "No Team", so its players sit on a card with no team, never on the
+    // marketplace's.
+    const conflict = c.checklistConflict;
+    if (conflict) {
+      const checklistTeams = (conflict.teams?.checklist ?? []).map((t) => t.trim()).filter(Boolean);
+      const teamsForChecklistPlayers = conflict.teams ? checklistTeams : teamsOnCard;
+      for (const p of conflict.players?.checklist ?? []) {
+        if (!p.trim()) continue;
+        additionalPlayerNames.push(p);
+        addCardTeamNames(cardTeamNamesByPlayer, p, teamsForChecklistPlayers);
+        addCardForPlayer(cardsByPlayer, p, teamsForChecklistPlayers, c.cardNumber);
+      }
+      for (const t of checklistTeams) additionalTeamNames.push(t);
+      // NEO-490 — the card as the operator may settle it: the checklist's
+      // players (or, with no player disagreement, the card's own) on the
+      // checklist's teams (or the card's own). A pairing already filed
+      // above (the marketplace's players on the card's teams) is not
+      // filed twice.
+      const checklistPlayers = (conflict.players?.checklist ?? [])
+        .map((p) => p.trim())
+        .filter(Boolean);
+      if (checklistPlayers.length > 0 || checklistTeams.length > 0) {
+        const playersForChecklist =
+          checklistPlayers.length > 0 ? checklistPlayers : (c.players ?? []);
+        for (const t of teamsForChecklistPlayers) {
+          addCardPlayerNames(cardPlayerNamesByTeam, t, playersForChecklist, c.cardNumber);
+        }
+      }
+    }
+  }
+  return {
+    additionalPlayerNames,
+    additionalTeamNames,
+    cardTeamNamesByPlayer,
+    cardPlayerNamesByTeam,
+    cardsByPlayer,
+  };
+}
+
 /**
  * NEO-656 — everything the review gate decides about the names it was handed,
  * with NO write. Two callers: `resolveChecklistEntities` (the gate, whose
@@ -1985,7 +2092,7 @@ function gateLinksOf(items: ReadonlyArray<GateItem>): GateLink[] {
  * This is `resolveUnknownsAndStartBatch` of NEO-645 minus its writes (the
  * name-row reset and upserts); every read and every rule is unchanged.
  */
-async function computeGateFacts(
+export async function computeGateFacts(
   ctx: ActionCtx,
   args: {
     selectorOptionId: Id<"selectorOptions">;
@@ -18878,76 +18985,13 @@ export const resolveChecklistEntities = action({
       );
     }
 
-    // Deduped by NORMALIZED name inside computeGateFacts — two
-    // spellings of one player ("Ken Griffey Jr." vs "Ken Griffey Jr") must
-    // not produce two unknowns and two Wikidata lookups.
-    const additionalPlayerNames: string[] = [];
-    const additionalTeamNames: string[] = [];
-    // NEO-254 — which teams appeared on the same card as which player. The
-    // gate resolves names in one flat pass, so the per-card association has to
-    // be captured HERE, where the cards still exist, or it is gone.
-    const cardTeamNamesByPlayer = new Map<string, string[]>();
-    // NEO-490 — and the reverse: which players appeared on each card printing
-    // a team, so a team name the set year cannot settle may be settled by its
-    // card's players (`addCardPlayerNames`).
-    const cardPlayerNamesByTeam: CardPlayersByTeam = new Map();
-    // NEO-602 — and each player's own cards (number, printed team), for the
-    // same-name pick step.
-    const cardsByPlayer: CardsByPlayer = new Map();
-    for (const c of args.cards) {
-      const teamsOnCard = cardTeamNames(c);
-      for (const p of c.players ?? []) {
-        additionalPlayerNames.push(p);
-        addCardTeamNames(cardTeamNamesByPlayer, p, teamsOnCard);
-        addCardForPlayer(cardsByPlayer, p, teamsOnCard, c.cardNumber);
-      }
-      for (const t of teamsOnCard) {
-        additionalTeamNames.push(t);
-        // NEO-591 — a card the career check answered "New player" gives the
-        // card rule no evidence (see `addCardPlayerNames`); the gate runs
-        // before that step, so this only matters to a caller that sends the
-        // answers early, and keeps the gate's rule the commit's rule.
-        addCardPlayerNames(cardPlayerNamesByTeam, t, c.players ?? [], c.cardNumber, {
-          withheld: (c.newPlayerByName?.length ?? 0) > 0,
-        });
-      }
-      // PR 451 (NEO-478) — an unsettled checklist disagreement: the card
-      // carries the marketplace's side (resolved above), and the operator may
-      // pick the checklist's in the wizard. Its names are resolved and queued
-      // here too, so a picked checklist player or team arrives as a decided
-      // name, never a pending one. The checklist's players sit on a card with
-      // the checklist's teams when the teams disagree too. NEO-489: a team
-      // disagreement with an empty checklist side is the checklist saying
-      // "No Team", so its players sit on a card with no team, never on the
-      // marketplace's.
-      const conflict = c.checklistConflict;
-      if (conflict) {
-        const checklistTeams = (conflict.teams?.checklist ?? []).map((t) => t.trim()).filter(Boolean);
-        const teamsForChecklistPlayers = conflict.teams ? checklistTeams : teamsOnCard;
-        for (const p of conflict.players?.checklist ?? []) {
-          if (!p.trim()) continue;
-          additionalPlayerNames.push(p);
-          addCardTeamNames(cardTeamNamesByPlayer, p, teamsForChecklistPlayers);
-          addCardForPlayer(cardsByPlayer, p, teamsForChecklistPlayers, c.cardNumber);
-        }
-        for (const t of checklistTeams) additionalTeamNames.push(t);
-        // NEO-490 — the card as the operator may settle it: the checklist's
-        // players (or, with no player disagreement, the card's own) on the
-        // checklist's teams (or the card's own). A pairing already filed
-        // above (the marketplace's players on the card's teams) is not
-        // filed twice.
-        const checklistPlayers = (conflict.players?.checklist ?? [])
-          .map((p) => p.trim())
-          .filter(Boolean);
-        if (checklistPlayers.length > 0 || checklistTeams.length > 0) {
-          const playersForChecklist =
-            checklistPlayers.length > 0 ? checklistPlayers : (c.players ?? []);
-          for (const t of teamsForChecklistPlayers) {
-            addCardPlayerNames(cardPlayerNamesByTeam, t, playersForChecklist, c.cardNumber);
-          }
-        }
-      }
-    }
+    const {
+      additionalPlayerNames,
+      additionalTeamNames,
+      cardTeamNamesByPlayer,
+      cardPlayerNamesByTeam,
+      cardsByPlayer,
+    } = gateCardInputs(args.cards);
 
     const resolvedNames = emptyResolvedNames();
     const facts = await computeGateFacts(ctx, {
@@ -19050,6 +19094,116 @@ export const leafSportForGate = internalQuery({
     (await findSportForSelectorOption(ctx, args.selectorOptionId)) ?? null,
 });
 
+/** One stored card, cut to what the gate's card-level tie-breaks read. */
+const tidyLeafCardValidator = v.object({
+  cardNumber: v.string(),
+  /** Every player printed on the card: the linked printed names, then the pending ones. */
+  playerNames: v.array(v.string()),
+  /** Every team on the card: the linked teams' full names, then the pending ones. */
+  teamNames: v.array(v.string()),
+  pendingTeamNames: v.array(v.string()),
+});
+type TidyLeafCard = Infer<typeof tidyLeafCardValidator>;
+
+/**
+ * NEO-656 — a stored card as the gate saw it when it was fetched: the players
+ * and teams printed on it. A linked player is read from `playerLinks` (the name
+ * printed on the card), a linked team by its row's full name, and the names
+ * still pending are the printed names themselves. Only a card with a pending
+ * name is returned: those are the only cards a pending name's tie-break reads.
+ */
+async function tidyLeafCardOf(
+  ctx: QueryCtx,
+  card: Doc<"cardChecklist">,
+  teamNames: Map<Id<"teams">, string | null>,
+): Promise<TidyLeafCard | null> {
+  const pendingPlayers = card.pendingPlayerNames ?? [];
+  const pendingTeams = card.pendingTeamNames ?? [];
+  if (pendingPlayers.length === 0 && pendingTeams.length === 0) return null;
+  const teams: string[] = [];
+  for (const teamId of card.teamOnCardIds ?? []) {
+    if (!teamNames.has(teamId)) {
+      const row = await ctx.db.get(teamId);
+      teamNames.set(teamId, row ? teamFullName(row) : null);
+    }
+    const name = teamNames.get(teamId);
+    if (name) teams.push(name);
+  }
+  return {
+    cardNumber: card.cardNumber,
+    playerNames: [
+      ...new Set([...(card.playerLinks ?? []).map((l) => l.nameOnCard), ...pendingPlayers]),
+    ],
+    teamNames: [...new Set([...teams, ...pendingTeams])],
+    pendingTeamNames: pendingTeams,
+  };
+}
+
+/**
+ * NEO-656 — one row- and byte-bounded page of a leaf's own cards, for
+ * `tidyLeafFacts`, in `by_selector_option_and_sort` order (the checklist's own).
+ * The same bounds as `parallelChecklistBuild`'s card loaders; the action sums
+ * the pages against the same two caps.
+ */
+export const tidyLeafCardsPage = internalQuery({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    cursor: v.union(v.string(), v.null()),
+  },
+  returns: v.object({
+    cards: v.array(tidyLeafCardValidator),
+    isDone: v.boolean(),
+    continueCursor: v.string(),
+    bytesRead: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const page = await ctx.db
+      .query("cardChecklist")
+      .withIndex("by_selector_option_and_sort", (q) =>
+        q.eq("selectorOptionId", args.selectorOptionId),
+      )
+      .paginate({
+        numItems: CARD_LOAD_PAGE,
+        cursor: args.cursor,
+        maximumBytesRead: CARD_LOAD_PAGE_BYTES,
+      });
+    const teamNames = new Map<Id<"teams">, string | null>();
+    const cards: TidyLeafCard[] = [];
+    for (const row of page.page) {
+      const card = await tidyLeafCardOf(ctx, row, teamNames);
+      if (card) cards.push(card);
+    }
+    const bytesRead = (await ctx.meta.getTransactionMetrics()).bytesRead.used;
+    return { cards, isDone: page.isDone, continueCursor: page.continueCursor, bytesRead };
+  },
+});
+
+/**
+ * NEO-656 — the cards cross-listed INTO a leaf, cut the same way. They carry
+ * pending names the leaf shows (`pendingNamesOfChecklist` reads them), so their
+ * co-printed teams and players serve the same tie-breaks.
+ */
+export const tidyLeafGuestCards = internalQuery({
+  args: { selectorOptionId: v.id("selectorOptions") },
+  returns: v.array(tidyLeafCardValidator),
+  handler: async (ctx, args) => {
+    const links = await ctx.db
+      .query("cardCrossListings")
+      .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", args.selectorOptionId))
+      .collect();
+    const rows = (await mapBounded(links, (link) => ctx.db.get(link.cardChecklistId))).filter(
+      (card): card is Doc<"cardChecklist"> => card !== null,
+    );
+    const teamNames = new Map<Id<"teams">, string | null>();
+    const cards: TidyLeafCard[] = [];
+    for (const row of rows) {
+      const card = await tidyLeafCardOf(ctx, row, teamNames);
+      if (card) cards.push(card);
+    }
+    return cards;
+  },
+});
+
 /**
  * NEO-656 — what the review gate says about the names still PENDING on one
  * leaf's own cards, for the Tidy Up walk. The walk reads facts, it does not
@@ -19057,11 +19211,18 @@ export const leafSportForGate = internalQuery({
  *
  * It is `computeGateFacts` (the gate's own derivation: unknown names, a
  * set-history pick between players, a rule-E preselect, the team rows a name
- * reached, the automatic links A / D / 6b / F) asked about the leaf's pending
- * player and team names alone, with no fetched cards. The sport is walked from
- * the leaf, never taken from the caller.
+ * reached, the automatic links A / D / 6b / F) asked with the card-level inputs
+ * the gate had at fetch time, rebuilt from the leaf's STORED cards (paged, as
+ * the parallel build pages them): the teams printed on the same card as a
+ * pending player (the same-card team tie-break) and the players printed on each
+ * card naming a pending team (the card rule). The sport is walked from the
+ * leaf, never taken from the caller.
  *
- * Admin only, like the gate it wraps.
+ * The gate is asked about every player printed on a card that names a pending
+ * team too, because the card rule needs each of them resolved; only the pending
+ * names' facts are returned.
+ *
+ * Admin only, like the gate it wraps. An action, not a subscribed query.
  */
 export const tidyLeafFacts = action({
   args: { selectorOptionId: v.id("selectorOptions") },
@@ -19097,22 +19258,106 @@ export const tidyLeafFacts = action({
       sportId,
     });
     if (prelude.pendingPlayerNames.length + prelude.pendingTeamNames.length === 0) return none;
+
+    // The leaf's own cards, page by page, then the cards cross-listed into it.
+    const stored: TidyLeafCard[] = [];
+    let bytes = 0;
+    let cursor: string | null = null;
+    for (let pages = 1; ; pages++) {
+      const page: {
+        cards: TidyLeafCard[];
+        isDone: boolean;
+        continueCursor: string;
+        bytesRead: number;
+      } = await ctx.runQuery(internal.selectorOptions.tidyLeafCardsPage, {
+        selectorOptionId: args.selectorOptionId,
+        cursor,
+      });
+      stored.push(...page.cards);
+      bytes += page.bytesRead;
+      // Past either cap the card-level inputs are left as far as they got: the
+      // names are still asked about, on the year alone.
+      if (
+        page.isDone ||
+        stored.length > MAX_INSERT_CARDS_FOR_BUILD ||
+        bytes > MAX_CARD_BYTES_FOR_BUILD ||
+        pages > MAX_INSERT_CARDS_FOR_BUILD
+      ) {
+        break;
+      }
+      cursor = page.continueCursor;
+    }
+    stored.push(
+      ...(await ctx.runQuery(internal.selectorOptions.tidyLeafGuestCards, {
+        selectorOptionId: args.selectorOptionId,
+      })),
+    );
+
+    const inputs = gateInputsOfStoredCards(stored, prelude.pendingTeamNames);
     const facts = await computeGateFacts(ctx, {
       selectorOptionId: args.selectorOptionId,
       sportId,
       sportLabel: prelude.sportLabel,
+      additionalPlayerNames: inputs.additionalPlayerNames,
+      cardTeamNamesByPlayer: inputs.cardTeamNamesByPlayer,
+      cardPlayerNamesByTeam: inputs.cardPlayerNamesByTeam,
       prelude,
       timing,
     });
+
+    // Only the pending names' facts: the other players the gate was asked
+    // about were there as evidence for a team.
+    const pendingPlayers = new Set(prelude.pendingPlayerNames.map(normalizePlayerName));
+    const pendingTeams = new Set(prelude.pendingTeamNames.map(normalizeTeamName));
+    const isPending = (kind: "player" | "team", name: string) =>
+      kind === "player"
+        ? pendingPlayers.has(normalizePlayerName(name))
+        : pendingTeams.has(normalizeTeamName(name));
+    const gateItems = facts.gateItems.filter((item) => isPending(item.kind, item.name));
     return {
-      unknownPlayers: facts.unknownPlayers,
-      unknownTeams: facts.unknownTeams,
-      ambiguousPlayers: facts.ambiguousPlayers,
-      autoLinkedCount: facts.autoLinkedCount,
-      gateItems: facts.gateItems,
+      unknownPlayers: facts.unknownPlayers.filter((n) => isPending("player", n)),
+      unknownTeams: facts.unknownTeams.filter((n) => isPending("team", n)),
+      ambiguousPlayers: facts.ambiguousPlayers.filter((n) => isPending("player", n)),
+      autoLinkedCount: gateItems.filter((item) => item.auto).length,
+      gateItems,
     };
   },
 });
+
+/**
+ * NEO-656 — the gate's card-level inputs, rebuilt from stored cards: the same
+ * three accumulators `gateCardInputs` fills from fetched ones, through the same
+ * helpers. A card files its players under the teams printed on it, and each of
+ * its PENDING team names under the players printed on it (a resolved team is
+ * never asked about, so it needs no entry). The players the gate must resolve
+ * are the ones on a card naming a pending team.
+ */
+export function gateInputsOfStoredCards(
+  cards: ReadonlyArray<TidyLeafCard>,
+  pendingTeamNames: ReadonlyArray<string>,
+): {
+  additionalPlayerNames: string[];
+  cardTeamNamesByPlayer: Map<string, string[]>;
+  cardPlayerNamesByTeam: CardPlayersByTeam;
+} {
+  const askedTeams = new Set(pendingTeamNames.map(normalizeTeamName));
+  const additionalPlayerNames: string[] = [];
+  const cardTeamNamesByPlayer = new Map<string, string[]>();
+  const cardPlayerNamesByTeam: CardPlayersByTeam = new Map();
+  for (const card of cards) {
+    const teamsOnCard = card.teamNames;
+    const namesAPendingTeam = card.pendingTeamNames.length > 0;
+    for (const p of card.playerNames) {
+      if (namesAPendingTeam) additionalPlayerNames.push(p);
+      addCardTeamNames(cardTeamNamesByPlayer, p, teamsOnCard);
+    }
+    for (const t of card.pendingTeamNames) {
+      if (!askedTeams.has(normalizeTeamName(t))) continue;
+      addCardPlayerNames(cardPlayerNamesByTeam, t, card.playerNames, card.cardNumber);
+    }
+  }
+  return { additionalPlayerNames, cardTeamNamesByPlayer, cardPlayerNamesByTeam };
+}
 
 /**
  * NEO-189 — how many cards one `commitCardChecklistChunk` transaction upserts.

@@ -2,7 +2,7 @@
 
 import { action, internalAction } from "../_generated/server";
 import { internal } from "../_generated/api";
-import { ConvexError, v } from "convex/values";
+import { ConvexError, v, type Infer } from "convex/values";
 import type { Id } from "../_generated/dataModel";
 import { requireAdmin } from "../auth";
 import {
@@ -2101,6 +2101,54 @@ export const enrichTeam = internalAction({
   },
 });
 
+type TeamEnrichment = Infer<typeof tidyNameEnrichmentValidator>;
+
+/**
+ * NEO-301 — lay a team lookup's later result over the partial answer already
+ * held for it (ported from the deleted `entityReviewQueue.overlayTeamEnrichment`;
+ * `tidyNames.applyLookupResult` made the same merge on the walk's rows). A field
+ * the new result leaves `undefined` keeps its held value; `colors` is merged per
+ * swatch for the same reason. Everything the new result DOES carry wins, so a
+ * Wikidata answer adds `wikidataId`, `yearsActive` and `leagueWikidataId` and an
+ * ESPN answer refreshes its own fields. Either side missing returns the other.
+ */
+export function overlayTeamEnrichment(
+  prior: TeamEnrichment | undefined,
+  next: TeamEnrichment | undefined,
+): TeamEnrichment | undefined {
+  if (!next) return prior;
+  if (!prior) return next;
+  const merged: Record<string, unknown> = { ...prior };
+  for (const [key, value] of Object.entries(next)) {
+    if (value !== undefined) merged[key] = value;
+  }
+  if (prior.colors || next.colors) {
+    const colors: Record<string, unknown> = { ...(prior.colors ?? {}) };
+    for (const [key, value] of Object.entries(next.colors ?? {})) {
+      if (value !== undefined) colors[key] = value;
+    }
+    merged.colors = colors;
+  }
+  return merged as TeamEnrichment;
+}
+
+/**
+ * A team lookup that lands on a partial answer the walk already holds (ESPN's
+ * league, location and colours from an earlier try) adds to it and never takes
+ * from it: the result is overlaid field by field, and an `error` (a try that
+ * found nothing at all) does not downgrade it, as `tidyNames.applyLookupResult`
+ * did (NEO-301). Without a held answer the result is returned as it came.
+ */
+export function withHeldTeamAnswer(
+  held: TeamEnrichment | undefined,
+  result: { status: "ready" | "error"; enrichment?: TeamEnrichment },
+): { status: "ready" | "error"; enrichment?: TeamEnrichment } {
+  if (!held) return result;
+  if (result.status === "error") return { status: "ready", enrichment: held };
+  const enrichment = overlayTeamEnrichment(held, result.enrichment);
+  return { status: "ready", ...(enrichment ? { enrichment } : {}) };
+}
+
 /**
  * NEO-656 (D3) — one name's Wikidata lookup, ON DEMAND, for the walk.
  *
@@ -2137,6 +2185,11 @@ export const lookupTidyName = action({
     sportId: v.id("selectorOptions"),
     /** The set's own history picks (`tidyLeafFacts`), carried first among the candidates. */
     historyPlayerIds: v.optional(v.array(v.id("players"))),
+    /**
+     * A team's partial answer the walk already holds (ESPN's half from an
+     * earlier try). The new result is laid over it, never replacing it (NEO-301).
+     */
+    heldEnrichment: v.optional(tidyNameEnrichmentValidator),
     /** Rule E's obvious candidate (`tidyLeafFacts`), carried onto the answer. */
     preselect: v.optional(
       v.object({
@@ -2215,8 +2268,15 @@ export const lookupTidyName = action({
       payload = { status: "error" };
     }
 
+    const settled =
+      args.kind === "team"
+        ? withHeldTeamAnswer(args.heldEnrichment, {
+            status: payload.status,
+            enrichment: pickEnrichment(payload.enrichment),
+          })
+        : { status: payload.status, enrichment: pickEnrichment(payload.enrichment) };
     const enrichment = mergeLookupEnrichment({
-      incoming: pickEnrichment(payload.enrichment),
+      incoming: settled.enrichment,
       history: known.history,
       live: known.live,
       preselect:
@@ -2224,7 +2284,7 @@ export const lookupTidyName = action({
           ? { ...args.preselect, name }
           : undefined,
     });
-    return { status: payload.status, ...(enrichment ? { enrichment } : {}) };
+    return { status: settled.status, ...(enrichment ? { enrichment } : {}) };
   },
 });
 

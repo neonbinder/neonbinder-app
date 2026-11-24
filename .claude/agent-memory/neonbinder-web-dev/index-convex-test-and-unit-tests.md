@@ -57,3 +57,4 @@ Vitest, convex-test, happy-dom, mock and fixture gotchas for unit and component 
 - [Pin regexes match planner inputs](reference_pin_regexes_match_plan_inputs_not_just_writes.md) — rename planner keys, do not loosen source-slice pins
 - [Render-phase open needs batch in state](reference_render_phase_open_needs_batch_in_state_and_fixture_batch_ids.md) — NEO-640 early open: previousBatchId in state; pre-streamed test fixtures never trip it; matched w/o pairedBy opens
 - [Pair confidence is server-stamped](reference_pair_confidence_stamped_by_server_fixtures_must_match.md) — clean-pair fixtures: pairedBy name/stored/crossRef at 1; number/variation pairs are 0.9 (NEO-640)
+- [Fake ActionCtx from convex-test](reference_fake_actionctx_from_convex_test.md) — drive an exported runQuery/runMutation-only action helper via t.query/t.mutation; make a parity fixture bite
