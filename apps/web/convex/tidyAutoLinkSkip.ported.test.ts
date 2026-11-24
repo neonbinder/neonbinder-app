@@ -19,6 +19,7 @@ import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { normalizePlayerName } from "./players";
 import { cancelScheduled } from "../lib/testing/drain-scheduled";
+import { insertTestCard } from "../lib/testing/card-row";
 import {
   ADMIN,
   allOf,
@@ -47,12 +48,27 @@ const BO = "Bo Jackson";
 const asAdmin = (t: T) => t.withIdentity(ADMIN);
 
 async function world(t: T) {
-  const s = await seedLeaf(t);
+  const s = await seedLeaf(t, { extraLeaf: "Insert" });
   const football = await t.run((ctx) =>
     ctx.db.insert("selectorOptions", { level: "sport", value: "Football", platformData: {}, children: [], lastUpdated: Date.now() }),
   );
   const bo = await t.run((ctx) =>
     ctx.db.insert("players", { name: BO, nameNormalized: normalizePlayerName(BO), sportId: football, lastUpdated: Date.now() }),
+  );
+  // The set's own earlier commit linked this name to the footballer. The commit
+  // proves a cross-sport `setHistory` link against these cards (NEO-656, C1):
+  // the client's `origin` label alone proves nothing.
+  await t.run((ctx) =>
+    insertTestCard(ctx, {
+      selectorOptionId: s.otherLeafId!,
+      cardNumber: "H1",
+      cardName: "Earlier commit",
+      playerIds: [bo],
+      playerLinks: [{ playerId: bo, nameOnCard: BO }],
+      platformData: {},
+      sortOrder: 0,
+      lastUpdated: Date.now(),
+    }),
   );
   return { ...s, football, bo };
 }

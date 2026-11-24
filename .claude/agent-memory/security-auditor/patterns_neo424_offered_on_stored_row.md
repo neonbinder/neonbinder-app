@@ -40,3 +40,10 @@ server re-derivation (player's name/alias equals the printed key, team sport
 equals the set's sport), or the relaxation is now unbounded for any admin
 client. Also check fan-out doors (`applyNameToAll`) that treat "the open card
 already carries it" as proof: they inherit whatever the single-card door let in.
+
+**Second-order flag (NEO-656 delta):** fixing one client flag can leave a sibling
+one: `checkGateLinks` re-checked sport from the set but exempted links whose
+client-supplied `origin` is `"setHistory"`. An enum ORIGIN tag that relaxes a
+check is the same client flag in another field; grep every `origin !==` /
+`origin ===` branch in a re-check and ask what proves the origin. Also check the
+"no sport above the row" branch fails closed for EVERY origin, not just most.

@@ -308,6 +308,7 @@ import {
   NAMESAKE_NAMES_PER_CALL,
   SET_HISTORY_IDS_PER_CALL,
   onlyId,
+  proveSetHistoryLinks,
   scanSetHistory,
   setHistoryTeamKeys,
   setHistoryVerdict,
@@ -26134,10 +26135,12 @@ export const validateOperatorPlayerIds = internalQuery({
  *    exactly as the gate set it;
  *  - the set's sport is walked from `selectorOptionId` here (never the action's
  *    client-supplied `sportId`). A team of another sport is dropped, and so is
- *    a player who does not play the set's sport unless the link is a
- *    set-history one (the set's own earlier commit is the only proof a guest
- *    link has). With no sport above the row nothing can be verified, so such
- *    links are dropped (fail closed);
+ *    a player who does not play the set's sport, unless the link is a
+ *    set-history one the SERVER proved (`provenSetHistory`: the set's own
+ *    committed cards, scanned by the commit action, link that printed name to
+ *    that id). `origin` is a client label and proves nothing. With no sport
+ *    above the row nothing can be verified, so every link is dropped
+ *    whatever its origin (fail closed);
  *  - a TEAM link whose origin is `hallOfFame` is dropped: a Hall of Fame fact
  *    names a player, and main took team links only from the set's history and
  *    the career team (NEO-490), leaving the name an ordinary unanswered row.
@@ -26148,6 +26151,11 @@ export const checkGateLinks = internalQuery({
   args: {
     selectorOptionId: v.id("selectorOptions"),
     gateLinks: v.array(gateLinkValidator),
+    /**
+     * The set-history links among `gateLinks` the commit action proved with its
+     * own scan (`proveSetHistoryLinks`). Absent proves nothing.
+     */
+    provenSetHistory: v.optional(v.array(gateLinkValidator)),
   },
   returns: v.object({
     links: v.array(checkedGateLinkValidator),
@@ -26165,7 +26173,22 @@ export const checkGateLinks = internalQuery({
     const playerSport = new Map<string, Id<"selectorOptions"> | null>();
     const playerPlaysSet = new Map<string, boolean>();
     const teamSport = new Map<string, Id<"selectorOptions"> | null>();
+    const proven = new Set(
+      (args.provenSetHistory ?? []).map(
+        (p) => `${p.kind}|${p.name}|${(p.kind === "player" ? p.playerId : p.teamId) ?? ""}`,
+      ),
+    );
+    const isProven = (link: (typeof args.gateLinks)[number]) =>
+      link.origin === "setHistory" &&
+      proven.has(
+        `${link.kind}|${link.name}|${(link.kind === "player" ? link.playerId : link.teamId) ?? ""}`,
+      );
     for (const link of args.gateLinks) {
+      // No sport above the row: nothing can be verified, whatever the origin.
+      if (!setSportId) {
+        dropped++;
+        continue;
+      }
       if (link.kind === "player") {
         const id = link.playerId;
         if (!id) {
@@ -26185,7 +26208,7 @@ export const checkGateLinks = internalQuery({
           dropped++;
           continue;
         }
-        if (link.origin !== "setHistory" && !playerPlaysSet.get(id)) {
+        if (!playerPlaysSet.get(id) && !isProven(link)) {
           dropped++;
           continue;
         }
@@ -26201,7 +26224,7 @@ export const checkGateLinks = internalQuery({
           teamSport.set(id, team ? team.sportId : null);
         }
         const sportId = teamSport.get(id);
-        if (!sportId || sportId !== setSportId) {
+        if (!sportId || (sportId !== setSportId && !isProven(link))) {
           dropped++;
           continue;
         }
@@ -26463,10 +26486,19 @@ export const commitCardChecklist = action({
     }
     const checkedGateLinks: Array<Infer<typeof checkedGateLinkValidator>> = [];
     let gateLinksDropped = 0;
+    // The set's own history, scanned here (a query cannot run one), proves which
+    // `setHistory` labels may cross sports. `origin` itself comes from the client.
+    const provenSetHistory = await proveSetHistoryLinks(
+      ctx,
+      args.selectorOptionId,
+      gateLinksIn,
+    );
     for (let at = 0; at < gateLinksIn.length; at += GATE_LINKS_PER_CHECK) {
+      const page = gateLinksIn.slice(at, at + GATE_LINKS_PER_CHECK);
       const checked = await ctx.runQuery(internal.selectorOptions.checkGateLinks, {
         selectorOptionId: args.selectorOptionId,
-        gateLinks: gateLinksIn.slice(at, at + GATE_LINKS_PER_CHECK),
+        gateLinks: page,
+        provenSetHistory: provenSetHistory.filter((p) => page.includes(p)),
       });
       checkedGateLinks.push(...checked.links);
       gateLinksDropped += checked.dropped;

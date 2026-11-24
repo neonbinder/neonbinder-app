@@ -68,6 +68,7 @@ import {
 import { rememberAliasesOnTeam } from "./rememberTeamAliases";
 import { MAX_TEAM_NAME_LENGTH } from "./teams";
 import { findSportForSelectorOption } from "./cardChecklist";
+import { setHistoryOffersPlayer } from "./setHistory";
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { resolveTeamForSetYear } from "./lib/teamRow";
 import { sortTeamYears } from "../lib/players/team-tenure";
@@ -379,7 +380,9 @@ export const LOOKUP_HISTORY_IDS_MAX = MAX_CANDIDATES_FOR_IDS * 2;
  *
  * `offered` (D5, ported from D7 of NEO-645): a link the lookup itself offered
  * may be in another sport, so the sport check is skipped for it, but only for a
- * player whose name or alias is this name (NEO-656 security audit, S1).
+ * player whose name or alias is this name, or one the server itself offers for
+ * it (the set's history players, rule E1's prior-year pick) (NEO-656 security
+ * audit, S1; N1).
  */
 export async function applyAnswer(
   ctx: MutationCtx,
@@ -414,10 +417,14 @@ export async function applyAnswer(
     // check only for a player who answers to this very name (their own name or
     // one of their aliases), which is what a lookup offers. Anyone else gets
     // the ordinary sport check.
+    // Or one the server itself offers for this name: the set's own history
+    // players and rule E1's prior-year pick, under whatever spelling the set
+    // printed (main took any id in the row's own preselect / candidates).
     const offeredForName =
       args.offered === true &&
       (player.nameNormalized === key ||
-        (player.aliases ?? []).some((a) => normalizeEntityName(a) === key));
+        (player.aliases ?? []).some((a) => normalizeEntityName(a) === key) ||
+        (await setHistoryOffersPlayer(ctx, card.selectorOptionId, name, player._id)));
     if (!offeredForName) {
       if (!args.sportId) throw new ConvexError("Pick a sport.");
       await assertSport(ctx, args.sportId);

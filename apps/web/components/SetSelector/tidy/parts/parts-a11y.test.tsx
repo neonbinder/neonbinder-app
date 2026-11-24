@@ -218,6 +218,44 @@ describe("TeamFillChips", () => {
     ).toBeTruthy();
   });
 
+  it("two preselected chips are described by 'Suggested teams save together.'; their names do not change (NEO-656)", () => {
+    const two = evidence();
+    two.players.push({
+      playerId: "player-2",
+      answer: { tier: "career", teams: [{ teamId: "t2", name: "Seattle Mariners" }] },
+      candidates: [{ teamId: "t2", name: "Seattle Mariners" }],
+      stints: [],
+    } as never);
+    queryResults["cardChecklist.teamSuggestionsForPreview"] = two;
+    const { container } = render(
+      <Chips
+        row={{ playerIds: ["player-1", "player-2"] }}
+        players={[
+          { playerId: "player-1", name: "Jackson Merrill", sportId: "sport-1", stints: [], stintsMore: false },
+          { playerId: "player-2", name: "Pete Rose", sportId: "sport-1", stints: [], stintsMore: false },
+        ]}
+      />,
+    );
+    const note = container.querySelector<HTMLElement>('p[id^="fill-together-"]');
+    expect(note?.textContent).toBe("Suggested teams save together.");
+    expect(note?.className).toContain("sr-only");
+    const padres = screen.getByRole("button", { name: /^San Diego Padres ?, suggested/ });
+    const mariners = screen.getByRole("button", { name: /^Seattle Mariners ?, suggested/ });
+    for (const chip of [padres, mariners]) {
+      expect(chip.getAttribute("aria-describedby")).toBe(note?.id);
+      // The note describes the chip; it is not part of its name.
+      expect(chip.textContent).not.toContain("save together");
+    }
+  });
+
+  it("one preselected chip has no 'save together' note and no description", () => {
+    const { container } = render(<Chips />);
+    expect(container.querySelector('p[id^="fill-together-"]')).toBeNull();
+    for (const chip of screen.getAllByRole("button", { name: /Padres|Mariners/ })) {
+      expect(chip.getAttribute("aria-describedby")).toBeNull();
+    }
+  });
+
   it("clicking a chip saves it, and that is an answer: the walk is told once it lands", async () => {
     const onAnswered = vi.fn();
     render(<Chips onAnswered={onAnswered} />);

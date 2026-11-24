@@ -568,6 +568,154 @@ describe("answerName — validation and the gate", () => {
     expect((await card(t, open))!.pendingPlayerNames).toEqual([BO]);
   });
 
+  // NEO-656 (N1): main took any id in the row's own preselect / candidates, so a
+  // history pick or the prior-year pick offered under ANOTHER spelling than the
+  // card's was accepted. `offered` is a client flag, so the server re-derives
+  // those two picks itself (the gate's own scan) rather than trusting it.
+  describe("offered: a pick the server itself derives for this name (N1)", () => {
+    /** A Basketball player known to the set's cards as "Magic Johnson" only: no alias says so. */
+    const nicknamed = (t: T) =>
+      t.run(async (ctx) => {
+        const hoops = await ctx.db.insert("selectorOptions", {
+          level: "sport",
+          value: "Basketball",
+          platformData: {},
+          children: [],
+          lastUpdated: 1,
+        });
+        const earvin = await ctx.db.insert("players", {
+          name: "Earvin Johnson",
+          nameNormalized: normalizeEntityName("Earvin Johnson"),
+          sportId: hoops,
+          lastUpdated: 1,
+        });
+        return earvin;
+      });
+    const printedLink = (
+      leaf: Id<"selectorOptions">,
+      playerId: Id<"players">,
+      nameOnCard: string,
+    ) => ({
+      selectorOptionId: leaf,
+      cardNumber: "H1",
+      cardName: "Earlier commit",
+      playerIds: [playerId],
+      playerLinks: [{ playerId, nameOnCard }],
+      platformData: {},
+      sortOrder: 0,
+      lastUpdated: 1,
+    });
+    const offeredLink = (t: T, w: World, cardId: Id<"cardChecklist">, playerId: Id<"players">) =>
+      t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
+        cardId,
+        kind: "player",
+        name: "Magic Johnson",
+        sportId: w.sport,
+        answer: { kind: "linkPlayer", playerId },
+        offered: true,
+      });
+
+    test("a set-history pick spelled differently from the card is accepted", async () => {
+      const t = newT();
+      const w = await world(t);
+      const earvin = await nicknamed(t);
+      const open = await t.run(async (ctx) => {
+        await ctx.db.insert("cardChecklist", {
+          ...printedLink(w.insert, earvin, "Magic Johnson"),
+          listingTitle: "#H1",
+          sportId: w.sport,
+        });
+        return printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: "Magic Johnson" }] });
+      });
+
+      await offeredLink(t, w, open, earvin);
+
+      expect((await card(t, open))!.playerIds).toEqual([earvin]);
+      expect((await card(t, open))!.playerLinks).toEqual([
+        { playerId: earvin, nameOnCard: "Magic Johnson" },
+      ]);
+    });
+
+    test("the prior-year product's pick (rule E1) spelled differently from the card is accepted", async () => {
+      const t = newT();
+      const w = await world(t);
+      const earvin = await nicknamed(t);
+      const open = await t.run(async (ctx) => {
+        const node = (
+          level: "year" | "manufacturer" | "setName" | "variantType",
+          value: string,
+          parentId: Id<"selectorOptions">,
+        ) =>
+          ctx.db.insert("selectorOptions", {
+            level,
+            value,
+            parentId,
+            platformData: {},
+            children: [],
+            lastUpdated: 1,
+          });
+        const year = await node("year", "2023", w.sport);
+        const brand = await node("manufacturer", "Topps", year);
+        const set = await node("setName", "Chrome", brand);
+        const base = await node("variantType", "Base", set);
+        await ctx.db.insert("cardChecklist", {
+          ...printedLink(base, earvin, "Magic Johnson"),
+          listingTitle: "#H1",
+          sportId: w.sport,
+        });
+        return printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: "Magic Johnson" }] });
+      });
+
+      await offeredLink(t, w, open, earvin);
+
+      expect((await card(t, open))!.playerIds).toEqual([earvin]);
+    });
+
+    test("a player of another sport nothing offers for this name is still refused, history or no history", async () => {
+      const t = newT();
+      const w = await world(t);
+      const earvin = await nicknamed(t);
+      const { mj } = await stranger(t);
+      const open = await t.run(async (ctx) => {
+        // The set's history links "Magic Johnson" to Earvin, not to the stranger.
+        await ctx.db.insert("cardChecklist", {
+          ...printedLink(w.insert, earvin, "Magic Johnson"),
+          listingTitle: "#H1",
+          sportId: w.sport,
+        });
+        return printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: "Magic Johnson" }] });
+      });
+
+      await expect(offeredLink(t, w, open, mj)).rejects.toThrow(/isn't in this sport/);
+      expect((await card(t, open))!.playerIds).toBeUndefined();
+      expect((await card(t, open))!.pendingPlayerNames).toEqual(["Magic Johnson"]);
+    });
+
+    test("without offered: true a history pick of another sport is refused like any other", async () => {
+      const t = newT();
+      const w = await world(t);
+      const earvin = await nicknamed(t);
+      const open = await t.run(async (ctx) => {
+        await ctx.db.insert("cardChecklist", {
+          ...printedLink(w.insert, earvin, "Magic Johnson"),
+          listingTitle: "#H1",
+          sportId: w.sport,
+        });
+        return printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: "Magic Johnson" }] });
+      });
+
+      await expect(
+        t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
+          cardId: open,
+          kind: "player",
+          name: "Magic Johnson",
+          sportId: w.sport,
+          answer: { kind: "linkPlayer", playerId: earvin },
+        }),
+      ).rejects.toThrow(/isn't in this sport/);
+    });
+  });
+
   test("an offered id that is gone since the lookup is refused, and nothing is written", async () => {
     const t = newT();
     const w = await world(t);

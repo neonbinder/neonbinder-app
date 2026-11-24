@@ -141,6 +141,50 @@ function insertSport(t: T, value: string): Promise<Sel> {
   );
 }
 
+/**
+ * NEO-656 — the set's own earlier commit, as `scanSetHistory` reads it: a card
+ * on a SIBLING variant under the same set name, printing `name` linked to
+ * `playerId` (and carrying `teamIds`). The commit action scans this itself to
+ * prove a `setHistory` link may cross sports; the client's `origin` proves
+ * nothing.
+ */
+async function seedSetHistory(
+  t: T,
+  setNameId: Sel,
+  history: {
+    players?: Array<{ name: string; playerId: Id<"players"> }>;
+    teamIds?: Array<Id<"teams">>;
+  },
+) {
+  await t.run(async (ctx) => {
+    const sibling = await ctx.db.insert("selectorOptions", {
+      level: "variantType",
+      value: "Insert",
+      platformData: {},
+      features: { manufacturer: "Topps", season: "2024" },
+      parentId: setNameId,
+      children: [],
+      lastUpdated: Date.now(),
+    });
+    const setName = await ctx.db.get(setNameId);
+    await ctx.db.patch(setNameId, { children: [...(setName?.children ?? []), sibling] });
+    await insertTestCard(ctx, {
+      selectorOptionId: sibling,
+      cardNumber: "H1",
+      cardName: "Earlier commit",
+      playerIds: (history.players ?? []).map((p) => p.playerId),
+      playerLinks: (history.players ?? []).map((p) => ({
+        playerId: p.playerId,
+        nameOnCard: p.name,
+      })),
+      ...(history.teamIds ? { teamOnCardIds: history.teamIds } : {}),
+      platformData: {},
+      sortOrder: 0,
+      lastUpdated: Date.now(),
+    });
+  });
+}
+
 type Commit = {
   selectorOptionId: Sel;
   sportId: Sel;
@@ -560,15 +604,16 @@ describe("NEO-254: a gate link is re-validated at commit", () => {
     expect(card.pendingPlayerNames).toEqual(["Bob Allen"]);
   });
 
-  test("a SET-HISTORY link to a player of ANOTHER sport is a guest link: kept, its sport read off the player's own document", async () => {
+  test("a SET-HISTORY link to a player of ANOTHER sport, proved by the set's own history, is a guest link: kept, its sport read off the player's own document", async () => {
     // NEO-656: `checkGateLinks` takes the sport from the player's row, never
     // from the client. Only a set-history link may cross sports (the set's own
     // earlier commit vouches for it); any other origin must play the set's
     // sport (S2, pinned in "checkGateLinks refuses ...").
     const t = convexTest(schema, modules);
-    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    const { variantTypeId, sportId, setNameId } = await seedVariantTypeUnderChromeSet(t);
     const football = await insertSport(t, "Football");
     const guest = await insertPlayer(t, football, "Bob Allen");
+    await seedSetHistory(t, setNameId, { players: [{ name: "Bob Allen", playerId: guest }] });
 
     const result = await commitWith(t, {
       selectorOptionId: variantTypeId,
@@ -1469,6 +1514,7 @@ describe("NEO-424: commitCardChecklist honours a set-history gate link (D5)", ()
   test("a cross-sport link beats the exactly-one in-sport match and writes nothing to playerSports", async () => {
     const t = convexTest(schema, modules);
     const w = await world(t);
+    await seedSetHistory(t, w.setNameId, { players: [{ name: "Bo Jackson", playerId: w.boFootball }] });
 
     const result = await commit(t, w, [makeCard({ players: ["Bo Jackson"] })], {
       gateLinks: [{ kind: "player", name: "Bo Jackson", playerId: w.boFootball, origin: "setHistory" }],
@@ -1515,6 +1561,7 @@ describe("NEO-424: commitCardChecklist honours a set-history gate link (D5)", ()
     const t = convexTest(schema, modules);
     const w = await world(t);
     const trout = await insertPlayer(t, w.sportId, "Mike Trout");
+    await seedSetHistory(t, w.setNameId, { players: [{ name: "Bo Jackson", playerId: w.boFootball }] });
 
     await commit(t, w, [makeCard({ players: ["Bo Jackson", "Mike Trout"] })], {
       gateLinks: [{ kind: "player", name: "Bo Jackson", playerId: w.boFootball, origin: "setHistory" }],
@@ -1528,6 +1575,7 @@ describe("NEO-424: commitCardChecklist honours a set-history gate link (D5)", ()
     const w = await world(t);
     const jose = await insertPlayer(t, w.football, "José Ramírez");
     await insertPlayer(t, w.sportId, "Jose Ramirez");
+    await seedSetHistory(t, w.setNameId, { players: [{ name: "Jose Ramirez", playerId: jose }] });
 
     await commit(t, w, [makeCard({ players: ["Jose Ramirez"] })], {
       gateLinks: [{ kind: "player", name: "José Ramírez", playerId: jose, origin: "setHistory" }],
@@ -1615,6 +1663,114 @@ describe("NEO-424: commitCardChecklist honours a set-history gate link (D5)", ()
       const [card] = await readCards(t, w.variantTypeId);
       expect(card.playerIds ?? []).toEqual([]);
       expect(card.pendingPlayerNames).toContain("Bo Jackson");
+    });
+
+    // NEO-656 (C1): `origin` is a label the browser carries. A cross-sport
+    // `setHistory` link stands only if the server's own scan of the set's
+    // committed cards links that printed name to that id.
+    test("a cross-sport setHistory PLAYER link the set's history does not yield is dropped and the name held back", async () => {
+      const t = convexTest(schema, modules);
+      const w = await world(t);
+      // History links "Bo Jackson" to the BASEBALL Bo, not the football one.
+      await seedSetHistory(t, w.setNameId, { players: [{ name: "Bo Jackson", playerId: w.boBaseball }] });
+
+      const result = await commit(t, w, [makeCard({ players: ["Bo Jackson"] })], {
+        gateLinks: [{ kind: "player", name: "Bo Jackson", playerId: w.boFootball, origin: "setHistory" }],
+      });
+
+      expect(result.unreviewedNameCount).toBe(1);
+      const [card] = await readCards(t, w.variantTypeId);
+      expect(card.playerIds ?? []).toEqual([]);
+      expect(card.pendingPlayerNames).toContain("Bo Jackson");
+    });
+
+    test("a cross-sport setHistory PLAYER link with no history at all is dropped", async () => {
+      const t = convexTest(schema, modules);
+      const w = await world(t);
+
+      const result = await commit(t, w, [makeCard({ players: ["Bo Jackson"] })], {
+        gateLinks: [{ kind: "player", name: "Bo Jackson", playerId: w.boFootball, origin: "setHistory" }],
+      });
+
+      expect(result.unreviewedNameCount).toBe(1);
+      expect((await readCards(t, w.variantTypeId))[0].playerIds ?? []).toEqual([]);
+    });
+
+    test("a genuine cross-sport setHistory PLAYER link is kept even when the printed name matches no alias (a nickname)", async () => {
+      const t = convexTest(schema, modules);
+      const w = await world(t);
+      const magic = await insertPlayer(t, w.football, "Earvin Johnson");
+      await seedSetHistory(t, w.setNameId, { players: [{ name: "Magic Johnson", playerId: magic }] });
+
+      const result = await commit(t, w, [makeCard({ players: ["Magic Johnson"] })], {
+        gateLinks: [{ kind: "player", name: "Magic Johnson", playerId: magic, origin: "setHistory" }],
+      });
+
+      expect(result.unreviewedNameCount ?? 0).toBe(0);
+      expect((await readCards(t, w.variantTypeId))[0].playerIds).toEqual([magic]);
+    });
+
+    test("a cross-sport setHistory TEAM link the set's history does not yield is dropped; a genuine one is kept", async () => {
+      const t = convexTest(schema, modules);
+      const w = await world(t);
+      const raiders = await raidersIn(t, w.football);
+      const other = await t.run((ctx) =>
+        ctx.db.insert("teams", {
+          location: "Los Angeles",
+          name: "Rams",
+          nameNormalized: normalizeTeamName("Los Angeles Rams"),
+          sportId: w.football,
+          lastUpdated: Date.now(),
+        }),
+      );
+      // History carries the Rams, so "Oakland Raiders" is not yielded for the Raiders.
+      await seedSetHistory(t, w.setNameId, { teamIds: [other] });
+      await commit(t, w, [makeCard({ teams: ["Oakland Raiders"] })], {
+        gateLinks: [{ kind: "team", name: "Oakland Raiders", teamId: raiders, origin: "setHistory" }],
+      });
+      expect((await readCards(t, w.variantTypeId))[0].teamOnCardIds).toBeUndefined();
+    });
+
+    test("a genuine cross-sport setHistory TEAM link (the set's cards carry that team) is kept", async () => {
+      const t = convexTest(schema, modules);
+      const w = await world(t);
+      const raiders = await raidersIn(t, w.football);
+      await seedSetHistory(t, w.setNameId, { teamIds: [raiders] });
+
+      await commit(t, w, [makeCard({ teams: ["Oakland Raiders"] })], {
+        gateLinks: [{ kind: "team", name: "Oakland Raiders", teamId: raiders, origin: "setHistory" }],
+      });
+
+      expect((await readCards(t, w.variantTypeId))[0].teamOnCardIds).toEqual([raiders]);
+    });
+
+    test("a set with no sport above it drops every link, whatever its origin", async () => {
+      const t = convexTest(schema, modules);
+      const w = await world(t);
+      // Cut the chain: the set name no longer has a sport above it.
+      const orphan = await t.run(async (ctx) => {
+        const set = await ctx.db.insert("selectorOptions", {
+          level: "setName",
+          value: "Orphan",
+          platformData: {},
+          children: [],
+          lastUpdated: Date.now(),
+        });
+        return set;
+      });
+      const checked = await t.query(internal.selectorOptions.checkGateLinks, {
+        selectorOptionId: orphan,
+        gateLinks: [
+          { kind: "player", name: "Bo Jackson", playerId: w.boBaseball, origin: "setHistory" },
+          { kind: "player", name: "Bo Jackson", playerId: w.boBaseball, origin: "careerTeam" },
+        ],
+        provenSetHistory: [
+          { kind: "player", name: "Bo Jackson", playerId: w.boBaseball, origin: "setHistory" },
+        ],
+      });
+
+      expect(checked.links).toEqual([]);
+      expect(checked.dropped).toBe(2);
     });
 
     test("a career-team link to a player of ANOTHER sport is dropped too; only a set-history link may cross sports", async () => {

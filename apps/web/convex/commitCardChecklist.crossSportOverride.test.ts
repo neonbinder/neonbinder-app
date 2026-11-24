@@ -17,6 +17,7 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { normalizePlayerName } from "./players";
+import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -109,9 +110,32 @@ async function insertPlayer(
 describe("NEO-313: a cross-sport gate link at commit", () => {
   test("a cross-sport LINK survives the commit: playerIds and playerLinks both carry the guest", async () => {
     const t = convexTest(schema, modules);
-    const { variantTypeId } = await seedBaseballSet(t);
+    const { variantTypeId, setNameId } = await seedBaseballSet(t);
     const football = await seedSport(t, "Football");
     const fields = await insertPlayer(t, { name: "Justin Fields", sportId: football });
+    // The server proves a cross-sport `setHistory` label (NEO-656, C1): the set's
+    // own earlier commit, on a sibling variant, linked this printed name to him.
+    await t.run(async (ctx) => {
+      const sibling = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Insert",
+        platformData: {},
+        features: { manufacturer: "Topps", season: "2024" },
+        parentId: setNameId,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      await insertTestCard(ctx, {
+        selectorOptionId: sibling,
+        cardNumber: "H1",
+        cardName: "Earlier commit",
+        playerIds: [fields],
+        playerLinks: [{ playerId: fields, nameOnCard: "Justin Fields" }],
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: Date.now(),
+      });
+    });
 
     await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
@@ -138,9 +162,32 @@ describe("NEO-313: a cross-sport gate link at commit", () => {
     // a CROSS-SPORT guest — the shape most likely to be special-cased by an
     // incomplete fix ("guests don't get a printed-name link").
     const t = convexTest(schema, modules);
-    const { variantTypeId } = await seedBaseballSet(t);
+    const { variantTypeId, setNameId } = await seedBaseballSet(t);
     const football = await seedSport(t, "Football");
     const fields = await insertPlayer(t, { name: "Justin Fields", sportId: football });
+    // The server proves a cross-sport `setHistory` label (NEO-656, C1): the set's
+    // own earlier commit, on a sibling variant, linked this printed name to him.
+    await t.run(async (ctx) => {
+      const sibling = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Insert",
+        platformData: {},
+        features: { manufacturer: "Topps", season: "2024" },
+        parentId: setNameId,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      await insertTestCard(ctx, {
+        selectorOptionId: sibling,
+        cardNumber: "H1",
+        cardName: "Earlier commit",
+        playerIds: [fields],
+        playerLinks: [{ playerId: fields, nameOnCard: "Justin Fields" }],
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: Date.now(),
+      });
+    });
 
     await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,

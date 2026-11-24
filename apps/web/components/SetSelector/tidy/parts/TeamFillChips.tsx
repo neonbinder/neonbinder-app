@@ -263,6 +263,12 @@ export default function TeamFillChips({
 
   const caseLine = outcomeHeading(row.teamCheckOutcome, bscName !== "");
 
+  // Two or more preselected chips save together, and a click on any one says so
+  // to a reader (it describes the chip; the chip's name is unchanged).
+  const togetherId = `fill-together-${row._id}`;
+  const savesTogether =
+    [...marketplaceChips, ...careerChips].filter((c) => chosenSet.has(c.teamId as string)).length >= 2;
+
   const renderChip = (chip: TeamChip, opts: { suffix?: string }) => {
     const on = chosenSet.has(chip.teamId as string);
     return (
@@ -270,6 +276,7 @@ export default function TeamFillChips({
         <button
           type="button"
           aria-disabled={write.busy || undefined}
+          aria-describedby={on && savesTogether ? togetherId : undefined}
           onClick={() => {
             if (write.busy) return;
             // A preselected chip stands for the whole pre-fill; any other is one team.
@@ -320,6 +327,11 @@ export default function TeamFillChips({
   return (
     <div className="grid gap-2" aria-busy={write.busy || undefined}>
       {caseLine && <p className="text-xs text-ink-2">{caseLine}</p>}
+      {savesTogether && (
+        <p id={togetherId} className="sr-only">
+          Suggested teams save together.
+        </p>
+      )}
 
       {marketplaceChips.length > 0 && (
         <div className="grid gap-1">
