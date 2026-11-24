@@ -13,7 +13,8 @@ format unset, title over 80, no card name. The server refuses "Build from …" w
 those up first" (a `role="alert"`); the client holds the auto build until the rows clear.
 
 - **Walk the source with `tidyForTheParallelBuild`.** Its defaults are
-  `noTeam: "prefilledElseNoTeamOnCard"` (save pre-filled chips, else "No team on this card")
+  `noTeam: "prefilledElseNoTeamOnCard"` (click the "<team>, suggested…" chip, which saves on click
+  since NEO-656, else "No team on this card")
   and `title: "cut"` (`answerPinkTitleTile`: the over-cap box opens itself; cut at the last
   word boundary within 80, "Save title"). It asserts `tally.skipped === 0` and annotates the
   tally. "Card name" (needsName) is not answered: a no-name card fails it by name.

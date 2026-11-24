@@ -29,8 +29,9 @@ The NEO-645 walk (`support/tidy-walk.ts`) replaced the entity-review wizard and 
   and holds its create until the lookups answer; reading it earlier picks the wrong branch.
 - **Old seed parity (origin/main bulk "Add remaining players as new"):** created every settled
   player that its own sport did not make ambiguous, so a NEO-424 cross-sport preselect was CREATED,
-  not linked; pick steps linked the top candidate. Over-80 titles were kept and stay pink; J3
-  (`blocksParallelBuild`) blocks a build only on name/disagreement pink, not on titles.
+  not linked; pick steps linked the top candidate. Since NEO-661 `blocksParallelBuild` holds a
+  build on ANY pink (a teamless card, an over-80 title included), so a build spec walks the source
+  with `tidyForTheParallelBuild` (suggested chip else "No team on this card", titles cut).
 - **Commit first, walk second.** Match Cards' Confirm saves the cards ("Saved N cards.") and only
   then the walk opens if a card needs a person. Settle whether it opened by reading the "N need you"
   pill once the saved line is up (same render), never `isVisible` on the walk (a ms window).
