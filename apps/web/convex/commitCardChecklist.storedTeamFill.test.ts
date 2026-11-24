@@ -263,6 +263,82 @@ describe("the commit's stored-cards tier", () => {
     expect(rows.get("11")!.teamOnCardIds ?? []).toEqual([]);
   });
 
+  test("NEO-656: a player the gate linked (a gate link, not an exact name) takes the team his base card carries", async () => {
+    const w = await seed();
+    const bench = await player(w, "Johnny Bench");
+    await stored(w, w.baseId, "1", [bench], [w.reds]);
+
+    await w.t.withIdentity(ADMIN).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: w.insertId,
+      sportId: w.sportId,
+      cards: [wire("10", ["J. Bench"])],
+      gateLinks: [{ kind: "player" as const, name: "J. Bench", playerId: bench, origin: "setHistory" as const }],
+    });
+    const rows = await w.t.run((ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", w.insertId))
+        .collect(),
+    );
+
+    expect(rows[0].playerIds).toEqual([bench]);
+    expect(rows[0].teamOnCardIds).toEqual([w.reds]);
+  });
+
+  test("an earlier card of the same insert counts too: the node being saved is evidence", async () => {
+    const w = await seed();
+    const bench = await player(w, "Johnny Bench");
+    await stored(w, w.insertId, "1", [bench], [w.reds]);
+
+    const rows = await commit(w, [wire("10", ["Johnny Bench"])]);
+
+    expect(rows.get("10")!.teamOnCardIds).toEqual([w.reds]);
+  });
+
+  test("tiers, first answer wins: the insert's own card outranks the base card (the base only speaks when the insert has none)", async () => {
+    const w = await seed();
+    const bench = await player(w, "Johnny Bench");
+    await stored(w, w.baseId, "1", [bench], [w.reds]);
+    await stored(w, w.insertId, "2", [bench], [w.phillies]);
+
+    const rows = await commit(w, [wire("10", ["Johnny Bench"])]);
+
+    expect(rows.get("10")!.teamOnCardIds).toEqual([w.phillies]);
+  });
+
+  test("main parity: a card of ANOTHER insert is not evidence (\"a team borrowed across inserts is a guess\"); the base card still is", async () => {
+    const w = await seed();
+    const bench = await player(w, "Johnny Bench");
+    const otherInsertId = await w.t.run(async (ctx) => {
+      const base = await ctx.db.get(w.baseId);
+      return ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Inserts",
+        parentId: base!.parentId,
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      });
+    });
+    await stored(w, otherInsertId, "1", [bench], [w.phillies]);
+    // Only another insert holds him: nothing to fill from (the career has no window here).
+    expect((await commit(w, [wire("10", ["Johnny Bench"])])).get("10")!.teamOnCardIds ?? []).toEqual([]);
+
+    await stored(w, w.baseId, "2", [bench], [w.reds]);
+    // The base card answers, and the other insert's team does not vote against it.
+    expect((await commit(w, [wire("11", ["Johnny Bench"])])).get("11")!.teamOnCardIds).toEqual([w.reds]);
+  });
+
+  test("a team the checklist names (one NB knows) is never replaced by the stored cards' team", async () => {
+    const w = await seed();
+    const bench = await player(w, "Johnny Bench");
+    await stored(w, w.baseId, "1", [bench], [w.reds]);
+
+    const rows = await commit(w, [wire("10", ["Johnny Bench"], ["Phillies"])]);
+
+    expect(rows.get("10")!.teamOnCardIds).toEqual([w.phillies]);
+  });
+
   test("rule 8: a card whose listing names a team is never filled", async () => {
     const w = await seed();
     const bench = await player(w, "Johnny Bench");
