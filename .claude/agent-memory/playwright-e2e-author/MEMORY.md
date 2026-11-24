@@ -175,3 +175,4 @@
 - [NEO-656 mixed end screen, team link](patterns_neo656_end_screen_mixed_and_team_link_apply.md) — pink+blue end screen reopens both; link #12, #13 pink, Apply 6
 - [NEO-656 minted team cut](patterns_neo656_minted_team_cut_from_title_turns_card_blue.md) — minted card name + team cut the title: live blue; drop cardName; preselect plants
 - [NEO-656 career in a 2nd tab](patterns_neo656_stage_a_walk_players_career_in_a_second_tab.md) — no Career tile for a new player; Players admin tab, chips update live
+- [Stored-tier fill](patterns_team_fill_stored_tier_career_tie_fixture.md) — career ties isolate Base-card fill; other insert not evidence; plants
