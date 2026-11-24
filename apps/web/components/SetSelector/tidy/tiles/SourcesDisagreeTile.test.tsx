@@ -482,6 +482,42 @@ describe("the cameo shortcut (T3)", () => {
     await waitFor(() => expect(onAnswered).toHaveBeenCalledTimes(1));
   });
 
+  it("keeps \"Using\" and Change up while the card is open, and tells the Player tile the name is not a player (D13)", async () => {
+    const { memory } = await renderPicked(CPC, LABEL, { context: ctx(OFFER) });
+    expect(screen.getByRole("status").textContent).toBe("Using “It Takes Two CPC” (BSC)");
+    expect(screen.getByRole("button", { name: "Change the player name" })).toBeTruthy();
+    expect(memory.answersOn("card-1", "player")).toEqual([
+      { kind: "notEntity", printed: "It Takes Two CPC" },
+    ]);
+  });
+
+  it("forgets that memory when the write is refused", async () => {
+    mockPickCameo.mockRejectedValueOnce(new ConvexError("That card has no cameo to offer. Refresh and try again."));
+    const memory = new WalkMemory();
+    const row = rowOf("card-1", CPC);
+    render(
+      <WalkMemoryProvider value={memory}>
+        <SourcesDisagreeTile
+          {...({
+            row,
+            context: ctx(OFFER),
+            attention: { level: "fix", items: [] },
+            leafId: "leaf-1",
+            sportId: undefined,
+            leafCards: [row],
+            setName: "Set",
+          } as unknown as TidyTileProps)}
+        />
+      </WalkMemoryProvider>,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: LABEL }));
+    });
+    await screen.findByRole("alert");
+    expect(memory.pickFor("card-1", "players")).toBeUndefined();
+    expect(memory.answersOn("card-1", "player")).toEqual([]);
+  });
+
   it("says what went wrong and does not move on when the write is refused", async () => {
     mockPickCameo.mockRejectedValueOnce(new ConvexError("That card has no cameo to offer. Refresh and try again."));
     const onAnswered = vi.fn();

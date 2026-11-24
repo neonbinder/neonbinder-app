@@ -272,6 +272,21 @@ function DisagreementEntry({
     if (busy) return;
     setBusy(true);
     setError(null);
+    if (!cameoOffer) {
+      setBusy(false);
+      return;
+    }
+    // The same memory as a plain pick, held before the write lands: the card
+    // loses the entry, so "Using" and Change stay up while it is open, and the
+    // Player tile says the name is not a player (the shortcut rules it out).
+    const before = kept;
+    memory.keepPick(row._id, {
+      field: entry.field,
+      values: entry.values,
+      picked: [cameoOffer.name],
+      typed: false,
+    });
+    memory.rememberAnswer(row._id, "player", cameoOffer.name, { kind: "notEntity", printed: cameoOffer.name });
     try {
       await pickSourceAsCameo({ cardId: row._id });
       setChanging(false);
@@ -279,6 +294,9 @@ function DisagreementEntry({
       setTyped("");
       answered();
     } catch (e) {
+      if (before) memory.keepPick(row._id, before);
+      else memory.dropPick(row._id, entry.field);
+      memory.forgetAnswer(row._id, "player", cameoOffer.name);
       setError(userFacingMessage(e, "Didn't save, try again."));
     } finally {
       setBusy(false);

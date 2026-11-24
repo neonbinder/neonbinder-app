@@ -375,14 +375,17 @@ function WalkDialog({
 
   // ── moving ──────────────────────────────────────────────────────────────
   /** Leave `fromId` going forward: to the next card still to walk, or the end. */
-  const advance = (fromId: string) => {
-    const sitting = withPassed({ passed: openPassed, trail }, fromId);
-    setPassed((prev) => (prev.includes(fromId) ? prev : [...prev, fromId]));
-    setReviewing((prev) => (prev.includes(fromId) ? prev.filter((id) => id !== fromId) : prev));
-    const next = nextCardId(order, sitting, fromId);
-    if (next) goToCard(next, fromId);
-    else finish(fromId);
-  };
+  const advance = useCallback(
+    (fromId: string) => {
+      const sitting = withPassed({ passed: openPassed, trail }, fromId);
+      setPassed((prev) => (prev.includes(fromId) ? prev : [...prev, fromId]));
+      setReviewing((prev) => (prev.includes(fromId) ? prev.filter((id) => id !== fromId) : prev));
+      const next = nextCardId(order, sitting, fromId);
+      if (next) goToCard(next, fromId);
+      else finish(fromId);
+    },
+    [openPassed, trail, order, goToCard, finish],
+  );
 
   const [saving, setSaving] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
@@ -414,6 +417,13 @@ function WalkDialog({
       setSaving(false);
       return;
     }
+    // A stint written for this card's player can settle other cards of theirs
+    // too, so the walk moves on only once the cards and the career gaps have
+    // been read again (`afterSave` below): `order` here is from before the write.
+    if (gaps.length > 0) {
+      setAfterSave(cardId);
+      return;
+    }
     // One transition for the state and the navigation, so the old card never
     // renders with Save pressable again for a frame (router navigation is a
     // transition; a sibling setState outside it lands first).
@@ -422,6 +432,21 @@ function WalkDialog({
       advance(cardId);
     });
   };
+
+  // The card whose save wrote a stint, waiting for the live cards and gaps.
+  // The mutation resolves after the transition that carries its effects, so the
+  // render this state causes already reads the settled cards; it also waits for
+  // the gap query to have answered the pairs the cards name now.
+  const [afterSave, setAfterSave] = useState<string | null>(null);
+  useEffect(() => {
+    if (afterSave === null || !careerGapsReady) return;
+    const from = afterSave;
+    setAfterSave(null);
+    startTransition(() => {
+      setSaving(false);
+      advance(from);
+    });
+  }, [afterSave, careerGapsReady, advance]);
 
   // The cards the sitting passed that are still flagged, in walk order.
   const skippedIds = useMemo(() => {

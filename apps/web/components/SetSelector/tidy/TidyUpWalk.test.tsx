@@ -376,6 +376,33 @@ describe("the footer", () => {
     expect(saveCard).toHaveBeenCalledWith({ cardId: "a", gaps: [GAP] });
   });
 
+  it("Save & next moves to the next card that still needs you after the stint lands: the same player's other cards it cleared are skipped", async () => {
+    // a, b and c are the same player and club: one default stint clears all three gaps.
+    const cards = [gapCard("a", "1"), gapCard("b", "2"), gapCard("c", "3"), pink("d", "4")];
+    const gaps = gapsFor("a", "b", "c");
+    const view = mount(cards, { careerGaps: gaps });
+    await screen.findByTestId("tile-team");
+    saveCard.mockImplementationOnce(async () => {
+      // The write lands: the live gaps are now empty for every card of that player.
+      view.rerender(
+        <MemoryRouter initialEntries={["/?tidy=a"]}>
+          <UrlProbe />
+          <TidyUpWalk
+            leafId={LEAF}
+            setName="2024 Topps Chrome"
+            title="Tidy up 2024 Topps Chrome"
+            cards={cards}
+            onClose={vi.fn()}
+            careerGaps={new Map()}
+          />
+        </MemoryRouter>,
+      );
+      return { keys: [] };
+    });
+    fireEvent.click(button("Save & next (Enter)"));
+    await waitFor(() => expect(url()).toBe("?tidy=d"));
+  });
+
   it("Save & next on a blue card with no career gap writes nothing: nothing records that it was seen", async () => {
     mount([blue("a", "1"), pink("b", "2")]);
     await screen.findByTestId("tile-team");
