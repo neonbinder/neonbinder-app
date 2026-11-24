@@ -411,13 +411,19 @@ function WalkDialog({
     const cardId = current._id;
     // The career gaps shown take the default stint (main's); with none shown
     // there is nothing to write.
-    const gaps = (attention?.items ?? []).flatMap((i) =>
+    const shown = (attention?.items ?? []).flatMap((i) =>
       i.kind === "careerGap"
         ? [{ playerId: i.playerId as Id<"players">, teamId: i.teamId as Id<"teams"> }]
         : [],
     );
+    let gaps = shown;
+    const wrote = new Set<string>();
     try {
-      if (!(await beforeSave.run())) throw new Error("A tile could not write its form");
+      // A tile's open form writes first. A player it wrote a stint to (an
+      // edited form that misses the set year, say) is not also given the
+      // default stint: main's hook wrote only the form.
+      if (!(await beforeSave.run(wrote))) throw new Error("A tile could not write its form");
+      gaps = shown.filter((g) => !wrote.has(g.playerId));
       if (gaps.length > 0) await saveCard({ cardId, gaps });
     } catch {
       setSaveFailed(true);
@@ -427,7 +433,7 @@ function WalkDialog({
     // A stint written for this card's player can settle other cards of theirs
     // too, so the walk moves on only once the cards and the career gaps have
     // been read again (`afterSave` below): `order` here is from before the write.
-    if (gaps.length > 0) {
+    if (shown.length > 0 || wrote.size > 0) {
       setAfterSave(cardId);
       return;
     }

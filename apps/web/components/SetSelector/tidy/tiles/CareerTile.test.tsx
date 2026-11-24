@@ -141,9 +141,14 @@ const madeHere = () => {
   return memory;
 };
 
-function renderTile(items: TidyAttention["items"], ctx: TidyCardContext | undefined = context(), memory?: WalkMemory) {
+function renderTile(
+  items: TidyAttention["items"],
+  ctx: TidyCardContext | undefined = context(),
+  memory?: WalkMemory,
+  row: TidyRow = card(),
+) {
   const props: TidyTileProps = {
-    row: card(),
+    row,
     context: ctx,
     attention: { level: "check", items },
     leafId: "leaf-1" as never,
@@ -377,10 +382,13 @@ describe("CareerTile", () => {
         const run = renderWithSave(context());
         await click(screen.getByRole("button", { name: "Edit the years stub" }));
         let ok = false;
+        const wrote = new Set<string>();
         await act(async () => {
-          ok = await run();
+          ok = await run(wrote);
         });
         expect(ok).toBe(true);
+        // The walk is told which player was written, so it adds no default stint on top.
+        expect([...wrote]).toEqual(["player-1"]);
         expect(mutation("players.addStint")).toHaveBeenCalledTimes(1);
         expect(mutation("players.addStint")).toHaveBeenCalledWith({
           playerId: "player-1",
@@ -400,7 +408,7 @@ describe("CareerTile", () => {
         expect(ok).toBe(false);
       });
 
-      it("closing the form writes nothing, on Save & next or ever", async () => {
+      it("closing the form writes nothing at the tile; Save & next then adds only what is open", async () => {
         const run = renderWithSave(context());
         await click(screen.getByRole("button", { name: "Close stub" }));
         expect(screen.getByRole("button", { name: "+ Add stint for Jackson Merrill" })).toBeTruthy();
@@ -408,6 +416,86 @@ describe("CareerTile", () => {
           await run();
         });
         expect(mutation("players.addStint")).not.toHaveBeenCalled();
+      });
+
+      describe("a card with two players made on it: the prefill needs one team on the card, not one player", () => {
+        const second = player({ playerId: "player-2", name: "Fernando Tatis" });
+        const twoPlayerCard = () =>
+          card({ playerIds: ["player-1", "player-2"], cardName: "Jackson Merrill / Fernando Tatis" });
+        const twoPlayers = (over: Record<string, unknown> = {}) => context({ players: [player(), second], ...over });
+        const madeBoth = () => {
+          const memory = madeHere();
+          memory.rememberMadePlayer(CARD, "player-2");
+          return memory;
+        };
+
+        it("each player made here gets the prefilled form, with no career gap shown (the live gap is one-player only)", () => {
+          renderTile([], twoPlayers(), madeBoth(), twoPlayerCard());
+          expect(screen.getAllByText("Prefilled San Diego Padres 2024-2024")).toHaveLength(2);
+          expect(screen.getByRole("group", { name: "Career Jackson Merrill" })).toBeTruthy();
+          expect(screen.getByRole("group", { name: "Career Fernando Tatis" })).toBeTruthy();
+          expect(screen.getByRole("group", { name: "Career" }).getAttribute("data-tidy-level")).toBe("check");
+        });
+
+        it("a player not made on this card has none, and a player whose career already counts has none", () => {
+          const memory = madeHere();
+          renderTile([], twoPlayers(), memory, twoPlayerCard());
+          expect(screen.getAllByText("Prefilled San Diego Padres 2024-2024")).toHaveLength(1);
+          expect(screen.queryByRole("group", { name: "Career Fernando Tatis" })).toBeNull();
+        });
+
+        it("a gap on one player and a made player without one: both are prefilled, each once", () => {
+          renderTile([gapItem], twoPlayers(), madeBoth(), twoPlayerCard());
+          expect(screen.getAllByText("Prefilled San Diego Padres 2024-2024")).toHaveLength(2);
+          expect(screen.getAllByRole("group", { name: "Career Jackson Merrill" })).toHaveLength(1);
+        });
+
+        it("two teams on the card: nothing is prefilled, and with no gap there is no tile", () => {
+          const { container } = renderTile(
+            [],
+            twoPlayers({
+              teams: [
+                { teamId: "team-pad", name: "San Diego Padres", onCard: true, candidate: false },
+                { teamId: "team-tex", name: "Texas Rangers", onCard: true, candidate: false },
+              ],
+            }),
+            madeBoth(),
+            twoPlayerCard(),
+          );
+          expect(container.textContent).toBe("");
+        });
+
+        it("Save & next adds what each open form shows and reports both players", async () => {
+          const { registry, run } = createBeforeSaveRegistry();
+          const props: TidyTileProps = {
+            row: twoPlayerCard(),
+            context: twoPlayers(),
+            attention: { level: "check", items: [] },
+            leafId: "leaf-1" as never,
+            sportId: SPORT as never,
+            leafCards: [],
+            setName: "Set",
+          };
+          render(
+            <WalkMemoryProvider value={madeBoth()}>
+              <BeforeSaveProvider value={registry}>
+                <CareerTile {...props} />
+              </BeforeSaveProvider>
+            </WalkMemoryProvider>,
+          );
+          const wrote = new Set<string>();
+          await act(async () => {
+            await run(wrote);
+          });
+          expect(mutation("players.addStint")).toHaveBeenCalledTimes(2);
+          expect(mutation("players.addStint")).toHaveBeenCalledWith({
+            playerId: "player-2",
+            teamId: "team-pad",
+            fromYear: 2024,
+            toYear: 2024,
+          });
+          expect([...wrote].sort()).toEqual(["player-1", "player-2"]);
+        });
       });
 
       it("a form opened by hand after closing it is not added by Save & next", async () => {

@@ -120,7 +120,6 @@ const csv = buildProSetCsv({
   ],
 });
 
-/** The open card's detail dialog: its print run, then close it. */
 /**
  * Move past the open card without writing a stint onto a catalogue player: Skip while a blue Career
  * tile is up (Save & next would add the set's year to his career, and there is no "Keep as is",
@@ -133,6 +132,7 @@ async function skipCareerGapOrSave(page: Page): Promise<boolean> {
   return gap;
 }
 
+/** The open card's detail dialog: its print run, then close it. */
 async function expectCardPrintRun(page: Page, number: string, run: string): Promise<void> {
   await editCardButton(page, number).click();
   const detail = page.getByRole("dialog").filter({ has: page.getByRole("spinbutton", { name: "Print run" }) });

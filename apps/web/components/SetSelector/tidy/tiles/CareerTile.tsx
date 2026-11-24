@@ -1,9 +1,11 @@
 import { useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import CareerGapRow from "../parts/CareerGapRow";
+import CareerStintEntry, { stintPrefillFor } from "../parts/CareerStintEntry";
 import { useTidyWrite } from "../parts/tidy-write";
 import TidyTile from "../TidyTile";
 import type { TidyTileProps } from "../tile-types";
+import { useWalkMemory } from "../walk-memory";
 
 /**
  * NEO-645 — tile 4, Career (indented under Player).
@@ -15,6 +17,12 @@ import type { TidyTileProps } from "../tile-types";
  * it is gone the moment a stint or a team covers it, wherever that is written.
  * Nothing records that anyone looked.
  *
+ * NEO-657: a player made on this card in this sitting gets the card's team as a
+ * prefilled "+ Add stint" (`CareerStintEntry`) whether or not they have a gap:
+ * it needs one NB team on the card, not one player. The live gap is one-player
+ * only, so a card with two made players shows the prefill here, at level
+ * "check", for each one that has no gap item. Nothing is stored.
+ *
  * Stints live on the PLAYER (`players.teamYears`), never on a card: "Add to
  * career" and "+ Add stint" write to the player through `players.addStint`. A
  * career gap's default is main's: Save & next with the gap still open adds the
@@ -24,11 +32,15 @@ import type { TidyTileProps } from "../tile-types";
 export default function CareerTile({ row, context, attention, leafId }: TidyTileProps) {
   const write = useTidyWrite();
   const gaps = attention.items.flatMap((i) => (i.kind === "careerGap" ? [i] : []));
-  const wanted = gaps.length > 0;
+  const memory = useWalkMemory();
+  const gapPlayers = new Set(gaps.map((g) => g.playerId));
+  const madeNoGap = (row.playerIds ?? []).filter((p) => !gapPlayers.has(p) && memory.madeOnCard(row._id, p));
+  const wanted = gaps.length > 0 || madeNoGap.length > 0;
   const chain = useQuery(api.selectorOptions.getAncestorChain, wanted ? { id: leafId } : "skip");
 
   if (!wanted || context === null) return null;
   if (context === undefined) {
+    if (gaps.length === 0) return null;
     return <TidyTile heading="Career" level="waiting" waitingText="Looking at this card" />;
   }
 
@@ -39,6 +51,9 @@ export default function CareerTile({ row, context, attention, leafId }: TidyTile
   const setYear = Number.isInteger(parsed) ? parsed : undefined;
 
   const multi = gaps.length > 1;
+
+  const prefilled = madeNoGap.filter((p) => stintPrefillFor(row, context, p, setYear, true) !== undefined);
+  if (gaps.length === 0 && prefilled.length === 0) return null;
 
   return (
     <TidyTile heading="Career" level="check">
@@ -60,6 +75,25 @@ export default function CareerTile({ row, context, attention, leafId }: TidyTile
           write={write}
         />
       ))}
+      {prefilled.map((id) => {
+        const player = context.players.find((p) => p.playerId === id);
+        if (!player) return null;
+        return (
+          <div key={`made:${id}`} role="group" aria-label={`Career ${player.name}`} className="grid gap-1.5">
+            <p className="text-sm font-medium text-ink wrap-anywhere">{player.name}</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <CareerStintEntry
+                row={row}
+                context={context}
+                playerId={id}
+                setYear={setYear}
+                leafId={leafId}
+                write={write}
+              />
+            </div>
+          </div>
+        );
+      })}
     </TidyTile>
   );
 }

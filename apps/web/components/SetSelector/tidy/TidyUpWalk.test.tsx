@@ -101,12 +101,12 @@ vi.mock("./tiles/CardNameTile", async () => {
   };
 });
 // NEO-657: a tile's before-save hook, when a test sets one (the open "+ Add stint" form's).
-let careerBeforeSave: (() => Promise<boolean>) | null = null;
+let careerBeforeSave: ((wrote: (playerId: string) => void) => Promise<boolean>) | null = null;
 vi.mock("./tiles/CareerTile", async () => {
   const { useBeforeSave } = await import("./before-save");
   return {
     default: function CareerTile() {
-      useBeforeSave(careerBeforeSave !== null, () => careerBeforeSave!());
+      useBeforeSave(careerBeforeSave !== null, (wrote) => careerBeforeSave!(wrote));
       return <div data-testid="tile-career" />;
     },
   };
@@ -466,6 +466,31 @@ describe("the footer", () => {
     fireEvent.click(button("Save & next (Enter)"));
     await waitFor(() => expect(url()).toBe("?tidy=b"));
     expect(order).toEqual(["hook", "saveCard"]);
+  });
+
+  it("NEO-657: a gap player the before-save hook wrote a stint to is not given the default stint on top of it", async () => {
+    // The open form was edited to another team: its stint is the one written.
+    careerBeforeSave = vi.fn(async (wrote) => {
+      wrote(GAP.playerId);
+      return true;
+    });
+    mount([gapCard("a", "1"), pink("b", "2")], { careerGaps: gapsFor("a") });
+    await screen.findByTestId("tile-team");
+    fireEvent.click(button("Save & next (Enter)"));
+    await waitFor(() => expect(url()).toBe("?tidy=b"));
+    expect(saveCard).not.toHaveBeenCalled();
+  });
+
+  it("NEO-657: a hook that wrote for one player leaves the other gaps' default stints to saveCard", async () => {
+    careerBeforeSave = vi.fn(async (wrote) => {
+      wrote("other-player");
+      return true;
+    });
+    mount([gapCard("a", "1"), pink("b", "2")], { careerGaps: gapsFor("a") });
+    await screen.findByTestId("tile-team");
+    fireEvent.click(button("Save & next (Enter)"));
+    await waitFor(() => expect(url()).toBe("?tidy=b"));
+    expect(saveCard).toHaveBeenCalledWith({ cardId: "a", gaps: [GAP] });
   });
 
   it("NEO-657: a before-save hook that reports false holds the card, with the save-failed line, and writes nothing", async () => {
