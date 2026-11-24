@@ -116,6 +116,18 @@ const RETRY_AFTER_S = 90;
  * (BSC_CHECKLIST_FETCH_TIMEOUT_MS), so it is an answer, never a failure to the gate.
  */
 const HOLD_MS = 15_000;
+/** Set once Sync is pressed: from then on the fetch may have queued this user's cards on the BSC team lane. */
+const run = { synced: false };
+
+// NEO-644: pass or fail, the cards this spec left waiting come off the BSC team lane. The lane is
+// one slot per deployment, so they would otherwise run after the spec ends, in front of every other
+// shard's per-card team lookups. Only this test user's items are cancelled (`bscFake.clearTeamLane`);
+// one already running finishes. Before the `bscFake` fixture's own teardown clears the faults and gate.
+test.afterEach(async ({ bscFake }) => {
+  if (!run.synced) return;
+  run.synced = false;
+  await bscFake.clearTeamLane();
+});
 
 test(
   "Checklist fetch — a BSC 429 on the team lookup opens the cooldown: the fetch lands at once, no team is guessed, and every card waits in the background queue (NEO-552)",
@@ -133,6 +145,7 @@ test(
       bscFault.slow(BSC_PATH.results, HOLD_MS, { times: 1, ttlS: 600 }),
       bscFault.tooManyRequests(BSC_PATH.cardListing, { retryAfterS: RETRY_AFTER_S, times: WAVE, ttlS: 600 }),
     ]);
+    run.synced = true;
     await syncChecklistButton(page).click();
     // One source, so no Match Cards: the line is the page's (it mounts 1.5 s into the held read).
     await expect(waitingOn(page, "BuySportsCards")).toBeVisible();

@@ -13,7 +13,8 @@
  * HOW. A spec cannot call a Convex action, so the helpers open the signed-in
  * worker's second page on `/testing/bsc-fake?...` (the NEO-552 hop, which calls
  * `api.testing.setMyBscFaults` / `addMyBscOrder` / `clearMyBscFaults` /
- * `clearBscCallGate` as that worker), read its status line and close it. The
+ * `clearBscCallGate` / `cancelMyBscTeamChecks` as that worker), read its status
+ * line and close it. The
  * spec's own page is never moved. Every rule lands on the worker's OWN fake
  * account (a namespace per test user), so a fault never reaches another shard.
  *
@@ -293,6 +294,22 @@ export class BscFake {
     this.gateAtRisk = false;
     this.rules.bsc = [];
     this.rules.ebay = [];
+  }
+
+  /**
+   * NEO-644: cancel the background BSC team lookups this worker's test user
+   * queued (`clear=lane`, `api.testing.cancelMyBscTeamChecks`), and no other
+   * worker's. The lane is one slot per deployment, so a spec that leaves cards
+   * waiting on it (the 429 and stall specs) holds every other shard's per-card
+   * lookups behind them. Not part of the fixture's teardown: a spec that
+   * queues cards calls it from its own `test.afterEach`. A lookup already
+   * running finishes.
+   *
+   * Contract: ENTRY the worker is signed in. EXIT none of this user's lane
+   * items that had not started is left to run.
+   */
+  async clearTeamLane(): Promise<void> {
+    await this.hop("clear=lane", "Cleared");
   }
 
   /** The fixture's teardown: `clear()`, and it throws if the fake or the gate could not be cleared. */
