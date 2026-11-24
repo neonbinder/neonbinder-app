@@ -1,11 +1,15 @@
+import { useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
 import { defaultGapStint } from "../../../../convex/lib/careerGapStint";
+import { stintCountsForYear } from "../../../../convex/lib/careerCoverage";
 import NeonButton from "../../../modules/NeonButton";
 import { useAnswered } from "../answered";
-import type { TidyCardContext } from "../tile-types";
-import AddStintEntry from "./AddStintEntry";
+import { useBeforeSave } from "../before-save";
+import type { TidyCardContext, TidyRow } from "../tile-types";
+import { useWalkMemory } from "../walk-memory";
+import AddStintEntry, { type StintPrefill } from "./AddStintEntry";
 import { NO_CAREER_TEXT, careerLineText, noStintText } from "./copy";
 import type { TidyWrite } from "./tidy-write";
 
@@ -22,8 +26,20 @@ type Ctx = NonNullable<TidyCardContext>;
  * PLAYER now (`players.addStint`). Nothing records that the gap was seen
  * (NEO-656): it is blue for as long as the data holds it. A wrong team is
  * Change on the Team tile, never here.
+ *
+ * NEO-657 (Jason, 2026-11-23: "When adding a new player IF we know the team on
+ * the card we should automatically create a new stint for the player for the
+ * year of the card. It should be open and editable so that if that is not the
+ * right years the admin can fix it."): for a player made on this card in this
+ * sitting (the walk's memory), when the card carries exactly one NB team and
+ * the set has a year, "+ Add stint" is open already holding that team and the
+ * year as both From and To, unless the career has a stint for that team that
+ * counts for the year (`stintCountsForYear`, the career-gap rule). "+ Add"
+ * writes it as shown; Esc closes it and writes nothing; Save & next with it
+ * still open adds what it shows.
  */
 export default function CareerGapRow({
+  row,
   context,
   playerId,
   teamId,
@@ -32,6 +48,7 @@ export default function CareerGapRow({
   multi,
   write,
 }: {
+  row: TidyRow;
   context: Ctx;
   playerId: string;
   teamId: string;
@@ -42,9 +59,38 @@ export default function CareerGapRow({
 }) {
   const addStint = useMutation(api.players.addStint);
   const answered = useAnswered();
+  const memory = useWalkMemory();
+  // What the open prefilled "+ Add stint" form would add right now (null when
+  // it is closed, or holds nothing addable). Save & next adds it as shown.
+  const [draft, setDraft] = useState<{ teamId: Id<"teams">; fromYear: number; toYear?: number } | null>(null);
   const player = context.players.find((p) => p.playerId === playerId);
   const team = context.teams.find((t) => t.teamId === teamId);
+  useBeforeSave(draft !== null, async () => {
+    if (!draft || !player) return true;
+    return write.run(
+      () =>
+        addStint({
+          playerId: player.playerId,
+          teamId: draft.teamId,
+          fromYear: draft.fromYear,
+          ...(draft.toYear !== undefined ? { toYear: draft.toYear } : {}),
+        }),
+      "Couldn't add that stint. Try again.",
+    );
+  });
   if (!player) return null;
+
+  // NEO-657: the card's team, when the card carries exactly one NB team (the
+  // tidy context's own `onCard`, never a name), for the set's year.
+  const cardTeams = context.teams.filter((t) => t.onCard);
+  const cardTeam = cardTeams.length === 1 ? cardTeams[0] : undefined;
+  const prefill: StintPrefill | undefined =
+    memory.madeOnCard(row._id, playerId) &&
+    cardTeam &&
+    setYear !== undefined &&
+    !player.stints.some((s) => s.teamId === cardTeam.teamId && stintCountsForYear(s, setYear))
+      ? { teamId: cardTeam.teamId, name: cardTeam.name, fromYear: setYear, toYear: setYear }
+      : undefined;
 
   const noCareer = player.stints.length === 0 && !player.stintsMore;
   const suffix = multi ? ` for ${player.name}` : "";
@@ -98,6 +144,8 @@ export default function CareerGapRow({
           </NeonButton>
         )}
         <AddStintEntry
+          prefill={prefill}
+          onDraft={setDraft}
           playerName={player.name}
           sportId={player.sportId}
           leafId={leafId}

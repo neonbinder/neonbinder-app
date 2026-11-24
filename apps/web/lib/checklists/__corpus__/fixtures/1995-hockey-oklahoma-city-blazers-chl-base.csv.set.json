@@ -1,0 +1,56 @@
+{
+  "file": "1995-hockey-oklahoma-city-blazers-chl-base.csv",
+  "mode": "set",
+  "options": {"setYear":"1995","mode":"set"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [],
+    "skipped": [
+      {"line":2,"text":"1,Kevin Barrett,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":3,"text":"2,Carl Boudreau,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":4,"text":"3,Joe Burton,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":5,"text":"4,George Dupont,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":6,"text":"5,Dominic Fafard,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":7,"text":"6,Jean-Ian Filiatrault,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":8,"text":"7,Tom Gomes,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":9,"text":"8,Todd Harris,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":10,"text":"9,Mervin Kopeck,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":11,"text":"10,Doug Lawrence,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":12,"text":"11,Kevin Lune,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":13,"text":"12,Steve Moore,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":14,"text":"13,Simon Olivier,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":15,"text":"14,Darcy Pengelly,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":16,"text":"15,Steve Simoni,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":17,"text":"16,Barkley Swenson,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":18,"text":"17,Sergei Tkachenko,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":19,"text":"18,Doug Sauter,Oklahoma City Blazers","reason":"Not under any section heading"}
+    ],
+    "format": "csv"
+  },
+  "sections": {
+    "format": "csv",
+    "sections": [],
+    "skipped": [
+      {"line":2,"text":"1,Kevin Barrett,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":3,"text":"2,Carl Boudreau,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":4,"text":"3,Joe Burton,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":5,"text":"4,George Dupont,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":6,"text":"5,Dominic Fafard,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":7,"text":"6,Jean-Ian Filiatrault,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":8,"text":"7,Tom Gomes,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":9,"text":"8,Todd Harris,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":10,"text":"9,Mervin Kopeck,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":11,"text":"10,Doug Lawrence,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":12,"text":"11,Kevin Lune,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":13,"text":"12,Steve Moore,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":14,"text":"13,Simon Olivier,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":15,"text":"14,Darcy Pengelly,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":16,"text":"15,Steve Simoni,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":17,"text":"16,Barkley Swenson,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":18,"text":"17,Sergei Tkachenko,Oklahoma City Blazers","reason":"Not under any section heading"},
+      {"line":19,"text":"18,Doug Sauter,Oklahoma City Blazers","reason":"Not under any section heading"}
+    ],
+    "skippedSections": [],
+    "rowCount": 0
+  }
+}

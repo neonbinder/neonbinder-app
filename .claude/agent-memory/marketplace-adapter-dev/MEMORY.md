@@ -102,6 +102,8 @@
 - [eBay read path: one clock](ebay-read-path-bounded-by-one-clock.md) — 3 s a try, one retry on timeout; timeout is never a missing policy
 - [Direct helper bypasses action stubs](reference_direct_helper_bypasses_credentials_action_stubs.md) — runAction -> plain helper skips vi.mock action stubs; add a twin stub, spy _handler for no-hop proof
 - [One fake host pin for both marketplaces](reference_one_fake_host_pin_shared_by_both_marketplaces.md) — share isFakeServiceHost/signForFake; fake switch keyed on request not config validity; strict echo guard
+- [Checklist matcher strips letter prefixes](reference_checklist_matcher_strips_letter_prefix_ties_need_digit_first_numbers.md) — "M-1" pairs card "1" by number; name-tie tests need digit-first numbers ("89M-1")
+- [pgrep wait loop matches itself](reference_pgrep_wait_loop_matches_itself.md) — `until ! pgrep -f tool` never ends under the harness; wait on a pid with kill -0
 - [Gate key = rate-limit domain, one value](reference_gate_key_is_the_rate_limit_domain_one_value.md) — key + x-nb-fake-ns from one helper; queuedBy on lane items; defer per-ns blocks; lib helper avoids testing.ts cycle
 - [Convex return record keys must be ASCII](reference_convex_return_record_keys_must_be_ascii.md) — accented record key fails the return validator; return {key, entry}[] and rebuild with jq
 - [convexTest under adapters/ needs a re-keyed glob](reference_convex_test_in_adapters_dir_needs_rekeyed_glob.md) — map ../x to ./x and ./y to ./adapters/y, or "Could not find module"

@@ -42,3 +42,4 @@ Accessible names, focus handling, live regions, dialogs, axe false reds and cont
 - [Lead-in names its list; cached status needs a tick](reference_lead_in_p_names_its_list_and_cached_status_needs_a_tick.md) — aria-labelledby on the lead-in p; delayed status fill from a remount
 - [Key hints hide on coarse pointers](reference_key_hint_hides_on_coarse_pointers_via_hintedlabel.md) — HintedLabel sr-onlys (Esc)/(Enter); drop aria-label to satisfy label-in-name, regex lookups
 - [Re-opened row focus is owed in walk memory](pattern_reopened_row_focus_is_owed_in_walk_memory.md) — oweFocus before the write; the row that mounts takes it; answer sentences go to the walk's status line
+- [Extra line in an option stays out of its name](reference_extra_line_in_option_stays_out_of_its_name.md) — aria-hidden span + aria-describedby on role=option; t.run turns undefined into null; drain

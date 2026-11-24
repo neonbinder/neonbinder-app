@@ -65,6 +65,13 @@
  * first word is a number only when it holds a digit or is a capitals letter
  * code ("RA-MT"): "Jean-Carlos Smith - Mets" is never card "Jean-Carlos".
  *
+ * NEO-616: a file with no header the above finds, but with Subset, Name,
+ * Checklist and Foil headings and colour columns of print runs after them
+ * (Pro Set's foil × colour layout), is read by `foil-colour-layout.ts`:
+ * cards once per subset, each foil × colour a parallel section with its
+ * cards' `printRun`. Tried only where no header was found, so every other
+ * file reads exactly as before.
+ *
  * NEO-496, whole-set checklists, spreadsheets and PDFs:
  *  - The header row is looked for in the first `HEADER_SEARCH_LINES`
  *    non-blank lines; lines above it are skipped as `ABOVE_THE_HEADER`
@@ -90,6 +97,14 @@
  */
 
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../../convex/features/cardAttention";
+import {
+  foilColourHeader,
+  readFoilColourLayout,
+  type FoilColourDeps,
+  type FoilColourHeader,
+  type FoilColourRead,
+  type FoilColourRecord,
+} from "./foil-colour-layout";
 import { cleanseExternalName } from "../entities/cleanse-name";
 import { HOBBY_MARKER_PATTERN } from "../cards/print-run-markers";
 import { isNoClaimTeamText, isNoTeamText, NO_TEAM_AND_A_TEAM } from "./no-team";
@@ -173,6 +188,13 @@ export type PublishedChecklistRow = {
    * (`checklist-sections.ts`) groups rows into sections by it.
    */
   subset?: string;
+  /**
+   * NEO-616: the print run this card has in the parallel its `subset` names
+   * (Pro Set's foil × colour layout, `foil-colour-layout.ts`). Present only
+   * on a row of such a parallel section, a whole number from 1 up; never on
+   * a plain card.
+   */
+  printRun?: number;
 };
 
 export type SkippedLine = {
@@ -1434,6 +1456,11 @@ class ParseCollector {
   readonly sections = new SectionTracker();
 
   private readonly mode: "leaf" | "set";
+  modeOf(): "leaf" | "set" {
+    return this.mode;
+  }
+  /** Rows were added already carrying their subset (`keepSectioned`). */
+  private sectioned = false;
 
   constructor(mode: "leaf" | "set") {
     this.mode = mode;
@@ -1476,10 +1503,35 @@ class ParseCollector {
     this.rowAt.push({ line, text, at });
   }
 
+  /**
+   * A row that already carries its subset (the foil × colour layout names
+   * its own sections), so the heading tracker has nothing to say about it.
+   */
+  keepSectioned(
+    line: number,
+    text: string,
+    row: PublishedChecklistRow,
+    at: LineAt = {},
+  ) {
+    if (this.mode === "leaf" && this.rows.length >= PUBLISHED_CHECKLIST_MAX_TOTAL_ROWS) {
+      this.skip(line, text, pastFileLimit(PUBLISHED_CHECKLIST_MAX_TOTAL_ROWS), at);
+      return;
+    }
+    this.sectioned = true;
+    this.rows.push(row);
+    this.rowAt.push({ line, text, at });
+  }
+
+  /** Take a foil × colour read: its skips, then its rows in its order. */
+  takeFoilColour(read: FoilColourRead): void {
+    for (const s of read.skipped) this.skip(s.line, s.text, s.reason, s.at);
+    for (const r of read.rows) this.keepSectioned(r.line, r.text, r.row, r.at);
+  }
+
   finish(format: PublishedChecklistFormat, hasSubsetColumn: boolean): PublishedChecklistParse {
     const mode = this.mode;
     let rows = this.rows;
-    const withSubsets = hasSubsetColumn || this.sections.sawHeadingRow;
+    const withSubsets = hasSubsetColumn || this.sections.sawHeadingRow || this.sectioned;
     const subsets = withSubsets
       ? [...new Set(rows.flatMap((r) => (r.subset === undefined ? [] : [r.subset])))]
       : undefined;
@@ -1543,6 +1595,10 @@ export function parsePublishedChecklist(
       break;
     }
   }
+  if (!header) {
+    const foilColour = readFoilColourText(lines, firstIndex, setYear, mode);
+    if (foilColour) return foilColour;
+  }
   if (!header) header = detectPositional(lines, firstIndex);
   const format: PublishedChecklistFormat = header
     ? header.delimiter === "\t"
@@ -1595,6 +1651,72 @@ export function parsePublishedChecklist(
     else out.keep(i + 1, raw, read.row, read.subsetCell);
   }
   return out.finish(format, header?.columns.includes("subset") ?? false);
+}
+
+/** What the foil × colour reader borrows from this parser (see `foil-colour-layout.ts`). */
+function foilColourDeps(setYear: string | null, mode: "leaf" | "set"): FoilColourDeps {
+  return {
+    mode,
+    maxName: PUBLISHED_CHECKLIST_MAX_NAME,
+    readCard: (cells) => {
+      const read = rowFromColumns(POSITIONAL, cells, setYear);
+      return "reason" in read ? read : { row: read.row };
+    },
+    overLimit,
+  };
+}
+
+/**
+ * NEO-616: a pasted or text-file checklist in Pro Set's foil × colour layout,
+ * or null when it is not one. Called only where no other header was found.
+ */
+function readFoilColourText(
+  lines: readonly string[],
+  firstIndex: number,
+  setYear: string | null,
+  mode: "leaf" | "set",
+): PublishedChecklistParse | null {
+  for (const delimiter of ["\t", ","] as const) {
+    let found: FoilColourHeader | null = null;
+    let headerIndex = -1;
+    for (let i = firstIndex, seen = 0; i < lines.length && seen < HEADER_SEARCH_LINES; i++) {
+      if (lines[i].trim() === "") continue;
+      seen++;
+      if (lines[i].length > PUBLISHED_CHECKLIST_MAX_LINE || !lines[i].includes(delimiter)) continue;
+      found = foilColourHeader(splitDelimited(lines[i], delimiter));
+      if (found) {
+        headerIndex = i;
+        break;
+      }
+    }
+    if (!found) continue;
+    const records: FoilColourRecord[] = [];
+    for (let i = firstIndex; i < lines.length; i++) {
+      const raw = lines[i];
+      if (raw.trim() === "" || i === headerIndex) continue;
+      const base = { line: i + 1, at: {} };
+      if (i < headerIndex) {
+        records.push({ ...base, text: clip(raw), cells: [], skip: ABOVE_THE_HEADER });
+      } else if (raw.length > PUBLISHED_CHECKLIST_MAX_LINE) {
+        records.push({
+          ...base,
+          text: `${raw.slice(0, 200).replace(/\s+/g, " ").trim().slice(0, 80)}…`,
+          cells: [],
+          skip: `Longer than ${PUBLISHED_CHECKLIST_MAX_LINE.toLocaleString("en-US")} characters`,
+        });
+      } else if (COUNT_LINE.test(raw.trim())) {
+        records.push({ ...base, text: raw, cells: [], skip: LOOKS_LIKE_A_COUNT });
+      } else {
+        records.push({ ...base, text: raw, cells: splitDelimited(raw, delimiter) });
+      }
+    }
+    const read = readFoilColourLayout(found, records, foilColourDeps(setYear, mode));
+    if (!read) continue;
+    const out = new ParseCollector(mode);
+    out.takeFoilColour(read);
+    return out.finish(delimiter === "\t" ? "tsv" : "csv", false);
+  }
+  return null;
 }
 
 /** A skipped line's text, kept short for the preview. */
@@ -1775,6 +1897,36 @@ function readCellsRun(
     if (columns) {
       headerAt = i;
       break;
+    }
+  }
+  if (!columns && format === "xlsx") {
+    // NEO-616: Pro Set's foil × colour layout, only where no other header was found.
+    let foilAt = -1;
+    let foil: FoilColourHeader | null = null;
+    for (let i = 0; i < Math.min(records.length, HEADER_SEARCH_LINES); i++) {
+      foil = foilColourHeader(records[i].cells);
+      if (foil) {
+        foilAt = i;
+        break;
+      }
+    }
+    if (foil) {
+      const foilRecords: FoilColourRecord[] = [];
+      records.forEach((record, i) => {
+        if (i === foilAt) return;
+        foilRecords.push({
+          line: record.line,
+          text: textOf(record),
+          at: atOf(record),
+          cells: record.cells,
+          ...(i < foilAt ? { skip: ABOVE_THE_HEADER } : {}),
+        });
+      });
+      const read = readFoilColourLayout(foil, foilRecords, foilColourDeps(setYear, out.modeOf()));
+      if (read) {
+        out.takeFoilColour(read);
+        return null;
+      }
     }
   }
   if (sheet !== undefined) out.sections.startSheet(sheet, columns?.includes("subset") ?? false);

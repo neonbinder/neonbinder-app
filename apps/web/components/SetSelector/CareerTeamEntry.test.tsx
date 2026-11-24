@@ -79,8 +79,8 @@ vi.mock("convex/react", () => ({
 
 import CareerTeamEntry, { UNKNOWN_TEAM_AMBIGUOUS, UNKNOWN_TEAM_TEXT } from "./CareerTeamEntry";
 
-function makeTeam(name: string, id: string) {
-  return { _id: id, name };
+function makeTeam(name: string, id: string, yearsActive?: { from: number; to?: number }) {
+  return { _id: id, name, ...(yearsActive ? { yearsActive } : {}) };
 }
 
 function renderEntry(
@@ -1758,6 +1758,36 @@ describe("CareerTeamEntry — whose stint, and only teams that exist (NEO-591)",
       expect(onAdd).toHaveBeenCalledWith({ name: "Winnipeg Jets", fromYear: 2016, teamId: "t-jets-new" });
     });
 
+    it("NEO-657: two saved teams with one name show their eras, in the visible row and the option's name", () => {
+      currentTeams = [
+        makeTeam("Monterrey Sultanes", "t-sultanes-old", { from: 1939, to: 1999 }),
+        makeTeam("Monterrey Sultanes", "t-sultanes-new", { from: 2005 }),
+      ];
+      renderEntry({ label: "Luis Rodriguez", knownTeamsOnly: true });
+      typeKnown("Monterrey");
+      const old = screen.getByRole("option", { name: "Use Monterrey Sultanes 1939–1999" });
+      const current = screen.getByRole("option", { name: "Use Monterrey Sultanes 2005–present" });
+      expect(old.textContent).toContain("1939–1999");
+      expect(current.textContent).toContain("2005–present");
+      expect(old.textContent).toContain("Monterrey Sultanes");
+    });
+
+    it("NEO-657: a staged team shows no era and the plain 'Use X' name", () => {
+      currentTeams = [];
+      renderEntry({ stagedNames: ["Padres Prospects"] });
+      typeName("Padres");
+      const option = screen.getByRole("option", { name: "Use Padres Prospects" });
+      expect(option.textContent).toBe("Padres Prospects");
+    });
+
+    it("NEO-657: a saved team with no yearsActive shows no era text and the plain name", () => {
+      currentTeams = [makeTeam("Monterrey Sultanes", "t-sultanes")];
+      renderEntry({ label: "Luis Rodriguez", knownTeamsOnly: true });
+      typeKnown("Monterrey");
+      const option = screen.getByRole("option", { name: "Use Monterrey Sultanes" });
+      expect(option.textContent).toBe("Monterrey Sultanes");
+    });
+
     it("takes the prefilled team once the search has found it", () => {
       currentTeams = [PADRES];
       const { onAdd } = renderEntry({
@@ -1819,5 +1849,54 @@ describe("CareerTeamEntry — whose stint, and only teams that exist (NEO-591)",
     expect(fromBox().disabled).toBe(true);
     expect((screen.getByLabelText(`To year (optional)${suffix}`) as HTMLInputElement).disabled).toBe(true);
     expect((addButton() as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe("CareerTeamEntry — what + Add would add, reported to the host (NEO-657)", () => {
+  const PADRES = "t-padres" as unknown as Id<"teams">;
+  const fromBox = () => screen.getByLabelText("From year") as HTMLInputElement;
+  const toBox = () => screen.getByLabelText("To year (optional)") as HTMLInputElement;
+  const mount = (onDraftChange: (d: unknown) => void) =>
+    render(
+      <CareerTeamEntry
+        sportId={SPORT_ID}
+        stagedNames={[]}
+        knownTeamsOnly
+        onAdd={vi.fn()}
+        onDraftChange={onDraftChange}
+        load={{ token: 1, name: "San Diego Padres", teamId: PADRES, fromYear: 2026, toYear: 2026 }}
+      />,
+    );
+
+  it("opening with a stint loaded reports it at once, saved team included", () => {
+    const onDraftChange = vi.fn();
+    mount(onDraftChange);
+    expect(onDraftChange).toHaveBeenLastCalledWith({
+      name: "San Diego Padres",
+      fromYear: 2026,
+      toYear: 2026,
+      teamId: PADRES,
+    });
+  });
+
+  it("follows a changed year, and reports null while the years are not addable", () => {
+    const onDraftChange = vi.fn();
+    mount(onDraftChange);
+    fireEvent.change(fromBox(), { target: { value: "2025" } });
+    expect(onDraftChange).toHaveBeenLastCalledWith({
+      name: "San Diego Padres",
+      fromYear: 2025,
+      toYear: 2026,
+      teamId: PADRES,
+    });
+    fireEvent.change(toBox(), { target: { value: "2020" } });
+    expect(onDraftChange).toHaveBeenLastCalledWith(null);
+  });
+
+  it("reports null when the form goes away", () => {
+    const onDraftChange = vi.fn();
+    const view = mount(onDraftChange);
+    view.unmount();
+    expect(onDraftChange).toHaveBeenLastCalledWith(null);
   });
 });

@@ -1,0 +1,23 @@
+{
+  "file": "2024-topps-stars-of-mlb-network-base.csv",
+  "mode": "leaf",
+  "options": {"setYear":"2024","mode":"leaf"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [
+      {"number":"1","players":["Lauren Shehadi"],"teams":[],"noTeam":true},
+      {"number":"2","players":["Robert Flores"],"teams":[],"noTeam":true},
+      {"number":"3","players":["Mark DeRosa"],"teams":[],"noTeam":true},
+      {"number":"4","players":["Brian Kenny"],"teams":[],"noTeam":true},
+      {"number":"5","players":["Harold Reynolds"],"teams":[],"noTeam":true},
+      {"number":"6","players":["Greg Amsinger"],"teams":[],"noTeam":true},
+      {"number":"7","players":["Chris Young"],"teams":[],"noTeam":true},
+      {"number":"8","players":["Yonder Alonso"],"teams":[],"noTeam":true},
+      {"number":"9","players":["Lauren Gardner"],"teams":[],"noTeam":true},
+      {"number":"10","players":["Intentional Talk"],"teams":[],"noTeam":true}
+    ],
+    "skipped": [],
+    "format": "csv"
+  },
+  "sections": {"format":"csv","sections":[],"skipped":[],"skippedSections":[],"rowCount":0}
+}

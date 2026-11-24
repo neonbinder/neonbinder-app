@@ -176,3 +176,5 @@
 - [NEO-656 minted team cut](patterns_neo656_minted_team_cut_from_title_turns_card_blue.md) — minted card name + team cut the title: live blue; drop cardName; preselect plants
 - [NEO-656 career in a 2nd tab](patterns_neo656_stage_a_walk_players_career_in_a_second_tab.md) — no Career tile for a new player; Players admin tab, chips update live
 - [Stored-tier fill](patterns_team_fill_stored_tier_career_tie_fixture.md) — career ties isolate Base-card fill; other insert not evidence; plants
+- [Foil × colour checklist spec shape](patterns_foil_colour_checklist_spec_shape.md) — NEO-616: City Designation walk tiles, answer-vs-save race, prefix-only pairing, titles dialog
+- [Fresh-only on a no-reset deployment](patterns_iterate_fresh_only_on_a_no_reset_deployment.md) — e2e-run setup resets user 0; swap names to iterate; partial team name for the list

@@ -915,6 +915,15 @@ export function matchChecklistSections(
     return true;
   };
 
+  /** `long` holds every word of `short` and at least one more. */
+  const strictlyExtends = (long: string, short: string) => {
+    const tl = new Set(long.split(" ").filter(Boolean));
+    const ts = new Set(short.split(" ").filter(Boolean));
+    if (ts.size === 0 || tl.size <= ts.size) return false;
+    for (const t of ts) if (!tl.has(t)) return false;
+    return true;
+  };
+
   const targetForms = targets.map((t) => [...new Set(t.labels.flatMap((l) => formsOf(l)))]);
   // Each target form's word bag, once, rather than once per section.
   const targetBags = targetForms.map((tf) => tf.map(bag));
@@ -998,7 +1007,17 @@ export function matchChecklistSections(
         }
       }
       if (bestIndex !== -1 && !tied && bestRatio < 0.4 && scored[bestIndex].guarded && usable(bestIndex)) {
-        found = { index: bestIndex, confidence: 1 - bestRatio };
+        // NEO-616: a name that several targets extend ("1989 Pro Set Base"
+        // inside "... Base Lazer Red" and 27 more) is not unique just because
+        // one extension is the shortest: that is a tie, left to the operator
+        // (rule 8). A lone extension still near-matches.
+        const extended = (i: number) =>
+          targetForms[i].some((f) => forms.some((s) => strictlyExtends(f, s)));
+        let extensions = 0;
+        for (let i = 0; i < targetForms.length; i++) if (extended(i)) extensions++;
+        if (!(extensions >= 2 && extended(bestIndex))) {
+          found = { index: bestIndex, confidence: 1 - bestRatio };
+        }
       }
     }
 

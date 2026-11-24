@@ -1,0 +1,42 @@
+{
+  "file": "2026-onit-athlete-arizona-state-sun-devils-base.csv",
+  "mode": "leaf",
+  "options": {"setYear":"2026","mode":"leaf"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [
+      {"number":"B-1","players":["Austin Musso"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-2","players":["Beckett Zavorek"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-3","players":["Brady Louck"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-4","players":["Brandon Olivera"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-5","players":["Brenden Lewis"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-6","players":["Brody Briggs"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-7","players":["Coen Niclai"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-8","players":["Colby Guy"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-9","players":["Cole Carlon"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-10","players":["Colin Linder"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-11","players":["Cooper Clouser"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-12","players":["Dean Toigo"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-13","players":["Derek Schaefer"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-14","players":["Easton Barrett"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-15","players":["Eli Buxton"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-16","players":["Finn Leach"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-17","players":["Garrett Michel"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-18","players":["Jaden Alba"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-19","players":["Jaxsyn Durst"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-20","players":["Josh Butler"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-21","players":["Kole Klecker"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-22","players":["Ky McGary"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-23","players":["Landon Hairston"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-24","players":["Matt Polk"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-25","players":["Nu'U Contrades"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-26","players":["Ryan Caruso"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-27","players":["Ryan Darrah"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-28","players":["Sean Fitzpatrick"],"teams":["Arizona State Sun Devils"]},
+      {"number":"B-29","players":["Wyatt Halvorson"],"teams":["Arizona State Sun Devils"]}
+    ],
+    "skipped": [],
+    "format": "csv"
+  },
+  "sections": {"format":"csv","sections":[],"skipped":[],"skippedSections":[],"rowCount":0}
+}

@@ -1587,6 +1587,97 @@ describe("NEO-535 — a parallel's leading insert words are said once", () => {
       "2026 Bowman Anime Red Anime Refractors",
     );
   });
+
+  test("NEO-616: the parallel is trimmed against the insert's own name, not its maker-stripped text", () => {
+    // The insert says "1989 Base" once the maker words are stripped, which
+    // shares only "1989" with the parallel; the shared words are the insert's
+    // own ("1989 Pro Set Base"). No doubled "Base".
+    const proSet: ListingCardInputs = {
+      cardNumber: "89B-1",
+      playerNames: ["Joe Montana"],
+      year: "2026",
+      manufacturer: "Pro Set",
+      setName: "Pro Set Metal",
+      titleLevels: [
+        { name: "1989 Pro Set Base", typeName: "Insert" },
+        { name: "1989 Pro Set Base Prismatic Blue", typeName: "Parallel" },
+      ],
+      sport: "Football",
+    };
+    expect(titleDescription(proSet)).toBe("2026 Pro Set Metal 1989 Base Prismatic Blue");
+  });
+
+  test("NEO-616: the insert's type name stays when the parallel shares only maker and year words", () => {
+    // "Pro Set Rookies" says "Rookies" once the maker is stripped. The parallel
+    // "Pro Set Gold" trims against the insert's own name down to "Gold", but
+    // the words it dropped ("Pro Set") were maker words `above.text` had
+    // already dropped, not words the insert says: the insert keeps "Insert".
+    const rookies: ListingCardInputs = {
+      cardNumber: "R-1",
+      playerNames: ["Joe Montana"],
+      year: "2026",
+      manufacturer: "Pro Set",
+      setName: "Pro Set Metal",
+      titleLevels: [
+        { name: "Pro Set Rookies", typeName: "Insert" },
+        { name: "Pro Set Gold", typeName: "Parallel" },
+      ],
+      sport: "Football",
+    };
+    expect(generateListingTitle(rookies)).toBe(
+      "2026 Pro Set Metal Rookies Insert Gold Parallel Joe Montana #R-1 Football",
+    );
+  });
+
+  test("NEO-616: the Pro Set Base shape still reads once, no doubled Base, in the full title", () => {
+    const proSet: ListingCardInputs = {
+      cardNumber: "89B-1",
+      playerNames: ["Joe Montana"],
+      year: "2026",
+      manufacturer: "Pro Set",
+      setName: "Pro Set Metal",
+      titleLevels: [
+        { name: "1989 Pro Set Base", typeName: "Insert" },
+        { name: "1989 Pro Set Base Prismatic Blue", typeName: "Parallel" },
+      ],
+      sport: "Football",
+    };
+    const title = generateListingTitle(proSet);
+    expect(title).toBe("2026 Pro Set Metal 1989 Base Prismatic Blue Parallel Joe Montana #89B-1 Football");
+    expect(title).not.toMatch(/Base\s+Base/);
+  });
+
+  test("NEO-616: words the trim folds together still read as one name (Autographs / Autograph Gold), as on main", () => {
+    const autos: ListingCardInputs = {
+      cardNumber: "A-1",
+      playerNames: ["Joe Montana"],
+      year: "2026",
+      manufacturer: "Pro Set",
+      setName: "Pro Set Metal",
+      titleLevels: [
+        { name: "Autographs", typeName: "Insert" },
+        { name: "Autograph Gold", typeName: "Parallel" },
+      ],
+      sport: "Football",
+    };
+    expect(generateListingTitle(autos)).not.toContain("Insert");
+  });
+
+  test("NEO-616: an insert the set name already says still yields its type name to the parallel, as on main", () => {
+    const prospects: ListingCardInputs = {
+      cardNumber: "BCP-1",
+      playerNames: ["Joe Montana"],
+      year: "2026",
+      manufacturer: "Bowman",
+      setName: "Bowman Chrome Prospects",
+      titleLevels: [
+        { name: "Chrome Prospects", typeName: "Insert" },
+        { name: "Chrome Prospects Gold", typeName: "Parallel" },
+      ],
+      sport: "Baseball",
+    };
+    expect(generateListingTitle(prospects)).not.toContain("Insert");
+  });
 });
 
 describe("NEO-528 — the description names the card's cameos", () => {

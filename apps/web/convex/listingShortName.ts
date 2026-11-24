@@ -387,7 +387,7 @@ const AUTO_WORDS: ReadonlySet<string> = new Set([
  * autograph spellings made one word, and a plural "s" dropped (not from "ss",
  * nor from a word of three letters or fewer).
  */
-function foldWord(word: string): string {
+export function foldWord(word: string): string {
   const bare = word.toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
   if (AUTO_WORDS.has(bare)) return "auto";
   if (bare.length > 3 && bare.endsWith("s") && !bare.endsWith("ss")) return bare.slice(0, -1);

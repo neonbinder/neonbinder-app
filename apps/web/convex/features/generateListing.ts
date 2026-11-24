@@ -64,7 +64,7 @@ import { isGenerationalSuffix } from "../../lib/players/name-fragment";
 import { teamFullName } from "../../lib/teams/team-name";
 import { cardSubjectName } from "../../lib/cards/unnamed-card";
 import { foldNameForCompare } from "../../lib/entities/normalize-name";
-import { parallelAfterInsert, parallelOpensWithInsert, roughlySays } from "../listingShortName";
+import { foldWord, parallelAfterInsert, parallelOpensWithInsert, roughlySays } from "../listingShortName";
 
 /** NEO-606 — a team row's Location / Name, as `ListingCardInputs.teamSplits` carries it. */
 export type ListingTeamSplit = { location: string; name: string };
@@ -619,7 +619,14 @@ function builderDescriptionParts(inputs: ListingCardInputs): DescriptionParts {
       // NEO-535 — the leading words a level shares with the one above it are
       // said once, by that one ("Anime" + "Anime Red Refractors" → "Anime Red
       // Refractors"; `parallelAfterInsert`).
-      const trimmed = parallelAfterInsert(raw, above.text ?? above.raw);
+      // The insert's OWN name first: a maker-stripped `above.text` ("1989
+      // Base") need not share the words the parallel repeats ("1989 Pro Set
+      // Base Prismatic Blue"), which then read "1989 Base Base Prismatic
+      // Blue". Only when that shares nothing does the said text decide.
+      let trimmed = parallelAfterInsert(raw, above.raw);
+      if (wordsOf(trimmed).length === wordsOf(raw).length && above.text !== undefined) {
+        trimmed = parallelAfterInsert(raw, above.text);
+      }
       const stripped = stripDoubledWords(trimmed, inputs);
       if (stripped && !alreadySaid([head(), ...said].filter(Boolean).join(" "), stripped)) {
         text = stripped;
@@ -628,7 +635,14 @@ function builderDescriptionParts(inputs: ListingCardInputs): DescriptionParts {
         // ("Gold Wave" + "Gold Wave Refractors" -> "Gold Wave Refractors"),
         // so the upper level's type name sits out instead of splitting it
         // ("Gold Wave Parallel Refractors").
-        if (wordsOf(trimmed).length < wordsOf(raw).length) {
+        // Only when the words trimmed away include one the upper level says:
+        // maker and year words its text already dropped do not make the two
+        // one name ("Pro Set Rookies" + "Pro Set Gold").
+        const dropped = wordsOf(raw).slice(0, wordsOf(raw).length - wordsOf(trimmed).length);
+        // Folded as `parallelAfterInsert` matches ("Autographs" / "Autograph");
+        // the insert's own name when its text says nothing (origin/main).
+        const saidAbove = wordsOf(above.text ?? above.raw).map(foldWord);
+        if (dropped.some((w) => saidAbove.includes(foldWord(w)))) {
           const upper = levels[levels.length - 1];
           if (upper && !upper.base) {
             upper.typeName = undefined;

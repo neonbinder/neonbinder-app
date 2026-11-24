@@ -129,6 +129,8 @@ function withoutSubset(row: PublishedChecklistRow): ChecklistSectionRow {
   const out: ChecklistSectionRow = { number: row.number, players: row.players, teams: row.teams };
   if (row.noNumber) out.noNumber = true;
   if (row.noTeam) out.noTeam = true;
+  // NEO-616: a parallel section's per-card print run (foil × colour layout).
+  if (row.printRun !== undefined) out.printRun = row.printRun;
   if (row.prospect) out.prospect = true;
   if (row.prospectClaimedTeams) out.prospectClaimedTeams = row.prospectClaimedTeams;
   if (row.variationName) out.variationName = row.variationName;

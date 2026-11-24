@@ -1,0 +1,223 @@
+{
+  "file": "2026-topps-chrome-sample.pdf",
+  "mode": "set",
+  "options": {"setYear":"2026","mode":"set"},
+  "read": {
+    "kind": "cells",
+    "cells": {
+      "format": "pdf",
+      "records": [
+        {"line":1,"page":1,"cells":["2026 Topps Chrome Baseball Checklist"],"xs":[53]},
+        {"line":2,"page":1,"cells":["BASE"],"xs":[53]},
+        {"line":3,"page":1,"cells":["BASE CARDS"],"xs":[53]},
+        {"line":4,"page":1,"cells":["1","Shohei Ohtani","Los Angeles Dodgers®"],"xs":[53,132.6,298]},
+        {"line":5,"page":1,"cells":["2","Cody Bellinger","New York Yankees®"],"xs":[53,132.6,298]},
+        {"line":6,"page":1,"cells":["3","Yordan Alvarez","Houston Astros®"],"xs":[53,132.6,298]},
+        {"line":7,"page":1,"cells":["4","Brice Turang","Milwaukee Brewers™"],"xs":[53,132.6,298]},
+        {"line":8,"page":1,"cells":["5","Trea Turner","Philadelphia Phillies®"],"xs":[53,132.6,298]},
+        {"line":9,"page":1,"cells":["INSERT"],"xs":[53]},
+        {"line":10,"page":1,"cells":["FUTURE STARS"],"xs":[53]},
+        {"line":11,"page":1,"cells":["FS-1","Munetaka Murakami","Chicago White Sox®"],"xs":[53,132.6,298]},
+        {"line":12,"page":1,"cells":["FS-2","Colson Montgomery","Chicago White Sox®"],"xs":[53,132.6,298]},
+        {"line":13,"page":1,"cells":["FS-3","JJ Wetherholt","St. Louis Cardinals®"],"xs":[53,132.6,298]},
+        {"line":14,"page":1,"cells":["FS-4","Samuel Basallo","Baltimore Orioles®"],"xs":[53,132.6,298]},
+        {"line":15,"page":1,"cells":["FS-5","Nick Kurtz","Athletics™"],"xs":[53,132.6,298]},
+        {"line":16,"page":1,"cells":["FS-6","Kevin McGonigle","Detroit Tigers®"],"xs":[53,132.6,298]},
+        {"line":17,"page":1,"cells":["FS-7","Jac Caglianone","Kansas City Royals®"],"xs":[53,132.6,298]},
+        {"line":18,"page":1,"cells":["FS-8","Roman Anthony","Boston Red Sox®"],"xs":[53,132.6,298]},
+        {"line":19,"page":1,"cells":["FS-9","Paul Skenes","Pittsburgh Pirates®"],"xs":[53,132.6,298]},
+        {"line":20,"page":1,"cells":["2025 MLB COMMISSIONERS TROPHY"],"xs":[53]},
+        {"line":21,"page":1,"cells":["CT-1","Los Angeles Dodgers®"],"xs":[53,298]},
+        {"line":22,"page":1,"cells":["FANATICS AUTHENTICS REDEMPTION CARDS"],"xs":[53]},
+        {"line":23,"page":1,"cells":["Chase Utley","Philadelphia Phillies®"],"xs":[132.6,298]},
+        {"line":24,"page":1,"cells":["Nick Kurtz","Athletics™"],"xs":[132.6,298]},
+        {
+          "line": 25,
+          "page": 1,
+          "cells": ["Checklists provided by Topps reflect the intended configurations of that product at the time of"],
+          "xs": [53]
+        },
+        {"line":26,"page":1,"cells":["production, but actual contents and odds may vary."],"xs":[53]},
+        {"line":27,"page":2,"cells":["Rookie"],"xs":[470]},
+        {"line":28,"page":2,"cells":["Rookie"],"xs":[470]},
+        {"line":29,"page":2,"cells":["Rookie"],"xs":[470]},
+        {"line":30,"page":2,"cells":["Rookie"],"xs":[470]},
+        {"line":31,"page":2,"cells":["Rookie"],"xs":[470]},
+        {"line":32,"page":2,"cells":["Rookie"],"xs":[470]},
+        {"line":33,"page":2,"cells":["Rookie"],"xs":[470]},
+        {"line":34,"page":2,"cells":["Rookie"],"xs":[470]},
+        {"line":35,"page":2,"cells":["Rookie"],"xs":[470]},
+        {
+          "line": 36,
+          "page": 2,
+          "cells": ["Checklists provided by Topps reflect the intended configurations of that product at the time of"],
+          "xs": [53]
+        },
+        {"line":37,"page":2,"cells":["production, but actual contents and odds may vary."],"xs":[53]}
+      ]
+    }
+  },
+  "parse": {
+    "rows": [
+      {"number":"1","players":["Shohei Ohtani"],"teams":["Los Angeles Dodgers"],"subset":"BASE CARDS"},
+      {"number":"2","players":["Cody Bellinger"],"teams":["New York Yankees"],"subset":"BASE CARDS"},
+      {"number":"3","players":["Yordan Alvarez"],"teams":["Houston Astros"],"subset":"BASE CARDS"},
+      {"number":"4","players":["Brice Turang"],"teams":["Milwaukee Brewers"],"subset":"BASE CARDS"},
+      {"number":"5","players":["Trea Turner"],"teams":["Philadelphia Phillies"],"subset":"BASE CARDS"},
+      {"number":"FS-1","players":["Munetaka Murakami"],"teams":["Chicago White Sox"],"subset":"FUTURE STARS"},
+      {"number":"FS-2","players":["Colson Montgomery"],"teams":["Chicago White Sox"],"subset":"FUTURE STARS"},
+      {"number":"FS-3","players":["JJ Wetherholt"],"teams":["St. Louis Cardinals"],"subset":"FUTURE STARS"},
+      {"number":"FS-4","players":["Samuel Basallo"],"teams":["Baltimore Orioles"],"subset":"FUTURE STARS"},
+      {"number":"FS-5","players":["Nick Kurtz"],"teams":["Athletics"],"subset":"FUTURE STARS"},
+      {"number":"FS-6","players":["Kevin McGonigle"],"teams":["Detroit Tigers"],"subset":"FUTURE STARS"},
+      {"number":"FS-7","players":["Jac Caglianone"],"teams":["Kansas City Royals"],"subset":"FUTURE STARS"},
+      {"number":"FS-8","players":["Roman Anthony"],"teams":["Boston Red Sox"],"subset":"FUTURE STARS"},
+      {"number":"FS-9","players":["Paul Skenes"],"teams":["Pittsburgh Pirates"],"subset":"FUTURE STARS"},
+      {"number":"CT-1","players":[],"teams":["Los Angeles Dodgers"],"subset":"2025 MLB COMMISSIONERS TROPHY"},
+      {
+        "number": "NNO",
+        "players": ["Chase Utley"],
+        "teams": ["Philadelphia Phillies"],
+        "noNumber": true,
+        "subset": "FANATICS AUTHENTICS REDEMPTION CARDS"
+      },
+      {
+        "number": "NNO",
+        "players": ["Nick Kurtz"],
+        "teams": ["Athletics"],
+        "noNumber": true,
+        "subset": "FANATICS AUTHENTICS REDEMPTION CARDS"
+      }
+    ],
+    "skipped": [
+      {"line":1,"page":1,"text":"2026 Topps Chrome Baseball Checklist","reason":"Looks like a title, not a card"},
+      {
+        "line": 25,
+        "page": 1,
+        "text": "Checklists provided by Topps reflect the intended configurations of that product at the time of",
+        "reason": "Only one column here, so it isn't a card"
+      },
+      {
+        "line": 26,
+        "page": 1,
+        "text": "production, but actual contents and odds may vary.",
+        "reason": "Only one column here, so it isn't a card"
+      },
+      {"line":27,"page":2,"text":"Rookie","reason":"Only one column here, so it isn't a card"},
+      {"line":28,"page":2,"text":"Rookie","reason":"Only one column here, so it isn't a card"},
+      {"line":29,"page":2,"text":"Rookie","reason":"Only one column here, so it isn't a card"},
+      {"line":30,"page":2,"text":"Rookie","reason":"Only one column here, so it isn't a card"},
+      {"line":31,"page":2,"text":"Rookie","reason":"Only one column here, so it isn't a card"},
+      {"line":32,"page":2,"text":"Rookie","reason":"Only one column here, so it isn't a card"},
+      {"line":33,"page":2,"text":"Rookie","reason":"Only one column here, so it isn't a card"},
+      {"line":34,"page":2,"text":"Rookie","reason":"Only one column here, so it isn't a card"},
+      {"line":35,"page":2,"text":"Rookie","reason":"Only one column here, so it isn't a card"},
+      {
+        "line": 36,
+        "page": 2,
+        "text": "Checklists provided by Topps reflect the intended configurations of that product at the time of",
+        "reason": "Only one column here, so it isn't a card"
+      },
+      {
+        "line": 37,
+        "page": 2,
+        "text": "production, but actual contents and odds may vary.",
+        "reason": "Only one column here, so it isn't a card"
+      }
+    ],
+    "format": "pdf",
+    "subsets": ["BASE CARDS","FUTURE STARS","2025 MLB COMMISSIONERS TROPHY","FANATICS AUTHENTICS REDEMPTION CARDS"],
+    "groups": {
+      "BASE CARDS": "BASE",
+      "FUTURE STARS": "INSERT",
+      "2025 MLB COMMISSIONERS TROPHY": "INSERT",
+      "FANATICS AUTHENTICS REDEMPTION CARDS": "INSERT"
+    }
+  },
+  "sections": {
+    "format": "pdf",
+    "sections": [
+      {
+        "name": "BASE CARDS",
+        "key": "base cards",
+        "group": "BASE",
+        "rows": [
+          {"number":"1","players":["Shohei Ohtani"],"teams":["Los Angeles Dodgers"]},
+          {"number":"2","players":["Cody Bellinger"],"teams":["New York Yankees"]},
+          {"number":"3","players":["Yordan Alvarez"],"teams":["Houston Astros"]},
+          {"number":"4","players":["Brice Turang"],"teams":["Milwaukee Brewers"]},
+          {"number":"5","players":["Trea Turner"],"teams":["Philadelphia Phillies"]}
+        ]
+      },
+      {
+        "name": "FUTURE STARS",
+        "key": "future stars",
+        "group": "INSERT",
+        "rows": [
+          {"number":"FS-1","players":["Munetaka Murakami"],"teams":["Chicago White Sox"]},
+          {"number":"FS-2","players":["Colson Montgomery"],"teams":["Chicago White Sox"]},
+          {"number":"FS-3","players":["JJ Wetherholt"],"teams":["St. Louis Cardinals"]},
+          {"number":"FS-4","players":["Samuel Basallo"],"teams":["Baltimore Orioles"]},
+          {"number":"FS-5","players":["Nick Kurtz"],"teams":["Athletics"]},
+          {"number":"FS-6","players":["Kevin McGonigle"],"teams":["Detroit Tigers"]},
+          {"number":"FS-7","players":["Jac Caglianone"],"teams":["Kansas City Royals"]},
+          {"number":"FS-8","players":["Roman Anthony"],"teams":["Boston Red Sox"]},
+          {"number":"FS-9","players":["Paul Skenes"],"teams":["Pittsburgh Pirates"]}
+        ]
+      },
+      {
+        "name": "2025 MLB COMMISSIONERS TROPHY",
+        "key": "2025 mlb commissioners trophy",
+        "group": "INSERT",
+        "rows": [{"number":"CT-1","players":[],"teams":["Los Angeles Dodgers"]}]
+      },
+      {
+        "name": "FANATICS AUTHENTICS REDEMPTION CARDS",
+        "key": "fanatics authentics redemption cards",
+        "group": "INSERT",
+        "rows": [
+          {"number":"NNO","players":["Chase Utley"],"teams":["Philadelphia Phillies"],"noNumber":true},
+          {"number":"NNO","players":["Nick Kurtz"],"teams":["Athletics"],"noNumber":true}
+        ]
+      }
+    ],
+    "skipped": [
+      {"line":1,"page":1,"text":"2026 Topps Chrome Baseball Checklist","reason":"Looks like a title, not a card"},
+      {
+        "line": 25,
+        "page": 1,
+        "text": "Checklists provided by Topps reflect the intended configurations of that product at the time of",
+        "reason": "Only one column here, so it isn't a card"
+      },
+      {
+        "line": 26,
+        "page": 1,
+        "text": "production, but actual contents and odds may vary.",
+        "reason": "Only one column here, so it isn't a card"
+      },
+      {"line":27,"page":2,"text":"Rookie","reason":"Only one column here, so it isn't a card"},
+      {"line":28,"page":2,"text":"Rookie","reason":"Only one column here, so it isn't a card"},
+      {"line":29,"page":2,"text":"Rookie","reason":"Only one column here, so it isn't a card"},
+      {"line":30,"page":2,"text":"Rookie","reason":"Only one column here, so it isn't a card"},
+      {"line":31,"page":2,"text":"Rookie","reason":"Only one column here, so it isn't a card"},
+      {"line":32,"page":2,"text":"Rookie","reason":"Only one column here, so it isn't a card"},
+      {"line":33,"page":2,"text":"Rookie","reason":"Only one column here, so it isn't a card"},
+      {"line":34,"page":2,"text":"Rookie","reason":"Only one column here, so it isn't a card"},
+      {"line":35,"page":2,"text":"Rookie","reason":"Only one column here, so it isn't a card"},
+      {
+        "line": 36,
+        "page": 2,
+        "text": "Checklists provided by Topps reflect the intended configurations of that product at the time of",
+        "reason": "Only one column here, so it isn't a card"
+      },
+      {
+        "line": 37,
+        "page": 2,
+        "text": "production, but actual contents and odds may vary.",
+        "reason": "Only one column here, so it isn't a card"
+      }
+    ],
+    "skippedSections": [],
+    "rowCount": 17
+  }
+}

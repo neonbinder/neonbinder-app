@@ -1,0 +1,77 @@
+{
+  "file": "2026-pro-set-metal-sample.csv",
+  "mode": "leaf",
+  "options": {"setYear":"2026","mode":"leaf"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [
+      {"number":"DD-1","players":["Carlton Fisk","Harold Baines"],"teams":[],"subset":"Dugout Duos"},
+      {"number":"DD-2","players":["Carlton Fisk","Jim Rice"],"teams":[],"subset":"Dugout Duos"},
+      {"number":"DD-3","players":["Darryl Strawberry","Ron Darling"],"teams":[],"subset":"Dugout Duos"},
+      {"number":"DD-4","players":["Dave Winfield","Kelly Gruber"],"teams":[],"subset":"Dugout Duos"},
+      {"number":"89A-AW1","players":["Aaron Watson"],"teams":["Cincinnati"],"subset":"1989 Pro Set Auto"},
+      {"number":"89A-AS3","players":["Adam Serwinowski"],"teams":["Los Angeles N"],"subset":"1989 Pro Set Auto"},
+      {"number":"89A-AW2","players":["Aidan West"],"teams":["Los Angeles N"],"subset":"1989 Pro Set Auto"},
+      {"number":"89A-AA1","players":["Aiva Arquette"],"teams":["Miami"],"subset":"1989 Pro Set Auto"},
+      {"number":"89B-1","players":["Aaron Watson"],"teams":["Cincinnati"],"subset":"1989 Pro Set Base"},
+      {"number":"89B-2","players":["Adam Serwinowski"],"teams":["Los Angeles N"],"subset":"1989 Pro Set Base"},
+      {"number":"89B-3","players":["Aidan West"],"teams":["Los Angeles N"],"subset":"1989 Pro Set Base"},
+      {"number":"89B-4","players":["Aiva Arquette"],"teams":["Miami"],"subset":"1989 Pro Set Base"},
+      {"number":"89M-1","players":["Aaron Watson"],"teams":["Cincinnati"],"subset":"1989 Pro Set Base Mini"},
+      {"number":"89M-2","players":["Adam Serwinowski"],"teams":["Los Angeles N"],"subset":"1989 Pro Set Base Mini"},
+      {"number":"89M-3","players":["Aidan West"],"teams":["Los Angeles N"],"subset":"1989 Pro Set Base Mini"},
+      {"number":"89M-4","players":["Aiva Arquette"],"teams":["Miami"],"subset":"1989 Pro Set Base Mini"}
+    ],
+    "skipped": [],
+    "format": "csv",
+    "subsets": ["Dugout Duos","1989 Pro Set Auto","1989 Pro Set Base","1989 Pro Set Base Mini"]
+  },
+  "sections": {
+    "format": "csv",
+    "sections": [
+      {
+        "name": "Dugout Duos",
+        "key": "dugout duos",
+        "rows": [
+          {"number":"DD-1","players":["Carlton Fisk","Harold Baines"],"teams":[]},
+          {"number":"DD-2","players":["Carlton Fisk","Jim Rice"],"teams":[]},
+          {"number":"DD-3","players":["Darryl Strawberry","Ron Darling"],"teams":[]},
+          {"number":"DD-4","players":["Dave Winfield","Kelly Gruber"],"teams":[]}
+        ]
+      },
+      {
+        "name": "1989 Pro Set Auto",
+        "key": "1989 pro set auto",
+        "rows": [
+          {"number":"89A-AW1","players":["Aaron Watson"],"teams":["Cincinnati"]},
+          {"number":"89A-AS3","players":["Adam Serwinowski"],"teams":["Los Angeles N"]},
+          {"number":"89A-AW2","players":["Aidan West"],"teams":["Los Angeles N"]},
+          {"number":"89A-AA1","players":["Aiva Arquette"],"teams":["Miami"]}
+        ]
+      },
+      {
+        "name": "1989 Pro Set Base",
+        "key": "1989 pro set base",
+        "rows": [
+          {"number":"89B-1","players":["Aaron Watson"],"teams":["Cincinnati"]},
+          {"number":"89B-2","players":["Adam Serwinowski"],"teams":["Los Angeles N"]},
+          {"number":"89B-3","players":["Aidan West"],"teams":["Los Angeles N"]},
+          {"number":"89B-4","players":["Aiva Arquette"],"teams":["Miami"]}
+        ]
+      },
+      {
+        "name": "1989 Pro Set Base Mini",
+        "key": "1989 pro set base mini",
+        "rows": [
+          {"number":"89M-1","players":["Aaron Watson"],"teams":["Cincinnati"]},
+          {"number":"89M-2","players":["Adam Serwinowski"],"teams":["Los Angeles N"]},
+          {"number":"89M-3","players":["Aidan West"],"teams":["Los Angeles N"]},
+          {"number":"89M-4","players":["Aiva Arquette"],"teams":["Miami"]}
+        ]
+      }
+    ],
+    "skipped": [],
+    "skippedSections": [],
+    "rowCount": 16
+  }
+}

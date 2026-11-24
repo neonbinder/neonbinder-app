@@ -52,3 +52,4 @@ Entity-review, Tidy Up and walk flows, team/player resolution, card titles and d
 - [Parallel commit chunks: defer the shared flush](reference_parallel_commit_chunks_defer_the_shared_flush.md) — find the one shared write, defer it to the caller, prove disjointness with a db Proxy; ties on sortOrder stay sequential
 - [Client-carried gate facts: sport from the doc](reference_client_carried_gate_facts_rederive_sport_from_the_doc.md) — re-check ids server-side; set-history links are cross-sport; recompute per-name facts, don't store
 - [Walk lookups in a keyed ref store](reference_walk_lookups_live_in_a_keyed_ref_store.md) — per-sitting results in a ref Map store keyed by the whole request; stale drops by key; root tsc filter
+- [Card number prefix/remainder helper](reference_card_number_prefix_remainder_helper.md) — splitCardNumberPrefix reads "89B-1"/"T88-12"; stripLetterPrefix does not

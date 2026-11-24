@@ -293,6 +293,17 @@ export interface DrillItem {
    * print run ("/50"). Never a count (NEO-364): the drill shows no numbers.
    */
   description?: string;
+  /**
+   * How `description` is said aloud when the visible text would not read well
+   * ("/50" is "numbered to 50"). Absent: the visible text is spoken as it is.
+   */
+  descriptionSpoken?: string;
+  /**
+   * NEO-616 — the print run itself, when the row's cards share one. The native
+   * selects append it to the option text; they never append `description`, so a
+   * future description cannot leak into them.
+   */
+  printRun?: number;
   /** Variant-type rows: what the row is (and its children are). */
   kind?: VariantKind;
   /** Card-bearing rows: cards hanging off this row, variations included; null when uncounted. */

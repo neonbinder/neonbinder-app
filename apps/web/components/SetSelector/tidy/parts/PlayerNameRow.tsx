@@ -421,15 +421,17 @@ function UnansweredPlayerName({
 
   const create = (oneNamePlayer: boolean) =>
     checking ? Promise.resolve(false) : answer(
-      () =>
-        createPlayer({
+      async () => {
+        const made = await createPlayer({
           cardId: row._id,
           name: name.printed,
           sportId: needSport(rowSportId),
           ...(oneNamePlayer ? { oneNamePlayer: true as const } : {}),
           ...(excludedNames.length > 0 ? { excludedCareerTeamNames: excludedNames } : {}),
           ...(seen ? { enrichment: seen } : {}),
-        }),
+        });
+        memory.rememberMadePlayer(row._id, made.playerId);
+      },
       "Couldn't add that player. Try again.",
     );
 

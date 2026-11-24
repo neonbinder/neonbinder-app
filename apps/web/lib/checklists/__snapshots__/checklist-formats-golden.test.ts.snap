@@ -40193,6 +40193,3652 @@ exports[`golden — CSV fixtures > 2026-onit-athlete-arizona-state-sun-devils-ba
 }
 `;
 
+exports[`golden — CSV fixtures > 2026-pro-set-metal-sample.csv: leaf and set parses > leaf parse 1`] = `
+{
+  "format": "csv",
+  "rows": [
+    {
+      "number": "DD-1",
+      "players": [
+        "Carlton Fisk",
+        "Harold Baines",
+      ],
+      "subset": "Dugout Duos",
+      "teams": [],
+    },
+    {
+      "number": "DD-2",
+      "players": [
+        "Carlton Fisk",
+        "Jim Rice",
+      ],
+      "subset": "Dugout Duos",
+      "teams": [],
+    },
+    {
+      "number": "DD-3",
+      "players": [
+        "Darryl Strawberry",
+        "Ron Darling",
+      ],
+      "subset": "Dugout Duos",
+      "teams": [],
+    },
+    {
+      "number": "DD-4",
+      "players": [
+        "Dave Winfield",
+        "Kelly Gruber",
+      ],
+      "subset": "Dugout Duos",
+      "teams": [],
+    },
+    {
+      "number": "89A-AW1",
+      "players": [
+        "Aaron Watson",
+      ],
+      "subset": "1989 Pro Set Auto",
+      "teams": [
+        "Cincinnati",
+      ],
+    },
+    {
+      "number": "89A-AS3",
+      "players": [
+        "Adam Serwinowski",
+      ],
+      "subset": "1989 Pro Set Auto",
+      "teams": [
+        "Los Angeles N",
+      ],
+    },
+    {
+      "number": "89A-AW2",
+      "players": [
+        "Aidan West",
+      ],
+      "subset": "1989 Pro Set Auto",
+      "teams": [
+        "Los Angeles N",
+      ],
+    },
+    {
+      "number": "89A-AA1",
+      "players": [
+        "Aiva Arquette",
+      ],
+      "subset": "1989 Pro Set Auto",
+      "teams": [
+        "Miami",
+      ],
+    },
+    {
+      "number": "89B-1",
+      "players": [
+        "Aaron Watson",
+      ],
+      "subset": "1989 Pro Set Base",
+      "teams": [
+        "Cincinnati",
+      ],
+    },
+    {
+      "number": "89B-2",
+      "players": [
+        "Adam Serwinowski",
+      ],
+      "subset": "1989 Pro Set Base",
+      "teams": [
+        "Los Angeles N",
+      ],
+    },
+    {
+      "number": "89B-3",
+      "players": [
+        "Aidan West",
+      ],
+      "subset": "1989 Pro Set Base",
+      "teams": [
+        "Los Angeles N",
+      ],
+    },
+    {
+      "number": "89B-4",
+      "players": [
+        "Aiva Arquette",
+      ],
+      "subset": "1989 Pro Set Base",
+      "teams": [
+        "Miami",
+      ],
+    },
+    {
+      "number": "89M-1",
+      "players": [
+        "Aaron Watson",
+      ],
+      "subset": "1989 Pro Set Base Mini",
+      "teams": [
+        "Cincinnati",
+      ],
+    },
+    {
+      "number": "89M-2",
+      "players": [
+        "Adam Serwinowski",
+      ],
+      "subset": "1989 Pro Set Base Mini",
+      "teams": [
+        "Los Angeles N",
+      ],
+    },
+    {
+      "number": "89M-3",
+      "players": [
+        "Aidan West",
+      ],
+      "subset": "1989 Pro Set Base Mini",
+      "teams": [
+        "Los Angeles N",
+      ],
+    },
+    {
+      "number": "89M-4",
+      "players": [
+        "Aiva Arquette",
+      ],
+      "subset": "1989 Pro Set Base Mini",
+      "teams": [
+        "Miami",
+      ],
+    },
+  ],
+  "skipped": [],
+  "subsets": [
+    "Dugout Duos",
+    "1989 Pro Set Auto",
+    "1989 Pro Set Base",
+    "1989 Pro Set Base Mini",
+  ],
+}
+`;
+
+exports[`golden — CSV fixtures > 2026-pro-set-metal-sample.csv: leaf and set parses > set parse 1`] = `
+{
+  "format": "csv",
+  "rowCount": 304,
+  "sections": [
+    {
+      "key": "dugout duos",
+      "name": "Dugout Duos",
+      "rows": [
+        {
+          "number": "DD-1",
+          "players": [
+            "Carlton Fisk",
+            "Harold Baines",
+          ],
+          "teams": [],
+        },
+        {
+          "number": "DD-2",
+          "players": [
+            "Carlton Fisk",
+            "Jim Rice",
+          ],
+          "teams": [],
+        },
+        {
+          "number": "DD-3",
+          "players": [
+            "Darryl Strawberry",
+            "Ron Darling",
+          ],
+          "teams": [],
+        },
+        {
+          "number": "DD-4",
+          "players": [
+            "Dave Winfield",
+            "Kelly Gruber",
+          ],
+          "teams": [],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set auto",
+      "name": "1989 Pro Set Auto",
+      "rows": [
+        {
+          "number": "89A-AW1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89A-AS3",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AW2",
+          "players": [
+            "Aidan West",
+          ],
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AA1",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base",
+      "name": "1989 Pro Set Base",
+      "rows": [
+        {
+          "number": "89B-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89B-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-3",
+          "players": [
+            "Aidan West",
+          ],
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base mini",
+      "name": "1989 Pro Set Base Mini",
+      "rows": [
+        {
+          "number": "89M-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89M-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-3",
+          "players": [
+            "Aidan West",
+          ],
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "dugout duos prismatic red",
+      "name": "Dugout Duos Prismatic Red",
+      "rows": [
+        {
+          "number": "DD-1",
+          "players": [
+            "Carlton Fisk",
+            "Harold Baines",
+          ],
+          "printRun": 5,
+          "teams": [],
+        },
+        {
+          "number": "DD-2",
+          "players": [
+            "Carlton Fisk",
+            "Jim Rice",
+          ],
+          "printRun": 5,
+          "teams": [],
+        },
+        {
+          "number": "DD-3",
+          "players": [
+            "Darryl Strawberry",
+            "Ron Darling",
+          ],
+          "printRun": 5,
+          "teams": [],
+        },
+        {
+          "number": "DD-4",
+          "players": [
+            "Dave Winfield",
+            "Kelly Gruber",
+          ],
+          "printRun": 5,
+          "teams": [],
+        },
+      ],
+    },
+    {
+      "key": "dugout duos prismatic gold",
+      "name": "Dugout Duos Prismatic Gold",
+      "rows": [
+        {
+          "number": "DD-1",
+          "players": [
+            "Carlton Fisk",
+            "Harold Baines",
+          ],
+          "printRun": 1,
+          "teams": [],
+        },
+        {
+          "number": "DD-2",
+          "players": [
+            "Carlton Fisk",
+            "Jim Rice",
+          ],
+          "printRun": 1,
+          "teams": [],
+        },
+        {
+          "number": "DD-3",
+          "players": [
+            "Darryl Strawberry",
+            "Ron Darling",
+          ],
+          "printRun": 1,
+          "teams": [],
+        },
+        {
+          "number": "DD-4",
+          "players": [
+            "Dave Winfield",
+            "Kelly Gruber",
+          ],
+          "printRun": 1,
+          "teams": [],
+        },
+      ],
+    },
+    {
+      "key": "dugout duos super prismatic gold silver",
+      "name": "Dugout Duos Super Prismatic Gold Silver",
+      "rows": [
+        {
+          "number": "DD-1",
+          "players": [
+            "Carlton Fisk",
+            "Harold Baines",
+          ],
+          "printRun": 1,
+          "teams": [],
+        },
+        {
+          "number": "DD-2",
+          "players": [
+            "Carlton Fisk",
+            "Jim Rice",
+          ],
+          "printRun": 1,
+          "teams": [],
+        },
+        {
+          "number": "DD-3",
+          "players": [
+            "Darryl Strawberry",
+            "Ron Darling",
+          ],
+          "printRun": 1,
+          "teams": [],
+        },
+        {
+          "number": "DD-4",
+          "players": [
+            "Dave Winfield",
+            "Kelly Gruber",
+          ],
+          "printRun": 1,
+          "teams": [],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set auto prismatic rwb",
+      "name": "1989 Pro Set Auto Prismatic RWB",
+      "rows": [
+        {
+          "number": "89A-AW1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89A-AS3",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AW2",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AA1",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set auto prismatic silver",
+      "name": "1989 Pro Set Auto Prismatic Silver",
+      "rows": [
+        {
+          "number": "89A-AW1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 20,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89A-AS3",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 20,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AW2",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 20,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AA1",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 20,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set auto prismatic platinum",
+      "name": "1989 Pro Set Auto Prismatic Platinum",
+      "rows": [
+        {
+          "number": "89A-AW1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 10,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89A-AS3",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 10,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AW2",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 10,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AA1",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 10,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set auto prismatic purple",
+      "name": "1989 Pro Set Auto Prismatic Purple",
+      "rows": [
+        {
+          "number": "89A-AW1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 8,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89A-AS3",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 8,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AW2",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 8,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AA1",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 8,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set auto prismatic pink",
+      "name": "1989 Pro Set Auto Prismatic Pink",
+      "rows": [
+        {
+          "number": "89A-AW1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 7,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89A-AS3",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 7,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AW2",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 7,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AA1",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 7,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set auto prismatic blue",
+      "name": "1989 Pro Set Auto Prismatic Blue",
+      "rows": [
+        {
+          "number": "89A-AW1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 5,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89A-AS3",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 5,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AW2",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 5,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AA1",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 5,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set auto prismatic orange",
+      "name": "1989 Pro Set Auto Prismatic Orange",
+      "rows": [
+        {
+          "number": "89A-AW1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 4,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89A-AS3",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 4,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AW2",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 4,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AA1",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 4,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set auto prismatic green",
+      "name": "1989 Pro Set Auto Prismatic Green",
+      "rows": [
+        {
+          "number": "89A-AW1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 3,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89A-AS3",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 3,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AW2",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 3,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AA1",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 3,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set auto prismatic black",
+      "name": "1989 Pro Set Auto Prismatic Black",
+      "rows": [
+        {
+          "number": "89A-AW1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 2,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89A-AS3",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 2,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AW2",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 2,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AA1",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 2,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set auto prismatic red",
+      "name": "1989 Pro Set Auto Prismatic Red",
+      "rows": [
+        {
+          "number": "89A-AW1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89A-AS3",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AW2",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AA1",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set auto prismatic gold",
+      "name": "1989 Pro Set Auto Prismatic Gold",
+      "rows": [
+        {
+          "number": "89A-AW1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89A-AS3",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AW2",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AA1",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set auto lazer rwb",
+      "name": "1989 Pro Set Auto Lazer RWB",
+      "rows": [
+        {
+          "number": "89A-AW1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89A-AS3",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AW2",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AA1",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set auto lazer silver",
+      "name": "1989 Pro Set Auto Lazer Silver",
+      "rows": [
+        {
+          "number": "89A-AW1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89A-AS3",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AW2",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AA1",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set auto lazer platinum",
+      "name": "1989 Pro Set Auto Lazer Platinum",
+      "rows": [
+        {
+          "number": "89A-AW1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89A-AS3",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AW2",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AA1",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set auto lazer purple",
+      "name": "1989 Pro Set Auto Lazer Purple",
+      "rows": [
+        {
+          "number": "89A-AW1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89A-AS3",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AW2",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AA1",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set auto lazer pink",
+      "name": "1989 Pro Set Auto Lazer Pink",
+      "rows": [
+        {
+          "number": "89A-AW1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89A-AS3",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AW2",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AA1",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set auto lazer blue",
+      "name": "1989 Pro Set Auto Lazer Blue",
+      "rows": [
+        {
+          "number": "89A-AW1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89A-AS3",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AW2",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AA1",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set auto lazer orange",
+      "name": "1989 Pro Set Auto Lazer Orange",
+      "rows": [
+        {
+          "number": "89A-AW1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89A-AS3",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AW2",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AA1",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set auto lazer green",
+      "name": "1989 Pro Set Auto Lazer Green",
+      "rows": [
+        {
+          "number": "89A-AW1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89A-AS3",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AW2",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AA1",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set auto lazer black",
+      "name": "1989 Pro Set Auto Lazer Black",
+      "rows": [
+        {
+          "number": "89A-AW1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89A-AS3",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AW2",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AA1",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set auto lazer red",
+      "name": "1989 Pro Set Auto Lazer Red",
+      "rows": [
+        {
+          "number": "89A-AW1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89A-AS3",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AW2",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AA1",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set auto lazer gold",
+      "name": "1989 Pro Set Auto Lazer Gold",
+      "rows": [
+        {
+          "number": "89A-AW1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89A-AS3",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AW2",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AA1",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set auto super prismatic gold silver",
+      "name": "1989 Pro Set Auto Super Prismatic Gold Silver",
+      "rows": [
+        {
+          "number": "89A-AW1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89A-AS3",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AW2",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AA1",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set auto silver circles rwb rwb",
+      "name": "1989 Pro Set Auto Silver Circles RWB RWB",
+      "rows": [
+        {
+          "number": "89A-AW1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89A-AS3",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AW2",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89A-AA1",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base prismatic rwb",
+      "name": "1989 Pro Set Base Prismatic RWB",
+      "rows": [
+        {
+          "number": "89B-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 6,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89B-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 6,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 6,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 6,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base prismatic silver",
+      "name": "1989 Pro Set Base Prismatic Silver",
+      "rows": [
+        {
+          "number": "89B-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 10,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89B-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 10,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 10,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 10,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base prismatic platinum",
+      "name": "1989 Pro Set Base Prismatic Platinum",
+      "rows": [
+        {
+          "number": "89B-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 8,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89B-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 8,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 8,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 8,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base prismatic purple",
+      "name": "1989 Pro Set Base Prismatic Purple",
+      "rows": [
+        {
+          "number": "89B-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 7,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89B-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 7,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 7,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 7,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base prismatic pink",
+      "name": "1989 Pro Set Base Prismatic Pink",
+      "rows": [
+        {
+          "number": "89B-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 6,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89B-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 6,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 6,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 6,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base prismatic blue",
+      "name": "1989 Pro Set Base Prismatic Blue",
+      "rows": [
+        {
+          "number": "89B-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 5,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89B-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 5,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 5,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 5,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base prismatic orange",
+      "name": "1989 Pro Set Base Prismatic Orange",
+      "rows": [
+        {
+          "number": "89B-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 4,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89B-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 4,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 4,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 4,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base prismatic green",
+      "name": "1989 Pro Set Base Prismatic Green",
+      "rows": [
+        {
+          "number": "89B-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 3,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89B-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 3,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 3,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 3,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base prismatic black",
+      "name": "1989 Pro Set Base Prismatic Black",
+      "rows": [
+        {
+          "number": "89B-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 2,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89B-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 2,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 2,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 2,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base prismatic red",
+      "name": "1989 Pro Set Base Prismatic Red",
+      "rows": [
+        {
+          "number": "89B-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89B-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base prismatic gold",
+      "name": "1989 Pro Set Base Prismatic Gold",
+      "rows": [
+        {
+          "number": "89B-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89B-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base lazer rwb",
+      "name": "1989 Pro Set Base Lazer RWB",
+      "rows": [
+        {
+          "number": "89B-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 6,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89B-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 6,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 6,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 6,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base lazer silver",
+      "name": "1989 Pro Set Base Lazer Silver",
+      "rows": [
+        {
+          "number": "89B-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89B-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base lazer platinum",
+      "name": "1989 Pro Set Base Lazer Platinum",
+      "rows": [
+        {
+          "number": "89B-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89B-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base lazer purple",
+      "name": "1989 Pro Set Base Lazer Purple",
+      "rows": [
+        {
+          "number": "89B-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89B-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base lazer pink",
+      "name": "1989 Pro Set Base Lazer Pink",
+      "rows": [
+        {
+          "number": "89B-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89B-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base lazer blue",
+      "name": "1989 Pro Set Base Lazer Blue",
+      "rows": [
+        {
+          "number": "89B-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89B-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base lazer orange",
+      "name": "1989 Pro Set Base Lazer Orange",
+      "rows": [
+        {
+          "number": "89B-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89B-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base lazer green",
+      "name": "1989 Pro Set Base Lazer Green",
+      "rows": [
+        {
+          "number": "89B-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89B-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base lazer black",
+      "name": "1989 Pro Set Base Lazer Black",
+      "rows": [
+        {
+          "number": "89B-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89B-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base lazer red",
+      "name": "1989 Pro Set Base Lazer Red",
+      "rows": [
+        {
+          "number": "89B-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89B-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base lazer gold",
+      "name": "1989 Pro Set Base Lazer Gold",
+      "rows": [
+        {
+          "number": "89B-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89B-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base super prismatic gold silver",
+      "name": "1989 Pro Set Base Super Prismatic Gold Silver",
+      "rows": [
+        {
+          "number": "89B-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89B-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base silver circles rwb rwb",
+      "name": "1989 Pro Set Base Silver Circles RWB RWB",
+      "rows": [
+        {
+          "number": "89B-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89B-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89B-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base mini prismatic silver",
+      "name": "1989 Pro Set Base Mini Prismatic Silver",
+      "rows": [
+        {
+          "number": "89M-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 10,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89M-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 10,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 10,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 10,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base mini prismatic platinum",
+      "name": "1989 Pro Set Base Mini Prismatic Platinum",
+      "rows": [
+        {
+          "number": "89M-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 8,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89M-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 8,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 8,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 8,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base mini prismatic purple",
+      "name": "1989 Pro Set Base Mini Prismatic Purple",
+      "rows": [
+        {
+          "number": "89M-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 7,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89M-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 7,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 7,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 7,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base mini prismatic pink",
+      "name": "1989 Pro Set Base Mini Prismatic Pink",
+      "rows": [
+        {
+          "number": "89M-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 6,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89M-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 6,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 6,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 6,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base mini prismatic blue",
+      "name": "1989 Pro Set Base Mini Prismatic Blue",
+      "rows": [
+        {
+          "number": "89M-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 5,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89M-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 5,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 5,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 5,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base mini prismatic orange",
+      "name": "1989 Pro Set Base Mini Prismatic Orange",
+      "rows": [
+        {
+          "number": "89M-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 4,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89M-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 4,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 4,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 4,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base mini prismatic green",
+      "name": "1989 Pro Set Base Mini Prismatic Green",
+      "rows": [
+        {
+          "number": "89M-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 3,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89M-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 3,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 3,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 3,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base mini prismatic black",
+      "name": "1989 Pro Set Base Mini Prismatic Black",
+      "rows": [
+        {
+          "number": "89M-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 2,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89M-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 2,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 2,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 2,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base mini prismatic red",
+      "name": "1989 Pro Set Base Mini Prismatic Red",
+      "rows": [
+        {
+          "number": "89M-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89M-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base mini prismatic gold",
+      "name": "1989 Pro Set Base Mini Prismatic Gold",
+      "rows": [
+        {
+          "number": "89M-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89M-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base mini lazer silver",
+      "name": "1989 Pro Set Base Mini Lazer Silver",
+      "rows": [
+        {
+          "number": "89M-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89M-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base mini lazer platinum",
+      "name": "1989 Pro Set Base Mini Lazer Platinum",
+      "rows": [
+        {
+          "number": "89M-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89M-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base mini lazer purple",
+      "name": "1989 Pro Set Base Mini Lazer Purple",
+      "rows": [
+        {
+          "number": "89M-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89M-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base mini lazer pink",
+      "name": "1989 Pro Set Base Mini Lazer Pink",
+      "rows": [
+        {
+          "number": "89M-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89M-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base mini lazer blue",
+      "name": "1989 Pro Set Base Mini Lazer Blue",
+      "rows": [
+        {
+          "number": "89M-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89M-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base mini lazer orange",
+      "name": "1989 Pro Set Base Mini Lazer Orange",
+      "rows": [
+        {
+          "number": "89M-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89M-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base mini lazer green",
+      "name": "1989 Pro Set Base Mini Lazer Green",
+      "rows": [
+        {
+          "number": "89M-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89M-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base mini lazer black",
+      "name": "1989 Pro Set Base Mini Lazer Black",
+      "rows": [
+        {
+          "number": "89M-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89M-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base mini lazer red",
+      "name": "1989 Pro Set Base Mini Lazer Red",
+      "rows": [
+        {
+          "number": "89M-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 2,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89M-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 2,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 2,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 2,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base mini lazer gold",
+      "name": "1989 Pro Set Base Mini Lazer Gold",
+      "rows": [
+        {
+          "number": "89M-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89M-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+    {
+      "key": "1989 pro set base mini super prismatic gold silver",
+      "name": "1989 Pro Set Base Mini Super Prismatic Gold Silver",
+      "rows": [
+        {
+          "number": "89M-1",
+          "players": [
+            "Aaron Watson",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Cincinnati",
+          ],
+        },
+        {
+          "number": "89M-2",
+          "players": [
+            "Adam Serwinowski",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-3",
+          "players": [
+            "Aidan West",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Los Angeles N",
+          ],
+        },
+        {
+          "number": "89M-4",
+          "players": [
+            "Aiva Arquette",
+          ],
+          "printRun": 1,
+          "teams": [
+            "Miami",
+          ],
+        },
+      ],
+    },
+  ],
+  "skipped": [],
+  "skippedSections": [],
+}
+`;
+
 exports[`golden — CSV fixtures > 2026-topps-insert-profiles.csv: leaf and set parses > leaf parse 1`] = `
 {
   "format": "csv",

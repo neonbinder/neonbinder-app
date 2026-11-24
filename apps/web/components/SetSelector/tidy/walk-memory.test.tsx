@@ -392,6 +392,16 @@ describe("WalkMemory answers on the open card", () => {
     expect(m.answersOn("c2", "player")).toHaveLength(1);
   });
 
+  it("a player made on the open card is remembered for that card only, and goes when the walk leaves it (NEO-657)", () => {
+    const m = new WalkMemory();
+    m.rememberMadePlayer("c1", "p1");
+    expect(m.madeOnCard("c1", "p1")).toBe(true);
+    expect(m.madeOnCard("c1", "p2")).toBe(false);
+    expect(m.madeOnCard("c2", "p1")).toBe(false);
+    m.leaveCard("c1");
+    expect(m.madeOnCard("c1", "p1")).toBe(false);
+  });
+
   it("leaving a card keeps its lookups for the sitting (the walk may come back)", async () => {
     const m = new WalkMemory();
     ask(m, vi.fn().mockResolvedValue(READY));

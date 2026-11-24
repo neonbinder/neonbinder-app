@@ -94,6 +94,8 @@ export class WalkMemory {
   private fullKeys = new Set<string>();
   private answers = new Map<string, OpenAnswer>();
   private picks = new Map<string, KeptPick>();
+  /** `cardId|playerId` for each player made on an open card (NEO-657's prefilled stint). */
+  private madePlayers = new Set<string>();
   private gateItems = new Map<string, GateItem>();
   private focusOwed: string | null = null;
   private factsState: FactsState = "idle";
@@ -295,6 +297,16 @@ export class WalkMemory {
     return [...this.answers.entries()].filter(([key]) => key.startsWith(prefix)).map(([, a]) => a);
   }
 
+  // ── a player made on the open card ────────────────────────────────────────
+  /** "Add as new player" made this player on this card; the Career tile opens its stint prefilled. */
+  rememberMadePlayer(cardId: string, playerId: string): void {
+    this.madePlayers.add(`${cardId}|${playerId}`);
+    this.bump();
+  }
+  madeOnCard(cardId: string, playerId: string): boolean {
+    return this.madePlayers.has(`${cardId}|${playerId}`);
+  }
+
   // ── a Sources pick ────────────────────────────────────────────────────────
   keepPick(cardId: string, pick: KeptPick): void {
     this.picks.set(`${cardId}|${pick.field}`, pick);
@@ -332,6 +344,9 @@ export class WalkMemory {
     }
     for (const key of [...this.picks.keys()]) {
       if (key.startsWith(`${cardId}|`)) changed = this.picks.delete(key) || changed;
+    }
+    for (const key of [...this.madePlayers]) {
+      if (key.startsWith(`${cardId}|`)) changed = this.madePlayers.delete(key) || changed;
     }
     if (changed) this.bump();
   }

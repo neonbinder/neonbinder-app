@@ -21,7 +21,7 @@ import type { TidyTileProps } from "../tile-types";
  * stint from the set's year (`tidyCards.saveCard`). A wrong team on the card is
  * Change on the Team tile.
  */
-export default function CareerTile({ context, attention, leafId }: TidyTileProps) {
+export default function CareerTile({ row, context, attention, leafId }: TidyTileProps) {
   const write = useTidyWrite();
   const gaps = attention.items.flatMap((i) => (i.kind === "careerGap" ? [i] : []));
   const wanted = gaps.length > 0;
@@ -50,6 +50,7 @@ export default function CareerTile({ context, attention, leafId }: TidyTileProps
       {gaps.map((item) => (
         <CareerGapRow
           key={`gap:${item.playerId}:${item.teamId}`}
+          row={row}
           context={context}
           playerId={item.playerId}
           teamId={item.teamId}

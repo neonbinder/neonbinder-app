@@ -1,0 +1,18 @@
+{
+  "file": "2025-bowman-draft-insert-bowman-draft-nights-autographs.csv",
+  "mode": "leaf",
+  "options": {"setYear":"2025","mode":"leaf"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [
+      {"number":"BDNA-EW","players":["Eli Willits"],"teams":["Washington Nationals"]},
+      {"number":"BDNA-GF","players":["Gavin Fien"],"teams":["Texas Rangers"]},
+      {"number":"BDNA-KA","players":["Kade Anderson"],"teams":["Seattle Mariners"]},
+      {"number":"BDNA-SH","players":["Seth Hernandez"],"teams":["Pittsburgh Pirates"]},
+      {"number":"BDNA-XN","players":["Xavier Neyens"],"teams":["Houston Astros"]}
+    ],
+    "skipped": [],
+    "format": "csv"
+  },
+  "sections": {"format":"csv","sections":[],"skipped":[],"skippedSections":[],"rowCount":0}
+}

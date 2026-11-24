@@ -190,6 +190,8 @@ beforeEach(() => {
   for (const k of Object.keys(queryResults)) delete queryResults[k];
   for (const k of Object.keys(mutations)) delete mutations[k];
   queryResults["players.nameFragmentCheck"] = { isFragment: false };
+  // The real mutation answers with the player it made (NEO-657's prefilled stint reads it).
+  mutation("tidyNames.createPlayer").mockResolvedValue({ playerId: "player-new" });
 });
 
 describe("PlayerTile", () => {
@@ -652,7 +654,14 @@ describe("PlayerTile", () => {
       );
     });
 
-    it("a name answered inline (Add as new player) tells the walk once the write lands", async () => {
+    it("Add as new player remembers the player in the walk, for the Career tile's prefilled stint (NEO-657)", async () => {
+    queryResults["players.nearMatches"] = [];
+    renderTile({});
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Add as new player" })));
+    expect(memory.madeOnCard(CARD, "player-new")).toBe(true);
+  });
+
+  it("a name answered inline (Add as new player) tells the walk once the write lands", async () => {
       queryResults["players.nearMatches"] = [];
       const onAnswered = vi.fn();
       renderTile({ onAnswered });

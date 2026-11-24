@@ -7318,6 +7318,11 @@ export const addCustomCard = mutation({
       }),
     });
 
+    // NEO-616 — a card born with no run adds to the row's denominator.
+    await ctx.scheduler.runAfter(0, internal.variantPrintRun.refreshVariantPrintRun, {
+      selectorOptionId: args.selectorOptionId,
+    });
+
     return id;
   },
 });
@@ -7913,8 +7918,22 @@ export const updateCard = mutation({
       if (description !== undefined) filtered.listingDescription = description;
     }
 
+    // NEO-616 — read BEFORE the patch: the row's shown print run follows the
+    // card's, so it is only recomputed when this save really moves the run
+    // (a `null` clear is `undefined` here, the same stored-or-absent compare).
+    let printRunMoved = false;
+    if ("printRun" in filtered) {
+      const before = await loadStoredCard();
+      printRunMoved = before.printRun !== filtered.printRun;
+    }
+
     if (Object.keys(filtered).length > 0) {
       await ctx.db.patch(id, { ...filtered, lastUpdated: Date.now() });
+    }
+    if (printRunMoved) {
+      await ctx.scheduler.runAfter(0, internal.variantPrintRun.refreshVariantPrintRun, {
+        selectorOptionId: (await loadStoredCard()).selectorOptionId,
+      });
     }
     if (playerLinksIndexWrite) {
       await syncCardPlayerLinks(
@@ -8224,6 +8243,10 @@ export const deleteCard = mutation({
     const ledger = createCardCountLedger();
     await removeCardRow(ctx, card, ledger);
     await ledger.flush(ctx);
+    // NEO-616 — one card fewer changes what share of the row carries a run.
+    await ctx.scheduler.runAfter(0, internal.variantPrintRun.refreshVariantPrintRun, {
+      selectorOptionId: card.selectorOptionId,
+    });
     return null;
   },
 });
@@ -23021,6 +23044,10 @@ export const commitCardChecklistChunk = internalMutation({
     const bscTeamEnrichmentIds: Array<Id<"cardChecklist">> = [];
     const staleDecisionIds: Array<Id<"cardChecklist">> = [];
     let contentAppliedCount = 0;
+    // NEO-616 — an accepted field changed some card's print run, or a card
+    // this chunk inserted carries one, so the leaf's own shown run is
+    // recomputed once, after this chunk.
+    let printRunChanged = false;
     // NEO-246 — see the return validator. Accumulated across every
     // `boundPendingNames` call in this chunk, on both the update and the
     // insert branch.
@@ -23198,6 +23225,7 @@ export const commitCardChecklistChunk = internalMutation({
           contentPatch.playerLinks = card.playerLinks;
         }
         if (Object.keys(contentPatch).length > 0) contentAppliedCount++;
+        if ("printRun" in contentPatch) printRunChanged = true;
 
         // ── NEO-102: the operator's "no team" confirmation ─────────────────
         //
@@ -23716,7 +23744,19 @@ export const commitCardChecklistChunk = internalMutation({
         );
         storedIds.push(newCardId);
         if (insertTeamAnswer.enqueue) bscTeamEnrichmentIds.push(newCardId);
+        // NEO-616 — a newly inserted card that carries a run moves the row's
+        // plurality too. The same flag the accepted-field write sets.
+        if (card.printRun !== undefined) printRunChanged = true;
       }
+    }
+
+    // NEO-616 — after the card writes, in the same transaction's wake. Before
+    // the deferred-counts return below, so a chunk that defers its flush still
+    // schedules the row's print-run refresh.
+    if (printRunChanged) {
+      await ctx.scheduler.runAfter(0, internal.variantPrintRun.refreshVariantPrintRun, {
+        selectorOptionId: args.selectorOptionId,
+      });
     }
 
     // NEO-645 — a chunk that runs beside its siblings leaves the flush to the

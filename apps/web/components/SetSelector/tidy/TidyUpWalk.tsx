@@ -28,6 +28,7 @@ import {
 } from "../card-attention";
 import type { CardChecklistRow } from "../card-checklist-row";
 import { AnsweredProvider } from "./answered";
+import { BeforeSaveProvider, createBeforeSaveRegistry } from "./before-save";
 import { InlineStackProvider, useCloseTopInlinePart, useInlineStackOpen } from "./inline-stack";
 import type { VariantKind } from "../../../app/collection/final/data/types";
 import TidyCardFace from "./TidyCardFace";
@@ -390,6 +391,8 @@ function WalkDialog({
   const [saving, setSaving] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
   const saveCard = useMutation(api.tidyCards.saveCard);
+  // NEO-657: what an open tile form still has to write before Save & next moves on.
+  const [beforeSave] = useState(createBeforeSaveRegistry);
 
   const pinkCount = attention?.items.filter((i) => i.level === "fix").length ?? 0;
   // Not while the career question is in flight: a card that just gained a team
@@ -414,6 +417,7 @@ function WalkDialog({
         : [],
     );
     try {
+      if (!(await beforeSave.run())) throw new Error("A tile could not write its form");
       if (gaps.length > 0) await saveCard({ cardId, gaps });
     } catch {
       setSaveFailed(true);
@@ -712,6 +716,7 @@ function WalkDialog({
   return createPortal(
     <Theme>
       <AnsweredProvider value={onAnswered}>
+        <BeforeSaveProvider value={beforeSave.registry}>
         <div
           ref={dialogRef}
           role="dialog"
@@ -896,6 +901,7 @@ function WalkDialog({
             </div>
           </div>
         </div>
+        </BeforeSaveProvider>
       </AnsweredProvider>
     </Theme>,
     document.body,

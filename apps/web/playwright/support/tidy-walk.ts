@@ -854,6 +854,10 @@ const PINKABLE: readonly TidyTileName[] = ["Sources disagree", "Player", "Team",
  * screen counts it "still to check") and counted in `careerSkipped`. There is
  * no "Keep as is" any more (B23). `career: "add"` presses Save & next over the
  * gaps, so it writes them: never on a catalogue player.
+ * A new player made on the card (Add as new player) whose card names one NB team
+ * has that team's stint for the set's year prefilled in an open "+ Add stint"
+ * form (NEO-657): Save & next adds it as shown, so `career: "add"` writes it to
+ * the walk's own player, never a shared catalogue row.
  *
  * Contract: ENTRY the walk is open. EXIT the end screen is up. Returns the
  * tally. `maxCards` is a runaway guard (the seed's Base is 335 cards).
