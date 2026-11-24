@@ -1,18 +1,17 @@
 /**
- * NEO-645 — what `commitCardChecklist` stores for the Tidy Up walk, through the
- * real action (prelude, chunk, finalize):
+ * NEO-645 / NEO-656 — what `commitCardChecklist` stores for the Tidy Up walk,
+ * through the real action (prelude, chunk, finalize):
  *
- *   - the printed names (with `order`) of names that have a name row, and none
- *     for an exact single match;
+ *   - the names it leaves pending on the card, in printed order, and none for an
+ *     exact single match (the card is the only record of its names);
  *   - `sourceDisagreements`: stored on a NEW row, the field holding nothing
- *     while unsettled, NB's own pick when exactly one value is made of NB rows,
- *     never re-derived on a re-sync (D4), and a payload over 4096 bytes refuses
- *     the commit and names the card by NB's own number;
+ *     while unsettled, never re-derived on a re-sync (D4), and a payload over
+ *     4096 bytes refuses the commit and names the card by NB's own number;
  *   - `sourceNumbers`, stored on a new row;
- *   - `careerGap` with today's rule (`careerCoversCardTeam`), never on a
- *     multi-player card;
- *   - `teamFill`: the batch tier (the player's team on other cards), blocked by
- *     a source-named team (rule 8).
+ *   - no stored career check: a career gap is read LIVE (`careerCoverage.careerGaps`)
+ *     with today's rule (`careerCoversCardTeam`), never on a multi-player card;
+ *   - the team fill: the batch tier (the player's team on other cards), blocked
+ *     by a source-named team (rule 8), with no note stored.
  *
  * The chunk's own branches are in `tidyCommit.chunk.test.ts`.
  */
@@ -23,10 +22,9 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
-import { normalizeEntityName } from "../lib/entities/normalize-name";
+import { deriveCardAttention } from "./features/cardAttention";
 import {
   addPlayer,
-  nameRow,
   seedTidyWorld,
   type TidyWorld,
 } from "../lib/testing/tidy-world";
@@ -90,14 +88,6 @@ const rows = (t: T, leaf: Id<"selectorOptions">) =>
   );
 const byNumber = async (t: T, leaf: Id<"selectorOptions">) =>
   new Map((await rows(t, leaf)).map((r) => [r.cardNumber, r]));
-const printed = (t: T, id: Id<"cardChecklist">) =>
-  t.run((ctx) =>
-    ctx.db
-      .query("cardPrintedNames")
-      .withIndex("by_card", (q) => q.eq("cardChecklistId", id))
-      .collect(),
-  );
-
 const JUDGE = "Aaron Judge";
 const SOTO = "Juan Soto";
 const NOBODY = "Zed Nobody";
@@ -111,58 +101,29 @@ async function world(t: T) {
   });
 }
 
-describe("commit — the printed names and where they sit", () => {
-  test("a name with a name row is indexed with its printed order; an exact single match gets none", async () => {
+describe("commit — the names the card keeps", () => {
+  test("a name nobody matches is pending on the card in printed order; an exact single match links", async () => {
     const t = newT();
     const { w, judge } = await world(t);
-    await t.run(async (ctx) => {
-      await nameRow(ctx, { scopeId: w.base, sportId: w.sport, kind: "player", name: NOBODY });
-      await nameRow(ctx, { scopeId: w.base, sportId: w.sport, kind: "player", name: "Quinn Rookie" });
-      await nameRow(ctx, { scopeId: w.base, sportId: w.sport, kind: "team", name: "Mystery Club" });
-    });
     await commit(t, w, [
       // Printed order: NOBODY (0), JUDGE (1, an exact link), Quinn (2).
       wire("1", { players: [NOBODY, JUDGE, "Quinn Rookie"], teams: ["Mystery Club"] }),
     ]);
     const card = (await byNumber(t, w.base)).get("1")!;
     expect(card.playerIds).toEqual([judge]);
+    expect(card.playerLinks).toEqual([{ playerId: judge, nameOnCard: JUDGE }]);
     expect(card.pendingPlayerNames).toEqual([NOBODY, "Quinn Rookie"]);
-    const rowsOf = (await printed(t, card._id)).sort((a, b) => a.kind.localeCompare(b.kind) || a.order - b.order);
-    expect(rowsOf.map((r) => [r.kind, r.printed, r.order])).toEqual([
-      ["player", NOBODY, 0],
-      ["player", "Quinn Rookie", 2],
-      ["team", "Mystery Club", 0],
-    ]);
-    // The exact single match has no row and no printed row.
-    expect(rowsOf.some((r) => r.printed === JUDGE)).toBe(false);
-    expect(rowsOf.every((r) => r.scopeId === w.base)).toBe(true);
+    expect(card.pendingTeamNames).toEqual(["Mystery Club"]);
   });
 
-  test("a pending name the gate wrote no row for is not indexed", async () => {
+  test("nothing but the card itself is written: no per-name row, no lookup scheduled", async () => {
     const t = newT();
     const { w } = await world(t);
     await commit(t, w, [wire("1", { players: [NOBODY] })]);
     const card = (await byNumber(t, w.base)).get("1")!;
     expect(card.pendingPlayerNames).toEqual([NOBODY]);
-    expect(await printed(t, card._id)).toEqual([]);
-  });
-
-  test("a name answered notEntity leaves the card, and the printed record is kept for Change", async () => {
-    const t = newT();
-    const { w } = await world(t);
-    await t.run((ctx) =>
-      nameRow(ctx, {
-        scopeId: w.base,
-        sportId: w.sport,
-        kind: "player",
-        name: NOBODY,
-        over: { answer: { kind: "notEntity", by: "operator" }, answerGen: 1 },
-      }),
-    );
-    await commit(t, w, [wire("1", { players: [NOBODY] })]);
-    const card = (await byNumber(t, w.base)).get("1")!;
-    expect(card.pendingPlayerNames).toBeUndefined();
-    expect(card.playerIds).toBeUndefined();
+    const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled.filter((s) => /tidyNames|entityReview|lookup/i.test(s.name))).toEqual([]);
   });
 });
 
@@ -266,7 +227,7 @@ describe("commit — sourceDisagreements", () => {
   });
 });
 
-describe("commit — careerGap (today's rule: a stint that started by the card year)", () => {
+describe("commit — a career gap is read live (today's rule: a stint that started by the card year)", () => {
   async function career(t: T, stints: Array<{ team: "padres" | "mets"; fromYear: number; toYear?: number }>) {
     const { w } = await world(t);
     const merrill = await t.run((ctx) =>
@@ -279,70 +240,95 @@ describe("commit — careerGap (today's rule: a stint that started by the card y
     );
     return { w, merrill };
   }
-  const gapOf = async (t: T, w: TidyWorld, n: string) => (await byNumber(t, w.base)).get(n)!.tidyChecks;
+  /** The gaps the live query reports for card `n`'s (player, team) pairs. */
+  const gapsOf = async (t: T, w: TidyWorld, n: string) => {
+    const card = (await byNumber(t, w.base)).get(n)!;
+    const [playerId] = card.playerIds ?? [];
+    const pairs = (card.teamOnCardIds ?? []).map((teamId) => ({
+      selectorOptionId: card.selectorOptionId,
+      playerId,
+      teamId,
+    }));
+    return t.withIdentity(ADMIN).query(api.careerCoverage.careerGaps, { pairs });
+  };
 
-  test("a one-player card printing a team the career does not cover carries a careerGap", async () => {
+  test("a one-player card printing a team the career does not cover is a gap; the commit stores no check", async () => {
     const t = newT();
     const { w, merrill } = await career(t, [{ team: "mets", fromYear: 2020, toYear: 2023 }]);
     await commit(t, w, [wire("1", { players: ["Jackson Merrill"], teams: ["San Diego Padres"] })]);
-    expect(await gapOf(t, w, "1")).toEqual([{ kind: "careerGap", playerId: merrill, teamId: w.padres }]);
+    expect(await gapsOf(t, w, "1")).toEqual([
+      { selectorOptionId: w.base, playerId: merrill, teamId: w.padres },
+    ]);
+    expect((await byNumber(t, w.base)).get("1")!.tidyChecks).toBeUndefined();
   });
 
-  test("a stint that started by the card year covers it: no check", async () => {
+  test("a stint that started by the card year covers it: no gap", async () => {
     const t = newT();
     const { w } = await career(t, [{ team: "padres", fromYear: 2019 }]);
     await commit(t, w, [wire("1", { players: ["Jackson Merrill"], teams: ["San Diego Padres"] })]);
-    expect(await gapOf(t, w, "1")).toBeUndefined();
+    expect(await gapsOf(t, w, "1")).toEqual([]);
   });
 
   test("a stint that began AFTER the card year does not: the rule is not a [Y-1, Y] window", async () => {
     const t = newT();
     const { w, merrill } = await career(t, [{ team: "padres", fromYear: 2025 }]);
     await commit(t, w, [wire("1", { players: ["Jackson Merrill"], teams: ["San Diego Padres"] })]);
-    expect(await gapOf(t, w, "1")).toEqual([{ kind: "careerGap", playerId: merrill, teamId: w.padres }]);
+    expect(await gapsOf(t, w, "1")).toEqual([
+      { selectorOptionId: w.base, playerId: merrill, teamId: w.padres },
+    ]);
   });
 
   test("a stint that ended before the card year still covers it (a former player of the club)", async () => {
     const t = newT();
     const { w } = await career(t, [{ team: "padres", fromYear: 2010, toYear: 2015 }]);
     await commit(t, w, [wire("1", { players: ["Jackson Merrill"], teams: ["San Diego Padres"] })]);
-    expect(await gapOf(t, w, "1")).toBeUndefined();
+    expect(await gapsOf(t, w, "1")).toEqual([]);
   });
 
-  test("a multi-player card is never checked", async () => {
+  test("a multi-player card raises no careerGap even when the live gaps name its pair", async () => {
     const t = newT();
-    const { w } = await career(t, [{ team: "mets", fromYear: 2020, toYear: 2023 }]);
+    const { w, merrill } = await career(t, [{ team: "mets", fromYear: 2020, toYear: 2023 }]);
     await commit(t, w, [wire("1", { players: ["Jackson Merrill", JUDGE], teams: ["San Diego Padres"] })]);
-    expect(await gapOf(t, w, "1")).toBeUndefined();
+    const card = (await byNumber(t, w.base)).get("1")!;
+    expect(card.playerIds).toHaveLength(2);
+    const attention = deriveCardAttention(card, {
+      careerGaps: [{ playerId: merrill, teamId: w.padres }],
+    });
+    expect(attention.items.some((i) => i.kind === "careerGap")).toBe(false);
   });
 
-  test("a card with no team printed has no gap to check", async () => {
+  test("a card with no team printed has no pair to check", async () => {
     const t = newT();
     const { w } = await career(t, [{ team: "mets", fromYear: 2020, toYear: 2023 }]);
     await commit(t, w, [wire("1", { players: ["Jackson Merrill"] })]);
-    expect((await gapOf(t, w, "1")) ?? []).not.toContainEqual(expect.objectContaining({ kind: "careerGap" }));
+    expect(await gapsOf(t, w, "1")).toEqual([]);
   });
 
-  test("a re-synced row keeps the checks it has: the gap is stored on new rows only", async () => {
+  test("the gap follows the career as it is NOW: a stint added after the commit covers it, with no recheck", async () => {
     const t = newT();
-    const { w } = await career(t, [{ team: "padres", fromYear: 2019 }]);
+    const { w, merrill } = await career(t, [{ team: "mets", fromYear: 2020, toYear: 2023 }]);
     await commit(t, w, [wire("1", { players: ["Jackson Merrill"], teams: ["San Diego Padres"] })]);
-    // Career edited elsewhere; the second sync must not invent a check on the stored row.
-    const merrill = (await t.run((ctx) => ctx.db.query("players").collect())).find((p) => p.name === "Jackson Merrill")!;
-    await t.run((ctx) => ctx.db.patch(merrill._id, { teamYears: [] }));
-    await commit(t, w, [wire("1", { players: ["Jackson Merrill"], teams: ["San Diego Padres"] })]);
-    expect(await gapOf(t, w, "1")).toBeUndefined();
+    expect(await gapsOf(t, w, "1")).toHaveLength(1);
+    await t.run((ctx) =>
+      ctx.db.patch(merrill, {
+        teamYears: [
+          { teamId: w.mets, fromYear: 2020, toYear: 2023 },
+          { teamId: w.padres, fromYear: 2024 },
+        ],
+      }),
+    );
+    expect(await gapsOf(t, w, "1")).toEqual([]);
   });
 });
 
-describe("commit — teamFill: the batch tier", () => {
+describe("commit — the team fill: the batch tier", () => {
   async function teamed(t: T) {
     const { w } = await world(t);
     const merrill = await t.run((ctx) => addPlayer(ctx, w, "Jackson Merrill"));
     return { w, merrill };
   }
 
-  test("a teamless card takes the team the same player has on another card of the commit, with a note", async () => {
+  test("a teamless card takes the team the same player has on another card of the commit", async () => {
     const t = newT();
     const { w, merrill } = await teamed(t);
     await commit(t, w, [
@@ -352,11 +338,9 @@ describe("commit — teamFill: the batch tier", () => {
     const cards = await byNumber(t, w.base);
     expect(cards.get("1")!.teamOnCardIds).toEqual([w.padres]);
     expect(cards.get("2")!.teamOnCardIds).toEqual([w.padres]);
-    expect(cards.get("2")!.tidyChecks).toEqual(
-      expect.arrayContaining([{ kind: "teamFill", teamIds: [w.padres], reason: "otherCards" }]),
-    );
-    // The card that PRINTED the team carries no fill note.
-    expect((cards.get("1")!.tidyChecks ?? []).some((c) => c.kind === "teamFill")).toBe(false);
+    // The fill is written; the note is not (NEO-656: nothing here can be derived from data).
+    expect(cards.get("2")!.tidyChecks).toBeUndefined();
+    expect(cards.get("1")!.tidyChecks).toBeUndefined();
     expect(merrill).toBeTruthy();
   });
 
@@ -369,7 +353,6 @@ describe("commit — teamFill: the batch tier", () => {
     ]);
     const two = (await byNumber(t, w.base)).get("2")!;
     expect(two.teamOnCardIds ?? []).not.toContain(w.padres);
-    expect((two.tidyChecks ?? []).some((c) => c.kind === "teamFill")).toBe(false);
   });
 
   test("rule 8: a card whose teams disagree between the sources is never filled", async () => {

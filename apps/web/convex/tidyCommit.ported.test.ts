@@ -1,13 +1,14 @@
 /**
- * NEO-645 — ported from the batch wizard's commit-level tests
+ * NEO-645 / NEO-656 — ported from the batch wizard's commit-level tests
  * (commitCardChecklist.entityReview): two spellings of one name, settled
  * pending names, the prelude's page boundary, unreviewed-name stamps.
  *
  * What changed under them: a player is created when the operator presses
  * "Add as new player" (`tidyNames.createPlayer`) and the answer reaches the
- * other cards that print the name by the scheduled fan-out; the commit only
- * LINKS (an operator or auto answer, or an exact single match) and leaves every
- * other name stamped pending. There is no batch to open, reconcile or clean up.
+ * other cards that print the name only through Apply to all
+ * (`tidyNames.applyNameToAll`); the commit only LINKS (the gate's own links, or
+ * an exact single match) and leaves every other name pending on the card. There
+ * is no batch to open, reconcile or clean up, and no per-name row.
  */
 
 import { convexTest } from "convex-test";
@@ -17,10 +18,9 @@ import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { PRELUDE_NAMES_PER_PAGE } from "./selectorOptions";
 import { normalizePlayerName } from "./players";
-import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
+import { cancelScheduled } from "../lib/testing/drain-scheduled";
 import { insertTestCard } from "../lib/testing/card-row";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
-import { insertAsTidyName } from "../lib/testing/tidy-review-row";
 import {
   ADMIN,
   allOf,
@@ -28,7 +28,6 @@ import {
   makeCard,
   readCards,
   seedLeaf,
-  seedUnansweredName,
   type T,
 } from "../lib/testing/tidy-ported";
 
@@ -59,23 +58,6 @@ const player = (t: T, sportId: Id<"selectorOptions">, name: string) =>
     }),
   );
 
-/** An operator's link answer on the name row, as the walk leaves it. */
-const linkAnswer = (
-  t: T,
-  s: { variantTypeId: Id<"selectorOptions">; sportId: Id<"selectorOptions"> },
-  name: string,
-  playerId: Id<"players">,
-) =>
-  t.run((ctx) =>
-    insertAsTidyName(ctx as never, {
-      selectorOptionId: s.variantTypeId,
-      kind: "player",
-      name,
-      sportId: s.sportId,
-      decision: { action: "link", linkedPlayerId: playerId },
-    }),
-  );
-
 describe("two spellings of one name end on ONE player row (NEO-296)", () => {
   test("the two spellings share one normalized key — the premise of the fold", () => {
     expect(normalizePlayerName(ACCENTED)).toBe(normalizePlayerName(PLAIN));
@@ -85,12 +67,6 @@ describe("two spellings of one name end on ONE player row (NEO-296)", () => {
 
   async function twoCards(t: T, order: [string, string]) {
     const s = await seedLeaf(t);
-    await seedUnansweredName(t, {
-      scopeId: s.variantTypeId,
-      sportId: s.sportId,
-      kind: "player",
-      name: order[0],
-    });
     await commit(t, s, [
       makeCard({ cardNumber: "1", cardName: "Card One", players: [order[0]] }),
       makeCard({ cardNumber: "2", cardName: "Card Two", players: [order[1]] }),
@@ -101,19 +77,25 @@ describe("two spellings of one name end on ONE player row (NEO-296)", () => {
   test.each([
     ["accented first, then plain", [ACCENTED, PLAIN] as [string, string]],
     ["plain first, then accented", [PLAIN, ACCENTED] as [string, string]],
-  ])("%s: one name row, one created player, and the fan-out points both cards at it", async (_label, order) => {
+  ])("%s: one created player, and Apply to all points both cards at it", async (_label, order) => {
     const t = newT();
     const s = await twoCards(t, order);
-    const names = await allOf(t, "tidyNames");
-    expect(names).toHaveLength(1);
     const cards = await readCards(t, s.variantTypeId);
     expect(cards.every((c) => (c.playerIds ?? []).length === 0)).toBe(true);
 
     const first = cards.find((c) => c.cardNumber === "1")!;
     const { playerId } = await t
       .withIdentity(ADMIN)
-      .mutation(api.tidyNames.createPlayer, { cardId: first._id, name: order[0] });
-    await drainScheduled(t);
+      .mutation(api.tidyNames.createPlayer, { cardId: first._id, name: order[0], sportId: s.sportId });
+    // The answer is this card's only; the other spelling waits for Apply to all.
+    const mid = await readCards(t, s.variantTypeId);
+    expect(mid.find((c) => c.cardNumber === "2")!.pendingPlayerNames).toEqual([order[1]]);
+    await t.withIdentity(ADMIN).action(api.tidyNames.applyNameToAll, {
+      cardId: first._id,
+      kind: "player",
+      name: order[0],
+      answer: { kind: "linkPlayer", playerId },
+    });
 
     const players = await allOf(t, "players");
     expect(players).toHaveLength(1);
@@ -132,8 +114,7 @@ describe("two spellings of one name end on ONE player row (NEO-296)", () => {
     const [one] = await readCards(t, s.variantTypeId);
     const { playerId } = await t
       .withIdentity(ADMIN)
-      .mutation(api.tidyNames.createPlayer, { cardId: one._id, name: ACCENTED });
-    await drainScheduled(t);
+      .mutation(api.tidyNames.createPlayer, { cardId: one._id, name: ACCENTED, sportId: s.sportId });
 
     const result = await commit(t, s, [makeCard({ cardNumber: "3", cardName: "Card Three", players: [PLAIN] })]);
 
@@ -170,8 +151,8 @@ describe("settled pending names retire when the commit settles them (NEO-296)", 
     // The backlog and the incoming payload disagree by an accent.
     await t.run((ctx) => ctx.db.patch(row._id, { pendingPlayerNames: [PLAIN] }));
 
-    // The operator's answer for the name (a link answer on the name row).
-    await linkAnswer(t, s, ACCENTED, jose);
+    // The one exact match settles the name the commit now carries.
+    expect(jose).toBeTruthy();
     await commit(t, s, [refCard("1", [ACCENTED])]);
 
     const after = await t.run((ctx) => ctx.db.get(row._id));
@@ -195,7 +176,7 @@ describe("settled pending names retire when the commit settles them (NEO-296)", 
       }),
     );
 
-    await linkAnswer(t, s, ACCENTED, jose);
+    expect(jose).toBeTruthy();
     await commit(t, s, [refCard("2", [ACCENTED])]);
 
     expect((await t.run((ctx) => ctx.db.get(handAdded)))!.pendingPlayerNames ?? []).toEqual([]);
@@ -206,7 +187,6 @@ describe("the prelude's phases keep the fold across a page boundary (NEO-296)", 
   async function world(t: T) {
     const s = await seedLeaf(t);
     const jose = await player(t, s.sportId, ACCENTED);
-    await linkAnswer(t, s, ACCENTED, jose);
     return { ...s, jose };
   }
 
@@ -292,18 +272,12 @@ describe("unreviewed-name stamps follow the answer (was: a later commit that car
   test("an unanswered name is stamped, then the walk's createPlayer clears the stamp and mints exactly one player", async () => {
     const t = newT();
     const s = await seedLeaf(t);
-    await seedUnansweredName(t, {
-      scopeId: s.variantTypeId,
-      sportId: s.sportId,
-      kind: "player",
-      name: "Elly De La Cruz",
-    });
     const first = await commit(t, s, [makeCard({ cardNumber: "1", players: ["Elly De La Cruz"] })]);
     expect(first.unreviewedNameCount).toBe(1);
     const [card] = await readCards(t, s.variantTypeId);
     expect(card.pendingPlayerNames).toEqual(["Elly De La Cruz"]);
 
-    await t.withIdentity(ADMIN).mutation(api.tidyNames.createPlayer, { cardId: card._id, name: "Elly De La Cruz" });
+    await t.withIdentity(ADMIN).mutation(api.tidyNames.createPlayer, { cardId: card._id, name: "Elly De La Cruz", sportId: s.sportId });
     const second = await commit(t, s, [makeCard({ cardNumber: "1", players: ["Elly De La Cruz"] })]);
 
     expect(second.unreviewedNameCount).toBe(0);
@@ -317,7 +291,6 @@ describe("unreviewed-name stamps follow the answer (was: a later commit that car
     const t = newT();
     const s = await seedLeaf(t);
     const trout = await player(t, s.sportId, "Mike Trout");
-    await linkAnswer(t, s, "Mike Trout", trout);
 
     const result = await commit(t, s, [makeCard({ cardNumber: "1", players: ["Mike Trout"] })]);
 
@@ -330,16 +303,7 @@ describe("unreviewed-name stamps follow the answer (was: a later commit that car
 });
 
 describe("there is no batch to reconcile (was: post-commit batch cleanup, an open batch reconciled)", () => {
-  test("a commit with the name rows in place leaves them: they are the set's answers, not a batch's throwaway", async () => {
-    const t = newT();
-    const s = await seedLeaf(t);
-    const trout = await player(t, s.sportId, "Mike Trout");
-    const rowId = await linkAnswer(t, s, "Mike Trout", trout);
-    await commit(t, s, [makeCard({ cardNumber: "1", players: ["Mike Trout"] })]);
-    expect((await t.run((ctx) => ctx.db.get(rowId)))?.answer?.kind).toBe("linkPlayer");
-  });
-
-  test("the gate with nothing unknown mints no batch id and writes no name row", async () => {
+  test("the gate with nothing unknown mints no batch id", async () => {
     const t = newT();
     const s = await seedLeaf(t);
     const resolved = await t.withIdentity(ADMIN).action(api.selectorOptions.resolveChecklistEntities, {
@@ -350,6 +314,5 @@ describe("there is no batch to reconcile (was: post-commit batch cleanup, an ope
     expect(resolved.unknownPlayers).toEqual([]);
     expect(resolved.unknownTeams).toEqual([]);
     expect((resolved as { batchId?: string }).batchId).toBeUndefined();
-    expect(await allOf(t, "tidyNames")).toHaveLength(0);
   });
 });

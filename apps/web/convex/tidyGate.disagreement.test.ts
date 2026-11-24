@@ -1,8 +1,8 @@
 /**
- * NEO-645 (schema doc 4) — the gate writes NO `tidyNames` row for a name that
- * sits only on the sides of a source disagreement nobody has settled (or only
- * on the side NB's own pick did not take). A name also printed on a settled
- * card keeps its row. The walk makes the row when the operator picks a side.
+ * NEO-645 / NEO-656 — the gate and a source disagreement nobody has settled.
+ * The gate writes nothing (no per-name row exists any more); it returns FACTS.
+ * A name on either side of an unsettled disagreement is still listed as unknown
+ * (the operator may pick either side), and a side wholly on file is not.
  */
 
 import { convexTest } from "convex-test";
@@ -11,8 +11,6 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { normalizePlayerName } from "./players";
-import { normalizeTeamName } from "./teams";
-import { namesOnlyOnUnsettledSides } from "./features/sourceDisagreements";
 import { cancelScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
@@ -24,13 +22,6 @@ const ADMIN = {
   issuer: "https://clerk.example.com",
   tokenIdentifier: "clerk|admin_player_step_context_001",
   name: "Admin User",
-  role: "admin",
-};
-const OTHER_ADMIN = {
-  subject: "admin_player_step_context_002",
-  issuer: "https://clerk.example.com",
-  tokenIdentifier: "clerk|admin_player_step_context_002",
-  name: "Other Admin",
   role: "admin",
 };
 
@@ -115,76 +106,33 @@ async function gate(t: T, s: { sportId: Sel; insert: Sel }, cards: object[]) {
   });
 }
 
-async function playerRowNames(t: T): Promise<string[]> {
-  return (await t.run((ctx) => ctx.db.query("tidyNames").collect()))
-    .filter((r) => r.kind === "player")
-    .map((r) => r.name)
-    .sort();
-}
+const unknown = async (t: T, s: { sportId: Sel; insert: Sel }, cards: object[]) =>
+  [...(await gate(t, s, cards)).unknownPlayers].sort();
 
 describe("the gate and a disagreement nobody has settled", () => {
-  test("neither side is on file: no row for either side's names", async () => {
+  test("neither side is on file: both sides' names are listed, and nothing is written", async () => {
     const t = newT();
     const s = await setup(t);
-
-    await gate(t, s, [disagreeing([ONE], [TWO], 1)]);
-
-    expect(await playerRowNames(t)).toEqual([]);
+    expect(await unknown(t, s, [disagreeing([ONE], [TWO], 1)])).toEqual([ONE, TWO]);
+    expect(await t.run((ctx) => ctx.db.query("players").collect())).toEqual([]);
   });
 
-  test("a name also printed on a settled card keeps its row", async () => {
+  test("a name also printed on a settled card is listed once", async () => {
     const t = newT();
     const s = await setup(t);
-
-    await gate(t, s, [disagreeing([ONE], [TWO], 1), plain([TWO], 2)]);
-
-    expect(await playerRowNames(t)).toEqual([TWO]);
+    expect(await unknown(t, s, [disagreeing([ONE], [TWO], 1), plain([TWO], 2)])).toEqual([ONE, TWO]);
   });
 
-  test("NB's own pick (one side wholly on file) leaves the losing side with no row", async () => {
+  test("a side wholly on file is not unknown; the other side still is", async () => {
     const t = newT();
     const s = await setup(t);
     await knownPlayer(t, s.sportId, ONE);
-
-    await gate(t, s, [disagreeing([ONE], [TWO], 1)]);
-
-    expect(await playerRowNames(t)).toEqual([]);
+    expect(await unknown(t, s, [disagreeing([ONE], [TWO], 1)])).toEqual([TWO]);
   });
 
-  test("without a disagreement the same unknown name still gets its row", async () => {
+  test("without a disagreement the same unknown name is listed", async () => {
     const t = newT();
     const s = await setup(t);
-
-    await gate(t, s, [plain([TWO], 1)]);
-
-    expect(await playerRowNames(t)).toEqual([TWO]);
-  });
-});
-
-describe("namesOnlyOnUnsettledSides", () => {
-  const entry = (a: string[], b: string[]) => ({
-    field: "players" as const,
-    values: [
-      { value: a, sources: ["bsc" as const] },
-      { value: b, sources: ["checklist" as const] },
-    ],
-  });
-  const none = { players: new Set<string>(), teams: new Set<string>() };
-
-  test("every side's names are skipped, whether or not NB already has a row for them", () => {
-    const out = namesOnlyOnUnsettledSides({
-      entries: [entry(["A One"], ["B Two"])],
-      heldElsewhere: none,
-    });
-    expect([...out.players].sort()).toEqual(["a one", "b two"]);
-    expect(out.teams.size).toBe(0);
-  });
-
-  test("a name held on a settled place is never skipped", () => {
-    const out = namesOnlyOnUnsettledSides({
-      entries: [entry(["A One"], ["B Two"])],
-      heldElsewhere: { players: new Set(["b two"]), teams: new Set() },
-    });
-    expect([...out.players]).toEqual(["a one"]);
+    expect(await unknown(t, s, [plain([TWO], 1)])).toEqual([TWO]);
   });
 });

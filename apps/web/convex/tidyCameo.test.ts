@@ -1,7 +1,9 @@
 /**
- * NEO-645 T3 — "“It Takes Two CPC”, Lindor as a cameo" on the Sources disagree
+ * NEO-645 T3 / NEO-656 — "“It Takes Two CPC”, Lindor as a cameo" on the Sources disagree
  * tile: when it is offered (`cardContext.cameoOffer`) and the one mutation that
- * settles the card (`tidyCameo.pickSourceAsCameo`).
+ * settles the card (`tidyCameo.pickSourceAsCameo`). Nothing is stored about the
+ * pick: the disagreement's entry leaves the card and the picked name is taken
+ * off its pending list.
  */
 
 import { convexTest } from "convex-test";
@@ -10,9 +12,9 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import { deriveCardAttention } from "./features/cardAttention";
-import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
+import { cancelScheduled } from "../lib/testing/drain-scheduled";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
-import { addPlayer, addTeam, nameRow, printCard, seedTidyWorld } from "../lib/testing/tidy-world";
+import { addPlayer, addTeam, printCard, seedTidyWorld } from "../lib/testing/tidy-world";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -96,21 +98,6 @@ describe("when the shortcut is offered", () => {
     expect(await offer(t, acuna.b)).toMatchObject({ playerId: acuna.pele, surname: "Pelé" });
   });
 
-  test("a name ruled out as not a player counts as not a player, even when one answers to it", async () => {
-    const t = newT();
-    const { card, w, lindor } = await setup(t);
-    await t.run(async (ctx) => {
-      await addPlayer(ctx, w, CPC);
-      await nameRow(ctx, {
-        scopeId: w.base,
-        sportId: w.sport,
-        kind: "player",
-        name: CPC,
-        over: { answer: { kind: "notEntity", by: "operator" } as never, answerGen: 1 },
-      });
-    });
-    expect(await offer(t, card)).toMatchObject({ playerId: lindor, name: CPC });
-  });
 });
 
 describe("when there is no button", () => {
@@ -149,21 +136,6 @@ describe("when there is no button", () => {
         playerId: lindor,
         sportId: w.sport,
         aliasNormalized: normalizeEntityName("Paco Lindor"),
-      }),
-    );
-    expect(await offer(t, card)).toBeUndefined();
-  });
-
-  test("the other side is answered as a player", async () => {
-    const t = newT();
-    const { card, w, lindor } = await setup(t);
-    await t.run((ctx) =>
-      nameRow(ctx, {
-        scopeId: w.base,
-        sportId: w.sport,
-        kind: "player",
-        name: CPC,
-        over: { answer: { kind: "linkPlayer", playerId: lindor, by: "operator" } as never, answerGen: 1 },
       }),
     );
     expect(await offer(t, card)).toBeUndefined();
@@ -247,18 +219,12 @@ describe("pickSourceAsCameo", () => {
         .collect(),
     );
     expect(links.map((l) => l.playerId)).toEqual([lindor]);
-    // 3. the disagreement is settled.
-    expect(c.sourceDisagreements![0].chosen).toEqual({ value: [CPC], by: "operator" });
+    // 3. the disagreement is settled: the card keeps only the result.
+    expect(c.sourceDisagreements).toBeUndefined();
     // 4. the card's own player stays empty, and the picked name is answered
-    //    "not a player" in the same call: nothing is left pending.
+    //    "not a player" in the same call, on this card: nothing is left pending.
     expect(c.playerIds).toBeUndefined();
     expect(c.pendingPlayerNames).toBeUndefined();
-    const rows = await t.run((ctx) => ctx.db.query("tidyNames").collect());
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({
-      nameNormalized: normalizeEntityName(CPC),
-      answer: { kind: "notEntity", by: "operator" },
-    });
     // 5. the title and description are rebuilt: the card's name where a
     //    player's would go, the cameo after it (Jason, 2026-11-22).
     expect(c.listingTitle).not.toBe("Typed by hand");
@@ -285,7 +251,7 @@ describe("pickSourceAsCameo", () => {
     expect(deriveCardAttention(c).items).toEqual([]);
   });
 
-  test("the not-a-player answer fans out to the other cards that print that exact name", async () => {
+  test("the not-a-player answer is this card's only: another card printing that exact name still waits on it", async () => {
     const t = newT();
     const { card, w } = await setup(t);
     const other = await t.run((ctx) =>
@@ -296,9 +262,8 @@ describe("pickSourceAsCameo", () => {
       }),
     );
     await t.withIdentity(ADMIN).mutation(api.tidyCameo.pickSourceAsCameo, { cardId: card });
-    await drainScheduled(t);
     const o = (await get(t, other))!;
-    expect(o.pendingPlayerNames).toBeUndefined();
+    expect(o.pendingPlayerNames).toEqual([CPC]);
     expect(o.playerIds).toBeUndefined();
   });
 
@@ -310,6 +275,7 @@ describe("pickSourceAsCameo", () => {
       cardId: card,
       kind: "player",
       name: CPC,
+      sportId: (await t.run((ctx) => ctx.db.get(card)))!.sportId,
       answer: { kind: "notEntity" },
     });
     const c = (await get(t, card))!;
@@ -367,7 +333,7 @@ describe("pickSourceAsCameo", () => {
       t.withIdentity(ADMIN).mutation(api.tidyCameo.pickSourceAsCameo, { cardId: card }),
     ).rejects.toThrow(/no cameo to offer/);
     const c = (await get(t, card))!;
-    expect(c.sourceDisagreements![0].chosen).toBeUndefined();
+    expect(c.sourceDisagreements).toHaveLength(1);
     expect(c.secondaryPlayerIds).toBeUndefined();
   });
 
@@ -384,7 +350,7 @@ describe("pickSourceAsCameo", () => {
       t.withIdentity(ADMIN).mutation(api.tidyCameo.pickSourceAsCameo, { cardId: card }),
     ).rejects.toThrow();
     const c = (await get(t, card))!;
-    expect(c.sourceDisagreements![0].chosen).toBeUndefined();
+    expect(c.sourceDisagreements).toHaveLength(1);
     expect(c.cardName).toBe(LINDOR);
   });
 });
@@ -444,13 +410,6 @@ describe("a cameo who becomes the card's player stops being a cameo", () => {
     const t = newT();
     const { lindor, w } = await withCameo(t);
     const card = await t.run(async (ctx) => {
-      await nameRow(ctx, {
-        scopeId: w.base,
-        sportId: w.sport,
-        kind: "player",
-        name: CPC,
-        over: { answerGen: 0 },
-      });
       const id = await printCard(ctx, w, {
         number: "9",
         printed: [{ kind: "player", name: CPC }],
@@ -467,9 +426,9 @@ describe("a cameo who becomes the card's player stops being a cameo", () => {
       cardId: card,
       kind: "player",
       name: CPC,
+      sportId: w.sport,
       answer: { kind: "linkPlayer", playerId: lindor },
     });
-    await drainScheduled(t);
     await expectRebuilt(t, card, lindor);
   });
 
