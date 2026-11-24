@@ -7,7 +7,7 @@ import {
   rankTeamCandidates,
 } from "../../convex/lib/entityNearMatch";
 import { teamFullName } from "../../lib/teams/team-name";
-import { eraLabel, teamOptionLabel } from "../../lib/teams/team-era";
+import { eraLabel } from "../../lib/teams/team-era";
 import { Input } from "../primitives/Input";
 import { MIN_CAREER_YEAR, maxCareerYear } from "../../lib/players/career-years";
 import {
@@ -133,6 +133,7 @@ export default function CareerTeamEntry({
   label,
   disabled = false,
   knownTeamsOnly = false,
+  autoFocusYears = true,
   onDone,
   onDraftChange,
 }: {
@@ -192,6 +193,13 @@ export default function CareerTeamEntry({
    * removing the stint that was being edited does. Nothing happens on mount.
    */
   resetToken?: number;
+  /**
+   * NEO-657 — whether a `load` moves focus to From year (default true, as the
+   * edit chip needs). The auto-opened prefilled "+ Add stint" form passes
+   * false: it appears on its own, so it must not take focus from where the
+   * walk placed it.
+   */
+  autoFocusYears?: boolean;
   /**
    * NEO-574 — other teams the cards print for this player, as one-press
    * fills for the team and From year. Parent-filtered: a team already
@@ -626,8 +634,8 @@ export default function CareerTeamEntry({
 
   /* NEO-591 — the chip that was pressed is gone, so focus goes to the years. */
   useEffect(() => {
-    if (appliedLoad !== undefined) fromYearRef.current?.focus();
-  }, [appliedLoad]);
+    if (appliedLoad !== undefined && autoFocusYears) fromYearRef.current?.focus();
+  }, [appliedLoad, autoFocusYears]);
 
   /*
    * NEO-574 — if the parent answered the add with the NEXT prefill (the next
@@ -915,7 +923,11 @@ export default function CareerTeamEntry({
                    * screen reader. A staged name has no era, so it reads as
                    * before.
                    */
-                  aria-label={`Use ${teamOptionLabel(s.name, s.yearsActive)}`}
+                  aria-label={
+                    s.yearsActive
+                      ? `Use ${s.name} ${eraLabel(s.yearsActive)}`
+                      : `Use ${s.name}`
+                  }
                   onMouseEnter={() => setHighlightIdx(idx)}
                   onClick={() => pickSuggestion(s.name, s.teamId)}
                   className={`flex w-full items-center gap-2 px-2 py-1 text-left text-sm ${

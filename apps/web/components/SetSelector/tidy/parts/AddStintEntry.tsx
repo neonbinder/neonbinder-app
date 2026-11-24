@@ -47,6 +47,17 @@ export default function AddStintEntry({
   const [open, setOpen] = useState(prefill !== undefined);
   /** The form is the one opened with the prefill and nothing has closed it. */
   const [prefilled, setPrefilled] = useState(prefill !== undefined);
+  // One instance for the row's life: the form follows the prefill prop rather
+  // than being remounted, so close() finds its button to return focus to. A
+  // prefill that arrives later (the card's Team answered after the player was
+  // made) opens it; one that goes away (the stint is written) closes it.
+  const hasPrefill = prefill !== undefined;
+  const [sawPrefill, setSawPrefill] = useState(hasPrefill);
+  if (hasPrefill !== sawPrefill) {
+    setSawPrefill(hasPrefill);
+    setOpen(hasPrefill);
+    setPrefilled(hasPrefill);
+  }
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const close = () => {
     setOpen(false);
@@ -57,8 +68,14 @@ export default function AddStintEntry({
   useInlinePart(open, close, scopeRef);
 
   if (open) {
+    const asPrefilled = prefilled && prefill !== undefined;
     return (
-      <div ref={scopeRef}>
+      <div
+        ref={scopeRef}
+        {...(asPrefilled
+          ? { role: "group", "aria-label": `New stint for ${playerName}, prefilled from the card` }
+          : {})}
+      >
         <CareerTeamEntry
           sportId={sportId}
           contextOptionId={leafId}
@@ -67,8 +84,9 @@ export default function AddStintEntry({
           label={playerName}
           disabled={disabled}
           onDone={close}
-          {...(prefilled && prefill
+          {...(asPrefilled
             ? {
+                autoFocusYears: false,
                 load: {
                   token: 1,
                   name: prefill.name,

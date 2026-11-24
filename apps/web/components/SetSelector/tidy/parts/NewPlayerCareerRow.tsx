@@ -369,7 +369,6 @@ export default function NewPlayerCareerRow({
           </NeonButton>
         )}
         <AddStintEntry
-          key={prefill ? "prefilled" : "plain"}
           prefill={prefill}
           onDraft={setDraft}
           playerName={player.name}

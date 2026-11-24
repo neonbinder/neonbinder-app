@@ -5,7 +5,7 @@
  * "Keep as is" writes nothing to the player: it is stored on the card at once
  * (`tidyCards.keepCareerGap`), so Save & next leaves the career alone.
  */
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -587,6 +587,12 @@ describe("CareerTile", () => {
         await click(screen.getByRole("button", { name: "Entry form stub" }));
         expect(mutation("players.addStint")).toHaveBeenCalledTimes(1);
         expect(screen.queryByText(/Prefilled/)).toBeNull();
+        // NEO-657: one instance, so focus lands on the button the form closed into.
+        await waitFor(() =>
+          expect(document.activeElement).toBe(
+            screen.getByRole("button", { name: "+ Add stint for Jackson Merrill" }),
+          ),
+        );
       });
     });
 
