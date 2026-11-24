@@ -681,12 +681,9 @@ function DropZone({
             ? "border-selection bg-raised-deep/30 ring-2 ring-selection ring-offset-2 ring-offset-raised-deep shadow-[0_0_14px_3px_rgb(0_194_255/calc(0.45*var(--glow)))]"
             : outlineTarget
               ? `border-dashed border-selection hover:border-solid ${
-                  // A suggested box keeps its yellow cue inside the blue
-                  // dashed border: an inset line of the notice rule colour,
-                  // distinct from drag-over (solid) and the jump (a ring).
-                  highlight
-                    ? "bg-notice-warn-bg/25 shadow-[inset_0_0_0_3px_var(--notice-warn-rule)]"
-                    : "bg-raised-deep/30"
+                  // A suggested box keeps its yellow cue as a fill inside
+                  // the blue dashed border.
+                  highlight ? "bg-notice-warn-bg/25" : "bg-raised-deep/30"
                 }`
               : highlight
                 ? "border-notice-warn-rule/50 bg-notice-warn-bg/25"
@@ -1500,13 +1497,7 @@ export default function ParallelGroupingModal({
     selectedCount === 1
       ? "Click here to make the selected row a parallel"
       : `Click here to make the ${selectedCount} selected rows parallels`;
-  const othersSelected = selectedCount - 1;
-  const ownBoxHint =
-    selectedCount === 1
-      ? "This row is selected"
-      : othersSelected === 1
-        ? "This row is selected. Untick it to drop the other row here."
-        : `This row is selected. Untick it to drop the other ${othersSelected} rows here.`;
+  const ownBoxHint = "Selected";
 
   /**
    * NEO-472 — selected rows the filter is hiding. They stay selected (the
@@ -1668,7 +1659,7 @@ export default function ParallelGroupingModal({
                 e.stopPropagation();
                 setFilter("");
               }}
-              placeholder="Filter inserts, like 1991 Topps"
+              placeholder="Filter inserts, like Prismatic Green"
               aria-label="Filter inserts"
               className="w-full pl-2.5 pr-8 py-1.5 text-sm"
             />
@@ -1700,6 +1691,24 @@ export default function ParallelGroupingModal({
           </span>
           <span role="status" data-filter-announce className="sr-only">
             {announcedFilterCount}
+          </span>
+          {/* Out here, not in the right pane's scroller, so it never
+              scrolls away and both panes start level. The label wraps the
+              switch, so it names it with no id. */}
+          <label className="flex min-h-11 cursor-pointer items-center gap-3 md:ml-auto">
+            <Switch
+              checked={showSelectedBoxes}
+              onCheckedChange={setShowSelectedBoxes}
+              aria-describedby={showSelectedBoxesHintId}
+            />
+            <span className="text-sm font-medium text-ink-2 break-words">
+              Show boxes for selected inserts
+            </span>
+          </label>
+          {/* Outside the label, so it describes the switch without joining
+              its name. */}
+          <span id={showSelectedBoxesHintId} className="sr-only">
+            When off, each selected insert's own box is hidden.
           </span>
         </div>
 
@@ -1792,28 +1801,11 @@ export default function ParallelGroupingModal({
                   tabIndex={rightOverflows ? 0 : undefined}
                   className="space-y-4 md:min-h-0 md:overflow-y-auto md:p-1.5 rounded-lg focus-outline focus-visible:-outline-offset-2"
                 >
-                {/* The label wraps the switch, so it names it with no id. */}
-                <label
-                  className="flex min-h-11 cursor-pointer items-center gap-3"
-                >
-                  <Switch
-                    checked={showSelectedBoxes}
-                    onCheckedChange={setShowSelectedBoxes}
-                    aria-describedby={showSelectedBoxesHintId}
-                  />
-                  <span className="text-sm font-medium text-ink">
-                    Show selected rows' boxes
-                  </span>
-                </label>
-                {/* Outside the label, so it describes the switch without
-                    joining its name. */}
-                <span id={showSelectedBoxesHintId} className="sr-only">
-                  Hides the drop boxes of selected rows.
-                </span>
                 {shownParentRows.length === 0 && (isFiltering || selectedCount > 0) && (
                   <p className="text-xs text-ink-3 italic py-1 break-words">
-                    No parallels to show
-                    {isFiltering ? ` for "${deferredFilter.trim()}"` : ""}
+                    {isFiltering
+                      ? `No parallels to show for "${deferredFilter.trim()}"`
+                      : 'Every box here belongs to a selected insert. Turn on "Show boxes for selected inserts" to see them.'}
                   </p>
                 )}
                 {shownParentRows.map((parent) => {

@@ -18,9 +18,9 @@
 //
 // NEO-660: a ticked row's own "Parallels of …" box leaves the right pane, so
 // only boxes that can take the selection are left, each in a dashed blue
-// outline; the "Show selected rows' boxes" switch (off on every open, never
-// moved by a tick) brings the own boxes back with their "This row is
-// selected" hint. The switch is on through the filter steps, so it is the
+// outline; the "Show boxes for selected inserts" switch (in the filter row; off
+// on every open, never moved by a tick) brings the own boxes back with their
+// "Selected" hint. The switch is on through the filter steps, so it is the
 // filter, not the tick, that hides those boxes there.
 //
 // MINTED NAMES are single tokens from env.ATTEMPT_TOKEN (set `pgmulti<token>`;
@@ -63,12 +63,12 @@ test(
     const boxes = dialog.getByRole("region", { name: "Parallels by insert" });
     const row = (name: string) => inserts.getByRole("group", { name, exact: true });
     const boxOf = (name: string) => boxes.getByRole("group", { name: `Parallels of "${name}"`, exact: true });
-    // NEO-660: the switch heads the right pane, off on open. Nothing is
-    // ticked yet, so every row has its box.
-    const showTicked = boxes.getByRole("checkbox", { name: "Show selected rows' boxes", exact: true });
+    // NEO-660: the switch sits in the filter row above both panes, off on
+    // open. Nothing is ticked yet, so every row has its box.
+    const showTicked = dialog.getByRole("checkbox", { name: "Show boxes for selected inserts", exact: true });
     // The input is visually hidden under its painted track, so a click lands
     // where a user's does: on the label's visible words.
-    const flipShowTicked = () => boxes.getByText("Show selected rows' boxes", { exact: true }).click();
+    const flipShowTicked = () => dialog.getByText("Show boxes for selected inserts", { exact: true }).click();
     await expect(showTicked).not.toBeChecked();
     await expect(boxOf(bolt)).toBeVisible();
     await expect(boxOf(comet)).toBeVisible();
@@ -98,7 +98,7 @@ test(
     await expect(showTicked).toBeChecked();
     for (const name of [bolt, comet]) {
       await expect(boxOf(name)).toBeVisible();
-      await expect(boxOf(name)).toHaveAccessibleDescription("This row is selected. Untick it to drop the other row here.");
+      await expect(boxOf(name)).toHaveAccessibleDescription("Selected");
       await expect(boxOf(name)).toHaveCSS("border-style", "solid");
     }
     await expect(boxOf(aces)).toHaveCSS("border-style", "dashed");

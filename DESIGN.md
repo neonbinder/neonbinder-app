@@ -343,6 +343,7 @@ Crisp, solid and few. One neon fill per decision. Every action button is `NeonBu
 - **Selected row:** the column's hued pick (`bg-pick-X border-pick-X-rule`) plus `selection-edge`.
 - **Keyboard highlight** ("where Enter lands"): a green tint (`bg-neon-green/20`), a 2px inset `ring-neon-green-text`, and in dark a faint inner glow scaled by `--glow`.
 - **Popover options:** `hover:bg-hover-raised`; the highlighted option takes the same green tint.
+- **Click target:** dashed `border-selection` at rest, solid on hover.
 
 ### Cards / Containers
 - **Corner Style:** 8px.

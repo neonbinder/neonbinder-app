@@ -782,7 +782,7 @@ describe("ParallelGroupingModal — several rows at once", () => {
     screen.getByText(title).parentElement!.parentElement as HTMLElement;
   // NEO-660 — a ticked row's own box is hidden until this switch is on.
   const boxSwitch = () =>
-    screen.getByRole("checkbox", { name: "Show selected rows' boxes" });
+    screen.getByRole("checkbox", { name: "Show boxes for selected inserts" });
   const showTickedBoxes = () => fireEvent.click(boxSwitch());
   const hasBox = (name: string) => screen.queryByText(boxTitle(name)) !== null;
   // dnd-kit keeps a role="status" of its own; this is the footer's.
@@ -950,7 +950,7 @@ describe("ParallelGroupingModal — several rows at once", () => {
     ).toBeTruthy();
     expect(
       within(zoneOf(boxTitle(BLUE))).getByText(
-        "This row is selected. Untick it to drop the other 5 rows here.",
+        "Selected",
       ),
     ).toBeTruthy();
 
@@ -1077,7 +1077,7 @@ describe("ParallelGroupingModal — several rows at once", () => {
 
     const box = zoneOf(boxTitle(MOJO));
     expect(
-      within(box).getByText("This row is selected. Untick it to drop the other 2 rows here."),
+      within(box).getByText("Selected"),
     ).toBeTruthy();
     // It does not offer itself as a click target (the other boxes do)...
     expect(box.className).not.toContain("cursor-pointer");
@@ -1098,20 +1098,17 @@ describe("ParallelGroupingModal — several rows at once", () => {
     expect(screen.getByText("2 promotions, 0 demotions")).toBeTruthy();
   });
 
-  test("a selected row's own box counts the OTHER rows: none, one, or several", () => {
+  test("a selected row's own box reads just \"Selected\", whatever else is ticked", () => {
     renderModal();
     showTickedBoxes();
     const hint = () =>
-      within(zoneOf(boxTitle(MOJO))).getByText(/^This row is selected/)
-        .textContent;
+      within(zoneOf(boxTitle(MOJO))).getByText(/^Selected$/).textContent;
     fireEvent.click(tick(MOJO));
-    expect(hint()).toBe("This row is selected");
+    expect(hint()).toBe("Selected");
     fireEvent.click(tick(AQUA));
-    expect(hint()).toBe("This row is selected. Untick it to drop the other row here.");
+    expect(hint()).toBe("Selected");
     fireEvent.click(tick(BW));
-    expect(hint()).toBe(
-      "This row is selected. Untick it to drop the other 2 rows here.",
-    );
+    expect(hint()).toBe("Selected");
   });
 
   test("clicking a row inside a box selects it; it does not drop the selection there", () => {
@@ -1202,7 +1199,7 @@ describe("ParallelGroupingModal — several rows at once", () => {
     }
     expect(
       within(zoneOf(boxTitle(AQUA))).getByText(
-        "This row is selected. Untick it to drop the other row here.",
+        "Selected",
       ),
     ).toBeTruthy();
   });
@@ -1263,7 +1260,7 @@ describe("ParallelGroupingModal — several rows at once", () => {
     expect(zoneOf(boxTitle(AQUA)).className).not.toContain("border-dashed");
   });
 
-  test("a suggested click-target box has the yellow inset cue; a plain target does not", () => {
+  test("a suggested click-target box keeps the warn fill with no inset shadow; a plain target has no warn fill", () => {
     // "… Mojo Refractors Gold" prefix-matches the target, so Mojo's box is
     // suggested (yellow) while Gold's is not.
     tree = [
@@ -1275,10 +1272,13 @@ describe("ParallelGroupingModal — several rows at once", () => {
     showTickedBoxes();
     const suggested = zoneOf(boxTitle(MOJO)).className;
     expect(suggested).toContain("border-dashed");
-    expect(suggested).toContain("shadow-[inset_0_0_0_3px_var(--notice-warn-rule)]");
+    expect(suggested).toContain("bg-notice-warn-bg/25");
+    expect(suggested).not.toContain("inset");
+    expect(suggested).not.toContain("shadow-");
     const plain = zoneOf(boxTitle(GOLD)).className;
     expect(plain).toContain("border-dashed");
-    expect(plain).not.toContain("shadow-[inset_0_0_0_3px_var(--notice-warn-rule)]");
+    expect(plain).not.toContain("bg-notice-warn-bg/25");
+    expect(plain).not.toContain("inset");
   });
 
   test("starting a drag does not change which boxes are rendered", () => {
@@ -1717,7 +1717,7 @@ describe("ParallelGroupingModal — two panes, filter and jump", () => {
     expect(screen.getByRole("group", { name: boxTitle(STADIUM) })).toBeTruthy();
     expect(screen.queryByRole("group", { name: boxTitle(TRADED) })).toBeNull();
     fireEvent.click(
-      screen.getByRole("checkbox", { name: "Show selected rows' boxes" }),
+      screen.getByRole("checkbox", { name: "Show boxes for selected inserts" }),
     );
     expect(screen.getByRole("group", { name: boxTitle(BOWMAN) })).toBeTruthy();
     // The filter still governs the rest.
@@ -1725,7 +1725,9 @@ describe("ParallelGroupingModal — two panes, filter and jump", () => {
   });
 
   const switchInput = () =>
-    screen.getByRole("checkbox", { name: "Show selected rows' boxes" });
+    screen.getByRole("checkbox", { name: "Show boxes for selected inserts" });
+  const EVERY_BOX_LINE =
+    'Every box here belongs to a selected insert. Turn on "Show boxes for selected inserts" to see them.';
   const emptyLine = (text: string) =>
     screen.queryByText((_, el) => el?.tagName === "P" && el.textContent === text);
 
@@ -1736,7 +1738,7 @@ describe("ParallelGroupingModal — two panes, filter and jump", () => {
     const hintId = input.getAttribute("aria-describedby");
     expect(hintId).toBeTruthy();
     const hint = document.getElementById(hintId!)!;
-    expect(hint.textContent).toBe("Hides the drop boxes of selected rows.");
+    expect(hint.textContent).toBe("When off, each selected insert's own box is hidden.");
     expect(hint.className).toContain("sr-only");
     // The hint describes the switch; it is not part of its name.
     expect(input.closest("label")!.contains(hint)).toBe(false);
@@ -1750,9 +1752,9 @@ describe("ParallelGroupingModal — two panes, filter and jump", () => {
     ];
     renderModal();
     for (const name of [TRADED, BOWMAN]) fireEvent.click(tick(name));
-    expect(emptyLine("No parallels to show")).toBeTruthy();
+    expect(emptyLine(EVERY_BOX_LINE)).toBeTruthy();
     fireEvent.click(switchInput());
-    expect(emptyLine("No parallels to show")).toBeNull();
+    expect(emptyLine(EVERY_BOX_LINE)).toBeNull();
   });
 
   test("a filter whose every match is selected, switch off: the empty line names the filter", () => {
@@ -1768,12 +1770,12 @@ describe("ParallelGroupingModal — two panes, filter and jump", () => {
   test("no filter, nothing selected and no top-level inserts: no empty line", () => {
     tree = [];
     renderModal();
-    expect(emptyLine("No parallels to show")).toBeNull();
+    expect(emptyLine(EVERY_BOX_LINE)).toBeNull();
   });
 
   test("no filter and nothing selected with boxes on screen: no empty line", () => {
     renderModal();
-    expect(emptyLine("No parallels to show")).toBeNull();
+    expect(emptyLine(EVERY_BOX_LINE)).toBeNull();
   });
 
   test("rows sit in the left pane and their boxes in the right, same order", () => {
@@ -2218,7 +2220,7 @@ describe("ParallelGroupingModal — two panes, keyboard and screen reader", () =
     renderModal();
     fireEvent.click(screen.getByRole("checkbox", { name: `Select ${BOWMAN}` }));
     fireEvent.click(
-      screen.getByRole("checkbox", { name: "Show selected rows' boxes" }),
+      screen.getByRole("checkbox", { name: "Show boxes for selected inserts" }),
     );
     // Bowman's own box refuses its own row: not a target, not a stop.
     expect(box(BOWMAN).getAttribute("tabindex")).toBe("-1");
