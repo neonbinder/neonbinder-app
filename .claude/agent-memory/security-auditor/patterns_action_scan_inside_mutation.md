@@ -18,3 +18,9 @@ so a same-sport answer on a large set could fail on the proof it did not need.
 check (1) the worst-case docs read vs the transaction limit, (2) that the cheap
 check that makes the scan unnecessary runs first, (3) the failure is fail-closed.
 Related: [[patterns_neo424_offered_on_stored_row]].
+
+**Fix shape that held (NEO-656 round 3):** public admin action runs `requireAdmin`, a cheap
+internalQuery probe, then the scan (try/catch → false), and passes a server-computed bool to an
+internalMutation (`{...publicArgs, userId, proven}`). Check: the bool is absent from every public
+args validator (Convex rejects extra fields), only the internal writer passes it, and the
+mutation re-reads the row (proof and write are not one transaction; admin-only, so a note).
