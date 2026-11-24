@@ -403,15 +403,24 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   `skipUntil`, `saveForLater`, `finishTidyWalk`. Answer tiles:
   `createPlayerOnOpenRow`, `createTeamOnOpenRow`, `answerPinkPlayerTiles`,
   `answerPinkTeamTiles`, `answerPinkAutographTile`, `ruleOutOpenPlayerRows`,
-  `ruleOutOpenTeamRows`, `takeSourceSide`. Career gaps: `keepOpenCareerGaps(page)`
-  answers every open gap on the card "Keep as is" (writes nothing), because
-  Save & next over an open Career gap writes a stint from the set's year to the
-  player. Whole walks: `walkAnsweringEverything` (answers every pink Player and
-  Team tile, Save & next or Skip, returns a `WalkTally`; its `career?: "keep" |
-  "add"` option defaults to `"keep"`, which keeps every open gap first and
-  counts them in `WalkTally.careerKept`; `"add"` leaves them for Save & next to
-  write, so never use it where the player is a catalogue player),
-  `tidyForTheParallelBuild`. Fetch into
+  `ruleOutOpenTeamRows`, `takeSourceSide`, `suggestedTeamChip(page, team, why?)`
+  (a preselected fill chip by its exact name "<team>, suggested · <why>").
+  An answer links the open card only (NEO-656): `applyNameToAll(page, "Player"
+  | "Team", printed)` presses "Apply to all cards printing “<printed>”" and
+  returns its line ("Linked N more cards." / "Cleared N more cards.").
+  Career gaps: there is no "Keep as is" (NEO-656); Save & next over an open
+  Career gap writes a stint from the set's year to the player, so a spec that
+  must not write one leaves the card with `skipCard`. End screen:
+  `expectTidyEndScreen(page, { fixed, skipped?, stillToCheck? })` asserts the
+  verdict (pink `cardsSkippedText`, else blue `cardsStillToCheckText`, else
+  `TIDY_ALL_CLEAR`) and the tally (`cardsTallyText`); `readTidyEndScreen`
+  reads them when the counts are not known. Whole walks:
+  `walkAnsweringEverything` (answers every pink Player and Team tile, Save &
+  next or Skip, returns a `WalkTally`; its `career?: "skip" | "add"` option
+  defaults to `"skip"`, which Skips a card with nothing pink but a Career gap
+  open, counted in `WalkTally.careerSkipped` and "still to check" on the end
+  screen; `"add"` presses Save & next over the gaps, writing them, so never
+  use it where the player is a catalogue player), `tidyForTheParallelBuild`. Fetch into
   it: `fetchChecklistToTidyWalk`, `fetchOneMarketplaceSetChecklistToTidyWalk`
   (`openOneMarketplaceSetBase` is in `set-builder.ts`). Each contract is in its
   doc comment; see "The Tidy Up walk" under Gotchas.
@@ -552,10 +561,15 @@ Idioms:
   stop a card. Every tile saves when it is answered, so nothing is staged and
   nothing is discarded: "Save for later (Esc)" closes the walk writing
   nothing, "Skip: not ready to list" moves on writing nothing, "Save & next
-  (Enter)" marks the card's blue items seen. The position is in the URL
-  (`?tidy=<card>|done`), so the browser's Back walks back through the cards;
-  the header's progress bar reads "N cards left" (`expectCardsLeft`). The end
-  screen counts skipped cards and has "Done (Esc)". A fetch writes its set,
+  (Enter)" moves on and, with a Career gap on screen, adds the default stint
+  to the player. Nothing records that a card was seen (NEO-656): pink and
+  blue are read live from the data, so a blue card stays blue until fixed.
+  The position is in the URL (`?tidy=<card>|done`), so the browser's Back
+  walks back through the cards; the header's progress bar reads "N cards
+  left" (`expectCardsLeft`). The end screen counts the walked cards by their
+  live level (pink "N cards skipped, not ready to list", else blue "N cards
+  still to check", plus the tally; `expectTidyEndScreen`) and has "Done
+  (Esc)". A fetch writes its set,
   so a spec that needs a first fetch of a real set is that set's registered
   sole writer (SET-REGISTRY.md); a hand-made set reaches the walk through a
   pasted checklist (`usePastedChecklist`).

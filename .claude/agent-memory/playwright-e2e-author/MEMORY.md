@@ -167,3 +167,4 @@
 - [Title plant, adopting spec](patterns_title_plant_on_an_adopting_sole_writer_spec.md) — drawer read-path plant; generator plant misses or poisons the seed
 - [Removed button, described field](patterns_removed_button_absence_and_described_field.md) — plant every client gate; describedby/focus asserts
 - [BSC team lane shared across shards](patterns_bsc_team_lane_is_shared_across_shards.md) — 1 slot, 1.7 s/card, FIFO deployment-wide; assert answered OR held back
+- [NEO-656 walk helpers](patterns_neo656_tidy_walk_helpers_skip_apply_end_screen.md) — no Keep as is (career skip), applyNameToAll, end screen, exact chip

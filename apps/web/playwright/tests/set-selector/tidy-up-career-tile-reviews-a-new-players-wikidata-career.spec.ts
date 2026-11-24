@@ -41,10 +41,9 @@ import {
   expectCardSettled,
   expectCardsLeft,
   finishTidyWalk,
-  keepOpenCareerGaps,
   pinkTile,
-  saveAndNext,
   settleWalkAfterCommit,
+  skipCard,
   tidyFooterButton,
   tidyTile,
   tidyUpName,
@@ -240,11 +239,11 @@ test(
     const [first, second] = walkerFirst ? [walkerCard, hondaCard] : [hondaCard, walkerCard];
     const [firstHeader, secondHeader] = walkerFirst ? [header("1", WALKER), header("2", HONDA)] : [header("2", HONDA), header("1", WALKER)];
     await first();
-    // Save & next with a career gap open adds a stint from the set's year (CareerGapRow's default).
-    // Both cards are pasted "No Team", but whatever team a fill puts on one, its gap is kept, so the
-    // walk writes no stint beyond the ones this spec adds (the header's "no catalogue row").
-    await keepOpenCareerGaps(page);
-    await saveAndNext(page);
+    // Save & next with a career gap open adds a stint from the set's year (NEO-656 D14). Both cards
+    // are pasted "No Team", but whatever team a fill puts on one could open a gap, so each card is
+    // left with Skip (no write): the walk writes no stint beyond the ones this spec adds (the
+    // header's "no catalogue row"). There is no "Keep as is" any more (B23).
+    await skipCard(page);
     await expect(secondHeader).toBeVisible();
     await expectCardsLeft(page, 1);
     // The browser's Back walks back to the first card, its answers still on it; Forward returns.
@@ -257,8 +256,7 @@ test(
     await expect(secondHeader).toBeVisible();
     await expectCardSettled(page);
     await second();
-    await keepOpenCareerGaps(page);
-    await saveAndNext(page);
+    await skipCard(page);
     await expect(tidyFooterButton(page, "done")).toBeVisible();
     await finishTidyWalk(page);
 
