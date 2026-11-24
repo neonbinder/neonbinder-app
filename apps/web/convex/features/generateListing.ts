@@ -619,7 +619,14 @@ function builderDescriptionParts(inputs: ListingCardInputs): DescriptionParts {
       // NEO-535 — the leading words a level shares with the one above it are
       // said once, by that one ("Anime" + "Anime Red Refractors" → "Anime Red
       // Refractors"; `parallelAfterInsert`).
-      const trimmed = parallelAfterInsert(raw, above.text ?? above.raw);
+      // The insert's OWN name first: a maker-stripped `above.text` ("1989
+      // Base") need not share the words the parallel repeats ("1989 Pro Set
+      // Base Prismatic Blue"), which then read "1989 Base Base Prismatic
+      // Blue". Only when that shares nothing does the said text decide.
+      let trimmed = parallelAfterInsert(raw, above.raw);
+      if (wordsOf(trimmed).length === wordsOf(raw).length && above.text !== undefined) {
+        trimmed = parallelAfterInsert(raw, above.text);
+      }
       const stripped = stripDoubledWords(trimmed, inputs);
       if (stripped && !alreadySaid([head(), ...said].filter(Boolean).join(" "), stripped)) {
         text = stripped;

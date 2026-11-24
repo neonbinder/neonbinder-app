@@ -1587,6 +1587,25 @@ describe("NEO-535 — a parallel's leading insert words are said once", () => {
       "2026 Bowman Anime Red Anime Refractors",
     );
   });
+
+  test("NEO-616: the parallel is trimmed against the insert's own name, not its maker-stripped text", () => {
+    // The insert says "1989 Base" once the maker words are stripped, which
+    // shares only "1989" with the parallel; the shared words are the insert's
+    // own ("1989 Pro Set Base"). No doubled "Base".
+    const proSet: ListingCardInputs = {
+      cardNumber: "89B-1",
+      playerNames: ["Joe Montana"],
+      year: "2026",
+      manufacturer: "Pro Set",
+      setName: "Pro Set Metal",
+      titleLevels: [
+        { name: "1989 Pro Set Base", typeName: "Insert" },
+        { name: "1989 Pro Set Base Prismatic Blue", typeName: "Parallel" },
+      ],
+      sport: "Football",
+    };
+    expect(titleDescription(proSet)).toBe("2026 Pro Set Metal 1989 Base Prismatic Blue");
+  });
 });
 
 describe("NEO-528 — the description names the card's cameos", () => {
