@@ -120,9 +120,10 @@ test(
       // His lookup has answered (a recorded no-match, but it waits in the deployment-wide
       // enrichment pool behind every other run's lookups: the batch-lookup ceiling, LOOKUPS). Its
       // answer offers him as new, or first offers a same-name player of another sport on file
-      // (NEO-424; a Soccer Carlos Alvarez is), which the spec declines with "... anyway".
-      const create = row.getByRole("button", { name: "Add as new player", exact: true });
-      const anyway = row.getByRole("button", { name: "Add as new player anyway", exact: true });
+      // (NEO-424; a Soccer Carlos Alvarez is), which the spec declines with "... anyway". Usable
+      // only: the aria-disabled "Add as new player" shown while the near-matches load is no answer.
+      const create = row.getByRole("button", { name: "Add as new player", exact: true, disabled: false });
+      const anyway = row.getByRole("button", { name: "Add as new player anyway", exact: true, disabled: false });
       await expect(create.or(anyway).first()).toBeVisible({ timeout: LOOKUPS });
       if (await anyway.isVisible()) {
         await anyway.click();
